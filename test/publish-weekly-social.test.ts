@@ -144,9 +144,9 @@ describe("weekRangeLabel (#5330 — rodapé do card capa/CTA)", () => {
 });
 
 describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", () => {
-  it("modo 'highlights': título de capa é 'Os principais destaques da semana'", () => {
+  it("modo 'highlights': título de capa é 'Os principais destaques de IA da semana'", () => {
     const texts = buildFlatCardTexts("highlights", ["260810", "260811", "260812", "260813", "260814"]);
-    assert.equal(texts.cover.title, "Os principais destaques da semana");
+    assert.equal(texts.cover.title, "Os principais destaques de IA da semana");
     assert.equal(texts.cover.footer, "10–14 ago · diar.ia.br");
   });
 
@@ -713,7 +713,7 @@ describe("main(): dispatch mockado", () => {
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
-      assert.match(capturedBody.text, /^Os principais destaques da semana/);
+      assert.match(capturedBody.text, /^Confira aqui o resumo dos destaques:/);
       assert.match(capturedBody.text, /1\. D1 da segunda[\s\S]*2\. D1 da terça/);
       assert.equal(capturedBody.destaque, "weekly-highlights");
       assert.equal(capturedBody.image_urls.length, 4);

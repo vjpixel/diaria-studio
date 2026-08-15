@@ -94,7 +94,7 @@ export type WeeklyInstagramMode = "clicked" | "highlights";
 
 const INTRO_LINES: Record<WeeklyInstagramMode, string> = {
   clicked: "Os mais clicados da semana na diar.ia.br:",
-  highlights: "Os principais destaques da semana na diar.ia.br:",
+  highlights: "Confira aqui o resumo dos destaques:",
 };
 
 /** Shape mínimo que a formatação precisa — desacoplado do tipo de seleção completo (`InstagramRankedCandidate`). */

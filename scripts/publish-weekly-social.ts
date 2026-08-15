@@ -202,7 +202,7 @@ export function buildFlatCardTexts(
   contentWindow: string[],
 ): { cover: { kicker: string; title: string; footer: string }; cta: { kicker: string; title: string; footer: string } } {
   const range = weekRangeLabel(contentWindow);
-  const coverTitle = mode === "highlights" ? "Os principais destaques da semana" : "Os mais clicados da semana";
+  const coverTitle = mode === "highlights" ? "Os principais destaques de IA da semana" : "Os mais clicados da semana";
   return {
     cover: { kicker: "Resumo semanal", title: coverTitle, footer: range ? `${range} · diar.ia.br` : "diar.ia.br" },
     cta: {

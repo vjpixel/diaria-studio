@@ -119,7 +119,7 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
         dataRoot,
         "260815-highlights",
         "cover",
-        { kicker: "Resumo semanal", title: "Os principais destaques da semana", footer: "diar.ia.br" },
+        { kicker: "Resumo semanal", title: "Os principais destaques de IA da semana", footer: "diar.ia.br" },
         generator,
       );
       assert.equal(calls, 1);

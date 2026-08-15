@@ -131,7 +131,7 @@ describe("formatInstagramWeekly", () => {
 
   it("#5330: modo 'highlights' usa a intro 'principais destaques', não 'mais clicados'", () => {
     const caption = formatInstagramWeekly(makeItems(2), "highlights");
-    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+    assert.match(caption, /^Confira aqui o resumo dos destaques:/);
     assert.doesNotMatch(caption, /mais clicados/);
   });
 
@@ -179,9 +179,9 @@ describe("formatFacebookWeekly (#5348)", () => {
     );
   });
 
-  it("modo 'highlights' usa a mesma intro 'principais destaques' do Instagram", () => {
+  it("modo 'highlights' usa a mesma intro do Instagram", () => {
     const caption = formatFacebookWeekly(makeItems(2), "highlights");
-    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+    assert.match(caption, /^Confira aqui o resumo dos destaques:/);
   });
 
   it("modo default (omitido) continua 'clicked'", () => {
@@ -234,9 +234,9 @@ describe("formatThreadsWeekly (#5348, unidade Threads)", () => {
     assert.equal(url.searchParams.get("utm_source"), "threads");
   });
 
-  it("modo 'highlights' usa a mesma intro 'principais destaques' dos outros canais", () => {
+  it("modo 'highlights' usa a mesma intro dos outros canais", () => {
     const caption = formatThreadsWeekly(makeItems(2), "highlights");
-    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+    assert.match(caption, /^Confira aqui o resumo dos destaques:/);
   });
 
   it("modo default (omitido) continua 'clicked'", () => {
