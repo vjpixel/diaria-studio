@@ -104,6 +104,32 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    é `ambígua/trade-off-real` disfarçada de `bloqueada-externa` (heurística
    de atenção, não substitui reler o corpo inteiro).
 
+   **Verificação de estado antes de classificar como "escopo grande, scoping
+   futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura"
+   **não é** um status válido desta lista — é sempre uma leitura de
+   `elegivel`/`precisa-resposta`/`bloqueada-externa`/`requer-sessao-local`/
+   `not-this-week`/`fora-do-escopo`, nunca um resultado automático de "issue
+   parece grande". Antes de aceitar essa leitura pra qualquer issue, rodar as
+   3 checagens abaixo:
+   1. `gh issue view N --json comments` — ler os comentários mais recentes
+      **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
+      unidade já dispatchada, ou progresso parcial registrado.
+   2. `git log --oneline --all --grep "#N"` — trabalho já mergeado costuma
+      citar o número da issue no commit message mesmo quando o comentário na
+      issue não foi lido a tempo.
+   3. Se algum comentário citar um doc de acompanhamento (`docs/*.md`), ler
+      esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
+      trabalho com uma seção "estado após esta rodada"/"candidatas pra
+      próxima rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+
+   Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
+   progresso, nenhum doc de acompanhamento) é legítimo classificar a issue
+   como `bloqueada-externa`/`ambígua/trade-off-real` por escopo. Caso
+   contrário, o próximo passo já está documentado — classificar como
+   `elegivel` e dispatchar essa fatia pequena nesta mesma rodada, ou, no
+   mínimo, reportar o próximo passo concreto na tabela do passo 4.5 em vez de
+   "épica-scale, scoping futuro".
+
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
 

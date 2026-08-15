@@ -509,6 +509,29 @@ aqui.
    humana"). Isto é um lembrete de dupla-checagem pro coordenador, não um
    parser automático — não dispensa a leitura do corpo inteiro.
 
+   **Verificação de estado antes de classificar como "escopo grande, scoping
+   futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura"
+   **não é** uma 4ª categoria — é sempre uma leitura de (a)/(b)/(c), nunca um
+   resultado automático de "issue parece grande". Antes de aceitar essa
+   leitura pra qualquer issue, rodar as 3 checagens abaixo:
+   1. `gh issue view N --json comments` — ler os comentários mais recentes
+      **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
+      unidade já dispatchada, ou progresso parcial registrado.
+   2. `git log --oneline --all --grep "#N"` — trabalho já mergeado costuma
+      citar o número da issue no commit message mesmo quando o comentário na
+      issue não foi lido a tempo.
+   3. Se algum comentário citar um doc de acompanhamento (`docs/*.md`), ler
+      esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
+      trabalho com uma seção "estado após esta rodada"/"candidatas pra
+      próxima rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+
+   Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
+   progresso, nenhum doc de acompanhamento) é legítimo classificar como (c)
+   bloqueio genuíno por escopo. Caso contrário, o próximo passo já está
+   documentado — dispatchar essa fatia pequena nesta mesma rodada (volta pra
+   (a)), ou, no mínimo, reportar o próximo passo concreto na tabela
+   obrigatória do passo 5 em vez de "épica-scale, scoping futuro".
+
    **Antes de incluir qualquer issue no lote de perguntas (#5373):** rodar
    `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
    — se a issue tem a label `decisao-registrada` ela quase certamente tem
