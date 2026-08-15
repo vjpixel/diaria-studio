@@ -572,6 +572,15 @@ export const ENTITY_SAMSUNG_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pra página de entidade "Apple" (#5125, condição do
+ * editor 14/08/2026 — regeneração automática, `scripts/lib/entities/apple.ts`).
+ * 5ª entidade publicada (1ª desta unidade, fora da rodada de escala reduzida
+ * original de 3 — ver docstring do módulo). */
+export const ENTITY_APPLE_FOOTER_NAV_UTM = {
+  source: "entity-apple",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1358,6 +1367,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Samsung (#5125 item 4, ' +
       "escala reduzida — 4ª de ~20 entidades planejadas). Cadastrado desde já pra não repetir o " +
+      "achado #5205 (drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-apple-footer-nav",
+    label: "Página de entidade Apple — link de rodapé pra diar.ia.br",
+    source: ENTITY_APPLE_FOOTER_NAV_UTM.source,
+    medium: ENTITY_APPLE_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-apple-footer-nav",
+    originFile: "scripts/lib/entities/apple.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Apple (#5125, ' +
+      "condição do editor 14/08/2026 — publicada só com regeneração automática, ver " +
+      "`scripts/regenerate-entity-pages.ts`). Cadastrado desde já pra não repetir o " +
       "achado #5205 (drift `nao_catalogado` no 1º clique real).",
     status: "ativo",
   },

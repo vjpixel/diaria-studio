@@ -97,17 +97,26 @@ mas seria a próxima com \+1 pesquisa (achar mais 1-2 menções em edições
 fora da janela já auditada, ou aceitar a redundância) esclareceria se vale
 a pena.
 
-**Apple — verificada, 7 menções reais e substanciais, mas não escolhida.**
-Todas as 7 menções (busca com IA no Siri, chip do iPhone 17 Air, chip M5,
-MacBook Air/iPad Air, Apple Foundation Models 3ª geração, transcrição de
-IA no Genius Bar, mais o processo antitruste da xAI/X contra Apple/OpenAI)
-são reais e substantivas — nenhum falso-positivo. Preterida em favor de
-Samsung porque o arco de Apple é mais repetitivo ("mais um recurso de IA
-embarcado" em quase toda entrada) contra o arco de Samsung, que tem uma
-virada de tom genuína (de fabricante que ajuda a alimentar o boom de IA
-para vítima financeira dele no mesmo trimestre). Ver rationale completo na
-docstring de `scripts/lib/entities/samsung.ts`. **Melhor candidata única
-pra próxima rodada de escala.**
+**Apple — verificada, 7 menções reais e substanciais, publicada em
+15/08/2026 (#5125, `scripts/lib/entities/apple.ts`).** Todas as 7 menções
+(busca com IA no Siri, chip do iPhone 17 Air, chip M5, MacBook Air/iPad
+Air, Apple Foundation Models 3ª geração, transcrição de IA no Genius Bar,
+mais o processo antitruste da xAI/X contra Apple/OpenAI) são reais e
+substantivas — nenhum falso-positivo. Havia sido preterida na rodada
+anterior em favor de Samsung porque o arco de Apple é mais repetitivo
+("mais um recurso de IA embarcado" em quase toda entrada); publicada nesta
+unidade porque era a "melhor candidata única pra próxima rodada" já
+registrada aqui, e o dispatch de #5125 pediu explicitamente 1 página nova
+(não reabrir o levantamento). Dos 10 matches brutos por regex
+(`\bapple\b|\bsiri\b|tim cook`), 3 foram lidos e excluídos de propósito —
+registrados em `ENTITY_EXCLUDED_EDITIONS.apple`
+(`scripts/lib/entities/patterns.ts`) pra que
+`scripts/regenerate-entity-pages.ts` nunca os re-alarme como pendência:
+"Siri agora terá Gemini" (redundante com a menção já incluída de "busca
+com IA no Siri"), "Siri vs Claude vs ChatGPT no iOS" (sobre a escolha do
+usuário entre assistentes, não um desenvolvimento de produto da Apple), e
+"Apple aposta em IA silenciosa para comandos" (aquisição da Q.ai —
+desenvolvimento real, mas redundante em tema com as demais menções).
 
 ## As 3 escolhidas nesta rodada
 
@@ -142,18 +151,27 @@ anti-thin-content").
 
 ## Estado após esta rodada
 
-3 de ~20 páginas de entidade planejadas (Perplexity + xAI + Amazon +
-Samsung = 4 publicadas no total, contando o PoC do #5195). Escala reduzida
-de propósito — cada página exige leitura+síntese editorial real do corpo
-de cada edição, não é mecânico (ver dispatch #5125). Candidatas prontas
-pra próxima rodada, sem precisar re-rodar o levantamento:
+5 de ~20 páginas de entidade planejadas (Perplexity + xAI + Amazon +
+Samsung + Apple = 5 publicadas no total, contando o PoC do #5195). Escala
+reduzida de propósito — cada página exige leitura+síntese editorial real
+do corpo de cada edição, não é mecânico (ver dispatch #5125). Candidatas
+prontas pra próxima rodada, sem precisar re-rodar o levantamento:
 
-- **Apple** (7 menções verificadas, prontas — ver "Achados" acima).
 - **DeepSeek** (5 menções verificadas, no piso — considerar mais pesquisa
   antes de implementar, ver "Achados" acima).
 - Alibaba, AMD, Oracle (3 cada, abaixo do piso — precisam de mais research
   fora da janela de título/subtítulo, ex: RADAR ou corpo de outras
   edições, pra eventualmente cruzar o piso de 5).
+
+**Regeneração automática (#5125, condição do editor 14/08/2026, cumprida
+nesta unidade):** `scripts/regenerate-entity-pages.ts` — (1) re-renderiza
+o HTML de toda entidade a partir do `EntityContent` fonte e sobrescreve o
+asset se divergir (mecânico, sem risco editorial); (2) detecta e alarma
+(com aging de 3 dias, mesmo mecanismo de `hub-staleness-check.ts`/#5123)
+quando uma edição nova casa o padrão de uma entidade já publicada e ainda
+não está no `mentions` dela. Task `Diaria-Entity-Pages-Regen`, diária
+09:40 — ver `docs/entity-pages-regen-setup.md` para o mecanismo completo e
+o comando de arme (ainda não armada nesta unidade, worktree isolado).
 
 Item 4 da issue #5125 original (decisão de escala pros 247 posts) segue
 dependendo da janela de medição de 3 semanas da PoC de Perplexity

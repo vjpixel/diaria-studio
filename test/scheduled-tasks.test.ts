@@ -273,6 +273,29 @@ describe("#5123 — Diaria-Hub-Staleness-Check registrada, diária, systemd-only
   });
 });
 
+describe("#5125 — Diaria-Entity-Pages-Regen registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:40", () => {
+    const t = getScheduledTaskByName("Diaria-Entity-Pages-Regen");
+    assert.ok(t, "Diaria-Entity-Pages-Regen ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/regenerate-entity-pages.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 40 });
+  });
+
+  it("horário de 09:40 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Entity-Pages-Regen" && t.schedule.hour === 9 && t.schedule.minute === 40,
+    );
+    assert.deepEqual(collisions, []);
+  });
+});
+
 describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script v2 (não o v1)", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
