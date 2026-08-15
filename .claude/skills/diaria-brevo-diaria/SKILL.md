@@ -13,6 +13,16 @@ decisão do editor que revoga o guard anterior ("nunca agenda/envia sozinho",
 #4580); o `scheduledAt` em si continua exigindo confirmação explícita do
 editor a cada execução (ver Passo 8), só a proibição categórica saiu.
 
+**Os Passos 1-4 (contatos + rampa) são um orquestrador determinístico desde
+#5192** — `scripts/brevo-diaria-run.ts` (padrão de `scripts/clarice-novos-run.ts`,
+#4941), não mais 5 invocações de script encadeadas em prosa. O LLM/editor
+segue decidindo `--max-add N` no gate humano (Passo 4) e confirmando o
+disparo — só a SEQUÊNCIA fixa entre sub-scripts (ordem, args, quando cada um
+roda) virou código. Os Passos 5-8 (campanha) continuam em prosa — cada um já
+é uma única invocação de `publish-daily-brevo.ts` cercada por um gate humano,
+sem encadeamento de múltiplos scripts pra determinizar (ver scoping na
+issue #5192).
+
 **Canal Pending, não o canal principal.** O envio-padrão da edição (Beehiiv,
 lista completa de assinantes confirmados) continua saindo pelo fluxo normal de
 `/diaria-edicao`/`/diaria-5-publicacao`. Este canal é um EXTRA: gente que se
@@ -46,30 +56,28 @@ npx tsx -e "import { editionDir } from './scripts/lib/edition-paths.ts'; console
 `<edition-dir>` nos passos abaixo. Se o diretório não existir, informe o
 editor e pare — não há o que publicar.
 
-## Passo 1 — Atualização de contatos (`evaluate-brevo-diaria.ts`, OBRIGATÓRIO — #4637/#4725)
+## Passos 1-3 — Preflight (contatos + pool + rampa, dry-run)
 
-**Não é mais opcional.** Antes de qualquer preview de campanha nova, esta
-skill SEMPRE roda esta reavaliação — não é uma sugestão que o editor aceita
-ou recusa, é parte fixa do fluxo (decisão do editor, comentário 260806 da
-issue #4637, consolidando a #4725). Motivo: a task agendada que faria isso
-automaticamente antes do envio canônico das 06:00
-(`Diaria-Brevo-Diaria-Evaluate`, 05:30 BRT, #4534) ainda não foi armada em
-produção segundo o CLAUDE.md — sem rodar aqui, a campanha nova sai pra gente
-que já deveria ter sido promovida/suprimida. Não é cosmético: na execução da
-edição 260807 (260806), rodar isto antes resolveu 3 contatos que receberiam
-mais um envio Pending indevidamente (1 auto-confirmado + 2 promovidos por
-abertura).
-
-Rode o dry-run primeiro:
+Roda o preflight determinístico — os 3 dry-runs (evaluate-brevo-diaria,
+refresh-pending-pool, sync-pending-to-brevo) em sequência fixa, SEM mutar
+nada:
 
 ```bash
-npx tsx scripts/evaluate-brevo-diaria.ts
+npx tsx scripts/brevo-diaria-run.ts --preflight
 ```
 
-Apresente ao editor a tabela de ações do stderr do script — quantos
-promovidos / descadastros nativos / suprimidos / mantidos — e o threshold em
-uso. **Não assuma o valor de cabeça**, leia direto de
-`scripts/lib/shared/brevo-diaria-score.ts`:
+Se qualquer um dos 3 passos falhar (erro de API, MCP indisponível, timeout,
+config ausente), o script PARA no primeiro que falhar e não roda os
+seguintes — reporte o erro tal como impresso (stderr) e pare, não tente
+contornar (mesma disciplina do #738 pro resto do pipeline; **falha do
+Passo 1 é HALT, não warning** — não prossiga pro Passo 5 com dado de
+audiência desatualizado).
+
+Com o stderr combinado dos 3 passos, apresente ao editor:
+
+**Passo 1 (`evaluate-brevo-diaria`)** — quantos promovidos / descadastros
+nativos / suprimidos / mantidos, e o threshold em uso. **Não assuma o valor
+de cabeça**, leia direto de `scripts/lib/shared/brevo-diaria-score.ts`:
 
 - `BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE` — promoção, avaliada contra
   contadores INSTANTÂNEOS (todos os envios). Comparação ESTRITA (`>`, não
@@ -83,88 +91,32 @@ promover errado é barato, suprimir errado é quase irreversível) — nunca lei
 o valor de uma como se valesse pra outra, mesmo que um dia voltem a coincidir
 por acaso.
 
-**Falha do evaluate é HALT, não warning.** Se o dry-run ou o `--push` abortar
-(erro de API, MCP indisponível, timeout, etc.), pare e informe o editor — não
-prossiga pro Passo 5 (preview da campanha) com dado de audiência
-desatualizado (mesma disciplina do #738 pro resto do pipeline).
+**Passo 2 (`refresh-pending-pool`)** — quantos Pending novos foram
+encontrados fora do pool (bruto + computado) e do store deste canal; quantos
+foram excluídos por origem **SparkLoop Upscribe** (`RH_SOURCE =
+"sparkloop-upscribe"`, filtro obrigatório — reusa o mesmo fingerprint de
+`sync-sparkloop-exclusion-segment-beehiiv.ts`, contato dessa origem NUNCA
+entra no pool por este canal); quantos serão de fato adicionados nesta
+rodada, dentro da cota (`DEFAULT_REFRESH_LIMIT` = 25/rodada por padrão —
+conservador, sem número explícito do editor; ajustável via
+`npx tsx scripts/refresh-pending-pool.ts --limit N` fora do orquestrador se o
+volume real em produção pedir outro valor — o orquestrador não expõe
+`--limit` de propósito, é uma decisão rara o bastante pra ficar fora do
+caminho automatizado). Contato Pending novo NUNCA compete por `score` com o
+pool antigo de 2023 — entra marcado `lane: "recency"` (decisão do editor,
+briefing 260814: cadastro recente/orgânico é mais "quente", mas nunca foi
+medido pela mesma fórmula manual) e ganha prioridade de fila própria em
+`selectContactsForBackfill` (Passo 3), sem um score inventado.
 
-A mutação real (`--push`) só roda depois da confirmação combinada do Passo 4
-— este passo aqui só produz a tabela de proposta.
-
-## Passo 2 — Refresh do pool Pending (`refresh-pending-pool.ts`, OBRIGATÓRIO — #5183)
-
-**Etapa nova (#5183).** O pool de entrada deste canal é um snapshot MANUAL
-congelado de 260802 (`data/pending-reativacao/pending-scored.csv`) — sem este
-passo, todo Pending cadastrado na Beehiiv DEPOIS daquele dia é invisível pro
-resto do fluxo (paginado pela Beehiiv, mas descartado em silêncio antes de
-virar candidato). Roda **sempre**, antes do Passo 3, na mesma disciplina de
-obrigatoriedade do Passo 1.
-
-Dry-run primeiro:
-
-```bash
-npx tsx scripts/refresh-pending-pool.ts
-```
-
-Apresente ao editor, a partir do stderr do script:
-
-- Quantos Pending novos foram encontrados fora do pool (bruto + computado) e
-  do store deste canal.
-- Quantos foram excluídos por origem **SparkLoop Upscribe** (`RH_SOURCE =
-  "sparkloop-upscribe"`) — filtro **obrigatório**, reusa o mesmo fingerprint
-  de `sync-sparkloop-exclusion-segment-beehiiv.ts`; contato dessa origem
-  NUNCA entra no pool por este canal.
-- Quantos serão de fato adicionados nesta rodada, dentro da cota
-  (`DEFAULT_REFRESH_LIMIT` = 25/rodada por padrão — conservador, sem número
-  explícito do editor; ajustável via `--limit N` se o volume real em produção
-  pedir outro valor).
-
-Com a confirmação combinada do Passo 4, aplique:
-
-```bash
-npx tsx scripts/refresh-pending-pool.ts --push
-npx tsx scripts/score-pending-origin.ts
-npx tsx scripts/verify-pending-emails-mv.ts
-```
-
-**Ordem FIXA, sempre as três em sequência** — um contato novo só é visível
-pra MillionVerifier depois de entrar no pool (`refresh-pending-pool.ts`), e só
-depois de reverificado (`verify-pending-emails-mv.ts`) é que
-`sync-pending-to-brevo.ts` (Passo 3) o enxerga como candidato. Pular
-`score-pending-origin.ts`/`verify-pending-emails-mv.ts` depois do `--push`
-deste passo deixa o pool "refrescado mas não recomputado" —
-`assertMvGuardAcknowledged` (`sync-pending-to-brevo.ts`) detecta esse estado e
-recusa `--push` do Passo 3 até rodar os dois scripts.
-
-Contato Pending novo NUNCA compete por `score` com o pool antigo de 2023 —
-entra marcado `lane: "recency"` (decisão do editor, briefing 260814: cadastro
-recente/orgânico é mais "quente", mas nunca foi medido pela mesma fórmula
-manual) e ganha prioridade de fila própria em `selectContactsForBackfill`
-(Passo 3), sem um score inventado.
-
-## Passo 3 — Proposta de aumento de rampa (`sync-pending-to-brevo.ts`, sempre perguntada)
-
-Depois dos Passos 1–2 (as saídas de promoção/supressão liberam slots; o pool
-está com os Pending mais recentes), rode o dry-run do backfill:
-
-```bash
-npx tsx scripts/sync-pending-to-brevo.ts
-```
-
-Apresente ao editor, a partir do stderr do script:
-
-- **Slots livres no cap** (`fila: X/Y ocupados, Z livre(s)`) — já reflete as
-  saídas propostas no Passo 1 só depois que o Passo 1 de fato aplicar
-  `--push` (rodar o dry-run deste passo ANTES do `--push` do Passo 1 mostra
-  o número desatualizado; ao apresentar ao editor, deixe claro se o Passo 1
-  já foi aplicado ou ainda está só proposto).
-- **Candidatos elegíveis**, ordenados pela fila priorizada — lane de
-  recência (Passo 2) primeiro, depois pool antigo por score de origem
-  (`scripts/score-pending-origin.ts` via `selectContactsForBackfill`).
-- **Cobertura MillionVerifier** (quantos do pool já foram processados —
-  ver `assertMvGuardAcknowledged`; sem cobertura completa, `--push` exige
-  `--i-know-this-skips-mv` explícito. Desde #5183, isso também bloqueia se o
-  pool foi refrescado no Passo 2 mas ainda não recomputado/reverificado).
+**Passo 3 (`sync-pending-to-brevo`)** — **slots livres no cap** (`fila: X/Y
+ocupados, Z livre(s)`) — reflete o estado ATUAL da lista Brevo, ainda sem as
+saídas do Passo 1 aplicadas (o preflight roda tudo em dry-run; o número real
+pós-aplicação só existe depois do Passo 4 rodar `--apply`, deixe isso claro
+ao editor); **candidatos elegíveis**, ordenados pela fila priorizada — lane
+de recência (Passo 2) primeiro, depois pool antigo por score de origem
+(`scripts/score-pending-origin.ts` via `selectContactsForBackfill`);
+**cobertura MillionVerifier** (quantos do pool já foram processados — ver
+`assertMvGuardAcknowledged`).
 
 Pergunte quantos contatos acrescentar — **"nenhum" continua sendo resposta
 válida**, mas deixou de ser o default sugerido só porque a abertura agregada
@@ -186,17 +138,7 @@ npx tsx scripts/check-brevo-diaria-guardrail.ts --dry-run
 ```
 
 (`openRatePct` no output — mesma métrica agregada do piso de 15% citado
-acima; não julgue "abaixo de 15%" de memória). Só então rode o push,
-**limitado ao número escolhido**:
-
-```bash
-npx tsx scripts/sync-pending-to-brevo.ts --push --max-add N
-```
-
-`--max-add 0` é a forma explícita de "nenhum" — roda o resto do fluxo (MV
-guard, circuit breaker de campanha) normalmente, só não ingere ninguém.
-Omitir `--max-add` volta ao comportamento antigo (preenche até o cap) — só
-use assim se o editor pedir explicitamente "preenche tudo que couber".
+acima; não julgue "abaixo de 15%" de memória).
 
 **O cap de 300 exclui os 5 `EDITOR_SEED_EMAILS` por design (#4631,
 #5182).** `computeCurrentActiveCount` (`sync-pending-to-brevo.ts`) e
@@ -227,28 +169,57 @@ necessário enquanto o gate automático não existir).
 
 ## Passo 4 — Gate humano: contatos + rampa
 
-Apresente as **três etapas juntas** — ações do Passo 1 (promovidos /
-descadastros nativos / suprimidos / mantidos), refresh do pool do Passo 2
-(Pending novos encontrados, excluídos por SparkLoop, selecionados dentro da
-cota) e proposta de rampa do Passo 3 (slots livres, candidatos, `--max-add`
-escolhido) — antes de aplicar QUALQUER mutação real. Só prossiga com
-confirmação explícita ("sim", "pode aplicar", equivalente) — mesma
-disciplina do #3938 pra gates interativos. Resposta ambígua ou ausência de
-resposta → não prossiga, pergunte de novo.
+Apresente as **três etapas juntas** (Passos 1-3 do preflight acima) — ações
+de promoção/supressão, refresh do pool, e proposta de rampa — antes de
+aplicar QUALQUER mutação real. Só prossiga com confirmação explícita ("sim",
+"pode aplicar", equivalente) — mesma disciplina do #3938 pra gates
+interativos. Resposta ambígua ou ausência de resposta → não prossiga,
+pergunte de novo.
 
-Com a confirmação, rode as mutações reais nesta ordem (Passo 1 primeiro —
-libera slots; Passo 2 antes do Passo 3 — o pool precisa estar refrescado
-E recomputado/reverificado antes do backfill enxergar os novos):
+Com a confirmação (N = número de contatos a acrescentar, escolhido no
+Passo 3 — `0` é a forma explícita de "nenhum"), rode a mutação real:
 
 ```bash
-npx tsx scripts/evaluate-brevo-diaria.ts --push
-npx tsx scripts/refresh-pending-pool.ts --push
-npx tsx scripts/score-pending-origin.ts
-npx tsx scripts/verify-pending-emails-mv.ts
-npx tsx scripts/sync-pending-to-brevo.ts --push --max-add N   # N = escolhido no Passo 3; omita p/ preencher até o cap
+npx tsx scripts/brevo-diaria-run.ts --apply --max-add N
 ```
 
-## Passo 5 — Preview da campanha (`--dry-run`, sempre depois dos Passos 1–4)
+Isso roda, na ordem FIXA (Passo 1 primeiro — libera slots; Passo 2 antes do
+Passo 3 — o pool precisa estar refrescado E recomputado/reverificado antes
+do backfill enxergar os novos):
+
+1. `evaluate-brevo-diaria.ts --push`
+2. `refresh-pending-pool.ts --push`
+3. `score-pending-origin.ts`
+4. `verify-pending-emails-mv.ts`
+5. `sync-pending-to-brevo.ts --push --max-add N`
+
+O script PARA no primeiro passo que falhar — nunca continua a sequência com
+uma mutação parcial. Se o passo 4 (`verify-pending-emails-mv`) falhar por
+`MV_COST_GUARD_THRESHOLD` (500 e-mails, ~US$1.14 acima do teto — critério 3
+de "Perguntar é exceção" no CLAUDE.md, gasto real acima do trivial), o erro
+aparece no stderr com a estimativa de custo: confirme com o editor e
+re-rode com `--confirm-mv`:
+
+```bash
+npx tsx scripts/brevo-diaria-run.ts --apply --max-add N --confirm-mv
+```
+
+(idempotente o suficiente pra reexecutar — os passos já aplicados
+`--push`/`score-pending-origin` não têm efeito colateral destrutivo em
+re-rodar; `verify-pending-emails-mv` usa checkpoint próprio, `refresh-pending-pool`
+não reingere quem já entrou no pool).
+
+Se em vez disso for o passo 5 (`sync-pending-to-brevo`) que falhar por
+cobertura MillionVerifier incompleta no pool ANTIGO
+(`assertMvGuardAcknowledged` — guard DISTINTO do `MV_COST_GUARD_THRESHOLD`
+acima), confirme com o editor que ingerir sem cobertura completa é aceitável
+nesta rodada e re-rode com `--i-know-this-skips-mv`:
+
+```bash
+npx tsx scripts/brevo-diaria-run.ts --apply --max-add N --i-know-this-skips-mv
+```
+
+## Passo 5 — Preview da campanha (`--dry-run`, sempre depois do Passo 4)
 
 ```bash
 npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
@@ -352,3 +323,11 @@ confirmado por essa releitura, não o que foi enviado no PUT.
   chamada direta à API, não pelo script.
 - Task agendada diária automática pro refresh do Passo 2 — a skill continua
   com gate humano em todos os passos (#5183 escopo explícito).
+- `--limit N` do `refresh-pending-pool.ts` — o orquestrador `brevo-diaria-run.ts`
+  não expõe essa flag (decisão de escopo do #5192); ajustar a cota de
+  25/rodada requer rodar `refresh-pending-pool.ts --push --limit N` fora do
+  orquestrador.
+- Envolver os Passos 5-8 (criação/agendamento de campanha) no orquestrador —
+  cada um já é uma única invocação de script cercada de gate humano, sem
+  encadeamento de JSON entre múltiplos sub-scripts pra determinizar (scoping
+  explícito do #5192, ver comentário no PR desta unidade).
