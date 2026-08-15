@@ -18,6 +18,7 @@ import {
   computeCountsFromBrevoStatistics,
   computeMatureCountsFromBrevoStatistics,
   hasUserUnsubscription,
+  hasHardBounce,
   evaluateContact,
   fetchBrevoContactState,
   fetchBeehiivSubscriptionStatus,
@@ -211,6 +212,28 @@ describe("hasUserUnsubscription — sinal PRIMÁRIO de descadastro genuíno (#46
   });
 });
 
+describe("hasHardBounce — distingue bounce de entrega de qualquer outra causa de emailBlacklisted (#5351 Parte B)", () => {
+  it("array hardBounces não-vazio → true", () => {
+    assert.equal(hasHardBounce({ hardBounces: [{ campaignId: 17 }] }), true);
+  });
+
+  it("array hardBounces vazio → false", () => {
+    assert.equal(hasHardBounce({ hardBounces: [] }), false);
+  });
+
+  it("hardBounces ausente → false", () => {
+    assert.equal(hasHardBounce({}), false);
+  });
+
+  it("statistics ausente (undefined) → false", () => {
+    assert.equal(hasHardBounce(undefined), false);
+  });
+
+  it("hardBounces malformado (não-array) → false, fail-safe", () => {
+    assert.equal(hasHardBounce({ hardBounces: "not-an-array" as unknown as unknown[] }), false);
+  });
+});
+
 describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#4476 item 7)", () => {
   const origFetch = globalThis.fetch;
   function restore() {
@@ -232,6 +255,7 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
         mature_opens_count: 1,
         emailBlacklisted: false,
         userUnsubscribed: false, // #4630 — sem statistics.unsubscriptions.userUnsubscription no fixture
+        hardBounced: false, // #5351 Parte B — sem statistics.hardBounces no fixture
       });
     } finally {
       restore();
@@ -1012,7 +1036,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
     }
   });
 
-  it("emailBlacklisted:true SEM userUnsubscription E sem estar ativo na Beehiiv → NÃO tratado como descadastro nativo (#4630, ruído de bounce/admin isolado), segue avaliação normal por score, beehiivStatus buscado 1x só (reusado entre passo 0 e passo 1)", async () => {
+  it("emailBlacklisted:true SEM userUnsubscription E sem estar ativo na Beehiiv, SEM hardBounces → NÃO tratado como descadastro nativo (#4630), marcado bounced/native_admin_block (#5351 Parte B), NUNCA propagado pra Beehiiv, beehiivStatus buscado 1x só", async () => {
     let byEmailCalls = 0;
     globalThis.fetch = (async (url: string | URL) => {
       const u = String(url);
@@ -1043,11 +1067,92 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
       });
       assert.equal(result.unsubscribedNative, 0, "adminUnsubscription isolado nunca é tratado como saída nativa (#4630)");
       assert.equal(result.selfConfirmed, 0);
-      // eventos sem timestamp de data → tratados como IMATUROS (fail-safe) →
-      // mature sends_count=0 < piso de supressão (3) → keep.
-      assert.equal(result.kept, 1);
+      assert.equal(result.bouncedNative, 1, "#5351 Parte B — saída terminal local dedicada, nunca 'segue avaliação normal'");
+      assert.equal(result.kept, 0, "não passa pela avaliação normal (comportamento antigo #4630, corrigido pelo #5351)");
       assert.equal(result.failed, 0);
       assert.equal(byEmailCalls, 1, "beehiivStatus buscado só 1x — reusado entre o passo 0 (pré-checagem) e o passo 1 (auto-confirmação)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true, emailBlacklisted sem userUnsubscription, sem hardBounces → unlinkFromBrevoList chamado, ZERO chamada de escrita/propagação na Beehiiv, store marca bounced/native_admin_block (#5351 Parte B)", async () => {
+    let unlinkBody: unknown;
+    const beehiivWriteUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (init?.method === "PUT" && u.includes("api.brevo.com")) {
+        unlinkBody = JSON.parse(init.body as string);
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/") && u.includes("api.brevo.com")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }], opened: [] },
+        });
+      }
+      if (init?.method && init.method !== "GET") beehiivWriteUrls.push(`${init.method} ${u}`);
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("bounce-push@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.bouncedNative, 1);
+      assert.deepEqual(unlinkBody, { unlinkListIds: [7] });
+      assert.deepEqual(beehiivWriteUrls, [], "ZERO chamada de escrita/propagação na Beehiiv (#5351 — decisão do editor: nunca tocar a Beehiiv neste caso)");
+      const c = findContact(result.store, "bounce-push@b.com")!;
+      assert.equal(c.status, "bounced");
+      assert.equal(c.resolution_reason, "native_admin_block");
+      assert.ok(c.bounced_at);
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:true SEM userUnsubscription, COM statistics.hardBounces não-vazio → bounced/native_bounce (distinção #5351 Parte B, zero chamada nova — mesmo GET)", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: {
+            messagesSent: [{ campaignId: 17 }],
+            opened: [],
+            hardBounces: [{ campaignId: 17 }],
+          },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("hard-bounce@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.bouncedNative, 1);
+      const c = findContact(result.store, "hard-bounce@b.com")!;
+      assert.equal(c.status, "bounced");
+      assert.equal(c.resolution_reason, "native_bounce", "hardBounces não-vazio → native_bounce, distinto de native_admin_block");
     } finally {
       restore();
     }

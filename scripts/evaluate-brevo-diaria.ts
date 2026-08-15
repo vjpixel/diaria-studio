@@ -326,6 +326,7 @@ import {
   applyEvaluation,
   applySelfConfirmed,
   applyNativeUnsubscribe,
+  applyBrevoDiariaBounced,
   normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
@@ -362,6 +363,18 @@ export interface BrevoContactStatistics {
     userUnsubscription?: unknown[];
     adminUnsubscription?: unknown[];
   };
+  /** #5351 Parte B — distingue bounce de entrega genuíno (endereço
+   * inválido/caixa cheia) de qualquer outra causa de `emailBlacklisted`
+   * sem clique do usuário (ação admin-side/complaint na Brevo). */
+  hardBounces?: BrevoStatEvent[];
+}
+
+/** Pura — `true` se existir >=1 evento de hard bounce
+ * (`statistics.hardBounces`, #5351 Parte B). Campo ausente/malformado →
+ * `false` (fail-safe, mesmo padrão de `hasUserUnsubscription`). */
+export function hasHardBounce(statistics: BrevoContactStatistics | undefined): boolean {
+  const arr = statistics?.hardBounces;
+  return Array.isArray(arr) && arr.length > 0;
 }
 
 /** Pura — `true` só se existir >=1 evento de descadastro por INICIATIVA DO
@@ -453,6 +466,10 @@ export interface BrevoContactState {
    * link nativo). `emailBlacklisted` sozinho não basta — ver
    * `hasUserUnsubscription`. */
   userUnsubscribed: boolean;
+  /** #5351 Parte B — sinal de bounce de entrega genuíno (vs. ação
+   * admin-side/complaint), usado só quando `emailBlacklisted && !userUnsubscribed`
+   * pra escolher entre `resolution_reason` `"native_bounce"`/`"native_admin_block"`. */
+  hardBounced: boolean;
 }
 
 export async function fetchBrevoContactState(apiKey: string, email: string): Promise<BrevoContactState> {
@@ -468,6 +485,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     mature_opens_count: mature.opens_count,
     emailBlacklisted: res.body?.emailBlacklisted === true,
     userUnsubscribed: hasUserUnsubscription(res.body?.statistics),
+    hardBounced: hasHardBounce(res.body?.statistics),
   };
 }
 
@@ -1034,6 +1052,10 @@ export interface RunEvaluationResult {
    * próprio objetivo de auditabilidade que o #4633 promete.
    */
   unsubscribedNativeBeehiivNotFound: number;
+  /** #5351 Parte B — `emailBlacklisted` sem `userUnsubscription` (bounce ou
+   * ação admin-side), 4ª saída terminal puramente local (nunca escreve na
+   * Beehiiv). */
+  bouncedNative: number;
   selfConfirmed: number;
   promoted: number;
   suppressed: number;
@@ -1062,6 +1084,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
 
   let unsubscribedNative = 0;
   let unsubscribedNativeBeehiivNotFound = 0;
+  let bouncedNative = 0;
   let selfConfirmed = 0;
   let promoted = 0;
   let suppressed = 0;
@@ -1175,14 +1198,24 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             }
             // emailBlacklisted true mas nem já-ativo na Beehiiv nem
             // userUnsubscription genuíno (#4630) — ruído de
-            // adminUnsubscription/bounce isolado. Não propaga pra Beehiiv,
-            // não conta como saída nativa. Segue avaliação normal abaixo
-            // (passo 1 reusa `beehiivStatus`, já sabido "não active" — nunca
-            // um 2º GET).
+            // adminUnsubscription/bounce isolado. Não propaga pra Beehiiv
+            // (decisão do editor, #5351 Parte B) — sem clique do usuário
+            // este contato nunca recebe outra campanha, então a avaliação
+            // normal (que depende de `sends_count` crescer) nunca concluiria
+            // nada pra ele. Saída terminal LOCAL dedicada em vez de "segue
+            // avaliação normal" (comportamento antigo, #4630) — o contato
+            // ficava preso `in_brevo` pra sempre.
+            const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
             log(
-              `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (bounce/ação admin) → NÃO ` +
-                "tratado como descadastro nativo (#4630), segue avaliação normal.",
+              `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (${bounceReason}) → NÃO ` +
+                "propagado pra Beehiiv (#5351, decisão do editor), marcado bounced localmente, libera slot.",
             );
+            bouncedNative++;
+            if (push) {
+              await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+              store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
+            }
+            continue;
           }
           // beehiivStatus === "active" cai direto pro bloco compartilhado de
           // auto-confirmação (passo 1) abaixo — nunca reverte um assinante já
@@ -1282,7 +1315,17 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     }
   }
 
-  return { store, unsubscribedNative, unsubscribedNativeBeehiivNotFound, selfConfirmed, promoted, suppressed, kept, failed };
+  return {
+    store,
+    unsubscribedNative,
+    unsubscribedNativeBeehiivNotFound,
+    bouncedNative,
+    selfConfirmed,
+    promoted,
+    suppressed,
+    kept,
+    failed,
+  };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -1349,6 +1392,7 @@ async function main(): Promise<void> {
   log(
     `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente ` +
       `(${result.unsubscribedNativeBeehiivNotFound} via 404 permanente Beehiiv, ver resolution_reason), ` +
+      `${result.bouncedNative} bounced (bounce/ação admin, #5351 — NUNCA propagado pra Beehiiv), ` +
       `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s).`,
