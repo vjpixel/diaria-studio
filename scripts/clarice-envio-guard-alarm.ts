@@ -46,15 +46,28 @@ import {
   markGuardAlarmed,
   emptyEnvioGuardAlarmState,
   buildGuardAlarmEmail,
+  type EnvioGuardAlarmEvaluation,
   type EnvioGuardAlarmReportFile,
   type EnvioGuardAlarmState,
 } from "./lib/clarice-envio-guard-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPORTS_DIR = resolve(ROOT, "data", "clarice-subscribers", "envio-reports");
 const STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "envio-guard-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "envio-guard-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[clarice-envio-guard-alarm]";
+/** #5339: task roda diária (~06:15) — 2 execuções limpas consecutivas (2
+ * dias, já que o fingerprint inclui `aammdd`) fecham a issue automaticamente,
+ * mesmo valor de cadência diária usado pelos alarmes já wired (lote 1/3). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export function loadState(statePath: string = STATE_PATH): EnvioGuardAlarmState {
   if (!existsSync(statePath)) return emptyEnvioGuardAlarmState();
@@ -72,6 +85,60 @@ export function loadState(statePath: string = STATE_PATH): EnvioGuardAlarmState 
 export function saveState(state: EnvioGuardAlarmState, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional do lote 1/3:
+// idempotência do E-MAIL (acima) e tracking de ISSUE são preocupações
+// independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte uma avaliação NÃO-ok no `AlarmFinding` genérico que
+ * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
+ * ("clarice-envio-guard"); `fingerprint` inclui `aammdd` — cada dia é seu
+ * próprio achado, mesmo racional de `clarice-envio-alarm.ts`. Sem PII: só
+ * `aammdd`, verdict e `reportId`. */
+function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): AlarmFinding {
+  return {
+    check: "clarice-envio-guard",
+    fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,
+    title:
+      evaluation.verdict === "alarm-no-report"
+        ? `[diar.ia.br] Diaria-Clarice-Envio-Guard: nenhum relatório encontrado pra ${aammdd}`
+        : `[diar.ia.br] Diaria-Clarice-Envio-Guard falhou em ${aammdd} (${evaluation.reportId})`,
+    body: [
+      "Achado automático do alarme `Diaria-Clarice-Envio-Guard-Alarm`",
+      "(`scripts/clarice-envio-guard-alarm.ts`).",
+      "",
+      `aammdd: ${aammdd}`,
+      `verdict: ${evaluation.verdict}`,
+      evaluation.reportId ? `reportId: ${evaluation.reportId}` : "Nenhum relatório encontrado — a rodada nem chegou a rodar.",
+      "",
+      "Se a onda de hoje ainda não disparou (antes das 06:00 BRT), considere",
+      "checar/suspender manualmente pelo painel Brevo.",
+      "",
+      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
 }
 
 /**
@@ -112,6 +179,36 @@ async function main(): Promise<void> {
       (evaluation.reportId ? ` reportId=${evaluation.reportId}` : ""),
   );
 
+  // #5339 — reconcilia issue pro achado (se houver) ANTES de montar o
+  // e-mail, mesmo padrão do lote 1/3. Roda toda execução não-dry-run,
+  // independente de o e-mail idempotente disparar nesta rodada.
+  const alarmFindings: AlarmFinding[] = evaluation.verdict !== "ok" ? [toAlarmFinding(evaluation, aammdd)] : [];
+  const alarmState = loadAlarmIssuesState();
+  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    const outcome = findingOutcomes[0];
+    if (outcome) {
+      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
+      if (outcome.action === "failed") {
+        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+      }
+    }
+  }
+
   const state = loadState();
   if (!shouldSendGuardAlarm(evaluation, state, aammdd)) {
     console.log(
@@ -122,7 +219,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { subject, body } = buildGuardAlarmEmail(evaluation, aammdd);
+  const { subject, body } = buildGuardAlarmEmail(evaluation, aammdd, issueRef);
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

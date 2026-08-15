@@ -264,12 +264,18 @@ export function describeBreaches(
  * como linha de CONTEXTO, separada da lista de breaches, nunca como se
  * tivesse causado o alarme.
  */
+/** `issueRef` (#5339, opcional, sempre o ÚLTIMO param — depois de
+ * `thresholds`, que já tinha default antes desta unidade) — outcome de
+ * `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`) pro achado
+ * desta campanha. `undefined` (dry-run, ou wiring ainda não chamado) omite
+ * a citação sem quebrar nada — mesmo fallback dos outros alarmes já wired. */
 export function buildGuardrailAlarmEmail(
   campaignName: string,
   guardrail: ArmGuardrailResult,
   nextScheduled: ScheduledSendInfo | null,
   now: Date,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
   const breaches = describeBreaches(guardrail, thresholds);
   const subject = `[diar.ia.br] Guardrail furado no envio "${campaignName}"`;
@@ -294,5 +300,13 @@ export function buildGuardrailAlarmEmail(
     );
   }
   lines.push("", `(alarme automático — avaliação rodou em ${now.toISOString()})`);
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
   return { subject, body: lines.join("\n") };
 }

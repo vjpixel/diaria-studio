@@ -87,10 +87,14 @@ export function markAlarmed(state: OpensCatchupAlarmState, now: Date): OpensCatc
 }
 
 /** Pure: monta assunto + corpo do e-mail de alarme — texto puro, mesmo
- * padrão de `apoios-diff-alarm.ts`. */
+ * padrão de `apoios-diff-alarm.ts`. `issueRef` (#5339, opcional) — outcome
+ * de `applyAlarmReconciliation` (`scripts/lib/alarm-issues.ts`) pro streak
+ * atual. `undefined` (dry-run, ou wiring ainda não chamado) omite a citação
+ * sem quebrar nada — mesmo fallback dos outros alarmes já wired. */
 export function buildOpensCatchupAlarmEmail(
   state: OpensCatchupAlarmState,
   latestError: string | undefined,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] catch-up de opens da Clarice falhando há ${state.consecutiveFailures} execuções seguidas`;
 
@@ -115,6 +119,15 @@ export function buildOpensCatchupAlarmEmail(
     "Este alarme não requer nenhuma ação automática — é só um aviso; o sync",
     "principal continua rodando normalmente enquanto isso é investigado.",
   );
+
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
 
   return { subject, body: lines.join("\n") };
 }
