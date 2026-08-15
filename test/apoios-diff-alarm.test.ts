@@ -18,6 +18,7 @@ import {
   advanceState,
   shouldAlarm,
   buildApoiosDiffAlarmEmail,
+  maskEmailForIssue,
   type DiffAlarmInput,
 } from "../scripts/lib/apoios-diff-alarm.ts";
 import { loadState, saveState } from "../scripts/apoios-diff-alarm.ts";
@@ -189,5 +190,49 @@ describe("loadState / saveState (scripts/apoios-diff-alarm.ts, I/O)", () => {
     saveState(state, path);
     const loaded = loadState(path);
     assert.equal(loaded.lastAlarmedFingerprint, null);
+  });
+});
+
+describe("maskEmailForIssue (#5339)", () => {
+  it("mantém só o 1º caractere do local-part + domínio completo", () => {
+    assert.equal(maskEmailForIssue("joao@example.com"), "j***@example.com");
+  });
+
+  it("e-mail sem @ (malformado) — mascara tudo menos o 1º caractere, fail-soft", () => {
+    assert.equal(maskEmailForIssue("naoehemail"), "n***");
+  });
+
+  it("string vazia — não lança, retorna máscara genérica", () => {
+    assert.equal(maskEmailForIssue(""), "***");
+  });
+});
+
+describe("buildApoiosDiffAlarmEmail com issueRef (#5339)", () => {
+  it("cita o número da issue quando issueRef tem action created/reused", () => {
+    const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
+    const { body } = buildApoiosDiffAlarmEmail(input, undefined, {
+      issueNumber: 5342,
+      url: "https://github.com/vjpixel/diaria-studio/issues/5342",
+      action: "created",
+    });
+    assert.match(body, /Issue: #5342/);
+    assert.match(body, /issues\/5342/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
+    const { body } = buildApoiosDiffAlarmEmail(input, undefined, {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh não autenticado",
+    });
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
+    const { body } = buildApoiosDiffAlarmEmail(input);
+    assert.doesNotMatch(body, /Issue:/);
   });
 });

@@ -73,15 +73,29 @@ import {
   hasPendingDiff,
   computeDiffFingerprint,
   buildApoiosDiffAlarmEmail,
+  maskEmailForIssue,
   type ApoiosDiffAlarmState,
   type DiffAlarmInput,
   type DiffAlarmGuardWarnings,
 } from "./lib/apoios-diff-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "apoios-diff-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "apoios-diff-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[apoios-diff-alarm]";
+/** #5339: task roda diária (09:45) — 2 execuções limpas consecutivas = 48h
+ * sem diff pendente antes de fechar a issue automaticamente, mesmo valor de
+ * `hub-drift-check.ts`/`robots-txt-drift-check.ts`/`beehiiv-home-meta-check.ts`
+ * pra cadência diária. */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export function loadState(statePath: string = STATE_PATH): ApoiosDiffAlarmState {
   if (!existsSync(statePath)) return emptyApoiosDiffAlarmState();
@@ -98,6 +112,77 @@ export function loadState(statePath: string = STATE_PATH): ApoiosDiffAlarmState 
 export function saveState(state: ApoiosDiffAlarmState, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE, #5339) ──────────────────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional dos outros
+// alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
+// são preocupações independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte o diff pendente INTEIRO (não cada entry — `vjpixel/diaria-studio`
+ * é repo PÚBLICO, e cada entry carrega o e-mail de um assinante/apoiador;
+ * ver `maskEmailForIssue`) num único `AlarmFinding` (#5339). `check` fixo
+ * ("apoios-diff") e `fingerprint` = `computeDiffFingerprint(input)`, a MESMA
+ * fórmula que já alimenta a idempotência do e-mail — reaparece só quando o
+ * conjunto de mudanças pendentes muda de shape, igual ao alarme por e-mail.
+ * O corpo lista os e-mails MASCARADOS (`maskEmailForIssue`) — só o e-mail
+ * (canal privado) mostra o e-mail completo. */
+function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
+  const lines = [
+    "Achado automático do alarme `Diaria-Apoios-Diff-Alarm`",
+    "(`scripts/apoios-diff-alarm.ts`).",
+    "",
+    `Adições/trocas de nível pendentes: ${input.toApply.length}`,
+    `Remoções pendentes: ${input.toRemove.length}`,
+    "",
+  ];
+  if (input.toApply.length > 0) {
+    lines.push("Adições/trocas (e-mail mascarado — detalhe completo só no e-mail de alarme):");
+    for (const e of input.toApply) {
+      lines.push(`  + ${maskEmailForIssue(e.email)}: ${e.fromLevel ?? "(nenhum)"} -> ${e.toLevel}`);
+    }
+    lines.push("");
+  }
+  if (input.toRemove.length > 0) {
+    lines.push("Remoções (e-mail mascarado):");
+    for (const e of input.toRemove) {
+      lines.push(`  - ${maskEmailForIssue(e.email)}: ${e.fromLevel} -> (nenhum)`);
+    }
+    lines.push("");
+  }
+  lines.push(
+    "Rode /diaria-apoios-sync (revisa o diff + Passo 1 de drift check antes) ou",
+    "npx tsx scripts/sync-apoio-nivel-beehiiv.ts --push pra aplicar.",
+    "",
+    "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+    "comentada/fechada sozinha quando o diff deixar de reproduzir por",
+    `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+  );
+
+  return {
+    check: "apoios-diff",
+    fingerprint: computeDiffFingerprint(input),
+    title: `[diar.ia.br] apoio_nivel: diff pendente (${input.toApply.length} adição(ões)/troca(s), ${input.toRemove.length} remoção(ões))`,
+    body: lines.join("\n"),
+    labels: ["enhancement"],
+    priority: "P2",
+  };
 }
 
 async function main(): Promise<void> {
@@ -203,6 +288,37 @@ async function main(): Promise<void> {
       `(último alarme: ${state.lastCheckedAt ?? "nunca"}).`,
   );
 
+  // #5339 — reconcilia UMA issue pro diff pendente inteiro (ver
+  // `toAlarmFinding` — nunca 1 issue por assinante, e-mail é mascarado no
+  // corpo por ser repo PÚBLICO) ANTES de montar o e-mail. Roda toda execução
+  // não-dry-run, independente de um e-mail novo disparar nesta rodada.
+  const alarmFindings = hasPendingDiff(input) ? [toAlarmFinding(input)] : [];
+  const alarmState = loadAlarmIssuesState();
+  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    const outcome = findingOutcomes[0];
+    if (outcome) {
+      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
+      if (outcome.action === "failed") {
+        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+      }
+    }
+  }
+
   if (shouldAlarm(state, input)) {
     // Self-review finding 5 (PR #4503): informa no e-mail quais remoções um
     // `--push` real recusaria — avaliado SEM os escape hatches
@@ -215,7 +331,7 @@ async function main(): Promise<void> {
       blastRadiusBlocked: blastGuard.blocked,
       blastRadiusRatioPct: Math.round(blastGuard.ratio * 1000) / 10,
     };
-    const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings);
+    const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

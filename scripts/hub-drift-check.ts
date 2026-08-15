@@ -62,16 +62,30 @@ import {
   advanceHubDriftState,
   emptyHubDriftAlarmState,
   buildHubDriftAlarmEmail,
+  hubDriftFindingKey,
   type HubCheckInput,
   type HubDriftResult,
   type HubDriftAlarmState,
 } from "./lib/hub-drift-check.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "hub-drift-check", "state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "hub-drift-check", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[hub-drift-check]";
 const FETCH_TIMEOUT_MS = 15_000;
+/** #5339: task roda diária (10:00) — 2 execuções limpas consecutivas = 48h
+ * sem o achado antes de fechar a issue automaticamente, mesmo valor de
+ * `beehiiv-home-meta-check.ts`/`on-hold-vencimento-alarm.ts`/
+ * `worker-drift-check.ts` pra cadência diária. */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 // ─── Estado (idempotência) — mesmo padrão I/O de worker-drift-check.ts ─────
 
@@ -93,6 +107,60 @@ export function loadState(statePath: string = STATE_PATH): HubDriftAlarmState {
 export function saveState(state: HubDriftAlarmState, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional de
+// beehiiv-home-meta-check.ts/worker-drift-check.ts: idempotência do E-MAIL
+// (acima) e tracking de ISSUE por achado são preocupações independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte um `HubDriftResult` quebrado ("broken"/"error") no `AlarmFinding`
+ * genérico que `scripts/lib/alarm-issues.ts` consome (#5339). `check` =
+ * slug do hub (cada hub é seu próprio eixo). `fingerprint` usa
+ * `hubDriftFindingKey`, a MESMA fórmula usada por `computeHubDriftFingerprint`
+ * e repassada a `buildHubDriftAlarmEmail`. Todo achado nasce `P2` — bug com
+ * workaround (deploy manual do Worker `arquivo`), mesma prioridade de
+ * `worker-drift-check.ts`. */
+function toAlarmFinding(r: HubDriftResult): AlarmFinding {
+  return {
+    check: r.slug,
+    fingerprint: hubDriftFindingKey(r),
+    title: `[diar.ia.br] hub "${r.label}" fora do ar (arquivo.diar.ia.br)`,
+    body: [
+      "Achado automático do alarme `Diaria-Hub-Drift-Check`",
+      "(`scripts/hub-drift-check.ts`).",
+      "",
+      `Hub: \`${r.label}\` (slug: ${r.slug})`,
+      `Detalhe: ${r.message}`,
+      `URL: ${r.url}`,
+      "",
+      "Verifique se o Worker `arquivo` está deployado com o commit mais recente",
+      "(cd workers/arquivo && npx wrangler deploy) e se o slug existe de fato em",
+      "workers/arquivo/src/hubs/registry.ts.",
+      "",
+      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
 }
 
 // ─── Checagem HTTP por hub (I/O, fail-soft) ────────────────────────────────
@@ -152,8 +220,44 @@ async function main(): Promise<void> {
       `(última checagem: ${state.lastCheckedAt ?? "nunca"}).`,
   );
 
+  // #5339 — reconcilia issue por hub quebrado ANTES de montar o e-mail (o
+  // e-mail cita a issue de cada achado pendente), mesmo padrão de
+  // worker-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
+  // não-dry-run, independente de um e-mail novo disparar nesta rodada.
+  const brokenResults = results.filter((r) => r.status === "broken" || r.status === "error");
+  const alarmFindings = brokenResults.map(toAlarmFinding);
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.fingerprint,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
+    }
+  }
+
   if (shouldAlarmHubDrift(state, results)) {
-    const { subject, body } = buildHubDriftAlarmEmail(results);
+    const { subject, body } = buildHubDriftAlarmEmail(results, new Date(), issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
