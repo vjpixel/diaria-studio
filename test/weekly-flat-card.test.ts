@@ -16,32 +16,57 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildFlatCardSvg, resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
-import { buildOverlaySvg } from "../scripts/gen-social-card-4x5.ts";
+import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 
-/** Extrai o 1º `font-size="N"` de um SVG (a linha de título) — helper de teste. */
+/** Extrai o 1º `font-size="N"` de um SVG cujo fill é a cor de título (ink) — helper de teste. */
 function firstTitleFontSize(svg: string): number {
-  const m = svg.match(/font-size="(\d+)"[^>]*fill="#FFFFFF">/);
-  if (!m) throw new Error(`nenhum font-size de título encontrado no SVG: ${svg.slice(0, 200)}`);
+  const re = new RegExp(`font-size="(\\d+)"[^>]*fill="${COLORS.ink}">`);
+  const m = svg.match(re);
+  if (!m) throw new Error(`nenhum font-size de título encontrado no SVG: ${svg.slice(0, 300)}`);
   return Number(m[1]);
 }
 
 describe("buildFlatCardSvg (pure)", () => {
-  it("#5330 fleet review (regressão): título do card sem foto usa a MESMA fórmula de tamanho de buildOverlaySvg — nunca desproporcional ao card de notícia", () => {
-    // Mesmo texto, mesmo `available` (W-PAD*2 é idêntico nos dois builders) —
-    // o font-size resultante tem que bater, senão os 2 tipos de slide do
-    // mesmo carrossel voltam a ficar visualmente desproporcionais (achado
-    // ao vivo que motivou este PR).
-    const title = "Os principais destaques da semana";
-    const flatSvg = buildFlatCardSvg({ kicker: "resumo semanal", title, footer: "diar.ia.br" });
-    const overlaySvg = buildOverlaySvg(title, "");
-    assert.equal(firstTitleFontSize(flatSvg), firstTitleFontSize(overlaySvg));
+  it("#5330 (2ª rodada, review do editor 260815): fundo é a paleta CLARA canônica da marca (paper/ink/brand), não o overlay escuro dos cards de notícia", () => {
+    const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Título qualquer", footer: "diar.ia.br" });
+    assert.match(svg, new RegExp(`fill="${COLORS.paper}"`), "fundo deveria ser COLORS.paper (claro)");
+    assert.match(svg, new RegExp(`fill="${COLORS.ink}"`), "título/rodapé deveriam ser COLORS.ink (escuro sobre claro)");
+    assert.doesNotMatch(svg, /fill="#FFFFFF"/, "não deveria ter texto branco (herança do overlay escuro antigo)");
+    assert.doesNotMatch(svg, /linearGradient/, "não deveria ter gradiente escuro (herança do overlay antigo)");
   });
 
-  it("inclui kicker (uppercase), título e rodapé no SVG gerado", () => {
+  it("#5330 (2ª rodada): título GRANDE, preenche o espaço disponível — nunca o tamanho pequeno do overlay de notícia (clamp 44-88)", () => {
+    // Título curto o suficiente pra caber em poucas linhas mesmo bem grande —
+    // o auto-size deveria escolher um tamanho bem acima do clamp do overlay
+    // de notícia (que nunca passa de 88), porque agora o objetivo é "ocupar
+    // o card todo, assim não sente falta de não ter imagem" (pedido do editor).
+    const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Os destaques da semana", footer: "diar.ia.br" });
+    const size = firstTitleFontSize(svg);
+    assert.ok(size > 88, `esperava título bem maior que o clamp do overlay de notícia (88), veio ${size}`);
+  });
+
+  it("título mais longo resulta em tamanho MENOR (auto-size decrescente pra continuar cabendo)", () => {
+    const shortSvg = buildFlatCardSvg({ kicker: "x", title: "Título curto", footer: "y" });
+    const longSvg = buildFlatCardSvg({
+      kicker: "x",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      footer: "y",
+    });
+    assert.ok(firstTitleFontSize(longSvg) < firstTitleFontSize(shortSvg));
+  });
+
+  it("nunca abaixo do tamanho mínimo mesmo com título extremamente longo", () => {
+    const veryLong = "Palavra ".repeat(60).trim();
+    const svg = buildFlatCardSvg({ kicker: "x", title: veryLong, footer: "y" });
+    assert.ok(firstTitleFontSize(svg) >= 46);
+  });
+
+  it("inclui kicker (uppercase), título (possivelmente quebrado em linhas) e rodapé no SVG gerado", () => {
     const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "As notícias da semana", footer: "diar.ia.br" });
     assert.match(svg, /RESUMO SEMANAL/);
-    assert.match(svg, /As notícias da semana/);
-    assert.match(svg, /diar\.ia\.br/);
+    assert.match(svg, /As notícias/);
+    assert.match(svg, /da semana/);
+    assert.match(svg, /diar<tspan/); // wordmark colorido, ver testes dedicados de footerMarkup
     assert.match(svg, /<svg /);
   });
 
@@ -61,6 +86,23 @@ describe("buildFlatCardSvg (pure)", () => {
     assert.doesNotMatch(svg, /<perigoso>/);
     assert.match(svg, /&amp;/);
     assert.match(svg, /&lt;perigoso&gt;/);
+  });
+
+  it("#5330 (achado ao vivo): rodapé terminando em 'diar.ia.br' usa o wordmark com pontos+br em COLORS.brand (teal) — igual aos cards de notícia", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br" });
+    assert.match(svg, new RegExp(`diar<tspan fill="${COLORS.brand}">\\.</tspan>ia<tspan fill="${COLORS.brand}">\\.</tspan><tspan fill="${COLORS.brand}">br</tspan>`));
+  });
+
+  it("rodapé com prefixo antes do wordmark ('10–14 ago · diar.ia.br') preserva o prefixo em texto plano + wordmark colorido", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "10–14 ago · diar.ia.br" });
+    assert.match(svg, /10–14 ago · diar<tspan/);
+  });
+
+  it("rodapé que NÃO termina em 'diar.ia.br' (ex: 'Link na bio') sai em texto plano, sem tspan", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "Link na bio" });
+    const footerLine = svg.split("\n").find((l) => l.includes("Link na bio"));
+    assert.ok(footerLine);
+    assert.doesNotMatch(footerLine ?? "", /tspan/);
   });
 });
 

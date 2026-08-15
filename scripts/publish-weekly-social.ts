@@ -112,6 +112,8 @@ import {
   type SectionCardGenerator,
 } from "./lib/weekly-instagram-ondemand-card.ts";
 import { resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
+import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/weekly-carousel-news-card.ts";
+import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
 import { formatInstagramWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
@@ -288,7 +290,23 @@ export type WeeklyImageResolution =
 export async function resolveWeeklyImageUrls(
   items: InstagramRankedCandidate[],
   editionsRoot: string,
-  opts: { sectionCardGenerator?: SectionCardGenerator } = {},
+  opts: {
+    sectionCardGenerator?: SectionCardGenerator;
+    /**
+     * Tamanho de fonte único do carrossel (#5330, ver
+     * `weekly-carousel-font-size.ts`). Quando presente (junto de `dataRoot` +
+     * `carouselKey`), itens de DESTAQUE (D1/D2/D3) são RECOMPOSTOS com esse
+     * tamanho (via `resolveOrGenerateNewsCardUrl`) em vez de reusar o card
+     * `04-{destaque}-4x5.jpg` já publicado no feed diário tal como está —
+     * standardiza visualmente o carrossel sem tocar no card diário original.
+     * Omitido (comportamento pré-#5330, ainda usado por chamadores/testes
+     * que só querem ler o card diário): lê `04-{destaque}-4x5.jpg` direto.
+     */
+    fontSize?: number;
+    dataRoot?: string;
+    carouselKey?: string;
+    newsCardGenerator?: NewsCardGenerator;
+  } = {},
 ): Promise<WeeklyImageResolution> {
   const sectionCardGenerator = opts.sectionCardGenerator ?? defaultSectionCardGenerator;
   const urls: string[] = [];
@@ -297,6 +315,31 @@ export async function resolveWeeklyImageUrls(
     // mesmo fix de resolveWeeklyEditionDirs em select-weekly-d1.ts, ver docstring lá.
     const dir = resolveEditionDir(editionsRoot, item.editionDate);
     if (item.destaqueNumber != null) {
+      if (opts.fontSize != null && opts.dataRoot && opts.carouselKey) {
+        const recomposed = await resolveOrGenerateNewsCardUrl(
+          opts.dataRoot,
+          opts.carouselKey,
+          {
+            editionDate: item.editionDate,
+            editionDir: dir,
+            destaque: `d${item.destaqueNumber}`,
+            title: item.title,
+            category: item.category,
+            fontSize: opts.fontSize,
+          },
+          opts.newsCardGenerator,
+        );
+        if (!recomposed.url) {
+          return {
+            ok: false,
+            missingEditionDate: item.editionDate,
+            missingDestaqueNumber: item.destaqueNumber,
+            onDemandError: recomposed.error ?? "recomposição do card de notícia não retornou URL nem erro",
+          };
+        }
+        urls.push(recomposed.url);
+        continue;
+      }
       const resolved = resolveDestaqueImageDetailed(dir, item.destaqueNumber);
       if (!resolved.url) {
         return {
@@ -309,8 +352,9 @@ export async function resolveWeeklyImageUrls(
       urls.push(resolved.url);
       continue;
     }
-    // RADAR/USE MELHOR — card 4:5 sob demanda (#4513).
-    const resolved = await resolveOrGenerateSectionCardUrl(item, dir, sectionCardGenerator);
+    // RADAR/USE MELHOR — card 4:5 sob demanda (#4513), tamanho fixo do
+    // carrossel repassado (#5330) quando disponível.
+    const resolved = await resolveOrGenerateSectionCardUrl(item, dir, sectionCardGenerator, opts.fontSize);
     if (!resolved.url) {
       return {
         ok: false,
@@ -356,6 +400,7 @@ export async function main(
     dataRoot?: string;
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
+    newsCardGenerator?: NewsCardGenerator;
   } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
@@ -644,13 +689,29 @@ export async function main(
     return;
   }
 
+  // #5330: capa/CTA (texto) calculado ANTES da resolução de imagem. O
+  // tamanho de fonte único (abaixo) padroniza só os 5 títulos de NOTÍCIA
+  // entre si — capa/CTA usam auto-size próprio (`buildFlatCardSvg`,
+  // preenche o card, não precisa bater com o tamanho das notícias: são um
+  // tipo de slide visualmente diferente de propósito, decisão do editor
+  // 260815 2ª rodada).
+  const flatTexts = buildFlatCardTexts(mode, contentWindow);
+  const carouselFontSize = computeCarouselTitleFontSize(items.map((i) => i.title));
+
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver
   // resolveWeeklyImageUrls acima; falha o post inteiro se qualquer item não
   // resolver imagem (não publica carrossel parcial). #4513: itens de
   // RADAR/USE MELHOR sem card pré-gerado passam pela geração sob demanda
-  // (assíncrona) dentro de resolveWeeklyImageUrls.
+  // (assíncrona) dentro de resolveWeeklyImageUrls. #5330: `fontSize` +
+  // `dataRoot` + `carouselKey` acionam a RECOMPOSIÇÃO do título de D1/D2/D3
+  // com o tamanho único do carrossel (nunca sobrescreve o card diário
+  // publicado — ver `weekly-carousel-news-card.ts`).
   const resolvedImages = await resolveWeeklyImageUrls(items, editionsRoot, {
     sectionCardGenerator: opts.sectionCardGenerator,
+    newsCardGenerator: opts.newsCardGenerator,
+    fontSize: carouselFontSize,
+    dataRoot,
+    carouselKey,
   });
   if (!resolvedImages.ok) {
     // #4511 fleet review MÉDIO: distingue JSON corrompido (re-rodar
@@ -696,7 +757,6 @@ export async function main(
   // `resolveWeeklyImageUrls` acima — sem isso, a exceção propagava sem
   // gravar status:"failed", e um re-run bem-intencionado não tinha como
   // saber que a tentativa anterior não chegou a publicar nada.
-  const flatTexts = buildFlatCardTexts(mode, contentWindow);
   let coverUrl: string;
   let ctaUrl: string;
   try {

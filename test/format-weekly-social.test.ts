@@ -27,8 +27,12 @@ function makeItems(n: number, titleLen = 20): InstagramWeeklyItem[] {
 
 // 52 chars = máximo permitido por destaque (context/editorial-rules.md).
 const LONG_TITLE = "Título de destaque bem longo perto do limite máximo!"; // 53 chars
-// Contexto propositalmente bem acima de CONTEXT_LINE_MAX_CHARS (140) — pior caso real
-// (#5330), já que `why`/`body` de origem não têm limite de tamanho como o título tem.
+// Contexto propositalmente longo (~300 chars) — pior caso real (#5330), já
+// que `why`/`body` de origem não têm limite de tamanho como o título tem.
+// Desde o achado ao vivo de 260815 (frase cortada no meio, "...expõe a
+// falta de"), `contextLine` NUNCA trunca por conta própria — só a frase
+// inteira, sempre. A rede de segurança contra estourar 2200 chars é só
+// `truncateAtLimit` no corpo INTEIRO da caption.
 const LONG_WHY =
   "Esse é um parágrafo de contexto propositalmente longo, escrito pra simular o pior caso " +
   "real de 'por que isso importa' de um destaque, que não passa por nenhum limite de " +
@@ -102,12 +106,22 @@ describe("formatInstagramWeekly", () => {
     assert.ok(caption.includes("1. Item sem contexto\n\nEdição completa"));
   });
 
-  it("#5330: contexto muito longo é truncado preservando palavras inteiras", () => {
+  it("#5330 (achado ao vivo 260815): contexto longo NUNCA corta no meio da frase — sempre a frase inteira", () => {
     const items = makeLongItems(1);
     const caption = formatInstagramWeekly(items);
-    const contextLine = caption.split("\n")[3] ?? "";
-    assert.ok(contextLine.length <= 143, `linha de contexto deveria ser truncada, veio com ${contextLine.length} chars`);
-    assert.ok(!contextLine.endsWith(" "), "não deveria truncar no meio de espaço/deixar trailing space antes de '...'");
+    assert.ok(caption.includes(LONG_WHY), "a frase de contexto deveria aparecer INTEIRA na caption, sem truncar");
+    assert.doesNotMatch(caption, /\.\.\.\n/, "não deveria haver reticências cortando uma linha de contexto no meio");
+  });
+
+  it("#5330: contexto de vários itens longos ainda cabe dentro do limite de caption (2200) sem precisar de cap por linha", () => {
+    const items = makeLongItems(5);
+    const caption = formatInstagramWeekly(items);
+    assert.ok(caption.length <= INSTAGRAM_WEEKLY_CHAR_LIMIT);
+    // Confirma que NENHUM dos 5 contextos foi cortado — se o corpo total
+    // coubesse sem truncar no limite geral, todos aparecem inteiros.
+    if (caption.length < INSTAGRAM_WEEKLY_CHAR_LIMIT) {
+      assert.equal((caption.match(new RegExp(LONG_WHY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length, 5);
+    }
   });
 
   it("#5330: modo 'highlights' usa a intro 'principais destaques', não 'mais clicados'", () => {

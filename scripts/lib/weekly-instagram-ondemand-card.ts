@@ -147,6 +147,8 @@ export interface SectionCardGeneratorInput {
   editionDir: string;
   /** Id sintético (`d9...`) usado como nome de arquivo/chave — ver `syntheticDestaqueIdFor`. */
   destaqueId: string;
+  /** Tamanho de fonte fixo do carrossel (#5330) — ver docstring de `buildOverlaySvg`. */
+  fontSizeOverride?: number;
 }
 
 /**
@@ -165,7 +167,7 @@ export type SectionCardGenerator = (input: SectionCardGeneratorInput) => Promise
  * card com `generateCard` (mesma pipeline de D1/D2/D3), e faz upload pro
  * mesmo KV Cloudflare.
  */
-export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, editionDir, destaqueId }) => {
+export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, editionDir, destaqueId, fontSizeOverride }) => {
   await assertBrandSerifAvailable("weekly-instagram-ondemand-card");
 
   const editorialText = buildOnDemandEditorialText(item);
@@ -181,7 +183,7 @@ export const defaultSectionCardGenerator: SectionCardGenerator = async ({ item, 
     { stdio: "inherit", cwd: ROOT },
   );
 
-  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay");
+  const cardPath = await generateCard(editionDir, destaqueId, item.title, item.category, "4x5", "overlay", { fontSizeOverride });
   if (!cardPath) {
     throw new Error(
       `geração da arte 4x5 nativa não produziu ${destaqueId} em ${editionDir} — image-generate.ts deveria ter criado 04-${destaqueId}-4x5-nativo.jpg`,
@@ -219,6 +221,7 @@ export async function resolveOrGenerateSectionCardUrl(
   item: InstagramRankedCandidate,
   editionDir: string,
   generator: SectionCardGenerator = defaultSectionCardGenerator,
+  fontSizeOverride?: number,
 ): Promise<SectionCardResolution> {
   if (!item.section) {
     return {
@@ -236,7 +239,7 @@ export async function resolveOrGenerateSectionCardUrl(
 
   const destaqueId = syntheticDestaqueIdFor(item.url);
   try {
-    const { url } = await generator({ item, editionDir, destaqueId });
+    const { url } = await generator({ item, editionDir, destaqueId, fontSizeOverride });
     writeSectionCardUrl(editionDir, cacheKey, url);
     return { url, generated: true };
   } catch (e: any) {

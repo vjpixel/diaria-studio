@@ -5,14 +5,17 @@
  * Decisão do editor (#5330, 260815): os dois carrosséis semanais (destaques
  * e mais clicados, ver `weekly-instagram-select.ts`) passam a abrir com um
  * slide de apresentação e fechar com um slide de CTA de assinatura — nenhum
- * dos dois tem imagem gerada por IA (custo zero, e diferencia visualmente
- * "isto é uma moldura do post" dos 5 cards de notícia no meio, que usam a
- * arte publicada de verdade).
+ * dos dois tem imagem gerada por IA (custo zero).
  *
- * Layout reusa a MESMA tipografia/hierarquia de `buildOverlaySvg`
- * (gen-social-card-4x5.ts) — título serif branco, filete teal, rodapé
- * `diar.ia.br` — só troca a arte de fundo por um fundo sólido (`COLORS.ink`,
- * DS canônico, nunca cor inventada) com leve gradiente pra não ficar chapado.
+ * Layout (revisão ao vivo do editor, #5330 260815 — 2ª rodada): NÃO imita o
+ * overlay escuro dos cards de notícia (que só existe pra dar contraste sobre
+ * a foto). Usa a paleta CLARA canônica da marca — mesma do site/newsletter
+ * (`COLORS.paper` fundo, `COLORS.ink` texto, `COLORS.brand` teal de acento)
+ * — e o título ocupa a maior parte do card (tamanho auto-ajustado pra
+ * PREENCHER o espaço disponível, não o tamanho pequeno herdado do overlay de
+ * notícia): "preenche o card todo, assim não sente falta de não ter
+ * imagem". Nunca escolhe um tamanho fixo — cresce até o limite de
+ * largura/altura pra cada texto especificamente.
  *
  * Cache: `data/weekly/{key}/_internal/06-flat-cards.json`, chave
  * `{slot}` ("cover" | "cta") — idempotente, mesmo padrão de
@@ -40,6 +43,11 @@ const PAD = 72; // Idêntico a `PAD` em gen-social-card-4x5.ts — mesma margem 
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
+/** Tamanho de fonte candidato — maior primeiro, pra achar o maior que cabe. */
+const TITLE_SIZE_MIN = 46;
+const TITLE_SIZE_MAX = 148;
+const TITLE_SIZE_STEP = 2;
+
 export interface FlatCardText {
   kicker: string;
   title: string;
@@ -48,51 +56,86 @@ export interface FlatCardText {
 }
 
 /**
- * Pure: monta o SVG do card sem foto — fundo sólido `COLORS.ink` com leve
- * gradiente, filete teal + kicker (mesma posição do overlay de notícia),
- * título serif branco, rodapé.
- *
- * Wrap e tamanho de fonte reusam EXATAMENTE a fórmula de `buildOverlaySvg`
- * (`wrapTitle`, divisor 26, fator 0.52, clamp 44-88) — achado ao vivo
- * (#5330, review do editor): usar constantes próprias (divisor 24, fator
- * 0.5, clamp 48-84) deixava o título da capa/CTA visivelmente
- * desproporcional ao título dos 5 cards de notícia no mesmo carrossel.
+ * Pure: acha o MAIOR tamanho de fonte (múltiplo de `TITLE_SIZE_STEP`) cujo
+ * wrap de `title` cabe em `availableHeight` (bloco de linhas) sem estourar
+ * `availableWidth` (garantido pelo próprio `maxCharsPerLine` de `wrapTitle`,
+ * que já limita a largura de cada linha pro tamanho testado). Começa do
+ * maior candidato e desce — o primeiro que couber é o resultado (nunca pior
+ * que `TITLE_SIZE_MIN`, mesmo pra título absurdamente longo).
+ */
+function fillingFontSize(title: string, availableWidth: number, availableHeight: number): { size: number; lines: string[] } {
+  for (let size = TITLE_SIZE_MAX; size >= TITLE_SIZE_MIN; size -= TITLE_SIZE_STEP) {
+    const maxCharsPerLine = Math.floor(availableWidth / (size * 0.52));
+    if (maxCharsPerLine < 1) continue;
+    const lines = wrapTitle(title, maxCharsPerLine);
+    const lineGap = Math.round(size * 1.18);
+    const blockHeight = lines.length * lineGap;
+    if (blockHeight <= availableHeight) return { size, lines };
+  }
+  const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * 0.52)));
+  return { size: TITLE_SIZE_MIN, lines: wrapTitle(title, maxCharsPerLine) };
+}
+
+const WORDMARK = "diar.ia.br";
+
+/**
+ * Pure: monta o `<text>` do rodapé — se `footer` TERMINA com o wordmark
+ * `diar.ia.br` (caso de `buildFlatCardTexts`: capa leva "{range} · diar.ia.br",
+ * CTA leva só "diar.ia.br"), os pontos e o "br" saem em `COLORS.brand`
+ * (teal), igual ao wordmark usado em `buildOverlaySvg`/`buildCardSvg`
+ * (gen-social-card-4x5.ts) — achado ao vivo (#5330, review do editor): o
+ * rodapé estava saindo inteiro em ink sólido, sem a cor de marca que os
+ * cards de notícia já usam pro mesmo texto. Footer que não termina com o
+ * wordmark (ex: eventual texto livre futuro) cai no fallback plano.
+ */
+function footerMarkup(footer: string): string {
+  if (!footer.endsWith(WORDMARK)) return esc(footer);
+  const prefix = footer.slice(0, -WORDMARK.length);
+  return `${esc(prefix)}diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan>`;
+}
+
+/**
+ * Pure: monta o SVG do card sem foto — paleta CLARA canônica da marca
+ * (`COLORS.paper`/`COLORS.ink`/`COLORS.brand`, mesma do site/newsletter),
+ * kicker no topo, título GRANDE preenchendo o espaço disponível (auto-size
+ * via `fillingFontSize` — nunca um tamanho fixo pequeno), rodapé na base.
  */
 export function buildFlatCardSvg(text: FlatCardText): string {
-  const available = W - PAD * 2;
-  const lines = wrapTitle(text.title, Math.floor(available / 26));
-  const longest = Math.max(...lines.map((l) => l.length));
-  const size = Math.max(44, Math.min(88, Math.floor(available / (longest * 0.52))));
+  const availableWidth = W - PAD * 2;
+  const kickerY = 168;
+  const barY = kickerY + 30;
+  const footerY = H - 62;
+  const titleTop = barY + 90;
+  const titleBottom = footerY - 90;
+  const availableHeight = titleBottom - titleTop;
+
+  const { size, lines } = fillingFontSize(text.title, availableWidth, availableHeight);
   const lineGap = Math.round(size * 1.18);
-  const baseY = H - 150;
-  const startY = baseY - (lines.length - 1) * lineGap;
+  const blockHeight = lines.length * lineGap;
+  // Bloco de título centralizado verticalmente no espaço entre kicker e rodapé.
+  const blockTop = titleTop + (availableHeight - blockHeight) / 2;
+  const firstBaselineY = blockTop + size * 0.85;
+
   const titleLines = lines
     .map(
       (line, i) =>
-        `<text x="${PAD}" y="${startY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="#FFFFFF">${esc(line)}</text>`,
+        `<text x="${PAD}" y="${firstBaselineY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="${COLORS.ink}">${esc(line)}</text>`,
     )
     .join("\n  ");
-  const kickerY = startY - size - 46;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#242019"/>
-      <stop offset="1" stop-color="${COLORS.ink}"/>
-    </linearGradient>
-  </defs>
-  <rect x="0" y="0" width="${W}" height="${H}" fill="url(#bg)"/>
-  <rect x="${PAD}" y="${kickerY - 64}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>
+  <rect x="0" y="0" width="${W}" height="${H}" fill="${COLORS.paper}"/>
+  <rect x="${PAD}" y="${kickerY - 38}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>
   <text x="${PAD}" y="${kickerY}" font-family="${FONT_SANS}" font-size="30" font-weight="700" letter-spacing="2" fill="${COLORS.brand}">${esc(text.kicker.toUpperCase())}</text>
   ${titleLines}
-  <text x="${PAD}" y="${H - 62}" font-family="${FONTS.serif}" font-size="34" fill="#FFFFFF">${esc(text.footer)}</text>
+  <text x="${PAD}" y="${footerY}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${footerMarkup(text.footer)}</text>
 </svg>`;
 }
 
 /** Renderiza `buildFlatCardSvg` pra um JPEG em disco. */
 export async function renderFlatCard(text: FlatCardText, outPath: string): Promise<string> {
-  await sharp({ create: { width: W, height: H, channels: 3, background: COLORS.ink } })
+  await sharp({ create: { width: W, height: H, channels: 3, background: COLORS.paper } })
     .composite([{ input: Buffer.from(buildFlatCardSvg(text)), top: 0, left: 0 }])
     .jpeg({ quality: 88 })
     .toFile(outPath);
