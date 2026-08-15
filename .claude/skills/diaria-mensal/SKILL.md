@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da diar.ia.br agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. Etapas 0-5, espelhando a numeração/semântica da diária (#2795) — 0 Preflight, 1 Coleta/Análise, 2 Escrita, 3 Imagens, 4 Revisão consolidada (gate humano, #2793), 5 Publicação Brevo. Gate ao final de cada etapa 1-5.
+description: Gera o digest mensal da diar.ia.br agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. Etapas 0-5, espelhando a numeração/semântica da diária (#2795) — 0 Preflight, 1 Coleta/Análise, 2 Escrita, 3 Imagens, 4 Revisão consolidada (gate humano, #2793), 5 Publicação Brevo. Gate único, consolidado na Etapa 4 (#5321 — 1, 2, 3 e 5 avançam sozinhas com banner, espelhando a diária).
 ---
 
 # /diaria-mensal
@@ -13,11 +13,9 @@ Produz uma edição **mensal** da diar.ia.br consolidando os destaques publicado
 
   Compat: `$1` = mês no formato `YYMM` (ex: `2605`). O ciclo é derivado automaticamente com aviso (envio = conteúdo + 1). Manter a compat enquanto pastas históricas ainda existirem no formato antigo.
 
-  **Se não passar nenhum dos dois, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir ciclo atual / anterior como atalhos mas exigir confirmação:
+  **Se não passar nenhum dos dois (#5321, "Perguntar é exceção"): default — assumir o ciclo corrente** (conteúdo = mês calendário anterior a `today()`, envio = mês calendário de `today()` — mesma convenção do exemplo acima: rodando em junho, `--cycle 2605-06`) e imprimir banner: `Ciclo não informado — assumindo {ciclo_atual}. Passe --cycle YYMM-MM para outro.` Nunca inferir a partir da edição mais recente em `data/monthly/` (podia estar parada há meses) — sempre calcular a partir de `today()`.
 
-  > "Você não passou o ciclo da edição mensal. Qual ciclo quer processar? atual ({ciclo_atual}, ex: 2605-06) / anterior ({ciclo_anterior}) / outro (informe --cycle YYMM-MM)"
-
-- `--no-gate` (opcional) = pular todos os gates humanos. Auto-aprova cada etapa e prossegue direto ao final.
+- `--no-gate` (opcional) = pular o gate humano da Etapa 4 (#5321 — desde essa issue é o único gate que resta; 1, 2, 3 e 5 já avançam sozinhas por padrão). Auto-aprova e prossegue direto ao final.
 
 **Variável interna `$CYCLE`:** após resolver o ciclo (pelo `--cycle` passado ou pela derivação do `YYMM` legado), usar `$CYCLE` como o rótulo do ciclo em todos os comandos abaixo. Ex: `CYCLE=2605-06`. O `$1` legado (YYMM) mapeia a `YYMM=${CYCLE:0:4}` quando necessário.
 
@@ -52,7 +50,7 @@ Ordem de checagem (mais avançada primeiro):
 - Etapa 1: `--step 1 --outputs "prioritized.md"` → pular para Etapa 2.
 - Nenhum sentinel nem output em disco → começar pela Etapa 1.
 
-Ao final do gate de cada etapa (exceto quando `retry`/`editar` volta pro topo), gravar o checkpoint:
+Ao final de cada etapa — 1, 2, 3 e 5 gravam sozinhas (#5321, sem pausar); só a Etapa 4 pausa pro gate humano, e só ali `retry`/`editar` volta pro topo em vez de gravar — o checkpoint:
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step N --dir "data/monthly/$CYCLE" --outputs "arquivo1,arquivo2"
@@ -133,11 +131,13 @@ Output: `_internal/monthly-clicks.json` + patch em `prioritized.md`. Warning (n�
 npx tsx scripts/monthly-click-sections.ts --cycle $CYCLE --use-melhor-min-clicks 6
 ```
 
-### Gate Etapa 1 (pulado com `--no-gate`)
+### Checkpoint Etapa 1 (#5321 — deixou de ser gate interativo)
+
+Antes do #5321, cada etapa 1-5 parava num gate `sim/editar/retry`. Espelhando a diária (só Stage 4 revisão e Stage 6 agendamento gateiam), a partir daqui **só a Etapa 4 (Revisão consolidada) pausa pra aprovação humana** — 1, 2, 3 e 5 avançam sozinhas, anunciando o resultado num banner em vez de perguntar.
 
 Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
 
-Apresentar ao editor:
+Imprimir banner e seguir direto — sem esperar resposta:
 ```
 D1: {tema} ({N} artigos)
 D2: {tema} ({N} artigos)
@@ -145,12 +145,12 @@ D3: {tema} ({N} artigos)
 Use Melhor: {N} tutoriais (mais clicados)
 Radar: {N} links (mais clicados)
 
-Aprovar? sim / editar / retry
+Etapa 1 concluída — avançando para Etapa 2 (Escrita). O editor revisa tudo isso
+junto no gate consolidado da Etapa 4; pra ajustar antes disso, edite
+prioritized.md e peça "reroda a Etapa 1" a qualquer momento.
 ```
-- `editar` → editor edita `prioritized.md` local/Drive; re-rodar analista após confirmação.
-- `retry` → re-disparar `analyst-monthly`.
 
-Após aprovação (`sim`), gravar o checkpoint (#2795):
+Gravar o checkpoint (#2795) imediatamente, sem esperar aprovação:
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 1 --dir "data/monthly/$CYCLE" --outputs "prioritized.md"
 ```
@@ -213,24 +213,26 @@ npx tsx scripts/clarice-apply.ts \
 
 Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
 
-### Gate Etapa 2 (pulado com `--no-gate`)
+### Checkpoint Etapa 2 (#5321 — deixou de ser gate interativo)
 
-Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se o editor tiver escolhido o subject no gate; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se um subject já foi escolhido; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
 
-Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
+Drive sync pull antes de seguir (o editor pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
-Apresentar:
+**Subject: default = opção 1 (#5321)** — o `writer-monthly` já ordena as 3 opções por preferência; sem intervenção do editor, assumir a opção 1 automaticamente (mesmo padrão do `title-picker` na diária — escolha entre opções já escritas é mecânico, não holístico). Imprimir banner e seguir:
 ```
 📄 draft.md gerado.
 Opções de subject:
-  1. {opção 1}
+  1. {opção 1}  ← assumida
   2. {opção 2}
   3. {opção 3}
 
-Aprovar? sim [+ número do subject escolhido] / editar / retry
+Etapa 2 concluída — avançando para Etapa 3 (Imagens). Pra trocar o subject,
+diga "usa a opção N do subject" a qualquer momento antes da Etapa 5 (a troca
+reescreve 02-chosen-subject.txt e reaplica o invariante do ASSUNTO abaixo).
 ```
 
-**Após aprovação (#421):** se o editor informar o número do subject escolhido (ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$CYCLE/_internal/02-chosen-subject.txt`:
+**Ao escolher o subject** (pelo default da opção 1, ou por pedido explícito do editor informando o número — ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$CYCLE/_internal/02-chosen-subject.txt`:
 ```bash
 CHOICE=2  # número informado pelo editor
 MONTHLY_DIR="data/monthly/$CYCLE"
@@ -244,7 +246,7 @@ Isso salva o texto completo (ex: `diar.ia.br | Abril 2026 — 30 milhões de emp
 
 **Invariante do ASSUNTO:** qualquer passo posterior que modifique `draft.md` (humanizador, Clarice, ajustes de formato) deve usar `Edit` (substituição pontual), nunca `Write` (overwrite completo). Se `Write` for inevitável, ler `02-chosen-subject.txt` antes e restaurar o ASSUNTO correto imediatamente após. O ASSUNTO escolhido pelo editor nunca pode ser sobrescrito silenciosamente.
 
-Após aprovação, gravar o checkpoint (#2795):
+Gravar o checkpoint (#2795) imediatamente, sem esperar aprovação:
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 2 --dir "data/monthly/$CYCLE" --outputs "draft.md"
 ```
@@ -356,20 +358,21 @@ cada restart):
 node -e "const p='data/monthly/$CYCLE/_internal/preview-server-url.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.preview_url_tab_id={tab_id};require('fs').writeFileSync(p,JSON.stringify(j,null,2));"
 ```
 
-### Gate Etapa 3 (pulado com `--no-gate`)
+### Checkpoint Etapa 3 (#5321 — deixou de ser gate interativo)
 
 Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
 **Aviso de fallback (#2869):** ler `$SEL_JSON` (`_internal/02-eia-selection.json`).
-Se `selection == "criterion"`, incluir uma linha de confirmação com o `pct_correct`.
-Se `selection == "fallback_last"` (ou o arquivo estiver ausente por falha do
-script), incluir um item de **aviso explícito** com o `reason` do JSON — o
-editor precisa saber que a escolha foi por fallback, não pelo critério, e
-pode responder `trocar-eia AAMMDD` pra apontar manualmente outra edição do
-mês (nesse caso, regravar `_internal/01-eia-meta.json` com `selection: "manual"`
-antes de seguir).
+Se `selection == "criterion"`, o texto do banner traz uma linha de confirmação
+com o `pct_correct`. Se `selection == "fallback_last"` (ou o arquivo estiver
+ausente por falha do script), o banner traz um item de **aviso explícito** com
+o `reason` do JSON, e **este aviso é repetido no resumo consolidado da Etapa 4
+(4e)** — não é um detalhe que se perde por não haver mais parada aqui. O
+editor pode responder `trocar-eia AAMMDD` a qualquer momento (aqui ou já na
+Etapa 4) pra apontar manualmente outra edição do mês (regravar
+`_internal/01-eia-meta.json` com `selection: "manual"` antes de seguir).
 
-Apresentar:
+Imprimir banner e seguir direto para a Etapa 4 — sem esperar resposta:
 ```
 📸 D1: data/monthly/$CYCLE/04-d1-2x1.jpg
 🤔 É IA? A: data/monthly/$CYCLE/01-eia-A.jpg
@@ -383,12 +386,13 @@ Apresentar:
 ⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback, não pelo critério de mais dividida. Motivo: {reason}
    Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
 
-Aprovar? sim / regenerar-d1 / regenerar-eia / trocar-eia AAMMDD
+Etapa 3 concluída — avançando para Etapa 4 (Revisão consolidada), que roda o
+preview de novo (fresco) e é onde a aprovação humana de fato acontece.
 ```
 
-Este gate é uma checagem rápida das imagens em si — a revisão CONSOLIDADA (draft completo + lint + fact-check) acontece na Etapa 4 a seguir, que roda o preview de novo (fresco, refletindo qualquer regeneração feita aqui).
+Este era um gate de checagem rápida das imagens em si — a revisão CONSOLIDADA (draft completo + lint + fact-check) acontece na Etapa 4 a seguir, que roda o preview de novo. Com #5321, essa redundância vira o motivo de a Etapa 3 não pausar mais: a Etapa 4 já é o ponto único de aprovação.
 
-Após aprovação, gravar o checkpoint (#2795):
+Gravar o checkpoint (#2795) imediatamente, sem esperar aprovação:
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 3 --dir "data/monthly/$CYCLE" --outputs "04-d1-2x1.jpg,01-eia.md"
 ```
@@ -485,6 +489,9 @@ Lint (scripts/lint-monthly-draft.ts):
 Fact-check (_internal/04-fact-check.json):
   {total} claims verificados — {sustained} sustentados, {attention_items} pedem atenção
   {listar DIVERGENT + superlativos não-sustentados, se houver}
+
+[se Etapa 3 sinalizou selection == "fallback_last" — #5321, aviso repetido aqui já que a Etapa 3 não pausa mais]
+⚠️ É IA? do recap: NENHUMA edição do mês teve poll elegível — usando o último dia ({EAI_EDITION}) por fallback. Motivo: {reason}. Responda "trocar-eia AAMMDD" pra escolher outra edição manualmente.
 
 ⚠️  Seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS
     ([Placeholder — inserir aqui...]) — preenchidas manualmente pela Clarice
@@ -612,11 +619,13 @@ Agent({
 
 O agente busca o email de teste via Gmail MCP (from:brevo.com) e verifica a estrutura mensal.
 
-Se `review-test-email` retornar `issues` não-vazias, exibir ao editor junto com o gate.
+Se `review-test-email` retornar `issues` não-vazias, exibir ao editor junto com o banner abaixo.
 
-### Gate Etapa 5 (pulado com `--no-gate`)
+### Checkpoint Etapa 5 (#5321 — deixou de ser gate interativo)
 
-Ler `_internal/05-published.json` e apresentar:
+A campanha Brevo criada aqui é **rascunho** e o único envio real que este passo faz é o e-mail de teste (`{test_email}`, caixa do próprio editor) — o envio de verdade pra lista de contatos da Clarice é um passo **manual, fora do pipeline** (item 3 abaixo). Como não há ação irreversível pra terceiros neste ponto (critério 1 do rubrico "Perguntar é exceção", CLAUDE.md), este passo mirra o Stage 5 automático da diária: encerra o pipeline mensal sem pausar.
+
+Ler `_internal/05-published.json` e imprimir banner:
 
 ```
 📧 Campanha Brevo criada e email de teste enviado.
@@ -633,15 +642,14 @@ Próximos passos manuais (Etapa Clarice):
   2. Conferir que renderizaram automaticamente (#1916/#1918): imagens 2x1 de
      D1/D2/D3, imagens do É IA?, e os boxes "Desconto exclusivo" + "Laboratório
      Clarice" (vêm do draft, não precisam mais ser preenchidos/adicionados à mão)
-  3. Revisar e enviar para a lista de contatos da Clarice
+  3. Revisar e enviar para a lista de contatos da Clarice — ação manual do
+     editor no dashboard Brevo, fora deste pipeline.
 
-Aprovado? sim / retry (regenerar campanha)
+Pipeline mensal encerrado. Pra regenerar a campanha (nova, a anterior fica
+como rascunho no Brevo), peça "regenera a campanha Brevo" a qualquer momento.
 ```
 
-- `retry` → re-rodar 5c com nova campanha (o script sempre cria uma campanha nova; a anterior fica como rascunho no Brevo e pode ser deletada manualmente)
-- `sim` → encerrar pipeline mensal
-
-Após aprovação (`sim`), gravar o checkpoint final (#2795):
+Gravar o checkpoint final (#2795) imediatamente, sem esperar aprovação:
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 5 --dir "data/monthly/$CYCLE" --outputs "_internal/05-published.json"
 ```

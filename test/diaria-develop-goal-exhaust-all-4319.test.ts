@@ -160,21 +160,19 @@ describe("diaria-develop findings deixam de ser classe especial (#4319)", () => 
   });
 });
 
-describe("diaria-develop gate do grupo 3 (#4319)", () => {
-  it("gate obrigatório com 3 opções (entrar/parar/escolher), dispara sempre — inclusive em reentradas", () => {
-    assert.match(develop, /## Gate do grupo 3 \(decisão do editor, #4319\)/);
-    assert.match(develop, /\*\*entrar\*\* — monta as ondas do grupo 3 normalmente/);
-    assert.match(develop, /\*\*parar aqui\*\*/);
-    assert.match(develop, /\*\*escolher quais\*\*/);
-    assert.match(develop, /o gate pergunta \*\*de novo\*\*/, "reentrada dispara o gate de novo");
+describe("diaria-develop gate do grupo 3 — auto-entra por default desde #5321 (era AskUserQuestion obrigatório, #4319)", () => {
+  it("default é entrar automaticamente com banner, dispara sempre — inclusive em reentradas", () => {
+    assert.match(develop, /## Gate do grupo 3 \(revisado #5321/);
+    assert.match(develop, /\*\*Default: entrar no grupo 3 automaticamente\*\*, com banner/);
+    assert.match(develop, /o banner é impresso \*\*de novo\*\*/, "reentrada dispara o banner de novo");
   });
 
-  it("gate NÃO é pulável por wave_policy=auto; sem resposta = parar (Fallback de ausência)", () => {
-    assert.match(develop, /\*\*Este gate não é pulável por `wave_policy: auto`\*\*/);
-    assert.match(develop, /\*\*Sem resposta = parar\*\*, não = entrar/);
+  it("intervenção do editor (não wave_policy=auto) é o único jeito de pular; registrado como editor_interrupted", () => {
+    assert.match(develop, /\*\*Intervenção do editor não é "fazer pergunta"\*\*/);
+    assert.match(develop, /"editor_interrupted"/);
   });
 
-  it("issues do grupo 3 não-entrado vão pro resíduo SEM virar pulada", () => {
+  it("issues do grupo 3 não-entrado (intervenção do editor) vão pro resíduo SEM virar pulada", () => {
     assert.match(
       develop,
       /\*\*sem\*\* marcar as issues como `pulada`/,
@@ -210,7 +208,7 @@ describe("diaria-develop plan.json schema — goal.tiers / current_tier / tier3_
     assert.match(develop, /"tiers":\s*\{\s*"1a":/);
     assert.match(develop, /"current_tier":\s*"1a"/);
     assert.match(develop, /"tier3_gate":\s*\[/, "tier3_gate deve ser array (histórico por disparo), não objeto único");
-    assert.match(develop, /`decision` ∈ `entrar`\|`parar`\|`escolher`\|`sem-resposta`/);
+    assert.match(develop, /`decision` ∈ `auto_entered`.*`editor_interrupted`/);
   });
 
   it("current_tier nunca é gravado sob table_only (mesmo tratamento explícito-vazio de target_set/remaining)", () => {
@@ -300,8 +298,9 @@ describe("diaria-overnight — só o cap de findings_depth permanece (#4319, #52
     );
   });
 
-  it("Fallback de ausência e os 3 gates humanos do develop continuam intactos (não afrouxados por #4319)", () => {
+  it("Fallback de ausência e os gates bloqueantes do develop continuam intactos (não afrouxados por #4319); gate do grupo 3 virou automático por decisão explícita do #5321", () => {
     assert.match(develop, /\*\*Fallback de ausência\*\* segue intacto/);
-    assert.match(develop, /Gate 1, Gate de Onda, Gate B e o \*\*gate do grupo 3\*\* \*\*não\*\* viram automáticos/);
+    assert.match(develop, /Gate 1, Gate de Onda e Gate B \*\*não\*\* viram automáticos/);
+    assert.match(develop, /gate do grupo 3 já é automático por padrão desde o #5321/);
   });
 });

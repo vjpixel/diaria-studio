@@ -22,6 +22,7 @@ import {
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
   parsePublishMondayArg,
+  nextMondayAAMMDD,
 } from "../scripts/lib/weekly-linkedin-cycle.ts";
 
 describe("isoWeekInfo / isoWeekLabel", () => {
@@ -138,5 +139,27 @@ describe("parsePublishMondayArg", () => {
 
   it("retorna string vazia quando ausente (nunca lança)", () => {
     assert.equal(parsePublishMondayArg([]), "");
+  });
+});
+
+describe("nextMondayAAMMDD (#5321 — default de --publish-monday quando omitido)", () => {
+  it("de uma quinta-feira, resolve pra segunda seguinte", () => {
+    // 2026-08-13 é quinta-feira.
+    assert.equal(nextMondayAAMMDD(new Date(2026, 7, 13)), "260817");
+  });
+
+  it("de um domingo, resolve pra segunda do dia seguinte", () => {
+    // 2026-08-16 é domingo.
+    assert.equal(nextMondayAAMMDD(new Date(2026, 7, 16)), "260817");
+  });
+
+  it("se já for segunda, resolve pra ela mesma (inclusivo)", () => {
+    // 2026-08-17 é segunda-feira.
+    assert.equal(nextMondayAAMMDD(new Date(2026, 7, 17)), "260817");
+  });
+
+  it("atravessa virada de mês/ano corretamente", () => {
+    // 2025-12-31 é quarta-feira → próxima segunda é 2026-01-05.
+    assert.equal(nextMondayAAMMDD(new Date(2025, 11, 31)), "260105");
   });
 });

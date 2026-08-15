@@ -115,25 +115,25 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   ```
   Exit 0 = todas as travas ok ou unchecked. Exit 1 = trava(s) bloqueante(s) detectada(s) → stderr imprime o resumo `✅/ℹ️/❌` por dependência com `blocks_stages` e ação de reauth. Se exit 1:
   1. Imprimir o resumo de prontidão.
-  2. Para cada trava bloqueante: renderizar halt banner:
+  2. Para cada trava bloqueante: renderizar banner (não é o halt bloqueante do #738 — este é aviso informativo, ver passo 3):
      ```bash
      npx tsx scripts/render-halt-banner.ts \
        --stage "0 — Preflight" \
        --reason "{dependency} — {state}" \
        --action "{reauth_action}"
      ```
-  3. Aguardar o editor resolver a trava (reauth) ou confirmar que quer continuar (aceitando que os stages afetados falharão).
+  3. **Default (#5321, "Perguntar é exceção"): seguir a pipeline com o banner já renderizado**, sem aguardar o editor — nenhum critério do rubrico se aplica (não é MCP disconnect do #738/token de sessão travando um `AskUserQuestion` do #3938; é OAuth/token de plataforma expirado, reversível, sem trade-off editorial). Registrar o impacto (`blocks_stages` do resumo) via `log-event.ts --level warn` — o editor resolve a trava quando quiser, os stages afetados falham fail-soft na hora (não silenciosamente).
   Conectores MCP (Gmail, Beehiiv) são reportados como `unchecked` — verificados em runtime pelo orchestrator (#738), não neste preflight TS.
 - **Pre-flight token OAuth Google (#1973) — coberto pelo preflight unificado acima.** O check individual `check-google-token.ts` NÃO deve ser executado aqui — o preflight unificado (#2358) já chama `checkOAuthLock` → `checkTokenHealth` e emite o halt banner se o token estiver expirado/ausente. Rodar os dois causaria double-halt: o editor seria parado pelo preflight unificado, confirmaria continuar, e seria parado novamente pelo check individual. Se o preflight unificado não estiver disponível (ex: worktree antigo sem o arquivo), rodar como fallback:
   ```bash
   npx tsx scripts/check-google-token.ts
   ```
-  Exit 0 = válido. Exit 1 = expirado/inválido/ausente → alertar o editor e perguntar se re-autentica (`npx tsx scripts/oauth-setup.ts`). Ver `docs/google-oauth-production.md` pra causa raiz dos 7d.
+  Exit 0 = válido. Exit 1 = expirado/inválido/ausente → **default (#5321): alertar o editor (banner) e seguir sem bloquear** — registrar warn no run-log; o editor roda `npx tsx scripts/oauth-setup.ts` quando quiser reautenticar. Ver `docs/google-oauth-production.md` pra causa raiz dos 7d.
 - **Pre-flight token Cloudflare/wrangler (#2286).** O `CLOUDFLARE_API_TOKEN` expirado só estoura em `maintain-valid-editions` (§0d.bis) — depois de gastar tokens em dedup e CTR. Checar ANTES, análogo ao check-google-token:
   ```bash
   npx tsx scripts/check-cloudflare-token.ts
   ```
-  Exit 0 = ativo OU erro de rede transitório (não bloqueia pipeline — soft note no stderr). Exit 1 = ausente/inválido/não-ativo → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). (Exit 2 removido em #2306 — transitório agora sai 0.) Se exit 1, **alertar o editor com o banner** e perguntar se renova agora ou continua (impacto: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
+  Exit 0 = ativo OU erro de rede transitório (não bloqueia pipeline — soft note no stderr). Exit 1 = ausente/inválido/não-ativo → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). (Exit 2 removido em #2306 — transitório agora sai 0.) Se exit 1, **default (#5321): alertar o editor com o banner e seguir sem bloquear** (impacto registrado: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis — o editor renova o token quando quiser). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
 - **Pre-flight Clarice REST (#1329).** Pinga `https://cortex.clarice.ai/api-correction` antes do Stage 2 saber se o fallback REST está saudável. Não bloqueia — só armazena `CLARICE_REST` (`true`/`false`) em sessão:
   ```bash
   npx tsx scripts/clarice-healthcheck.ts

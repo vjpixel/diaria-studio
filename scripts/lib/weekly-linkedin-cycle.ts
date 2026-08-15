@@ -71,11 +71,26 @@ export function isValidWeeklyCycle(s: string | undefined | null): s is string {
   return week >= 1 && week <= 53;
 }
 
-function formatAAMMDD(d: Date): string {
+/** Pure: formata `Date` local pra `AAMMDD`. */
+export function formatAAMMDD(d: Date): string {
   const yy = String(d.getFullYear() % 100).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yy}${mm}${dd}`;
+}
+
+/**
+ * Pure: AAMMDD da próxima segunda-feira a partir de `from` — se `from` já
+ * for segunda, retorna a própria data (inclusivo, não "a segunda seguinte").
+ * Default de `--publish-monday` quando omitido (#5321, "Perguntar é
+ * exceção") — a skill roda tipicamente aos domingos, então o caso comum
+ * resolve pra amanhã.
+ */
+export function nextMondayAAMMDD(from: Date = new Date()): string {
+  const dayNum = (from.getDay() + 6) % 7; // segunda=0 .. domingo=6
+  const daysUntilMonday = dayNum === 0 ? 0 : 7 - dayNum;
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + daysUntilMonday);
+  return formatAAMMDD(d);
 }
 
 /** Pure: parseia `AAMMDD` pra `Date` local (meia-noite). `null` se inválido. */

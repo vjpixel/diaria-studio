@@ -62,6 +62,19 @@ function formatAAMMDD(d: Date): string {
 }
 
 /**
+ * Pure: AAMMDD do próximo sábado a partir de `from` — se `from` já for
+ * sábado, retorna a própria data (inclusivo, não "o sábado seguinte").
+ * Default de `AAMMDD-do-sabado` quando omitido (#5321, "Perguntar é
+ * exceção").
+ */
+export function nextSaturdayAAMMDD(from: Date = new Date()): string {
+  const dayNum = from.getDay(); // domingo=0 .. sábado=6
+  const daysUntilSaturday = (6 - dayNum + 7) % 7;
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + daysUntilSaturday);
+  return formatAAMMDD(d);
+}
+
+/**
  * Resolve os 5 diretórios de edição (segunda a sexta) candidatos para o
  * sábado dado, marcando quais de fato têm `02-reviewed.md` no disco.
  * Não lança — dirs ausentes viram `exists: false`, filtrados pelo caller

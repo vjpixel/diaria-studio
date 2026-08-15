@@ -14,7 +14,7 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
 - `$1` = data da edição (`AAMMDD`, ex: `260423`). Se não passar, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 2` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 1 aprovado e Stage 2 incompleto. Rode /diaria-1-pesquisa primeiro ou passe AAMMDD explicitamente.`
-  - **Se `candidates.length >= 2`**: perguntar ao editor qual: `Múltiplas edições em curso: {lista}. Qual processar?`
+  - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 - `$2` (opcional) = `newsletter` | `social` — re-roda só um dos dois. Sem este argumento, roda ambos em paralelo.
 
 ## Placeholders
