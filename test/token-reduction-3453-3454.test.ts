@@ -37,16 +37,21 @@ function frontmatter(content: string): string {
   return m![1];
 }
 
-describe("#3453 — overnight: coordenador em effort high", () => {
-  it("frontmatter fixa effort: high (não xhigh)", () => {
+describe("#3453 — overnight: coordenador em effort high (histórico; experimento #5306 baixou para medium)", () => {
+  it("frontmatter fixa effort: medium (experimento #5306, não mais high/xhigh)", () => {
     const fm = frontmatter(overnight);
-    assert.match(fm, /^effort:\s*high\s*$/m, "effort deve ser high no frontmatter");
+    assert.match(fm, /^effort:\s*medium\s*$/m, "effort deve ser medium no frontmatter (#5306)");
     assert.doesNotMatch(fm, /effort:\s*xhigh/, "effort NÃO deve mais ser xhigh no frontmatter");
     assert.match(fm, /^model:\s*sonnet\s*$/m, "model deve continuar sonnet");
   });
 
   it("prosa documenta a troca xhigh → high citando #3453", () => {
     assert.match(overnight, /Effort baixado de `xhigh` → `high` \(#3453\)/);
+  });
+
+  it("prosa documenta o experimento high → medium citando #5306", () => {
+    assert.match(overnight, /#5306/);
+    assert.match(overnight, /`high` → `medium`/);
   });
 });
 
