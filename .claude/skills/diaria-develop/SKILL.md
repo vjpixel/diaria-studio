@@ -87,6 +87,25 @@ checar o corpo foi a causa raiz observada ao vivo no #5376. A tabela do
 `plan.json` e a Fase 2 (buckets a-d) já preservam essa distinção por design;
 o risco aqui é só a classificação inicial na Fase 0 ser feita por atalho.
 
+**Issue com checklist/múltiplos itens: classificar item por item, não a
+issue inteira (#5379, 15/08/2026)** — o mesmo atalho do parágrafo acima
+reaparece um nível abaixo, *dentro* de uma issue com corpo em lista/
+checklist: jogar a issue inteira numa única letra A-E quando só 1 item
+depende do bloqueio e os demais já têm caminho de execução claro (achado
+ao vivo: #4555 tinha decisão editorial — cat. C — embutida junto de uma
+tarefa de prospecção fora do repo; #5237 tinha 4 dos 5 itens de checklist
+codáveis já, com só o developer token — cat. A — bloqueando o 5º). Antes de
+rotular como A-E uma issue com múltiplos itens: percorrer cada item
+separadamente. Itens sem decisão/credencial pendente ficam **elegíveis**
+(voltam pro dispatch normal, cat. A-E vira irrelevante pra eles) mesmo que
+outro item da mesma issue permaneça bloqueado — dispatch parcial (unidade
+cobrindo só os itens elegíveis + comentário registrando o(s) item(ns)
+bloqueado(s) e sua letra) é o resultado esperado, não uma exceção. Antes de
+fechar qualquer item como A-E, buscar no corpo por "a escolha é editorial",
+"decidir", "qual"/"quanto"/"quando" em frase interrogativa, "trade-off" —
+sinal de que aquele item é cat. C disfarçada de outra letra (heurística de
+atenção, não substitui reler o corpo inteiro).
+
 ## Goal de esgotamento (#4297, expandido em #4319)
 
 Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock — e desde #4319 o alvo default é o backlog aberto **inteiro**, não só o bloqueado.

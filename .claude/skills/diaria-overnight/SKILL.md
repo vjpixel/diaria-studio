@@ -84,6 +84,25 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    atalho de classificar pelo título/label sem checar o corpo foi a causa
    raiz do #5376.
 
+   **Issue com checklist/múltiplos itens: classificar item por item, não a
+   issue inteira (#5379, 15/08/2026)** — o mesmo atalho reaparece um nível
+   abaixo, *dentro* de uma issue com corpo em lista/checklist: rotular a
+   issue inteira como `bloqueada-externa`/`ambígua/trade-off-real` quando só
+   parte dos itens depende do bloqueio, e o resto já tem caminho de execução
+   claro (achado ao vivo no `/diaria-continuo`: #4555 tinha decisão editorial
+   embutida junto de prospecção externa; #5237 tinha 4 de 5 itens de
+   checklist codáveis já, com só 1 item preso a um developer token). Antes de
+   rotular como bloqueada uma issue com múltiplos itens: percorrer cada item
+   separadamente. Itens sem decisão/credencial pendente ficam `elegivel`
+   (dispatch normal) mesmo que outro item da mesma issue siga bloqueado —
+   dispatch parcial (unidade cobrindo só os itens elegíveis + comentário
+   registrando o(s) item(ns) que segue(m) faltando, com o motivo específico
+   de cada um) é o resultado esperado. Buscar no corpo por "a escolha é
+   editorial", "decidir", "qual"/"quanto"/"quando" em frase interrogativa,
+   "trade-off" antes de fechar qualquer item como bloqueado — sinal de que
+   é `ambígua/trade-off-real` disfarçada de `bloqueada-externa` (heurística
+   de atenção, não substitui reler o corpo inteiro).
+
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
 
