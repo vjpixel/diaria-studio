@@ -410,6 +410,24 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5123, #4924",
   },
   {
+    name: "Diaria-Entity-Pages-Regen",
+    description:
+      "regenera o HTML das páginas de entidade (workers/artigos/public/entidades/) a partir do EntityContent commitado, e alarma quando uma edição nova casa o padrão de uma entidade publicada mas ainda não está no mentions dela (persiste snapshot diário + alarma se >= 3 dias, mesmo mecanismo de aging de Diaria-Hub-Staleness-Check)",
+    steps: [{ key: "regen", script: "scripts/regenerate-entity-pages.ts" }],
+    logPath: "entities/.regen.log",
+    // Diária basta — mesmo racional de Diaria-Hub-Staleness-Check (custo é
+    // só ler corpus local + regen determinística; só o e-mail de alarme, se
+    // houver pendência vencida, faz I/O de rede). Horário: 09:40, entre
+    // Diaria-Beehiiv-Home-Meta-Check (09:35) e Diaria-Apoios-Diff-Alarm
+    // (09:45) — sem colisão com nenhuma outra daily do registro.
+    schedule: { kind: "daily", hour: 9, minute: 40 },
+    // #5125: condição inegociável do editor pra publicar a 1ª página de
+    // entidade fora da rodada original de 3 (Apple) — "a página nasce com
+    // regeneração automática, senão não é publicada". Não armada nesta
+    // unidade (worktree isolado) — ver CLAUDE.md.
+    issue: "#5125",
+  },
+  {
     name: "Diaria-Clarice-Novos",
     description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
     // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,

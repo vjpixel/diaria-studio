@@ -31,6 +31,7 @@ import { getPerplexityEntity } from "./lib/entities/perplexity.ts";
 import { getXaiEntity } from "./lib/entities/xai.ts";
 import { getAmazonEntity } from "./lib/entities/amazon.ts";
 import { getSamsungEntity } from "./lib/entities/samsung.ts";
+import { getAppleEntity } from "./lib/entities/apple.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -43,6 +44,7 @@ export const ENTITY_LOADERS: Record<string, () => EntityContent> = {
   xai: getXaiEntity,
   amazon: getAmazonEntity,
   samsung: getSamsungEntity,
+  apple: getAppleEntity,
 };
 
 function outPathFor(slug: string): string {
