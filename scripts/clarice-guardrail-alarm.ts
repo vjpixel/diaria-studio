@@ -56,12 +56,25 @@ import {
   type GuardrailAlarmState,
   type CampaignGuardrailInput,
 } from "./lib/clarice-guardrail-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "clarice-guardrail-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "clarice-guardrail-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
+/** #5339: campanha avaliada 1x pra sempre (`markEvaluated`, nunca reavalia)
+ * — o achado desaparece do pendente já na PRÓXIMA execução após o breach,
+ * então 2 execuções consecutivas ausentes fecha rápido; mesmo valor de
+ * cadência usado pelos outros alarmes já wired (esta task roda a cada 4h). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 function loadState(): GuardrailAlarmState {
   if (!existsSync(STATE_PATH)) return emptyGuardrailAlarmState();
@@ -76,6 +89,63 @@ function loadState(): GuardrailAlarmState {
 
 function saveState(state: GuardrailAlarmState): void {
   writeFileAtomic(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional do lote 1/3:
+// idempotência do E-MAIL (acima) e tracking de ISSUE são preocupações
+// independentes.
+
+function loadAlarmIssuesState(): AlarmIssuesState {
+  if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(ALARM_ISSUES_STATE_PATH, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+function saveAlarmIssuesState(state: AlarmIssuesState): void {
+  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte um breach num `AlarmFinding` genérico que
+ * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
+ * ("clarice-guardrail"); `fingerprint` = `campaign-{id}` — cada campanha só
+ * é avaliada 1x pra sempre (`markEvaluated`, nunca reavaliada), então o
+ * achado nasce e some do pendente já na execução seguinte, fechando rápido
+ * via o streak de ausência. Sem PII: nome/id de CAMPANHA, não e-mail de
+ * assinante — `campaignName` nunca carrega dado de contato individual. */
+function toAlarmFinding(
+  item: BrevoCampaignListItem,
+  guardrail: ReturnType<typeof evaluateSendGuardrails>,
+): AlarmFinding {
+  return {
+    check: "clarice-guardrail",
+    fingerprint: `campaign-${item.id}`,
+    title: `[diar.ia.br] Guardrail furado no envio "${item.name}"`,
+    body: [
+      "Achado automático do alarme `Diaria-Clarice-Guardrail-Alarm`",
+      "(`scripts/clarice-guardrail-alarm.ts`).",
+      "",
+      `Campanha: "${item.name}" (id ${item.id})`,
+      `Abertura: ${guardrail.openRatePct.toFixed(1)}% (contexto, não gatilha o breach — #5166)`,
+      `Bounce hard: ${guardrail.hardBounceRatePct.toFixed(2)}% / total: ${guardrail.bounceRatePct.toFixed(2)}%`,
+      `Unsub: ${guardrail.unsubRatePct.toFixed(2)}%`,
+      `Spam: ${guardrail.spamRatePct.toFixed(3)}%`,
+      "",
+      "Ver o e-mail de alarme correspondente (Gmail do editor) pro detalhe completo",
+      "de qual(is) limiar(es) foram furados e o próximo envio agendado.",
+      "",
+      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
 }
 
 interface BrevoCampaignListItem {
@@ -154,7 +224,7 @@ async function main(): Promise<void> {
     now,
   );
 
-  let nextState = state;
+  const evaluations: { item: BrevoCampaignListItem; guardrail: ReturnType<typeof evaluateSendGuardrails> }[] = [];
   for (const item of pending) {
     // #4063-style guard: re-checa a janela com o `sentDate` já validado (o
     // filter acima usa o mesmo predicado, mas o TS narrow exige refazer aqui).
@@ -172,9 +242,47 @@ async function main(): Promise<void> {
         `(abertura ${guardrail.openRatePct.toFixed(1)}%, bounce hard ${guardrail.hardBounceRatePct.toFixed(2)}%/total ${guardrail.bounceRatePct.toFixed(2)}%, ` +
         `unsub ${guardrail.unsubRatePct.toFixed(2)}%, spam ${guardrail.spamRatePct.toFixed(3)}%)`,
     );
+    evaluations.push({ item, guardrail });
+  }
 
+  // #5339 — reconcilia UMA issue por campanha com breach ANTES de montar os
+  // e-mails (o e-mail cita a issue), mesmo padrão do lote 1/3. Roda toda
+  // execução não-dry-run, independente do gate `anyBreach` de cada item —
+  // só campanhas com breach viram AlarmFinding.
+  const breached = evaluations.filter((e) => e.guardrail.anyBreach);
+  const alarmFindings: AlarmFinding[] = breached.map(({ item, guardrail }) => toAlarmFinding(item, guardrail));
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `[clarice-guardrail-alarm] --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState: nextAlarmIssuesState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextAlarmIssuesState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [o.fingerprint, { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error }]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`[clarice-guardrail-alarm] issue não criada/reusada (${o.fingerprint}): ${o.error}`);
+      } else {
+        console.log(`[clarice-guardrail-alarm] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
+    }
+  }
+
+  let nextState = state;
+  for (const { item, guardrail } of evaluations) {
     if (guardrail.anyBreach) {
-      const { subject, body } = buildGuardrailAlarmEmail(item.name, guardrail, nextScheduled, now);
+      const issueRef = issueRefs?.get(`campaign-${item.id}`);
+      const { subject, body } = buildGuardrailAlarmEmail(item.name, guardrail, nextScheduled, now, undefined, issueRef);
       const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
       if (isDryRun) {
         console.log(`[clarice-guardrail-alarm] --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

@@ -139,6 +139,39 @@ describe("buildOpensCatchupAlarmEmail (#4740)", () => {
   });
 });
 
+describe("buildOpensCatchupAlarmEmail com issueRef (#5339) — prova de fumaça do wiring alarm-issues", () => {
+  const state: OpensCatchupAlarmState = {
+    consecutiveFailures: CONSECUTIVE_FAILURE_THRESHOLD,
+    lastAlarmedAt: null,
+    lastCheckedAt: T0.toISOString(),
+  };
+
+  it("cita o número da issue quando issueRef foi criado/reusado", () => {
+    const { body } = buildOpensCatchupAlarmEmail(state, "listSentCampaigns rejeitou: 429", {
+      issueNumber: 5344,
+      url: "https://github.com/vjpixel/diaria-studio/issues/5344",
+      action: "created",
+    });
+    assert.match(body, /Issue: #5344/);
+    assert.match(body, /issues\/5344/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const { body } = buildOpensCatchupAlarmEmail(state, undefined, {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh não autenticado",
+    });
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const { body } = buildOpensCatchupAlarmEmail(state, "listSentCampaigns rejeitou: 429");
+    assert.doesNotMatch(body, /Issue:/);
+  });
+});
+
 describe("loadState / saveState (scripts/clarice-opens-catchup-alarm.ts, I/O)", () => {
   let tmpDir: string;
   beforeEach(() => {

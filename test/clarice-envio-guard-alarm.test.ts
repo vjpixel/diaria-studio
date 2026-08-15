@@ -171,3 +171,30 @@ describe("buildGuardAlarmEmail", () => {
     assert.match(body, /06:00/);
   });
 });
+
+describe("buildGuardAlarmEmail com issueRef (#5339) — prova de fumaça do wiring alarm-issues", () => {
+  it("cita o número da issue quando issueRef foi criado/reusado", () => {
+    const reportId = `envio-${AAMMDD}-guard-prereq-fallback-deixou-passar`;
+    const { body } = buildGuardAlarmEmail(
+      { verdict: "alarm-failure", reportId },
+      AAMMDD,
+      { issueNumber: 5342, url: "https://github.com/vjpixel/diaria-studio/issues/5342", action: "created" },
+    );
+    assert.match(body, /Issue: #5342/);
+    assert.match(body, /issues\/5342/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const { body } = buildGuardAlarmEmail(
+      { verdict: "alarm-no-report", reportId: null },
+      AAMMDD,
+      { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" },
+    );
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const { body } = buildGuardAlarmEmail({ verdict: "alarm-no-report", reportId: null }, AAMMDD);
+    assert.doesNotMatch(body, /Issue:/);
+  });
+});

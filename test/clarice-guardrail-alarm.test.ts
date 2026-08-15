@@ -251,3 +251,31 @@ test("buildGuardrailAlarmEmail — #5166: abertura baixa isolada (bounce/unsub/s
   assert.doesNotMatch(body, /- Abertura/);
   assert.match(body, /Abertura: 11\.1% \(contexto — não gatilha mais este alarme, #5166\)/);
 });
+
+test("buildGuardrailAlarmEmail com issueRef (#5339) — cita o número da issue quando criado/reusado (prova de fumaça do wiring alarm-issues)", () => {
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
+  const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW, undefined, {
+    issueNumber: 5343,
+    url: "https://github.com/vjpixel/diaria-studio/issues/5343",
+    action: "created",
+  });
+  assert.match(body, /Issue: #5343/);
+  assert.match(body, /issues\/5343/);
+});
+
+test("buildGuardrailAlarmEmail com issueRef — action 'failed' cita o motivo em vez de um número (e-mail nunca perde o achado por falha de gh)", () => {
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
+  const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW, undefined, {
+    issueNumber: null,
+    url: null,
+    action: "failed",
+    error: "gh não autenticado",
+  });
+  assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+});
+
+test("buildGuardrailAlarmEmail sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
+  const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW);
+  assert.doesNotMatch(body, /Issue:/);
+});
