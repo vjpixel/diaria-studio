@@ -53,6 +53,16 @@
  */
 import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
 
+/** Label que este módulo aplica a toda issue de alarme (#5338: precisa
+ * existir no repo — nunca existiu antes desta unidade, então `gh issue
+ * create` falhava em TODA execução com "'alarm' not found" e zero achado
+ * virava issue desde o #5112). Usada tanto pelo self-heal em
+ * `ensureAlarmLabelExists` (chamado ao detectar o erro "not found" pra essa
+ * label especificamente) quanto pelo setup manual documentado. */
+export const ALARM_LABEL = "alarm";
+const ALARM_LABEL_COLOR = "5319e7";
+const ALARM_LABEL_DESCRIPTION = "Achado de alarme agendado criou/reusa esta issue automaticamente (#5112)";
+
 export type AlarmPriority = "P0" | "P1" | "P2" | "P3";
 
 export interface AlarmFinding {
@@ -160,12 +170,119 @@ export function findExistingAlarmIssue(
   return match ? { issueNumber: match.number, url: match.url } : null;
 }
 
+/** Erro de `gh issue create`/`gh label create` quando uma label passada em
+ * `--label` não existe no repo — formato observado ao vivo (#5338):
+ * `could not add label: 'alarm' not found`. Captura o nome entre aspas
+ * simples; `g` pra achar todas as ocorrências se `gh` reportar mais de uma
+ * label ausente na mesma mensagem. */
+const LABEL_NOT_FOUND_PATTERN = /could not add label: '([^']+)' not found/gi;
+
+/** Nomes de label extraídos de uma mensagem de erro "not found" do `gh` —
+ * lista vazia se o erro não é dessa classe (caller distingue "falha por
+ * label ausente, retentável" de qualquer outra falha, que não deve mascarar
+ * o motivo real). */
+function extractMissingLabels(stderr: string): string[] {
+  const names: string[] = [];
+  const re = new RegExp(LABEL_NOT_FOUND_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(stderr)) !== null) names.push(match[1]);
+  return names;
+}
+
+/** Self-heal (#5338 item 1) — best-effort, nunca lança: tenta criar a label
+ * `alarm` no repo (`--force` a torna idempotente caso já exista com
+ * cor/descrição diferentes de uma criação manual). Chamada só no caminho de
+ * retry (vale a pena tentar 1x quando `gh issue create` já falhou por essa
+ * label especificamente) — não em toda execução, pra não gastar uma chamada
+ * `gh` extra quando a label já existe (caso comum após a 1ª auto-criação). */
+function ensureAlarmLabelExists(cwd: string, run: GhRunFn): boolean {
+  const res = run(
+    ["label", "create", ALARM_LABEL, "--color", ALARM_LABEL_COLOR, "--description", ALARM_LABEL_DESCRIPTION, "--force"],
+    cwd,
+  );
+  return res.status === 0;
+}
+
+function parseIssueCreateUrl(res: GhSpawnResult): { issueNumber: number; url: string } | { error: string } {
+  const url = res.stdout.trim().split("\n").filter(Boolean).pop() ?? "";
+  const numMatch = url.match(/\/issues\/(\d+)\s*$/);
+  if (!numMatch) {
+    return {
+      error: `não foi possível extrair o número da issue da URL retornada por 'gh issue create': "${url}"`,
+    };
+  }
+  return { issueNumber: Number(numMatch[1]), url };
+}
+
+/**
+ * Cria a issue via `gh issue create` — com retry não-fatal (#5338 item 2)
+ * quando a falha é EXATAMENTE "label não encontrada": tenta self-heal da
+ * label `alarm` (`ensureAlarmLabelExists`) e retenta mantendo `alarm` na
+ * lista se a criação deu certo, ou sem ela (e sem qualquer outra label que o
+ * `gh` também tenha acusado como ausente) caso contrário. Perder um rótulo é
+ * aceitável; perder o rastreio do achado inteiro não é — nunca deixa uma
+ * falha de label genuína, sem retry, virar o único motivo de a issue nunca
+ * existir. Qualquer outra classe de falha (rate limit, offline, `gh` não
+ * autenticado) passa direto pro fail-soft de sempre, sem retry.
+ */
+function createAlarmIssueWithLabelRetry(
+  title: string,
+  body: string,
+  labels: string[],
+  cwd: string,
+  run: GhRunFn,
+): AlarmIssueResult {
+  const attempt = (attemptLabels: string[]) =>
+    run(
+      attemptLabels.length > 0
+        ? ["issue", "create", "--title", title, "--body", body, "--label", attemptLabels.join(",")]
+        : ["issue", "create", "--title", title, "--body", body],
+      cwd,
+    );
+
+  const res = attempt(labels);
+  if (res.status === 0) {
+    const parsed = parseIssueCreateUrl(res);
+    if ("error" in parsed) return { issueNumber: null, url: null, action: "failed", error: parsed.error };
+    return { issueNumber: parsed.issueNumber, url: parsed.url, action: "created" };
+  }
+
+  const missing = extractMissingLabels(res.stderr);
+  if (missing.length === 0) {
+    // Falha que não é (só) de label ausente — nunca mascarar com retry.
+    return {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: res.stderr.trim() || `gh issue create falhou (status ${res.status})`,
+    };
+  }
+
+  const alarmLabelHealed = missing.includes(ALARM_LABEL) && ensureAlarmLabelExists(cwd, run);
+  const stillMissing = alarmLabelHealed ? missing.filter((l) => l !== ALARM_LABEL) : missing;
+  const retryLabels = labels.filter((l) => !stillMissing.includes(l));
+
+  const retryRes = attempt(retryLabels);
+  if (retryRes.status !== 0) {
+    return {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: `label(s) ausente(s) no repo (${missing.join(", ")}) — retry sem ela(s) também falhou: ${retryRes.stderr.trim() || `status ${retryRes.status}`}`,
+    };
+  }
+  const parsed = parseIssueCreateUrl(retryRes);
+  if ("error" in parsed) return { issueNumber: null, url: null, action: "failed", error: parsed.error };
+  return { issueNumber: parsed.issueNumber, url: parsed.url, action: "created" };
+}
+
 /**
  * Garante que existe uma issue pro achado `finding` — reusa via `cachedEntry`
  * (fast path, sem tocar rede) OU via busca por marcador (`findExistingAlarmIssue`,
- * fallback quando o cache não tem a entry) OU cria uma nova. **NUNCA**
- * fabrica `issueNumber`/`url` — se `gh issue create` falhar, devolve
- * `action: "failed"` com `error` populado.
+ * fallback quando o cache não tem a entry) OU cria uma nova (com retry
+ * fail-soft de label ausente — ver `createAlarmIssueWithLabelRetry`).
+ * **NUNCA** fabrica `issueNumber`/`url` — se toda tentativa de `gh issue
+ * create` falhar, devolve `action: "failed"` com `error` populado.
  */
 export function ensureAlarmIssue(
   finding: AlarmFinding,
@@ -183,34 +300,11 @@ export function ensureAlarmIssue(
   }
 
   const priority = finding.priority ?? "P2";
-  const labels = [...new Set([...(finding.labels ?? []), "alarm", priority])];
+  const labels = [...new Set([...(finding.labels ?? []), ALARM_LABEL, priority])];
   const marker = alarmFindingMarker(finding.check, finding.fingerprint);
   const body = `${finding.body}\n\n${marker}\n`;
 
-  const res = run(
-    ["issue", "create", "--title", finding.title, "--body", body, "--label", labels.join(",")],
-    cwd,
-  );
-  if (res.status !== 0) {
-    return {
-      issueNumber: null,
-      url: null,
-      action: "failed",
-      error: res.stderr.trim() || `gh issue create falhou (status ${res.status})`,
-    };
-  }
-
-  const url = res.stdout.trim().split("\n").filter(Boolean).pop() ?? "";
-  const numMatch = url.match(/\/issues\/(\d+)\s*$/);
-  if (!numMatch) {
-    return {
-      issueNumber: null,
-      url: url || null,
-      action: "failed",
-      error: `não foi possível extrair o número da issue da URL retornada por 'gh issue create': "${url}"`,
-    };
-  }
-  return { issueNumber: Number(numMatch[1]), url, action: "created" };
+  return createAlarmIssueWithLabelRetry(finding.title, body, labels, cwd, run);
 }
 
 /** Comenta "não reproduz mais" numa issue — `true` em sucesso, `false` se

@@ -154,17 +154,22 @@ describe("ensureAlarmIssue (#5112)", () => {
     assert.equal(createCount, 1, "gh issue create só deveria ter sido chamado 1 vez");
   });
 
-  it("falha na criação (gh issue create retorna status != 0) -> action failed, NUNCA fabrica issueNumber/url", () => {
+  it("falha na criação NÃO relacionada a label (ex: rate limit) -> action failed direto, sem tentar retry", () => {
+    let createCalls = 0;
     const run: GhRunFn = (args) => {
       if (args[0] === "issue" && args[1] === "list") return ok("[]");
-      if (args[0] === "issue" && args[1] === "create") return fail("gh: could not create issue: label 'alarm' not found");
+      if (args[0] === "issue" && args[1] === "create") {
+        createCalls++;
+        return fail("HTTP 403: rate limited");
+      }
       throw new Error("unexpected");
     };
     const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
     assert.equal(result.action, "failed");
     assert.equal(result.issueNumber, null);
     assert.equal(result.url, null);
-    assert.match(result.error ?? "", /label 'alarm' not found/);
+    assert.match(result.error ?? "", /rate limited/);
+    assert.equal(createCalls, 1, "não deveria retentar uma falha que não é de label ausente");
   });
 
   it("labels incluem sempre 'alarm' + a prioridade resolvida (default P2)", () => {
@@ -198,6 +203,106 @@ describe("ensureAlarmIssue (#5112)", () => {
     };
     ensureAlarmIssue(FINDING_A, undefined, CWD, run);
     assert.ok(bodyArg!.includes(alarmFindingMarker(FINDING_A.check, FINDING_A.fingerprint)));
+  });
+});
+
+// ─── #5338: label 'alarm' ausente no repo -> self-heal + retry ────────────
+
+describe("ensureAlarmIssue — retry fail-soft de label ausente (#5338)", () => {
+  it("erro real do gh ('could not add label') na label 'alarm' -> self-heal cria a label, retry mantém 'alarm', 2ª tentativa cria a issue", () => {
+    let createAttempts = 0;
+    let labelCreateCalled = false;
+    let lastLabelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        labelCreateCalled = true;
+        assert.equal(args[2], "alarm");
+        assert.ok(args.includes("--force"));
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        createAttempts++;
+        const idx = args.indexOf("--label");
+        lastLabelArg = idx >= 0 ? args[idx + 1] : null;
+        if (createAttempts === 1) return fail("could not add label: 'alarm' not found");
+        return ok("https://github.com/x/y/issues/6001\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.equal(labelCreateCalled, true, "deveria ter tentado auto-criar a label 'alarm'");
+    assert.equal(createAttempts, 2, "deveria retentar 'gh issue create' após o self-heal");
+    assert.match(lastLabelArg ?? "", /\balarm\b/, "self-heal bem-sucedido -> retry mantém 'alarm' na lista");
+    assert.deepEqual(result, { issueNumber: 6001, url: "https://github.com/x/y/issues/6001", action: "created" });
+  });
+
+  it("self-heal da label 'alarm' também falha -> retry cai pra lista SEM 'alarm', ainda cria a issue", () => {
+    let createAttempts = 0;
+    let lastLabelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") return fail("gh: permission denied");
+      if (args[0] === "issue" && args[1] === "create") {
+        createAttempts++;
+        const idx = args.indexOf("--label");
+        lastLabelArg = idx >= 0 ? args[idx + 1] : null;
+        if (createAttempts === 1) return fail("could not add label: 'alarm' not found");
+        return ok("https://github.com/x/y/issues/6002\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.equal(createAttempts, 2);
+    assert.ok(lastLabelArg, "retry ainda deveria mandar --label (com as outras labels válidas)");
+    assert.doesNotMatch(lastLabelArg!, /\balarm\b/, "self-heal falhou -> 'alarm' cai fora do retry");
+    assert.match(lastLabelArg!, /\bbug\b/, "labels que não falharam continuam no retry");
+    assert.match(lastLabelArg!, /\bP2\b/);
+    assert.equal(result.action, "created");
+    assert.equal(result.issueNumber, 6002);
+  });
+
+  it("retry sem a label ausente TAMBÉM falha -> action failed com o motivo de ambas as tentativas, nunca perde o achado silenciosamente", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") return ok("");
+      if (args[0] === "issue" && args[1] === "create") return fail("could not add label: 'alarm' not found");
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.equal(result.action, "failed");
+    assert.equal(result.issueNumber, null);
+    assert.equal(result.url, null);
+    assert.match(result.error ?? "", /ausente/);
+    assert.match(result.error ?? "", /alarm/);
+  });
+
+  it("label ausente que NÃO é 'alarm' -> dropada do retry sem tentar self-heal (só 'alarm' é auto-criável por este módulo)", () => {
+    let labelCreateCalled = false;
+    let createAttempts = 0;
+    let lastLabelArg: string | null = null;
+    const findingWithExtraLabel: AlarmFinding = { ...FINDING_A, labels: ["bug", "nivel-inexistente"] };
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        labelCreateCalled = true;
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        createAttempts++;
+        const idx = args.indexOf("--label");
+        lastLabelArg = idx >= 0 ? args[idx + 1] : null;
+        if (createAttempts === 1) return fail("could not add label: 'nivel-inexistente' not found");
+        return ok("https://github.com/x/y/issues/6003\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(findingWithExtraLabel, undefined, CWD, run);
+    assert.equal(labelCreateCalled, false, "só a label 'alarm' é auto-criável — outra label ausente não dispara self-heal");
+    assert.equal(createAttempts, 2);
+    assert.doesNotMatch(lastLabelArg ?? "", /nivel-inexistente/);
+    assert.match(lastLabelArg ?? "", /\balarm\b/, "'alarm' não estava entre as ausentes -> segue no retry");
+    assert.equal(result.action, "created");
   });
 });
 
