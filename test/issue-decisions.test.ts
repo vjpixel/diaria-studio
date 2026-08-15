@@ -14,6 +14,11 @@
  *     PR #5375 — a versão original embutia JSON cru entre os delimitadores,
  *     e um `pergunta`/`resposta` contendo "-->" truncava o parse; o payload
  *     agora vai em base64, que nunca contém essa sequência)
+ *
+ * Espelha a mesma cobertura para o marcador `bloqueio-execucao` (item 5 do
+ * #5373) — happy path, marcador ausente, malformado, múltiplos marcadores
+ * pega o mais recente, "-->" no payload, e não-confusão entre os dois tipos
+ * de marcador quando ambos aparecem no mesmo conjunto de comentários.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -21,7 +26,11 @@ import {
   formatDecisionMarker,
   parseDecisionMarkers,
   latestDecisionFor,
+  formatExecutionBlockMarker,
+  parseExecutionBlockMarkers,
+  latestExecutionBlockFor,
   type IssueDecision,
+  type ExecutionBlock,
 } from "../scripts/lib/issue-decisions.ts";
 
 function decision(overrides: Partial<IssueDecision> = {}): IssueDecision {
@@ -29,6 +38,15 @@ function decision(overrides: Partial<IssueDecision> = {}): IssueDecision {
     decided_at: "2026-08-14T05:38:00Z",
     pergunta: "Consertar ou aposentar GA4?",
     resposta: "CONSERTAR, não aposentar",
+    sessao: "continuo",
+    ...overrides,
+  };
+}
+
+function executionBlock(overrides: Partial<ExecutionBlock> = {}): ExecutionBlock {
+  return {
+    recorded_at: "2026-08-15T16:00:00Z",
+    motivo: "falta acesso a painel GA4/GTM",
     sessao: "continuo",
     ...overrides,
   };
@@ -107,5 +125,98 @@ describe("latestDecisionFor", () => {
     const valid = decision();
     const bodies = ["<!-- decisao-editor: {broken -->", formatDecisionMarker(valid)];
     assert.deepEqual(latestDecisionFor(bodies), valid);
+  });
+});
+
+describe("formatExecutionBlockMarker + parseExecutionBlockMarkers round-trip (#5373 item 5)", () => {
+  it("marcador formatado é reconhecido pelo parser", () => {
+    const b = executionBlock();
+    const marker = formatExecutionBlockMarker(b);
+    assert.match(marker, /^<!-- bloqueio-execucao: [A-Za-z0-9+/=]+ -->$/);
+    const parsed = parseExecutionBlockMarkers([`Bloqueio de execução registrado.\n\n${marker}`]);
+    assert.deepEqual(parsed, [b]);
+  });
+
+  it("payload contendo a sequência literal '-->' não trunca o parse", () => {
+    const b = executionBlock({
+      motivo: 'Guard de publicação (ver <!-- comentário --> no código) proíbe envio real.',
+    });
+    const marker = formatExecutionBlockMarker(b);
+    const parsed = parseExecutionBlockMarkers([marker]);
+    assert.deepEqual(parsed, [b]);
+  });
+});
+
+describe("parseExecutionBlockMarkers", () => {
+  it("marcador ausente retorna lista vazia", () => {
+    assert.deepEqual(parseExecutionBlockMarkers(["comentário qualquer sem marcador"]), []);
+  });
+
+  it("lista de comentários vazia retorna lista vazia", () => {
+    assert.deepEqual(parseExecutionBlockMarkers([]), []);
+  });
+
+  it("marcador malformado (JSON inválido) é ignorado, não lança", () => {
+    const bad = "<!-- bloqueio-execucao: {not valid json} -->";
+    assert.doesNotThrow(() => parseExecutionBlockMarkers([bad]));
+    assert.deepEqual(parseExecutionBlockMarkers([bad]), []);
+  });
+
+  it("marcador com campo faltando é ignorado", () => {
+    const incomplete = '<!-- bloqueio-execucao: {"recorded_at":"2026-08-15T00:00:00Z"} -->';
+    assert.deepEqual(parseExecutionBlockMarkers([incomplete]), []);
+  });
+
+  it("marcador com motivo vazio é ignorado", () => {
+    const encoded = Buffer.from(
+      JSON.stringify({ recorded_at: "2026-08-15T00:00:00Z", motivo: "", sessao: "overnight" }),
+      "utf8",
+    ).toString("base64");
+    assert.deepEqual(
+      parseExecutionBlockMarkers([`<!-- bloqueio-execucao: ${encoded} -->`]),
+      [],
+    );
+  });
+
+  it("extrai múltiplos marcadores válidos de múltiplos comentários", () => {
+    const b1 = executionBlock({ recorded_at: "2026-08-14T05:38:00Z" });
+    const b2 = executionBlock({ recorded_at: "2026-08-15T16:00:00Z" });
+    const bodies = [formatExecutionBlockMarker(b1), formatExecutionBlockMarker(b2)];
+    assert.deepEqual(parseExecutionBlockMarkers(bodies), [b1, b2]);
+  });
+
+  it("não confunde marcador de decisão com marcador de bloqueio-de-execução", () => {
+    const d = decision();
+    const bodies = [formatDecisionMarker(d)];
+    assert.deepEqual(parseExecutionBlockMarkers(bodies), []);
+    assert.deepEqual(parseDecisionMarkers(bodies), [d]);
+  });
+});
+
+describe("latestExecutionBlockFor", () => {
+  it("nenhum marcador -> null", () => {
+    assert.equal(latestExecutionBlockFor(["sem marcador aqui"]), null);
+  });
+
+  it("lista vazia -> null", () => {
+    assert.equal(latestExecutionBlockFor([]), null);
+  });
+
+  it("múltiplos marcadores -> devolve o mais recente por recorded_at", () => {
+    const older = executionBlock({ recorded_at: "2026-08-12T20:02:00Z", motivo: "motivo antigo" });
+    const newer = executionBlock({ recorded_at: "2026-08-15T16:00:00Z", motivo: "motivo atual" });
+    const middle = executionBlock({ recorded_at: "2026-08-14T14:34:00Z", motivo: "motivo do meio" });
+    const bodies = [
+      formatExecutionBlockMarker(older),
+      formatExecutionBlockMarker(newer),
+      formatExecutionBlockMarker(middle),
+    ];
+    assert.deepEqual(latestExecutionBlockFor(bodies), newer);
+  });
+
+  it("mistura de marcador válido e malformado -> ignora o malformado, acha o válido", () => {
+    const valid = executionBlock();
+    const bodies = ["<!-- bloqueio-execucao: {broken -->", formatExecutionBlockMarker(valid)];
+    assert.deepEqual(latestExecutionBlockFor(bodies), valid);
   });
 });
