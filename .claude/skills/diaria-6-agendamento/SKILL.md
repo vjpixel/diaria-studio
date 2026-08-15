@@ -12,7 +12,7 @@ Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmaca
 - `AAMMDD` (opcional) — se omitido, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 6` e parsear `candidates[]` do JSON de saida (#583):
   - **Se `candidates.length === 1`**: assumir essa edicao. Logar info: `Assumindo edicao em curso: {AAMMDD}`.
   - **Se `candidates.length === 0`**: erro. `Nenhuma edicao com Stage 5 (Publicacao) aprovado e Stage 6 incompleto. Rode /diaria-5-publicacao primeiro ou passe AAMMDD explicitamente.`
-  - **Se `candidates.length >= 2`**: perguntar ao editor qual.
+  - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 
 Critico: este e o stage que **agenda** a newsletter no Beehiiv; rodar na edicao errada causa agendamento de conteudo incorreto.
 

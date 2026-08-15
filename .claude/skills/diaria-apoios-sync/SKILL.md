@@ -121,7 +121,7 @@ dry-run** — nenhum dos dois grava na Beehiiv, só refinam o dado de entrada
 
 ## Passo 3 — gate de decisão
 
-Perguntar ao editor se aplica (`AskUserQuestion` ou equivalente). Opções:
+**Mantido pelo #5321 ("Perguntar é exceção") — critério 1: escreve em massa num sistema externo (Beehiiv, custom field de assinantes reais), sem staging reversível equivalente a rascunho.** Perguntar ao editor se aplica (`AskUserQuestion` ou equivalente). Opções:
 - **Aplicar** → rodar com `--push`.
 - **Não aplicar** → parar aqui, nada foi escrito.
 - Se o guard de blast radius apareceu como "EXCEDIDO" no dry-run: avisar

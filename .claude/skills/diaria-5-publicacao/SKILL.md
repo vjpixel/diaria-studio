@@ -21,7 +21,7 @@ Dispara a Etapa 5 unificada (publicação paralela: Beehiiv + Facebook + LinkedI
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 5` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 4 (Revisão) aprovado e Stage 5 incompleto. Rode /diaria-4-revisao primeiro ou passe AAMMDD explicitamente.`
-  - **Se `candidates.length >= 2`**: perguntar ao editor qual.
+  - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 
 **`{EDITION_DIR}` (#2463/#3024):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Resolver **uma vez** logo após ter `{AAMMDD}`, e usar em todo path abaixo que hoje aparece como `{EDITION_DIR}/`:
 ```bash
@@ -54,7 +54,7 @@ npx tsx scripts/check-worker-cors.ts --worker-url https://eia.diar.ia.br
 
 ## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336, invertido em #1326)
 
-**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` ou via gate interativo.
+**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` — o gate interativo (menu numérico) que existia aqui foi **removido (#5321, "Perguntar é exceção")**: o gate do Stage 4 já aconteceu, o editor já revisou o conteúdo, e nenhuma opção do menu passava no rubrico (nada irreversível — Beehiiv sai como rascunho, LinkedIn/Facebook saem agendados 24h+ à frente, tudo reversível no dashboard de cada plataforma antes de ir ao ar).
 
 **Path 1 — flag `--skip` foi passado:**
 ```bash
@@ -66,21 +66,16 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista}"
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
 ```
 
-**Path 3 — gate interativo (sem `--skip` e sem `auto_approve`):**
-
+**Path 3 — nenhuma flag passada (default):**
+```bash
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 ```
-Modo de publicação para esta edição (default = tudo automático):
-
-  [1] Beehiiv automático  — top-level segue context/publishers/beehiiv-playbook.md
-  [2] Beehiiv manual      — você faz o paste no Beehiiv
-  [3] LinkedIn automático — Worker queue + Make webhook (agenda 17:00 BRT)
-  [4] LinkedIn manual     — você posta; copy: {EDITION_DIR}/03-social.md
-  [5] Facebook automático — Graph API agenda os 3 posts
-  [6] Facebook manual     — você posta; copy: {EDITION_DIR}/03-social.md
-
-Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
-ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar.
-Default se não responder = TUDO AUTOMÁTICO (#1326).
+Imprimir banner e seguir direto pro dispatch — sem esperar resposta:
+```
+Modo de publicação: TUDO AUTOMÁTICO (default, #1326/#5321).
+Beehiiv sai como rascunho, LinkedIn e Facebook saem agendados 24h+ à frente —
+tudo reversível no dashboard de cada plataforma antes de ir ao ar. Pra
+excluir um canal desta edição, rode de novo com --skip {canal[,canal...]}.
 ```
 
 ## O que faz

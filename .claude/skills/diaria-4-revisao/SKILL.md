@@ -14,7 +14,7 @@ Dispara a Etapa 4 da pipeline diar.ia.br: **Revisão editorial assistida**. Mont
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 4` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`.
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 3 aprovado e Stage 4 incompleto. Rode /diaria-3-imagens primeiro ou passe AAMMDD explicitamente.`
-  - **Se `candidates.length >= 2`**: perguntar ao editor qual: `Múltiplas edições em curso: {lista}. Qual processar?`
+  - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 
 **`{EDITION_DIR}` (#2463/#3024):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Resolver **uma vez** logo após ter `{AAMMDD}`, e usar em todo path abaixo que hoje aparece como `data/editions/{AAMMDD}/`:
 ```bash

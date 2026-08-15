@@ -86,13 +86,15 @@ inteira antes — não só o body.
 
 ## Argumentos
 
-- `--publish-monday AAMMDD` — **obrigatório e explícito** (mesmo invariante
-  de `CLAUDE.md`: nunca inferir de `today()`). É o AAMMDD da SEGUNDA em que
-  o artigo será publicado — a janela de conteúdo (segunda a sexta) é
-  resolvida automaticamente como a semana ANTERIOR a essa data
+- `--publish-monday AAMMDD` — é o AAMMDD da SEGUNDA em que o artigo será
+  publicado — a janela de conteúdo (segunda a sexta) é resolvida
+  automaticamente como a semana ANTERIOR a essa data
   (`resolveWeeklyLinkedinCycle` em `scripts/lib/weekly-linkedin-cycle.ts`).
-  Se omitido, pergunte ao editor com a próxima segunda como sugestão —
-  nunca assuma silenciosamente.
+  **Se omitido (#5321, "Perguntar é exceção"): default — a próxima
+  segunda-feira** (`nextMondayAAMMDD()`, mesmo módulo — se hoje já for
+  segunda, resolve pra hoje) — e imprimir banner: `--publish-monday não
+  informado — assumindo {AAMMDD} (próxima segunda). Passe explicitamente
+  para outra data.` Nunca inferir silenciosamente sem o banner.
 
 O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
 (não da segunda de publicação) e usado como namespace de diretório

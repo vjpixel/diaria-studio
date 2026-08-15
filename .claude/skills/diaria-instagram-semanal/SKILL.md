@@ -76,11 +76,14 @@ atual:
 ## Argumentos
 
 - `AAMMDD-do-sabado` — data do sábado ÂNCORA da semana (segunda a sexta
-  anterior). **Obrigatório e explícito** (mesmo invariante de `CLAUDE.md`:
-  nunca inferir de `today()`). Se omitido, pergunte ao editor com o próximo
-  sábado como sugestão — nunca assuma silenciosamente. Vale pros dois modos
-  — só a data de AGENDAMENTO muda (`highlights` = o próprio sábado,
-  `clicked` = domingo seguinte), a janela de conteúdo é a mesma.
+  anterior). **Se omitido (#5321, "Perguntar é exceção"): default — o
+  próximo sábado** (`nextSaturdayAAMMDD()` em `scripts/lib/select-weekly-d1.ts`
+  — se hoje já for sábado, resolve pra hoje) — e imprimir banner:
+  `AAMMDD-do-sabado não informado — assumindo {AAMMDD} (próximo sábado).
+  Passe explicitamente para outra data.` Nunca inferir silenciosamente sem o
+  banner. Vale pros dois modos — só a data de AGENDAMENTO muda
+  (`highlights` = o próprio sábado, `clicked` = domingo seguinte), a janela
+  de conteúdo é a mesma.
 - `--mode clicked|highlights` — qual dos dois carrosséis rodar (ver tabela
   acima). Default `clicked` (back-compat com invocações antigas, de antes do
   #5330). Rode a skill 2x na semana, uma vez por modo.

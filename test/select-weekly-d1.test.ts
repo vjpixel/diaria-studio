@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import {
   computeWeekdayEditionDates,
   resolveWeeklyEditionDirs,
+  nextSaturdayAAMMDD,
 } from "../scripts/lib/select-weekly-d1.ts";
 
 function setupEdition(root: string, date: string, d1Title: string, d1Url: string): string {
@@ -95,5 +96,27 @@ describe("resolveWeeklyEditionDirs", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("nextSaturdayAAMMDD (#5321 — default de AAMMDD-do-sabado quando omitido)", () => {
+  it("de uma quinta-feira, resolve pro sábado seguinte", () => {
+    // 2026-08-13 é quinta-feira → sábado seguinte é 2026-08-15.
+    assert.equal(nextSaturdayAAMMDD(new Date(2026, 7, 13)), "260815");
+  });
+
+  it("se já for sábado, resolve pra ele mesmo (inclusivo)", () => {
+    // 2026-08-15 é sábado.
+    assert.equal(nextSaturdayAAMMDD(new Date(2026, 7, 15)), "260815");
+  });
+
+  it("de domingo, resolve pro sábado da semana seguinte (6 dias à frente)", () => {
+    // 2026-08-16 é domingo → próximo sábado é 2026-08-22.
+    assert.equal(nextSaturdayAAMMDD(new Date(2026, 7, 16)), "260822");
+  });
+
+  it("atravessa virada de ano corretamente", () => {
+    // 2025-12-27 é sábado; a partir de 2025-12-28 (domingo), próximo sábado é 2026-01-03.
+    assert.equal(nextSaturdayAAMMDD(new Date(2025, 11, 28)), "260103");
   });
 });
