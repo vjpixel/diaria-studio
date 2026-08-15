@@ -2,7 +2,7 @@
 name: diaria-continuo
 description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação Telegram do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Toda invocação se auto-envolve em `/loop` (#5332) — ver "Como usar". Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
 model: sonnet
-effort: high
+effort: medium
 ---
 
 # /diaria-continuo
@@ -191,12 +191,27 @@ generalizada às demais. O blast radius em si (merges autônomos em master,
 incluindo cat. D depois de uma resposta do editor) não mudou — o que mudou
 é só o mecanismo de consentimento de entrada.
 
-**Modelo/effort do coordenador.** `model: sonnet` + `effort: high` —
+**Modelo/effort do coordenador.** `model: sonnet` + `effort: medium` —
 paridade explícita com `/diaria-overnight` (#3453) e `/diaria-develop`
 (#3454), mesma decisão registrada na tabela do briefing do #5293. Mesma
 limitação de escopo-de-turno documentada nos dois SKILL.md irmãos: o override
 de frontmatter vale "pelo resto do turno atual" — não há mecanismo de hook
 que force o modelo/effort programaticamente entre prompts.
+
+**EXPERIMENTO em curso (#5306, 15/08/2026): `effort` baixado de `high` →
+`medium`, em paridade com a mesma troca em `/diaria-overnight`.** Hipótese:
+o guia de migração do Sonnet 5 indica que `medium` no Sonnet 5 é comparável
+em inteligência ao `high` do Sonnet 4.6 — geração em que o racional acima
+(#3453) foi calibrado. **Esta troca vale só a partir da PRÓXIMA invocação
+desta skill** (escopo-de-turno, ver parágrafo acima) — uma sessão já em
+andamento continua no `effort` com que começou. Medição pendente: comparar
+`coordinator_tokens_estimate` (normalizado por unidade trabalhada) de
+rodadas futuras em `medium` contra as últimas rodadas em `high`, mais
+avaliação pós-hoc da qualidade da triagem/gate/review consolidado —
+protocolo completo e resultado a registrar em #5306 antes de tornar a
+mudança permanente. `.claude/skills/diaria-develop/SKILL.md` foi deixado de
+fora de propósito (fica em `high` como controle — editor presente lá, sinal
+de qualidade mais fácil de ler).
 
 ## Reuso da maquinaria do overnight — por citação, nunca duplicado
 
