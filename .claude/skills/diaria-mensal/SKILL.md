@@ -291,7 +291,7 @@ SEL_PCT=$(node -e "const j=JSON.parse(require('fs').readFileSync('$SEL_JSON','ut
 npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/ \
   --selection $SEL_SELECTION --pct-correct $SEL_PCT
 ```
-Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Gate Etapa 3 abaixo.
+Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Checkpoint Etapa 3 abaixo.
 
 ### 3c. Preview local via `serve-preview.ts` (#3546 — substitui Claude Artifacts)
 
