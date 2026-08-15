@@ -14,7 +14,6 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`make-linkedin-setup.md`](./make-linkedin-setup.md) | Scenario Make.com pra publicação LinkedIn "fire-now" via webhook |
 | [`make-595-comments-setup.md`](./make-595-comments-setup.md) | Extensão do scenario Make (#595) pra suportar comments automáticos no LinkedIn |
 | [`linkedin-cron-worker-setup.md`](./linkedin-cron-worker-setup.md) | Cloudflare Worker `diaria-linkedin-cron` pra agendamento real de posts (substitui Make Data Store) |
-| [`telegram-setup.md`](./telegram-setup.md) | Plugin oficial de channels do Telegram pra acompanhar sessões pelo celular |
 | [`clarice-dashboard-access-setup.md`](./clarice-dashboard-access-setup.md) | Cookie-token auth do clarice-dashboard |
 | [`google-oauth-production.md`](./google-oauth-production.md) | Publicar app OAuth Google em "Produção" (fix causa-raiz da expiração de 7 dias) |
 | [`branch-protection.md`](./branch-protection.md) | Exigir CI verde antes de merge em `master` |

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 import type { QueryFn } from "../scripts/studio-ui/studio-chat.ts";
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344/#5341
 
 /** Parseia um corpo SSE completo (já lido inteiro) em `{event, data}[]` —
  * mesmo formato de `formatSseEvent`. Ignora linhas de comentário (heartbeat). */
@@ -678,7 +679,7 @@ describe("POST /api/chat (#3822) — notificação de turno concluído via chatD
       chatQueryFn: (params) => throwingQueryFn(params),
       chatDoneNowFn: () => 0,
       chatDoneNotifyFn: async () => {
-        throw new Error("Telegram Bot API indisponível");
+        throw new Error("Gmail API indisponível");
       },
     });
     try {
@@ -712,7 +713,7 @@ describe("POST /api/chat (#3822) — notificação de turno concluído via chatD
     // (bypassando o threshold real de `maybeNotifyChatDone`, que só é
     // aplicado quando `chatDoneNotifyFn` NÃO é injetado) — então este teste
     // sozinho não prova o threshold em produção; ver
-    // "maybeNotifyChatDone (#3822)" em studio-telegram-notify.test.ts pro
+    // "maybeNotifyChatDone (#3822)" em studio-push-notify.test.ts pro
     // teste real do threshold. Aqui confirmamos só que a duração É medida e
     // repassada corretamente (5_000, não 0 nem NaN) — a decisão de notificar
     // ou não fica a cargo de quem implementa `chatDoneNotifyFn` (o default
@@ -732,9 +733,7 @@ describe("POST /api/chat (#3822) — fail-soft real, sem injetar chatDoneNotifyF
   let root: string;
   let server: StudioServer;
   let queryFn: QueryFn;
-  let originalToken: string | undefined;
-  let originalChatId: string | undefined;
-  let originalWatchdogChatId: string | undefined;
+  let originalCredsOverride: string | undefined;
 
   function makeFakeQuery(messages: SDKMessage[]): QueryFn {
     return () => {
@@ -747,17 +746,23 @@ describe("POST /api/chat (#3822) — fail-soft real, sem injetar chatDoneNotifyF
 
   before(async () => {
     // Guard de publicação (CLAUDE.md/dispatch-rules): garante que este teste
-    // NUNCA dispare uma chamada de rede real ao Telegram, mesmo que a
-    // máquina que rodar a suíte tenha credenciais no ambiente — remove-as
-    // pra forçar `resolveTelegramCredentials` no caminho "sem credenciais"
-    // (skip silencioso), o mesmo caminho fail-soft que roda numa máquina sem
-    // nada configurado.
-    originalToken = process.env.TELEGRAM_BOT_TOKEN;
-    originalChatId = process.env.TELEGRAM_CHAT_ID;
-    originalWatchdogChatId = process.env.TELEGRAM_WATCHDOG_CHAT_ID;
-    delete process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_CHAT_ID;
-    delete process.env.TELEGRAM_WATCHDOG_CHAT_ID;
+    // NUNCA dispare uma chamada de rede real ao Gmail, mesmo que a
+    // máquina que rodar a suíte tenha credenciais reais na junction `data/` —
+    // pra forçar `sendGmailMessage`/`google-auth.ts` no caminho "credenciais
+    // ausentes" (lança `GoogleAuthError`, capturado por `sendPushNotification`
+    // -> `{ok:false}`), o mesmo caminho fail-soft que roda numa máquina sem
+    // nada configurado — **determinístico independente da máquina**: aponta
+    // `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (`google-auth.ts`, #4344) pra um
+    // path que nunca existe, em vez de confiar que `data/.credentials.json`
+    // do repo real está ausente (não está — é uma junction OneDrive
+    // sincronizada com a credencial real do editor em várias máquinas; sem
+    // este override, este teste enviaria um e-mail de verdade sempre que
+    // rodado numa máquina com a junction montada).
+    originalCredsOverride = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = join(
+      mkdtempSync(join(tmpdir(), "studio-server-no-creds-")),
+      ".credentials-que-nunca-existe.json",
+    );
 
     root = mkdtempSync(join(tmpdir(), "studio-server-chat-done-notify-default-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
@@ -776,15 +781,11 @@ describe("POST /api/chat (#3822) — fail-soft real, sem injetar chatDoneNotifyF
   after(async () => {
     await server.close();
     rmSync(root, { recursive: true, force: true });
-    if (originalToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
-    else process.env.TELEGRAM_BOT_TOKEN = originalToken;
-    if (originalChatId === undefined) delete process.env.TELEGRAM_CHAT_ID;
-    else process.env.TELEGRAM_CHAT_ID = originalChatId;
-    if (originalWatchdogChatId === undefined) delete process.env.TELEGRAM_WATCHDOG_CHAT_ID;
-    else process.env.TELEGRAM_WATCHDOG_CHAT_ID = originalWatchdogChatId;
+    if (originalCredsOverride === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = originalCredsOverride;
   });
 
-  it("turno completo sem credenciais Telegram no ambiente -> 200 normal, chat-done chega no stream, nada lança", async () => {
+  it("turno completo sem credenciais Gmail no ambiente -> 200 normal, chat-done chega no stream, nada lança", async () => {
     queryFn = makeFakeQuery([
       { type: "system", subtype: "init", session_id: "sess-nodefault", model: "m", cwd: root } as unknown as SDKMessage,
       { type: "result", subtype: "success", is_error: false, result: "tudo certo", session_id: "sess-nodefault" } as unknown as SDKMessage,

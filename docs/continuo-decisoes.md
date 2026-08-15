@@ -42,11 +42,13 @@ o trade-off na mesa:
   roda quando o passo 1 não tem mais nada pra fazer). A skill parada
   esperando resposta e a skill dormindo (passo 6) são estados equivalentes
   em produtividade.
-- **Mitigação — status investigado numa unidade anterior, FECHADO nesta.** A
-  issue original citava `scripts/lib/telegram-notify.ts` e o
-  `gate-chat-bridge.js` do Studio (#3557/#3617/#3804) como já existentes e
-  suficientes. Achado da unidade anterior (leitura direta do código):
-  - **`scripts/studio-ui/studio-telegram-notify.ts`** só dispara pra
+- **Mitigação — status investigado numa unidade anterior, FECHADO nesta;
+  canal definido como e-mail em #5341.** A issue original citava o client de
+  notificação push genérico da época (substituído em #5341 por
+  `scripts/lib/push-notify.ts`) e o `gate-chat-bridge.js` do Studio
+  (#3557/#3617/#3804) como já existentes e suficientes. Achado da unidade
+  anterior (leitura direta do código):
+  - **`scripts/studio-ui/studio-push-notify.ts`** só dispara pra
     `AskUserQuestion` pendente em `chatPermissionsPending`
     (`studio-chat.ts`) — populado só por sessões abertas **através do
     drawer do Studio**, não por uma sessão de terminal comum.
@@ -56,33 +58,38 @@ o trade-off na mesa:
   - **Nenhum dos dois cobre o caminho que esta skill de fato usa** (decisão
     do briefing: "no terminal", tabela acima) — ficou registrado como
     pendência explícita, não resolvida naquela unidade.
-  - **Fechado nesta unidade (#5293 item 3, achado adjacente):**
-    `.claude/hooks/notify-continuo-askuserquestion.mjs`, um `PreToolUse`
-    hook novo registrado no MESMO matcher `AskUserQuestion` que
+  - **Fechado nesta unidade (#5293 item 3, achado adjacente); canal
+    definido como e-mail em #5341 (decisão do editor: padronizar em e-mail
+    em vez de exigir um app de mensagens novo):**
+    `.claude/hooks/notify-continuo-askuserquestion.mjs`, um
+    `PreToolUse` hook novo registrado no MESMO matcher `AskUserQuestion` que
     `block-askuserquestion-overnight-autonomous.mjs` já usa
     (`.claude/settings.json`). Lê `session_id` do payload do hook, varre
     `data/sessions/` por um registro `continuo-*-{session_id}.json` ativo
-    (`session-registry.ts`) e, se encontrar, dispara a Bot API do Telegram
-    diretamente (mesma credencial `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` de
-    `telegram-notify.ts` — reimplementada, não importada, por ser um hook
-    self-contained, mesma convenção do hook irmão). **NUNCA bloqueia** — é
-    observação pura, roda em paralelo ao hook que decide bloquear/permitir.
-    Testado em `test/notify-continuo-askuserquestion.test.ts`. **Limitação
-    residual honesta:** funciona só se `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
-    estiverem configurados na máquina (mesmo requisito de todo o resto do
-    projeto que usa Telegram — `docs/telegram-setup.md`) — sem eles, o hook
-    é um no-op silencioso e o risco aceito original (travar sem aviso) volta
-    a valer integralmente. Confirmar `echo $TELEGRAM_BOT_TOKEN` antes da 1ª
-    invocação em produção desta skill. **Credenciais presentes mas
-    rejeitadas** (token revogado, `chat_id` errado, rate limit) — diferente
-    de credenciais AUSENTES — loga em stderr (`resp.status`+corpo, ou a
-    exceção de rede) em vez de descartar silenciosamente (#5293 fleet
+    (`session-registry.ts`) e, se encontrar, envia um e-mail direto via
+    Gmail API (refresh OAuth + `users.messages.send` — reimplementado
+    inline, não importado de `scripts/lib/gmail-send.ts`/`google-auth.ts`,
+    por ser um hook self-contained, mesma convenção do hook irmão; mesma
+    credencial `data/.credentials.json` que os 17 alarmes agendados já
+    usam). **NUNCA bloqueia** — é observação pura, roda em paralelo ao hook
+    que decide bloquear/permitir. Testado em
+    `test/notify-continuo-askuserquestion.test.ts`. **Limitação residual
+    honesta:** funciona só se `data/.credentials.json` (OAuth Google) estiver
+    configurado na máquina (`npx tsx scripts/oauth-setup.ts`) — sem ele, o
+    hook é um no-op silencioso e o risco aceito original (travar sem aviso)
+    volta a valer integralmente. **Credenciais presentes mas rejeitadas**
+    (refresh token expirado/revogado, resposta HTTP não-2xx do envio) —
+    diferente de credenciais AUSENTES — loga em stderr (`resp.status`+corpo,
+    ou a exceção de rede) em vez de descartar silenciosamente (#5293 fleet
     review, achado 4); ainda assim nunca bloqueia o `AskUserQuestion`. stderr
     de hook não tem superfície de alerta própria neste repo — só aparece se
     alguém estiver olhando o terminal/journalctl no momento, o que é
     exatamente a situação que este hook existe pra não depender. Fechar essa
     lacuna (ex: um segundo canal de alerta pra falha do PRÓPRIO alerta) é
-    follow-up, não bloqueio desta unidade.
+    follow-up, não bloqueio desta unidade. **Ressalva de responsividade
+    (#5341):** e-mail não interrompe como um push de celular — depende do
+    editor ter notificação de e-mail ativa no telefone; degradação aceita
+    conscientemente em troca de não exigir um app de mensagens novo.
 
 ## Itens 3-6 — estado (#5293)
 
@@ -99,7 +106,7 @@ quatro restantes — cada um com código + testes, não só prosa:
    `session-registry.ts` por uma sessão `continuo` ativa com `phase` em
    `HEALTHY_IDLE_PHASES` (`"aguardando-resposta"` | `"pausado-edicao"`) — se
    encontrar, o diagnóstico vira `healthy_idle` (não `stall`), sem
-   halt banner nem alerta Telegram. **Depende do heartbeat de fase estar
+   halt banner nem alerta push. **Depende do heartbeat de fase estar
    sendo gravado pelo coordenador** (ver bullet "Heartbeat de phase é
    OBRIGATÓRIO" em "Reuso da maquinaria" no `SKILL.md`) — o mecanismo é
    fail-safe no sentido de nunca mascarar um stall genuíno, mas não é
@@ -178,10 +185,11 @@ quatro restantes — cada um com código + testes, não só prosa:
 **Achado adjacente, fechado nesta mesma unidade (não fazia parte dos 6 itens
 originais, mas do "Risco aceito" registrado acima):**
 `.claude/hooks/notify-continuo-askuserquestion.mjs` — hook `PreToolUse` que
-dispara Telegram quando um `AskUserQuestion` pendente pertence a uma sessão
-`continuo` ativa, cobrindo especificamente o caminho "sessão de terminal
-comum" que `studio-telegram-notify.ts`/`gate-chat-bridge.js` não cobrem. Ver
-detalhe completo na seção "Risco aceito" acima.
+envia um e-mail (canal definido em #5341) quando um
+`AskUserQuestion` pendente pertence a uma sessão `continuo` ativa, cobrindo
+especificamente o caminho "sessão de terminal comum" que
+`studio-push-notify.ts`/`gate-chat-bridge.js` não cobrem. Ver detalhe
+completo na seção "Risco aceito" acima.
 
 **Residual, honestamente não resolvido:** nenhuma invocação real desta
 skill aconteceu ainda em produção — todo o mecanismo acima foi validado por

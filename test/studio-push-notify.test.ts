@@ -1,21 +1,21 @@
 /**
- * test/studio-telegram-notify.test.ts (#3564, #3822)
+ * test/studio-push-notify.test.ts (#3564, #3822, canal e-mail #5341)
  *
- * Testes de regressão pro watcher de notificação Telegram do Studio
- * (`scripts/studio-ui/studio-telegram-notify.ts`):
+ * Testes de regressão pro watcher de notificação push do Studio
+ * (`scripts/studio-ui/studio-push-notify.ts`):
  *
  *   - resolveStudioPublicBaseUrl: default local + STUDIO_PUBLIC_BASE_URL,
  *     nunca hardcoda studio.diar.ia.br.
- *   - formatEditionGateMessage / formatChatGateMessage: texto + deep-link.
+ *   - formatEditionGateMessage / formatChatGateMessage: subject/body + deep-link.
  *   - computeGateNotifications: diff puro (o que notificar / esquecer).
- *   - runTelegramNotifyTick: integração leve com buildStateFn/notifyFn
+ *   - runPushNotifyTick: integração leve com buildStateFn/notifyFn
  *     injetáveis — dedup real (mesmo gate não notifica 2x em ticks
  *     consecutivos) + re-notificação quando o gate reaparece depois de
  *     resolvido.
  *   - (#3822) resolveChatDoneNotifyThresholdMs / summarizeChatResult /
  *     formatChatDoneMessage / maybeNotifyChatDone: notificação de turno de
- *     chat concluído — threshold de duração, truncamento+sanitização do
- *     resumo, fail-soft.
+ *     chat concluído — threshold de duração, truncamento do resumo,
+ *     fail-soft.
  */
 
 import { describe, it } from "node:test";
@@ -26,15 +26,15 @@ import {
   formatEditionGateMessage,
   formatChatGateMessage,
   computeGateNotifications,
-  runTelegramNotifyTick,
+  runPushNotifyTick,
   CHAT_DONE_NOTIFY_THRESHOLD_MS,
   CHAT_DONE_SUMMARY_MAX_CHARS,
   resolveChatDoneNotifyThresholdMs,
   summarizeChatResult,
   formatChatDoneMessage,
   maybeNotifyChatDone,
-} from "../scripts/studio-ui/studio-telegram-notify.ts";
-import { createInMemoryNotifiedStore } from "../scripts/lib/telegram-notify.ts";
+} from "../scripts/studio-ui/studio-push-notify.ts";
+import { createInMemoryNotifiedStore, type PushMessage } from "../scripts/lib/push-notify.ts";
 import type { StudioState } from "../scripts/studio-ui/studio-state.ts";
 import type { ChatDoneEvent } from "../scripts/studio-ui/studio-chat.ts";
 
@@ -69,28 +69,28 @@ describe("resolveStudioPublicBaseUrl (#3564)", () => {
 describe("formatEditionGateMessage", () => {
   it("inclui a edição, o rótulo do stage e o deep-link pro cockpit da edição", () => {
     const msg = formatEditionGateMessage("260716", 4, "http://127.0.0.1:4174");
-    assert.match(msg, /260716/);
-    assert.match(msg, /revisão editorial/);
-    assert.match(msg, /http:\/\/127\.0\.0\.1:4174\/edicao\/260716/);
+    assert.match(msg.subject, /260716/);
+    assert.match(msg.body, /revisão editorial/);
+    assert.match(msg.body, /http:\/\/127\.0\.0\.1:4174\/edicao\/260716/);
   });
 
   it("stage 6 usa o rótulo de agendamento", () => {
     const msg = formatEditionGateMessage("260716", 6, "http://127.0.0.1:4174");
-    assert.match(msg, /agendamento final/);
+    assert.match(msg.body, /agendamento final/);
   });
 });
 
 describe("formatChatGateMessage", () => {
   it("inclui o preview da pergunta quando presente + deep-link pra home", () => {
     const msg = formatChatGateMessage("qual destaque promover?", "http://127.0.0.1:4174");
-    assert.match(msg, /qual destaque promover\?/);
-    assert.match(msg, /http:\/\/127\.0\.0\.1:4174\//);
+    assert.match(msg.body, /qual destaque promover\?/);
+    assert.match(msg.body, /http:\/\/127\.0\.0\.1:4174\//);
   });
 
   it("funciona sem preview (question null) — não quebra o formato", () => {
     const msg = formatChatGateMessage(null, "http://127.0.0.1:4174");
-    assert.match(msg, /esperando uma resposta/);
-    assert.doesNotMatch(msg, /null/);
+    assert.match(msg.body, /esperando uma resposta/);
+    assert.doesNotMatch(msg.body, /null/);
   });
 });
 
@@ -125,7 +125,7 @@ describe("computeGateNotifications", () => {
 });
 
 // ---------------------------------------------------------------------------
-// runTelegramNotifyTick — dedup real através de ticks sucessivos
+// runPushNotifyTick — dedup real através de ticks sucessivos
 // ---------------------------------------------------------------------------
 
 function stateWith(opts: {
@@ -144,52 +144,52 @@ function stateWith(opts: {
   };
 }
 
-describe("runTelegramNotifyTick (#3564 — dedup + re-notificação)", () => {
+describe("runPushNotifyTick (#3564 — dedup + re-notificação)", () => {
   it("notifica 1x um gate novo e NÃO repete em ticks seguintes com o mesmo estado", async () => {
     const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
+    const calls: PushMessage[] = [];
     const buildStateFn = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: true };
     };
 
-    const first = await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    const first = await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
     assert.deepEqual(first, ["edition-gate:260716:4"]);
     assert.equal(calls.length, 1);
 
-    const second = await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    const second = await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
     assert.deepEqual(second, [], "mesmo gate ainda pendente não deve notificar de novo");
-    assert.equal(calls.length, 1, "sendTelegramNotification não deve ser chamado 2x pro mesmo gate");
+    assert.equal(calls.length, 1, "sendPushNotification não deve ser chamado 2x pro mesmo gate");
   });
 
   it("notifica de novo se o gate for resolvido e depois reaparecer", async () => {
     const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const calls: PushMessage[] = [];
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: true };
     };
 
     const pending = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
     const resolved = () => stateWith({ gatesPending: [] });
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn: pending, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn: pending, notifyFn });
     assert.equal(calls.length, 1);
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn: resolved, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn: resolved, notifyFn });
     assert.equal(calls.length, 1, "gate resolvido não dispara notificação nova");
     assert.equal(store.has("edition-gate:260716:4"), false, "chave deve ser esquecida ao resolver");
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn: pending, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn: pending, notifyFn });
     assert.equal(calls.length, 2, "gate reaparecendo depois de resolvido notifica de novo");
   });
 
   it("notifica gates de chat (AskUserQuestion) com o mesmo mecanismo de dedup", async () => {
     const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const calls: PushMessage[] = [];
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: true };
     };
     const buildStateFn = () =>
@@ -199,19 +199,19 @@ describe("runTelegramNotifyTick (#3564 — dedup + re-notificação)", () => {
         ],
       });
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
     assert.equal(calls.length, 1);
-    assert.match(calls[0], /promover D2\?/);
+    assert.match(calls[0].body, /promover D2\?/);
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
     assert.equal(calls.length, 1, "mesma pergunta pendente não notifica 2x");
   });
 
   it("2 gates simultâneos (edição + chat) geram 2 notificações distintas no mesmo tick", async () => {
     const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const calls: PushMessage[] = [];
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: true };
     };
     const buildStateFn = () =>
@@ -222,40 +222,24 @@ describe("runTelegramNotifyTick (#3564 — dedup + re-notificação)", () => {
         ],
       });
 
-    const notified = await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    const notified = await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
     assert.equal(notified.length, 2);
     assert.equal(calls.length, 2);
   });
 
-  it("notifyFn retornando {ok:false, skipped:true} (sem credenciais) NÃO marca dedup — retenta no próximo tick", async () => {
+  it("notifyFn retornando {ok:false} (auth/rede/timeout) NÃO marca dedup — retenta no próximo tick", async () => {
     const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
-      return { ok: false, skipped: true };
-    };
-    const buildStateFn = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
-
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
-
-    assert.equal(calls.length, 2, "sem credenciais, cada tick deve tentar de novo — nunca 'desiste' de um gate ainda pendente");
-    assert.equal(store.has("edition-gate:260716:4"), false);
-  });
-
-  it("notifyFn retornando {ok:false} (erro de rede) NÃO marca dedup — retenta no próximo tick", async () => {
-    const store = createInMemoryNotifiedStore();
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const calls: PushMessage[] = [];
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: false, error: "network down" };
     };
     const buildStateFn = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
 
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
-    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
 
-    assert.equal(calls.length, 2, "falha de rede não deve suprimir a retentativa no próximo tick");
+    assert.equal(calls.length, 2, "falha não deve suprimir a retentativa no próximo tick");
     assert.equal(store.has("edition-gate:260716:4"), false);
   });
 
@@ -266,7 +250,7 @@ describe("runTelegramNotifyTick (#3564 — dedup + re-notificação)", () => {
       called = true;
       return { ok: true };
     };
-    const notified = await runTelegramNotifyTick("/fake", store, {
+    const notified = await runPushNotifyTick("/fake", store, {
       buildStateFn: () => stateWith({}),
       notifyFn,
     });
@@ -356,38 +340,32 @@ describe("summarizeChatResult (#3822)", () => {
     assert.equal(summarizeChatResult(exact), exact);
   });
 
-  it("remove caracteres que abrem entidade Markdown legado do Telegram (* _ ` [ ])", () => {
+  it("e-mail é texto puro — não sanitiza/remove caracteres especiais (diferente do Markdown legado do canal anterior)", () => {
     const result = summarizeChatResult("Corrigi *o* [título](x) do `campo` importante_urgente.");
-    assert.doesNotMatch(result, /[*_`[\]]/);
-    // conteúdo textual sobrevive, só os caracteres de sintaxe somem
-    assert.match(result, /Corrigi o título\(x\) do campo importanteurgente\./);
-  });
-
-  it("resumo que fica vazio depois de sanitizar (só símbolos) -> mensagem genérica", () => {
-    assert.equal(summarizeChatResult("***"), "Tarefa concluída no chat drawer.");
+    assert.equal(result, "Corrigi *o* [título](x) do `campo` importante_urgente.");
   });
 });
 
 describe("formatChatDoneMessage (#3822)", () => {
-  it("caminho feliz: título de sucesso + resumo + deep-link pra home", () => {
+  it("caminho feliz: subject de sucesso + resumo + deep-link pra home", () => {
     const msg = formatChatDoneMessage(
       doneEvent({ result: "Corrigi o título do destaque D2." }),
       "http://127.0.0.1:4174",
     );
-    assert.match(msg, /Tarefa concluída/);
-    assert.match(msg, /Corrigi o título do destaque D2\./);
-    assert.match(msg, /http:\/\/127\.0\.0\.1:4174\/$/);
-    assert.doesNotMatch(msg, /erro/i);
+    assert.match(msg.subject, /Tarefa concluída/);
+    assert.match(msg.body, /Corrigi o título do destaque D2\./);
+    assert.match(msg.body, /http:\/\/127\.0\.0\.1:4174\/$/);
+    assert.doesNotMatch(msg.subject, /erro/i);
   });
 
   it("sem texto final -> mensagem genérica de fallback", () => {
     const msg = formatChatDoneMessage(doneEvent({ result: null }), "http://127.0.0.1:4174");
-    assert.match(msg, /Tarefa concluída no chat drawer\./);
+    assert.match(msg.body, /Tarefa concluída no chat drawer\./);
   });
 
-  it("turno com isError:true -> título distinto sinalizando erro", () => {
+  it("turno com isError:true -> subject distinto sinalizando erro", () => {
     const msg = formatChatDoneMessage(doneEvent({ isError: true, result: null }), "http://127.0.0.1:4174");
-    assert.match(msg, /erro/i);
+    assert.match(msg.subject, /erro/i);
   });
 });
 
@@ -407,9 +385,9 @@ describe("maybeNotifyChatDone (#3822) — threshold + fail-soft", () => {
   });
 
   it("turno longo (no threshold, inclusive) -> chama notifyFn com a mensagem formatada", async () => {
-    const calls: string[] = [];
-    const notifyFn = async (text: string) => {
-      calls.push(text);
+    const calls: PushMessage[] = [];
+    const notifyFn = async (msg: PushMessage) => {
+      calls.push(msg);
       return { ok: true };
     };
     const result = await maybeNotifyChatDone(doneEvent({ result: "Terminei a tarefa X." }), 30_000, {
@@ -418,7 +396,7 @@ describe("maybeNotifyChatDone (#3822) — threshold + fail-soft", () => {
       baseUrl: "http://127.0.0.1:4174",
     });
     assert.equal(calls.length, 1);
-    assert.match(calls[0], /Terminei a tarefa X\./);
+    assert.match(calls[0].body, /Terminei a tarefa X\./);
     assert.deepEqual(result, { ok: true });
   });
 
@@ -451,21 +429,12 @@ describe("maybeNotifyChatDone (#3822) — threshold + fail-soft", () => {
     }
   });
 
-  it("fail-soft: notifyFn indicando falha de rede não lança — propaga {ok:false,error}", async () => {
+  it("fail-soft: notifyFn indicando falha não lança — propaga {ok:false,error}", async () => {
     const notifyFn = async () => ({ ok: false, error: "network down" });
     const result = await maybeNotifyChatDone(doneEvent({ result: "ok" }), 60_000, {
       notifyFn,
       thresholdMs: 30_000,
     });
     assert.deepEqual(result, { ok: false, error: "network down" });
-  });
-
-  it("fail-soft: sem credenciais (notifyFn retorna skipped) não lança", async () => {
-    const notifyFn = async () => ({ ok: false, skipped: true });
-    const result = await maybeNotifyChatDone(doneEvent({ result: "ok" }), 60_000, {
-      notifyFn,
-      thresholdMs: 30_000,
-    });
-    assert.deepEqual(result, { ok: false, skipped: true });
   });
 });

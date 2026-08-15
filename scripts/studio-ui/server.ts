@@ -204,13 +204,13 @@
  *     cirúrgica de `boxes_divulgacao` em `platform.config.json`, mesmo guard
  *     de mtime). Criação de caixa nova está fora de escopo — só edita
  *     conteúdo já existente.
- *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
- *     background, subido por `startStudioServer` e fechado em `close()`,
- *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
- *     de `GET /api/state`) e dispara notificação com deep-link + dedup pro
- *     Telegram quando algo passa a esperar o editor — ver
- *     `studio-telegram-notify.ts`. Fail-soft total: sem credenciais
- *     configuradas, ou qualquer falha de rede, o Studio segue normal.
+ *   - Notificação push por e-mail (#3564, canal Gmail desde #5341, sem rota
+ *     HTTP própria): um watcher em background, subido por `startStudioServer`
+ *     e fechado em `close()`, observa `gatesPending`/`chatPermissionsPending`
+ *     (mesmo `buildStudioState` de `GET /api/state`) e dispara notificação
+ *     com deep-link + dedup quando algo passa a esperar o editor — ver
+ *     `studio-push-notify.ts`. Fail-soft total: qualquer falha de
+ *     auth/rede, o Studio segue normal.
  *
  * **Read-only por construção, com exceções controladas** (#3555 é a fatia
  * fundação da EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui
@@ -405,14 +405,15 @@ import {
   readParaEncerrarState, // #4274
   saveParaEncerrar, // #4274
 } from "./studio-boxes.ts";
-// #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
-// no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
-// outra rota depende dele). Ver studio-telegram-notify.ts.
+// #3564/#5341: notificação push por e-mail (gate 4/6 pendente +
+// AskUserQuestion pendente no chat) com dedup — arquivo próprio desta
+// fatia, import isolado (nenhuma outra rota depende dele). Ver
+// studio-push-notify.ts.
 import {
-  startTelegramNotifyWatcher,
+  startPushNotifyWatcher,
   maybeNotifyChatDone,
-  type TelegramNotifyWatchHandle,
-} from "./studio-telegram-notify.ts";
+  type PushNotifyWatchHandle,
+} from "./studio-push-notify.ts";
 // #3848: status de todas as integrações (APIs + MCPs) — arquivo próprio
 // desta fatia, import isolado (nenhuma outra rota depende dele). Ver
 // studio-integrations.ts.
@@ -480,19 +481,19 @@ export interface StudioServerOptions {
    * Claude Agent SDK sem spawnar o CLI real; produção usa o default de
    * `studio-chat.ts`. */
   chatQueryFn?: QueryFn;
-  /** Intervalo de polling (ms) do watcher de notificação Telegram (#3564) —
-   * default 15s (independente de `pollIntervalMs` acima, que é tunado pra
-   * SSE de baixa latência; aqui 1 tick/s seria polling desnecessariamente
-   * agressivo pra um evento que só interessa notificar 1x). Reduzido em
-   * testes. */
-  telegramPollIntervalMs?: number;
+  /** Intervalo de polling (ms) do watcher de notificação push (#3564,
+   * canal e-mail desde #5341) — default 15s (independente de
+   * `pollIntervalMs` acima, que é tunado pra SSE de baixa latência; aqui
+   * 1 tick/s seria polling desnecessariamente agressivo pra um evento que
+   * só interessa notificar 1x). Reduzido em testes. */
+  pushPollIntervalMs?: number;
   /** Tamanho máximo (bytes) do corpo de `POST /api/chat` — default 256KB,
    * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
    * absurdo consumindo memória do processo. */
   chatMaxBodyBytes?: number;
   /** Notificador injetável do evento `chat-done` (#3822) — default
-   * `maybeNotifyChatDone` (`studio-telegram-notify.ts`); testes mockam pra
-   * observar chamadas sem bater na rede do Telegram. */
+   * `maybeNotifyChatDone` (`studio-push-notify.ts`); testes mockam pra
+   * observar chamadas sem bater na rede/Gmail real. */
   chatDoneNotifyFn?: typeof maybeNotifyChatDone;
   /** Relógio injetável usado só pra medir a duração de um turno de chat
    * (#3822 — decide se `chatDoneNotifyFn` dispara, comparando contra o
@@ -806,7 +807,7 @@ function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string
  * ANTES de `runChatTurn` até o evento `chat-done` chegar no `onEvent` abaixo,
  * e repassa pra `opts.chatDoneNotifyFn` (default `maybeNotifyChatDone`) —
  * disparo direto no fluxo que já emite o evento (não um watcher de polling
- * à parte, ver doc-comment de `studio-telegram-notify.ts`). Chamada
+ * à parte, ver doc-comment de `studio-push-notify.ts`). Chamada
  * fire-and-forget (`.catch` só loga) — nunca atrasa o `res.write`/`res.end`
  * do turno em si, mesmo espírito fail-soft do resto do módulo.
  */
@@ -905,7 +906,7 @@ async function handleApiChat(
         setSessionId(rootDir, wireEvent.data.sessionId);
       }
       // #3822: dispara DIRETO daqui (não de um watcher de polling à parte —
-      // ver doc-comment de `handleApiChat`/`studio-telegram-notify.ts`) —
+      // ver doc-comment de `handleApiChat`/`studio-push-notify.ts`) —
       // fire-and-forget, o `.catch` só loga; nunca atrasa o `res.write`
       // abaixo nem a resolução deste turno.
       if (wireEvent.event === "chat-done") {
@@ -2283,9 +2284,9 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
 
   // #3564: watcher independente de qualquer cliente SSE conectado — o
   // cenário-alvo é justamente o editor longe do computador (nenhuma aba do
-  // Studio aberta). Fail-soft por construção (ver studio-telegram-notify.ts).
-  const telegramNotifyWatch: TelegramNotifyWatchHandle = startTelegramNotifyWatcher(rootDir, {
-    pollIntervalMs: opts.telegramPollIntervalMs,
+  // Studio aberta). Fail-soft por construção (ver studio-push-notify.ts).
+  const pushNotifyWatch: PushNotifyWatchHandle = startPushNotifyWatcher(rootDir, {
+    pollIntervalMs: opts.pushPollIntervalMs,
   });
   // #3565: opt-in (ver StudioServerOptions.enableSnapshotPush) — nunca ativo
   // implicitamente em teste, só quando main() liga pro uso real.
@@ -2305,7 +2306,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           return;
         }
         closed = true;
-        telegramNotifyWatch.close();
+        pushNotifyWatch.close();
         snapshotWatch?.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
       }),

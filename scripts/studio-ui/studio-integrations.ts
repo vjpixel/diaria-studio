@@ -31,7 +31,7 @@
  *     (`workers/linkedin-cron`, sem auth, endpoint público de debug).
  *
  * As demais integrações da lista da issue (apoia.se, Brave Search,
- * Brevo/Clarice mensal, Gemini, MillionVerifier, OpenAI, Stripe, Telegram,
+ * Brevo/Clarice mensal, Gemini, MillionVerifier, OpenAI, Stripe,
  * Google OAuth/Drive) ficam com probe **"configurada? sim/não" apenas**
  * (`ReachableState = "not_verified"`) — documentado no campo `note` de cada
  * uma. Motivos por integração:
@@ -256,21 +256,12 @@ export const INTEGRATIONS: IntegrationDef[] = [
     note: "Análise de cupons/assinaturas (read-only). Ver também o MCP claude_ai_Stripe abaixo.",
   },
   {
-    id: "telegram",
-    name: "Telegram",
-    kind: "api",
-    envVars: ["TELEGRAM_BOT_TOKEN"],
-    optionalEnvVars: ["TELEGRAM_CHAT_ID", "TELEGRAM_WATCHDOG_CHAT_ID"],
-    probe: "env-only",
-    note: "Notificações do Studio (#3564) + watchdog overnight (#2688).",
-  },
-  {
     id: "google_oauth",
     name: "Google OAuth/Drive",
     kind: "api",
     envVars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
     probe: "env-only",
-    note: "Digest mensal — Drive sync + Gmail inbox drain. Setup: npx tsx scripts/oauth-setup.ts.",
+    note: "Digest mensal — Drive sync + Gmail inbox drain + notificações push do Studio/watchdog por e-mail (#5341, scripts/lib/push-notify.ts). Setup: npx tsx scripts/oauth-setup.ts.",
   },
   {
     id: "linkedin_worker",

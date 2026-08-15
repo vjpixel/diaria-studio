@@ -936,11 +936,11 @@ const STUDIO_SNAPSHOT_STALE_MINUTES = 10;
  *
  * TODO(#3564): botão "me avise quando eu voltar" — a issue #3565 permite
  * anotar isso como TODO em vez de implementar, já que #3564 (notificações
- * push via Telegram/deep-link) segue OPEN (checado no momento desta fatia)
- * sem a infra de push pronta pra integrar. Quando #3564 mergear, plugar
- * aqui sem violar o invariante "zero ações" desta view — o botão dispararia
- * uma notificação num canal externo (Telegram), nunca um comando executado
- * a partir DESTE Worker/processo.
+ * push via e-mail/deep-link, canal definido em #5341) segue OPEN (checado
+ * no momento desta fatia) sem a infra de push pronta pra integrar. Quando
+ * #3564 mergear, plugar aqui sem violar o invariante "zero ações" desta
+ * view — o botão dispararia uma notificação num canal externo (e-mail),
+ * nunca um comando executado a partir DESTE Worker/processo.
  */
 export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: Date = new Date()): string {
   if (!snapshot) {

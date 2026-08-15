@@ -17,8 +17,8 @@
  *   (a) Append em stall_events no plan.json (com dedup por janela de 30 min)
  *   (b) Emite evento no run-log via scripts/log-event.ts
  *   (c) Renderiza halt banner via scripts/render-halt-banner.ts
- *   (d) Alert Telegram (opcional): se TELEGRAM_BOT_TOKEN + TELEGRAM_WATCHDOG_CHAT_ID
- *       estiverem definidos, envia mensagem diretamente via Bot API.
+ *   (d) Push por e-mail (#5341 — via `scripts/lib/push-notify.ts`, reusa a
+ *       credencial OAuth do Gmail).
  *
  * #2958: a task Task Scheduler roda com `ExecutionTimeLimit` de 5 min
  * (`setup-watchdog-schedule.ps1`) — se estourado, o Task Scheduler força o
@@ -28,8 +28,9 @@
  * I/O sem timeout que podiam bloquear indefinidamente e nunca devolver o
  * controle ao processo: os `execFileSync` para `render-halt-banner.ts`/
  * `log-event.ts` (default do Node = sem timeout) e o `fetch` do alerta
- * Telegram (sem `AbortSignal`). Qualquer hang em um desses (rede lenta pra
- * api.telegram.org, ou um dos scripts filhos travando em I/O) fazia o
+ * push (sem `AbortSignal` na época; #5341 migrou pro Gmail, com timeout
+ * explícito via `withTimeout`). Qualquer hang em um
+ * desses (rede lenta, ou um dos scripts filhos travando em I/O) fazia o
  * watchdog inteiro ficar pendurado até o Task Scheduler matá-lo aos 5 min —
  * causa raiz plausível do 267014. Fix: timeout explícito nos dois pontos —
  * se estourar, a chamada lança, o `catch` já existente trata como falha
@@ -52,7 +53,7 @@
  * "arquivo existe mas foi lido no meio de uma escrita não-atômica (JSON
  * truncado)" de forma idêntica: ambos caíam no mesmo `catch` e retornavam de
  * `main()` ANTES de gravar `stall_events`, emitir o evento no run-log,
- * renderizar o halt banner ou disparar o alerta Telegram — a notificação de
+ * renderizar o halt banner ou disparar o alerta push — a notificação de
  * stall inteira era pulada silenciosamente (só stderr, sem `process.exit(1)`,
  * sem crash reportável no Task Scheduler). Pior: este mesmo módulo grava
  * `plan.json` de volta (bloco STALL abaixo) via `writeFileSync` cru — ele
@@ -101,11 +102,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
-import {
-  TELEGRAM_IO_TIMEOUT_MS,
-  buildTelegramSendMessageRequest,
-  sendTelegramNotification,
-} from "./lib/telegram-notify.ts";
+import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -347,20 +344,18 @@ export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowM
 // Alert channels
 // ---------------------------------------------------------------------------
 
-// #3564: a implementação de request/timeout/env var foi extraída pra
-// scripts/lib/telegram-notify.ts (reusada agora também pelo Studio UI —
-// gate pendente/halt banner). Os nomes abaixo (`WATCHDOG_IO_TIMEOUT_MS`,
-// `buildTelegramAlertRequest`) ficam de pé como aliases locais + re-exports
-// só pra não quebrar `test/overnight-watchdog.test.ts` (#633 — regressão de
-// import) e qualquer outro consumidor externo que já dependa deles; a
-// lógica em si não é mais duplicada aqui.
-export const WATCHDOG_IO_TIMEOUT_MS = TELEGRAM_IO_TIMEOUT_MS;
-export const buildTelegramAlertRequest = buildTelegramSendMessageRequest;
+// #3564/#5341: a implementação de request/timeout foi extraída pra
+// scripts/lib/push-notify.ts (reusada agora também pelo Studio UI — gate
+// pendente/halt banner). `WATCHDOG_IO_TIMEOUT_MS` fica de pé como alias
+// local só pra não quebrar `test/overnight-watchdog.test.ts` (#633 —
+// regressão de import) e qualquer outro consumidor externo que já dependa
+// dele; a lógica em si não é mais duplicada aqui.
+export const WATCHDOG_IO_TIMEOUT_MS = PUSH_IO_TIMEOUT_MS;
 
-async function sendTelegramAlert(message: string): Promise<void> {
-  const result = await sendTelegramNotification(message);
+async function sendPushAlert(subject: string, body: string): Promise<void> {
+  const result = await sendPushNotification({ subject, body });
   if (!result.ok && !result.skipped) {
-    process.stderr.write(`[watchdog] Telegram alert falhou: ${result.error}\n`);
+    process.stderr.write(`[watchdog] Notificação push falhou: ${result.error}\n`);
   }
 }
 
@@ -627,7 +622,7 @@ async function runWatchdogForKind(
   if (diagnosis.action !== "stall") return;
 
   // #2781: `elapsedMin` usado no bloco STALL abaixo (emitRunLogEvent,
-  // renderHaltBanner, alerta Telegram) vem de `diagnosis.elapsedMin` — não é
+  // renderHaltBanner, alerta push) vem de `diagnosis.elapsedMin` — não é
   // recomputado aqui. Antes essa mesma fórmula existia duplicada em
   // `diagnoseWatchdogActivity` E em `main()`, com risco de os 2 valores
   // divergirem se um fosse alterado sem o outro.
@@ -676,11 +671,11 @@ async function runWatchdogForKind(
   // (c) Renderiza halt banner
   renderHaltBanner(ROOT, kind, aammdd, elapsedMin, thresholdMin);
 
-  // (d) Telegram (opcional — reusa TELEGRAM_BOT_TOKEN do .env.example)
-  await sendTelegramAlert(
+  // (d) Push por e-mail (#5341, fail-soft TOTAL)
+  await sendPushAlert(
+    `[diar.ia.br ${kind}] STALL detectado — rodada ${aammdd}`,
     [
-      `*[diar.ia.br ${kind}] STALL detectado*`,
-      `Rodada \`${aammdd}\` sem atividade há *${elapsedMin} min* (limiar: ${thresholdMin} min).`,
+      `Rodada ${aammdd} sem atividade há ${elapsedMin} min (limiar: ${thresholdMin} min).`,
       `Fonte: ${lastSource}.`,
       `Verifique a sessão ${kind} e responda 'retry' pra retomar ou 'abort' pra encerrar.`,
     ].join("\n"),
@@ -746,7 +741,7 @@ async function main(): Promise<void> {
 // #2958: sem este guard, importar o módulo (ex: test/overnight-watchdog.test.ts
 // importando as funções puras exportadas acima) também disparava main() como
 // efeito colateral do import — rodando a lógica real do watchdog (leitura de
-// data/overnight/, e potencialmente emitRunLogEvent/renderHaltBanner/Telegram
+// data/overnight/, e potencialmente emitRunLogEvent/renderHaltBanner/push
 // se uma rodada real estivesse em stall) durante `npm test`. Mesmo padrão de
 // guard já usado em scripts/lib/check-watchdog-armed.ts.
 if (isMainModule(import.meta.url)) {

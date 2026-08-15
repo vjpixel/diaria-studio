@@ -26,7 +26,6 @@ import {
   findActiveRun,
   getLastRunLogActivity,
   diagnoseWatchdogActivity,
-  buildTelegramAlertRequest,
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
   hasHealthyIdleSession,
@@ -428,7 +427,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
     });
     assert.equal(result.action, "stall");
     // #2781: main() usa diagnosis.elapsedMin no bloco STALL (emitRunLogEvent,
-    // renderHaltBanner, alerta Telegram) em vez de recomputar — precisa bater
+    // renderHaltBanner, alerta push) em vez de recomputar — precisa bater
     // com o elapsed real (90 min), não ser recalculado separadamente.
     assert.equal(result.elapsedMin, 90);
   });
@@ -688,30 +687,20 @@ describe("runAllWatchedKinds (#5293 fleet review achado 3)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildTelegramAlertRequest + timeouts (#2958)
+// timeouts do alerta push (#2958, canal e-mail #5341)
 // ---------------------------------------------------------------------------
 //
 // #2958 (260704): a task Task Scheduler roda com ExecutionTimeLimit de 5 min;
 // se o watchdog ficasse pendurado num I/O sem timeout, o Task Scheduler
 // forçava o término (Last Result 267014). Dois pontos sem timeout: o fetch
-// do alerta Telegram e os execFileSync de render-halt-banner/log-event.
+// do alerta push (#5341 definiu o canal Gmail, `push-notify.ts`
+// envolve a chamada inteira com `withTimeout`) e os execFileSync de
+// render-halt-banner/log-event. A formatação/timeout do request HTTP em si
+// (Gmail API) é testada em test/push-notify.test.ts e test/gmail-send.test.ts
+// — aqui só o alias local que overnight-watchdog.ts reexporta.
 
-describe("buildTelegramAlertRequest (#2958)", () => {
-  it("inclui um AbortSignal de timeout na requisição (nunca fica pendurado sem limite)", () => {
-    const { url, options } = buildTelegramAlertRequest("TOKEN123", "chat-1", "mensagem de teste");
-    assert.equal(url, "https://api.telegram.org/botTOKEN123/sendMessage");
-    assert.ok(options.signal instanceof AbortSignal, "options.signal deve ser um AbortSignal");
-    assert.equal(options.method, "POST");
-  });
-
-  it("o corpo carrega chat_id e a mensagem informados", () => {
-    const { options } = buildTelegramAlertRequest("TOKEN123", "chat-42", "stall detectado");
-    const body = JSON.parse(options.body as string);
-    assert.equal(body.chat_id, "chat-42");
-    assert.equal(body.text, "stall detectado");
-  });
-
-  it("WATCHDOG_IO_TIMEOUT_MS é um valor finito e positivo (bounded, nunca 0/Infinity)", () => {
+describe("WATCHDOG_IO_TIMEOUT_MS (#2958, alias de PUSH_IO_TIMEOUT_MS desde #5341)", () => {
+  it("é um valor finito e positivo (bounded, nunca 0/Infinity)", () => {
     assert.ok(Number.isFinite(WATCHDOG_IO_TIMEOUT_MS) && WATCHDOG_IO_TIMEOUT_MS > 0);
   });
 });
@@ -769,7 +758,7 @@ describe("execFileSync de render-halt-banner/log-event usam timeout limitado (#2
 // ...))` cru e tratava "arquivo ausente" e "arquivo existe mas o parse falhou
 // (escrita não-atômica em progresso)" de forma idêntica: ambos caíam no catch
 // e `main()` retornava ANTES de gravar stall_events/emitir run-log/renderizar
-// halt banner/alertar Telegram — a notificação de stall inteira era perdida
+// halt banner/alertar push — a notificação de stall inteira era perdida
 // silenciosamente. Pior: o próprio watchdog gravava plan.json de volta via
 // `writeFileSync` cru, podendo ser a ORIGEM da janela de truncamento.
 //
