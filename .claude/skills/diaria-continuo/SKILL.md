@@ -452,6 +452,27 @@ aqui.
    supervisão-blast-radius, plataforma-sem-fix, mesma taxonomia cat. A-E do
    develop) e montar um lote de perguntas: para cada issue bloqueada, qual
    decisão/credencial/confirmação exata a destravaria.
+
+   **Antes de incluir qualquer issue no lote de perguntas (#5373):** rodar
+   `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
+   — se a issue tem a label `decisao-registrada` ela quase certamente tem
+   marcador, mas checar mesmo sem a label (rede de segurança: label pode
+   faltar em decisão gravada por outra skill antes deste PR). **Comparação
+   concreta, não estimativa:** "última mudança observável" = o campo
+   `updatedAt` da issue — o mesmo já buscado pela varredura incremental do
+   passo 2 (`gh issue list ... --json number,title,labels,updatedAt`); se
+   esta issue não veio nesse fetch (ex: varredura full-scan sem `updatedAt`
+   no field-list), rodar `gh issue view N --json updatedAt` antes de
+   comparar. Decisão encontrada com `decided_at` **posterior** a `updatedAt`
+   → **não** entra no lote — a decisão já existe; usar como
+   contexto e tratar a issue pelo que falta de fato (elegível se só faltava a
+   decisão; segue bloqueada se a execução esbarra em algo novo e distinto da
+   decisão em si, sem reabrir a pergunta). Corpo/labels mudaram genuinamente
+   depois de `decided_at` → decisão pode estar desatualizada, incluir no
+   lote normalmente. Isto vale tanto pra varredura completa quanto pra
+   incremental do passo 2 — issue que não mudou desde `last_scan_at` e já
+   tem decisão registrada nunca deveria ter voltado ao lote de qualquer
+   forma.
 4. **Perguntar** → heartbeat `--phase aguardando-resposta` **ANTES** de
    chamar `AskUserQuestion` (não depois — o watchdog pode rodar entre os dois
    passos; o heartbeat precisa estar gravado antes que a chamada bloqueie),
@@ -474,6 +495,17 @@ aqui.
    adicional** — a resposta do editor É o consentimento, mesmo princípio do
    consentimento de entrada via `<command-name>` (ver "Como usar" acima,
    #5332) e da regra de auto-merge em sessão interativa (#5251).
+
+   **Registro machine-readable da decisão (#5373).** O comentário começa com
+   o marcador de `formatDecisionMarker` (`scripts/lib/issue-decisions.ts`,
+   `{decided_at, pergunta, resposta, sessao: "continuo"}`) antes da prosa de
+   sempre — a prosa não muda, o marcador é só o prefixo. Junto: `gh issue
+   edit N --add-label decisao-registrada`; e apender no CORPO da issue `>
+   Decidido em {data}: {resposta breve}` logo após o trecho que fazia a
+   pergunta (ou no fim do corpo, se não houver trecho localizável) — é o
+   corpo que a próxima varredura (desta ou de outra sessão) lê primeiro, e
+   fechar o loop ali é o que evita a mesma pergunta reaparecer mesmo se o
+   parsing do marcador falhar por algum motivo.
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir; ao acordar, re-checar
    primeiro o guard de colisão editorial do passo 1 (se uma edição entrou em
