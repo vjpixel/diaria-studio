@@ -1,7 +1,6 @@
 ---
 name: diaria-continuo
-description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação Telegram do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
-disable-model-invocation: true
+description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação Telegram do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Toda invocação se auto-envolve em `/loop` (#5332) — ver "Como usar". Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
 model: sonnet
 effort: high
 ---
@@ -37,101 +36,133 @@ invariável" abaixo.
 
 ## Como usar
 
-**Correção (#5332, 14/08/2026): a integração com `/loop` documentada pelo
-#5329/#5330 abaixo não funciona — confirmado ao vivo, não assumido.** A
-"forma de invocação recomendada" original desta seção (`/loop
-/diaria-continuo`) foi testada numa sessão real e falhou já no passo 1 do
-`/loop` ("rodar o prompt agora"): a skill `loop`, em modo dinâmico, invoca o
-prompt via ferramenta `Skill`, e essa chamada recebe erro incondicional —
+**Toda invocação se auto-envolve em `/loop` (#5332, 15/08/2026) — o editor
+só digita `/diaria-continuo`, sem o wrapper explícito.** Histórico: o #5329
+tentou isso documentando `/loop /diaria-continuo` como forma recomendada, e
+o #5332 (correção anterior, 14/08/2026) achou ao vivo que isso não
+funcionava — `disable-model-invocation: true`, que esta skill tinha até
+agora, bloqueia **toda** chamada à ferramenta `Skill` sobre
+`/diaria-continuo`, incondicionalmente, mesmo vinda de dentro do `/loop`. A
+correção de 14/08 apenas documentou a limitação (não recomendar mais o
+caminho quebrado). **Decisão do editor em 15/08/2026, confirmada via
+`AskUserQuestion` sabendo do trade-off completo:** remover a flag e
+implementar auto-envolvimento, aceitando que isso também libera, em
+princípio, qualquer sessão minha (não só via `/loop`) a decidir invocar
+`/diaria-continuo` por conta própria — não só quando o `/loop` mecanicamente
+reinvoca o prompt num wake. **Nenhuma trava de instrução contra invocação
+espontânea foi adicionada de propósito** — o editor escolheu explicitamente
+não incluir essa mitigação extra ao ser perguntado; o limite atual é só o
+meu próprio julgamento de quando é apropriado invocar, não um requisito
+estrutural do harness.
 
-```
-Skill diaria-continuo cannot be used with Skill tool due to disable-model-invocation.
-Ask the user to run /diaria-continuo themselves — it cannot be invoked via the Skill tool.
-Do not replicate this skill's workflow by other means — it is reserved for explicit user invocation.
-```
+### Mecanismo de auto-envolvimento
 
-`disable-model-invocation: true` (frontmatter, linha 4) bloqueia **toda**
-chamada à ferramenta `Skill` sobre `/diaria-continuo`, sem exceção por
-contexto — não importa se quem pediu foi o modelo espontaneamente ou uma
-camada externa como `/loop` mecanicamente reinvocando o prompt a cada wake.
-O bloqueio é da ferramenta, não do "motivo" da chamada. Isso derruba a
-premissa inteira da seção "Integração com `/loop` e `ScheduleWakeup`"
-abaixo: não só o resume via `ScheduleWakeup` (que o #5329 já registrava como
-"não verificado"), mas o **próprio primeiro `/loop /diaria-continuo` já não
-consegue rodar** — o texto anterior tratava isso como confirmado por leitura
-de doc, sem ter testado o caso concreto de uma skill com
-`disable-model-invocation`.
+Primeira ação do coordenador, antes de qualquer outra coisa, ao processar
+este `SKILL.md`:
 
-**Única forma de invocação que funciona hoje: `/diaria-continuo` digitado
-diretamente pelo editor no terminal.** O mecanismo nativo de slash command
-do harness (o editor digitando o comando) não passa pela ferramenta `Skill`
-— é isso que o próprio texto do erro acima instrui ("ask the user to run
-`/diaria-continuo` themselves"). `/loop /diaria-continuo` **não é** um modo
-alternativo válido para esta skill — não rodar, não recomendar ao editor.
+1. **Detectar como fui invocado.** Se esta mensagem contém um bloco
+   `<command-name>/diaria-continuo</command-name>` — sinal de invocação
+   nativa, o editor digitou o comando diretamente — trata-se de uma entrada
+   **fresca**, ainda não envolvida em `/loop`. Se, em vez disso, este
+   conteúdo chegou como resultado de uma chamada de ferramenta `Skill`
+   (tool_result, sem bloco `<command-name>` correspondente, e com as
+   instruções do `/loop` já presentes mais cedo nesta mesma resposta) —
+   trata-se de uma **reentrada de dentro do próprio `/loop`** (seu passo "run
+   the parsed prompt now", ou o resume via `ScheduleWakeup`).
+2. **Entrada fresca → auto-envolver, sem exceção.** Chamar
+   `Skill("loop", {args: "/diaria-continuo {flags originais, se houver}"})`
+   imediatamente — antes de ler `context/overnight-dispatch-rules.md`, antes
+   de checar a fila, antes de qualquer passo do "Loop invariável" abaixo.
+   Preservar os flags da invocação original verbatim (`--dry-run`, `--bugs`,
+   `--priority ...`) dentro do `args` passado pro `/loop`, pra não perdê-los
+   na reentrada. Isso entrega o controle pro `/loop`, que roda em modo
+   dinâmico (sem intervalo — ver `Skill("loop", ...)` na lista de skills
+   disponíveis pro comportamento exato) e, no seu próprio passo 1, invoca
+   `/diaria-continuo` de novo — desta vez via `Skill` tool, chamada que
+   agora funciona porque a flag não bloqueia mais.
+3. **Reentrada via `/loop` → pular este bloco, seguir direto pro "Loop
+   invariável".** Não chamar `Skill("loop", ...)` de novo — isso causaria
+   recursão (o `/loop` reinvocando `/diaria-continuo`, que reinvoca `/loop`,
+   indefinidamente). É o `/loop`, não `/diaria-continuo`, quem decide
+   quando chamar `ScheduleWakeup` pro próximo wake (ver "Integração com
+   `/loop` e `ScheduleWakeup`" abaixo) — o coordenador desta skill só
+   executa o "Loop invariável" normalmente a partir daqui.
 
-**Consequência para o passo 6 do "Loop invariável" (dormir/acordar
-sozinho):** sem `/loop`, não existe hoje nenhum mecanismo de despertar por
-tempo. A sessão só volta a agir pelas duas fontes que já eram corretas antes
-do #5329 — mensagem do editor, ou notificação assíncrona de um subagente em
-background terminando (ver "Os dois estados de espera" mais abaixo, que
-continuam válidos). "Nunca encerra" continua verdadeiro (a sessão não
-fecha), mas "dorme e acorda sozinho" segue **não implementado** — a mesma
-lacuna que o #5329 tentou fechar persiste, porque a solução proposta esbarra
-num limite de harness que este repo não controla.
+**Não validado ao vivo ainda (mesma disciplina de honestidade do resto deste
+arquivo) — o sinal de detecção do passo 1 (bloco `<command-name>` presente
+vs. ausente) é a melhor heurística disponível dado o harness, mas nunca foi
+testado numa invocação real de `/diaria-continuo` pós-remoção da flag.** A
+1ª invocação em produção deve ser observada de perto especificamente nesse
+ponto — confirmar que o auto-wrap dispara uma vez só (não recursa) e que a
+reentrada via `/loop` de fato pula o bloco 2. Se o sinal se mostrar
+não-confiável (ex: o bloco `<command-name>` não aparecer do jeito esperado,
+ou a reentrada não conseguir distinguir do fresco), reportar como achado —
+não há teste automatizado possível pra isso (é comportamento do harness em
+tempo de execução, não algo que roda em CI).
 
-**Follow-up necessário, não resolvido nesta correção (decisão do editor,
-não deste PR):** as duas saídas possíveis são (a) o harness ganhar alguma
-exceção que permita uma skill como `/loop` invocar programaticamente uma
-skill `disable-model-invocation` quando a invocação-raiz partiu de um
-comando digitado pelo editor — fora do controle deste repo, não há como
-implementar aqui; ou (b) remover `disable-model-invocation` de
-`/diaria-continuo`, o que muda a superfície de consentimento (blast radius
-de merges autônomos, ver bullet abaixo) e por isso é decisão editorial, não
-técnica. Nenhuma das duas foi feita nesta correção — o escopo aqui foi só
-corrigir a documentação pra não prometer um caminho que não existe.
-
-### Integração com `/loop` e `ScheduleWakeup` (#5329) — histórico, **não funcional** (ver correção acima)
-
-Texto original preservado como registro do raciocínio (a leitura da doc do
-`/loop` estava certa sobre a mecânica de `ScheduleWakeup`; o que faltava era
-testar se o `Skill` tool call inicial sequer completa para uma skill
-`disable-model-invocation` — não completa):
+### Integração com `/loop` e `ScheduleWakeup` (#5329, agora funcional via auto-envolvimento)
 
 `/loop` (sem intervalo — "modo dinâmico") roda o prompt agora e, ao final de
 cada turno em que o loop deve continuar, chama a ferramenta `ScheduleWakeup`
 com um `delaySeconds` de fallback e um `prompt` que reinvoca `/loop
-/diaria-continuo` na próxima ativação — seria assim que a sessão "acordaria"
-sem depender de mensagem do editor, **se** o passo inicial de `/loop`
-conseguisse invocar `/diaria-continuo` via `Skill` tool. Não consegue (ver
-correção acima).
+/diaria-continuo` na próxima ativação — é assim que a sessão "acorda" sem
+depender de mensagem do editor. O sentinel de resume do `ScheduleWakeup` é
+mecânica interna do modo dinâmico de `/loop` — funciona porque, com a flag
+removida, o passo 1 de `/loop` consegue completar a chamada `Skill`
+(diferente do estado documentado pelo #5332 original, que travava ali).
 
-**Cadência do wake em modo ocioso, caso o follow-up acima algum dia
-viabilize este caminho:** a doc do `/loop` só documenta um número fixo
-(1200-1800s, 20-30min) pro caso em que um Monitor está armado — ali é o
-fallback heartbeat, "quanto esperar se nenhum evento disparar". O passo 6
-não arma Monitor (não há um evento de baixa latência esperando pra ser
-capturado), então cairia no outro caso da mesma doc: "sem Monitor, é a
-cadência — escolha com base no que foi observado", sem número específico.
-1200-1800s seria adotado por analogia conservadora, não porque a doc
-prescreva esse valor pra ticks sem evento observável — registro preservado
-pra quando/se o follow-up desbloquear isso.
+**Cadência do wake em modo ocioso (passo 6, fila seca sem resposta
+pendente):** a doc do `/loop` só documenta um número fixo (1200-1800s,
+20-30min) pro caso em que um Monitor está armado — ali é o fallback
+heartbeat, "quanto esperar se nenhum evento disparar". O passo 6 não arma
+Monitor (não há um evento de baixa latência esperando pra ser capturado),
+então cai no outro caso da mesma doc: "sem Monitor, é a cadência — escolha
+com base no que foi observado", sem número específico. Adotamos 1200-1800s
+aqui mesmo assim, por analogia conservadora ao valor do caso com Monitor —
+o passo 6 já é estritamente passivo (só re-varre e dorme, nunca gera
+trabalho especulativo), e um intervalo maior só atrasaria a detecção de
+issue nova/resposta do editor sem ganho real de custo. Ao reentrar via
+`/loop /diaria-continuo` em modo ocioso, passar `delaySeconds` nesse
+intervalo ao chamar `ScheduleWakeup`.
 
-**Os dois estados de espera já existentes e corretos, independentes de
-`/loop` (estes seguem válidos e são a única coisa que hoje sustenta "nunca
-encerra"):**
-- **Passo 4 (`AskUserQuestion` bloqueante).** Bloqueia de verdade dentro do
-  turno em que foi chamado — o editor responde quando puder, sem timeout.
+**Os dois estados de espera já existentes e corretos são preservados,
+independente do `/loop`:**
+- **Passo 4 (`AskUserQuestion` bloqueante).** O wake do `/loop` **nunca**
+  deve reenviar ou reformular uma pergunta já pendente — `AskUserQuestion`
+  bloqueia de verdade dentro do turno em que foi chamado; um wake de
+  `ScheduleWakeup` só deveria disparar a próxima re-varredura quando **não**
+  há pergunta bloqueada no momento (heartbeat `--phase
+  aguardando-resposta` sinaliza esse estado pro watchdog, ver "Reuso da
+  maquinaria" abaixo — o mesmo sinal serve pra não duplicar a pergunta num
+  wake seguinte).
 - **Notificação assíncrona de subagente terminando.** Continua funcionando
-  exatamente como hoje, via `<task-notification>` — é a única fonte de
-  despertar que não depende de o editor mandar mensagem, mas só dispara
-  quando há um subagente em background rodando (passo 1, fila desbloqueada)
-  — não cobre o passo 6 (fila seca, ocioso).
+  exatamente como hoje, via `<task-notification>`, independente de a sessão
+  estar rodando através de `/loop` ou não — as duas fontes de despertar
+  (evento de subagente e `ScheduleWakeup`) coexistem sem conflito.
 
-Esta skill só roda por invocação explícita do editor
-(`disable-model-invocation: true`) — o blast radius (merges autônomos em
-master, incluindo cat. D depois de uma resposta do editor) exige que a
-invocação seja o consentimento, mesmo padrão de `/diaria-overnight` e
-`/diaria-remover-votos-pixel`.
+**Heartbeat durante wakes ociosos é obrigatório (#5329 item 5).** Cada
+re-entrada via `/loop` que só re-varre a fila e não acha nada novo (passo 6
+voltando ao passo 2, sem trabalho) deve continuar gravando o heartbeat
+(`npx tsx scripts/lib/session-registry.ts heartbeat --kind continuo --phase
+{fase-corrente}`) descrito em "Reuso da maquinaria" abaixo — sem isso, o
+watchdog (`scripts/overnight-watchdog.ts`) perde visibilidade da sessão
+entre wakes e pode alarmar falso-positivo de stall, exatamente o cenário que
+o mecanismo de `HEALTHY_IDLE_PHASES` existe pra evitar. O heartbeat não é
+opcional só porque o wake "não achou nada" — é justamente esse caso que o
+watchdog precisa distinguir de uma sessão travada.
+
+**Consentimento (revisado #5332, 15/08/2026 — não é mais
+`disable-model-invocation`).** O gate de consentimento original — a flag no
+frontmatter — foi removido pra viabilizar o auto-envolvimento. O
+consentimento agora é: o editor digitou `/diaria-continuo` **uma vez** pra
+iniciar a cadeia (sinal `<command-name>` do passo 1 acima); a partir daí, o
+`/loop` reentra automaticamente via `Skill` tool sem exigir nova digitação a
+cada wake. Isso é uma mudança real de superfície de risco em relação ao
+padrão de `/diaria-overnight`/`/diaria-remover-votos-pixel` (que mantêm a
+flag) — aceita explicitamente pelo editor pra esta skill especificamente, não
+generalizada às demais. O blast radius em si (merges autônomos em master,
+incluindo cat. D depois de uma resposta do editor) não mudou — o que mudou
+é só o mecanismo de consentimento de entrada.
 
 **Modelo/effort do coordenador.** `model: sonnet` + `effort: high` —
 paridade explícita com `/diaria-overnight` (#3453) e `/diaria-develop`
@@ -321,9 +352,9 @@ aqui.
    verdade, mesmo princípio do overnight), promover a issue a elegível, **e
    implementar** (volta ao passo 1). Blast radius da implementação: **tudo
    que a resposta destravar, inclusive cat. D (blast radius alto), sem gate
-   adicional** — a resposta do editor É o consentimento, mesmo princípio de
-   `disable-model-invocation: true` e da regra de auto-merge em sessão
-   interativa (#5251).
+   adicional** — a resposta do editor É o consentimento, mesmo princípio do
+   consentimento de entrada via `<command-name>` (ver "Como usar" acima,
+   #5332) e da regra de auto-merge em sessão interativa (#5251).
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir; ao acordar, re-checar
    primeiro o guard de colisão editorial do passo 1 (se uma edição entrou em
