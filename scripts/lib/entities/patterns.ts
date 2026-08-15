@@ -46,8 +46,8 @@ export const ENTITY_EXCLUDED_EDITIONS: Record<string, readonly string[]> = {
   // 3 dos 10 matches por regex de `apple` (ver docstring de `apple.ts`) não
   // entraram em `mentions` — lidos e descartados na auditoria de 15/08/2026:
   apple: [
-    // 2025-09-04, "Siri agora terá Gemini" (slug real: siri-agora-tera-gemini,
-    // publicado 2025-11-06) — desenvolvimento genuíno (acordo bilionário
+    // "Siri agora terá Gemini" (slug: siri-agora-tera-gemini, publicado
+    // 2025-11-06) — desenvolvimento genuíno (acordo bilionário
     // Apple-Google), mas redundante com o mesmo arco de "busca com IA no
     // Siri" já coberto pela menção de openai-anuncia-controles-parentais
     // (2025-09-04, "World Knowledge Answers"); manter as duas duplicaria o
