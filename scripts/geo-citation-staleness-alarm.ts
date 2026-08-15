@@ -66,6 +66,7 @@ import {
   emptyAlarmIssuesState,
   type AlarmFinding,
   type AlarmIssuesState,
+  type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,8 +76,9 @@ const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "geo-citations", "alarm-is
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[geo-citation-staleness-alarm]";
 /** #5339: task roda semanal (domingos 10:30) — 2 execuções limpas
- * consecutivas = 2 semanas sem o achado, mesmo valor (número de execuções)
- * dos demais alarmes deste lote, aplicado à cadência semanal desta task. */
+ * consecutivas = 2 semanas sem o achado, mesmo valor usado pelos alarmes
+ * de #5112 em diante (`cursos-error-alarm.ts`, deste mesmo lote, usa 24 —
+ * cadência diária, não semanal), aplicado à cadência semanal desta task. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export function loadState(statePath: string = STATE_PATH): GeoCitationStalenessAlarmState {
@@ -122,7 +124,8 @@ export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH
     const raw = JSON.parse(readFileSync(statePath, "utf8"));
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
     return emptyAlarmIssuesState();
-  } catch {
+  } catch (e) {
+    console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
 }
@@ -341,7 +344,7 @@ async function main(): Promise<void> {
     ...(missingCheck.hasMissing ? [toMissingProviderFinding(missingCheck)] : []),
   ];
   const alarmState = loadAlarmIssuesState();
-  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+  let issueRefs: Map<string, AlarmIssueResult> | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);

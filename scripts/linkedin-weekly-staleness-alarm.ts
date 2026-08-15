@@ -47,6 +47,7 @@ import {
   emptyAlarmIssuesState,
   type AlarmFinding,
   type AlarmIssuesState,
+  type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,8 +56,9 @@ const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "weekly", "linkedin-stalen
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[linkedin-weekly-staleness-alarm]";
 /** #5339: task roda semanal (domingos 22:00) — 2 execuções limpas
- * consecutivas = 2 semanas sem o achado, mesmo valor (número de execuções)
- * dos demais alarmes deste lote, aplicado à cadência semanal desta task. */
+ * consecutivas = 2 semanas sem o achado, mesmo valor usado pelos alarmes
+ * de #5112 em diante (`cursos-error-alarm.ts`, deste mesmo lote, usa 24 —
+ * cadência diária, não semanal), aplicado à cadência semanal desta task. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export function loadState(statePath: string = STATE_PATH): LinkedinWeeklyStalenessAlarmState {
@@ -87,7 +89,8 @@ export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH
     const raw = JSON.parse(readFileSync(statePath, "utf8"));
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
     return emptyAlarmIssuesState();
-  } catch {
+  } catch (e) {
+    console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
 }
@@ -149,7 +152,7 @@ async function main(): Promise<void> {
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const alarmFindings: AlarmFinding[] = evaluation.verdict === "alarm-missing" ? [toAlarmFinding(cycle)] : [];
   const alarmState = loadAlarmIssuesState();
-  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+  let issueRef: AlarmIssueResult | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);

@@ -83,6 +83,7 @@ import {
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   type AlarmIssuesState,
+  type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
 
 loadProjectEnv();
@@ -166,7 +167,8 @@ function loadAlarmIssuesState(): AlarmIssuesState {
     const raw = JSON.parse(readFileSync(ALARM_ISSUES_STATE_PATH, "utf8"));
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
     return emptyAlarmIssuesState();
-  } catch {
+  } catch (e) {
+    console.error(`[cursos-error-alarm] estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
     return emptyAlarmIssuesState();
   }
 }
@@ -225,7 +227,7 @@ async function main(): Promise<void> {
   // independente de um e-mail novo disparar nesta rodada.
   const alarmFindings = alarmFindingsFor(evaluation);
   const alarmState = loadAlarmIssuesState();
-  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+  let issueRefs: Map<string, AlarmIssueResult> | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);

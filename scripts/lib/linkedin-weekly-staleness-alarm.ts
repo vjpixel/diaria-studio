@@ -32,6 +32,7 @@
  */
 
 import { cycleFromContentMonday } from "./weekly-linkedin-cycle.ts";
+import type { AlarmIssueResult } from "./alarm-issues.ts";
 
 /**
  * Pure: dado `now`, retorna a segunda-feira (meia-noite local) da última
@@ -106,7 +107,7 @@ export function buildLinkedinWeeklyStalenessAlarmEmail(
   /** #5339, opcional — `{issueNumber, url, action, error}` de
    * `applyAlarmReconciliation`, pra citar a issue deste achado. `undefined`
    * preserva o corpo pré-#5339. */
-  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+  issueRef?: AlarmIssueResult,
 ): { subject: string; body: string } {
   const issueLine = issueRef
     ? issueRef.action === "failed"

@@ -82,7 +82,7 @@
  * conservador aqui significa nunca alarmar sobre histórico desconhecido.
  */
 
-import type { AlarmFinding } from "./alarm-issues.ts";
+import type { AlarmFinding, AlarmIssueResult } from "./alarm-issues.ts";
 
 // ─── Padrões de log fatal (mantidos só pro nome/documentação — a DETECÇÃO
 // agora é por contador, não por grep de texto) ──────────────────────────────
@@ -296,8 +296,8 @@ const FATAL_PATTERN_SLUGS: Record<FatalLogPattern, string> = {
 
 /** Fingerprint estável da condição de taxa de não-confirmado — não inclui o
  * valor de `ratePct` (mudaria a cada execução e nunca deduplicaria o mesmo
- * achado contínuo, ver `hasPendingHubDrift`-style pattern dos outros alarmes
- * deste lote). */
+ * achado contínuo, ver o fingerprint FIXO "streak-failing" de
+ * `clarice-opens-catchup-alarm.ts`, mesmo racional). */
 export const RATE_NOT_CONFIRMED_FINGERPRINT = "rate-not-confirmed";
 
 /**
@@ -372,7 +372,7 @@ export function buildCursosAlarmEmail(
   /** #5339, opcional — mapa `fingerprint -> {issueNumber, url, action, error}`
    * de `applyAlarmReconciliation`, pra citar a issue de cada condição que
    * disparou. `undefined` preserva o corpo pré-#5339 (nenhuma citação). */
-  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
+  issueRefs?: ReadonlyMap<string, AlarmIssueResult>,
 ): { subject: string; body: string } {
   const parts: string[] = [];
   const subjectBits: string[] = [];

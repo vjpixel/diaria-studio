@@ -47,6 +47,8 @@
  * o histórico parar de crescer de novo.
  */
 
+import type { AlarmIssueResult } from "./alarm-issues.ts";
+
 /** Dias sem registro novo até alarmar — ~10 dias (1 execução semanal perdida
  * + folga; a task roda domingos 07:00 — ver #5117 item 5 para o porquê de
  * não ser mais 21). */
@@ -220,7 +222,7 @@ export function buildGeoCitationStalenessAlarmEmail(
   /** #5339, opcional — `{issueNumber, url, action, error}` de
    * `applyAlarmReconciliation`, pra citar a issue deste achado. `undefined`
    * preserva o corpo pré-#5339. */
-  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+  issueRef?: AlarmIssueResult,
 ): { subject: string; body: string } {
   const panelSuffix = panel ? ` (painel "${panel}")` : "";
   // `staleDays === null` também cobre o caso de `latestRecordTs` NÃO-null mas
@@ -382,7 +384,7 @@ export function shouldAlarmMissingProviders(
 export function buildMissingProviderAlarmEmail(
   panelsWithMissing: readonly PanelMissingProviders[],
   /** #5339, opcional — mesmo contrato de `buildGeoCitationStalenessAlarmEmail`. */
-  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+  issueRef?: AlarmIssueResult,
 ): { subject: string; body: string } {
   const allMissing = [...new Set(panelsWithMissing.flatMap((p) => p.missingProviders))].sort();
   const subject = `[diar.ia.br] monitor de citação GEO sem registro de ${allMissing.join(", ")} na última rodada`;
