@@ -110,6 +110,30 @@ fechar qualquer item como A-E, buscar no corpo por "a escolha é editorial",
 sinal de que aquele item é cat. C disfarçada de outra letra (heurística de
 atenção, não substitui reler o corpo inteiro).
 
+**Verificação de estado antes de classificar como "escopo grande, scoping
+futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura" **não
+é** uma 6ª categoria — é sempre uma leitura de A-E (tipicamente C, decisão-
+produto, ou nenhuma — issue já executável), nunca um resultado automático de
+"issue parece grande". Antes de aceitar essa leitura pra qualquer issue,
+rodar as 3 checagens abaixo:
+1. `gh issue view N --json comments` — ler os comentários mais recentes
+   **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
+   unidade já dispatchada, ou progresso parcial registrado.
+2. `git log --oneline --all --grep "#N"` — trabalho já mergeado costuma
+   citar o número da issue no commit message mesmo quando o comentário na
+   issue não foi lido a tempo.
+3. Se algum comentário citar um doc de acompanhamento (`docs/*.md`), ler
+   esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
+   trabalho com uma seção "estado após esta rodada"/"candidatas pra próxima
+   rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+
+Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
+progresso, nenhum doc de acompanhamento) é legítimo classificar a issue como
+bloqueada por escopo. Caso contrário, o próximo passo já está documentado —
+dispatchar essa fatia pequena nesta mesma onda (issue vira elegível), ou, no
+mínimo, reportar o próximo passo concreto na tabela do `plan.json` em vez de
+"épica-scale, scoping futuro".
+
 ## Goal de esgotamento (#4297, expandido em #4319)
 
 Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock — e desde #4319 o alvo default é o backlog aberto **inteiro**, não só o bloqueado.
