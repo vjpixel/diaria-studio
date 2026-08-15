@@ -221,6 +221,21 @@ export function buildCardSvg(
  * O gradiente vai de transparente (60% da altura) a quase opaco na base: cobre
  * a área do texto sem apagar a imagem inteira.
  */
+/**
+ * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
+ * `wrapTitle` (divisor 26), tamanho `available/(longest*0.52)` clamped
+ * 44-88. Exportada (#5330 fleet review — achado de 2 agentes independentes:
+ * `weekly-carousel-font-size.ts` duplicava esses 4 números mágicos numa
+ * cópia separada, risco de drift silencioso se o clamp/divisor mudar aqui e
+ * não lá) — único lugar que define a fórmula; `buildOverlaySvg` e
+ * `computeCarouselTitleFontSize` chamam esta função em vez de reimplementar.
+ */
+export function overlayFittingFontSize(title: string, availableWidth: number): number {
+  const lines = wrapTitle(title, Math.floor(availableWidth / 26));
+  const longest = Math.max(...lines.map((l) => l.length));
+  return Math.max(44, Math.min(88, Math.floor(availableWidth / (longest * 0.52))));
+}
+
 export function buildOverlaySvg(
   title: string,
   dateLabel = "",
@@ -238,8 +253,7 @@ export function buildOverlaySvg(
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
   const lines = wrapTitle(title, Math.floor(available / 26));
-  const longest = Math.max(...lines.map((l) => l.length));
-  const size = fontSizeOverride ?? Math.max(44, Math.min(88, Math.floor(available / (longest * 0.52))));
+  const size = fontSizeOverride ?? overlayFittingFontSize(title, available);
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
   // a distância até o rodapé é constante.

@@ -14,8 +14,15 @@
  * que destoa visualmente quando os 5 cards ficam lado a lado no carrossel.
  *
  * Cache: `data/weekly/{carouselKey}/_internal/06-news-cards.json`, chave
- * `{editionDate}-{destaque}` — idempotente, mesmo padrão de
- * `weekly-flat-card.ts`/`weekly-instagram-ondemand-card.ts`.
+ * `{editionDate}-{destaque}-{fontSize}` — idempotente, mesmo padrão de
+ * `weekly-flat-card.ts`/`weekly-instagram-ondemand-card.ts`. `fontSize` faz
+ * parte da chave de propósito (#5330 fleet review, achado de correctness):
+ * `carouselFontSize` é recalculado do zero a cada `main()` a partir do SET
+ * de itens selecionado naquela rodada — um re-run com seleção diferente
+ * (ex: editor troca 1 item e roda de novo) pode legitimamente mudar o
+ * tamanho comum. Sem `fontSize` na chave, um item que não mudou de posição
+ * serviria uma imagem cacheada no tamanho ANTIGO, quebrando a padronização
+ * visual em silêncio — exatamente o bug que este módulo existe pra evitar.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -41,8 +48,8 @@ function newsCardsCachePath(dataRoot: string, carouselKey: string): string {
   return resolve(dataRoot, "weekly", carouselKey, "_internal", "06-news-cards.json");
 }
 
-function cacheKey(input: Pick<NewsCardRecomposeInput, "editionDate" | "destaque">): string {
-  return `${input.editionDate}-${input.destaque}`;
+function cacheKey(input: Pick<NewsCardRecomposeInput, "editionDate" | "destaque" | "fontSize">): string {
+  return `${input.editionDate}-${input.destaque}-${input.fontSize}`;
 }
 
 function readNewsCardUrl(dataRoot: string, carouselKey: string, key: string): { url: string | null; corruptError?: string } {

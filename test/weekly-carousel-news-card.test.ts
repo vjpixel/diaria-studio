@@ -40,13 +40,15 @@ describe("resolveOrGenerateNewsCardUrl (cache + recomposição)", () => {
         generator,
       );
       assert.equal(calls, 1);
-      assert.equal(result.url, "https://cdn.example.com/weekly/260815-highlights/260810-d1-4x5.jpg");
+      // #5330 fleet review: fontSize agora faz parte da chave/kvKey (evita
+      // servir cache com tamanho desatualizado).
+      assert.equal(result.url, "https://cdn.example.com/weekly/260815-highlights/260810-d1-62-4x5.jpg");
       assert.equal(capturedInput.fontSize, 62);
       assert.equal(capturedInput.title, "Título do destaque");
       const cachePath = join(dataRoot, "weekly", "260815-highlights", "_internal", "06-news-cards.json");
       assert.ok(existsSync(cachePath));
       const cached = JSON.parse(readFileSync(cachePath, "utf8"));
-      assert.equal(cached["260810-d1"].url, result.url);
+      assert.equal(cached["260810-d1-62"].url, result.url);
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -72,6 +74,31 @@ describe("resolveOrGenerateNewsCardUrl (cache + recomposição)", () => {
       const result2 = await resolveOrGenerateNewsCardUrl(dataRoot, "260815-highlights", input, generator);
       assert.equal(calls, 1, "2ª chamada deveria ser cache hit");
       assert.equal(result1.url, result2.url);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("#5330 fleet review (correctness): fontSize DIFERENTE pra mesma edição+destaque é cache MISS — nunca serve card com tamanho desatualizado", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-newscard-"));
+    try {
+      let calls = 0;
+      const generator: NewsCardGenerator = async ({ kvKey }) => {
+        calls++;
+        return { url: `https://cdn.example.com/${kvKey}` };
+      };
+      const base = { editionDate: "260810", editionDir: "/fake", destaque: "d1", title: "D1", category: "NOTÍCIAS" };
+      // Simula um re-run do mesmo carrossel com um fontSize recalculado
+      // diferente (ex: editor trocou 1 item, mudando o título mais
+      // restritivo) — sem fontSize na chave, isso serviria o card ANTIGO
+      // em silêncio, quebrando a padronização visual que este módulo existe
+      // pra garantir.
+      const result1 = await resolveOrGenerateNewsCardUrl(dataRoot, "260815-highlights", { ...base, fontSize: 62 }, generator);
+      const result2 = await resolveOrGenerateNewsCardUrl(dataRoot, "260815-highlights", { ...base, fontSize: 50 }, generator);
+      assert.equal(calls, 2, "fontSize diferente deveria SEMPRE regenerar, nunca reusar o cache do tamanho antigo");
+      assert.notEqual(result1.url, result2.url);
+      assert.match(result1.url ?? "", /-62-4x5\.jpg$/);
+      assert.match(result2.url ?? "", /-50-4x5\.jpg$/);
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }

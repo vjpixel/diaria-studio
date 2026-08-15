@@ -22,6 +22,7 @@ import {
   stripKickerEmoji,
   buildCardSvg,
   buildOverlaySvg,
+  overlayFittingFontSize,
   editionDateLabel,
   RATIOS,
 } from "../scripts/gen-social-card-4x5.ts";
@@ -181,6 +182,24 @@ describe("buildCardSvg — clamp de font-size (#4114)", () => {
       buildCardSvg("Google lança Gemini 3.6 e 3.5 Flash com contexto expandido e preço menor", ""),
     );
     assert.ok(longo <= curto, `fonte cresceu com título maior: ${curto} → ${longo}`);
+  });
+});
+
+describe("overlayFittingFontSize (#5330 fleet review — extraída de buildOverlaySvg pra reuso sem duplicar a fórmula)", () => {
+  it("mesmo tamanho que buildOverlaySvg computaria internamente pro mesmo título/largura", () => {
+    const title = "Google lança Gemini 3.6";
+    const available = 1080 - 72 * 2;
+    const direct = overlayFittingFontSize(title, available);
+    const svg = buildOverlaySvg(title, "");
+    const m = svg.match(/font-size="(\d+)"[^>]*fill="#FFFFFF">/);
+    assert.equal(direct, Number(m?.[1]));
+  });
+
+  it("clamp 44-88, igual ao comportamento histórico de buildOverlaySvg", () => {
+    const available = 1080 - 72 * 2;
+    assert.ok(overlayFittingFontSize("IA", available) <= 88);
+    const longo = "Palavra ".repeat(60).trim();
+    assert.ok(overlayFittingFontSize(longo, available) >= 44);
   });
 });
 

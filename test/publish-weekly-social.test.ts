@@ -672,10 +672,11 @@ describe("main(): dispatch mockado", () => {
       // único do carrossel — a URL vem do fakeNewsCardGenerator, não mais da
       // URL fixturada em addImageFixture (que só alimentava o caminho antigo
       // de "reusa a URL já publicada tal como está").
-      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
-        "https://cdn.example.com/news/weekly/271225-clicked/271220-d2-4x5.jpg",
-        "https://cdn.example.com/news/weekly/271225-clicked/271220-d1-4x5.jpg",
-      ]);
+      // fontSize faz parte da chave/nome do arquivo (#5330 fleet review —
+      // cache nunca serve tamanho desatualizado) — casa por padrão, não
+      // valor exato, já que o tamanho depende da fórmula de wrap real.
+      assert.match(capturedBody.image_urls[1], /\/news\/weekly\/271225-clicked\/271220-d2-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-clicked\/271220-d1-\d+-4x5\.jpg$/);
       assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-clicked\/cta-4x5\.jpg$/);
       assert.equal(capturedBody.image_url, null);
 
@@ -717,10 +718,8 @@ describe("main(): dispatch mockado", () => {
       assert.equal(capturedBody.destaque, "weekly-highlights");
       assert.equal(capturedBody.image_urls.length, 4);
       assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-highlights\/cover-4x5\.jpg$/);
-      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
-        "https://cdn.example.com/news/weekly/271225-highlights/271220-d1-4x5.jpg",
-        "https://cdn.example.com/news/weekly/271225-highlights/271221-d1-4x5.jpg",
-      ]);
+      assert.match(capturedBody.image_urls[1], /\/news\/weekly\/271225-highlights\/271220-d1-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-highlights\/271221-d1-\d+-4x5\.jpg$/);
       assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-highlights\/cta-4x5\.jpg$/);
 
       // Agendado no PRÓPRIO sábado (dayOffset=0), não no domingo (dayOffset
@@ -845,10 +844,8 @@ describe("main(): dispatch mockado", () => {
       // RADAR (8%) vence D1 (2%) — vem primeiro na caption E no carrossel.
       assert.match(capturedBody.text, /1\. Item de Radar vencedor[\s\S]*2\. D1 pouco clicado/);
       assert.equal(capturedBody.image_urls.length, 4);
-      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
-        "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg",
-        "https://cdn.example.com/news/weekly/271225-clicked/271220-d1-4x5.jpg",
-      ]);
+      assert.equal(capturedBody.image_urls[1], "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg");
+      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-clicked\/271220-d1-\d+-4x5\.jpg$/);
       assert.equal(generatorCalls, 1, "gerador sob demanda deveria ser chamado exatamente 1x — nunca redundante pro D1, que já tinha card");
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
