@@ -385,13 +385,29 @@ export function formatDuration(ms: number): string {
   return `${days.toFixed(1)} dia(s)`;
 }
 
+/** Pura — fingerprint estável do achado de UM worker (#5339: chave usada
+ * tanto pelo `AlarmFinding.fingerprint` quanto pelo `Map` de `issueRefs`
+ * repassado a `buildWorkerDriftAlarmEmail` — mesmo padrão de
+ * `homeMetaFindingIssueKey` em `beehiiv-home-meta-check.ts`, "check:message").
+ * Estável até o `message` mudar (novo commit ou novo deploy) — não inclui
+ * `driftMs`, que muda a cada execução mesmo sem nada de novo acontecer. */
+export function workerDriftFindingKey(r: Pick<WorkerDriftResult, "workerName" | "message">): string {
+  return `${r.workerName}:${r.message}`;
+}
+
 /** Pura — monta assunto + corpo do e-mail de alarme (texto puro, mesmo
  * padrão de `scripts/lib/gmail-send.ts`/`apoios-diff-alarm.ts`, sem HTML).
  * Lista só os workers com `status` "drift"/"never_deployed"; workers "error"
- * entram numa seção separada de aviso (não bloqueiam o alarme dos demais). */
+ * entram numa seção separada de aviso (não bloqueiam o alarme dos demais).
+ * `issueRefs` (#5339, opcional) — mapa `workerDriftFindingKey -> {issueNumber,
+ * url, action, error}` de `scripts/lib/alarm-issues.ts`, usado pra citar a
+ * issue de cada worker defasado. `undefined` (dry-run, ou wiring ainda não
+ * chamado) omite a citação sem quebrar nada — mesmo fallback de
+ * `buildHomeMetaDriftAlarmEmail`. */
 export function buildWorkerDriftAlarmEmail(
   results: readonly WorkerDriftResult[],
   now: Date = new Date(),
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
 ): { subject: string; body: string } {
   const drifted = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
   const errored = results.filter((r) => r.status === "error");
@@ -413,6 +429,10 @@ export function buildWorkerDriftAlarmEmail(
       `  - ${r.workerName} (workers/${r.workerDir}/): drift há ~${ago} — último commit: ${r.lastCommitAt}, ${deployInfo}`,
     );
     lines.push(`    Deploy: cd workers/${r.workerDir} && npx wrangler deploy`);
+    const ref = issueRefs?.get(workerDriftFindingKey(r));
+    if (ref) {
+      lines.push(ref.action === "failed" ? `    Issue: falha ao criar/reusar (${ref.error})` : `    Issue: #${ref.issueNumber} (${ref.url})`);
+    }
   }
 
   if (errored.length > 0) {

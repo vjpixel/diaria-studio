@@ -1,0 +1,61 @@
+name: Deploy reativar Worker
+
+# #5337: workers/reativar era o único dos 11 Workers sem deploy automático
+# — 3ª recorrência da mesma classe já fechada 2x (#3268 brevo-dashboard,
+# #3399 poll). Ficou 4 dias em produção com código defasado (#4723) sem
+# nenhum sinal automático até o alarme `Diaria-Worker-Drift-Check` (#4723
+# entregou a DETECÇÃO, não o deploy automático). Este workflow fecha o gap:
+# dispara `wrangler deploy` automaticamente sempre que um push em master
+# tocar `workers/reativar/**` — mesmo molde de deploy-poll.yml.
+#
+# Secrets reusados (mesmos dos outros deploy-*.yml): CLOUDFLARE_ACCOUNT_ID e
+# CLOUDFLARE_WORKERS_TOKEN.
+#
+# `workflow_dispatch` manual para publicar o commit `9385b7a2` (#5231) que
+# gerou o drift original NÃO foi rodado nesta unidade — a branch deste PR
+# ainda não está mergeada em master, e `workflow_dispatch` só executa
+# workflows já presentes no branch padrão do repo. Fica para o
+# editor/coordenador rodar manualmente (Actions -> Deploy reativar Worker ->
+# Run workflow) depois do merge, ou esperar o próximo push em
+# `workers/reativar/**` fechar o drift sozinho.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/reativar/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-reativar
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # Necessário pra `[build] command` do wrangler.toml (npx tsx
+      # ../../scripts/generate-worker-tokens.ts), que resolve `tsx` a partir
+      # do node_modules da raiz do repo — mesmo padrão do ci.yml (#3164) e do
+      # deploy-poll.yml (#3399).
+      - run: npm ci
+
+      - name: Install reativar worker deps
+        working-directory: workers/reativar
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/reativar
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy

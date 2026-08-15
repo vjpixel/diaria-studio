@@ -19,7 +19,13 @@ Para cada diretório sob `workers/*` com um `wrangler.toml`/`.jsonc`:
 
 Se houver pelo menos 1 worker em `drift`/`never_deployed`, chega **1 e-mail** ao editor nomeando o(s) worker(s), há quanto tempo, e o comando exato de deploy (`cd workers/{dir} && npx wrangler deploy`).
 
-## Idempotência
+## Issue automática por worker defasado (#5339)
+
+Toda execução (fora de `--dry-run`) reconcilia uma issue GitHub por worker com drift pendente via `scripts/lib/alarm-issues.ts` (`{check, fingerprint, title, body, labels}` → `ensureAlarmIssue`/`closeAlarmIssue`, mesmo helper genérico já usado por `beehiiv-home-meta-check.ts`, #5112). `check` = nome do worker; `fingerprint` = `workerDriftFindingKey` (`workerName:message`, `scripts/lib/worker-drift-check.ts`) — estável até o achado mudar (novo commit ou novo deploy), não a cada execução. O e-mail passa a citar o número da issue por worker (`Issue: #NNNN (url)`); se `gh issue create` falhar (sem `gh` autenticado, rate limit), o e-mail sai com o motivo em vez de suprimir a citação (`action: "failed"`, nunca perde o alarme). Estado de dedup: `data/worker-drift-check/alarm-issues.json` (arquivo separado de `state.json` — idempotência do E-MAIL e tracking de ISSUE são preocupações independentes, mesmo padrão de `beehiiv-home-meta-check.ts`). Issue fecha sozinha depois de 2 execuções consecutivas sem o achado (mesmo `CLOSE_ALARM_ISSUE_AFTER_RUNS` do padrão #5112).
+
+`worker-drift-check.ts` foi o 1º dos 11 alarmes agendados do repo a ganhar esse wiring (#5339) — priorizado por ter gerado o achado #5337 manualmente (o próprio pretexto da issue #5339). Os outros 10 alarmes (`hub-drift-check.ts`, `robots-txt-drift-check.ts`, `apoios-diff-alarm.ts`, `clarice-envio-alarm.ts`, `clarice-envio-guard-alarm.ts`, `clarice-guardrail-alarm.ts`, `clarice-opens-catchup-alarm.ts`, `cursos-error-alarm.ts`, `geo-citation-staleness-alarm.ts`, `linkedin-weekly-staleness-alarm.ts`) seguem sem wiring — follow-up declarado explicitamente no #5339, não esquecimento.
+
+## Idempotência (E-MAIL)
 
 Fingerprint do conjunto de workers pendentes (`data/worker-drift-check/state.json`, mesmo padrão de `apoios-diff-alarm.ts`) — inclui o timestamp de commit E de deploy de cada worker problemático:
 

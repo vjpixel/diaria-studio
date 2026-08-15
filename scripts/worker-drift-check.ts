@@ -92,16 +92,29 @@ import {
   emptyWorkerDriftAlarmState,
   buildWorkerDriftAlarmEmail,
   buildApiErrorAlarmEmail,
+  workerDriftFindingKey,
   type WorkerDriftCheckInput,
   type WorkerDriftResult,
   type WorkerDriftAlarmState,
 } from "./lib/worker-drift-check.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKERS_DIR = resolve(ROOT, "workers");
 const STATE_PATH = resolve(ROOT, "data", "worker-drift-check", "state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "worker-drift-check", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[worker-drift-check]";
+/** #5339: mesmo valor de CLOSE_ALARM_ISSUE_AFTER_RUNS de beehiiv-home-meta-check.ts
+ * (task roda a cada 6h — 2 execuções limpas consecutivas = 12h sem o achado
+ * antes de fechar a issue automaticamente). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 // ─── Estado (idempotência) — mesmo padrão I/O de apoios-diff-alarm.ts ──────
 
@@ -136,6 +149,59 @@ export function loadState(statePath: string = STATE_PATH): WorkerDriftAlarmState
 export function saveState(state: WorkerDriftAlarmState, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional de
+// beehiiv-home-meta-check.ts: idempotência do E-MAIL (acima) e tracking de
+// ISSUE por achado são preocupações independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte um `WorkerDriftResult` defasado (status "drift"/"never_deployed")
+ * no `AlarmFinding` genérico que `scripts/lib/alarm-issues.ts` consome
+ * (#5339). `check` = nome do worker (cada worker é seu próprio eixo — não
+ * há como 2 workers colidirem no mesmo achado). `fingerprint` usa
+ * `workerDriftFindingKey`, a MESMA fórmula usada pra montar `issueRefs` em
+ * `buildWorkerDriftAlarmEmail`. Todo achado nasce `P2` — mesma prioridade
+ * da issue original #5337 (bug com workaround: deploy manual). */
+function toAlarmFinding(r: WorkerDriftResult): AlarmFinding {
+  return {
+    check: r.workerName,
+    fingerprint: workerDriftFindingKey(r),
+    title: `[diar.ia.br] worker "${r.workerName}" com deploy defasado`,
+    body: [
+      "Achado automático do alarme `Diaria-Worker-Drift-Check`",
+      "(`scripts/worker-drift-check.ts`).",
+      "",
+      `Worker: \`${r.workerName}\` (workers/${r.workerDir}/)`,
+      `Detalhe: ${r.message}`,
+      `Último commit: ${r.lastCommitAt ?? "-"}`,
+      `Último deploy: ${r.lastDeployedAt ?? "nunca"}`,
+      "",
+      `Deploy: cd workers/${r.workerDir} && npx wrangler deploy`,
+      "",
+      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
 }
 
 // ─── Descoberta de workers (I/O) ────────────────────────────────────────────
@@ -353,8 +419,44 @@ async function main(): Promise<void> {
     }
   }
 
+  // #5339 — reconcilia issue por worker defasado ANTES de montar o e-mail
+  // (o e-mail cita a issue de cada achado pendente), mesmo padrão de
+  // beehiiv-home-meta-check.ts. Roda toda execução não-dry-run, independente
+  // de um e-mail novo disparar nesta rodada.
+  const driftedResults = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
+  const alarmFindings = driftedResults.map(toAlarmFinding);
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.fingerprint,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
+    }
+  }
+
   if (shouldAlarm(state, results)) {
-    const { subject, body } = buildWorkerDriftAlarmEmail(results, now);
+    const { subject, body } = buildWorkerDriftAlarmEmail(results, now, issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

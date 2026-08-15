@@ -395,6 +395,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4910, #5113",
   },
   {
+    name: "Diaria-Plugin-Review-Drift-Check",
+    description:
+      "drift-check do system prompt dos 5 agentes do plugin pr-review-toolkit que DEFAULT_EFFORT=max dispara — alarma se a linguagem de filtro de confiança/severidade mudar (arquivo per-máquina, fora deste repo)",
+    steps: [{ key: "check", script: "scripts/plugin-review-drift-check.ts" }],
+    logPath: "plugin-review-drift-check/.drift-check.log",
+    // Diária 10:20 — logo depois de Diaria-Robots-Txt-Drift-Check (10:15,
+    // acima), mesmo cluster matinal de drift-checks; sem colisão com
+    // nenhuma outra daily já registrada (ver grep de `kind: "daily"` neste
+    // arquivo). Plugin ausente (sessão cloud, clone fresco) é skip — o
+    // script nunca falha/alarma nesse caso (ver docstring do script).
+    schedule: { kind: "daily", hour: 10, minute: 20 },
+    issue: "#5311",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
