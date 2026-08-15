@@ -43,6 +43,9 @@
  *     Claude Code com o MCP Gmail conectado, então `create_draft`/MCP não
  *     serve aqui. `gmail.readonly`/`gmail.modify` (já concedidos acima) NÃO
  *     incluem enviar mensagens — precisa deste scope à parte.)
+ *   - https://www.googleapis.com/auth/analytics.readonly (#5248: GA4 Data
+ *     API `properties.runReport`, comportamento pós-clique na home hospedada
+ *     `diar.ia.br` — `scripts/ga4-sync.ts`)
  */
 
 import { createServer } from "node:http";
@@ -127,6 +130,15 @@ const SCOPES = [
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
   "https://www.googleapis.com/auth/gmail.send",
+  // #5248: ler relatórios da propriedade GA4 (`analyticsdata.googleapis.com`,
+  // `properties.runReport`) — comportamento PÓS-CLIQUE na home hospedada
+  // `diar.ia.br` (custom hostname da Beehiiv, fora da zona Cloudflare, então
+  // fora do alcance de `ai-referrer-log.ts`). Escopo somente leitura — não
+  // existe write path pra GA4 nesta ingestão. `scripts/lib/ga4-client.ts` +
+  // `scripts/ga4-sync.ts`. Token emitido antes desta mudança NÃO ganha o
+  // scope sozinho — mesma armadilha dos blocos acima; exige re-rodar este
+  // script e reaprovar no browser. Ver docs/ga4-data-api-setup.md.
+  "https://www.googleapis.com/auth/analytics.readonly",
 ];
 
 function buildAuthUrl(clientId: string): string {
