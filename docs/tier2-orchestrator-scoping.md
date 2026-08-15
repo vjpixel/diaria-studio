@@ -25,7 +25,7 @@ Metodologia: para cada skill, separar 3 camadas —
 
 **Recomendação da issue:** "a mais fácil, provavelmente 100% script."
 **Veredito real, confirmado pela implementação já mergeada:** quase, mas
-não 100% — sobra 1 chamada MCP genuinamente não-determinizável.
+não 100% — sobram 2 chamadas MCP genuinamente não-determinizáveis.
 
 | Camada | Conteúdo |
 |---|---|
@@ -51,7 +51,7 @@ Passos 5-8 foram avaliados e conscientemente deixados de fora.
 
 | Camada | Conteúdo |
 |---|---|
-| (a) glue determinístico | Passos 1-4 (contatos + rampa): sequência fixa de 5 sub-scripts (`evaluate-brevo-diaria.ts`, `refresh-pending-pool.ts`, `score-pending-origin.ts`, `verify-pending-emails-mv.ts`, `sync-pending-to-brevo.ts`) em ordem que **precisa** ser respeitada (Passo 1 libera slots antes do Passo 3 contar candidatos; Passo 2 precisa rodar antes do Passo 3 enxergar os novos). A ordem em si não tem julgamento editorial — só risco de erro humano/LLM esquecer um passo ou invertê-lo numa sequência que muta contatos reais. Virou `scripts/brevo-diaria-run.ts` (644 linhas, 2 modos: `--preflight` dry-run / `--apply --max-add N` mutação real). |
+| (a) glue determinístico | Passos 1-4 (contatos + rampa): sequência fixa de 5 sub-scripts (`evaluate-brevo-diaria.ts`, `refresh-pending-pool.ts`, `score-pending-origin.ts`, `verify-pending-emails-mv.ts`, `sync-pending-to-brevo.ts`) em ordem que **precisa** ser respeitada (Passo 1 libera slots antes do Passo 3 contar candidatos; Passo 2 precisa rodar antes do Passo 3 enxergar os novos). A ordem em si não tem julgamento editorial — só risco de erro humano/LLM esquecer um passo ou invertê-lo numa sequência que muta contatos reais. Virou `scripts/brevo-diaria-run.ts` (319 linhas, 2 modos: `--preflight` dry-run / `--apply --max-add N` mutação real). |
 | (b) gate humano | **Passo 4** (quantos contatos acrescentar, `--max-add N` — decisão numérica mas editorial, considera abertura agregada/composição da fila) **fica no script como parâmetro explícito**, decidido pelo humano antes de invocar `--apply`. **Passos 6 e 8** (revisão de copy da campanha; confirmação de `scheduledAt` — agendamento é imutável na Brevo) são gates genuínos que **não foram tocados** — cada um já é 1 única invocação de `publish-daily-brevo.ts` cercada de confirmação humana, sem JSON de um passo alimentando o próximo. |
 | (c) subagente/MCP | Nenhuma nesta skill — todos os 8 passos são scripts TS com API REST direta (Beehiiv/Brevo/MillionVerifier), nenhum depende de MCP-only tool. |
 
@@ -78,7 +78,7 @@ scripts, cada uma já auto-contida por `--cycle`.
 |---|---|
 | (a) glue determinístico | Quase nenhum. Passo 1 (`send-monthly-apoiadores.ts --cycle $CYCLE`) e Passo 2 (`publish-monthly-apoiadores-brevo.ts --cycle $CYCLE [--dry-run]`) **não trocam dado entre si via stdout/JSON** — os dois leem/gravam o MESMO state file (`beehiiv-apoiadores-state.json`) de forma independente, e o próprio Passo 2 já lê esse state sozinho para o guard de idempotência (`decidePublishBrevoAction`, fechado no #4572 develop). Não há valor extraído de um passo e injetado manualmente no próximo — cada script só precisa do `--cycle`, que já vem do humano. O único "encadeamento" é ordem recomendada (Passo 1 antes do Passo 2), mas o próprio SKILL.md documenta que o Passo 2 funciona sem o Passo 1 ter rodado. |
 | (b) gate humano | Real e central: o Passo 2 SEMPRE cria a campanha como rascunho — test email, escolha de dia sem edição pesada, e Schedule/Send final são sempre ação manual do editor na UI da Brevo (decisão de produto do #4482, não um gate técnico que possa virar script). O Passo 3 (`--mark-sent`) é o humano confirmando que enviou de verdade pela UI — não há como determinizar "o editor clicou Send no painel Brevo". |
-| (c) subagente/MCP | Nenhuma — os 2 scripts usam REST direto (Brevo `POST /emailCampaigns`, `sync-apoio-nivel-brevo.ts` via apoia.se API). |
+| (c) subagente/MCP | Nenhuma — os 2 scripts do fluxo desta skill (Passo 1/Passo 2) usam REST direto contra a Brevo (`POST /emailCampaigns`). `sync-apoio-nivel-brevo.ts` (apoia.se API) é um PRÉ-REQUISITO externo à skill, rodado separadamente — não é um dos "2 scripts" do Passo 1/2 descritos acima. |
 
 **Recomendação: NÃO vira `*-run.ts`.** Não sobra orquestrador — os 2
 passos já são scripts standalone que um humano/LLM invoca em sequência
@@ -97,7 +97,14 @@ como está"). Fecha esta candidata como avaliada.
 
 **Recomendação da issue:** "quase tudo já é `publish-weekly-social.ts`
 [...] provavelmente a de menor retorno das 4." **Veredito desta análise:
-confirmado.**
+confirmado** — mas a skill cresceu bastante desde a redação original da
+#5192: hoje são 2 modos (`clicked`/`highlights`, ou `--mode both`) e **3
+canais** (Instagram/Facebook/Threads desde o #5348, mergeado no mesmo dia
+desta análise), com polling obrigatório de status pro carrossel do
+Threads. A conclusão técnica abaixo (sem cadeia de N scripts trocando JSON
+a proteger) continua válida apesar do crescimento — o aumento de escopo
+foi em FLAGS/canais de saída do mesmo script, não em glue novo entre
+scripts distintos.
 
 | Camada | Conteúdo |
 |---|---|
