@@ -120,12 +120,29 @@ developer token real — item 1 do checklist, ver issue):
   servidor oficial do time do Google Ads (link no topo do arquivo, ver
   também a issue #5237). Diferente do `clarice` (HTTP + header-auth), esse
   MCP é um processo local que lê as credenciais do próprio ambiente (`env`
-  no bloco da entrada) — mesmo padrão de env vars de `GOOGLE_ADS_*` já usado
-  por `google-ads-associate-token.ts`, mais `GOOGLE_PROJECT_ID`. **Não
-  testado ao vivo** — o Basic Access ainda está na fila, então qualquer
-  tentativa de handshake do MCP hoje bate no mesmo `DEVELOPER_TOKEN_NOT_APPROVED`
-  do restante deste documento. Confirmar a entrada quando o token sair da
-  fila.
+  no bloco da entrada).
+
+  **Contrato de auth do servidor MCP em si é DIFERENTE do fluxo REST usado
+  por `google-ads-ingest-spend.ts`/`google-ads-associate-token.ts` (achado
+  do fleet review do PR #5380, 15/08/2026).** A 1ª versão desta entrada
+  declarava `GOOGLE_ADS_CLIENT_ID`/`GOOGLE_ADS_CLIENT_SECRET`/
+  `GOOGLE_ADS_REFRESH_TOKEN` — vars do fluxo OAuth REST, que o servidor MCP
+  não lê (confirmado contra o README oficial de `googleads/google-ads-mcp`).
+  O servidor MCP só reconhece 2 métodos de auth: **ADC** (`GOOGLE_APPLICATION_CREDENTIALS`
+  apontando pro JSON de uma Service Account + `GOOGLE_PROJECT_ID` +
+  `GOOGLE_ADS_DEVELOPER_TOKEN`) ou **proxy OAuth do FastMCP**
+  (`GOOGLE_ADS_MCP_OAUTH_CLIENT_ID`/`_SECRET` + `GOOGLE_ADS_MCP_BASE_URL`).
+  A entrada em `.mcp.json` foi corrigida pro caminho ADC (`GOOGLE_PROJECT_ID`
+  + `GOOGLE_ADS_DEVELOPER_TOKEN` + `GOOGLE_ADS_CUSTOMER_ID` + `GOOGLE_APPLICATION_CREDENTIALS`)
+  — mas **`GOOGLE_APPLICATION_CREDENTIALS` ainda não existe**: requer criar
+  uma Service Account no GCP Console (IAM → Service Accounts → Create) e
+  baixar a chave JSON, ação do editor fora do escopo do #5237/#5380 (ver
+  `.env.example`). **Não testado ao vivo** por dois motivos empilhados —
+  Basic Access ainda na fila (`DEVELOPER_TOKEN_NOT_APPROVED`) E a Service
+  Account ainda não existe. Confirmar a entrada quando os dois saírem da
+  fila. O script de ingestão REST (`google-ads-ingest-spend.ts`) é um
+  caminho INDEPENDENTE — usa `CLIENT_ID`/`SECRET`/`REFRESH_TOKEN`, já
+  fail-soft, não depende de nada desta seção.
 - **`scripts/google-ads-ingest-spend.ts`** (+ núcleo puro
   `scripts/lib/google-ads-ingest.ts`): traduz GAQL (`segments.date` +
   `metrics.cost_micros`, agregado por mês) pro formato de
