@@ -34,6 +34,7 @@ import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
 import { esc, wrapTitle } from "../gen-social-card-4x5.ts";
+import { cloudflareKvKey } from "../upload-images-public.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -216,7 +217,17 @@ export async function resolveOrGenerateFlatCardUrl(
   const outDir = resolve(dataRoot, "weekly", key, "_internal");
   mkdirSync(outDir, { recursive: true });
   const outPath = resolve(outDir, `06-${slot}-4x5.jpg`);
-  const kvKey = `weekly/${key}/${slot}-4x5.jpg`;
+  // #5386: a chave PRECISA casar com a allowlist `/^img-[^:]+$/` de
+  // `handleImage` (workers/poll/src/index.ts, fix de segurança do #4112) —
+  // um namespace `weekly/...` batia 404 na Graph API do Instagram (fetch da
+  // `image_url` pelo lado da Meta, não do nosso Worker) e derrubava o
+  // carrossel inteiro. Reusa `cloudflareKvKey()` (mesma convenção de
+  // `upload-images-public.ts`/`weekly-instagram-ondemand-card.ts`) — `key`
+  // não termina em AAMMDD (`{saturday}-{mode}`, ex "260815-highlights"),
+  // então o helper cai no fallback documentado `img-unknown-...`; `key` vai
+  // inteiro no filename, preservando a unicidade entre "destaques"/"mais
+  // clicados" do mesmo sábado.
+  const kvKey = cloudflareKvKey(key, `weekly-${key}-${slot}-4x5.jpg`);
 
   const { url } = await generator({ text, outPath, kvKey });
   writeFlatCardUrl(dataRoot, key, slot, url);
