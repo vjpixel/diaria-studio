@@ -27,6 +27,8 @@ Cada achado pendente (dos 6 eixos acima) tem uma issue GitHub garantida — cria
 
 Se a criação/comentário/fechamento de issue falhar (ex: `gh` não autenticado no servidor), o **e-mail sai assim mesmo** — a linha do achado cita `→ issue não criada: {motivo}` em vez do número da issue, e o cursor de reconciliação NÃO avança (retry na próxima execução).
 
+**#5338 (14-15/08/2026) — mecanismo estava morto em runtime, agora tem self-heal.** A label `alarm` que `ensureAlarmIssue` aplica incondicionalmente nunca tinha sido criada no repo — toda execução entre o #5112 e o #5338 falhava com `could not add label: 'alarm' not found` e **zero** achado virava issue (e-mails saíam sem citar issue nenhuma, `data/beehiiv-home-meta-check/alarm-issues.json` ficou em `{}` o tempo todo). A label foi criada manualmente nesta unidade e `ensureAlarmIssue` ganhou retry fail-soft (`createAlarmIssueWithLabelRetry`, `scripts/lib/alarm-issues.ts`): se `gh issue create` falhar só por label ausente, tenta self-heal (`gh label create alarm --force`, best-effort) e retenta — mantendo `alarm` se o self-heal funcionou, ou sem ela (e sem qualquer outra label reportada ausente, sem tentativa de auto-criação pra essas) caso contrário. Perder um rótulo é aceitável; perder o rastreio do achado inteiro não é.
+
 ## Idempotência
 
 Fingerprint do conjunto de achados pendentes (`data/beehiiv-home-meta-check/state.json`, mesmo padrão de `hub-drift-check.ts`/`robots-txt-drift-check.ts`/`worker-drift-check.ts`):
