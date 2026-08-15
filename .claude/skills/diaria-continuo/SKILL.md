@@ -482,6 +482,33 @@ aqui.
    quando na verdade era (a) é o próprio bug do #5376 — na dúvida entre (a) e
    as outras duas, reler o corpo antes de desistir dela.
 
+   **Issue com checklist/múltiplos itens: classificar item por item, nunca a
+   issue inteira de uma vez (#5379, 15/08/2026)** — o #5376 corrigiu
+   classificação issue-a-issue; o #5379 achou o mesmo atalho um nível abaixo,
+   *dentro* de uma issue só. Duas issues reais (#4555, #5237) foram jogadas
+   inteiras em (c) porque continham 1 item genuinamente bloqueado misturado
+   com itens (a)/(b) independentes. Antes de rotular uma issue com corpo em
+   lista/checklist como (c): percorrer cada item separadamente e classificar
+   cada um nas mesmas 3 categorias acima. Itens sem decisão nem credencial
+   pendente **voltam pra (a)** e são dispatchados normalmente — nunca ficam
+   presos ao rótulo do item bloqueado. Só os itens que de fato dependem do
+   bloqueio ficam em (c). O resultado normal é dispatch **parcial**: unidade
+   cobrindo só os itens (a) da issue, mais comentário registrando o(s)
+   item(ns) (c) que segue(m) faltando — não é preciso esperar o bloqueio
+   resolver pra fazer a parte que já dá. Mesmo tratamento vale se um item
+   isolado (não em lista) for, na verdade, dois problemas colados: separar
+   antes de rotular.
+
+   **Grep textual antes de classificar em (c) (#5379) — heurística de
+   atenção, não substitui ler o corpo.** Antes de fechar um item como (c),
+   buscar no corpo daquele item por sinais de decisão embutida: "a escolha é editorial",
+   "decidir", frase interrogativa com "qual"/"quanto"/"quando", "trade-off".
+   Qualquer acerto é motivo pra reler aquele trecho com atenção — pode ser
+   (b) disfarçado de (c), como o #4555 (perfil de parceiro + orçamento de
+   slot editorial, ambos decisão pendente, classificados como "só ação
+   humana"). Isto é um lembrete de dupla-checagem pro coordenador, não um
+   parser automático — não dispensa a leitura do corpo inteiro.
+
    **Antes de incluir qualquer issue no lote de perguntas (#5373):** rodar
    `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
    — se a issue tem a label `decisao-registrada` ela quase certamente tem
