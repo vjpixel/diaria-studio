@@ -138,19 +138,63 @@ interna do modo dinâmico de `/loop` — funciona porque, com a flag removida,
 o passo 1 de `/loop` consegue completar a chamada `Skill` (diferente do
 estado documentado pelo #5332 original, que travava ali).
 
-**Cadência do wake em modo ocioso (passo 6, fila seca sem resposta
-pendente):** a doc do `/loop` só documenta um número fixo (1200-1800s,
-20-30min) pro caso em que um Monitor está armado — ali é o fallback
-heartbeat, "quanto esperar se nenhum evento disparar". O passo 6 não arma
-Monitor (não há um evento de baixa latência esperando pra ser capturado),
-então cai no outro caso da mesma doc: "sem Monitor, é a cadência — escolha
-com base no que foi observado", sem número específico. Adotamos 1200-1800s
-aqui mesmo assim, por analogia conservadora ao valor do caso com Monitor —
-o passo 6 já é estritamente passivo (só re-varre e dorme, nunca gera
-trabalho especulativo), e um intervalo maior só atrasaria a detecção de
-issue nova/resposta do editor sem ganho real de custo. Ao reentrar via
-`/loop /diaria-continuo` em modo ocioso, passar `delaySeconds` nesse
-intervalo ao chamar `ScheduleWakeup`.
+**Cadência do wake em modo ocioso (passo 6, fila seca sem resposta pendente)
+— revisada em #5390, 15/08/2026: 4 horas, não mais 20-30min.** O valor
+antigo (1200-1800s, adotado por analogia conservadora ao fallback do
+`/loop` com Monitor armado) gerava re-varredura a cada 20-30min mesmo numa
+fila seca de verdade — bootstrap de contexto repetido sem gerar trabalho
+real (issue nova ou resposta do editor tolera latência de horas, não
+minutos). Decisão do editor: alongar o wake ocioso pra **4 horas**.
+
+**Restrição do harness: `ScheduleWakeup` clampa `delaySeconds` em
+[60, 3600]** — 4h (14400s) não cabe numa única chamada. Duas formas de
+chegar lá foram avaliadas: (a) persistir um contador de "quantas horas
+faltam" em `plan.json` e encadear 4 wakes de 3600s, os 3 primeiros
+no-op puro; (b) manter o wake **sempre horário** (3600s, o próprio teto do
+clamp) e mover o corte de "vale a pena re-varrer de verdade" pro **início
+do passo 6**, comparando contra o campo `last_scan_at` já existente em
+`plan.json`. Adotamos **(b)** — mesmo efeito de custo (3 de cada 4 wakes
+não fazem trabalho algum), mecanismo mais simples (não precisa de contador
+dedicado nem de lógica de "quantas horas faltam", só uma comparação de
+timestamp já disponível) e sem estado extra pra manter consistente entre
+rotação de dia e cadeia de wakes.
+
+**Mecanismo:** todo wake de `ScheduleWakeup` em modo ocioso agenda o
+próximo com `delaySeconds: 3600` (fixo — não varia; não há mais backoff
+progressivo, ver nota logo abaixo). Ao acordar, ANTES de re-varrer (passo
+2):
+- `now() - last_scan_at < 4h` → **wake no-op**: não re-varre nada, não toca
+  a fila, só grava heartbeat (obrigatório em todo wake, inclusive este —
+  #5329 item 5, não afrouxado por esta mudança) e volta a dormir
+  (`ScheduleWakeup` de novo, mais 3600s).
+- `now() - last_scan_at >= 4h` (ou `last_scan_at` ausente/vazio — 1ª
+  varredura do dia) → **wake de varredura**: segue o "Loop invariável"
+  normalmente a partir do passo 2, que já grava `last_scan_at = now()` ao
+  fim da varredura (mecanismo preexistente, #5344 Parte B6 — nenhuma
+  mudança nesse ponto).
+
+Ao reentrar via `/loop /diaria-continuo` em modo ocioso, o `delaySeconds`
+passado ao `ScheduleWakeup` é sempre `3600` — o corte de 4h vive na decisão
+de re-varrer ou não no início do próximo wake, nunca no valor do delay em
+si.
+
+**`idle_scan_streak`/backoff progressivo (#5344 Parte B5) — superado por
+esta mudança, não mais lido/escrito pelo loop.** O backoff
+20min→30min→45min→60min existia pra alongar gradualmente o wake ocioso até
+o teto de 3600s do `ScheduleWakeup`, degrau por degrau, conforme a fila
+seguia seca. Com o wake ocioso agora fixo em 3600s desde o primeiro ciclo
+(o teto do clamp virou o próprio valor de todo wake — não sobra intervalo
+abaixo dele pra progredir), o backoff fica redundante: o corte de 4h já
+faz o trabalho que o backoff fazia (reduzir a frequência de re-varredura
+de verdade numa fila seca), por um mecanismo mais simples. O campo
+`idle_scan_streak` continua declarado como opcional em
+`plan.json`/`scripts/overnight-statusline.ts`/
+`scripts/lib/continuo-plan-rotation.ts` — custo de remover o tipo é maior
+que o de deixar órfão, mesmo raciocínio aplicado ao `WATCHED_KINDS` do
+watchdog (ver seção B do #5390) — mas o "Loop invariável" abaixo **não** o
+lê nem incrementa mais; é dado morto, não consultado por nenhuma decisão de
+cadência. Se precisar reverter, é esta seção que volta a ler/escrever o
+campo.
 
 **Os dois estados de espera já existentes e corretos são preservados,
 independente do `/loop`:**
@@ -625,34 +669,30 @@ aqui.
    textual mínimo que dá ao editor algo pra auditar depois, sem o custo de
    desenhar um schema novo.
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
-   estava nessa phase — idempotente repetir) e dormir; ao acordar, re-checar
-   primeiro o guard de colisão editorial do passo 1 (se uma edição entrou em
-   curso enquanto dormia, heartbeat `--phase pausado-edicao` e continuar
-   dormindo) e então re-varrer periodicamente (a fila desbloqueada pode ter
-   crescido nesse meio-tempo — voltar ao passo 1 se sim). Nunca "termina": a
-   sessão fica viva esperando ou fila nova, ou resposta a uma pergunta
-   pendente.
+   estava nessa phase — idempotente repetir) e dormir (`ScheduleWakeup` com
+   `delaySeconds: 3600`, ver "Cadência do wake em modo ocioso" acima); ao
+   acordar, re-checar primeiro o guard de colisão editorial do passo 1 (se
+   uma edição entrou em curso enquanto dormia, heartbeat `--phase
+   pausado-edicao` e continuar dormindo) e então aplicar o corte de 4h
+   descrito acima: `now() - last_scan_at < 4h` → wake no-op (heartbeat +
+   dormir de novo, sem tocar a fila); `>= 4h` → volta ao passo 1/2 pra
+   re-varrer de verdade (a fila desbloqueada pode ter crescido nesse
+   meio-tempo). Nunca "termina": a sessão fica viva esperando ou fila nova,
+   ou resposta a uma pergunta pendente.
 
-   **Backoff progressivo do `ScheduleWakeup` ocioso (#5344 Parte B5,
-   15/08/2026).** Quando este passo dorme por fila seca e sem resposta
-   pendente (não pelo guard de colisão editorial do passo 1, que tem cadência
-   própria), o delay do `ScheduleWakeup` não é mais fixo 1200-1800s — segue
-   backoff progressivo **20min → 30min → 45min → 60min** (o teto de 3600s do
-   próprio `ScheduleWakeup`), avançando um degrau por varredura ociosa
-   consecutiva (fila seca E sem resposta pendente) além da anterior. Contador
-   `idle_scan_streak` (inteiro, novo campo em `plan.json`): incrementar em 1
-   toda vez que este passo 6 dormir por ociosidade; **resetar para `0`** assim
-   que o passo 1 encontrar issue nova pra trabalhar (fila deixou de estar
-   seca) ou o passo 5 processar uma resposta do editor — nesses dois casos o
-   próximo sono ocioso, se houver, recomeça do piso (20min). Mapeamento
-   `idle_scan_streak → delay`: `0` → 1200s (20min), `1` → 1800s (30min), `2`
-   → 2700s (45min), `≥3` → 3600s (60min, teto — não cresce além disso).
-   Ganho: numa janela ociosa longa (ordem de horas), menos wakes = menos
-   turnos completos de coordenador pagando bootstrap de contexto; custo é só
-   latência de detecção (até 1h numa fila que já estava seca — o modo ocioso
-   é estritamente passivo por decisão do briefing, então isso nunca bloqueia
-   trabalho real). O guard de colisão editorial (`pausado-edicao`) não usa
-   este backoff — cadência de repolling da edição em curso é assunto
+   **Cadência fixa de 3600s + corte de 4h (#5390, 15/08/2026) — substitui o
+   backoff progressivo `idle_scan_streak` que existia aqui (#5344 Parte
+   B5).** Mecanismo completo, rationale e o clamp `[60, 3600]` do
+   `ScheduleWakeup` já estão documentados em "Cadência do wake em modo
+   ocioso" (acima, na seção "Integração com `/loop` e `ScheduleWakeup`") —
+   não duplicar aqui. Resumo: todo wake ocioso dorme 3600s (fixo, sem
+   variação); o que muda com o tempo não é o delay do wake, é se ele faz
+   trabalho (varredura de verdade, quando `now() - last_scan_at >= 4h`) ou
+   nada (heartbeat + volta a dormir). Ganho equivalente ao backoff antigo —
+   numa janela ociosa longa, a maioria dos wakes não paga bootstrap de
+   contexto de re-varredura — só que sem contador dedicado nem degraus
+   intermediários. O guard de colisão editorial (`pausado-edicao`) não usa
+   este corte — cadência de repolling da edição em curso é assunto
    separado, não tratado aqui. **Custo acumulado (#5293 item 6):** ao acordar de um período de
    sono longo (ordem de horas) ou a cada rotação de dia (passo 2), rodar
    `npx tsx scripts/continuo-cost-summary.ts` e considerar o número reportado

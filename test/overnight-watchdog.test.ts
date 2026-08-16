@@ -30,6 +30,7 @@ import {
   WATCHDOG_IO_TIMEOUT_MS,
   hasHealthyIdleSession,
   runAllWatchedKinds,
+  WATCHED_KINDS,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
 import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
@@ -683,6 +684,63 @@ describe("runAllWatchedKinds (#5293 fleet review achado 3)", () => {
     }
     assert.match(stderrOutput, /kind=continuo/);
     assert.match(stderrOutput, /falha simulada/);
+  });
+});
+
+describe("WATCHED_KINDS (#5390) — continuo removido da vigilância de produção", () => {
+  it("contém só 'overnight' — 'continuo' não é mais vigiado", () => {
+    assert.deepEqual(WATCHED_KINDS, ["overnight"]);
+  });
+
+  it("regressão: sessão continuo parada MUITO além do limiar de stall NÃO produz stall_event nem push — porque main() nunca a diagnostica (WATCHED_KINDS não inclui 'continuo')", async () => {
+    // Antes do #5390 (WATCHED_KINDS = ["overnight", "continuo"]), esta mesma
+    // simulação de main() diagnosticaria e agiria sobre 'continuo'. Prova
+    // negativa: um runOne espião nunca é invocado com kind='continuo' quando
+    // orquestrado com WATCHED_KINDS — logo nenhum stall_event é anexado ao
+    // plan.json nem nenhum push é disparado para essa sessão, mesmo que ela
+    // esteja parada há muito mais que o limiar de 60 min (simulado abaixo por
+    // um plan.json com stall_events vazio e nenhuma atividade recente).
+    const dir = mkdtempSync(join(tmpdir(), "watchdog-5390-"));
+    try {
+      // Sessão continuo genuinamente parada: plan.json com mtime "antigo" (o
+      // teste não precisa manipular o relógio — o ponto é que runOne nunca é
+      // chamado para 'continuo' independente do estado real do plan.json).
+      const continuoDir = join(dir, "data", "continuo", "260814");
+      mkdirSync(continuoDir, { recursive: true });
+      writeFileSync(join(continuoDir, "plan.json"), JSON.stringify({ stall_events: [] }));
+
+      const attempted: string[] = [];
+      const anyFailed = await runAllWatchedKinds(WATCHED_KINDS, async (kind) => {
+        attempted.push(kind);
+      });
+
+      assert.deepEqual(
+        attempted,
+        ["overnight"],
+        "'continuo' nunca deveria ser tentado — WATCHED_KINDS não o inclui desde #5390",
+      );
+      assert.equal(anyFailed, false);
+
+      // O plan.json da sessão continuo permanece intocado — nenhum stall_event
+      // foi (nem poderia ter sido) anexado, porque runWatchdogForKind nunca
+      // rodou para esse kind.
+      const planAfter = JSON.parse(readFileSync(join(continuoDir, "plan.json"), "utf8"));
+      assert.deepEqual(planAfter.stall_events, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ANTES do #5390 este teste teria falhado: WATCHED_KINDS incluindo 'continuo' faria runOne ser chamado para ele", async () => {
+    // Reconstrói o comportamento pré-#5390 explicitamente (não lê o array de
+    // produção) para provar que o teste acima é sensível à mudança real —
+    // não passaria incondicionalmente independente do conteúdo de WATCHED_KINDS.
+    const legacyWatchedKinds: readonly ("overnight" | "continuo")[] = ["overnight", "continuo"];
+    const attempted: string[] = [];
+    await runAllWatchedKinds(legacyWatchedKinds, async (kind) => {
+      attempted.push(kind);
+    });
+    assert.deepEqual(attempted, ["overnight", "continuo"]);
   });
 });
 
