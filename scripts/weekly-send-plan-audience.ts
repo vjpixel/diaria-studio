@@ -46,11 +46,18 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
-import { excludeCommittedToQueuedCampaigns, segmentRampWarm, type StoreRow } from "./lib/clarice-segment.ts";
-import { CLARICE_BASE, ensureDir } from "./lib/clarice-paths.ts";
+import type { StoreRow } from "./lib/clarice-segment.ts";
+import { CLARICE_BASE, ensureDir, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 import { firstName } from "./lib/clarice-name.ts";
+import { loadSentOrQueuedEmails } from "./clarice-build-segment.ts";
+import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
+// #5403/#5424 — reusa a MESMA seleção pura (3 guards: cutoff novos/rampa,
+// committed queued/sent, sent-or-queued.json cycle-wide) já testada em
+// clarice-schedule-ramp.ts, em vez de duplicar a lógica aqui — os 2 call
+// sites do achado #5403/#5424 nunca podem divergir de novo por construção.
+import { selectAvailableRampWarm } from "./clarice-schedule-ramp.ts";
 
 /**
  * DUPLICADO de `extractPlanCredits` (workers/brevo-dashboard/src/brevo-api.ts,
@@ -124,13 +131,19 @@ export function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const write = hasFlag(argv, "write");
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const outDir = getArg(argv, "out-dir") || resolve(CLARICE_BASE, "weekly-plan", new Date().toISOString().slice(0, 10));
+  // #5403 — opcional: sem `--cycle`, o guard cycle-wide `sent-or-queued.json`
+  // não tem ciclo pra ler (este script não tem noção nativa de ciclo, ao
+  // contrário de clarice-plan-wave.ts/clarice-schedule-ramp.ts) e é pulado
+  // com aviso; `--write` recusa prosseguir sem ele (mesmo padrão fail-safe
+  // dos demais guards deste arquivo — crédito, committed).
+  const cycle = getArg(argv, "cycle") || undefined;
 
-  return run(volumes, { write, dbPath, outDir });
+  return run(volumes, { write, dbPath, outDir, cycle });
 }
 
 async function run(
   volumes: number[],
-  opts: { write: boolean; dbPath: string; outDir: string },
+  opts: { write: boolean; dbPath: string; outDir: string; cycle?: string },
 ): Promise<void> {
   const totalRequested = volumes.reduce((a, b) => a + b, 0);
   console.log(`Plano: ${volumes.map((v, i) => `${DAY_LABELS[i]}=${v.toLocaleString("pt-BR")}`).join(", ")} (total ${totalRequested.toLocaleString("pt-BR")}).`);
@@ -212,14 +225,28 @@ async function run(
     db.close();
   }
 
-  const rampWarm = segmentRampWarm(rows) as AudienceRow[];
-  const ordered = excludeCommittedToQueuedCampaigns(rampWarm, committedListIds);
-  const committedExcluded = rampWarm.length - ordered.length;
-  if (committedExcluded > 0) {
-    console.log(
-      `Excluídos ${committedExcluded.toLocaleString("pt-BR")} contato(s) já comprometidos com uma campanha agendada ou já disparada — evita envio duplicado.`,
+  // #5403/#5424: sem `--cycle` não há ciclo pra ler `sent-or-queued.json` —
+  // pulado com aviso em dry-run, mas `--write` recusa prosseguir (mesmo
+  // fail-safe dos guards de crédito/committed acima).
+  if (!opts.cycle) {
+    console.warn(
+      "⚠️  --cycle não informado — guard cycle-wide sent-or-queued.json pulado (#5403). Passe --cycle {conteúdo}-{envio} pra aplicá-lo.",
     );
+    if (opts.write) {
+      console.error("❌ --write requer --cycle (guard sent-or-queued.json é obrigatório — evita envio duplicado). Abortando.");
+      process.exit(1);
+    }
   }
+  // #5424: mesmo cutoff `novos`/`rampa` (#5410) que `clarice-build-segment.ts
+  // --group ramp-warm` já aplica em produção — não depende de `--cycle`
+  // (lido de `novos-cutoff.json`, global, não por ciclo de conteúdo).
+  const novosCutoff = readNovosCutoff(CLARICE_BASE);
+  const sentOrQueuedEmails = opts.cycle ? loadSentOrQueuedEmails(clariceSegmentsDir(opts.cycle)) : new Set<string>();
+  const ordered = selectAvailableRampWarm(rows, {
+    committedListIds,
+    sentOrQueuedEmails,
+    cutoffNovosIso: novosCutoff?.cutoffIso ?? null,
+  }) as AudienceRow[];
   console.log(`Audiência elegível (1º envio, send_eligible, verificado): ${ordered.length.toLocaleString("pt-BR")} contatos.`);
 
   const groups = sliceIntoVolumes(ordered, volumes);
