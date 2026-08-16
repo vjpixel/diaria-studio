@@ -124,6 +124,23 @@ describe("syncEiaBlockFromReviewed (#5459)", () => {
     assert.ok(result.newEiaMd.includes("Crédito só no mirror."));
   });
 
+  it("#5466 review: mirror é o placeholder de stitch (eia-composer ainda rodando no momento do stitch) e 01-eia.md já tem conteúdo real (race: eia-composer terminou DEPOIS do stitch mas ANTES desta sync) → no-op, reason mirror-is-placeholder, 01-eia.md NÃO é sobrescrito", () => {
+    const creditoReal = "Foto da ave-do-paraíso — [Author](https://x.com/u) / CC BY-SA 4.0.";
+    const eiaMd = `---\neia_answer:\n  A: real\n  B: ia\n---\n\n**É IA?**\n\n${creditoReal}\n`;
+    // Mesmo texto literal gravado por stitch-newsletter.ts::readEiaBlock
+    // quando 01-eia.md ainda não existia no momento do stitch.
+    const reviewedMd = reviewedMdWithEiaBlock(
+      "É IA?\n\n[É IA? ainda processando — bloco será inserido na Etapa 3]",
+    );
+
+    const result = syncEiaBlockFromReviewed(eiaMd, reviewedMd, EDITION_DIR);
+
+    assert.equal(result.changed, false);
+    assert.equal(result.reason, "mirror-is-placeholder");
+    assert.equal(result.newEiaMd, eiaMd, "01-eia.md real não deve ser sobrescrito pelo placeholder");
+    assert.ok(result.newEiaMd.includes(creditoReal), "crédito real de 01-eia.md deve permanecer intacto");
+  });
+
   it("frontmatter sem eia_answer (formato inesperado) não é confundido com corpo — preserva o que houver antes do 2º ---", () => {
     const eiaMd = "---\nalgum_outro_campo: valor\n---\n\n**É IA?**\n\nCrédito original.\n";
     const reviewedMd = reviewedMdWithEiaBlock("**É IA?**\n\nCrédito corrigido.");

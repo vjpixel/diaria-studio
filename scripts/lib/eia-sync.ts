@@ -52,6 +52,26 @@ function normalizeLine(s?: string): string {
   return s ? normalize(s) : "";
 }
 
+/** Trecho estável do placeholder que `stitch-newsletter.ts::readEiaBlock`
+ * grava no mirror quando `01-eia.md` ainda não existe no momento do stitch
+ * ("É IA?\n\n[É IA? ainda processando — bloco será inserido na Etapa 3]").
+ * Usado como sentinela: só o miolo entre colchetes, tolerante a variação de
+ * whitespace via `normalize()` — não precisamos bater a linha inteira. */
+const EIA_PLACEHOLDER_MARKER = "ainda processando — bloco será inserido na Etapa 3";
+
+/**
+ * #5459 review (PR #5466): guarda contra a race onde `eia-composer` termina
+ * DURANTE o Stage 2 — criando `01-eia.md` real DEPOIS do stitch (que gravou
+ * o placeholder no mirror) mas ANTES desta sync rodar. Sem este guard, o
+ * mirror (placeholder) diverge de `01-eia.md` (crédito real) e o sync
+ * regrava o placeholder por cima do crédito real — perda de dado. Se o
+ * mirror extraído é o próprio placeholder, não há correção pós-Clarice pra
+ * propagar: é sempre no-op.
+ */
+function isPlaceholderMirror(block: string): boolean {
+  return normalize(block).includes(normalize(EIA_PLACEHOLDER_MARKER));
+}
+
 export interface EiaSyncResult {
   /** `true` quando o mirror pós-correção divergia de `01-eia.md` e
    * `newEiaMd` traz a versão sincronizada. `false` = no-op (sem mirror em
@@ -61,7 +81,7 @@ export interface EiaSyncResult {
   newEiaMd: string;
   /** Motivo do no-op, só presente quando `changed` é `false` — útil pro
    * wrapper de CLI logar sem precisar re-derivar. */
-  reason?: "no-mirror" | "already-synced";
+  reason?: "no-mirror" | "already-synced" | "mirror-is-placeholder";
 }
 
 /**
@@ -86,6 +106,10 @@ export function syncEiaBlockFromReviewed(
   const mirrorBlock = extractEiaMirrorBlock(reviewedMdText);
   if (!mirrorBlock) {
     return { changed: false, newEiaMd: eiaMdText, reason: "no-mirror" };
+  }
+
+  if (isPlaceholderMirror(mirrorBlock)) {
+    return { changed: false, newEiaMd: eiaMdText, reason: "mirror-is-placeholder" };
   }
 
   const real = parseEIA(eiaMdText, editionDir);
