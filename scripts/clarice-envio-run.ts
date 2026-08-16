@@ -77,7 +77,8 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
@@ -124,7 +125,10 @@ import type { InvocationSummary } from "./clarice-schedule-group.ts";
 // essa ORDEM (não só o comportamento final), mesmo padrão do #4983.
 loadProjectEnv();
 
-const ROOT = resolve(new URL("..", import.meta.url).pathname);
+// `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a drive
+// letter, ex: "C:\C:\Users\...") — ver nota em scripts/brevo-diaria-run.ts e
+// test/root-path-windows.test.ts.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------------------------------------------------------------------
 // Spawn de sub-script — mesmo padrão de clarice-novos-run.ts.

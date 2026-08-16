@@ -74,7 +74,8 @@
  * @see scripts/lib/clarice-envio-last-brake.ts (sidecar do último freio conhecido)
  */
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -100,7 +101,10 @@ import type { WaveProposal } from "./lib/clarice-wave-plan.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 
 loadProjectEnv();
-const ROOT = resolve(new URL("..", import.meta.url).pathname);
+// `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a drive
+// letter, ex: "C:\C:\Users\...") — ver nota em scripts/brevo-diaria-run.ts e
+// test/root-path-windows.test.ts.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------------------------------------------------------------------
 // Deps injetáveis.
