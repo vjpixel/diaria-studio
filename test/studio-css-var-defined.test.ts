@@ -41,7 +41,13 @@ const PUBLIC_DIR = join(ROOT, "scripts", "studio-ui", "public");
  * `/tokens.generated.css` — não existem como arquivo em `public/`, então
  * precisam ser lidos da fonte. */
 function generatedTokenNames(): Set<string> {
-  const src = readFileSync(join(ROOT, "scripts", "studio-ui", "tokens-css.ts"), "utf8");
+  // `stripComments` aqui também, não só nos `.css`: `tokens-css.ts` tem uma
+  // docstring que ILUSTRA o formato (`:root { --token: valor; ... }`), e sem
+  // isto `--token` entrava na lista de tokens "definidos". Um `var(--token)`
+  // em qualquer CSS passaria batido — exatamente o falso negativo que este
+  // guard existe pra impedir, dentro do próprio guard (achado no review do
+  // PR #5482). TS/JS usam o mesmo delimitador `/* */`, então o helper serve.
+  const src = stripComments(readFileSync(join(ROOT, "scripts", "studio-ui", "tokens-css.ts"), "utf8"));
   return new Set([...src.matchAll(/--([a-zA-Z0-9-]+)\s*:/g)].map((m) => m[1]));
 }
 
