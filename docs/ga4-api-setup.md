@@ -58,7 +58,10 @@ Não é a única opção — é a que reaproveita infraestrutura já validada.
 
 Todos os quatro (`GA4_PROPERTY_ID`, `GA4_CLIENT_ID`, `GA4_CLIENT_SECRET`,
 `GA4_REFRESH_TOKEN`) vão para o Doppler (`diaria-studio` / `dev`), nunca
-para o repo — mesma disciplina de `GOOGLE_ADS_*`.
+para o repo — mesma disciplina de `GOOGLE_ADS_*`. Depois de gravar no
+Doppler, rodar `npm run sync-env` (CLAUDE.md §1b) para propagar as 4 novas
+chaves ao `.env` local — sem isso o script segue fail-soft (aviso, exit 0)
+mesmo com o Doppler já atualizado.
 
 **Nenhuma credencial real foi criada ou testada nesta unidade** (#5248) —
 o escopo aqui é o código de ingestão fail-soft + testes com mock. Obter as
