@@ -27,6 +27,8 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
   samsung: /\bsamsung\b/i,
   apple: /\bapple\b|\bsiri\b|tim cook/i,
   deepseek: /\bdeepseek\b/i,
+  oracle: /\boracle\b/i,
+  alibaba: /\balibaba\b/i,
 };
 
 /**
