@@ -181,7 +181,31 @@ gh api graphql -f query='query { repository(owner: "vjpixel", name: "diaria-stud
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'
 ```
 
-## 12. Tocou `invariant-checks/*.ts`? Regenerar `docs/editorial-invariants.md` (#4877)
+## 12. Matar processo próprio: sempre por PID, nunca por nome de imagem (#5432)
+
+**Nunca** `taskkill /IM <nome>` (Windows) nem `pkill -f <nome>`/`killall <nome>`
+(Unix) para encerrar um processo que você mesmo iniciou (ex: script de
+diagnóstico em background). Esses comandos casam por **nome de imagem/padrão
+de linha de comando**, não por PID/árvore do chamador — matam TODO processo
+com esse nome na máquina, incluindo os de **outras sessões concorrentes**
+(overnight, develop, continuo, sessão interativa do editor — múltiplas
+sessões coexistem na mesma máquina por design, #5156), o Studio server,
+scheduled tasks, ou o próprio harness do Claude Code.
+
+Incidente de referência (#5432): um subagente investigando o #5401 rodou
+`taskkill //F //IM node.exe //T` pra parar um script de diagnóstico próprio
+— comando sem escopo, mataria todo `node.exe` da máquina. Dano visível foi
+nulo nessa ocorrência (sorte de timing), mas o blast radius potencial é
+alto e o padrão é fácil de repetir.
+
+**Correto:** guardar o PID do processo que você mesmo iniciou (`$!` no
+shell, ou o retorno de `spawn`/`exec`) e matar só ele —
+`taskkill //F //PID {pid}` no Windows, `kill {pid}` no Unix — ou, se
+disponível, usar o mecanismo de kill do próprio harness em vez de um
+comando de shell solto. Nunca `/IM {nome-de-processo}` ou `-f {padrão}` sem
+escopo ao PID/árvore do chamador.
+
+## 13. Tocou `invariant-checks/*.ts`? Regenerar `docs/editorial-invariants.md` (#4877)
 
 Se você adicionar, editar ou remover uma invariante em
 `scripts/lib/invariant-checks/stage-*.ts`, rode
@@ -193,7 +217,7 @@ do coordenador (2 ocorrências na mesma rodada overnight 260810: PRs #4864 e
 #4876). Commitar o `docs/editorial-invariants.md` regenerado junto com a
 mudança em `invariant-checks/`.
 
-## 13. Preflight de duplicidade — checklist obrigatório (#5327 item 3)
+## 14. Preflight de duplicidade — checklist obrigatório (#5327 item 3)
 
 **Antes de implementar**, todo subagente implementador roda `gh pr list
 --state open` e `gh issue view {N} --json state` para a(s) issue(s) do lote.
@@ -213,7 +237,7 @@ Esperado sobretudo em `/diaria-continuo` (roda em paralelo a sessões
 interativas comuns do mesmo editor por design), mas vale igualmente em
 overnight/develop contra qualquer sessão concorrente.
 
-## 14. Critérios de agrupamento em lotes (#2024, #3453 Rec 3, teto #2754)
+## 15. Critérios de agrupamento em lotes (#2024, #3453 Rec 3, teto #2754)
 
 **Escopo diferente dos itens 1-13 acima**: estes não são regras que o
 subagente implementador segue — são o critério que o **coordenador**
