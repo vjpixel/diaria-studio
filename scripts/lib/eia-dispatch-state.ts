@@ -26,9 +26,10 @@
  * @see .claude/agents/orchestrator-stage-3.md §3a
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 export interface EiaDispatchState {
   /** Bash ID do `run_in_background=true` que disparou `eia-compose.ts`.
@@ -89,8 +90,22 @@ export function writeEiaDispatchState(
 ): EiaDispatchState {
   const p = statePath(editionDir);
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n", "utf8");
-  return state;
+  // #5434 item 2: lock + tmp-write + rename, mesmo mecanismo dos outros 2
+  // módulos de estado — esta escrita é sempre overwrite completo (não faz
+  // merge com o que já existe), mas ainda se beneficia do tmp+rename atômico
+  // (nunca deixa o arquivo real pela metade) e do lock (evita que um retry
+  // concorrente do Stage 3 §3a e o dispatch original do Stage 1 se
+  // atropelem).
+  const lockPath = p + ".lock";
+  acquireLock(lockPath);
+  try {
+    const tmpPath = p + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, p);
+    return state;
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 // CLI:
