@@ -671,15 +671,19 @@ test("eligibility #2876: soft_bounce >= limite + priority_points > 0 → SEGUE s
 // ausente/omitido).
 // ---------------------------------------------------------------------------
 
-test("eligibility #5041: sends>=2 e opens<=0, JÁ medido → sunset_non_opener", () => {
+test("eligibility #5041: sends>=2 e opens<=0, JÁ medido → sunset_non_opener SERIA o veredito, mas #5401 suspendeu o corte (dado de opens não-confiável, 14.922 contatos já cortados por engano)", () => {
   const r = classifyEligibility({
     ...CLEAN,
     sends_count: 2,
     opens_count: 0,
     brevo_modified_at: "2026-08-01T09:00:00Z",
   });
-  assert.equal(r.send_eligible, false);
-  assert.equal(r.ineligible_reason, "sunset_non_opener");
+  // #5401: enquanto SUNSET_NON_OPENER_SUSPENDED_5401 = true, este perfil
+  // (que antes do #5401 seria cortado) fica elegível. O predicado puro
+  // shouldSunsetNonOpener continua correto — ver cobertura própria em
+  // test/clarice-envio-policy.test.ts — só o WIRING está desligado.
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
 });
 
 test("eligibility #5041: sends=1 (só 1 envio) → NÃO sunseta, mesmo já medido e opens=0", () => {
@@ -777,7 +781,7 @@ test("eligibility #5046: opt-in engajado (priority_points>0), sends=2, opens=0 �
   assert.equal(r.ineligible_reason, null);
 });
 
-test("eligibility #5046: MESMO perfil SEM opt-in (priority_points<=0) → SEGUE sunset_non_opener (zero regressão do #5041)", () => {
+test("eligibility #5046: MESMO perfil SEM opt-in (priority_points<=0) → SEGUE sunset_non_opener enquanto o corte estava ativo; com #5401 suspendendo, fica elegível (zero regressão do #5041 na lógica do override, só o corte inteiro está desligado)", () => {
   const r = classifyEligibility({
     ...CLEAN,
     priority_points: 0,
@@ -785,8 +789,29 @@ test("eligibility #5046: MESMO perfil SEM opt-in (priority_points<=0) → SEGUE 
     opens_count: 0,
     brevo_modified_at: "2026-08-01T09:00:00Z",
   });
-  assert.equal(r.send_eligible, false);
-  assert.equal(r.ineligible_reason, "sunset_non_opener");
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+// ---------------------------------------------------------------------------
+// eligibility #5401 (P0) — suspensão do corte sunset_non_opener. opens_count
+// subconta abertura real em até 20× pra campanhas do ciclo 2606 (catch-up
+// #4688 não cobre esse subconjunto) — 14.922 dos 15.864 contatos já cortados
+// tiveram o último envio numa campanha comprovadamente subcontada. O corte é
+// permanente por construção, então SUNSET_NON_OPENER_SUSPENDED_5401 = true
+// precisa manter TODO perfil que antes seria cortado como elegível, mesmo o
+// caso mais óbvio (muitos envios, zero abertura, há muito tempo medido).
+// ---------------------------------------------------------------------------
+
+test("eligibility #5401: perfil MAIS óbvio de não-abridor (sends=10, opens=0, medido há semanas) continua ELEGÍVEL enquanto o corte está suspenso", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 10,
+    opens_count: 0,
+    brevo_modified_at: "2026-07-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
 });
 
 // ---------------------------------------------------------------------------

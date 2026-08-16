@@ -269,12 +269,19 @@ test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave
 // SQLite real → recomputeDerived (classifyEligibility + shouldSunsetNonOpener,
 // clarice-db.ts) → loadStoreRows → segmentFromStore/priorityQueue. O predicado
 // puro (shouldSunsetNonOpener) e o wiring isolado (classifyEligibility) já
-// têm cobertura própria — este teste é o "de ponta a ponta" pedido pela issue:
-// prova que um não-abridor reincidente sai da FILA DE ELEGÍVEIS de fato, não
-// só que uma coluna do store mudou de valor.
+// têm cobertura própria.
+//
+// #5401 (P0, 260816) SUSPENDEU o corte inteiro (opens_count subconta abertura
+// em até 20× pra campanhas do ciclo 2606, catch-up #4688 não cobre esse
+// subconjunto — 14.922 contatos já cortados por dado corrompido, corte é
+// permanente por construção). Este teste, que antes provava "sai da fila de
+// fato", agora prova o inverso enquanto a suspensão está ativa: o MESMO
+// perfil que seria cortado permanece na fila — é a garantia de que a
+// suspensão realmente se propaga ponta a ponta (SQLite → store →
+// segmentação → fila de envio), não só que uma flag existe em algum lugar.
 // ---------------------------------------------------------------------------
 
-test("#5041 end-to-end: não-abridor reincidente (≥2 envios, 0 aberturas, já sincronizado) sai da fila de elegíveis na próxima rodada", () => {
+test("#5401 end-to-end: não-abridor reincidente (≥2 envios, 0 aberturas, já sincronizado) CONTINUA na fila enquanto o corte sunset está suspenso", () => {
   const db = openClariceDb(":memory:");
   // não-abridor reincidente: 3 envios, 0 aberturas, JÁ sincronizado pela
   // Brevo (brevo_modified_at não-null) — satisfaz o guard hasMeasuredOpens.
@@ -304,23 +311,26 @@ test("#5041 end-to-end: não-abridor reincidente (≥2 envios, 0 aberturas, já 
   recomputeDerived(db);
 
   const rows = loadStoreRows(db);
-  const sunsetado = rows.find((r) => r.email === "nunca.abre@x.com")!;
-  assert.equal(sunsetado.send_eligible, 0);
-  assert.equal(sunsetado.ineligible_reason, "sunset_non_opener");
+  const seriaSunsetado = rows.find((r) => r.email === "nunca.abre@x.com")!;
+  // #5401: com o corte suspenso, este perfil (que classifyEligibility teria
+  // marcado sunset_non_opener antes do #5401) fica elegível como qualquer
+  // outro não-abridor de dado ainda não confiável.
+  assert.equal(seriaSunsetado.send_eligible, 1);
+  assert.equal(seriaSunsetado.ineligible_reason, null);
 
   const s = segmentFromStore(rows);
-  // saiu de fato da fila — não aparece nem em reSend nem em firstSend.
-  assert.ok(!s.reSend.some((r) => r.email === "nunca.abre@x.com"));
-  assert.ok(!s.firstSend.some((r) => r.email === "nunca.abre@x.com"));
+  // continua na fila — não foi excluído.
+  assert.ok(!s.excluded.some((e) => e.email === "nunca.abre@x.com"));
   assert.ok(
-    s.excluded.some((e) => e.email === "nunca.abre@x.com" && e.reason === "sunset_non_opener"),
+    s.reSend.some((r) => r.email === "nunca.abre@x.com") || s.firstSend.some((r) => r.email === "nunca.abre@x.com"),
+    "não-abridor reincidente deveria continuar na fila (re-envio) enquanto o sunset está suspenso (#5401)",
   );
 
   // a mesma checagem, na fila de prioridade que a wave real fatia de fato.
   const queue = priorityQueue(s);
-  assert.ok(!queue.some((r) => r.email === "nunca.abre@x.com"), "não-abridor sunsetado nunca aparece na fila de envio");
+  assert.ok(queue.some((r) => r.email === "nunca.abre@x.com"), "não-abridor com sunset suspenso continua aparecendo na fila de envio (#5401)");
 
-  // os 3 controles continuam elegíveis e presentes na fila (re-envio).
+  // os 3 controles (nunca sunsetariam, com ou sem #5401) continuam elegíveis e presentes na fila.
   for (const email of ["ainda.nao.sincronizado@x.com", "pagante.nao.abre@x.com", "engajado@x.com"]) {
     const row = rows.find((r) => r.email === email)!;
     assert.equal(row.send_eligible, 1, `${email} deveria continuar elegível`);

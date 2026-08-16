@@ -468,6 +468,34 @@ export interface EligibilityInput {
   brevo_modified_at?: string | null;
 }
 
+/**
+ * #5401 (P0, 260816): SUSPENSÃO TEMPORÁRIA do corte `sunset_non_opener`.
+ *
+ * `opens_count` do store subconta abertura real em até 20× pra campanhas do
+ * ciclo 2606 (20/07-28/07) e ~40% pras campanhas de 09/08 em diante — o
+ * catch-up de opens (#4688) não cobre esse subconjunto (suspeita: filtro por
+ * nome de campanha não enxerga `Diar.ia Mensal 2606 — envio N`, só
+ * `Clarice 2607 grupo:*`) e a degradação é PERMANENTE fora da janela de 30
+ * dias. `hasMeasuredOpens` (clarice-segment.ts) só prova "já foi sincronizado
+ * alguma vez" — não prova "a abertura desta campanha está completa" — então
+ * não protege contra este caso.
+ *
+ * Dano já medido: 14.922 dos 15.864 contatos cortados por este corte tiveram
+ * o último envio numa campanha comprovadamente subcontada (Brevo reporta
+ * ~20% de abertura; o store registrou ~1%). O corte é permanente por
+ * construção (sem caminho de volta), então continuar cortando sobre dado
+ * ruim é dano novo a cada `clarice-build-db.ts`.
+ *
+ * Critério de reativação (não automático — decisão do editor após os itens
+ * 3-4 do #5401 fecharem): catch-up cobrindo todas as campanhas do ciclo
+ * (não só as nomeadas no padrão atual) + alarme de COBERTURA comparando
+ * `opens_count` agregado do store contra `opensRate` da Brevo por campanha.
+ * `shouldSunsetNonOpener` (clarice-envio-policy.ts) continua correta como
+ * predicado puro — é só este call site que fica desligado enquanto a fonte
+ * de dado não é confiável.
+ */
+const SUNSET_NON_OPENER_SUSPENDED_5401 = true;
+
 export function classifyEligibility(i: EligibilityInput): {
   send_eligible: boolean;
   ineligible_reason: IneligibleReason | null;
@@ -533,6 +561,7 @@ export function classifyEligibility(i: EligibilityInput): {
   // cobrem a ausência OPCIONAL do campo neste tipo (ver doc de
   // `EligibilityInput` acima), não dado corrompido.
   if (
+    !SUNSET_NON_OPENER_SUSPENDED_5401 &&
     !engaged &&
     !mvExempt &&
     hasMeasuredOpens({ brevo_modified_at: i.brevo_modified_at ?? null }) &&

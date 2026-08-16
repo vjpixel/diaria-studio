@@ -1260,22 +1260,24 @@ test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua exc
   assert.equal(out.already_committed_brevo, 1);
 });
 
-test("REGRESSÃO main(): 'reativacao' sobrevive a sends_count=1 (1ª retentativa), mas sends_count=2 é cortado por SUNSET (#5041) — interação não documentada antes deste teste", async () => {
+test("REGRESSÃO main(): 'reativacao' — sends_count=1 e sends_count=2 SOBREVIVEM os dois enquanto SUNSET (#5041) está suspenso (#5401) — interação documentada desde #5041, atualizada pra refletir a suspensão", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-reativacao-sunset-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
   // `reativacao` exige sends_count>0 && opens_count===0 (isReativacao,
   // clarice-segment.ts). `shouldSunsetNonOpener` (clarice-envio-policy.ts,
-  // ligado em classifyEligibility por #5041) corta send_eligible=false pra
+  // ligado em classifyEligibility por #5041) cortaria send_eligible=false pra
   // sends_count>=2 && opens_count<=0 — as duas populações se sobrepõem
-  // inteiramente a partir de sends_count=2. Sem este teste, a interação
-  // ficava implícita e só um regen de fixture (#5041 self-review, PR #5044)
-  // a revelou.
+  // inteiramente a partir de sends_count=2. #5401 (P0, 260816) suspendeu esse
+  // corte (opens_count subconta abertura real em até 20× pra parte do store,
+  // 14.922 contatos já cortados por dado corrompido) — enquanto suspenso, o
+  // 2º contato (sends_count=2) não é mais desqualificado antes de chegar ao
+  // predicado de reativacao, então os dois sobrevivem agora.
   db.prepare(
     "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_modified_at) VALUES ('primeira-tentativa@x.com','P',2,0,1,'verified','2026-06-01T00:00:00Z')",
   ).run();
   db.prepare(
-    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_modified_at) VALUES ('sunset-permanente@x.com','S',2,0,2,'verified','2026-06-01T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_modified_at) VALUES ('sunset-suspenso@x.com','S',2,0,2,'verified','2026-06-01T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -1285,7 +1287,7 @@ test("REGRESSÃO main(): 'reativacao' sobrevive a sends_count=1 (1ª retentativa
     () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "reativacao", "--dry-run", "--data-root", dir])),
   );
   const out = JSON.parse(logs.join("\n"));
-  // Só o de sends_count=1 sobrevive — o de sends_count=2 foi permanentemente
-  // desqualificado por sunset ANTES de chegar ao predicado de reativacao.
-  assert.equal(out.selected, 1);
+  // #5401: os dois sobrevivem — nenhum é desqualificado por sunset enquanto
+  // o corte está suspenso (SUNSET_NON_OPENER_SUSPENDED_5401, clarice-db.ts).
+  assert.equal(out.selected, 2);
 });
