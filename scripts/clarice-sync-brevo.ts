@@ -459,7 +459,11 @@ export async function main(
   }
 
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
-  const concurrency = Number(getArg(argv, "concurrency")) || 4;
+  // getIntArg (#4497/#4573) — ausente vira o default 4; typo no VALOR (ex:
+  // "--concurrency abc") ou "--concurrency 0" agora LANÇAM em vez de colapsar
+  // silenciosamente (antes: Number(getArg(...)) || 4 não distinguia "flag
+  // ausente" de "valor inválido/vazio", e concorrência 0 travaria o pool()).
+  const concurrency = getIntArg(argv, "concurrency", { min: 1 }) ?? 4;
   // getIntArg (#4497) — ausente vira 0 ("sem limite", comportamento normal do
   // sync agendado); um typo no VALOR (ex: "--limit abc") agora LANÇA em vez
   // de colapsar no mesmo 0 silenciosamente (antes: Number(getArg(...)) || 0
