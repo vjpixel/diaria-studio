@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { stripCssComments } from "./helpers/css.ts";
 
 const PUBLIC_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -38,7 +39,11 @@ describe("Studio public CSS — sem hex cru fora do allowlist (#4674)", () => {
 
     const offenders: string[] = [];
     for (const file of cssFiles) {
-      const content = readFileSync(join(PUBLIC_DIR, file), "utf-8");
+      // Comentário não pinta nada: um comentário que CITA um hex (tipicamente
+      // documentando por que aquela cor foi REMOVIDA) não é hex cru em
+      // declaração. Sem isto, explicar a correção no próprio CSS derruba o
+      // teste — aconteceu ao vivo no #5480.
+      const content = stripCssComments(readFileSync(join(PUBLIC_DIR, file), "utf-8"));
       const allowed = new Set((ALLOWLIST[file] ?? []).map((h) => h.toLowerCase()));
       for (const match of content.matchAll(HEX_COLOR_DECL)) {
         const hex = match[2].toLowerCase();

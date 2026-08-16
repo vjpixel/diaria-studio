@@ -189,7 +189,18 @@
 .dispatch-overnight { border-color: var(--status-ok); color: var(--status-ok); }
 .dispatch-develop { border-color: var(--status-warn); color: var(--status-warn); }
 .dispatch-bloqueada { border-color: var(--status-danger); color: var(--status-danger); }
-.dispatch-fora-de-rodada { border-color: var(--rule); color: var(--fg-dim, var(--rule)); }
+/* Neutro por OPACIDADE sobre a cor de texto herdada — mesmo padrão de
+   `.priority-none` (0.4) e `.track-other` (0.6) logo acima, e não um token de
+   cor próprio.
+   A versão anterior usava `color: var(--fg-dim, var(--rule))`. `--fg-dim`
+   NUNCA existiu neste repo (a única ocorrência era essa linha), então o
+   fallback `--rule` valia sempre — e `--rule` é cor de linha divisória,
+   #EBE5D0: contraste medido de **1,22:1** contra o papel, quando o mínimo
+   legível pra texto pequeno é 4,5:1. Ficava praticamente invisível.
+   0.7 sobre `--ink` dá 6,73:1 — folga sobre o mínimo, em vez de raspar nele
+   (0.6, o valor de `.track-other`, daria 4,76:1: passa, mas sem margem num
+   badge de 0.72rem). */
+.dispatch-fora-de-rodada { opacity: 0.7; }
 
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·
