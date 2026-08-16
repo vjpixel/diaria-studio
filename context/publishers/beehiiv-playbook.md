@@ -79,6 +79,22 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 - Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg` existem; `04-d3-1x1.jpg` e `04-d3-2x1.jpg` são obrigatórios somente para edições com 3 destaques — ausência é correta em edições 2-destaque (#2352); edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
+**Auditoria screenshot→asserção determinística (#5417, 260816).** Os únicos 2
+call sites de `mcp__claude-in-chrome__computer` com `action: "screenshot"`
+neste arquivo são: (1) o screenshot-probe de visibilidade logo abaixo — não é
+verificação de conteúdo, é teste de responsividade do renderer (só um
+screenshot bem-sucedido prova que o pipeline de render/CDP não está
+congelado; `get_page_text`/`find` não exercitam o mesmo caminho e não
+serviriam de proxy confiável); (2) `resolveClickPoint` em §5.1 passo 3 —
+não é verificação nenhuma, é cálculo de coordenadas de clique real
+(`computer.left_click`), que **precisa** de um screenshot pra converter
+retângulo→pixel. Nenhum dos dois é substituível por asserção binária sem
+mudar a semântica do mecanismo. O restante do arquivo já usa
+`get_page_text`/`find`/varredura `doc.descendants` via `javascript_tool`
+(ex: §5.3, §6.6) como caminho primário de verificação — a hipótese da
+issue (screenshot fazendo o trabalho de uma checagem binária) não achou
+call site inequívoco pra trocar nesta auditoria.
+
 ### Preflight de visibilidade da aba (#2015, #2075)
 
 **Antes de QUALQUER passo que dependa de clique real** (`computer`) — criar post
