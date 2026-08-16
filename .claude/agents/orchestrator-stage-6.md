@@ -482,6 +482,11 @@ ficar presa em `running` ate reconciliacao (ver `reconcileZombieRunningRows` em
 `scripts/overnight-statusline.ts`, que detecta `.step-6-done.json` presente + row `running`
 e corrige a exibicao sem escrita).
 
+`capture-stage-usage.ts` sai com exit 0 mesmo quando nao capturou nada — ler o JSON de
+stdout: se `"source":"unavailable"`, logar warn (mesmo padrao do sentinel acima — #5475):
+`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`.
+Nao bloquear.
+
 ### 6b-8. Regenerar o report + registrar na superfície do Studio (#1510, #3457, #3714) — ULTIMO passo do pipeline
 
 Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: agora a

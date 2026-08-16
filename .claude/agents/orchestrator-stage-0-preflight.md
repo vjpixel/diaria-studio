@@ -521,6 +521,13 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 0 --
 npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 0
 ```
 
+Ler o JSON de stdout: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel — #5475) e não bloquear:
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn \
+  --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'
+```
+
 ---
 
 ## Stage 1 — Research
