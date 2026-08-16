@@ -55,6 +55,21 @@ export interface StageRow {
   tokens_in?: number;
   tokens_out?: number;
   models?: string[];
+  /**
+   * Procedência do número acima (#5413). Sem isto, `tokens_in`/`cost_usd`
+   * ficam sem como ser auditados depois: `aggregate-costs.ts` compara custo
+   * entre edições semanas mais tarde e não teria como saber se aquele stage
+   * foi medido com a sessão isolada ou somando sessões concorrentes.
+   *
+   * `all_sessions` = número possivelmente contaminado (comportamento
+   * pré-#5413, ou fallback). `sessions_excluded > 0` sob `current_session` =
+   * quanta contaminação o filtro evitou. `subagent_tokens_in: null` = custo
+   * de subagente NÃO REGISTRADO pelo harness, nunca zero.
+   */
+  session_filter?: "current_session" | "all_sessions";
+  sessions_excluded?: number;
+  subagent_tokens_in?: number | null;
+  subagent_tokens_out?: number | null;
 }
 
 export interface StageStatusDoc {
@@ -229,6 +244,10 @@ export interface UpdateOpts {
   tokens_in?: number;
   tokens_out?: number;
   models?: string[];
+  session_filter?: "current_session" | "all_sessions"; // #5413
+  sessions_excluded?: number;
+  subagent_tokens_in?: number | null;
+  subagent_tokens_out?: number | null;
 }
 
 function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undefined {
@@ -316,6 +335,13 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       tokens_in: opts.tokens_in ?? r.tokens_in,
       tokens_out: opts.tokens_out ?? r.tokens_out,
       models: opts.models ?? r.models,
+      session_filter: opts.session_filter ?? r.session_filter,
+      sessions_excluded: opts.sessions_excluded ?? r.sessions_excluded,
+      // `??` NÃO serve aqui: `null` é um valor com significado ("subagente
+      // não registrado", #5413) e seria tratado como "não informado",
+      // ressuscitando o valor anterior. Presença da chave é o critério.
+      subagent_tokens_in: "subagent_tokens_in" in opts ? opts.subagent_tokens_in : r.subagent_tokens_in,
+      subagent_tokens_out: "subagent_tokens_out" in opts ? opts.subagent_tokens_out : r.subagent_tokens_out,
     } as StageRow;
   });
   // `...doc` já preserva `run_started_at` (#1304) — não precisa repetir

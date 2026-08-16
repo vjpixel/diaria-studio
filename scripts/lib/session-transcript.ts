@@ -48,6 +48,12 @@
  * Subagentes com `isolation: "worktree"` escrevem num cwd diferente →
  * diretório de projeto diferente → também não capturados.
  *
+ * **Os números acima são de uma amostra datada (300 transcripts, harness
+ * 2.1.233, 16/08/2026) — re-derivar antes de citar**, mesma disciplina do
+ * #1172. Se uma versão futura do harness passar a gravar `isSidechain`, o
+ * código já lida com isso sozinho (`subagentTokensIn` deixa de ser `null`);
+ * é este parágrafo que vira prosa desatualizada, não o comportamento.
+ *
  * Requer `~/.claude/projects/` — só existe em sessão LOCAL (não em
  * cloud/worktree efêmero), consistente com o label `local` da issue #3441
  * (ver CLAUDE.md § Label `local`).
@@ -78,6 +84,11 @@ export interface UsageEntry {
  * comando do Bash tool. É o nome do arquivo de transcript (`{id}.jsonl`), o
  * que permite a um script rodado de dentro da sessão saber qual transcript é
  * o seu. `null` quando ausente (sessão não-Claude, teste, harness antigo).
+ *
+ * Confirmado ao vivo no #5413: filtrando por este id, a edição 260814 saiu de
+ * 1.001M pra 708M tokens, batendo stage a stage com a análise manual feita
+ * por outro caminho (S4 581→424, S5 175→75, S6 62→35). Não é suposição sobre
+ * o formato — o número fecha.
  */
 export function currentSessionId(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = env.CLAUDE_CODE_SESSION_ID;
@@ -177,20 +188,25 @@ export function listTranscriptFiles(transcriptsDir: string): string[] {
   }
 }
 
-export interface UsageWindowResult {
+/**
+ * Qual filtro de sessão valeu — união discriminada de propósito: torna
+ * `{ sessionFilter: "current_session", filterReason: ... }` (um estado que
+ * não existe) irrepresentável, em vez de depender de o produtor acertar dois
+ * campos independentes. `all_sessions` SEMPRE carrega o motivo.
+ */
+export type SessionFilterMode = "current_session" | "all_sessions";
+export type SessionFilterReason = "no_session_id" | "session_file_not_found";
+
+export type SessionFilterOutcome =
+  | { sessionFilter: "current_session" }
+  | { sessionFilter: "all_sessions"; filterReason: SessionFilterReason };
+
+interface UsageWindowBase {
   entries: UsageEntry[];
   sessionsScanned: number;
   tokensIn: number;
   tokensOut: number;
   models: string[];
-  /**
-   * `current_session` = só o transcript da sessão pedida entrou na conta.
-   * `all_sessions` = TODOS os arquivos do diretório entraram — o número pode
-   * incluir sessões Claude Code concorrentes no mesmo repo (#5413).
-   */
-  sessionFilter: "current_session" | "all_sessions";
-  /** Por que caiu em `all_sessions`. Ausente quando o filtro valeu. */
-  filterReason?: "no_session_id" | "session_file_not_found";
   /**
    * Quantos OUTROS transcripts tinham turnos nesta mesma janela e ficaram de
    * fora. `0` sob `all_sessions` (nada foi excluído). Sob `current_session`,
@@ -199,12 +215,23 @@ export interface UsageWindowResult {
   sessionsExcluded: number;
   /**
    * Tokens de subagente (`Agent()`) na janela. `null` = nenhum turno
-   * sidechain observado — que é o caso em 100% dos transcripts do harness
-   * 2.1.233. `null` significa "não registrado", NUNCA "custou zero" (#5413).
+   * sidechain observado — o que foi o caso em toda a amostra checada no
+   * #5413 (300 transcripts, harness 2.1.233). `null` significa "não
+   * registrado", NUNCA "custou zero".
    */
   subagentTokensIn: number | null;
   subagentTokensOut: number | null;
 }
+
+/**
+ * Distribuído à mão (`(Base & A) | (Base & B)`) em vez de
+ * `Base & (A | B)` — TypeScript não estreita por discriminante quando a
+ * união está dentro de uma interseção, então a forma curta compila mas
+ * obriga o consumidor a castear pra ler `filterReason`.
+ */
+export type UsageWindowResult =
+  | (UsageWindowBase & { sessionFilter: "current_session" })
+  | (UsageWindowBase & { sessionFilter: "all_sessions"; filterReason: SessionFilterReason });
 
 export interface CollectUsageOptions {
   /**
@@ -217,12 +244,24 @@ export interface CollectUsageOptions {
 }
 
 /**
- * Agrega usage de TODOS os arquivos `.jsonl` do diretório cujas entradas
- * caem dentro de `[startIso, endIso]` (inclusive). `tokensIn` = soma de
- * input + cache_creation + cache_read (convenção "billed input tokens" —
- * todos os 3 são cobrados no request, mesmo que a taxas diferentes; ver
- * `scripts/lib/pricing.ts` pra como isso vira custo). `tokensOut` = soma de
- * output. `models` = lista de model strings distintos observados.
+ * Agrega usage das entradas que caem dentro de `[startIso, endIso]`
+ * (inclusive).
+ *
+ * **Quais arquivos entram depende de `opts.sessionId` (#5413):** com um id
+ * que casa com um transcript do diretório, só ELE é somado
+ * (`sessionFilter: "current_session"`) — é o caminho default em produção,
+ * resolvido pelo CLI via `currentSessionId()`. Sem id, ou com um id que não
+ * casa com arquivo nenhum, varre TODOS os `.jsonl` do diretório
+ * (`sessionFilter: "all_sessions"` + `filterReason`), que é o comportamento
+ * pré-#5413 e pode misturar sessões Claude Code concorrentes no mesmo repo.
+ * `sessionsExcluded` diz quantos transcritos tinham turnos nesta janela e
+ * ficaram de fora.
+ *
+ * `tokensIn` = soma de input + cache_creation + cache_read (convenção
+ * "billed input tokens" — todos os 3 são cobrados no request, mesmo que a
+ * taxas diferentes; ver `scripts/lib/pricing.ts` pra como isso vira custo).
+ * `tokensOut` = soma de output. `models` = lista de model strings distintos
+ * observados.
  */
 export function collectUsageInWindow(
   transcriptsDir: string,
@@ -239,21 +278,20 @@ export function collectUsageInWindow(
   // explícito — nunca devolve vazio silencioso (seria indistinguível de
   // "stage sem atividade") nem volta ao comportamento antigo sem avisar.
   const wanted = opts.sessionId ? join(transcriptsDir, `${opts.sessionId}.jsonl`) : null;
-  let sessionFilter: UsageWindowResult["sessionFilter"] = "all_sessions";
-  let filterReason: UsageWindowResult["filterReason"];
-  if (!wanted) {
-    filterReason = "no_session_id";
-  } else if (files.includes(wanted)) {
-    sessionFilter = "current_session";
-  } else {
-    filterReason = "session_file_not_found";
-  }
+  // Construído numa expressão só: a união discriminada não deixa os dois
+  // campos saírem de sincronia, mas isso só vale se o valor nascer inteiro em
+  // vez de montado por `let`s independentes.
+  const outcome: SessionFilterOutcome = !wanted
+    ? { sessionFilter: "all_sessions", filterReason: "no_session_id" }
+    : files.includes(wanted)
+      ? { sessionFilter: "current_session" }
+      : { sessionFilter: "all_sessions", filterReason: "session_file_not_found" };
 
   const entries: UsageEntry[] = [];
   const excluded = new Set<string>();
   if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
     for (const file of files) {
-      const keep = sessionFilter === "all_sessions" || file === wanted;
+      const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
       for (const entry of parseTranscriptFile(file)) {
         const ts = new Date(entry.timestamp).getTime();
         if (!Number.isFinite(ts)) continue;
@@ -288,8 +326,7 @@ export function collectUsageInWindow(
     tokensIn,
     tokensOut,
     models: [...modelSet],
-    sessionFilter,
-    ...(filterReason ? { filterReason } : {}),
+    ...outcome,
     sessionsExcluded: excluded.size,
     subagentTokensIn: sawSidechain ? subIn : null,
     subagentTokensOut: sawSidechain ? subOut : null,

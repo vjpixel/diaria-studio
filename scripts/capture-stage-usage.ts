@@ -59,6 +59,8 @@ import {
   currentSessionId,
   resolveTranscriptsDir,
   type CollectUsageOptions,
+  type SessionFilterMode,
+  type SessionFilterReason,
   type UsageWindowResult,
 } from "./lib/session-transcript.ts";
 import { editionDateMs, estimateCallCostUsd, shortModelName } from "./lib/pricing.ts";
@@ -78,17 +80,42 @@ export interface CaptureResult {
   sessions_scanned?: number;
   entries_matched?: number;
   /** `current_session` | `all_sessions` — ver #5413. */
-  session_filter?: UsageWindowResult["sessionFilter"];
-  session_filter_reason?: UsageWindowResult["filterReason"];
+  session_filter?: SessionFilterMode;
+  session_filter_reason?: SessionFilterReason;
   /** Sessões concorrentes com turnos na mesma janela que ficaram de fora. */
   sessions_excluded?: number;
   /**
    * `null` = custo de subagente NÃO REGISTRADO pelo harness, não zero. Campo
-   * explícito de propósito: antes do #5413 esse buraco ficava somido dentro
-   * de `tokens_in`, que era lido como "o custo do stage".
+   * explícito de propósito: antes do #5413 esse custo não tinha campo nenhum
+   * — ficava simplesmente ausente, e `tokens_in` era lido como se já fosse o
+   * total do stage. O buraco não inflava o número, tornava-o incompleto sem
+   * deixar rastro.
    */
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
+}
+
+/**
+ * Campos de diagnóstico do #5413, num só lugar — os dois retornos de
+ * `captureUsageForWindow` (sucesso e `no_usage_records_in_window`) precisam
+ * carregar exatamente o mesmo conjunto. Duplicar isso à mão foi o que fez o
+ * `sessions_excluded` sumir do branch vazio na primeira versão desta issue.
+ */
+function describeWindowFilter(
+  window: UsageWindowResult,
+): Pick<
+  CaptureResult,
+  "session_filter" | "session_filter_reason" | "sessions_excluded" | "subagent_tokens_in" | "subagent_tokens_out"
+> {
+  return {
+    session_filter: window.sessionFilter,
+    ...(window.sessionFilter === "all_sessions"
+      ? { session_filter_reason: window.filterReason }
+      : {}),
+    sessions_excluded: window.sessionsExcluded,
+    subagent_tokens_in: window.subagentTokensIn,
+    subagent_tokens_out: window.subagentTokensOut,
+  };
 }
 
 /**
@@ -112,12 +139,17 @@ export function captureUsageForWindow(
   }
   const window = collectUsageInWindow(transcriptsDir, start, end, opts);
   if (window.entries.length === 0) {
+    // `sessions_excluded` importa MAIS aqui do que no caminho de sucesso: a
+    // sessão corrente sem turno na janela + uma concorrente COM turnos é
+    // exatamente o caso em que "custo zero" e "o stage não foi medido" se
+    // parecem. Omitir o campo neste branch tornaria os dois indistinguíveis —
+    // que é o defeito que esta issue existe pra matar, reintroduzido no lugar
+    // onde menos se olharia.
     return {
       source: "unavailable",
       reason: "no_usage_records_in_window",
       sessions_scanned: window.sessionsScanned,
-      session_filter: window.sessionFilter,
-      ...(window.filterReason ? { session_filter_reason: window.filterReason } : {}),
+      ...describeWindowFilter(window),
     };
   }
 
@@ -152,11 +184,7 @@ export function captureUsageForWindow(
     models,
     sessions_scanned: window.sessionsScanned,
     entries_matched: window.entries.length,
-    session_filter: window.sessionFilter,
-    ...(window.filterReason ? { session_filter_reason: window.filterReason } : {}),
-    sessions_excluded: window.sessionsExcluded,
-    subagent_tokens_in: window.subagentTokensIn,
-    subagent_tokens_out: window.subagentTokensOut,
+    ...describeWindowFilter(window),
   };
 }
 
@@ -222,6 +250,15 @@ async function main(): Promise<void> {
         tokens_in: result.tokens_in,
         tokens_out: result.tokens_out,
         models: result.models,
+        // #5413: a procedência viaja junto com o número. Sem isso o
+        // diagnóstico existiria só no stdout desta invocação e sumiria —
+        // quem investigar uma anomalia de custo semanas depois via
+        // `aggregate-costs.ts` não teria como saber se o stage foi medido
+        // isolado ou somando sessão concorrente.
+        session_filter: result.session_filter,
+        sessions_excluded: result.sessions_excluded,
+        subagent_tokens_in: result.subagent_tokens_in,
+        subagent_tokens_out: result.subagent_tokens_out,
       },
       new Date().toISOString(),
     );

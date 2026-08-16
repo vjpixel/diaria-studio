@@ -171,12 +171,23 @@ describe("captureUsageForWindow + stage-status.json — integração de escrita"
 });
 
 describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", () => {
-  function runCli(args: string[]) {
+  /**
+   * `sessionId` controla `CLAUDE_CODE_SESSION_ID` no subprocesso (#5413).
+   * Default `undefined` = variável REMOVIDA do ambiente — sem isso o
+   * resultado do teste dependeria de a suíte estar rodando dentro de uma
+   * sessão Claude Code ou não (herdaria o id real da sessão do editor),
+   * o que dá verde por acaso na máquina e outro caminho no CI.
+   */
+  function runCli(args: string[], sessionId?: string) {
     const projectRoot = join(import.meta.dirname, "..");
     const scriptPath = join(projectRoot, "scripts", "capture-stage-usage.ts");
+    const env = { ...process.env };
+    if (sessionId === undefined) delete env.CLAUDE_CODE_SESSION_ID;
+    else env.CLAUDE_CODE_SESSION_ID = sessionId;
     return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
       cwd: projectRoot,
       encoding: "utf8",
+      env,
     });
   }
 
@@ -299,6 +310,207 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
     } finally {
       rmSync(editionRoot, { recursive: true, force: true });
       rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * O filtro por sessão do #5413 depende, em produção, de UMA linha de
+   * `main()`: ler `CLAUDE_CODE_SESSION_ID` do ambiente. Os testes de
+   * `collectUsageInWindow` cobrem a lógica de filtragem, mas passam o
+   * `sessionId` à mão — nenhum deles provaria que o CLI de fato lê a variável.
+   * Um typo no nome dela passaria por toda a suíte e só apareceria numa
+   * edição real, com o número inflado de novo. Estes testes fecham isso pelo
+   * caminho que o orchestrator usa: subprocess, sem flag nenhuma.
+   */
+  describe("filtro por sessão via ambiente (#5413)", () => {
+    /** Sessão da edição + uma concorrente, ambas dentro da janela do stage. */
+    function writeTwoSessions(transcriptsDir: string): void {
+      writeFileSync(join(transcriptsDir, "s1.jsonl"), usageLine(), "utf8");
+      writeFileSync(
+        join(transcriptsDir, "s2.jsonl"),
+        usageLine({
+          message: {
+            model: "claude-opus-4-8",
+            usage: { input_tokens: 5_000_000, output_tokens: 400_000 },
+          },
+        }),
+        "utf8",
+      );
+    }
+
+    it("sem flag nenhuma, conta só a sessão de CLAUDE_CODE_SESSION_ID", () => {
+      const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+      try {
+        writeTwoSessions(transcriptsDir);
+        const r = runCli(
+          ["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir],
+          "s1",
+        );
+        assert.equal(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.session_filter, "current_session");
+        assert.equal(out.session_filter_reason, undefined);
+        assert.equal(out.tokens_in, 1_000_000, "os 5M da sessão concorrente NÃO entram");
+        assert.equal(out.sessions_excluded, 1);
+        assert.equal(out.subagent_tokens_in, null, "null = não registrado, nunca 0");
+
+        // A procedência precisa sobreviver EM DISCO, não só no stdout — é o
+        // que permite auditar este número numa análise semanas depois.
+        const row = loadDoc(editionDir, "260508").rows.find((x) => x.stage === 1)!;
+        assert.equal(row.session_filter, "current_session");
+        assert.equal(row.sessions_excluded, 1);
+        assert.equal(row.subagent_tokens_in, null);
+      } finally {
+        rmSync(editionRoot, { recursive: true, force: true });
+        rmSync(transcriptsDir, { recursive: true, force: true });
+      }
+    });
+
+    it("--all-sessions reproduz o comportamento pré-#5413 mesmo com a variável setada", () => {
+      const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+      try {
+        writeTwoSessions(transcriptsDir);
+        const r = runCli(
+          [
+            "--edition-dir",
+            editionDir,
+            "--stage",
+            "1",
+            "--transcripts-dir",
+            transcriptsDir,
+            "--all-sessions",
+          ],
+          "s1",
+        );
+        assert.equal(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.session_filter, "all_sessions");
+        assert.equal(out.session_filter_reason, "no_session_id");
+        assert.equal(out.tokens_in, 6_000_000, "soma as duas sessões");
+        assert.equal(out.sessions_excluded, 0);
+      } finally {
+        rmSync(editionRoot, { recursive: true, force: true });
+        rmSync(transcriptsDir, { recursive: true, force: true });
+      }
+    });
+
+    it("--session-id vence a variável de ambiente (análise pós-hoc)", () => {
+      const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+      try {
+        writeTwoSessions(transcriptsDir);
+        const r = runCli(
+          [
+            "--edition-dir",
+            editionDir,
+            "--stage",
+            "1",
+            "--transcripts-dir",
+            transcriptsDir,
+            "--session-id",
+            "s2",
+          ],
+          "s1",
+        );
+        assert.equal(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.session_filter, "current_session");
+        assert.equal(out.tokens_in, 5_000_000, "contou s2, não s1");
+      } finally {
+        rmSync(editionRoot, { recursive: true, force: true });
+        rmSync(transcriptsDir, { recursive: true, force: true });
+      }
+    });
+
+    it("sessão desconhecida cai em all_sessions com motivo — não devolve vazio", () => {
+      const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+      try {
+        writeTwoSessions(transcriptsDir);
+        const r = runCli(
+          ["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir],
+          "sessao-de-outra-maquina",
+        );
+        assert.equal(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.source, "session_transcript", "nunca vira 'unavailable' por causa do filtro");
+        assert.equal(out.session_filter, "all_sessions");
+        assert.equal(out.session_filter_reason, "session_file_not_found");
+        assert.equal(out.tokens_in, 6_000_000);
+      } finally {
+        rmSync(editionRoot, { recursive: true, force: true });
+        rmSync(transcriptsDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe("captureUsageForWindow — mapeamento dos campos do #5413", () => {
+  it("propaga sessionFilter/sessionsExcluded/subagentTokens pro JSON de saída", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-"));
+    try {
+      writeFileSync(join(dir, "a.jsonl"), usageLine(), "utf8");
+      writeFileSync(join(dir, "b.jsonl"), usageLine(), "utf8");
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.session_filter, "current_session");
+      assert.equal(r.sessions_excluded, 1);
+      assert.equal(r.subagent_tokens_in, null);
+      assert.equal(r.subagent_tokens_out, null);
+      assert.equal(r.tokens_in, 1_000_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * O caso que o retorno `unavailable` mais precisa descrever: a sessão da
+   * edição não tem turno na janela, mas UMA CONCORRENTE tem. Se
+   * `sessions_excluded` sumisse aqui, o JSON ficaria idêntico ao de "stage
+   * genuinamente sem atividade" — trocando um número contaminado por um
+   * silêncio, que é a mesma classe de defeito que o #5413 existe pra matar.
+   */
+  it("preserva sessions_excluded quando a sessão própria está vazia e a concorrente não", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine({ timestamp: "2026-05-08T23:00:00.000Z" }), "utf8");
+      writeFileSync(join(dir, "concorrente.jsonl"), usageLine(), "utf8");
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "edicao" },
+      );
+      assert.equal(r.source, "unavailable");
+      assert.equal(r.reason, "no_usage_records_in_window");
+      assert.equal(r.session_filter, "current_session");
+      assert.equal(r.sessions_excluded, 1, "sem isto, 'sem atividade' e 'contaminado' ficam iguais");
+      assert.equal(r.subagent_tokens_in, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mantém session_filter no retorno 'unavailable' (janela sem turno da sessão)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-"));
+    try {
+      writeFileSync(join(dir, "a.jsonl"), usageLine({ timestamp: "2026-05-08T23:00:00.000Z" }), "utf8");
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.source, "unavailable");
+      assert.equal(r.reason, "no_usage_records_in_window");
+      assert.equal(r.session_filter, "current_session");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
