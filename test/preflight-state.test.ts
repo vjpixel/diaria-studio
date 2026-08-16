@@ -338,4 +338,34 @@ describe("CLI", () => {
   it("sem --edition-dir sai 2", () => {
     assert.equal(runCli(["--get", "chrome_mcp"]).status, 2);
   });
+
+  /**
+   * `--get` sem valor vira flag booleana no parseArgs e cairia no dump do
+   * estado inteiro com exit 0 — um template que perdesse o `{chave}`
+   * devolveria JSON multi-linha onde o caller espera um token só, sem nada
+   * acusar. Typo já falhava alto; ausência de valor precisa falhar igual.
+   */
+  it("--get / --set sem valor saem 2, não dumpam o estado inteiro", () => {
+    const dir = tempEdition();
+    try {
+      const g = runCli(["--edition-dir", dir, "--get"]);
+      assert.equal(g.status, 2, `stdout inesperado: ${g.stdout}`);
+      const s = runCli(["--edition-dir", dir, "--set"]);
+      assert.equal(s.status, 2, `stdout inesperado: ${s.stdout}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --get nem --set ainda dumpa o estado inteiro (modo inspeção)", () => {
+    const dir = tempEdition();
+    try {
+      setProbe(dir, "chrome_mcp", true);
+      const r = runCli(["--edition-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).chrome_mcp, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

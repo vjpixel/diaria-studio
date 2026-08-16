@@ -181,7 +181,7 @@ function parseProbeValue(raw: string): PreflightProbe {
 }
 
 if (isMainModule(import.meta.url)) {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDir = values["edition-dir"];
   if (!editionDir) {
     console.error(
@@ -190,6 +190,18 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
   const dir = resolve(process.cwd(), editionDir);
+
+  // `--get`/`--set` SEM valor viram flag booleana no parseArgs, não entram em
+  // `values` — cairiam no dump do estado inteiro, exit 0. Um template que
+  // perdesse o `{chave}` devolveria um JSON multi-linha onde o caller espera
+  // um único `true`/`false`/`unknown`, sem nada acusar. Typo falha alto neste
+  // módulo; ausência de valor tem que falhar igual.
+  for (const flag of ["set", "get"]) {
+    if (flags.has(flag)) {
+      console.error(`--${flag} exige um valor (ex: --${flag} chrome_mcp${flag === "set" ? "=true" : ""})`);
+      process.exit(2);
+    }
+  }
 
   const set = values["set"];
   if (set) {
