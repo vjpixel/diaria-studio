@@ -672,3 +672,29 @@ test("syncDomain — collectCampaignSpam:true (clarice.ai) SEGUE chamando as que
   await syncDomain(clariceConfig, 10, SYNC_NOW, wrapped);
   assert.equal(feedbackLoopCalls, 1, "clarice.ai continua tentando a query base normalmente");
 });
+
+test("syncDomain — janela de DESCOBERTA de campanha (FEEDBACK_LOOP_ID) é 90 dias, independente de `windowDays` da média de domínio (#5446, nunca reunificar com HEALTH_SAMPLE_DAYS)", async () => {
+  const clariceConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "clarice.ai")!;
+  const deps = clariceDeps();
+  let feedbackLoopRange: { start: { year: number; month: number; day: number }; end: { year: number; month: number; day: number } } | null = null;
+  const wrapped: SyncDomainDeps = {
+    ...deps,
+    queryFeedbackLoopIds: async (range) => {
+      feedbackLoopRange = range;
+      return deps.queryFeedbackLoopIds(range);
+    },
+  };
+
+  // windowDays=10 (o mesmo default de HEALTH_SAMPLE_DAYS) — se a janela de
+  // descoberta ainda estivesse acoplada a `windowDays`, o range abaixo
+  // cobriria só 10 dias. A regressão que este teste bloqueia é exatamente
+  // essa reunificação.
+  await syncDomain(clariceConfig, 10, SYNC_NOW, wrapped);
+
+  assert.ok(feedbackLoopRange, "queryFeedbackLoopIds foi chamada");
+  const { start, end } = feedbackLoopRange!;
+  const startDate = Date.UTC(start.year, start.month - 1, start.day);
+  const endDate = Date.UTC(end.year, end.month - 1, end.day);
+  const daysCovered = Math.round((endDate - startDate) / 86_400_000) + 1;
+  assert.equal(daysCovered, 90, "janela de descoberta cobre 90 dias-calendário, não os 10 de `windowDays`");
+});

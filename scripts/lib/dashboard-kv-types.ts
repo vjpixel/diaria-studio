@@ -287,11 +287,13 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    *
    * ACUMULA entre execuções (merge, nunca overwrite) — ver
    * `mergeCampaignSpamRecords` em `scripts/lib/postmaster-campaign-spam.ts`.
-   * A janela sondada por execução é `HEALTH_SAMPLE_DAYS` (10 dias), mas a
-   * tabela Envios mostra ~90 dias de campanhas — sem merge, só as ~10
-   * campanhas mais recentes ganhariam valor a cada execução, e o resto
-   * ficaria permanentemente vazio (o Postmaster nunca re-sonda uma janela já
-   * passada). `postmaster-spam-sync.ts` lê o mapa atual do KV ANTES de
+   * A janela de DESCOBERTA sondada por execução é `CAMPAIGN_DISCOVERY_WINDOW_DAYS`
+   * (90 dias, `postmaster-spam-sync.ts` — era `HEALTH_SAMPLE_DAYS`/10 dias
+   * antes do #5446, insuficiente pra alcançar os dias esparsos em que o
+   * Postmaster publica `FEEDBACK_LOOP_ID`) — mas mesmo com 90 dias o merge
+   * continua necessário: sem ele, só as campanhas dentro da janela sondada
+   * ganhariam valor a cada execução, e o resto ficaria permanentemente vazio
+   * (o Postmaster nunca re-sonda uma janela já passada). `postmaster-spam-sync.ts` lê o mapa atual do KV ANTES de
    * escrever, mescla com o lote desta execução (chaves da execução atual
    * SUBSTITUEM a entrada antiga — a mesma campanha só ganha mais cobertura
    * com o tempo enquanto está dentro da janela sondada; chaves ausentes
