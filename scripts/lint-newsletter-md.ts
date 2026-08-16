@@ -348,9 +348,345 @@ export function lintIntroCount(md: string): IntroCountResult {
 // #1737 item 2: checkWhyMattersFormat (#701) e checkEaiSection (#588) movidos
 // pra scripts/lib/lint-checks/. Re-exportados no topo do arquivo pra back-compat.
 
+// ---------------------------------------------------------------------------
+// #5416 — Modo agregador `--stage <2|4> --json`
+// ---------------------------------------------------------------------------
+//
+// `.claude/agents/orchestrator-stage-4.md` §4c.2 dispara 15 invocações
+// separadas de `lint-newsletter-md.ts` (1 processo Node por check). As duas
+// funções abaixo rodam o MESMO conjunto de checks — mesmas funções puras,
+// mesmos arquivos-fonte — numa única chamada de processo, devolvendo um
+// relatório único com veredito por check.
+//
+// **Aditivo, nunca substitui os modos `--check X` individuais acima** — cada
+// bloco `if (args.check === "...")` de main() continua existindo intacto e
+// continua sendo o jeito suportado de rodar 1 check isolado (debug, testes
+// existentes). Este agregador só empacota os MESMOS checks numa chamada.
+//
+// A severity (`gate-blocking` vs `warn-only`) de cada entrada espelha o
+// comportamento REAL de `process.exit()` do modo `--check` correspondente
+// (não a prosa do playbook, que diverge em 1 ponto conhecido — ver nota em
+// `stacked-intro-callouts` abaixo) — garante que `--stage N --json` produz o
+// MESMO veredito que rodar cada `--check X` isoladamente.
+
+export type StageCheckSeverity = "gate-blocking" | "warn-only";
+
+export interface StageCheckResult {
+  id: string;
+  source_issue: string;
+  severity: StageCheckSeverity;
+  ok: boolean;
+  result: unknown;
+}
+
+export interface StageLintReport {
+  stage: 2 | 4;
+  /** `true` quando nenhum check `gate-blocking` falhou (warn-only nunca bloqueia). */
+  passed: boolean;
+  checks: StageCheckResult[];
+}
+
+type PushCheckFn = (
+  id: string,
+  sourceIssue: string,
+  severity: StageCheckSeverity,
+  ok: boolean,
+  result: unknown,
+) => void;
+
+/**
+ * Isola cada check individual dentro dos agregadores `--stage <2|4> --json`
+ * abaixo (#5455 fix, review de #5416). Sem isto, uma exceção não tratada em
+ * QUALQUER check (ex: `01-approved.json` presente mas malformado —
+ * `JSON.parse` sem try/catch) derrubava a função inteira: `main()` propagava
+ * sem capturar, o processo morria, stdout ficava vazio, e a granularidade de
+ * TODOS os outros checks independentes (que não tinham nada a ver com o
+ * arquivo corrompido) se perdia junto. `runCheckSafely` converte essa exceção
+ * numa entrada `StageCheckResult` normal — `ok: false`, severity SEMPRE
+ * `gate-blocking` (fail-safe: nunca deixar uma exceção virar "warn-only" por
+ * engano, mesmo quando o check original é warn-only) — preservando a
+ * execução dos checks seguintes.
+ */
+function runCheckSafely<T extends { ok: boolean }>(
+  push: PushCheckFn,
+  id: string,
+  sourceIssue: string,
+  severity: StageCheckSeverity,
+  fn: () => T,
+): void {
+  try {
+    const result = fn();
+    push(id, sourceIssue, severity, result.ok, result);
+  } catch (err) {
+    push(id, sourceIssue, "gate-blocking", false, {
+      error: `exceção não tratada em ${id}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
+/**
+ * Roda os checks de `.claude/agents/orchestrator-stage-4.md` §4c.2 sobre
+ * `{editionDir}/02-reviewed.md` numa única chamada.
+ *
+ * NÃO inclui `validate-lancamentos.ts` (script separado, fora deste
+ * arquivo) — o orchestrator continua chamando-o à parte.
+ */
+export function runStage4LintReport(editionDir: string, root: string): StageLintReport {
+  const mdPath = resolve(editionDir, "02-reviewed.md");
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const snippetPath = resolve(root, "data", "snippets", "agradecimento-apoiadores.md");
+
+  const checks: StageCheckResult[] = [];
+  const push = (
+    id: string,
+    sourceIssue: string,
+    severity: StageCheckSeverity,
+    ok: boolean,
+    result: unknown,
+  ) => {
+    checks.push({ id, source_issue: sourceIssue, severity, ok, result });
+  };
+
+  if (!existsSync(mdPath)) {
+    push("md-exists", "#5416", "gate-blocking", false, {
+      error: `arquivo não encontrado: ${mdPath}`,
+    });
+  } else {
+    const md = readFileSync(mdPath, "utf8");
+
+    // url-bucket + coverage-line (#165, #592, #609) — mesmo código do modo
+    // default (sem --check) de main() abaixo.
+    if (!existsSync(approvedPath)) {
+      push("url-bucket", "#165", "gate-blocking", false, {
+        error: `01-approved.json não encontrado: ${approvedPath}`,
+      });
+    } else {
+      runCheckSafely(push, "url-bucket", "#165", "gate-blocking", () => {
+        const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+        const urlBucket = lintNewsletter(md, approved);
+        const coverage = checkCoverageLine(md);
+        if (!coverage.ok) {
+          urlBucket.errors.push({
+            section: "coverage_line",
+            expected_bucket: "radar",
+            url: "",
+            line: 1,
+            found_in_bucket: "missing",
+            title: coverage.firstLine.slice(0, 80),
+          });
+          urlBucket.ok = false;
+        }
+        return urlBucket;
+      });
+    }
+
+    runCheckSafely(push, "secondary-items-have-summary", "#2545", "gate-blocking", () =>
+      checkSecondaryItemsHaveSummary(md),
+    );
+
+    runCheckSafely(push, "no-untranslated-summary", "#3196", "gate-blocking", () =>
+      checkNoUntranslatedSummary(md),
+    );
+
+    runCheckSafely(push, "video-links-are-youtube", "#3202", "gate-blocking", () =>
+      checkVideoLinksAreYoutube(md),
+    );
+
+    runCheckSafely(push, "section-links-resolve", "#3821", "gate-blocking", () =>
+      checkSectionLinksResolve(md),
+    );
+
+    runCheckSafely(push, "title-publisher-suffix", "#2664", "warn-only", () =>
+      checkTitlePublisherSuffix(md),
+    );
+
+    runCheckSafely(push, "title-trailing-period", "#2672", "warn-only", () =>
+      checkTitleTrailingPeriod(md),
+    );
+
+    runCheckSafely(push, "no-trailing-ellipsis", "#2881", "warn-only", () =>
+      checkNoTrailingEllipsis(md),
+    );
+
+    runCheckSafely(push, "mid-sentence-ellipsis", "#3196", "warn-only", () =>
+      checkMidSentenceEllipsis(md),
+    );
+
+    runCheckSafely(push, "title-mentions-ia", "#4825", "warn-only", () =>
+      checkTitleMentionsIA(md),
+    );
+
+    // stacked-intro-callouts (#2729): self-review #5416 — o playbook
+    // (orchestrator-stage-4.md §4c.2) documenta este check como WARN-ONLY,
+    // mas o modo `--check stacked-intro-callouts` (main() abaixo) sempre
+    // `process.exit(1)` quando `!result.ok` — comportamento GATE-BLOCKING na
+    // prática. A severity aqui espelha o comportamento REAL (exit code), não
+    // a prosa do playbook — discrepância pré-existente, fora do escopo desta
+    // issue (não alterada aqui; sinalizada no PR #5416 para triagem futura).
+    runCheckSafely(push, "stacked-intro-callouts", "#2729", "gate-blocking", () =>
+      lintStackedIntroCallouts(md),
+    );
+
+    runCheckSafely(push, "orphan-box-in-gap", "#3204", "gate-blocking", () => {
+      const calloutPlacement = lintCalloutPlacement(md);
+      const orphanGaps = findOrphanBoxWarnings(md);
+      const orphanOk = calloutPlacement.ok && orphanGaps.length === 0;
+      return { ok: orphanOk, calloutPlacement, orphanGaps };
+    });
+
+    runCheckSafely(push, "no-xml-artifacts", "#4077", "gate-blocking", () =>
+      checkNoXmlArtifacts(md),
+    );
+
+    runCheckSafely(push, "snippet-staleness", "#4076", "warn-only", () =>
+      runSnippetStalenessCheck(mdPath, root),
+    );
+  }
+
+  if (existsSync(snippetPath)) {
+    runCheckSafely(push, "agradecimento-hardcoded", "#4359", "warn-only", () => {
+      const raw = readFileSync(snippetPath, "utf8");
+      return checkAgradecimentoHardcoded(raw);
+    });
+  } else {
+    // Mesmo espírito do resto do arquivo: snippet ausente não é violação —
+    // o box de agradecimento é opcional (#4359).
+    push("agradecimento-hardcoded", "#4359", "warn-only", true, {
+      skipped: `snippet não encontrado: ${snippetPath}`,
+    });
+  }
+
+  const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
+  return { stage: 4, passed, checks };
+}
+
+/**
+ * Roda os checks de `.claude/agents/orchestrator-stage-2.md` §2b sobre
+ * `{editionDir}/_internal/02-draft.md` numa única chamada. Diferente do
+ * Stage 4 (que roda 1x pré-gate), estes checks alimentam um loop de retry
+ * (exit 1 → re-disparar o writer) no orchestrator — o agregador só empacota
+ * o veredito de cada check; a decisão de re-disparo continua no playbook.
+ */
+export function runStage2LintReport(editionDir: string, root: string): StageLintReport {
+  const mdPath = resolve(editionDir, "_internal", "02-draft.md");
+  const approvedPath = resolve(editionDir, "_internal", "01-approved-capped.json");
+
+  const checks: StageCheckResult[] = [];
+  const push = (
+    id: string,
+    sourceIssue: string,
+    severity: StageCheckSeverity,
+    ok: boolean,
+    result: unknown,
+  ) => {
+    checks.push({ id, source_issue: sourceIssue, severity, ok, result });
+  };
+
+  if (!existsSync(mdPath)) {
+    push("md-exists", "#5416", "gate-blocking", false, {
+      error: `arquivo não encontrado: ${mdPath}`,
+    });
+    return { stage: 2, passed: false, checks };
+  }
+  const md = readFileSync(mdPath, "utf8");
+
+  if (!existsSync(approvedPath)) {
+    push("url-bucket", "#165", "gate-blocking", false, {
+      error: `01-approved-capped.json não encontrado: ${approvedPath}`,
+    });
+    push("section-counts", "#907", "gate-blocking", false, {
+      error: `01-approved-capped.json não encontrado: ${approvedPath}`,
+    });
+  } else {
+    // JSON.parse pode lançar (arquivo presente mas malformado) — isolado à
+    // parte de runCheckSafely porque os DOIS checks abaixo (url-bucket e
+    // section-counts) dependem do mesmo parse; uma falha aqui precisa
+    // reportar os dois como gate-blocking, não só engolir o 1º.
+    let approved: ApprovedJson | undefined;
+    try {
+      approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+    } catch (err) {
+      const message = `exceção não tratada ao ler/parsear ${approvedPath}: ${err instanceof Error ? err.message : String(err)}`;
+      push("url-bucket", "#165", "gate-blocking", false, { error: message });
+      push("section-counts", "#907", "gate-blocking", false, { error: message });
+    }
+
+    if (approved) {
+      runCheckSafely(push, "url-bucket", "#165", "gate-blocking", () => {
+        const urlBucket = lintNewsletter(md, approved!);
+        const coverage = checkCoverageLine(md);
+        if (!coverage.ok) {
+          urlBucket.errors.push({
+            section: "coverage_line",
+            expected_bucket: "radar",
+            url: "",
+            line: 1,
+            found_in_bucket: "missing",
+            title: coverage.firstLine.slice(0, 80),
+          });
+          urlBucket.ok = false;
+        }
+        return urlBucket;
+      });
+
+      runCheckSafely(push, "section-counts", "#907", "gate-blocking", () =>
+        checkSectionCounts(md, approved!),
+      );
+    }
+  }
+
+  runCheckSafely(push, "destaque-min-chars", "#914", "gate-blocking", () =>
+    checkDestaqueMinChars(md),
+  );
+
+  runCheckSafely(push, "destaque-max-chars", "#964", "gate-blocking", () =>
+    checkDestaqueMaxChars(md),
+  );
+
+  runCheckSafely(push, "why-matters-length", "#3993", "gate-blocking", () =>
+    checkWhyMattersLength(md),
+  );
+
+  runCheckSafely(push, "aprofunde-format", "#3920", "gate-blocking", () =>
+    checkAprofundeFormat(md),
+  );
+
+  const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
+  return { stage: 2, passed, checks };
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseCliArgs(process.argv.slice(2)).values;
+  const parsedArgs = parseCliArgs(process.argv.slice(2));
+  const args = parsedArgs.values;
+
+  // Modo --stage <2|4> --json (#5416) — agregador em lote, ver docstring de
+  // runStage2LintReport/runStage4LintReport acima. Aditivo: não interfere
+  // com nenhum modo --check abaixo (chave nova, `--json` nunca usado por eles).
+  if (parsedArgs.flags.has("json") && (args.stage === "2" || args.stage === "4")) {
+    if (!args["edition-dir"]) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --stage <2|4> --json --edition-dir <edition-dir-path>",
+      );
+      process.exit(2);
+    }
+    const editionDir = resolve(ROOT, args["edition-dir"]);
+    const report =
+      args.stage === "4"
+        ? runStage4LintReport(editionDir, ROOT)
+        : runStage2LintReport(editionDir, ROOT);
+    console.log(JSON.stringify(report, null, 2));
+    const failing = report.checks.filter((c) => !c.ok);
+    console.error(`\n=== lint-newsletter-md --stage ${args.stage} --json ===`);
+    console.error(
+      `Checks: ${report.checks.length} (${failing.length} com violação, ${failing.filter((c) => c.severity === "gate-blocking").length} gate-blocking)`,
+    );
+    for (const c of failing) {
+      const tag = c.severity === "gate-blocking" ? "❌" : "⚠️";
+      console.error(`  ${tag} [${c.id}/${c.source_issue}] severity=${c.severity}`);
+    }
+    process.exit(report.passed ? 0 : 1);
+  }
 
   // Modo --check titles-per-highlight (#178)
   if (args.check === "titles-per-highlight") {

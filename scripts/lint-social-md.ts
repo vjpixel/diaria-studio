@@ -139,8 +139,166 @@ export type { ScopedCoverageResult };
 export { checkScopedHumanizerCoverage };
 export { checkNoXmlArtifacts };
 export type { NoXmlArtifactsError, NoXmlArtifactsReport };
+
+// ---------------------------------------------------------------------------
+// #5416 — Modo agregador `--stage 4 --json`
+// ---------------------------------------------------------------------------
+//
+// Mesmo tratamento dado a `lint-newsletter-md.ts` (#5416): agrega os checks
+// que `.claude/agents/orchestrator-stage-4.md` §4c.2b dispara em invocações
+// separadas de `lint-social-md.ts --check X --md 03-social.md` — todos
+// GATE-BLOCKING (`process.exit(1)` quando o check falha, comportamento real
+// hoje em cada bloco `--check` correspondente abaixo). Aditivo: os modos
+// `--check X` continuam existindo e funcionando exatamente como antes.
+
+export type SocialStageCheckSeverity = "gate-blocking" | "warn-only";
+
+export interface SocialStageCheckResult {
+  id: string;
+  source_issue: string;
+  severity: SocialStageCheckSeverity;
+  ok: boolean;
+  result: unknown;
+}
+
+export interface SocialStageLintReport {
+  stage: 4;
+  passed: boolean;
+  checks: SocialStageCheckResult[];
+}
+
+type SocialPushCheckFn = (
+  id: string,
+  sourceIssue: string,
+  severity: SocialStageCheckSeverity,
+  ok: boolean,
+  result: unknown,
+) => void;
+
+/**
+ * Mesmo padrão defensivo de `runCheckSafely` em `lint-newsletter-md.ts`
+ * (#5455 fix, review de #5416) — aplicado aqui por consistência mesmo com
+ * superfície de exceção mais estreita (nenhum check abaixo faz JSON.parse
+ * ou I/O externo além da leitura do próprio `md`, já guardada por
+ * `existsSync`). Isola cada check para que uma exceção inesperada em um
+ * deles não derrube o agregador inteiro nem engula o veredito dos demais.
+ */
+function runSocialCheckSafely<T extends { ok: boolean }>(
+  push: SocialPushCheckFn,
+  id: string,
+  sourceIssue: string,
+  severity: SocialStageCheckSeverity,
+  fn: () => T,
+): void {
+  try {
+    const result = fn();
+    push(id, sourceIssue, severity, result.ok, result);
+  } catch (err) {
+    push(id, sourceIssue, "gate-blocking", false, {
+      error: `exceção não tratada em ${id}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
+/**
+ * Roda os checks de `.claude/agents/orchestrator-stage-4.md` §4c.2b sobre
+ * `{editionDir}/03-social.md` numa única chamada.
+ */
+export function runStage4SocialLintReport(editionDir: string): SocialStageLintReport {
+  const mdPath = resolve(editionDir, "03-social.md");
+  const checks: SocialStageCheckResult[] = [];
+  const push = (
+    id: string,
+    sourceIssue: string,
+    severity: SocialStageCheckSeverity,
+    ok: boolean,
+    result: unknown,
+  ) => {
+    checks.push({ id, source_issue: sourceIssue, severity, ok, result });
+  };
+
+  if (!existsSync(mdPath)) {
+    push("md-exists", "#5416", "gate-blocking", false, {
+      error: `arquivo não encontrado: ${mdPath}`,
+    });
+    return { stage: 4, passed: false, checks };
+  }
+  const md = readFileSync(mdPath, "utf8");
+
+  runSocialCheckSafely(push, "post_pixel-matches-d1", "#1861", "gate-blocking", () =>
+    lintPostPixelMatchesD1(md),
+  );
+
+  runSocialCheckSafely(push, "no-xml-artifacts", "#4077", "gate-blocking", () =>
+    checkNoXmlArtifacts(md),
+  );
+
+  // #2526/#4352: `lintAntithesisReveal`/`lintTrailingEditorialHook` sempre
+  // retornam `ok: true` (são relatórios, não veredito) — o bloqueio é
+  // decidido pelo CLI via `matches.length > 0`, mesma lógica replicada aqui.
+  // Não usa `runSocialCheckSafely` (o `ok` do push diverge do `.ok` interno
+  // do `result` de propósito — ver comentário acima; o helper genérico
+  // assume que os dois coincidem) — try/catch explícito preserva o `result`
+  // exatamente como a função pura retorna (contrato coberto por teste,
+  // `test/lint-social-md-stage-json.test.ts`).
+  try {
+    const antithesis = lintAntithesisReveal(md);
+    push(
+      "no-antithesis-reveal",
+      "#2526",
+      "gate-blocking",
+      antithesis.matches.length === 0,
+      antithesis,
+    );
+  } catch (err) {
+    push("no-antithesis-reveal", "#2526", "gate-blocking", false, {
+      error: `exceção não tratada em no-antithesis-reveal: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const editorialHook = lintTrailingEditorialHook(md);
+    push(
+      "no-trailing-editorial-hook",
+      "#2658",
+      "gate-blocking",
+      editorialHook.matches.length === 0,
+      editorialHook,
+    );
+  } catch (err) {
+    push("no-trailing-editorial-hook", "#2658", "gate-blocking", false, {
+      error: `exceção não tratada em no-trailing-editorial-hook: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
+  return { stage: 4, passed, checks };
+}
+
 function main(): void {
-  const args = parseArgsStructured(process.argv.slice(2)).values;
+  const parsedArgs = parseArgsStructured(process.argv.slice(2));
+  const args = parsedArgs.values;
+
+  // Modo --stage 4 --json (#5416) — agregador em lote, ver docstring de
+  // runStage4SocialLintReport acima. Aditivo: não interfere com nenhum modo
+  // --check abaixo.
+  if (parsedArgs.flags.has("json") && args.stage === "4") {
+    if (!args["edition-dir"]) {
+      console.error("Uso: lint-social-md.ts --stage 4 --json --edition-dir <edition-dir-path>");
+      process.exit(2);
+    }
+    const editionDir = resolve(process.cwd(), args["edition-dir"]);
+    const report = runStage4SocialLintReport(editionDir);
+    console.log(JSON.stringify(report, null, 2));
+    const failing = report.checks.filter((c) => !c.ok);
+    console.error(`\n=== lint-social-md --stage 4 --json ===`);
+    console.error(`Checks: ${report.checks.length} (${failing.length} com violação)`);
+    for (const c of failing) {
+      console.error(`  ❌ [${c.id}/${c.source_issue}] severity=${c.severity}`);
+    }
+    process.exit(report.passed ? 0 : 1);
+  }
+
   if (!args.md) {
     console.error(
       "Uso: lint-social-md.ts --md <path>\n" +
