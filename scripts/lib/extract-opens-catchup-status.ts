@@ -98,6 +98,16 @@ export function extractLastJsonObjectWithKey(text: string, key: string): Record<
  * espalhado por todo consumidor). `contactsFailed` (per-CONTATO) fica DE
  * FORA de propósito — um 404 isolado (contato removido entre export e
  * re-busca) é ruído esperado, não falha de cobertura da campanha.
+ *
+ * #5401 (fix de acompanhamento, achado do fleet review pré-merge): `catchup`
+ * vem de um scanner de brace-matching sobre texto de log, não de um objeto
+ * tipado real — `result` ausente ou `result.campaignsFailed` não-numérico
+ * (log truncado, escrita concorrente, refactor futuro que renomeia o campo)
+ * fazia o `?? 0` tratar ausência de dado como "zero falhas", reportando
+ * `status: "ok"` indistinguível de cobertura 100% confirmada — o que zerava
+ * o streak de falhas consecutivas do alarme (`clarice-opens-catchup-alarm.ts`)
+ * com um único log malformado. `result` ausente/malformado agora reprova
+ * como `"error"` explícito — nunca vira `"ok"` por omissão.
  */
 export function extractOpensCatchupStatus(logText: string, now: Date = new Date()): OpensCatchupStatus {
   const checked_at = now.toISOString();
@@ -110,12 +120,18 @@ export function extractOpensCatchupStatus(logText: string, now: Date = new Date(
     | undefined;
   if (catchup === null || catchup === undefined) return { status: "not_run", checked_at };
   if (catchup.ok === true) {
-    const campaignsFailed = catchup.result?.campaignsFailed ?? 0;
-    if (campaignsFailed > 0) {
-      const campaignsInWindow = catchup.result?.campaignsInWindow ?? 0;
+    if (!catchup.result || typeof catchup.result.campaignsFailed !== "number") {
       return {
         status: "error",
-        error: `cobertura parcial: ${campaignsFailed}/${campaignsInWindow} campanha(s) na janela falharam no export`,
+        error: "opens_catchup.result ausente/malformado — não é possível confirmar cobertura",
+        checked_at,
+      };
+    }
+    const { campaignsFailed, campaignsInWindow } = catchup.result;
+    if (campaignsFailed > 0) {
+      return {
+        status: "error",
+        error: `cobertura parcial: ${campaignsFailed}/${campaignsInWindow ?? "?"} campanha(s) na janela falharam no export`,
         checked_at,
       };
     }
