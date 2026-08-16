@@ -48,8 +48,6 @@
  * backoff em vez de abortar a rodada, nunca tratar como erro de lógica.
  */
 
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   excludeCommittedToQueuedCampaigns,
@@ -429,11 +427,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // Raiz do REPO (não `process.cwd()`): este script é spawnado por
   // `clarice-envio-run.ts`, e um cwd diferente faria a leitura cair pro
   // default `aberto` — o orquestrador então abortaria por divergência com o
-  // próprio estado que ele acabou de ler. Mesmo `ROOT` do irmão.
-  // `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a
-  // drive letter, ex: "C:\C:\Users\...") — ver nota em
-  // scripts/brevo-diaria-run.ts e test/root-path-windows.test.ts.
-  const abcState = readClariceAbcState(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+  // próprio estado que ele acabou de ler. `REPO_ROOT` (já importado de
+  // `./lib/clarice-paths.ts`) resolve pro mesmo path absoluto que o `ROOT`
+  // computado inline em `clarice-envio-run.ts`/`clarice-envio-guard.ts`
+  // (mesmo padrão fileURLToPath, achado do review da PR do fix Windows).
+  const abcState = readClariceAbcState(REPO_ROOT);
   const lockedSubject = getArg(argv, "locked-subject") || lockedSubjectFromState(abcState);
 
   const proposal = await planWave({

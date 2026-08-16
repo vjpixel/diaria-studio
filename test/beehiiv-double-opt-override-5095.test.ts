@@ -44,9 +44,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = new URL("..", import.meta.url).pathname;
+// `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a drive
+// letter, ex: "C:\C:\Users\...") — mesmo bug do fix em scripts/*-run.ts
+// (ver test/root-path-windows.test.ts), achado ao vivo aqui rodando esta
+// suíte numa máquina Windows: a varredura ficava vazia (ENOENT no primeiro
+// call site) e o guard passava tautologicamente, sem checar nada.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Caminhos que CRIAM subscription. Cada um DEVE mandar
