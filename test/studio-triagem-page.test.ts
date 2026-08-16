@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 import { clearTriageCache, type GhRunFn } from "../scripts/studio-ui/studio-issues.ts";
+import { EXEC_TRACK_LABELS } from "../scripts/lib/issue-exec-track.ts";
 
 const mockIssues = [
   { number: 10, title: "issue P1", url: "https://github.com/x/y/issues/10", state: "OPEN", labels: [{ name: "P1" }] },
@@ -159,14 +160,21 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
   it("(#5212) toda opção do <select> de Classificação carrega o escopo (Issues/PRs) no texto visível — sobrevive ao <select> fechado", async () => {
     const res = await fetch(new URL("/triagem", server.url));
     const body = await res.text();
-    assert.ok(body.includes(">Issues · elegível<"));
-    assert.ok(body.includes(">Issues · bloqueada<"));
-    assert.ok(body.includes(">Issues · ambígua<"));
+    // #5462: o grupo Issues passou de elegível/bloqueada/ambígua pros 4
+    // valores de execTrack. O prefixo de escopo continua obrigatório — sem
+    // ele, "Overnight" apareceria 2x no <select> fechado (issue E pr) sem
+    // nenhuma pista de qual tabela é afetada.
+    // #5462: os 4 rótulos do grupo Issues são EXATAMENTE os de
+    // `EXEC_TRACK_LABELS` — mesma capitalização do badge, pra que o valor
+    // escolhido no `<select>` fechado case com o que a tabela mostra.
+    for (const label of Object.values(EXEC_TRACK_LABELS)) {
+      assert.ok(body.includes(`>Issues · ${label}<`), `opção "Issues · ${label}" ausente`);
+    }
     assert.ok(body.includes(">PRs · overnight<"));
     assert.ok(body.includes(">PRs · develop<"));
     assert.ok(body.includes(">PRs · other<"));
     // nenhuma opção deve ter sobrado sem o prefixo de escopo (regressão do #5212)
-    assert.ok(!body.includes('value="issue:elegivel">elegível<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
+    assert.ok(!body.includes('value="issue:overnight">Overnight<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
     assert.ok(!body.includes('value="pr:overnight">overnight<'), "opção não deveria ter perdido o prefixo 'PRs ·'");
   });
 

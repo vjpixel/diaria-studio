@@ -30,7 +30,7 @@ export function prsFilterActive(filters) {
  * `issuesFilterActive`/`prsFilterActive` acima, pra ser testável sem harness
  * de DOM.
  *
- * `selectValue` carrega o prefixo do grupo de origem (`issue:elegivel`,
+ * `selectValue` carrega o prefixo do grupo de origem (`issue:overnight`,
  * `pr:overnight`) — o grupo decide qual dos 2 campos recebe o valor; o OUTRO
  * é SEMPRE zerado no mesmo update, nunca fica preso a um valor antigo de um
  * grupo diferente do recém-selecionado (o risco que colapsar os 2 controles

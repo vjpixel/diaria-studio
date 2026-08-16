@@ -183,9 +183,13 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.dispatch-elegivel { border-color: var(--status-ok); color: var(--status-ok); }
+/* #5462: os 4 valores de execTrack. A cor codifica "quanto isso está pronto
+   pra andar", não a sessão em si — verde anda sozinho hoje à noite, âmbar
+   espera você, vermelho espera alguém de fora, cinza não espera ninguém. */
+.dispatch-overnight { border-color: var(--status-ok); color: var(--status-ok); }
+.dispatch-develop { border-color: var(--status-warn); color: var(--status-warn); }
 .dispatch-bloqueada { border-color: var(--status-danger); color: var(--status-danger); }
-.dispatch-ambigua { border-color: var(--status-warn); color: var(--status-warn); }
+.dispatch-fora-de-rodada { border-color: var(--rule); color: var(--fg-dim, var(--rule)); }
 
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·

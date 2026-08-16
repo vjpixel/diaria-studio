@@ -32,10 +32,10 @@ import { COLORS, FONTS } from "../lib/shared/design-tokens.ts";
  * revisao.css/edicao.css/chat-drawer.css/style.css — mapeamento por FAMÍLIA
  * de matiz (verde/laranja-amarelo/vermelho/roxo-azul), não por redesenho
  * semântico badge-a-badge:
- *   ok     (verde)        — dispatch-elegivel, ci-green, wave-chip-active,
+ *   ok     (verde)        — dispatch-overnight, ci-green, wave-chip-active,
  *                            status-apoiando, state-configured/reachable,
  *                            track-edicao, diff add.
- *   warn   (laranja)      — priority-p1/p2, dispatch-ambigua,
+ *   warn   (laranja)      — priority-p1/p2, dispatch-develop,
  *                            status-apoiou_e_parou, wave-capacity-warning,
  *                            state-partial/error, track-mensal, ci-pending,
  *                            log warn, chat-msg.system.

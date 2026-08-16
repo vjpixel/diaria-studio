@@ -28,8 +28,9 @@
  * `extractFilePaths` abaixo — originalmente insumo da análise de cluster de
  * conflito de `studio-waves.ts`, removida no #4004; a extração em si
  * continua, é o dado bruto que a coluna de Classificação da Triagem usa) e
- * `dispatchTrack` (classificação best-effort elegível/bloqueada/ambígua, ver
- * `classifyDispatchTrack` abaixo — mesma relocação do #4004).
+ * `execTrack` (qual sessão consegue trabalhar a issue — overnight/develop/
+ * bloqueada/fora-de-rodada, ver `scripts/lib/issue-exec-track.ts`; sucede o
+ * `dispatchTrack` elegível/bloqueada/ambígua do #4004, aposentado no #5462).
  * `TriagePr` ganhou `ciState` (resumo de `statusCheckRollup`) e
  * `reviewDecision` (repasse cru da API) — visão de "PRs em voo" pedida pelo
  * #3562. Isso exige incluir `body` no `gh issue list` e
@@ -44,6 +45,7 @@
  */
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "./gh-run.ts";
+import { classifyExecTrack, EXEC_TRACK_UI, type ExecTrack } from "../lib/issue-exec-track.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -56,7 +58,7 @@ export interface GhIssueRaw {
   labels?: Array<{ name: string }>;
   createdAt?: string;
   updatedAt?: string;
-  /** Usado só pra derivar `files`/`dispatchTrack` (#3562) — NUNCA repassado
+  /** Usado só pra derivar `files`/`execTrack` (#3562) — NUNCA repassado
    * cru pro cliente (ver `parseIssues`: o corpo não entra em `TriageIssue`). */
   body?: string;
 }
@@ -93,10 +95,11 @@ export interface TriageIssue {
    * `extractFilePaths` abaixo. Nunca inclui o corpo cru da issue, só os
    * paths extraídos. */
   files: string[];
-  /** Classificação best-effort elegível/bloqueada/ambígua (#3562) — ver
-   * `classifyDispatchTrack` abaixo. Aproximação determinística, não
-   * substitui a Fase 0 do `/diaria-develop`/`/diaria-overnight`. */
-  dispatchTrack: DispatchTrack;
+  /** Qual sessão consegue trabalhar a issue (#5462) — ver
+   * `scripts/lib/issue-exec-track.ts`, fonte única compartilhada com a Fase 0
+   * do `/diaria-overnight`/`/diaria-develop`. Determinístico: lê labels +
+   * marcador `aguardando-ate:`, nunca infere julgamento a partir de prosa. */
+  execTrack: ExecTrack;
 }
 
 export interface TriagePr {
@@ -128,6 +131,13 @@ export interface TriageData {
   generatedAt: string;
   issues: TriageIssue[];
   prs: TriagePr[];
+  /** Vocabulário de `execTrack` (valor + rótulo + explicação), na ordem de
+   * precedência do classificador (#5462). Servido junto do payload pra que o
+   * front RENDERIZE a partir daqui em vez de redeclarar os 4 valores — a
+   * redeclaração era uma 2ª fonte de verdade que um 5º valor quebraria só do
+   * lado do servidor, passando silenciosamente no cliente (achado no review
+   * do PR #5463). */
+  execTrackUi: typeof EXEC_TRACK_UI;
   /** Mensagem de erro da última tentativa de fetch via `gh`, ou `null` se a
    * última tentativa (ou o dado servido do cache) foi bem-sucedida. */
   error: string | null;
@@ -149,7 +159,7 @@ export type GhRunFn = (args: string[], cwd: string) => GhRunResult;
 // Relocadas de `studio-waves.ts` no #4004 (limpeza da seção "Composição de
 // wave — preview" e do mecanismo wave-fire, descontinuado no #3720/#3985) —
 // `studio-issues.ts` é o único consumidor real: `parseIssues` abaixo usa as
-// duas pra popular `TriageIssue.files`/`TriageIssue.dispatchTrack`, que
+// duas pra popular `TriageIssue.files`/`TriageIssue.execTrack`, que
 // alimentam a coluna de Classificação da Triagem. A análise de cluster de
 // conflito/composição de onda que também vivia em `studio-waves.ts` (agora
 // removida) usava esses dois como insumo, mas eram funções genéricas de
@@ -188,37 +198,12 @@ export function extractFilePaths(text: string | null | undefined): string[] {
   return [...found].sort();
 }
 
-export type DispatchTrack = "elegivel" | "bloqueada" | "ambigua";
-
-/** Labels reais que a fila de `/diaria-develop` trata como bloqueio externo
- * (ver `context/overnight-dispatch-rules.md`): `external-blocker` (A/B/E
- * conforme corpo), `on-hold`/`kit-migration` (B), `not-this-week` (D),
- * `beehiiv` (E — plataforma plan-gated). */
-const BLOCKING_LABELS = new Set([
-  "external-blocker",
-  "on-hold",
-  "kit-migration",
-  "not-this-week",
-  "beehiiv",
-]);
-
-/** Marcadores textuais de decisão-produto/editorial em aberto (cat. C do
- * develop) quando NENHUMA label de bloqueio está presente — sinal mais fraco
- * que uma label real, por isso vira "ambígua" e não "bloqueada". */
-const AMBIGUITY_RE = /decidir entre|trade-?off|escolher entre|qual (?:abordagem|opç[aã]o)/i;
-
-/**
- * Classificação best-effort — NÃO é o mesmo julgamento que o coordenador do
- * `/diaria-develop` faz lendo a issue inteira (Fase 0, "Categoria inferida
- * por labels reais + corpo"). É uma aproximação determinística boa o
- * suficiente pra triagem visual; a fonte de verdade continua sendo a sessão
- * `/diaria-develop`/`/diaria-overnight` em si.
- */
-export function classifyDispatchTrack(labels: string[], text: string | null | undefined): DispatchTrack {
-  if (labels.some((l) => BLOCKING_LABELS.has(l))) return "bloqueada";
-  if (AMBIGUITY_RE.test(text ?? "")) return "ambigua";
-  return "elegivel";
-}
+// A classificação de issue vive em `scripts/lib/issue-exec-track.ts` desde o
+// #5462 — não é mais uma heurística própria da Triagem. O `classifyDispatchTrack`
+// que morava aqui classificava por regex de prosa (`AMBIGUITY_RE`) e por isso
+// não conseguia separar as duas ambiguidades que o overnight trata de forma
+// oposta (trivial → briefing; trade-off-real → develop). Ver a docstring do
+// módulo novo pro raciocínio completo.
 
 // ─── funções puras (testáveis sem invocar `gh`) ────────────────────────
 
@@ -266,7 +251,7 @@ export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
       createdAt: i.createdAt ?? null,
       updatedAt: i.updatedAt ?? null,
       files,
-      dispatchTrack: classifyDispatchTrack(labels, `${i.title}\n${i.body ?? ""}`),
+      execTrack: classifyExecTrack({ labels, body: i.body }),
     };
   });
 }
@@ -464,6 +449,7 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       generatedAt: new Date(nowMs).toISOString(),
       issues: parseIssues(issuesRaw),
       prs: parsePrs(prsRaw),
+      execTrackUi: EXEC_TRACK_UI,
       error: null,
       cached: false,
     };
@@ -479,6 +465,10 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       generatedAt: new Date(nowMs).toISOString(),
       issues: [],
       prs: [],
+      // Servido mesmo no caminho de falha: é vocabulário estático, não
+      // depende do `gh`. Sem isso o front perderia rótulo/tooltip justamente
+      // quando já está degradado.
+      execTrackUi: EXEC_TRACK_UI,
       error: message,
       cached: false,
     };

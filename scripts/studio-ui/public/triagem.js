@@ -100,19 +100,31 @@ function trackBadge(track) {
   return `<span class="track-badge track-${track}">${track}</span>`;
 }
 
-// #3715 — significado de cada valor de Classificação (dispatchTrack), espelhando
-// studio-issues.ts::classifyDispatchTrack. Exposto como tooltip (title=) em cada
-// badge — a tabela não tinha nenhuma explicação por-valor, só a nota genérica
-// acima do cabeçalho.
-const DISPATCH_TRACK_EXPLAIN = {
-  elegivel: "elegível — sem sinal de bloqueio; entra na análise de cluster/dispatch de onda.",
-  bloqueada: "bloqueada — tem label de bloqueio real (ex: conta externa/decisão/credencial) e não entra na onda.",
-  ambigua: "ambígua — o texto sugere possível bloqueio, mas é marcador fraco (não label); fica fora do dispatch automático até triagem humana.",
-};
+// #3715/#5462 — vocabulário de Classificação (execTrack): rótulo + explicação
+// por valor, exibidos como tooltip no badge e como legenda visível.
+//
+// NÃO redeclarar os 4 valores aqui. Eles vêm do servidor em
+// `data.execTrackUi` (montado por scripts/lib/issue-exec-track.ts a partir de
+// `Record<ExecTrack, string>`, que quebra o build se um valor novo entrar sem
+// rótulo). Redeclarar criava exatamente a 2ª fonte de verdade que o #5462
+// existe pra eliminar: um 5º valor quebraria o build do servidor e passaria
+// SILENCIOSAMENTE aqui, caindo no fallback sem tradução nem tooltip (achado no
+// review do PR #5463).
+//
+// A ordem vem do servidor e é a de precedência do classificador, não
+// alfabética — a legenda lida de cima pra baixo explica por que uma issue com
+// 2 sinais caiu onde caiu.
+function execTrackEntry(track) {
+  return (data.execTrackUi ?? []).find((e) => e.track === track);
+}
 
 function dispatchBadge(track) {
-  const labelPt = { elegivel: "elegível", bloqueada: "bloqueada", ambigua: "ambígua" }[track] ?? track;
-  const title = DISPATCH_TRACK_EXPLAIN[track] ?? "";
+  const entry = execTrackEntry(track);
+  // Fallback pro valor cru só cobre a janela em que o payload ainda não
+  // chegou (1º render antes do fetch); depois disso, toda variante servida
+  // pelo servidor tem entrada garantida pelo Record do lib.
+  const labelPt = entry?.label ?? track;
+  const title = entry?.explain ?? "";
   return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
 }
 
@@ -212,7 +224,7 @@ function renderIssuesTable() {
     (i) =>
       matchesPriorityFilter(i.priority) &&
       matchesLabelFilter(i.labels) &&
-      (!filters.dispatch || i.dispatchTrack === filters.dispatch),
+      (!filters.dispatch || i.execTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
   updateEmptyState(
@@ -229,7 +241,7 @@ function renderIssuesTable() {
     tr.innerHTML = `
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
-      <td>${dispatchBadge(i.dispatchTrack)}</td>
+      <td>${dispatchBadge(i.execTrack)}</td>
       <td>${priorityBadge(i.priority)}</td>
       <td>${labelsBadges(i.labels)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>

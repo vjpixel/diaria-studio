@@ -21,7 +21,6 @@ import {
   derivePriority,
   deriveTrackFromBranch,
   extractFilePaths,
-  classifyDispatchTrack,
   parseIssues,
   parsePrs,
   summarizeChecks,
@@ -103,26 +102,16 @@ describe("extractFilePaths (#3562, relocado no #4004)", () => {
   });
 });
 
-describe("classifyDispatchTrack (#3562, relocado no #4004)", () => {
-  it("label de bloqueio real -> bloqueada", () => {
-    assert.equal(classifyDispatchTrack(["external-blocker", "enhancement"], "qualquer corpo"), "bloqueada");
-    assert.equal(classifyDispatchTrack(["on-hold"], ""), "bloqueada");
-    assert.equal(classifyDispatchTrack(["kit-migration"], ""), "bloqueada");
-    assert.equal(classifyDispatchTrack(["not-this-week"], ""), "bloqueada");
-    assert.equal(classifyDispatchTrack(["beehiiv"], ""), "bloqueada");
-  });
-
-  it("marcador textual de decisão em aberto sem label de bloqueio -> ambigua", () => {
-    assert.equal(classifyDispatchTrack(["enhancement"], "Precisamos decidir entre A e B"), "ambigua");
-    assert.equal(classifyDispatchTrack([], "existe um trade-off real aqui"), "ambigua");
-  });
-
-  it("sem sinal nenhum -> elegivel", () => {
-    assert.equal(classifyDispatchTrack(["bug", "P2"], "corpo qualquer sem ambiguidade"), "elegivel");
-  });
-
-  it("label de bloqueio vence marcador de ambiguidade quando ambos presentes", () => {
-    assert.equal(classifyDispatchTrack(["on-hold"], "precisamos decidir entre A e B"), "bloqueada");
+describe("classificação de issue migrou pro lib compartilhado (#5462)", () => {
+  // `classifyDispatchTrack` (elegível/bloqueada/ambígua) foi substituído por
+  // `classifyExecTrack` (overnight/develop/bloqueada/fora-de-rodada) em
+  // `scripts/lib/issue-exec-track.ts` — a tabela de precedência é testada lá
+  // (`test/issue-exec-track.test.ts`). Aqui fica só o guard de que a Triagem
+  // não voltou a ter classificador PRÓPRIO: uma 2ª fonte de verdade divergindo
+  // da Fase 0 das skills é exatamente o que o #5462 removeu.
+  it("studio-issues.ts não exporta mais classificador próprio", async () => {
+    const mod = await import("../scripts/studio-ui/studio-issues.ts");
+    assert.equal("classifyDispatchTrack" in mod, false);
   });
 });
 
@@ -188,8 +177,8 @@ describe("parsePrs (#3562)", () => {
   });
 });
 
-describe("parseIssues — files + dispatchTrack (#3562, entrega 2)", () => {
-  it("deriva files do corpo e dispatchTrack='elegivel' sem label de bloqueio", () => {
+describe("parseIssues — files + execTrack (#3562, entrega 2; #5462)", () => {
+  it("deriva files do corpo e execTrack='overnight' sem label de bloqueio", () => {
     const raw: GhIssueRaw[] = [
       {
         number: 1,
@@ -202,30 +191,40 @@ describe("parseIssues — files + dispatchTrack (#3562, entrega 2)", () => {
     ];
     const [issue] = parseIssues(raw);
     assert.deepEqual(issue.files, ["context/overnight-dispatch-rules.md", "scripts/studio-ui/server.ts"]);
-    assert.equal(issue.dispatchTrack, "elegivel");
+    assert.equal(issue.execTrack, "overnight");
   });
 
-  it("label external-blocker -> dispatchTrack='bloqueada'", () => {
+  it("label external-blocker -> execTrack='bloqueada'", () => {
     const raw: GhIssueRaw[] = [
       { number: 2, title: "t", url: "u", state: "OPEN", labels: [{ name: "external-blocker" }], body: "" },
     ];
     const [issue] = parseIssues(raw);
-    assert.equal(issue.dispatchTrack, "bloqueada");
+    assert.equal(issue.execTrack, "bloqueada");
   });
 
-  it("corpo sem label de bloqueio mas com marcador de decisão -> 'ambigua'", () => {
+  it("label windows -> execTrack='develop'", () => {
     const raw: GhIssueRaw[] = [
-      { number: 3, title: "t", url: "u", state: "OPEN", labels: [], body: "precisamos decidir entre X e Y" },
+      { number: 3, title: "t", url: "u", state: "OPEN", labels: [{ name: "windows" }], body: "" },
     ];
     const [issue] = parseIssues(raw);
-    assert.equal(issue.dispatchTrack, "ambigua");
+    assert.equal(issue.execTrack, "develop");
+  });
+
+  it("corpo com marcador de decisão em aberto NÃO classifica sozinho (#5462)", () => {
+    // Regressão do `AMBIGUITY_RE` removido: este corpo virava 'ambigua' antes,
+    // tirando da fila do overnight uma issue que o briefing destrava.
+    const raw: GhIssueRaw[] = [
+      { number: 4, title: "t", url: "u", state: "OPEN", labels: [], body: "precisamos decidir entre X e Y" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.execTrack, "overnight");
   });
 
   it("body ausente -> files vazio, sem lançar", () => {
-    const raw = [{ number: 4, title: "sem corpo", url: "u", state: "OPEN" }] as GhIssueRaw[];
+    const raw = [{ number: 5, title: "sem corpo", url: "u", state: "OPEN" }] as GhIssueRaw[];
     const [issue] = parseIssues(raw);
     assert.deepEqual(issue.files, []);
-    assert.equal(issue.dispatchTrack, "elegivel");
+    assert.equal(issue.execTrack, "overnight");
   });
 });
 
