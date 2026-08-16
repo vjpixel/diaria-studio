@@ -29,6 +29,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 /** Nó de DOM que aceita qualquer acesso/atribuição sem reclamar. Devolve
  * outro nó pra qualquer propriedade desconhecida, então cadeias arbitrárias
@@ -64,13 +65,30 @@ function stubNode(): unknown {
 
 const originals: Record<string, unknown> = {};
 
+/** Ids que `triagem.html` de fato declara, lidos do HTML real em vez de
+ * repetidos aqui. `getElementById` devolve `null` pra qualquer id FORA desta
+ * lista — como o DOM real faria.
+ *
+ * Sem isso o stub aceitaria qualquer id e mascararia drift HTML↔JS: renomear
+ * um `id` no HTML sem atualizar o `triagem.js` faria
+ * `el.refreshBtn.addEventListener(...)` (top-level) lançar `TypeError` em
+ * produção — o MESMO sintoma de página zerada deste incidente, por outra via. */
+function realHtmlIds(): Set<string> {
+  const html = readFileSync(
+    new URL("../scripts/studio-ui/public/triagem.html", import.meta.url),
+    "utf8",
+  );
+  return new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+}
+
 function installDomStub(): void {
   for (const key of ["document", "window", "fetch", "location"]) {
     originals[key] = (globalThis as Record<string, unknown>)[key];
   }
+  const ids = realHtmlIds();
   (globalThis as Record<string, unknown>).document = new Proxy(
     {
-      getElementById: () => stubNode(),
+      getElementById: (id: string) => (ids.has(id) ? stubNode() : null),
       createElement: () => stubNode(),
       querySelector: () => stubNode(),
       querySelectorAll: () => [],
@@ -85,18 +103,54 @@ function installDomStub(): void {
     },
   );
   (globalThis as Record<string, unknown>).window = globalThis;
-  // `fetch` resolve um payload vazio mas BEM FORMADO — o módulo dispara
-  // `fetchIssues()` no load, e um payload malformado testaria outra coisa
-  // (robustez a lixo do servidor), não "o módulo carrega".
+  // `fetch` resolve um payload BEM FORMADO e **populado**. Populado importa:
+  // com `issues: []`/`prs: []` os `for` de `renderIssuesTable`/
+  // `renderPrsTable`/`renderLabelFilters` completam com ZERO iterações, e
+  // nenhum dos helpers de linha (`dispatchBadge`, `priorityBadge`,
+  // `labelsBadges`, `ciBadge`, `trackBadge`, `ageLabel`) chega a ser chamado —
+  // um identificador órfão dentro de um `<td>` passaria batido, que é
+  // exatamente a classe que este guard promete cobrir.
+  //
+  // Um item de cada tabela basta pra forçar uma passada por cada corpo de
+  // loop; cobrir combinações é papel dos testes de lógica pura.
   (globalThis as Record<string, unknown>).fetch = async () =>
     ({
       ok: true,
       status: 200,
       json: async () => ({
         generatedAt: new Date(0).toISOString(),
-        issues: [],
-        prs: [],
-        execTrackUi: [],
+        issues: [
+          {
+            number: 1,
+            title: "issue de smoke",
+            url: "https://example.test/1",
+            state: "OPEN",
+            labels: ["bug", "P2"],
+            priority: "P2",
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+            files: ["scripts/foo.ts"],
+            execTrack: "overnight",
+          },
+        ],
+        prs: [
+          {
+            number: 2,
+            title: "pr de smoke",
+            url: "https://example.test/2",
+            state: "OPEN",
+            isDraft: false,
+            headRefName: "overnight/fix-1-slug",
+            track: "overnight",
+            labels: ["P1"],
+            priority: "P1",
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+            ciState: "green",
+            reviewDecision: "APPROVED",
+          },
+        ],
+        execTrackUi: [{ track: "overnight", label: "Overnight", explain: "explicação de smoke" }],
         error: null,
         cached: false,
       }),
