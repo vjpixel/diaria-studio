@@ -104,13 +104,21 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    é `ambígua/trade-off-real` disfarçada de `bloqueada-externa` (heurística
    de atenção, não substitui reler o corpo inteiro).
 
-   **Verificação de estado antes de classificar como "escopo grande, scoping
-   futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura"
-   **não é** um status válido desta lista — é sempre uma leitura de
-   `elegivel`/`precisa-resposta`/`bloqueada-externa`/`requer-sessao-local`/
-   `not-this-week`/`fora-do-escopo`, nunca um resultado automático de "issue
-   parece grande". Antes de aceitar essa leitura pra qualquer issue, rodar as
-   3 checagens abaixo:
+   **Verificação de estado antes de classificar qualquer issue como
+   bloqueada — `bloqueada-externa`, `requer-sessao-local`,
+   `ambígua/trade-off-real`, ou `not-this-week` (#5383, generalizado em
+   #5392).** "Escopo grande, scoping futuro" **não é um 5º status** — é
+   sempre uma leitura que se resolve em `not-this-week` (o status já
+   existente pra "trabalhável, mas não nesta rodada"), nunca um motivo
+   paralelo aos 4 reais. Nenhuma dessas classificações é automática a partir
+   de "a issue parece bloqueada" — o #5383 original restringia a
+   verificação só ao caso "escopo grande"; o #5392 achou o mesmo atalho nas
+   outras classificações (achado concreto: #5255 classificada
+   `requer-sessao-local` sem checar `docs/audience-source-notes.md`, que já
+   tinha a decisão completa registrada 2 dias antes da issue existir). Antes
+   de aceitar qualquer uma dessas 4 leituras pra uma issue — inclusive
+   quando a leitura inicial for "escopo grande demais" (→ `not-this-week`)
+   — rodar as 4 checagens abaixo:
    1. `gh issue view N --json comments` — ler os comentários mais recentes
       **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
       unidade já dispatchada, ou progresso parcial registrado.
@@ -121,14 +129,35 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
       esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
       trabalho com uma seção "estado após esta rodada"/"candidatas pra
       próxima rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+   4. **`grep -il {palavra-chave do título/tema} docs/*.md`** — buscar um
+      doc relacionado ao ASSUNTO da issue, mesmo sem link em nenhum
+      comentário (o #5255 nunca citou `docs/audience-source-notes.md`).
+      CLAUDE.md já documenta esse padrão de doc como "registro de decisão
+      que evita reabrir investigação já concluída" (`docs/seo-notes.md`,
+      `docs/audience-source-notes.md`). Achou um doc relacionado → ler **por
+      inteiro** antes de aceitar a classificação de bloqueio — ele pode
+      conter a decisão que torna a issue não-bloqueada.
 
-   Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
-   progresso, nenhum doc de acompanhamento) é legítimo classificar a issue
-   como `bloqueada-externa`/`ambígua/trade-off-real` por escopo. Caso
-   contrário, o próximo passo já está documentado — classificar como
+   **Quando pular a checagem 4.** É barata o bastante pra rodar em toda
+   classificação de bloqueio (um `grep`, não um fleet de agentes) — o skip
+   por label é estreito, não vale a issue inteira: só pula quando o
+   `npx tsx scripts/lib/issue-decisions.ts --issue N` (passo 4 acima)
+   confirma que a decisão/bloqueio JÁ REGISTRADO cobre exatamente o motivo
+   de bloqueio sendo avaliado agora, não qualquer outro item/sub-pergunta
+   da mesma issue. Item isolado sem marker correspondente → roda a
+   checagem 4 mesmo com a issue tendo `decisao-registrada`/
+   `bloqueio-execucao` de outro item.
+
+   Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
+   progresso, nenhum doc de acompanhamento, nenhum doc relacionado por
+   assunto) é legítimo classificar a issue como bloqueada — pelo motivo
+   específico aplicável (`bloqueada-externa`, `requer-sessao-local`,
+   `ambígua/trade-off-real`, ou `not-this-week` quando o motivo for escopo
+   grande demais pra esta rodada). Caso contrário, o próximo passo já está
+   documentado — classificar como
    `elegivel` e dispatchar essa fatia pequena nesta mesma rodada, ou, no
    mínimo, reportar o próximo passo concreto na tabela do passo 4.5 em vez de
-   "épica-scale, scoping futuro".
+   aceitar a leitura de bloqueio.
 
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
