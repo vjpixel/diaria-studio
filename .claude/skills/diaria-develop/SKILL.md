@@ -161,6 +161,42 @@ já está documentado — dispatchar essa fatia pequena nesta mesma onda (issue
 vira elegível), ou, no mínimo, reportar o próximo passo concreto na tabela
 do `plan.json` em vez de aceitar a leitura de bloqueio.
 
+**Bloqueio descoberto MID-EXECUÇÃO (não na varredura da Fase 0): estrutural vs
+ação-física-rápida-do-editor (#5440, 16/08/2026).** As categorias A-E acima
+cobrem o bloqueio identificado na classificação inicial. Um segundo tipo
+aparece só depois, no meio da tentativa de execução em si (ex: cat. B
+"confirma que a conta existe" vira, na hora de mexer de fato na conta, um
+2FA/CAPTCHA que a sessão não consegue passar sozinha) — e os dois exigem
+tratamento diferente:
+
+1. **Estrutural** (comportamento atual, mantido sem mudança) — o novo
+   impedimento precisa de algo que a sessão genuinamente não tem e o editor
+   presente também não resolve na hora: aguardar terceiro, feature gated por
+   plano, acesso/conta que não existe. Sinal: resolver exigiria dias, uma
+   ação de outra pessoa, ou uma decisão que nem o editor tem pronta agora.
+   → documentar (marcador `formatExecutionBlockMarker`, `bloqueio-execucao`)
+   e `pulada` motivo `nao-destravavel-na-sessao`, sem perguntar — pular
+   direto é correto aqui, perguntar seria a mesma fricção que o #5321 já
+   eliminou.
+2. **Ação física de segundos que só o editor presente executa** (2FA,
+   clique de confirmação numa tela que só ele vê, identificar qual das N
+   contas/opções é a certa, resolver um CAPTCHA) — sinal: resolve em
+   segundos com **1 ação física** do editor, sem precisar decidir nada nem
+   esperar terceiro. A sessão develop pressupõe editor presente (diferente
+   do overnight) — pular esse tipo sem perguntar mina a proposta de valor
+   central da skill. **`AskUserQuestion` AO VIVO**, com a opção padrão
+   "não consigo agora / documentar e pular" sempre disponível (mesmo padrão
+   de toda opção de Gate 1) — só cai no caminho `pulada` acima se o editor
+   escolher essa opção ou estiver ausente (Fallback de ausência).
+
+Exemplos concretos do achado que motivou isto (sessão 260816b): remoção de
+2º admin numa conta de Ads travada em reverificação 2FA (tipo 2 — o editor
+confirma no próprio dispositivo em segundos); conta entre N opções que só o
+editor reconhece pelo nome (tipo 2 — identificação, não decisão); CAPTCHA no
+live chat de um fornecedor (tipo 2). Contraste: cat. B esperando o editor
+**criar** uma conta nova em outro serviço é tipo 1 — não é uma ação de
+segundos, é abrir/configurar algo que não existe ainda.
+
 ## Goal de esgotamento (#4297, expandido em #4319)
 
 Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock — e desde #4319 o alvo default é o backlog aberto **inteiro**, não só o bloqueado.
@@ -218,8 +254,44 @@ Parte do backlog é **intrinsecamente irresolvível na sessão** (cat. B esperan
 - `draft-ci-vermelho`
 - `pulada` motivo `nao-destravavel-na-sessao` (Fase 1 passo 5 — exige comentário durável explicando o que falta, com dedup; cobre tanto bloqueio cat. A/B/E não resolvido quanto **implementação de issue elegível que falha sem nunca abrir PR/chegar ao CI** — subagente trava, `npm ci`/worktree falha, exceção não tratada. Uma issue elegível pula Gate 1 direto pra composição da onda, então esse é o ÚNICO caminho terminal disponível pra ela quando a implementação não converge; sem esse caminho o tier correspondente nunca esgotaria)
 - `pulada` motivo `decisao-adiada` (editor saiu no meio)
+- `entregue-fora-de-codigo` (#5441, 16/08/2026 — ver subseção própria abaixo)
 
 O Goal força **encarar cada issue do alvo e classificá-la** — o que ele elimina é "a issue nem foi olhada porque não estava na tabela da Fase 0", não a exigência de resolver o irresolvível.
+
+### Unidade concluída sem gerar PR (#5441, 16/08/2026)
+
+As categorias A-E e os terminais acima assumem que "resolver a issue" termina
+em código: PR mergeado, ou pulada por bloqueio real. Existe um terceiro
+caminho que a skill não modelava — a unidade conclui integralmente por uma
+ação puramente OPERACIONAL, fora do repositório (deploy manual de um Worker
+já defasado, export de dado de um painel de terceiro, ajuste direto numa
+configuração externa) e não gera diff nenhum pra revisar/mergear. Sem um
+status pra isso, a issue ficava boiando aberta indefinidamente — o trabalho
+já tinha sido feito e documentado no `plan.json`/relatório, mas nada no
+fluxo a levava até `gh issue close`.
+
+**Quando se aplica:** a unidade terminou (o efeito pretendido pela issue já
+existe no mundo — Worker redeployado, CSV exportado, campo atualizado no
+painel) e não existe/não faz sentido existir um PR pra fechar (não houve
+mudança de código versionada neste repo, ou a mudança de código que houve já
+foi mergeada antes e o que faltava era só a ação operacional em si).
+**Não** se aplica quando ainda falta implementar algo codável — nesse caso a
+issue continua em `pendente`/segue pro Gate 1 normalmente.
+
+**Protocolo:** ao concluir uma unidade assim, o coordenador NÃO fecha a
+issue sozinho — pergunta ao editor, **batchado** com as demais decisões da
+mesma onda (mesmo padrão de agrupamento das perguntas cat. C na Fase 0.5:
+uma única `AskUserQuestion` cobrindo todas as unidades `entregue-fora-de-
+codigo` da onda corrente), se fecha agora ou mantém aberta por algum motivo
+(ex: aguardando validação de resultado pelo editor). Opções: "fechar agora"
+(`gh issue close` + comentário durável com a evidência da entrega — link do
+deploy, nome do arquivo exportado, timestamp) ou "manter aberta" (fica
+`entregue-fora-de-codigo` mesmo assim — é terminal PARA O GOAL da sessão,
+independente da decisão de fechar; a sessão não trava esperando o editor
+decidir sobre fechamento, só sobre o Gate 1 residual normal). Registrar no
+`plan.json` por issue: `status: "entregue-fora-de-codigo"`,
+`fora_de_codigo_evidencia` (o que foi feito, nunca um secret),
+`fora_de_codigo_fechamento` (`"fechada"` | `"mantida-aberta: {motivo}"`).
 
 ### O Goal é relativo ao escopo da sessão
 
@@ -405,7 +477,7 @@ Ao detectar edição em curso (`scripts/lib/find-current-edition.ts` retorna can
 
 ## `plan.json` (`data/develop/{AAMMDD}/`, gitignored)
 
-Reusa o schema do overnight (**inclusive `started_at` — ISO 8601 real capturado no passo 1, nunca a string `{AAMMDD}`, #3841**) + campos próprios de desbloqueio: `block_category` (A–E), `block_label` (literal real), `what_unblocks`, `unblock_status` (`pendente`|`desbloqueada-validada`|`nao-destravavel-na-sessao`), `unblock_evidence` (dry-run exit 0 / comentário #link / probe API ok — **NUNCA o valor do secret**), `editor_input_received` (bool/hash, nunca o secret), `source` (`inherited-overnight`|`fresh-scan`|`manual-issues-arg`), `wave` (id da onda paralela), `fleet_review` (#4383 — `"done"` | `"skipped: {motivo}"`, gravado pelo coordenador ao concluir o passo "REVIEW DE FLEET PRÉ-MERGE" da seção Gates, por unidade; ausente em `plan.json` de sessão anterior a #4383). **Políticas de sessão do briefing front-loaded (#2966):** `attack_order` (resolvida — default `so_destravaveis_agora` sem pergunta, ou override via `--attack-order`/pedido mid-sessão, #4498), `wave_policy` (`auto`|`per_wave`, default `auto`), `catD_preauth` (`show_each`|`preapproved`, default `show_each`) — gravadas na Fase 0.5 e relidas em todas as fases; nunca re-perguntadas em resume. **Regra crítica de resume:** nunca re-perguntar um desbloqueio já validado (`unblock_status: desbloqueada-validada` + `status: pendente` → retomar direto na implementação) nem uma política já escolhida. **Segurança:** o plan.json nunca armazena o valor de um token. Develop **não** grava `preempted_*`.
+Reusa o schema do overnight (**inclusive `started_at` — ISO 8601 real capturado no passo 1, nunca a string `{AAMMDD}`, #3841**) + campos próprios de desbloqueio: `block_category` (A–E), `block_label` (literal real), `what_unblocks`, `unblock_status` (`pendente`|`desbloqueada-validada`|`nao-destravavel-na-sessao`), `unblock_evidence` (dry-run exit 0 / comentário #link / probe API ok — **NUNCA o valor do secret**), `editor_input_received` (bool/hash, nunca o secret), `source` (`inherited-overnight`|`fresh-scan`|`manual-issues-arg`), `wave` (id da onda paralela), `fora_de_codigo_evidencia`/`fora_de_codigo_fechamento` (#5441 — só presentes quando `status: "entregue-fora-de-codigo"`, ver subseção "Unidade concluída sem gerar PR"), `fleet_review` (#4383 — `"done"` | `"skipped: {motivo}"`, gravado pelo coordenador ao concluir o passo "REVIEW DE FLEET PRÉ-MERGE" da seção Gates, por unidade; ausente em `plan.json` de sessão anterior a #4383). **Políticas de sessão do briefing front-loaded (#2966):** `attack_order` (resolvida — default `so_destravaveis_agora` sem pergunta, ou override via `--attack-order`/pedido mid-sessão, #4498), `wave_policy` (`auto`|`per_wave`, default `auto`), `catD_preauth` (`show_each`|`preapproved`, default `show_each`) — gravadas na Fase 0.5 e relidas em todas as fases; nunca re-perguntadas em resume. **Regra crítica de resume:** nunca re-perguntar um desbloqueio já validado (`unblock_status: desbloqueada-validada` + `status: pendente` → retomar direto na implementação) nem uma política já escolhida. **Segurança:** o plan.json nunca armazena o valor de um token. Develop **não** grava `preempted_*`.
 
 **`goal` (#4297, expandido em #4319), objeto no nível raiz:**
 ```json
@@ -429,7 +501,7 @@ Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `
 
 **Migração de legado (#4319):** `plan.json` gravado por sessão anterior a #4319 tem `policy: "exhaust"` — ler como **`blocked_only`**, nunca como `exhaust_all` (promover o escopo silenciosamente em resume mudaria o mandato da sessão no meio, o que o Fallback de ausência existe pra impedir). Um `plan.json` legado também não tem `tiers`/`current_tier`/`tier3_gate` — tratar como ausentes, sem tentar reconstruir retroativamente. Em particular, **`current_tier` ausente num resume não vira `"1a"` por default** — a sessão trata `target_set`/`remaining` já gravados por ela mesma (pré-#4319) como uma fila única sem partição por tier, exatamente como funcionava antes desta issue existir; a Fase 1 passo 6 (avanço entre tiers) não roda pra essa sessão porque não há tier nenhum pra avançar.
 
-`tiers` = a partição do backlog aberto em 4 ondas (Fase 0 passo 6), recalculada a cada re-checagem entre ondas (Fase 1 passo 6) — issue nova pode entrar num tier já esgotado, e nesse caso `current_tier` **volta** pra ele (não gera livelock: status terminal nunca é re-escolhido). `current_tier` = onda que a Fase 1 está trabalhando agora (`1a`|`1b`|`2`|`3`) — só existe (é gravado) com `policy: "exhaust_all"` ou `"blocked_only"` (nesta, só assume `1a`/`1b`); com `policy: "table_only"` o campo **nunca é gravado**, fica ausente a sessão inteira (mesmo tratamento explícito-vazio que `target_set`/`remaining` já recebem nessa política — ver Fase 1). `target_set` = união das issues nos tiers relevantes pra política escolhida (as 4 ondas com `exhaust_all`; só a fatia bloqueada de `1a` + `1b` com `blocked_only`), populado assim que a Fase 0.5 souber a política — **imutável durante a sessão exceto por re-scan** (novatas aceitas numa re-checagem são adicionadas tanto a `target_set` quanto a `remaining`, e ao `tiers` correspondente; issue que sai de aberto — fechada fora da sessão, manualmente ou por outra sessão concorrente, ver risco de sessões paralelas no CLAUDE.md — é removida de `target_set`/`remaining`/`tiers` no próximo ciclo de re-checagem, mesmo sem nunca ter atingido um dos 4 status terminais locais). `remaining` = `target_set` menos as issues que já atingiram status terminal (`mergeada`, `draft-ci-vermelho`, `pulada` motivo `nao-destravavel-na-sessao` ou `decisao-adiada`) — recalculado a cada atualização de status (mesmo ponto do passo 5 da Fase 1). `reached` = `remaining.length === 0`, só relevante quando `policy` ∈ `{exhaust_all, blocked_only}`.
+`tiers` = a partição do backlog aberto em 4 ondas (Fase 0 passo 6), recalculada a cada re-checagem entre ondas (Fase 1 passo 6) — issue nova pode entrar num tier já esgotado, e nesse caso `current_tier` **volta** pra ele (não gera livelock: status terminal nunca é re-escolhido). `current_tier` = onda que a Fase 1 está trabalhando agora (`1a`|`1b`|`2`|`3`) — só existe (é gravado) com `policy: "exhaust_all"` ou `"blocked_only"` (nesta, só assume `1a`/`1b`); com `policy: "table_only"` o campo **nunca é gravado**, fica ausente a sessão inteira (mesmo tratamento explícito-vazio que `target_set`/`remaining` já recebem nessa política — ver Fase 1). `target_set` = união das issues nos tiers relevantes pra política escolhida (as 4 ondas com `exhaust_all`; só a fatia bloqueada de `1a` + `1b` com `blocked_only`), populado assim que a Fase 0.5 souber a política — **imutável durante a sessão exceto por re-scan** (novatas aceitas numa re-checagem são adicionadas tanto a `target_set` quanto a `remaining`, e ao `tiers` correspondente; issue que sai de aberto — fechada fora da sessão, manualmente ou por outra sessão concorrente, ver risco de sessões paralelas no CLAUDE.md — é removida de `target_set`/`remaining`/`tiers` no próximo ciclo de re-checagem, mesmo sem nunca ter atingido um dos 5 status terminais locais). `remaining` = `target_set` menos as issues que já atingiram status terminal (`mergeada`, `draft-ci-vermelho`, `pulada` motivo `nao-destravavel-na-sessao` ou `decisao-adiada`, `entregue-fora-de-codigo`) — recalculado a cada atualização de status (mesmo ponto do passo 5 da Fase 1). `reached` = `remaining.length === 0`, só relevante quando `policy` ∈ `{exhaust_all, blocked_only}`.
 
 `rescans_done` e `findings_depth` = **contadores puros de observabilidade no develop desde #4319** (sem cap, nenhuma lógica de parada lê o valor) — `rescans_done` incrementa a cada ciclo de re-checagem entre ondas ou re-varredura de convergência; `findings_depth` incrementa a cada finding gerado pela própria sessão que ela mesma consome. Reportados na Fase 2, não usados pra decidir nada durante a sessão. Com `policy: "table_only"`, `reached` fica `false` e ambos os contadores ficam `0` pela sessão inteira — não são avaliados, só presentes pra manter o schema estável.
 
