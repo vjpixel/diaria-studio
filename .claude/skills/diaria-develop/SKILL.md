@@ -515,13 +515,16 @@ Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `
 
 `/diaria-develop` **trabalha** as issues ambíguas de trade-off-real (cat. C — decisão de produto/editorial). **Fronteira resolvida (#2640):** o `/diaria-overnight` marca issues de trade-off-real como `pulada` motivo `ambígua/trade-off-real`, posta comentário na issue direcionando ao `/diaria-develop`, e **nunca** as inclui no seu briefing. Ambiguidade trivial-mas-não-documentada (escolha técnica sem impacto diferencial em usuário) continua no briefing do overnight; trade-off-real é escopo exclusivo do develop.
 
-## Label `local` — issues que só fecham em sessão local (#2643)
+## Labels de máquina — `windows` / `server` (#5462 aposentou `local`)
 
-Issues com label **`local`** requerem recursos machine-local: junction `data/` (OneDrive), ComfyUI, credenciais persistidas, etc. O `/diaria-overnight` detecta o modo de execução via `npx tsx scripts/lib/exec-mode.ts` (`local` | `cloud`) e pula issues `local` em sessão cloud com motivo `requer-sessao-local`.
+**Não aplicar `local` a issue nova.** A label foi aposentada em 16/08/2026 porque colapsava três realidades distintas — máquina Windows, servidor Linux, e ação em conta de terceiro — e por isso não decidia nada. Ela continua existindo no GitHub só pelas issues **fechadas** que a carregam, e `classifyExecTrack` (`scripts/lib/issue-exec-track.ts`) a **ignora**: uma issue marcada só com `local` cai no default `overnight`, não em `develop`. Aplicá-la hoje produz roteamento silenciosamente errado.
 
-O `/diaria-develop` **roda por natureza em sessão local** (o editor está presente na máquina). Por isso, issues `local` são **elegíveis normalmente** no develop — a label é apenas informacional aqui. Se por algum motivo a sessão develop rodar em cloud (improvável), aplicar a mesma detecção do overnight e avisar o editor antes de pular.
+**Qual usar:**
+- **`windows`** — exige a máquina Windows do editor: Chrome logado, ComfyUI, ou qualquer coisa que só existe lá. Classifica como **Develop** (o overnight roda no servidor Linux e não alcança).
+- **`server`** — exige o servidor Linux 24/7: systemd, tarefas agendadas, Studio, OneDrive. **Não** tira do overnight — é exatamente a máquina onde ele já roda.
+- **`external-blocker`** — não é máquina nenhuma: precisa de ação do editor numa conta de terceiro (allowlist, credencial, cadastro). Classifica como **Bloqueada**.
 
-**Quando aplicar a label `local` a uma nova issue:** quando a implementação ou o teste requer qualquer recurso ausente num clone fresco de cloud — junction `data/`, ComfyUI local, OneDrive sincronizado, credenciais locais não-gitadas, `scripts/overnight-watchdog.ts` via Task Scheduler, ou qualquer dependência de path local do editor.
+`/diaria-develop` roda por natureza com o editor presente, então issue `windows` é elegível aqui — é justamente o que o develop pega e o overnight não. `scripts/lib/exec-mode.ts` **não** decide isso: ele responde "esta sessão tem `data/`?", que no servidor Linux dá `local` inclusive pra uma issue que exige o Windows.
 
 ## Regras
 

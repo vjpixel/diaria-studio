@@ -45,7 +45,7 @@
  */
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "./gh-run.ts";
-import { classifyExecTrack, type ExecTrack } from "../lib/issue-exec-track.ts";
+import { classifyExecTrack, EXEC_TRACK_UI, type ExecTrack } from "../lib/issue-exec-track.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -131,6 +131,13 @@ export interface TriageData {
   generatedAt: string;
   issues: TriageIssue[];
   prs: TriagePr[];
+  /** Vocabulário de `execTrack` (valor + rótulo + explicação), na ordem de
+   * precedência do classificador (#5462). Servido junto do payload pra que o
+   * front RENDERIZE a partir daqui em vez de redeclarar os 4 valores — a
+   * redeclaração era uma 2ª fonte de verdade que um 5º valor quebraria só do
+   * lado do servidor, passando silenciosamente no cliente (achado no review
+   * do PR #5463). */
+  execTrackUi: typeof EXEC_TRACK_UI;
   /** Mensagem de erro da última tentativa de fetch via `gh`, ou `null` se a
    * última tentativa (ou o dado servido do cache) foi bem-sucedida. */
   error: string | null;
@@ -442,6 +449,7 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       generatedAt: new Date(nowMs).toISOString(),
       issues: parseIssues(issuesRaw),
       prs: parsePrs(prsRaw),
+      execTrackUi: EXEC_TRACK_UI,
       error: null,
       cached: false,
     };
@@ -457,6 +465,10 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
       generatedAt: new Date(nowMs).toISOString(),
       issues: [],
       prs: [],
+      // Servido mesmo no caminho de falha: é vocabulário estático, não
+      // depende do `gh`. Sem isso o front perderia rótulo/tooltip justamente
+      // quando já está degradado.
+      execTrackUi: EXEC_TRACK_UI,
       error: message,
       cached: false,
     };

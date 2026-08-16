@@ -17,6 +17,7 @@ import {
   classifyExecTrack,
   parseWaitUntil,
   EXEC_TRACK_LABELS,
+  EXEC_TRACK_UI,
   type ExecTrack,
 } from "../scripts/lib/issue-exec-track.ts";
 
@@ -119,6 +120,22 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
     assert.equal(track([], "<!-- aguardando-ate: 2026-13-45 -->"), "overnight");
   });
 
+  // Dia que passa na regex (01-31) mas não existe no mês. `new Date` não
+  // rejeita: rola pro mês seguinte em silêncio (2026-02-30 → 2026-03-02).
+  // Sem a checagem de round-trip o sistema usaria uma data diferente da que
+  // o editor escreveu, sem erro em lugar nenhum.
+  for (const invalida of ["2026-02-30", "2026-04-31", "2026-06-31", "2026-09-31", "2026-11-31"]) {
+    it(`${invalida} não existe no calendário → ignorado, sem rollover mudo`, () => {
+      assert.equal(parseWaitUntil(`<!-- aguardando-ate: ${invalida} -->`), null);
+      assert.equal(track([], `<!-- aguardando-ate: ${invalida} -->`), "overnight");
+    });
+  }
+
+  it("29 de fevereiro é aceito em ano bissexto e recusado fora dele", () => {
+    assert.ok(parseWaitUntil("<!-- aguardando-ate: 2028-02-29 -->"));
+    assert.equal(parseWaitUntil("<!-- aguardando-ate: 2027-02-29 -->"), null);
+  });
+
   it("marcador em linha própria entre parágrafos é encontrado", () => {
     const body = "Contexto longo.\n\n<!-- aguardando-ate: 2026-09-01 -->\n\nMais prosa.";
     assert.equal(track([], body), "bloqueada");
@@ -181,6 +198,34 @@ describe("classifyExecTrack — precedência", () => {
   it("bloqueio vence trade-off-real", () => {
     assert.equal(track(["trade-off-real", "beehiiv"]), "bloqueada");
   });
+
+  // As 4 acima cruzam label×label. O marcador de data é um branch
+  // estruturalmente diferente (valor parseado, não `Set.has`), então precisa
+  // do seu próprio cruzamento com os tiers vizinhos.
+  const FUTURO = "<!-- aguardando-ate: 2026-09-01 -->";
+
+  it("data futura vence máquina (windows + espera → bloqueada)", () => {
+    assert.equal(track(["windows"], FUTURO), "bloqueada");
+  });
+
+  it("data futura vence trade-off-real", () => {
+    assert.equal(track(["trade-off-real"], FUTURO), "bloqueada");
+  });
+
+  it("fora-de-rodada vence data futura", () => {
+    assert.equal(track(["on-hold"], FUTURO), "fora-de-rodada");
+    assert.equal(track(["wontfix"], FUTURO), "fora-de-rodada");
+  });
+
+  it("marcador com a data de HOJE não bloqueia — a espera terminou", () => {
+    // Comparação é estrita (`>`), então `waitUntil === now` libera. Um
+    // marcador "até hoje" significa que hoje já é o dia de voltar à fila.
+    const hoje = new Date("2026-08-16T00:00:00Z");
+    assert.equal(
+      classifyExecTrack({ labels: [], body: "<!-- aguardando-ate: 2026-08-16 -->", now: hoje }),
+      "overnight",
+    );
+  });
 });
 
 describe("parseWaitUntil", () => {
@@ -210,5 +255,34 @@ describe("EXEC_TRACK_LABELS", () => {
       assert.ok(EXEC_TRACK_LABELS[t].length > 0);
     }
     assert.equal(Object.keys(EXEC_TRACK_LABELS).length, tracks.length);
+  });
+});
+
+describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
+  // Este é o guard que impede a 2ª fonte de verdade voltar: `triagem.js`
+  // renderiza A PARTIR daqui (via `data.execTrackUi`), em vez de redeclarar os
+  // 4 valores. Antes disso, um 5º valor quebraria o build do servidor (pelo
+  // `Record<ExecTrack, string>`) e passaria silencioso no cliente, caindo no
+  // fallback sem tradução nem tooltip.
+  it("tem uma entrada por valor do tipo, com label e explicação preenchidas", () => {
+    assert.equal(EXEC_TRACK_UI.length, Object.keys(EXEC_TRACK_LABELS).length);
+    for (const entry of EXEC_TRACK_UI) {
+      assert.equal(entry.label, EXEC_TRACK_LABELS[entry.track]);
+      assert.ok(entry.explain.length > 0, `${entry.track} sem explicação`);
+    }
+  });
+
+  it("está na ordem de precedência do classificador, não alfabética", () => {
+    // A legenda é lida de cima pra baixo pra entender por que uma issue com 2
+    // sinais caiu onde caiu — ordem alfabética destruiria essa leitura.
+    assert.deepEqual(
+      EXEC_TRACK_UI.map((e) => e.track),
+      ["overnight", "develop", "bloqueada", "fora-de-rodada"],
+    );
+  });
+
+  it("nenhuma explicação repetida — cada valor diz algo próprio", () => {
+    const explains = new Set(EXEC_TRACK_UI.map((e) => e.explain));
+    assert.equal(explains.size, EXEC_TRACK_UI.length);
   });
 });

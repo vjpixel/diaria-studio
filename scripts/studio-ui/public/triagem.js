@@ -100,33 +100,31 @@ function trackBadge(track) {
   return `<span class="track-badge track-${track}">${track}</span>`;
 }
 
-// #3715/#5462 — significado de cada valor de Classificação (execTrack),
-// espelhando scripts/lib/issue-exec-track.ts::classifyExecTrack. Exposto como
-// tooltip (title=) em cada badge e como legenda visível (renderDispatchTrackLegend).
+// #3715/#5462 — vocabulário de Classificação (execTrack): rótulo + explicação
+// por valor, exibidos como tooltip no badge e como legenda visível.
 //
-// A ordem aqui é a ordem de precedência do classificador, não alfabética — a
-// legenda lida de cima pra baixo explica por que uma issue com 2 sinais caiu
-// onde caiu.
-const DISPATCH_TRACK_EXPLAIN = {
-  overnight:
-    "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada: quem separa ambiguidade trivial (destravável no briefing) de trade-off real é o próprio overnight, na Fase 0.",
-  develop:
-    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), ou é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C).",
-  bloqueada:
-    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou espera por data ainda vigente (marcador `aguardando-ate:`, que desarma sozinho na data).",
-  "fora-de-rodada": "Fora de rodada — o editor tirou de circulação (`on-hold`, `wontfix`). Não é 'ainda não', é 'não'.",
-};
-
-const DISPATCH_TRACK_LABEL_PT = {
-  overnight: "Overnight",
-  develop: "Develop",
-  bloqueada: "bloqueada",
-  "fora-de-rodada": "fora de rodada",
-};
+// NÃO redeclarar os 4 valores aqui. Eles vêm do servidor em
+// `data.execTrackUi` (montado por scripts/lib/issue-exec-track.ts a partir de
+// `Record<ExecTrack, string>`, que quebra o build se um valor novo entrar sem
+// rótulo). Redeclarar criava exatamente a 2ª fonte de verdade que o #5462
+// existe pra eliminar: um 5º valor quebraria o build do servidor e passaria
+// SILENCIOSAMENTE aqui, caindo no fallback sem tradução nem tooltip (achado no
+// review do PR #5463).
+//
+// A ordem vem do servidor e é a de precedência do classificador, não
+// alfabética — a legenda lida de cima pra baixo explica por que uma issue com
+// 2 sinais caiu onde caiu.
+function execTrackEntry(track) {
+  return (data.execTrackUi ?? []).find((e) => e.track === track);
+}
 
 function dispatchBadge(track) {
-  const labelPt = DISPATCH_TRACK_LABEL_PT[track] ?? track;
-  const title = DISPATCH_TRACK_EXPLAIN[track] ?? "";
+  const entry = execTrackEntry(track);
+  // Fallback pro valor cru só cobre a janela em que o payload ainda não
+  // chegou (1º render antes do fetch); depois disso, toda variante servida
+  // pelo servidor tem entrada garantida pelo Record do lib.
+  const labelPt = entry?.label ?? track;
+  const title = entry?.explain ?? "";
   return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
 }
 
