@@ -12,7 +12,9 @@ import {
   parseWorktreePorcelain,
   filterUnderWorktreesDir,
   selectMergedForRemoval,
+  selectOrphanedForStaleRemoval,
   shouldSkipForSharedSession,
+  ORPHAN_STALE_THRESHOLD_MS,
 } from "../scripts/cleanup-merged-worktrees.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
 
@@ -129,6 +131,132 @@ test("selectMergedForRemoval — nenhum mergeado -> array vazio (fail-soft: nunc
 
 test("selectMergedForRemoval — lista vazia de entrada -> array vazio", () => {
   assert.deepEqual(selectMergedForRemoval([], () => true), []);
+});
+
+// ── selectOrphanedForStaleRemoval (#5418) ──
+
+const NOW = Date.parse("2026-08-16T12:00:00.000Z");
+const EIGHT_DAYS_AGO = NOW - 8 * 24 * 60 * 60 * 1000;
+const ONE_DAY_AGO = NOW - 1 * 24 * 60 * 60 * 1000;
+
+test("selectOrphanedForStaleRemoval — worktree detached HEAD antigo (>7 dias) é removido", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => true,
+    () => EIGHT_DAYS_AGO,
+    NOW,
+  );
+  assert.deepEqual(result.map((e) => e.path), ["/a"]);
+});
+
+test("selectOrphanedForStaleRemoval — worktree detached HEAD recente (<7 dias) é preservado", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => true,
+    () => ONE_DAY_AGO,
+    NOW,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("selectOrphanedForStaleRemoval — branch com ref local deletado e antigo é removido", () => {
+  const entries = [{ path: "/a", branch: "overnight/fix-old" }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    (branch) => branch !== "overnight/fix-old", // ref não existe mais localmente
+    () => EIGHT_DAYS_AGO,
+    NOW,
+  );
+  assert.deepEqual(result.map((e) => e.path), ["/a"]);
+});
+
+test("selectOrphanedForStaleRemoval — branch local ainda existe, mesmo antigo, NUNCA é removido (decisão de escopo #5418)", () => {
+  const entries = [{ path: "/a", branch: "overnight/fix-still-open" }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => true, // branch ainda existe localmente
+    () => EIGHT_DAYS_AGO,
+    NOW,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("selectOrphanedForStaleRemoval — mtime desconhecido (stat falhou) nunca conta como stale (fail-soft)", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => true,
+    () => null,
+    NOW,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("selectOrphanedForStaleRemoval — worktree já selecionado por merge não é duplicado", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const alreadySelected = [{ path: "/a", branch: null }];
+  const result = selectOrphanedForStaleRemoval(
+    entries,
+    alreadySelected,
+    () => true,
+    () => EIGHT_DAYS_AGO,
+    NOW,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("selectOrphanedForStaleRemoval — respeita threshold customizado", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const twoDaysAgo = NOW - 2 * 24 * 60 * 60 * 1000;
+  const oneDayThreshold = 24 * 60 * 60 * 1000;
+  const result = selectOrphanedForStaleRemoval(entries, [], () => true, () => twoDaysAgo, NOW, oneDayThreshold);
+  assert.deepEqual(result.map((e) => e.path), ["/a"]);
+});
+
+test("ORPHAN_STALE_THRESHOLD_MS — 7 dias em ms", () => {
+  assert.equal(ORPHAN_STALE_THRESHOLD_MS, 7 * 24 * 60 * 60 * 1000);
+});
+
+// ── Regressão #5418: combinação worktree detached antigo + sessão viva ──
+//
+// A issue pede explicitamente este cenário: worktree detached HEAD antigo é
+// candidato à remoção por `selectOrphanedForStaleRemoval`, MAS se houver
+// qualquer sessão ativa registrada (mock de `listActiveSessions` retornando
+// não-vazio), a varredura inteira (merged + órfã) é pulada por
+// `shouldSkipForSharedSession` ANTES de `selectOrphanedForStaleRemoval` ser
+// sequer chamado em `main()` — o guard de sessão viva é incondicional, não
+// por-worktree, então nenhum worktree (mergeado, órfão, ou vivo) é tocado
+// enquanto houver sessão ativa sem `--confirm-shared`.
+test("regressão #5418 — worktree detached+antigo seria removido isoladamente, mas sessão viva bloqueia a varredura inteira", () => {
+  const entries = [{ path: "/a", branch: null }];
+  const wouldRemoveInIsolation = selectOrphanedForStaleRemoval(
+    entries,
+    [],
+    () => true,
+    () => EIGHT_DAYS_AGO,
+    NOW,
+  );
+  assert.deepEqual(wouldRemoveInIsolation.map((e) => e.path), ["/a"], "confirma que o worktree É candidato isoladamente");
+
+  const activeSession: SessionRecord = {
+    kind: "develop",
+    machineTag: "host-b",
+    sessionId: "sess-live",
+    startedAt: "2026-08-16T11:00:00.000Z",
+    lastHeartbeat: "2026-08-16T11:59:00.000Z",
+  };
+  assert.equal(
+    shouldSkipForSharedSession([activeSession], false),
+    true,
+    "com sessão viva detectada, main() pula a varredura inteira antes de chegar em selectOrphanedForStaleRemoval",
+  );
 });
 
 // ── shouldSkipForSharedSession (#5156 item 9) ──
