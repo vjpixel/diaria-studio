@@ -130,15 +130,18 @@ function dispatchBadge(track) {
 
 // #3874: o significado de cada valor de Classificação só existia como
 // `title=` (tooltip) em cada badge da tabela — tooltip não existe em touch
-// (R7 de docs/studio-ui-ux-guidelines.md). Renderiza a MESMA
-// DISPATCH_TRACK_EXPLAIN como uma legenda em texto visível, 1x por página
-// (não repetida por linha — evitaria poluir a tabela), logo acima da
-// tabela de issues. `title=` continua nos badges individuais, como reforço
-// pro hover no desktop.
+// (R7 de docs/studio-ui-ux-guidelines.md). Renderiza o MESMO vocabulário
+// como legenda em texto visível, 1x por página (não repetida por linha —
+// poluiria a tabela), logo acima da tabela de issues. `title=` continua nos
+// badges individuais, como reforço pro hover no desktop.
+//
+// #5462: deixou de ser estático. O vocabulário vem de `data.execTrackUi`
+// (servido por /api/issues), então esta função só tem o que renderizar DEPOIS
+// do fetch — por isso é chamada de `renderAll()`, não no load do módulo.
 function renderDispatchTrackLegend() {
   if (!el.dispatchTrackLegend) return;
-  el.dispatchTrackLegend.innerHTML = Object.entries(DISPATCH_TRACK_EXPLAIN)
-    .map(([track, explain]) => `<li><strong>${dispatchBadge(track)}</strong> — ${escapeHtml(explain)}</li>`)
+  el.dispatchTrackLegend.innerHTML = (data.execTrackUi ?? [])
+    .map(({ track, explain }) => `<li><strong>${dispatchBadge(track)}</strong> — ${escapeHtml(explain)}</li>`)
     .join("");
 }
 
@@ -333,6 +336,7 @@ function renderError() {
 
 function renderAll() {
   renderLabelFilters();
+  renderDispatchTrackLegend();
   renderTables();
   renderError();
   el.lastUpdated.textContent = data.generatedAt
@@ -349,7 +353,17 @@ async function fetchIssues() {
     setFetchStatus(data.error ? "down" : "ok", data.error ? "erro no gh" : "ok");
   } catch (e) {
     setFetchStatus("down", "falha ao buscar /api/issues");
-    data = { issues: data.issues, prs: data.prs, error: String(e), cached: true, generatedAt: data.generatedAt };
+    // Preserva `execTrackUi` no caminho de falha — é vocabulário estático, e
+    // perdê-lo aqui deixaria os badges sem rótulo/tooltip justamente quando a
+    // página já está degradada (#5462).
+    data = {
+      issues: data.issues,
+      prs: data.prs,
+      execTrackUi: data.execTrackUi,
+      error: String(e),
+      cached: true,
+      generatedAt: data.generatedAt,
+    };
   }
   renderAll();
 }
@@ -367,6 +381,4 @@ el.filterDispatchTrack.addEventListener("change", () => {
 });
 el.refreshBtn.addEventListener("click", () => fetchIssues());
 
-// Estático (não depende de `data`) — renderiza 1x ao montar a página.
-renderDispatchTrackLegend();
 fetchIssues();
