@@ -110,12 +110,16 @@ fechar qualquer item como A-E, buscar no corpo por "a escolha é editorial",
 sinal de que aquele item é cat. C disfarçada de outra letra (heurística de
 atenção, não substitui reler o corpo inteiro).
 
-**Verificação de estado antes de classificar como "escopo grande, scoping
-futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura" **não
-é** uma 6ª categoria — é sempre uma leitura de A-E (tipicamente C, decisão-
-produto, ou nenhuma — issue já executável), nunca um resultado automático de
-"issue parece grande". Antes de aceitar essa leitura pra qualquer issue,
-rodar as 3 checagens abaixo:
+**Verificação de estado antes de classificar qualquer issue como bloqueada —
+categoria A-E, `local`, ou "escopo grande, scoping futuro" (#5383,
+generalizado em #5392).** Nenhuma dessas classificações é automática a
+partir da leitura fácil da issue — o #5383 original restringia a verificação
+só ao caso "escopo grande, scoping futuro"; o #5392 achou o mesmo atalho em
+qualquer classificação de bloqueio (achado concreto: #5255 classificada
+`local` sem checar `docs/audience-source-notes.md`, que já tinha a decisão
+completa registrada 2 dias antes da issue existir). Antes de aceitar
+qualquer classificação de bloqueio pra uma issue — categoria A-E, `local`,
+ou "escopo grande" — rodar as 4 checagens abaixo:
 1. `gh issue view N --json comments` — ler os comentários mais recentes
    **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
    unidade já dispatchada, ou progresso parcial registrado.
@@ -126,14 +130,30 @@ rodar as 3 checagens abaixo:
    esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
    trabalho com uma seção "estado após esta rodada"/"candidatas pra próxima
    rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+4. **`grep -il {palavra-chave do título/tema} docs/*.md`** — buscar um doc
+   relacionado ao ASSUNTO da issue, mesmo sem link em nenhum comentário (o
+   #5255 nunca citou `docs/audience-source-notes.md`). CLAUDE.md já
+   documenta esse padrão de doc como "registro de decisão que evita reabrir
+   investigação já concluída" (`docs/seo-notes.md`, `docs/audience-source-
+   notes.md`). Achou um doc relacionado → ler **por inteiro** antes de
+   aceitar a classificação de bloqueio — ele pode conter a decisão que
+   torna a issue não-bloqueada.
 
-Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
-progresso, nenhum doc de acompanhamento) é legítimo classificar a issue na
-categoria A-E aplicável (tipicamente C, decisão-produto — postar a leitura
-como comentário durável na issue). Caso contrário, o próximo passo já está documentado —
-dispatchar essa fatia pequena nesta mesma onda (issue vira elegível), ou, no
-mínimo, reportar o próximo passo concreto na tabela do `plan.json` em vez de
-"épica-scale, scoping futuro".
+**Quando pular a checagem 4.** É barata o bastante pra rodar em toda
+classificação de bloqueio (um `grep`, não um fleet de agentes), mas issue já
+com label `decisao-registrada` ou `bloqueio-execucao` pula — a checagem via
+`npx tsx scripts/lib/issue-decisions.ts --issue N` (parágrafo acima) já é
+verificação de estado equivalente ou mais forte e já rodou antes de qualquer
+classificação de bloqueio chegar até aqui.
+
+Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
+progresso, nenhum doc de acompanhamento, nenhum doc relacionado por assunto)
+é legítimo classificar a issue na categoria de bloqueio aplicável (A-E,
+tipicamente C decisão-produto; `local`; ou "escopo grande" — postar a
+leitura como comentário durável na issue). Caso contrário, o próximo passo
+já está documentado — dispatchar essa fatia pequena nesta mesma onda (issue
+vira elegível), ou, no mínimo, reportar o próximo passo concreto na tabela
+do `plan.json` em vez de aceitar a leitura de bloqueio.
 
 ## Goal de esgotamento (#4297, expandido em #4319)
 

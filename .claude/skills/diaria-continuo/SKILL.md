@@ -553,11 +553,17 @@ aqui.
    humana"). Isto é um lembrete de dupla-checagem pro coordenador, não um
    parser automático — não dispensa a leitura do corpo inteiro.
 
-   **Verificação de estado antes de classificar como "escopo grande, scoping
-   futuro" (#5383).** "Épica-scale, precisa de scoping numa sessão futura"
-   **não é** uma 4ª categoria — é sempre uma leitura de (a)/(b)/(c), nunca um
-   resultado automático de "issue parece grande". Antes de aceitar essa
-   leitura pra qualquer issue, rodar as 3 checagens abaixo:
+   **Verificação de estado antes de classificar qualquer item como
+   bloqueado — (b) decisão de produto pendente, (c) bloqueio genuíno, ou
+   "escopo grande, scoping futuro" (#5383, generalizado em #5392).** Nenhuma
+   dessas leituras é automática a partir da leitura fácil do item — o #5383
+   original restringia a verificação só ao caso "escopo grande, scoping
+   futuro"; o #5392 achou o mesmo atalho em qualquer classificação de
+   bloqueio (achado concreto: #5255 classificada como bloqueio (`local`) sem
+   checar `docs/audience-source-notes.md`, que já tinha a decisão completa
+   registrada 2 dias antes da issue existir). Antes de aceitar qualquer
+   classificação de bloqueio pra um item — (b), (c), ou "escopo grande" —
+   rodar as 4 checagens abaixo:
    1. `gh issue view N --json comments` — ler os comentários mais recentes
       **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
       unidade já dispatchada, ou progresso parcial registrado.
@@ -568,13 +574,28 @@ aqui.
       esse doc **inteiro** — a convenção deste repo é fechar cada rodada de
       trabalho com uma seção "estado após esta rodada"/"candidatas pra
       próxima rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
+   4. **`grep -il {palavra-chave do título/tema} docs/*.md`** — buscar um
+      doc relacionado ao ASSUNTO do item, mesmo sem link em nenhum
+      comentário (o #5255 nunca citou `docs/audience-source-notes.md`).
+      CLAUDE.md já documenta esse padrão de doc como "registro de decisão
+      que evita reabrir investigação já concluída" (`docs/seo-notes.md`,
+      `docs/audience-source-notes.md`). Achou um doc relacionado → ler **por
+      inteiro** antes de aceitar a classificação de bloqueio — ele pode
+      conter a decisão que torna o item não-bloqueado.
 
-   Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
-   progresso, nenhum doc de acompanhamento) é legítimo classificar como (c)
-   bloqueio genuíno por escopo. Caso contrário, o próximo passo já está
-   documentado — dispatchar essa fatia pequena nesta mesma rodada (volta pra
-   (a)), ou, no mínimo, reportar o próximo passo concreto na tabela
-   obrigatória do passo 5 em vez de "épica-scale, scoping futuro".
+   **Quando pular a checagem 4.** É barata o bastante pra rodar em toda
+   classificação de bloqueio (um `grep`, não um fleet de agentes), mas issue
+   já com label `decisao-registrada` ou `bloqueio-execucao` pula — a
+   checagem via `npx tsx scripts/lib/issue-decisions.ts --issue N` (passo
+   seguinte, abaixo) já é verificação de estado equivalente ou mais forte.
+
+   Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
+   progresso, nenhum doc de acompanhamento, nenhum doc relacionado por
+   assunto) é legítimo classificar o item como (b), (c), ou "escopo grande"
+   por bloqueio genuíno. Caso contrário, o próximo passo já está documentado
+   — volta pra (a) e dispatcha essa fatia pequena nesta mesma rodada, ou, no
+   mínimo, reporta o próximo passo concreto na tabela obrigatória do passo 5
+   em vez de aceitar a leitura de bloqueio.
 
    **Antes de incluir qualquer issue no lote de perguntas (#5373):** rodar
    `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
