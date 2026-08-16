@@ -100,18 +100,32 @@ function trackBadge(track) {
   return `<span class="track-badge track-${track}">${track}</span>`;
 }
 
-// #3715 — significado de cada valor de Classificação (dispatchTrack), espelhando
-// studio-issues.ts::classifyDispatchTrack. Exposto como tooltip (title=) em cada
-// badge — a tabela não tinha nenhuma explicação por-valor, só a nota genérica
-// acima do cabeçalho.
+// #3715/#5462 — significado de cada valor de Classificação (execTrack),
+// espelhando scripts/lib/issue-exec-track.ts::classifyExecTrack. Exposto como
+// tooltip (title=) em cada badge e como legenda visível (renderDispatchTrackLegend).
+//
+// A ordem aqui é a ordem de precedência do classificador, não alfabética — a
+// legenda lida de cima pra baixo explica por que uma issue com 2 sinais caiu
+// onde caiu.
 const DISPATCH_TRACK_EXPLAIN = {
-  elegivel: "elegível — sem sinal de bloqueio; entra na análise de cluster/dispatch de onda.",
-  bloqueada: "bloqueada — tem label de bloqueio real (ex: conta externa/decisão/credencial) e não entra na onda.",
-  ambigua: "ambígua — o texto sugere possível bloqueio, mas é marcador fraco (não label); fica fora do dispatch automático até triagem humana.",
+  overnight:
+    "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada: quem separa ambiguidade trivial (destravável no briefing) de trade-off real é o próprio overnight, na Fase 0.",
+  develop:
+    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), ou é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C).",
+  bloqueada:
+    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou espera por data ainda vigente (marcador `aguardando-ate:`, que desarma sozinho na data).",
+  "fora-de-rodada": "Fora de rodada — o editor tirou de circulação (`on-hold`, `wontfix`). Não é 'ainda não', é 'não'.",
+};
+
+const DISPATCH_TRACK_LABEL_PT = {
+  overnight: "Overnight",
+  develop: "Develop",
+  bloqueada: "bloqueada",
+  "fora-de-rodada": "fora de rodada",
 };
 
 function dispatchBadge(track) {
-  const labelPt = { elegivel: "elegível", bloqueada: "bloqueada", ambigua: "ambígua" }[track] ?? track;
+  const labelPt = DISPATCH_TRACK_LABEL_PT[track] ?? track;
   const title = DISPATCH_TRACK_EXPLAIN[track] ?? "";
   return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
 }
@@ -212,7 +226,7 @@ function renderIssuesTable() {
     (i) =>
       matchesPriorityFilter(i.priority) &&
       matchesLabelFilter(i.labels) &&
-      (!filters.dispatch || i.dispatchTrack === filters.dispatch),
+      (!filters.dispatch || i.execTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
   updateEmptyState(
@@ -229,7 +243,7 @@ function renderIssuesTable() {
     tr.innerHTML = `
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
-      <td>${dispatchBadge(i.dispatchTrack)}</td>
+      <td>${dispatchBadge(i.execTrack)}</td>
       <td>${priorityBadge(i.priority)}</td>
       <td>${labelsBadges(i.labels)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>

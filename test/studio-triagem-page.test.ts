@@ -159,14 +159,19 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
   it("(#5212) toda opção do <select> de Classificação carrega o escopo (Issues/PRs) no texto visível — sobrevive ao <select> fechado", async () => {
     const res = await fetch(new URL("/triagem", server.url));
     const body = await res.text();
-    assert.ok(body.includes(">Issues · elegível<"));
+    // #5462: o grupo Issues passou de elegível/bloqueada/ambígua pros 4
+    // valores de execTrack. O prefixo de escopo continua obrigatório — sem
+    // ele, "Overnight" apareceria 2x no <select> fechado (issue E pr) sem
+    // nenhuma pista de qual tabela é afetada.
+    assert.ok(body.includes(">Issues · Overnight<"));
+    assert.ok(body.includes(">Issues · Develop<"));
     assert.ok(body.includes(">Issues · bloqueada<"));
-    assert.ok(body.includes(">Issues · ambígua<"));
+    assert.ok(body.includes(">Issues · fora de rodada<"));
     assert.ok(body.includes(">PRs · overnight<"));
     assert.ok(body.includes(">PRs · develop<"));
     assert.ok(body.includes(">PRs · other<"));
     // nenhuma opção deve ter sobrado sem o prefixo de escopo (regressão do #5212)
-    assert.ok(!body.includes('value="issue:elegivel">elegível<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
+    assert.ok(!body.includes('value="issue:overnight">Overnight<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
     assert.ok(!body.includes('value="pr:overnight">overnight<'), "opção não deveria ter perdido o prefixo 'PRs ·'");
   });
 

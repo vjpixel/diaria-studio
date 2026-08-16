@@ -1,0 +1,176 @@
+/**
+ * issue-exec-track.test.ts (#5462)
+ *
+ * Trava a tabela de precedência de `classifyExecTrack` — que é a parte fácil
+ * de quebrar por acidente, porque cada regra nova tem uma ordem "óbvia" que
+ * quase sempre é outra.
+ *
+ * O teste mais importante do arquivo não é nenhum caso de bloqueio: é
+ * "ambiguidade textual → overnight". Ele existe pra impedir que alguém
+ * reintroduza o `AMBIGUITY_RE` que este módulo substituiu, mandando pro
+ * develop uma issue que o briefing do overnight destrava em 30 segundos.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  classifyExecTrack,
+  parseWaitUntil,
+  EXEC_TRACK_LABELS,
+  type ExecTrack,
+} from "../scripts/lib/issue-exec-track.ts";
+
+/** Data fixa — nenhum teste deste arquivo pode depender do relógio real. */
+const NOW = new Date("2026-08-16T12:00:00Z");
+
+function track(labels: string[], body = ""): ExecTrack {
+  return classifyExecTrack({ labels, body, now: NOW });
+}
+
+describe("classifyExecTrack — default", () => {
+  it("issue sem label nenhuma é overnight", () => {
+    assert.equal(track([]), "overnight");
+  });
+
+  it("issue só com prioridade/tipo é overnight", () => {
+    assert.equal(track(["bug", "P1", "stage-0"]), "overnight");
+  });
+});
+
+describe("classifyExecTrack — ambiguidade NÃO classifica (regressão #5462)", () => {
+  // O AMBIGUITY_RE antigo (studio-issues.ts) casava com os 4 corpos abaixo e
+  // mandava todos pra "ambigua". Dois deles são trade-off real (develop), dois
+  // são escolha técnica trivial (briefing do overnight) — e nada no texto
+  // distingue. Por isso o classificador não olha o corpo em busca disso.
+  const CORPOS = [
+    "precisamos decidir entre design system e documentar",
+    "trade-off: CSS-only vs JS",
+    "escolher entre formato A ou B de log",
+    "qual abordagem usar pro cache",
+  ];
+
+  for (const body of CORPOS) {
+    it(`"${body.slice(0, 32)}..." → overnight (briefing triará)`, () => {
+      assert.equal(track([], body), "overnight");
+    });
+  }
+
+  it("vira develop só quando o overnight JÁ julgou e gravou a label", () => {
+    assert.equal(track(["trade-off-real"], CORPOS[0]), "develop");
+  });
+
+  it("volta pro overnight quando o develop remove a label após decidir", () => {
+    // develop/SKILL.md:70 — "posta a decisão como comentário durável na
+    // issue, remove a ambiguidade (→ elegível)". Sem esta volta a issue
+    // ficaria presa em develop para sempre depois de já decidida.
+    assert.equal(track([], CORPOS[0]), "overnight");
+  });
+});
+
+describe("classifyExecTrack — máquina", () => {
+  it("label windows → develop", () => {
+    assert.equal(track(["windows"]), "develop");
+  });
+
+  it("label server → overnight (é a máquina onde o overnight já roda)", () => {
+    assert.equal(track(["server"]), "overnight");
+  });
+
+  it("label local aposentada é ignorada, não classifica", () => {
+    // Aposentada em 16/08/2026: ambígua entre windows e server, segue
+    // existindo no GitHub só pelas issues fechadas que a carregam.
+    assert.equal(track(["local"]), "overnight");
+  });
+});
+
+describe("classifyExecTrack — bloqueio", () => {
+  for (const label of ["external-blocker", "kit-migration", "beehiiv", "bloqueio-execucao"]) {
+    it(`label ${label} → bloqueada`, () => {
+      assert.equal(track([label]), "bloqueada");
+    });
+  }
+
+  for (const label of ["not-this-week", "next-month"]) {
+    it(`label ${label} (deferimento vago) → bloqueada`, () => {
+      assert.equal(track([label]), "bloqueada");
+    });
+  }
+});
+
+describe("classifyExecTrack — marcador aguardando-ate", () => {
+  it("data futura → bloqueada", () => {
+    assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 -->"), "bloqueada");
+  });
+
+  it("data passada → desarma sozinho, volta pro fluxo normal", () => {
+    assert.equal(track([], "<!-- aguardando-ate: 2026-08-01 -->"), "overnight");
+  });
+
+  it("data passada não ressuscita issue com bloqueio real", () => {
+    assert.equal(track(["external-blocker"], "<!-- aguardando-ate: 2026-08-01 -->"), "bloqueada");
+  });
+
+  it("data passada preserva a restrição de máquina", () => {
+    assert.equal(track(["windows"], "<!-- aguardando-ate: 2026-08-01 -->"), "develop");
+  });
+
+  it("marcador malformado é ignorado, não prende a issue", () => {
+    assert.equal(track([], "<!-- aguardando-ate: amanhã -->"), "overnight");
+    assert.equal(track([], "<!-- aguardando-ate: 2026-13-45 -->"), "overnight");
+  });
+
+  it("marcador no meio de prosa é encontrado", () => {
+    const body = "Contexto longo.\n\n<!-- aguardando-ate: 2026-09-01 -->\n\nMais prosa.";
+    assert.equal(track([], body), "bloqueada");
+  });
+});
+
+describe("classifyExecTrack — precedência", () => {
+  it("fora-de-rodada vence bloqueio", () => {
+    assert.equal(track(["on-hold", "external-blocker"]), "fora-de-rodada");
+  });
+
+  it("fora-de-rodada vence máquina", () => {
+    assert.equal(track(["wontfix", "windows"]), "fora-de-rodada");
+  });
+
+  it("bloqueio vence máquina", () => {
+    // Uma issue windows E bloqueada por credencial não é "trabalho do
+    // develop": nem o editor presente destrava sem a credencial.
+    assert.equal(track(["windows", "external-blocker"]), "bloqueada");
+  });
+
+  it("bloqueio vence trade-off-real", () => {
+    assert.equal(track(["trade-off-real", "beehiiv"]), "bloqueada");
+  });
+});
+
+describe("parseWaitUntil", () => {
+  it("extrai a data em UTC", () => {
+    const d = parseWaitUntil("<!-- aguardando-ate: 2026-09-01 -->");
+    assert.equal(d?.toISOString(), "2026-09-01T00:00:00.000Z");
+  });
+
+  it("tolera espaçamento variável e caixa alta", () => {
+    assert.ok(parseWaitUntil("<!--aguardando-ate:2026-09-01-->"));
+    assert.ok(parseWaitUntil("<!--   AGUARDANDO-ATE:   2026-09-01   -->"));
+  });
+
+  it("null quando ausente, vazio, ou body nulo", () => {
+    assert.equal(parseWaitUntil("sem marcador"), null);
+    assert.equal(parseWaitUntil(""), null);
+    assert.equal(parseWaitUntil(null), null);
+    assert.equal(parseWaitUntil(undefined), null);
+  });
+});
+
+describe("EXEC_TRACK_LABELS", () => {
+  it("cobre os 4 valores do tipo", () => {
+    const tracks: ExecTrack[] = ["overnight", "develop", "bloqueada", "fora-de-rodada"];
+    for (const t of tracks) {
+      assert.equal(typeof EXEC_TRACK_LABELS[t], "string");
+      assert.ok(EXEC_TRACK_LABELS[t].length > 0);
+    }
+    assert.equal(Object.keys(EXEC_TRACK_LABELS).length, tracks.length);
+  });
+});
