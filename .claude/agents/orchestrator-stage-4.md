@@ -201,23 +201,11 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 **4c.2 — Lints consolidados:**
 ```bash
 npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --md {EDITION_DIR}/02-reviewed.md --approved {EDITION_DIR}/_internal/01-approved.json
-npx tsx scripts/lint-newsletter-md.ts --check secondary-items-have-summary --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check no-untranslated-summary --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check video-links-are-youtube --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check section-links-resolve --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check title-publisher-suffix --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check title-trailing-period --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check no-trailing-ellipsis --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check mid-sentence-ellipsis --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check title-mentions-ia --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check orphan-box-in-gap --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check no-xml-artifacts --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check snippet-staleness --md {EDITION_DIR}/02-reviewed.md
-npx tsx scripts/lint-newsletter-md.ts --check agradecimento-hardcoded
+npx tsx scripts/lint-newsletter-md.ts --stage 4 --json --edition-dir {EDITION_DIR}
 ```
-Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
+(#5416) O 2º comando substitui as 15 invocações separadas que existiam aqui antes (1 processo Node por check) por uma única chamada agregadora — mesmas funções, mesmo veredito por check, só menos overhead de processo. `validate-lancamentos.ts` continua separado (script próprio, fora de `lint-newsletter-md.ts`). Output do agregador (stdout): JSON `{ stage: 4, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. `passed` já reflete "nenhum check `gate-blocking` falhou" — não recompute na mão. Pra cada `checks[]` com `ok:false`: `severity: "gate-blocking"` → tratar como ❌ (mesma ação descrita no parágrafo do check correspondente abaixo, indexado pelo `id`); `severity: "warn-only"` → ⚠️ no `{violations_block}`, nunca bloqueia. Os `id` batem 1:1 com os nomes de `--check X` de antes (`secondary-items-have-summary`, `no-untranslated-summary`, etc.) — os parágrafos abaixo continuam sendo a referência de rationale/ação por check, só a invocação mudou. Debug de 1 check isolado: `--check X --md {EDITION_DIR}/02-reviewed.md` continua funcionando exatamente como antes (modo aditivo, não removido).
+
+**Nota (#5416, achado ao vivo — fora do escopo desta mudança, sinalizada para triagem futura):** `stacked-intro-callouts` está documentado abaixo como WARN-ONLY, mas o `severity` que o agregador reporta pra esse `id` é `gate-blocking` — reflete o comportamento REAL do modo `--check stacked-intro-callouts` (sempre fazia `process.exit(1)` quando o check falha, apesar da prosa dizer WARN-ONLY). O agregador preserva esse comportamento por design (não alterar veredito de nenhum check nesta mudança); a divergência doc-vs-código é pré-existente e não foi corrigida aqui.
 
 `secondary-items-have-summary` (#2545): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR sem descrição renderiza título pelado no email. Ação: editar `02-reviewed.md` e adicionar descrição plain text (1 frase) abaixo de cada item pelado, ou re-rodar Etapa 1 (se a causa foi cache-miss no enrich).
 
