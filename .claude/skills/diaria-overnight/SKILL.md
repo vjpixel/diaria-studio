@@ -106,15 +106,19 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
 
    **Verificação de estado antes de classificar qualquer issue como
    bloqueada — `bloqueada-externa`, `requer-sessao-local`,
-   `ambígua/trade-off-real`, ou "escopo grande, scoping futuro" (#5383,
-   generalizado em #5392).** Nenhuma dessas classificações é automática a
-   partir de "a issue parece bloqueada" — o #5383 original restringia a
+   `ambígua/trade-off-real`, ou `not-this-week` (#5383, generalizado em
+   #5392).** "Escopo grande, scoping futuro" **não é um 5º status** — é
+   sempre uma leitura que se resolve em `not-this-week` (o status já
+   existente pra "trabalhável, mas não nesta rodada"), nunca um motivo
+   paralelo aos 4 reais. Nenhuma dessas classificações é automática a partir
+   de "a issue parece bloqueada" — o #5383 original restringia a
    verificação só ao caso "escopo grande"; o #5392 achou o mesmo atalho nas
    outras classificações (achado concreto: #5255 classificada
    `requer-sessao-local` sem checar `docs/audience-source-notes.md`, que já
    tinha a decisão completa registrada 2 dias antes da issue existir). Antes
-   de aceitar qualquer uma dessas 4 leituras pra uma issue, rodar as 4
-   checagens abaixo:
+   de aceitar qualquer uma dessas 4 leituras pra uma issue — inclusive
+   quando a leitura inicial for "escopo grande demais" (→ `not-this-week`)
+   — rodar as 4 checagens abaixo:
    1. `gh issue view N --json comments` — ler os comentários mais recentes
       **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
       unidade já dispatchada, ou progresso parcial registrado.
@@ -135,20 +139,22 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
       conter a decisão que torna a issue não-bloqueada.
 
    **Quando pular a checagem 4.** É barata o bastante pra rodar em toda
-   classificação de bloqueio (um `grep`, não um fleet de agentes), mas issue
-   já com label `decisao-registrada` ou `bloqueio-execucao` pula — a
-   checagem via `npx tsx scripts/lib/issue-decisions.ts --issue N` (passo 4
-   acima) já é verificação de estado equivalente ou mais forte (lê o
-   registro machine-readable direto, sem depender de achar o doc certo por
-   palavra-chave) e já rodou antes de qualquer classificação de bloqueio
-   chegar até aqui.
+   classificação de bloqueio (um `grep`, não um fleet de agentes) — o skip
+   por label é estreito, não vale a issue inteira: só pula quando o
+   `npx tsx scripts/lib/issue-decisions.ts --issue N` (passo 4 acima)
+   confirma que a decisão/bloqueio JÁ REGISTRADO cobre exatamente o motivo
+   de bloqueio sendo avaliado agora, não qualquer outro item/sub-pergunta
+   da mesma issue. Item isolado sem marker correspondente → roda a
+   checagem 4 mesmo com a issue tendo `decisao-registrada`/
+   `bloqueio-execucao` de outro item.
 
    Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
    progresso, nenhum doc de acompanhamento, nenhum doc relacionado por
    assunto) é legítimo classificar a issue como bloqueada — pelo motivo
    específico aplicável (`bloqueada-externa`, `requer-sessao-local`,
-   `ambígua/trade-off-real`, ou "escopo grande, scoping futuro"). Caso
-   contrário, o próximo passo já está documentado — classificar como
+   `ambígua/trade-off-real`, ou `not-this-week` quando o motivo for escopo
+   grande demais pra esta rodada). Caso contrário, o próximo passo já está
+   documentado — classificar como
    `elegivel` e dispatchar essa fatia pequena nesta mesma rodada, ou, no
    mínimo, reportar o próximo passo concreto na tabela do passo 4.5 em vez de
    aceitar a leitura de bloqueio.

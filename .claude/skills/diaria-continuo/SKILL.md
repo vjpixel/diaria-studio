@@ -554,16 +554,19 @@ aqui.
    parser automático — não dispensa a leitura do corpo inteiro.
 
    **Verificação de estado antes de classificar qualquer item como
-   bloqueado — (b) decisão de produto pendente, (c) bloqueio genuíno, ou
-   "escopo grande, scoping futuro" (#5383, generalizado em #5392).** Nenhuma
-   dessas leituras é automática a partir da leitura fácil do item — o #5383
-   original restringia a verificação só ao caso "escopo grande, scoping
-   futuro"; o #5392 achou o mesmo atalho em qualquer classificação de
-   bloqueio (achado concreto: #5255 classificada como bloqueio (`local`) sem
-   checar `docs/audience-source-notes.md`, que já tinha a decisão completa
+   bloqueado — (b) decisão de produto pendente ou (c) bloqueio genuíno
+   (#5383, generalizado em #5392).** "Escopo grande, scoping futuro" **não é
+   uma 4ª categoria** — é sempre uma leitura que se resolve em (c), nunca um
+   status paralelo a (a)/(b)/(c). Nenhuma dessas leituras é automática a
+   partir da leitura fácil do item — o #5383 original restringia a
+   verificação só ao caso "escopo grande, scoping futuro"; o #5392 achou o
+   mesmo atalho em qualquer classificação de bloqueio (achado concreto:
+   #5255 classificada como bloqueio (`local`) sem checar
+   `docs/audience-source-notes.md`, que já tinha a decisão completa
    registrada 2 dias antes da issue existir). Antes de aceitar qualquer
-   classificação de bloqueio pra um item — (b), (c), ou "escopo grande" —
-   rodar as 4 checagens abaixo:
+   classificação de bloqueio pra um item — (b) ou (c) (inclusive quando a
+   leitura inicial for "escopo grande demais") — rodar as 4 checagens
+   abaixo:
    1. `gh issue view N --json comments` — ler os comentários mais recentes
       **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
       unidade já dispatchada, ou progresso parcial registrado.
@@ -584,15 +587,19 @@ aqui.
       conter a decisão que torna o item não-bloqueado.
 
    **Quando pular a checagem 4.** É barata o bastante pra rodar em toda
-   classificação de bloqueio (um `grep`, não um fleet de agentes), mas issue
-   já com label `decisao-registrada` ou `bloqueio-execucao` pula — a
-   checagem via `npx tsx scripts/lib/issue-decisions.ts --issue N` (passo
-   seguinte, abaixo) já é verificação de estado equivalente ou mais forte.
+   classificação de bloqueio (um `grep`, não um fleet de agentes) — o skip
+   por label é estreito, não vale a issue inteira: só pula quando o
+   `issue-decisions.ts --issue N` (passo seguinte, abaixo) confirma que a
+   decisão/bloqueio JÁ REGISTRADO cobre exatamente o motivo de bloqueio
+   sendo avaliado agora, não qualquer outro item/sub-pergunta da mesma
+   issue. Item isolado sem marker correspondente → roda a checagem 4 mesmo
+   com a issue tendo `decisao-registrada`/`bloqueio-execucao` de outro item.
 
    Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
    progresso, nenhum doc de acompanhamento, nenhum doc relacionado por
-   assunto) é legítimo classificar o item como (b), (c), ou "escopo grande"
-   por bloqueio genuíno. Caso contrário, o próximo passo já está documentado
+   assunto) é legítimo classificar o item como (b) ou (c) — inclusive
+   quando o motivo for escopo grande demais pra esta rodada. Caso
+   contrário, o próximo passo já está documentado
    — volta pra (a) e dispatcha essa fatia pequena nesta mesma rodada, ou, no
    mínimo, reporta o próximo passo concreto na tabela obrigatória do passo 5
    em vez de aceitar a leitura de bloqueio.

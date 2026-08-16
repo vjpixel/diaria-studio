@@ -111,15 +111,18 @@ sinal de que aquele item é cat. C disfarçada de outra letra (heurística de
 atenção, não substitui reler o corpo inteiro).
 
 **Verificação de estado antes de classificar qualquer issue como bloqueada —
-categoria A-E, `local`, ou "escopo grande, scoping futuro" (#5383,
-generalizado em #5392).** Nenhuma dessas classificações é automática a
-partir da leitura fácil da issue — o #5383 original restringia a verificação
-só ao caso "escopo grande, scoping futuro"; o #5392 achou o mesmo atalho em
+categoria A-E ou `local` (#5383, generalizado em #5392).** "Escopo grande,
+scoping futuro" **não é uma 6ª categoria** — é sempre uma leitura que se
+resolve na categoria A-E aplicável (tipicamente C, decisão-produto), nunca
+um status paralelo. Nenhuma dessas classificações é automática a partir da
+leitura fácil da issue — o #5383 original restringia a verificação só ao
+caso "escopo grande, scoping futuro"; o #5392 achou o mesmo atalho em
 qualquer classificação de bloqueio (achado concreto: #5255 classificada
 `local` sem checar `docs/audience-source-notes.md`, que já tinha a decisão
 completa registrada 2 dias antes da issue existir). Antes de aceitar
-qualquer classificação de bloqueio pra uma issue — categoria A-E, `local`,
-ou "escopo grande" — rodar as 4 checagens abaixo:
+qualquer classificação de bloqueio pra uma issue — categoria A-E ou `local`
+(inclusive quando a leitura inicial for "escopo grande demais") — rodar as
+4 checagens abaixo:
 1. `gh issue view N --json comments` — ler os comentários mais recentes
    **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
    unidade já dispatchada, ou progresso parcial registrado.
@@ -140,17 +143,20 @@ ou "escopo grande" — rodar as 4 checagens abaixo:
    torna a issue não-bloqueada.
 
 **Quando pular a checagem 4.** É barata o bastante pra rodar em toda
-classificação de bloqueio (um `grep`, não um fleet de agentes), mas issue já
-com label `decisao-registrada` ou `bloqueio-execucao` pula — a checagem via
-`npx tsx scripts/lib/issue-decisions.ts --issue N` (parágrafo acima) já é
-verificação de estado equivalente ou mais forte e já rodou antes de qualquer
-classificação de bloqueio chegar até aqui.
+classificação de bloqueio (um `grep`, não um fleet de agentes) — o skip por
+label é estreito, não vale a issue inteira: só pula quando o
+`npx tsx scripts/lib/issue-decisions.ts --issue N` (parágrafo acima) confirma
+que a decisão/bloqueio JÁ REGISTRADO cobre exatamente o motivo de bloqueio
+sendo avaliado agora, não qualquer outro item/sub-pergunta da mesma issue.
+Item isolado sem marker correspondente → roda a checagem 4 mesmo com a
+issue tendo `decisao-registrada`/`bloqueio-execucao` de outro item.
 
 Só se as 4 checagens não acharem nada (nenhum PR, nenhum comentário de
 progresso, nenhum doc de acompanhamento, nenhum doc relacionado por assunto)
 é legítimo classificar a issue na categoria de bloqueio aplicável (A-E,
-tipicamente C decisão-produto; `local`; ou "escopo grande" — postar a
-leitura como comentário durável na issue). Caso contrário, o próximo passo
+tipicamente C decisão-produto; ou `local` — inclusive quando o motivo for
+escopo grande demais pra esta rodada; postar a leitura como comentário
+durável na issue). Caso contrário, o próximo passo
 já está documentado — dispatchar essa fatia pequena nesta mesma onda (issue
 vira elegível), ou, no mínimo, reportar o próximo passo concreto na tabela
 do `plan.json` em vez de aceitar a leitura de bloqueio.
