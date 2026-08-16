@@ -439,7 +439,7 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     assert.ok(guardMinutes < dispatchMinutes, `guard (${s.hour}:${s.minute}) deveria rodar antes de 06:00`);
   });
 
-  it("ordem: Diaria-Clarice-Envio (19:00) roda DEPOIS de Diaria-Clarice-Novos (11:00) — cadastros novos já no store", () => {
+  it("ordem: Diaria-Clarice-Envio (19:00) roda DEPOIS de Diaria-Clarice-Novos (09:00) — cadastros novos já no store", () => {
     const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
     const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
     assert.ok(novos && envio);
@@ -452,21 +452,26 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     assert.ok(envioMinutes > novosMinutes, "Diaria-Clarice-Envio deveria rodar depois de Diaria-Clarice-Novos");
   });
 
-  it("#5140: folga de >= 4h entre Clarice-Novos e Clarice-Envio — o guard queued∪sent não cobre in_process", () => {
-    // Não é preferência de horário, é a margem que impede ENVIO DUPLICADO.
-    // `isNovos` é subconjunto ESTRITO de `isRampWarm`, então todo contato que
-    // o `novos` acabou de atender continua no universo da onda que o
-    // `Diaria-Clarice-Envio` monta. O que os exclui é o guard
-    // `fetchCommittedCampaignListIds` (`queued ∪ sent`), e ele NÃO enxerga
-    // `in_process` — o status que apareceu de fato nas rodadas de 09 e
-    // 11/08/2026. Se a campanha do `novos` ainda não assentou em `sent` na
-    // hora em que o envio segmenta, os mesmos contatos entram na onda de
-    // amanhã e recebem duas vezes em poucas horas.
+  it("#5140: folga de >= 4h entre Clarice-Novos e Clarice-Envio — piso histórico, mantido como regressão mesmo após #5410", () => {
+    // Histórico do piso: até o #5410, `isNovos` era subconjunto ESTRITO de
+    // `isRampWarm`, então todo contato que o `novos` acabou de atender
+    // continuava no universo da onda que o `Diaria-Clarice-Envio` monta. O
+    // que os excluía era o guard `fetchCommittedCampaignListIds`
+    // (`queued ∪ sent`), que NÃO enxergava `in_process` — o status que
+    // apareceu de fato nas rodadas de 09 e 11/08/2026. Se a campanha do
+    // `novos` ainda não tivesse assentado em `sent` na hora em que o envio
+    // segmentava, os mesmos contatos entravam na onda de amanhã e recebiam
+    // duas vezes em poucas horas.
     //
-    // Com 11:00 × 19:00 a folga é de 8h. O piso de 4h existe pra que mover
-    // qualquer uma das duas tasks pra perto da outra quebre AQUI, e não em
-    // produção — onde o sintoma seria um contato reclamando de e-mail
-    // repetido, semanas depois, sem rastro óbvio da causa.
+    // #5410 (16/08/2026) fechou esse caminho ESTRUTURALMENTE: `isNovos` e
+    // `isRampWarm` hoje PARTICIONAM a fila de 1º envio
+    // (`segmentRampWarm` corta por `readNovosCutoff()`) em vez de um ser
+    // subconjunto do outro — a duplicata não depende mais de folga de
+    // horas. Mesmo assim o piso de 4h AQUI é mantido como regressão barata:
+    // a rodada da manhã moveu de 11:00→09:00 no #5447 (folga com as 19:00
+    // subiu de 8h pra 10h, não caiu), e é preferível que uma reaproximação
+    // futura das duas tasks quebre este teste explicitamente em vez de
+    // depender só da partição estrutural do #5410 nunca regredir sozinha.
     const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
     const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
     assert.ok(novos && envio);
@@ -480,7 +485,7 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     );
   });
 
-  it("#5185: Diaria-Clarice-Novos-Tarde presente, 15:00 diário, mesmo script/guard de Diaria-Clarice-Novos, log próprio", () => {
+  it("#5185: Diaria-Clarice-Novos-Tarde presente, 18:00 diário (#5447, sucede 15:00), mesmo script/guard de Diaria-Clarice-Novos, log próprio", () => {
     const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
     const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
     assert.ok(tarde, "Diaria-Clarice-Novos-Tarde ausente de SCHEDULED_TASKS");
@@ -490,12 +495,12 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
       manha!.steps.map((s) => s.script),
       "a 2a captura roda o MESMO orquestrador (clarice-novos-run.ts) — decisão do editor 260814, sem integração com clarice-envio-run.ts",
     );
-    assert.deepEqual(tarde!.schedule, { kind: "daily", hour: 15, minute: 0 });
+    assert.deepEqual(tarde!.schedule, { kind: "daily", hour: 18, minute: 0 });
     assert.deepEqual(tarde!.guard, manha!.guard, "mesmo guard de pré-condição (data/ montada) das duas tasks");
     assert.notEqual(tarde!.logPath, manha!.logPath, "logs separados — não misturar as duas rodadas no mesmo arquivo");
   });
 
-  it("#5185: ordem — Diaria-Clarice-Novos-Tarde (15:00) roda depois de Diaria-Clarice-Novos (11:00) e antes de Diaria-Clarice-Envio (19:00)", () => {
+  it("#5185: ordem — Diaria-Clarice-Novos-Tarde (18:00) roda depois de Diaria-Clarice-Novos (09:00) e antes de Diaria-Clarice-Envio (19:00)", () => {
     const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
     const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
     const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
@@ -508,6 +513,28 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     const envioMinutes = e.hour * 60 + e.minute;
     assert.ok(tardeMinutes > manhaMinutes, "Diaria-Clarice-Novos-Tarde deveria rodar depois de Diaria-Clarice-Novos");
     assert.ok(envioMinutes > tardeMinutes, "Diaria-Clarice-Envio deveria rodar depois de Diaria-Clarice-Novos-Tarde");
+  });
+
+  it("#5447: espaçamento — as 2 rodadas do 'novos' ficam a >= 6h uma da outra (09:00 x 18:00)", () => {
+    // #5445 mostrou que o par 11:00+15:00 (4h de espaçamento) era só a 210ª
+    // melhor combinação entre 276 possíveis — o par vencedor (09:00+18:00,
+    // 9h de espaçamento) cobre melhor as duas pontas da curva de chegada de
+    // cadastro. Este teste trava o INVARIANTE de espaçamento mínimo que a
+    // #5445 mostrou faltar (nenhum teste anterior travava a distância entre
+    // as duas rodadas do dia, só a ordem relativa) — não um valor fixo, pra
+    // não impedir um futuro ajuste fino (ex: 09:00+18:30) desde que a folga
+    // mínima seja preservada.
+    const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    assert.ok(manha && tarde);
+    const m = manha!.schedule as { kind: "daily"; hour: number; minute: number };
+    const t = tarde!.schedule as { kind: "daily"; hour: number; minute: number };
+    const gapMinutes = (t.hour * 60 + t.minute) - (m.hour * 60 + m.minute);
+    assert.ok(
+      gapMinutes >= 360,
+      `espaçamento entre as 2 rodadas do 'novos' caiu pra ${gapMinutes}min (< 360) — ` +
+        "#5445 mostrou que espaçamento curto degrada a latência média de chegada",
+    );
   });
 
   it("#5220: Diaria-Clarice-Envio-Guard-Alarm presente, 06:15 diário, step aponta pro alarme próprio do guard", () => {
@@ -635,18 +662,18 @@ describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd
   });
 });
 
-describe("#5405 — Diaria-Clarice-Novos-Abort-Alarm registrada, diária 15:10, depois das 2 rodadas do novos", () => {
-  it("está presente no registro, com o step apontando pro script correto, 15:10 BRT", () => {
+describe("#5405 — Diaria-Clarice-Novos-Abort-Alarm registrada, diária 18:10 (#5447, sucede 15:10), depois das 2 rodadas do novos", () => {
+  it("está presente no registro, com o step apontando pro script correto, 18:10 BRT", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm");
     assert.ok(t, "Diaria-Clarice-Novos-Abort-Alarm ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
       ["scripts/clarice-novos-abort-alarm.ts"],
     );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 15, minute: 10 });
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 18, minute: 10 });
   });
 
-  it("roda DEPOIS de Diaria-Clarice-Novos-Tarde (15:00) — lê o status da rodada mais recente do dia", () => {
+  it("roda DEPOIS de Diaria-Clarice-Novos-Tarde (18:00) — lê o status da rodada mais recente do dia", () => {
     const alarm = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm")!;
     const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde")!;
     assert.equal(alarm.schedule.kind, "daily");
@@ -658,7 +685,7 @@ describe("#5405 — Diaria-Clarice-Novos-Abort-Alarm registrada, diária 15:10, 
     assert.ok(alarmMinutes > tardeMinutes, "Diaria-Clarice-Novos-Abort-Alarm deveria rodar depois de Diaria-Clarice-Novos-Tarde");
   });
 
-  it("15:10 não colide com nenhuma outra daily", () => {
+  it("18:10 não colide com nenhuma outra daily", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm")!;
     assert.equal(t.schedule.kind, "daily");
     const mine = t.schedule as { kind: "daily"; hour: number; minute: number };

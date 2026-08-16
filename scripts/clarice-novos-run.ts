@@ -8,7 +8,8 @@
  * prosa (`.claude/skills/diaria-clarice-novos/SKILL.md`) tem o LLM como
  * *glue* — extrai valores do JSON de um passo e injeta no próximo, decide
  * ramos condicionais, aborta em guard. Isso é incompatível com uma task
- * agendada diária (11:00 BRT desde o #5140 — antes 17:00, `Diaria-Clarice-Novos`): julgamento
+ * agendada diária (09:00 + 18:00 BRT desde o #5447 — antes 11:00+15:00 do
+ * #5140/#5185, antes 17:00, `Diaria-Clarice-Novos`/`Diaria-Clarice-Novos-Tarde`): julgamento
  * não-determinístico no caminho de um envio de e-mail real e irreversível
  * contraria a regra do #573 ("validar via TS determinístico"). Este script
  * é o *glue* em código — a skill (invocação manual, ad-hoc) passa a

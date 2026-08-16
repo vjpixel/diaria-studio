@@ -457,45 +457,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // editor pausou a automação de propósito".
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
     logPath: "clarice-subscribers/.novos-run.log",
-    // 11:00 BRT (decisão do editor 260812, #5140 — sucede as 17:00 do #4941).
-    // Dois motivos independentes, ambos medidos:
-    //
-    //   1. JANELA DE DECISÃO. O e-mail tem dois objetivos de conversão
-    //      (assinar a Diária, usar o cupom da Clarice) e nenhum dos dois
-    //      acontece na leitura: a mediana do clique é 7,6h e o p75 é 37,9h.
-    //      Quando acontecem, é em horário comercial — a curva de compra da
-    //      Stripe (1.118 assinaturas/180d, independente de envio de e-mail)
-    //      põe 41-46% das compras entre 12h e 17h e só 6% de madrugada. Um
-    //      envio às 17:00 empurrava quem age rápido pra 18h-21h, o bloco de
-    //      menor propensão do dia. Índice de propensão da janela de ação
-    //      (100 = hora média): 17h = 120, 11h = 170.
-    //   2. FOLGA DO GUARD. `Diaria-Clarice-Envio` (19:00) monta a onda do dia
-    //      seguinte a partir de `ramp-warm`, e `novos` é subconjunto ESTRITO
-    //      dele (`isNovos` = `isRampWarm` + corte por `created`). Quem já
-    //      recebeu do `novos` só sai da onda pelo guard `queued ∪ sent`
-    //      (`fetchCommittedCampaignListIds`), que NÃO cobre `in_process` — o
-    //      status observado nas rodadas de 09 e 11/08. Com 17:00 a campanha
-    //      tinha 2h pra assentar em `sent` antes das 19:00; com 11:00 tem 8h.
-    //      Sem essa folga, uma campanha presa em `in_process` faz o mesmo
-    //      contato receber duas vezes em 13h.
+    // 09:00 BRT (decisão do editor 16/08/2026, #5447 — sucede as 11:00 do
+    // #5140, a partir da análise do #5445). A justificativa não é mais
+    // propensão horária de compra (D5 do #4347/#5140) — é o par com a
+    // rodada da tarde (`Diaria-Clarice-Novos-Tarde`, hoje 18:00): 09:00+18:00
+    // é a curva de chegada de cadastro casada com espaçamento entre as duas
+    // rodadas. Números medidos no #5445: latência média cai de 9,2h (par
+    // antigo 11:00+15:00) pra 6,7h; % de contatos > 12h de espera cai de 45%
+    // pra 16%. O par 11:00+15:00 era só a 210ª melhor combinação de 2
+    // horários entre 276 possíveis — 09:00+18:00 venceu por cobrir melhor as
+    // duas pontas do dia sem esbarrar na margem de segurança do envio das
+    // 19:00 (ver comentário da task -Tarde abaixo).
     //
     // Segue sem colisão com outra task armada (a mais próxima é o ciclo de 4h
     // do Diaria-Clarice-Guardrail-Alarm) e depois do Diaria-Clarice-Sync
     // (08:30), então o store está fresco. Supera a decisão D5 do #4347
     // ("~4×/semana, invocação manual") — a skill manual continua existindo,
     // delegando pro mesmo orquestrador (ver .claude/skills/diaria-clarice-novos).
-    schedule: { kind: "daily", hour: 11, minute: 0 },
+    schedule: { kind: "daily", hour: 9, minute: 0 },
     guard: {
       requiredFile: "clarice-subscribers/clarice-users.db",
       abortMessage:
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
     },
-    issue: "#4347, #4941",
+    issue: "#4347, #4941, #5140, #5445, #5447",
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
-    description: "2a captura diaria dos cadastros novos da Clarice (mesmo fluxo do Diaria-Clarice-Novos, 15:00 BRT)",
+    description: "2a captura diaria dos cadastros novos da Clarice (mesmo fluxo do Diaria-Clarice-Novos, 18:00 BRT)",
     // #5185: a issue original propunha `clarice-envio-run.ts` chamar
     // `runNovos()` internamente e alimentar o pool `ramp-warm` direto
     // (opção B, decisão registrada no comentário de 260813 desta issue) —
@@ -533,29 +523,32 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // 11:00 ainda esteja `in_process` na Brevo (camada 1 não depende do
     // status da Brevo assentar).
     //
-    // RISCO RESIDUAL (achado desta unidade, documentado — não corrigido
-    // aqui, ver `test/scheduled-tasks.test.ts`): o guard `queued∪sent` que
-    // `Diaria-Clarice-Envio` (19:00) usa pra montar `ramp-warm` NÃO cobre
-    // `in_process` (mesmo gap que motivou mover `Diaria-Clarice-Novos` de
-    // 17:00→11:00 no #5140, dando 8h de folga pra campanha assentar em
-    // `sent`). Entre esta task (15:00) e `Diaria-Clarice-Envio` (19:00) a
-    // folga é de só 4h — o mesmo piso que o teste `#5140` já usa como limite
-    // MÍNIMO aceitável pro par 11:00×19:00 (medido: 8h funciona, 2h já
-    // causou duplicata ao vivo), mas 4h nunca foi medido ao vivo. Contatos
-    // capturados às 15:00 fazem parte de `isRampWarm` (subconjunto de
-    // `isNovos`), então se a campanha das 15:00 ainda estiver `in_process`
-    // às 19:00, o mesmo contato pode entrar TAMBÉM na onda `ramp-warm` de
-    // amanhã 06:00 — duplicata em ~15h em vez de horas. Acompanhar as
-    // primeiras rodadas reais (relatórios em `data/clarice-subscribers/
-    // novos-reports/` + `envio-reports/`) antes de considerar este risco
-    // fechado.
+    // HORÁRIO — 18:00 BRT (decisão do editor 16/08/2026, #5447, a partir do
+    // #5445). O RISCO RESIDUAL descrito no parágrafo acima (guard
+    // `queued∪sent` de `Diaria-Clarice-Envio` não cobrir `in_process`) ficou
+    // estruturalmente FECHADO pelo #5410 (16/08/2026): `isNovos` deixou de
+    // ser subconjunto de `isRampWarm` — os dois predicados hoje PARTICIONAM
+    // a fila de 1º envio. `clarice-envio-run.ts` monta a onda via
+    // `clarice-build-segment.ts`, que lê `readNovosCutoff()` e passa
+    // `cutoffNovosIso` pra `segmentRampWarm`: todo contato com
+    // `created >= cutoff` (janela de ~2 dias) fica fora da rampa
+    // independente do status da campanha do `novos` na Brevo. O caminho que
+    // produzia a duplicata (contato capturado pelo `novos` da tarde ainda
+    // `in_process` às 19:00 e entrando TAMBÉM em `ramp-warm`) não existe
+    // mais — não é uma questão de folga de horas, é partição por
+    // construção.
+    //
+    // 18:00 (não 18:30, o ótimo marginal medido no #5445) por margem de
+    // duração de rodada: mesmo o pior caso medido (31min) termina ~29min
+    // antes de `Diaria-Clarice-Envio` (19:00) — o ganho de latência de
+    // 18:00→18:30 é de só 0,1h, não vale comer essa margem.
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
     // Log próprio (não compartilha arquivo com Diaria-Clarice-Novos) — cada
     // task do registro tem seu logPath dedicado (convenção do arquivo
     // inteiro), e misturar as duas rodadas no mesmo log tornaria a
     // auditoria por horário mais confusa sem ganho nenhum.
     logPath: "clarice-subscribers/.novos-tarde-run.log",
-    schedule: { kind: "daily", hour: 15, minute: 0 },
+    schedule: { kind: "daily", hour: 18, minute: 0 },
     // Mesmo guard de pré-condição da task das 11:00 — "junction data/ ainda
     // não montada" é uma condição de MÁQUINA, não de horário, então se
     // aplica igual às duas.
@@ -570,20 +563,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registro — logo já vale automaticamente pras duas tasks sem lógica
     // nova (confirmado lendo `scripts/clarice-novos-run.ts`, sem precisar
     // de um 2o toggle).
-    issue: "#4347, #4941, #5185",
+    issue: "#4347, #4941, #5185, #5410, #5445, #5447",
   },
   {
     name: "Diaria-Clarice-Novos-Abort-Alarm",
     description: "alarme de aborts consecutivos por semaforo vermelho (D4) do grupo 'novos' da Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-novos-abort-alarm.ts" }],
     logPath: "clarice-subscribers/.novos-abort-alarm.log",
-    // Diária 15:10 BRT — depois das DUAS rodadas do dia (11:00 e 15:00
+    // Diária 18:10 BRT — depois das DUAS rodadas do dia (09:00 e 18:00
     // Diaria-Clarice-Novos-Tarde), lê o status da MAIS RECENTE. Mesmo
     // padrão de "alarme roda depois do que ele observa" de
     // Diaria-Clarice-Opens-Catchup-Alarm (09:00, depois do Diaria-Clarice-
     // Sync das 08:30).
-    schedule: { kind: "daily", hour: 15, minute: 10 },
-    issue: "#5405",
+    schedule: { kind: "daily", hour: 18, minute: 10 },
+    issue: "#5405, #5447",
   },
   {
     name: "Diaria-Clarice-Envio",
@@ -598,12 +591,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "run", script: "scripts/clarice-envio-run.ts" }],
     logPath: "clarice-subscribers/.envio-run.log",
     // 19:00 BRT (decisão do editor 260811): planeja e AGENDA a onda de
-    // amanhã 06:00 BRT (09:00 UTC). Roda depois do Diaria-Clarice-Novos
-    // (11:00 desde o #5140, antes 17:00) de propósito — os cadastros novos do
-    // dia já entraram no store antes do planejamento da onda, e a campanha do
-    // `novos` já teve tempo de assentar em `sent` pro guard `queued ∪ sent`
-    // excluí-los desta onda (o mesmo contato está nos DOIS universos:
-    // `isNovos` é subconjunto estrito de `isRampWarm`).
+    // amanhã 06:00 BRT (09:00 UTC). Roda depois das DUAS rodadas do
+    // Diaria-Clarice-Novos (09:00 e 18:00 desde o #5447, antes 11:00+15:00 do
+    // #5140) de propósito — os cadastros novos do dia já entraram no store
+    // antes do planejamento da onda. Desde o #5410, `isNovos` e `isRampWarm`
+    // PARTICIONAM a fila de 1º envio (`segmentRampWarm` corta por
+    // `readNovosCutoff()`) em vez de um ser subconjunto do outro — a
+    // exclusão não depende mais da campanha do `novos` ter assentado em
+    // `sent` antes das 19:00.
     // Sem colisão com nenhuma outra task
     // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
     schedule: { kind: "daily", hour: 19, minute: 0 },
