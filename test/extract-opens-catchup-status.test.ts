@@ -63,9 +63,43 @@ describe("extractLastJsonObjectWithKey (#4740)", () => {
 
 describe("extractOpensCatchupStatus (#4740)", () => {
   it("opens_catchup.ok=true → status ok", () => {
-    const log = fakeLog({ opens_catchup: { ok: true, result: { campaignsInWindow: 3 } } });
+    const log = fakeLog({ opens_catchup: { ok: true, result: { campaignsInWindow: 3, campaignsFailed: 0 } } });
     const r = extractOpensCatchupStatus(log, NOW);
     assert.deepEqual(r, { status: "ok", checked_at: NOW.toISOString() });
+  });
+
+  it("REGRESSÃO (#5401): opens_catchup.ok=true sem result → status error, nunca ok por omissão", () => {
+    const log = fakeLog({ opens_catchup: { ok: true } });
+    const r = extractOpensCatchupStatus(log, NOW);
+    assert.equal(r.status, "error");
+    assert.match((r as { error: string }).error, /ausente\/malformado/);
+  });
+
+  it("REGRESSÃO (#5401): opens_catchup.ok=true com result presente mas campaignsFailed ausente/não-numérico → status error", () => {
+    const log = fakeLog({ opens_catchup: { ok: true, result: {} } });
+    const r = extractOpensCatchupStatus(log, NOW);
+    assert.equal(r.status, "error");
+    assert.match((r as { error: string }).error, /ausente\/malformado/);
+  });
+
+  it("REGRESSÃO (#5401): opens_catchup.ok=true mas result.campaignsFailed>0 → status error, não ok (cobertura parcial não fica invisível)", () => {
+    const log = fakeLog({
+      opens_catchup: { ok: true, result: { campaignsInWindow: 49, campaignsFailed: 1 } },
+    });
+    const r = extractOpensCatchupStatus(log, NOW);
+    assert.equal(r.status, "error");
+    assert.equal(
+      (r as { error: string }).error,
+      "cobertura parcial: 1/49 campanha(s) na janela falharam no export",
+    );
+  });
+
+  it("#5401: opens_catchup.ok=true com result.contactsFailed>0 mas campaignsFailed=0 → continua ok (404 pontual não é falha de cobertura de campanha)", () => {
+    const log = fakeLog({
+      opens_catchup: { ok: true, result: { campaignsInWindow: 3, campaignsFailed: 0, contactsFailed: 2 } },
+    });
+    const r = extractOpensCatchupStatus(log, NOW);
+    assert.equal(r.status, "ok");
   });
 
   it("opens_catchup.ok=false → status error com a mensagem", () => {
@@ -86,8 +120,15 @@ describe("extractOpensCatchupStatus (#4740)", () => {
   });
 
   it("checked_at usa o timestamp passado, não Date.now() implícito", () => {
+    const log = fakeLog({ opens_catchup: { ok: true, result: { campaignsInWindow: 3, campaignsFailed: 0 } } });
+    const r = extractOpensCatchupStatus(log, NOW);
+    assert.equal(r.checked_at, "2026-08-07T08:30:00.000Z");
+  });
+
+  it("checked_at usa o timestamp passado mesmo no branch de erro (#5401: result ausente)", () => {
     const log = fakeLog({ opens_catchup: { ok: true } });
     const r = extractOpensCatchupStatus(log, NOW);
     assert.equal(r.checked_at, "2026-08-07T08:30:00.000Z");
+    assert.equal(r.status, "error");
   });
 });

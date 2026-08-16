@@ -85,15 +85,58 @@ export function extractLastJsonObjectWithKey(text: string, key: string): Record<
 /**
  * Pure: extrai o status do catch-up de opens a partir do texto bruto do log
  * de uma run de `clarice-sync-brevo.ts --incremental`.
+ *
+ * #5401: `ok: true` sozinho não é sinal de COBERTURA — `runOpensCatchup` é
+ * fail-soft POR CAMPANHA (uma campanha cujo export/poll/download falhar
+ * incrementa `result.campaignsFailed` mas não faz a função lançar, então o
+ * summary ainda reporta `ok: true`). Confirmado ao vivo em 260816: a mesma
+ * run que reporta `{"status":"ok"}` em produção pode ter deixado campanha(s)
+ * inteiras da janela sem re-exportar (timeout de download, entre outras
+ * causas) — exatamente o gap que o item 4/5 da issue #5401 pede pra fechar.
+ * `campaignsFailed > 0` agora reprova como `"error"` (reusa o streak/alarme/
+ * issue já wired pro status de erro — sem introduzir um 3º branch de estado
+ * espalhado por todo consumidor). `contactsFailed` (per-CONTATO) fica DE
+ * FORA de propósito — um 404 isolado (contato removido entre export e
+ * re-busca) é ruído esperado, não falha de cobertura da campanha.
+ *
+ * #5401 (fix de acompanhamento, achado do fleet review pré-merge): `catchup`
+ * vem de um scanner de brace-matching sobre texto de log, não de um objeto
+ * tipado real — `result` ausente ou `result.campaignsFailed` não-numérico
+ * (log truncado, escrita concorrente, refactor futuro que renomeia o campo)
+ * fazia o `?? 0` tratar ausência de dado como "zero falhas", reportando
+ * `status: "ok"` indistinguível de cobertura 100% confirmada — o que zerava
+ * o streak de falhas consecutivas do alarme (`clarice-opens-catchup-alarm.ts`)
+ * com um único log malformado. `result` ausente/malformado agora reprova
+ * como `"error"` explícito — nunca vira `"ok"` por omissão.
  */
 export function extractOpensCatchupStatus(logText: string, now: Date = new Date()): OpensCatchupStatus {
   const checked_at = now.toISOString();
   const summary = extractLastJsonObjectWithKey(logText, "opens_catchup");
   if (!summary) return { status: "not_run", checked_at };
 
-  const catchup = summary.opens_catchup as { ok?: boolean; error?: string } | null | undefined;
+  const catchup = summary.opens_catchup as
+    | { ok?: boolean; error?: string; result?: { campaignsFailed?: number; campaignsInWindow?: number } }
+    | null
+    | undefined;
   if (catchup === null || catchup === undefined) return { status: "not_run", checked_at };
-  if (catchup.ok === true) return { status: "ok", checked_at };
+  if (catchup.ok === true) {
+    if (!catchup.result || typeof catchup.result.campaignsFailed !== "number") {
+      return {
+        status: "error",
+        error: "opens_catchup.result ausente/malformado — não é possível confirmar cobertura",
+        checked_at,
+      };
+    }
+    const { campaignsFailed, campaignsInWindow } = catchup.result;
+    if (campaignsFailed > 0) {
+      return {
+        status: "error",
+        error: `cobertura parcial: ${campaignsFailed}/${campaignsInWindow ?? "?"} campanha(s) na janela falharam no export`,
+        checked_at,
+      };
+    }
+    return { status: "ok", checked_at };
+  }
   if (catchup.ok === false) {
     return { status: "error", error: typeof catchup.error === "string" ? catchup.error : "erro desconhecido", checked_at };
   }
