@@ -18,6 +18,7 @@ import {
   issuesFilterActive,
   prsFilterActive,
   applyDispatchTrackFilterValue,
+  LOADING_MESSAGE,
   classificationFilterScope,
   classificationScopeNotice,
   activeFilterSummary,
@@ -189,5 +190,46 @@ describe("emptyStateMessage (#5212)", () => {
   it("filtro ativo, total 0, mas sem filterSummary disponível (filtro fora de escopo) → cai pro emptyLabel genérico", () => {
     const result = emptyStateMessage({ filteredCount: 0, totalCount: 0, filterActive: true, filterSummary: null, emptyLabel: "Nenhuma issue aberta." });
     assert.equal(result, "Nenhuma issue aberta.");
+  });
+});
+
+describe("emptyStateMessage — estado de carregamento (#5472)", () => {
+  // `loading` precede TODOS os outros casos. Antes do 1º fetch voltar,
+  // filteredCount/totalCount são 0 porque o dado não chegou — não porque não
+  // existe. Sem isto, "buscando" e "vazio" (e, como o #5468 mostrou ao vivo,
+  // "quebrado") são a mesma tela.
+  const base = { filteredCount: 0, totalCount: 0, filterActive: false, filterSummary: null, emptyLabel: "Nenhuma issue aberta." };
+
+  it("carregando vence o estado-vazio genérico", () => {
+    assert.equal(emptyStateMessage({ ...base, loading: true }), LOADING_MESSAGE);
+  });
+
+  it("carregando vence '0 resultados para este filtro'", () => {
+    assert.equal(
+      emptyStateMessage({ ...base, totalCount: 12, filterActive: true, filterSummary: "overnight", loading: true }),
+      LOADING_MESSAGE,
+    );
+  });
+
+  it("carregando vence o aviso de 'filtro sem efeito'", () => {
+    assert.equal(
+      emptyStateMessage({ ...base, filterActive: true, filterSummary: "overnight", loading: true }),
+      LOADING_MESSAGE,
+    );
+  });
+
+  it("com resultados já renderizados, carregando não mostra mensagem nenhuma", () => {
+    // Refresh manual sobre uma tabela já populada: as linhas antigas seguem
+    // visíveis, então um "carregando…" sobreposto seria ruído.
+    assert.equal(emptyStateMessage({ ...base, filteredCount: 3, loading: true }), null);
+  });
+
+  it("loading ausente/false preserva o comportamento anterior", () => {
+    assert.equal(emptyStateMessage({ ...base }), "Nenhuma issue aberta.");
+    assert.equal(emptyStateMessage({ ...base, loading: false }), "Nenhuma issue aberta.");
+    assert.equal(
+      emptyStateMessage({ ...base, totalCount: 12, filterActive: true, filterSummary: "x", loading: false }),
+      "0 resultados para este filtro.",
+    );
   });
 });

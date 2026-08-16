@@ -11,6 +11,15 @@
 // "meu filtro escondeu tudo". Foi o que aconteceu com `prioridade` na tabela de
 // PRs: o filtro era aplicado (`renderPrsTable`) mas ficou de fora da checagem.
 
+/** Texto do estado de carregamento, compartilhado pelas duas tabelas.
+ * Constante exportada (em vez de literal solto) pra que o teste trave o
+ * contrato sem repetir a string. */
+export const LOADING_MESSAGE = "carregando…";
+
+/** Placeholder do contador enquanto o fetch não voltou. Não é `0`: `0` é uma
+ * AFIRMAÇÃO ("não há nada"), e antes do dado chegar isso é desconhecido. */
+export const LOADING_COUNT = "…";
+
 /** Filtros que a tabela de ISSUES aplica: prioridade, classificação, labels. @pure */
 export function issuesFilterActive(filters) {
   return Boolean(filters.priority || filters.dispatch || filters.labels?.size > 0);
@@ -110,8 +119,15 @@ export function activeFilterSummary(filters, table) {
  *     vazia lia como "o filtro escondeu tudo", quando na verdade não havia
  *     nada pra esconder.
  */
-export function emptyStateMessage({ filteredCount, totalCount, filterActive, filterSummary, emptyLabel }) {
+export function emptyStateMessage({ filteredCount, totalCount, filterActive, filterSummary, emptyLabel, loading }) {
   if (filteredCount > 0) return null;
+  // `loading` vence TODOS os outros casos (#5472): antes do 1º fetch voltar,
+  // `filteredCount`/`totalCount` são 0 porque o dado ainda não chegou — não
+  // porque não existe. Dizer "Nenhuma issue aberta." ali é afirmar como fato
+  // algo que ainda não se sabe, e foi exatamente o que fez a página quebrada
+  // do #5468 parecer uma página vazia legítima: sem estado de carregamento,
+  // "buscando" e "quebrado" são pixel a pixel a mesma tela.
+  if (loading) return LOADING_MESSAGE;
   if (!filterActive) return emptyLabel;
   if (totalCount === 0) {
     if (!filterSummary) return emptyLabel;

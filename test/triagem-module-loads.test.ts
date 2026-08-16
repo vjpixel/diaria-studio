@@ -30,10 +30,16 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { LOADING_COUNT, LOADING_MESSAGE } from "../scripts/studio-ui/public/triagem-filters.js";
 
 /** Nó de DOM que aceita qualquer acesso/atribuição sem reclamar. Devolve
  * outro nó pra qualquer propriedade desconhecida, então cadeias arbitrárias
  * (`el.foo.bar.baz`) funcionam sem precisar prever o que o módulo usa. */
+/** Nós criados por id, pra que o teste possa INSPECIONAR o que o módulo
+ * escreveu (contador, mensagem de estado vazio) em vez de só verificar que
+ * nada lançou. */
+const nodesById = new Map<string, Record<string, unknown>>();
+
 function stubNode(): unknown {
   const target: Record<string | symbol, unknown> = {
     addEventListener() {},
@@ -88,7 +94,15 @@ function installDomStub(): void {
   const ids = realHtmlIds();
   (globalThis as Record<string, unknown>).document = new Proxy(
     {
-      getElementById: (id: string) => (ids.has(id) ? stubNode() : null),
+      getElementById: (id: string) => {
+        if (!ids.has(id)) return null;
+        let node = nodesById.get(id);
+        if (!node) {
+          node = stubNode() as Record<string, unknown>;
+          nodesById.set(id, node);
+        }
+        return node;
+      },
       createElement: () => stubNode(),
       querySelector: () => stubNode(),
       querySelectorAll: () => [],
@@ -113,8 +127,9 @@ function installDomStub(): void {
   //
   // Um item de cada tabela basta pra forçar uma passada por cada corpo de
   // loop; cobrir combinações é papel dos testes de lógica pura.
-  (globalThis as Record<string, unknown>).fetch = async () =>
-    ({
+  (globalThis as Record<string, unknown>).fetch = async () => {
+    if (gateFetch) await gateFetch;
+    return {
       ok: true,
       status: 200,
       json: async () => ({
@@ -154,8 +169,13 @@ function installDomStub(): void {
         error: null,
         cached: false,
       }),
-    }) as unknown as Response;
+    } as unknown as Response;
+  };
 }
+
+/** Quando setado, o `fetch` stubbado só resolve depois desta promise — deixa o
+ * teste observar a tela DURANTE o carregamento. */
+let gateFetch: Promise<void> | null = null;
 
 function restoreDomStub(): void {
   for (const [key, value] of Object.entries(originals)) {
@@ -164,7 +184,7 @@ function restoreDomStub(): void {
   }
 }
 
-describe("triagem.js — guard de carga (#5462)", () => {
+describe("triagem.js — guard de carga (#5462) + estado de carregamento (#5472)", () => {
   /** Erros que escapam ASSINCRONAMENTE do módulo. `fetchIssues()` é disparado
    * no top-level sem `await`, então um throw dentro dele (o caso real do
    * incidente — a legenda rodava por ali) não rejeita o `import`: vira
@@ -172,8 +192,16 @@ describe("triagem.js — guard de carga (#5462)", () => {
    * falha apareceria desancorada, atribuída a outro teste da suíte. */
   const asyncErrors: unknown[] = [];
   const capture = (e: unknown) => asyncErrors.push(e);
+  let liberarFetch!: () => void;
 
   before(() => {
+    // Segura o fetch ANTES do módulo ser importado — é a única janela em que
+    // dá pra observar o 1º carregamento, já que o ESM cacheia o módulo e o
+    // `fetchIssues()` de abertura roda uma vez só. Evita ter que exportar
+    // qualquer API só-para-teste do código de produção.
+    gateFetch = new Promise<void>((resolve) => {
+      liberarFetch = resolve;
+    });
     installDomStub();
     process.on("unhandledRejection", capture);
     process.on("uncaughtException", capture);
@@ -183,19 +211,37 @@ describe("triagem.js — guard de carga (#5462)", () => {
     process.off("unhandledRejection", capture);
     process.off("uncaughtException", capture);
     restoreDomStub();
+    gateFetch = null;
   });
 
-  it("carrega e inicializa sem lançar — nenhum identificador órfão no caminho de init", async () => {
-    // Regressão direta do incidente: `renderDispatchTrackLegend` referenciava
-    // `DISPATCH_TRACK_EXPLAIN` já removida, e rodava na inicialização.
+  it("carrega, mostra 'carregando…' durante o fetch, e resolve pro dado real", async () => {
+    // (1) Regressão do #5468: `renderDispatchTrackLegend` referenciava
+    // `DISPATCH_TRACK_EXPLAIN` já removida e rodava na inicialização.
     await assert.doesNotReject(
       () => import("../scripts/studio-ui/public/triagem.js"),
       "triagem.js deve carregar com DOM stubbado; um throw aqui é a página abrindo zerada",
     );
 
-    // Deixa o `fetchIssues()` disparado no load completar dentro da fronteira
-    // deste teste, pra que o erro dele seja atribuído AQUI.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // (2) #5472 — com o fetch ainda em voo, a tela precisa dizer "estou
+    // buscando", não "não há nada". Testar só `emptyStateMessage` (puro) não
+    // cobriria isto: o modo de falha aqui é o módulo nunca RENDERIZAR antes
+    // do await, e aí a mensagem existe na função e nunca chega à tela.
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(nodesById.get("issues-count")?.textContent, LOADING_COUNT, "contador de issues deveria mostrar o placeholder");
+    assert.equal(nodesById.get("prs-count")?.textContent, LOADING_COUNT, "contador de PRs deveria mostrar o placeholder");
+    assert.equal(nodesById.get("issues-empty")?.textContent, LOADING_MESSAGE);
+    assert.equal(nodesById.get("issues-empty")?.hidden, false, "a mensagem precisa estar VISÍVEL, não só preenchida");
+
+    // (3) Liberado: números reais do payload (1 issue, 1 PR), sem "carregando".
+    liberarFetch();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(nodesById.get("issues-count")?.textContent, "1");
+    assert.equal(nodesById.get("prs-count")?.textContent, "1");
+    // Com resultados, o contêiner de estado-vazio é ESCONDIDO, não reescrito —
+    // `updateEmptyState` só toca `textContent` quando há mensagem a mostrar.
+    // O "carregando…" fica no DOM, invisível; é `hidden` que importa aqui.
+    assert.equal(nodesById.get("issues-empty")?.hidden, true, "com 1 issue renderizada, o estado-vazio deve sumir");
+    assert.equal(nodesById.get("prs-empty")?.hidden, true);
 
     assert.deepEqual(
       asyncErrors.map((e) => (e instanceof Error ? e.message : String(e))),

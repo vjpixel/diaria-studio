@@ -19,6 +19,7 @@ import {
   issuesFilterActive,
   prsFilterActive,
   applyDispatchTrackFilterValue,
+  LOADING_COUNT,
   classificationFilterScope,
   classificationScopeNotice,
   activeFilterSummary,
@@ -46,6 +47,12 @@ const el = {
   prsScopeNotice: document.getElementById("prs-scope-notice"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
 };
+
+/** `true` enquanto um fetch de /api/issues está em voo (#5472). Começa em
+ * `true`: a página monta antes do 1º fetch voltar, e nesse intervalo os
+ * contadores/tabelas não sabem de nada — mostrar `0` ali afirmaria "não há
+ * nada" quando o certo é "ainda não sei". */
+let loading = true;
 
 /** Snapshot bruto da última resposta de /api/issues — filtros nunca refetcham. */
 let data = { issues: [], prs: [], error: null, cached: false, generatedAt: null };
@@ -217,7 +224,7 @@ function matchesLabelFilter(labels) {
 // pura) — aqui só aplica o resultado ao DOM.
 function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel, filterSummary) {
   if (!emptyEl) return;
-  const message = emptyStateMessage({ filteredCount, totalCount, filterActive: hasActiveFilter, filterSummary, emptyLabel });
+  const message = emptyStateMessage({ filteredCount, totalCount, filterActive: hasActiveFilter, filterSummary, emptyLabel, loading });
   emptyEl.hidden = message === null;
   if (message !== null) emptyEl.textContent = message;
 }
@@ -229,7 +236,7 @@ function renderIssuesTable() {
       matchesLabelFilter(i.labels) &&
       (!filters.dispatch || i.execTrack === filters.dispatch),
   );
-  el.issuesCount.textContent = String(filtered.length);
+  el.issuesCount.textContent = loading ? LOADING_COUNT : String(filtered.length);
   updateEmptyState(
     el.issuesEmpty,
     filtered.length,
@@ -261,7 +268,7 @@ function renderPrsTable() {
       matchesLabelFilter(p.labels) &&
       (!filters.track || p.track === filters.track),
   );
-  el.prsCount.textContent = String(filtered.length);
+  el.prsCount.textContent = loading ? LOADING_COUNT : String(filtered.length);
   updateEmptyState(
     el.prsEmpty,
     filtered.length,
@@ -345,7 +352,11 @@ function renderAll() {
 }
 
 async function fetchIssues() {
+  loading = true;
   setFetchStatus("", "carregando…");
+  // Re-render ANTES do await: sem isso o estado de carregamento só apareceria
+  // depois da resposta, ou seja, nunca — que é justamente o buraco relatado.
+  renderAll();
   try {
     const res = await fetch("/api/issues");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -364,6 +375,11 @@ async function fetchIssues() {
       cached: true,
       generatedAt: data.generatedAt,
     };
+  } finally {
+    // `finally`, não no fim do `try`: um throw inesperado FORA do catch (ou
+    // um `return` futuro dentro dele) deixaria a página em "carregando…" pra
+    // sempre — trocando um estado enganoso por outro.
+    loading = false;
   }
   renderAll();
 }
