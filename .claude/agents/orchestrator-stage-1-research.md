@@ -374,12 +374,16 @@ In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `{EDIT
 5. **Apresentar no gate da Etapa 1:** listar as substituições (`🚀 fonte primária: {título} — imprensa→oficial`) pro editor confirmar/reverter. Não é silencioso — o editor vê cada promoção.
 
 Se `launch_candidate` count = 0, pular este passo (info no run-log). Falha de busca/verify nunca bloqueia — degrada pra "manter como notícia".
+
+**Nota de robustez — 1m-ter pode terminar depois de 1n/1o/1p1 (#5471, 260817, [histórico](../../docs/orchestrator-stage-1-research-historia.md#5471-1m-ter-fora-de-ordem)).** O `discovery-searcher` do passo 1 acima é uma chamada `Agent` normal (síncrona, não background) — se ela demorar, é possível que 1n (topic-cluster)/1o (filter-date-window)/1p1 (research-review-dates) já tenham rodado sobre `tmp-categorized.json` antes de 1m-ter terminar. **Não é erro** — aplicar a promoção (passo 3) sobre o arquivo mais recente que já existir naquele momento (`tmp-dates-reviewed.json` em vez de `tmp-categorized.json`, se já existir), nunca sobre uma cópia stale. Ajustar o `--categorized` do 1m-quater (logo abaixo) pro MESMO arquivo onde a promoção foi de fato escrita — não assumir que é sempre `tmp-categorized.json`. Confirmado ao vivo (260817): resultado equivalente, sem gap de dedup (1m-quater sempre roda depois, sobre o arquivo certo). Se esta ordem-alternativa passar a se repetir com frequência (não mais one-off), reconsiderar mover 1m-ter pra antes do 1l (dedup) — ver histórico.
+
 **1m-quater. Dedup pós-promoção (#2315).** `dedup.ts` (passo 1l) viu URLs de pesquisa originais — URLs oficiais introduzidas pelo passo 1m-ter NUNCA passaram pelo dedup. Re-checar agora. **Sempre rodar** (idempotente: sem `primary_source_substituted` → `checked: 0`):
 ```bash
 npx tsx scripts/check-promoted-dedup.ts \
   --categorized {EDITION_DIR}/_internal/tmp-categorized.json \
   --past-editions data/past-editions.md --window 3
 ```
+(`--categorized` acima assume o caminho normal — ver "Nota de robustez" logo acima para o caso em que 1m-ter rodou tarde e escreveu em `tmp-dates-reviewed.json`.)
 Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar no gate `⚠️ N lançamento(s) revertidos para RADAR (URL oficial repetia edição anterior, colidia com artigo nativo da própria edição, ou duplicava outra promoção — #2315/#4200)` (o `reason` de cada entrada em `demoted[]` diz qual dos três casos foi). Falha → warn + prosseguir.
 
 **1m-quinquies. Resolver URLs de VÍDEO para YouTube (#3202).** Regra editorial: itens da seção VÍDEOS usam SEMPRE link do YouTube (`context/editorial-rules.md` — Seção "Vídeos"). Para cada artigo em `video` cuja URL NÃO seja `youtube.com/watch` ou `youtu.be` (checar com `isYoutubeUrl` de `scripts/lib/video-youtube-resolve.ts`):

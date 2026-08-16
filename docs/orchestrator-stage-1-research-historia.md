@@ -126,3 +126,44 @@ ponto do pipeline.
 260806: item resgatado com `category: "lancamento"` fixo era na verdade
 cobertura de incidente de segurança, corrigida manualmente só no gate humano
 do Stage 4.
+
+### 5471 1m-ter fora de ordem
+
+Auto-reporter da edição 260817 (2026-08-16, `data/run-log.jsonl`
+`2026-08-16T18:44:33.522Z`, `runtime_fix_lite`) detectou que o passo 1m-ter
+(promoção de fonte primária) foi aplicado sobre `tmp-dates-reviewed.json`
+(saída de 1p1) em vez de `tmp-categorized.json` (posição documentada, antes
+de 1n/1o/1p1). Causa: o `discovery-searcher` do 1m-ter é uma chamada `Agent`
+síncrona (não background, ao contrário do É IA?/1d) — nesta rodada, os
+agents de busca demoraram a retornar o suficiente pra o orchestrator já ter
+seguido adiante e rodado 1n (topic-cluster)/1o (filter-date-window)/1p1
+(research-review-dates) antes da promoção terminar.
+
+**Investigação (#5471):** varredura de `run-log.jsonl` (20 entradas de
+1m-ter entre 260609 e 260813, uma por edição) e de issues fechadas
+(`gh issue list --search "1m-ter"`/`"fora de ordem"`) não encontrou nenhuma
+outra ocorrência do mesmo padrão — a mensagem `runtime_fix_lite`/"fora de
+ordem" aparece só na entrada de 260817. **One-off, sem sinal de recorrência.**
+
+**Resultado observado:** 2 artigos DeepSeek promovidos de RADAR → LANÇAMENTOS
+(URLs oficiais `deepseek.com`), verificados via `categorize()` +
+`verify-accessibility.ts` antes da promoção — as mesmas checagens que
+rodariam na posição documentada. Sem gap de dedup pós-promoção: 1m-quater
+(`check-promoted-dedup.ts`) ainda roda depois, sobre o arquivo onde a
+promoção foi de fato escrita. Resultado final equivalente ao caminho
+documentado.
+
+**Decisão (P2/medium, sem indicação de corrupção de dado, sem recorrência —
+critério da issue #5471 pra fechar via documentação):** não introduzir
+barreira de sincronização nem tornar 1m-ter formalmente idempotente-em-
+qualquer-ponto — o custo de qualquer uma das duas mudanças de código não se
+paga contra um incidente único com resultado equivalente. Em vez disso, o
+playbook (`orchestrator-stage-1-research.md`, nota logo antes de
+1m-quater) passou a documentar explicitamente que essa variação de timing é
+esperada e segura: aplicar a promoção sobre o arquivo mais recente
+disponível, e apontar o `--categorized` de 1m-quater pro mesmo arquivo — sem
+mudança de comportamento além de deixar explícito o que o orchestrator já
+fez corretamente ao vivo. Se o padrão se repetir (2+ ocorrências futuras),
+reconsiderar mover 1m-ter pra antes do 1l (dedup) — opção que eliminaria a
+possibilidade de corrida com 1n/1o/1p1 por construção, ao custo de rodar a
+busca de fonte primária sobre um pool ainda não deduplicado.
