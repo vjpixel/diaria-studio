@@ -272,6 +272,7 @@ async function main(): Promise<void> {
         sessions_excluded: result.sessions_excluded,
         subagent_tokens_in: result.subagent_tokens_in,
         subagent_tokens_out: result.subagent_tokens_out,
+        parse_errors: result.parse_errors,
       },
       new Date().toISOString(),
     );

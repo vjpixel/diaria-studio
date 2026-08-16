@@ -70,6 +70,13 @@ export interface StageRow {
   sessions_excluded?: number;
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
+  /**
+   * Linhas de transcript que pareciam um evento JSON válido mas falharam
+   * `JSON.parse` (#5423) — sinal de truncamento por escrita concorrente. Ver
+   * `parseErrors` em `scripts/lib/session-transcript.ts` e `CaptureResult`
+   * em `scripts/capture-stage-usage.ts`. `0`/ausente é o caso normal.
+   */
+  parse_errors?: number;
 }
 
 export interface StageStatusDoc {
@@ -248,6 +255,7 @@ export interface UpdateOpts {
   sessions_excluded?: number;
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
+  parse_errors?: number; // #5423
 }
 
 function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undefined {
@@ -337,6 +345,7 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       models: opts.models ?? r.models,
       session_filter: opts.session_filter ?? r.session_filter,
       sessions_excluded: opts.sessions_excluded ?? r.sessions_excluded,
+      parse_errors: opts.parse_errors ?? r.parse_errors,
       // `??` NÃO serve aqui: `null` é um valor com significado ("subagente
       // não registrado", #5413) e seria tratado como "não informado",
       // ressuscitando o valor anterior. Presença da chave é o critério.

@@ -354,21 +354,28 @@ export function collectUsageInWindow(
   const entries: UsageEntry[] = [];
   const excluded = new Set<string>();
   let parseErrors = 0;
-  if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
-    for (const file of files) {
-      const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
-      const parsed = parseTranscriptFile(file);
-      // Somado incondicionalmente (não só pros arquivos `keep`) — mesma
-      // convenção de `sessionsScanned`, que também conta o diretório inteiro
-      // independente do filtro de sessão.
-      parseErrors += parsed.parseErrors;
-      for (const entry of parsed.entries) {
-        const ts = new Date(entry.timestamp).getTime();
-        if (!Number.isFinite(ts)) continue;
-        if (ts < startMs || ts > endMs) continue;
-        if (keep) entries.push(entry);
-        else excluded.add(file);
-      }
+  // `parseErrors` (#5423) não é escopado à janela de tempo — uma linha
+  // truncada não tem timestamp legível pra comparar contra
+  // `[startIso, endIso]` (ver doc de `UsageWindowBase.parseErrors` acima).
+  // Por isso a contagem roda incondicionalmente, mesmo quando os
+  // timestamps de janela são inválidos; só a filtragem de `entries` por
+  // `[startMs, endMs]` (que SIM depende de janela válida) fica atrás do
+  // guard `Number.isFinite`.
+  const windowValid = Number.isFinite(startMs) && Number.isFinite(endMs);
+  for (const file of files) {
+    const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
+    const parsed = parseTranscriptFile(file);
+    // Somado incondicionalmente (não só pros arquivos `keep`) — mesma
+    // convenção de `sessionsScanned`, que também conta o diretório inteiro
+    // independente do filtro de sessão.
+    parseErrors += parsed.parseErrors;
+    if (!windowValid) continue;
+    for (const entry of parsed.entries) {
+      const ts = new Date(entry.timestamp).getTime();
+      if (!Number.isFinite(ts)) continue;
+      if (ts < startMs || ts > endMs) continue;
+      if (keep) entries.push(entry);
+      else excluded.add(file);
     }
   }
 
