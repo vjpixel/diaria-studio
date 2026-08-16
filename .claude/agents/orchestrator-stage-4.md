@@ -240,26 +240,17 @@ Nota (#4274, reescopo do gate `/diaria-develop` 260729): o slot A (apoio+ferrame
 
 **4c.2b — Lint social + consistência post_pixel + sentinel humanizador (#2145, #2279):**
 ```bash
-npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
+npx tsx scripts/lint-social-md.ts --stage 4 --json --edition-dir {EDITION_DIR}
 ```
-Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
+(#5416) Este comando substitui as 4 invocações separadas que existiam aqui antes (`post_pixel-matches-d1`, `no-xml-artifacts`, `no-antithesis-reveal`, `no-trailing-editorial-hook`, 1 processo Node cada) por uma única chamada agregadora — mesmas funções, mesmo veredito por check. Output (stdout): JSON `{ stage: 4, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. `passed` já reflete "nenhum check falhou" — todos os 4 `id` deste stage são `gate-blocking` (não há warn-only em §4c.2b). Pra cada `checks[]` com `ok:false`, tratar como ❌ (mesma ação descrita no parágrafo do check correspondente abaixo, indexado pelo `id`). Debug de 1 check isolado (`--check X --md {EDITION_DIR}/03-social.md`) continua funcionando exatamente como antes (modo aditivo, não removido).
 
-```bash
-npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03-social.md
-```
-`no-xml-artifacts` (#4118 finding 2, #4077): **GATE-BLOCKING** quando exit 1 — mesmo backstop já aplicado a `02-reviewed.md` (§4c.2 acima), agora também em `03-social.md`: tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio). `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão pra TODOS os slugs (inclusive `social`) ANTES de escrever em disco — este lint é o backstop independente da causa. Ação: remover manualmente o trecho de tag XML solta do fim de `03-social.md` antes de aprovar o gate.
+`post_pixel-matches-d1` (#1861): compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **GATE-BLOCKING** — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde.
 
-**Antítese-revelação social (#2526) — GATE-BLOCKING desde #4352:**
-```bash
-npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
-```
-Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "reescreva a frase direto, sem negar pra revelar, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0). Promovido de WARN-ONLY no #4352 (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-antithesis-reveal-promotion`).
+`no-xml-artifacts` (#4118 finding 2, #4077): **GATE-BLOCKING** — mesmo backstop já aplicado a `02-reviewed.md` (§4c.2 acima), agora também em `03-social.md`: tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio). `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão pra TODOS os slugs (inclusive `social`) ANTES de escrever em disco — este lint é o backstop independente da causa. Ação: remover manualmente o trecho de tag XML solta do fim de `03-social.md` antes de aprovar o gate.
 
-**Gancho editorial emendado social (#2658) — GATE-BLOCKING desde #4352:**
-```bash
-npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
-```
-Primo de #2526: detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). **Exit 1 = GATE-BLOCKING**, mesmo padrão do check acima — ❌ mostrar no resumo com ação: "mover o gancho pro corpo ou cortar a oração emendada, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0). Promovido de WARN-ONLY no #4352, mesmo racional do check acima. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
+`no-antithesis-reveal` (#2526) — **GATE-BLOCKING desde #4352:** detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). ❌ mostrar no resumo com ação: "reescreva a frase direto, sem negar pra revelar, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde. Promovido de WARN-ONLY no #4352 (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-antithesis-reveal-promotion`).
+
+`no-trailing-editorial-hook` (#2658) — **GATE-BLOCKING desde #4352:** primo de #2526, detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). ❌ mostrar no resumo com ação: "mover o gancho pro corpo ou cortar a oração emendada, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde. Promovido de WARN-ONLY no #4352, mesmo racional do check acima. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
 
 **Guard determinístico do humanizador social (#2279, #2529):**
 ```bash

@@ -161,4 +161,69 @@ describe("validateLinkedinUniqueness (#266)", () => {
     assert.equal(r.ok, false);
     assert.match(r.reason ?? "", /#266/);
   });
+
+  describe("caminho worker_queue (#5472 — url:null não zera mais a checagem)", () => {
+    it("conta posts com url:null + worker_queue_key único como successful", () => {
+      const r = validateLinkedinUniqueness({
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: null, status: "scheduled", worker_queue_key: "wq-key-1" },
+          { platform: "linkedin", destaque: "d2", url: null, status: "scheduled", worker_queue_key: "wq-key-2" },
+          { platform: "linkedin", destaque: "d3", url: null, status: "scheduled", worker_queue_key: "wq-key-3" },
+        ],
+      });
+      assert.equal(r.ok, true);
+      // Antes do fix: linkedin_count/linkedin_unique_urls saíam 0 (falsa
+      // confiança — ok:true sem nenhum post de fato avaliado).
+      assert.equal(r.linkedin_count, 3);
+      assert.equal(r.linkedin_unique_urls, 3);
+    });
+
+    it("detecta worker_queue_key duplicado entre destaques (data loss real)", () => {
+      const r = validateLinkedinUniqueness({
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: null, status: "scheduled", worker_queue_key: "wq-key-dup" },
+          { platform: "linkedin", destaque: "d2", url: null, status: "scheduled", worker_queue_key: "wq-key-dup" },
+          { platform: "linkedin", destaque: "d3", url: null, status: "scheduled", worker_queue_key: "wq-key-3" },
+        ],
+      });
+      assert.equal(r.ok, false);
+      assert.equal(r.linkedin_count, 3);
+      assert.equal(r.linkedin_unique_urls, 2);
+      assert.equal(r.duplicates.length, 1);
+      assert.deepEqual(r.duplicates[0].destaques.sort(), ["d1", "d2"]);
+    });
+
+    it("conta posts com url:null + make_request_id único (route make_now) como successful", () => {
+      const r = validateLinkedinUniqueness({
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: null, status: "draft", make_request_id: "make-req-1" },
+          { platform: "linkedin", destaque: "d2", url: null, status: "draft", make_request_id: "make-req-2" },
+        ],
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.linkedin_count, 2);
+      assert.equal(r.linkedin_unique_urls, 2);
+    });
+
+    it("post failed com worker_queue_key ainda é ignorado (mesma regra do #266)", () => {
+      const r = validateLinkedinUniqueness({
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: null, status: "scheduled", worker_queue_key: "wq-1" },
+          { platform: "linkedin", destaque: "d2", url: null, status: "failed", reason: "worker_timeout" },
+        ],
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.linkedin_count, 1);
+    });
+
+    it("post sem url, worker_queue_key nem make_request_id não conta (nenhum identificador)", () => {
+      const r = validateLinkedinUniqueness({
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: null, status: "scheduled" },
+        ],
+      });
+      assert.equal(r.ok, true);
+      assert.equal(r.linkedin_count, 0);
+    });
+  });
 });

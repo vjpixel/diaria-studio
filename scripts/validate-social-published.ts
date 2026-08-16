@@ -51,24 +51,49 @@ export interface ValidationResult {
 }
 
 /**
+ * Extrai o identificador de unicidade de um post LinkedIn (#5472).
+ *
+ * Desde a migração pra `worker_queue` (commit b5a77861 — remoção da
+ * postagem direta via Chrome), posts LinkedIn têm `url: null` no momento do
+ * agendamento: a URL real só existe depois que a fila processa e publica de
+ * fato. `worker_queue_key` (route worker_queue) e `make_request_id` (route
+ * make_now, com ou sem fallback) são os identificadores únicos emitidos por
+ * `dispatchEntry` em `publish-linkedin.ts` para esse caminho. `url` segue
+ * sendo o identificador quando presente (caminho legado ou publicação já
+ * verificada/promovida a "published").
+ */
+function postIdentifier(p: Post): string | null {
+  if (p.url) return p.url;
+  if (typeof p.worker_queue_key === "string" && p.worker_queue_key) {
+    return p.worker_queue_key;
+  }
+  if (typeof p.make_request_id === "string" && p.make_request_id) {
+    return p.make_request_id;
+  }
+  return null;
+}
+
+/**
  * Valida que cada post LinkedIn com `status` ∈ {"draft", "scheduled"} tem
- * URL única. URLs duplicadas indicam que o save sobrescreveu draft anterior
- * em vez de criar um novo (#266).
+ * identificador único (URL, `worker_queue_key`, ou `make_request_id` — ver
+ * `postIdentifier`). Identificadores duplicados indicam que o save
+ * sobrescreveu draft/agendamento anterior em vez de criar um novo (#266,
+ * reaberto e corrigido pra route worker_queue em #5472).
  */
 export function validateLinkedinUniqueness(data: PublishedJson): ValidationResult {
   const linkedinPosts = (data.posts ?? []).filter(
     (p) => p.platform === "linkedin",
   );
   const successfulPosts = linkedinPosts.filter(
-    (p) => p.status !== "failed" && p.url,
+    (p) => p.status !== "failed" && postIdentifier(p) !== null,
   );
 
   const urlGroups = new Map<string, string[]>();
   for (const p of successfulPosts) {
-    const url = p.url as string;
-    const list = urlGroups.get(url) ?? [];
+    const id = postIdentifier(p) as string;
+    const list = urlGroups.get(id) ?? [];
     list.push(p.destaque ?? "?");
-    urlGroups.set(url, list);
+    urlGroups.set(id, list);
   }
 
   const duplicates = [...urlGroups.entries()]
@@ -83,7 +108,7 @@ export function validateLinkedinUniqueness(data: PublishedJson): ValidationResul
     duplicates,
     reason: ok
       ? undefined
-      : `${duplicates.length} URL(s) duplicada(s) detectada(s) — drafts sobrescreveram um ao outro (#266 data loss). Recriar manualmente no LinkedIn.`,
+      : `${duplicates.length} identificador(es) duplicado(s) detectado(s) — drafts/agendamentos sobrescreveram um ao outro (#266 data loss). Recriar manualmente no LinkedIn.`,
   };
 }
 
