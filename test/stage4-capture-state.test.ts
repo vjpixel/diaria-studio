@@ -100,4 +100,77 @@ describe("readStage4CaptureState / writeStage4CaptureState (#5414)", () => {
     assert.equal(JSON.parse(readFileSync(other, "utf8")).hello, "world");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Fleet review pré-merge #5414 (silent-failure-hunter, CRITICAL) — o catch
+  // genérico original engolia EACCES/EPERM/EISDIR/lock do OneDrive sem log
+  // nenhum, indistinguível de "nunca capturado". Simula um erro de FS real
+  // (não ausência de arquivo, não JSON corrompido) fazendo o path do state
+  // file ser um DIRETÓRIO em vez de um arquivo — `existsSync` retorna true,
+  // mas `readFileSync` lança EISDIR, tanto em Windows quanto POSIX.
+  it("erro de FS real na leitura (EISDIR) -> loga e retorna default, nunca lança (CRITICAL #1)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-capture-state-eisdir-"));
+    mkdirSync(join(dir, "_internal", "stage4-capture-state.json"), { recursive: true });
+
+    let logged = "";
+    const originalError = console.error;
+    console.error = (msg: unknown) => {
+      logged = String(msg);
+    };
+    try {
+      assert.deepEqual(readStage4CaptureState(dir), DEFAULT);
+    } finally {
+      console.error = originalError;
+    }
+    assert.ok(logged.length > 0, "esperava console.error chamado com o erro de FS");
+    assert.match(logged, /EISDIR/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // CRITICAL #2 — o write-side upsert não pode silenciosamente tratar um
+  // erro de FS real (arquivo existe mas ilegível) como "nunca existiu": isso
+  // apagaria `whatsappUrl` já capturado por §4c.1b quando §4c.1c tentasse
+  // gravar `metaDescriptionSuggestion` num write separado. A escrita deve
+  // LANÇAR em vez de sobrescrever com DEFAULT_STATE.
+  //
+  // Mocking direto de `readFileSync`/`writeFileSync` (`node:test`'s
+  // `mock.method`) foi tentado e descartado: sob o loader ESM deste
+  // ambiente (tsx + Node 24), `node:fs` importado via named import não
+  // compartilha identidade mutável com o objeto CJS de
+  // `createRequire(...)("node:fs")` — mockar um não afeta o outro, e mockar
+  // a própria namespace ESM lança "Cannot redefine property". Fault
+  // injection via FS real (arquivo -> diretório) é a alternativa portável
+  // usada aqui.
+  it("erro de FS real na leitura durante upsert de escrita -> lança (origem é o READ, não o WRITE), preserva o que já estava em disco (CRITICAL #2)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-capture-state-write-eisdir-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const statePath = join(internalDir, "stage4-capture-state.json");
+
+    // Substitui o arquivo por um diretório de mesmo nome — `existsSync`
+    // continua true, mas `readFileSync` lança EISDIR. É exatamente o caso
+    // "existe mas não pôde ser lido" que o CRITICAL #2 endereça — distinto
+    // de "nunca escrito" (legitimamente vira DEFAULT_STATE) e de "JSON
+    // corrompido" (legitimamente sobrescrito).
+    mkdirSync(statePath, { recursive: true });
+
+    let thrown: Error | undefined;
+    try {
+      writeStage4CaptureState(dir, { metaDescriptionSuggestion: "nova sugestão" });
+    } catch (err) {
+      thrown = err as Error;
+    }
+    assert.ok(thrown, "esperava writeStage4CaptureState lançar em vez de sobrescrever silenciosamente");
+    // A mensagem do erro nativo do Node inclui a syscall (`, read` vs
+    // `, write`) — confirmando que o throw veio da tentativa de LEITURA
+    // dentro de `tryReadRaw`, nunca chegando perto de `writeFileSync`.
+    assert.match(thrown!.message, /EISDIR/);
+    assert.match(thrown!.message, /, read/);
+    assert.doesNotMatch(thrown!.message, /, write/);
+
+    // O path segue sendo o mesmo diretório-armadilha — nunca foi
+    // substituído por um arquivo com DEFAULT_STATE merged.
+    assert.throws(() => readFileSync(statePath, "utf8"), /EISDIR/);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

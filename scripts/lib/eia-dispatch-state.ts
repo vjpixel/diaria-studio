@@ -46,18 +46,32 @@ function statePath(editionDir: string): string {
   return resolve(editionDir, "_internal", "eia-dispatch-state.json");
 }
 
-/** Lê o estado do dispatch do É IA?. Fail-soft — arquivo ausente/corrompido/
- * shape inesperado -> `{bashId: null, dispatchedAt: null}`. */
+/** Lê o estado do dispatch do É IA?. Fail-soft — arquivo ausente, erro de FS
+ * real (EACCES/EPERM/EISDIR/lock do OneDrive — logado, nunca engolido em
+ * silêncio) ou JSON corrompido/shape inesperado -> `{bashId: null,
+ * dispatchedAt: null}`. */
 export function readEiaDispatchState(editionDir: string): EiaDispatchState {
   const p = statePath(editionDir);
   if (!existsSync(p)) return { ...DEFAULT_STATE };
+  let raw: string;
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as Partial<EiaDispatchState>;
+    raw = readFileSync(p, "utf8");
+  } catch (err) {
+    console.error(
+      `eia-dispatch-state: falha ao ler ${p}: ${(err as Error).message} — tratando como nunca dispatchado`,
+    );
+    return { ...DEFAULT_STATE };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<EiaDispatchState>;
     return {
-      bashId: typeof raw.bashId === "string" ? raw.bashId : null,
-      dispatchedAt: typeof raw.dispatchedAt === "string" ? raw.dispatchedAt : null,
+      bashId: typeof parsed.bashId === "string" ? parsed.bashId : null,
+      dispatchedAt: typeof parsed.dispatchedAt === "string" ? parsed.dispatchedAt : null,
     };
-  } catch {
+  } catch (err) {
+    console.error(
+      `eia-dispatch-state: JSON inválido em ${p}: ${(err as Error).message} — tratando como nunca dispatchado`,
+    );
     return { ...DEFAULT_STATE };
   }
 }

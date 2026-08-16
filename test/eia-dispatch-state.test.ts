@@ -78,4 +78,32 @@ describe("readEiaDispatchState / writeEiaDispatchState (#5414)", () => {
     assert.deepEqual(readEiaDispatchState(dir), { bashId: null, dispatchedAt: "2026-08-16T08:00:00.000Z" });
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Fleet review pré-merge #5414 (silent-failure-hunter, CRITICAL #1) — o
+  // catch genérico original engolia EACCES/EPERM/EISDIR/lock do OneDrive sem
+  // log nenhum, indistinguível de "nunca dispatchado". Simula um erro de FS
+  // real (não ausência de arquivo, não JSON corrompido) fazendo o path do
+  // state file ser um DIRETÓRIO em vez de um arquivo — `existsSync` retorna
+  // true, mas `readFileSync` lança EISDIR, tanto em Windows quanto POSIX.
+  // (CRITICAL #2, upsert perdendo dado em escrita, não se aplica aqui — o
+  // silent-failure-hunter confirmou que `writeEiaDispatchState` sempre
+  // sobrescreve por completo, nunca faz merge sobre uma leitura anterior.)
+  it("erro de FS real na leitura (EISDIR) -> loga e retorna default, nunca lança (CRITICAL #1)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eia-dispatch-state-eisdir-"));
+    mkdirSync(join(dir, "_internal", "eia-dispatch-state.json"), { recursive: true });
+
+    let logged = "";
+    const originalError = console.error;
+    console.error = (msg: unknown) => {
+      logged = String(msg);
+    };
+    try {
+      assert.deepEqual(readEiaDispatchState(dir), DEFAULT);
+    } finally {
+      console.error = originalError;
+    }
+    assert.ok(logged.length > 0, "esperava console.error chamado com o erro de FS");
+    assert.match(logged, /EISDIR/);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

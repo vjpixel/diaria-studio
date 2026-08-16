@@ -124,6 +124,89 @@ describe("readPreflightState / writePreflightState (#5414, pure)", () => {
     assert.equal(JSON.parse(readFileSync(other, "utf8")).hello, "world");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Fleet review pré-merge #5414 (silent-failure-hunter, CRITICAL) — o catch
+  // genérico original engolia EACCES/EPERM/EISDIR/lock do OneDrive sem log
+  // nenhum, indistinguível de "arquivo nunca escrito". Simula um erro de FS
+  // real (não ausência de arquivo, não JSON corrompido) fazendo o path do
+  // state file ser um DIRETÓRIO em vez de um arquivo — `existsSync` retorna
+  // true, mas `readFileSync` lança EISDIR, tanto em Windows quanto POSIX.
+  it("erro de FS real na leitura (EISDIR) -> loga e retorna default, nunca lança (CRITICAL #1)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-state-eisdir-"));
+    mkdirSync(join(dir, "_internal", "preflight-state.json"), { recursive: true });
+
+    let logged = "";
+    const originalError = console.error;
+    console.error = (msg: unknown) => {
+      logged = String(msg);
+    };
+    try {
+      assert.deepEqual(readPreflightState(dir), DEFAULT);
+    } finally {
+      console.error = originalError;
+    }
+    assert.ok(logged.length > 0, "esperava console.error chamado com o erro de FS");
+    assert.match(logged, /EISDIR/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // CRITICAL #2 — o write-side upsert não pode silenciosamente tratar um
+  // erro de FS real (arquivo existe mas ilegível) como "nunca existiu": isso
+  // apagaria campos já persistidos por um write anterior na mesma edição.
+  // Preparamos um estado real em disco (JSON válido, campo capturado), então
+  // forçamos EISDIR só na hora do upsert seguinte — a escrita deve LANÇAR
+  // (não sobrescrever com DEFAULT_STATE) e o conteúdo original — aqui, o
+  // fato de o path continuar sendo um diretório e nunca um arquivo — precisa
+  // sobreviver intacto.
+  //
+  // Mocking direto de `readFileSync`/`writeFileSync` (`node:test`'s
+  // `mock.method`) foi tentado e descartado: sob o loader ESM deste
+  // ambiente (tsx + Node 24), `node:fs` importado via `import { readFileSync
+  // } from "node:fs"` não compartilha identidade mutável com o objeto CJS
+  // obtido via `createRequire(...)("node:fs")` — mockar um não afeta o
+  // outro, e mockar a própria namespace ESM lança "Cannot redefine
+  // property" (propriedades de module namespace object são não-
+  // configuráveis). Fault injection via FS real (arquivo -> diretório) é a
+  // alternativa portável (Windows + POSIX) usada aqui.
+  it("erro de FS real na leitura durante upsert de escrita -> lança (origem é o READ, não o WRITE), preserva o que já estava em disco (CRITICAL #2)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-state-write-eisdir-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const statePath = join(internalDir, "preflight-state.json");
+
+    // Substitui o arquivo por um diretório de mesmo nome — `existsSync`
+    // continua true (arquivo "existe"), mas `readFileSync` lança EISDIR.
+    // É exatamente o caso "existe mas não pôde ser lido" que o CRITICAL #2
+    // endereça — distinto de "nunca escrito" (que legitimamente vira
+    // DEFAULT_STATE) e de "JSON corrompido" (que legitimamente é
+    // sobrescrito).
+    mkdirSync(statePath, { recursive: true });
+
+    let thrown: Error | undefined;
+    try {
+      writePreflightState(dir, { gmailMcp: true });
+    } catch (err) {
+      thrown = err as Error;
+    }
+    assert.ok(thrown, "esperava writePreflightState lançar em vez de sobrescrever silenciosamente");
+    // A mensagem do erro nativo do Node inclui a syscall (`, read` vs
+    // `, write`) — confirmando que o throw veio da tentativa de LEITURA
+    // dentro de `tryReadRaw` (regra: propaga sem capturar), e que o código
+    // nunca chegou perto de `writeFileSync` nesse caminho.
+    assert.match(thrown!.message, /EISDIR/);
+    assert.match(thrown!.message, /, read/);
+    assert.doesNotMatch(thrown!.message, /, write/);
+
+    // O path segue sendo o mesmo diretório-armadilha — nunca foi
+    // substituído por um arquivo com DEFAULT_STATE merged. Se o bug do
+    // CRITICAL #2 tivesse voltado, o upsert teria seguido em frente com
+    // `current = DEFAULT_STATE` e tentado `writeFileSync` sobre o
+    // diretório — o que lançaria um EISDIR DIFERENTE (`, write`), não o
+    // que capturamos acima.
+    assert.throws(() => readFileSync(statePath, "utf8"), /EISDIR/);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("preflight-state.ts CLI (#5414)", () => {

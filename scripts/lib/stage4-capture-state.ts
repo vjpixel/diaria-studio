@@ -54,20 +54,45 @@ function statePath(editionDir: string): string {
   return resolve(editionDir, "_internal", "stage4-capture-state.json");
 }
 
-/** Lê o estado capturado no Stage 4. Fail-soft — arquivo ausente/corrompido/
- * shape inesperado -> os 2 campos `null`. */
+/** `null` = arquivo ausente (legítimo, "nunca escrito"). Propaga qualquer
+ * erro de FS real (EACCES/EPERM/EISDIR/lock do OneDrive) — quem chama decide
+ * se isso é fail-soft (leitura) ou deve abortar (escrita, ver
+ * `writeStage4CaptureState`). */
+function tryReadRaw(p: string): string | null {
+  if (!existsSync(p)) return null;
+  return readFileSync(p, "utf8");
+}
+
+function normalizeState(raw: Partial<Stage4CaptureState>): Stage4CaptureState {
+  return {
+    whatsappUrl: typeof raw.whatsappUrl === "string" ? raw.whatsappUrl : null,
+    metaDescriptionSuggestion:
+      typeof raw.metaDescriptionSuggestion === "string" ? raw.metaDescriptionSuggestion : null,
+    capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
+  };
+}
+
+/** Lê o estado capturado no Stage 4. Fail-soft — arquivo ausente, erro de FS
+ * real (EACCES/EPERM/EISDIR/lock do OneDrive — logado, nunca engolido em
+ * silêncio) ou JSON corrompido/shape inesperado -> os 2 campos `null`. */
 export function readStage4CaptureState(editionDir: string): Stage4CaptureState {
   const p = statePath(editionDir);
-  if (!existsSync(p)) return { ...DEFAULT_STATE };
+  let raw: string | null;
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as Partial<Stage4CaptureState>;
-    return {
-      whatsappUrl: typeof raw.whatsappUrl === "string" ? raw.whatsappUrl : null,
-      metaDescriptionSuggestion:
-        typeof raw.metaDescriptionSuggestion === "string" ? raw.metaDescriptionSuggestion : null,
-      capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
-    };
-  } catch {
+    raw = tryReadRaw(p);
+  } catch (err) {
+    console.error(
+      `stage4-capture-state: falha ao ler ${p}: ${(err as Error).message} — tratando como nunca capturado`,
+    );
+    return { ...DEFAULT_STATE };
+  }
+  if (raw === null) return { ...DEFAULT_STATE };
+  try {
+    return normalizeState(JSON.parse(raw) as Partial<Stage4CaptureState>);
+  } catch (err) {
+    console.error(
+      `stage4-capture-state: JSON inválido em ${p}: ${(err as Error).message} — tratando como nunca capturado`,
+    );
     return { ...DEFAULT_STATE };
   }
 }
@@ -75,7 +100,14 @@ export function readStage4CaptureState(editionDir: string): Stage4CaptureState {
 /** Grava um patch parcial por cima do estado já existente (upsert) — §4c.1b
  * e §4c.1c computam os 2 valores em passos separados, cada write só toca o
  * próprio campo. Sempre atualiza `capturedAt`. Propaga erro de escrita
- * real — só a LEITURA é fail-soft. */
+ * real — e propaga também erro de LEITURA real do arquivo existente
+ * (EACCES/EPERM/lock do OneDrive): sobrescrever um arquivo que existe mas
+ * não pôde ser lido apagaria silenciosamente um valor já capturado por um
+ * write anterior na mesma edição (ex: `whatsappUrl` de §4c.1b, se §4c.1c
+ * falhar ao reler antes de gravar `metaDescriptionSuggestion`), então esse
+ * caso aborta em vez de fazer merge sobre `DEFAULT_STATE`. Só JSON
+ * corrompido é tolerado no caminho de escrita (aceitável sobrescrever —
+ * mesmo comportamento já documentado). */
 export function writeStage4CaptureState(
   editionDir: string,
   patch: Partial<Omit<Stage4CaptureState, "capturedAt">>,
@@ -83,7 +115,17 @@ export function writeStage4CaptureState(
 ): Stage4CaptureState {
   const now = opts.now ?? (() => new Date());
   const p = statePath(editionDir);
-  const current = readStage4CaptureState(editionDir);
+  const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
+  let current: Stage4CaptureState;
+  if (raw === null) {
+    current = { ...DEFAULT_STATE };
+  } else {
+    try {
+      current = normalizeState(JSON.parse(raw) as Partial<Stage4CaptureState>);
+    } catch {
+      current = { ...DEFAULT_STATE };
+    }
+  }
   const next: Stage4CaptureState = { ...current, ...patch, capturedAt: now().toISOString() };
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(next, null, 2) + "\n", "utf8");

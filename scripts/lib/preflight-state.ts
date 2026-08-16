@@ -73,23 +73,49 @@ function statePath(editionDir: string): string {
   return resolve(editionDir, "_internal", "preflight-state.json");
 }
 
-/** Lê o estado do preflight. Fail-soft — arquivo ausente/corrompido/shape
- * inesperado -> todos os campos `null` (equivalente a "nunca verificado"). */
+/** `null` = arquivo ausente (legítimo, "nunca escrito"). Propaga qualquer
+ * erro de FS real (EACCES/EPERM/EISDIR/lock do OneDrive) — quem chama decide
+ * se isso é fail-soft (leitura) ou deve abortar (escrita, ver
+ * `writePreflightState`). */
+function tryReadRaw(p: string): string | null {
+  if (!existsSync(p)) return null;
+  return readFileSync(p, "utf8");
+}
+
+function normalizeState(raw: Partial<PreflightState>): PreflightState {
+  const boolOrNull = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
+  return {
+    chromeMcp: boolOrNull(raw.chromeMcp),
+    gmailMcp: boolOrNull(raw.gmailMcp),
+    beehiivMcp: boolOrNull(raw.beehiivMcp),
+    clariceRest: boolOrNull(raw.clariceRest),
+    cloudflareTokenOk: boolOrNull(raw.cloudflareTokenOk),
+    capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
+  };
+}
+
+/** Lê o estado do preflight. Fail-soft — arquivo ausente, erro de FS real
+ * (EACCES/EPERM/EISDIR/lock do OneDrive — logado, nunca engolido em
+ * silêncio) ou JSON corrompido/shape inesperado -> todos os campos `null`
+ * (equivalente a "nunca verificado"). */
 export function readPreflightState(editionDir: string): PreflightState {
   const p = statePath(editionDir);
-  if (!existsSync(p)) return { ...DEFAULT_STATE };
+  let raw: string | null;
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as Partial<PreflightState>;
-    const boolOrNull = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
-    return {
-      chromeMcp: boolOrNull(raw.chromeMcp),
-      gmailMcp: boolOrNull(raw.gmailMcp),
-      beehiivMcp: boolOrNull(raw.beehiivMcp),
-      clariceRest: boolOrNull(raw.clariceRest),
-      cloudflareTokenOk: boolOrNull(raw.cloudflareTokenOk),
-      capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
-    };
-  } catch {
+    raw = tryReadRaw(p);
+  } catch (err) {
+    console.error(
+      `preflight-state: falha ao ler ${p}: ${(err as Error).message} — tratando como nunca verificado`,
+    );
+    return { ...DEFAULT_STATE };
+  }
+  if (raw === null) return { ...DEFAULT_STATE };
+  try {
+    return normalizeState(JSON.parse(raw) as Partial<PreflightState>);
+  } catch (err) {
+    console.error(
+      `preflight-state: JSON inválido em ${p}: ${(err as Error).message} — tratando como nunca verificado`,
+    );
     return { ...DEFAULT_STATE };
   }
 }
@@ -98,7 +124,12 @@ export function readPreflightState(editionDir: string): PreflightState {
  * Stage 0 apura os 5 sinais em passos separados (§0c), cada write só toca o
  * próprio campo sem apagar os que já foram gravados antes na mesma execução.
  * Sempre atualiza `capturedAt`. Propaga erro de escrita real (disco cheio,
- * permissão) — só a LEITURA é fail-soft. */
+ * permissão) — e propaga também erro de LEITURA real do arquivo existente
+ * (EACCES/EPERM/lock do OneDrive): sobrescrever um arquivo que existe mas
+ * não pôde ser lido apagaria silenciosamente campos já capturados por writes
+ * anteriores na mesma edição, então esse caso aborta em vez de fazer merge
+ * sobre `DEFAULT_STATE`. Só JSON corrompido é tolerado no caminho de
+ * escrita (aceitável sobrescrever — mesmo comportamento já documentado). */
 export function writePreflightState(
   editionDir: string,
   patch: Partial<Omit<PreflightState, "capturedAt">>,
@@ -106,7 +137,17 @@ export function writePreflightState(
 ): PreflightState {
   const now = opts.now ?? (() => new Date());
   const p = statePath(editionDir);
-  const current = readPreflightState(editionDir);
+  const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
+  let current: PreflightState;
+  if (raw === null) {
+    current = { ...DEFAULT_STATE };
+  } else {
+    try {
+      current = normalizeState(JSON.parse(raw) as Partial<PreflightState>);
+    } catch {
+      current = { ...DEFAULT_STATE };
+    }
+  }
   const next: PreflightState = { ...current, ...patch, capturedAt: now().toISOString() };
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(next, null, 2) + "\n", "utf8");
