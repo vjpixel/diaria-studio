@@ -372,3 +372,136 @@ describe("runStage2LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 });
+
+// -----------------------------------------------------------------------
+// #5455 fix — regressão do achado crítico do fleet review sobre #5416:
+// JSON malformado em 01-approved.json/01-approved-capped.json não pode
+// derrubar o agregador inteiro (processo morrendo, stdout vazio) nem
+// engolir o veredito dos OUTROS checks independentes.
+// -----------------------------------------------------------------------
+
+describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malformado (#5455)", () => {
+  it("Stage 4: JSON.parse inválido não derruba o processo — stdout continua JSON válido, url-bucket falha isolado, outros checks seguem normais", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-stage4-json-malformed-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), buildMd());
+    // JSON deliberadamente inválido (não é nem objeto, nem array parseável).
+    writeFileSync(join(dir, "_internal", "01-approved.json"), "{ isto não é json válido ][");
+
+    // (a) processo não crasha sem stdout — sai com JSON no stdout, nunca vazio.
+    const r = runCli(["--stage", "4", "--json", "--edition-dir", dir]);
+    assert.ok(r.stdout.length > 0, `stdout não deveria ficar vazio; stderr: ${r.stderr}`);
+    assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+
+    // (b) stdout é JSON válido.
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.stage, 4);
+    assert.equal(out.passed, false);
+
+    // (c) url-bucket (o check que depende de 01-approved.json) aparece
+    // isolado como falha, com o erro serializado — não propaga exceção.
+    const urlBucket = out.checks.find((c: { id: string }) => c.id === "url-bucket");
+    assert.ok(urlBucket, "url-bucket deveria estar presente mesmo com JSON malformado");
+    assert.equal(urlBucket.ok, false);
+    assert.equal(urlBucket.severity, "gate-blocking");
+    assert.match(urlBucket.result.error, /exceção não tratada em url-bucket/);
+
+    // (d) checks independentes (não leem 01-approved.json) continuam
+    // reportando o veredito NORMAL — não são engolidos pelo crash.
+    const secondary = out.checks.find(
+      (c: { id: string }) => c.id === "secondary-items-have-summary",
+    );
+    assert.ok(secondary, "secondary-items-have-summary deveria continuar presente");
+    assert.equal(secondary.severity, "gate-blocking");
+    assert.deepEqual(secondary.result, checkSecondaryItemsHaveSummary(buildMd()));
+
+    const trailingPeriod = out.checks.find(
+      (c: { id: string }) => c.id === "title-trailing-period",
+    );
+    assert.ok(trailingPeriod, "title-trailing-period deveria continuar presente");
+    assert.deepEqual(trailingPeriod.result, checkTitleTrailingPeriod(buildMd()));
+
+    // Todos os 15 checks continuam presentes — nenhum foi engolido.
+    assert.equal(out.checks.length, 15);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("Stage 4: função exportada também isola a exceção (sem passar pelo CLI)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-stage4-malformed-direct-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), buildMd());
+    writeFileSync(join(dir, "_internal", "01-approved.json"), "{{{not json");
+
+    assert.doesNotThrow(() => runStage4LintReport(dir, PROJECT_ROOT));
+    const report = runStage4LintReport(dir, PROJECT_ROOT);
+    assert.equal(report.passed, false);
+    const urlBucket = report.checks.find((c) => c.id === "url-bucket");
+    assert.equal(urlBucket?.ok, false);
+    assert.match((urlBucket?.result as { error: string }).error, /exceção não tratada/);
+    // Outro check independente segue presente com veredito normal.
+    const xmlArtifacts = report.checks.find((c) => c.id === "no-xml-artifacts");
+    assert.deepEqual(xmlArtifacts?.result, checkNoXmlArtifacts(buildMd()));
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("Stage 2: JSON.parse inválido não derruba o processo — url-bucket E section-counts falham isolados, checks independentes (destaque-*) seguem normais", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-stage2-json-malformed-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "02-draft.md"), buildMd());
+    writeFileSync(join(dir, "_internal", "01-approved-capped.json"), "][ não é json {{{");
+
+    const r = runCli(["--stage", "2", "--json", "--edition-dir", dir]);
+    assert.ok(r.stdout.length > 0, `stdout não deveria ficar vazio; stderr: ${r.stderr}`);
+    assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.stage, 2);
+    assert.equal(out.passed, false);
+
+    const urlBucket = out.checks.find((c: { id: string }) => c.id === "url-bucket");
+    assert.ok(urlBucket);
+    assert.equal(urlBucket.ok, false);
+    assert.equal(urlBucket.severity, "gate-blocking");
+    assert.match(urlBucket.result.error, /exceção não tratada ao ler\/parsear/);
+
+    const sectionCounts = out.checks.find((c: { id: string }) => c.id === "section-counts");
+    assert.ok(sectionCounts);
+    assert.equal(sectionCounts.ok, false);
+    assert.match(sectionCounts.result.error, /exceção não tratada ao ler\/parsear/);
+
+    // Checks independentes (não leem 01-approved-capped.json) continuam
+    // presentes com veredito normal — engolir o crash perderia justamente
+    // estes.
+    const minChars = out.checks.find((c: { id: string }) => c.id === "destaque-min-chars");
+    assert.ok(minChars);
+    assert.deepEqual(minChars.result, checkDestaqueMinChars(buildMd()));
+
+    const aprofunde = out.checks.find((c: { id: string }) => c.id === "aprofunde-format");
+    assert.ok(aprofunde);
+    assert.deepEqual(aprofunde.result, checkAprofundeFormat(buildMd()));
+
+    // Todos os 6 checks continuam presentes.
+    assert.equal(out.checks.length, 6);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("Stage 2: função exportada também isola a exceção (sem passar pelo CLI)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-stage2-malformed-direct-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "02-draft.md"), buildMd());
+    writeFileSync(join(dir, "_internal", "01-approved-capped.json"), "not json at all");
+
+    assert.doesNotThrow(() => runStage2LintReport(dir, PROJECT_ROOT));
+    const report = runStage2LintReport(dir, PROJECT_ROOT);
+    assert.equal(report.passed, false);
+    const urlBucket = report.checks.find((c) => c.id === "url-bucket");
+    assert.equal(urlBucket?.ok, false);
+    const whyLength = report.checks.find((c) => c.id === "why-matters-length");
+    assert.deepEqual(whyLength?.result, checkWhyMattersLength(buildMd()));
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

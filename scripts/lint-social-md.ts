@@ -167,6 +167,39 @@ export interface SocialStageLintReport {
   checks: SocialStageCheckResult[];
 }
 
+type SocialPushCheckFn = (
+  id: string,
+  sourceIssue: string,
+  severity: SocialStageCheckSeverity,
+  ok: boolean,
+  result: unknown,
+) => void;
+
+/**
+ * Mesmo padrão defensivo de `runCheckSafely` em `lint-newsletter-md.ts`
+ * (#5455 fix, review de #5416) — aplicado aqui por consistência mesmo com
+ * superfície de exceção mais estreita (nenhum check abaixo faz JSON.parse
+ * ou I/O externo além da leitura do próprio `md`, já guardada por
+ * `existsSync`). Isola cada check para que uma exceção inesperada em um
+ * deles não derrube o agregador inteiro nem engula o veredito dos demais.
+ */
+function runSocialCheckSafely<T extends { ok: boolean }>(
+  push: SocialPushCheckFn,
+  id: string,
+  sourceIssue: string,
+  severity: SocialStageCheckSeverity,
+  fn: () => T,
+): void {
+  try {
+    const result = fn();
+    push(id, sourceIssue, severity, result.ok, result);
+  } catch (err) {
+    push(id, sourceIssue, "gate-blocking", false, {
+      error: `exceção não tratada em ${id}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 /**
  * Roda os checks de `.claude/agents/orchestrator-stage-4.md` §4c.2b sobre
  * `{editionDir}/03-social.md` numa única chamada.
@@ -192,32 +225,51 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
   }
   const md = readFileSync(mdPath, "utf8");
 
-  const postPixel = lintPostPixelMatchesD1(md);
-  push("post_pixel-matches-d1", "#1861", "gate-blocking", postPixel.ok, postPixel);
+  runSocialCheckSafely(push, "post_pixel-matches-d1", "#1861", "gate-blocking", () =>
+    lintPostPixelMatchesD1(md),
+  );
 
-  const xmlArtifacts = checkNoXmlArtifacts(md);
-  push("no-xml-artifacts", "#4077", "gate-blocking", xmlArtifacts.ok, xmlArtifacts);
+  runSocialCheckSafely(push, "no-xml-artifacts", "#4077", "gate-blocking", () =>
+    checkNoXmlArtifacts(md),
+  );
 
   // #2526/#4352: `lintAntithesisReveal`/`lintTrailingEditorialHook` sempre
   // retornam `ok: true` (são relatórios, não veredito) — o bloqueio é
   // decidido pelo CLI via `matches.length > 0`, mesma lógica replicada aqui.
-  const antithesis = lintAntithesisReveal(md);
-  push(
-    "no-antithesis-reveal",
-    "#2526",
-    "gate-blocking",
-    antithesis.matches.length === 0,
-    antithesis,
-  );
+  // Não usa `runSocialCheckSafely` (o `ok` do push diverge do `.ok` interno
+  // do `result` de propósito — ver comentário acima; o helper genérico
+  // assume que os dois coincidem) — try/catch explícito preserva o `result`
+  // exatamente como a função pura retorna (contrato coberto por teste,
+  // `test/lint-social-md-stage-json.test.ts`).
+  try {
+    const antithesis = lintAntithesisReveal(md);
+    push(
+      "no-antithesis-reveal",
+      "#2526",
+      "gate-blocking",
+      antithesis.matches.length === 0,
+      antithesis,
+    );
+  } catch (err) {
+    push("no-antithesis-reveal", "#2526", "gate-blocking", false, {
+      error: `exceção não tratada em no-antithesis-reveal: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
 
-  const editorialHook = lintTrailingEditorialHook(md);
-  push(
-    "no-trailing-editorial-hook",
-    "#2658",
-    "gate-blocking",
-    editorialHook.matches.length === 0,
-    editorialHook,
-  );
+  try {
+    const editorialHook = lintTrailingEditorialHook(md);
+    push(
+      "no-trailing-editorial-hook",
+      "#2658",
+      "gate-blocking",
+      editorialHook.matches.length === 0,
+      editorialHook,
+    );
+  } catch (err) {
+    push("no-trailing-editorial-hook", "#2658", "gate-blocking", false, {
+      error: `exceção não tratada em no-trailing-editorial-hook: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
 
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
   return { stage: 4, passed, checks };
