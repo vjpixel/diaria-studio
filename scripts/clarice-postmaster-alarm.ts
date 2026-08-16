@@ -49,6 +49,15 @@ import {
   buildPostmasterStaleAlarmEmail,
   CONSECUTIVE_STALE_THRESHOLD,
   type PostmasterStaleAlarmState,
+  // #5446 item 2 — ausência prolongada de campaignSpam, streak INDEPENDENTE
+  // do de staleness geral acima (ver docstring do módulo).
+  emptyCampaignSpamMissingAlarmState,
+  advanceCampaignSpamMissingState,
+  shouldAlarmCampaignSpamMissing,
+  markCampaignSpamMissingAlarmed,
+  buildCampaignSpamMissingAlarmEmail,
+  CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
+  type CampaignSpamMissingAlarmState,
 } from "./lib/clarice-postmaster-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -60,6 +69,9 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "postmaster-alarm-state.json");
+// #5446 item 2 — arquivo SEPARADO de STATE_PATH: streak independente (ver
+// docstring do módulo lib), idempotência própria.
+const CAMPAIGN_SPAM_MISSING_STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "postmaster-campaign-spam-missing-state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "clarice-subscribers", "postmaster-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[clarice-postmaster-alarm]";
@@ -99,6 +111,38 @@ function toAlarmFinding(state: PostmasterStaleAlarmState, entryDate: string | nu
   };
 }
 
+/** #5446 item 2 — converte o streak de AUSÊNCIA de campaignSpam num
+ * `AlarmFinding`. `check`/`fingerprint` FIXOS e DISTINTOS de `toAlarmFinding`
+ * acima — sinal independente, reconciliado como issue própria (mesmo padrão
+ * multi-finding de `geo-citation-staleness-alarm.ts`, que reconcilia
+ * staleness e provider-ausente como 2 achados separados na mesma execução). */
+function toCampaignSpamMissingFinding(state: CampaignSpamMissingAlarmState): AlarmFinding {
+  return {
+    check: "clarice-postmaster-campaign-spam",
+    fingerprint: "campaign-spam-missing",
+    title: `[diar.ia.br] sinal de spam POR CAMPANHA do Postmaster ausente há ${state.consecutiveMissing} dias`,
+    body: [
+      "Achado automático do alarme `Diaria-Postmaster-Spam-Alarm`",
+      "(`scripts/clarice-postmaster-alarm.ts`, checagem de ausência prolongada #5446 item 2).",
+      "",
+      `Checagens diárias consecutivas sem worstCampaignSpamRatePct: ${state.consecutiveMissing} ` +
+        `(threshold: ${CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS}).`,
+      "",
+      "O breaker está rodando só na média de domínio — sem nenhum sinal por",
+      "campanha. Verifique `npx tsx scripts/postmaster-campaign-spam-report.ts",
+      "--window-days 30` e a docstring de `CAMPAIGN_DISCOVERY_WINDOW_DAYS`",
+      "(scripts/postmaster-spam-sync.ts, #5449) pro histórico da causa raiz",
+      "conhecida (janela de descoberta curta demais).",
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5339).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
+}
+
 export function loadState(statePath: string = STATE_PATH): PostmasterStaleAlarmState {
   if (!existsSync(statePath)) return emptyPostmasterStaleAlarmState();
   try {
@@ -117,6 +161,31 @@ export function loadState(statePath: string = STATE_PATH): PostmasterStaleAlarmS
 }
 
 export function saveState(state: PostmasterStaleAlarmState, statePath: string = STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// #5446 item 2 — load/save do streak de ausência de campaignSpam, mesmo
+// fail-soft/formato de loadState/saveState acima (arquivo separado).
+export function loadCampaignSpamMissingState(
+  statePath: string = CAMPAIGN_SPAM_MISSING_STATE_PATH,
+): CampaignSpamMissingAlarmState {
+  if (!existsSync(statePath)) return emptyCampaignSpamMissingAlarmState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<CampaignSpamMissingAlarmState>;
+    const consecutiveMissing = typeof raw.consecutiveMissing === "number" ? raw.consecutiveMissing : 0;
+    const lastAlarmedAt = typeof raw.lastAlarmedAt === "string" || raw.lastAlarmedAt === null ? raw.lastAlarmedAt ?? null : null;
+    const lastCheckedAt = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt ?? null : null;
+    return { consecutiveMissing, lastAlarmedAt, lastCheckedAt };
+  } catch {
+    return emptyCampaignSpamMissingAlarmState();
+  }
+}
+
+export function saveCampaignSpamMissingState(
+  state: CampaignSpamMissingAlarmState,
+  statePath: string = CAMPAIGN_SPAM_MISSING_STATE_PATH,
+): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
@@ -161,14 +230,32 @@ async function main(): Promise<void> {
       `(último check: ${oldState.lastCheckedAt ?? "nunca"}).`,
   );
 
-  // Reconcilia issue pro achado (streak acima do threshold) ANTES de montar
-  // o e-mail, mesmo padrão dos alarmes já wired. Roda toda execução
-  // não-dry-run, independente do gate `shouldAlarm` (que é sobre o E-MAIL,
-  // já idempotente por streak via `lastAlarmedAt`).
-  const alarmFindings: AlarmFinding[] =
-    newState.consecutiveStale >= CONSECUTIVE_STALE_THRESHOLD ? [toAlarmFinding(newState, entry?.date ?? null)] : [];
+  // #5446 item 2 — streak de ausência de campaignSpam, INDEPENDENTE do
+  // streak de staleness geral acima (ver docstring de
+  // lib/clarice-postmaster-alarm.ts). Avançado na MESMA execução, sobre a
+  // MESMA `entry` já buscada — sem 2º fetch ao dashboard.
+  const oldCampaignSpamMissingState = loadCampaignSpamMissingState();
+  let newCampaignSpamMissingState = advanceCampaignSpamMissingState(oldCampaignSpamMissingState, entry, now);
+  console.log(
+    `${LOG_PREFIX} campaignSpam ausente: streak=${newCampaignSpamMissingState.consecutiveMissing} ` +
+      `(threshold: ${CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS}).`,
+  );
+
+  // Reconcilia issue por ACHADO (streak acima do threshold) ANTES de montar
+  // os e-mails, mesmo padrão dos alarmes já wired (multi-finding: mesmo
+  // molde de geo-citation-staleness-alarm.ts, que reconcilia 2 achados
+  // independentes na mesma execução). Roda toda execução não-dry-run,
+  // independente do gate `shouldAlarm*` (que é sobre o E-MAIL, já idempotente
+  // por streak via `lastAlarmedAt`).
+  const alarmFindings: AlarmFinding[] = [
+    ...(newState.consecutiveStale >= CONSECUTIVE_STALE_THRESHOLD ? [toAlarmFinding(newState, entry?.date ?? null)] : []),
+    ...(newCampaignSpamMissingState.consecutiveMissing >= CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS
+      ? [toCampaignSpamMissingFinding(newCampaignSpamMissingState)]
+      : []),
+  ];
   const alarmState = loadAlarmIssuesState();
-  let issueRef: { issueNumber: number | null; url: string | null; action: string; error?: string } | undefined;
+  type IssueRef = { issueNumber: number | null; url: string | null; action: string; error?: string };
+  let issueRefs: Map<string, IssueRef> | undefined;
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
@@ -182,19 +269,24 @@ async function main(): Promise<void> {
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
     });
     saveAlarmIssuesState(nextAlarmIssuesState);
-    const outcome = findingOutcomes[0];
-    if (outcome) {
-      issueRef = { issueNumber: outcome.issueNumber, url: outcome.url, action: outcome.action, error: outcome.error };
-      if (outcome.action === "failed") {
-        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [o.check, { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error }]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
       } else {
-        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
       }
     }
   }
 
   if (shouldAlarm(newState)) {
-    const { subject, body } = buildPostmasterStaleAlarmEmail(newState, entry ? { date: entry.date } : null, issueRef);
+    const { subject, body } = buildPostmasterStaleAlarmEmail(
+      newState,
+      entry ? { date: entry.date } : null,
+      issueRefs?.get("clarice-postmaster"),
+    );
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
@@ -204,7 +296,28 @@ async function main(): Promise<void> {
       console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to} (streak=${newState.consecutiveStale}).`);
     }
   } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário.`);
+    console.log(`${LOG_PREFIX} nenhum e-mail (staleness geral) necessário.`);
+  }
+
+  if (shouldAlarmCampaignSpamMissing(newCampaignSpamMissingState)) {
+    const { subject, body } = buildCampaignSpamMissingAlarmEmail(
+      newCampaignSpamMissingState,
+      issueRefs?.get("clarice-postmaster-campaign-spam"),
+    );
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+    if (isDryRun) {
+      console.log(
+        `${LOG_PREFIX} --dry-run: enviaria e-mail (campaignSpam ausente) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
+      );
+    } else {
+      await sendGmailMessage(to, subject, body);
+      newCampaignSpamMissingState = markCampaignSpamMissingAlarmed(newCampaignSpamMissingState, now);
+      console.log(
+        `${LOG_PREFIX} e-mail de alarme (campaignSpam ausente) enviado pra ${to} (streak=${newCampaignSpamMissingState.consecutiveMissing}).`,
+      );
+    }
+  } else {
+    console.log(`${LOG_PREFIX} nenhum e-mail (campaignSpam ausente) necessário.`);
   }
 
   if (isDryRun) {
@@ -212,6 +325,7 @@ async function main(): Promise<void> {
     return;
   }
   saveState(newState);
+  saveCampaignSpamMissingState(newCampaignSpamMissingState);
 }
 
 if (isMainModule(import.meta.url)) {

@@ -1025,6 +1025,33 @@ test("resolveSpamSignal — sem worstCampaignSpamRatePct (schema evolution) → 
   assert.equal(signal.worstCampaignDaysWithData, undefined);
 });
 
+// #5446 item 3: `campaignSignalAvailable` — diz se a entry TINHA um pico por
+// campanha válido, independente de ele ter GOVERNADO o `Math.max` (esse é o
+// `usesCampaignPeak`/`worstCampaignFeedbackLoopId` de cima, testado acima).
+test("resolveSpamSignal — campaignSignalAvailable=true quando worstCampaignSpamRatePct presente, MESMO quando a média de domínio governa (#5446)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.5, worstCampaignSpamRatePct: 0.08 }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.worstCampaignFeedbackLoopId, undefined, "domínio governou, não o pico");
+  assert.equal(signal.campaignSignalAvailable, true, "mas o sinal por-campanha ESTAVA disponível");
+});
+
+test("resolveSpamSignal — campaignSignalAvailable=false quando worstCampaignSpamRatePct ausente (#5446, o caso que motivou a issue)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05 }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.campaignSignalAvailable, false);
+});
+
+test("resolveSpamSignal — campaignSignalAvailable=false quando worstCampaignSpamRatePct não-finito (payload corrompido, #5446)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, worstCampaignSpamRatePct: NaN }), NOW);
+  assert.equal(signal.campaignSignalAvailable, false);
+});
+
+test("resolveSpamSignal — source=indeterminate → campaignSignalAvailable fica undefined (pergunta não se aplica, #5446)", () => {
+  const signal = resolveSpamSignal(null, NOW);
+  assert.equal(signal.source, "indeterminate");
+  assert.equal(signal.campaignSignalAvailable, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // describeSpamSignalOrigin (#5059) — helper compartilhado extraído de
 // `describeSpamSignalLine` (scripts/clarice-schedule-ramp.ts), que antes
@@ -1119,6 +1146,65 @@ test("renderWeeklyPlanTabPanel — média de domínio governa → linha 'Spam (P
   assert.doesNotMatch(spamPostmasterRow!, /pico de campanha/, "sem pico por campanha governando, não deve inventar cobertura");
 });
 
+// #5446 item 3: a célula "Spam (Postmaster)" precisa distinguir "sem sinal
+// por-campanha disponível — breaker no fallback de média de domínio" (aviso
+// explícito) de "sinal disponível, só que o domínio foi pior" (nenhum aviso —
+// não é fallback, é o Math.max escolhendo o outro lado por mérito).
+test("renderWeeklyPlanTabPanel — worstCampaignSpamRatePct AUSENTE → aviso explícito de fallback de média de domínio (#5446)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 0.02 }));
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.match(spamPostmasterRow!, /sem sinal por-campanha — fallback de média de domínio/);
+});
+
+test("renderWeeklyPlanTabPanel — worstCampaignSpamRatePct PRESENTE mas domínio governa (Math.max escolheu o domínio) → SEM aviso de fallback (#5446)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(
+    camps,
+    NOW,
+    [],
+    mkPostmasterEntry({ spamRatePct: 0.5, worstCampaignSpamRatePct: 0.08 }),
+  );
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.doesNotMatch(
+    spamPostmasterRow!,
+    /fallback de média de domínio/,
+    "sinal por-campanha ESTAVA disponível — não é fallback, mérito do Math.max",
+  );
+});
+
+test("renderWeeklyPlanTabPanel — pico por campanha governa → SEM aviso de fallback (#5446, sinal claramente disponível e usado)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(
+    camps,
+    NOW,
+    [],
+    mkPostmasterEntry({
+      spamRatePct: 0.02,
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 1,
+    }),
+  );
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.doesNotMatch(spamPostmasterRow!, /fallback de média de domínio/);
+});
+
 test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {
   const camps = [
     campaignSentHoursAgo(60, {
@@ -1178,9 +1264,20 @@ test("renderWeeklyPlanTabPanel — célula 'sem leitura' carrega title= com a ca
   assert.ok(rowLowCoverage);
   assert.match(rowLowCoverage!, /title="Cobertura da janela/);
 
-  // com leitura CONFIÁVEL (source==="postmaster"), sem title= nenhum — nunca
-  // um tooltip de "causa de indeterminate" numa leitura válida.
-  const htmlOk = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 0.05 }));
+  // com leitura CONFIÁVEL (source==="postmaster") E sinal por-campanha
+  // disponível, sem title= nenhum — nunca um tooltip de "causa de
+  // indeterminate" numa leitura válida. #5446: precisa incluir
+  // worstCampaignSpamRatePct aqui — sem ele, a linha carrega um title=
+  // LEGÍTIMO E DIFERENTE (aviso de fallback de média de domínio, ver testes
+  // dedicados de #5446 logo abaixo do bloco `resolveSpamSignal`); este teste
+  // é especificamente sobre o tooltip de "causa de indeterminate" antigo, não
+  // sobre title= em geral.
+  const htmlOk = renderWeeklyPlanTabPanel(
+    camps,
+    NOW,
+    [],
+    mkPostmasterEntry({ spamRatePct: 0.05, worstCampaignSpamRatePct: 0.02 }),
+  );
   const rowOk = htmlOk.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
   assert.ok(rowOk);
   assert.doesNotMatch(rowOk!, /title=/);

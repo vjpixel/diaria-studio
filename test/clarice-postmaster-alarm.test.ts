@@ -24,8 +24,17 @@ import {
   POSTMASTER_DATA_STALE_MS,
   type PostmasterStaleAlarmState,
   type PostmasterEntryForStaleCheck,
+  // #5446 item 2
+  emptyCampaignSpamMissingAlarmState,
+  hasAttributableCampaignSpam,
+  advanceCampaignSpamMissingState,
+  shouldAlarmCampaignSpamMissing,
+  markCampaignSpamMissingAlarmed,
+  buildCampaignSpamMissingAlarmEmail,
+  CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
+  type CampaignSpamMissingAlarmState,
 } from "../scripts/lib/clarice-postmaster-alarm.ts";
-import { loadState, saveState } from "../scripts/clarice-postmaster-alarm.ts";
+import { loadState, saveState, loadCampaignSpamMissingState, saveCampaignSpamMissingState } from "../scripts/clarice-postmaster-alarm.ts";
 import { POSTMASTER_STALE_MS } from "../workers/brevo-dashboard/src/thresholds.ts";
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
@@ -266,5 +275,150 @@ describe("loadState / saveState (scripts/clarice-postmaster-alarm.ts, I/O)", () 
     const loaded = loadState(path);
     assert.equal(loaded.lastStaleReason, null);
     assert.equal(loaded.consecutiveStale, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5446 item 2 — ausência PROLONGADA de campaignSpam no KV. Streak
+// INDEPENDENTE do de staleness geral acima: a entry pode estar
+// perfeitamente fresca (todos os guards de `resolveSpamSignal` OK) e ainda
+// assim nunca ter um `worstCampaignSpamRatePct` — cenário real do #5449
+// (janela de descoberta curta demais nunca alcançava os dias esparsos com
+// FEEDBACK_LOOP_ID publicado).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("hasAttributableCampaignSpam (#5446 item 2)", () => {
+  it("entry com worstCampaignSpamRatePct finito → true", () => {
+    assert.equal(hasAttributableCampaignSpam(freshEntry({ worstCampaignSpamRatePct: 1.39 })), true);
+  });
+
+  it("entry sem worstCampaignSpamRatePct (schema evolution / sem campanha atribuível) → false", () => {
+    assert.equal(hasAttributableCampaignSpam(freshEntry()), false);
+  });
+
+  it("entry com worstCampaignSpamRatePct não-finito (NaN, payload corrompido) → false", () => {
+    assert.equal(hasAttributableCampaignSpam(freshEntry({ worstCampaignSpamRatePct: NaN })), false);
+  });
+
+  it("entry null/undefined → false, nunca lança", () => {
+    assert.equal(hasAttributableCampaignSpam(null), false);
+    assert.equal(hasAttributableCampaignSpam(undefined), false);
+  });
+});
+
+describe("advanceCampaignSpamMissingState / shouldAlarmCampaignSpamMissing (#5446 item 2)", () => {
+  it("streak sobe 1 por checagem sem worstCampaignSpamRatePct", () => {
+    let state = emptyCampaignSpamMissingAlarmState();
+    state = advanceCampaignSpamMissingState(state, freshEntry(), NOW);
+    assert.equal(state.consecutiveMissing, 1);
+    state = advanceCampaignSpamMissingState(state, freshEntry(), NOW);
+    assert.equal(state.consecutiveMissing, 2);
+  });
+
+  it("uma checagem com worstCampaignSpamRatePct presente zera o streak e re-arma o alarme", () => {
+    let state: CampaignSpamMissingAlarmState = { consecutiveMissing: 20, lastAlarmedAt: NOW.toISOString(), lastCheckedAt: NOW.toISOString() };
+    state = advanceCampaignSpamMissingState(state, freshEntry({ worstCampaignSpamRatePct: 0.5 }), NOW);
+    assert.equal(state.consecutiveMissing, 0);
+    assert.equal(state.lastAlarmedAt, null, "re-arma pro PRÓXIMO streak de ausência");
+  });
+
+  it("entry null (dashboard fora do ar / sem leitura nenhuma) também conta como ausência", () => {
+    let state = emptyCampaignSpamMissingAlarmState();
+    state = advanceCampaignSpamMissingState(state, null, NOW);
+    assert.equal(state.consecutiveMissing, 1);
+  });
+
+  it("abaixo do threshold — sem alarme (regressão exigida: falso-positivo em janela de baixo volume normal)", () => {
+    const state: CampaignSpamMissingAlarmState = {
+      consecutiveMissing: CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS - 1,
+      lastAlarmedAt: null,
+      lastCheckedAt: NOW.toISOString(),
+    };
+    assert.equal(shouldAlarmCampaignSpamMissing(state), false);
+  });
+
+  it("no threshold, sem alarme anterior — dispara (regressão exigida pela #5446 item 2)", () => {
+    const state: CampaignSpamMissingAlarmState = {
+      consecutiveMissing: CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
+      lastAlarmedAt: null,
+      lastCheckedAt: NOW.toISOString(),
+    };
+    assert.equal(shouldAlarmCampaignSpamMissing(state), true);
+  });
+
+  it("markCampaignSpamMissingAlarmed impede reenviar o MESMO alarme enquanto o streak continua crescendo", () => {
+    let state: CampaignSpamMissingAlarmState = {
+      consecutiveMissing: CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
+      lastAlarmedAt: null,
+      lastCheckedAt: NOW.toISOString(),
+    };
+    assert.equal(shouldAlarmCampaignSpamMissing(state), true);
+    state = markCampaignSpamMissingAlarmed(state, NOW);
+    state = { ...state, consecutiveMissing: state.consecutiveMissing + 1 };
+    assert.equal(shouldAlarmCampaignSpamMissing(state), false);
+  });
+});
+
+describe("buildCampaignSpamMissingAlarmEmail (#5446 item 2)", () => {
+  it("inclui o streak e menciona explicitamente que é sinal DIFERENTE do agregado de domínio", () => {
+    const state: CampaignSpamMissingAlarmState = {
+      consecutiveMissing: CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
+      lastAlarmedAt: null,
+      lastCheckedAt: NOW.toISOString(),
+    };
+    const { subject, body } = buildCampaignSpamMissingAlarmEmail(state);
+    assert.match(subject, new RegExp(String(CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS)));
+    assert.match(body, /campanha/i);
+    assert.match(body, /média de domínio/i);
+  });
+
+  it("com issueRef 'created' cita a issue no corpo", () => {
+    const state: CampaignSpamMissingAlarmState = { consecutiveMissing: 14, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString() };
+    const { body } = buildCampaignSpamMissingAlarmEmail(state, {
+      issueNumber: 5446,
+      url: "https://github.com/vjpixel/diaria-studio/issues/5446",
+      action: "created",
+    });
+    assert.match(body, /#5446/);
+  });
+});
+
+describe("loadCampaignSpamMissingState / saveCampaignSpamMissingState (I/O, #5446 item 2)", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "clarice-campaign-spam-missing-"));
+  });
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("arquivo ausente -> estado vazio (fail-soft)", () => {
+    const path = resolve(tmpDir, "nao-existe.json");
+    assert.deepEqual(loadCampaignSpamMissingState(path), emptyCampaignSpamMissingAlarmState());
+  });
+
+  it("roundtrip: save + load preserva o estado", () => {
+    const path = resolve(tmpDir, "state.json");
+    const state: CampaignSpamMissingAlarmState = { consecutiveMissing: 14, lastAlarmedAt: NOW.toISOString(), lastCheckedAt: NOW.toISOString() };
+    saveCampaignSpamMissingState(state, path);
+    assert.equal(existsSync(path), true);
+    assert.deepEqual(loadCampaignSpamMissingState(path), state);
+  });
+
+  it("JSON corrompido -> estado vazio, nunca lança", () => {
+    const path = resolve(tmpDir, "corrompido.json");
+    writeFileSync(path, "{ nao é json válido");
+    assert.deepEqual(loadCampaignSpamMissingState(path), emptyCampaignSpamMissingAlarmState());
+  });
+
+  it("estado independente do arquivo de staleness geral — os 2 streaks nunca colidem no mesmo path", () => {
+    const staleStatePath = resolve(tmpDir, "postmaster-alarm-state.json");
+    const missingStatePath = resolve(tmpDir, "postmaster-campaign-spam-missing-state.json");
+    const staleState: PostmasterStaleAlarmState = { consecutiveStale: 5, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString(), lastStaleReason: "date-stale" };
+    const missingState: CampaignSpamMissingAlarmState = { consecutiveMissing: 20, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString() };
+    saveState(staleState, staleStatePath);
+    saveCampaignSpamMissingState(missingState, missingStatePath);
+    assert.deepEqual(loadState(staleStatePath), staleState);
+    assert.deepEqual(loadCampaignSpamMissingState(missingStatePath), missingState);
   });
 });

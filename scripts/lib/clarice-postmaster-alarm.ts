@@ -208,3 +208,142 @@ export function buildPostmasterStaleAlarmEmail(
 
   return { subject, body: lines.join("\n") };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5446 item 2: ausência PROLONGADA de `worstCampaignSpamRatePct`/`campaignSpam`
+// no KV — sinal INDEPENDENTE do streak de staleness acima. A média de
+// domínio pode estar perfeitamente FRESCA (o guard acima nunca dispara)
+// enquanto o enriquecimento por-campanha nunca encontra nenhuma campanha
+// atribuível — exatamente o cenário real da issue: `postmaster-spam-sync.ts`
+// caía no ramo `attempted === 0` ("sem campanha atribuível na janela") e
+// isso era só um `console.log` benigno, indistinguível de "está tudo bem,
+// não teve onda essa semana" quando na verdade a JANELA de descoberta nunca
+// alcançava os dias esparsos em que o Postmaster publica `FEEDBACK_LOOP_ID`
+// (root cause corrigida em `CAMPAIGN_DISCOVERY_WINDOW_DAYS`, #5449). Esta
+// checagem é a rede de segurança pra caso o mesmo sintoma reapareça por
+// outro motivo (accountId desatualizado de novo, mudança de formato do
+// feedback_loop_id, API do Postmaster parando de publicar o metric) —
+// #5449 corrigiu a CAUSA conhecida, não instrumentou contra causas futuras.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface CampaignSpamMissingAlarmState {
+  /** Checagens CONSECUTIVAS (task diária) em que `worstCampaignSpamRatePct`
+   * esteve ausente/não-finito na entry lida do dashboard. Zera assim que uma
+   * checagem encontra o campo populado. */
+  consecutiveMissing: number;
+  /** ISO do último e-mail de alarme enviado pra ESTE streak, ou `null` se
+   * ainda não alarmamos (streak resetado, ou ainda abaixo do threshold) —
+   * mesmo padrão de idempotência de `PostmasterStaleAlarmState.lastAlarmedAt`. */
+  lastAlarmedAt: string | null;
+  /** ISO da última checagem — só informativo. */
+  lastCheckedAt: string | null;
+}
+
+export function emptyCampaignSpamMissingAlarmState(): CampaignSpamMissingAlarmState {
+  return { consecutiveMissing: 0, lastAlarmedAt: null, lastCheckedAt: null };
+}
+
+/**
+ * 14 checagens diárias consecutivas (a task roda 1x/dia, mesma cadência da
+ * `Diaria-Postmaster-Spam-Sync`) — 2 semanas corridas. Folga generosa de
+ * propósito: mesmo com a janela de descoberta de 90 dias (#5449), campanhas
+ * pequenas legitimamente não cruzam o limiar de reporte do Postmaster toda
+ * semana — um threshold curto (ex: 2-3 dias, o valor usado pro streak de
+ * staleness geral acima) alarmaria em toda semana de volume baixo normal,
+ * que não é o sintoma real da issue. 14 dias é "isto já não é mais volume
+ * baixo, é o enriquecimento por-campanha genuinamente cego".
+ */
+export const CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS = 14;
+
+/** Pure: a entry TEM um pico por campanha válido pra oferecer? (mesmo guard
+ * `Number.isFinite` que `resolveSpamSignal`/`campaignSignalAvailable`
+ * usam — ver thresholds.ts, #5446 item 3, MESMA definição de "disponível"
+ * nos dois lados do #5446.) */
+export function hasAttributableCampaignSpam(entry: PostmasterEntryForStaleCheck): boolean {
+  return Boolean(entry) && Number.isFinite(entry?.worstCampaignSpamRatePct);
+}
+
+/**
+ * Pure: computa o próximo estado do streak de ausência. Uma checagem que
+ * ACHA o campo populado zera o streak e re-arma o alarme pra próxima
+ * ocorrência — mesmo padrão de `advanceState` acima. Uma entry totalmente
+ * ausente (`null`/fetch falhou) também conta como "sem campanha atribuível"
+ * (não há nada pra distinguir aqui — se não há entry, não há
+ * `worstCampaignSpamRatePct` de jeito nenhum) — o streak de staleness geral
+ * já cobre esse caso com o texto certo; este streak só precisa saber que o
+ * campo específico não apareceu.
+ */
+export function advanceCampaignSpamMissingState(
+  state: CampaignSpamMissingAlarmState,
+  entry: PostmasterEntryForStaleCheck,
+  now: Date,
+): CampaignSpamMissingAlarmState {
+  const lastCheckedAt = now.toISOString();
+  if (hasAttributableCampaignSpam(entry)) {
+    return { consecutiveMissing: 0, lastAlarmedAt: null, lastCheckedAt };
+  }
+  return { ...state, consecutiveMissing: state.consecutiveMissing + 1, lastCheckedAt };
+}
+
+/** Pure: `true` quando o streak atingiu o threshold E ainda não alarmamos pra
+ * ESTE streak — mesmo contrato de `shouldAlarm` acima. */
+export function shouldAlarmCampaignSpamMissing(state: CampaignSpamMissingAlarmState): boolean {
+  return state.consecutiveMissing >= CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS && state.lastAlarmedAt === null;
+}
+
+/** Pure: marca este streak como já alarmado. */
+export function markCampaignSpamMissingAlarmed(
+  state: CampaignSpamMissingAlarmState,
+  now: Date,
+): CampaignSpamMissingAlarmState {
+  return { ...state, lastAlarmedAt: now.toISOString() };
+}
+
+/** Pure: monta assunto + corpo do e-mail de alarme de ausência prolongada —
+ * texto puro, mesmo padrão de `buildPostmasterStaleAlarmEmail` acima.
+ * `issueRef` opcional (mesmo contrato dos outros alarmes deste arquivo). */
+export function buildCampaignSpamMissingAlarmEmail(
+  state: CampaignSpamMissingAlarmState,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+): { subject: string; body: string } {
+  const subject = `[diar.ia.br] sinal de spam POR CAMPANHA do Postmaster ausente há ${state.consecutiveMissing} dias seguidos`;
+
+  const lines: string[] = [
+    "O agregado de spam POR DOMÍNIO (`Spam (Postmaster)` na aba Rampa) pode",
+    "estar perfeitamente saudável enquanto isto acontece — este alarme é",
+    "sobre um sinal DIFERENTE: `worstCampaignSpamRatePct`/`campaignSpam`",
+    `ficaram ausentes do KV por ${state.consecutiveMissing} checagens diárias`,
+    "CONSECUTIVAS da task \"Diaria-Postmaster-Spam-Alarm\".",
+    "",
+    "Consequência prática: o breaker (`resolveSpamSignal`) está rodando",
+    "inteiramente na média de domínio, sem nenhum sinal por-campanha — o",
+    "mesmo mascaramento identificado no #4705 (uma campanha específica pode",
+    "estar com spam bem acima do limite enquanto a média do domínio inteiro",
+    "segue dentro da faixa segura, e ninguém veria isso). A coluna Spam da",
+    "tabela Envios também fica vazia/\"sem dado atribuível\" para toda campanha",
+    "nova nesta janela.",
+    "",
+    "Causas prováveis (mesma ordem de suspeita do #5446): (1) accountId",
+    "hardcoded (`DEFAULT_POSTMASTER_ACCOUNT_ID`) desatualizado — confira",
+    "`npx tsx scripts/postmaster-campaign-spam-report.ts --window-days 30`",
+    "pelo aviso \"campanha(s) de OUTRA conta ESP\"; (2) o Postmaster parou de",
+    "publicar FEEDBACK_LOOP_ID pra este domínio/conta; (3) volume real de",
+    "envio caiu abaixo do limiar de reporte do Postmaster por tempo demais",
+    "(menos provável com a janela de 90 dias do #5449, mas possível).",
+    "",
+    "Este alarme não requer nenhuma ação automática — é só um aviso; o freio",
+    "de ISP continua operando fail-safe (média de domínio) enquanto isso é",
+    "investigado.",
+  ];
+
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
+
+  return { subject, body: lines.join("\n") };
+}

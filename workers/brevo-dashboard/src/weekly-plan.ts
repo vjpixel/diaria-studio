@@ -630,6 +630,20 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
     Number.isFinite(spamSignal.worstCampaignDaysWithData)
       ? ` <span style="opacity:0.65;font-weight:400;font-size:0.85em">(pico de campanha, ${spamSignal.worstCampaignDaysWithData} dia(s) com dado)</span>`
       : "";
+  // #5446 item 3: quando NÃO há sinal por-campanha disponível na entry
+  // (`campaignSignalAvailable===false` — distinto de "disponível mas o
+  // domínio foi pior", que já é coberto pelo caso acima ficar sem sufixo de
+  // cobertura mas SEM precisar deste aviso), o número mostrado é 100% média
+  // de domínio — o breaker está no FALLBACK, não "sem dado nesta leitura".
+  // Sem este aviso a célula fica indistinguível de "está tudo bem, só não
+  // teve pico maior que a média" (o exato mascaramento que motivou a issue
+  // #4705/#5446: a média de domínio pode ficar dentro do limite enquanto uma
+  // campanha específica está bem mais alta, e ninguém vê isso na UI quando o
+  // enriquecimento por-campanha simplesmente não achou nada atribuível).
+  const spamPostmasterFallbackSuffix =
+    spamSignal.source === "postmaster" && spamSignal.campaignSignalAvailable === false
+      ? ` <span style="opacity:0.65;font-weight:400;font-size:0.85em" title="Sem campanha atribuível na janela sondada pelo Postmaster — este número é só a média de domínio, o pico por-campanha não está disponível.">(sem sinal por-campanha — fallback de média de domínio)</span>`
+      : "";
   // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
   // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
   // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
@@ -640,7 +654,7 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   // precisar do dado, só não aparece mais nesta linha da tabela; a docstring
   // acima desta função (e o código logo abaixo) continuam sendo a fonte de
   // verdade de que esta É a linha que governa o semáforo.
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}"${spamPostmasterTitleAttr}>${spamPostmasterValueFmt}${spamPostmasterCoverageSuffix}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}"${spamPostmasterTitleAttr}>${spamPostmasterValueFmt}${spamPostmasterCoverageSuffix}${spamPostmasterFallbackSuffix}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.

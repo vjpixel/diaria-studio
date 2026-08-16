@@ -152,6 +152,20 @@ export interface SpamSignal {
    * campanha — ver docstring de `resolveSpamSignal` abaixo).
    */
   worstCampaignDaysWithData?: number;
+  /**
+   * #5446 item 3: `true`/`false` quando `source==="postmaster"` — diz se a
+   * entry TINHA um `worstCampaignSpamRatePct` finito, independente de ele ter
+   * sido o valor que governou `ratePct` (ver `worstCampaignFeedbackLoopId`
+   * acima, que só é populado quando o pico por campanha VENCEU o `Math.max`).
+   * `false` é o caso que motivou a issue: a célula "Spam (Postmaster)" mostra
+   * a média de domínio sem nenhum sinal de que o enriquecimento por-campanha
+   * está indisponível — indistinguível na UI de "está tudo bem, só não teve
+   * pico maior que a média" (achado real: janela de descoberta curta demais
+   * nunca alcançava os dias em que o Postmaster publica `FEEDBACK_LOOP_ID`,
+   * #5446/#5449). `undefined` quando `source==="indeterminate"` (a pergunta
+   * não se aplica — já não há leitura confiável de nenhum tipo).
+   */
+  campaignSignalAvailable?: boolean;
 }
 
 /**
@@ -328,6 +342,9 @@ export function resolveSpamSignal(
     worstCampaignFeedbackLoopId: usesCampaignPeak ? entry.worstCampaignFeedbackLoopId : undefined,
     worstCampaignDaysWithData:
       usesCampaignPeak && Number.isFinite(entry.worstCampaignDaysWithData) ? entry.worstCampaignDaysWithData : undefined,
+    // #5446 item 3: independente de quem GOVERNOU o `Math.max` — só se a
+    // entry TINHA um pico por campanha válido pra oferecer.
+    campaignSignalAvailable: Number.isFinite(entry.worstCampaignSpamRatePct),
   };
 }
 
