@@ -481,6 +481,31 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("#5399 achado 2: spamSignal indeterminate => relatório destaca a leitura cega, separada da linha genérica do freio", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(
+        goldenHandlers({
+          risk: {
+            spamSignal: { source: "indeterminate", ratePct: null },
+            brake: { level: "hold", reasons: ["spam (Postmaster): sem leitura confiável — assume 70% do limiar de 0,30%"], maxUtil: 0.7 },
+          },
+        }),
+      );
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /SEM LEITURA CONFIÁVEL \(indeterminate\)/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5399 achado 2: spamSignal postmaster (leitura confiável) => SEM a linha de destaque", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.doesNotMatch(r.reportMarkdown, /SEM LEITURA CONFIÁVEL/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("lock detido por outra rodada => aborta ANTES do Passo 1 (code 1), zero exec, guard #4765", async () => {
       // Fecha o gap de teste do pr-test-analyzer: a trava de concorrência
       // (scripts/lib/clarice-envio-lock.ts) existe especificamente pra

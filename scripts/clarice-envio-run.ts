@@ -815,6 +815,18 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     const risk = riskStep.json;
     if (!risk) throw new EnvioAbort("❌ clarice-envio-risk não devolveu JSON parseável.");
     report.note(`freio: ${risk.brake.level.toUpperCase()} — ${risk.brake.reasons.join(" ")}`);
+    // #5399 achado 2: "spam (Postmaster): sem leitura confiável" vinha
+    // embutido em `brake.reasons` acima, na MESMA posição visual de uma
+    // leitura normal — o operador podia decidir volume sem perceber que o
+    // sinal PRIMÁRIO de spam está cego (o freio já é fail-safe por desenho,
+    // mas essa é justamente a leitura que o humano deveria enxergar
+    // destacada). Linha própria, com `⚠️` — mesmo padrão de destaque já usado
+    // pra `staleNote` logo abaixo.
+    if (risk.spamSignal.source === "indeterminate") {
+      report.note(
+        "⚠️  sinal de spam do Postmaster está SEM LEITURA CONFIÁVEL (indeterminate) — o freio assume 70% de utilização às cegas nesta rodada. Ver task 'Diaria-Postmaster-Spam-Sync'.",
+      );
+    }
     // #5220 — sidecar JSON pro guard das 05:00 (clarice-envio-guard.ts) usar
     // como FALLBACK se os próprios pré-requisitos dele (esta mesma dupla de
     // scripts, chamados de novo de manhã com dado mais fresco) falharem

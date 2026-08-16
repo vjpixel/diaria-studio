@@ -56,7 +56,6 @@ import type { StoreRow } from "./clarice-segment.ts";
 import { hasMeasuredOpens } from "./clarice-segment.ts";
 import {
   cohortDisplayLabel,
-  cohortSendRank,
   compareCohortEntriesByRecency,
   isMvExemptCohort,
 } from "./cohorts.ts";
@@ -707,9 +706,9 @@ export function sliceCohortComposition(available: CohortComposition[], total: nu
 }
 
 export interface CohortInversion {
-  /** Cohort `mv_unverified` mais NOVO (menor `cohortSendRank`) que está bloqueado. */
+  /** Cohort `mv_unverified` mais NOVO/morno (por `compareCohortEntriesByRecency`, #5398) que está bloqueado. */
   blockedCohort: string;
-  /** Cohort mais FRIO que a onda efetivamente consumiria (maior rank entre os slices consumidos). */
+  /** Cohort mais FRIO (por `compareCohortEntriesByRecency`) que a onda efetivamente consumiria entre os slices consumidos. */
   coldestConsumedCohort: string | null;
   /** Contatos da onda vindos de cohort(s) mais frios que `blockedCohort` — a cauda substituível. */
   coldTailCount: number;
@@ -750,28 +749,31 @@ export function detectCohortInversion(
   const identified = consumed.filter((c) => c.cohort !== null);
   if (identified.length === 0) return null;
 
+  // "coldest" = a entrada que `compareCohortEntriesByRecency` sempre coloca
+  // por ÚLTIMO contra qualquer outra — recência real (`mostRecentCreated`)
+  // primeiro, `cohortSendRank` só como fallback quando nenhum dos dois lados
+  // tem data confiável (#5398, sucede a comparação pura por rank).
   let coldest = identified[0];
   for (const c of identified) {
-    if (cohortSendRank(c.cohort) > cohortSendRank(coldest.cohort)) coldest = c;
+    if (compareCohortEntriesByRecency(c, coldest) > 0) coldest = c;
   }
-  const coldestRank = cohortSendRank(coldest.cohort);
 
   const candidates = mvBacklog.byCohort.filter(
     (e) =>
       !isMvExemptCohort(e.cohort) &&
       e.cohort !== MV_BACKLOG_NO_COHORT_LABEL &&
-      cohortSendRank(e.cohort) < coldestRank,
+      compareCohortEntriesByRecency(e, coldest) < 0,
   );
   if (candidates.length === 0) return null;
 
+  // "blocked" = o candidato MAIS NOVO/morno (vence toda comparação de recência).
   let blocked = candidates[0];
   for (const e of candidates) {
-    if (cohortSendRank(e.cohort) < cohortSendRank(blocked.cohort)) blocked = e;
+    if (compareCohortEntriesByRecency(e, blocked) < 0) blocked = e;
   }
-  const blockedRank = cohortSendRank(blocked.cohort);
 
   const coldTailCount = identified
-    .filter((c) => cohortSendRank(c.cohort) > blockedRank)
+    .filter((c) => compareCohortEntriesByRecency(c, blocked) > 0)
     .reduce((s, c) => s + c.count, 0);
 
   return { blockedCohort: blocked.cohort, coldestConsumedCohort: coldest.cohort, coldTailCount };
@@ -833,23 +835,22 @@ export interface MvOnDemandPlan {
    */
   targetVerifyCount: number;
   /**
-   * Alocação por cohort, na MESMA ordem de prioridade de `cohortSendRank`
-   * (morno→frio). NUNCA a ordem por volume que `summarizeMvBacklog.byCohort`
-   * usa pra exibição — a #4542 já corrigiu uma inversão dessa ordem
-   * (verificar lead frio antes de um morno com backlog pendente); reordenar
-   * por volume aqui reintroduziria a mesma classe de bug.
+   * Alocação por cohort, na MESMA ordem de prioridade de
+   * `compareCohortEntriesByRecency` (morno→frio por `created` real; degrada
+   * pra `cohortSendRank` só quando nenhum lado comparado tem data confiável,
+   * #5398). NUNCA a ordem por volume que `summarizeMvBacklog.byCohort` usa
+   * pra exibição — a #4542 já corrigiu uma inversão dessa ordem (verificar
+   * lead frio antes de um morno com backlog pendente); reordenar por volume
+   * aqui reintroduziria a mesma classe de bug.
    *
-   * RESSALVA (#5169 revisão 260812): pra LEADS, `cohortSendRank` continua
-   * sendo a ordem real de consumo da fila (`segmentRampWarm` em
-   * clarice-segment.ts, bucket é derivado de `created`). Pra `ex-assinantes`
-   * (único cohort estrutural não-MV-isento que passa por aqui —
-   * `assinantes-ativos` é isento via `isMvExemptCohort`, `juridico` é
-   * virtual e nunca aparece como `cohort` real), isso deixou de ser garantia
-   * desde que `segmentRampWarm` passou a ordenar por `compareContactRecency`
-   * (created real, sem prioridade de cohort) — a alocação aqui pode priorizar
-   * verificar `ex-assinantes` achando-o "quente" quando a fila de fato já
-   * está enviando leads mais recentes primeiro. Impacto prático baixo (base
-   * pequena — ver #5179), mas é uma imprecisão real, não só de comentário.
+   * (#5169/#5179, revisado #5398) Pra LEADS, essa ordem por recência já
+   * espelha `segmentRampWarm` (clarice-segment.ts, ordena por
+   * `compareContactRecency` — created real do contato). Continua sendo a
+   * mesma comparação, a nível de cohort agregado em vez de contato
+   * individual, então a divergência que existia quando este campo ainda
+   * ordenava por `cohortSendRank` fixo (achado da revisão #5169 260812,
+   * `ex-assinantes` podia ser tratado como "quente" por rank enquanto a fila
+   * real já priorizava leads mais recentes) não se aplica mais.
    */
   byCohort: MvOnDemandAllocation[];
   /**
@@ -877,8 +878,9 @@ const EMPTY_MV_ONDEMAND_PLAN: MvOnDemandPlan = {
 
 /**
  * Monta o recorte MÍNIMO de verificação MV pra cobrir `deficit` — nunca o
- * backlog inteiro. Percorre `backlog.byCohort` na ordem de `cohortSendRank`
- * (morno→frio), acumulando até `targetVerifyCount`; cohorts MV-isentos
+ * backlog inteiro. Percorre `backlog.byCohort` na ordem de
+ * `compareCohortEntriesByRecency` (morno→frio por recência real, #5398),
+ * acumulando até `targetVerifyCount`; cohorts MV-isentos
  * (`isMvExemptCohort` — hoje só `assinantes-ativos`) NUNCA entram no plano —
  * defesa em profundidade: `summarizeMvBacklog` já não deveria contar um
  * cohort isento (`classifyEligibility` nunca atribui `mv_unverified` a ele,
@@ -959,8 +961,7 @@ export interface NonOpenerExposure {
  * razão SAI da contagem abaixo (o filtro `send_eligible !== 1` no topo do
  * loop já cuida disso) — num store recém-recomputado, esta função deve
  * tender a 0: ela vira canário operacional (acusa se um contato desse perfil
- * ainda está elegível — store desatualizado, exceção legítima como
- * assinante-ativo, ou uma regressão no corte).
+ * ainda está elegível — store desatualizado, ou uma regressão no corte).
  *
  * Reportar isso é o mínimo que dá pra fazer sem reabrir a decisão de produto:
  * é esse estoque que alimenta a reclamação de spam, que por sua vez faz
@@ -975,10 +976,25 @@ export interface NonOpenerExposure {
  * medição SUPERESTIMAR a exposição real e — via `decideSemaphore`, que a
  * consome — pode frear volume de onda mais do que o comportamento real da
  * base justifica.
+ *
+ * #5399: exclui `mvExempt` (`isMvExemptCohort`) e `engaged`
+ * (`priority_points > 0`) da contagem — são exatamente os DOIS overrides que
+ * `classifyEligibility` (clarice-db.ts) já respeita ao decidir o corte de
+ * sunset (`!mvExempt` é condição explícita; um engajado nunca bate o
+ * predicado de não-abridor porque abriu algo em algum momento — mas
+ * `priority_points > 0` também cobre engajamento por clique sem abertura
+ * registrada, #4688 combinado). Sem esse filtro, os
+ * `assinantes-ativos`/engajados MV-isentos por desenho apareciam como falso
+ * positivo permanente do canário — medição ao vivo 16/08/2026: 750 contatos,
+ * 100% `assinantes-ativos`, `sends_count=2`/`opens_count=0`, exatamente o
+ * perfil que o sunset EXCLUI de propósito (ver docstring de
+ * `classifyEligibility`). Depois do filtro, a contagem só sinaliza
+ * não-abridor que o sunset DEVERIA ter cortado e não cortou.
  */
 export function measureNonOpenerExposure(
   rows: Array<
-    Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count" | "brevo_modified_at">
+    Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count" | "brevo_modified_at"> &
+      Partial<Pick<StoreRow, "cohort" | "priority_points">>
   >,
   minSends = 2,
 ): NonOpenerExposure {
@@ -987,6 +1003,7 @@ export function measureNonOpenerExposure(
   for (const r of rows) {
     if (r.send_eligible !== 1) continue;
     eligible += 1;
+    if (isMvExemptCohort(r.cohort) || (r.priority_points ?? 0) > 0) continue;
     if ((r.sends_count ?? 0) >= minSends && (r.opens_count ?? 0) === 0 && hasMeasuredOpens(r))
       count += 1;
   }
@@ -1367,7 +1384,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       `Inversão de safra (#4787): a onda consumiria ${fmt(cohortInversion.coldTailCount)} contato(s) de ` +
         `${cohortDisplayLabel(cohortInversion.coldestConsumedCohort)} (mais FRIO) enquanto ` +
         `${cohortDisplayLabel(cohortInversion.blockedCohort)} (mais NOVO/morno) está bloqueado em mv_unverified no ` +
-        `MillionVerifier — a ordem "mais novo primeiro" que cohortSendRank codifica não está sendo honrada. ` +
+        `MillionVerifier — a ordem "mais novo primeiro" por recência real (\`compareCohortEntriesByRecency\`) não está sendo honrada. ` +
         `Verificação MV sob demanda dimensionada pra cobrir a diferença — ver seção "Verificação MV sob demanda" abaixo.`,
     );
   }

@@ -211,7 +211,8 @@ class FatalApiError extends Error {}
  * limit)`) — pra um cohort GIGANTE (dezenas de milhares) só parcialmente
  * coberto pelo déficit diário (~1-5k), QUAIS contatos entram na fatia de
  * hoje não tinha relação nenhuma com recência real, mesmo já ordenando os
- * COHORTS certos (`cohortSendRank`/`planMvOnDemand`) do mais novo pro mais
+ * COHORTS certos (`compareCohortEntriesByRecency`/`planMvOnDemand`, #5398 —
+ * sucede a ordenação pura por `cohortSendRank`) do mais novo pro mais
  * antigo — a mesma classe de lacuna que `compareContactRecency`
  * (`scripts/lib/cohorts.ts`) fecha do lado da fila de envio
  * (`segmentRampWarm`). `created` NULL fica por último em `DESC` (semântica

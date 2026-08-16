@@ -736,8 +736,11 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
     });
   }
 
-  // Ordem determinística via cohortSendRank (morno→frio) — só afeta a ordem
-  // do logging abaixo (cohortCounts/sample); cada cohort não vira mais CSV
+  // Ordem determinística via cohortSendRank (morno→frio) — CONFIRMADO benigno
+  // na auditoria #5398: só afeta a ordem VISUAL do logging abaixo
+  // (cohortCounts/sample), nunca prioridade de envio real (que é decidida em
+  // clarice-wave-plan.ts/clarice-segment.ts, via `compareCohortEntriesByRecency`/
+  // `compareContactRecency`) — não precisa migrar. Cada cohort não vira mais CSV
   // (#2886 PR4 — o write side de `stripe-export-{cohort}.csv` foi eliminado:
   // a lista base por cohort agora vive só no store, via `buildUniverse` +
   // `clarice-build-db.ts`. `stripe-export-{cohort}.csv` não tinha mais

@@ -26,8 +26,10 @@
  *                  assinantes-ativos, #3826), exclui quem já está
  *                  comprometido com uma campanha AGENDADA (queued, #2994) OU
  *                  JÁ DISPARADA (sent, #3682 — imune ao lag de sends_count
- *                  local) e fatia nos 3 volumes (ordem preservada, cohortSendRank
- *                  morno→frio). `--extra-email` anexa email(s) fixo(s) nas 3
+ *                  local) e fatia nos 3 volumes (ordem preservada, recência
+ *                  real via `compareContactRecency` — morno→frio; degrada
+ *                  pra cohortSendRank só sem `created` confiável, #5169/#5398).
+ *                  `--extra-email` anexa email(s) fixo(s) nas 3
  *                  listas SEM remover ninguém. Valida crédito Brevo cobre a
  *                  soma ANTES de escrever qualquer CSV. Escreve
  *                  `{ciclo}/ramp/ramp-manifest.json` + `w{1,2,3}-{dia}.csv` +

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
  * cohort-order-dryrun.ts — dry-run comparativo READ-ONLY entre a ordenação de
- * 1º envio por TIER (comportamento pré-#2857-fase-B) e por COHORT (#2857 fase
- * B, `segmentFromStore`/`cohortSendRank` atuais) sobre um store real.
+ * 1º envio por TIER (comportamento pré-#2857-fase-B) e o critério VIGENTE em
+ * produção (`segmentFromStore`/`compareContactRecency`, recência real de
+ * `created` — sucede o `cohortSendRank` puro do #2857 fase B desde #5169;
+ * `firstSendByCohort` mantém o nome por compat, mas a comparação em si já é
+ * por recência, #5398) sobre um store real.
  *
  * Artefato de validação humana pré-fase-C (cutover: remoção da coluna `tier`)
  * — o editor roda isso contra o store de produção pra conferir, com números
@@ -35,7 +38,7 @@
 import { writeFileSync } from "node:fs";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows, isFirstSend, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
-import { cohortSendRank } from "./lib/cohorts.ts";
+import { compareContactRecency } from "./lib/cohorts.ts";
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 
@@ -71,17 +74,22 @@ export function firstSendByTier(rows: StoreRow[]): StoreRow[] {
     });
 }
 
-/** Ordena `firstSend` por COHORT ASC + email ASC — comportamento ATUAL (pós-#2857 fase B), mesma regra de `segmentFromStore`. */
+/**
+ * Ordena `firstSend` por recência REAL (`compareContactRecency`) —
+ * comportamento VIGENTE (pós-#5169, sucede o `cohortSendRank` puro do #2857
+ * fase B), mesma regra de `segmentFromStore`/`firstSend.sort` em
+ * clarice-segment.ts. Renomeado de propósito continua "byCohort" no nome
+ * público (não quebrar chamadores/testes existentes) mas a comparação em si
+ * já não é por cohort — é por `created` do contato, cohort só entra como
+ * fallback dentro de `compareContactRecency` (#5398, auditoria de migração
+ * cohortSendRank → recência: esta ferramenta de dry-run comparava contra um
+ * critério já revogado em produção).
+ */
 export function firstSendByCohort(rows: StoreRow[]): StoreRow[] {
   return rows
     .filter((r) => isFirstSend(r))
     .slice()
-    .sort((a, b) => {
-      const ra = cohortSendRank(a.cohort);
-      const rb = cohortSendRank(b.cohort);
-      if (ra !== rb) return ra < rb ? -1 : 1;
-      return a.email.localeCompare(b.email);
-    });
+    .sort(compareContactRecency);
 }
 
 export interface OrderDiffEntry {
@@ -141,7 +149,7 @@ export function renderComparisonReport(cmp: OrderComparison, top: number): strin
     .map((d) => `| ${d.position} | ${d.tierOrderEmail} | ${d.cohortOrderEmail} |`)
     .join("\n") || "| (nenhuma) | — | — |";
 
-  return `# Dry-run comparativo — ordem de 1º envio: tier (antigo) vs cohort (#2857 fase B)
+  return `# Dry-run comparativo — ordem de 1º envio: tier (antigo) vs recência vigente (#2857 fase B, recência desde #5169)
 
 > READ-ONLY. NÃO dispara, NÃO escreve nada. Universo firstSend (elegível, nunca
 > enviado): **${fmt(cmp.firstSendTotal)}** contatos.
