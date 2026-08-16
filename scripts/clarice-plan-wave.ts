@@ -55,10 +55,11 @@ import {
   segmentRampWarm,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
+import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
 import { brevoGet, fetchCommittedCampaignListIds, fetchDraftCampaigns } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { requireCycleArg, CLARICE_BASE, REPO_ROOT } from "./lib/clarice-paths.ts";
+import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
@@ -191,6 +192,9 @@ export interface PlanWaveOptions {
   /** #4664 — override de teste da raiz de `novos-state.json` (mesmo padrão
    *  `--data-root` do resto do projeto). Default = `CLARICE_BASE` (produção). */
   novosStateBaseDir?: string;
+  /** #5395 — override de teste da raiz de `{ciclo}/segments/sent-or-queued.json`
+   *  (mesmo padrão `baseDir` de `clariceSegmentsDir`). Default = `CLARICE_BASE` (produção). */
+  segmentsBaseDir?: string;
   /** #5140 — raiz do repo pra ler `data/clarice-hour-test.json`. Injetável em teste. */
   hourTestRootDir?: string;
   /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
@@ -312,7 +316,21 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // Sem chave a checagem nem foi tentada — mesma consequência prática.
     committedLookupFailed = true;
   }
-  const availableFirstSendRows = excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed);
+  // #5395 — `excludeCommittedToQueuedCampaigns` sozinho só cobre quem está
+  // COMMITTED numa campanha Brevo queued/sent; um contato que entrou numa
+  // lista cuja campanha foi suspensa/replanejada (nunca virou queued nem
+  // sent) escapa desse guard mas já foi marcado como enviado/reservado em
+  // `sent-or-queued.json` pelo `clarice-build-segment.ts` (#3227/#4759) — o
+  // MESMO guard cycle-wide que a fila REAL (`--group ramp-warm`) aplica.
+  // Sem replicar aqui, `availableFirstSend` conta esses órfãos como
+  // disponíveis quando na prática já foram consumidos/reservados por outra
+  // invocação do ciclo — a raiz do achado ao vivo de 260816 (onda saiu 25%
+  // menor que o planejado, sem aviso).
+  const sentOrQueuedEmails = loadSentOrQueuedEmails(clariceSegmentsDir(opts.cycle, opts.segmentsBaseDir ?? CLARICE_BASE));
+  const availableFirstSendRows = excludeSentOrQueued(
+    excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed),
+    sentOrQueuedEmails,
+  );
   const availableFirstSend = availableFirstSendRows.length;
   // #4787: composição por safra da MESMA fila que `availableFirstSend` conta
   // — alimenta o gatilho proativo de inversão de safra em buildWaveProposal.
