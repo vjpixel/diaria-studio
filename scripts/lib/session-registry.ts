@@ -278,7 +278,7 @@ export function listActiveSessions(
   }
   const out: SessionRecord[] = [];
   for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue;
+    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     const record = readJsonSafe<SessionRecord>(join(dir, name));
     if (!record || !record.sessionId || !record.kind) continue;
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
