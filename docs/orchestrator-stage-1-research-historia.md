@@ -64,6 +64,19 @@ Em 260506 (227 uncertain), serial era ~26-30min, com concurrency=4 cai pra
 Paridade validada: top-6 overlap 5/6 vs. single-call, dentro do ruído
 run-to-run do próprio scorer.
 
+### 1v use melhor caso real
+
+260604: dois posts da `latent.space` entraram em USE MELHOR sendo
+newsletter/análise/cobertura, não tutorial — motivou o guard determinístico
+warn-only que hoje pega esse mal-bucketamento antes do gate.
+
+### 1v quater caso real
+
+260602: destaque sobre o lançamento do RTX Spark usava um link de cobertura
+de imprensa (Canaltech) em vez da fonte oficial — a regra #160 (LANÇAMENTOS
+só com link oficial) cobria a seção LANÇAMENTOS, mas destaques sobre
+lançamentos escapavam desse guard.
+
 ### 1v quinquies caso real
 
 Edição 260727: D2 apontava pro Tecnoblog enquanto o anúncio oficial da
