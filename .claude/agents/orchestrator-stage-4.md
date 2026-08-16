@@ -753,6 +753,7 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 4
 ```
 
 - Falha do sentinel → logar warn. Não bloquear.
+- Ler o JSON de stdout do `capture-stage-usage.ts` acima: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
 - O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou e pula direto para a Etapa 5.
 
 ---

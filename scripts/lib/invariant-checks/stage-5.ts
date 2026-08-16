@@ -13,6 +13,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
+import { loadDoc } from "../../update-stage-status.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -890,6 +891,46 @@ function checkPendingResearchUnresolved(editionDir: string): InvariantViolation[
   ];
 }
 
+/**
+ * #5475: Stage 5 marcado `done` sem `cost_usd`/`tokens_in` gravados em
+ * `stage-status.json`. `capture-stage-usage.ts` (§5h, ver orchestrator-stage-5.md)
+ * é fail-soft por design — quando não consegue resolver o transcript da sessão
+ * (`source: "unavailable"`), sai com exit 0 SEM escrever nada, o que é correto
+ * (nunca fabricar zero/null como se fosse dado real). O problema é que, sem
+ * este check, esse gap fica invisível: `stage-status.md` renderiza `-` tanto
+ * pra "não medido" quanto (hipoteticamente) pra "custou zero", e ninguém nota
+ * até comparar manualmente contra uma edição de referência — exatamente o que
+ * aconteceu na edição 260817 (§5h rodou, mas a resolução automática da sessão
+ * via `CLAUDE_CODE_SESSION_ID` falhou silenciosamente).
+ *
+ * Só dispara quando o Stage 5 já está `done` — antes disso a ausência é
+ * esperada (stage ainda em andamento, capture-stage-usage.ts nem rodou).
+ * `severity: "warning"` — nunca bloqueia o pipeline, é auditoria de custo.
+ */
+function checkStageUsageCaptured(editionDir: string): InvariantViolation[] {
+  const editionId = editionDir.replace(/[/\\]$/, "").split(/[\\/]/).pop() ?? "";
+  const doc = loadDoc(editionDir, editionId);
+  const row = doc.rows.find((r) => r.stage === 5);
+  if (!row || row.status !== "done") return [];
+  if (row.cost_usd === undefined && row.tokens_in === undefined) {
+    return [
+      {
+        rule: "stage-usage-captured",
+        message:
+          "Stage 5 concluído sem cost_usd/tokens_in em stage-status.json — " +
+          'capture-stage-usage.ts provavelmente retornou source:"unavailable" ' +
+          "(sem transcript local resolvido, ou nenhuma entrada de usage na janela) " +
+          "e o warn correspondente não foi logado. Custo/tokens deste stage vão " +
+          "ficar ausentes de aggregate-costs.ts sem deixar rastro no run-log.",
+        source_issue: "#5475",
+        severity: "warning",
+        file: resolve(editionDir, "_internal", "stage-status.json"),
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -1037,6 +1078,20 @@ export const STAGE_5_RULES: InvariantRule[] = [
     postDispatchOnly: true,
     run: checkConsentBinding,
   },
+  {
+    id: "stage-usage-captured",
+    description:
+      "Stage 5 done com cost_usd/tokens_in populados em stage-status.json (#5475)",
+    source_issue: "#5475",
+    stage: 5,
+    // Só faz sentido checar depois que o Stage 5 já rodou até o fim
+    // (§5h escreve o sentinel + marca done + roda capture-stage-usage.ts,
+    // todos antes de §5i, que é quando check-invariants roda sem
+    // --phase pre-dispatch). Rodar em §5a (pre-dispatch) daria falso-positivo
+    // sempre — o stage ainda nem começou.
+    postDispatchOnly: true,
+    run: checkStageUsageCaptured,
+  },
 ];
 
 export {
@@ -1059,5 +1114,6 @@ export {
   checkInstagramCredsSet,
   checkThreadsCredsSet,
   checkTwitterCredsSet,
+  checkStageUsageCaptured,
   checkPendingResearchUnresolved,
 };
