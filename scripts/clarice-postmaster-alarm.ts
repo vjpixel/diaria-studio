@@ -40,7 +40,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { DEFAULT_DASHBOARD_URL, fetchPostmasterSpamEntry } from "./clarice-schedule-ramp.ts";
+import { DEFAULT_DASHBOARD_URL, fetchPostmasterSpamEntryDetailed } from "./clarice-schedule-ramp.ts";
 import {
   emptyPostmasterStaleAlarmState,
   advanceState,
@@ -106,7 +106,11 @@ export function loadState(statePath: string = STATE_PATH): PostmasterStaleAlarmS
     const consecutiveStale = typeof raw.consecutiveStale === "number" ? raw.consecutiveStale : 0;
     const lastAlarmedAt = typeof raw.lastAlarmedAt === "string" || raw.lastAlarmedAt === null ? raw.lastAlarmedAt ?? null : null;
     const lastCheckedAt = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt ?? null : null;
-    return { consecutiveStale, lastAlarmedAt, lastCheckedAt };
+    // #5412 — campo novo; ausente em estado persistido por uma versão
+    // anterior desta task (schema evolution) → `null` (mesmo fail-soft do
+    // resto desta função, nunca lança por campo desconhecido/faltando).
+    const lastStaleReason = typeof raw.lastStaleReason === "string" ? raw.lastStaleReason : null;
+    return { consecutiveStale, lastAlarmedAt, lastCheckedAt, lastStaleReason };
   } catch {
     return emptyPostmasterStaleAlarmState();
   }
@@ -144,13 +148,16 @@ async function main(): Promise<void> {
   const toOverride = getArg(argv, "to");
   const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
 
-  const entry = await fetchPostmasterSpamEntry(dashboardUrl);
+  // #5412 — versão "detailed" distingue fetch-falhou de fetch-ok-sem-leitura;
+  // passada pra `advanceState` pra o e-mail/issue apontarem o operador pro
+  // lugar certo (dashboard vs. task de sync) — ver docstring do módulo lib.
+  const { entry, fetchFailed } = await fetchPostmasterSpamEntryDetailed(dashboardUrl);
   const oldState = loadState();
   const now = new Date();
-  let newState = advanceState(oldState, entry, now);
+  let newState = advanceState(oldState, entry, now, { fetchFailed });
 
   console.log(
-    `${LOG_PREFIX} entry.date=${entry?.date ?? "(nenhuma)"} streak=${newState.consecutiveStale} ` +
+    `${LOG_PREFIX} entry.date=${entry?.date ?? "(nenhuma)"} fetchFailed=${fetchFailed} streak=${newState.consecutiveStale} ` +
       `(último check: ${oldState.lastCheckedAt ?? "nunca"}).`,
   );
 

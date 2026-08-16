@@ -1,10 +1,12 @@
 /**
- * test/clarice-postmaster-alarm.test.ts (#5399 achado 2)
+ * test/clarice-postmaster-alarm.test.ts (#5399 achado 2, estendido pelo #5412)
  *
  * Lógica pura do alarme de sinal de spam do Postmaster degradado por
- * staleness: `isPostmasterEntryStale` (regressão exigida pela issue), streak
- * de checagens consecutivas, idempotência (não reenvia o mesmo alarme a cada
- * checagem), re-armamento após uma leitura fresca.
+ * staleness: `isPostmasterEntryStale` (regressão exigida pela issue #5399 +
+ * cobertura estendida `recorded-stale`/`low-coverage` do #5412), streak de
+ * checagens consecutivas, idempotência (não reenvia o mesmo alarme a cada
+ * checagem), re-armamento após uma leitura fresca, e a distinção
+ * `fetch-failed` vs. leitura stale (#5412 achado 2).
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -21,33 +23,67 @@ import {
   CONSECUTIVE_STALE_THRESHOLD,
   POSTMASTER_DATA_STALE_MS,
   type PostmasterStaleAlarmState,
+  type PostmasterEntryForStaleCheck,
 } from "../scripts/lib/clarice-postmaster-alarm.ts";
 import { loadState, saveState } from "../scripts/clarice-postmaster-alarm.ts";
+import { POSTMASTER_STALE_MS } from "../workers/brevo-dashboard/src/thresholds.ts";
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 
-describe("isPostmasterEntryStale (#5399 achado 2 — regressão exigida pela issue)", () => {
-  it("entry com date além de POSTMASTER_DATA_STALE_MS → stale (alarme dispararia)", () => {
-    const staleDate = new Date(NOW.getTime() - POSTMASTER_DATA_STALE_MS - 1).toISOString().slice(0, 10);
-    assert.equal(isPostmasterEntryStale({ date: staleDate }, NOW), true);
+/** Entry VÁLIDA e FRESCA por padrão (todos os 3 guards de `resolveSpamSignal`
+ * passam) — cada teste sobrescreve só o campo que quer exercitar. Sem isso,
+ * um `{ date: ... }` sozinho (padrão pré-#5412) já cai no branch `malformed`
+ * (sem `spamRatePct`/`recordedAt`), mascarando o que o teste quer isolar. */
+function freshEntry(p: Partial<PostmasterEntryForStaleCheck & { date: string }> = {}): PostmasterEntryForStaleCheck {
+  return {
+    date: new Date(NOW.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+    spamRatePct: 0.05,
+    recordedAt: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString(),
+    daysWithData: 10,
+    daysProbed: 10,
+    ...p,
+  } as PostmasterEntryForStaleCheck;
+}
+
+describe("isPostmasterEntryStale (#5399 achado 2 + #5412 — cobre os 5 motivos de resolveSpamSignal)", () => {
+  it("entry com date além de POSTMASTER_DATA_STALE_MS → stale (date-stale)", () => {
+    const staleDate = new Date(NOW.getTime() - POSTMASTER_DATA_STALE_MS - 1).toISOString();
+    assert.equal(isPostmasterEntryStale(freshEntry({ date: staleDate }), NOW), true);
   });
 
-  it("entry fresca (dentro de POSTMASTER_DATA_STALE_MS) → não stale", () => {
-    const freshDate = new Date(NOW.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    assert.equal(isPostmasterEntryStale({ date: freshDate }, NOW), false);
+  it("entry fresca (todos os guards OK) → não stale", () => {
+    assert.equal(isPostmasterEntryStale(freshEntry(), NOW), false);
   });
 
-  it("entry null (nenhuma leitura registrada) → stale, fail-safe", () => {
+  it("entry null (nenhuma leitura registrada) → stale, fail-safe (missing)", () => {
     assert.equal(isPostmasterEntryStale(null, NOW), true);
   });
 
-  it("date inválida/inparseável → stale, fail-safe", () => {
-    assert.equal(isPostmasterEntryStale({ date: "não-é-uma-data" }, NOW), true);
+  it("date inválida/inparseável → stale, fail-safe (date-stale)", () => {
+    assert.equal(isPostmasterEntryStale(freshEntry({ date: "não-é-uma-data" }), NOW), true);
   });
 
-  it("exatamente na borda (== POSTMASTER_DATA_STALE_MS) ainda NÃO é stale — só '>' dispara", () => {
+  it("exatamente na borda de POSTMASTER_DATA_STALE_MS ainda NÃO é stale — só '>' dispara", () => {
     const borderline = new Date(NOW.getTime() - POSTMASTER_DATA_STALE_MS);
-    assert.equal(isPostmasterEntryStale({ date: borderline.toISOString() }, NOW), false);
+    assert.equal(isPostmasterEntryStale(freshEntry({ date: borderline.toISOString() }), NOW), false);
+  });
+
+  // #5412 — os 2 branches que o #5399 original NÃO cobria.
+  it("#5412: recordedAt além de POSTMASTER_STALE_MS (gravação velha) → stale (recorded-stale), mesmo com date fresca", () => {
+    const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1).toISOString();
+    assert.equal(isPostmasterEntryStale(freshEntry({ recordedAt: staleRecordedAt }), NOW), true);
+  });
+
+  it("#5412: cobertura baixa (daysWithData/daysProbed < 0.5) → stale (low-coverage), mesmo com date/recordedAt frescos", () => {
+    assert.equal(isPostmasterEntryStale(freshEntry({ daysWithData: 1, daysProbed: 10 }), NOW), true);
+  });
+
+  it("#5412: cobertura exatamente no piso (0.5) NÃO é stale — só '<' dispara", () => {
+    assert.equal(isPostmasterEntryStale(freshEntry({ daysWithData: 5, daysProbed: 10 }), NOW), false);
+  });
+
+  it("#5412: spamRatePct ausente/não-finito → stale (malformed)", () => {
+    assert.equal(isPostmasterEntryStale(freshEntry({ spamRatePct: NaN }), NOW), true);
   });
 });
 
@@ -83,14 +119,50 @@ describe("advanceState / shouldAlarm (streak de checagens consecutivas)", () => 
     for (let i = 0; i < CONSECUTIVE_STALE_THRESHOLD; i++) state = advanceState(state, null, NOW);
     state = markAlarmed(state, NOW);
 
-    const freshDate = new Date(NOW.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    state = advanceState(state, { date: freshDate }, NOW);
+    state = advanceState(state, freshEntry(), NOW);
     assert.equal(state.consecutiveStale, 0);
     assert.equal(state.lastAlarmedAt, null);
+    assert.equal(state.lastStaleReason, null);
 
     // Depois de reaparecer stale de novo, o threshold volta a valer normalmente.
     for (let i = 0; i < CONSECUTIVE_STALE_THRESHOLD; i++) state = advanceState(state, null, NOW);
     assert.equal(shouldAlarm(state), true);
+  });
+
+  // #5412 — lastStaleReason grava o motivo (superfície de diagnóstico do e-mail/issue).
+  it("#5412: lastStaleReason reflete o motivo do resolveSpamSignal (date-stale, recorded-stale, low-coverage)", () => {
+    let state = emptyPostmasterStaleAlarmState();
+    state = advanceState(state, null, NOW);
+    assert.equal(state.lastStaleReason, "missing");
+
+    state = emptyPostmasterStaleAlarmState();
+    const staleDate = new Date(NOW.getTime() - POSTMASTER_DATA_STALE_MS - 1).toISOString();
+    state = advanceState(state, freshEntry({ date: staleDate }), NOW);
+    assert.equal(state.lastStaleReason, "date-stale");
+
+    state = emptyPostmasterStaleAlarmState();
+    const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1).toISOString();
+    state = advanceState(state, freshEntry({ recordedAt: staleRecordedAt }), NOW);
+    assert.equal(state.lastStaleReason, "recorded-stale");
+
+    state = emptyPostmasterStaleAlarmState();
+    state = advanceState(state, freshEntry({ daysWithData: 1, daysProbed: 10 }), NOW);
+    assert.equal(state.lastStaleReason, "low-coverage");
+  });
+
+  // #5412 achado 2 — fetch-failed é um motivo DISTINTO, passado explicitamente
+  // pelo chamador (não inferido de `entry === null` sozinho).
+  it("#5412: opts.fetchFailed=true → lastStaleReason='fetch-failed', mesmo com entry null (indistinguível de 'sem leitura' sem o opt-in)", () => {
+    let state = emptyPostmasterStaleAlarmState();
+    state = advanceState(state, null, NOW, { fetchFailed: true });
+    assert.equal(state.consecutiveStale, 1);
+    assert.equal(state.lastStaleReason, "fetch-failed");
+  });
+
+  it("#5412: sem opts (default) — entry null vira 'missing', NÃO 'fetch-failed'", () => {
+    let state = emptyPostmasterStaleAlarmState();
+    state = advanceState(state, null, NOW);
+    assert.equal(state.lastStaleReason, "missing");
   });
 });
 
@@ -122,6 +194,25 @@ describe("buildPostmasterStaleAlarmEmail", () => {
     });
     assert.match(body, /#5400/);
   });
+
+  // #5412 achado 2 — texto distinto pra "dashboard fora do ar" vs "leitura stale".
+  it("#5412: lastStaleReason='fetch-failed' → corpo menciona o DASHBOARD, não a task de sync como 1ª suspeita", () => {
+    let state = emptyPostmasterStaleAlarmState();
+    for (let i = 0; i < CONSECUTIVE_STALE_THRESHOLD; i++) state = advanceState(state, null, NOW, { fetchFailed: true });
+    const { body } = buildPostmasterStaleAlarmEmail(state, null, undefined);
+    assert.match(body, /dashboard não respondeu/i);
+  });
+
+  it("#5412: lastStaleReason='recorded-stale' (leitura stale, fetch OK) → corpo NÃO confunde com 'dashboard não respondeu'", () => {
+    let state = emptyPostmasterStaleAlarmState();
+    const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1).toISOString();
+    for (let i = 0; i < CONSECUTIVE_STALE_THRESHOLD; i++) {
+      state = advanceState(state, freshEntry({ recordedAt: staleRecordedAt }), NOW);
+    }
+    const { body } = buildPostmasterStaleAlarmEmail(state, { date: "2026-08-11" }, undefined);
+    assert.doesNotMatch(body, /dashboard não respondeu/i);
+    assert.match(body, /provavelmente parou de rodar/);
+  });
 });
 
 describe("loadState / saveState (scripts/clarice-postmaster-alarm.ts, I/O)", () => {
@@ -135,12 +226,13 @@ describe("loadState / saveState (scripts/clarice-postmaster-alarm.ts, I/O)", () 
     assert.deepEqual(loadState(resolve(tmpDir, "nao-existe.json")), emptyPostmasterStaleAlarmState());
   });
 
-  it("roundtrip: save + load preserva o estado", () => {
+  it("roundtrip: save + load preserva o estado (inclui lastStaleReason, #5412)", () => {
     const path = resolve(tmpDir, "sub", "state.json");
     const state: PostmasterStaleAlarmState = {
       consecutiveStale: CONSECUTIVE_STALE_THRESHOLD,
       lastAlarmedAt: NOW.toISOString(),
       lastCheckedAt: NOW.toISOString(),
+      lastStaleReason: "recorded-stale",
     };
     saveState(state, path);
     assert.equal(existsSync(path), true);
@@ -155,8 +247,24 @@ describe("loadState / saveState (scripts/clarice-postmaster-alarm.ts, I/O)", () 
 
   it("lastAlarmedAt null é preservado no roundtrip (streak zerado/re-armado)", () => {
     const path = resolve(tmpDir, "state.json");
-    const state: PostmasterStaleAlarmState = { consecutiveStale: 0, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString() };
+    const state: PostmasterStaleAlarmState = {
+      consecutiveStale: 0,
+      lastAlarmedAt: null,
+      lastCheckedAt: NOW.toISOString(),
+      lastStaleReason: null,
+    };
     saveState(state, path);
     assert.deepEqual(loadState(path).lastAlarmedAt, null);
+  });
+
+  it("#5412: estado persistido por versão anterior (sem lastStaleReason) carrega com null — schema evolution fail-soft", () => {
+    const path = resolve(tmpDir, "legacy-state.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ consecutiveStale: 1, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString() }),
+    );
+    const loaded = loadState(path);
+    assert.equal(loaded.lastStaleReason, null);
+    assert.equal(loaded.consecutiveStale, 1);
   });
 });

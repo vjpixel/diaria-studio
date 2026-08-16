@@ -110,9 +110,11 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign, brevoGetList, brevoGet, brevoListAllLists, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
-import { clariceRampDir, parseCycleArg } from "./lib/clarice-paths.ts";
+import { clariceRampDir, clariceSegmentsDir, parseCycleArg, CLARICE_BASE } from "./lib/clarice-paths.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { segmentRampWarm, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
+import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
+import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
@@ -241,10 +243,7 @@ export type RampVolumeResult = { ok: true; plan: RampVolumePlan } | { ok: false;
  * preservado — nunca lança, nunca resolve pra falso-verde por conta de uma
  * falha de fetch).
  */
-export async function fetchPostmasterSpamEntry(
-  dashboardUrl: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<Pick<
+export type PostmasterSpamEntryPick = Pick<
   PostmasterSpamEntry,
   | "spamRatePct"
   | "recordedAt"
@@ -255,16 +254,52 @@ export async function fetchPostmasterSpamEntry(
   | "worstCampaignSpamRatePct"
   | "worstCampaignFeedbackLoopId"
   | "worstCampaignDaysWithData"
-> | null> {
+>;
+
+/** #5412 — resultado detalhado de `fetchPostmasterSpamEntryDetailed`: além da
+ * `entry` (ou `null`), distingue POR QUE está `null` — `fetchFailed: true`
+ * quando o FETCH em si falhou (rede, exceção, HTTP não-2xx) vs. `false`
+ * quando o fetch respondeu OK mas não trouxe uma leitura válida (nenhuma
+ * leitura registrada ainda, ou payload malformado). Os 2 casos eram
+ * indistinguíveis pra quem só chamava `fetchPostmasterSpamEntry` (thin
+ * wrapper abaixo, preserva o comportamento/assinatura pros ~5 call sites
+ * existentes) — só `clarice-postmaster-alarm.ts` precisa da distinção, pra
+ * não apontar o operador pra investigar o sync quando o problema real é o
+ * dashboard/Worker estar fora do ar. */
+export interface PostmasterSpamEntryFetchResult {
+  entry: PostmasterSpamEntryPick | null;
+  fetchFailed: boolean;
+}
+
+/**
+ * #4131 finding 4: busca a leitura do Postmaster (`postmaster:spam`, auto ou manual)
+ * via o endpoint público `/api/postmaster-spam` do Worker (ver
+ * `workers/brevo-dashboard/src/index.ts`) — a MESMA leitura gravada por
+ * `scripts/postmaster-spam-sync.ts` (automático) ou `scripts/postmaster-spam-entry.ts`
+ * (manual, fallback). Sem isso, este script nunca
+ * enxergava a leitura e `decideSemaphore` ficava travado no máximo em
+ * "yellow" pra sempre (nunca escalonava volume, mesmo com uma leitura fresca
+ * e boa registrada) — mudança real de produção sem caminho de saída.
+ *
+ * Fail-soft por design: qualquer erro de rede/parse devolve `entry: null`,
+ * que `resolveSpamSignal` já trata como "indeterminate" (comportamento
+ * seguro preservado — nunca lança, nunca resolve pra falso-verde por conta
+ * de uma falha de fetch). `fetchFailed` distingue essa falha de "fetch OK,
+ * sem leitura válida" — ver docstring de `PostmasterSpamEntryFetchResult`.
+ */
+export async function fetchPostmasterSpamEntryDetailed(
+  dashboardUrl: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<PostmasterSpamEntryFetchResult> {
   try {
     const res = await fetchFn(`${dashboardUrl}/api/postmaster-spam`);
-    if (!res.ok) return null;
+    if (!res.ok) return { entry: null, fetchFailed: true };
     const body = (await res.json()) as { entry?: unknown };
     const raw = body?.entry;
-    if (!raw || typeof raw !== "object") return null;
+    if (!raw || typeof raw !== "object") return { entry: null, fetchFailed: false };
     const e = raw as Partial<PostmasterSpamEntry>;
-    if (typeof e.spamRatePct !== "number" || !Number.isFinite(e.spamRatePct)) return null;
-    if (typeof e.recordedAt !== "string" || !e.recordedAt) return null;
+    if (typeof e.spamRatePct !== "number" || !Number.isFinite(e.spamRatePct)) return { entry: null, fetchFailed: false };
+    if (typeof e.recordedAt !== "string" || !e.recordedAt) return { entry: null, fetchFailed: false };
     // #4154, achado do self-review do #4342 (3ª rodada): esta é uma 2ª
     // leitura da mesma info que normalizePostmasterSpamEntry já normaliza no
     // worker (via GET /api/postmaster-spam) — sem repassar producedBy aqui, o
@@ -288,28 +323,44 @@ export async function fetchPostmasterSpamEntry(
     // (achado item 3 do fleet review pré-merge do #4779), mesmo com o KV
     // gravado corretamente pelo produtor.
     return {
-      date: typeof e.date === "string" ? e.date : "",
-      spamRatePct: e.spamRatePct,
-      recordedAt: e.recordedAt,
-      producedBy: e.producedBy === "manual" || e.producedBy === "auto" ? e.producedBy : undefined,
-      daysWithData: typeof e.daysWithData === "number" && Number.isFinite(e.daysWithData) ? e.daysWithData : undefined,
-      daysProbed: typeof e.daysProbed === "number" && Number.isFinite(e.daysProbed) ? e.daysProbed : undefined,
-      worstCampaignSpamRatePct:
-        typeof e.worstCampaignSpamRatePct === "number" && Number.isFinite(e.worstCampaignSpamRatePct)
-          ? e.worstCampaignSpamRatePct
-          : undefined,
-      worstCampaignFeedbackLoopId:
-        typeof e.worstCampaignFeedbackLoopId === "string" && e.worstCampaignFeedbackLoopId
-          ? e.worstCampaignFeedbackLoopId
-          : undefined,
-      worstCampaignDaysWithData:
-        typeof e.worstCampaignDaysWithData === "number" && Number.isFinite(e.worstCampaignDaysWithData)
-          ? e.worstCampaignDaysWithData
-          : undefined,
+      entry: {
+        date: typeof e.date === "string" ? e.date : "",
+        spamRatePct: e.spamRatePct,
+        recordedAt: e.recordedAt,
+        producedBy: e.producedBy === "manual" || e.producedBy === "auto" ? e.producedBy : undefined,
+        daysWithData: typeof e.daysWithData === "number" && Number.isFinite(e.daysWithData) ? e.daysWithData : undefined,
+        daysProbed: typeof e.daysProbed === "number" && Number.isFinite(e.daysProbed) ? e.daysProbed : undefined,
+        worstCampaignSpamRatePct:
+          typeof e.worstCampaignSpamRatePct === "number" && Number.isFinite(e.worstCampaignSpamRatePct)
+            ? e.worstCampaignSpamRatePct
+            : undefined,
+        worstCampaignFeedbackLoopId:
+          typeof e.worstCampaignFeedbackLoopId === "string" && e.worstCampaignFeedbackLoopId
+            ? e.worstCampaignFeedbackLoopId
+            : undefined,
+        worstCampaignDaysWithData:
+          typeof e.worstCampaignDaysWithData === "number" && Number.isFinite(e.worstCampaignDaysWithData)
+            ? e.worstCampaignDaysWithData
+            : undefined,
+      },
+      fetchFailed: false,
     };
   } catch {
-    return null;
+    return { entry: null, fetchFailed: true };
   }
+}
+
+/** Thin wrapper de `fetchPostmasterSpamEntryDetailed` — só a `entry`, sem a
+ * distinção `fetchFailed` (#5412). Mantido pra não tocar a assinatura dos
+ * ~5 call sites existentes (clarice-check-semaphore.ts, clarice-envio-risk.ts,
+ * clarice-plan-wave.ts, este próprio arquivo) — nenhum deles precisa
+ * distinguir fetch-falho de fetch-sem-leitura; ambos já tratavam `null` como
+ * "indeterminate" (mesmo resultado de `resolveSpamSignal`), fail-safe. */
+export async function fetchPostmasterSpamEntry(
+  dashboardUrl: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<PostmasterSpamEntryPick | null> {
+  return (await fetchPostmasterSpamEntryDetailed(dashboardUrl, fetchFn)).entry;
 }
 
 /**
@@ -615,6 +666,35 @@ export function buildRampManifest(volumes: number[], dayLabels: string[] = DAY_L
 /** `totalRequested` cabe no crédito restante do ciclo Brevo? Pura, testável. */
 export function creditCoversPlan(totalRequested: number, credits: number): boolean {
   return totalRequested <= credits;
+}
+
+/**
+ * Seleção de audiência ramp-warm disponível — MESMOS 3 guards que a fila
+ * REAL (`clarice-build-segment.ts --group ramp-warm`) e `clarice-plan-wave.ts`
+ * (#5402/#5395, #5410) já aplicam, na mesma ordem:
+ *   1. `segmentRampWarm` com o cutoff `novos`/`rampa` (#5424/#5410) — exclui
+ *      quem ainda está na janela `novos`.
+ *   2. `excludeCommittedToQueuedCampaigns` — exclui quem já está comprometido
+ *      com uma campanha Brevo AGENDADA (queued) OU JÁ DISPARADA (sent).
+ *   3. `excludeSentOrQueued` (#5403) — exclui quem já está rastreado em
+ *      `sent-or-queued.json` (guard cycle-wide, cobre órfãos de replan que o
+ *      guard 2 sozinho não vê).
+ * Extraída como função pura pra ser testável sem SQLite/Brevo/filesystem — os
+ * 2 call sites do achado #5403/#5424 (`--build-audience` deste script E
+ * `weekly-send-plan-audience.ts`, via import direto) montam os 3 conjuntos
+ * de input e delegam aqui, garantindo que não voltem a divergir.
+ */
+export function selectAvailableRampWarm(
+  rows: StoreRow[],
+  opts: {
+    committedListIds: ReadonlySet<string>;
+    sentOrQueuedEmails: ReadonlySet<string>;
+    cutoffNovosIso: string | null;
+  },
+): (StoreRow & { name: string | null })[] {
+  const rampWarm = segmentRampWarm(rows, { cutoffNovosIso: opts.cutoffNovosIso }) as (StoreRow & { name: string | null })[];
+  const committedFiltered = excludeCommittedToQueuedCampaigns(rampWarm, opts.committedListIds) as (StoreRow & { name: string | null })[];
+  return excludeSentOrQueued(committedFiltered, opts.sentOrQueuedEmails) as (StoreRow & { name: string | null })[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,8 +1285,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       db.close();
     }
 
-    const rampWarm = segmentRampWarm(rows) as (StoreRow & { name: string | null })[];
-    const ordered = excludeCommittedToQueuedCampaigns(rampWarm, committedListIds) as (StoreRow & { name: string | null })[];
+    // #5424/#5403: mesmo cutoff novos/rampa (#5410) + guard cycle-wide
+    // sent-or-queued.json (#5402/#5395) que a fila REAL
+    // (`clarice-build-segment.ts --group ramp-warm`) já aplica em produção —
+    // ver docstring de `selectAvailableRampWarm` abaixo.
+    const novosCutoff = readNovosCutoff(CLARICE_BASE);
+    const sentOrQueuedEmails = loadSentOrQueuedEmails(clariceSegmentsDir(cycle));
+    const ordered = selectAvailableRampWarm(rows, {
+      committedListIds,
+      sentOrQueuedEmails,
+      cutoffNovosIso: novosCutoff?.cutoffIso ?? null,
+    });
     console.error(`Audiência elegível (ramp-warm): ${ordered.length.toLocaleString("pt-BR")} contatos.`);
 
     const extraEmails = parseExtraEmailArg(getArg(argv, "extra-email"));
