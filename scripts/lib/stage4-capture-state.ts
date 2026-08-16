@@ -132,6 +132,11 @@ export function writeStage4CaptureState(
   return next;
 }
 
+const FIELD_BY_FLAG: Record<string, keyof Omit<Stage4CaptureState, "capturedAt">> = {
+  "whatsapp-url": "whatsappUrl",
+  "meta-description-suggestion": "metaDescriptionSuggestion",
+};
+
 // CLI:
 //   Escrever (1+ flags):
 //     npx tsx scripts/lib/stage4-capture-state.ts --edition-dir <dir> \
@@ -152,10 +157,24 @@ if (isMainModule(import.meta.url)) {
   if (parsed.flags.has("read")) {
     console.log(JSON.stringify(readStage4CaptureState(editionDir)));
   } else {
+    // (#5437, espelha o fix de #5434 em preflight-state.ts) Uma flag de
+    // valor conhecida (--whatsapp-url, --meta-description-suggestion)
+    // passada sem valor (fim dos args, ou seguida de outra `--flag`)
+    // degrada em `parseArgs` para `flags.add(flag)` em vez de
+    // `values[flag]` — sem este check, o write dessa flag específica seria
+    // silenciosamente omitido do patch (indistinguível de "flag nem foi
+    // passada"). Falhar alto (exit 2) em vez de degradar em silêncio.
+    const missingValue = Object.keys(FIELD_BY_FLAG).filter((flag) => parsed.flags.has(flag));
+    if (missingValue.length > 0) {
+      console.error(
+        `--${missingValue.join(" e --")} requer um valor (mesmo que vazio, use "") — recebido sem valor`,
+      );
+      process.exit(2);
+    }
     const patch: Partial<Omit<Stage4CaptureState, "capturedAt">> = {};
-    if (parsed.values["whatsapp-url"] !== undefined) patch.whatsappUrl = parsed.values["whatsapp-url"];
-    if (parsed.values["meta-description-suggestion"] !== undefined) {
-      patch.metaDescriptionSuggestion = parsed.values["meta-description-suggestion"];
+    for (const [flag, field] of Object.entries(FIELD_BY_FLAG)) {
+      const raw = parsed.values[flag];
+      if (raw !== undefined) patch[field] = raw;
     }
     if (Object.keys(patch).length === 0) {
       console.error("nada para escrever — passe --whatsapp-url e/ou --meta-description-suggestion, ou --read");

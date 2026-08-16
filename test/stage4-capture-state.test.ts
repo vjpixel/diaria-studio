@@ -8,14 +8,19 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   readStage4CaptureState,
   writeStage4CaptureState,
   type Stage4CaptureState,
 } from "../scripts/lib/stage4-capture-state.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT = resolve(ROOT, "scripts", "lib", "stage4-capture-state.ts");
 
 const DEFAULT: Stage4CaptureState = {
   whatsappUrl: null,
@@ -172,5 +177,127 @@ describe("readStage4CaptureState / writeStage4CaptureState (#5414)", () => {
     assert.throws(() => readFileSync(statePath, "utf8"), /EISDIR/);
 
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// (#5437) Espelha test/preflight-state.test.ts:266/:284 — mesma classe de
+// bug que o #5434 corrigiu em preflight-state.ts: uma flag de valor
+// conhecida passada sem argumento (fim dos args, ou seguida de outra
+// `--flag`) degradava em silêncio em `parseArgs` (vira flag booleana em vez
+// de entrar em `values`), omitindo o write daquele campo do patch sem erro
+// nenhum — indistinguível de "flag nem foi passada".
+describe("stage4-capture-state.ts CLI (#5414, #5437)", () => {
+  let editionDir: string;
+
+  before(() => {
+    editionDir = mkdtempSync(join(tmpdir(), "stage4-capture-state-cli-"));
+  });
+
+  after(() => {
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("--read sem arquivo -> JSON default", () => {
+    const out = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    assert.deepEqual(JSON.parse(out.trim()), DEFAULT);
+  });
+
+  it("escrever via flags e reler via --read", () => {
+    execFileSync(
+      "npx",
+      [
+        "tsx",
+        SCRIPT,
+        "--edition-dir",
+        editionDir,
+        "--whatsapp-url",
+        "https://diar.ia.br/e/260817?w=1",
+        "--meta-description-suggestion",
+        "uma-sugestao-sem-espaco",
+      ],
+      { cwd: ROOT, shell: true },
+    );
+    const out = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    const state = JSON.parse(out.trim());
+    assert.equal(state.whatsappUrl, "https://diar.ia.br/e/260817?w=1");
+    assert.equal(state.metaDescriptionSuggestion, "uma-sugestao-sem-espaco");
+    assert.ok(state.capturedAt);
+  });
+
+  it("sem --edition-dir -> exit != 0", () => {
+    assert.throws(() => {
+      execFileSync("npx", ["tsx", SCRIPT, "--read"], { cwd: ROOT, shell: true, stdio: "pipe" });
+    });
+  });
+
+  it("sem flags de escrita e sem --read -> exit != 0", () => {
+    assert.throws(() => {
+      execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir], { cwd: ROOT, shell: true, stdio: "pipe" });
+    });
+  });
+
+  // --whatsapp-url sem valor (fim dos args) degradava em silêncio antes do
+  // fix: parseArgs trata isso como flag booleana, `values["whatsapp-url"]`
+  // fica undefined, e o write da patch simplesmente pulava esse campo sem
+  // erro nenhum. Regressão: falhar alto (exit 2), nunca sair 0.
+  it("--whatsapp-url sem valor (fim dos args) -> exit 2, nunca degrada em silêncio", () => {
+    assert.throws(
+      () => {
+        execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--whatsapp-url"], {
+          cwd: ROOT,
+          shell: true,
+          stdio: "pipe",
+        });
+      },
+      (err: unknown) => {
+        assert.equal((err as { status: number }).status, 2);
+        return true;
+      },
+    );
+  });
+
+  // Mesmo caso, mas com uma flag válida em seguida — a flag sem valor não
+  // pode ser mascarada pelo sucesso da outra, e nada deve ser escrito.
+  it("--meta-description-suggestion sem valor seguido de --whatsapp-url válida -> exit 2, não escreve nada", () => {
+    const before = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    assert.throws(
+      () => {
+        execFileSync(
+          "npx",
+          [
+            "tsx",
+            SCRIPT,
+            "--edition-dir",
+            editionDir,
+            "--meta-description-suggestion",
+            "--whatsapp-url",
+            "https://diar.ia.br/e/260817?w=999",
+          ],
+          { cwd: ROOT, shell: true, stdio: "pipe" },
+        );
+      },
+      (err: unknown) => {
+        assert.equal((err as { status: number }).status, 2);
+        return true;
+      },
+    );
+    const after = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    assert.equal(after, before);
   });
 });
