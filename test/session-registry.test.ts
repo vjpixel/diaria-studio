@@ -583,4 +583,17 @@ describe("clock skew — listActiveSessions/acquireMergeLock nunca escondem/roub
     assert.match(stderrOutput, /clock skew/i);
     assert.match(stderrOutput, /sess-a/);
   });
+
+  it("ignora arquivos com sufixo -safeBackup- no listActiveSessions", () => {
+    const root = freshRoot();
+    const dir = sessionsDir(root);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "overnight-predator-sess123-predator-safeBackup-0001.json"), JSON.stringify({
+      sessionId: "sess123",
+      kind: "overnight",
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+    }));
+    assert.equal(listActiveSessions(root).length, 0);
+  });
 });
