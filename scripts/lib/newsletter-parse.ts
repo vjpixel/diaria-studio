@@ -1802,6 +1802,28 @@ export function readBoxDivulgacaoAltForSlot(
     if (!boxes || typeof boxes !== "object") return null;
     const filename = boxes[`slot${slot}`];
     if (typeof filename !== "string" || !filename) return null;
+    return readBoxDivulgacaoAltForFile(filename, rootDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #5457: mesma leitura de `alt:` de `readBoxDivulgacaoAltForSlot`, mas por
+ * NOME DE ARQUIVO direto em vez de resolvido a partir de
+ * `platform.config.json > boxes_divulgacao.slot{N}`. Existe pra permitir que
+ * callers com uma fonte de resolução diferente do config estático (ex: o
+ * snippet REALMENTE usado num slot, registrado em
+ * `_internal/box-selection.json` pela seleção automática do #4626) consultem
+ * o `alt:` do arquivo certo — ver `checkBoxDivulgacaoAltMissing` em
+ * `invariant-checks/stage-4.ts`, que passou a preferir essa fonte quando
+ * disponível em vez de sempre reler o config estático.
+ */
+export function readBoxDivulgacaoAltForFile(
+  filename: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  try {
     const snippetPath = resolve(rootDir, "data", "snippets", filename);
     if (!existsSync(snippetPath)) return null;
     const alt = parseBoxHeaderField(readFileSync(snippetPath, "utf8"), "alt");
