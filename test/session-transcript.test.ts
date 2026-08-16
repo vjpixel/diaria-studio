@@ -10,6 +10,7 @@ import {
   parseTranscriptFile,
   listTranscriptFiles,
   collectUsageInWindow,
+  currentSessionId,
 } from "../scripts/lib/session-transcript.ts";
 
 describe("encodeProjectDirName", () => {
@@ -201,5 +202,144 @@ describe("collectUsageInWindow", () => {
     assert.equal(result.entries.length, 0);
     assert.equal(result.tokensIn, 0);
     assert.equal(result.tokensOut, 0);
+  });
+});
+
+describe("currentSessionId (#5413)", () => {
+  it("lê CLAUDE_CODE_SESSION_ID do ambiente", () => {
+    assert.equal(currentSessionId({ CLAUDE_CODE_SESSION_ID: "abc-123" }), "abc-123");
+  });
+
+  it("devolve null quando ausente, vazio ou só espaço", () => {
+    assert.equal(currentSessionId({}), null);
+    assert.equal(currentSessionId({ CLAUDE_CODE_SESSION_ID: "" }), null);
+    assert.equal(currentSessionId({ CLAUDE_CODE_SESSION_ID: "   " }), null);
+  });
+});
+
+describe("collectUsageInWindow — filtro por sessão (#5413)", () => {
+  const WIN = ["2026-05-08T08:30:00.000Z", "2026-05-08T08:48:00.000Z"] as const;
+
+  /**
+   * Reproduz a contaminação medida na edição 260814: a sessão da edição
+   * (`edicao`) e uma sessão concorrente (`concorrente`, um /diaria-continuo
+   * rodando ao lado) gravam turnos na MESMA janela de tempo do stage. Antes
+   * do #5413 os dois entravam na conta — 29% do total atribuído à edição
+   * vinha de sessões que não eram a edição.
+   */
+  function setupTwoSessions(): string {
+    const dir = mkdtempSync(join(tmpdir(), "session-filter-test-"));
+    writeFileSync(
+      join(dir, "edicao.jsonl"),
+      usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }),
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, "concorrente.jsonl"),
+      usageLine({
+        timestamp: "2026-05-08T08:40:00.000Z",
+        message: { model: "claude-sonnet-5", usage: { input_tokens: 900, output_tokens: 700 } },
+      }),
+      "utf8",
+    );
+    return dir;
+  }
+
+  it("conta SÓ a sessão pedida e reporta a concorrente como excluída", () => {
+    const dir = setupTwoSessions();
+    try {
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.sessionFilter, "current_session");
+      assert.equal(r.filterReason, undefined);
+      assert.equal(r.entries.length, 1);
+      // só os 100+10+20 da edição — os 900 da concorrente NÃO entram
+      assert.equal(r.tokensIn, 130);
+      assert.equal(r.tokensOut, 50);
+      assert.equal(r.sessionsExcluded, 1);
+      assert.deepEqual(r.models, ["claude-opus-4-8"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem sessionId mantém o comportamento antigo, mas diz que não filtrou", () => {
+    const dir = setupTwoSessions();
+    try {
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1]);
+      assert.equal(r.sessionFilter, "all_sessions");
+      assert.equal(r.filterReason, "no_session_id");
+      assert.equal(r.tokensIn, 130 + 900);
+      assert.equal(r.sessionsExcluded, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sessionId inexistente cai em all_sessions com motivo — nunca devolve vazio silencioso", () => {
+    const dir = setupTwoSessions();
+    try {
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "sessao-que-nao-existe" });
+      assert.equal(r.sessionFilter, "all_sessions");
+      assert.equal(r.filterReason, "session_file_not_found");
+      assert.equal(r.entries.length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("não conta como excluída uma sessão concorrente FORA da janela", () => {
+    const dir = mkdtempSync(join(tmpdir(), "session-filter-test-"));
+    try {
+      writeFileSync(join(dir, "edicao.jsonl"), usageLine(), "utf8");
+      writeFileSync(
+        join(dir, "outra.jsonl"),
+        usageLine({ timestamp: "2026-05-08T23:00:00.000Z" }),
+        "utf8",
+      );
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "edicao" });
+      assert.equal(r.sessionsExcluded, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("collectUsageInWindow — tokens de subagente (#5413)", () => {
+  const WIN = ["2026-05-08T08:30:00.000Z", "2026-05-08T08:48:00.000Z"] as const;
+
+  it("devolve null (não 0) quando nenhum turno sidechain existe — o caso real do harness", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidechain-test-"));
+    try {
+      writeFileSync(join(dir, "s.jsonl"), usageLine(), "utf8");
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "s" });
+      assert.equal(r.subagentTokensIn, null, "null = não registrado, nunca 'custou zero'");
+      assert.equal(r.subagentTokensOut, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("soma sidechain separadamente se o harness voltar a gravá-lo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidechain-test-"));
+    try {
+      writeFileSync(
+        join(dir, "s.jsonl"),
+        [
+          usageLine(),
+          usageLine({
+            isSidechain: true,
+            message: { model: "claude-sonnet-5", usage: { input_tokens: 500, output_tokens: 40 } },
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+      const r = collectUsageInWindow(dir, WIN[0], WIN[1], { sessionId: "s" });
+      assert.equal(r.subagentTokensIn, 500);
+      assert.equal(r.subagentTokensOut, 40);
+      // continua dentro do total — o campo é decomposição, não exclusão
+      assert.equal(r.tokensIn, 130 + 500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

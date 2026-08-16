@@ -17,20 +17,36 @@
  * harness pra nomear o diretório de projeto (confirmado empiricamente:
  * `C:\Users\x\Projects\diaria-studio` → `C--Users-x-Projects-diaria-studio`).
  *
- * Limitação honesta (documentada, não escondida — mesma disciplina de
- * `coordinator_tokens_estimate`/`subagent_metrics` do overnight/develop,
- * #3453/#3454): subagentes despachados via `Agent()` SEM `isolation:
- * "worktree"` escrevem no MESMO diretório de projeto (mesmo cwd) — suas
- * sessões aparecem como arquivos `.jsonl` adicionais nesse diretório, dentro
- * da mesma janela de tempo do stage, e SÃO capturados por
- * `collectUsageInWindow` (que varre TODOS os arquivos do diretório, não só o
- * da sessão corrente). Subagentes com `isolation: "worktree"` escrevem num
- * cwd diferente → diretório de projeto diferente → NÃO capturados (gap
- * conhecido, documentado no PR). Sessões concorrentes não relacionadas ao
- * pipeline que rodarem no MESMO diretório de projeto durante a mesma janela
- * (ex: editor abre um terminal Claude Code separado no repo enquanto uma
- * edição roda) inflam o número — mitigado mas não eliminado pela janela de
- * tempo estreita (start/end do próprio stage).
+ * ## Duas limitações, medidas no #5413 (16/08/2026) — corrigido o que dava
+ *
+ * A versão original deste módulo afirmava que subagentes despachados via
+ * `Agent()` sem `isolation: "worktree"` ERAM capturados por
+ * `collectUsageInWindow`. **Isso é falso** no harness 2.1.233: varredura dos
+ * 300 `.jsonl` do diretório de projeto não achou UM único turno com
+ * `isSidechain: true`. O custo de subagente não está registrado em transcript
+ * nenhum — a edição 260814 teve 44 dispatches de `Agent()` cujo custo não
+ * aparece em número algum.
+ *
+ * 1. **Conta a menos (não corrigível aqui):** subagente não é registrado.
+ *    Em vez de deixar o buraco somido dentro de um número rotulado como
+ *    custo do stage, `collectUsageInWindow` agora devolve
+ *    `subagentTokensIn/Out` explicitamente — `null` quando nenhum turno
+ *    sidechain foi observado. Se o harness voltar a gravá-los, o campo passa
+ *    a somar sozinho (a leitura já está no parser).
+ *
+ * 2. **Conta a mais (corrigida):** varrer TODOS os arquivos do diretório faz
+ *    a janela de tempo do stage capturar qualquer sessão Claude Code
+ *    concorrente no mesmo repo. Medido na 260814: dos 1.001M tokens
+ *    atribuídos, 303M (29%) vieram de 5 sessões humanas paralelas, duas
+ *    delas em branches de feature. Agora o default é filtrar pela sessão
+ *    corrente (`CLAUDE_CODE_SESSION_ID`, exposto pelo harness no ambiente do
+ *    Bash tool); o comportamento antigo continua alcançável via `sessionId:
+ *    null` explícito, e o resultado sempre diz qual dos dois valeu
+ *    (`sessionFilter`) e quantas sessões foram ignoradas
+ *    (`sessionsExcluded`).
+ *
+ * Subagentes com `isolation: "worktree"` escrevem num cwd diferente →
+ * diretório de projeto diferente → também não capturados.
  *
  * Requer `~/.claude/projects/` — só existe em sessão LOCAL (não em
  * cloud/worktree efêmero), consistente com o label `local` da issue #3441
@@ -49,6 +65,25 @@ export interface UsageEntry {
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   sessionFile: string;
+  /**
+   * `true` = turno de subagente (`Agent()`) gravado dentro do transcript do
+   * pai. Nunca observado no harness 2.1.233 (ver #5413 no cabeçalho); a
+   * leitura existe para o dia em que voltar a ser gravado.
+   */
+  isSidechain: boolean;
+}
+
+/**
+ * Id da sessão Claude Code corrente, exposto pelo harness no ambiente de todo
+ * comando do Bash tool. É o nome do arquivo de transcript (`{id}.jsonl`), o
+ * que permite a um script rodado de dentro da sessão saber qual transcript é
+ * o seu. `null` quando ausente (sessão não-Claude, teste, harness antigo).
+ */
+export function currentSessionId(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.CLAUDE_CODE_SESSION_ID;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 /** `~/.claude/projects` — raiz de todos os diretórios de projeto do harness. */
@@ -76,6 +111,7 @@ export function resolveTranscriptsDir(
 interface RawTranscriptLine {
   type?: string;
   timestamp?: string;
+  isSidechain?: boolean;
   message?: {
     model?: string;
     usage?: {
@@ -123,6 +159,7 @@ export function parseTranscriptFile(filePath: string): UsageEntry[] {
       cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
       cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
       sessionFile: filePath,
+      isSidechain: obj.isSidechain === true,
     });
   }
   return entries;
@@ -146,6 +183,37 @@ export interface UsageWindowResult {
   tokensIn: number;
   tokensOut: number;
   models: string[];
+  /**
+   * `current_session` = só o transcript da sessão pedida entrou na conta.
+   * `all_sessions` = TODOS os arquivos do diretório entraram — o número pode
+   * incluir sessões Claude Code concorrentes no mesmo repo (#5413).
+   */
+  sessionFilter: "current_session" | "all_sessions";
+  /** Por que caiu em `all_sessions`. Ausente quando o filtro valeu. */
+  filterReason?: "no_session_id" | "session_file_not_found";
+  /**
+   * Quantos OUTROS transcripts tinham turnos nesta mesma janela e ficaram de
+   * fora. `0` sob `all_sessions` (nada foi excluído). Sob `current_session`,
+   * um valor alto é o sinal de quanta contaminação existiria sem o filtro.
+   */
+  sessionsExcluded: number;
+  /**
+   * Tokens de subagente (`Agent()`) na janela. `null` = nenhum turno
+   * sidechain observado — que é o caso em 100% dos transcripts do harness
+   * 2.1.233. `null` significa "não registrado", NUNCA "custou zero" (#5413).
+   */
+  subagentTokensIn: number | null;
+  subagentTokensOut: number | null;
+}
+
+export interface CollectUsageOptions {
+  /**
+   * Restringe a conta ao transcript `{sessionId}.jsonl`. `null`/omitido varre
+   * o diretório inteiro (comportamento pré-#5413, sujeito a contaminação por
+   * sessão concorrente). O CLI resolve isto via `currentSessionId()`; o núcleo
+   * não lê env, pra continuar testável.
+   */
+  sessionId?: string | null;
 }
 
 /**
@@ -160,29 +228,58 @@ export function collectUsageInWindow(
   transcriptsDir: string,
   startIso: string,
   endIso: string,
+  opts: CollectUsageOptions = {},
 ): UsageWindowResult {
   const files = listTranscriptFiles(transcriptsDir);
   const startMs = new Date(startIso).getTime();
   const endMs = new Date(endIso).getTime();
 
+  // Resolve o alvo do filtro ANTES de ler qualquer arquivo. Um sessionId que
+  // não corresponde a nenhum transcript cai em `all_sessions` com motivo
+  // explícito — nunca devolve vazio silencioso (seria indistinguível de
+  // "stage sem atividade") nem volta ao comportamento antigo sem avisar.
+  const wanted = opts.sessionId ? join(transcriptsDir, `${opts.sessionId}.jsonl`) : null;
+  let sessionFilter: UsageWindowResult["sessionFilter"] = "all_sessions";
+  let filterReason: UsageWindowResult["filterReason"];
+  if (!wanted) {
+    filterReason = "no_session_id";
+  } else if (files.includes(wanted)) {
+    sessionFilter = "current_session";
+  } else {
+    filterReason = "session_file_not_found";
+  }
+
   const entries: UsageEntry[] = [];
+  const excluded = new Set<string>();
   if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
     for (const file of files) {
+      const keep = sessionFilter === "all_sessions" || file === wanted;
       for (const entry of parseTranscriptFile(file)) {
         const ts = new Date(entry.timestamp).getTime();
         if (!Number.isFinite(ts)) continue;
-        if (ts >= startMs && ts <= endMs) entries.push(entry);
+        if (ts < startMs || ts > endMs) continue;
+        if (keep) entries.push(entry);
+        else excluded.add(file);
       }
     }
   }
 
   let tokensIn = 0;
   let tokensOut = 0;
+  let subIn = 0;
+  let subOut = 0;
+  let sawSidechain = false;
   const modelSet = new Set<string>();
   for (const e of entries) {
-    tokensIn += e.inputTokens + e.cacheCreationInputTokens + e.cacheReadInputTokens;
+    const billedIn = e.inputTokens + e.cacheCreationInputTokens + e.cacheReadInputTokens;
+    tokensIn += billedIn;
     tokensOut += e.outputTokens;
     modelSet.add(e.model);
+    if (e.isSidechain) {
+      sawSidechain = true;
+      subIn += billedIn;
+      subOut += e.outputTokens;
+    }
   }
 
   return {
@@ -191,5 +288,10 @@ export function collectUsageInWindow(
     tokensIn,
     tokensOut,
     models: [...modelSet],
+    sessionFilter,
+    ...(filterReason ? { filterReason } : {}),
+    sessionsExcluded: excluded.size,
+    subagentTokensIn: sawSidechain ? subIn : null,
+    subagentTokensOut: sawSidechain ? subOut : null,
   };
 }
