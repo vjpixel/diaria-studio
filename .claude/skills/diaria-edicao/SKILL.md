@@ -135,6 +135,16 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 
 Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
 
+## Execução stage-a-stage com contexto limpo (#5414) — recomendado, custo bem menor
+
+`/diaria-edicao` roda a pipeline inteira numa conversa só, mas isso não é necessário nem ideal: o custo de uma edição é, com boa aproximação, turnos × contexto residente, e rodar tudo numa sessão só deixa o contexto crescer sem interrupção — a auditoria de 260816 (#5414) mediu ~708M tokens numa edição real (159k→933k de contexto entre Stage 0 e o fim do Stage 4, sem nenhuma compactação até o Stage 4 estar quase pronto) contra ~360M simulados rodando cada stage com contexto limpo — **corte de ~49%**, sem remover um único passo do pipeline.
+
+Rodar stage a stage já era suportado antes desta issue (as skills isoladas `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`, `/diaria-6-agendamento` sempre existiram, e o resume via sentinelas em disco já era o mecanismo padrão). O que faltava era **descartar o contexto entre stages com segurança**: os playbooks tinham 17 pontos que mandavam "setar em sessão" / "capturar como" — sinais de saúde de MCP/REST apurados no Stage 0 (`CHROME_MCP`, `GMAIL_MCP`, `BEEHIIV_MCP`, `CLARICE_REST`, `CLOUDFLARE_TOKEN_OK`), o dispatch do É IA? em background (Stage 1 → Stage 3), e 2 valores computados no meio do Stage 4 (`whatsapp_url`, `meta_description_suggestion`) — cujo único lugar de existência era a conversa. Fechado pelo #5414: esses 9 valores agora são persistidos em `{EDITION_DIR}/_internal/` (`preflight-state.json`, `eia-dispatch-state.json`, `stage4-capture-state.json` — ver `scripts/lib/preflight-state.ts`, `scripts/lib/eia-dispatch-state.ts`, `scripts/lib/stage4-capture-state.ts`) e cada stage que precisa deles lê do disco no próprio início, em vez de depender de "lembrar" da conversa.
+
+**Na prática:** abrir uma sessão nova por stage é seguro e é o jeito recomendado de economizar token numa edição — encerrar a sessão depois de `/diaria-1-pesquisa`, abrir outra pra `/diaria-2-escrita {AAMMDD}`, e assim por diante, cada uma com contexto limpo (só o system prompt + CLAUDE.md + o playbook do próprio stage). O resume via sentinelas em disco (§0b do Stage 0, e o preflight de sentinel no início de cada stage isolado) garante que a sessão nova retome exatamente de onde a anterior parou. `/diaria-edicao` numa sessão única continua funcionando igual — nada neste ponto mudou o comportamento dela, só passou a ser opcional manter tudo numa conversa só.
+
+**O que isso não cobre:** só os 9 valores acima foram auditados e persistidos. Se uma sessão nova de algum stage notar um comportamento diferente do que rodar tudo numa conversa só (algo que só existia "na cabeça" do stage anterior e não em nenhum arquivo), é sinal de mais um ponto não identificado — reportar em issue nova (o #5419 cobre rodar uma edição de controle formal comparando os dois modos; até lá, tratar qualquer divergência como achado a investigar, não como esperado).
+
 ## Outputs
 
 Todos em `data/editions/{AAMMDD}/` (ex: `260418/`):

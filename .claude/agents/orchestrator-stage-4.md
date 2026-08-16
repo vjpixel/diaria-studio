@@ -178,7 +178,11 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
     console.log(buildWhatsappEditionUrl('{AAMMDD}', '{título_d1}'));
   "
   ```
-  Capturar como `{whatsapp_url}` — incluído no gate (§4d). Se o editor mudar o título do D1 via "ajustar" (§4d.1), recomputar antes de re-apresentar o gate (mesma cascata de re-render já disparada pela mudança de título).
+  Capturar como `{whatsapp_url}` e **persistir em disco (#5414)** — o Stage 4 é o mais longo do pipeline (587 turnos medidos na auditoria do #5414); um corte de contexto entre este passo e o gate (§4d) não pode perder o valor:
+  ```bash
+  npx tsx scripts/lib/stage4-capture-state.ts --edition-dir {EDITION_DIR} --whatsapp-url "{whatsapp_url}"
+  ```
+  Incluído no gate (§4d), que lê de volta deste arquivo. Se o editor mudar o título do D1 via "ajustar" (§4d.1), recomputar E regravar antes de re-apresentar o gate (mesma cascata de re-render já disparada pela mudança de título).
 
 **4c.1c — Sugestão de meta description do D1 (#5101 item 2):** o preview text da Beehiiv (teaser de e-mail, geralmente sobre D2/D3) também alimenta `description`/`og:description`/`twitter:description` da página web publicada — funciona como preheader, mas produz um snippet de busca/card social que descreve as OUTRAS matérias, não a do título da página (D1). Computar a sugestão (pura, determinística, sem LLM):
   ```bash
@@ -188,7 +192,11 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
     console.log(s ?? '');
   "
   ```
-  Capturar como `{meta_description_suggestion}` — incluído no gate (§4d), puramente informativo. **Não decidir sozinho trocar o preview text em produção** — é decisão do editor (trade-off contra a taxa de abertura do e-mail): o editor cola esta sugestão no campo de SEO description da Beehiiv **se esse campo existir separado do preview text** — não confirmado a partir daqui (sem acesso à UI da Beehiiv nesta sessão; checar manualmente e registrar em `docs/seo-notes.md` se ainda não estiver lá). Se `{corpo_d1}` estiver vazio/nulo (ex: falha de parse) OU se o 1º parágrafo do corpo não tiver prosa aproveitável (ex: só uma imagem ou um link markdown, sem texto ao redor), `buildMetaDescriptionSuggestion` retorna `null` (`s ?? ''` acima já normaliza pra string vazia na captura) — mostrar `⚠️ sugestão indisponível` nesse caso, sem bloquear o gate.
+  Capturar como `{meta_description_suggestion}` e **persistir em disco (#5414)**, mesmo motivo do §4c.1b acima:
+  ```bash
+  npx tsx scripts/lib/stage4-capture-state.ts --edition-dir {EDITION_DIR} --meta-description-suggestion "{meta_description_suggestion}"
+  ```
+  (String vazia é um valor legítimo já capturado — grava normalmente, não pular a escrita.) Incluído no gate (§4d), que lê de volta deste arquivo. Puramente informativo. **Não decidir sozinho trocar o preview text em produção** — é decisão do editor (trade-off contra a taxa de abertura do e-mail): o editor cola esta sugestão no campo de SEO description da Beehiiv **se esse campo existir separado do preview text** — não confirmado a partir daqui (sem acesso à UI da Beehiiv nesta sessão; checar manualmente e registrar em `docs/seo-notes.md` se ainda não estiver lá). Se `{corpo_d1}` estiver vazio/nulo (ex: falha de parse) OU se o 1º parágrafo do corpo não tiver prosa aproveitável (ex: só uma imagem ou um link markdown, sem texto ao redor), `buildMetaDescriptionSuggestion` retorna `null` (`s ?? ''` acima já normaliza pra string vazia na captura) — mostrar `⚠️ sugestão indisponível` nesse caso, sem bloquear o gate.
 
 **4c.2 — Lints consolidados:**
 ```bash
@@ -501,6 +509,12 @@ Capturar os dois e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate 
 
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
 
+**Ler `{whatsapp_url}`/`{meta_description_suggestion}` do disco antes de montar o resumo (#5414)** — não confiar em variável de sessão, um corte de contexto entre §4c e aqui não pode fazer esses dois valores desaparecerem do gate:
+```bash
+npx tsx scripts/lib/stage4-capture-state.ts --edition-dir {EDITION_DIR} --read
+```
+Extrair `whatsappUrl` e `metaDescriptionSuggestion` do JSON retornado. Se `whatsappUrl` vier `null` (nunca computado — §4c.1b não rodou), mostrar `⚠️ URL do WhatsApp indisponível`. Se `metaDescriptionSuggestion` vier `null`, mostrar `⚠️ sugestão indisponível` (mesmo texto que já vale pra string vazia — os dois casos renderizam igual no gate, só a causa muda).
+
 Apresentar ao editor numa visualização limpa:
 
 ```
@@ -579,8 +593,8 @@ Regras de apresentação:
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
-- `{whatsapp_url}` (#4570) = saída de `buildWhatsappEditionUrl` (§4c.1b) — a URL que já está baked-in no bloco WhatsApp dentro do D1 (#5152). Puramente informativa aqui (nunca bloqueia o gate) — o guard que de fato BLOQUEIA quando essa previsão não bate com o slug real do post roda no Stage 6 (`scripts/check-whatsapp-slug-guard.ts`, ver `orchestrator-stage-6.md` §6d), porque o post só existe na Beehiiv a partir do Stage 5.
-- `{meta_description_suggestion}` (#5101 item 2) = saída de `buildMetaDescriptionSuggestion` (§4c.1c) — sugestão pura, sem LLM, derivada do 1º parágrafo do corpo do D1 (`null` quando não há prosa aproveitável, normalizado pra string vazia na captura de §4c.1c). Puramente informativa (nunca bloqueia o gate); string vazia → mostrar `⚠️ sugestão indisponível`.
+- `{whatsapp_url}` (#4570) = saída de `buildWhatsappEditionUrl` (§4c.1b), lida de `stage4-capture-state.json` (#5414, ver acima) — a URL que já está baked-in no bloco WhatsApp dentro do D1 (#5152). Puramente informativa aqui (nunca bloqueia o gate) — o guard que de fato BLOQUEIA quando essa previsão não bate com o slug real do post roda no Stage 6 (`scripts/check-whatsapp-slug-guard.ts`, ver `orchestrator-stage-6.md` §6d), porque o post só existe na Beehiiv a partir do Stage 5.
+- `{meta_description_suggestion}` (#5101 item 2) = saída de `buildMetaDescriptionSuggestion` (§4c.1c), lida de `stage4-capture-state.json` (#5414, ver acima) — sugestão pura, sem LLM, derivada do 1º parágrafo do corpo do D1 (`null` quando não há prosa aproveitável, normalizado pra string vazia na captura de §4c.1c). Puramente informativa (nunca bloqueia o gate); string vazia → mostrar `⚠️ sugestão indisponível`.
 
 Logar a resposta:
 ```bash

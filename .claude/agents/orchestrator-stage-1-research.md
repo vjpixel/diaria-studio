@@ -57,11 +57,16 @@ O `scripts/eia-compose.ts` (#110 fix 2) não depende de nenhum output do pipelin
 npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir {EDITION_DIR}/
 ```
 
-Armazenar `eia_bash_id` (output do `Bash(run_in_background=true)`) e `eia_dispatch_ts` (timestamp). Stage 3 usa o bashId pra detectar conclusão ou faz file-presence check em `{EDITION_DIR}/01-eia.md`.
+Armazenar `eia_bash_id` (output do `Bash(run_in_background=true)`) e `eia_dispatch_ts` (timestamp). **Persistir em disco (#5414)** — Stage 3 pode rodar como sessão nova (`/diaria-3-imagens`), sem `eia_bash_id` em memória:
+```bash
+npx tsx scripts/lib/eia-dispatch-state.ts --edition-dir {EDITION_DIR} \
+  --bash-id "{eia_bash_id}" --dispatched-at "{eia_dispatch_ts}"
+```
+Stage 3 usa o `bashId` (só útil na mesma sessão) pra detectar conclusão OU — sempre, inclusive em sessão nova — faz file-presence check em `{EDITION_DIR}/01-eia.md`, lendo `dispatchedAt` de `eia-dispatch-state.json` (via `scripts/lib/eia-dispatch-state.ts`) para o timeout de 10min do §3a.
 
 **Logging por caminho** (#110 fix 4):
 - **Dispatch normal**: logar `info 'eia dispatched (background bash)'`.
-- **Skip por resume** (`01-eia.md` já existir): logar `info 'eia dispatch skipped: already_exists (resume)'`. Não dispatchar.
+- **Skip por resume** (`01-eia.md` já existir): logar `info 'eia dispatch skipped: already_exists (resume)'`. Não dispatchar (não gravar `eia-dispatch-state.json`).
 - **Skip por dispatch failure** (Bash run_in_background indisponível ou erro imediato): logar `warn 'eia dispatch skipped: bash_unavailable'`. Ainda assim prosseguir com a Etapa 1 — Etapa 3 sinaliza ausência e oferece retry.
 
 **Validação no gate da Etapa 1** (#110 fix 1): antes do gate principal, checar se `{EDITION_DIR}/01-eia.md` existe OU se há background bash ativo (via `eia_bash_id`). Se nenhum dos dois (skip silencioso), incluir bullet no relatório: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`

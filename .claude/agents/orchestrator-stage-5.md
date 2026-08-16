@@ -24,6 +24,12 @@ LinkedIn nao usa Chrome — Cloudflare Worker enfileira em KV e dispara Make web
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
 
+**`CHROME_MCP` (#5414):** ler o sinal de saude do Claude in Chrome MCP apurado pelo Stage 0, do disco em vez de memoria de sessao (este stage roda com frequencia como sessao nova via `/diaria-5-publicacao`):
+```bash
+npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read
+```
+Extrair `chromeMcp` do JSON retornado. Se `chromeMcp === false`: **re-probar** (`mcp__claude-in-chrome__tabs_context_mcp`) antes de decidir — o preflight pode ter rodado ha horas (edicao retomada). Se o probe atual falhar tambem: pular o Passo 5c-1 (Newsletter Beehiiv) direto, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"` — nao falhar o stage inteiro por causa disso. Se o probe atual suceder (preflight estava desatualizado): prosseguir normal e regravar o sinal (`--chrome-mcp true`) para refletir o estado atual. `null` (arquivo ausente — edicao pre-#5414) tem a mesma semantica permissiva de sempre: probar direto, sem pre-warn.
+
 ### Pre-condicao: sentinel Stage 4
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-4.md §Escrever sentinel de conclusao do Stage 4 -->
@@ -416,7 +422,7 @@ Proximo passo → /diaria-6-agendamento {AAMMDD}
 (agendamento Beehiiv + auto-reporter)
 ```
 
-Se alguma parte foi pulada (ex: `CHROME_MCP = false`), incluir bloco de retomada explicito:
+Se alguma parte foi pulada (ex: `chromeMcp === false`, lido do `preflight-state.json` no inicio deste stage — ver acima), incluir bloco de retomada explicito:
 
 ```
 Retomada manual pendente

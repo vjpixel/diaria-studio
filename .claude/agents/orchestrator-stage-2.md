@@ -17,6 +17,7 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 ```bash
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
+**`CLARICE_REST` (#5414):** ler do disco (`npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read`, campo `clariceRest`) em vez de memória de sessão — roda com frequência como sessão nova via `/diaria-2-escrita`. `null` = mesma semântica permissiva de sempre: tentar o fallback Clarice abaixo mesmo assim.
 
 ### Pré-condição: sentinel Stage 1
 
@@ -293,7 +294,7 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
      npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'
      ```
 
-     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `CLARICE_REST = false` (do Stage 0 healthcheck), pular direto pro halt banner — sem chance de fallback bem-sucedido.
+     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `clariceRest === false` (lido do `preflight-state.json` no início deste stage — ver acima), pular direto pro halt banner — sem chance de fallback bem-sucedido.
 
      **Skip consciente (#2320).** Se editor aprovar o skip após halt (MCP + REST falharam):
      ```bash
