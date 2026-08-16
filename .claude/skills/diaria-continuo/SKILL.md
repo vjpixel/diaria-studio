@@ -429,7 +429,15 @@ aqui.
 1. **Trabalhar a fila desbloqueada** exatamente como o overnight faz hoje
    (ver "Reuso da maquinaria" acima) — 1 merge por vez, disciplina do
    #636/#633/#2959 intacta. Prioridade P0 > P1 > P2 > P3, mesmo critério do
-   overnight. **Guard de colisão com a edição diária (#5293 item 4 — PAUSA,
+   overnight. **`claim-issue` vale pra toda unidade, com ou sem fan-out
+   (#5407):** o `claim de issue` citado em "Reuso da maquinaria" acima
+   (`claim-issue --kind continuo --issue N`) não é exclusivo do caminho de
+   subagente/worktree — a `continuo` tem a mesma estrutura de
+   coordenador-resolve-direto pra unidades pequenas que o develop tem
+   (mesma correção aplicada lá); reivindicar a issue antes de começar a
+   mexer nela vale igualmente quando o coordenador resolve a unidade
+   DIRETAMENTE, sem dispatchar subagente/worktree. **Guard de colisão com a
+   edição diária (#5293 item 4 — PAUSA,
    não encerra):** antes de dispatchar cada unidade, checar
    `npx tsx scripts/lib/find-current-edition.ts` (mesmo guard que o overnight
    usa) — se uma edição estiver em curso, **não** gravar `preempted_by`/

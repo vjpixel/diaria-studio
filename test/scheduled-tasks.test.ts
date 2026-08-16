@@ -16,12 +16,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  formatScheduleHuman,
   getScheduledTaskByName,
   listScheduledTaskNames,
+  listScheduledTaskRows,
+  renderScheduledTasksTable,
   SCHEDULED_TASKS,
+  type ScheduledTaskDefinition,
   type WeekDay,
 } from "../scripts/lib/scheduled-tasks.ts";
 
@@ -186,6 +191,71 @@ describe("getScheduledTaskByName / listScheduledTaskNames", () => {
       listScheduledTaskNames(),
       SCHEDULED_TASKS.map((t) => t.name),
     );
+  });
+});
+
+describe("#5408 — enumeração programática (listScheduledTaskRows / --list / --json)", () => {
+  it("listScheduledTaskRows devolve exatamente SCHEDULED_TASKS.length linhas, na mesma ordem", () => {
+    const rows = listScheduledTaskRows();
+    assert.equal(rows.length, SCHEDULED_TASKS.length);
+    assert.deepEqual(
+      rows.map((r) => r.name),
+      SCHEDULED_TASKS.map((t) => t.name),
+    );
+  });
+
+  it("adicionar uma task ao registro faz ela aparecer em listScheduledTaskRows SEM tocar a função (#5408)", () => {
+    // Chama a função REAL (não uma duplicata da lógica) com um array
+    // injetado (SCHEDULED_TASKS + 1 fake) — prova literal do critério da
+    // issue: "adicionar uma task ao array a faz aparecer sem tocar no
+    // comando". Não mutamos o `SCHEDULED_TASKS` exportado (afetaria outros
+    // testes do processo) — o parâmetro injetável de listScheduledTaskRows
+    // existe justamente pra permitir este teste sem essa mutação global.
+    const fakeExtra: ScheduledTaskDefinition = {
+      name: "Diaria-Fake-Task-Para-Teste",
+      description: "task fake só pra este teste",
+      steps: [{ key: "noop", script: "scripts/does-not-exist.ts" }],
+      logPath: "fake/.fake.log",
+      schedule: { kind: "daily", hour: 12, minute: 0 },
+      issue: "#5408 (teste)",
+    };
+    const before = listScheduledTaskRows();
+    const after = listScheduledTaskRows([...SCHEDULED_TASKS, fakeExtra]);
+    assert.equal(after.length, before.length + 1);
+    assert.ok(after.some((r) => r.name === "Diaria-Fake-Task-Para-Teste"));
+  });
+
+  it("formatScheduleHuman cobre os 4 kinds sem lançar", () => {
+    assert.equal(formatScheduleHuman({ kind: "daily", hour: 9, minute: 5 }), "daily 09:05");
+    assert.equal(formatScheduleHuman({ kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 }), "weekly Sunday 03:00");
+    assert.equal(formatScheduleHuman({ kind: "monthly", day: 1, hour: 9, minute: 0 }), "monthly day 1 09:00");
+    assert.equal(formatScheduleHuman({ kind: "interval", hours: 4 }), "interval 4h");
+  });
+
+  it("renderScheduledTasksTable produz exatamente SCHEDULED_TASKS.length linhas", () => {
+    const table = renderScheduledTasksTable();
+    const lines = table.split("\n");
+    assert.equal(lines.length, SCHEDULED_TASKS.length);
+  });
+
+  it("CLI --list imprime exatamente SCHEDULED_TASKS.length linhas em stdout", () => {
+    const out = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    const lines = out.trim().split("\n");
+    assert.equal(lines.length, SCHEDULED_TASKS.length);
+  });
+
+  it("CLI --json imprime um array JSON de tamanho SCHEDULED_TASKS.length", () => {
+    const out = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    const parsed = JSON.parse(out);
+    assert.ok(Array.isArray(parsed));
+    assert.equal(parsed.length, SCHEDULED_TASKS.length);
+    assert.equal(parsed[0].name, SCHEDULED_TASKS[0].name);
   });
 });
 

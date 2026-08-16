@@ -35,7 +35,12 @@
  * @see scripts/lib/task-runner.ts (Fase 2 — executor)
  * @see scripts/run-task.ts (Fase 2 — entrypoint CLI)
  * @see scripts/lib/systemd-units.ts + scripts/setup-systemd-timers.ts (Fase 3)
+ * @see docs/scheduled-tasks-registry.md (prosa operacional) — `--list`/`--json`
+ *   abaixo (#5408) são a enumeração PROGRAMÁTICA, fonte pra quem precisa da
+ *   lista completa sem depender de grep truncável.
  */
+
+import { isMainModule, parseArgs } from "./cli-args.ts";
 
 /** Dias da semana aceitos por um schedule `weekly` — mesmo vocabulário do
  * `-DaysOfWeek` do PowerShell (`New-ScheduledTaskTrigger -Weekly`). */
@@ -863,4 +868,90 @@ export function getScheduledTaskByName(name: string): ScheduledTaskDefinition | 
 /** Lista os nomes de todas as tasks do registro, na ordem declarada. */
 export function listScheduledTaskNames(): string[] {
   return SCHEDULED_TASKS.map((t) => t.name);
+}
+
+// ---------------------------------------------------------------------------
+// Enumeração programática (#5408) — mesmo idioma CLI de exec-mode.ts /
+// studio-chat-enabled.ts: função pura testável + guard `isMainModule` fino.
+//
+// Motivação: antes desta unidade não existia forma programática de
+// enumerar SCHEDULED_TASKS — só leitura de prosa (docs/scheduled-tasks-registry.md)
+// ou `grep` no `.ts`, que pode truncar silenciosamente (ex: `grep | head`)
+// sem se anunciar como truncado. `--list`/`--json` abaixo são a fonte
+// canônica; ver também test/scheduled-tasks-drift.test.ts (doc↔código).
+// ---------------------------------------------------------------------------
+
+/** Linha tabular derivada de uma `ScheduledTaskDefinition` — shape estável
+ * consumido tanto pelo modo `--list` (tabela) quanto `--json` (array). */
+export interface ScheduledTaskRow {
+  name: string;
+  schedule: string;
+  scripts: string;
+  logPath: string;
+  killSwitch: string;
+  issue: string;
+}
+
+/** Formata `ScheduledTaskSchedule` como string humana curta (não é o
+ * `OnCalendar` do systemd — ver `scheduleToOnCalendar` em systemd-units.ts
+ * pra isso; aqui é só leitura rápida em tabela/JSON). */
+export function formatScheduleHuman(schedule: ScheduledTaskSchedule): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  switch (schedule.kind) {
+    case "daily":
+      return `daily ${pad(schedule.hour)}:${pad(schedule.minute)}`;
+    case "weekly":
+      return `weekly ${schedule.dayOfWeek} ${pad(schedule.hour)}:${pad(schedule.minute)}`;
+    case "monthly":
+      return `monthly day ${schedule.day} ${pad(schedule.hour)}:${pad(schedule.minute)}`;
+    case "interval":
+      return `interval ${schedule.hours}h`;
+  }
+}
+
+/** Deriva as linhas tabulares de TODO `tasks` (default `SCHEDULED_TASKS`),
+ * na ordem declarada — nunca truncado, sempre `tasks.length` linhas.
+ * `tasks` é injetável só pra teste (demonstrar "adicionar uma task faz ela
+ * aparecer sem tocar a função", #5408) — em runtime, omitir sempre usa o
+ * registro real. `killSwitch` só cobre o que está MODELADO no registro
+ * (`guard.requiredFile`, arquivo cuja ausência aborta a run) — a maioria
+ * das tasks não tem guard estruturado (kill switches como
+ * `data/clarice-novos-enabled.json` vivem em código de runtime dos
+ * scripts, fora do schema de `ScheduledTaskDefinition`), então `"-"` aqui
+ * significa "sem guard MODELADO neste registro", não "sem kill switch
+ * nenhum" — ver `docs/scheduled-tasks-registry.md` pra kill switches
+ * documentados em prosa (ex: Diaria-Clarice-Novos). */
+export function listScheduledTaskRows(tasks: ScheduledTaskDefinition[] = SCHEDULED_TASKS): ScheduledTaskRow[] {
+  return tasks.map((t) => ({
+    name: t.name,
+    schedule: formatScheduleHuman(t.schedule),
+    scripts: t.steps.map((s) => s.script).join(", "),
+    logPath: t.logPath,
+    killSwitch: t.guard ? t.guard.requiredFile : "-",
+    issue: t.issue,
+  }));
+}
+
+/** Renderiza a tabela `--list` — 1 linha por task, colunas separadas por
+ * tab (`\t`), sem header — mantém a garantia "exatamente
+ * `SCHEDULED_TASKS.length` linhas" (#5408) simples de verificar em teste. */
+export function renderScheduledTasksTable(rows: ScheduledTaskRow[] = listScheduledTaskRows()): string {
+  return rows
+    .map((r) => [r.name, r.schedule, r.scripts, r.logPath, r.killSwitch, r.issue].join("\t"))
+    .join("\n");
+}
+
+// CLI guard: só executa como main module, importável sem efeito colateral
+// (mesmo padrão de exec-mode.ts/studio-chat-enabled.ts).
+if (isMainModule(import.meta.url)) {
+  const { flags } = parseArgs(process.argv.slice(2));
+  const rows = listScheduledTaskRows();
+  if (flags.has("json")) {
+    console.log(JSON.stringify(rows, null, 2));
+  } else if (flags.has("list")) {
+    console.log(renderScheduledTasksTable(rows));
+  } else {
+    console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json]");
+    console.log(`(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue)`);
+  }
 }
