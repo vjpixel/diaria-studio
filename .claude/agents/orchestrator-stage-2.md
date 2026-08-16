@@ -326,6 +326,8 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
      ```
   Se a Clarice falhar (MCP + REST), propagar o erro — **não** usar o rascunho sem revisão.
 
+- **Sincronizar o bloco É IA? de volta pra `01-eia.md` (#5459).** O bloco `**É IA?**` em `02-reviewed.md` é só um MIRROR copiado verbatim de `01-eia.md` no stitch — mas `extractContent` sempre lê `01-eia.md`, nunca o mirror. Humanizador+Clarice, que acabaram de rodar sobre `02-reviewed.md` inteiro sem exclusão de seção, podem ter reescrito o bloco (achado ao vivo 260817: travessão removido só no mirror). Sem este passo só o Stage 4 (`eia-credit-synced`, #3825, warning-only) descobriria, sempre exigindo fix manual — rodar agora fecha o loop automaticamente: `npx tsx scripts/sync-eia-block.ts --edition-dir {EDITION_DIR}`. Exit 0 sempre que `02-reviewed.md` existir (no-op se sem mirror ainda ou já sincronizado); reescreve `01-eia.md` in-place quando divergir, preservando o frontmatter YAML. Exit 3 só se `02-reviewed.md` faltar (erro real).
+
 - **Verificar estabilidade de URLs em LANÇAMENTOS (#873).** Clarice pode "limpar" URLs (remover query params, normalizar paths, adicionar trailing slash) — isso quebra a regra "LANÇAMENTOS só com link oficial" (#160) silenciosamente, porque a URL pós-Clarice pode não bater mais com a whitelist. Comparar URLs pré/pós-Clarice **antes** de `validate-lancamentos.ts`:
   ```bash
   npx tsx scripts/verify-clarice-url-stability.ts \
