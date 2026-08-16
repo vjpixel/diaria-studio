@@ -29,8 +29,10 @@
  *                     (#2809).
  *   - `ramp-warm`   (1º envio seguro) = send_eligible=1 AND sends_count=0 AND
  *                     (mv_bucket='verified' OR cohort MV-isento — #3826,
- *                     `isMvExemptCohort`), ordem cohortSendRank (morno→frio,
- *                     assinantes-ativos rank 0). NÃO exclui internos (não
+ *                     `isMvExemptCohort`), ordem `compareContactRecency`
+ *                     (`created` real do contato, morno→frio; degrada pra
+ *                     cohortSendRank só quando nenhum lado tem `created`
+ *                     confiável — #5169/#5398). NÃO exclui internos (não
  *                     pedido pela #2885 — este grupo é sobre segurança de 1º
  *                     contato, não retenção/reativação).
  *

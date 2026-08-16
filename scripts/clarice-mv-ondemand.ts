@@ -9,8 +9,10 @@
  * de uma vez, ~US$482 pré-comprados — contra o teto de aquisição do projeto,
  * que não pré-compra capacidade). Aqui o gasto é proporcional ao uso: só
  * verifica o suficiente pra destravar a proposta ATUAL, na MESMA ordem de
- * prioridade que a fila de envio usa (`cohortSendRank`, morno→frio — #4542
- * já corrigiu uma inversão dessa ordem, não reintroduzir).
+ * prioridade que a fila de envio usa (recência real via
+ * `compareCohortEntriesByRecency`, morno→frio — sucede a ordenação pura por
+ * `cohortSendRank`, #5398; #4542 já corrigiu uma inversão dessa ordem, não
+ * reintroduzir).
  *
  * READ+WRITE — ao contrário de `clarice-plan-wave.ts` (read-only por
  * construção, docstring dele), este script GASTA crédito MillionVerifier de

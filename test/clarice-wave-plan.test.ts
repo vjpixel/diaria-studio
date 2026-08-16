@@ -837,7 +837,9 @@ describe("planMvOnDemand (#4659)", () => {
 // Composição por safra e inversão de safra (#4787)
 // ---------------------------------------------------------------------------
 
-function mvBacklogFixture(byCohort: Array<{ cohort: string; count: number }>) {
+function mvBacklogFixture(
+  byCohort: Array<{ cohort: string; count: number; mostRecentCreated?: string | null }>,
+) {
   return {
     total: byCohort.reduce((s, e) => s + e.count, 0),
     byCohort,
@@ -997,6 +999,33 @@ describe("detectCohortInversion (#4787)", () => {
       mvBacklogFixture([{ cohort: "leads-2024h1", count: 1000 }]),
     );
     assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (#5398): cohortSendRank e mostRecentCreated discordam — o veredito segue mostRecentCreated", () => {
+    // leads-2021h1 é estruturalmente mais FRIO que leads-2024h2 por
+    // cohortSendRank (período mais antigo) — mas seu `mostRecentCreated` é
+    // BEM mais recente que o de leads-2024h2 aqui. Sob cohortSendRank puro
+    // (comportamento pré-#5398), leads-2021h1 venceria como "coldest" e
+    // leads-2022h1 no backlog (rank mais novo que 2021h1) apareceria como
+    // bloqueado com coldTailCount = só os 500 de 2021h1. Sob recência real
+    // (comportamento vigente), leads-2024h2 é quem tem a data mais VELHA —
+    // vira o "coldest" de fato, e a cauda fria passa a incluir os dois cohorts
+    // consumidos (2021h1 + 2024h2 — ambos mais frios que o backlog bloqueado).
+    const consumed = [
+      { cohort: "leads-2021h1", count: 500, mostRecentCreated: "2026-08-10T00:00:00Z" },
+      { cohort: "leads-2024h2", count: 300, mostRecentCreated: "2020-01-01T00:00:00Z" },
+    ];
+    const backlog = mvBacklogFixture([
+      { cohort: "leads-2022h1", count: 1000, mostRecentCreated: "2026-08-15T00:00:00Z" },
+    ]);
+    const inversion = detectCohortInversion(consumed, backlog);
+    assert.ok(inversion, "deveria detectar a inversão");
+    assert.equal(inversion!.blockedCohort, "leads-2022h1");
+    // Se o veredito ainda seguisse cohortSendRank, coldestConsumedCohort seria
+    // "leads-2021h1" (rank mais frio) e coldTailCount seria 500 — a asserção
+    // abaixo falharia sem o fix de #5398.
+    assert.equal(inversion!.coldestConsumedCohort, "leads-2024h2");
+    assert.equal(inversion!.coldTailCount, 500 + 300);
   });
 });
 
@@ -1255,6 +1284,31 @@ describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430, fechada pe
     ]);
     assert.equal(e.count, 1, "só o contato com brevo_modified_at != null conta como não-abridor medido");
     assert.equal(e.fraction, 1 / 3);
+  });
+
+  it("REGRESSÃO (#5399 achado 1): N contatos assinantes-ativos não-abridores → aviso NÃO dispara (count exclui mvExempt)", () => {
+    const e = measureNonOpenerExposure([
+      { cohort: "assinantes-ativos", priority_points: 0, send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+      { cohort: "assinantes-ativos", priority_points: 0, send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+      { cohort: "assinantes-ativos", priority_points: 0, send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+    ]);
+    assert.equal(e.count, 0, "assinantes-ativos é MV-isento por desenho — não é uma anomalia de sunset");
+    assert.equal(e.fraction, 0);
+  });
+
+  it("REGRESSÃO (#5399 achado 1): lead não-abridor com hasMeasuredOpens verdadeiro → aviso DISPARA", () => {
+    const e = measureNonOpenerExposure([
+      { cohort: "leads-2024h1", priority_points: 0, send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+    ]);
+    assert.equal(e.count, 1, "não-abridor fora do MV-isento/engajado é exatamente o que o sunset deveria ter cortado");
+    assert.equal(e.fraction, 1);
+  });
+
+  it("#5399 achado 1: engajado (priority_points > 0) também sai da contagem, mesmo fora de assinantes-ativos", () => {
+    const e = measureNonOpenerExposure([
+      { cohort: "leads-2022h1", priority_points: 5, send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+    ]);
+    assert.equal(e.count, 0, "engajado é o outro override que o sunset respeita — não deveria ter sido cortado mesmo");
   });
 });
 
