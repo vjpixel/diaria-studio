@@ -288,6 +288,7 @@ import {
   type WaterfallTierStat,
   type RecencyMonotonicityViolation,
 } from "./lib/clarice-segment.ts";
+import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
 import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
@@ -767,6 +768,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
     ctx = { sinceIso: sinceArg };
+  } else if (group === "ramp-warm") {
+    // #5410: cutoff SEMPRE lido do mesmo state que `novos` grava
+    // (`clarice-novos-run.ts`, logo após resolver `since` no Passo 1 — antes
+    // do semáforo) — nunca um `--since` explícito aqui, pra não reabrir a
+    // divergência entre os dois lados que motivou a issue. Ausente (base sem
+    // nenhuma rodada de `novos` ainda) → `null`, `isRampWarm` não exclui por
+    // recência (comportamento pré-#5410).
+    const cutoff = readNovosCutoff(getArg(argv, "data-root") || undefined);
+    ctx = { cutoffNovosIso: cutoff?.cutoffIso ?? null };
   }
 
   // --budget é OPCIONAL (diferente de clarice-build-waves-store.ts, onde é
@@ -1153,6 +1163,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     exact_budget: tiersPathArg && exactBudget ? true : undefined,
     min_score: !tiersPathArg ? minScore || undefined : undefined,
     since: ctx?.sinceIso || undefined,
+    // #5410: só presente no grupo `ramp-warm` — o cutoff que exclui a janela
+    // `novos` desta seleção (auditoria; `null` = base ainda sem nenhuma
+    // rodada de `novos`, comportamento pré-#5410).
+    cutoff_novos: group === "ramp-warm" ? ctx?.cutoffNovosIso ?? null : undefined,
     // #4622: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
     cohort: cohort ?? undefined,
     universe_total: rows.length,

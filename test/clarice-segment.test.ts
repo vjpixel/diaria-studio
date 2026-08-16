@@ -1037,6 +1037,51 @@ test("segmentRampWarm: ordem cohortSendRank (morno→frio); NÃO exclui internos
   );
 });
 
+// ---------------------------------------------------------------------------
+// #5410 — isRampWarm/segmentRampWarm excluem a janela `novos` por construção
+// (cutoffNovosIso), particionando com isNovos em vez de conter.
+// ---------------------------------------------------------------------------
+
+test("#5410: isRampWarm exclui contato DENTRO da janela novos (created >= cutoff)", () => {
+  const dentro = row({ email: "novo@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-08-15T10:00:00Z" });
+  // Sem cutoff (2º arg omitido) — comportamento pré-#5410, inclui.
+  assert.equal(isRampWarm(dentro), true);
+  // Com cutoff — dentro da janela `novos`, EXCLUÍDO da rampa.
+  assert.equal(isRampWarm(dentro, "2026-08-14"), false);
+});
+
+test("#5410: isRampWarm NÃO exclui contato FORA da janela novos (created < cutoff) — sem buraco pelo outro lado", () => {
+  const fora = row({ email: "antigo@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-07-01T10:00:00Z" });
+  assert.equal(isRampWarm(fora, "2026-08-14"), true);
+});
+
+test("#5410: isRampWarm sem `created` (dado ausente) não é excluído por cutoff — fail-safe pré-existente preservado", () => {
+  const semCreated = row({ email: "sem-created@x.com", sends_count: 0, mv_bucket: "verified" });
+  assert.equal(isRampWarm(semCreated, "2026-08-14"), true);
+});
+
+test("#5410: segmentRampWarm com cutoffNovosIso — onda de rampa NUNCA inclui contato pendente na janela novos; contato fora da janela continua normal", () => {
+  const rows: StoreRow[] = [
+    row({ email: "pendente-novos@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-08-16T09:00:00Z" }),
+    row({ email: "fila-fria@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-01-01T09:00:00Z" }),
+  ];
+  const seg = segmentRampWarm(rows, { cutoffNovosIso: "2026-08-14" });
+  assert.deepEqual(
+    seg.map((r) => r.email),
+    ["fila-fria@x.com"],
+  );
+});
+
+test("#5410: isRampWarm e isNovos particionam (nunca ambos true pro mesmo contato) — mesmo cutoff nos dois lados", () => {
+  const cutoff = "2026-08-14";
+  const dentro = row({ email: "dentro@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-08-15T00:00:00Z" });
+  const fora = row({ email: "fora@x.com", sends_count: 0, mv_bucket: "verified", created: "2026-08-01T00:00:00Z" });
+  assert.equal(isNovos(dentro, cutoff), true);
+  assert.equal(isRampWarm(dentro, cutoff), false);
+  assert.equal(isNovos(fora, cutoff), false);
+  assert.equal(isRampWarm(fora, cutoff), true);
+});
+
 test("NAMED_GROUPS / isNamedGroupKey: os 3 grupos da #2885 + 'novos' (#4347) estão registrados", () => {
   assert.deepEqual(Object.keys(NAMED_GROUPS).sort(), ["engajados", "novos", "ramp-warm", "reativacao"]);
   assert.equal(isNamedGroupKey("engajados"), true);

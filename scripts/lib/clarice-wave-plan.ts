@@ -1075,6 +1075,57 @@ function describeAgeHours(ageHours: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// #5405 item 2/3 — corrige o aviso de frescor quando a ÚLTIMA tentativa do
+// `novos` abortou (em vez de "nunca rodou"/"considere rodar", que descrevem
+// esquecimento — não é isso), e reporta a fila represada na janela `novos`.
+// ---------------------------------------------------------------------------
+
+/** `novos-run-status.json` mais recente, só as partes que este módulo usa
+ *  (evita importar `NovosRunStatusValue` inteiro pra este arquivo de tipos). */
+export interface NovosLastAbortInfo {
+  status: "semaphore-red" | "other-error";
+  /** ISO — quando esta tentativa terminou (`checkedAt` de `last-novos-run-status.json`). */
+  checkedAt: string;
+  detail?: string;
+}
+
+/** #5405 item 3 — quantos cadastros estão na janela `novos` ainda sem envio,
+ *  e desde quando o mais antigo deles espera. `count: 0` → fila vazia. */
+export interface NovosPendingInfo {
+  count: number;
+  earliestCreatedIso: string | null;
+}
+
+/**
+ * `lastRunAt` (novos-state.json) só avança em ENVIO CONFIRMADO — uma rodada
+ * que aborta no semáforo nunca o toca. Por isso `abort.checkedAt` (que
+ * avança em TODA tentativa, sucesso ou não) pode ser mais recente que
+ * `lastRunAt` mesmo quando `freshness.status` ainda diz "fresh"/"warning" —
+ * é exatamente esse gap que fazia o aviso ler "considere rodar" quando o
+ * `novos` já tinha rodado e abortado (#5405, achado ao vivo 16/08).
+ */
+function isAbortMoreRecentThanLastRun(
+  abort: NovosLastAbortInfo | null | undefined,
+  freshness: NovosFreshness,
+): abort is NovosLastAbortInfo {
+  if (!abort) return false;
+  if (freshness.status === "never-run") return true; // nenhum envio confirmado ainda — qualquer abort é "mais recente".
+  const abortMs = Date.parse(abort.checkedAt);
+  const lastRunMs = Date.parse(freshness.lastRunAt);
+  if (!Number.isFinite(abortMs) || !Number.isFinite(lastRunMs)) return false;
+  return abortMs > lastRunMs;
+}
+
+/** Sufixo "Fila represada: N cadastro(s) desde X." — vazio (fila vazia/dado
+ *  indisponível) → string vazia, nunca um sufixo confuso "desde undefined". */
+function describePendingSuffix(pending: NovosPendingInfo | null | undefined): string {
+  if (!pending || pending.count <= 0) return "";
+  return pending.earliestCreatedIso
+    ? ` Fila represada: ${pending.count} cadastro(s) desde ${pending.earliestCreatedIso}.`
+    : ` Fila represada: ${pending.count} cadastro(s).`;
+}
+
+// ---------------------------------------------------------------------------
 // Volume — delega inteiramente ao semáforo do dashboard
 // ---------------------------------------------------------------------------
 
@@ -1219,6 +1270,13 @@ export interface WaveProposalInput {
   committedLookupFailed: boolean;
   /** #4664 — frescor do último `/diaria-clarice-novos`. Ver seção acima. */
   novosFreshness: NovosFreshness;
+  /** #5405 item 2 — desfecho da ÚLTIMA tentativa (`last-novos-run-status.json`),
+   *  só quando foi um ABORT (`sent`/`empty`/`uncertain` não mudam o texto de
+   *  frescor). `undefined`/`null` → comportamento pré-#5405 (sem override). */
+  novosLastAbort?: NovosLastAbortInfo | null;
+  /** #5405 item 3 — fila represada na janela `novos`. `undefined`/`null` →
+   *  omitido dos textos (fail-soft, mesmo padrão do resto do módulo). */
+  novosPending?: NovosPendingInfo | null;
 }
 
 /**
@@ -1316,7 +1374,26 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   // pra reverter a prioridade editorial em silêncio, ver docstring da seção
   // acima); "warning" é aviso — o editor pesa. Read-only por construção: este
   // guard só DETECTA e REPORTA, nunca invoca a skill sozinho.
-  if (input.novosFreshness.status === "never-run") {
+  // #5405 item 2: a ÚLTIMA tentativa pode ter ABORTADO (semáforo vermelho,
+  // D4, ou outro motivo) sem nunca ter chegado a confirmar envio — nesse
+  // caso o texto abaixo NÃO deve ler como "esqueceu de rodar"
+  // ("nunca rodou"/"considere rodar"), porque rodou; só não conseguiu
+  // enviar. `pendingSuffix` (#5405 item 3) mostra a fila represada.
+  const pendingSuffix = describePendingSuffix(input.novosPending);
+
+  if (isAbortMoreRecentThanLastRun(input.novosLastAbort, input.novosFreshness)) {
+    const reason =
+      input.novosLastAbort.status === "semaphore-red"
+        ? "semáforo VERMELHO (D4, circuit breaker de entregabilidade)"
+        : "outro motivo (não semáforo)";
+    blockers.push(
+      `/diaria-clarice-novos rodou mas ABORTOU — última tentativa não confirmou nenhum envio (motivo: ${reason}).` +
+        pendingSuffix +
+        " Destrave o semáforo (ou resolva o motivo do abort) antes de montar esta onda — cadastro novo continua " +
+        "esperando o /diaria-clarice-novos, não a rampa (#5410); ver o relatório mais recente em " +
+        "data/clarice-subscribers/novos-reports/*-abort.md (#5405).",
+    );
+  } else if (input.novosFreshness.status === "never-run") {
     blockers.push(
       "/diaria-clarice-novos nunca rodou neste histórico — nenhum cadastro recente foi processado. " +
         "A onda pode sair 100% leads frios sem que assinante novo receba a prioridade que o fluxo garante (#4664). " +
@@ -1326,8 +1403,9 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
     blockers.push(
       `/diaria-clarice-novos rodou há ${describeAgeHours(input.novosFreshness.ageHours)} ` +
         `(acima do limiar de ${NOVOS_FRESHNESS_BLOCKER_HOURS}h) — cadastro novo pode estar esperando na fila com ` +
-        `prioridade invertida (caso real: onda d6-qui06, 05/08, saiu 99,3% leads frios de 2024, #4664). ` +
-        "Rode /diaria-clarice-novos antes de montar esta onda.",
+        `prioridade invertida (caso real: onda d6-qui06, 05/08, saiu 99,3% leads frios de 2024, #4664).` +
+        pendingSuffix +
+        " Rode /diaria-clarice-novos antes de montar esta onda.",
     );
   } else if (input.novosFreshness.status === "warning") {
     warnings.push(
@@ -1468,7 +1546,10 @@ export function renderWaveProposal(p: WaveProposal): string {
   L.push("");
 
   L.push("── /diaria-clarice-novos ──");
-  if (p.novosFreshness.status === "never-run") {
+  if (isAbortMoreRecentThanLastRun(p.novosLastAbort, p.novosFreshness)) {
+    const reason = p.novosLastAbort.status === "semaphore-red" ? "semáforo VERMELHO (D4)" : "outro motivo";
+    L.push(`  ⛔ ABORTOU (${reason}) em ${p.novosLastAbort.checkedAt} — nenhum envio confirmado desde então (#5405).`);
+  } else if (p.novosFreshness.status === "never-run") {
     L.push("  Nunca rodou neste histórico — nenhum registro de execução encontrado.");
   } else {
     const STATUS_ICON: Record<NovosFreshnessStatus, string> = {
@@ -1480,6 +1561,12 @@ export function renderWaveProposal(p: WaveProposal): string {
     L.push(
       `  ${STATUS_ICON[p.novosFreshness.status]} Última execução: ${p.novosFreshness.lastRunAt} ` +
         `(${describeAgeHours(p.novosFreshness.ageHours)} atrás)`,
+    );
+  }
+  if (p.novosPending && p.novosPending.count > 0) {
+    L.push(
+      `  Fila represada: ${fmt(p.novosPending.count)} cadastro(s)` +
+        (p.novosPending.earliestCreatedIso ? ` desde ${p.novosPending.earliestCreatedIso}.` : "."),
     );
   }
   L.push("");

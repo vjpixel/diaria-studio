@@ -632,6 +632,65 @@ test("main: --dry-run também não escreve sent-or-queued.json (integração)", 
 });
 
 // ---------------------------------------------------------------------------
+// #5410 — main() com --group ramp-warm lê o cutoff persistido (novos-cutoff.json,
+// escrito por clarice-novos-run.ts) e exclui a janela `novos` da seleção —
+// integração ponta-a-ponta (store real + CLI), não só o predicado puro
+// (coberto em test/clarice-segment.test.ts).
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#5410): main() --group ramp-warm exclui contato DENTRO da janela novos (cutoff lido de novos-cutoff.json); contato fora da janela continua selecionado", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-5410-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket, created) VALUES " +
+      "('pendente-novos@x.com','Pendente',5,0,'verified','2026-08-16T09:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket, created) VALUES " +
+      "('fila-fria@x.com','Fria',5,0,'verified','2026-01-01T09:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  // Cutoff persistido — mesmo formato que `writeNovosCutoff` (clarice-novos-cutoff.ts) grava.
+  writeFileSync(
+    resolve(dir, "novos-cutoff.json"),
+    JSON.stringify({ cutoffIso: "2026-08-14", recordedAt: "2026-08-16T11:00:00.000Z" }) + "\n",
+  );
+
+  const logs = await withFakeBrevoFetch(() =>
+    captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 1);
+  assert.equal(out.cutoff_novos, "2026-08-14");
+
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  const csv = readFileSync(resolve(segDir, "ramp-warm.csv"), "utf8");
+  assert.deepEqual(emailsOf(csv), ["fila-fria@x.com"]);
+});
+
+test("main() --group ramp-warm SEM novos-cutoff.json (base sem nenhuma rodada de novos ainda) — comportamento pré-#5410, nada excluído por recência", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-5410-nocutoff-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket, created) VALUES " +
+      "('recente@x.com','Recente',5,0,'verified','2026-08-16T09:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withFakeBrevoFetch(() =>
+    captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 1);
+  assert.equal(out.cutoff_novos, null);
+});
+
+// ---------------------------------------------------------------------------
 // #4347 — guard queued/sent (fetchCommittedCampaignListIds) wired em main()
 // ---------------------------------------------------------------------------
 

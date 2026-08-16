@@ -522,15 +522,39 @@ export function segmentReativacao(rows: StoreRow[]): StoreRow[] {
  * incluso — um `assinantes-ativos` antigo agora fica atrás de um lead mais
  * recente. `cohortSendRank` só volta a decidir no fallback (nenhum dos dois
  * lados com `created` confiável).
+ *
+ * #5410: `cutoffNovosIso` (opcional) exclui quem está DENTRO da janela
+ * `novos` (`created >= cutoffNovosIso`) — o corte complementar de `isNovos`
+ * abaixo, que faz os dois predicados PARTICIONAREM a fila de 1º envio em vez
+ * de se conterem (antes, `isRampWarm` não tinha corte nenhum por `created` e
+ * era superconjunto estrito de `isNovos` — a separação real dependia só de
+ * ORDEM DE EXECUÇÃO, e um `novos` que abortava — semáforo vermelho, #5405 —
+ * deixava a onda de rampa engolir em silêncio os cadastros represados).
+ * `cutoffNovosIso` vem SEMPRE do mesmo lugar que `isNovos` usa —
+ * `readNovosCutoff` (clarice-novos-cutoff.ts), persistido por
+ * `clarice-novos-run.ts` — nunca um valor calculado ad-hoc aqui, pra não
+ * reabrir a divergência entre os dois lados que a issue #5410 corrigiu.
+ * Ausente/`created` inválido/ausente → sem exclusão (fail-safe: na dúvida,
+ * o comportamento é o pré-#5410 — nunca pior que o estado anterior).
+ * **Decisão do editor (#5410, 16/08/2026): separação ABSOLUTA, sem regra de
+ * envelhecimento** — não há teto de dias que faça um contato "expirar" da
+ * janela `novos` e cair aqui; o represamento é visível via o alarme do
+ * #5405, não por um corte temporal nesta função.
  */
 export function isRampWarm(
-  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket" | "cohort">,
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket" | "cohort" | "created">,
+  cutoffNovosIso?: string | null,
 ): boolean {
-  return (
-    isFirstSend(r) &&
-    (r.mv_bucket === "verified" || isMvExemptCohort(r.cohort)) &&
-    !isTestAccount(r.email)
-  );
+  if (!isFirstSend(r)) return false;
+  if (cutoffNovosIso) {
+    const cutoffMs = Date.parse(cutoffNovosIso);
+    const createdMs = r.created ? Date.parse(r.created) : NaN;
+    if (!Number.isNaN(cutoffMs) && !Number.isNaN(createdMs) && createdMs >= cutoffMs) {
+      // Dentro da janela `novos` — espera o `novos`, nunca cai na rampa (#5410).
+      return false;
+    }
+  }
+  return (r.mv_bucket === "verified" || isMvExemptCohort(r.cohort)) && !isTestAccount(r.email);
 }
 
 /**
@@ -538,9 +562,14 @@ export function isRampWarm(
  * recência real de cadastro (`created` DESC), cohort não entra na
  * comparação (nem bucket, nem prioridade estrutural pra assinantes-ativos/
  * ex-assinantes/juridico).
+ *
+ * `opts.cutoffNovosIso` (#5410) — ver docstring de `isRampWarm` acima.
  */
-export function segmentRampWarm(rows: StoreRow[]): StoreRow[] {
-  return rows.filter(isRampWarm).slice().sort(compareContactRecency);
+export function segmentRampWarm(rows: StoreRow[], opts?: { cutoffNovosIso?: string | null }): StoreRow[] {
+  return rows
+    .filter((r) => isRampWarm(r, opts?.cutoffNovosIso))
+    .slice()
+    .sort(compareContactRecency);
 }
 
 /**
@@ -653,10 +682,12 @@ export function assertRecencySelectionMonotonic(
  *  validar `--group` e despachar pro predicado certo. */
 export type NamedGroupKey = "engajados" | "reativacao" | "ramp-warm" | "novos";
 
-/** Contexto extra que um predicado de grupo pode precisar — hoje só `novos`
- *  (`sinceIso`, obrigatório pra esse grupo). Os outros 3 ignoram `ctx`. */
+/** Contexto extra que um predicado de grupo pode precisar — `novos`
+ *  (`sinceIso`, obrigatório pra esse grupo) e `ramp-warm` (`cutoffNovosIso`,
+ *  opcional — #5410, ver `isRampWarm`). `engajados`/`reativacao` ignoram `ctx`. */
 export interface NamedGroupContext {
   sinceIso?: string;
+  cutoffNovosIso?: string | null;
 }
 
 /**
@@ -708,7 +739,9 @@ export const NAMED_GROUPS: Record<NamedGroupKey, NamedGroupDef> = {
   "ramp-warm": {
     key: "ramp-warm",
     label: "Ramp warm (1º envio seguro)",
-    segment: (rows) => segmentRampWarm(rows),
+    // #5410: ctx?.cutoffNovosIso — sempre `readNovosCutoff()` no call site
+    // (clarice-build-segment.ts), nunca recalculado aqui.
+    segment: (rows, ctx) => segmentRampWarm(rows, { cutoffNovosIso: ctx?.cutoffNovosIso }),
     guardScope: "committed",
   },
   novos: {
