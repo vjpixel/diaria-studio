@@ -78,7 +78,8 @@
  *
  * Esta versão do produtor "auto" faz uma 2ª rodada de consultas (reusando
  * `scripts/lib/postmaster-campaign-spam.ts`, a mesma lib pura do #4704):
- * `FEEDBACK_LOOP_ID` (DAILY) sobre a MESMA janela → `collectCampaignFeedbackLoopIds`
+ * `FEEDBACK_LOOP_ID` (DAILY) sobre a janela de DESCOBERTA — `CAMPAIGN_DISCOVERY_WINDOW_DAYS`,
+ * 90 dias, separada da janela de média de domínio desde #5446 — → `collectCampaignFeedbackLoopIds`
  * deduplica por campanha → 1 query `FEEDBACK_LOOP_SPAM_RATE` por campanha →
  * `findWorstCampaignSpam` acha o PICO mais alto entre todas — gravado em
  * `PostmasterSpamEntry.worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`.
@@ -138,11 +139,14 @@
  * `PostmasterSpamEntry.campaignSpam` — um mapa `campaignId(string) →
  * PostmasterCampaignSpamRecord` — ACUMULADO entre execuções (`main()` lê o
  * mapa já gravado no KV via `getTextFromWorkerKV`, mescla com o lote desta
- * execução via `mergeCampaignSpamRecords`, grava o resultado): a janela
- * sondada por execução é `HEALTH_SAMPLE_DAYS` (10 dias), mas a tabela Envios
- * mostra ~90 dias de campanhas — sem o merge, cada execução reescreveria o
- * mapa do zero e apagaria silenciosamente o histórico de campanhas fora da
- * janela atual. Leitura do KV anterior é FAIL-SOFT (mesmo padrão do resto do
+ * execução via `mergeCampaignSpamRecords`, grava o resultado): a janela de
+ * DESCOBERTA por execução é `CAMPAIGN_DISCOVERY_WINDOW_DAYS` (90 dias desde
+ * #5446 — era `HEALTH_SAMPLE_DAYS`/10 dias antes, insuficiente pra alcançar
+ * os dias esparsos em que o Postmaster publica `FEEDBACK_LOOP_ID`, ver
+ * docstring da constante), mas mesmo com 90 dias o merge continua
+ * necessário — sem ele, cada execução reescreveria o mapa do zero e
+ * apagaria silenciosamente o histórico de campanhas fora da janela atual.
+ * Leitura do KV anterior é FAIL-SOFT (mesmo padrão do resto do
  * enriquecimento por-campanha): falhar nunca derruba a sync, só degrada pra
  * "sem mapa anterior" (grava só o lote desta execução).
  *
@@ -218,6 +222,23 @@ loadProjectEnv();
 
 /** Mesma janela das outras métricas da aba Rampa (HEALTH_SAMPLE_DAYS) — pedido do editor, 260730. */
 const DEFAULT_WINDOW_DAYS = HEALTH_SAMPLE_DAYS;
+/**
+ * #5446: janela SEPARADA pra descoberta de campanha por-`FEEDBACK_LOOP_ID`
+ * (`collectWorstCampaignSpam`, usada por `syncDomain`) — NUNCA reunificar com
+ * `DEFAULT_WINDOW_DAYS`. `FEEDBACK_LOOP_ID` não é série diária: o Postmaster só
+ * publica o id no dia em que ele cruza um limiar (não divulgado) de volume E
+ * de reclamações distintas — confirmado ao vivo em 16/08/2026, janela de 25
+ * dias devolveu FBL em só 3 (23/07, 27/07, 02/08). Com `DEFAULT_WINDOW_DAYS`
+ * (10 dias, pensado pra MÉDIA de domínio) a descoberta nunca alcançava esses
+ * dias, e `worstCampaignSpamRatePct`/`campaignSpam` ficavam pra sempre
+ * ausentes do KV — sintoma idêntico a "sem onda essa semana", mascarando o
+ * breaker do ramp atrás da média de domínio indefinidamente (#4704/#5368).
+ * 90 dias alinha com o horizonte que a tabela Envios já mostra
+ * (`PostmasterSpamEntry.campaignSpam` é acumulado via merge, #4970 — ver
+ * `dashboard-kv-types.ts`) e fica dentro dos 120 dias de retenção do
+ * Postmaster. É 1 query com range, não N — alargar não multiplica chamadas.
+ */
+const CAMPAIGN_DISCOVERY_WINDOW_DAYS = 90;
 /** Nome arbitrário ecoado de volta em `DomainStatV2.metric` — só precisa bater entre a query e `extractSpamRateReadingsV2`. */
 const SPAM_RATE_METRIC_NAME = "spam_rate";
 /** Idem, pra `FEEDBACK_LOOP_ID` (#4705). */
@@ -613,12 +634,18 @@ export async function syncDomain(
   const tag = `[postmaster-spam-sync] domínio ${config.domain}:`;
 
   const { readings, daysProbed } = await collectSpamReadingsV2(windowDays, now, deps.queryDomainSpam);
-  const range = buildWindowRange(windowDays, now);
 
-  // #4705: pico de spam POR CAMPANHA na MESMA janela do domínio — fail-soft
-  // (ver docstring do módulo): uma falha aqui nunca derruba a sync principal,
-  // só deixa a entry sem os 2 campos novos (fallback pro comportamento
-  // anterior ao #4705, resolveSpamSignal usa a média de domínio).
+  // #5446: janela de DESCOBERTA de campanha é `CAMPAIGN_DISCOVERY_WINDOW_DAYS`
+  // (90 dias), NÃO `windowDays` (média de domínio, tipicamente 10) — ver
+  // docstring da constante. Antes deste fix as duas janelas eram a mesma
+  // `range`, e a descoberta nunca alcançava os dias esparsos em que o
+  // Postmaster publica `FEEDBACK_LOOP_ID`.
+  const campaignRange = buildWindowRange(CAMPAIGN_DISCOVERY_WINDOW_DAYS, now);
+
+  // #4705: pico de spam POR CAMPANHA — fail-soft (ver docstring do módulo):
+  // uma falha aqui nunca derruba a sync principal, só deixa a entry sem os 2
+  // campos novos (fallback pro comportamento anterior ao #4705,
+  // resolveSpamSignal usa a média de domínio).
   let campaignResult: CollectWorstCampaignSpamResult = {
     worst: null,
     aggregates: [],
@@ -636,7 +663,7 @@ export async function syncDomain(
     // pré-merge do #4780).
     let baseQueryFailed = false;
     try {
-      campaignResult = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, deps.queryFeedbackLoopIds, deps.queryCampaignSpamRate);
+      campaignResult = await collectWorstCampaignSpam(campaignRange, DEFAULT_POSTMASTER_ACCOUNT_ID, deps.queryFeedbackLoopIds, deps.queryCampaignSpamRate);
     } catch (e) {
       baseQueryFailed = true;
       warn(`${tag} falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ${e instanceof Error ? e.message : String(e)}`);
@@ -652,9 +679,9 @@ export async function syncDomain(
 
     // #4970: mescla o mapa por-campanha desta execução com o que já está
     // gravado no KV — sem isso, cada execução reescreveria o mapa do zero e só
-    // as campanhas dentro da janela sondada (HEALTH_SAMPLE_DAYS, ~10 dias)
-    // reteriam valor, apagando silenciosamente o histórico das ~90 dias que a
-    // tabela Envios mostra (ver docstring de `PostmasterSpamEntry.campaignSpam`,
+    // as campanhas dentro da janela sondada (`CAMPAIGN_DISCOVERY_WINDOW_DAYS`,
+    // 90 dias desde #5446) reteriam valor, apagando silenciosamente o restante
+    // do histórico que a tabela Envios mostra (ver docstring de `PostmasterSpamEntry.campaignSpam`,
     // dashboard-kv-types.ts, pro racional completo). FAIL-SOFT na leitura
     // (mesmo padrão do resto do enriquecimento por-campanha, #4705/#4780):
     // credenciais ausentes, rede, KV vazio (1ª execução pós-#4970) ou JSON
