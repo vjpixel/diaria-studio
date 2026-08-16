@@ -71,13 +71,14 @@ describe("parseTranscriptFile", () => {
 
   it("extrai entradas assistant com usage", () => {
     withTempFile([usageLine()], (file) => {
-      const entries = parseTranscriptFile(file);
+      const { entries, parseErrors } = parseTranscriptFile(file);
       assert.equal(entries.length, 1);
       assert.equal(entries[0].model, "claude-opus-4-8");
       assert.equal(entries[0].inputTokens, 100);
       assert.equal(entries[0].outputTokens, 50);
       assert.equal(entries[0].cacheCreationInputTokens, 10);
       assert.equal(entries[0].cacheReadInputTokens, 20);
+      assert.equal(parseErrors, 0);
     });
   });
 
@@ -89,42 +90,131 @@ describe("parseTranscriptFile", () => {
         usageLine(),
       ],
       (file) => {
-        const entries = parseTranscriptFile(file);
+        const { entries, parseErrors } = parseTranscriptFile(file);
         assert.equal(entries.length, 1);
+        // JSON válido sem usage — caminho `!usage continue`, nunca o `catch`.
+        // Não é erro de parse, é o formato esperado da maioria das linhas.
+        assert.equal(parseErrors, 0);
       },
     );
   });
 
-  it("pula linhas assistant sem usage (ex: mensagens de controle)", () => {
+  it("pula linhas assistant sem usage (ex: mensagens de controle) sem contar como erro", () => {
     withTempFile(
       [JSON.stringify({ type: "assistant", timestamp: "2026-05-08T08:34:00.000Z", message: { model: "x" } })],
       (file) => {
-        assert.equal(parseTranscriptFile(file).length, 0);
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        assert.equal(entries.length, 0);
+        assert.equal(parseErrors, 0);
       },
     );
   });
 
-  it("tolera linha JSON corrompida sem lançar", () => {
+  it("tolera linha JSON corrompida (lixo genérico, não parece evento) sem lançar nem contar", () => {
     withTempFile(["{not valid json", usageLine()], (file) => {
-      const entries = parseTranscriptFile(file);
+      const { entries, parseErrors } = parseTranscriptFile(file);
       assert.equal(entries.length, 1);
+      // "{not valid json" não começa como `{"type":"...` — não parece
+      // truncamento de evento real, comportamento pré-#5423 preservado.
+      assert.equal(parseErrors, 0);
     });
   });
 
   it("retorna vazio pra arquivo inexistente", () => {
-    assert.deepEqual(parseTranscriptFile("/does/not/exist.jsonl"), []);
+    assert.deepEqual(parseTranscriptFile("/does/not/exist.jsonl"), { entries: [], parseErrors: 0 });
   });
 
   it("ignora linhas em branco", () => {
     withTempFile(["", usageLine(), ""], (file) => {
-      assert.equal(parseTranscriptFile(file).length, 1);
+      assert.equal(parseTranscriptFile(file).entries.length, 1);
+    });
+  });
+
+  describe("#5423 — linha truncada por escrita concorrente conta em parseErrors", () => {
+    it("conta linha que COMEÇA como {\"type\":\"assistant\" mas é cortada no meio", () => {
+      // Simula o harness fechando a escrita do turno no meio — o prefixo é
+      // válido (`{"type":"assistant",...`), mas o objeto nunca fecha.
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output';
+      withTempFile([truncated, usageLine()], (file) => {
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        // a linha truncada não vira entrada (não parseou), mas a linha boa sim
+        assert.equal(entries.length, 1);
+        assert.equal(parseErrors, 1);
+      });
+    });
+
+    it("linha de controle genuína (não-JSON esperado) não é contada como erro", () => {
+      // Linha que nunca teve intenção de ser um evento de transcript — não
+      // começa com `{"type":"`, então não é confundida com truncamento.
+      withTempFile(["not-json-at-all, some log fragment", usageLine()], (file) => {
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        assert.equal(entries.length, 1);
+        assert.equal(parseErrors, 0);
+      });
+    });
+
+    it("múltiplas linhas truncadas somam parseErrors", () => {
+      const truncatedA = '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"in';
+      const truncatedB = '{"type":"user","timestamp":"2026-05-08T08:36:00.000Z","message":{"cont';
+      withTempFile([truncatedA, truncatedB, usageLine()], (file) => {
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        assert.equal(entries.length, 1);
+        assert.equal(parseErrors, 2);
+      });
+    });
+
+    it("detecta truncamento mesmo quando \"type\" não é o primeiro campo do objeto (heurística não depende de ordem de campo)", () => {
+      // O header do módulo documenta os CAMPOS de uma linha de evento, nunca
+      // a ORDEM — campos como uuid/parentUuid/sessionId podem vir antes de
+      // `type` num transcript real. A heurística não pode depender de
+      // `"type"` ser o primeiro campo.
+      const truncated =
+        '{"uuid":"abc-123","parentUuid":null,"sessionId":"s1","type":"assistant","message":{"usage":{"input_to';
+      withTempFile([truncated, usageLine()], (file) => {
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        assert.equal(entries.length, 1);
+        assert.equal(parseErrors, 1);
+      });
     });
   });
 });
 
 describe("listTranscriptFiles", () => {
-  it("retorna vazio pra diretório inexistente", () => {
-    assert.deepEqual(listTranscriptFiles("/does/not/exist"), []);
+  it("retorna vazio pra diretório inexistente, sem logar (caso esperado)", () => {
+    const originalError = console.error;
+    let called = false;
+    console.error = () => {
+      called = true;
+    };
+    try {
+      assert.deepEqual(listTranscriptFiles("/does/not/exist"), []);
+      assert.equal(called, false);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  it("#5423 F4 — loga quando readdirSync falha num path que existsSync confirmou existir", () => {
+    // Um arquivo comum passa `existsSync` mas `readdirSync` nele lança
+    // ENOTDIR — reproduz a mesma classe de anomalia de FS que a issue pede
+    // pra não engolir em silêncio (permissão, corrida de FS no diretório real).
+    const dir = mkdtempSync(join(tmpdir(), "list-transcripts-notdir-test-"));
+    const notADir = join(dir, "not-a-directory.txt");
+    writeFileSync(notADir, "conteudo", "utf8");
+    const originalError = console.error;
+    let loggedArgs: unknown[] | null = null;
+    console.error = (...args: unknown[]) => {
+      loggedArgs = args;
+    };
+    try {
+      const result = listTranscriptFiles(notADir);
+      assert.deepEqual(result, []);
+      assert.ok(loggedArgs, "console.error deveria ter sido chamado");
+    } finally {
+      console.error = originalError;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("lista só .jsonl, ignora outros arquivos", () => {

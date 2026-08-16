@@ -93,6 +93,13 @@ export interface CaptureResult {
    */
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
+  /**
+   * Linhas de transcript que pareciam um evento JSON válido mas falharam
+   * `JSON.parse` (#5423) — sinal de truncamento por escrita concorrente, não
+   * escopado à janela do stage (linha malformada não tem timestamp legível).
+   * `0` é o caso normal.
+   */
+  parse_errors?: number;
 }
 
 /**
@@ -105,7 +112,12 @@ function describeWindowFilter(
   window: UsageWindowResult,
 ): Pick<
   CaptureResult,
-  "session_filter" | "session_filter_reason" | "sessions_excluded" | "subagent_tokens_in" | "subagent_tokens_out"
+  | "session_filter"
+  | "session_filter_reason"
+  | "sessions_excluded"
+  | "subagent_tokens_in"
+  | "subagent_tokens_out"
+  | "parse_errors"
 > {
   return {
     session_filter: window.sessionFilter,
@@ -115,6 +127,7 @@ function describeWindowFilter(
     sessions_excluded: window.sessionsExcluded,
     subagent_tokens_in: window.subagentTokensIn,
     subagent_tokens_out: window.subagentTokensOut,
+    parse_errors: window.parseErrors,
   };
 }
 
@@ -259,6 +272,7 @@ async function main(): Promise<void> {
         sessions_excluded: result.sessions_excluded,
         subagent_tokens_in: result.subagent_tokens_in,
         subagent_tokens_out: result.subagent_tokens_out,
+        parse_errors: result.parse_errors,
       },
       new Date().toISOString(),
     );

@@ -259,6 +259,31 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
     }
   });
 
+  it("#5423 (self-review fleet review) — parse_errors persiste em stage-status.json, não só no stdout", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    try {
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"input_to';
+      writeFileSync(join(transcriptsDir, "session.jsonl"), [truncated, usageLine()].join("\n"), "utf8");
+      const r = runCli(["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.source, "session_transcript");
+      assert.equal(out.parse_errors, 1);
+
+      // O bug real (#5423 fleet review): CaptureResult tinha o campo, mas
+      // `applyUpdate` nunca recebia `parse_errors` — o diagnóstico morria no
+      // stdout desta invocação isolada e nunca chegava no disco. Reler via
+      // `loadDoc` (não o `out` do stdout) é o que prova que persistiu.
+      const doc = loadDoc(editionDir, "260508");
+      const row = doc.rows.find((row) => row.stage === 1)!;
+      assert.equal(row.parse_errors, 1, "parse_errors precisa estar em stage-status.json, não só no stdout do CLI");
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
   it("sem transcript local: sai com status 0, source unavailable, não escreve nada (fail-soft)", () => {
     const { editionRoot, editionDir, transcriptsDir } = setupEdition();
     // Não escreve nenhum .jsonl no transcriptsDir — simula ausência de dado real.
@@ -509,6 +534,54 @@ describe("captureUsageForWindow — mapeamento dos campos do #5413", () => {
       assert.equal(r.source, "unavailable");
       assert.equal(r.reason, "no_usage_records_in_window");
       assert.equal(r.session_filter, "current_session");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5423 — propaga parse_errors quando uma linha truncada está no transcript, no caminho de sucesso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-parse-errors-"));
+    try {
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"input_to';
+      writeFileSync(join(dir, "a.jsonl"), [truncated, usageLine()].join("\n"), "utf8");
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.source, "session_transcript");
+      assert.equal(r.parse_errors, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5423 — propaga parse_errors também no caminho 'unavailable' (sem isso, o sinal de corrupção se perde exatamente quando o stage já reporta problema)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-parse-errors-unavail-"));
+    try {
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"input_to';
+      // linha truncada + uma linha boa FORA da janela — resultado cai em
+      // "unavailable/no_usage_records_in_window", mas o parse_errors não pode
+      // sumir com o resto do diagnóstico.
+      writeFileSync(
+        join(dir, "a.jsonl"),
+        [truncated, usageLine({ timestamp: "2026-05-08T23:00:00.000Z" })].join("\n"),
+        "utf8",
+      );
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.source, "unavailable");
+      assert.equal(r.reason, "no_usage_records_in_window");
+      assert.equal(r.parse_errors, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

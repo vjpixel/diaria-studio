@@ -135,26 +135,69 @@ interface RawTranscriptLine {
 }
 
 /**
- * Parseia um único arquivo `.jsonl` de transcript, extraindo toda entrada
- * `type: "assistant"` com `message.usage` presente. Tolera linhas corrompidas
- * (JSON.parse falho) e linhas sem usage — pula silenciosamente (transcript
- * tem MUITOS tipos de linha que não carregam usage: `user`, `system`,
- * `file-history-snapshot`, etc.).
+ * Heurística pra decidir se uma linha que falhou `JSON.parse` é (a) uma linha
+ * de evento real do transcript CORTADA no meio por escrita concorrente — ex:
+ * `capture-stage-usage.ts` lendo o mesmo arquivo que o harness ainda está
+ * gravando (#5423) — ou (b) lixo/formato que nunca foi um evento JSON pra
+ * começar (linha vazia truncada de outro jeito, artefato de escrita
+ * corrompida sem relação com o esquema do transcript). O writer emite JSON
+ * da esquerda pra direita, então uma linha truncada no meio da escrita ainda
+ * preserva o prefixo correto — só falta o fechamento.
+ *
+ * **Não ancorado à posição exata de `"type"`** (self-review: o header deste
+ * módulo documenta os CAMPOS de uma linha de evento — `type`, `timestamp`,
+ * `isSidechain`, `message` — mas nunca a ORDEM em que o harness os grava;
+ * exigir `{"type":"` logo no início do objeto seria frágil contra qualquer
+ * reordenação real, ex: `uuid`/`parentUuid`/`sessionId` antes de `type`).
+ * Em vez disso, checa objeto (`{` no início) + substring `"type":"` em
+ * qualquer posição visível na parte não cortada da linha — sinal mais fraco
+ * de posição, mas resiliente a ordem de campo, e ainda distingue de lixo que
+ * nunca foi um evento JSON (não abre `{`, ou não tem `type` nenhum).
  */
-export function parseTranscriptFile(filePath: string): UsageEntry[] {
+function looksLikeTruncatedTranscriptEvent(line: string): boolean {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("{") && /"type"\s*:\s*"/.test(trimmed);
+}
+
+/** Resultado de `parseTranscriptFile` — entradas extraídas + diagnóstico. */
+export interface ParsedTranscriptFile {
+  entries: UsageEntry[];
+  /**
+   * Linhas que pareciam começar como um evento JSON válido (`{"type":"...`)
+   * mas falharam `JSON.parse` — sinal de truncamento por escrita concorrente,
+   * não de "linha de controle sem usage" (essa é JSON válido, só cai no
+   * `!usage continue` abaixo, nunca chega no `catch`). Ver
+   * `looksLikeTruncatedTranscriptEvent` (#5423).
+   */
+  parseErrors: number;
+}
+
+/**
+ * Parseia um único arquivo `.jsonl` de transcript, extraindo toda entrada
+ * `type: "assistant"` com `message.usage` presente. Tolera linhas sem usage —
+ * pula silenciosamente (transcript tem MUITOS tipos de linha que não
+ * carregam usage: `user`, `system`, `file-history-snapshot`, etc. — todas
+ * JSON válido, nunca contam como erro). Linhas que falham `JSON.parse` são
+ * classificadas por `looksLikeTruncatedTranscriptEvent`: as que parecem
+ * truncamento real incrementam `parseErrors`; lixo genérico continua pulado
+ * sem contar, como sempre foi.
+ */
+export function parseTranscriptFile(filePath: string): ParsedTranscriptFile {
   let content: string;
   try {
     content = readFileSync(filePath, "utf8");
   } catch {
-    return [];
+    return { entries: [], parseErrors: 0 };
   }
   const entries: UsageEntry[] = [];
+  let parseErrors = 0;
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
     let obj: RawTranscriptLine;
     try {
       obj = JSON.parse(line);
     } catch {
+      if (looksLikeTruncatedTranscriptEvent(line)) parseErrors++;
       continue;
     }
     if (obj.type !== "assistant") continue;
@@ -173,17 +216,29 @@ export function parseTranscriptFile(filePath: string): UsageEntry[] {
       isSidechain: obj.isSidechain === true,
     });
   }
-  return entries;
+  return { entries, parseErrors };
 }
 
-/** Lista todos os `.jsonl` de um diretório de transcripts (não-recursivo). */
+/**
+ * Lista todos os `.jsonl` de um diretório de transcripts (não-recursivo).
+ * Diretório ausente é o caso ESPERADO (sessão cloud/worktree efêmero sem
+ * `~/.claude/projects/`) — retorna `[]` sem logar. `readdirSync` falhar num
+ * diretório que `existsSync` acabou de confirmar (permissão, corrida de FS)
+ * é ANÔMALO — loga antes de degradar pra `[]`, em vez de virar o mesmo
+ * silêncio do caso esperado (#5423 F4).
+ */
 export function listTranscriptFiles(transcriptsDir: string): string[] {
   if (!existsSync(transcriptsDir)) return [];
   try {
     return readdirSync(transcriptsDir)
       .filter((f) => f.endsWith(".jsonl"))
       .map((f) => join(transcriptsDir, f));
-  } catch {
+  } catch (err) {
+    console.error(
+      `session-transcript: readdirSync falhou em ${transcriptsDir} (existsSync confirmou que o diretório existia) — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return [];
   }
 }
@@ -221,6 +276,15 @@ interface UsageWindowBase {
    */
   subagentTokensIn: number | null;
   subagentTokensOut: number | null;
+  /**
+   * Soma de `parseErrors` (#5423) de TODOS os arquivos varridos no
+   * diretório — não escopado à janela de tempo nem ao filtro de sessão,
+   * porque uma linha que falhou `JSON.parse` não tem timestamp legível pra
+   * comparar contra `[startIso, endIso]`. `0` é o caso normal; qualquer
+   * valor > 0 é sinal de escrita concorrente cortando uma linha no meio
+   * (ver `looksLikeTruncatedTranscriptEvent`), nunca de "transcript vazio".
+   */
+  parseErrors: number;
 }
 
 /**
@@ -289,16 +353,29 @@ export function collectUsageInWindow(
 
   const entries: UsageEntry[] = [];
   const excluded = new Set<string>();
-  if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
-    for (const file of files) {
-      const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
-      for (const entry of parseTranscriptFile(file)) {
-        const ts = new Date(entry.timestamp).getTime();
-        if (!Number.isFinite(ts)) continue;
-        if (ts < startMs || ts > endMs) continue;
-        if (keep) entries.push(entry);
-        else excluded.add(file);
-      }
+  let parseErrors = 0;
+  // `parseErrors` (#5423) não é escopado à janela de tempo — uma linha
+  // truncada não tem timestamp legível pra comparar contra
+  // `[startIso, endIso]` (ver doc de `UsageWindowBase.parseErrors` acima).
+  // Por isso a contagem roda incondicionalmente, mesmo quando os
+  // timestamps de janela são inválidos; só a filtragem de `entries` por
+  // `[startMs, endMs]` (que SIM depende de janela válida) fica atrás do
+  // guard `Number.isFinite`.
+  const windowValid = Number.isFinite(startMs) && Number.isFinite(endMs);
+  for (const file of files) {
+    const keep = outcome.sessionFilter === "all_sessions" || file === wanted;
+    const parsed = parseTranscriptFile(file);
+    // Somado incondicionalmente (não só pros arquivos `keep`) — mesma
+    // convenção de `sessionsScanned`, que também conta o diretório inteiro
+    // independente do filtro de sessão.
+    parseErrors += parsed.parseErrors;
+    if (!windowValid) continue;
+    for (const entry of parsed.entries) {
+      const ts = new Date(entry.timestamp).getTime();
+      if (!Number.isFinite(ts)) continue;
+      if (ts < startMs || ts > endMs) continue;
+      if (keep) entries.push(entry);
+      else excluded.add(file);
     }
   }
 
@@ -330,5 +407,6 @@ export function collectUsageInWindow(
     sessionsExcluded: excluded.size,
     subagentTokensIn: sawSidechain ? subIn : null,
     subagentTokensOut: sawSidechain ? subOut : null,
+    parseErrors,
   };
 }
