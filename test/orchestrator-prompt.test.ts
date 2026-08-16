@@ -156,7 +156,13 @@ describe("orchestrator-prompt (#634)", () => {
       // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
       // o check humanizer-section-coverage de reversões legítimas da Clarice).
       // Teto bumped de 548→575 com headroom (era 559 medido pós-#3929).
-      "orchestrator-stage-2.md": 575,
+      // #5414: +1 linha líquida — leitura de `CLARICE_REST` do
+      // `preflight-state.json` (persistência em disco dos sinais do Stage 0,
+      // em vez de memória de sessão — premissa de rodar stages com contexto
+      // limpo) logo após a resolução de `{EDITION_DIR}`, substituindo o
+      // consumo por variável de sessão em §3b. Arquivo foi a 576 linhas.
+      // Teto bumped de 575→580 com headroom pequeno.
+      "orchestrator-stage-2.md": 580,
       // #4258 item 3: +9 linhas (novo §3a-bis — passo de humanizador+Clarice
       // sobre a frase de descrição do É IA?, único texto da edição que não
       // passava por esse fluxo). Teto bumped de 135→150 com headroom (era
@@ -220,7 +226,15 @@ describe("orchestrator-prompt (#634)", () => {
       // editor decide se cola a sugestão (trade-off contra taxa de abertura
       // do e-mail). Arquivo foi a 777 linhas. Teto bumped de 765→780 com
       // headroom pequeno.
-      "orchestrator-stage-4.md": 780,
+      // #5414: +11 linhas líquidas — persistência em disco (#5414) de
+      // `{whatsapp_url}` (§4c.1b) e `{meta_description_suggestion}`
+      // (§4c.1c) em `stage4-capture-state.json`, lidas de volta no início
+      // do gate (§4d) em vez de "capturadas em sessão". Stage 4 é o mais
+      // longo do pipeline (587 turnos medidos na auditoria do #5414) — o
+      // objetivo é sobreviver a corte de contexto DENTRO do próprio stage,
+      // não só entre stages. Arquivo foi a 791 linhas. Teto bumped de
+      // 780→800 com headroom pequeno.
+      "orchestrator-stage-4.md": 800,
       "orchestrator-stage-5.md": 455,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
