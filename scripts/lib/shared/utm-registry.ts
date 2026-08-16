@@ -588,6 +588,22 @@ export const ENTITY_DEEPSEEK_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pra página de entidade "Oracle" (#5125 item 4,
+ * `scripts/lib/entities/oracle.ts`) — 7ª entidade publicada, sessão
+ * `/diaria-continuo` de 16/08/2026. */
+export const ENTITY_ORACLE_FOOTER_NAV_UTM = {
+  source: "entity-oracle",
+  medium: "footer-nav",
+} as const;
+
+/** Mesmo padrão acima, pra página de entidade "Alibaba" (#5125 item 4,
+ * `scripts/lib/entities/alibaba.ts`) — 8ª entidade publicada, mesma sessão
+ * de `ENTITY_ORACLE_FOOTER_NAV_UTM` acima. */
+export const ENTITY_ALIBABA_FOOTER_NAV_UTM = {
+  source: "entity-alibaba",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1456,6 +1472,32 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade DeepSeek (#5125 item 4, ' +
       "6ª entidade publicada). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-oracle-footer-nav",
+    label: "Página de entidade Oracle — link de rodapé pra diar.ia.br",
+    source: ENTITY_ORACLE_FOOTER_NAV_UTM.source,
+    medium: ENTITY_ORACLE_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-oracle-footer-nav",
+    originFile: "scripts/lib/entities/oracle.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Oracle (#5125 item 4, ' +
+      "7ª entidade publicada). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-alibaba-footer-nav",
+    label: "Página de entidade Alibaba — link de rodapé pra diar.ia.br",
+    source: ENTITY_ALIBABA_FOOTER_NAV_UTM.source,
+    medium: ENTITY_ALIBABA_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-alibaba-footer-nav",
+    originFile: "scripts/lib/entities/alibaba.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Alibaba (#5125 item 4, ' +
+      "8ª entidade publicada). Cadastrado desde já pra não repetir o achado #5205 " +
       "(drift `nao_catalogado` no 1º clique real).",
     status: "ativo",
   },
