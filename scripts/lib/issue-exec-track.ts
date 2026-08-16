@@ -107,8 +107,22 @@ const TRADE_OFF_LABEL = "trade-off-real";
  * Data-só (sem hora) é intencional: a granularidade útil aqui é o dia, e
  * comparar em UTC evita que a issue reapareça/desapareça conforme o fuso de
  * quem abriu a Triagem.
+ *
+ * **O marcador precisa estar SOZINHO na própria linha** (`^...$` com flag `m`)
+ * — não basta aparecer em qualquer lugar do corpo. Achado na verificação
+ * contra o backlog real (#5462): a própria issue que introduziu este
+ * mecanismo caiu em `bloqueada`, porque o corpo dela DOCUMENTA o marcador
+ * citando-o em prosa/code-span como exemplo. Sem a âncora de linha, toda
+ * issue que menciona o mecanismo se auto-bloqueia — falso positivo silencioso,
+ * já que a issue some do filtro Overnight sem nenhum sinal de que foi um
+ * exemplo citado que a tirou de lá.
+ *
+ * A âncora também alinha com a convenção de `issue-decisions.ts`, onde o
+ * marcador é PREFIXO do comentário (linha própria, prosa legível depois).
+ * Menção inline é sempre documentação; marcador de verdade é sempre linha
+ * própria.
  */
-const WAIT_UNTIL_RE = /<!--\s*aguardando-ate:\s*(\d{4}-\d{2}-\d{2})\s*-->/i;
+const WAIT_UNTIL_RE = /^[ \t]*<!--\s*aguardando-ate:\s*(\d{4}-\d{2}-\d{2})\s*-->[ \t]*$/im;
 
 export interface ExecTrackInput {
   /** Nomes de label da issue (já normalizados, sem o objeto do `gh`). */

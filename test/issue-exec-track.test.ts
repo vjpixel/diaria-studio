@@ -119,9 +119,47 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
     assert.equal(track([], "<!-- aguardando-ate: 2026-13-45 -->"), "overnight");
   });
 
-  it("marcador no meio de prosa é encontrado", () => {
+  it("marcador em linha própria entre parágrafos é encontrado", () => {
     const body = "Contexto longo.\n\n<!-- aguardando-ate: 2026-09-01 -->\n\nMais prosa.";
     assert.equal(track([], body), "bloqueada");
+  });
+
+  it("marcador indentado em linha própria ainda conta", () => {
+    assert.equal(track([], "texto\n   <!-- aguardando-ate: 2026-09-01 -->   \nmais"), "bloqueada");
+  });
+
+  // Regressão do falso positivo achado rodando o classificador contra o
+  // backlog real (#5462): a issue que INTRODUZIU o marcador caiu em
+  // `bloqueada`, porque o corpo dela documenta o mecanismo citando o marcador
+  // em prosa. Sem a âncora de linha, toda issue que menciona o mecanismo se
+  // auto-bloqueia — e some do filtro Overnight sem sinal nenhum.
+  describe("citação em prosa NÃO bloqueia (regressão #5462)", () => {
+    it("marcador citado inline no meio de uma frase", () => {
+      const body = "Usar `<!-- aguardando-ate: 2026-09-01 -->` no corpo, no espírito de issue-decisions.ts.";
+      assert.equal(track([], body), "overnight");
+    });
+
+    it("marcador citado dentro de bloco de código com prefixo de diff", () => {
+      const body = "```\n- const RE = /x/;\n+ <!-- aguardando-ate: 2026-09-01 --> exemplo\n```";
+      assert.equal(track([], body), "overnight");
+    });
+
+    it("marcador seguido de texto na mesma linha não conta", () => {
+      assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 --> ver também o item 3"), "overnight");
+    });
+
+    it("marcador precedido de texto na mesma linha não conta", () => {
+      assert.equal(track([], "exemplo: <!-- aguardando-ate: 2026-09-01 -->"), "overnight");
+    });
+
+    it("corpo que documenta E usa o marcador: a linha própria vence", () => {
+      const body = [
+        "Escreva `<!-- aguardando-ate: AAAA-MM-DD -->` pra adiar.",
+        "",
+        "<!-- aguardando-ate: 2026-09-01 -->",
+      ].join("\n");
+      assert.equal(track([], body), "bloqueada");
+    });
   });
 });
 
