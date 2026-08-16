@@ -246,8 +246,9 @@ export const DEFAULT_EFFORT = "max";
  * limiar pra 500 é exatamente a outra opção que o #4813 já tinha discutido e
  * descartado — decisão revisitada com dado novo, não uma reversão por
  * capricho: ver a decisão do editor registrada em
- * https://github.com/vjpixel/diaria-studio/issues/5420#issuecomment (16/08/2026,
- * "DECISÃO DO EDITOR (16/08/2026) — limiar de 500 linhas"). Economia estimada
+ * https://github.com/vjpixel/diaria-studio/issues/5420#issuecomment-5308999233
+ * (16/08/2026, "DECISÃO DO EDITOR (16/08/2026) — limiar de 500 linhas").
+ * Economia estimada
  * ~4,5M tokens/dia — metade dos PRs (a mediana de agosto) passa a cair no
  * review de 1 agente, e o p90 (1.375 linhas) continua protegido no fleet
  * completo.
