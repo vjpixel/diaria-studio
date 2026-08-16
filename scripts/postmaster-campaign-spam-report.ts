@@ -39,7 +39,7 @@
  *      indisponível)".
  *
  * Uso:
- *   npx tsx scripts/postmaster-campaign-spam-report.ts [--window-days 10] [--account-id 11130585] [--json]
+ *   npx tsx scripts/postmaster-campaign-spam-report.ts [--window-days 90] [--account-id 11130585] [--json]
  *
  * Env:
  *   data/.credentials.json  com o scope `postmaster.traffic.readonly` (ou
@@ -68,7 +68,7 @@ import {
   type CampaignSpamAggregate,
   type ParsedFeedbackLoopId,
 } from "./lib/postmaster-campaign-spam.ts";
-import { buildWindowRange, parseWindowDaysArg } from "./postmaster-spam-sync.ts";
+import { buildWindowRange, parseWindowDaysArg, CAMPAIGN_DISCOVERY_WINDOW_DAYS } from "./postmaster-spam-sync.ts";
 
 loadProjectEnv();
 
@@ -181,14 +181,31 @@ async function resolveBrevoCampaignMetadata(campaignId: number): Promise<{ name?
   return { name: detail.name, subject: detail.subject };
 }
 
+/**
+ * Pura/testável: resolve `--window-days` pro relatório. Default é
+ * `CAMPAIGN_DISCOVERY_WINDOW_DAYS` (90 dias, mesma janela de DESCOBERTA que
+ * `postmaster-spam-sync.ts` já usa pra achar campanha atribuível via
+ * FEEDBACK_LOOP_ID) — NUNCA `DEFAULT_WINDOW_DAYS`/`HEALTH_SAMPLE_DAYS` (10
+ * dias), que é o default que `parseWindowDaysArg` aplicaria sozinho a um
+ * `--window-days` ausente/vazio. Sem este passo explícito de suprir o
+ * default ANTES de `parseWindowDaysArg`, o relatório saía vazio por padrão —
+ * mesma causa raiz do #5446, corrigida só no caminho automático (`syncDomain`)
+ * pelo PR #5449 (#5450).
+ */
+export function resolveReportWindowDays(argv: string[]): number {
+  const windowArg =
+    getStringArg(argv, "window-days", { example: String(CAMPAIGN_DISCOVERY_WINDOW_DAYS) }) ??
+    String(CAMPAIGN_DISCOVERY_WINDOW_DAYS);
+  return parseWindowDaysArg(windowArg);
+}
+
 async function main(): Promise<void> {
-  const windowArg = getStringArg(process.argv, "window-days", { example: "10" }) ?? "";
   const accountIdArg = getStringArg(process.argv, "account-id", { example: DEFAULT_ACCOUNT_ID });
   const asJson = hasFlag(process.argv, "json");
 
   let windowDays: number;
   try {
-    windowDays = parseWindowDaysArg(windowArg);
+    windowDays = resolveReportWindowDays(process.argv);
   } catch (e) {
     console.error(`[postmaster-campaign-spam-report] ${(e as Error).message}`);
     process.exit(2);

@@ -238,7 +238,7 @@ const DEFAULT_WINDOW_DAYS = HEALTH_SAMPLE_DAYS;
  * `dashboard-kv-types.ts`) e fica dentro dos 120 dias de retenção do
  * Postmaster. É 1 query com range, não N — alargar não multiplica chamadas.
  */
-const CAMPAIGN_DISCOVERY_WINDOW_DAYS = 90;
+export const CAMPAIGN_DISCOVERY_WINDOW_DAYS = 90;
 /** Nome arbitrário ecoado de volta em `DomainStatV2.metric` — só precisa bater entre a query e `extractSpamRateReadingsV2`. */
 const SPAM_RATE_METRIC_NAME = "spam_rate";
 /** Idem, pra `FEEDBACK_LOOP_ID` (#4705). */
