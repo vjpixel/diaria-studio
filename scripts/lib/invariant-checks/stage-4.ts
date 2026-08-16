@@ -25,6 +25,7 @@ import {
   readBoxDivulgacao2Image,
   readBoxDivulgacao3Image,
   readBoxDivulgacaoAltForSlot,
+  readBoxDivulgacaoAltForFile, // #5457
   readBoxDivulgacaoRuntimeExcludedForSlot, // #4504
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
@@ -1112,9 +1113,28 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
  * Warning, não error (decisão explícita da issue): alt fraco (anchor text)
  * não deve bloquear a publicação — deve só ficar visível no gate.
  *
- * `rootDir` (default: raiz do repo real, via `readBoxDivulgacaoAltForSlot`)
- * existe só pra permitir fixture de teste isolada — o call site real
- * (STAGE_4_RULES) nunca passa override.
+ * **#5457: slot 1/2/3 preferem `_internal/box-selection.json` sobre o config
+ * estático.** Desde #4626, o snippet que de fato aparece nos slots de
+ * rotação (1/2/3) pode ser escolhido automaticamente por
+ * `select-boxes-by-clicks.ts` (`resolveBoxesForEdition`) e diverge de
+ * `boxes_divulgacao.slot{N}` no `platform.config.json` — o registro do que
+ * foi USADO de fato fica em `box-selection.json`, gravado por
+ * `stitch-newsletter.ts` a cada stitch (`SlotSelectionRecord[]`, `file` por
+ * slot já é o valor EFETIVO independente do modo — pinado, automático, ou
+ * fallback pro config, os três casos já resolvidos por
+ * `resolveBoxesForEdition`). Ler esse arquivo evita o gap achado ao vivo na
+ * edição 260817: o check apontava pro snippet estático (que sequer usa
+ * imagem) enquanto o snippet REALMENTE renderizado em `02-reviewed.md`
+ * (fonte de `boxText`/`imageUrl` logo abaixo, já sempre a edição real) era
+ * outro, com `alt:` correto. Sem o arquivo (edição pré-#4626, ou falha de
+ * escrita fail-soft do stitch), cai pro config estático — comportamento
+ * idêntico ao pré-#5457. Slot 0 nunca entra na rotação automática (fora do
+ * escopo de `resolveBoxesForEdition`, ver docstring do módulo) — sempre lido
+ * do config estático.
+ *
+ * `rootDir` (default: raiz do repo real, via `readBoxDivulgacaoAltForSlot`/
+ * `readBoxDivulgacaoAltForFile`) existe só pra permitir fixture de teste
+ * isolada — o call site real (STAGE_4_RULES) nunca passa override.
  */
 function checkBoxDivulgacaoAltMissing(
   editionDir: string,
@@ -1141,15 +1161,31 @@ function checkBoxDivulgacaoAltMissing(
     if (!boxText) continue; // slot vazio nesta edição — nada a checar
     const imageUrl = readImage(editionDir, boxText);
     if (!imageUrl) continue; // sem imagem — anchor text é o alt de sempre, sem gap
-    const alt = rootDir !== undefined
-      ? readBoxDivulgacaoAltForSlot(n, rootDir)
-      : readBoxDivulgacaoAltForSlot(n);
+
+    // #5457: slot 0 nunca tem entry em box-selection.json (fora da rotação
+    // automática) — só 1/2/3 consultam o arquivo antes do fallback estático.
+    const selectedFile = n === 0 ? undefined : readBoxSelectionFileForSlot(editionDir, n);
+    let alt: string | null;
+    let usedFile: string | null;
+    if (selectedFile) {
+      alt = rootDir !== undefined
+        ? readBoxDivulgacaoAltForFile(selectedFile, rootDir)
+        : readBoxDivulgacaoAltForFile(selectedFile);
+      usedFile = selectedFile;
+    } else {
+      alt = rootDir !== undefined
+        ? readBoxDivulgacaoAltForSlot(n, rootDir)
+        : readBoxDivulgacaoAltForSlot(n);
+      usedFile = null; // desconhecido aqui sem reler o config — mensagem cita o slot, não o nome do arquivo
+    }
     if (alt) continue;
+    const sourceNote = usedFile
+      ? `o snippet \`${usedFile}\` (efetivamente usado neste slot nesta edição, via _internal/box-selection.json)`
+      : `o snippet atribuído em boxes_divulgacao.slot${n} (platform.config.json)`;
     violations.push({
       rule: "box-divulgacao-alt-missing",
       message:
-        `Slot ${n} de box de divulgação tem imagem, mas o snippet atribuído em ` +
-        `boxes_divulgacao.slot${n} (platform.config.json) não declara \`alt:\` no header. ` +
+        `Slot ${n} de box de divulgação tem imagem, mas ${sourceNote} não declara \`alt:\` no header. ` +
         `O alt renderizado cai no anchor text do 1º link do box (rótulo de ação genérico, ` +
         `ex: "Ler o artigo") — não descreve a imagem pra leitor de tela ou cliente com imagens ` +
         `bloqueadas (Outlook desktop). Fix: adicionar \`alt: {descrição do CONTEÚDO da imagem}\` ` +
@@ -1160,6 +1196,32 @@ function checkBoxDivulgacaoAltMissing(
     });
   }
   return violations;
+}
+
+/**
+ * #5457: lê `_internal/box-selection.json` (grava por `stitch-newsletter.ts`
+ * a cada stitch, via `resolveBoxesForEdition`/`SlotSelectionRecord` em
+ * `select-boxes-by-clicks.ts` — não importado aqui pra não acoplar este
+ * módulo a esse script; contrato de campo replicado localmente) e devolve o
+ * snippet EFETIVAMENTE usado no slot informado (1/2/3 — nunca 0, fora do
+ * escopo de `box-selection.json`). `null`/`undefined` (arquivo ausente,
+ * malformado, ou sem entry pro slot) sinaliza ao caller pra cair no fallback
+ * do config estático — mesmo fail-soft do resto do módulo.
+ */
+function readBoxSelectionFileForSlot(editionDir: string, slot: 1 | 2 | 3): string | null {
+  const path = resolve(editionDir, "_internal", "box-selection.json");
+  if (!existsSync(path)) return null;
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(data)) return null;
+    const entry = data.find(
+      (r) => r && typeof r === "object" && (r as { slot?: unknown }).slot === slot,
+    ) as { file?: unknown } | undefined;
+    if (!entry) return null;
+    return typeof entry.file === "string" && entry.file ? entry.file : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
