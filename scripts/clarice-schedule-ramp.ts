@@ -679,9 +679,10 @@ export function creditCoversPlan(totalRequested: number, credits: number): boole
  *   3. `excludeSentOrQueued` (#5403) — exclui quem já está rastreado em
  *      `sent-or-queued.json` (guard cycle-wide, cobre órfãos de replan que o
  *      guard 2 sozinho não vê).
- * Extraída como função pura pra ser testável sem SQLite/Brevo/filesystem —
- * cada call site (`--build-audience` deste script) monta os 3 conjuntos de
- * input e delega aqui.
+ * Extraída como função pura pra ser testável sem SQLite/Brevo/filesystem — os
+ * 2 call sites do achado #5403/#5424 (`--build-audience` deste script E
+ * `weekly-send-plan-audience.ts`, via import direto) montam os 3 conjuntos
+ * de input e delegam aqui, garantindo que não voltem a divergir.
  */
 export function selectAvailableRampWarm(
   rows: StoreRow[],

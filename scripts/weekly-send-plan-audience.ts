@@ -31,8 +31,13 @@
  * dry-run por padrão (só imprime o plano); `--write` grava os arquivos.
  *
  * Uso:
- *   npx tsx scripts/weekly-send-plan-audience.ts --volumes 7000,7500,8000 [--write] [--db path] [--out-dir path]
+ *   npx tsx scripts/weekly-send-plan-audience.ts --volumes 7000,7500,8000 --cycle 2608-09 [--write] [--db path] [--out-dir path]
  *   --volumes N,N,N   OBRIGATÓRIO — os 3 volumes (ter/sex/dom) decididos pela aba Rampa do dashboard.
+ *   --cycle {conteúdo}-{envio}  RECOMENDADO (#5403) — aplica o guard cycle-wide
+ *                      sent-or-queued.json do ciclo (evita contar como
+ *                      disponível quem já foi reservado por outra invocação
+ *                      do mesmo ciclo). Sem ele: dry-run segue com aviso,
+ *                      --write recusa prosseguir.
  *   --write           grava wN.csv + manifest.json em data/clarice-subscribers/weekly-plan/{data-de-hoje}/
  *                      (default: dry-run, só imprime o plano).
  *   --db path         override do path do store (default DEFAULT_DB_PATH).
