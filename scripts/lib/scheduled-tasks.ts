@@ -710,6 +710,21 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4154",
   },
   {
+    name: "Diaria-Postmaster-Spam-Alarm",
+    description: "alarme de sinal de spam do Postmaster cego (staleness geral) + campaignSpam ausente prolongado",
+    steps: [{ key: "alarm", script: "scripts/clarice-postmaster-alarm.ts" }],
+    logPath: "clarice-subscribers/.postmaster-alarm.log",
+    // #5399 registrou o script mas nunca a task (achado #5446: o texto do
+    // próprio e-mail já citava "Diaria-Postmaster-Spam-Alarm" como se
+    // existisse). 12:45 — 15min depois do Diaria-Postmaster-Spam-Sync
+    // (12:30) acima, mesma folga de ordem de grandeza usada entre monitor e
+    // alarme semanal do GEO (Diaria-Geo-Citation-Monitor 07:00 →
+    // Diaria-Geo-Citation-Staleness-Alarm 10:30): dá tempo do sync gravar no
+    // KV antes do alarme ler.
+    schedule: { kind: "daily", hour: 12, minute: 45 },
+    issue: "#5399, #5446",
+  },
+  {
     name: "Diaria-SEO-Weekly",
     description: "loop de SEO semanal (cobertura de indexacao + Search Analytics)",
     steps: [
