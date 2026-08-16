@@ -163,6 +163,20 @@ describe("parseTranscriptFile", () => {
         assert.equal(parseErrors, 2);
       });
     });
+
+    it("detecta truncamento mesmo quando \"type\" não é o primeiro campo do objeto (heurística não depende de ordem de campo)", () => {
+      // O header do módulo documenta os CAMPOS de uma linha de evento, nunca
+      // a ORDEM — campos como uuid/parentUuid/sessionId podem vir antes de
+      // `type` num transcript real. A heurística não pode depender de
+      // `"type"` ser o primeiro campo.
+      const truncated =
+        '{"uuid":"abc-123","parentUuid":null,"sessionId":"s1","type":"assistant","message":{"usage":{"input_to';
+      withTempFile([truncated, usageLine()], (file) => {
+        const { entries, parseErrors } = parseTranscriptFile(file);
+        assert.equal(entries.length, 1);
+        assert.equal(parseErrors, 1);
+      });
+    });
   });
 });
 

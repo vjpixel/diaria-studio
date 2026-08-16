@@ -142,14 +142,21 @@ interface RawTranscriptLine {
  * começar (linha vazia truncada de outro jeito, artefato de escrita
  * corrompida sem relação com o esquema do transcript). O writer emite JSON
  * da esquerda pra direita, então uma linha truncada no meio da escrita ainda
- * preserva o prefixo correto — só falta o fechamento. Toda linha real de
- * transcript (`assistant`, `user`, `system`, `file-history-snapshot`, ...)
- * começa com o mesmo prefixo `{"type":"`; se falhar o parse mas começar
- * assim, é (a) — anômalo, merece contagem. Caso contrário é (b) — esperado,
- * pula silencioso, comportamento pré-#5423 preservado.
+ * preserva o prefixo correto — só falta o fechamento.
+ *
+ * **Não ancorado à posição exata de `"type"`** (self-review: o header deste
+ * módulo documenta os CAMPOS de uma linha de evento — `type`, `timestamp`,
+ * `isSidechain`, `message` — mas nunca a ORDEM em que o harness os grava;
+ * exigir `{"type":"` logo no início do objeto seria frágil contra qualquer
+ * reordenação real, ex: `uuid`/`parentUuid`/`sessionId` antes de `type`).
+ * Em vez disso, checa objeto (`{` no início) + substring `"type":"` em
+ * qualquer posição visível na parte não cortada da linha — sinal mais fraco
+ * de posição, mas resiliente a ordem de campo, e ainda distingue de lixo que
+ * nunca foi um evento JSON (não abre `{`, ou não tem `type` nenhum).
  */
 function looksLikeTruncatedTranscriptEvent(line: string): boolean {
-  return /^\s*\{"type":"/.test(line);
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("{") && /"type"\s*:\s*"/.test(trimmed);
 }
 
 /** Resultado de `parseTranscriptFile` — entradas extraídas + diagnóstico. */
