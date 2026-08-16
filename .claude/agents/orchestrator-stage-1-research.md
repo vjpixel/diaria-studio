@@ -622,7 +622,7 @@ Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga w
 
 ### 1v-ter. Guard USE MELHOR — flagar não-tutorial antes do gate (#1798)
 
-Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — em 260604 dois posts da `latent.space` entraram). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
+Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — [caso real](../../docs/orchestrator-stage-1-research-historia.md#1v-use-melhor-caso-real)). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
 
 ```bash
 npx tsx scripts/review-use-melhor.ts --approved {EDITION_DIR}/_internal/01-categorized.json
@@ -634,7 +634,7 @@ Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** 
 
 ### 1v-quater. Guard fonte-primária em DESTAQUES (#1699)
 
-Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — caso 260602: RTX Spark com link Canaltech). **Warn-only**:
+Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — [caso real](../../docs/orchestrator-stage-1-research-historia.md#1v-quater-caso-real)). **Warn-only**:
 
 ```bash
 npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01-categorized.json
