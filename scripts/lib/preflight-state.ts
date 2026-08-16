@@ -190,6 +190,20 @@ if (isMainModule(import.meta.url)) {
     console.log(JSON.stringify(readPreflightState(editionDir)));
   } else {
     const patch: Partial<Omit<PreflightState, "capturedAt">> = {};
+    // (#5434) Uma flag de valor conhecida (--chrome-mcp etc.) passada sem
+    // valor (fim dos args, ou seguida de outra `--flag`) degrada em
+    // `parseArgs` para `flags.add(flag)` em vez de `values[flag]` — sem este
+    // check, o write dessa flag específica seria silenciosamente omitido do
+    // patch (indistinguível de "flag nem foi passada"), enquanto outras
+    // flags no mesmo comando escrevem normalmente. Falhar alto (exit 2) em
+    // vez de degradar em silêncio.
+    const missingValue = Object.keys(FIELD_BY_FLAG).filter((flag) => parsed.flags.has(flag));
+    if (missingValue.length > 0) {
+      console.error(
+        `--${missingValue.join(" e --")} requer um valor ("true" ou "false") — recebido sem valor`,
+      );
+      process.exit(2);
+    }
     for (const [flag, field] of Object.entries(FIELD_BY_FLAG)) {
       const raw = parsed.values[flag];
       if (raw !== undefined) patch[field] = parseBoolFlag(raw, flag);
