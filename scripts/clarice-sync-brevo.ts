@@ -294,7 +294,23 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
 
   const caches: CampaignCache[] = [];
   let campaignsFailed = 0;
-  for (const campaign of recent) {
+  // #5401: era um `for` SEQUENCIAL — 1 export+poll+download de CSV por vez.
+  // Quando a feature nasceu (#4688) a janela de 30 dias cobria ~8 campanhas;
+  // medido ao vivo em 260816, a mesma janela hoje cobre 49 (a cadência de
+  // envio por cohort/dia cresceu bem além do "chute inicial" da janela — ver
+  // docstring de DEFAULT_OPENS_CATCHUP_WINDOW_DAYS). Processadas uma a uma em
+  // ordem DESC por data, as campanhas mais ANTIGAS da janela — as que mais
+  // precisam do catch-up antes de sair dela pra sempre — ficam no fim da fila
+  // e sistematicamente não são alcançadas a tempo (confirmado ao vivo: a
+  // campanha "envio 6" — 2606, a mais antiga ainda na janela — nunca teve
+  // `brevo_modified_at` tocado por NENHUM catch-up em 27 dias; reproduzido
+  // isolando o export dela, que funciona corretamente quando alcançado — o
+  // gap é só de ALCANÇAR, não de lógica). `pool()` (mesmo padrão já usado
+  // logo abaixo pro re-fetch por contato) reduz o wall-clock total em
+  // ~`concurrency`× sem aumentar o volume de chamadas à Brevo — o rate-limit
+  // já é respeitado por `brevoGet`/`brevoPost` via `Retry-After`, não pelo
+  // loop estar sequencial.
+  await pool(recent, concurrency, async (campaign) => {
     try {
       // dentro da janela → sempre re-exporta (mesma semântica de isWithinRefetchWindow
       // em clarice-engagement-cohorts-v2.ts: captura engajamento tardio).
@@ -314,7 +330,7 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
         `⚠️  catch-up: export da campanha ${campaign.id} (${campaign.name}) falhou: ${(e as Error).message}`,
       );
     }
-  }
+  });
 
   const openersFull = collectOpenedEmails(caches);
   // #4722 item 2: --limit trunca o PROCESSAMENTO (fetch+upsert), não a

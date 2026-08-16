@@ -215,6 +215,77 @@ test("DEFAULT_OPENS_CATCHUP_WINDOW_DAYS: valor positivo razoável (não 0, não 
   assert.ok(DEFAULT_OPENS_CATCHUP_WINDOW_DAYS > 0);
 });
 
+// ─── REGRESSÃO (#5401): export de campanha roda em CONCORRÊNCIA limitada ──
+//
+// Antes do fix, o loop de export de campanha era um `for` sequencial — 1
+// export+poll+download por vez. Com a janela cobrindo dezenas de campanhas
+// (medido ao vivo: 49 em 260816, contra as ~8 assumidas quando a feature
+// nasceu), isso fazia o wall-clock total crescer linearmente e as campanhas
+// mais ANTIGAS da janela (processadas por último, ordem desc) ficarem
+// sistematicamente sem re-exportar a tempo. Este teste trava que N campanhas
+// "lentas" (cada exportRecipients demora `delayMs`) rodam em paralelo — o
+// tempo total fica próximo de `ceil(N/concurrency) * delayMs`, não `N * delayMs`.
+
+test("runOpensCatchup: exporta campanhas em paralelo (bounded por deps.concurrency), não uma-a-uma", async () => {
+  const DELAY_MS = 60;
+  const N = 4;
+  const CONCURRENCY = 2;
+  const campaigns = Array.from({ length: N }, (_, i) => fakeCampaign(i + 1, 1));
+
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const client: CampaignExportClient = {
+    async listSentCampaigns() {
+      return campaigns;
+    },
+    async exportRecipients(campaignId) {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+      inFlight--;
+      return { processId: `p-${campaignId}` };
+    },
+    async pollProcess(processId) {
+      const id = Number(String(processId).replace("p-", ""));
+      return { status: "completed", exportUrl: `fake://export/${id}` };
+    },
+    async downloadCsv() {
+      return "Email_ID,Delivered_Date,Total Opens";
+    },
+  };
+
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: () => {},
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+    concurrency: CONCURRENCY,
+  };
+
+  const t0 = Date.now();
+  const result = await runOpensCatchup(deps);
+  const elapsedMs = Date.now() - t0;
+
+  assert.equal(result.campaignsFailed, 0);
+  assert.ok(
+    maxInFlight > 1,
+    `esperava >1 export em voo simultaneamente (concurrency=${CONCURRENCY}), pico observado: ${maxInFlight}`,
+  );
+  assert.ok(
+    maxInFlight <= CONCURRENCY,
+    `nunca mais que deps.concurrency=${CONCURRENCY} exports simultâneos, pico observado: ${maxInFlight}`,
+  );
+  // Sequencial custaria N*DELAY_MS (~240ms); paralelo com concurrency=2 custa
+  // ~ceil(N/CONCURRENCY)*DELAY_MS (~120ms). Margem generosa contra jitter do
+  // scheduler do Node/CI, mas longe o bastante do sequencial pra travar a
+  // regressão real (era 100% sequencial antes do fix).
+  assert.ok(
+    elapsedMs < N * DELAY_MS,
+    `esperava < ${N * DELAY_MS}ms (paralelo), levou ${elapsedMs}ms (parece sequencial de novo)`,
+  );
+});
+
 // ─── #4722 item 2: --limit também restringe o catch-up ───────────────────
 
 test("runOpensCatchup: deps.limit trunca quantos openers são re-buscados/upsertados, mas openersFound reporta o total REAL", async () => {
