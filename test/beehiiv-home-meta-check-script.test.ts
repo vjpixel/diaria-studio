@@ -24,9 +24,16 @@ import {
   loadAlarmIssuesState,
   saveAlarmIssuesState,
   checkLatestPostPage,
+  ALARM_ALLOWLIST,
 } from "../scripts/beehiiv-home-meta-check.ts";
-import { emptyHomeMetaAlarmState, advanceHomeMetaAlarmState } from "../scripts/lib/beehiiv-home-meta-check.ts";
-import { emptyAlarmIssuesState, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
+import {
+  emptyHomeMetaAlarmState,
+  advanceHomeMetaAlarmState,
+  extractHomeMeta,
+  evaluateHomeMetaDrift,
+  homeMetaFindingIssueKey,
+} from "../scripts/lib/beehiiv-home-meta-check.ts";
+import { emptyAlarmIssuesState, planAlarmReconciliation, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 describe("fetchHomeHtml (#4557) — fetch mockado, sem rede real", () => {
   it("200 -> html preenchido, fetchError null", async () => {
@@ -133,6 +140,56 @@ describe("loadAlarmIssuesState / saveAlarmIssuesState (#5112, I/O)", () => {
     const path = resolve(tmpDir, "array.json");
     writeFileSync(path, "[1,2,3]");
     assert.deepEqual(loadAlarmIssuesState(path), emptyAlarmIssuesState());
+  });
+});
+
+describe("ALARM_ALLOWLIST (#5364)", () => {
+  it("fingerprint da entry english-labels casa EXATAMENTE com o fingerprint real gerado pelo achado 'N min read' isolado", () => {
+    const html = [
+      "<!doctype html><html><head>",
+      '<meta property="og:title" content="diar.ia.br">',
+      "</head><body>",
+      "<p>5 min read</p>",
+      "</body></html>",
+    ].join("");
+    const findings = evaluateHomeMetaDrift(html, extractHomeMeta(html));
+    const finding = findings.find((f) => f.check === "english-labels");
+    assert.ok(finding, `esperava achado english-labels: ${JSON.stringify(findings)}`);
+    assert.equal(finding!.check, ALARM_ALLOWLIST[0].check);
+    // Redundante de propósito (guarda contra o assert de fingerprint abaixo
+    // ficar frouxo se `homeMetaFindingIssueKey` mudar de fórmula no futuro):
+    // a mensagem precisa continuar batendo com o texto exato que a produção
+    // já viu na issue real (#5364).
+    assert.equal(finding!.message, 'rótulo(s) em inglês residual(is) encontrado(s): "N min read"');
+    assert.equal(homeMetaFindingIssueKey(finding!), ALARM_ALLOWLIST[0].fingerprint);
+  });
+
+  it("cada entry carrega motivo, data e issue de referência (auditabilidade — não é array de strings sem contexto)", () => {
+    for (const entry of ALARM_ALLOWLIST) {
+      assert.ok(entry.reason && entry.reason.length > 10, "reason precisa ser texto explicativo, não vazio");
+      assert.match(entry.accepted_at, /^\d{4}-\d{2}-\d{2}$/);
+      assert.match(entry.ref_issue, /^#\d+$/);
+    }
+  });
+
+  it("planAlarmReconciliation com ALARM_ALLOWLIST real -> achado 'N min read' isolado nunca gera ação", () => {
+    const html = [
+      "<!doctype html><html><head>",
+      '<meta property="og:title" content="diar.ia.br">',
+      "</head><body>",
+      "<p>5 min read</p>",
+      "</body></html>",
+    ].join("");
+    const findings = evaluateHomeMetaDrift(html, extractHomeMeta(html));
+    const finding = findings.find((f) => f.check === "english-labels")!;
+    const alarmFinding = {
+      check: finding.check,
+      fingerprint: homeMetaFindingIssueKey(finding),
+      title: "irrelevante pro teste",
+      body: "irrelevante pro teste",
+    };
+    const actions = planAlarmReconciliation([alarmFinding], emptyAlarmIssuesState(), 2, ALARM_ALLOWLIST);
+    assert.deepEqual(actions, []);
   });
 });
 

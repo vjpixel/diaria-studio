@@ -85,6 +85,7 @@ import {
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmPriority,
+  type AlarmAllowlist,
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -158,6 +159,38 @@ const PRIORITY_BY_CHECK: Partial<Record<HomeMetaDriftFinding["check"], AlarmPrio
 function priorityForCheck(check: HomeMetaDriftFinding["check"]): AlarmPriority {
   return PRIORITY_BY_CHECK[check] ?? "P2";
 }
+
+/** Achados deste check aceitos como limitação PERMANENTE de plataforma —
+ * ver docstring de `scripts/lib/alarm-issues.ts` seção "Allowlist de
+ * achados aceitos" (#5364). Cada entry pula toda ação de issue
+ * (criar/reabrir/comentar/fechar) pro fingerprint EXATO listado — o
+ * smoke-test continua rodando e reportando o drift normalmente (o achado
+ * segue aparecendo em `findings`/no e-mail), só a issue automática do
+ * GitHub para de ser tocada.
+ *
+ * `english-labels:"N min read"`: investigado ao vivo em 3 sessões
+ * `/diaria-develop` de 260816 (260816, 260816b, 260816c) — o rótulo "N min
+ * read" vem do merge tag nativo "Read time" do tema Beehiiv, que não tem
+ * opção de localização pt-BR, e o workspace está no plano Launch/free (sem
+ * acesso a customização de tema que permitiria substituir o merge tag por
+ * um equivalente traduzido). Nenhuma das 3 investigações achou alavanca do
+ * lado do código deste repo — é puramente uma limitação da plataforma
+ * hospedante. Ref: #5364. O fingerprint é exato pro texto atual da
+ * mensagem (`homeMetaFindingIssueKey` — `${check}:${message}`); se o texto
+ * do achado mudar (ex: outro rótulo em inglês aparecer junto de "N min
+ * read"), o fingerprint muda e este item PARA de casar — não silencia um
+ * achado novo por acidente. */
+export const ALARM_ALLOWLIST: AlarmAllowlist = [
+  {
+    check: "english-labels",
+    fingerprint: 'english-labels:rótulo(s) em inglês residual(is) encontrado(s): "N min read"',
+    reason:
+      "limitação de plataforma Beehiiv, merge tag 'Read time' nativo não localiza, sem alavanca no plano " +
+      "Launch/free — investigado em 3 sessões develop de 260816, sem workaround encontrado",
+    accepted_at: "2026-08-16",
+    ref_issue: "#5364",
+  },
+];
 
 /** Converte um achado de drift no `AlarmFinding` genérico que
  * `scripts/lib/alarm-issues.ts` consome. O `fingerprint` usa a MESMA
@@ -283,7 +316,7 @@ async function main(): Promise<void> {
   let issueRefs: Map<string, HomeMetaFindingIssueRef> | undefined;
 
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, ALARM_ALLOWLIST);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
@@ -292,6 +325,7 @@ async function main(): Promise<void> {
     const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+      allowlist: ALARM_ALLOWLIST,
     });
     saveAlarmIssuesState(nextState);
     issueRefs = new Map(
