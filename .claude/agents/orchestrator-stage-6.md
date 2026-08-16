@@ -34,14 +34,14 @@ Exit code handling:
 
 ### Pre-condicao: estado do preflight (#5414)
 
-Este stage pode rodar em **contexto proprio** (`/diaria-6-agendamento {AAMMDD}` numa sessao limpa). O que o Stage 0 descobriu esta no disco, nao na conversa:
+Este stage pode rodar em **contexto proprio** (`/diaria-6-agendamento {AAMMDD}` numa sessao limpa) — o preflight esta no disco, nao na conversa:
 
 ```bash
 npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get beehiiv_mcp
 npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get chrome_mcp
 ```
 
-`beehiiv_mcp` cobre a correcao de slug; `chrome_mcp` cobre o Schedule na UI. `unknown` em qualquer um = **re-probar antes de decidir**, nunca tratar como `false`.
+`beehiiv_mcp` cobre a correcao de slug; `chrome_mcp`, o Schedule na UI. `false` → warn e seguir (o passo dependente falha adiante, coberto pelo halt banner do #738). **`unknown` → re-probar e GRAVAR** (`mcp__claude_ai_Beehiiv__get_current_user` / `mcp__claude-in-chrome__tabs_context_mcp`, depois `--set {chave}={true|false}`) — sem gravar, um resume deste stage volta a ler `unknown`. **Nunca tratar `unknown` como `false`.**
 
 ### 6a. Pre-requisitos
 

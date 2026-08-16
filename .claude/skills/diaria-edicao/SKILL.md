@@ -103,7 +103,7 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 
 **Rodar a edição inteira numa sessão só é o modo CARO.** Medido na edição 260814: o contexto residente sobe de 159k para 933k tokens sem nenhuma interrupção do Stage 0 ao fim do Stage 4, e cada turno paga o acumulado inteiro. O Stage 4 sozinho — 587 turnos — rodou entre 580k e 930k por turno. Simulando a mesma edição com cada etapa partindo de contexto limpo: **708M → 360M tokens, ~49% menos**, sem remover um passo sequer do pipeline.
 
-Desde o #5414 nada mais precisa viver na conversa: os probes do preflight ficam em `_internal/preflight-state.json` e os sentinelas de etapa já estão em disco. Então dá pra rodar:
+O #5414 persistiu os **5 probes de conectividade do preflight** (Stage 0) em `_internal/preflight-state.json`; os sentinelas de etapa já estavam em disco. Com isso dá pra rodar:
 
 ```
 /diaria-1-pesquisa {AAMMDD}     # depois /clear
@@ -116,7 +116,9 @@ Desde o #5414 nada mais precisa viver na conversa: os probes do preflight ficam 
 
 Cada skill detecta sozinha a etapa corrente e retoma do disco. `/diaria-edicao` continua funcionando ponta-a-ponta numa sessão só — é mais cômodo, e é a forma certa quando você quer acompanhar tudo de uma vez; só é mais caro.
 
-**Ressalva honesta:** contexto limpo significa que o Stage 4 não "lembra" do Stage 1. Os probes de preflight estão cobertos, e o resto do estado sempre foi lido de arquivo — mas isso ainda não foi validado numa edição real ponta-a-ponta (é o #5419). Se notar algo faltando na revisão que existia antes, reporte na issue.
+**Ressalva honesta — o que NÃO está coberto:** contexto limpo significa que uma etapa não "lembra" da anterior. Os 5 probes de preflight estão em disco; os demais valores de sessão mapeados no #5414 são consumidos dentro da própria etapa, com **uma exceção conhecida**: `eia_dispatch_ts` (Stage 1 §1d) define a janela de 10 min que o Stage 3 §3a espera pelo "É IA?". Num `/diaria-3-imagens` em sessão limpa esse prazo não existe — a detecção primária (presença de `01-eia.md`) continua valendo, e se o arquivo faltar, re-dispatchar em vez de esperar por um deadline desconhecido.
+
+Nada disso foi validado numa edição real ponta-a-ponta ainda (é o #5419). Se notar algo faltando que existia antes, reporte na issue.
 
 ---
 

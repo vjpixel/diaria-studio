@@ -59,9 +59,10 @@
  * @see scripts/lib/studio-chat-enabled.ts — mesmo padrão de módulo+CLI
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 /** Probes do Stage 0 consultados por stages posteriores. */
 export const PREFLIGHT_KEYS = [
@@ -128,6 +129,19 @@ export function readProbe(editionDir: string, key: PreflightKey): PreflightProbe
  * Grava UM probe, preservando os demais (merge sobre o que já está em
  * disco). O Stage 0 chama isto uma vez por probe, conforme cada um resolve —
  * não há um momento em que todos os 5 estejam prontos ao mesmo tempo.
+ *
+ * **Sob lock, e isso não é precaução teórica.** É read-modify-write, e cada
+ * `--set` é um processo separado. O playbook do Stage 0 manda explicitamente
+ * disparar chamadas Bash independentes "numa única mensagem" (§0e–0h) — ou
+ * seja, a própria convenção do projeto encoraja o paralelismo que causaria
+ * lost update aqui: A lê, B lê o mesmo estado, A grava, B grava por cima e o
+ * probe de A some. O write sucede, então nada acusaria a perda — o Stage 5
+ * leria `unknown` para um probe que de fato rodou.
+ *
+ * Reusa `file-lock.ts`, o mesmo mecanismo que `social-published-store.ts` já
+ * usa para os publishers paralelos gravarem `06-social-published.json`.
+ * Escrita via tmp + `rename` (atômico) — nunca deixa o arquivo real pela
+ * metade se o processo morrer no meio.
  */
 export function setProbe(
   editionDir: string,
@@ -136,13 +150,22 @@ export function setProbe(
   opts: { now?: () => Date } = {},
 ): PreflightState {
   const now = opts.now ?? (() => new Date());
-  const state = readPreflightState(editionDir);
-  state[key] = value;
-  state.updated_at = now().toISOString();
   const p = preflightStatePath(editionDir);
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n", "utf8");
-  return state;
+  const lockPath = p + ".lock";
+  acquireLock(lockPath);
+  try {
+    // Ler DENTRO do lock — ler fora seria a própria janela da corrida.
+    const state = readPreflightState(editionDir);
+    state[key] = value;
+    state.updated_at = now().toISOString();
+    const tmpPath = p + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, p);
+    return state;
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 /** `true`/`false`/`unknown` — forma legível que o playbook consegue casar. */

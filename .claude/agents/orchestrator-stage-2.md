@@ -293,7 +293,7 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
      npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'
      ```
 
-     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get clarice_rest` imprimir `false` (do Stage 0 healthcheck, #5414 — lido do disco, não da conversa), pular direto pro halt banner — sem chance de fallback bem-sucedido.
+     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get clarice_rest` imprimir `false` (do Stage 0 healthcheck, #5414 — lido do disco, não da conversa), pular direto pro halt banner — sem chance de fallback bem-sucedido. `true` ou `unknown` → tentar o fallback normalmente (só bloqueia direto quando SABEMOS que o REST está degradado).
 
      **Skip consciente (#2320).** Se editor aprovar o skip após halt (MCP + REST falharam):
      ```bash

@@ -41,15 +41,16 @@ Exit code handling:
 
 ### Pre-condicao: estado do preflight (#5414)
 
-Este stage pode rodar em **contexto proprio** (sessao limpa, `/diaria-5-publicacao {AAMMDD}`) — nao assuma lembrar de nada que o Stage 0 descobriu. Ler do disco:
+Este stage pode rodar em **contexto proprio** (`/diaria-5-publicacao {AAMMDD}` numa sessao limpa) — o que o Stage 0 descobriu esta no disco, nao na conversa:
 
 ```bash
 npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get chrome_mcp
+npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get gmail_mcp
 ```
 
-- `true` → seguir normal.
-- `false` → Chrome indisponivel no preflight. Gravar `_internal/05-published.json` com `status: "skipped"` e entradas LinkedIn com `status: "pending_manual"`. Nao falhar.
-- `unknown` → **nao probado** (Stage 0 nao rodou, ou rodou antes do #5414). **Re-probar** com `mcp__claude-in-chrome__tabs_context_mcp` e gravar o resultado (`--set chrome_mcp={true|false}`) antes de decidir. **Nunca tratar `unknown` como `false`** — pular a publicacao inteira porque o preflight nao deixou registro seria falha silenciosa, exatamente a classe de erro que o #5413 removeu da telemetria.
+- `chrome_mcp: false` → gravar `05-published.json` com `status: "skipped"` e LinkedIn `pending_manual`. Nao falhar.
+- `gmail_mcp: false` → o `review-test-email` (§5f) usa Gmail como metodo PRIMARIO; vai cair no fallback Chrome. Logar warn, nao impeditivo.
+- **`unknown` → re-probar e GRAVAR** (`mcp__claude-in-chrome__tabs_context_mcp` / `mcp__claude_ai_Gmail__list_labels`, depois `--set {chave}={true|false}`). **Nunca tratar `unknown` como `false`** — pular a publicacao porque o preflight nao deixou registro seria falha silenciosa.
 
 ### 5a. Pre-requisitos + sync
 

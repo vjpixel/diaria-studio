@@ -160,6 +160,125 @@ describe("formatProbe / isPreflightKey", () => {
   });
 });
 
+/**
+ * A mudança de comportamento real do #5414 está nos playbooks `.md`, que são
+ * PROMPT executado por um LLM — não código. Uma chave com typo ali não
+ * quebra build nem teste: só aparece numa edição real, quando o CLI sai 2 e
+ * o stage não sabe o que fazer. Este guard fecha isso em CI.
+ */
+describe("playbooks × PREFLIGHT_KEYS — guard de deriva (#5414)", () => {
+  const PLAYBOOKS = [
+    ".claude/agents/orchestrator-stage-0-preflight.md",
+    ".claude/agents/orchestrator-stage-2.md",
+    ".claude/agents/orchestrator-stage-5.md",
+    ".claude/agents/orchestrator-stage-6.md",
+  ];
+
+  /** Só chaves LITERAIS: `{chave}` (placeholder de template) não casa. */
+  function citedKeys(): { key: string; file: string }[] {
+    const root = join(import.meta.dirname, "..");
+    const found: { key: string; file: string }[] = [];
+    for (const rel of PLAYBOOKS) {
+      const text = readFileSync(join(root, rel), "utf8");
+      for (const m of text.matchAll(/--(?:set|get)\s+([a-z][a-z_]*)/g)) {
+        found.push({ key: m[1], file: rel });
+      }
+    }
+    return found;
+  }
+
+  it("toda chave citada nos playbooks existe em PREFLIGHT_KEYS", () => {
+    const invalid = citedKeys().filter((c) => !isPreflightKey(c.key));
+    assert.deepEqual(
+      invalid,
+      [],
+      `chave inexistente citada em playbook (typo?): ${invalid
+        .map((c) => `${c.key} em ${c.file}`)
+        .join(", ")}`,
+    );
+  });
+
+  it("a busca acha algo — não passa vazia por acidente", () => {
+    assert.ok(
+      citedKeys().length >= 5,
+      "regex deixou de casar as invocações do playbook; o guard viraria no-op silencioso",
+    );
+  });
+
+  /**
+   * Assimetria é o modo de falha real, não a chave inválida: um probe
+   * GRAVADO e nunca lido é trabalho jogado fora; um probe LIDO e nunca
+   * gravado devolve `unknown` para sempre, e o stage cai no caminho de
+   * re-probe achando que o preflight não rodou. Os dois passariam pelo teste
+   * de "chave válida" acima sem reclamar.
+   */
+  function citedWith(kind: "set" | "get"): Set<string> {
+    const root = join(import.meta.dirname, "..");
+    const out = new Set<string>();
+    for (const rel of PLAYBOOKS) {
+      const text = readFileSync(join(root, rel), "utf8");
+      for (const m of text.matchAll(new RegExp(`--${kind}\\s+([a-z][a-z_]*)`, "g"))) {
+        out.add(m[1]);
+      }
+    }
+    return out;
+  }
+
+  it("todo probe é GRAVADO em algum playbook — senão é sempre unknown", () => {
+    const written = citedWith("set");
+    const semEscrita = PREFLIGHT_KEYS.filter((k) => !written.has(k));
+    assert.deepEqual(
+      semEscrita,
+      [],
+      `probe lido mas nunca gravado (leria 'unknown' pra sempre): ${semEscrita.join(", ")}`,
+    );
+  });
+
+  it("todo probe é LIDO em algum playbook — senão é trabalho jogado fora", () => {
+    const read = citedWith("get");
+    const semLeitura = PREFLIGHT_KEYS.filter((k) => !read.has(k));
+    assert.deepEqual(
+      semLeitura,
+      [],
+      `probe gravado e nunca consultado: ${semLeitura.join(", ")}`,
+    );
+  });
+});
+
+describe("setProbe — concorrência (#5414)", () => {
+  /**
+   * O playbook do Stage 0 manda disparar chamadas Bash independentes numa
+   * mensagem só (§0e–0h). Sem lock, dois `--set` simultâneos perdem um dos
+   * probes em silêncio: ambos leem o mesmo estado, o segundo grava por cima.
+   */
+  it("dois setProbe concorrentes preservam os dois valores", async () => {
+    const dir = tempEdition();
+    try {
+      await Promise.all([
+        Promise.resolve().then(() => setProbe(dir, "chrome_mcp", true)),
+        Promise.resolve().then(() => setProbe(dir, "clarice_rest", false)),
+      ]);
+      const s = readPreflightState(dir);
+      assert.equal(s.chrome_mcp, true, "probe do primeiro write sumiu (lost update)");
+      assert.equal(s.clarice_rest, false, "probe do segundo write sumiu");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("não deixa .lock nem .tmp para trás", () => {
+    const dir = tempEdition();
+    try {
+      setProbe(dir, "chrome_mcp", true);
+      const p = preflightStatePath(dir);
+      assert.equal(existsSync(p + ".lock"), false, "lock vazado trava o próximo write");
+      assert.equal(existsSync(p + ".tmp"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("CLI", () => {
   function runCli(args: string[]) {
     const projectRoot = join(import.meta.dirname, "..");
