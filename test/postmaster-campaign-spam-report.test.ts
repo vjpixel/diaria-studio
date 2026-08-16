@@ -14,8 +14,10 @@ import assert from "node:assert/strict";
 import {
   enrichWithCampaignMetadata,
   formatCampaignSpamReport,
+  resolveReportWindowDays,
   type CampaignSpamReportRow,
 } from "../scripts/postmaster-campaign-spam-report.ts";
+import { CAMPAIGN_DISCOVERY_WINDOW_DAYS } from "../scripts/postmaster-spam-sync.ts";
 import type { CampaignSpamAggregate } from "../scripts/lib/postmaster-campaign-spam.ts";
 
 function agg(overrides: Partial<CampaignSpamAggregate> = {}): CampaignSpamAggregate {
@@ -34,6 +36,23 @@ function agg(overrides: Partial<CampaignSpamAggregate> = {}): CampaignSpamAggreg
     ...overrides,
   };
 }
+
+// ── resolveReportWindowDays (#5450) ──
+
+test("resolveReportWindowDays — sem --window-days usa CAMPAIGN_DISCOVERY_WINDOW_DAYS (90), não DEFAULT_WINDOW_DAYS/HEALTH_SAMPLE_DAYS (10) — mesma causa raiz do #5446, agora fechada no relatório manual", () => {
+  const days = resolveReportWindowDays(["node", "postmaster-campaign-spam-report.ts"]);
+  assert.equal(days, CAMPAIGN_DISCOVERY_WINDOW_DAYS);
+  assert.equal(days, 90);
+});
+
+test("resolveReportWindowDays — --window-days explícito continua sobrepondo o default", () => {
+  const days = resolveReportWindowDays(["node", "postmaster-campaign-spam-report.ts", "--window-days", "30"]);
+  assert.equal(days, 30);
+});
+
+test("resolveReportWindowDays — --window-days inválido continua lançando (mesmo comportamento de parseWindowDaysArg)", () => {
+  assert.throws(() => resolveReportWindowDays(["node", "postmaster-campaign-spam-report.ts", "--window-days", "abc"]));
+});
 
 // ── enrichWithCampaignMetadata ──
 
