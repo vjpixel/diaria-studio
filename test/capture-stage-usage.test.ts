@@ -513,4 +513,52 @@ describe("captureUsageForWindow — mapeamento dos campos do #5413", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#5423 — propaga parse_errors quando uma linha truncada está no transcript, no caminho de sucesso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-parse-errors-"));
+    try {
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"input_to';
+      writeFileSync(join(dir, "a.jsonl"), [truncated, usageLine()].join("\n"), "utf8");
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.source, "session_transcript");
+      assert.equal(r.parse_errors, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5423 — propaga parse_errors também no caminho 'unavailable' (sem isso, o sinal de corrupção se perde exatamente quando o stage já reporta problema)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-map-parse-errors-unavail-"));
+    try {
+      const truncated =
+        '{"type":"assistant","timestamp":"2026-05-08T08:35:00.000Z","message":{"usage":{"input_to';
+      // linha truncada + uma linha boa FORA da janela — resultado cai em
+      // "unavailable/no_usage_records_in_window", mas o parse_errors não pode
+      // sumir com o resto do diagnóstico.
+      writeFileSync(
+        join(dir, "a.jsonl"),
+        [truncated, usageLine({ timestamp: "2026-05-08T23:00:00.000Z" })].join("\n"),
+        "utf8",
+      );
+      const r = captureUsageForWindow(
+        dir,
+        "2026-05-08T08:30:00.000Z",
+        "2026-05-08T08:48:00.000Z",
+        "260508",
+        { sessionId: "a" },
+      );
+      assert.equal(r.source, "unavailable");
+      assert.equal(r.reason, "no_usage_records_in_window");
+      assert.equal(r.parse_errors, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
