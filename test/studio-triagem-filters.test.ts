@@ -19,6 +19,8 @@ import {
   prsFilterActive,
   applyDispatchTrackFilterValue,
   LOADING_MESSAGE,
+  LOADING_COUNT,
+  countLabel,
   classificationFilterScope,
   classificationScopeNotice,
   activeFilterSummary,
@@ -230,6 +232,33 @@ describe("emptyStateMessage — estado de carregamento (#5472)", () => {
     assert.equal(
       emptyStateMessage({ ...base, totalCount: 12, filterActive: true, filterSummary: "x", loading: false }),
       "0 resultados para este filtro.",
+    );
+  });
+});
+
+describe("countLabel — placeholder só quando não há o que mostrar (#5478 review)", () => {
+  it("carregando sem linhas → placeholder", () => {
+    assert.equal(countLabel({ filteredCount: 0, loading: true }), LOADING_COUNT);
+  });
+
+  it("carregando COM linhas visíveis → número real, não placeholder", () => {
+    // Refresh manual sobre dado existente: as linhas antigas continuam na
+    // tela. Um cabeçalho "Issues abertas (…)" sobre 5 linhas concretas é o
+    // contador dizendo "não sei quantas" logo acima das que ele sabe.
+    assert.equal(countLabel({ filteredCount: 5, loading: true }), "5");
+  });
+
+  it("sem carregar → sempre o número, inclusive zero", () => {
+    assert.equal(countLabel({ filteredCount: 0, loading: false }), "0");
+    assert.equal(countLabel({ filteredCount: 7, loading: false }), "7");
+  });
+
+  it("mesma precedência de emptyStateMessage — as duas olham 'já tenho algo?' primeiro", () => {
+    const args = { filteredCount: 5, loading: true };
+    assert.equal(countLabel(args), "5");
+    assert.equal(
+      emptyStateMessage({ ...args, totalCount: 5, filterActive: false, filterSummary: null, emptyLabel: "x" }),
+      null,
     );
   });
 });

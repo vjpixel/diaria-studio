@@ -41,8 +41,19 @@ import { LOADING_COUNT, LOADING_MESSAGE } from "../scripts/studio-ui/public/tria
 const nodesById = new Map<string, Record<string, unknown>>();
 
 function stubNode(): unknown {
+  const listeners = new Map<string, Array<() => void>>();
   const target: Record<string | symbol, unknown> = {
-    addEventListener() {},
+    // Guarda os handlers pra que o teste possa DISPARAR eventos (ex: clique
+    // em "Atualizar") — sem isso não dá pra reproduzir dois fetches em voo.
+    addEventListener(type: string, fn: () => void) {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+    /** Só-para-teste: dispara os handlers registrados para `type`. */
+    __fire(type: string) {
+      for (const fn of listeners.get(type) ?? []) fn();
+    },
     removeEventListener() {},
     appendChild() {},
     setAttribute() {},
@@ -247,6 +258,59 @@ describe("triagem.js — guard de carga (#5462) + estado de carregamento (#5472)
       asyncErrors.map((e) => (e instanceof Error ? e.message : String(e))),
       [],
       "inicialização de triagem.js lançou de forma assíncrona — página abriria zerada",
+    );
+  });
+
+  // Achado do review do PR #5478 (P2): sem guard de sequência, a resposta
+  // ANTIGA que chega por último sobrescreve a nova — a tela passa a mostrar
+  // dado velho como se fosse fresco, sem sinal nenhum. Reproduzido aqui
+  // fazendo o 1º fetch resolver DEPOIS do 2º, que é o caso que a ordem
+  // natural de chegada esconde.
+  it("resposta obsoleta que chega atrasada não sobrescreve a mais recente", async () => {
+    const respostas: Array<{ liberar: () => void; issues: unknown[] }> = [];
+    (globalThis as Record<string, unknown>).fetch = async () => {
+      const entrada = { liberar: () => {}, issues: [] as unknown[] };
+      const espera = new Promise<void>((resolve) => {
+        entrada.liberar = resolve;
+      });
+      respostas.push(entrada);
+      await espera;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          generatedAt: new Date(0).toISOString(),
+          issues: entrada.issues,
+          prs: [],
+          execTrackUi: [],
+          error: null,
+          cached: false,
+        }),
+      } as unknown as Response;
+    };
+
+    const mod = await import("../scripts/studio-ui/public/triagem.js");
+    void mod;
+    // Dois fetches em voo, disparados pelo mesmo caminho do botão "Atualizar".
+    const clicar = () => (nodesById.get("refresh-btn")?.__fire as ((t: string) => void))("click");
+    clicar();
+    clicar();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(respostas.length, 2, "os dois fetches precisam estar em voo pra reproduzir a corrida");
+
+    // O 2º (mais novo) traz 2 issues e responde PRIMEIRO.
+    respostas[1].issues = [{ number: 9, title: "novo", url: "u", state: "OPEN", labels: [], priority: null, files: [], execTrack: "overnight" }, { number: 10, title: "novo2", url: "u", state: "OPEN", labels: [], priority: null, files: [], execTrack: "overnight" }];
+    respostas[1].liberar();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(nodesById.get("issues-count")?.textContent, "2", "a resposta nova deveria ter sido renderizada");
+
+    // Só então o 1º (obsoleto) responde, com 0 issues. Não pode reverter a tela.
+    respostas[0].liberar();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      nodesById.get("issues-count")?.textContent,
+      "2",
+      "resposta obsoleta sobrescreveu a mais recente — dado velho exibido como fresco",
     );
   });
 });

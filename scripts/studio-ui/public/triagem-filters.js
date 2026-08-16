@@ -20,6 +20,21 @@ export const LOADING_MESSAGE = "carregando…";
  * AFIRMAÇÃO ("não há nada"), e antes do dado chegar isso é desconhecido. */
 export const LOADING_COUNT = "…";
 
+/**
+ * Texto do contador de uma tabela. Pura.
+ *
+ * O placeholder só aparece quando **não há linha nenhuma pra mostrar**. Com
+ * linhas já renderizadas (refresh manual sobre dado existente), o contador
+ * mantém o número real: dizer "…" sobre uma tabela que exibe 5 linhas concretas
+ * é um cabeçalho afirmando "não sei quantas" logo acima das que ele sabe.
+ *
+ * Mesma precedência de `emptyStateMessage` — as duas respondem à pergunta "já
+ * tenho algo a mostrar?" antes de considerar o carregamento.
+ */
+export function countLabel({ filteredCount, loading }) {
+  return loading && filteredCount === 0 ? LOADING_COUNT : String(filteredCount);
+}
+
 /** Filtros que a tabela de ISSUES aplica: prioridade, classificação, labels. @pure */
 export function issuesFilterActive(filters) {
   return Boolean(filters.priority || filters.dispatch || filters.labels?.size > 0);
@@ -121,7 +136,9 @@ export function activeFilterSummary(filters, table) {
  */
 export function emptyStateMessage({ filteredCount, totalCount, filterActive, filterSummary, emptyLabel, loading }) {
   if (filteredCount > 0) return null;
-  // `loading` vence TODOS os outros casos (#5472): antes do 1º fetch voltar,
+  // `loading` vence os demais casos de ZERO RESULTADO (#5472) — não vence o
+  // `filteredCount > 0` acima, de propósito: se já há linhas na tela, elas
+  // continuam valendo e uma mensagem sobreposta seria ruído. Antes do 1º fetch voltar,
   // `filteredCount`/`totalCount` são 0 porque o dado ainda não chegou — não
   // porque não existe. Dizer "Nenhuma issue aberta." ali é afirmar como fato
   // algo que ainda não se sabe, e foi exatamente o que fez a página quebrada

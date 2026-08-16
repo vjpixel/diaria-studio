@@ -19,7 +19,7 @@
     </div>
     <div class="statusbar-item conn" id="fetch-status">
       <span class="dot" id="fetch-dot"></span>
-      <span id="fetch-label">carregando…</span>
+      <span id="fetch-label" aria-live="polite">carregando…</span>
     </div>
   </header>
 
@@ -73,7 +73,7 @@
     </section>
 
     <section class="panel">
-      <h2>Issues abertas (<span id="issues-count">0</span>)<span id="issues-filter-chip" class="filter-scope-chip" hidden></span></h2>
+      <h2>Issues abertas (<span id="issues-count" aria-live="polite">0</span>)<span id="issues-filter-chip" class="filter-scope-chip" hidden></span></h2>
       <p class="hint">
         "Classificação" é uma heurística best-effort (labels operacionais +
         marcadores de texto) que aproxima — mas não substitui — a triagem
@@ -81,7 +81,7 @@
       </p>
       <ul class="hint" id="dispatch-track-legend"></ul>
       <div id="issues-scope-notice" class="hint filter-scope-notice" hidden></div>
-      <div id="issues-empty" class="hint" hidden>Nenhuma issue aberta.</div>
+      <div id="issues-empty" class="hint" role="status" aria-live="polite" hidden>Nenhuma issue aberta.</div>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
@@ -101,14 +101,14 @@
     </section>
 
     <section class="panel">
-      <h2>PRs abertos (<span id="prs-count">0</span>)<span id="prs-filter-chip" class="filter-scope-chip" hidden></span></h2>
+      <h2>PRs abertos (<span id="prs-count" aria-live="polite">0</span>)<span id="prs-filter-chip" class="filter-scope-chip" hidden></span></h2>
       <p class="hint">
         "CI" resume <code>statusCheckRollup</code>. Não é o gate de merge
         completo (#2210/#2222) — falta checar threads não-resolvidas, que
         exigiria 1 chamada extra por PR; essa coluna cobre só o pedaço de CI.
       </p>
       <div id="prs-scope-notice" class="hint filter-scope-notice" hidden></div>
-      <div id="prs-empty" class="hint" hidden>Nenhum PR aberto.</div>
+      <div id="prs-empty" class="hint" role="status" aria-live="polite" hidden>Nenhum PR aberto.</div>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
