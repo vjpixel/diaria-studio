@@ -392,10 +392,24 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
 
 ## Loop invariável (nunca encerra por conta própria)
 
-Seis passos, repetidos indefinidamente — a sessão só para por ação externa
-(o editor mata o processo). O guard de colisão editorial (passo 1) **PAUSA**,
-nunca encerra — diferente do overnight, que preempta a rodada inteira ao
-detectar a edição diária em curso.
+Um passo 0 de sync + seis passos, repetidos indefinidamente — a sessão só
+para por ação externa (o editor mata o processo). O guard de colisão
+editorial (passo 1) **PAUSA**, nunca encerra — diferente do overnight, que
+preempta a rodada inteira ao detectar a edição diária em curso.
+
+0. **Sync de master (#5397)** — no início de CADA reentrada neste loop
+   (entrada fresca da sessão e cada retomada via wake `/loop`/
+   `ScheduleWakeup`), rodar `npx tsx scripts/sync-code.ts` (mesmo wrapper
+   fail-soft do #2686 usado no Passo 0 de `/diaria-edicao`: fetch + `git
+   checkout master && git pull --ff-only`). **Fail-soft invariável**:
+   qualquer falha de sync (offline, divergência, conflito de stash) vira
+   warning no log e o loop segue normalmente — nunca bloqueia. Cobre o
+   cenário em que outra máquina/sessão mergeou algo enquanto esta sessão
+   dormia entre ciclos do loop — sem este passo, um wake abriria worktree a
+   partir de um `master` local defasado até o próprio loop mergear algo
+   (passo 1, item 6, reusado do overnight), reintroduzindo bugs já corrigidos
+   alhures. Não substitui o `git pull` pós-merge do passo 1 (item 6) — este
+   passo 0 cobre a janela ANTES do primeiro merge de cada reentrada.
 
 **Mudança de config de sessão nunca é sinal de pausa (#5327 item 1, achado
 ao vivo 260814).** Comandos como `/effort medium`, `/fast`, ou qualquer outro
