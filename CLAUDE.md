@@ -66,7 +66,11 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 **Registro operacional completo de todas as tasks agendadas (watchdogs,
 syncs, alarmes, precomputes — horários, estado de armamento por máquina,
 histórico de cutover Windows) vive em `docs/scheduled-tasks-registry.md`
-(#5344 Parte B2) — não incondicionalmente carregado aqui.**
+(#5344 Parte B2) — não incondicionalmente carregado aqui. Enumeração
+PROGRAMÁTICA (nunca truncável como um `grep` pode ser, #5408): `npx tsx
+scripts/lib/scheduled-tasks.ts --list` (tabela) ou `--json` (consumo
+programático) — fonte canônica sobre grep/leitura de prosa quando a
+pergunta é "quais tasks existem?".**
 
 **Sessão supervisionada:** `/diaria-develop [AAMMDD] [--issues N,M] [--only A-E] [--dry-run] [--no-implement] [--serial]` — **superconjunto do overnight em escopo, não em modo** (#2636, reenquadrado em #4319). Por padrão (`goal_policy=exhaust_all`) trabalha o backlog aberto **inteiro** em 4 ondas priorizadas (bugs → bloqueadas restantes → elegíveis P0/P1 → resto) até não sobrar issue aberta, com gate obrigatório antes de entrar na última onda; `goal_policy=blocked_only` restringe ao escopo original — só o backlog **BLOQUEADO** que o overnight pula: credencial-runtime, conta-externa, decisão-produto, supervisão-blast-radius, plataforma-sem-fix (cat. A–E). Roda **com o editor presente** em qualquer política — é essa presença, não o escopo, que separa o develop do overnight. O editor desbloqueia ao vivo (cola token, confirma conta, decide trade-off, autoriza blast-radius), a skill valida deterministicamente (#573) e leva ao merge reusando a maquinaria do overnight, **paralelizando tudo que for seguro** (worktrees concorrentes; issues que colidem em arquivo fundem num PR só em vez de serializar, #4319; teto 6, #2754; `--serial` desliga). Diferente do overnight, perguntar é permitido e central; nunca continua sem o editor — e desde #4319 os caps mecânicos de re-varredura/profundidade de finding saíram do develop — o de **re-varredura** saiu também do overnight em #5272 (lá a parada passou a vir do anti-livelock + guard de colisão editorial, nunca de um contador — e **sem teto de relógio**: um teto de 09:00 BRT entrou junto com o #5272 e foi retirado no mesmo dia por decisão do editor, então em dia sem edição a rodada não tem limite de horário, só a fila secando); só o cap de **profundidade de finding** segue exclusivo do overnight, que roda desassistido e tem a cadeia de findings se auto-alimentando.
 
