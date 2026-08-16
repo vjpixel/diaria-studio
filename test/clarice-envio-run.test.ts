@@ -535,6 +535,50 @@ describe("clarice-envio-run (#5026)", () => {
     });
 
     // -----------------------------------------------------------------------
+    // #5395 — reconciliação: clarice-build-segment.ts corta silenciosamente
+    // (`ordered.slice(0, budget)`, --group não suporta --exact-budget) quando
+    // a fila real pós-guards é menor que `decision.volume` — sem esta checagem
+    // a rodada declara sucesso (code 0) e o relatório fica 100% verde mesmo
+    // com a onda saindo menor que o planejado (achado ao vivo 260816).
+    // -----------------------------------------------------------------------
+
+    it("#5395: clarice-build-segment devolve MENOS que o budget => relatório registra RECONCILIAÇÃO, sem abortar a rodada", async () => {
+      const root = freshRoot();
+      // baseVolume 3005 × (1+0.15) = 3456 (mesma conta do teste "caminho
+      // feliz" acima) — a fila real só entregou 2000, bem menos.
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-build-segment.ts": jsonResult({ selected: 2000, cycle: CYCLE, group: "ramp-warm" }),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(
+        r.reportMarkdown.includes("RECONCILIAÇÃO"),
+        `relatório deveria registrar a divergência 2000×3456; reportMarkdown=${r.reportMarkdown}`,
+      );
+      assert.ok(r.reportMarkdown.includes("2000") && r.reportMarkdown.includes("3456"));
+      const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+      assert.ok(segment, "a rodada ainda deve chamar clarice-build-segment normalmente (reconciliação não bloqueia)");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5395: clarice-build-segment devolve exatamente o budget => relatório NÃO menciona RECONCILIAÇÃO", async () => {
+      const root = freshRoot();
+      // budget real desta fixture é 3456 (baseVolume 3005 × (1+0,15)) — o
+      // default de goldenHandlers (`selected: proposal.volumes.baseVolume`,
+      // 3005) diverge de propósito nos OUTROS testes (nunca é lido por eles);
+      // aqui a asserção depende disso, então fixamos `selected` = budget.
+      const { exec } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-build-segment.ts": jsonResult({ selected: 3456, cycle: CYCLE, group: "ramp-warm" }),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(!r.reportMarkdown.includes("RECONCILIAÇÃO"), r.reportMarkdown);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // -----------------------------------------------------------------------
     // #5055 — estado durável do teste A/B/C no orquestrador
     // -----------------------------------------------------------------------
 

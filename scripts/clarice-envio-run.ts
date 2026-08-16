@@ -963,9 +963,31 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     const waveKeyBase = waveKey(n, sendDate);
     report.note(`onda d${n} · ${sendDate} · chave base "${waveKeyBase}" · teste A/B/C: ${abcAction}.`);
 
-    step(deps, report, "clarice-build-segment", "scripts/clarice-build-segment.ts", [
-      "--group", "ramp-warm", "--cycle", cycle, "--budget", String(decision.volume),
-    ]);
+    const buildSegmentStep = step<{ selected?: number; budget?: number }>(
+      deps,
+      report,
+      "clarice-build-segment",
+      "scripts/clarice-build-segment.ts",
+      ["--group", "ramp-warm", "--cycle", cycle, "--budget", String(decision.volume)],
+    );
+    // #5395 — reconciliação: `--group ramp-warm` sem `--exact-budget` (não
+    // suportado nesse modo) corta silenciosamente pra `ordered.slice(0,
+    // budget)` — se a fila real (pós-guards) for menor que `decision.volume`,
+    // `selected` sai menor que o pedido sem NENHUM sinal no relatório (a
+    // causa raiz do achado ao vivo de 260816: onda 25% menor, relatório
+    // 100% verde). `selected` ausente no JSON (parse falhou) não é tratado
+    // como divergência — é ausência de dado, não confirmação de "bateu".
+    const segmentSelected = buildSegmentStep.json?.selected;
+    if (typeof segmentSelected === "number" && segmentSelected < decision.volume) {
+      const deficit = decision.volume - segmentSelected;
+      const pct = ((deficit / decision.volume) * 100).toFixed(1);
+      report.note(
+        `⚠️  RECONCILIAÇÃO: onda saiu ${segmentSelected} contra ${decision.volume} planejados ` +
+          `(déficit ${deficit}, −${pct}%) — a fila real pós-guards (sent-or-queued.json/committed) ` +
+          "era menor que o `availableFirstSend` calculado no planejamento. Investigar antes da próxima rodada " +
+          "(órfãos de replan de lista, guard divergente, etc. — #5395).",
+      );
+    }
 
     // #5140 — teste de HORÁRIO. Só entra quando o de ASSUNTO está travado:
     // as duas dimensões dividem a MESMA onda, e rodar as duas juntas produz
