@@ -64,6 +64,8 @@ import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceNovosEnabled } from "./lib/clarice-novos-enabled.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
+import { writeNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
+import { writeNovosRunStatus, isSemaphoreAbortMessage, type NovosRunStatusValue } from "./lib/clarice-novos-run-status.ts";
 import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
@@ -263,6 +265,16 @@ function writeAndRegisterReport(deps: NovosRunDeps, reportId: string, title: str
   // encerra até o fetch pendente do e-mail assentar, mesmo sem await.
 }
 
+/** #5405 — snapshot do desfecho desta invocação (consumido pelo alarme de
+ * abort recorrente e pelo aviso do plan-wave). Nunca chamado em `--dry-run`
+ * (mesma decisão de `writeNovosCutoff` acima — não é uma tentativa real). */
+function noteRunStatus(deps: NovosRunDeps, now: Date, status: NovosRunStatusValue, detail?: string): void {
+  writeNovosRunStatus(
+    { status, checkedAt: now.toISOString(), detail: detail?.slice(0, 300) },
+    resolve(deps.rootDir, "data", "clarice-subscribers"),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Passo runner — spawna, loga, e devolve o JSON parseado (ou lança NovosAbort
 // se o exit code não for aceito por `okCodes`).
@@ -339,6 +351,15 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     const since = delta.json?.since;
     if (!since) throw new NovosAbort("❌ clarice-stripe-delta não devolveu 'since' no resumo JSON — não dá pra prosseguir sem saber a janela usada.");
     report.note(`since efetivo: ${since} (${delta.json?.rows ?? "?"} cliente(s) no delta)`);
+    // #5410: persiste o cutoff ANTES do semáforo (Passo 3) — se a rodada
+    // abortar em vermelho, o cutoff já gravado impede `ramp-warm` de
+    // absorver os cadastros desta janela em silêncio (fonte única
+    // compartilhada com `isRampWarm`/`isNovos`, clarice-segment.ts). Pulado
+    // em `--dry-run`: não é uma rodada real, não deve mexer no estado que a
+    // rodada de produção lê.
+    if (!opts.dryRun) {
+      writeNovosCutoff(since, resolve(deps.rootDir, "data", "clarice-subscribers"), now);
+    }
     step(deps, report, "clarice-build-db (pós-delta)", "scripts/clarice-build-db.ts", []);
 
     // --- Resolve {CICLO_ENVIO} — determinístico, ambiguidade aborta (#4941) ---
@@ -406,6 +427,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       report.note("ℹ️  0 contato(s) — rodada vazia, não é erro. Nada a importar/disparar.");
       const reportId = `novos-${aammdd}-empty`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — 0 contatos`, report.build());
+      noteRunStatus(deps, now, "empty");
       return { code: 0, reportId, reportMarkdown: report.build() };
     }
 
@@ -536,6 +558,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `(idempotente por key/campanha, re-tentar --send-now é seguro).`,
       );
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
+      noteRunStatus(deps, now, "uncertain");
       return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     if (sendNow.code !== 0) {
@@ -555,6 +578,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `tratando como disparo INCERTO por segurança, não declarando sucesso.`,
       );
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
+      noteRunStatus(deps, now, "uncertain");
       return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     report.note(`✅ disparo confirmado (status="sent") — ${selected} contato(s).`);
@@ -572,6 +596,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `clarice-novos-html-state.ts --cycle ${cicloMensal} --finalize --list-id N --campaign-id N --sent-count ${selected}`,
       );
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — ${selected} contato(s)`, report.build());
+      noteRunStatus(deps, now, "sent");
       return { code: 0, reportId: reportIdSent, reportMarkdown: report.build() };
     }
 
@@ -609,12 +634,21 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     }
 
     writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — ${selected} contato(s)`, report.build());
+    noteRunStatus(deps, now, "sent");
     return { code: 0, reportId: reportIdSent, reportMarkdown: report.build() };
   } catch (e) {
     const abort = e instanceof NovosAbort ? e : new NovosAbort(`❌ erro inesperado: ${(e as Error).message}`);
     report.note(abort.message);
     const reportId = `novos-${aammdd}-abort`;
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — abortado`, report.build());
+    // #5405: nunca gravado em --dry-run (não é uma tentativa de produção) —
+    // mesma decisão de `writeNovosCutoff`. Kill switch pausado nunca chega
+    // aqui (retorna antes do try). `isSemaphoreAbortMessage` distingue o
+    // motivo D4 (semáforo) de qualquer outro abort — só o primeiro conta pro
+    // streak do alarme (#5405 item 1).
+    if (!opts.dryRun) {
+      noteRunStatus(deps, now, isSemaphoreAbortMessage(abort.message) ? "semaphore-red" : "other-error", abort.message);
+    }
     return { code: abort.code, reportId, reportMarkdown: report.build() };
   }
 }

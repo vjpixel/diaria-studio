@@ -15,6 +15,8 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { readNovosCutoff } from "../scripts/lib/clarice-novos-cutoff.ts";
+import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -332,6 +334,13 @@ describe("clarice-novos-run (#4941)", () => {
       assert.equal(finalizeCall.args[finalizeCall.args.indexOf("--campaign-id") + 1], "555");
       assert.equal(finalizeCall.args[finalizeCall.args.indexOf("--sent-count") + 1], "42");
 
+      // #5410/#5405: envio confirmado grava cutoff + status "sent" — próxima
+      // leitura de ramp-warm/alarme enxerga a rodada como bem-sucedida.
+      const cutoff = readNovosCutoff(resolve(root, "data", "clarice-subscribers"));
+      assert.equal(cutoff?.cutoffIso, "2026-08-01");
+      const status = readNovosRunStatus(resolve(root, "data", "clarice-subscribers"));
+      assert.equal(status?.status, "sent");
+
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -431,6 +440,10 @@ describe("clarice-novos-run (#4941)", () => {
       const segmentCall = calls.find((c) => c.script === "scripts/clarice-build-segment.ts")!;
       assert.ok(segmentCall.args.includes("--dry-run"));
       assert.ok(!calls.find((c) => c.script === "scripts/clarice-stripe-delta.ts")!.args.includes("--execute"));
+      // #5410/#5405: --dry-run nunca é uma tentativa de produção — não deve
+      // mexer no cutoff/status compartilhados que a rodada real lê.
+      assert.equal(readNovosCutoff(resolve(root, "data", "clarice-subscribers")), null);
+      assert.equal(readNovosRunStatus(resolve(root, "data", "clarice-subscribers")), null);
       rmSync(root, { recursive: true, force: true });
     });
   });
@@ -447,6 +460,44 @@ describe("clarice-novos-run (#4941)", () => {
       const result = await runNovos([], deps);
       assert.equal(result.code, 1);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5410: cutoff (`since` do Passo 1) é persistido MESMO quando o semáforo aborta — é isto que impede ramp-warm de absorver a janela novos", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
+      const { exec } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 1);
+      const cutoff = readNovosCutoff(resolve(root, "data", "clarice-subscribers"));
+      assert.ok(cutoff, "cutoff deveria ter sido persistido antes do semáforo abortar");
+      assert.equal(cutoff!.cutoffIso, "2026-08-01"); // `since` devolvido por goldenHandlers().clarice-stripe-delta.ts
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5405: status da rodada (last-novos-run-status.json) marca 'semaphore-red' quando o abort é especificamente do guard de semáforo", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
+      const { exec } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      await runNovos([], deps);
+      const status = readNovosRunStatus(resolve(root, "data", "clarice-subscribers"));
+      assert.equal(status?.status, "semaphore-red");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5405: status da rodada marca 'other-error' quando o abort NÃO é do guard de semáforo (ex: teto D13 do build-segment)", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ error: "cap exceeded" }, 1);
+      const { exec } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      await runNovos([], deps);
+      const status = readNovosRunStatus(resolve(root, "data", "clarice-subscribers"));
+      assert.equal(status?.status, "other-error");
       rmSync(root, { recursive: true, force: true });
     });
 

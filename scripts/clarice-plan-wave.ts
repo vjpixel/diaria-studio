@@ -53,6 +53,7 @@ import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   excludeCommittedToQueuedCampaigns,
   segmentRampWarm,
+  segmentNovos,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
@@ -63,6 +64,8 @@ import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
+import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
+import { readNovosRunStatus } from "./lib/clarice-novos-run-status.ts";
 import {
   TransientDashboardError,
   TRANSIENT_DASHBOARD_STATUSES,
@@ -327,8 +330,16 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // invocação do ciclo — a raiz do achado ao vivo de 260816 (onda saiu 25%
   // menor que o planejado, sem aviso).
   const sentOrQueuedEmails = loadSentOrQueuedEmails(clariceSegmentsDir(opts.cycle, opts.segmentsBaseDir ?? CLARICE_BASE));
+  // #5410: mesmo cutoff que `clarice-build-segment.ts --group ramp-warm`
+  // usa em produção — sem isto, a PRÉVIA contaria como "disponível" contatos
+  // que a seleção REAL nunca incluiria (ainda dentro da janela `novos`),
+  // superestimando a fila igual ao gap do #5395 (comentário acima).
+  const novosCutoff = readNovosCutoff(opts.novosStateBaseDir ?? CLARICE_BASE);
   const availableFirstSendRows = excludeSentOrQueued(
-    excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed),
+    excludeCommittedToQueuedCampaigns(
+      segmentRampWarm(rows, { cutoffNovosIso: novosCutoff?.cutoffIso ?? null }),
+      committed,
+    ),
     sentOrQueuedEmails,
   );
   const availableFirstSend = availableFirstSendRows.length;
@@ -354,6 +365,31 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const novosState = readNovosState(opts.novosStateBaseDir ?? CLARICE_BASE);
   const novosFreshness = measureNovosFreshness(novosState?.lastRunAt ?? null, now);
 
+  // #5405 item 2 — desfecho da ÚLTIMA tentativa (sucesso ou abort), fonte
+  // independente de `novosState` (que só avança em envio confirmado — ver
+  // docstring de `clarice-novos-run-status.ts`). `undefined` (nenhuma
+  // tentativa registrada ainda) → `buildWaveProposal` cai no comportamento
+  // pré-#5405 (sem override de texto).
+  const lastRunStatus = readNovosRunStatus(opts.novosStateBaseDir ?? CLARICE_BASE);
+  const novosLastAbort =
+    lastRunStatus && (lastRunStatus.status === "semaphore-red" || lastRunStatus.status === "other-error")
+      ? { status: lastRunStatus.status, checkedAt: lastRunStatus.checkedAt, detail: lastRunStatus.detail }
+      : null;
+
+  // #5405 item 3 — fila represada na janela `novos` (mesmo cutoff do #5410
+  // acima). Sem cutoff conhecido (base sem nenhuma rodada de `novos` ainda)
+  // → `null`, omitido dos textos.
+  const novosPending = novosCutoff
+    ? (() => {
+        const pending = segmentNovos(rows, { sinceIso: novosCutoff.cutoffIso });
+        let earliest: string | null = null;
+        for (const r of pending) {
+          if (r.created && (earliest === null || r.created < earliest)) earliest = r.created;
+        }
+        return { count: pending.length, earliestCreatedIso: earliest };
+      })()
+    : null;
+
   // #5140: mesma leitura fail-soft do estado que `clarice-envio-run.ts` faz.
   // Sem isto a PRÉVIA mostraria 1 lista num dia em que a execução criaria 2
   // campanhas em horários diferentes — a prévia é o que o editor aprova.
@@ -376,6 +412,8 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     startingWaveNumber: computeNextWaveNumber(state.waves),
     committedLookupFailed,
     novosFreshness,
+    novosLastAbort,
+    novosPending,
   });
 }
 

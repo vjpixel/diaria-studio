@@ -568,6 +568,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4347, #4941, #5185",
   },
   {
+    name: "Diaria-Clarice-Novos-Abort-Alarm",
+    description: "alarme de aborts consecutivos por semaforo vermelho (D4) do grupo 'novos' da Clarice",
+    steps: [{ key: "alarm", script: "scripts/clarice-novos-abort-alarm.ts" }],
+    logPath: "clarice-subscribers/.novos-abort-alarm.log",
+    // Diária 15:10 BRT — depois das DUAS rodadas do dia (11:00 e 15:00
+    // Diaria-Clarice-Novos-Tarde), lê o status da MAIS RECENTE. Mesmo
+    // padrão de "alarme roda depois do que ele observa" de
+    // Diaria-Clarice-Opens-Catchup-Alarm (09:00, depois do Diaria-Clarice-
+    // Sync das 08:30).
+    schedule: { kind: "daily", hour: 15, minute: 10 },
+    issue: "#5405",
+  },
+  {
     name: "Diaria-Clarice-Envio",
     description: "planeja e agenda a onda Clarice do dia seguinte (06:00 BRT) - freio por risco de ISP + escalada adaptativa",
     // Kill switch dedicado: ANTES de qualquer chamada Brevo,

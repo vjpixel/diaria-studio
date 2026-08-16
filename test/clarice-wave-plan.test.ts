@@ -1406,6 +1406,83 @@ describe("buildWaveProposal — frescor do novos (#4664)", () => {
   });
 });
 
+describe("buildWaveProposal — #5405 item 2: aviso diz 'abortou' quando a ÚLTIMA tentativa não confirmou envio", () => {
+  it("REGRESSÃO: lastRunAt recente (freshness='warning') + abort MAIS RECENTE que lastRunAt => 'abortou', NÃO 'considere rodar'", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "warning", lastRunAt: "2026-08-15T11:00:00.000Z", ageHours: 20 },
+        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+      }),
+    );
+    const all = [...p.blockers, ...p.warnings].join(" ");
+    assert.match(all, /ABORTOU/);
+    assert.doesNotMatch(all, /considere rodar/);
+  });
+
+  it("abort MAIS ANTIGO que lastRunAt (já recuperou) — texto normal de freshness, sem override", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "warning", lastRunAt: "2026-08-16T11:00:00.000Z", ageHours: 13 },
+        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-15T11:00:00.000Z" },
+      }),
+    );
+    const all = [...p.blockers, ...p.warnings].join(" ");
+    assert.match(all, /considere rodar/);
+    assert.doesNotMatch(all, /ABORTOU/);
+  });
+
+  it("'never-run' + qualquer abort registrado => 'abortou' (rodou, só nunca confirmou envio) em vez de 'nunca rodou'", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null },
+        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+      }),
+    );
+    const all = p.blockers.join(" ");
+    assert.match(all, /ABORTOU/);
+    assert.doesNotMatch(all, /nunca rodou/);
+  });
+
+  it("sem novosLastAbort (undefined) — comportamento pré-#5405 inalterado", () => {
+    const p = buildWaveProposal(
+      proposalInput({ novosFreshness: { status: "warning", lastRunAt: "2026-08-16T00:00:00.000Z", ageHours: 20 } }),
+    );
+    assert.match(p.warnings.join(" "), /considere rodar/);
+  });
+
+  it("motivo 'other-error' aparece no texto (não confundido com semáforo)", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null },
+        novosLastAbort: { status: "other-error", checkedAt: "2026-08-16T11:00:00.000Z" },
+      }),
+    );
+    assert.match(p.blockers.join(" "), /outro motivo/);
+  });
+});
+
+describe("buildWaveProposal — #5405 item 3: fila represada aparece no texto do aviso", () => {
+  it("blocker inclui contagem + data do cadastro mais antigo represado", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "blocker", lastRunAt: "2026-08-13T00:00:00.000Z", ageHours: 72 },
+        novosPending: { count: 28, earliestCreatedIso: "2026-08-15" },
+      }),
+    );
+    assert.match(p.blockers.join(" "), /28 cadastro\(s\) desde 2026-08-15/);
+  });
+
+  it("pending com count=0 não aparece no texto", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        novosFreshness: { status: "blocker", lastRunAt: "2026-08-13T00:00:00.000Z", ageHours: 72 },
+        novosPending: { count: 0, earliestCreatedIso: null },
+      }),
+    );
+    assert.doesNotMatch(p.blockers.join(" "), /Fila represada/);
+  });
+});
+
 describe("renderWaveProposal — data do novos SEMPRE visível (#4664)", () => {
   it("mostra a data/hora mesmo dentro do prazo ('fresh')", () => {
     const out = renderWaveProposal(
@@ -1422,6 +1499,20 @@ describe("renderWaveProposal — data do novos SEMPRE visível (#4664)", () => {
       buildWaveProposal(proposalInput({ novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null } })),
     );
     assert.match(out, /Nunca rodou neste histórico/);
+  });
+
+  it("#5405: tela mostra ABORTOU (não a data de frescor) quando o abort é mais recente que lastRunAt; fila represada some se count=0", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          novosFreshness: { status: "warning", lastRunAt: "2026-08-15T11:00:00.000Z", ageHours: 20 },
+          novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+          novosPending: { count: 28, earliestCreatedIso: "2026-08-15" },
+        }),
+      ),
+    );
+    assert.match(out, /ABORTOU \(semáforo VERMELHO \(D4\)\)/);
+    assert.match(out, /Fila represada: 28 cadastro\(s\) desde 2026-08-15\./);
   });
 });
 
