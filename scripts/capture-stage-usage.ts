@@ -19,6 +19,18 @@
  *   # override explícito de janela (default: lê start/end do próprio row):
  *   npx tsx scripts/capture-stage-usage.ts --edition-dir ... --stage 1 \
  *     --start 2026-05-08T08:30:00Z --end 2026-05-08T08:48:00Z
+ *   # análise pós-hoc de uma sessão que não é a corrente:
+ *   npx tsx scripts/capture-stage-usage.ts --edition-dir ... --stage 1 --session-id <uuid>
+ *   # comportamento pré-#5413 (soma TODAS as sessões da janela):
+ *   npx tsx scripts/capture-stage-usage.ts --edition-dir ... --stage 1 --all-sessions
+ *
+ * #5413 — por default conta só a sessão que invocou o script
+ * (`CLAUDE_CODE_SESSION_ID`). Antes somava toda sessão Claude Code ativa no
+ * mesmo repo dentro da janela do stage: medido na edição 260814, isso inflou
+ * o total em 29% (303M de 1.001M vieram de 5 sessões paralelas). O resultado
+ * agora sempre carrega `session_filter` e `sessions_excluded` — e
+ * `subagent_tokens_in: null`, que significa NÃO REGISTRADO pelo harness, não
+ * "custou zero".
  *
  * Fail-soft (#738-adjacent, mesma disciplina de `update-stage-status.ts`):
  * qualquer condição impeditiva (sem timestamps, sem diretório de transcripts
@@ -29,7 +41,8 @@
  * Requer sessão LOCAL — `~/.claude/projects/` não existe (ou não reflete a
  * sessão corrente) em ambiente cloud/worktree efêmero. Ver
  * `scripts/lib/session-transcript.ts` pro detalhe do que é capturável vs o
- * que fica como gap conhecido (subagentes com `isolation: "worktree"`).
+ * que fica como gap conhecido (custo de subagente, em qualquer modo de
+ * isolamento, não é gravado em transcript nenhum — #5413).
  *
  * Output: JSON em stdout — `{ source: "session_transcript", ... }` em
  * sucesso, `{ source: "unavailable", reason, ... }` quando não há dado real
@@ -41,7 +54,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { loadDoc, saveDoc, applyUpdate, type StageRow } from "./update-stage-status.ts";
-import { collectUsageInWindow, resolveTranscriptsDir } from "./lib/session-transcript.ts";
+import {
+  collectUsageInWindow,
+  currentSessionId,
+  resolveTranscriptsDir,
+  type CollectUsageOptions,
+  type SessionFilterMode,
+  type SessionFilterReason,
+  type UsageWindowResult,
+} from "./lib/session-transcript.ts";
 import { editionDateMs, estimateCallCostUsd, shortModelName } from "./lib/pricing.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,6 +79,43 @@ export interface CaptureResult {
   models?: string[];
   sessions_scanned?: number;
   entries_matched?: number;
+  /** `current_session` | `all_sessions` — ver #5413. */
+  session_filter?: SessionFilterMode;
+  session_filter_reason?: SessionFilterReason;
+  /** Sessões concorrentes com turnos na mesma janela que ficaram de fora. */
+  sessions_excluded?: number;
+  /**
+   * `null` = custo de subagente NÃO REGISTRADO pelo harness, não zero. Campo
+   * explícito de propósito: antes do #5413 esse custo não tinha campo nenhum
+   * — ficava simplesmente ausente, e `tokens_in` era lido como se já fosse o
+   * total do stage. O buraco não inflava o número, tornava-o incompleto sem
+   * deixar rastro.
+   */
+  subagent_tokens_in?: number | null;
+  subagent_tokens_out?: number | null;
+}
+
+/**
+ * Campos de diagnóstico do #5413, num só lugar — os dois retornos de
+ * `captureUsageForWindow` (sucesso e `no_usage_records_in_window`) precisam
+ * carregar exatamente o mesmo conjunto. Duplicar isso à mão foi o que fez o
+ * `sessions_excluded` sumir do branch vazio na primeira versão desta issue.
+ */
+function describeWindowFilter(
+  window: UsageWindowResult,
+): Pick<
+  CaptureResult,
+  "session_filter" | "session_filter_reason" | "sessions_excluded" | "subagent_tokens_in" | "subagent_tokens_out"
+> {
+  return {
+    session_filter: window.sessionFilter,
+    ...(window.sessionFilter === "all_sessions"
+      ? { session_filter_reason: window.filterReason }
+      : {}),
+    sessions_excluded: window.sessionsExcluded,
+    subagent_tokens_in: window.subagentTokensIn,
+    subagent_tokens_out: window.subagentTokensOut,
+  };
 }
 
 /**
@@ -71,6 +129,7 @@ export function captureUsageForWindow(
   start: string | undefined,
   end: string | undefined,
   editionId: string,
+  opts: CollectUsageOptions = {},
 ): CaptureResult {
   if (!start || !end) {
     return { source: "unavailable", reason: "missing_stage_timestamps" };
@@ -78,12 +137,19 @@ export function captureUsageForWindow(
   if (!existsSync(transcriptsDir)) {
     return { source: "unavailable", reason: "no_local_transcripts_dir" };
   }
-  const window = collectUsageInWindow(transcriptsDir, start, end);
+  const window = collectUsageInWindow(transcriptsDir, start, end, opts);
   if (window.entries.length === 0) {
+    // `sessions_excluded` importa MAIS aqui do que no caminho de sucesso: a
+    // sessão corrente sem turno na janela + uma concorrente COM turnos é
+    // exatamente o caso em que "custo zero" e "o stage não foi medido" se
+    // parecem. Omitir o campo neste branch tornaria os dois indistinguíveis —
+    // que é o defeito que esta issue existe pra matar, reintroduzido no lugar
+    // onde menos se olharia.
     return {
       source: "unavailable",
       reason: "no_usage_records_in_window",
       sessions_scanned: window.sessionsScanned,
+      ...describeWindowFilter(window),
     };
   }
 
@@ -118,6 +184,7 @@ export function captureUsageForWindow(
     models,
     sessions_scanned: window.sessionsScanned,
     entries_matched: window.entries.length,
+    ...describeWindowFilter(window),
   };
 }
 
@@ -128,7 +195,8 @@ async function main(): Promise<void> {
   if (!editionDirRaw || !stageRaw) {
     console.error(
       "Uso: npx tsx scripts/capture-stage-usage.ts --edition-dir <path> --stage N " +
-        "[--start ISO] [--end ISO] [--transcripts-dir <path>] [--dry-run]",
+        "[--start ISO] [--end ISO] [--transcripts-dir <path>] [--dry-run] " +
+        "[--session-id <id>] [--all-sessions]",
     );
     process.exit(2);
   }
@@ -156,7 +224,15 @@ async function main(): Promise<void> {
   const end = values["end"] ?? row.end;
   const transcriptsDir = values["transcripts-dir"] ?? resolveTranscriptsDir(process.cwd());
 
-  const result = captureUsageForWindow(transcriptsDir, start, end, editionId);
+  // #5413: por default conta só a sessão que invocou este script — ele roda
+  // via Bash tool DE DENTRO da sessão da edição, então `CLAUDE_CODE_SESSION_ID`
+  // identifica o transcript certo. `--all-sessions` recupera o comportamento
+  // antigo (varre o diretório inteiro) pra uso pontual em análise pós-hoc.
+  const sessionId = flags.has("all-sessions")
+    ? null
+    : (values["session-id"] ?? currentSessionId());
+
+  const result = captureUsageForWindow(transcriptsDir, start, end, editionId, { sessionId });
   result.stage = stage;
 
   if (result.source === "unavailable") {
@@ -174,6 +250,15 @@ async function main(): Promise<void> {
         tokens_in: result.tokens_in,
         tokens_out: result.tokens_out,
         models: result.models,
+        // #5413: a procedência viaja junto com o número. Sem isso o
+        // diagnóstico existiria só no stdout desta invocação e sumiria —
+        // quem investigar uma anomalia de custo semanas depois via
+        // `aggregate-costs.ts` não teria como saber se o stage foi medido
+        // isolado ou somando sessão concorrente.
+        session_filter: result.session_filter,
+        sessions_excluded: result.sessions_excluded,
+        subagent_tokens_in: result.subagent_tokens_in,
+        subagent_tokens_out: result.subagent_tokens_out,
       },
       new Date().toISOString(),
     );
