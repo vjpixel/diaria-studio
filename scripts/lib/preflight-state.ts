@@ -36,9 +36,10 @@
  * @see .claude/agents/orchestrator-stage-0-preflight.md §0c
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 export interface PreflightState {
   /** Claude in Chrome MCP (`mcp__claude-in-chrome__tabs_context_mcp`).
@@ -137,21 +138,38 @@ export function writePreflightState(
 ): PreflightState {
   const now = opts.now ?? (() => new Date());
   const p = statePath(editionDir);
-  const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
-  let current: PreflightState;
-  if (raw === null) {
-    current = { ...DEFAULT_STATE };
-  } else {
-    try {
-      current = normalizeState(JSON.parse(raw) as Partial<PreflightState>);
-    } catch {
-      current = { ...DEFAULT_STATE };
-    }
-  }
-  const next: PreflightState = { ...current, ...patch, capturedAt: now().toISOString() };
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(next, null, 2) + "\n", "utf8");
-  return next;
+  // #5434 item 2: lock + tmp-write + rename. §0e–0h do playbook do Stage 0
+  // manda disparar os checks de preflight "numa única mensagem" (chamadas
+  // Bash paralelas) — sem serialização, dois `--set` concorrentes fariam
+  // read-modify-write sobre o mesmo arquivo (A lê, B lê o mesmo estado antes
+  // de A gravar, A grava, B grava por cima — o campo que A tinha acabado de
+  // setar some, sem nenhum erro visível). O lock (mesmo primitivo de
+  // `social-published-store.ts`) serializa o read-modify-write inteiro;
+  // escrever em `.tmp` + `renameSync` evita deixar o arquivo real pela
+  // metade se o processo morrer no meio do write.
+  const lockPath = p + ".lock";
+  acquireLock(lockPath);
+  try {
+    const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
+    let current: PreflightState;
+    if (raw === null) {
+      current = { ...DEFAULT_STATE };
+    } else {
+      try {
+        current = normalizeState(JSON.parse(raw) as Partial<PreflightState>);
+      } catch {
+        current = { ...DEFAULT_STATE };
+      }
+    }
+    const next: PreflightState = { ...current, ...patch, capturedAt: now().toISOString() };
+    const tmpPath = p + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, p);
+    return next;
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 const FIELD_BY_FLAG: Record<string, keyof Omit<PreflightState, "capturedAt">> = {

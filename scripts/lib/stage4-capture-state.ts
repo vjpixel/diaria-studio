@@ -27,9 +27,10 @@
  * @see .claude/agents/orchestrator-stage-4.md §4c.1b, §4c.1c, §4d
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 export interface Stage4CaptureState {
   /** URL prevista do bloco WhatsApp do D1 (`buildWhatsappEditionUrl`, #4570).
@@ -115,21 +116,34 @@ export function writeStage4CaptureState(
 ): Stage4CaptureState {
   const now = opts.now ?? (() => new Date());
   const p = statePath(editionDir);
-  const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
-  let current: Stage4CaptureState;
-  if (raw === null) {
-    current = { ...DEFAULT_STATE };
-  } else {
-    try {
-      current = normalizeState(JSON.parse(raw) as Partial<Stage4CaptureState>);
-    } catch {
-      current = { ...DEFAULT_STATE };
-    }
-  }
-  const next: Stage4CaptureState = { ...current, ...patch, capturedAt: now().toISOString() };
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(next, null, 2) + "\n", "utf8");
-  return next;
+  // #5434 item 2: lock + tmp-write + rename — mesma race de
+  // `preflight-state.ts` (§4c.1b e §4c.1c gravam campos separados; sem
+  // serialização, um write concorrente pode ler o estado antes do outro
+  // gravar e apagar esse campo no rename seguinte). Lock via
+  // `scripts/lib/file-lock.ts` (mesmo primitivo de `social-published-store.ts`).
+  const lockPath = p + ".lock";
+  acquireLock(lockPath);
+  try {
+    const raw = tryReadRaw(p); // propaga erro de FS real — NÃO captura aqui, de propósito
+    let current: Stage4CaptureState;
+    if (raw === null) {
+      current = { ...DEFAULT_STATE };
+    } else {
+      try {
+        current = normalizeState(JSON.parse(raw) as Partial<Stage4CaptureState>);
+      } catch {
+        current = { ...DEFAULT_STATE };
+      }
+    }
+    const next: Stage4CaptureState = { ...current, ...patch, capturedAt: now().toISOString() };
+    const tmpPath = p + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, p);
+    return next;
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 const FIELD_BY_FLAG: Record<string, keyof Omit<Stage4CaptureState, "capturedAt">> = {

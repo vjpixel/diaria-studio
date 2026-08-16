@@ -307,4 +307,52 @@ describe("preflight-state.ts CLI (#5414)", () => {
     });
     assert.equal(after, before, "estado em disco não deve mudar quando o comando falha por flag sem valor");
   });
+
+  // (#5434 item 2) §0e–0h do playbook do Stage 0 manda disparar os 5 checks
+  // de preflight "numa única mensagem" — chamadas Bash paralelas, cada uma
+  // um processo `preflight-state.ts --set` separado. Sem lock, dois desses
+  // processos fazem read-modify-write sobre o mesmo `preflight-state.json`:
+  // A lê, B lê o mesmo estado antes de A gravar, A grava, B grava por cima —
+  // o campo que A tinha acabado de setar some, sem erro nenhum (lost
+  // update). Regressão: disparar N processos concorrentes, cada um setando
+  // um campo DIFERENTE, e confirmar que todos os N campos sobrevivem.
+  it("escritas concorrentes (5 processos, 1 campo cada) não se perdem — race do #5434 item 2", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-state-race-"));
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    const writes: [string, string][] = [
+      ["chrome-mcp", "true"],
+      ["gmail-mcp", "false"],
+      ["beehiiv-mcp", "true"],
+      ["clarice-rest", "false"],
+      ["cloudflare-token-ok", "true"],
+    ];
+
+    // Todos disparados ao mesmo tempo (Promise.all, sem await sequencial) —
+    // reproduz o paralelismo que o playbook pede "numa única mensagem".
+    await Promise.all(
+      writes.map(([flag, value]) =>
+        execFileAsync("npx", ["tsx", SCRIPT, "--edition-dir", dir, `--${flag}`, value], {
+          cwd: ROOT,
+          shell: true,
+        }),
+      ),
+    );
+
+    const out = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", dir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    const state = JSON.parse(out.trim());
+    assert.equal(state.chromeMcp, true, "chromeMcp perdido — lost update da race");
+    assert.equal(state.gmailMcp, false, "gmailMcp perdido — lost update da race");
+    assert.equal(state.beehiivMcp, true, "beehiivMcp perdido — lost update da race");
+    assert.equal(state.clariceRest, false, "clariceRest perdido — lost update da race");
+    assert.equal(state.cloudflareTokenOk, true, "cloudflareTokenOk perdido — lost update da race");
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
