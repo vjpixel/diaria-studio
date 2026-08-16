@@ -233,16 +233,30 @@ export const DEFAULT_EFFORT = "max";
  * medidos), e a medição feita na própria #4813 mostrou mediana de 497 linhas e
  * p90 de 1.375 linhas por PR — com um piso de 50, quase todo PR real caía no
  * fleet de 5 agentes de qualquer jeito; **34% dos PRs recentes tinham menos de
- * 300 linhas**, faixa que agora se qualifica pro review de 1 agente. O editor
- * decidiu pelo limiar mais conservador (300, não 500 — a outra opção discutida
- * na issue): ver a decisão registrada em
+ * 300 linhas**, faixa que se qualificou pro review de 1 agente. O editor
+ * decidiu inicialmente pelo limiar mais conservador (300, não 500 — a outra
+ * opção discutida na issue): ver a decisão registrada em
  * https://github.com/vjpixel/diaria-studio/issues/4813#issuecomment-5235991770.
  *
+ * **#5420 (260816): limiar subiu de 300 para 500.** Segunda medição, feita em
+ * agosto/2026, mostrou mediana de 497 linhas e p90 de 1.375 linhas — com o
+ * limiar em 300, a MEDIANA dos PRs (a maioria) já caía no fleet caro de 5
+ * agentes, o que o #4813 original não previa (a medição dele foi anterior e
+ * mais otimista sobre quanto do tráfego real ficava abaixo de 300). Subir o
+ * limiar pra 500 é exatamente a outra opção que o #4813 já tinha discutido e
+ * descartado — decisão revisitada com dado novo, não uma reversão por
+ * capricho: ver a decisão do editor registrada em
+ * https://github.com/vjpixel/diaria-studio/issues/5420#issuecomment (16/08/2026,
+ * "DECISÃO DO EDITOR (16/08/2026) — limiar de 500 linhas"). Economia estimada
+ * ~4,5M tokens/dia — metade dos PRs (a mediana de agosto) passa a cair no
+ * review de 1 agente, e o p90 (1.375 linhas) continua protegido no fleet
+ * completo.
+ *
  * Isto SUBSTITUI o antigo `TRIVIAL_DIFF_LINE_THRESHOLD` (50) — não é um
- * segundo limiar rodando ao lado do primeiro; todo diff <50 já é <300, então
+ * segundo limiar rodando ao lado do primeiro; todo diff <50 já é <500, então
  * não há duas checagens de tamanho sobrepostas.
  */
-export const EFFORT_DIFF_LINE_THRESHOLD = 300;
+export const EFFORT_DIFF_LINE_THRESHOLD = 500;
 
 /**
  * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.

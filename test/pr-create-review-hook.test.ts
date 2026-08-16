@@ -171,20 +171,25 @@ describe("resolveEffort (#2754)", () => {
 
 // #4813 (generaliza #4243): effort por tamanho de diff virou o critério
 // PRIMÁRIO pra toda PR sem sinal de overnight, não mais um piso barato só pra
-// diffs triviais. Limiar 300 (EFFORT_DIFF_LINE_THRESHOLD), decisão do editor
-// registrada em
+// diffs triviais. Limiar original 300 (EFFORT_DIFF_LINE_THRESHOLD), decisão do
+// editor registrada em
 // https://github.com/vjpixel/diaria-studio/issues/4813#issuecomment-5235991770
 // — mediana de 497 linhas / p90 1.375 medidos na própria issue, 34% dos PRs
-// recentes abaixo de 300 linhas. Este bloco trava: diff pequeno (< limiar) →
-// low; diff grande CONHECIDO (≥ limiar) → max explícito com reason
-// "diff_grande" (distinto de "default"); e qualquer falha ao obter o tamanho
-// do diff cai no DEFAULT_EFFORT normal (reason "default") — nunca em "pular o
-// review".
+// recentes abaixo de 300 linhas.
+//
+// #5420 (260816): limiar subiu de 300 para 500 — a mediana de agosto (497
+// linhas) já caía no fleet caro de 5 agentes com o limiar em 300; o editor
+// revisitou a decisão com esse dado novo e escolheu a outra opção que o #4813
+// já tinha discutido (500). Ver `EFFORT_DIFF_LINE_THRESHOLD` no hook pra
+// justificativa completa. Este bloco trava: diff pequeno (< limiar) → low;
+// diff grande CONHECIDO (≥ limiar) → max explícito com reason "diff_grande"
+// (distinto de "default"); e qualquer falha ao obter o tamanho do diff cai no
+// DEFAULT_EFFORT normal (reason "default") — nunca em "pular o review".
 //
 // `execFn` aqui precisa discriminar por chamada (branch vs. diff stats),
 // diferente dos mocks acima (que ignoram os args): resolveEffort agora faz
 // duas chamadas de `gh` quando não há sinal de overnight.
-describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243)", () => {
+describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243; limiar 500 desde #5420)", () => {
   function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
     return (_cmd, args) => {
       if (args.includes("additions,deletions")) {
@@ -204,19 +209,20 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243)
     assert.equal(result.reason, "diff_pequeno");
   });
 
-  // Regressão de comportamento mais importante do #4813: a faixa 50-299
-  // linhas, que ANTES caía direto no DEFAULT_EFFORT/fleet de 5 agentes (só o
-  // piso <50 do #4243 rebaixava pra low), agora resolve `low` — prova que o
-  // alargamento do limiar de fato mudou o comportamento da faixa média, não
-  // só preservou o antigo piso.
-  it("diff de 50-299 linhas (faixa que ANTES caía em DEFAULT_EFFORT, agora em low) → low", () => {
+  // Regressão de comportamento mais importante do #4813 (e ainda válida pós
+  // #5420, com o limiar em 500): uma faixa média de linhas, que ANTES do
+  // #4813 caía direto no DEFAULT_EFFORT/fleet de 5 agentes (só o piso <50 do
+  // #4243 rebaixava pra low), resolve `low` — prova que o alargamento do
+  // limiar de fato mudou o comportamento da faixa média, não só preservou o
+  // antigo piso.
+  it("diff de 190 linhas (faixa média, bem acima do antigo piso de 50 e abaixo do limiar atual) → low", () => {
     const execFn = makeExecFn({ diff: JSON.stringify({ additions: 150, deletions: 40 }) });
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, "low");
     assert.equal(result.reason, "diff_pequeno");
   });
 
-  it("diff de exatamente 299 linhas (1 abaixo do limiar) → low, reason diff_pequeno", () => {
+  it("diff de exatamente 1 linha abaixo do limiar → low, reason diff_pequeno", () => {
     const execFn = makeExecFn({
       diff: JSON.stringify({ additions: EFFORT_DIFF_LINE_THRESHOLD - 1, deletions: 0 }),
     });
@@ -225,13 +231,34 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243)
     assert.equal(result.reason, "diff_pequeno");
   });
 
-  it("diff exatamente no limiar (300 linhas) → NÃO é pequeno (limiar é exclusivo), resolve max/DEFAULT_EFFORT explícito por tamanho", () => {
+  it("diff exatamente no limiar (500 linhas, #5420) → NÃO é pequeno (limiar é exclusivo), resolve max/DEFAULT_EFFORT explícito por tamanho", () => {
     const execFn = makeExecFn({
       diff: JSON.stringify({ additions: EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 }),
     });
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, "max");
     assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.reason, "diff_grande");
+  });
+
+  // #5420: os dois lados concretos do limiar de 500 pedidos na decisão do
+  // editor — 400 linhas (abaixo) e 600 linhas (acima) — travados com números
+  // literais (não relativos à constante), pra uma futura troca da constante
+  // não conseguir mascarar uma regressão na REGRA (o teste acima, relativo a
+  // `EFFORT_DIFF_LINE_THRESHOLD`, já cobre "no limiar" e "1 abaixo do limiar"
+  // pra qualquer valor da constante; estes dois cobrem os valores que a
+  // própria issue usou como exemplo).
+  it("diff de 400 linhas (#5420, abaixo do limiar de 500) → low", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 250, deletions: 150 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "diff_pequeno");
+  });
+
+  it("diff de 600 linhas (#5420, acima do limiar de 500) → max", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 400, deletions: 200 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
     assert.equal(result.reason, "diff_grande");
   });
 
@@ -355,8 +382,9 @@ describe("buildReviewInstruction (#2754)", () => {
   // LITERALMENTE — o agente acha os mesmos bugs e deixa de reportar os que
   // julga abaixo da barra, derrubando o recall MEDIDO. Virou risco real quando
   // o #5251 fez "sem findings de alta confiança" ser a condição de auto-merge
-  // e o #4813 fez o `low` pegar todo diff < 300 linhas. Este teste existe pra
-  // frase não voltar por descuido.
+  // e o #4813 (limiar 300 originalmente, 500 desde #5420) fez o `low` pegar
+  // todo diff abaixo do limiar. Este teste existe pra frase não voltar por
+  // descuido.
   it("effort=low NÃO filtra por severidade nem confiança (#5304)", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
     assert.doesNotMatch(msg, /only a few high-confidence findings/);
@@ -827,7 +855,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     assert.deepEqual(event.details, { pr: "100", effort: "low", motivo: "branch_overnight", agentes: 1 });
   });
 
-  it("diff pequeno (<300 linhas, #4813) → low, evento loga motivo=diff_pequeno agentes=1", () => {
+  it("diff pequeno (< limiar, #4813/#5420) → low, evento loga motivo=diff_pequeno agentes=1", () => {
     const root = freshRoot();
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
@@ -839,7 +867,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     assert.deepEqual(event.details, { pr: "101", effort: "low", motivo: "diff_pequeno", agentes: 1 });
   });
 
-  it("branch normal com diff grande CONHECIDO (≥300 linhas, #4813), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
+  it("branch normal com diff grande CONHECIDO (≥ limiar, #4813/#5420), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
     const root = freshRoot();
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
