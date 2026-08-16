@@ -99,6 +99,27 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 
    Interpretar: vazia / "ok" / "sim" → default 4; inteiro N ≥ 1 → `window_days = N`; outra coisa → repetir.
 
+## Modo econômico: uma sessão por etapa (#5414)
+
+**Rodar a edição inteira numa sessão só é o modo CARO.** Medido na edição 260814: o contexto residente sobe de 159k para 933k tokens sem nenhuma interrupção do Stage 0 ao fim do Stage 4, e cada turno paga o acumulado inteiro. O Stage 4 sozinho — 587 turnos — rodou entre 580k e 930k por turno. Simulando a mesma edição com cada etapa partindo de contexto limpo: **708M → 360M tokens, ~49% menos**, sem remover um passo sequer do pipeline.
+
+Desde o #5414 nada mais precisa viver na conversa: os probes do preflight ficam em `_internal/preflight-state.json` e os sentinelas de etapa já estão em disco. Então dá pra rodar:
+
+```
+/diaria-1-pesquisa {AAMMDD}     # depois /clear
+/diaria-2-escrita {AAMMDD}      # depois /clear
+/diaria-3-imagens {AAMMDD}      # depois /clear
+/diaria-4-revisao {AAMMDD}      # depois /clear
+/diaria-5-publicacao {AAMMDD}   # depois /clear
+/diaria-6-agendamento {AAMMDD}
+```
+
+Cada skill detecta sozinha a etapa corrente e retoma do disco. `/diaria-edicao` continua funcionando ponta-a-ponta numa sessão só — é mais cômodo, e é a forma certa quando você quer acompanhar tudo de uma vez; só é mais caro.
+
+**Ressalva honesta:** contexto limpo significa que o Stage 4 não "lembra" do Stage 1. Os probes de preflight estão cobertos, e o resto do estado sempre foi lido de arquivo — mas isso ainda não foi validado numa edição real ponta-a-ponta (é o #5419). Se notar algo faltando na revisão que existia antes, reporte na issue.
+
+---
+
 ## Passo 2 — Executar o playbook diretamente no top-level (#207)
 
 **Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-writer` (#3991, reverte #3486), `social-curto` (#3992), `auto-reporter` em paralelo conforme cada stage prescreve. **`publish-newsletter` também é executado pelo top-level direto como playbook (#1054)** — não dispatchá-lo via `Agent` porque `javascript_tool` é restrita ao top-level e o paste-into-htmlSnippet falha em subagentes.

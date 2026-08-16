@@ -32,6 +32,17 @@ Exit code handling:
 - `2` → **FATAL:** "05-published.json ausente. Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
 
+### Pre-condicao: estado do preflight (#5414)
+
+Este stage pode rodar em **contexto proprio** (`/diaria-6-agendamento {AAMMDD}` numa sessao limpa). O que o Stage 0 descobriu esta no disco, nao na conversa:
+
+```bash
+npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get beehiiv_mcp
+npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get chrome_mcp
+```
+
+`beehiiv_mcp` cobre a correcao de slug; `chrome_mcp` cobre o Schedule na UI. `unknown` em qualquer um = **re-probar antes de decidir**, nunca tratar como `false`.
+
 ### 6a. Pre-requisitos
 
 **Marcar Stage 6 `running` no inicio (#1783):**

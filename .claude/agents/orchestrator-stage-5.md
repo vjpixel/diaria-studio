@@ -39,6 +39,18 @@ Exit code handling:
 - `2` → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "stage4_sentinel_missing_legacy"`), continuar.
 
+### Pre-condicao: estado do preflight (#5414)
+
+Este stage pode rodar em **contexto proprio** (sessao limpa, `/diaria-5-publicacao {AAMMDD}`) — nao assuma lembrar de nada que o Stage 0 descobriu. Ler do disco:
+
+```bash
+npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR}/ --get chrome_mcp
+```
+
+- `true` → seguir normal.
+- `false` → Chrome indisponivel no preflight. Gravar `_internal/05-published.json` com `status: "skipped"` e entradas LinkedIn com `status: "pending_manual"`. Nao falhar.
+- `unknown` → **nao probado** (Stage 0 nao rodou, ou rodou antes do #5414). **Re-probar** com `mcp__claude-in-chrome__tabs_context_mcp` e gravar o resultado (`--set chrome_mcp={true|false}`) antes de decidir. **Nunca tratar `unknown` como `false`** — pular a publicacao inteira porque o preflight nao deixou registro seria falha silenciosa, exatamente a classe de erro que o #5413 removeu da telemetria.
+
 ### 5a. Pre-requisitos + sync
 
 **Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
@@ -416,7 +428,7 @@ Proximo passo → /diaria-6-agendamento {AAMMDD}
 (agendamento Beehiiv + auto-reporter)
 ```
 
-Se alguma parte foi pulada (ex: `CHROME_MCP = false`), incluir bloco de retomada explicito:
+Se alguma parte foi pulada (ex: `--get chrome_mcp` = `false`), incluir bloco de retomada explicito:
 
 ```
 Retomada manual pendente
