@@ -909,17 +909,20 @@ export function formatScheduleHuman(schedule: ScheduledTaskSchedule): string {
   }
 }
 
-/** Deriva as linhas tabulares de TODO `SCHEDULED_TASKS`, na ordem declarada
- * — nunca truncado, sempre `SCHEDULED_TASKS.length` linhas. `killSwitch` só
- * cobre o que está MODELADO no registro (`guard.requiredFile`, arquivo cuja
- * ausência aborta a run) — a maioria das tasks não tem guard estruturado
- * (kill switches como `data/clarice-novos-enabled.json` vivem em código de
- * runtime dos scripts, fora do schema de `ScheduledTaskDefinition`), então
- * `"-"` aqui significa "sem guard MODELADO neste registro", não "sem kill
- * switch nenhum" — ver `docs/scheduled-tasks-registry.md` pra kill switches
+/** Deriva as linhas tabulares de TODO `tasks` (default `SCHEDULED_TASKS`),
+ * na ordem declarada — nunca truncado, sempre `tasks.length` linhas.
+ * `tasks` é injetável só pra teste (demonstrar "adicionar uma task faz ela
+ * aparecer sem tocar a função", #5408) — em runtime, omitir sempre usa o
+ * registro real. `killSwitch` só cobre o que está MODELADO no registro
+ * (`guard.requiredFile`, arquivo cuja ausência aborta a run) — a maioria
+ * das tasks não tem guard estruturado (kill switches como
+ * `data/clarice-novos-enabled.json` vivem em código de runtime dos
+ * scripts, fora do schema de `ScheduledTaskDefinition`), então `"-"` aqui
+ * significa "sem guard MODELADO neste registro", não "sem kill switch
+ * nenhum" — ver `docs/scheduled-tasks-registry.md` pra kill switches
  * documentados em prosa (ex: Diaria-Clarice-Novos). */
-export function listScheduledTaskRows(): ScheduledTaskRow[] {
-  return SCHEDULED_TASKS.map((t) => ({
+export function listScheduledTaskRows(tasks: ScheduledTaskDefinition[] = SCHEDULED_TASKS): ScheduledTaskRow[] {
+  return tasks.map((t) => ({
     name: t.name,
     schedule: formatScheduleHuman(t.schedule),
     scripts: t.steps.map((s) => s.script).join(", "),

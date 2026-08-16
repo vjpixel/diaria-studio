@@ -204,12 +204,13 @@ describe("#5408 — enumeração programática (listScheduledTaskRows / --list /
     );
   });
 
-  it("adicionar uma task ao registro faz ela aparecer em listScheduledTaskRows sem tocar a função", () => {
-    // Não mutamos SCHEDULED_TASKS de verdade (é `const` exportado, mutar
-    // afetaria outros testes do processo) — simulamos via um array próprio
-    // no mesmo shape e mapeamos com a mesma lógica de listScheduledTaskRows
-    // (formatScheduleHuman), confirmando que o comando não precisa de
-    // nenhuma mudança pra refletir uma entrada nova.
+  it("adicionar uma task ao registro faz ela aparecer em listScheduledTaskRows SEM tocar a função (#5408)", () => {
+    // Chama a função REAL (não uma duplicata da lógica) com um array
+    // injetado (SCHEDULED_TASKS + 1 fake) — prova literal do critério da
+    // issue: "adicionar uma task ao array a faz aparecer sem tocar no
+    // comando". Não mutamos o `SCHEDULED_TASKS` exportado (afetaria outros
+    // testes do processo) — o parâmetro injetável de listScheduledTaskRows
+    // existe justamente pra permitir este teste sem essa mutação global.
     const fakeExtra: ScheduledTaskDefinition = {
       name: "Diaria-Fake-Task-Para-Teste",
       description: "task fake só pra este teste",
@@ -219,7 +220,7 @@ describe("#5408 — enumeração programática (listScheduledTaskRows / --list /
       issue: "#5408 (teste)",
     };
     const before = listScheduledTaskRows();
-    const after = [...before, { name: fakeExtra.name, schedule: formatScheduleHuman(fakeExtra.schedule), scripts: fakeExtra.steps.map((s) => s.script).join(", "), logPath: fakeExtra.logPath, killSwitch: "-", issue: fakeExtra.issue }];
+    const after = listScheduledTaskRows([...SCHEDULED_TASKS, fakeExtra]);
     assert.equal(after.length, before.length + 1);
     assert.ok(after.some((r) => r.name === "Diaria-Fake-Task-Para-Teste"));
   });
