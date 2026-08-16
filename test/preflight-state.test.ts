@@ -257,4 +257,54 @@ describe("preflight-state.ts CLI (#5414)", () => {
       execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir], { cwd: ROOT, shell: true, stdio: "pipe" });
     });
   });
+
+  // (#5434) --chrome-mcp sem valor (fim dos args) degradava em silêncio antes
+  // do fix: parseArgs trata isso como flag booleana, `values["chrome-mcp"]`
+  // fica undefined, e o write da patch simplesmente pulava esse campo sem
+  // erro nenhum — indistinguível de "flag nunca passada". Regressão: falhar
+  // alto (exit 2), nunca sair 0 nem cair no dump de --read.
+  it("--chrome-mcp sem valor (fim dos args) -> exit 2, nunca degrada em silêncio", () => {
+    assert.throws(
+      () => {
+        execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--chrome-mcp"], {
+          cwd: ROOT,
+          shell: true,
+          stdio: "pipe",
+        });
+      },
+      (err: unknown) => {
+        assert.equal((err as { status: number }).status, 2);
+        return true;
+      },
+    );
+  });
+
+  // Mesmo caso, mas com uma flag válida em seguida — a flag sem valor não
+  // pode ser mascarada pelo sucesso da outra.
+  it("--chrome-mcp sem valor seguido de --gmail-mcp true -> exit 2, não escreve nada", () => {
+    const before = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    assert.throws(
+      () => {
+        execFileSync(
+          "npx",
+          ["tsx", SCRIPT, "--edition-dir", editionDir, "--chrome-mcp", "--gmail-mcp", "true"],
+          { cwd: ROOT, shell: true, stdio: "pipe" },
+        );
+      },
+      (err: unknown) => {
+        assert.equal((err as { status: number }).status, 2);
+        return true;
+      },
+    );
+    const after = execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      shell: true,
+    });
+    assert.equal(after, before, "estado em disco não deve mudar quando o comando falha por flag sem valor");
+  });
 });
