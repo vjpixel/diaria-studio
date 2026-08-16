@@ -50,6 +50,37 @@
  * execução tenta de novo). O caller (script) é responsável por incluir o
  * motivo no e-mail mesmo assim — o e-mail NUNCA é suprimido por falha de
  * criação de issue, só perde a citação da issue pra aquele achado.
+ *
+ * ─── Allowlist de achados aceitos como limitação permanente (#5364) ────────
+ *
+ * Alguns achados nunca vão parar de reproduzir por design — não são bug,
+ * são limitação de PLATAFORMA sem alavanca do lado do código (ex: #5364 —
+ * merge tag nativo da Beehiiv que não localiza, sem fix possível no plano
+ * Launch/free). O mecanismo de auto-close (`missingStreak`/
+ * `CLOSE_ALARM_ISSUE_AFTER_RUNS` acima) só cobre o caso OPOSTO — achado que
+ * PARA de reproduzir — então um achado permanente nunca fecha sozinho, e
+ * fechar a issue manualmente sem mais nada faz o achado seguinte recriá-la
+ * (mesmo fingerprint, sem issue aberta -> `ensureAlarmIssue` cria de novo).
+ *
+ * `AlarmAllowlist` resolve isso: uma lista, declarada em código pelo script
+ * chamador (`check`/`fingerprint`/`reason`/`accepted_at`/`ref_issue` — nunca
+ * um array de strings sem contexto, cf. requisito de auditabilidade), que
+ * `planAlarmReconciliation` consulta pra pular TODA ação (`ensure`,
+ * `comment_resolved`, `advance_streak`, `close`) sobre um fingerprint
+ * aceito — tanto do lado `pending` (nunca cria/reabre) quanto do lado
+ * `state` (uma entry de issue já existente pra esse fingerprint fica
+ * congelada, sem mais comentário/fechamento automático). Isso já cobre
+ * "reabrir issue fechada manualmente" sem lógica extra: o achado nunca
+ * tenta criar/reabrir issue pra um fingerprint aceito, então fechar a
+ * issue manualmente (ou via `Closes #NNNN` no PR que adiciona a entry) é
+ * definitivo.
+ *
+ * Match é sempre EXATO (`check` + `fingerprint` iguais, nunca prefixo/regex)
+ * — fail-safe: se o texto do achado mudar (o `message` que compõe o
+ * fingerprint em checks como `beehiiv-home-meta-check.ts` muda), o
+ * fingerprint muda, e a entry da allowlist para de casar automaticamente.
+ * Silenciar por acidente um achado NOVO/diferente por causa de um match
+ * frouxo seria pior que o problema que este mecanismo resolve.
  */
 import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
 
@@ -91,6 +122,34 @@ export interface AlarmIssueResult {
   url: string | null;
   action: "created" | "reused" | "failed";
   error?: string;
+}
+
+// ─── Allowlist de achados aceitos como limitação permanente (#5364) ────────
+// Ver docstring do módulo, seção "Allowlist de achados aceitos" — mecanismo
+// genérico, entries declaradas por script chamador.
+
+export interface AlarmAllowlistEntry {
+  /** Eixo/categoria do achado — mesmo valor de `AlarmFinding.check`. */
+  check: string;
+  /** Fingerprint EXATO aceito — mesmo valor de `AlarmFinding.fingerprint`.
+   * Match nunca é prefixo/regex (fail-safe: ver docstring do módulo). */
+  fingerprint: string;
+  /** Motivo da aceitação (texto livre, obrigatório) — por que este achado é
+   * uma limitação permanente/sem-fix, não um bug a corrigir. */
+  reason: string;
+  /** Data (ISO `YYYY-MM-DD`) em que a decisão de aceitar foi tomada. */
+  accepted_at: string;
+  /** Issue de referência onde a investigação/decisão está documentada
+   * (ex: `"#5364"`). */
+  ref_issue: string;
+}
+
+export type AlarmAllowlist = readonly AlarmAllowlistEntry[];
+
+/** Pura — `true` se `check`+`fingerprint` casa EXATAMENTE (nunca por
+ * prefixo/regex) com alguma entry da allowlist. */
+export function isAllowlisted(check: string, fingerprint: string, allowlist: AlarmAllowlist): boolean {
+  return allowlist.some((e) => e.check === check && e.fingerprint === fingerprint);
 }
 
 // ─── Marcador de dedup (puro) ───────────────────────────────────────────────
@@ -358,20 +417,30 @@ export type AlarmReconcileAction =
  *     então o meio da faixa ficava sem NENHUMA ação e o streak persistido
  *     travava pra sempre em 1, fazendo `nextStreak` recalcular 2 do zero a
  *     cada execução seguinte).
+ *
+ * `allowlist` (#5364, default `[]`) remove TODA ação sobre um fingerprint
+ * aceito como limitação permanente — nem `ensure` do lado `pending` (nunca
+ * cria/reabre issue pra ele), nem `comment_resolved`/`advance_streak`/
+ * `close` do lado `state` (uma entry já existente pra esse fingerprint fica
+ * congelada, tratada como fora do escopo de reconciliação a partir daqui).
  */
 export function planAlarmReconciliation(
   pending: readonly AlarmFinding[],
   state: AlarmIssuesState,
   closeAfterRuns: number,
+  allowlist: AlarmAllowlist = [],
 ): AlarmReconcileAction[] {
   const actions: AlarmReconcileAction[] = [];
-  const pendingKeys = new Set(pending.map((f) => alarmIssueStateKey(f.check, f.fingerprint)));
+  const activePending = pending.filter((f) => !isAllowlisted(f.check, f.fingerprint, allowlist));
+  const pendingKeys = new Set(activePending.map((f) => alarmIssueStateKey(f.check, f.fingerprint)));
+  const allowlistedKeys = new Set(allowlist.map((e) => alarmIssueStateKey(e.check, e.fingerprint)));
 
-  for (const finding of pending) {
+  for (const finding of activePending) {
     actions.push({ kind: "ensure", finding });
   }
 
   for (const [key, entry] of Object.entries(state)) {
+    if (allowlistedKeys.has(key)) continue;
     if (pendingKeys.has(key)) continue;
     if (entry.closedAt) continue;
     const nextStreak = entry.missingStreak + 1;
@@ -397,6 +466,9 @@ export interface ApplyAlarmReconciliationOptions {
   closeAfterRuns: number;
   run?: GhRunFn;
   now?: Date;
+  /** #5364 — achados aceitos como limitação permanente; default `[]`
+   * (comportamento inalterado quando o caller não passa nada). */
+  allowlist?: AlarmAllowlist;
 }
 
 export interface ApplyAlarmReconciliationResult {
@@ -421,10 +493,11 @@ export function applyAlarmReconciliation(
 ): ApplyAlarmReconciliationResult {
   const run = opts.run ?? defaultAlarmGhRun;
   const now = opts.now ?? new Date();
+  const allowlist = opts.allowlist ?? [];
   const nextState: AlarmIssuesState = { ...state };
   const findingOutcomes: AlarmFindingOutcome[] = [];
 
-  const actions = planAlarmReconciliation(pending, state, opts.closeAfterRuns);
+  const actions = planAlarmReconciliation(pending, state, opts.closeAfterRuns, allowlist);
 
   for (const action of actions) {
     if (action.kind === "ensure") {

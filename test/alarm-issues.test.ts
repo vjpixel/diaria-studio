@@ -27,8 +27,10 @@ import {
   closeAlarmIssue,
   planAlarmReconciliation,
   applyAlarmReconciliation,
+  isAllowlisted,
   type AlarmFinding,
   type AlarmIssuesState,
+  type AlarmAllowlist,
   type GhRunFn,
 } from "../scripts/lib/alarm-issues.ts";
 
@@ -556,5 +558,182 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
     const { nextState } = applyAlarmReconciliation([FINDING_A], state, { cwd: CWD, closeAfterRuns: 2, run });
     assert.equal(nextState[key].closedAt, null);
     assert.equal(nextState[key].missingStreak, 0);
+  });
+});
+
+// ─── Allowlist de achados aceitos como limitação permanente (#5364) ────────
+
+describe("isAllowlisted (#5364 — puro)", () => {
+  const ALLOWLIST: AlarmAllowlist = [
+    {
+      check: FINDING_A.check,
+      fingerprint: FINDING_A.fingerprint,
+      reason: "limitação de plataforma, sem alavanca no código",
+      accepted_at: "2026-08-16",
+      ref_issue: "#5364",
+    },
+  ];
+
+  it("check+fingerprint EXATOS -> true", () => {
+    assert.equal(isAllowlisted(FINDING_A.check, FINDING_A.fingerprint, ALLOWLIST), true);
+  });
+
+  it("fingerprint diferente (mesmo check) -> false — guard contra over-match", () => {
+    assert.equal(isAllowlisted(FINDING_A.check, "english-labels:outro achado qualquer", ALLOWLIST), false);
+  });
+
+  it("fingerprint similar mas NÃO idêntico (ex: rótulo extra no texto) -> false", () => {
+    assert.equal(
+      isAllowlisted(
+        FINDING_A.check,
+        'english-labels:rótulo(s) em inglês residual(is) encontrado(s): "N min read", "Sign Up"',
+        ALLOWLIST,
+      ),
+      false,
+    );
+  });
+
+  it("check diferente, mesmo fingerprint -> false", () => {
+    assert.equal(isAllowlisted("outro-check", FINDING_A.fingerprint, ALLOWLIST), false);
+  });
+
+  it("allowlist vazia -> sempre false", () => {
+    assert.equal(isAllowlisted(FINDING_A.check, FINDING_A.fingerprint, []), false);
+  });
+});
+
+describe("planAlarmReconciliation com allowlist (#5364)", () => {
+  const ALLOWLIST: AlarmAllowlist = [
+    {
+      check: FINDING_A.check,
+      fingerprint: FINDING_A.fingerprint,
+      reason: "limitação de plataforma, sem alavanca no código",
+      accepted_at: "2026-08-16",
+      ref_issue: "#5364",
+    },
+  ];
+
+  it("(a) achado pendente com fingerprint na allowlist -> NENHUMA ação, mesmo achado reproduzindo", () => {
+    const actions = planAlarmReconciliation([FINDING_A], emptyAlarmIssuesState(), 2, ALLOWLIST);
+    assert.deepEqual(actions, []);
+  });
+
+  it("(a) issue já rastreada localmente pra um fingerprint allowlisted -> nunca comenta/fecha/avança streak, mesmo o achado sumindo", () => {
+    const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null },
+    };
+    // achado ausente de `pending` (sumiu) — sem allowlist isso geraria
+    // comment_resolved; com allowlist, a entry fica congelada.
+    const actions = planAlarmReconciliation([], state, 2, ALLOWLIST);
+    assert.deepEqual(actions, []);
+  });
+
+  it("(b) fingerprint FORA da allowlist -> comportamento inalterado, cria/reabre normalmente", () => {
+    const OTHER: AlarmFinding = {
+      check: "http-self-link",
+      fingerprint: "http-self-link:algum outro achado",
+      title: "outro achado",
+      body: "corpo",
+    };
+    const actions = planAlarmReconciliation([OTHER], emptyAlarmIssuesState(), 2, ALLOWLIST);
+    assert.deepEqual(actions, [{ kind: "ensure", finding: OTHER }]);
+  });
+
+  it("(c) fingerprint similar mas NÃO exato (texto do achado mudou) -> NÃO é silenciado, action ensure normal", () => {
+    const CHANGED: AlarmFinding = {
+      ...FINDING_A,
+      fingerprint: 'english-labels:rótulo(s) em inglês residual(is) encontrado(s): "N min read", "Sign Up"',
+    };
+    const actions = planAlarmReconciliation([CHANGED], emptyAlarmIssuesState(), 2, ALLOWLIST);
+    assert.deepEqual(actions, [{ kind: "ensure", finding: CHANGED }]);
+  });
+
+  it("sem allowlist (default []) -> comportamento idêntico ao de antes do #5364", () => {
+    const actions = planAlarmReconciliation([FINDING_A], emptyAlarmIssuesState(), 2);
+    assert.deepEqual(actions, [{ kind: "ensure", finding: FINDING_A }]);
+  });
+
+  it("achado allowlisted convive com achado não-allowlisted na mesma execução -> só o não-allowlisted gera ação", () => {
+    const OTHER: AlarmFinding = {
+      check: "http-self-link",
+      fingerprint: "http-self-link:algum outro achado",
+      title: "outro achado",
+      body: "corpo",
+    };
+    const actions = planAlarmReconciliation([FINDING_A, OTHER], emptyAlarmIssuesState(), 2, ALLOWLIST);
+    assert.deepEqual(actions, [{ kind: "ensure", finding: OTHER }]);
+  });
+});
+
+describe("applyAlarmReconciliation com allowlist (#5364) — I/O injetado", () => {
+  const ALLOWLIST: AlarmAllowlist = [
+    {
+      check: FINDING_A.check,
+      fingerprint: FINDING_A.fingerprint,
+      reason: "limitação de plataforma, sem alavanca no código",
+      accepted_at: "2026-08-16",
+      ref_issue: "#5364",
+    },
+  ];
+
+  it("(a) achado allowlisted reproduzindo indefinidamente -> gh NUNCA é chamado, nenhuma entry de estado criada", () => {
+    const run: GhRunFn = () => {
+      throw new Error("não deveria chamar gh pra um achado allowlisted");
+    };
+    const { nextState, findingOutcomes } = applyAlarmReconciliation([FINDING_A], emptyAlarmIssuesState(), {
+      cwd: CWD,
+      closeAfterRuns: 2,
+      run,
+      allowlist: ALLOWLIST,
+    });
+    assert.deepEqual(findingOutcomes, []);
+    const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+    assert.equal(nextState[key], undefined);
+  });
+
+  it("(a) rodando 3x seguidas com o mesmo achado allowlisted -> segue sem gh/estado em toda execução (nunca reabre)", () => {
+    const run: GhRunFn = () => {
+      throw new Error("não deveria chamar gh pra um achado allowlisted");
+    };
+    let state = emptyAlarmIssuesState();
+    for (let i = 0; i < 3; i++) {
+      const result = applyAlarmReconciliation([FINDING_A], state, {
+        cwd: CWD,
+        closeAfterRuns: 2,
+        run,
+        allowlist: ALLOWLIST,
+      });
+      state = result.nextState;
+      assert.deepEqual(result.findingOutcomes, []);
+    }
+    assert.deepEqual(state, {});
+  });
+
+  it("(b) achado FORA da allowlist -> cria issue normalmente (comportamento inalterado)", () => {
+    const OTHER: AlarmFinding = {
+      check: "http-self-link",
+      fingerprint: "http-self-link:algum outro achado",
+      title: "outro achado",
+      body: "corpo",
+    };
+    let createCalled = false;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        createCalled = true;
+        return ok("https://github.com/x/y/issues/8001\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const { findingOutcomes } = applyAlarmReconciliation([OTHER], emptyAlarmIssuesState(), {
+      cwd: CWD,
+      closeAfterRuns: 2,
+      run,
+      allowlist: ALLOWLIST,
+    });
+    assert.equal(createCalled, true);
+    assert.equal(findingOutcomes[0].action, "created");
+    assert.equal(findingOutcomes[0].issueNumber, 8001);
   });
 });
