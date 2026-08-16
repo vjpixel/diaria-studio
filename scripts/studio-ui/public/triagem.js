@@ -19,6 +19,8 @@ import {
   issuesFilterActive,
   prsFilterActive,
   applyDispatchTrackFilterValue,
+  LOADING_MESSAGE,
+  countLabel,
   classificationFilterScope,
   classificationScopeNotice,
   activeFilterSummary,
@@ -46,6 +48,12 @@ const el = {
   prsScopeNotice: document.getElementById("prs-scope-notice"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
 };
+
+/** `true` enquanto um fetch de /api/issues está em voo (#5472). Começa em
+ * `true`: a página monta antes do 1º fetch voltar, e nesse intervalo os
+ * contadores/tabelas não sabem de nada — mostrar `0` ali afirmaria "não há
+ * nada" quando o certo é "ainda não sei". */
+let loading = true;
 
 /** Snapshot bruto da última resposta de /api/issues — filtros nunca refetcham. */
 let data = { issues: [], prs: [], error: null, cached: false, generatedAt: null };
@@ -217,7 +225,7 @@ function matchesLabelFilter(labels) {
 // pura) — aqui só aplica o resultado ao DOM.
 function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel, filterSummary) {
   if (!emptyEl) return;
-  const message = emptyStateMessage({ filteredCount, totalCount, filterActive: hasActiveFilter, filterSummary, emptyLabel });
+  const message = emptyStateMessage({ filteredCount, totalCount, filterActive: hasActiveFilter, filterSummary, emptyLabel, loading });
   emptyEl.hidden = message === null;
   if (message !== null) emptyEl.textContent = message;
 }
@@ -229,7 +237,7 @@ function renderIssuesTable() {
       matchesLabelFilter(i.labels) &&
       (!filters.dispatch || i.execTrack === filters.dispatch),
   );
-  el.issuesCount.textContent = String(filtered.length);
+  el.issuesCount.textContent = countLabel({ filteredCount: filtered.length, loading });
   updateEmptyState(
     el.issuesEmpty,
     filtered.length,
@@ -261,7 +269,7 @@ function renderPrsTable() {
       matchesLabelFilter(p.labels) &&
       (!filters.track || p.track === filters.track),
   );
-  el.prsCount.textContent = String(filtered.length);
+  el.prsCount.textContent = countLabel({ filteredCount: filtered.length, loading });
   updateEmptyState(
     el.prsEmpty,
     filtered.length,
@@ -344,14 +352,43 @@ function renderAll() {
     : "";
 }
 
+/** Teto de espera do fetch. Sem isso, um servidor que aceita a conexão e nunca
+ * responde deixa a página em "carregando…" indefinidamente — trocar "parece
+ * vazio" por "gira pra sempre" não seria progresso. */
+const FETCH_TIMEOUT_MS = 20000;
+
+/** Sequência monotônica de requisições. Dois fetches podem estar em voo ao
+ * mesmo tempo (duplo clique em "Atualizar", ou clicar durante a carga
+ * inicial), e nada garante que respondam na ordem em que saíram. Sem este
+ * guard, a resposta ANTIGA que chega por último sobrescreve a nova — a tela
+ * passa a mostrar dado velho como se fosse fresco, silenciosamente. */
+let fetchSeq = 0;
+
 async function fetchIssues() {
-  setFetchStatus("", "carregando…");
+  const seq = ++fetchSeq;
+  loading = true;
+  setFetchStatus("", LOADING_MESSAGE);
+  // Re-render ANTES do await: sem isso o estado de carregamento só apareceria
+  // depois da resposta, ou seja, nunca — que é justamente o buraco relatado.
+  renderAll();
+
+  let payload = null;
+  let failure = null;
   try {
-    const res = await fetch("/api/issues");
+    const res = await fetch("/api/issues", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    data = await res.json();
-    setFetchStatus(data.error ? "down" : "ok", data.error ? "erro no gh" : "ok");
+    payload = await res.json();
   } catch (e) {
+    failure = e;
+  }
+
+  // Resposta obsoleta: um fetch mais novo já começou. Descarta por completo —
+  // não escreve `data` (sobrescreveria o mais recente) nem mexe em `loading`,
+  // que agora pertence à requisição em voo, não a esta.
+  if (seq !== fetchSeq) return;
+
+  loading = false;
+  if (failure) {
     setFetchStatus("down", "falha ao buscar /api/issues");
     // Preserva `execTrackUi` no caminho de falha — é vocabulário estático, e
     // perdê-lo aqui deixaria os badges sem rótulo/tooltip justamente quando a
@@ -360,10 +397,13 @@ async function fetchIssues() {
       issues: data.issues,
       prs: data.prs,
       execTrackUi: data.execTrackUi,
-      error: String(e),
+      error: String(failure),
       cached: true,
       generatedAt: data.generatedAt,
     };
+  } else {
+    data = payload;
+    setFetchStatus(data.error ? "down" : "ok", data.error ? "erro no gh" : "ok");
   }
   renderAll();
 }
