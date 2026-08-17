@@ -18,6 +18,20 @@ import {
   emptyOnedriveSyncAlarmState,
   buildOnedriveSyncAlarmEmail,
 } from "../scripts/lib/onedrive-sync-alarm.ts";
+import { toAlarmFinding } from "../scripts/onedrive-sync-alarm.ts";
+
+// #5558/#5561 enumerou 14 scripts emissores de AlarmFinding no momento em
+// que o campo `family` virou obrigatório — este script (#5548) nasceu
+// depois e ficou de fora da varredura, o que permitiu um `AlarmFinding` sem
+// `family` mergear em master (achado ao vivo, hotfix #5525-adjacente,
+// 17/08/2026: `npx tsc --noEmit` vermelho em master por causa disso).
+// Trava aqui o mesmo assert que os outros 14 scripts já têm.
+describe("toAlarmFinding — family (#5558/#5561, 15º emissor)", () => {
+  it("family é sempre 'estado' (é um alarme de ESTADO — serviço parado/canário obsoleto, não um evento pontual)", () => {
+    assert.equal(toAlarmFinding("alarm-service-down", "inactive").family, "estado");
+    assert.equal(toAlarmFinding("alarm-canary-stale", "active").family, "estado");
+  });
+});
 
 describe("parseSystemctlIsActiveOutput", () => {
   it('"active" → active', () => {
