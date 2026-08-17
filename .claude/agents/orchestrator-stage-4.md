@@ -165,9 +165,9 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
 **4c.1 — Destaques + títulos + links:**
 - Ler `_internal/01-approved.json` para os destaques aprovados (D1, D2, D3) com `url`, `category`, `score`.
 - Ler `02-reviewed.md` para extrair os títulos escolhidos (1 por destaque após poda) e os URLs no corpo final.
-- Verificar acessibilidade dos 3 URLs principais (simples HEAD request, ~3s):
+- Verificar acessibilidade dos 3 URLs principais (simples HEAD request, ~3s). **#5585: o script só aceita argumentos posicionais** (`<urls.json | url1,url2,...> [out.json] [--bodies-dir ...] [...]`) — `--urls`/`--out` NÃO existem e quebram o parser (o valor de `--urls` cai malformado como positional); `/dev/null` também não funciona no Windows/Git Bash, usar um path real de scratch:
   ```bash
-  npx tsx scripts/verify-accessibility.ts --urls "{url1},{url2},{url3}" --out /dev/null
+  npx tsx scripts/verify-accessibility.ts "{url1},{url2},{url3}" "{EDITION_DIR}/_internal/verify-accessibility-4c1.json"
   ```
   Capturar `verify_verdict` (accessible/inaccessible/timeout) para cada URL. Inacessível = mostrar ⚠️ no resumo mas não bloquear.
 
