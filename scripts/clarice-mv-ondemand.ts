@@ -71,7 +71,8 @@
  * numa onda real fica pra sessão supervisionada com o editor presente.
  */
 
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   readStoreCandidates,
@@ -87,8 +88,10 @@ import { DEFAULT_DASHBOARD_URL } from "./clarice-schedule-ramp.ts";
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { readClariceAbcState, lockedSubjectFromState } from "./lib/clarice-abc-state.ts";
 
-/** Raiz do repo — não `process.cwd()`, mesmo motivo de `clarice-plan-wave.ts`. */
-const ROOT = resolve(new URL("..", import.meta.url).pathname);
+/** Raiz do repo — não `process.cwd()`, mesmo motivo de `clarice-plan-wave.ts`.
+ * `fileURLToPath` em vez de `new URL(...).pathname` — este último quebra no
+ * Windows (ver nota em scripts/brevo-diaria-run.ts). */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 loadProjectEnv();
 

@@ -79,7 +79,8 @@
  * @see scripts/clarice-novos-run.ts (padrão de referência, #4941)
  */
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
@@ -88,7 +89,16 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 // quando os sub-scripts spawnados herdarem o ambiente do processo pai.
 loadProjectEnv();
 
-const ROOT = resolve(new URL("..", import.meta.url).pathname);
+// `new URL("..", import.meta.url).pathname` quebra no Windows — URL pathname
+// de um path com drive letter vem com barra inicial ("/C:/Users/..."), e
+// path.resolve() nesse formato prefixa o drive atual em vez de descartar a
+// barra, produzindo "C:\C:\Users\..." (path inexistente, derruba todo
+// spawnSync que usa ROOT como cwd com ENOENT — achado ao vivo rodando
+// /diaria-brevo-diaria nesta máquina). fileURLToPath() lida com o drive
+// letter corretamente em toda plataforma; ver test/root-path-windows.test.ts
+// para a regressão (roda em qualquer SO via `path.win32`, sem precisar de
+// máquina Windows no CI).
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------------------------------------------------------------------
 // Spawn de sub-script — injetável pra teste (nenhum spawn real nos testes).
