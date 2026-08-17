@@ -249,10 +249,15 @@ export function isTitleOk(check: TitleCheck): boolean {
 /**
  * Confere título × relatório.
  *
- * Só reprova o que é CONTRADIÇÃO verificável: um número declarado no título que
- * diverge do que a tabela do relatório mostra. Título que simplesmente não
- * declara um dos números passa — a política aqui é impedir que o assunto minta,
- * não obrigar um formato único de assunto.
+ * Reprova dois casos, ambos com a tabela presente e legível:
+ *   1. CONTRADIÇÃO — um número declarado no título diverge da tabela.
+ *   2. NÃO-CONFERIBILIDADE — o título não declara nenhum dos dois números, e
+ *      portanto não há nada a conferir apesar de existir tabela. Aprovar isso
+ *      em silêncio foi o que manteve o guard inócuo no caminho documentado.
+ *
+ * Declarar só UM dos dois números continua passando — a política é impedir que
+ * o assunto minta e garantir que ele seja verificável, não impor um formato
+ * único de assunto.
  */
 export function compareTitleWithReport(title: string, markdown: string): TitleCheck {
   const table = parseUnitsTable(markdown);

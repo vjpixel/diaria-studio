@@ -138,6 +138,23 @@ export interface ReportEntry extends ReportRegistryInput {
   createdAt: string;
   /** Path servido pelo Studio — `GET {url}` (ver `server.ts`). */
   url: string;
+  /**
+   * `true` quando ALGUM registro deste `id` já disparou (ou tentou disparar) o
+   * e-mail de notificação (#5521).
+   *
+   * É a chave de dedup de e-mail — e é deliberadamente "já NOTIFICOU", não "já
+   * existe entrada". A diferença não é acadêmica: o Stage 6 registra o MESMO
+   * `edicao-{AAMMDD}` duas vezes de propósito (6b-6 com `notify:false` só pra
+   * satisfazer o invariante de conclusão do stage, 6b-8 com o default `true` —
+   * é a 2ª que deve notificar o editor, ver `send-edition-report.ts`). Dedup
+   * por existência de entrada engoliria justamente esse e-mail, que é o
+   * relatório diário da edição.
+   *
+   * Ausente nas entradas gravadas antes do #5521 — tratado como `false`, então
+   * o 1º registro pós-upgrade de uma rodada antiga ainda notifica (preferível
+   * a suprimir um e-mail legítimo por falta de dado histórico).
+   */
+  notified?: boolean;
 }
 
 export interface RegisterReportResult {
@@ -187,7 +204,7 @@ export type ReportEmailDispatchResult =
         | "register-failed"
         | "notify-disabled"
         /**
-         * #5521: já existia entrada com este `id` (mesmo kind + sessionId) —
+         * #5521: um registro anterior deste mesmo `id` já disparou o e-mail —
          * ou seja, é RE-registro da mesma rodada, não rodada nova.
          *
          * Uma rodada que fecha, é reaberta pelo editor e fecha de novo
@@ -201,7 +218,7 @@ export type ReportEmailDispatchResult =
          * suprimir os e-mails seguintes não esconde nada do editor: 1 e-mail
          * por rodada, sempre linkando a versão atual.
          */
-        | "already-registered"
+        | "already-notified"
     }
   | { sent: false; error: string };
 
@@ -494,7 +511,7 @@ export function registerReport(
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
-  let alreadyRegistered = false;
+  let alreadyNotified = false;
   const entry: ReportEntry = {
     ...input,
     id,
@@ -507,10 +524,13 @@ export function registerReport(
     const lockPath = path + ".lock";
     acquireLock(lockPath);
     try {
+      // #5521: dedup de e-mail por "já NOTIFICOU", nunca por "já existe
+      // entrada" — ver `ReportEntry.notified`.
+      alreadyNotified = readPreviousEntry(path, id)?.notified === true;
+      const willNotify = notify && !alreadyNotified;
+      entry.notified = alreadyNotified || willNotify;
+
       const otherLines = readLinesExcludingId(path, id);
-      // #5521: `readLinesExcludingId` filtra a entrada anterior desta rodada —
-      // se sumiu alguma linha, é re-registro, e o e-mail não deve sair de novo.
-      alreadyRegistered = otherLines.length < countNonEmptyLines(path);
       const nextLines = [...otherLines, JSON.stringify(entry)];
       const tmpPath = path + ".tmp";
       writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
@@ -524,8 +544,8 @@ export function registerReport(
       error: null,
       emailDispatch: !notify
         ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" })
-        : alreadyRegistered
-          ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-registered" })
+        : alreadyNotified
+          ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-notified" })
           : dispatchReportEmail(rootDir, entry, emailDeps),
     };
   } catch (e) {
@@ -549,14 +569,25 @@ export function registerReport(
  * descarta (mesma disciplina fail-soft de `listReports`, que ignora essas
  * linhas na LEITURA sem apagá-las do arquivo).
  */
-/** Quantas linhas não-vazias o registro tem hoje (0 se ainda não existe). */
-function countNonEmptyLines(path: string): number {
-  if (!existsSync(path)) return 0;
+/** Entrada já gravada para `id`, se houver (#5521). */
+function readPreviousEntry(path: string, id: string): Partial<ReportEntry> | null {
+  if (!existsSync(path)) return null;
+  let raw: string;
   try {
-    return readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+    raw = readFileSync(path, "utf8");
   } catch {
-    return 0;
+    return null;
   }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as Partial<ReportEntry>;
+      if (parsed?.id === id) return parsed;
+    } catch {
+      // linha corrompida — ignorar
+    }
+  }
+  return null;
 }
 
 function readLinesExcludingId(path: string, excludeId: string): string[] {

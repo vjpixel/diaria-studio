@@ -454,7 +454,23 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
 
     const second = registerReport(tmpRoot, input("overnight 260817 — 4 unidades, 6 issues"), deps);
     assert.equal(second.ok, true, "o registro em si tem que ser atualizado");
-    assert.deepEqual(await second.emailDispatch, { sent: false, skipped: "already-registered" });
+    assert.deepEqual(await second.emailDispatch, { sent: false, skipped: "already-notified" });
+  });
+
+  it("REGRESSÃO: registro com notify:false NÃO consome a notificação (Stage 6)", async () => {
+    // O Stage 6 registra o MESMO `edicao-{AAMMDD}` 2×: 6b-6 com notify:false
+    // (HTML descartável, só pra fechar o invariante do stage) e 6b-8 com o
+    // default true — é a 2ª que manda o relatório diário pro editor. Dedup por
+    // "já existe entrada" engolia justamente esse e-mail.
+    const primeira = registerReport(tmpRoot, input("descartável — 1 unidades"), deps, false);
+    assert.deepEqual(await primeira.emailDispatch, { sent: false, skipped: "notify-disabled" });
+
+    const segunda = registerReport(tmpRoot, input("final — 1 unidades"), deps);
+    assert.deepEqual(
+      await segunda.emailDispatch,
+      { sent: true },
+      "a chamada final do Stage 6 TEM que notificar",
+    );
   });
 
   it("rodada DIFERENTE continua mandando e-mail", async () => {
