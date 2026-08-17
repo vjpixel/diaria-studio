@@ -762,7 +762,9 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 4
 
 ## Fluxo pós-gate
 
-Após aprovação do gate (ou auto-approve com `--no-gates`), o orchestrator prossegue imediatamente para a **Etapa 5 — Publicação** (leia `orchestrator-stage-5.md`).
+**Isto só se aplica quando este playbook foi lido como parte de `/diaria-edicao` (via `orchestrator.md`).** Se foi lido a partir da skill standalone `/diaria-4-revisao`, PARE aqui: escreva o sentinel, apresente o resumo, e sugira `/diaria-5-publicacao {AAMMDD}` como próximo comando — não leia `orchestrator-stage-5.md`.
+
+Quando lido via `/diaria-edicao`: após aprovação do gate (ou auto-approve com `--no-gates`), o orchestrator prossegue imediatamente para a **Etapa 5 — Publicação** (leia `orchestrator-stage-5.md`).
 
 O pré-render do Stage 4 já populou todos os artefatos que o Stage 5 precisa:
 - `_internal/newsletter-final.html` (HTML pronto)
