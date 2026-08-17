@@ -10,9 +10,9 @@
  * normal, ou o inverso). Nenhum teste travava essa coerência antes.
  *
  * Também trava o PISO: o limiar não pode descer até o timeout de espera de
- * CI da SKILL do overnight (30 min), senão toda espera de CI saudável — em
- * que o coordenador fica legitimamente sem escrever em plan.json/run-log —
- * vira halt banner + e-mail de alerta. Ver rationale completo em
+ * CI (`CI_WAIT_TIMEOUT_MIN`), senão toda espera de CI saudável — em que o
+ * coordenador fica legitimamente sem escrever em plan.json/run-log — vira
+ * halt banner + e-mail de alerta. Ver rationale completo em
  * `scripts/lib/overnight-stall-threshold.ts`.
  */
 
@@ -21,14 +21,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { OVERNIGHT_STALL_THRESHOLD_MIN } from "../scripts/lib/overnight-stall-threshold.ts";
-import { detectStall } from "../scripts/overnight-watchdog.ts";
+import {
+  CI_WAIT_TIMEOUT_MIN,
+  OVERNIGHT_STALL_THRESHOLD_MIN,
+} from "../scripts/lib/overnight-stall-threshold.ts";
+import { detectStall, parseArgs } from "../scripts/overnight-watchdog.ts";
 import { shouldWakeCheck } from "../scripts/lib/overnight-fallback-wake.ts";
 
-/** Timeout de espera de CI declarado na SKILL do overnight (minutos). */
-const CI_WAIT_TIMEOUT_MIN = 30;
-
 const REPO_ROOT = resolve(import.meta.dirname, "..");
+const OVERNIGHT_SKILL = ".claude/skills/diaria-overnight/SKILL.md";
+
+const read = (rel: string): string => readFileSync(resolve(REPO_ROOT, rel), "utf-8");
 
 describe("OVERNIGHT_STALL_THRESHOLD_MIN", () => {
   it("vale 45 min (decisão do editor 17/08/2026 — era 60)", () => {
@@ -41,6 +44,28 @@ describe("OVERNIGHT_STALL_THRESHOLD_MIN", () => {
       `limiar (${OVERNIGHT_STALL_THRESHOLD_MIN} min) precisa ser > timeout de CI ` +
         `(${CI_WAIT_TIMEOUT_MIN} min), senão toda espera de CI saudável dispara alarme. ` +
         `Pra baixar mais, o timeout de CI da SKILL tem que cair junto.`,
+    );
+  });
+
+  /**
+   * `CI_WAIT_TIMEOUT_MIN` é uma CÓPIA em código de um valor cuja fonte viva é
+   * a prosa da SKILL — a regra de timeout de CI é executada pelo coordenador
+   * lendo o texto, não por código. Sem este teste, mudar o timeout na SKILL
+   * deixaria o piso comparando contra um número congelado e o guard acima
+   * passaria verde contra a regra ERRADA: a mesma classe de divergência
+   * silenciosa que esta issue existe pra eliminar, só que uma camada acima
+   * (achado do review do #5568).
+   */
+  it("CI_WAIT_TIMEOUT_MIN bate com o timeout declarado na prosa da SKILL", () => {
+    const skill = read(OVERNIGHT_SKILL);
+    const m = skill.match(/Timeout por espera de CI = \*\*(\d+) min\*\*/);
+    assert.ok(m, `não achei "Timeout por espera de CI = **N min**" em ${OVERNIGHT_SKILL}`);
+    assert.equal(
+      Number(m[1]),
+      CI_WAIT_TIMEOUT_MIN,
+      `a SKILL declara timeout de CI de ${m[1]} min, mas CI_WAIT_TIMEOUT_MIN é ` +
+        `${CI_WAIT_TIMEOUT_MIN}. Atualize scripts/lib/overnight-stall-threshold.ts — ` +
+        `e reveja se OVERNIGHT_STALL_THRESHOLD_MIN ainda fica acima do piso novo.`,
     );
   });
 
@@ -95,35 +120,150 @@ describe("coerência entre as camadas de detecção de stall", () => {
   });
 });
 
-describe("prosa da SKILL/docs em sincronia com a constante", () => {
+/**
+ * `parseArgs` é o consumidor que MAIS importa e o que estava sem nenhuma
+ * cobertura (achado do review do #5568, provado por mutação: reverter esta
+ * função pro literal `"60"` passava a suíte inteira sem uma falha). É ela —
+ * não o default de parâmetro de `detectStall` — que resolve o limiar usado
+ * de fato quando o systemd timer roda o watchdog: `detectStall` é sempre
+ * chamado com o valor explícito que sai daqui.
+ */
+describe("parseArgs: resolução do limiar (env, flag, default)", () => {
+  /** Coletor de avisos, no lugar do stderr real. */
+  const collect = (): { warns: string[]; warn: (m: string) => void } => {
+    const warns: string[] = [];
+    return { warns, warn: (m) => void warns.push(m) };
+  };
+
+  it("sem env e sem flag → OVERNIGHT_STALL_THRESHOLD_MIN, sem avisos", () => {
+    const { warns, warn } = collect();
+    const { thresholdMin, dryRun } = parseArgs([], {}, warn);
+    assert.equal(thresholdMin, OVERNIGHT_STALL_THRESHOLD_MIN);
+    assert.equal(dryRun, false);
+    assert.deepEqual(warns, []);
+  });
+
+  it("env válida é respeitada", () => {
+    const { warns, warn } = collect();
+    const { thresholdMin } = parseArgs([], { OVERNIGHT_WATCHDOG_STALL_MIN: "90" }, warn);
+    assert.equal(thresholdMin, 90);
+    assert.deepEqual(warns, []);
+  });
+
+  it("--threshold tem precedência sobre a env", () => {
+    const { thresholdMin } = parseArgs(
+      ["--threshold", "120"],
+      { OVERNIGHT_WATCHDOG_STALL_MIN: "90" },
+      () => {},
+    );
+    assert.equal(thresholdMin, 120);
+  });
+
+  it("--dry-run é reconhecido junto com o resto", () => {
+    const { dryRun, thresholdMin } = parseArgs(["--dry-run", "--threshold", "90"], {}, () => {});
+    assert.equal(dryRun, true);
+    assert.equal(thresholdMin, 90);
+  });
+
+  for (const bad of ["", "abc", "0", "-5"]) {
+    it(`env inválida (${JSON.stringify(bad)}) → default COM aviso, nunca descarte silencioso`, () => {
+      const { warns, warn } = collect();
+      const { thresholdMin } = parseArgs([], { OVERNIGHT_WATCHDOG_STALL_MIN: bad }, warn);
+      assert.equal(thresholdMin, OVERNIGHT_STALL_THRESHOLD_MIN);
+      assert.equal(warns.length, 1, "entrada inválida precisa avisar em stderr");
+      assert.match(warns[0], /OVERNIGHT_WATCHDOG_STALL_MIN/);
+    });
+  }
+
+  for (const bad of ["abc", "0", "-1"]) {
+    it(`--threshold inválido (${JSON.stringify(bad)}) → mantém o anterior COM aviso`, () => {
+      const { warns, warn } = collect();
+      const { thresholdMin } = parseArgs(
+        ["--threshold", bad],
+        { OVERNIGHT_WATCHDOG_STALL_MIN: "90" },
+        warn,
+      );
+      assert.equal(thresholdMin, 90, "flag inválida não pode derrubar a env válida");
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /--threshold/);
+    });
+  }
+
+  it("--threshold sem valor seguinte → aviso, mantém o default", () => {
+    const { warns, warn } = collect();
+    const { thresholdMin } = parseArgs(["--threshold"], {}, warn);
+    assert.equal(thresholdMin, OVERNIGHT_STALL_THRESHOLD_MIN);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /sem valor/);
+  });
+
+  it("limiar no piso ou abaixo dele avisa, mas OBEDECE (override intencional continua possível)", () => {
+    const { warns, warn } = collect();
+    const { thresholdMin } = parseArgs(["--threshold", String(CI_WAIT_TIMEOUT_MIN)], {}, warn);
+    assert.equal(thresholdMin, CI_WAIT_TIMEOUT_MIN, "o guard de piso avisa, não recusa");
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /piso/);
+  });
+});
+
+describe("prosa em sincronia com a constante", () => {
   /**
    * A camada (i) do stall passivo é executada pelo COORDENADOR lendo a
    * SKILL — não há código pra travar esse número, só o texto. Um limiar
    * mudado no código e esquecido na prosa faz o coordenador seguir usando o
    * valor antigo, que é exatamente a divergência silenciosa que motivou
    * este arquivo.
+   *
+   * A 1ª versão deste guard casava 3 FRASES literais (`>60 min sem
+   * progresso` etc). O review do #5568 demonstrou o furo: uma reformulação
+   * plausível ("atividade parada há 60 minutos") passava batida, e os `.ts`
+   * ficavam de fora — foi assim que um comentário stale sobreviveu dentro do
+   * próprio arquivo que a issue reescreveu. Agora a regra é genérica
+   * (qualquer menção a "60 min"/"60 minutos" nos arquivos que falam do
+   * limiar) e a lista de arquivos inclui os consumidores `.ts`.
    */
-  const files = [
-    ".claude/skills/diaria-overnight/SKILL.md",
+  const SCANNED = [
+    OVERNIGHT_SKILL,
     "docs/overnight-watchdog-setup.md",
+    "scripts/overnight-watchdog.ts",
+    "scripts/lib/overnight-fallback-wake.ts",
+    "scripts/lib/overnight-stall-threshold.ts",
   ];
 
-  for (const rel of files) {
-    it(`${rel} não cita o limiar antigo de 60 min`, () => {
-      const text = readFileSync(resolve(REPO_ROOT, rel), "utf-8");
-      const stale = text.match(/>\s*60 min sem progresso|inatividade > 60 min|estourado 60 min/g);
-      assert.equal(
-        stale,
-        null,
-        `${rel} ainda cita 60 min como limiar de stall; a constante hoje é ` +
-          `${OVERNIGHT_STALL_THRESHOLD_MIN} min.`,
+  /**
+   * Menções LEGÍTIMAS ao valor antigo: notas históricas que datam a mudança
+   * de propósito ("era 60 até…", "60 min à época desta decisão"). Casar por
+   * trecho da linha, não por número de linha — linha se desloca a cada edit.
+   */
+  const HISTORICAL = [
+    "era 60 até 17/08/2026",
+    "60 min à época desta decisão",
+    "60 min quando o",
+    "60 min quando esta constante foi escolhida",
+    "45 min desde",
+  ];
+
+  for (const rel of SCANNED) {
+    it(`${rel} não cita o limiar antigo fora de nota histórica`, () => {
+      const offenders = read(rel)
+        .split("\n")
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter(({ line }) => /\b60\s*min(uto)?s?\b/i.test(line))
+        .filter(({ line }) => !HISTORICAL.some((h) => line.includes(h)));
+
+      assert.deepEqual(
+        offenders.map(({ n, line }) => `L${n}: ${line.trim()}`),
+        [],
+        `${rel} cita 60 min como se fosse o limiar atual (hoje ${OVERNIGHT_STALL_THRESHOLD_MIN} min). ` +
+          `Se for nota histórica legítima, deixe explícito e adicione o trecho a HISTORICAL.`,
       );
     });
+  }
 
+  for (const rel of [OVERNIGHT_SKILL, "docs/overnight-watchdog-setup.md"]) {
     it(`${rel} cita o limiar atual (${OVERNIGHT_STALL_THRESHOLD_MIN} min)`, () => {
-      const text = readFileSync(resolve(REPO_ROOT, rel), "utf-8");
       assert.ok(
-        text.includes(`${OVERNIGHT_STALL_THRESHOLD_MIN} min`),
+        read(rel).includes(`${OVERNIGHT_STALL_THRESHOLD_MIN} min`),
         `${rel} não menciona o limiar atual de ${OVERNIGHT_STALL_THRESHOLD_MIN} min.`,
       );
     });

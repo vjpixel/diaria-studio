@@ -24,7 +24,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 | Camada | Mecanismo | Cobre |
 |---|---|---|
 | **i) Detecção-no-wake** (#2379) | O coordenador, quando acordado por um evento (CI, task-notification), verifica se há >45 min sem progresso — e emite halt banner. | Coordenador acorda mas a issue está travada. |
-| **ii) Detecção-por-tempo** (#2688 — este watchdog) | Script externo que roda independente do coordenador, via Task Scheduler, e detecta silêncio total. | Coordenador parado — sem nenhum evento chegando. |
+| **ii) Detecção-por-tempo** (#2688 — este watchdog) | Script externo que roda independente do coordenador, via systemd timer (o par Windows/Task Scheduler foi removido no #5115), e detecta silêncio total. | Coordenador parado — sem nenhum evento chegando. |
 
 As duas camadas são complementares. O #2379 (existente na SKILL.md) permanece como está.
 
@@ -175,13 +175,13 @@ Para alterar sem mexer no código:
 
 ```env
 # Em .env:
-OVERNIGHT_WATCHDOG_STALL_MIN=30
+OVERNIGHT_WATCHDOG_STALL_MIN=35
 ```
 
 Ou via flag CLI (override pontual):
 
 ```bash
-npx tsx scripts/overnight-watchdog.ts --threshold 30
+npx tsx scripts/overnight-watchdog.ts --threshold 35
 ```
 
 ---

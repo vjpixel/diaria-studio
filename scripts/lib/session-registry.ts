@@ -121,7 +121,8 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * estado se o processo morrer pausado.
  *
  * 90 minutos — mesma ordem de grandeza do threshold de stall já usado em
- * outros lugares do repo (#2768/#2896, "60 min sem progresso"), com folga
+ * outros lugares do repo (#2768/#2896; `OVERNIGHT_STALL_THRESHOLD_MIN`, 60
+ * min quando esta constante foi escolhida, 45 desde o #5568), com folga
  * extra para a latência de sync do OneDrive entre máquinas (que o TTL de 24h
  * não precisava considerar por ser tão folgado).
  *
