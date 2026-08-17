@@ -1,6 +1,40 @@
 # Meta Ads MCP — tools e política de escrita (#5238)
 
-Conector conectado em claude.ai (sessão develop 260816c, 16/08/2026) — `mcp.facebook.com/ads`, OAuth via Meta Business, escopo restrito à conta de anúncios do projeto (ID `2675087492865991`).
+Conector conectado em claude.ai (sessão develop 260816c, 16/08/2026) — `mcp.facebook.com/ads`, OAuth via Meta Business. **Não há escopo restrito a uma conta**: o conector enxerga as **2** contas de anúncios visíveis pra este login Meta Business, ambas `is_ads_mcp_enabled: true` e `is_queryable: true`. Não existe trava de escopo do lado da Meta — **toda chamada precisa passar `ad_account_id` explícito**, e passar o ID errado é obedecido sem aviso. Ver "Conta correta e como confirmar" abaixo antes de tocar em qualquer tool `ads_*` — leitura ou escrita (#5505, correção do erro anterior desta doc, que apontava a conta errada e afirmava escopo restrito que nunca existiu).
+
+## Conta correta e como confirmar
+
+**Não decore o ID abaixo — re-derive.** Mesma disciplina do #1172 (nunca confiar em número escrito em doc; sempre re-verificar ao vivo antes de agir): rode `ads_get_ad_accounts` (LEITURA) e filtre pela conta cujo `business_name === "Diar.ia"`. Em 16/08/2026 essa era `10151064543294811` (`business_id 1402002661457292`) — mas o procedimento é o que importa, não o valor congelado aqui.
+
+Evidência convergente que confirma essa conta como a do projeto (tudo verificado ao vivo em #5505, tools de LEITURA):
+
+| Verificação | `10151064543294811` (correta) | `2675087492865991` |
+|---|---|---|
+| `business_name` | `Diar.ia` | *(vazio — sem business)* |
+| `ads_get_ad_account_pages` | 4 Pages, incl. **`diar.ia.br`** (`839717705901271`) | `{"pages":[]}` |
+| `ads_get_datasets` (pixel) | **`1285191740325112`** (`"Diar.ia"`, `is_active:true`) | `{"datasets":[],"total_count":0}` |
+| Campanha de teste real | `[Teste #5469] Tráfego — inscrição diar.ia.br` (`52527075669398`) | — |
+
+**A `2675087492865991` existe, é visível pelo conector, e NÃO é do projeto** — não tem `business_name`, não tem Page (`pages: []`), não tem pixel (`datasets: []`). Registrado aqui explicitamente pra que uma sessão futura não a "corrija de volta" achando que é essa a conta certa — ela apareceu na doc original por engano (#5505), não por ser a conta do projeto.
+
+**Page a usar em `object_story_spec`:** `diar.ia.br` (`839717705901271`). A conta correta enxerga 4 Pages no total (`ads_get_ad_account_pages`); as outras 3 (`VJ pixel`, `Criaturas Afetivas`, `#memeLab`) são de **outros projetos do editor** — escolher a Page errada publica o anúncio na marca errada. Só `diar.ia.br` é válida aqui.
+
+**Pixel:** `1285191740325112` (`"Diar.ia"`, `is_active:true`) — só acessível pela conta correta (`ads_get_datasets` na `2675087492865991` devolve vazio).
+
+## Risco: conta dormente desde 2017
+
+A conta correta (`10151064543294811`) está **dormente há ~9 anos**: `ads_get_ad_entities` (`level=ad_account`, `date_preset=maximum`) devolve `amount_spent: "R$71,74 BRL"` lifetime, `impressions: 11225`. `level=campaign` lista 36 campanhas, quase todas de **outro projeto do editor** (`#memeLab`, `Chronica Mobilis`, `PhotolinkRemix`, `InCorpóreos`) — a mais recente sendo `[26/5/2017] Promovendo "#memeLab"`. Fora isso, só a campanha de teste do diar.ia.br (`52527075669398`, criada em #5469).
+
+Reativar conta dormente na Meta traz risco real e **não visível por nenhuma tool de leitura do conector**: revisão manual de pagamento/anúncio, limite de gasto inicial baixo, possibilidade de bloqueio por "atividade incomum". `min_daily_budget_cents: 514` (R$ 5,14) que a API devolve é o **mínimo** de orçamento diário, não um teto de conta — o spend cap real só aparece gastando.
+
+**Antes do 1º gasto do teste de 3 canais, checar:**
+- Status de revisão da conta (`account_status` — `ACTIVE` na leitura de #5505, mas revisão pode acontecer só ao ativar gasto real via `ads_activate_entity`).
+- Limite de gasto/faturamento vigente (não exposto por nenhuma tool de leitura; só aparece ao gastar).
+- Método de pagamento válido — a API diz `has_payment_method: true`, mas isso não garante que a cobrança de fato passe depois de 9 anos sem uso.
+
+**Antes de tratar o braço Meta como dado válido no experimento:** rodar 1 dia com gasto mínimo e comparar **entrega real vs. orçamento alocado**. Sub-gasto silencioso já é a falha conhecida deste tipo de teste neste projeto (o Google Ads gastou 8% do orçamento diário do PMax por ~60 dias sem ninguém perceber até auditar). Se o braço Meta subgastar, é sinal de conta capada/em revisão — não ruído estatístico — e o braço precisa ser **reiniciado**, não interpretado como "Meta é cara/ruim".
+
+**Nota para o #5469 (script de ingestão Meta → `spend.csv`):** quando implementado, travar o `ad_account_id` numa constante testável em `scripts/lib/` (ex: teste que falha se o valor mudar sem revisão explícita) — nunca uma string solta copiada desta doc. Doc errada + string copiada = `spend.csv` do Meta nasce zerado sem erro nenhum, e o custo por leitor do canal fica indefinido com denominador vazio.
 
 ## Correção de contagem
 
