@@ -29,6 +29,7 @@ function row(day: string, opts: Partial<DayOpenRateSummary> = {}): DayOpenRateSu
     opens: 40,
     openRate: 40,
     smallSample: false,
+    immature: false,
     ...opts,
   };
 }
@@ -57,7 +58,7 @@ describe("#5593: catmullRomToBezierPath", () => {
   });
 });
 
-describe("#5593: splitIntoRuns — buraco vira segmento separado, nunca zero interpolado", () => {
+describe("#5610 item 2: splitIntoRuns — conecta através dos buracos (inverte a decisão original do #5593)", () => {
   test("sem null nenhum, 1 único run com todos os itens", () => {
     const runs = splitIntoRuns([1, 2, 3]);
     assert.equal(runs.length, 1);
@@ -65,13 +66,11 @@ describe("#5593: splitIntoRuns — buraco vira segmento separado, nunca zero int
     assert.deepEqual(runs[0].map((r) => r.index), [0, 1, 2]);
   });
 
-  test("null no meio quebra em 2 runs — o buraco não vira ponto de valor 0", () => {
+  test("null no meio NÃO quebra mais em 2 runs — vira 1 único run contínuo pulando o índice do buraco", () => {
     const runs = splitIntoRuns([1, 2, null, 4, 5]);
-    assert.equal(runs.length, 2, "dia sem envio deve separar em 2 segmentos, não interpolar");
-    assert.deepEqual(runs[0].map((r) => r.value), [1, 2]);
-    assert.deepEqual(runs[0].map((r) => r.index), [0, 1]);
-    assert.deepEqual(runs[1].map((r) => r.value), [4, 5]);
-    assert.deepEqual(runs[1].map((r) => r.index), [3, 4]);
+    assert.equal(runs.length, 1, "#5610: buraco não deve mais separar em segmentos — a linha conecta através dele");
+    assert.deepEqual(runs[0].map((r) => r.value), [1, 2, 4, 5]);
+    assert.deepEqual(runs[0].map((r) => r.index), [0, 1, 3, 4], "índice original preservado, inclusive o salto sobre o buraco (índice 2 ausente)");
   });
 
   test("null nas 2 pontas é ignorado (não vira run vazio)", () => {
@@ -134,15 +133,14 @@ describe("#5593: renderOpenRateChartSvg", () => {
     assert.doesNotMatch(svg, /#[0-9a-fA-F]{3,6}/, "não deve haver cor hex hardcoded no SVG");
   });
 
-  test("dia sem envio no meio do intervalo vira BURACO — path da linha se quebra em 2 segmentos", () => {
-    // 01, 02 têm dado; 03 não teve envio; 04, 05 têm dado de novo (2 pontos
-    // em cada lado do buraco, pra cada lado render uma linha própria).
+  test("#5610 item 2: dia sem envio no meio do intervalo NÃO quebra mais a linha — 1 único segmento contínuo", () => {
+    // 01, 02 têm dado; 03 não teve envio; 04, 05 têm dado de novo — a linha
+    // agora atravessa o dia 03 em vez de quebrar em 2 segmentos (inversão
+    // da decisão original do #5593).
     const rows = [row("2026-08-01"), row("2026-08-02"), row("2026-08-04"), row("2026-08-05")];
     const svg = renderOpenRateChartSvg(rows);
-    // Cada série com buraco produz 2 <path fill="none" ...> (linha) em vez
-    // de 1 só — confirma que NÃO interpolou através do dia 03.
     const deliveredLineCount = (svg.match(/stroke="var\(--brand\)"/g) ?? []).length;
-    assert.equal(deliveredLineCount, 2, "buraco no meio deve gerar 2 segmentos de linha pra Delivered, não 1 contínuo");
+    assert.equal(deliveredLineCount, 1, "buraco no meio não deve mais gerar segmento separado — a linha conecta através dele");
   });
 
   test("amostra pequena (smallSample=true) usa marcador OCO (fill=var(--card)) em vez do preenchido", () => {
@@ -152,6 +150,23 @@ describe("#5593: renderOpenRateChartSvg", () => {
     ]);
     assert.match(svg, /fill="var\(--card\)" stroke="var\(--brand\)"/, "marcador oco de Delivered pra dia smallSample");
     assert.match(svg, /fill="var\(--card\)" stroke="var\(--alert\)"/, "marcador oco de Open Rate pra dia smallSample");
+  });
+
+  test("#5610 item 5: dia imaturo (immature=true) usa marcador com opacidade reduzida", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { immature: true }),
+      row("2026-08-11", { immature: false }),
+    ]);
+    assert.match(svg, /fill="var\(--brand\)" opacity="0\.55"/, "marcador Delivered do dia imaturo tem opacidade reduzida");
+    assert.match(svg, /fill="var\(--alert\)" opacity="0\.55"/, "marcador Open Rate do dia imaturo tem opacidade reduzida");
+  });
+
+  test("#5610 item 5: smallSample + immature no mesmo dia combinam marcador oco com opacidade reduzida", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { smallSample: true, immature: true, count: 1 }),
+      row("2026-08-11"),
+    ]);
+    assert.match(svg, /fill="var\(--card\)" stroke="var\(--brand\)" stroke-width="2" opacity="0\.55"/);
   });
 
   test("rótulos de extremidade do eixo X usam mês abreviado pt-BR (ex: 'ago 10')", () => {

@@ -74,7 +74,7 @@ import {
   escHtml,
   aggregateByDay,
   renderOpenRateByDaySection,
-  DAY_OPENRATE_COLUMNS,
+  DAY_OPENRATE_WINDOW_DAYS,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -3124,8 +3124,21 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no resumo curado");
   });
 
+  // #5610 item 4: `aggregateByDay` agora corta por janela FIXA de dias-calendário
+  // relativa ao `now` real (`new Date()`, não injetável no call site de produção
+  // em `renderDashboardHtml`) — `baseCampaignForTabs` (sentDate fixo em
+  // 2026-06-10) inevitavelmente sai da janela de 30 dias conforme o relógio de
+  // parede avança. Os 2 testes abaixo (que dependem de `id="day-openrate"`
+  // aparecer) usam uma fixture IRMÃ com `sentDate` relativo a "agora" (5 dias
+  // atrás, maduro e dentro da janela), preservando `baseCampaignForTabs` intacta
+  // pra todos os outros ~10 testes desta describe que não dependem de janela.
+  const recentCampaignForTabs = {
+    ...baseCampaignForTabs,
+    sentDate: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
+  };
+
   test("panel-envios (#3406, ex-'Visão geral') contém id=campaigns-table, monthly-totals, volume-ciclo", () => {
-    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const html = renderDashboardHtml([recentCampaignForTabs]);
     const panel = html.match(/id="panel-envios"[\s\S]*?(?=id="panel-rampa")/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-envios deve existir no HTML");
     assert.match(panel, /id="campaigns-table"/, "Envios deve estar no panel Envios");
@@ -3135,7 +3148,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
   });
 
   test("#5490: panel-envios — day-openrate vem depois de volume-ciclo e antes de campaigns-table", () => {
-    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const html = renderDashboardHtml([recentCampaignForTabs]);
     const panel = html.match(/id="panel-envios"[\s\S]*?(?=id="panel-rampa")/)?.[0] ?? "";
     const idxVolume = panel.indexOf('id="volume-ciclo"');
     const idxDayOpenRate = panel.indexOf('id="day-openrate"');
@@ -3485,20 +3498,42 @@ describe("#5490: aggregateByDay agrega open rate por dia-calendário BRT", () =>
     return makeCampaign(id, `Clarice News 2605 d0${id}-A`, sentDate, { sent: 100, delivered: 90, uniqueViews: 20, ...gsOverrides });
   }
 
-  test("envio de 50h atrás é incluído no agregado (mesma maturação de 48h de aggregateByWeekday, #2611)", () => {
+  test("envio de 50h atrás é incluído no agregado, immature=false (maduro)", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c50h = makeCampaignHoursAgo(1, 50, now);
-    const { rows, excluded } = aggregateByDay([c50h], now);
-    assert.equal(excluded.length, 0, "50h não deve estar no excluded");
+    const { rows } = aggregateByDay([c50h], now);
     assert.equal(rows.length, 1, "50h deve gerar linha no agregado");
+    assert.equal(rows[0].immature, false, "50h já passou da janela de maturação de 48h");
   });
 
-  test("envio de 10h atrás é excluído (open rate instável)", () => {
+  test("#5610 item 5: envio de 10h atrás NÃO é mais excluído — entra no agregado com immature=true", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c10h = makeCampaignHoursAgo(2, 10, now);
-    const { rows, excluded } = aggregateByDay([c10h], now);
-    assert.equal(rows.length, 0, "10h não deve gerar linha no agregado");
-    assert.equal(excluded.length, 1, "10h deve estar no excluded");
+    const { rows } = aggregateByDay([c10h], now);
+    assert.equal(rows.length, 1, "10h deve gerar linha no agregado (pedido do editor: não esconder o dia mais recente)");
+    assert.equal(rows[0].immature, true, "10h ainda está dentro da janela de maturação de 48h");
+  });
+
+  test("#5610 item 5: dia com 1 campanha madura + 1 imatura fica marcado immature=true (flag por-dia, OR entre campanhas)", () => {
+    // "now" fica só 2 dias depois do envio — a campanha das 09:00 UTC já tem
+    // 51h (madura, >48h), a das 23:00 UTC do MESMO dia-calendário BRT
+    // (23:00 UTC - 3h = 20:00 BRT, ainda 06-10) tem só 37h (imatura, <48h).
+    const now = new Date("2026-06-12T12:00:00Z");
+    const mature = makeCampaign(15, "Clarice News 2605 d05-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const immatureCampaign = makeCampaign(16, "Clarice News 2605 d05-B", "2026-06-10T23:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([mature, immatureCampaign], now);
+    assert.equal(rows.length, 1, "mesma data-calendário BRT deve agregar em 1 linha só");
+    assert.equal(rows[0].day, "2026-06-10");
+    assert.equal(rows[0].immature, true, "basta 1 campanha imatura no dia pra marcar o dia inteiro");
+  });
+
+  test("#5610 item 4: janela fixa de windowDays dias-calendário — dia fora da janela some do agregado", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const dentroDaJanela = makeCampaign(17, "Clarice News 2605 d06-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 }); // 16 dias atrás
+    const foraDaJanela = makeCampaign(18, "Clarice News 2604 d01-A", "2026-05-01T09:00:00Z", { delivered: 100, uniqueViews: 40 }); // ~56 dias atrás
+    const { rows } = aggregateByDay([dentroDaJanela, foraDaJanela], now, 30);
+    assert.equal(rows.length, 1, "só o dia dentro da janela de 30 dias deve aparecer");
+    assert.equal(rows[0].day, "2026-06-10");
   });
 
   test("duas campanhas do MESMO dia-calendário BRT se agregam na mesma linha", () => {
@@ -3549,16 +3584,9 @@ describe("#5490: aggregateByDay agrega open rate por dia-calendário BRT", () =>
   });
 });
 
-describe("#5490: renderOpenRateByDaySection", () => {
-  test("rows=[] e excluded=[] retorna string vazia (seção omitida)", () => {
-    assert.equal(renderOpenRateByDaySection([], []), "");
-  });
-
-  test("rows=[] com excluded não-vazio ainda retorna HTML com nota de estabilizando (mesmo padrão de renderWeekdaySection #2619)", () => {
-    const excluded = [{ name: "Clarice News 2605 d09-A", sentDate: "2026-06-24T09:00:00Z" }];
-    const html = renderOpenRateByDaySection([], excluded);
-    assert.ok(html.length > 0, "deve retornar HTML mesmo com rows=[]");
-    assert.match(html, /id="day-openrate"/);
+describe("#5490/#5610: renderOpenRateByDaySection", () => {
+  test("rows=[] retorna string vazia (seção omitida)", () => {
+    assert.equal(renderOpenRateByDaySection([]), "");
   });
 
   test("renderiza id=day-openrate e título 'Open rate por dia'", () => {
@@ -3586,68 +3614,86 @@ describe("#5490: renderOpenRateByDaySection", () => {
     assert.match(html, /MPP/, "deve mencionar MPP explicitamente");
   });
 
-  test("sem windowLimitWhenFull, nota de janela não cita número específico de campanhas", () => {
+  test("#5610 item 4: nota de janela cita a janela FIXA de dias corridos (não mais número de campanhas)", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c = makeCampaign(63, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows, [], null);
-    assert.match(html, /janela de campanhas carregada/, "deve deixar claro que é janela, não série histórica completa (ressalva 1)");
-    assert.doesNotMatch(html, /até \d+ envios mais recentes/, "sem windowLimitWhenFull não deve citar limite específico");
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /últimos 30 dias corridos/, "deve citar a janela fixa em dias-calendário (default = DAY_OPENRATE_WINDOW_DAYS)");
+    assert.doesNotMatch(html, /janela de campanhas carregada/, "semântica antiga (contagem de campanhas) não deve mais aparecer");
   });
 
-  test("com windowLimitWhenFull=100, nota cita o limite (#5490 ressalva 1 — janela de 100 campanhas)", () => {
+  test("#5610 item 4: windowDays customizado é refletido na nota", () => {
     const now = new Date("2026-06-26T12:00:00Z");
-    const c = makeCampaign(64, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
-    const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows, [], 100);
-    assert.match(html, /até 100 envios mais recentes/, "deve citar explicitamente a janela de 100 campanhas");
-    assert.match(html, /não é série histórica persistida/, "deve deixar claro que não é série histórica completa");
+    const c = makeCampaign(64, "Clarice News 2605 d01-A", "2026-06-24T09:00:00Z", { delivered: 100, uniqueViews: 40 }); // 2 dias atrás — dentro de uma janela de 7
+    const { rows } = aggregateByDay([c], now, 7);
+    assert.equal(rows.length, 1, "dia deve estar dentro da janela customizada de 7 dias");
+    const html = renderOpenRateByDaySection(rows, 7);
+    assert.match(html, /últimos 7 dias corridos/);
   });
 
-  test("linhas ordenadas cronologicamente aparecem na mesma ordem no HTML (queda visível #4705)", () => {
+  test("DAY_OPENRATE_WINDOW_DAYS é 30", () => {
+    assert.equal(DAY_OPENRATE_WINDOW_DAYS, 30);
+  });
+
+  test("linhas ordenadas cronologicamente — rótulos de extremidade do eixo X do gráfico refletem mais antigo → mais recente (queda visível #4705)", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const day1 = makeCampaign(70, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 52 }); // 52%
     const day2 = makeCampaign(71, "Clarice News 2605 d02-A", "2026-06-12T09:00:00Z", { delivered: 100, uniqueViews: 4 }); // 4%
     const { rows } = aggregateByDay([day1, day2], now);
+    assert.equal(rows[0].day, "2026-06-10", "mais antigo primeiro");
+    assert.equal(rows[1].day, "2026-06-12", "mais recente por último");
     const html = renderOpenRateByDaySection(rows);
-    const idx10 = html.indexOf("10/06");
-    const idx12 = html.indexOf("12/06");
-    assert.ok(idx10 > -1 && idx12 > -1);
-    assert.ok(idx10 < idx12, "dia mais antigo (10/06) deve aparecer antes do mais recente (12/06)");
+    const idxFirst = html.indexOf("jun 10");
+    const idxLast = html.indexOf("jun 12");
+    assert.ok(idxFirst > -1 && idxLast > -1, "rótulos de extremidade do eixo X do SVG devem citar os 2 dias");
+    assert.ok(idxFirst < idxLast, "dia mais antigo (10) deve aparecer antes do mais recente (12) no markup");
   });
 
-  test("DAY_OPENRATE_COLUMNS tem 5 colunas (Dia, Envios, Delivered, Opens, Open rate)", () => {
-    assert.equal(DAY_OPENRATE_COLUMNS.length, 5);
-    assert.equal(DAY_OPENRATE_COLUMNS[0].label, "Dia");
-    assert.equal(DAY_OPENRATE_COLUMNS[4].label, "Open rate");
-  });
-
-  test("small sample (1 campanha) é anotado na linha", () => {
+  test("#5610 item 1: tabela 'Dia / Envios / Delivered / Opens / Open rate' foi removida — só o gráfico SVG permanece", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c = makeCampaign(80, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
     const html = renderOpenRateByDaySection(rows);
-    assert.match(html, /amostra pequena/, "linha com 1 campanha deve marcar amostra pequena");
+    assert.doesNotMatch(html, /<table>/, "tabela não deve mais existir nesta seção");
+    assert.match(html, /<svg/, "o gráfico continua sendo a fonte de leitura");
   });
 
-  // #5593: gráfico SVG acima da tabela — a tabela em si (asserções acima)
-  // continua intacta; aqui só confere que o `<svg>` foi embutido junto.
-  test("#5593: seção inclui o gráfico SVG ANTES da tabela (mantém a tabela abaixo)", () => {
+  test("#5610 item 3: dia com amostra pequena gera legenda textual explicando o marcador oco", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(81, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now); // 1 campanha só => smallSample=true
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /amostra pequena/i, "legenda deve explicar o marcador oco, já que a tabela que fazia isso saiu");
+  });
+
+  test("#5610 item 3/5: sem amostra pequena nem dia imaturo, legenda de marcador não aparece", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const a = makeCampaign(82, "Clarice News 2605 d01-A", "2026-06-10T09:05:00Z", { delivered: 100, uniqueViews: 30 });
+    const b = makeCampaign(83, "Clarice News 2605 d01-B", "2026-06-10T09:10:00Z", { delivered: 100, uniqueViews: 30 });
+    const { rows } = aggregateByDay([a, b], now); // count=2 => smallSample=false; 16 dias atrás => immature=false
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /amostra pequena/i);
+    assert.doesNotMatch(html, /maturação/i);
+  });
+
+  test("#5610 item 5: dia imaturo gera legenda textual sobre a janela de maturação de 48h", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(84, "Clarice News 2605 d01-A", now.toISOString(), { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows[0].immature, true);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /maturação de 48h/i, "legenda deve explicar o marcador semitransparente de dia imaturo");
+  });
+
+  // #5593: gráfico SVG é a única forma de leitura da série (tabela removida no #5610 item 1).
+  test("#5593/#5610: seção inclui o gráfico SVG", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c = makeCampaign(90, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
     const html = renderOpenRateByDaySection(rows);
     const svgIdx = html.indexOf("<svg");
-    const tableIdx = html.indexOf("<table>");
     assert.ok(svgIdx > -1, "deve conter um <svg> inline");
-    assert.ok(tableIdx > -1, "a tabela deve continuar presente");
-    assert.ok(svgIdx < tableIdx, "o gráfico deve vir ANTES da tabela no markup");
-  });
-
-  test("#5593: rows=[] (só excluded) não tenta renderizar o gráfico", () => {
-    const excluded = [{ name: "Clarice News 2605 d09-A", sentDate: "2026-06-24T09:00:00Z" }];
-    const html = renderOpenRateByDaySection([], excluded);
-    assert.doesNotMatch(html, /<svg/, "sem linhas, não há dado pro gráfico");
   });
 });
 
