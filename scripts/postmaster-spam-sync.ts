@@ -202,6 +202,7 @@ import {
   queryDomainStatsV2,
   extractSpamRateReadingsV2,
   extractFeedbackLoopIdsV2,
+  calendarDateToEntryDate,
   type CalendarDate,
   type DateRangeV2,
   type QueryDomainStatsResponseV2,
@@ -239,6 +240,36 @@ const DEFAULT_WINDOW_DAYS = HEALTH_SAMPLE_DAYS;
  * Postmaster. É 1 query com range, não N — alargar não multiplica chamadas.
  */
 export const CAMPAIGN_DISCOVERY_WINDOW_DAYS = 90;
+
+/**
+ * #5487: janela SEPARADA, mais curta, só pro que ALIMENTA O BREAKER
+ * (`worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`) — NUNCA
+ * reunificar com `CAMPAIGN_DISCOVERY_WINDOW_DAYS`. A descoberta de 90 dias
+ * (acima) segue existindo pra tabela Envios (`campaignSpam`, decisão do
+ * #5368 — publicação esparsa do Postmaster exige janela larga pra achar o
+ * `FEEDBACK_LOOP_ID`), mas usar a MESMA janela pro breaker faz um pico
+ * isolado de campanha continuar governando `Math.max`/`stop` por até 90 dias
+ * sem nenhum decaimento — achado ao vivo em 16/08/2026: um pico de 27/06
+ * (quase 7 semanas antes) segurou o freio em `stop` sozinho, com a média de
+ * domínio (0,24%) nem chegando perto do limiar.
+ *
+ * Decisão do editor (delegada — "investigue online para propor soluções",
+ * sessão /diaria-develop 260817, registrada em comentário na #5487):
+ * pesquisa sobre deliverability real mostra que o Gmail suaviza reputação
+ * numa janela de ~7-30 dias (não 90) e trata pico isolado sem tendência
+ * sustentada como candidato a verificação, não resposta prolongada — uma
+ * janela discreta mais curta pro breaker é o que mais se aproxima de como o
+ * próprio Gmail se comporta, sem reintroduzir a precedência assimétrica que
+ * o #4779 já removeu do `Math.max` simples (opção descartada: peso
+ * decrescente por idade).
+ *
+ * 21 dias (3 semanas): cobre com folga a janela de recuperação real do
+ * Gmail, exclui com folga qualquer pico de 6+ semanas (o caso desta issue),
+ * e evita reagir de menos a uma degradação que começou há 10-14 dias (o que
+ * uma janela de 7 dias faria).
+ */
+export const BREAKER_CAMPAIGN_RECENCY_WINDOW_DAYS = 21;
+
 /** Nome arbitrário ecoado de volta em `DomainStatV2.metric` — só precisa bater entre a query e `extractSpamRateReadingsV2`. */
 const SPAM_RATE_METRIC_NAME = "spam_rate";
 /** Idem, pra `FEEDBACK_LOOP_ID` (#4705). */
@@ -431,11 +462,34 @@ export interface CollectWorstCampaignSpamResult {
 }
 
 /**
+ * Pura (#5487): `sinceDateInclusive` no mesmo formato `YYYY-MM-DD` de
+ * `CampaignSpamAggregate.peakDate` — comparação lexicográfica funciona
+ * porque o formato é de largura fixa. Usada só pra decidir QUAL agregado
+ * entra na disputa do breaker (`findWorstCampaignSpam`); nunca filtra o
+ * array que alimenta a tabela Envios (`aggregates`/`campaignSpam`), que
+ * continua cobrindo a janela de descoberta inteira (`CAMPAIGN_DISCOVERY_WINDOW_DAYS`).
+ */
+export function filterAggregatesByRecency(
+  aggregates: CampaignSpamAggregate[],
+  sinceDateInclusive: string,
+): CampaignSpamAggregate[] {
+  return aggregates.filter((a) => a.peakDate >= sinceDateInclusive);
+}
+
+/**
  * I/O/testável (#4705, retorno estruturado desde #4780): coleta o PICO de
  * spam por campanha na mesma janela do domínio — `queryFeedbackLoopIds`/
  * `queryCampaignSpamRate` injetáveis (mesmo padrão do resto do arquivo),
  * produção passa `gFetch` via `queryDomainStatsV2` (ver `main()`), testes
  * passam fakes sem bater rede/token real.
+ *
+ * `now`/`breakerWindowDays` (#5487): `worst` — o único campo que alimenta o
+ * breaker — é calculado só sobre os agregados cujo `peakDate` cai dentro dos
+ * últimos `breakerWindowDays` (default `BREAKER_CAMPAIGN_RECENCY_WINDOW_DAYS`),
+ * mesmo que a coleta em si (`range`, tipicamente 90 dias) tenha alcançado
+ * campanhas mais antigas. `aggregates` no retorno continua sendo o array
+ * COMPLETO (sem esse filtro) — é a tabela Envios que precisa do histórico
+ * cheio, não o breaker.
  *
  * FAIL-SOFT por campanha: uma query de `FEEDBACK_LOOP_SPAM_RATE` que falhar
  * (429/5xx/timeout) é pulada com `console.warn`, resto da coleta segue — mesmo
@@ -456,6 +510,8 @@ export async function collectWorstCampaignSpam(
   accountId: string,
   queryFeedbackLoopIds: (range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
   queryCampaignSpamRate: (parsed: ParsedFeedbackLoopId, range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
+  now: Date,
+  breakerWindowDays: number = BREAKER_CAMPAIGN_RECENCY_WINDOW_DAYS,
 ): Promise<CollectWorstCampaignSpamResult> {
   const idsResponse = await queryFeedbackLoopIds(range);
   const idsByDay = extractFeedbackLoopIdsV2(idsResponse, FEEDBACK_LOOP_ID_METRIC_NAME);
@@ -486,7 +542,9 @@ export async function collectWorstCampaignSpam(
       );
     }
   }
-  return { worst: findWorstCampaignSpam(aggregates), aggregates, attempted: campaigns.length, failed, otherAccountsSeen };
+  const breakerSince = calendarDateToEntryDate(toCalendarDate(new Date(now.getTime() - (breakerWindowDays - 1) * 86_400_000)));
+  const recentAggregates = filterAggregatesByRecency(aggregates, breakerSince);
+  return { worst: findWorstCampaignSpam(recentAggregates), aggregates, attempted: campaigns.length, failed, otherAccountsSeen };
 }
 
 /**
@@ -545,9 +603,9 @@ export function describeCampaignSpamCollectionLine(
     return {
       level: "log",
       message:
-        `[postmaster-spam-sync] pior campanha na janela: feedback_loop_id="${worst.feedbackLoopId}" ` +
+        `[postmaster-spam-sync] pior campanha nos últimos ${BREAKER_CAMPAIGN_RECENCY_WINDOW_DAYS} dias: feedback_loop_id="${worst.feedbackLoopId}" ` +
         `pico=${worst.spamRatePct.toFixed(3)}% em ${worst.date} (cobertura: ${worst.daysWithData} dia(s) com dado) — ` +
-        `este valor governa o breaker (precedência sobre a média de domínio).`,
+        `este valor governa o breaker (precedência sobre a média de domínio; #5487 — janela do breaker é mais curta que a de descoberta/tabela Envios).`,
     };
   }
   if (attempted > 0 && failed === attempted) {
@@ -663,7 +721,7 @@ export async function syncDomain(
     // pré-merge do #4780).
     let baseQueryFailed = false;
     try {
-      campaignResult = await collectWorstCampaignSpam(campaignRange, DEFAULT_POSTMASTER_ACCOUNT_ID, deps.queryFeedbackLoopIds, deps.queryCampaignSpamRate);
+      campaignResult = await collectWorstCampaignSpam(campaignRange, DEFAULT_POSTMASTER_ACCOUNT_ID, deps.queryFeedbackLoopIds, deps.queryCampaignSpamRate, now);
     } catch (e) {
       baseQueryFailed = true;
       warn(`${tag} falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ${e instanceof Error ? e.message : String(e)}`);
