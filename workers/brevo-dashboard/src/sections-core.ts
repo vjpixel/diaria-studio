@@ -45,6 +45,9 @@ import {
 // aqui), mesmo padrão já documentado acima para render-links.ts/weekly-plan.ts/
 // experiment-cta.ts (uso só em corpo de função, request-time).
 import { renderBrevoDiariaTabPanel, type BrevoDiariaTabData } from "./brevo-diaria.ts";
+// #5593: gráfico SVG inline (duas séries, spline + área com gradiente) pra
+// "Open rate por dia" — módulo à parte, puro/testável sem fixture de Worker.
+import { renderOpenRateChartSvg } from "./chart-svg.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -859,6 +862,11 @@ ${monthlyAbcSectionsByDate}
      card sem mexer em markup/dados. */
   .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 4px; }
   table { background: var(--card); }
+  /* #5593: wrapper do gráfico SVG "Open rate por dia" — mesmo idioma visual
+     de card do .table-wrap acima (fundo --card, borda --hair), formato faixa
+     larga e baixa pedido no benchmark. */
+  .chart-wrap { background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 4px; margin-bottom: 12px; }
+  .day-openrate-chart { display: block; }
   td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
     font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
@@ -3574,6 +3582,7 @@ export function renderOpenRateByDaySection(
   ${renderMixedAudienceNote()}
   <p class="section-note"><small>Aberturas (uniqueViews) são MPP-inclusivas — Apple Mail conta como aberto mesmo sem leitura humana; leia a curva como tendência, não nível absoluto.</small></p>
   ${windowNote}
+  <div class="chart-wrap">${renderOpenRateChartSvg(rows)}</div>
   ${renderColumnGlossary("day-openrate", DAY_OPENRATE_COLUMNS)}
   <div class="table-wrap">
   <table>
