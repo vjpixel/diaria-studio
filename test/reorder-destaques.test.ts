@@ -15,9 +15,10 @@ import {
   existsSync,
   readdirSync,
   renameSync as renameFsSync,
+  copyFileSync as copyFileFsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   reorderHighlightsInJson,
@@ -459,6 +460,8 @@ describe("renameSyncVerified (#5085 — guard pós-rename)", () => {
         // Não cria o destino de verdade — simula o rename "sumir" depois.
       },
       existsSync: () => false,
+      copyFileSync: copyFileFsSync,
+      readFileSync,
     };
     assert.throws(
       () => renameSyncVerified("/fake/from.jpg", "/fake/to.jpg", fakeDeps),
@@ -468,30 +471,33 @@ describe("renameSyncVerified (#5085 — guard pós-rename)", () => {
   });
 });
 
-describe("renameDestaqueImages (#5085 — guard pós-rename + 4x5-nativo)", () => {
-  it("destino de um rename intermediário sumiu → aborta a sequência inteira (não segue silenciosamente)", () => {
+describe("renameDestaqueImages (#5564 — guard pós-escrita + 4x5-nativo)", () => {
+  it("destino da escrita final sumiu → aborta a sequência inteira (não segue silenciosamente)", () => {
     const dir = mkdtempSync(join(tmpdir(), "reorder-img-vanish-"));
     try {
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "data1");
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "data2");
       writeFileSync(join(dir, "04-d3-1x1.jpg"), "data3");
 
-      // deps reais, exceto existsSync: sempre reporta ausência do arquivo
-      // TMP recém-renomeado — simula o OneDrive descartando a versão
-      // "perdedora" entre o renameSync e a checagem seguinte.
+      // deps reais, exceto existsSync: qualquer arquivo DENTRO de `dir`
+      // (o diretório "sincronizado") reporta ausência — simula o OneDrive
+      // descartando a escrita final entre o `copyFileSync` e a checagem
+      // seguinte (o staging, fora de `dir`, continua reportando a verdade).
       const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          // Executa o rename de verdade (pra poder inspecionar o filesystem
-          // no catch abaixo), mas a verificação subsequente vai reportar
-          // "sumiu" mesmo assim.
-          renameFsSync(from, to);
+        renameSync: renameFsSync,
+        copyFileSync: copyFileFsSync,
+        readFileSync,
+        existsSync: (p) => {
+          const s = String(p);
+          if (s === dir) return true;
+          if (s.startsWith(dir + sep)) return false;
+          return existsSync(s);
         },
-        existsSync: (p) => !String(p).includes("TMP"),
       };
 
       assert.throws(
         () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
-        /reorder-destaques: rename .* retornou sem erro mas o arquivo de destino não existe/,
+        /reorder-destaques: escrita de .* retornou sem erro mas o arquivo não existe/,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -525,229 +531,108 @@ describe("renameDestaqueImages (#5085 — guard pós-rename + 4x5-nativo)", () =
   });
 });
 
-describe("renameDestaqueImages / renameDestaquePrompts (#5087 — rollback best-effort de órfãos TMP)", () => {
-  it("renameDestaqueImages: abort no meio da sequência reverte o rename já aplicado (sem 04-TMP1-* órfão)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reorder-img-rollback-"));
-    try {
-      writeFileSync(join(dir, "04-d1-1x1.jpg"), "data1");
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "data2");
-      writeFileSync(join(dir, "04-d3-1x1.jpg"), "data3");
-
-      // newOrder [2,1,3]: d1→TMP1 (deve suceder e depois ser revertido),
-      // d2→TMP2 (falha aqui, ANTES de tocar o filesystem — simula um erro
-      // tipo EPERM/ENOENT do próprio renameSync, não um conflito pós-rename
-      // do OneDrive já coberto pelo teste de "guard pós-rename" acima).
-      const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          if (String(to).includes("TMP2")) {
-            throw new Error("simulated EPERM on rename to TMP2");
-          }
-          renameFsSync(from, to);
-        },
-        existsSync,
-      };
-
-      assert.throws(
-        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
-        /simulated EPERM on rename to TMP2/,
-      );
-
-      // Rollback: 04-TMP1-* não deve sobrar órfão — deve ter voltado a
-      // 04-d1-1x1.jpg com os bytes originais.
-      assert.ok(
-        !existsSync(join(dir, "04-TMP1-1x1.jpg")),
-        "04-TMP1-1x1.jpg não deveria sobrar órfão no disco após o abort",
-      );
-      assert.ok(
-        existsSync(join(dir, "04-d1-1x1.jpg")),
-        "04-d1-1x1.jpg deveria ter sido restaurado pelo rollback",
-      );
-      assert.equal(
-        readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"),
-        "data1",
-        "bytes originais preservados pelo rollback",
-      );
-      // d2 nunca chegou a ser tocado pelo fs (a exceção foi lançada antes do
-      // renameSync real) — permanece intacto.
-      assert.ok(existsSync(join(dir, "04-d2-1x1.jpg")));
-      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "data2");
-      assert.ok(existsSync(join(dir, "04-d3-1x1.jpg")));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("renameDestaquePrompts: abort no meio da sequência reverte o rename já aplicado (sem 02-TMP1-* órfão)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reorder-prompts-rollback-"));
-    try {
-      writeFileSync(join(dir, "02-d1-prompt.md"), "p1");
-      writeFileSync(join(dir, "02-d2-prompt.md"), "p2");
-
-      const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          if (String(to).includes("TMP2")) {
-            throw new Error("simulated EPERM on rename to TMP2");
-          }
-          renameFsSync(from, to);
-        },
-        existsSync,
-      };
-
-      assert.throws(
-        () => renameDestaquePrompts(dir, [2, 1, 3], false, fakeDeps),
-        /simulated EPERM on rename to TMP2/,
-      );
-
-      assert.ok(!existsSync(join(dir, "02-TMP1-prompt.md")));
-      assert.ok(existsSync(join(dir, "02-d1-prompt.md")));
-      assert.equal(readFileSync(join(dir, "02-d1-prompt.md"), "utf8"), "p1");
-      assert.ok(existsSync(join(dir, "02-d2-prompt.md")));
-      assert.equal(readFileSync(join(dir, "02-d2-prompt.md"), "utf8"), "p2");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("renameDestaqueImages / renameDestaquePrompts (HOTFIX — rollback não pode sobrescrever uma promoção anterior já bem-sucedida)", () => {
-  // Reproduz EXATAMENTE o cenário do achado do review consolidado: swap
-  // D1↔D2 ([2,1,3]). TMP1 (era D1) PROMOVE com sucesso pro passo 2 (vira
-  // D2). TMP2 (era D2) FALHA ao promover pro passo 2 (deveria virar D1).
-  //
-  // Antes do fix: `rollbackTmpRenames` só recebia os pares "original→TMP"
-  // AINDA pendentes — TMP1 já tinha sido removido da lista de rollback
-  // porque "teve sucesso" ao promover. O rollback então renomeava só TMP2
-  // de volta pro seu `originalName` = "04-d2-*" — que JÁ ESTAVA OCUPADO
-  // pelo conteúdo recém-promovido de D1. `renameSync` sobrescrevia em
-  // silêncio: D1 sumia sem chance de recuperação (nem TMP1 nem d1-*
-  // sobravam no disco com o conteúdo de D1) e D2 voltava a ter o conteúdo
-  // ANTIGO — pior que nunca ter rodado, e sem nenhum sinal de erro extra
-  // além da falha original de promoção.
-  //
-  // Depois do fix: o rollback desfaz TODOS os renames aplicados (passo 1 E
-  // passo 2) em ordem reversa, cada um voltando ao nome que tinha
-  // IMEDIATAMENTE ANTES daquele rename específico — nunca ao "originalName"
-  // genérico do grupo. D1 e D2 devem terminar exatamente como começaram.
-  it("renameDestaqueImages: swap D1↔D2, TMP1 promove OK e TMP2 falha ao promover → D1 e D2 restaurados intactos (nenhum perdido, nenhum sobrescrito)", () => {
+describe("renameDestaqueImages / renameDestaquePrompts (#5564 — rollback via staging restaura conteúdo original)", () => {
+  // #5564 substituiu a dança de rename-em-2-passos (original→TMP→final,
+  // toda ela dentro do diretório sincronizado) por staging local +
+  // escrita direta no destino (ver docstring de `stageAndWriteVerified`
+  // em scripts/reorder-destaques.ts). O rollback não depende mais de uma
+  // pilha cronológica de renames — cada arquivo afetado tem seu conteúdo
+  // ORIGINAL capturado no staging ANTES de qualquer escrita, então o
+  // rollback simplesmente regrava esse conteúdo de volta no path
+  // original, pra CADA arquivo afetado, independente de quais escritas
+  // chegaram a rodar.
+  it("renameDestaqueImages: swap D1↔D2, escrita final do 2º arquivo falha → D1 e D2 restaurados intactos (nenhum perdido, nenhum sobrescrito)", () => {
     const dir = mkdtempSync(join(tmpdir(), "reorder-img-cyclic-rollback-"));
     try {
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "CONTENT_D1");
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "CONTENT_D2");
       writeFileSync(join(dir, "04-d3-1x1.jpg"), "CONTENT_D3");
 
-      // Falha só na 1ª chamada que casar o padrão "promoção de TMP2 → final"
-      // (flag `tmp2FailureInjected`) — a promoção original (dentro do try
-      // principal) é a única que deve lançar. Sem a flag, o MESMO padrão
-      // ("from" contém "TMP2", "to" não contém "TMP") também casaria a
-      // chamada de ROLLBACK que tenta mover TMP2 de volta pro seu nome
-      // anterior, fazendo o próprio rollback falhar e mascarar o que
-      // estamos testando.
-      let tmp2FailureInjected = false;
+      // pending (ordem de readdirSync): d1→(final)d2, d2→(final)d1. A
+      // 1ª escrita final (dest=04-d2-1x1.jpg) sucede; a 2ª (dest=04-d1-1x1.jpg)
+      // falha — simula um erro tipo EPERM/ENOSPC do próprio copyFileSync,
+      // não um conflito pós-escrita do OneDrive (já coberto no describe
+      // "#5564 — guard pós-escrita" acima). A flag garante que só a 1ª
+      // chamada casando o path falha — o rollback (que também escreve
+      // nesse mesmo path) deve suceder normalmente.
+      let failureInjected = false;
+      const finalD1Path = join(dir, "04-d1-1x1.jpg");
       const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          const fromStr = String(from);
-          const toStr = String(to);
-          // Só a promoção de TMP2 → final (passo 2) falha. Passo 1
-          // (original→TMP) e a promoção de TMP1 → final seguem normais —
-          // é essa ordem (TMP1 promove ANTES de TMP2 falhar) que exercita
-          // o caminho quebrado: o rollback precisa lidar com uma promoção
-          // JÁ bem-sucedida no meio da pilha de renames aplicados.
-          if (!tmp2FailureInjected && fromStr.includes("TMP2") && !toStr.includes("TMP")) {
-            tmp2FailureInjected = true;
-            throw new Error("simulated failure promoting TMP2 -> final");
-          }
-          renameFsSync(from, to);
-        },
+        renameSync: renameFsSync,
         existsSync,
+        readFileSync,
+        copyFileSync: ((from: unknown, to: unknown, ...rest: unknown[]) => {
+          if (!failureInjected && String(to) === finalD1Path) {
+            failureInjected = true;
+            throw new Error("simulated failure writing final 04-d1-1x1.jpg");
+          }
+          (copyFileFsSync as any)(from, to, ...rest);
+        }) as typeof copyFileFsSync,
       };
 
       assert.throws(
         () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
-        /simulated failure promoting TMP2 -> final/,
+        /simulated failure writing final 04-d1-1x1\.jpg/,
       );
 
-      // Nenhum TMP{N} órfão sobra no disco.
-      assert.ok(
-        !existsSync(join(dir, "04-TMP1-1x1.jpg")),
-        "04-TMP1-1x1.jpg não deveria sobrar órfão",
-      );
-      assert.ok(
-        !existsSync(join(dir, "04-TMP2-1x1.jpg")),
-        "04-TMP2-1x1.jpg não deveria sobrar órfão",
+      // Nenhum arquivo extra (staging/TMP) vaza pro diretório sincronizado.
+      assert.deepEqual(
+        readdirSync(dir).sort(),
+        ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"],
       );
 
-      // D1 restaurado com o conteúdo ORIGINAL — o bug fazia D1 desaparecer
-      // completamente (irrecuperável a partir do output da função).
-      assert.ok(
-        existsSync(join(dir, "04-d1-1x1.jpg")),
-        "04-d1-1x1.jpg (D1) deveria existir pós-rollback — antes do fix, sumia",
-      );
       assert.equal(
         readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"),
         "CONTENT_D1",
-        "04-d1-1x1.jpg deveria ter o conteúdo ORIGINAL de D1 restaurado",
+        "04-d1-1x1.jpg deveria ter o conteúdo ORIGINAL restaurado pelo rollback",
       );
-
-      // D2 restaurado com o conteúdo ORIGINAL — o bug deixava D2 com o
-      // conteúdo antigo (correto por acidente aqui, mas só porque o
-      // rollback sobrescrevia por cima do D1 promovido — o teste abaixo
-      // fecha o caso em que isso seria detectável como corrupção).
-      assert.ok(existsSync(join(dir, "04-d2-1x1.jpg")));
       assert.equal(
         readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"),
         "CONTENT_D2",
-        "04-d2-1x1.jpg deveria ter o conteúdo ORIGINAL de D2 restaurado (não o de D1 sobrescrito)",
+        "04-d2-1x1.jpg deveria ter o conteúdo ORIGINAL restaurado (não o de D1 sobrescrito na 1ª escrita)",
       );
-
-      // D3 nunca fez parte do reorder — intacto.
-      assert.ok(existsSync(join(dir, "04-d3-1x1.jpg")));
       assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "CONTENT_D3");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  // Mesma classe de bug, ciclo de 3 (rotação, não swap) — exercita o caso
-  // em que DUAS promoções têm sucesso antes de uma terceira falhar, pra
-  // confirmar que o fix generaliza além do swap de 2 documentado no achado
-  // original (self-review deste hotfix).
-  it("renameDestaqueImages: rotação de 3 (newOrder=[3,1,2]), 2 promoções OK e a 3ª falha → D1/D2/D3 todos restaurados intactos", () => {
+  // Mesma classe, ciclo de 3 (rotação, não swap) — exercita o caso em que
+  // DUAS escritas finais têm sucesso antes de uma terceira falhar.
+  it("renameDestaqueImages: rotação de 3 (newOrder=[3,1,2]), 2 escritas finais OK e a 3ª falha → D1/D2/D3 todos restaurados intactos", () => {
     const dir = mkdtempSync(join(tmpdir(), "reorder-img-3cycle-rollback-"));
     try {
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "CONTENT_D1");
       writeFileSync(join(dir, "04-d2-1x1.jpg"), "CONTENT_D2");
       writeFileSync(join(dir, "04-d3-1x1.jpg"), "CONTENT_D3");
 
-      // newOrder=[3,1,2]: oldToNew = {3→1, 1→2, 2→3}. TMP1 (era D1) promove
-      // pra D2, TMP2 (era D2) promove pra D3 — ambos com sucesso. TMP3
-      // (era D3) falha ao promover pra D1. Mesma flag "só falha 1×" do
-      // teste acima — sem ela, o rollback tentando mover TMP3 de volta
-      // casaria o mesmo padrão e falharia também.
-      let tmp3FailureInjected = false;
+      // newOrder=[3,1,2]: oldToNew = {3→1, 1→2, 2→3}. Escritas finais em
+      // ordem: dest=04-d2 (era D1, OK), dest=04-d3 (era D2, OK), dest=04-d1
+      // (era D3, falha).
+      let failureInjected = false;
+      const finalD1Path = join(dir, "04-d1-1x1.jpg");
       const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          const fromStr = String(from);
-          const toStr = String(to);
-          if (!tmp3FailureInjected && fromStr.includes("TMP3") && !toStr.includes("TMP")) {
-            tmp3FailureInjected = true;
-            throw new Error("simulated failure promoting TMP3 -> final");
-          }
-          renameFsSync(from, to);
-        },
+        renameSync: renameFsSync,
         existsSync,
+        readFileSync,
+        copyFileSync: ((from: unknown, to: unknown, ...rest: unknown[]) => {
+          if (!failureInjected && String(to) === finalD1Path) {
+            failureInjected = true;
+            throw new Error("simulated failure writing final 04-d1-1x1.jpg");
+          }
+          (copyFileFsSync as any)(from, to, ...rest);
+        }) as typeof copyFileFsSync,
       };
 
       assert.throws(
         () => renameDestaqueImages(dir, [3, 1, 2], false, fakeDeps),
-        /simulated failure promoting TMP3 -> final/,
+        /simulated failure writing final 04-d1-1x1\.jpg/,
       );
 
-      for (const n of [1, 2, 3]) {
-        assert.ok(
-          !existsSync(join(dir, `04-TMP${n}-1x1.jpg`)),
-          `04-TMP${n}-1x1.jpg não deveria sobrar órfão`,
-        );
-      }
+      assert.deepEqual(
+        readdirSync(dir).sort(),
+        ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"],
+      );
       assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "CONTENT_D1");
       assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "CONTENT_D2");
       assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "CONTENT_D3");
@@ -756,41 +641,106 @@ describe("renameDestaqueImages / renameDestaquePrompts (HOTFIX — rollback não
     }
   });
 
-  // Mesmo cenário exato do achado, mas no OUTRO call site que compartilha
-  // `rollbackAppliedRenames` — `renameDestaquePrompts` tinha exatamente a
-  // mesma estrutura de bug (mesma função de rollback, mesmo padrão de
-  // "remover do tracking ao promover").
-  it("renameDestaquePrompts: swap D1↔D2, TMP1 promove OK e TMP2 falha ao promover → D1 e D2 restaurados intactos", () => {
+  // Mesmo cenário, no OUTRO call site que compartilha `stageAndWriteVerified`.
+  it("renameDestaquePrompts: swap D1↔D2, escrita final do 2º arquivo falha → D1 e D2 restaurados intactos", () => {
     const dir = mkdtempSync(join(tmpdir(), "reorder-prompts-cyclic-rollback-"));
     try {
       writeFileSync(join(dir, "02-d1-prompt.md"), "CONTENT_D1");
       writeFileSync(join(dir, "02-d2-prompt.md"), "CONTENT_D2");
 
-      let tmp2FailureInjected = false;
+      let failureInjected = false;
+      const finalD1Path = join(dir, "02-d1-prompt.md");
       const fakeDeps: RenameFileDeps = {
-        renameSync: (from, to) => {
-          const fromStr = String(from);
-          const toStr = String(to);
-          if (!tmp2FailureInjected && fromStr.includes("TMP2") && !toStr.includes("TMP")) {
-            tmp2FailureInjected = true;
-            throw new Error("simulated failure promoting TMP2 -> final");
-          }
-          renameFsSync(from, to);
-        },
+        renameSync: renameFsSync,
         existsSync,
+        readFileSync,
+        copyFileSync: ((from: unknown, to: unknown, ...rest: unknown[]) => {
+          if (!failureInjected && String(to) === finalD1Path) {
+            failureInjected = true;
+            throw new Error("simulated failure writing final 02-d1-prompt.md");
+          }
+          (copyFileFsSync as any)(from, to, ...rest);
+        }) as typeof copyFileFsSync,
       };
 
       assert.throws(
         () => renameDestaquePrompts(dir, [2, 1, 3], false, fakeDeps),
-        /simulated failure promoting TMP2 -> final/,
+        /simulated failure writing final 02-d1-prompt\.md/,
       );
 
-      assert.ok(!existsSync(join(dir, "02-TMP1-prompt.md")));
-      assert.ok(!existsSync(join(dir, "02-TMP2-prompt.md")));
-      assert.ok(existsSync(join(dir, "02-d1-prompt.md")));
+      assert.deepEqual(readdirSync(dir).sort(), ["02-d1-prompt.md", "02-d2-prompt.md"]);
       assert.equal(readFileSync(join(dir, "02-d1-prompt.md"), "utf8"), "CONTENT_D1");
-      assert.ok(existsSync(join(dir, "02-d2-prompt.md")));
       assert.equal(readFileSync(join(dir, "02-d2-prompt.md"), "utf8"), "CONTENT_D2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("renameDestaqueImages (#5564 — regressão central: 'reversão pós-hoc' detectada mesmo com escrita individual OK)", () => {
+  // Reproduz a causa raiz reportada na issue: `renameSyncVerified` (#5085)
+  // já checava `existsSync` logo após CADA rename — mas isso não pegava o
+  // caso real: o provedor de sync (OneDrive) reportava a escrita como
+  // bem-sucedida (existsSync passa), e só DEPOIS — enquanto os OUTROS
+  // arquivos da sequência ainda estavam sendo escritos — revertia o
+  // arquivo de volta pro conteúdo de ANTES do reorder. Um mock de
+  // filesystem não consegue reproduzir a corrida real do OneDrive, mas
+  // reproduz a CLASSE do bug: um `readFileSync` que reporta o conteúdo
+  // ORIGINAL (não o recém-escrito) quando consultado DEPOIS que todas as
+  // escritas finais já terminaram — exatamente o padrão "confirmei o
+  // conteúdo correto momentos antes, e ele reverteu depois" da issue.
+  it("verificação final (passo 3 de stageAndWriteVerified) detecta o arquivo revertido e aborta em vez de reportar sucesso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-posthoc-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "CONTENT_D1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "CONTENT_D2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "CONTENT_D3");
+
+      // Conteúdo ORIGINAL de cada path afetado pelo swap — é pra isso que
+      // o provedor de sync "reverte" quando descarta a versão perdedora.
+      const originalAtPath = new Map<string, Buffer>([
+        [join(dir, "04-d1-1x1.jpg"), Buffer.from("CONTENT_D1")],
+        [join(dir, "04-d2-1x1.jpg"), Buffer.from("CONTENT_D2")],
+      ]);
+
+      let writesToSyncedDir = 0;
+      const TOTAL_FINAL_WRITES = 2; // swap D1<->D2 => 2 arquivos mudam de nome
+
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        copyFileSync: ((from: unknown, to: unknown, ...rest: unknown[]) => {
+          (copyFileFsSync as any)(from, to, ...rest);
+          if (String(to).startsWith(dir + sep)) writesToSyncedDir++;
+        }) as typeof copyFileFsSync,
+        readFileSync: ((p: unknown, ...rest: unknown[]) => {
+          const s = String(p);
+          // Só "revela" a reversão DEPOIS que TODAS as escritas finais já
+          // terminaram — reproduz "revertido um instante depois", não
+          // "nunca escreveu" (esse segundo caso já é coberto pelo guard
+          // do passo 2 no describe "guard pós-escrita" acima).
+          if (
+            s.startsWith(dir + sep) &&
+            writesToSyncedDir >= TOTAL_FINAL_WRITES &&
+            originalAtPath.has(s)
+          ) {
+            return originalAtPath.get(s)!;
+          }
+          return (readFileSync as any)(p, ...rest);
+        }) as typeof readFileSync,
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
+        /reversão pós-hoc/,
+        "deveria abortar com erro claro citando a reversão pós-hoc (#5564), não reportar sucesso silenciosamente",
+      );
+
+      // Rollback (que usa copyFileSync real, não interceptado por
+      // originalAtPath) ainda restaura o conteúdo original de fato no
+      // disco — confirmado via readFileSync REAL (fora do fakeDeps).
+      assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "CONTENT_D1");
+      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "CONTENT_D2");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1133,15 +1083,16 @@ describe("reorder-destaques CLI (#5087): imagens renomeadas ANTES do texto — a
         "utf8",
       );
 
-      // Imagens reais no edition dir — newOrder [2,1,3] move D1, então o
-      // passo 1 (image rename) tenta 04-d1-1x1.jpg → 04-TMP1-1x1.jpg.
+      // Imagens reais no edition dir. #5564: a nova implementação copia o
+      // conteúdo ORIGINAL de cada arquivo afetado pro staging ANTES de
+      // qualquer escrita — 04-d2-1x1.jpg (fonte da entrada D2→D1) é um
+      // DIRETÓRIO de propósito, então essa cópia falha com um EISDIR REAL
+      // de filesystem, sem precisar de dependency injection (a CLI usa os
+      // deps reais de produção). O abort acontece antes de QUALQUER
+      // escrita — nem staging completo, nem texto.
       writeFileSync(join(dir, "04-d1-1x1.jpg"), "img1");
-      writeFileSync(join(dir, "04-d2-1x1.jpg"), "img2");
+      mkdirSync(join(dir, "04-d2-1x1.jpg"));
       writeFileSync(join(dir, "04-d3-1x1.jpg"), "img3");
-      // Cria o TARGET do rename como diretório de propósito — força uma
-      // falha REAL de filesystem (EISDIR), sem precisar de dependency
-      // injection (a CLI usa os deps reais de produção).
-      mkdirSync(join(dir, "04-TMP1-1x1.jpg"));
 
       const result = runReorderCli([
         "--edition", "999999",
