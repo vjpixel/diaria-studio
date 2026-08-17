@@ -45,11 +45,11 @@ A Parte 1 (regen mecânica) só depende de código já commitado — roda mesmo 
 Requer Linux/systemd + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme; a Parte 1 (regen mecânica) não depende de nenhuma credencial.
 
 ```bash
-npx tsx scripts/setup-systemd-timers.ts --task Diaria-Entity-Pages-Regen
-cp .systemd-units/diaria-entity-pages-regen.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now diaria-entity-pages-regen.timer
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Entity-Pages-Regen   # gera os units em .systemd-units/
+npx tsx scripts/arm-systemd-timers.ts --task Diaria-Entity-Pages-Regen     # copia + daemon-reload + enable --now
 ```
+
+Os dois passos são separados de propósito (#4805 Fase 3 / #4807): o gerador nunca chama `systemctl`, garantia travada por `test/systemd-units.test.ts`. `arm-systemd-timers.ts` (#4828) é o único lugar que arma — preferir a ele sobre `cp` + `systemctl` à mão.
 
 Isso registra a task `Diaria-Entity-Pages-Regen` (diária, 09:40 — entre `Diaria-Beehiiv-Home-Meta-Check` 09:35 e `Diaria-Apoios-Diff-Alarm` 09:45, sem colisão com nenhuma outra daily do registro). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-entity-pages-regen.timer`.
 

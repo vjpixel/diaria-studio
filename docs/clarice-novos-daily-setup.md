@@ -85,7 +85,7 @@ Mesmo script (`clarice-novos-run.ts`), mesmo guard de pré-condição, mesmo kil
 
 **Risco residual do #5185 — FECHADO pelo #5410 (16/08/2026):** a folga até `Diaria-Clarice-Envio` (19:00) já não depende mais de a campanha do `novos` ter assentado em `sent` — desde o #5410, `isNovos` e `isRampWarm` PARTICIONAM a fila de 1º envio (`segmentRampWarm` corta por `readNovosCutoff()`) em vez de um ser subconjunto do outro. É exatamente esse fechamento estrutural que libera mover a rodada da tarde de 15:00 para 18:00 sem reabrir o risco de duplicata — ver `scripts/lib/scheduled-tasks.ts` para o detalhe técnico completo. O teste `#5140` (`test/scheduled-tasks.test.ts`) mantém o piso de 4h como regressão barata mesmo com o caminho estrutural fechado.
 
-**Task NÃO armada nesta unidade** (worktree isolado do subagente implementador) — mesma disciplina de sempre. Arme (Linux/systemd, checkout compartilhado, DEPOIS do merge):
+**Task NÃO armada nesta unidade** (worktree isolado do subagente implementador) — mesma disciplina de sempre. **Estado atual: ARMADA na `predator`, confirmado ao vivo em 17/08/2026** (`systemctl --user is-enabled` = `enabled`); a fonte canônica de estado de arme é `docs/scheduled-tasks-registry.md`, não esta seção, que descreve o procedimento. Arme (Linux/systemd, checkout compartilhado, DEPOIS do merge):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos-Tarde
@@ -94,7 +94,7 @@ systemctl --user daemon-reload && systemctl --user enable --now diaria-clarice-n
 
 ## Re-arme feito em 260816 (#5447)
 
-**Pendente, não executado nesta unidade** (worktree isolado — ver seção de arme acima). O coordenador top-level roda, no checkout principal DEPOIS do merge, pra `Diaria-Clarice-Novos` (09:00), `Diaria-Clarice-Novos-Tarde` (18:00) e `Diaria-Clarice-Novos-Abort-Alarm` (18:10) — mesma armadilha de `Persistent=true` documentada acima (usar o kill switch antes de reiniciar, ou rearmar antes da próxima ocorrência do horário novo):
+**Executado — confirmado ao vivo em 17/08/2026** (`diaria-clarice-novos` 09:00, `-tarde` 18:00, `-abort-alarm` 18:10 BRT, os três `enabled` e com disparo recente na `predator`). *(Estava pendente na unidade implementadora, worktree isolado — ver seção de arme acima.)* O coordenador top-level roda, no checkout principal DEPOIS do merge, pra `Diaria-Clarice-Novos` (09:00), `Diaria-Clarice-Novos-Tarde` (18:00) e `Diaria-Clarice-Novos-Abort-Alarm` (18:10) — mesma armadilha de `Persistent=true` documentada acima (usar o kill switch antes de reiniciar, ou rearmar antes da próxima ocorrência do horário novo):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
