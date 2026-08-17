@@ -522,11 +522,11 @@ export async function runEnvioGuard(deps: EnvioGuardDeps): Promise<EnvioGuardRes
       onInvalid: (msg) => report.note(msg),
     });
     const { brake: effectiveBrake, overrideApplied } = applyEnvioOverride(risk!.brake, override);
-    if (overrideApplied) {
-      report.note("(guard) override do editor aplicado sobre o freio fresco — ver razão acima.");
-    }
 
     report.note(`freio fresco (05:00): ${effectiveBrake.level.toUpperCase()} — ${effectiveBrake.reasons.join(" ")}`);
+    if (overrideApplied) {
+      report.note("(guard) override do editor aplicado sobre o freio fresco recebido do subprocess — ver razão acima.");
+    }
 
     if (effectiveBrake.level !== "stop") {
       report.note("freio dentro do aceitável — onda(s) seguem pro disparo das 06:00 sem alteração.");
