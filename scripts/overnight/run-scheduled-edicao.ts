@@ -44,6 +44,58 @@ import { runTsx } from "../lib/run-tsx.ts";
 const SKIP_FLAGS = "--skip newsletter,linkedin,facebook";
 const MAX_TURNS = "120";
 
+/**
+ * Vars de auth da API que, se presentes no ambiente, o CLI `claude` PREFERE
+ * sobre o login claude.ai — e que precisam sair antes do spawn (#5608).
+ *
+ * O unit systemd faz `EnvironmentFile=-.env` (#5114, necessário: sem isso o
+ * `${CLARICE_API_KEY}` do `.mcp.json` não resolve), e o `.env` deste repo tem
+ * `ANTHROPIC_API_KEY` legitimamente — `geo-citation-monitor.ts` e
+ * `audit-context-tokens.ts` consomem a API direto. O efeito colateral é que a
+ * edição agendada herdava a key e o CLI trocava a assinatura por uma conta
+ * pay-per-token, com duas consequências fatais, ambas vistas ao vivo em
+ * 17/08/2026 na edição 260818:
+ *
+ *   1. `Credit balance is too low` — a rodada morre com exit 1.
+ *   2. `claude.ai connectors are disabled because ANTHROPIC_API_KEY or another
+ *      auth source is set and takes precedence over your claude.ai login` —
+ *      Beehiiv e Gmail são conectores nativos e o Stage 0 depende dos dois,
+ *      então mesmo COM crédito a rodada bateria no fail-fast do #738.
+ *
+ * O filtro fica aqui, e não no gerador de unit (`edicao-systemd-units.ts`),
+ * de propósito: vale pra qualquer caminho de invocação — unit systemd, `npx
+ * tsx` à mão, ou um agendador futuro — e é testável sem ler arquivo de unit.
+ * `CLAUDE_CODE_OAUTH_TOKEN` **não** entra na lista: esse É o login claude.ai,
+ * removê-lo desautenticaria a sessão em vez de consertá-la.
+ *
+ * **A lista é enumerada, não exaustiva** (achado do review do PR #5609). A
+ * própria mensagem do CLI diz "ANTHROPIC_API_KEY **or another auth source**",
+ * e a superfície de auth do Claude Code inclui outras vars que roteiam pra
+ * um provider diferente do login. As 4 abaixo cobrem o incidente observado
+ * (as 2 de key) mais o roteamento Bedrock/Vertex — nenhuma delas aparece em
+ * `.env.example` hoje, então remover é no-op no ambiente atual e blindagem
+ * pra quando alguma entrar no `.env` por outro motivo. `ANTHROPIC_BASE_URL`
+ * ficou de FORA de propósito: ela não autentica sozinha, e um proxy
+ * legítimo configurado no futuro seria quebrado em silêncio por um filtro
+ * que ninguém lembraria de estar aqui. Se aparecer um caso novo de auth
+ * shadowing, o conserto é acrescentar a var a esta lista — com o motivo.
+ */
+export const CLAUDE_CLI_STRIPPED_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+] as const;
+
+/** Cópia do ambiente sem as vars acima. Não muta o `process.env` do runner —
+ * só o filho vê o ambiente filtrado (outros passos do mesmo processo, se
+ * existirem no futuro, continuam enxergando a key). */
+export function claudeCliEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const copy = { ...env };
+  for (const key of CLAUDE_CLI_STRIPPED_ENV_VARS) delete copy[key];
+  return copy;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -175,7 +227,12 @@ export function main(
         "--no-session-persistence",
         prompt,
       ],
-      { cwd: repoRootAbs, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: repoRootAbs,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: claudeCliEnv(process.env),
+      },
     ) as unknown as string;
   } catch (e) {
     const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
