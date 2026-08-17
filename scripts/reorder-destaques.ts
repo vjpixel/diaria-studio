@@ -12,7 +12,10 @@
  *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
  *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
  *     sufixo, e adicionou verificação `existsSync` pós-rename — ver
- *     `renameSyncVerified`)
+ *     `renameSyncVerified`. #5564 adicionou um settle-delay + re-verificação
+ *     de CONTEÚDO (não só existência) depois que a sequência de renames
+ *     termina — ver `verifyRenamesSettled`, cobre a reversão PÓS-HOC de sync
+ *     do OneDrive que o guard `existsSync` do #5085 não pegava)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
@@ -68,13 +71,43 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /**
  * Funções de rename/existsSync injetáveis pra teste (#5085, mesmo padrão de
  * `PlanFileReaders` em `overnight-statusline.ts`).
+ *
+ * `readFileSync`/`writeFileSync`/`sleepSync` (#5564) são OPCIONAIS de
+ * propósito — usados só pelo settle-check pós-sequência
+ * (`verifyRenamesSettled`), com fallback pro `node:fs`/`Atomics.wait` reais
+ * quando omitidos. Opcionais pra não quebrar os `RenameFileDeps` parciais já
+ * existentes em `test/reorder-destaques.test.ts` (só `renameSync` +
+ * `existsSync`, criados antes do #5564 existir).
  */
 export interface RenameFileDeps {
   renameSync: typeof renameSync;
   existsSync: typeof existsSync;
+  readFileSync?: typeof readFileSync;
+  writeFileSync?: typeof writeFileSync;
+  /** Sleep síncrono usado pro settle-delay entre o fim de uma sequência de
+   * renames e a re-verificação de conteúdo dos arquivos finais. Fallback:
+   * `Atomics.wait` real (mesmo padrão de `sleepSync` em
+   * `scripts/lib/task-runner.ts`). Injetável em teste — inclusive pra
+   * simular, como efeito colateral da própria chamada, o conflito de sync
+   * acontecendo "durante" a espera (é assim que os testes do #5564
+   * reproduzem a reversão pós-hoc sem depender de OneDrive de verdade). */
+  sleepSync?: (ms: number) => void;
 }
 
-const defaultRenameFileDeps: RenameFileDeps = { renameSync, existsSync };
+function sleepSyncReal(ms: number): void {
+  if (ms <= 0) return;
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
+
+const defaultRenameFileDeps: RenameFileDeps = {
+  renameSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  sleepSync: sleepSyncReal,
+};
 
 /**
  * Rename com verificação pós-rename (#5085 — achado ao vivo edição 260812).
@@ -108,6 +141,121 @@ export function renameSyncVerified(
         `com imagem ausente/errada — reexecute reorder-destaques.ts depois de confirmar que o ` +
         `sync terminou (ou restaure os arquivos a partir do OneDrive antes de retentar).`,
     );
+  }
+}
+
+const DEFAULT_RENAME_SETTLE_DELAY_MS = 1500;
+
+/** Nº de tentativas de auto-cura (reescrever o conteúdo esperado + esperar
+ * de novo) antes de `verifyRenamesSettled` desistir e lançar. */
+export const RENAME_SETTLE_MAX_RETRIES = 2;
+
+/**
+ * #5564: ms de espera entre o fim de uma sequência de renames e a
+ * re-verificação de conteúdo dos arquivos finais. Lido do env
+ * `REORDER_SETTLE_DELAY_MS` a CADA chamada (não cacheado no load do módulo,
+ * pra permitir setar a env var em teste depois que o módulo já foi
+ * importado) — permite que a suíte de testes reduza a espera real sem mudar
+ * o comportamento de produção (default 1500ms).
+ */
+export function resolveSettleDelayMs(): number {
+  const envVal = process.env.REORDER_SETTLE_DELAY_MS;
+  if (envVal !== undefined) {
+    const parsed = parseInt(envVal, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_RENAME_SETTLE_DELAY_MS;
+}
+
+export interface SettleTarget {
+  /** Path final que deve conter `expected` depois que a sequência de
+   * renames termina. */
+  path: string;
+  /** Conteúdo esperado, capturado ANTES do rename que produziu esse path
+   * (ainda em memória — não depende de reler o arquivo do disco, que já
+   * pode estar comprometido). */
+  expected: Buffer;
+}
+
+/**
+ * Settle-check pós-sequência (#5564 — achado ao vivo na edição 260818).
+ *
+ * `renameSyncVerified` (#5085, acima) verifica `existsSync` LOGO após cada
+ * rename individual — pega falha visível "durante" a sequência. Mas o
+ * padrão relatado na issue foi outro: um arquivo confirmado correto no
+ * disco (checagem imediata passou) sumia ou tinha o conteúdo trocado
+ * MINUTOS depois — reversão PÓS-HOC do provedor de sync (OneDrive)
+ * resolvendo um conflito entre a rajada de renames locais e o estado que
+ * ele tinha em nuvem. Nada no fluxo original olhava de novo depois do
+ * rename original ter "aparentado" sucesso, então o script saía com exit 0
+ * e a corrupção só era descoberta na hora de publicar.
+ *
+ * Estratégia: depois que TODA a sequência de renames de um grupo (imagens
+ * OU prompts) termina sem erro, espera UM settle-delay (`resolveSettleDelayMs`,
+ * não por arquivo — batching o custo de tempo) e então RE-VERIFICA, byte a
+ * byte (não só `existsSync`), que cada arquivo final ainda bate com o
+ * conteúdo esperado (capturado em memória ANTES do rename que o produziu).
+ * Se algum arquivo divergir, tenta se AUTO-CURAR reescrevendo o conteúdo
+ * esperado direto no path (a fonte da verdade já está em memória) e dá mais
+ * um settle-delay antes de re-checar — até `RENAME_SETTLE_MAX_RETRIES`
+ * vezes. Só desiste (lança) depois de exaurir as tentativas de auto-cura —
+ * nunca um warning silencioso que o operador pode não ler, e nunca um exit
+ * 0 que deixa a publicação seguir com o disco fora do estado impresso pelo
+ * plano.
+ *
+ * Lança (nunca retorna erro como valor) — o caller (`renameDestaqueImages`/
+ * `renameDestaquePrompts`) já está dentro do `try` que aciona
+ * `rollbackAppliedRenames` no `catch`, então uma falha aqui participa do
+ * mesmo mecanismo de rollback best-effort do #5087.
+ */
+export function verifyRenamesSettled(
+  targets: SettleTarget[],
+  deps: RenameFileDeps = defaultRenameFileDeps,
+): void {
+  if (targets.length === 0) return;
+  const existsFn = deps.existsSync;
+  const readFn = deps.readFileSync ?? readFileSync;
+  const writeFn = deps.writeFileSync ?? writeFileSync;
+  const sleepFn = deps.sleepSync ?? sleepSyncReal;
+  const delayMs = resolveSettleDelayMs();
+
+  const matches = (path: string, expected: Buffer): boolean => {
+    if (!existsFn(path)) return false;
+    try {
+      const actual = readFn(path);
+      const actualBuf = Buffer.isBuffer(actual) ? actual : Buffer.from(actual as unknown as string);
+      return actualBuf.equals(expected);
+    } catch {
+      return false;
+    }
+  };
+
+  // Uma única espera pra todo o grupo — não uma por arquivo. O objetivo é
+  // dar tempo do sync assentar depois da RAJADA inteira de renames, não
+  // multiplicar a espera por Nº de arquivos.
+  sleepFn(delayMs);
+
+  for (const target of targets) {
+    let attempt = 0;
+    while (!matches(target.path, target.expected)) {
+      attempt++;
+      if (attempt > RENAME_SETTLE_MAX_RETRIES) {
+        throw new Error(
+          `reorder-destaques: pós-settle (#5564), ${target.path} não tem o conteúdo esperado depois ` +
+            `de ${RENAME_SETTLE_MAX_RETRIES} tentativa(s) de auto-cura. Provável conflito de sync ` +
+            `(OneDrive) revertendo/corrompendo o arquivo mesmo após o rename ter aparentado sucesso na ` +
+            `checagem imediata (#5085). Abortando para evitar publicação com imagem/prompt ausente ou ` +
+            `errado — reexecute reorder-destaques.ts depois de confirmar que o sync do OneDrive ` +
+            `terminou (ou restaure ${target.path} manualmente a partir do OneDrive antes de retentar).`,
+        );
+      }
+      // Auto-cura: reescreve o conteúdo esperado (capturado ANTES do rename
+      // original, ainda em memória — não depende de reler algo que pode já
+      // estar comprometido) direto no path final, dá mais um settle-delay,
+      // e re-checa.
+      writeFn(target.path, target.expected);
+      sleepFn(delayMs);
+    }
   }
 }
 
@@ -443,6 +591,10 @@ export function renameDestaqueImages(
   // `rollbackAppliedRenames` — remover ao promover foi o que causava o
   // data-loss em reorders cíclicos).
   const appliedRenames: Array<{ from: string; to: string }> = [];
+  // #5564: conteúdo esperado de cada arquivo FINAL, capturado ANTES do
+  // rename que o produziu — input do settle-check pós-sequência
+  // (`verifyRenamesSettled`) que detecta reversão PÓS-HOC de sync.
+  const settleTargets: SettleTarget[] = [];
   try {
     // 2-step rename pra evitar colisão
     for (const f of files) {
@@ -469,10 +621,18 @@ export function renameDestaqueImages(
         const oldN = parseInt(m[1], 10);
         const newN = oldToNew.get(oldN)!;
         const finalName = `04-d${newN}-${m[2]}`;
-        renameSyncVerified(join(editionDir, f), join(editionDir, finalName), deps);
+        const tmpPath = join(editionDir, f);
+        const finalPath = join(editionDir, finalName);
+        const expected = (deps.readFileSync ?? readFileSync)(tmpPath) as Buffer;
+        renameSyncVerified(tmpPath, finalPath, deps);
         appliedRenames.push({ from: f, to: finalName });
         renames.push({ from: f, to: finalName });
+        settleTargets.push({ path: finalPath, expected });
       }
+      // #5564: settle-delay + re-verificação de TODOS os finais de uma vez
+      // só (não repropaga em silêncio — lança e aciona o rollback do catch
+      // abaixo se algum arquivo divergir mesmo após auto-cura).
+      verifyRenamesSettled(settleTargets, deps);
     }
   } catch (e) {
     rollbackAppliedRenames(editionDir, appliedRenames, deps);
@@ -512,6 +672,10 @@ export function deriveTituloSubtitulo(
  * `renameDestaqueImages` (`rollbackAppliedRenames`) pra órfãos `02-TMP{N}-*`
  * — inclusive o HOTFIX de rastrear passo 1 E passo 2 (ver docstring de
  * `rollbackAppliedRenames`).
+ *
+ * #5564: mesmo settle-check pós-sequência de `renameDestaqueImages`
+ * (`verifyRenamesSettled`) — cobre reversão PÓS-HOC de sync nos arquivos
+ * `_internal/02-d{N}-*`, não só nas imagens.
  */
 export function renameDestaquePrompts(
   internalDir: string,
@@ -531,6 +695,9 @@ export function renameDestaquePrompts(
   // Ver comentário equivalente em `renameDestaqueImages` — mesma pilha de
   // renames aplicados (passo 1 E passo 2), nunca removida ao promover.
   const appliedRenames: Array<{ from: string; to: string }> = [];
+  // #5564: mesmo settle-check de `renameDestaqueImages` — ver docstring de
+  // `verifyRenamesSettled`.
+  const settleTargets: SettleTarget[] = [];
   try {
     // 2-step rename
     for (const f of files) {
@@ -556,10 +723,15 @@ export function renameDestaquePrompts(
         const oldN = parseInt(m[1], 10);
         const newN = oldToNew.get(oldN)!;
         const finalName = `02-d${newN}-${m[2]}`;
-        renameSyncVerified(join(internalDir, f), join(internalDir, finalName), deps);
+        const tmpPath = join(internalDir, f);
+        const finalPath = join(internalDir, finalName);
+        const expected = (deps.readFileSync ?? readFileSync)(tmpPath) as Buffer;
+        renameSyncVerified(tmpPath, finalPath, deps);
         appliedRenames.push({ from: f, to: finalName });
         renames.push({ from: f, to: finalName });
+        settleTargets.push({ path: finalPath, expected });
       }
+      verifyRenamesSettled(settleTargets, deps);
     }
   } catch (e) {
     rollbackAppliedRenames(internalDir, appliedRenames, deps);

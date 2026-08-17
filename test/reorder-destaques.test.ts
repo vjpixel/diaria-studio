@@ -27,12 +27,25 @@ import {
   renameDestaqueImages,
   renameDestaquePrompts,
   renameSyncVerified,
+  verifyRenamesSettled,
   deriveTituloSubtitulo,
   parseArgs,
   type RenameFileDeps,
+  type SettleTarget,
 } from "../scripts/reorder-destaques.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
+
+// #5564: o settle-check pós-sequência (`verifyRenamesSettled`) espera
+// `REORDER_SETTLE_DELAY_MS` de verdade quando os testes abaixo NÃO injetam
+// um `sleepSync` fake (ex: os testes de rename "felizes" já existentes,
+// escritos antes do #5564, que passam `RenameFileDeps` parciais sem
+// `sleepSync`). Produção usa 1500ms; aqui reduzimos pra manter a suíte
+// rápida sem pular a lógica real (ainda executa settle-delay + re-leitura
+// de verdade no filesystem, só que quase instantâneo). Setado a nível de
+// módulo — `resolveSettleDelayMs()` lê o env a CADA chamada, então isso
+// vale mesmo os módulos já tendo sido importados acima.
+process.env.REORDER_SETTLE_DELAY_MS = "5";
 
 describe("reorderHighlightsInJson (#1585)", () => {
   it("swap 1↔2: highlights[0]=original[1], highlights[1]=original[0]", () => {
@@ -791,6 +804,214 @@ describe("renameDestaqueImages / renameDestaquePrompts (HOTFIX — rollback não
       assert.equal(readFileSync(join(dir, "02-d1-prompt.md"), "utf8"), "CONTENT_D1");
       assert.ok(existsSync(join(dir, "02-d2-prompt.md")));
       assert.equal(readFileSync(join(dir, "02-d2-prompt.md"), "utf8"), "CONTENT_D2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("verifyRenamesSettled (#5564 — reversão PÓS-HOC de sync, não só durante)", () => {
+  it("conteúdo bate logo de cara (caminho feliz) → não lança, não reescreve", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-settle-ok-"));
+    try {
+      const finalPath = join(dir, "04-d1-1x1.jpg");
+      writeFileSync(finalPath, "correct-content");
+      let writeCalls = 0;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        writeFileSync: (...args: Parameters<typeof writeFileSync>) => {
+          writeCalls++;
+          return writeFileSync(...args);
+        },
+      };
+      const targets: SettleTarget[] = [
+        { path: finalPath, expected: Buffer.from("correct-content") },
+      ];
+      assert.doesNotThrow(() => verifyRenamesSettled(targets, fakeDeps));
+      assert.equal(writeCalls, 0, "não deveria precisar de auto-cura — conteúdo já batia");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lista vazia → no-op, não chama sleepSync", () => {
+    let sleepCalls = 0;
+    const fakeDeps: RenameFileDeps = {
+      renameSync: renameFsSync,
+      existsSync,
+      sleepSync: () => {
+        sleepCalls++;
+      },
+    };
+    assert.doesNotThrow(() => verifyRenamesSettled([], fakeDeps));
+    assert.equal(sleepCalls, 0);
+  });
+
+  it("achado ao vivo #5564: conteúdo diverge só DEPOIS do settle-delay (revertido DURANTE o sleep, não durante o rename) → detecta e se AUTO-CURA", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-settle-heal-"));
+    try {
+      const finalPath = join(dir, "04-d1-1x1.jpg");
+      writeFileSync(finalPath, "correct-content");
+      let sleepCalls = 0;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        sleepSync: () => {
+          sleepCalls++;
+          if (sleepCalls === 1) {
+            // Simula o provedor de sync (OneDrive) revertendo/corrompendo o
+            // arquivo DURANTE o settle-delay — a checagem imediata de
+            // `renameSyncVerified` (#5085) já tinha passado ANTES disso, o
+            // que é exatamente o padrão relatado na issue (reversão pós-hoc,
+            // não durante o rename original).
+            writeFileSync(finalPath, "CORRUPTED-BY-SYNC");
+          }
+        },
+      };
+      const targets: SettleTarget[] = [
+        { path: finalPath, expected: Buffer.from("correct-content") },
+      ];
+      assert.doesNotThrow(() => verifyRenamesSettled(targets, fakeDeps));
+      // Auto-cura: o conteúdo correto foi reescrito por cima da corrupção.
+      assert.equal(readFileSync(finalPath, "utf8"), "correct-content");
+      assert.ok(
+        sleepCalls >= 2,
+        "deveria ter dado pelo menos +1 settle-delay depois da auto-cura, pra re-checar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reversão PERSISTENTE (toda auto-cura é revertida de novo) → exaure as tentativas e LANÇA — nunca sai silencioso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-settle-persist-"));
+    try {
+      const finalPath = join(dir, "04-d1-1x1.jpg");
+      writeFileSync(finalPath, "correct-content");
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        sleepSync: () => {
+          // Toda vez que "assenta", o conflito de sync reverte de novo —
+          // simula um provedor de sync persistentemente hostil (o pior caso,
+          // não só um blip único).
+          writeFileSync(finalPath, "CORRUPTED-BY-SYNC");
+        },
+      };
+      const targets: SettleTarget[] = [
+        { path: finalPath, expected: Buffer.from("correct-content") },
+      ];
+      assert.throws(
+        () => verifyRenamesSettled(targets, fakeDeps),
+        /pós-settle \(#5564\).*não tem o conteúdo esperado depois de/,
+      );
+      // Confirma que realmente NÃO saiu silencioso: o arquivo em disco
+      // segue divergente do esperado no momento em que a exceção propagou.
+      assert.equal(readFileSync(finalPath, "utf8"), "CORRUPTED-BY-SYNC");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo final SOME (não só conteúdo divergente) depois do settle-delay → detecta e lança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-settle-vanish-"));
+    try {
+      const finalPath = join(dir, "04-d1-1x1.jpg");
+      writeFileSync(finalPath, "correct-content");
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        writeFileSync: () => {
+          // Simula um caso mais hostil ainda: até a tentativa de auto-cura
+          // (reescrever) é derrotada — o arquivo nunca reaparece.
+        },
+        sleepSync: () => {
+          rmSync(finalPath, { force: true });
+        },
+      };
+      const targets: SettleTarget[] = [
+        { path: finalPath, expected: Buffer.from("correct-content") },
+      ];
+      assert.throws(
+        () => verifyRenamesSettled(targets, fakeDeps),
+        /pós-settle \(#5564\).*não tem o conteúdo esperado depois de/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("renameDestaqueImages / renameDestaquePrompts (#5564 — settle-check pós-sequência, integração)", () => {
+  it("renameDestaqueImages: arquivo final corrompido só DEPOIS que a sequência de renames termina (post-hoc, não durante) → lança em vez de retornar exit-0 silencioso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-posthoc-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "data1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "data2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "data3");
+
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        sleepSync: () => {
+          // Corrompe o D1 final (que deveria ter os bytes do antigo D2)
+          // DEPOIS que toda a sequência de renames (passo 1 + passo 2) já
+          // terminou sem erro — reproduz exatamente o padrão da issue: o
+          // plano de rename é executado e "parece" ter dado certo, mas o
+          // disco diverge do plano por causa de um conflito de sync que só
+          // se resolve depois.
+          writeFileSync(join(dir, "04-d1-1x1.jpg"), "CORRUPTED");
+        },
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
+        /pós-settle \(#5564\).*não tem o conteúdo esperado depois de/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renameDestaquePrompts: prompt final corrompido só DEPOIS que a sequência termina → lança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-prompts-posthoc-"));
+    try {
+      writeFileSync(join(dir, "02-d1-sd-prompt.json"), "prompt1");
+      writeFileSync(join(dir, "02-d2-sd-prompt.json"), "prompt2");
+
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        sleepSync: () => {
+          writeFileSync(join(dir, "02-d1-sd-prompt.json"), "CORRUPTED");
+        },
+      };
+
+      assert.throws(
+        () => renameDestaquePrompts(dir, [2, 1, 3], false, fakeDeps),
+        /pós-settle \(#5564\).*não tem o conteúdo esperado depois de/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-run não aciona o settle-check (nenhum arquivo foi escrito de verdade)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-dry-settle-"));
+    try {
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "a");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "b");
+      let sleepCalls = 0;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: renameFsSync,
+        existsSync,
+        sleepSync: () => {
+          sleepCalls++;
+        },
+      };
+      assert.doesNotThrow(() => renameDestaqueImages(dir, [2, 1, 3], true, fakeDeps));
+      assert.equal(sleepCalls, 0, "dry-run não deveria acionar settle-delay nenhum");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
