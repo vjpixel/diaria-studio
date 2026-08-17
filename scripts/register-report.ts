@@ -19,6 +19,11 @@
  * imprime um warning em stderr e sai 0 (nunca aborta o fecho da sessão
  * chamadora).
  *
+ * **Exceção desde #5521:** divergência entre as contagens do `--title` e a
+ * tabela de unidades do relatório sai `exit 1` sem registrar nada — ver
+ * `assertTitleMatchesReport`. É a única exceção no fluxo de REGISTRO (a
+ * validação de argumentos de uso já saía `exit 2` antes disto).
+ *
  * Uso:
  *   npx tsx scripts/register-report.ts --kind overnight --id 260720 \
  *     --title "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas" \
@@ -35,15 +40,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { registerReport, isReportKind } from "./studio-ui/studio-reports.ts";
-import { compareTitleWithReport } from "./lib/overnight-report-counts.ts";
+import { compareTitleWithReport, UNITS_TABLE_MARKER } from "./lib/overnight-report-counts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_STUDIO_PORT = "4174";
 
 /**
  * Kinds cujo relatório traz a tabela "Unidades mergeadas" e, portanto, permitem
- * conferir as contagens do título (#5521). `edicao`/`mensal` têm outro formato
- * e não passam por esta checagem.
+ * conferir as contagens do título (#5521). Os demais kinds (`edicao`, `mensal`,
+ * `clarice-*`, `cac`) têm outro formato e não passam por esta checagem.
  */
 const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
 
@@ -55,39 +60,70 @@ const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
  * mostrava 13 unidades e 17 issues. Ninguém percebeu porque nada comparava as
  * duas coisas.
  *
- * BLOQUEANTE de propósito (`exit 1`), ao contrário do resto deste script, que é
- * fail-soft: um relatório registrado com número errado já cumpriu o estrago no
- * instante em que o assunto sai, e não há como desfazer depois. Falhar aqui
+ * BLOQUEANTE de propósito (`exit 1`), ao contrário do resto do fluxo de
+ * registro, que é fail-soft (a validação de argumentos de uso já era `exit 2`):
+ * um relatório registrado com número errado já cumpriu o estrago no instante
+ * em que o assunto sai, e não há como desfazer depois. Falhar aqui
  * custa ao coordenador reescrever uma linha; deixar passar custa a confiança do
  * editor em todo assunto seguinte. Divergência é sempre erro de quem escreveu o
  * título — a tabela vem do fecho já conferido contra o git.
  *
- * Degrada em silêncio quando não há o que conferir (relatório sem a tabela,
- * arquivo ilegível, kind fora de `COUNT_CHECKED_KINDS`): a checagem existe pra
- * pegar contradição, não pra impor formato novo a relatório antigo.
+ * Passa sem reprovar quando genuinamente não há o que conferir: kind fora de
+ * `COUNT_CHECKED_KINDS`, ou relatório sem tabela de unidades (formato antigo —
+ * a checagem existe pra pegar contradição, não pra impor formato novo a
+ * relatório antigo). Relatório ausente/ilegível também passa, mas com AVISO em
+ * stderr: ali a conferência deixou de rodar por um motivo que pode ser erro do
+ * coordenador, e silêncio faria parecer que rodou e aprovou.
  */
 function assertTitleMatchesReport(kind: string, title: string, htmlPath: string): void {
   if (!COUNT_CHECKED_KINDS.has(kind)) return;
   if (!htmlPath.endsWith(".md")) return;
 
+  // Relatório ausente/ilegível é justamente a entrada mais correlacionada com
+  // erro do coordenador (AAMMDD errado no `--html-path`) — e `registerReport`
+  // registra assim mesmo, com link morto e título não conferido. Não dá pra
+  // BLOQUEAR (o registro é fail-soft por desenho e o relatório pode
+  // legitimamente ainda não estar em disco), mas sumir em silêncio faria
+  // parecer que a conferência rodou e aprovou.
   const abs = resolve(ROOT, htmlPath);
-  if (!existsSync(abs)) return;
+  const warnUnchecked = (motivo: string): void => {
+    process.stderr.write(
+      `[register-report] AVISO: título NÃO conferido — ${htmlPath} ${motivo} (#5521).\n`,
+    );
+  };
+
+  if (!existsSync(abs)) {
+    warnUnchecked("não existe");
+    return;
+  }
 
   let markdown: string;
   try {
     markdown = readFileSync(abs, "utf-8");
   } catch {
+    warnUnchecked("ilegível");
     return;
   }
 
   const check = compareTitleWithReport(title, markdown);
-  if (check.ok) return;
+  if (check.kind === "skipped") {
+    // Marcador ausente: o guard não rodou. Avisar ALTO em vez de sumir — um
+    // guard dormente que parece ativo é pior do que guard nenhum, e essa é a
+    // única forma de o coordenador perceber que esqueceu o marcador.
+    warnUnchecked(`não traz o marcador ${UNITS_TABLE_MARKER} antes da tabela de unidades`);
+    return;
+  }
+  if (check.problems.length === 0) return;
+
+  const detail =
+    check.kind === "checked"
+      ? `  Sufixo correto pela tabela: "${check.suggestion}"\n  Nota: ${check.issuesNote}\n`
+      : "";
 
   process.stderr.write(
     `[register-report] título não bate com ${htmlPath} (#5521):\n` +
       check.problems.map((p) => `  - ${p}\n`).join("") +
-      `  Sufixo correto pela tabela: "${check.suggestion}"\n` +
-      `  Nota: ${check.issuesNote}\n` +
+      detail +
       `  Corrija o --title e rode de novo (nada foi registrado, nenhum e-mail saiu).\n`,
   );
   process.exit(1);

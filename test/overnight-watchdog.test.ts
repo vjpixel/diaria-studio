@@ -26,6 +26,7 @@ import {
   findActiveRun,
   getLastRunLogActivity,
   isSelfInflictedPlanMtime,
+  resolveRunActivity,
   diagnoseWatchdogActivity,
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
@@ -1181,5 +1182,68 @@ describe("getLastRunLogActivity ignora eventos do próprio watchdog (#5520)", ()
     ]);
 
     assert.equal(getLastRunLogActivity(tmpRoot, "260707", "overnight"), null);
+  });
+});
+
+describe("resolveRunActivity: piso started_at (#5520, achado do review)", () => {
+  let tmpRoot: string;
+  let planPath: string;
+
+  const writePlan = (startedAt: string, stallEvents: StallEvent[]) => {
+    const dir = join(tmpRoot, "data", "overnight", "260817");
+    mkdirSync(dir, { recursive: true });
+    planPath = join(dir, "plan.json");
+    writeFileSync(planPath, JSON.stringify({ started_at: startedAt, stall_events: stallEvents }), "utf-8");
+  };
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-floor-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: rodada morta não vira ts=0 depois do 1º alarme — cai em started_at", () => {
+    // Estado após o watchdog ter alarmado: o mtime do plan.json é da ESCRITA
+    // DELE, e o único evento no run-log também é dele. Sem piso, as duas fontes
+    // são descontadas, `computeLastActivity` devolve ts=0, o diagnóstico vira
+    // `skip_unknown_activity` (só loga) e a expiração isenta ts=0 — a rodada
+    // nunca mais alarma E nunca expira.
+    writePlan("2026-08-15T00:00:00Z", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    const activity = resolveRunActivity(tmpRoot, "overnight", "260817", planPath);
+    assert.notEqual(activity.ts, 0, "ts=0 silenciaria o watchdog para sempre");
+    assert.equal(activity.ts, new Date("2026-08-15T00:00:00Z").getTime());
+    assert.match(activity.source, /started_at/);
+  });
+
+  it("com o piso, a rodada morta é aposentada como carcaça em 24h", () => {
+    writePlan("2026-08-15T00:00:00Z", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    const active = findActiveRun(tmpRoot, "overnight", {
+      nowMs: new Date("2026-08-20T00:00:00Z").getTime(),
+    });
+    assert.equal(active, null, "5 dias depois do started_at tem que expirar");
+  });
+
+  it("atividade genuína recente vence o piso", () => {
+    writePlan("2026-08-15T00:00:00Z", []); // sem stall_events → mtime não é descontado
+
+    const activity = resolveRunActivity(tmpRoot, "overnight", "260817", planPath);
+    assert.equal(activity.source, "plan.json mtime");
+    assert.ok(activity.ts > new Date("2026-08-16T00:00:00Z").getTime());
+  });
+
+  it("sem started_at utilizável, mantém o ts=0 histórico (skip_unknown_activity)", () => {
+    writePlan("não-é-data", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    assert.equal(resolveRunActivity(tmpRoot, "overnight", "260817", planPath).ts, 0);
   });
 });

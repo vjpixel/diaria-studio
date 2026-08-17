@@ -11,17 +11,18 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 import {
   parseUnitsTable,
   deriveCounts,
   parseTitleCounts,
   compareTitleWithReport,
+  isTitleOk,
 } from "../scripts/lib/overnight-report-counts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,6 +34,7 @@ Rodada estendida. **10 unidades mergeadas em 13 issues fechadas**, 2 reviews con
 
 ## Unidades mergeadas
 
+<!-- unidades-mergeadas -->
 | Issue(s) | PR | O quê |
 |---|---|---|
 | #5471 | #5473 | 1m-ter fora de ordem no Stage 1 |
@@ -58,44 +60,93 @@ Nesta rodada: 13 issues fechadas.
 
 describe("parseUnitsTable (#5521)", () => {
   it("extrai as 13 linhas da tabela do 260816e", () => {
-    const rows = parseUnitsTable(REPORT_260816E);
+    const { found, rows } = parseUnitsTable(REPORT_260816E);
+    assert.equal(found, true);
     assert.equal(rows.length, 13);
   });
 
   it("reconhece lote com múltiplas issues numa linha só", () => {
-    const rows = parseUnitsTable(REPORT_260816E);
-    const lote = rows.find((r) => r.pr === 5510);
+    const lote = parseUnitsTable(REPORT_260816E).rows.find((r) => r.pr === 5510);
     assert.deepEqual(lote!.issues, [5493, 5495, 5496]);
   });
 
-  it("separa issues (1ª coluna) do PR (2ª coluna)", () => {
-    const rows = parseUnitsTable(REPORT_260816E);
-    assert.deepEqual(rows[0], { issues: [5471], pr: 5473 });
+  it("separa a coluna de issues da coluna de PR", () => {
+    assert.deepEqual(parseUnitsTable(REPORT_260816E).rows[0], { issues: [5471], pr: 5473 });
   });
 
   it("não confunde cabeçalho nem separador com linha de dados", () => {
-    const rows = parseUnitsTable(REPORT_260816E);
-    assert.ok(rows.every((r) => r.issues.length > 0));
+    assert.ok(parseUnitsTable(REPORT_260816E).rows.every((r) => r.issues.length > 0));
   });
 
-  it("para na próxima seção — texto posterior não vira linha", () => {
-    const rows = parseUnitsTable(REPORT_260816E);
+  it("para no fim do bloco — texto posterior não vira linha", () => {
+    const { rows } = parseUnitsTable(REPORT_260816E);
     assert.ok(!rows.some((r) => r.issues.includes(5416) && r.pr === null));
   });
 
-  it("relatório sem a seção → lista vazia (não lança)", () => {
-    assert.deepEqual(parseUnitsTable("# relatório\n\nsem tabela aqui.\n"), []);
+  it("relatório sem marcador → found:false (não lança)", () => {
+    assert.deepEqual(parseUnitsTable("# relatório\n\nsem tabela aqui.\n"), {
+      found: false,
+      rows: [],
+    });
   });
 
   it("linha sem PR declarado → pr null", () => {
-    const md = "## Unidades mergeadas\n\n| Issue(s) | PR | O quê |\n|---|---|---|\n| #100 | — | sem PR |\n";
-    assert.deepEqual(parseUnitsTable(md), [{ issues: [100], pr: null }]);
+    const md = "<!-- unidades-mergeadas -->\n| Issue(s) | PR | O quê |\n|---|---|---|\n| #100 | — | sem PR |\n";
+    assert.deepEqual(parseUnitsTable(md).rows, [{ issues: [100], pr: null }]);
+  });
+
+  // #5521: a âncora é o MARCADOR, não o título da seção — os relatórios reais
+  // usam meia dúzia de títulos diferentes pra essa mesma tabela.
+  for (const heading of ["## Resolvidas", "## Destravadas e mergeadas", "### Resolvidas — 5 PRs"]) {
+    it(`REGRESSÃO: acha a tabela sob o título real "${heading}"`, () => {
+      const md = `${heading}
+
+<!-- unidades-mergeadas -->
+| Issue(s) | PR | O quê |
+|---|---|---|
+| #5471 | #5473 | x |
+`;
+      const { found, rows } = parseUnitsTable(md);
+      assert.equal(found, true);
+      assert.equal(rows.length, 1);
+    });
+  }
+
+  it("REGRESSÃO: tabela SEM o marcador não é conferida (evita falso positivo em formato legado)", () => {
+    // Formato real do 260811: a coluna rotulada "Issues fechadas" traz
+    // DESCRIÇÃO, e as issues estão sob "Unidade". Adivinhar por nome de coluna
+    // casava a tabela errada; sem marcador, o certo é não conferir.
+    const md = [
+      "## Resolvidas",
+      "",
+      "| Unidade | PR | Issues fechadas |",
+      "|---|---|---|",
+      "| #4557 | #4964 | guard de drift |",
+    ].join("\n");
+    assert.equal(parseUnitsTable(md).found, false);
+  });
+
+  it("REGRESSÃO: marcador presente mas sem linha legível → found:true, rows vazio", () => {
+    // O guard TEM que saber que a tabela existia, senão vira no-op silencioso
+    // justamente quando o formato quebrou.
+    const md = "<!-- unidades-mergeadas -->\n| Issue(s) | PR | O quê |\n|---|---|---|\n| (nenhuma) | — | x |\n";
+    assert.deepEqual(parseUnitsTable(md), { found: true, rows: [] });
+  });
+
+  it("aceita número cru (sem #) na coluna de issues", () => {
+    const md = "<!-- unidades-mergeadas -->\n| Issue(s) | PR | O quê |\n|---|---|---|\n| 5471 | 5473 | x |\n";
+    assert.deepEqual(parseUnitsTable(md).rows, [{ issues: [5471], pr: 5473 }]);
+  });
+
+  it("não confunde a tabela de custo com a de unidades", () => {
+    const md = "## Custo\n\n| unidade | tokens |\n|---|---|\n| #5471 | 169249 |\n";
+    assert.equal(parseUnitsTable(md).found, false);
   });
 });
 
 describe("deriveCounts (#5521)", () => {
   it("REGRESSÃO: 260816e são 13 unidades e 17 issues, não 10 e 13", () => {
-    const counts = deriveCounts(parseUnitsTable(REPORT_260816E));
+    const counts = deriveCounts(parseUnitsTable(REPORT_260816E).rows);
     assert.deepEqual(counts, { units: 13, issues: 17 });
   });
 
@@ -120,10 +171,13 @@ describe("parseTitleCounts (#5521)", () => {
     );
   });
 
-  it("lê o formato histórico 'N resolvidas'", () => {
+  it("REGRESSÃO: 'N resolvidas' é ambíguo e NÃO vira unidades", () => {
+    // A 1ª versão lia isso como unidades; a convenção real do projeto
+    // ("28 issues resolvidas (26 PRs)") mostra que conta ISSUES. Ler como
+    // unidade dava falso positivo em toda rodada com lote.
     assert.deepEqual(
       parseTitleCounts("diar.ia.br overnight 260816 — 12 resolvidas, 19 puladas, 0 findings"),
-      { units: 12, issues: null },
+      { units: null, issues: null },
     );
   });
 
@@ -146,9 +200,10 @@ describe("compareTitleWithReport (#5521)", () => {
       "diar.ia.br overnight 260816e — 10 unidades, 13 issues fechadas (2 P1), 2 reviews limpos",
       REPORT_260816E,
     );
-    assert.equal(check.ok, false);
+    assert.equal(check.kind, "checked");
+    assert.ok(!isTitleOk(check));
     assert.equal(check.problems.length, 2);
-    assert.equal(check.suggestion, "13 unidades, 17 issues");
+    assert.equal(check.kind === "checked" && check.suggestion, "13 unidades, 17 issues");
   });
 
   it("título correto passa", () => {
@@ -156,19 +211,19 @@ describe("compareTitleWithReport (#5521)", () => {
       "diar.ia.br overnight 260816e — 13 unidades, 17 issues (2 P1), 2 reviews limpos",
       REPORT_260816E,
     );
-    assert.equal(check.ok, true);
-    assert.deepEqual(check.expected, { units: 13, issues: 17 });
+    assert.ok(isTitleOk(check));
+    assert.deepEqual(check.kind === "checked" && check.expected, { units: 13, issues: 17 });
   });
 
   it("título que declara só unidades e acerta passa (issues não é obrigatório)", () => {
     const check = compareTitleWithReport("overnight 260816e — 13 unidades", REPORT_260816E);
-    assert.equal(check.ok, true);
+    assert.ok(isTitleOk(check));
   });
 
   it("relatório sem tabela → skipped, nunca reprova formato antigo", () => {
-    const check = compareTitleWithReport("overnight 260101 — 5 resolvidas", "# rel\n\nprosa.\n");
-    assert.equal(check.ok, true);
-    assert.equal(check.skipped, true);
+    const check = compareTitleWithReport("overnight 260101 — 5 unidades", "# rel\n\nprosa.\n");
+    assert.ok(isTitleOk(check));
+    assert.equal(check.kind, "skipped");
   });
 
   it("só o número errado é apontado quando o outro está certo", () => {
@@ -176,7 +231,7 @@ describe("compareTitleWithReport (#5521)", () => {
       "overnight 260816e — 13 unidades, 13 issues",
       REPORT_260816E,
     );
-    assert.equal(check.ok, false);
+    assert.ok(!isTitleOk(check));
     assert.equal(check.problems.length, 1);
     assert.match(check.problems[0], /17 issue/);
   });
@@ -187,42 +242,73 @@ describe("compareTitleWithReport (#5521)", () => {
 // ---------------------------------------------------------------------------
 
 describe("register-report.ts: guard de contagem (#5521)", () => {
-  let tmpRoot: string;
+  let reportDir: string;
   let reportPath: string;
 
-  const run = (title: string, kind = "overnight") => {
-    try {
-      const stdout = execFileSync(
-        "npx",
-        [
-          "tsx",
-          join(ROOT, "scripts", "register-report.ts"),
-          "--kind", kind,
-          "--id", "zz-test-5521",
-          "--title", title,
-          "--html-path", reportPath,
-        ],
-        { cwd: ROOT, encoding: "utf-8", stdio: "pipe" },
-      );
-      return { code: 0, stderr: "", stdout };
-    } catch (e) {
-      const err = e as { status: number; stderr: string; stdout: string };
-      return { code: err.status, stderr: err.stderr ?? "", stdout: err.stdout ?? "" };
-    }
+  /**
+   * Roda o CLI real.
+   *
+   * `DIARIA_TEST_CREDENTIALS_PATH` aponta pra um caminho inexistente de
+   * propósito (#4478): sem isso, um caminho que chegue até `registerReport`
+   * dispararia e-mail REAL pro editor em toda máquina com credencial Gmail
+   * configurada. Este arquivo já cometeu esse erro uma vez — a versão anterior
+   * exercitava o kind `edicao` (fora de `COUNT_CHECKED_KINDS`), que atravessa o
+   * guard e registra de verdade, poluindo `data/reports/index.jsonl` (que é
+   * sincronizado por OneDrive entre as máquinas e alimenta o /relatorios real).
+   * Os casos abaixo só exercitam caminhos que saem ANTES de registrar.
+   */
+  const run = (title: string, kind = "overnight", htmlPath = reportPath) => {
+    const r = spawnSync(
+      "npx",
+      [
+        "tsx",
+        join(ROOT, "scripts", "register-report.ts"),
+        "--kind", kind,
+        "--id", "zz-test-5521",
+        "--title", title,
+        "--html-path", htmlPath,
+      ],
+      {
+        cwd: ROOT,
+        encoding: "utf-8",
+        env: { ...process.env, DIARIA_TEST_CREDENTIALS_PATH: "/nonexistent-5521" },
+      },
+    );
+    return { code: r.status ?? -1, stderr: r.stderr ?? "", stdout: r.stdout ?? "" };
   };
 
   beforeEach(() => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "reg-report-5521-"));
-    // Precisa viver dentro do ROOT: register-report resolve --html-path contra ele.
-    const dir = join(ROOT, "data", "tmp-test-5521");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "report.md"), REPORT_260816E, "utf-8");
-    reportPath = "data/tmp-test-5521/report.md";
+    // Precisa viver dentro do ROOT (register-report resolve --html-path contra
+    // ele), então NÃO há isolamento por tmpdir aqui — daí o sufixo aleatório,
+    // pra duas execuções concorrentes não disputarem o mesmo diretório.
+    const suffix = mkdtempSync(join(tmpdir(), "reg-5521-")).split("-").pop();
+    reportDir = join(ROOT, "data", `tmp-test-5521-${suffix}`);
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(join(reportDir, "report.md"), REPORT_260816E, "utf-8");
+    reportPath = `data/tmp-test-5521-${suffix}/report.md`;
   });
 
+  const registryPath = join(ROOT, "data", "reports", "index.jsonl");
+
+  /** Linhas deste teste que porventura tenham sido registradas. */
+  const registeredLines = (): string[] => {
+    if (!existsSync(registryPath)) return [];
+    return readFileSync(registryPath, "utf-8")
+      .split("\n")
+      .filter((l) => l.includes("zz-test-5521"));
+  };
+
   afterEach(() => {
-    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-    try { rmSync(join(ROOT, "data", "tmp-test-5521"), { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(reportDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    // `data/reports/index.jsonl` é o registro REAL (sincronizado por OneDrive,
+    // alimenta o /relatorios do editor). O caminho "relatório ausente" abaixo
+    // chega a `registerReport` de propósito — então limpar é obrigatório.
+    if (existsSync(registryPath)) {
+      const kept = readFileSync(registryPath, "utf-8")
+        .split("\n")
+        .filter((l) => !l.includes("zz-test-5521"));
+      writeFileSync(registryPath, kept.join("\n"), "utf-8");
+    }
   });
 
   it("REGRESSÃO: título divergente sai 1 e não registra nada", () => {
@@ -238,8 +324,28 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
     assert.match(r.stderr, /nada foi registrado, nenhum e-mail saiu/);
   });
 
-  it("kind fora de overnight/develop não é checado (formato diferente)", () => {
-    const r = run("edição — 10 unidades, 13 issues", "edicao");
+  it("relatório ausente: avisa que NÃO conferiu em vez de pular calado", () => {
+    const r = run("overnight — 10 unidades", "overnight", "data/nao-existe-5521/report.md");
+    assert.match(r.stderr, /AVISO: título NÃO conferido/);
+    // Documenta o comportamento real: sem relatório em disco não há o que
+    // conferir, então o registro PROSSEGUE (fail-soft) — só que ruidosamente.
     assert.equal(r.code, 0);
+  });
+
+  it("REGRESSÃO: relatório sem o marcador avisa que a conferência não rodou", () => {
+    const semMarcador = join(reportDir, "sem-marcador.md");
+    writeFileSync(semMarcador, "# rel\n\n## Resolvidas\n\n| Issue | PR |\n|---|---|\n| #1 | #2 |\n", "utf-8");
+    const r = run("overnight — 10 unidades", "overnight", `${reportPath.replace("report.md", "sem-marcador.md")}`);
+    assert.match(r.stderr, /marcador/);
+    assert.match(r.stderr, /NÃO conferido/);
+  });
+
+  it("REGRESSÃO: o caminho que BLOQUEIA não chega a registrar nada", () => {
+    run("diar.ia.br overnight 260816e — 10 unidades, 13 issues fechadas");
+    assert.deepEqual(
+      registeredLines(),
+      [],
+      "title divergente tem que sair antes de tocar data/reports/index.jsonl",
+    );
   });
 });

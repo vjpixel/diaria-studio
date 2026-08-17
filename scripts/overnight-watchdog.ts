@@ -205,7 +205,9 @@ export const ABANDONED_RUN_MAX_AGE_MS = 24 * 60 * 60_000;
  * A escrita acontece a milissegundos do `stall_event.at` registrado, então 2
  * min cobre folgadamente qualquer lentidão de FS. Uma escrita GENUÍNA do
  * coordenador dentro dessa janela seria mascarada, mas só até o próximo tick
- * (10-15 min depois), quando o mtime já não casa com nenhum `stall_event`.
+ * (10 min depois — cadência fixa do timer systemd), quando o mtime já não casa
+ * com nenhum `stall_event`. Numa rodada que nunca mais tem escrita genuína pra
+ * corrigir isso, o piso de `resolveRunActivity` (`plan.started_at`) assume.
  */
 export const SELF_WRITE_TOLERANCE_MS = 2 * 60_000;
 
@@ -387,11 +389,45 @@ export function resolveRunActivity(
 ): { ts: number; source: string } {
   const rawPlanMtime = mtimeMs(planPath);
   const plan = readPlanForStallHandling(planPath);
+
+  // O desconto de escrita própria depende de conhecer os `stall_events`. Sem o
+  // plano legível, `isSelfInflictedPlanMtime` devolve `false` e o mtime CRU
+  // volta a valer — o que reabre exatamente o bug do #5520 (a escrita do
+  // watchdog contando como atividade da rodada) de forma invisível. Raro
+  // (#3353 tornou a escrita atômica), mas silencioso demais pra passar batido.
+  if (plan === null && existsSync(planPath)) {
+    process.stderr.write(
+      `[watchdog] Aviso: ${planPath} ilegível — desconto de escrita própria NÃO aplicado neste ciclo.\n`,
+    );
+  }
+
   const planMtime = isSelfInflictedPlanMtime(rawPlanMtime, plan?.stall_events)
     ? null
     : rawPlanMtime;
 
-  return computeLastActivity(planMtime, getLastRunLogActivity(rootDir, aammdd, kind));
+  const activity = computeLastActivity(planMtime, getLastRunLogActivity(rootDir, aammdd, kind));
+  if (activity.ts > 0) return activity;
+
+  // #5520 (achado do review): quando as DUAS fontes são descontadas por serem
+  // escrita própria, a atividade colapsa em `ts: 0` — que
+  // `diagnoseWatchdogActivity` trata como `skip_unknown_activity` (só loga) e
+  // que a expiração acima isenta de propósito. Numa rodada genuinamente morta
+  // isso é auto-perpetuante: depois do PRIMEIRO alarme legítimo, o único
+  // toque em `plan.json`/run-log passa a ser o do próprio watchdog, então todo
+  // ciclo seguinte recai em `ts: 0` — a rodada nunca mais alarma E nunca
+  // expira. Seria o bug do #5520 de novo, invertido: em vez de falso "sem
+  // stall" pra sempre, um alarme verdadeiro seguido de silêncio pra sempre.
+  //
+  // `started_at` é o piso certo porque o watchdog NUNCA o escreve: é gravado
+  // uma vez pelo coordenador ao abrir a rodada. Com ele, uma rodada morta
+  // segue alarmando (com o dedup normal) e cruza `ABANDONED_RUN_MAX_AGE_MS`
+  // no prazo, sendo aposentada como carcaça em vez de ficar num limbo mudo.
+  const startedAt = typeof plan?.started_at === "string" ? new Date(plan.started_at).getTime() : NaN;
+  if (!isNaN(startedAt) && startedAt > 0) {
+    return { ts: startedAt, source: "plan.started_at (fontes descontadas)" };
+  }
+
+  return activity;
 }
 
 /**
