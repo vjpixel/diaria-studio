@@ -60,28 +60,51 @@ export interface AggregateGaqlSpendOptions {
   fonteLabel: string;
 }
 
+export interface AggregateGaqlSpendResult {
+  rows: SpendRow[];
+  /** Nº de linhas de `rows` (o parâmetro, GAQL bruto) descartadas por
+   *  malformação durante a agregação — sem `segments.date` válido ou sem
+   *  `metrics.costMicros` parseável (#5598). Perda TOTAL do mês
+   *  (`aggregatedRows` fica vazio com `rows.length > 0`) já vira `defect` em
+   *  `runGoogleAdsIngest`; este campo é o que torna visível a perda PARCIAL
+   *  — um schema drift que afeta só uma fração das linhas (ex: metade dos
+   *  dias com um campo renomeado) não zera o agregado, então passava
+   *  despercebido antes: `spend.csv` saía atualizado, só que SUBESTIMADO. */
+  discardedCount: number;
+}
+
 /**
- * Agrupa linhas GAQL por mês (`AAAA-MM` extraído de `segments.date`,
- * formato `AAAA-MM-DD` da API) somando `cost_micros` (unidade de 1/1.000.000
- * da moeda da conta) e convertendo para a unidade decimal que `spend.csv`
- * espera. Linhas sem `segments.date` ou `metrics.costMicros` parseável são
- * ignoradas (não têm mês pra agrupar) — nunca contaminam a soma como 0.
+ * Núcleo de `aggregateGaqlSpendByMonth` — agrupa linhas GAQL por mês
+ * (`AAAA-MM` extraído de `segments.date`, formato `AAAA-MM-DD` da API)
+ * somando `cost_micros` (unidade de 1/1.000.000 da moeda da conta) e
+ * convertendo para a unidade decimal que `spend.csv` espera. Linhas sem
+ * `segments.date` ou `metrics.costMicros` parseável são ignoradas (não têm
+ * mês pra agrupar) — nunca contaminam a soma como 0 — e contadas em
+ * `discardedCount` (#5598), pra que a perda fique visível a quem chama em
+ * vez de só um `spend.csv` menor sem explicação.
  *
  * @pure
  */
-export function aggregateGaqlSpendByMonth(
+export function aggregateGaqlSpendByMonthWithDiscards(
   rows: GaqlSpendApiRow[],
   opts: AggregateGaqlSpendOptions,
-): SpendRow[] {
+): AggregateGaqlSpendResult {
   const byMonth = new Map<string, { microsSum: number; dates: string[] }>();
+  let discardedCount = 0;
 
   for (const row of rows) {
     const date = row.segments?.date;
     const microsRaw = row.metrics?.costMicros;
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || microsRaw === undefined) continue;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || microsRaw === undefined) {
+      discardedCount++;
+      continue;
+    }
 
     const micros = typeof microsRaw === "string" ? Number(microsRaw) : microsRaw;
-    if (!Number.isFinite(micros)) continue;
+    if (!Number.isFinite(micros)) {
+      discardedCount++;
+      continue;
+    }
 
     const mes = date.slice(0, 7);
     const entry = byMonth.get(mes) ?? { microsSum: 0, dates: [] };
@@ -90,7 +113,7 @@ export function aggregateGaqlSpendByMonth(
     byMonth.set(mes, entry);
   }
 
-  return [...byMonth.entries()]
+  const aggregatedRows = [...byMonth.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([mes, { microsSum, dates }]) => {
       const first = dates.slice().sort()[0];
@@ -104,6 +127,24 @@ export function aggregateGaqlSpendByMonth(
         fonte: `${opts.fonteLabel} — GAQL cost_micros, ${dates.length} dia(s) (${range}), ingestão automática`,
       };
     });
+
+  return { rows: aggregatedRows, discardedCount };
+}
+
+/**
+ * Atalho de `aggregateGaqlSpendByMonthWithDiscards` pra quem só precisa das
+ * linhas agregadas — assinatura preservada de propósito, não quebra
+ * callers/testes anteriores ao #5598. Quem precisa saber quantas linhas
+ * foram descartadas (`runGoogleAdsIngest`, pra logar perda parcial) usa a
+ * variante `WithDiscards` acima diretamente.
+ *
+ * @pure
+ */
+export function aggregateGaqlSpendByMonth(
+  rows: GaqlSpendApiRow[],
+  opts: AggregateGaqlSpendOptions,
+): SpendRow[] {
+  return aggregateGaqlSpendByMonthWithDiscards(rows, opts).rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +162,7 @@ export interface GoogleAdsAuthConfig {
 }
 
 export type GoogleAdsIngestResult =
-  | { kind: "updated"; rows: SpendRow[]; fetchedRows: number }
+  | { kind: "updated"; rows: SpendRow[]; fetchedRows: number; discardedCount: number }
   | { kind: "fallback"; reason: string; failureClass: GoogleAdsFailureClass };
 
 /** Subconjunto de `fetch` usado — permite injetar um mock em teste sem
@@ -379,6 +420,16 @@ export function classifyGoogleAdsFailure(body: string): GoogleAdsFailureClass {
  * devolve `fetchedCount` = nº de linhas GAQL BRUTAS (não o nº de meses
  * agregados) pra preservar o significado histórico de `fetchedRows` que
  * `test/google-ads-ingest-5237.test.ts` já trava.
+ *
+ * **Perda PARCIAL de linhas é logada mesmo no caminho de sucesso (#5598).**
+ * Perda TOTAL (`rows.length > 0` bruto, agregado vazio) já vira `failureClass:
+ * "defect"` acima — mas se só uma fração das linhas do mês vier malformada
+ * (ex: schema drift que afeta metade dos dias), o agregado não fica vazio,
+ * `runSpendIngest` segue o caminho `"updated"` normalmente, e sem este log o
+ * `spend.csv` sai SUBESTIMADO sem nenhum sinal. `discardedCount` vai no
+ * retorno (pra quem quiser inspecionar programaticamente) e sai como
+ * `console.warn` sempre que `> 0` — sem virar `defect`/exit não-zero: o
+ * dado parcial ainda é útil, só precisa ser visível.
  */
 export async function runGoogleAdsIngest(
   fetchImpl: FetchLike,
@@ -389,11 +440,12 @@ export async function runGoogleAdsIngest(
   const fonteLabel = opts.fonteLabel ?? "Google Ads API (MCP oficial)";
   const gaqlQuery = opts.gaqlQuery ?? buildDefaultGaqlQuery(opts.now ?? new Date());
 
-  // `runSpendIngest` só carrega `reason: string`; a classe de falha viaja
-  // por fora, neste closure, pra não alargar o contrato genérico de
-  // `spend-ingest.ts` (que serve Google E Microsoft) por causa de um
-  // vocabulário de erro que é só do Google.
+  // `runSpendIngest` só carrega `reason: string`; a classe de falha e a
+  // contagem de descarte viajam por fora, neste closure, pra não alargar o
+  // contrato genérico de `spend-ingest.ts` (que serve Google E Microsoft)
+  // por causa de vocabulário/telemetria que é só do Google.
   let failureClass: GoogleAdsFailureClass = "transient";
+  let discardedCount = 0;
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, opts.auth);
@@ -415,21 +467,33 @@ export async function runGoogleAdsIngest(
     // verdade, não indisponibilidade — `runSpendIngest` transforma `rows: []`
     // em fallback (não há o que mesclar), e é ESTE marcador que impede o CLI
     // de reportar conta pausada como se fosse falha.
-    const rows = aggregateGaqlSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
+    const aggregated = aggregateGaqlSpendByMonthWithDiscards(spendResult.rows, { canal, moeda, fonteLabel });
+    discardedCount = aggregated.discardedCount;
 
     // ...MAS "vazio" só é legítimo se a API também não mandou nada. Se ela
     // devolveu N>0 linhas e a agregação descartou TODAS, o dado existe e nós
     // é que não conseguimos lê-lo — schema drift (Google renomear
     // `costMicros`/`segments.date`) entra exatamente por aqui, porque
-    // `aggregateGaqlSpendByMonth` pula linha malformada em silêncio por
-    // design. Chamar isso de "gasto zero" seria o mesmo mascaramento que
-    // esta issue mandou eliminar, e pior: silencioso justo quando a #5524
-    // começar a gastar de verdade.
-    failureClass = spendResult.rows.length > 0 && rows.length === 0 ? "defect" : "empty";
-    return { kind: "ok", rows, fetchedCount: spendResult.rows.length };
+    // `aggregateGaqlSpendByMonthWithDiscards` pula linha malformada em
+    // silêncio por design. Chamar isso de "gasto zero" seria o mesmo
+    // mascaramento que esta issue mandou eliminar, e pior: silencioso justo
+    // quando a #5524 começar a gastar de verdade.
+    failureClass = spendResult.rows.length > 0 && aggregated.rows.length === 0 ? "defect" : "empty";
+    return { kind: "ok", rows: aggregated.rows, fetchedCount: spendResult.rows.length };
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
   if (result.kind === "fallback") return { ...result, failureClass };
-  return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount };
+
+  // Chegou aqui com `discardedCount > 0` só é possível no caso de perda
+  // PARCIAL — perda total já saiu pelo ramo `fallback`/`defect` acima
+  // (`aggregated.rows.length === 0`), então este warning nunca duplica o
+  // banner "✖ DEFEITO" do CLI.
+  if (discardedCount > 0) {
+    console.warn(
+      `[google-ads-ingest] ${discardedCount} linha(s) GAQL descartada(s) por malformação durante a agregação (#5598) — spend.csv pode sair SUBESTIMADO pro(s) mês(es) afetado(s). Investigar schema drift na API (campo renomeado?) antes de confiar no valor.`,
+    );
+  }
+
+  return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount, discardedCount };
 }

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   aggregateGaqlSpendByMonth,
+  aggregateGaqlSpendByMonthWithDiscards,
   mergeSpendRows,
   refreshGoogleAdsAccessToken,
   fetchGoogleAdsSpendRows,
@@ -76,6 +77,54 @@ describe("#5237 — aggregateGaqlSpendByMonth", () => {
 
   it("lista vazia de rows produz lista vazia", () => {
     assert.deepEqual(aggregateGaqlSpendByMonth([], { canal: "Google Ads", moeda: "BRL", fonteLabel: "x" }), []);
+  });
+});
+
+describe("#5598 — aggregateGaqlSpendByMonthWithDiscards", () => {
+  it("perda PARCIAL: discardedCount bate com o número exato de linhas malformadas, mesmo com linhas válidas", () => {
+    const rows: GaqlSpendApiRow[] = [
+      { segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } }, // válida
+      { segments: {}, metrics: { costMicros: "3000000" } }, // descartada: sem data
+      { segments: { date: "2026-08-12" }, metrics: {} }, // descartada: sem custo
+      { segments: { date: "not-a-date" }, metrics: { costMicros: "1000000" } }, // descartada: data inválida
+      { segments: { date: "2026-08-15" }, metrics: { costMicros: "2500000" } }, // válida
+    ];
+
+    const out = aggregateGaqlSpendByMonthWithDiscards(rows, {
+      canal: "Google Ads",
+      moeda: "BRL",
+      fonteLabel: "x",
+    });
+
+    assert.equal(out.discardedCount, 3);
+    assert.equal(out.rows.length, 1);
+    assert.equal(out.rows[0].mes, "2026-08");
+    assert.equal(out.rows[0].valor, 7.5); // (5_000_000 + 2_500_000) / 1e6 — as 3 malformadas nunca contaminam a soma
+  });
+
+  it("perda TOTAL: discardedCount === nº de linhas de entrada, agregado vazio", () => {
+    const rows: GaqlSpendApiRow[] = [
+      { segments: {}, metrics: { costMicros: "1000000" } },
+      { segments: { date: "2026-08-01" }, metrics: {} },
+    ];
+    const out = aggregateGaqlSpendByMonthWithDiscards(rows, { canal: "Google Ads", moeda: "BRL", fonteLabel: "x" });
+    assert.equal(out.discardedCount, 2);
+    assert.deepEqual(out.rows, []);
+  });
+
+  it("sem malformação: discardedCount é 0", () => {
+    const rows: GaqlSpendApiRow[] = [{ segments: { date: "2026-08-01" }, metrics: { costMicros: "1000000" } }];
+    const out = aggregateGaqlSpendByMonthWithDiscards(rows, { canal: "Google Ads", moeda: "BRL", fonteLabel: "x" });
+    assert.equal(out.discardedCount, 0);
+  });
+
+  it("aggregateGaqlSpendByMonth continua devolvendo só as rows (atalho preservado)", () => {
+    const rows: GaqlSpendApiRow[] = [
+      { segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } },
+      { segments: {}, metrics: { costMicros: "3000000" } },
+    ];
+    const opts = { canal: "Google Ads", moeda: "BRL", fonteLabel: "x" };
+    assert.deepEqual(aggregateGaqlSpendByMonth(rows, opts), aggregateGaqlSpendByMonthWithDiscards(rows, opts).rows);
   });
 });
 
@@ -506,6 +555,78 @@ describe("#5237 — 'empty' não pode encobrir schema drift (achado do review do
     });
     const result = await runGoogleAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
     assert.equal(result.kind, "updated");
+  });
+});
+
+describe("#5598 — perda parcial na agregação fica visível (discardedCount + warning), não some em silêncio", () => {
+  const tokenThen = (body: string, status = 200): FetchLike => async (url) =>
+    url.includes("oauth2.googleapis.com")
+      ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
+      : new Response(body, { status });
+
+  it("resultado 'updated' expõe discardedCount batendo com o nº exato de linhas descartadas", async () => {
+    const mixed = JSON.stringify({
+      results: [
+        { segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } }, // válida
+        { segments: {}, metrics: { costMicros: "3000000" } }, // descartada: sem data
+        { segments: { date: "2026-08-12" }, metrics: {} }, // descartada: sem custo
+      ],
+    });
+    const result = await runGoogleAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "updated");
+    if (result.kind === "updated") {
+      assert.equal(result.discardedCount, 2);
+      assert.equal(result.fetchedRows, 3); // linhas GAQL BRUTAS, não o nº de meses agregados
+    }
+  });
+
+  it("discardedCount > 0 emite console.warn no caminho de SUCESSO, sem virar defect/exit não-zero", async () => {
+    const mixed = JSON.stringify({
+      results: [
+        { segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } },
+        { segments: {}, metrics: { costMicros: "3000000" } },
+      ],
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = await runGoogleAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+      assert.equal(result.kind, "updated");
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(warnings.some((w) => w.includes("1") && /descartad/.test(w)));
+  });
+
+  it("discardedCount === 0 (nenhuma linha malformada) NÃO emite warning", async () => {
+    const clean = JSON.stringify({
+      results: [{ segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } }],
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = await runGoogleAdsIngest(tokenThen(clean), { auth: AUTH, existingRows: [] });
+      assert.equal(result.kind, "updated");
+      if (result.kind === "updated") assert.equal(result.discardedCount, 0);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnings.length, 0);
+  });
+
+  it("perda TOTAL continua caindo em 'defect' (fallback), não em 'updated' com discardedCount", async () => {
+    const drifted = JSON.stringify({
+      results: [{ segments: { date: "2026-08-10" }, metrics: { cost_micros_v2: "5000000" } }],
+    });
+    const result = await runGoogleAdsIngest(tokenThen(drifted), { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "defect");
   });
 });
 
