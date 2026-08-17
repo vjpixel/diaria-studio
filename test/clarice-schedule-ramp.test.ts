@@ -340,6 +340,28 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     assert.equal(result.plan.semaphore, "red");
     assert.equal(result.plan.flagged, true);
     assert.ok(result.plan.volumes[0] < result.plan.baseVolume, "vermelho deve cortar o volume-base");
+    // #5592: `breachedMetrics` nomeia QUAL(is) métrica(s) romperam — antes só
+    // "semaphore: red" chegava até o texto do abort, sem dizer qual breaker.
+    // Neste fixture: abertura baixa + bounce duro alto + unsub alto rompem;
+    // bounce TOTAL (4%) fica abaixo do limiar (5%) e spam é indeterminado
+    // (sem leitura de Postmaster) — nenhum dos dois deve aparecer.
+    assert.ok(result.plan.breachedMetrics && result.plan.breachedMetrics.length > 0, "vermelho deve nomear ao menos 1 métrica rompida");
+    const breaches = (result.plan.breachedMetrics ?? []).join(" | ");
+    assert.match(breaches, /abertura/);
+    assert.match(breaches, /bounce duro/);
+    assert.match(breaches, /unsub/);
+    assert.doesNotMatch(breaches, /bounce total/);
+    assert.doesNotMatch(breaches, /spam/);
+  });
+
+  it("saúde ok (verde/amarelo) → breachedMetrics vazio (#5592)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // saúde boa, sem leitura Postmaster → "yellow" (#4063)
+    const result = deriveRampVolumes(campaigns, now);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.plan.semaphore, "yellow");
+    assert.deepEqual(result.plan.breachedMetrics, []);
   });
 
   // #4131 finding 4: com uma leitura FRESCA e boa do Postmaster injetada

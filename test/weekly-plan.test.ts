@@ -13,6 +13,7 @@ import {
   filterMatureCampaigns,
   aggregateHealth,
   decideSemaphore,
+  describeBreachedMetrics,
   classifyMetric,
   classifySpamSignal,
   resolveSpamSignal,
@@ -247,6 +248,46 @@ test("decideSemaphore — pior métrica manda (1 vermelha entre verdes → verme
 test("decideSemaphore — thresholds customizados são respeitados", () => {
   const custom = { ...DEFAULT_HEALTH_THRESHOLDS, openRate: { green: 50, yellow: 40 } };
   assert.equal(decideSemaphore(mkHealth({ openRate: 45 }), mkSpamOk(), custom), "yellow");
+});
+
+// #5592: `describeBreachedMetrics` nomeia QUAL(is) métrica(s) romperam o
+// semáforo — `decideSemaphore` sozinho só devolve o veredito PIOR ("red"),
+// nunca diz qual das 5 métricas causou. Antes desta função, o guard
+// `clarice-check-semaphore.ts` e o e-mail de alarme de aborts consecutivos
+// (#5405 item 1) diziam só "circuit breaker(s) ... rompido(s)", sem nomear —
+// mesmo o dashboard já sabendo a resposta (tabela de saúde por métrica).
+test("describeBreachedMetrics — tudo saudável → lista vazia", () => {
+  assert.deepEqual(describeBreachedMetrics(mkHealth({}), mkSpamOk()), []);
+});
+
+test("describeBreachedMetrics — só abertura rompe → nomeia só abertura", () => {
+  const breaches = describeBreachedMetrics(mkHealth({ openRate: 10 }), mkSpamOk());
+  assert.equal(breaches.length, 1);
+  assert.match(breaches[0], /abertura/);
+});
+
+test("describeBreachedMetrics — spam via Postmaster rompe (Brevo/complaints em zero) → nomeia spam, não 'health.spamRate' (#4063)", () => {
+  const health = mkHealth({ spamRate: 0 }); // Brevo: 0 complaints, mas o breaker usa o Postmaster
+  const postmasterBreach: SpamSignal = { source: "postmaster", ratePct: 1.39, breach: true };
+  const breaches = describeBreachedMetrics(health, postmasterBreach);
+  assert.equal(breaches.length, 1);
+  assert.match(breaches[0], /spam/);
+  assert.match(breaches[0], /1\.39%/);
+});
+
+test("describeBreachedMetrics — várias métricas rompem simultaneamente → nomeia todas, na ordem abertura/bounce duro/bounce total/spam/unsub", () => {
+  const health = mkHealth({ openRate: 10, hardBounceRate: 3, unsubRate: 4 });
+  const breaches = describeBreachedMetrics(health, mkSpamOk());
+  assert.equal(breaches.length, 3);
+  assert.match(breaches[0], /abertura/);
+  assert.match(breaches[1], /bounce duro/);
+  assert.match(breaches[2], /unsub/);
+});
+
+test("describeBreachedMetrics — spam indeterminado nunca aparece como rompido (classifica no máximo 🟡, #4063)", () => {
+  const indeterminate: SpamSignal = { source: "indeterminate", ratePct: null, breach: false };
+  const breaches = describeBreachedMetrics(mkHealth({}), indeterminate);
+  assert.deepEqual(breaches, []);
 });
 
 test("computeWeekPlan — verde escalona +10% composto ter/sex/dom", () => {

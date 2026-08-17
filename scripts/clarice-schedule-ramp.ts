@@ -127,6 +127,7 @@ import {
   decideSemaphore,
   baseVolumeFromLastSendDay,
   computeWeekPlan,
+  describeBreachedMetrics,
   type Semaphore,
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
 import { resolveSpamSignal, describeSpamSignalOrigin, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063, #5059
@@ -224,6 +225,13 @@ export interface RampVolumePlan {
   semaphore: Semaphore;
   flagged: boolean;
   baseVolume: number;
+  /**
+   * #5592: QUAL(is) métrica(s) romperam o semáforo (vazio quando `semaphore !==
+   * "red"`) — `describeBreachedMetrics` em weekly-plan.ts. Opcional pra não
+   * quebrar literais existentes (testes) que constroem `RampVolumePlan` sem
+   * esse campo; só o call site de produção em `deriveRampVolumes` o popula.
+   */
+  breachedMetrics?: string[];
 }
 
 export type RampVolumeResult = { ok: true; plan: RampVolumePlan } | { ok: false; reason: string };
@@ -413,7 +421,11 @@ export function deriveRampVolumes(
   const spamSignal = resolveSpamSignal(spamEntry ?? null, now);
   const semaphore = decideSemaphore(health, spamSignal);
   const plan = computeWeekPlan(baseVolume, semaphore);
-  return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume } };
+  // #5592: só computa a lista (custo desprezível) quando há algo pra reportar
+  // — vermelho é a única classificação onde `describeBreachedMetrics` pode
+  // devolver não-vazio (ver docstring de `decideSemaphore`).
+  const breachedMetrics = semaphore === "red" ? describeBreachedMetrics(health, spamSignal) : [];
+  return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume, breachedMetrics } };
 }
 
 export type AutoRampVolumeResult =
@@ -1210,6 +1222,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `base=${result.plan.baseVolume.toLocaleString("pt-BR")} → volumes: ${volumes.join(", ")}` +
       (result.plan.flagged ? "  ⚠️ revisar antes de prosseguir (semáforo vermelho)" : ""),
     );
+    // #5592: nomeia o(s) breaker(s) — sem isso o operador via só "semáforo=red"
+    // e precisava abrir o dashboard pra descobrir qual métrica furou.
+    if (result.plan.breachedMetrics?.length) {
+      console.error(`   🔎 métrica(s) rompida(s): ${result.plan.breachedMetrics.join("; ")}`);
+    }
   }
   const totalRequested = volumes.reduce((a, b) => a + b, 0);
 
