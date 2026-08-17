@@ -289,3 +289,55 @@ tem Fase 0/briefing único (`batch_approval: "editor_approved" |
 sempre `"default_proposed"` como default permanente, decisão mecânica do
 coordenador a cada dispatch (nunca vira `AskUserQuestion` novo — ver
 `.claude/skills/diaria-continuo/SKILL.md`, "Loop invariável" passo 1).
+
+## 16. Viés de autoria e confiança em PR alheio (#5484)
+
+**Escopo diferente dos itens 1-14**: este item, como o 15, é critério do
+**coordenador** (overnight/develop/continuo) — quem decide se dispatcha ou
+adia uma issue — não do subagente implementador. Dois padrões concretos
+observados ao vivo na rodada 260816e, ambos corrigidos só depois de o
+editor perguntar 4× "por que essas issues elegíveis ficaram sem dispatch?":
+
+**(a) Issue de autoria da própria sessão nunca recebe tratamento mais
+permissivo que issue de terceiro.** Ter escrito a issue (overnight, develop
+ou continuo — inclusive com sugestão de implementação já no corpo) não é
+motivo pra adiar — se algo, é o oposto: mais contexto prévio é menos
+justificativa pra adiar, não mais. "Exige decisão de design", "melhor numa
+rodada com mais contexto dedicado" ou equivalente só valem como razão pra
+não dispatchar se batem **literalmente** um dos 4 critérios de "Perguntar é
+exceção" do `CLAUDE.md` (irreversível pra terceiros; trade-off editorial
+genuíno que muda a experiência do leitor; gasto real acima do trivial; a
+resposta muda materialmente o trabalho) — os mesmos critérios usados pra
+issue de terceiro, sem exceção implícita de "precisa amadurecer". Sem
+nenhum dos 4 batendo: dispatchar, não anotar pra depois.
+
+**(b) "Já existe PR aberto" não é bloqueio por si só — exige checagem
+antes de virar razão pra não agir.** Ver a existência de um PR de outro
+autor cobrindo a issue e concluir "não é meu, deixo pro editor" sem checar
+nada é o mesmo erro do item 14 em sentido inverso — lá o preflight existe
+pra evitar duplicar trabalho; aqui, sem esse mesmo preflight aplicado com
+julgamento, um PR alheio vira desculpa pra não entregar. Antes de aceitar
+"já existe PR" como razão pra pular a issue, checar as 3 perguntas — **as
+3 juntas** justificam esperar; falhando qualquer uma, tratar como se o PR
+não existisse e avaliar implementação independente na mesma respiração:
+
+1. **Autor é o editor ou colaborador conhecido do projeto?** (`gh pr view N
+   --json author` — um handle nunca visto antes, ex. contribuidor externo
+   de primeira contribuição, falha este ponto.)
+2. **CI está rodando ou verde?** (`gh pr checks N` — "aprovação de workflow
+   pendente" em PR de fork de primeira vez, típico de contribuidor
+   desconhecido, falha este ponto.)
+3. **Atualizado nas últimas ~24-48h?** (`gh pr view N --json updatedAt` —
+   PR parado há dias é sinal de abandono, falha este ponto.)
+
+Incidente de referência (#5484, rodada 260816e): #5427 tinha o PR #5428
+aberto por um fork de autor desconhecido (`emre155`), sem CI rodado e sem
+review — nenhuma das 3 perguntas foi checada antes de concluir "deixo pro
+editor". O diff da causa raiz já tinha sido verificado ao vivo pelo próprio
+coordenador; dava pra reimplementar de forma independente na mesma
+respiração, sem esperar o editor perguntar.
+
+**Nota:** um gate mecânico de re-triagem (item do #5476 relacionado) não
+cobre este item — reavaliar a MESMA issue com o MESMO critério errado
+produz a MESMA conclusão errada. O que fecha a lacuna é aplicar o checklist
+acima **antes** de decidir adiar, não repetir a decisão depois.
