@@ -120,7 +120,7 @@ export interface GoogleAdsAuthConfig {
 
 export type GoogleAdsIngestResult =
   | { kind: "updated"; rows: SpendRow[]; fetchedRows: number }
-  | { kind: "fallback"; reason: string };
+  | { kind: "fallback"; reason: string; failureClass: GoogleAdsFailureClass };
 
 /** Subconjunto de `fetch` usado — permite injetar um mock em teste sem
  *  depender do `fetch` global do runtime. */
@@ -181,7 +181,7 @@ export async function fetchGoogleAdsSpendRows(
   auth: GoogleAdsAuthConfig,
   accessToken: string,
   gaqlQuery: string,
-): Promise<{ rows: GaqlSpendApiRow[] } | { error: string }> {
+): Promise<{ rows: GaqlSpendApiRow[] } | { error: string; failureClass?: GoogleAdsFailureClass }> {
   const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
   const loginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
@@ -205,7 +205,14 @@ export async function fetchGoogleAdsSpendRows(
 
   const text = await res.text();
   if (!res.ok) {
-    return { error: `googleAds:search respondeu HTTP ${res.status}: ${text.slice(0, 300)}` };
+    // 600, não 300: com 300 o `errorCode` da GoogleAdsFailure ficava CORTADO
+    // (ele vem depois de `@type`/`details`), e foi por isso que o
+    // `INVALID_VALUE_WITH_DURING_OPERATOR` acima passou despercebido no
+    // #5380 — a mensagem de fallback dizia só "HTTP 400" sem o motivo.
+    return {
+      error: `googleAds:search respondeu HTTP ${res.status}: ${text.slice(0, 600)}`,
+      failureClass: classifyGoogleAdsFailure(text),
+    };
   }
 
   let payload: { results?: GaqlSpendApiRow[] };
@@ -224,10 +231,93 @@ export interface RunGoogleAdsIngestOptions {
   moeda?: string;
   fonteLabel?: string;
   gaqlQuery?: string;
+  /** Relógio injetável — o range `BETWEEN` da query padrão é derivado daqui.
+   *  Default `new Date()`; testes passam uma data fixa. */
+  now?: Date;
 }
 
-const DEFAULT_GAQL_QUERY =
-  "SELECT segments.date, metrics.cost_micros FROM customer WHERE segments.date DURING LAST_90_DAYS";
+/** Janela padrão da ingestão, em dias (inclusive do dia corrente). */
+export const DEFAULT_LOOKBACK_DAYS = 90;
+
+/** `AAAA-MM-DD` em UTC — mesmo formato que `segments.date` devolve. */
+function toGaqlDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Monta a query padrão com um range EXPLÍCITO (`BETWEEN`), não um literal
+ * de data.
+ *
+ * **Não trocar por `DURING LAST_90_DAYS`** — esse literal NÃO EXISTE no
+ * GAQL, e foi o que a 1ª versão deste módulo (#5380) usou. Verificado ao
+ * vivo contra a API em 17/08/2026 (v22 e v25, idêntico):
+ *
+ *     "queryError": "INVALID_VALUE_WITH_DURING_OPERATOR"
+ *     "Invalid date literal supplied for DURING operator: LAST_90_DAYS."
+ *
+ * O GAQL valida a query ANTES da autorização, então esse 400 chegava mesmo
+ * com o developer token ainda em nível de teste — e o fail-soft o absorvia
+ * como "API indisponível", exatamente o mascaramento que a issue #5237
+ * mandou evitar. A ingestão nunca teria funcionado, nem depois do Basic
+ * Access sair da fila. Os literais válidos param em `LAST_30_DAYS`
+ * (confirmados ao vivo: `LAST_30_DAYS`/`LAST_14_DAYS`/`LAST_7_DAYS`/
+ * `THIS_MONTH`/`LAST_MONTH` passam da validação de query e só então esbarram
+ * no 403 de auth), nenhum deles cobre os 90 dias que #5236 quer — por isso
+ * `BETWEEN` com datas calculadas, que não depende de literal nenhum.
+ *
+ * @pure
+ */
+export function buildDefaultGaqlQuery(now: Date, lookbackDays = DEFAULT_LOOKBACK_DAYS): string {
+  const end = new Date(now.getTime());
+  const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
+  return (
+    "SELECT segments.date, metrics.cost_micros FROM customer " +
+    `WHERE segments.date BETWEEN '${toGaqlDate(start)}' AND '${toGaqlDate(end)}'`
+  );
+}
+
+/**
+ * Classe de falha da chamada à API — o que separa "estado esperado, degrada
+ * em silêncio" de "bug nosso, precisa gritar".
+ *
+ * A issue #5237 é explícita nisto: *"o teste do parser precisa distinguir os
+ * dois casos, senão o fail-soft mascara bug de verdade"*. Sem a distinção,
+ * `DEVELOPER_TOKEN_NOT_APPROVED` (esperado hoje) e
+ * `INVALID_VALUE_WITH_DURING_OPERATOR` (defeito que nunca ia sarar sozinho)
+ * saíam com a mesma linha de log.
+ *
+ * - `auth-pending` — o acesso ainda não existe. Estado ESPERADO até o Basic
+ *   Access sair da fila (#5262). Degrada quieto pro CSV manual.
+ * - `defect` — a requisição está malformada ou a versão da API morreu. Nada
+ *   no mundo externo conserta isso; é código nosso. Grita.
+ * - `transient` — rede, 5xx, quota. Tentar de novo depois resolve.
+ * - `empty` — a chamada FUNCIONOU e a conta não gastou nada no período.
+ *   Não é falha nenhuma: a conta está pausada desde fevereiro/2026, então
+ *   zero é a resposta correta. A issue #5237 pede esta distinção com todas
+ *   as letras — *"Zero não é falha de ingestão... senão o fail-soft mascara
+ *   bug de verdade quando a #5524 começar a gastar"*.
+ *
+ * @pure
+ */
+export type GoogleAdsFailureClass = "auth-pending" | "defect" | "transient" | "empty";
+
+/** Marcadores de defeito checados ANTES dos de auth: são inequívocos (um
+ *  `queryError` nunca convive com um `authorizationError` na mesma resposta,
+ *  porque o GAQL valida a query primeiro e aborta ali). */
+const DEFECT_MARKERS = ["queryError", "fieldError", "UNSUPPORTED_VERSION", "INVALID_DEVELOPER_TOKEN"];
+const AUTH_PENDING_MARKERS = [
+  "DEVELOPER_TOKEN_NOT_APPROVED",
+  "USER_PERMISSION_DENIED",
+  "CUSTOMER_NOT_ENABLED",
+  "OAUTH_TOKEN_INVALID",
+];
+
+/** @pure */
+export function classifyGoogleAdsFailure(body: string): GoogleAdsFailureClass {
+  if (DEFECT_MARKERS.some((m) => body.includes(m))) return "defect";
+  if (AUTH_PENDING_MARKERS.some((m) => body.includes(m))) return "auth-pending";
+  return "transient";
+}
 
 /**
  * Orquestra token → GAQL → agregação → merge, sempre fail-soft: qualquer
@@ -249,20 +339,37 @@ export async function runGoogleAdsIngest(
   const canal = opts.canal ?? "Google Ads";
   const moeda = opts.moeda ?? "BRL";
   const fonteLabel = opts.fonteLabel ?? "Google Ads API (MCP oficial)";
-  const gaqlQuery = opts.gaqlQuery ?? DEFAULT_GAQL_QUERY;
+  const gaqlQuery = opts.gaqlQuery ?? buildDefaultGaqlQuery(opts.now ?? new Date());
+
+  // `runSpendIngest` só carrega `reason: string`; a classe de falha viaja
+  // por fora, neste closure, pra não alargar o contrato genérico de
+  // `spend-ingest.ts` (que serve Google E Microsoft) por causa de um
+  // vocabulário de erro que é só do Google.
+  let failureClass: GoogleAdsFailureClass = "transient";
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, opts.auth);
-    if ("error" in tokenResult) return { kind: "error", reason: tokenResult.error };
+    if ("error" in tokenResult) {
+      failureClass = "transient";
+      return { kind: "error", reason: tokenResult.error };
+    }
 
     const spendResult = await fetchGoogleAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, gaqlQuery);
-    if ("error" in spendResult) return { kind: "error", reason: spendResult.error };
+    if ("error" in spendResult) {
+      failureClass = spendResult.failureClass ?? "transient";
+      return { kind: "error", reason: spendResult.error };
+    }
 
+    // A chamada sucedeu: daqui pra frente, um resultado vazio é gasto zero
+    // de verdade, não indisponibilidade. `runSpendIngest` transforma
+    // `rows: []` em fallback (não há o que mesclar), e é ESTE marcador que
+    // impede o CLI de reportar conta pausada como se fosse falha.
+    failureClass = "empty";
     const rows = aggregateGaqlSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
     return { kind: "ok", rows, fetchedCount: spendResult.rows.length };
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
-  if (result.kind === "fallback") return result;
+  if (result.kind === "fallback") return { ...result, failureClass };
   return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount };
 }

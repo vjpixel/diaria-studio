@@ -15,6 +15,9 @@ import {
   refreshGoogleAdsAccessToken,
   fetchGoogleAdsSpendRows,
   runGoogleAdsIngest,
+  buildDefaultGaqlQuery,
+  classifyGoogleAdsFailure,
+  DEFAULT_LOOKBACK_DAYS,
   type GaqlSpendApiRow,
   type GoogleAdsAuthConfig,
   type FetchLike,
@@ -243,5 +246,199 @@ describe("#5237 — runGoogleAdsIngest (orquestração end-to-end, fail-soft)", 
     };
     const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows });
     assert.equal(result.kind, "fallback");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão do bug encontrado ao vivo em 17/08/2026 (#5237)
+//
+// A 1ª versão (#5380) mandava `WHERE segments.date DURING LAST_90_DAYS`. Esse
+// literal NÃO EXISTE no GAQL: a API responde 400 `INVALID_VALUE_WITH_DURING_
+// OPERATOR` em toda versão testada (v22 e v25). Como o GAQL valida a query
+// ANTES da autorização, o 400 vinha mesmo com o developer token ainda em
+// nível de teste — e o fail-soft o registrava como "API indisponível", igual
+// a um `DEVELOPER_TOKEN_NOT_APPROVED`. A ingestão jamais teria funcionado,
+// nem depois do Basic Access sair da fila, e nada no output diria isso.
+//
+// Os corpos abaixo são as respostas REAIS capturadas nessa verificação.
+// ---------------------------------------------------------------------------
+
+/** Resposta real da API à query com `DURING LAST_90_DAYS` (v25, 17/08/2026). */
+const REAL_QUERY_ERROR_BODY = JSON.stringify({
+  error: {
+    code: 400,
+    message: "Request contains an invalid argument.",
+    status: "INVALID_ARGUMENT",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.ads.googleads.v25.errors.GoogleAdsFailure",
+        errors: [
+          {
+            errorCode: { queryError: "INVALID_VALUE_WITH_DURING_OPERATOR" },
+            message: "Invalid date literal supplied for DURING operator: LAST_90_DAYS.",
+          },
+        ],
+        requestId: "FAk-3h1TY-uJkxzKVt6jJg",
+      },
+    ],
+  },
+});
+
+/** Resposta real com `login-customer-id` presente (403, 17/08/2026). */
+const REAL_USER_PERMISSION_DENIED_BODY = JSON.stringify({
+  error: {
+    code: 403,
+    message: "The caller does not have permission",
+    status: "PERMISSION_DENIED",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.ads.googleads.v22.errors.GoogleAdsFailure",
+        errors: [{ errorCode: { authorizationError: "USER_PERMISSION_DENIED" } }],
+      },
+    ],
+  },
+});
+
+/** Resposta real sem `login-customer-id` (403, 17/08/2026) — o estado
+ *  verdadeiro do projeto: Basic Access ainda na fila. */
+const REAL_TOKEN_NOT_APPROVED_BODY = JSON.stringify({
+  error: {
+    code: 403,
+    status: "PERMISSION_DENIED",
+    details: [
+      {
+        "@type": "type.googleapis.com/google.ads.googleads.v22.errors.GoogleAdsFailure",
+        errors: [{ errorCode: { authorizationError: "DEVELOPER_TOKEN_NOT_APPROVED" } }],
+      },
+    ],
+  },
+});
+
+describe("#5237 — buildDefaultGaqlQuery (regressão: LAST_90_DAYS não existe)", () => {
+  const NOW = new Date("2026-08-17T12:00:00Z");
+
+  it("NUNCA emite o operador DURING nem o literal inválido LAST_90_DAYS", () => {
+    const q = buildDefaultGaqlQuery(NOW);
+    assert.doesNotMatch(q, /DURING/);
+    assert.doesNotMatch(q, /LAST_90_DAYS/);
+  });
+
+  it("usa BETWEEN com um range explícito de 90 dias terminando hoje", () => {
+    const q = buildDefaultGaqlQuery(NOW);
+    // 90 dias INCLUSIVE: 2026-08-17 menos 89 dias = 2026-05-20.
+    assert.match(q, /WHERE segments\.date BETWEEN '2026-05-20' AND '2026-08-17'/);
+  });
+
+  it("mantém as colunas que aggregateGaqlSpendByMonth consome", () => {
+    const q = buildDefaultGaqlQuery(NOW);
+    assert.match(q, /segments\.date/);
+    assert.match(q, /metrics\.cost_micros/);
+  });
+
+  it("a janela é configurável e continua sem literal de data", () => {
+    const q = buildDefaultGaqlQuery(NOW, 30);
+    assert.match(q, /BETWEEN '2026-07-19' AND '2026-08-17'/);
+    assert.doesNotMatch(q, /DURING/);
+    assert.equal(DEFAULT_LOOKBACK_DAYS, 90);
+  });
+
+  it("runGoogleAdsIngest manda a query construída, não um literal", async () => {
+    let sentQuery = "";
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.includes("oauth2.googleapis.com")) {
+        return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+      }
+      sentQuery = JSON.parse(String(init?.body)).query;
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    };
+    await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], now: NOW });
+    assert.doesNotMatch(sentQuery, /DURING|LAST_90_DAYS/);
+    assert.match(sentQuery, /BETWEEN '2026-05-20' AND '2026-08-17'/);
+  });
+});
+
+describe("#5237 — classifyGoogleAdsFailure (fail-soft não pode mascarar bug)", () => {
+  it("queryError real (LAST_90_DAYS) é DEFEITO, não indisponibilidade", () => {
+    assert.equal(classifyGoogleAdsFailure(REAL_QUERY_ERROR_BODY), "defect");
+  });
+
+  it("UNSUPPORTED_VERSION é defeito — esperar não conserta versão morta", () => {
+    assert.equal(
+      classifyGoogleAdsFailure('{"errorCode":{"requestError":"UNSUPPORTED_VERSION"}}'),
+      "defect",
+    );
+  });
+
+  it("DEVELOPER_TOKEN_NOT_APPROVED é auth-pending (estado esperado hoje)", () => {
+    assert.equal(classifyGoogleAdsFailure(REAL_TOKEN_NOT_APPROVED_BODY), "auth-pending");
+  });
+
+  it("USER_PERMISSION_DENIED é auth-pending, não defeito de header", () => {
+    assert.equal(classifyGoogleAdsFailure(REAL_USER_PERMISSION_DENIED_BODY), "auth-pending");
+  });
+
+  it("5xx/rede sem código conhecido é transient", () => {
+    assert.equal(classifyGoogleAdsFailure("<html>502 Bad Gateway</html>"), "transient");
+  });
+});
+
+describe("#5237 — classe de falha propagada até o CLI", () => {
+  const tokenOk = (body: string, status: number): FetchLike => async (url) =>
+    url.includes("oauth2.googleapis.com")
+      ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
+      : new Response(body, { status });
+
+  it("query malformada chega como failureClass 'defect' (com o errorCode legível)", async () => {
+    const result = await runGoogleAdsIngest(tokenOk(REAL_QUERY_ERROR_BODY, 400), {
+      auth: AUTH,
+      existingRows: [],
+      gaqlQuery: "SELECT segments.date FROM customer WHERE segments.date DURING LAST_90_DAYS",
+    });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") {
+      assert.equal(result.failureClass, "defect");
+      // A truncagem antiga (300 chars) cortava o errorCode e foi o que
+      // escondeu este bug — o motivo precisa carregá-lo.
+      assert.match(result.reason, /INVALID_VALUE_WITH_DURING_OPERATOR/);
+    }
+  });
+
+  it("token na fila chega como 'auth-pending', não como defeito", async () => {
+    const result = await runGoogleAdsIngest(tokenOk(REAL_TOKEN_NOT_APPROVED_BODY, 403), {
+      auth: AUTH,
+      existingRows: [],
+    });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "auth-pending");
+  });
+
+  it("conta pausada (chamada OK, zero linhas) é 'empty' — zero não é falha", async () => {
+    const result = await runGoogleAdsIngest(tokenOk(JSON.stringify({ results: [] }), 200), {
+      auth: AUTH,
+      existingRows: [],
+    });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "empty");
+  });
+
+  it("gasto zero explícito (linhas com costMicros '0') também é 'empty', não defeito", async () => {
+    const body = JSON.stringify({
+      results: [{ segments: { date: "2026-08-10" }, metrics: { costMicros: "0" } }],
+    });
+    const result = await runGoogleAdsIngest(tokenOk(body, 200), { auth: AUTH, existingRows: [] });
+    // Linha com custo 0 é dado válido: vira SpendRow de valor 0 e ATUALIZA.
+    assert.equal(result.kind, "updated");
+    if (result.kind === "updated") {
+      assert.equal(result.rows.find((r) => r.canal === "Google Ads")?.valor, 0);
+    }
+  });
+
+  it("falha de rede continua 'transient'", async () => {
+    const fetchImpl: FetchLike = async () => {
+      throw new Error("connect ETIMEDOUT");
+    };
+    const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "transient");
   });
 });

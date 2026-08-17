@@ -19,6 +19,56 @@ Conversion Import — o único caminho que amarra `gclid` a assinante de verdade
 disponível apenas para contas de administrador"*. O developer token pertence à
 MCC, e é o CID dela que vai em `login-customer-id` nas chamadas.
 
+## Verificação ao vivo (17/08/2026) — o que a API responde HOJE
+
+Rodada contra a API real (`googleAds:search`, v22 e v25, resultados idênticos).
+Registrado aqui porque duas conclusões erradas já foram tiradas de evidência
+parcial, e a distinção entre elas é sutil:
+
+| Chamada | Resposta |
+|---|---|
+| `customers:listAccessibleCustomers` | **200** — `customers/2369219639`, `customers/6236094249` |
+| `googleAds:search` com `login-customer-id` | 403 `USER_PERMISSION_DENIED` |
+| `googleAds:search` sem `login-customer-id` | 403 `DEVELOPER_TOKEN_NOT_APPROVED` |
+
+**`listAccessibleCustomers` responder 200 NÃO significa que o Basic Access
+saiu.** Esse endpoint lista contas do usuário OAuth e passa com token de
+teste; só uma query GAQL contra a conta de produção distingue os dois
+estados. Uma leitura anterior tomou o 200 como prova de aprovação — não é.
+O estado real continua sendo **Basic Access na fila**.
+
+O `USER_PERMISSION_DENIED` (em vez de `DEVELOPER_TOKEN_NOT_APPROVED`) quando
+`login-customer-id` está presente também **não** indica header errado: o
+header está correto, é o mesmo token de teste sendo recusado por outro
+caminho. Confirmado variando o header e o customer alvo — todas as
+combinações falham, nenhuma por configuração.
+
+### Bug encontrado e corrigido na mesma rodada
+
+`DURING LAST_90_DAYS` — usado na query padrão desde o PR #5380 — **não é um
+literal GAQL válido**:
+
+```
+"queryError": "INVALID_VALUE_WITH_DURING_OPERATOR"
+"Invalid date literal supplied for DURING operator: LAST_90_DAYS."
+```
+
+O GAQL valida a query **antes** da autorização, então esse 400 vinha mesmo
+com o token de teste — e o fail-soft o registrava como "API indisponível",
+idêntico ao caso esperado. A ingestão nunca teria funcionado, nem depois da
+aprovação, e nada no log diria isso. Agravantes: a mensagem de erro era
+truncada em 300 chars, o que **cortava exatamente o `errorCode`**; e o CLI
+exigia `GOOGLE_PROJECT_ID` (que o caminho REST não usa), abortando antes
+mesmo de tentar.
+
+Corrigido: query montada com `BETWEEN` e datas explícitas
+(`buildDefaultGaqlQuery`), truncagem em 600, `GOOGLE_PROJECT_ID` fora dos
+requisitos do REST, e classificação de falha
+(`auth-pending`/`defect`/`transient`/`empty`) para que defeito nosso e
+indisponibilidade externa parem de sair com a mesma cara. Travado por
+`test/google-ads-ingest-5237.test.ts` com os corpos de erro reais desta
+verificação como fixture.
+
 ## Estado (14/08/2026)
 
 - [x] MCC criada e conta de anunciante sob ela
@@ -106,9 +156,22 @@ Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
 - `GOOGLE_ADS_CUSTOMER_ID` — `2369219639` (a conta que tem os dados)
 - `GOOGLE_PROJECT_ID` — o "ID do projeto" (`velvety-tube-505505-d1`, tabela de
   identificadores acima), não o nome nem o número. Adicionado em #5237,
-  **ainda pendente de sync no Doppler** — só `.env.example` tem o placeholder
-  até alguém com acesso ao vault rodar `npm run sync-env` ou
-  `doppler secrets set GOOGLE_PROJECT_ID` manualmente.
+  **ainda pendente de sync no Doppler** (confirmado ausente no vault em
+  17/08/2026: `doppler secrets get GOOGLE_PROJECT_ID` → *Could not find
+  requested secret*). Fechar com:
+
+  ```bash
+  doppler secrets set GOOGLE_PROJECT_ID=velvety-tube-505505-d1
+  ```
+
+  **Não bloqueia mais a ingestão REST.** Até 17/08/2026 o CLI
+  `google-ads-ingest-spend.ts` listava esta var como obrigatória e abortava
+  com "variável de ambiente ausente" antes de tentar a chamada — motivo
+  enganoso, porque o caminho REST autentica por
+  CLIENT_ID/SECRET/REFRESH_TOKEN e nunca leu este valor. A var é exigida só
+  pelo servidor MCP oficial (`.mcp.json`, caminho ADC), que de todo modo
+  ainda depende de `GOOGLE_APPLICATION_CREDENTIALS` (Service Account
+  inexistente).
 
 ## MCP oficial e ingestão automática (#5237)
 
@@ -154,6 +217,28 @@ developer token real — item 1 do checklist, ver issue):
   `cac-report.ts`, que segue lendo o CSV mantido manualmente. Cobertura em
   `test/google-ads-ingest-5237.test.ts` usa fixtures GAQL sintéticas — não
   chama a API real.
+
+  **Fail-soft ≠ silêncio (corrigido 17/08/2026).** A falha é classificada
+  antes de virar log, porque absorver tudo na mesma mensagem foi o que
+  escondeu o bug do `LAST_90_DAYS` por dois dias:
+
+  | Classe | Significado | Saída |
+  |---|---|---|
+  | `auth-pending` | Basic Access ainda na fila (#5262) | aviso normal, degrada pro CSV |
+  | `defect` | query malformada / versão da API morta | **banner DEFEITO** — esperar não resolve |
+  | `empty` | chamada OK, gasto zero (conta pausada) | linha de sucesso, não é falha |
+  | `transient` | rede, 5xx, quota | aviso normal, degrada pro CSV |
+
+  **O exit code continua 0 em todas as classes, inclusive `defect`** — a
+  task agendada encadeia com `&&` o ingest da Microsoft
+  (`docs/scheduled-tasks-registry.md`), e sair não-zero calaria o outro
+  canal. O que separa defeito de indisponibilidade é o banner, não o exit
+  code.
+
+  A janela consultada são 90 dias via `BETWEEN` com datas calculadas
+  (`buildDefaultGaqlQuery`, relógio injetável). **Não trocar por `DURING`** —
+  ver a seção de verificação ao vivo no topo; nenhum literal `DURING` cobre
+  90 dias (eles param em `LAST_30_DAYS`).
 
 ## Caminho manual — export CSV do painel (#5503)
 
