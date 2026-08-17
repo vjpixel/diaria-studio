@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   aggregateMicrosoftAdsSpendByMonth,
+  aggregateMicrosoftAdsSpendByMonthWithDiscards,
   refreshMicrosoftAdsAccessToken,
   fetchMicrosoftAdsSpendRows,
   runMicrosoftAdsIngest,
@@ -204,6 +205,115 @@ describe("#5502 — runMicrosoftAdsIngest (orquestração end-to-end, fail-soft)
       return new Response(JSON.stringify({ rows: [] }), { status: 200 });
     };
     const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows });
+    assert.equal(result.kind, "fallback");
+  });
+});
+
+describe("#5605 — aggregateMicrosoftAdsSpendByMonthWithDiscards (espelha #5598 do Google Ads)", () => {
+  it("perda PARCIAL: discardedCount bate com o número exato de linhas malformadas, mesmo com linhas válidas", () => {
+    const rows: MicrosoftAdsReportRow[] = [
+      { TimePeriod: "08/10/2026", Spend: "50.00" }, // válida
+      { Spend: "10.00" }, // descartada: sem TimePeriod
+      { TimePeriod: "not-a-date", Spend: "10.00" }, // descartada: data irreconhecível
+      { TimePeriod: "08/12/2026" }, // descartada: sem Spend
+    ];
+    const out = aggregateMicrosoftAdsSpendByMonthWithDiscards(rows, {
+      canal: "Microsoft Advertising",
+      moeda: "BRL",
+      fonteLabel: "x",
+    });
+    assert.equal(out.discardedCount, 3);
+    assert.equal(out.rows.length, 1);
+    assert.equal(out.rows[0]?.valor, 50);
+  });
+
+  it("perda TOTAL: discardedCount === nº de linhas de entrada, agregado vazio", () => {
+    const rows: MicrosoftAdsReportRow[] = [{ Spend: "1.00" }, { TimePeriod: "08/10/2026" }];
+    const out = aggregateMicrosoftAdsSpendByMonthWithDiscards(rows, {
+      canal: "Microsoft Advertising",
+      moeda: "BRL",
+      fonteLabel: "x",
+    });
+    assert.equal(out.discardedCount, 2);
+    assert.deepEqual(out.rows, []);
+  });
+
+  it("sem malformação: discardedCount é 0", () => {
+    const rows: MicrosoftAdsReportRow[] = [{ TimePeriod: "08/10/2026", Spend: "50.00" }];
+    const out = aggregateMicrosoftAdsSpendByMonthWithDiscards(rows, {
+      canal: "Microsoft Advertising",
+      moeda: "BRL",
+      fonteLabel: "x",
+    });
+    assert.equal(out.discardedCount, 0);
+  });
+
+  it("aggregateMicrosoftAdsSpendByMonth (atalho) devolve exatamente .rows de WithDiscards — assinatura preservada", () => {
+    const rows: MicrosoftAdsReportRow[] = [{ TimePeriod: "08/10/2026", Spend: "50.00" }, { Spend: "1.00" }];
+    const opts = { canal: "Microsoft Advertising", moeda: "BRL", fonteLabel: "x" };
+    assert.deepEqual(aggregateMicrosoftAdsSpendByMonth(rows, opts), aggregateMicrosoftAdsSpendByMonthWithDiscards(rows, opts).rows);
+  });
+});
+
+describe("#5605 — runMicrosoftAdsIngest propaga discardedCount + console.warn em perda parcial", () => {
+  const tokenThen = (rowsBody: string): FetchLike => async (url) =>
+    url.includes("login.microsoftonline.com")
+      ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
+      : new Response(rowsBody, { status: 200 });
+
+  it("resultado 'updated' expõe discardedCount batendo com o nº exato de linhas descartadas", async () => {
+    const mixed = JSON.stringify({
+      rows: [
+        { TimePeriod: "08/10/2026", Spend: "50.00" }, // válida
+        { Spend: "10.00" }, // descartada: sem TimePeriod
+      ],
+    });
+    const result = await runMicrosoftAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "updated");
+    if (result.kind === "updated") {
+      assert.equal(result.discardedCount, 1);
+      assert.equal(result.fetchedRows, 2); // linhas do report BRUTAS, não o nº de meses agregados
+    }
+  });
+
+  it("discardedCount > 0 emite console.warn no caminho de SUCESSO, sem virar exit não-zero", async () => {
+    const mixed = JSON.stringify({
+      rows: [{ TimePeriod: "08/10/2026", Spend: "50.00" }, { Spend: "10.00" }],
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = await runMicrosoftAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+      assert.equal(result.kind, "updated");
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(warnings.some((w) => w.includes("1") && /descartad/.test(w)));
+  });
+
+  it("discardedCount === 0 (nenhuma linha malformada) NÃO emite warning", async () => {
+    const clean = JSON.stringify({ rows: [{ TimePeriod: "08/10/2026", Spend: "50.00" }] });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = await runMicrosoftAdsIngest(tokenThen(clean), { auth: AUTH, existingRows: [] });
+      assert.equal(result.kind, "updated");
+      if (result.kind === "updated") assert.equal(result.discardedCount, 0);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnings.length, 0);
+  });
+
+  it("perda TOTAL continua caindo em 'fallback' (nada pra mesclar), não em 'updated' com discardedCount", async () => {
+    const drifted = JSON.stringify({ rows: [{ TimePeriod: "08/10/2026" }] }); // sem Spend
+    const result = await runMicrosoftAdsIngest(tokenThen(drifted), { auth: AUTH, existingRows: [] });
     assert.equal(result.kind, "fallback");
   });
 });

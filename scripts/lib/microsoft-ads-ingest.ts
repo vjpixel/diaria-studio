@@ -88,30 +88,60 @@ function normalizeMicrosoftDate(raw: string): string | null {
   return null;
 }
 
+export interface AggregateMicrosoftAdsSpendResult {
+  rows: SpendRow[];
+  /** Nº de linhas de `rows` (o parâmetro, `CampaignPerformanceReport` bruto)
+   *  descartadas por malformação durante a agregação — sem `TimePeriod`
+   *  reconhecível ou sem `Spend` parseável (#5605, espelha `discardedCount`
+   *  de `aggregateGaqlSpendByMonthWithDiscards` no #5598). Perda TOTAL do
+   *  mês (`aggregatedRows` fica vazio com `rows.length > 0`) é assunto do
+   *  caller (`runMicrosoftAdsIngest`); este campo torna visível a perda
+   *  PARCIAL — um schema drift que afeta só uma fração das linhas não zera
+   *  o agregado, então passava despercebido antes: `spend.csv` saía
+   *  atualizado, só que SUBESTIMADO. */
+  discardedCount: number;
+}
+
 /**
- * Agrupa linhas do `CampaignPerformanceReport` por mês (`AAAA-MM`), somando
- * `Spend`. Linha sem `TimePeriod` reconhecível ou sem `Spend` parseável é
- * IGNORADA (não tem mês pra agrupar) — nunca contamina a soma como 0, mesma
- * disciplina de `aggregateGaqlSpendByMonth` (`google-ads-ingest.ts`).
+ * Núcleo de `aggregateMicrosoftAdsSpendByMonth` — agrupa linhas do
+ * `CampaignPerformanceReport` por mês (`AAAA-MM`), somando `Spend`. Linha
+ * sem `TimePeriod` reconhecível ou sem `Spend` parseável é IGNORADA (não
+ * tem mês pra agrupar) — nunca contamina a soma como 0, mesma disciplina de
+ * `aggregateGaqlSpendByMonth` (`google-ads-ingest.ts`) — e contada em
+ * `discardedCount` (#5605), pra que a perda fique visível a quem chama em
+ * vez de só um `spend.csv` menor sem explicação.
  *
  * @pure
  */
-export function aggregateMicrosoftAdsSpendByMonth(
+export function aggregateMicrosoftAdsSpendByMonthWithDiscards(
   rows: MicrosoftAdsReportRow[],
   opts: AggregateMicrosoftAdsSpendOptions,
-): SpendRow[] {
+): AggregateMicrosoftAdsSpendResult {
   const byMonth = new Map<string, { spendSum: number; dates: string[] }>();
+  let discardedCount = 0;
 
   for (const row of rows) {
     const rawDate = row.TimePeriod;
-    if (!rawDate) continue;
+    if (!rawDate) {
+      discardedCount++;
+      continue;
+    }
     const date = normalizeMicrosoftDate(rawDate);
-    if (!date) continue;
+    if (!date) {
+      discardedCount++;
+      continue;
+    }
 
     const spendRaw = row.Spend;
-    if (spendRaw === undefined) continue;
+    if (spendRaw === undefined) {
+      discardedCount++;
+      continue;
+    }
     const spend = typeof spendRaw === "string" ? Number(spendRaw) : spendRaw;
-    if (!Number.isFinite(spend)) continue;
+    if (!Number.isFinite(spend)) {
+      discardedCount++;
+      continue;
+    }
 
     const mes = date.slice(0, 7);
     const entry = byMonth.get(mes) ?? { spendSum: 0, dates: [] };
@@ -120,7 +150,7 @@ export function aggregateMicrosoftAdsSpendByMonth(
     byMonth.set(mes, entry);
   }
 
-  return [...byMonth.entries()]
+  const aggregatedRows = [...byMonth.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([mes, { spendSum, dates }]) => {
       const first = dates.slice().sort()[0];
@@ -134,6 +164,24 @@ export function aggregateMicrosoftAdsSpendByMonth(
         fonte: `${opts.fonteLabel} — CampaignPerformanceReport, ${dates.length} dia(s) (${range}), ingestão automática`,
       };
     });
+
+  return { rows: aggregatedRows, discardedCount };
+}
+
+/**
+ * Atalho de `aggregateMicrosoftAdsSpendByMonthWithDiscards` pra quem só
+ * precisa das linhas agregadas — assinatura preservada de propósito, não
+ * quebra callers/testes anteriores ao #5605. Quem precisa saber quantas
+ * linhas foram descartadas (`runMicrosoftAdsIngest`, pra logar perda
+ * parcial) usa a variante `WithDiscards` acima diretamente.
+ *
+ * @pure
+ */
+export function aggregateMicrosoftAdsSpendByMonth(
+  rows: MicrosoftAdsReportRow[],
+  opts: AggregateMicrosoftAdsSpendOptions,
+): SpendRow[] {
+  return aggregateMicrosoftAdsSpendByMonthWithDiscards(rows, opts).rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +201,7 @@ export interface MicrosoftAdsAuthConfig {
 }
 
 export type MicrosoftAdsIngestResult =
-  | { kind: "updated"; rows: SpendRow[]; fetchedRows: number }
+  | { kind: "updated"; rows: SpendRow[]; fetchedRows: number; discardedCount: number }
   | { kind: "fallback"; reason: string };
 
 /** Subconjunto de `fetch` usado — permite injetar um mock em teste, mesmo
@@ -269,6 +317,13 @@ const DEFAULT_REPORT_REQUEST_URL = "https://reporting.api.bingads.microsoft.com/
  * exatamente essa string, nunca "Microsoft Ads"/"Bing Ads", senão a linha
  * cai no caminho "canal desconhecido" de `buildCacReport` mesmo com o gasto
  * corretamente importado.
+ *
+ * **Perda PARCIAL de linhas é logada mesmo no caminho de sucesso (#5605,
+ * espelha o #5598 do Google Ads).** `discardedCount` vai no retorno (pra
+ * quem quiser inspecionar programaticamente) e sai como `console.warn`
+ * sempre que `> 0` — sem virar exit não-zero: o dado parcial ainda é útil,
+ * só precisa ser visível. P3 porque nenhuma campanha Microsoft Ads roda
+ * ainda hoje (#5493) — risco adormecido até então.
  */
 export async function runMicrosoftAdsIngest(
   fetchImpl: FetchLike,
@@ -279,6 +334,8 @@ export async function runMicrosoftAdsIngest(
   const fonteLabel = opts.fonteLabel ?? "Microsoft Advertising Reporting API";
   const reportRequestUrl = opts.reportRequestUrl ?? DEFAULT_REPORT_REQUEST_URL;
 
+  let discardedCount = 0;
+
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, opts.auth);
     if ("error" in tokenResult) return { kind: "error", reason: tokenResult.error };
@@ -286,11 +343,19 @@ export async function runMicrosoftAdsIngest(
     const spendResult = await fetchMicrosoftAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, reportRequestUrl);
     if ("error" in spendResult) return { kind: "error", reason: spendResult.error };
 
-    const rows = aggregateMicrosoftAdsSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
-    return { kind: "ok", rows, fetchedCount: spendResult.rows.length };
+    const aggregated = aggregateMicrosoftAdsSpendByMonthWithDiscards(spendResult.rows, { canal, moeda, fonteLabel });
+    discardedCount = aggregated.discardedCount;
+    return { kind: "ok", rows: aggregated.rows, fetchedCount: spendResult.rows.length };
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
   if (result.kind === "fallback") return result;
-  return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount };
+
+  if (discardedCount > 0) {
+    console.warn(
+      `[microsoft-ads-ingest] ${discardedCount} linha(s) do CampaignPerformanceReport descartada(s) por malformação durante a agregação (#5605) — spend.csv pode sair SUBESTIMADO pro(s) mês(es) afetado(s). Investigar schema drift na API (campo renomeado?) antes de confiar no valor.`,
+    );
+  }
+
+  return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount, discardedCount };
 }

@@ -196,6 +196,32 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    `.claude/skills/diaria-develop/SKILL.md`, passo "Herdar a triagem do
    overnight").
 
+   **O mesmo princípio vale pra julgamento em PROSA herdado de um
+   relatório de sessão anterior, não só pra label mecânica (#5596).** O
+   bloco acima cobre a superfície MECÂNICA — uma label do GitHub, checável
+   em 1 campo. Mas a mesma tentação de economizar trabalho existe quando o
+   que é herdado não é uma label e sim um trecho de prosa de um
+   `data/{overnight,develop}/{AAMMDD}/report.md` de uma rodada anterior do
+   MESMO DIA (ou o próprio resumo que a sessão atual escreveu num turno
+   anterior da conversa) — ex: "pausei o cluster de anúncios a pedido do
+   editor até X ser resolvido" citando um conjunto de issues por número.
+   Generalizar "isso era verdade quando o relatório foi escrito" para "isso
+   ainda é verdade agora" sem reabrir cada issue é o mesmo erro do bloco
+   acima, só que sem label nenhuma pra checar mecanicamente — o filtro
+   barato aqui é reabrir `gh issue view N --json comments` e conferir se
+   existe comentário **mais recente que a referência usada**, não confiar
+   no resumo em prosa. O risco cresce com o tamanho do cluster citado
+   (quanto mais issues agrupadas na mesma frase do relatório antigo, mais
+   convidativo tratá-las como uma unidade só, quando cada uma pode ter
+   avançado num ritmo diferente desde então). Achado concreto (#5596): uma
+   sessão `/diaria-develop` de 260817 herdou "cluster de anúncios pagos
+   bloqueado" de um relatório de horas antes no mesmo dia e reportou 8
+   issues como "genuinamente bloqueadas" sem reabrir nenhuma — 3 delas
+   (#5522, #5500, #5543) já tinham avançado (uma reaprovada em comentário
+   posterior ao que fundamentou o "bloqueado", outra com item de checklist
+   sem bloqueio real, a terceira respondível na hora) e só foram destravadas
+   depois de o editor perguntar por que ficaram sem dispatch.
+
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
 

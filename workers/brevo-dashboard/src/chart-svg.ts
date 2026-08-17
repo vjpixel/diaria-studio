@@ -102,11 +102,28 @@ export function splitIntoRuns<T>(slots: Array<T | null>): Array<Array<{ index: n
  * chegam como chave BRT (mesma origem de `aggregateByDay`/`groupByBrtDay`),
  * então a iteração é pura aritmética de calendário UTC sobre a STRING, não
  * reintroduz fuso horário. Exportado pra teste unitário.
+ *
+ * **#5603:** as 3 situações de entrada inválida (data malformada em
+ * `startDay`, em `endDay`, ou range invertido `start > end`) lançam erros
+ * DESCRITIVOS e DISTINTOS, em vez de caírem no mesmo fallback silencioso
+ * `return [startDay]` — o único chamador (`renderOpenRateChartSvg`, via
+ * `aggregateByDay` em `sections-core.ts`) já garante entrada válida hoje;
+ * isto é defesa pra um chamador futuro/refactor que quebre essa garantia
+ * implícita não colapsar o gráfico pra "1 dia de dados" sem nenhuma pista
+ * de por quê.
  */
 export function enumerateDayRange(startDay: string, endDay: string): string[] {
   const start = new Date(`${startDay}T00:00:00Z`);
+  if (isNaN(start.getTime())) {
+    throw new Error(`chart-svg: enumerateDayRange recebeu startDay malformado (${JSON.stringify(startDay)})`);
+  }
   const end = new Date(`${endDay}T00:00:00Z`);
-  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [startDay];
+  if (isNaN(end.getTime())) {
+    throw new Error(`chart-svg: enumerateDayRange recebeu endDay malformado (${JSON.stringify(endDay)})`);
+  }
+  if (start > end) {
+    throw new Error(`chart-svg: enumerateDayRange recebeu range invertido (startDay=${startDay} > endDay=${endDay})`);
+  }
   const days: string[] = [];
   const cur = new Date(start);
   while (cur <= end) {
@@ -195,6 +212,26 @@ function fmtDayLabel(day: string): string {
  */
 export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   if (rows.length === 0) return "";
+
+  // #5603: assert leve — `rows` precisa vir ordenado ASCENDENTE por `day` e
+  // sem `day` duplicado. O único chamador (`aggregateByDay` em
+  // sections-core.ts) já garante isso hoje, então isto nunca deve disparar
+  // em produção; existe pra transformar uma violação FUTURA (refactor de
+  // `aggregateByDay`, 2º call site) num erro imediato e localizável — sem
+  // este assert, `day` duplicado é resolvido em silêncio pelo `Map`
+  // mantendo só a última ocorrência, e ordem descendente produziria um
+  // `enumerateDayRange` invertido (que agora lança, ver acima) em vez de um
+  // gráfico simplesmente errado.
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].day === rows[i - 1].day) {
+      throw new Error(`chart-svg: renderOpenRateChartSvg recebeu day duplicado (${rows[i].day}) — invariante de aggregateByDay violado`);
+    }
+    if (rows[i].day < rows[i - 1].day) {
+      throw new Error(
+        `chart-svg: renderOpenRateChartSvg recebeu rows fora de ordem ascendente (${rows[i - 1].day} > ${rows[i].day}) — invariante de aggregateByDay violado`,
+      );
+    }
+  }
 
   const days = enumerateDayRange(rows[0].day, rows[rows.length - 1].day);
   const byDay = new Map(rows.map((r) => [r.day, r]));

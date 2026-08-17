@@ -189,6 +189,31 @@ de 1 campo já teria pego isso) e o corpo tinha 4 de 5 itens de checklist já
 codáveis, só 1 preso a um developer token — mesmo padrão do #5379 acima, item
 por item.
 
+**O mesmo princípio vale pra julgamento em PROSA herdado de um relatório de
+sessão anterior, não só pra label mecânica (#5596).** O bloco acima cobre a
+superfície MECÂNICA — uma label do GitHub, checável em 1 campo. Mas a mesma
+tentação de economizar trabalho existe quando o que é herdado não é uma
+label e sim um trecho de prosa de um `data/{overnight,develop}/{AAMMDD}/
+report.md` de uma rodada anterior do MESMO DIA (ou o próprio resumo que a
+sessão atual escreveu num turno anterior da conversa) — ex: "pausei o
+cluster de anúncios a pedido do editor até X ser resolvido" citando um
+conjunto de issues por número. Generalizar "isso era verdade quando o
+relatório foi escrito" para "isso ainda é verdade agora" sem reabrir cada
+issue é o mesmo erro do bloco acima, só que sem label nenhuma pra checar
+mecanicamente — o filtro barato aqui é reabrir `gh issue view N --json
+comments` e conferir se existe comentário **mais recente que a referência
+usada**, não confiar no resumo em prosa. O risco cresce com o tamanho do
+cluster citado (quanto mais issues agrupadas na mesma frase do relatório
+antigo, mais convidativo tratá-las como uma unidade só, quando cada uma
+pode ter avançado num ritmo diferente desde então). Achado concreto
+(#5596): uma sessão `/diaria-develop` de 260817 herdou "cluster de anúncios
+pagos bloqueado" de um relatório de horas antes no mesmo dia e reportou 8
+issues como "genuinamente bloqueadas" sem reabrir nenhuma — 3 delas (#5522,
+#5500, #5543) já tinham avançado (uma reaprovada em comentário posterior ao
+que fundamentou o "bloqueado", outra com item de checklist sem bloqueio
+real, a terceira respondível na hora) e só foram destravadas depois de o
+editor perguntar por que ficaram sem dispatch.
+
 **Bloqueio descoberto MID-EXECUÇÃO (não na varredura da Fase 0): estrutural vs
 ação-física-rápida-do-editor (#5440, 16/08/2026).** As categorias A-E acima
 cobrem o bloqueio identificado na classificação inicial. Um segundo tipo

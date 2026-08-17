@@ -100,6 +100,24 @@ describe("#5593: enumerateDayRange — preenche TODO dia-calendário entre extre
   });
 });
 
+describe("#5603: enumerateDayRange — 3 casos de entrada inválida lançam erros DISTINTOS (nunca o fallback silencioso [startDay])", () => {
+  test("startDay malformado lança erro mencionando startDay", () => {
+    assert.throws(() => enumerateDayRange("not-a-date", "2026-08-03"), /startDay malformado/);
+  });
+
+  test("endDay malformado lança erro mencionando endDay (distinto do erro de startDay)", () => {
+    assert.throws(() => enumerateDayRange("2026-08-01", "not-a-date"), /endDay malformado/);
+  });
+
+  test("range invertido (startDay > endDay) lança erro mencionando range invertido — distinto dos 2 casos acima", () => {
+    assert.throws(() => enumerateDayRange("2026-08-05", "2026-08-01"), /range invertido/);
+  });
+
+  test("startDay malformado tem precedência sobre endDay malformado — 1 erro por vez, não silencia o outro", () => {
+    assert.throws(() => enumerateDayRange("not-a-date", "also-not-a-date"), /startDay malformado/);
+  });
+});
+
 describe("#5593: niceMax — arredonda pro próximo múltiplo redondo", () => {
   test("0 ou negativo vira 1 (evita divisão por zero na escala)", () => {
     assert.equal(niceMax(0), 1);
@@ -210,6 +228,27 @@ describe("#5593: renderOpenRateChartSvg", () => {
     // reintroduzida aqui).
     assert.doesNotMatch(labelsBlock, /fill="var\(--brand\)">Delivered/);
     assert.doesNotMatch(labelsBlock, /fill="var\(--alert\)">Open Rate/);
+  });
+});
+
+describe("#5603: renderOpenRateChartSvg — assert leve de ordem ascendente + day único (invariante de aggregateByDay)", () => {
+  test("day duplicado lança erro descritivo mencionando o day repetido", () => {
+    assert.throws(
+      () => renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-10")]),
+      /day duplicado.*2026-08-10/,
+    );
+  });
+
+  test("rows fora de ordem ascendente lança erro descritivo com as duas pontas", () => {
+    assert.throws(
+      () => renderOpenRateChartSvg([row("2026-08-11"), row("2026-08-10")]),
+      /fora de ordem ascendente.*2026-08-11.*2026-08-10/,
+    );
+  });
+
+  test("rows ordenado ascendente e sem duplicata segue funcionando normalmente (nenhuma regressão)", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11"), row("2026-08-12")]);
+    assert.match(svg, /<svg/);
   });
 });
 

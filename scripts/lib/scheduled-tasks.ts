@@ -928,6 +928,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 18, minute: 20 },
     issue: "#5563",
   },
+  {
+    name: "Diaria-Task-Never-Armed-Alarm",
+    description:
+      "detector de drift entre o registro declarativo e o systemd real: task no registro sem timer armado (e o inverso, mais fraco), #5607",
+    steps: [{ key: "alarm", script: "scripts/task-never-armed-alarm.ts" }],
+    logPath: "task-never-armed-alarm/.alarm.log",
+    // Diária 18:30 BRT — slot livre (ver grep de `kind: "daily"` neste
+    // arquivo; o vizinho mais próximo é 18:20, Diaria-Edicao-Diaria-
+    // Staleness-Alarm). Drift lento (registro vs. máquina só diverge
+    // quando alguém adiciona/remove task e esquece de armar/desarmar) —
+    // cadência diária é suficiente, não precisa de intervalo curto como o
+    // sweep de units failed. Achado ao vivo que motivou (#5607): 6 tasks
+    // no registro (incluindo o próprio Diaria-Systemd-Failed-Units-Alarm)
+    // nunca tiveram timer armado na predator, e nenhum alarme existente
+    // pegou isso — só foram achadas por acaso.
+    // NOTA (mesmo padrão documentado em docs/scheduled-tasks-registry.md
+    // pras outras tasks desta unidade): ainda NÃO armada — rodar
+    // `scripts/setup-systemd-timers.ts` (ou equivalente) da checkout
+    // compartilhada depois do merge. Até lá, esta própria task aparecerá
+    // como "nunca armada" na 1ª execução manual — esperado.
+    schedule: { kind: "daily", hour: 18, minute: 30 },
+    issue: "#5607",
+  },
 ];
 
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
