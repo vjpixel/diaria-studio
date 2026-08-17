@@ -212,6 +212,11 @@ export function formatCacReportMarkdown(
   if (report.unmappedChannels.length > 0) {
     lines.push(`⚠ canal(is) desconhecido(s) em spend.csv (confira o nome exato): ${report.unmappedChannels.join(", ")}.`);
   }
+  if (report.channelsMissingSpend.length > 0) {
+    lines.push(
+      `⚠ canal(is) com assinantes atribuídos mas SEM linha em spend.csv (ausente do relatório): ${report.channelsMissingSpend.join(", ")}.`,
+    );
+  }
   lines.push("");
   lines.push(
     "| Canal | Sub-canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",

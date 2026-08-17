@@ -197,6 +197,9 @@ function renderTable(report) {
   if (report.unmappedChannels && report.unmappedChannels.length > 0) {
     warnings.push(`canal(is) desconhecido(s) em spend.csv: ${report.unmappedChannels.join(", ")}.`);
   }
+  if (report.channelsMissingSpend && report.channelsMissingSpend.length > 0) {
+    warnings.push(`canal(is) com assinantes mas sem linha em spend.csv (ausente da tabela): ${report.channelsMissingSpend.join(", ")}.`);
+  }
   if (report.window) warnings.push("janela de cadastro aplicada — números recortados por período.");
   el.warnings.textContent = warnings.join(" ");
 }

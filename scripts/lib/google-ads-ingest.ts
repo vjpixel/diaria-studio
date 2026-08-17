@@ -19,9 +19,23 @@
  * manual) sem quebrar `cac-report.ts` nem lançar stack cru — nunca
  * `process.exit` de dentro deste módulo, que não sabe se está rodando
  * dentro de um teste.
+ *
+ * ## Adaptador de `spend-ingest.ts` (#5502 Parte B)
+ *
+ * A orquestração genérica (fetch → merge, sempre fail-soft) mora em
+ * `scripts/lib/spend-ingest.ts` (`runSpendIngest`/`mergeSpendRows`) — este
+ * módulo é o ADAPTADOR Google: implementa a autenticação OAuth2 + a query
+ * GAQL + a normalização `GaqlSpendApiRow[] → SpendRow[]`, e delega o
+ * merge pra `runSpendIngest`. `mergeSpendRows` continua re-exportado
+ * DAQUI (não só de `spend-ingest.ts`) pra não quebrar callers/testes
+ * existentes que importam do path antigo — é o mesmo símbolo, uma única
+ * implementação.
  */
 
 import type { SpendRow } from "./aquisicao-spend.ts";
+import { runSpendIngest, mergeSpendRows, type SpendIngestFetchResult } from "./spend-ingest.ts";
+
+export { mergeSpendRows };
 
 // ---------------------------------------------------------------------------
 // Parsing GAQL → SpendRow (puro)
@@ -88,22 +102,6 @@ export function aggregateGaqlSpendByMonth(
         fonte: `${opts.fonteLabel} — GAQL cost_micros, ${dates.length} dia(s) (${range}), ingestão automática`,
       };
     });
-}
-
-/**
- * Funde linhas novas (`incoming`) em cima do conjunto existente lido do
- * `spend.csv` atual: uma linha `incoming` SUBSTITUI qualquer linha
- * `existing` com o mesmo par (`canal`, `mes`) — idempotente em re-execução —
- * e linhas de outros canais/meses (LinkedIn, Beehiiv Boosts, meses antigos
- * de Google Ads não recobertos pela query) são preservadas intactas.
- *
- * @pure
- */
-export function mergeSpendRows(existing: SpendRow[], incoming: SpendRow[]): SpendRow[] {
-  const key = (r: SpendRow) => `${r.canal} ${r.mes}`;
-  const incomingKeys = new Set(incoming.map(key));
-  const kept = existing.filter((r) => !incomingKeys.has(key(r)));
-  return [...kept, ...incoming].sort((a, b) => a.canal.localeCompare(b.canal) || a.mes.localeCompare(b.mes));
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +235,12 @@ const DEFAULT_GAQL_QUERY =
  * antes de chamar isto; aqui é rede/auth/API) devolve `{ kind: "fallback",
  * reason }` em vez de lançar — o CLI decide o que logar, mas NUNCA quebra
  * o relatório (`cac-report.ts` segue lendo o `spend.csv` manual intocado).
+ *
+ * Implementado como adaptador de `runSpendIngest` (#5502 Parte B) — o
+ * `fetcher` encapsula token+GAQL+agregação (a parte ESPECÍFICA do Google) e
+ * devolve `fetchedCount` = nº de linhas GAQL BRUTAS (não o nº de meses
+ * agregados) pra preservar o significado histórico de `fetchedRows` que
+ * `test/google-ads-ingest-5237.test.ts` já trava.
  */
 export async function runGoogleAdsIngest(
   fetchImpl: FetchLike,
@@ -247,17 +251,18 @@ export async function runGoogleAdsIngest(
   const fonteLabel = opts.fonteLabel ?? "Google Ads API (MCP oficial)";
   const gaqlQuery = opts.gaqlQuery ?? DEFAULT_GAQL_QUERY;
 
-  const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, opts.auth);
-  if ("error" in tokenResult) return { kind: "fallback", reason: tokenResult.error };
+  const fetcher = async (): Promise<SpendIngestFetchResult> => {
+    const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, opts.auth);
+    if ("error" in tokenResult) return { kind: "error", reason: tokenResult.error };
 
-  const spendResult = await fetchGoogleAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, gaqlQuery);
-  if ("error" in spendResult) return { kind: "fallback", reason: spendResult.error };
+    const spendResult = await fetchGoogleAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, gaqlQuery);
+    if ("error" in spendResult) return { kind: "error", reason: spendResult.error };
 
-  const incoming = aggregateGaqlSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
-  if (incoming.length === 0) {
-    return { kind: "fallback", reason: "GAQL não devolveu nenhuma linha com custo — nada pra atualizar" };
-  }
+    const rows = aggregateGaqlSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
+    return { kind: "ok", rows, fetchedCount: spendResult.rows.length };
+  };
 
-  const merged = mergeSpendRows(opts.existingRows, incoming);
-  return { kind: "updated", rows: merged, fetchedRows: spendResult.rows.length };
+  const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
+  if (result.kind === "fallback") return result;
+  return { kind: "updated", rows: result.rows, fetchedRows: result.fetchedCount };
 }

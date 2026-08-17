@@ -346,6 +346,32 @@ describe("buildCacReport", () => {
     assert.deepEqual(report.unmappedChannels, ["Beehiiv Boost", "TikTok Ads"]);
   });
 
+  it("channelsMissingSpend (#5502): canal com assinantes no snapshot mas sem linha em spend.csv aparece — o inverso não deixa o canal sumir em silêncio", () => {
+    const subs = [sub({ utm_source: "linkedin" })]; // LinkedIn tem assinante...
+    const noLinkedInRows: SpendRow[] = [spend({ canal: "Google Ads" })]; // ...mas spend.csv não tem linha de LinkedIn
+    const report = buildCacReport(noLinkedInRows, subs);
+    assert.deepEqual(report.channelsMissingSpend, ["LinkedIn"]);
+  });
+
+  it("channelsMissingSpend fica vazio quando todo canal com assinantes tem linha em spend.csv", () => {
+    const subs = [sub({ utm_source: "linkedin" }), sub({ utm_source: "android.googlequicksearchbox" })];
+    const report = buildCacReport(spendRows, subs); // spendRows tem Google Ads + LinkedIn + Beehiiv Boosts
+    assert.deepEqual(report.channelsMissingSpend, []);
+  });
+
+  it("channelsMissingSpend fica vazio pra canal sem NENHUM assinante atribuído — omitir um canal sem tráfego não é o mesmo bug", () => {
+    const noLinkedInRows: SpendRow[] = [spend({ canal: "Google Ads" })];
+    const report = buildCacReport(noLinkedInRows, []); // nenhum assinante de canal nenhum
+    assert.deepEqual(report.channelsMissingSpend, []);
+  });
+
+  it("channelsMissingSpend: canal com QUALQUER linha em spend.csv (mesmo só um sub-canal) não conta como ausente", () => {
+    const subs = [sub({ utm_source: "android.googlequicksearchbox" })]; // PMax
+    const pmaxOnlyRows: SpendRow[] = [spend({ canal: "Google Ads", subcanal: "PMax", valor: 100 })];
+    const report = buildCacReport(pmaxOnlyRows, subs);
+    assert.deepEqual(report.channelsMissingSpend, []);
+  });
+
   it("base metrics vêm de TODOS os ativos, não só dos canais medidos", () => {
     const subs = [
       sub({ utm_source: "direct", stats: { total_received: 100, total_unique_clicked: 5, total_unique_opened: 50 } }),

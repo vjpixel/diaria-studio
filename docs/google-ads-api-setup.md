@@ -155,6 +155,40 @@ developer token real — item 1 do checklist, ver issue):
   `test/google-ads-ingest-5237.test.ts` usa fixtures GAQL sintéticas — não
   chama a API real.
 
+## Caminho manual — export CSV do painel (#5503)
+
+Enquanto o Basic Access não sai da fila (caminho GAQL acima indisponível), o
+painel do Google Ads (`ads.google.com`) permite exportar relatórios como CSV
+à mão — **é o único caminho que funciona hoje**, mas o formato é bem
+diferente do GAQL: preâmbulo de linhas livres (`Relatório de campanha` /
+`Todo o período`), colunas em pt-BR, número com vírgula decimal/ponto de
+milhar, linhas `Total:` e células ` --`. `scripts/lib/google-ads-csv.ts` +
+`scripts/google-ads-import-csv.ts` cobrem esse formato (núcleo puro testado
+contra fixture em `test/google-ads-csv-import.test.ts` — nunca lê
+`data/aquisicao/google-ads/*.csv` real em teste, `data/` é gitignored).
+
+1. No painel: Campanhas → exportar relatório de **campanhas** (e,
+   opcionalmente, **anúncios**/**palavras-chave**/**termos de pesquisa**)
+   como CSV, salvar em `data/aquisicao/google-ads/{tipo}-{AAMMDD}.csv`
+   (convenção de nome usada pelo `listFilesByPrefix` do CLI: prefixo
+   `campanhas-`/`palavras-chave-`/`termos-de-pesquisa-`).
+2. Importar gasto por campanha, separado por sub-canal PMax/Search (reusa
+   `SpendRow.subcanal`, #5496 — nunca um mecanismo novo):
+   ```bash
+   npx tsx scripts/google-ads-import-csv.ts --mes 2026-02
+   ```
+   **`--mes` é obrigatório** — os exports vêm em "Todo o período", sem
+   coluna de data; o script nunca adivinha o mês (ver docstring do CLI). A
+   única forma de ter `mes` derivado automaticamente é re-exportar do painel
+   com segmentação por Data/Mês — ação futura do editor, o parser já aceita
+   o formato de hoje sem mudança quando isso acontecer.
+3. Ver keywords com zero impressão e termos com custo > 0 sem tocar
+   `spend.csv` (requer `palavras-chave-*.csv`/`termos-de-pesquisa-*.csv` no
+   mesmo diretório):
+   ```bash
+   npx tsx scripts/google-ads-import-csv.ts --report
+   ```
+
 ## Manutenção
 
 `https://arquivo.diar.ia.br/privacidade` é revalidada pelo Google enquanto a
