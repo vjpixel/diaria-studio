@@ -126,16 +126,61 @@ export function armMetricsFromCampaign(input: CampaignGuardrailInput): ArmMetric
  * (rara — normalmente bounce sobe junto) só é pega por `shouldSunsetNonOpener`
  * (sunset permanente após 2 envios sem abertura) ou pelo monitor de spam do
  * Postmaster, não mais por este e-mail imediato.
+ *
+ * #5525 (achado ao vivo, campanha 146 "novos-260816"): breakers percentuais
+ * sem piso de volume disparam com UM ÚNICO evento em campanhas pequenas —
+ * sent=33, 1 unsub = 3,03% ≥ limiar de 3% (`thresholds.unsubRate.yellow`).
+ * Investigação via dashboard confirmou: 4 de ~13 campanhas `novos` na janela
+ * investigada cruzaram o breaker de unsub com só 1-3 unsubs absolutos
+ * (sent 24-99), enquanto a taxa AGREGADA do cohort (12 unsub / 756 sent ≈
+ * 1,6%) fica confortavelmente abaixo do próprio limiar amarelo (2%) — ruído
+ * de amostra pequena em torno de uma taxa real saudável, não um problema
+ * recorrente real. `MIN_SENT_FOR_RATE_BREACH`/`MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND`
+ * abaixo suprimem bounce/unsub/spam breach quando o volume é pequeno DEMAIS
+ * pra taxa ser confiável — MAS mantêm uma rede de segurança por CONTAGEM
+ * ABSOLUTA (nunca por %), pra uma catástrofe real numa campanha pequena
+ * (ex: 15 de 30 descadastrando) continuar visível. Escopo: só este path do
+ * ALARME — `evaluateArmGuardrails` (usado direto pelo experimento CTA em
+ * `experiment-cta.ts`) fica intocado, porque os braços desse experimento
+ * sempre têm volume grande o bastante (300+ na prática) pra esse blind spot
+ * nunca se manifestar lá.
  */
+/** Piso de volume (`sent`) abaixo do qual um breach percentual só é
+ * confiável se também cruzar `MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND` em
+ * contagem absoluta (#5525). Escolhido acima do range observado de envios
+ * `novos` (24-99) e abaixo do range típico dos envios diários (centenas a
+ * milhares) — não é um piso estatístico formal, é o mesmo estilo de
+ * constante simples/editor-tunável do resto deste módulo (ver
+ * `thresholds.ts`). */
+export const MIN_SENT_FOR_RATE_BREACH = 200;
+/** Rede de segurança: mesmo abaixo de `MIN_SENT_FOR_RATE_BREACH`, o breach
+ * continua disparando se o evento (unsubs/bounces/complaints) atingir esta
+ * contagem ABSOLUTA — nunca deixa uma campanha pequena com resultado
+ * genuinamente catastrófico ficar invisível só por causa do piso acima. */
+export const MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND = 10;
+
 export function evaluateSendGuardrails(
   input: CampaignGuardrailInput,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): ArmGuardrailResult {
   const raw = evaluateArmGuardrails(armMetricsFromCampaign(input), thresholds, { treatZeroAsBreach: true });
+  // #5525: campanha pequena demais pra taxa percentual ser confiável — só
+  // mantém o breach se a contagem ABSOLUTA do evento também for alta o
+  // bastante (rede de segurança contra blind spot numa catástrofe real).
+  const smallSend = input.sent < MIN_SENT_FOR_RATE_BREACH;
+  const bounceBreach =
+    raw.bounceBreach &&
+    (!smallSend || input.hardBounces + input.softBounces >= MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND);
+  const unsubBreach =
+    raw.unsubBreach && (!smallSend || input.unsubscriptions >= MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND);
+  const spamBreach = raw.spamBreach && (!smallSend || input.complaints >= MIN_ABSOLUTE_EVENT_COUNT_FOR_SMALL_SEND);
   return {
     ...raw,
     openBreach: false,
-    anyBreach: raw.bounceBreach || raw.unsubBreach || raw.spamBreach,
+    bounceBreach,
+    unsubBreach,
+    spamBreach,
+    anyBreach: bounceBreach || unsubBreach || spamBreach,
   };
 }
 
