@@ -576,6 +576,12 @@ export interface CacReport {
    *  em spend.csv" em vez de virar uma linha medida vazia sem aviso
    *  (finding 4 do self-review #5236, PR #5276). */
   unmappedChannels: string[];
+  /** Inverso de `unmappedChannels` (#5502 Parte A): canais com assinantes
+   *  atribuídos no snapshot mas SEM nenhuma linha em `spend.csv` — a linha
+   *  simplesmente não existe no relatório (não há como aparecer "vazia"
+   *  como um canal desconhecido aparece), então este é o único sinal de que
+   *  o canal foi omitido. Ver `computeChannelsMissingSpend`. */
+  channelsMissingSpend: string[];
   /** Janela global aplicada ao relatório inteiro (`--desde/--ate`, #5495) —
    *  `null` = nenhuma (comportamento acumulado desde sempre). Cada linha
    *  `measured` carrega sua PRÓPRIA janela efetiva em `row.window`
@@ -617,6 +623,37 @@ function intersectWindows(a: CohortWindow | undefined, b: CohortWindow | undefin
  *  de dupla-contagem. @pure */
 function spendChannelLabel(spend: SpendRow): string {
   return spend.subcanal ? `${spend.canal}/${spend.subcanal}` : spend.canal;
+}
+
+/**
+ * Inverso de `unmappedChannels` (#5502 Parte A): canal com assinantes
+ * ATRIBUÍDOS no snapshot (via `CHANNEL_KEY_SPECS`) mas SEM nenhuma linha
+ * correspondente em `spend.csv` — hoje esse canal simplesmente não aparece
+ * no relatório (o loop de `buildCacReport` é `spendRows.map`, dirigido pelo
+ * CSV), o que é silencioso do jeito ERRADO pra uma comparação onde o gasto é
+ * dado manual (#5502).
+ *
+ * Verificado no nível de CANAL (não canal/subcanal) — um canal com QUALQUER
+ * linha em `spend.csv` (canal inteiro OU algum sub-canal) já conta como
+ * "tem gasto", mesmo que outro sub-canal específico dele ainda não tenha
+ * linha própria; sinalizar sub-canal ausente individualmente seria ruído
+ * (ex: campanha nova ainda sem Search rodando não é a mesma classe de
+ * problema que o canal inteiro nunca ter sido importado).
+ *
+ * Usa `subscribersForChannel` (mesmo caminho não-ambíguo de
+ * `CHANNEL_GROUP_KEYS`) — canais ambíguos sem sub-canal explícito (ex: a
+ * chave `google.com` de "Search") não entram aqui sozinhos, mesma disciplina
+ * conservadora do resto do módulo. @pure
+ */
+export function computeChannelsMissingSpend(spendRows: SpendRow[], subs: BeehiivBackupSubscriber[]): string[] {
+  const spendCanais = new Set(spendRows.map((r) => r.canal));
+  const knownCanais = [...new Set(CHANNEL_KEY_SPECS.map((s) => s.canal))];
+  const missing: string[] = [];
+  for (const canal of knownCanais) {
+    if (spendCanais.has(canal)) continue;
+    if (subscribersForChannel(subs, canal).length > 0) missing.push(canal);
+  }
+  return missing;
 }
 
 /** Resolve os assinantes de UMA linha de `spend.csv` contra `CHANNEL_KEY_SPECS`
@@ -765,6 +802,7 @@ export function buildCacReport(
     window,
     excludedMissingCreated,
     unmappedChannels,
+    channelsMissingSpend: computeChannelsMissingSpend(spendRows, subs),
   };
 }
 
