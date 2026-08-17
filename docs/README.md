@@ -35,6 +35,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`runbooks/poll-secret-rotation.md`](./runbooks/poll-secret-rotation.md) | Runbook de rotação do secret HMAC do poll É IA? |
 | [`seo-notes.md`](./seo-notes.md) | Registro de fatos apurados sobre `data/seo/` (#4548) — evita reinterpretar `opportunities: 0`/canônica divergente como achado novo antes do checkpoint |
 | [`audience-source-notes.md`](./audience-source-notes.md) | Registro de decisão sobre fontes de cadastro conhecidas na Beehiiv (#5095 — SparkLoop/Techzip) — evita reabrir investigação já concluída |
+| [`conversion-tracking-setup.md`](./conversion-tracking-setup.md) | Estado final publicado da instrumentação GTM de conversão de cadastro (#5500) — IDs de referência, tags/triggers por plataforma, verificação ao vivo |
 
 ## Produto / estratégia / análises vivas
 
