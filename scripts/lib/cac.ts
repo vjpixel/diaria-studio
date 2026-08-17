@@ -259,18 +259,37 @@ export interface ChannelKeySpec {
  * de referrer prováveis se o Ads Manager algum dia rodar. Sem sub-canal —
  * nenhuma segmentação conhecida ainda.
  *
- * **Meta e Microsoft Advertising deliberadamente NÃO têm spec aqui (#5493).**
- * Nomes canônicos já fixados (`"Meta"`, `"Microsoft Advertising"` — usar
- * exatamente essas strings em `spend.csv`/scripts de ingestão), mas as
- * CHAVES de atribuição são bloqueadas por observação real: o navegador
- * embutido da Meta corta a query string com frequência (chega como
- * `l.facebook.com`/`lm.facebook.com`/`l.instagram.com` no `referring_site`,
- * formas nunca vistas no snapshot até agora), e `instagram.com`/
- * `instagram-diaria`/`instagram-pessoal` já são tráfego ORGÂNICO hoje —
- * mapear ingenuamente contaminaria o CAC da Meta com orgânico grátis,
- * exatamente o oposto de medir. Rodar `scripts/observe-channel-keys.ts`
- * contra ≥1 dia de campanha real e colar a saída literal no PR que
- * adicionar essas specs — nunca adivinhar.
+ * **Meta e Microsoft Advertising deliberadamente NÃO têm spec de REFERRER
+ * aqui (#5493).** Nomes canônicos já fixados (`"Meta"`, `"Microsoft
+ * Advertising"` — usar exatamente essas strings em `spend.csv`/scripts de
+ * ingestão), mas as CHAVES DE REFERRER são bloqueadas por observação real:
+ * o navegador embutido da Meta corta a query string com frequência (chega
+ * como `l.facebook.com`/`lm.facebook.com`/`l.instagram.com` no
+ * `referring_site`, formas nunca vistas no snapshot até agora), e
+ * `instagram.com`/`instagram-diaria`/`instagram-pessoal` já são tráfego
+ * ORGÂNICO hoje — mapear ingenuamente contaminaria o CAC da Meta com
+ * orgânico grátis, exatamente o oposto de medir. Rodar
+ * `scripts/observe-channel-keys.ts` contra ≥1 dia de campanha real e colar
+ * a saída literal no PR que adicionar essas specs de referrer — nunca
+ * adivinhar.
+ *
+ * **Teste de 3 canais (260816, §8.2 do protocolo) — as 3 specs abaixo NÃO
+ * violam o #5493, porque são chaves de `utm_source`, não de referrer.**
+ * `resolveGroupKey` (`scripts/cohort-engagement.ts`) dá precedência ao
+ * `utm_source` sobre `referring_site`, e só cai no referrer quando o UTM
+ * vem vazio (`__none__`) — ver a função acima. O #5493 proíbe ADIVINHAR
+ * chave de REFERRER (ex: `l.facebook.com`) porque essa forma só se descobre
+ * observando tráfego real batendo no snapshot; `utm_source` é o oposto —
+ * é um valor que NÓS escrevemos na URL final de cada anúncio, então não há
+ * nada para observar antes de existir: a chave já é conhecida no momento em
+ * que o anúncio é criado. O gate #5522 confirmou ao vivo que o `utm_source`
+ * sobrevive intacto da home até a linha do assinante no snapshot (não é
+ * cortado como o referrer da Meta é). Por isso as 3 chaves abaixo casam
+ * SÓ pelo valor exato de `utm_source` que os anúncios do teste usam —
+ * nunca um domínio de plataforma (`facebook.com`, `instagram.com`,
+ * `bing.com`, `google.com`), que também carrega tráfego ORGÂNICO e
+ * reproduziria o mesmo bug que hoje colocaria LinkedIn em 1º lugar com
+ * R$0 de custo caso fosse usado como referrer sem janela.
  */
 export const CHANNEL_KEY_SPECS: readonly ChannelKeySpec[] = [
   {
@@ -291,6 +310,22 @@ export const CHANNEL_KEY_SPECS: readonly ChannelKeySpec[] = [
   {
     canal: "LinkedIn",
     keys: ["linkedin", "linkedin.com", "l.linkedin.com", "www.linkedin.com"],
+  },
+  // Teste de 3 canais (260816, §8.2) — chaves de utm_source que NÓS
+  // escrevemos nas URLs finais dos anúncios, não adivinhação de referrer
+  // (ver docstring acima). Nomes de canal EXATOS: são as strings gravadas
+  // na coluna `canal` de `data/aquisicao/spend.csv` por este teste.
+  {
+    canal: "Google Ads (teste 2608)",
+    keys: ["google-ads"],
+  },
+  {
+    canal: "Microsoft Ads (teste 2608)",
+    keys: ["microsoft-ads"],
+  },
+  {
+    canal: "Meta Ads (teste 2608)",
+    keys: ["meta-ads"],
   },
 ];
 
