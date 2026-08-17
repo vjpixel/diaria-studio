@@ -17,7 +17,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,6 +47,31 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
       `worker(s) sem workflow de deploy correspondente em .github/workflows/: ${missing.join(", ")} — ` +
         "criar um deploy-{worker}.yml espelhando deploy-poll.yml/deploy-reativar.yml (push em master " +
         `tocando "workers/{worker}/**" + workflow_dispatch).`,
+    );
+  });
+
+  // Regressão do deploy quebrado de 17/08/2026: workers/reativar tinha
+  // workflow (o teste acima passava) mas nunca teve package-lock.json
+  // commitado — o passo "Install reativar worker deps" (`npm ci` dentro do
+  // worker) falhava com EUSAGE em TODA execução, então o deploy automático
+  // que o #5337 entregou nunca chegou a rodar uma vez. `npm ci` exige
+  // lockfile por definição; o único sinal era e-mail de run failed.
+  it("todo worker com package.json tem package-lock.json commitado (npm ci no deploy)", () => {
+    const workers = discoverWorkers();
+    const missing: string[] = [];
+
+    for (const worker of workers) {
+      const dir = resolve(ROOT, "workers", worker.workerDir);
+      if (!existsSync(resolve(dir, "package.json"))) continue;
+      if (!existsSync(resolve(dir, "package-lock.json"))) missing.push(worker.workerDir);
+    }
+
+    assert.deepEqual(
+      missing,
+      [],
+      `worker(s) com package.json mas sem package-lock.json: ${missing.join(", ")} — ` +
+        "os deploy-*.yml rodam `npm ci` dentro do diretório do worker, que falha com EUSAGE sem lockfile. " +
+        "Gerar com `npm install --package-lock-only` no diretório do worker e commitar.",
     );
   });
 });
