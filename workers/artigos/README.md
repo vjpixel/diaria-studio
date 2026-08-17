@@ -39,6 +39,27 @@ sub-paths dentro do mesmo `custom_domain`.
    (confirmar que o Beehiiv continua servindo o resto do domínio sem
    interferência).
 
+## Índices por mês/tema — NÃO estão aqui, já existem em `arquivo.diar.ia.br` (#5125)
+
+O escopo de #5125 também pediu "índice por mês" e "índice por tema" do
+corpus. **As duas já existem em produção, num Worker diferente
+(`workers/arquivo`), não neste:**
+
+- Por mês: `https://arquivo.diar.ia.br/` (#4105) — todas as edições
+  confirmadas, agrupadas por `YYYY-MM`.
+- Por tema: `https://arquivo.diar.ia.br/temas/` (#4558 Parte A) — índice dos
+  6 hubs temáticos publicados (`HUB_META`), cada um listando as edições que
+  casam o tema.
+
+Antes de construir uma 3ª página de índice aqui (ou em qualquer host novo),
+rodar `npx tsx scripts/corpus-index-coverage-report.ts` (precisa do junction
+`data/`) e ler `docs/corpus-index-status-5125.md` — o relatório cruza o
+corpus confirmado contra os dois índices já existentes e mede cobertura real
+(mês: 100%; tema: ~82% via os 6 hubs, na medição de 17/08/2026). Duplicar um
+índice que já cobre o corpus contradiz a decisão registrada em #5125 (opção
+C: produzir superfície que NÃO existe, nunca espelhar o que já existe em
+host nosso).
+
 ## Páginas de entidade (#5125)
 
 Além de artigos avulsos (`{ano}/{slug}/`), o host também serve páginas de
