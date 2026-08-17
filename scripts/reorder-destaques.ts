@@ -210,6 +210,27 @@ interface PendingFileRename {
  * renames intercalados na pasta sincronizada, ao longo de toda a execução"
  * pra "1 escrita por arquivo final, todas verificadas antes do processo
  * retornar sucesso".
+ *
+ * Residual adicional, específico do Passo 4 (#5583, achado do review
+ * consolidado sobre o #5581): a deleção do órfão (`unlinkSync`) só tem
+ * verificação SÍNCRONA — se `unlinkSync` lança, o catch ali embaixo já
+ * trata isso como best-effort (warn + segue). O que ela NÃO tem é o
+ * equivalente da passada de verificação com delay do Passo 3: se o
+ * provedor de sync reverter a deleção de forma assíncrona (a mesma classe
+ * "reversão pós-hoc" da causa raiz do #5564 — rename/delete é
+ * delete-antigo+create-novo do ponto de vista do sync client, então nada
+ * impede o create de voltar minutos depois), o órfão pode reaparecer
+ * silenciosamente depois que este processo já retornou sucesso, sem
+ * nenhum erro sinalizado. Aceito como risco residual documentado (mesmo
+ * tratamento best-effort já dado à falha síncrona): a deleção resolve o
+ * caso comum, e replicar aqui a verificação com delay do Passo 3
+ * adicionaria latência real a TODA reordenação de destaque para mitigar
+ * um cenário de baixa probabilidade (a janela de reversão do OneDrive é
+ * mais associada a escritas de conteúdo variável, tipo `run-log.jsonl`,
+ * do que a deleções simples) e severidade P2. Se o órfão reaparecer
+ * depois de um reorder, é detectável/limpável manualmente — não há
+ * dano invisível de conteúdo publicado errado, só um arquivo obsoleto
+ * sobrando no diretório.
  */
 function stageAndWriteVerified(
   dir: string,
