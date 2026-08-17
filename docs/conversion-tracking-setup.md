@@ -89,9 +89,11 @@ Confirmado por três caminhos independentes:
    confirmação da ponta deles, que a inspeção de rede sozinha não prova
    (rede só mostra que o beacon saiu, não que foi aceito e casou com a
    regra do goal).
-3. **Re-verificado nesta sessão (#5543), incidentalmente:** navegando
-   `eia.diar.ia.br/confirmado` pra outro teste, o mesmo `bat.bing.com/action/0`
-   com `ti=187268188` e o `gtag.js` de `AW-17790097065` apareceram na carga
+3. **Observado ao vivo nesta mesma sessão, incidentalmente, ao investigar o
+   #5543:** navegando `eia.diar.ia.br/confirmado` pra outro teste (o
+   comentário do #5543 registra a lista genérica de requests, sem este nível
+   de detalhe), capturei o mesmo `bat.bing.com/action/0` com `ti=187268188`
+   e o `gtag.js` de `AW-17790097065` aparecendo na carga
    da página — confirma que a base UET e o gtag do Google Ads também
    carregam em `/confirmado`, não só na home.
 
