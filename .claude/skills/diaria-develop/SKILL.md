@@ -163,6 +163,29 @@ já está documentado — dispatchar essa fatia pequena nesta mesma onda (issue
 vira elegível), ou, no mínimo, reportar o próximo passo concreto na tabela
 do `plan.json` em vez de aceitar a leitura de bloqueio.
 
+**Herdar classificação de rodada anterior do MESMO DIA não dispensa esta
+verificação (#5586) — vale tanto pra classificação herdada do overnight
+(Fase 0 passo 2 abaixo, "Herdar a triagem do overnight") quanto pra uma
+classificação herdada de uma rodada `/diaria-develop` anterior do mesmo dia.** Chegar com o
+status já decidido por outra sessão de horas antes não é uma via paralela que
+escapa das 4 checagens — é o mesmo atalho ("a issue parece bloqueada") que
+este bloco existe pra vetar, só que disfarçado de reaproveitamento. Antes de
+aceitar qualquer classificação de bloqueio herdada (categoria A-E ou `local`),
+rodar pelo menos o passo mais barato das 4 checagens acima: `gh issue view N
+--json labels` e conferir se a label/marcador citado como motivo da
+classificação herdada **ainda existe** na issue (comparação de 1 campo, não
+uma investigação completa). Motivo batendo → aceitar a herança sem reabrir as
+4 checagens. Motivo NÃO batendo (label removida, nunca existiu de fato, ou o
+corpo mudou desde a classificação original) → tratar a issue como se
+estivesse sendo classificada agora pela primeira vez e rodar a verificação
+completa das 4 checagens acima — nunca propagar a classificação stale pra
+mais uma onda/rodada. Achado concreto (#5586, `/diaria-overnight` 260817c):
+#5237 chegou marcada `bloqueada-externa: label external-blocker` por uma
+rodada anterior do mesmo dia; a label não existia mais na issue (a checagem
+de 1 campo já teria pego isso) e o corpo tinha 4 de 5 itens de checklist já
+codáveis, só 1 preso a um developer token — mesmo padrão do #5379 acima, item
+por item.
+
 **Bloqueio descoberto MID-EXECUÇÃO (não na varredura da Fase 0): estrutural vs
 ação-física-rápida-do-editor (#5440, 16/08/2026).** As categorias A-E acima
 cobrem o bloqueio identificado na classificação inicial. Um segundo tipo
@@ -361,7 +384,7 @@ Detalhes que decidem se isto funciona:
      --message "coordinator_model" \
      --details '{"model": "sonnet", "effort": "high", "source": "skill_frontmatter"}'
    ```
-2. **Herdar a triagem do overnight:** ler `data/overnight/{AAMMDD-recente}/plan.json` e extrair os `status: pulada` com motivo ∈ `{bloqueio-externo, not-this-week, ambigua, requer-sessao-local}` (#4297 — a última só aparece se aquela rodada do overnight rodou em cloud; herdar mesmo assim, porque develop roda local por natureza e a torna elegível, ver seção "Label `local`") — a triagem cara já foi feita (`source: inherited-overnight`). **Checar se aquela rodada ainda está EM VOO antes de herdar (#5156 item 7):** `npx tsx scripts/lib/session-registry.ts list-active` — se houver uma entrada `kind: "overnight"` ainda ativa (não stale), o `plan.json` que acabou de ser lido é um documento de PROGRESSO, não o resultado final da rodada — os `status: pulada` de agora podem virar `elegivel`/`mergeada` minutos depois, ou novas issues `pulada` podem ainda ser adicionadas. Herdar mesmo assim (não vale a pena esperar), mas gravar `source: "inherited-overnight-in-flight"` em vez de `source: "inherited-overnight"` nessas issues — sinal explícito pro editor/relatório de que a herança é parcial/não-determinística, não uma leitura de rodada já encerrada. Registro vazio ou entrada `overnight` stale → herança normal, `source: "inherited-overnight"` como sempre. **Com `--bugs` (#3375)**: descartar aqui as issues herdadas sem label `bug` — não entram na tabela nem na classificação seguinte. **Com `--priority` (#3499)**: descartar também as issues herdadas cuja prioridade ∉ conjunto passado.
+2. **Herdar a triagem do overnight:** ler `data/overnight/{AAMMDD-recente}/plan.json` e extrair os `status: pulada` com motivo ∈ `{bloqueio-externo, not-this-week, ambigua, requer-sessao-local}` (#4297 — a última só aparece se aquela rodada do overnight rodou em cloud; herdar mesmo assim, porque develop roda local por natureza e a torna elegível, ver seção "Label `local`") — a triagem cara já foi feita (`source: inherited-overnight`). **Herdar não é aceitar cegamente (#5586):** antes de tratar cada motivo herdado como fato assentado, rodar a checagem barata de "Herdar classificação de rodada anterior do MESMO DIA não dispensa esta verificação" (seção "Categorias de bloqueio + protocolo de desbloqueio" acima) — `gh issue view N --json labels` pra confirmar que a label citada como motivo ainda existe. **Checar se aquela rodada ainda está EM VOO antes de herdar (#5156 item 7):** `npx tsx scripts/lib/session-registry.ts list-active` — se houver uma entrada `kind: "overnight"` ainda ativa (não stale), o `plan.json` que acabou de ser lido é um documento de PROGRESSO, não o resultado final da rodada — os `status: pulada` de agora podem virar `elegivel`/`mergeada` minutos depois, ou novas issues `pulada` podem ainda ser adicionadas. Herdar mesmo assim (não vale a pena esperar), mas gravar `source: "inherited-overnight-in-flight"` em vez de `source: "inherited-overnight"` nessas issues — sinal explícito pro editor/relatório de que a herança é parcial/não-determinística, não uma leitura de rodada já encerrada. Registro vazio ou entrada `overnight` stale → herança normal, `source: "inherited-overnight"` como sempre. **Com `--bugs` (#3375)**: descartar aqui as issues herdadas sem label `bug` — não entram na tabela nem na classificação seguinte. **Com `--priority` (#3499)**: descartar também as issues herdadas cuja prioridade ∉ conjunto passado.
 3. **Varredura completa dos issues abertos** (#4319 — antes era só uma varredura de confirmação por label de bloqueio; agora precisa do backlog inteiro pra montar as 4 ondas): `gh issue list --state open --limit 200 --json number,title,labels,body,updatedAt` (`updatedAt` — #5373, usado adiante pra comparar contra `decided_at` do helper de decisão); reconciliar contra o herdado do passo 2 — **fresh-scan vence o plan.json herdado em divergência**. Mesmo filtro `--bugs` se aplica ao resultado fresco. Mesmo filtro `--priority` se aplica ao resultado fresco.
 4. **Classificar cada bloqueio em A–E** (só pras issues com sinal de bloqueio real — herdadas do passo 2 ou labels `external-blocker`/`kit-migration`/`not-this-week`/`beehiiv` do passo 3, cruzado com o corpo; `on-hold` NÃO entra aqui, #4498 — ver passo 5). Issue herdada só por `requer-sessao-local` (sem nenhuma label de categoria A–E aplicável) não força uma categoria — categoria `local` em vez de A-E (mesmo tratamento informacional da seção "Label `local`").
 5. **Excluir do alvo, em qualquer política**: `fora-do-escopo`, `not-this-week` (issue inteira excluída da rodada — distinto do motivo cat. D da tabela de bloqueio), `elegivel_especial` (#3072), `on-hold` (#4498 — "Pausada indefinidamente pelo editor — fora dos briefings até reativar", semântica do próprio label; nunca entra no briefing/Gate 1, mesmo que carregue também `external-blocker`/`kit-migration`; reativação é o editor remover a label no GitHub).
