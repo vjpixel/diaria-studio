@@ -67,8 +67,15 @@ import {
   TRANSIENT_DASHBOARD_STATUSES,
   parseRetryAfterSecs,
 } from "./lib/transient-dashboard-error.ts";
+import { readClariceEnvioOverrideState, applyEnvioOverride } from "./lib/clarice-envio-override.ts";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 loadProjectEnv();
+// `new URL("..", import.meta.url).pathname` quebra no Windows (mesma nota de
+// `clarice-envio-guard.ts`/`brevo-diaria-run.ts`) — usar `fileURLToPath` +
+// `dirname`/`resolve`.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface RiskSnapshot {
   readonly brake: BrakeDecision;
@@ -80,6 +87,11 @@ export interface RiskSnapshot {
   readonly spamSignal: SpamSignalLike;
   /** Cache stale do dashboard (Cloudflare serviu last-good por falha upstream) — nunca decide sobre isso sem avisar. */
   readonly staleNote: string | null;
+  /** #5515 — `true` quando um override ativo (`data/clarice-envio-override.json`)
+   * rebaixou um `stop` calculado pra `hold`. `brake.reasons` já carrega o
+   * texto explicando isso — este campo é só pra callers que queiram checar
+   * sem parsear string. */
+  readonly overrideApplied: boolean;
 }
 
 /**
@@ -144,6 +156,13 @@ export interface FetchRiskSnapshotOptions {
   readonly dashboardUrl: string;
   readonly now: Date;
   readonly fetchFn?: typeof fetch;
+  /** #5515 — raiz do projeto pra localizar `data/clarice-envio-override.json`.
+   * Default `ROOT` (raiz real do repo) — testes injetam um dir descartável. */
+  readonly rootDir?: string;
+  /** #5515 — seam de aviso pro override ilegível (JSON quebrado, `brake`
+   * inválido, `until` ausente) — nunca chamado por expiração normal (isso é
+   * silencioso por design). Default `console.warn`. */
+  readonly onInvalidOverride?: (message: string) => void;
 }
 
 export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise<RiskSnapshot> {
@@ -190,9 +209,21 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
   const freshRisk = aggregateRisk(freshCampaigns);
   const accelRisk = aggregateRisk(accelCampaigns);
 
-  const brake = decideBrake(freshRisk, spamSignal);
+  const rawBrake = decideBrake(freshRisk, spamSignal);
   const step = adaptiveStep(accelRisk, spamSignal);
   const openTrend = openRateTrend(toOpenTrendPoints(trendCampaigns));
+
+  // #5515 — ponto único de aplicação do override persistente. As DUAS
+  // metades do par (`clarice-envio-run.ts` 19:00 / `clarice-envio-guard.ts`
+  // 05:00) leem o freio DESTE script (import direto ou subprocess) — herdam
+  // o rebaixamento automaticamente sem precisar reimplementar a leitura do
+  // override cada uma. `clarice-envio-guard.ts` também consulta o override
+  // diretamente antes de cancelar (defesa em profundidade — ver docstring
+  // de `applyEnvioOverride`).
+  const override = readClariceEnvioOverrideState(opts.rootDir ?? ROOT, opts.now, {
+    onInvalid: opts.onInvalidOverride,
+  });
+  const { brake, overrideApplied } = applyEnvioOverride(rawBrake, override);
 
   return {
     brake,
@@ -202,6 +233,7 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
     accelWindow: { sampleDays: groupByBrtDay(accelCampaigns).size, sent: accelRisk.sent, delivered: accelRisk.delivered },
     spamSignal,
     staleNote,
+    overrideApplied,
   };
 }
 
