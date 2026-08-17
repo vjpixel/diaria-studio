@@ -31,6 +31,7 @@ import {
   computeRetention,
   computeRetentionGroup,
   formatRetentionReport,
+  isExposicaoDesigual,
   partitionByCohort,
   type BucketLabel,
   type RetentionGroup,
@@ -331,6 +332,37 @@ function grupos(over: Partial<Record<BucketLabel, RetentionSubscriber[]>>, minRe
   } as Record<BucketLabel, RetentionGroup>;
 }
 
+describe("isExposicaoDesigual (#4556)", () => {
+  it("REGRESSÃO: coorte com 0 dias contra base madura é o caso MAIS desigual", () => {
+    // A versão inline original exigia `diasCoorte > 0` antes do ratio, na
+    // intenção de evitar divisão por zero — que em JS devolve `Infinity`, não
+    // lança. O efeito era desligar o aviso exatamente aqui.
+    assert.equal(isExposicaoDesigual(0, 233), true);
+    assert.equal(isExposicaoDesigual(233, 0), true);
+  });
+
+  it("0 vs 0 não é desigual — são iguais", () => {
+    assert.equal(isExposicaoDesigual(0, 0), false);
+  });
+
+  it("null de qualquer lado não afirma desigualdade", () => {
+    assert.equal(isExposicaoDesigual(null, 233), false);
+    assert.equal(isExposicaoDesigual(25, null), false);
+    assert.equal(isExposicaoDesigual(null, null), false);
+  });
+
+  it("compara pelo ratio nos dois sentidos", () => {
+    assert.equal(isExposicaoDesigual(25, 233), true);
+    assert.equal(isExposicaoDesigual(233, 25), true);
+    assert.equal(isExposicaoDesigual(25, 30), false);
+  });
+
+  it("o limiar é estrito — exatamente o ratio não marca", () => {
+    assert.equal(isExposicaoDesigual(10, 10 * EXPOSICAO_DESIGUAL_RATIO), false);
+    assert.equal(isExposicaoDesigual(10, 10 * EXPOSICAO_DESIGUAL_RATIO + 1), true);
+  });
+});
+
 describe("buildComparabilityNotes (#4556)", () => {
   it("emite as três ressalvas estruturais mesmo sem dado nenhum", () => {
     const notas = buildComparabilityNotes(grupos({}), 0);
@@ -444,6 +476,59 @@ describe("computeRetention (#4556)", () => {
 
   it("carrega o bloco de comparabilidade no resultado", () => {
     assert.ok(result.comparabilidade.notas.length >= 3);
+  });
+});
+
+describe("computeRetention — o que NÃO pode sair no output (#4556)", () => {
+  // O subscriber real (API e snapshot) carrega `email` e `stats.click_rate`
+  // em runtime, mesmo que `RetentionSubscriber` não os declare — tipagem
+  // estrutural não remove campo. O resultado é montado campo a campo, nunca
+  // por spread; este teste trava isso contra um refactor futuro que resolvesse
+  // "simplificar" espalhando o objeto bruto. Espelha o teste de não-uso de
+  // `click_rate` em `test/leitor.test.ts`.
+  const bruto = {
+    email: "assinante@exemplo.com.br",
+    created: IN_COHORT,
+    status: "active",
+    stats: {
+      total_received: 100,
+      total_unique_opened: 50,
+      total_unique_clicked: 5,
+      click_rate: 999,
+    },
+  } as unknown as RetentionSubscriber;
+
+  const serializado = JSON.stringify(
+    computeRetention([bruto], {
+      window: WINDOW,
+      since: LAUNCH_COHORT_SINCE,
+      until: LAUNCH_COHORT_UNTIL,
+      minReceived: 0,
+      nowEpochSeconds: NOW,
+      fonte: "teste",
+    }),
+  );
+
+  it("não vaza e-mail de assinante", () => {
+    assert.ok(!serializado.includes("assinante@exemplo.com.br"));
+    assert.ok(!serializado.includes("email"));
+  });
+
+  it("não propaga click_rate — nem o valor, nem o campo", () => {
+    assert.ok(!serializado.includes("click_rate"));
+    assert.ok(!serializado.includes("999"));
+  });
+
+  it("o CTR que sai é o real (5/100), não o click_rate", () => {
+    const result = computeRetention([bruto], {
+      window: WINDOW,
+      since: LAUNCH_COHORT_SINCE,
+      until: LAUNCH_COHORT_UNTIL,
+      minReceived: 0,
+      nowEpochSeconds: NOW,
+      fonte: "teste",
+    });
+    assert.equal(result.grupos.coorte.ctr_agregado, 0.05);
   });
 });
 

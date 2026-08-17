@@ -458,6 +458,33 @@ export function computeRetentionGroup(
 export const EXPOSICAO_DESIGUAL_RATIO = 2;
 
 /**
+ * Duas exposições medianas são desiguais o bastante pra invalidar a
+ * comparação de retenção?
+ *
+ * Escrita como função nomeada porque a versão inline errava justamente o
+ * caso extremo: ela exigia `diasCoorte > 0` antes de calcular o ratio, na
+ * intenção de evitar divisão por zero — que em JS não lança, devolve
+ * `Infinity`. O efeito real era DESLIGAR o aviso quando a coorte tem 0 dias
+ * de exposição contra uma base madura, que é a comparação mais desigual
+ * possível. O único caso que precisa de guarda é `0 vs 0` (aí as duas são
+ * iguais, e iguais não é desigual).
+ *
+ * @pure
+ */
+export function isExposicaoDesigual(
+  diasCoorte: number | null,
+  diasBase: number | null,
+  ratio: number = EXPOSICAO_DESIGUAL_RATIO,
+): boolean {
+  if (diasCoorte == null || diasBase == null) return false;
+  if (diasCoorte === diasBase) return false; // cobre o 0 vs 0
+  // Um lado sem exposição nenhuma e o outro com: desigual por definição, e
+  // nenhum ratio finito expressa isso.
+  if (diasCoorte <= 0 || diasBase <= 0) return true;
+  return Math.max(diasBase / diasCoorte, diasCoorte / diasBase) > ratio;
+}
+
+/**
  * Monta o bloco de ressalvas. As duas notas estruturais saem SEMPRE — não
  * são condicionais a um limiar, porque o viés existe em qualquer leitura
  * deste script (ver docstring do módulo). Os marcadores booleanos são o que
@@ -474,12 +501,7 @@ export function buildComparabilityNotes(
 
   const expostosCoorte = coorte.mediana_dias_expostos;
   const expostosBase = base.mediana_dias_expostos;
-  const exposicao_desigual =
-    expostosCoorte != null &&
-    expostosBase != null &&
-    expostosCoorte > 0 &&
-    Math.max(expostosBase / expostosCoorte, expostosCoorte / expostosBase) >
-      EXPOSICAO_DESIGUAL_RATIO;
+  const exposicao_desigual = isExposicaoDesigual(expostosCoorte, expostosBase);
 
   const coorte_imatura =
     minReceived > 0 &&
@@ -714,6 +736,15 @@ if (isMainModule(import.meta.url)) {
       `[cohort-retention] --min-received inválido: "${minReceivedRaw}" (esperado número >= 0)\n`,
     );
     process.exit(3);
+  }
+
+  // `--live` vence `--snapshot`, mas passar os dois é quase sempre engano de
+  // quem achou que fixou a leitura num snapshot. Avisar em vez de obedecer em
+  // silêncio: o rótulo `fonte` do output diria "live" e ninguém repara.
+  if (cliFlags.has("live") && values["snapshot"] != null) {
+    process.stderr.write(
+      `[cohort-retention] --live e --snapshot juntos: usando a API ao vivo e IGNORANDO --snapshot ${values["snapshot"]}\n`,
+    );
   }
 
   loadSubscribers({
