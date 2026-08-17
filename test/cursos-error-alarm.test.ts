@@ -315,6 +315,9 @@ test("alarmFindingsFor — um finding por padrão fatal + um pra taxa quando amb
     ["fatal:cadastro-beehiiv-falhou", "fatal:cookie-hmac-secret-ausente", "rate-not-confirmed"],
   );
   for (const f of findings) assert.equal(f.check, "cursos-error");
+  // #5558: family é sempre "estado" — os 2 padrões (fatal + taxa não confirmada)
+  // são condição re-checável a cada execução, resolvem sozinhos.
+  for (const f of findings) assert.equal(f.family, "estado");
 });
 
 test("alarmFindingsFor — nenhum finding quando nada dispara", () => {

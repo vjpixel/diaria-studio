@@ -143,7 +143,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * conjunto de mudanças pendentes muda de shape, igual ao alarme por e-mail.
  * O corpo lista os e-mails MASCARADOS (`maskEmailForIssue`) — só o e-mail
  * (canal privado) mostra o e-mail completo. */
-function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
+export function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
   const lines = [
     "Achado automático do alarme `Diaria-Apoios-Diff-Alarm`",
     "(`scripts/apoios-diff-alarm.ts`).",

@@ -179,7 +179,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * `workerDriftFindingKey`, a MESMA fórmula usada pra montar `issueRefs` em
  * `buildWorkerDriftAlarmEmail`. Todo achado nasce `P2` — mesma prioridade
  * da issue original #5337 (bug com workaround: deploy manual). */
-function toAlarmFinding(r: WorkerDriftResult): AlarmFinding {
+export function toAlarmFinding(r: WorkerDriftResult): AlarmFinding {
   return {
     check: r.workerName,
     fingerprint: workerDriftFindingKey(r),

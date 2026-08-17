@@ -16,8 +16,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { checkRobotsTxt, loadState, saveState } from "../scripts/robots-txt-drift-check.ts";
-import { emptyRobotsDriftAlarmState, advanceRobotsDriftState } from "../scripts/lib/robots-txt-drift-check.ts";
+import { checkRobotsTxt, loadState, saveState, toAlarmFinding } from "../scripts/robots-txt-drift-check.ts";
+import { emptyRobotsDriftAlarmState, advanceRobotsDriftState, type RobotsDriftResult } from "../scripts/lib/robots-txt-drift-check.ts";
 
 describe("checkRobotsTxt (#4910) — fetch mockado, sem rede real", () => {
   it("200 -> httpStatus 200, robotsTxt com o corpo, fetchError null", async () => {
@@ -103,5 +103,20 @@ describe("loadState / saveState (#4910, I/O)", () => {
     const state = advanceRobotsDriftState(null, new Date("2026-08-10T12:00:00Z"));
     saveState(state, path);
     assert.equal(loadState(path).lastAlarmedFingerprint, null);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — robots.txt volta a bater com o esperado, resolve sozinho", () => {
+    const r: RobotsDriftResult = {
+      host: "diar.ia.br",
+      url: "https://diar.ia.br/robots.txt",
+      status: "drift",
+      httpStatus: 200,
+      fetchError: null,
+      reasons: ["bloco gerenciado da Cloudflare reapareceu"],
+      message: "bloco gerenciado da Cloudflare reapareceu",
+    };
+    assert.equal(toAlarmFinding(r).family, "estado");
   });
 });

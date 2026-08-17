@@ -21,7 +21,7 @@ import {
   maskEmailForIssue,
   type DiffAlarmInput,
 } from "../scripts/lib/apoios-diff-alarm.ts";
-import { loadState, saveState } from "../scripts/apoios-diff-alarm.ts";
+import { loadState, saveState, toAlarmFinding } from "../scripts/apoios-diff-alarm.ts";
 
 const EMPTY: DiffAlarmInput = { toApply: [], toRemove: [] };
 
@@ -234,5 +234,12 @@ describe("buildApoiosDiffAlarmEmail com issueRef (#5339)", () => {
     const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
     const { body } = buildApoiosDiffAlarmEmail(input);
     assert.doesNotMatch(body, /Issue:/);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — diff pendente é recomputado a cada execução, condição re-checável", () => {
+    const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
+    assert.equal(toAlarmFinding(input).family, "estado");
   });
 });

@@ -140,7 +140,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * que já governa a idempotência do e-mail, cobre só os painéis STALE). Sem
  * PII — o achado só cita nome de painel e timestamp de registro, nenhum
  * dado de assinante. */
-function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel: string; latestRecordTs: string | null; check: { staleDays: number | null } }[]; fingerprint: string }): AlarmFinding {
+export function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel: string; latestRecordTs: string | null; check: { staleDays: number | null } }[]; fingerprint: string }): AlarmFinding {
   const worst = agg.stalePanels[0];
   const lines = [
     "Achado automático do alarme `Diaria-Geo-Citation-Staleness-Alarm`",
@@ -174,7 +174,7 @@ function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel: strin
 /** Converte o veredito de provider ausente (#5316) num `AlarmFinding`
  * (#5339) — `check` distinto de `toStalenessFinding` (sinal independente,
  * ver docstring de `computeMultiPanelMissingProviders`). Sem PII. */
-function toMissingProviderFinding(missingCheck: { hasMissing: boolean; panelsWithMissing: { panel: string; missingProviders: string[] }[]; fingerprint: string }): AlarmFinding {
+export function toMissingProviderFinding(missingCheck: { hasMissing: boolean; panelsWithMissing: { panel: string; missingProviders: string[] }[]; fingerprint: string }): AlarmFinding {
   const allMissing = [...new Set(missingCheck.panelsWithMissing.flatMap((p) => p.missingProviders))].sort();
   const lines = [
     "Achado automático do alarme `Diaria-Geo-Citation-Staleness-Alarm`",

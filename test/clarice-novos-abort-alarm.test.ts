@@ -18,6 +18,7 @@ import {
   NOVOS_ABORT_STREAK_THRESHOLD,
   type NovosAbortAlarmState,
 } from "../scripts/lib/clarice-novos-abort-alarm.ts";
+import { toAlarmFinding } from "../scripts/clarice-novos-abort-alarm.ts";
 
 const T0 = new Date("2026-08-14T11:05:00.000Z");
 const T1 = new Date("2026-08-15T11:05:00.000Z");
@@ -121,5 +122,12 @@ describe("buildNovosAbortAlarmEmail (#5405)", () => {
     const state: NovosAbortAlarmState = { consecutiveSemaphoreAborts: 3, lastAlarmedAt: null, lastCheckedAt: T0.toISOString() };
     const { body } = buildNovosAbortAlarmEmail(state, undefined, null);
     assert.doesNotMatch(body, /Fila represada/);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — o achado é 'o mecanismo está abortando', resolve sozinho quando o streak volta a zero", () => {
+    const state: NovosAbortAlarmState = { consecutiveSemaphoreAborts: 3, lastAlarmedAt: null, lastCheckedAt: T0.toISOString() };
+    assert.equal(toAlarmFinding(state, undefined).family, "estado");
   });
 });

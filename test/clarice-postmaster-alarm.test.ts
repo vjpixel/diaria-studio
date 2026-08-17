@@ -34,7 +34,14 @@ import {
   CAMPAIGN_SPAM_MISSING_THRESHOLD_DAYS,
   type CampaignSpamMissingAlarmState,
 } from "../scripts/lib/clarice-postmaster-alarm.ts";
-import { loadState, saveState, loadCampaignSpamMissingState, saveCampaignSpamMissingState } from "../scripts/clarice-postmaster-alarm.ts";
+import {
+  loadState,
+  saveState,
+  loadCampaignSpamMissingState,
+  saveCampaignSpamMissingState,
+  toAlarmFinding,
+  toCampaignSpamMissingFinding,
+} from "../scripts/clarice-postmaster-alarm.ts";
 import { POSTMASTER_STALE_MS } from "../workers/brevo-dashboard/src/thresholds.ts";
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
@@ -420,5 +427,17 @@ describe("loadCampaignSpamMissingState / saveCampaignSpamMissingState (I/O, #544
     saveCampaignSpamMissingState(missingState, missingStatePath);
     assert.deepEqual(loadState(staleStatePath), staleState);
     assert.deepEqual(loadCampaignSpamMissingState(missingStatePath), missingState);
+  });
+});
+
+describe("toAlarmFinding / toCampaignSpamMissingFinding — family (#5558)", () => {
+  it("toAlarmFinding é sempre 'estado' — 'o SINAL está cego', resolve sozinho quando uma leitura fresca voltar", () => {
+    const state: PostmasterStaleAlarmState = { consecutiveStale: 5, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString(), lastStaleReason: "date-stale" };
+    assert.equal(toAlarmFinding(state, null).family, "estado");
+  });
+
+  it("toCampaignSpamMissingFinding é sempre 'estado' — condição de ausência re-checada a cada execução", () => {
+    const state: CampaignSpamMissingAlarmState = { consecutiveMissing: 20, lastAlarmedAt: null, lastCheckedAt: NOW.toISOString() };
+    assert.equal(toCampaignSpamMissingFinding(state).family, "estado");
   });
 });

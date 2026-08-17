@@ -117,7 +117,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * `family: "evento"` (#5553) — mesmo racional de `clarice-envio-alarm.ts`:
  * a falha de um `aammdd` específico é um fato histórico, não uma condição
  * que "volta a ficar ok". */
-function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): AlarmFinding {
+export function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): AlarmFinding {
   return {
     check: "clarice-envio-guard",
     fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,

@@ -25,6 +25,7 @@ import {
   type CampaignGuardrailInput,
   type GuardrailAlarmState,
 } from "../scripts/lib/clarice-guardrail-alarm.ts";
+import { toAlarmFinding } from "../scripts/clarice-guardrail-alarm.ts";
 
 const NOW = new Date("2026-07-24T06:00:00.000Z"); // envio 9B saiu 06:00 BRT (09:00 UTC) do dia seguinte no incidente real
 
@@ -278,4 +279,10 @@ test("buildGuardrailAlarmEmail sem issueRef (undefined) — corpo sai igual ao c
   const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
   const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW);
   assert.doesNotMatch(body, /Issue:/);
+});
+
+test("toAlarmFinding — family é sempre 'evento' — campanha só é avaliada 1x, não se auto-resolve (#5558, regressão direta do #5525)", () => {
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
+  const finding = toAlarmFinding({ id: 146, name: "Clarice 2607 grupo:novos-260816" }, guardrail);
+  assert.equal(finding.family, "evento");
 });

@@ -85,7 +85,7 @@ const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
  * ("clarice-postmaster"/"signal-stale") — o achado é "o SINAL está cego",
  * não um evento datado: a MESMA issue é reusada enquanto o streak persistir.
  * Sem PII: só data da última leitura + contagem de streak. */
-function toAlarmFinding(state: PostmasterStaleAlarmState, entryDate: string | null): AlarmFinding {
+export function toAlarmFinding(state: PostmasterStaleAlarmState, entryDate: string | null): AlarmFinding {
   return {
     check: "clarice-postmaster",
     fingerprint: "signal-stale",
@@ -119,7 +119,7 @@ function toAlarmFinding(state: PostmasterStaleAlarmState, entryDate: string | nu
  * acima — sinal independente, reconciliado como issue própria (mesmo padrão
  * multi-finding de `geo-citation-staleness-alarm.ts`, que reconcilia
  * staleness e provider-ausente como 2 achados separados na mesma execução). */
-function toCampaignSpamMissingFinding(state: CampaignSpamMissingAlarmState): AlarmFinding {
+export function toCampaignSpamMissingFinding(state: CampaignSpamMissingAlarmState): AlarmFinding {
   return {
     check: "clarice-postmaster-campaign-spam",
     fingerprint: "campaign-spam-missing",
