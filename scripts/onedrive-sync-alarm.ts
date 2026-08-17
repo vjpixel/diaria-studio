@@ -168,7 +168,7 @@ function saveAlarmIssuesState(state: AlarmIssuesState): void {
   writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
-function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: OnedriveServiceState): AlarmFinding {
+export function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: OnedriveServiceState): AlarmFinding {
   return {
     check: "onedrive-sync",
     fingerprint: verdict,
@@ -194,6 +194,7 @@ function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: Onedriv
     ].join("\n"),
     labels: ["bug"],
     priority: "P1",
+    family: "estado",
   };
 }
 
