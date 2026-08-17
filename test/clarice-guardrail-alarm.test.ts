@@ -105,6 +105,52 @@ test("evaluateSendGuardrails — envio saudável (tudo dentro dos limites) → a
   assert.equal(result.anyBreach, false);
 });
 
+test("evaluateSendGuardrails — REGRESSÃO #5525: campanha pequena (sent=33) com 1 único unsub NÃO dispara mais — caso real 'novos-260816' (id 146)", () => {
+  const input = mkCampaign({
+    sent: 33,
+    delivered: 33,
+    uniqueViews: 11, // 33,3% abertura — contexto, nunca gatilha (#5166)
+    unsubscriptions: 1, // 1/33 ≈ 3,03% — cruzava o limiar de 3% antes do #5525
+    hardBounces: 0,
+    softBounces: 0,
+    complaints: 0,
+  });
+  const result = evaluateSendGuardrails(input);
+  assert.ok(Math.abs(result.unsubRatePct - 3.0303) < 0.001, "taxa continua calculada — só deixa de gatilhar");
+  assert.equal(result.unsubBreach, false);
+  assert.equal(result.anyBreach, false);
+});
+
+test("evaluateSendGuardrails — #5525: campanha pequena com evento catastrófico em CONTAGEM ABSOLUTA continua disparando (rede de segurança, nunca cega totalmente)", () => {
+  const input = mkCampaign({
+    sent: 30,
+    delivered: 30,
+    uniqueViews: 10,
+    unsubscriptions: 15, // 50% E contagem absoluta (15) >= piso de segurança (10)
+    hardBounces: 0,
+    softBounces: 0,
+    complaints: 0,
+  });
+  const result = evaluateSendGuardrails(input);
+  assert.equal(result.unsubBreach, true, "15 unsubs absolutos não pode ficar invisível só por causa do piso de volume");
+  assert.equal(result.anyBreach, true);
+});
+
+test("evaluateSendGuardrails — #5525: campanha grande (sent>=200) continua avaliando por percentual puro, sem exigir contagem absoluta extra", () => {
+  const input = mkCampaign({
+    sent: 300,
+    delivered: 300,
+    uniqueViews: 100,
+    unsubscriptions: 9, // 3% — cruza o limiar, mas contagem absoluta (9) é BAIXA — não importa acima do piso de volume
+    hardBounces: 0,
+    softBounces: 0,
+    complaints: 0,
+  });
+  const result = evaluateSendGuardrails(input);
+  assert.equal(result.unsubBreach, true, "acima do piso de volume, taxa percentual sozinha já basta");
+  assert.equal(result.anyBreach, true);
+});
+
 test("isReadyForEvaluation — fronteira exata de 10h (>=, não >) (#4475, eram 6h originalmente)", () => {
   const sentDate = "2026-07-23T00:00:00.000Z";
   const exactly10h = new Date(Date.parse(sentDate) + GUARDRAIL_EVAL_WINDOW_MS);

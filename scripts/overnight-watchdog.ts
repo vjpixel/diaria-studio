@@ -11,10 +11,14 @@
  * Mede "última atividade" como max(mtime plan.json, último evento run-log
  * com agent:"overnight" para a edição desta rodada).
  *
- * Stall = "última atividade" > STALL_THRESHOLD_MIN (default 60) min atrás.
+ * Stall = "última atividade" > `OVERNIGHT_STALL_THRESHOLD_MIN` (45 min desde
+ * 17/08/2026, #5568 — antes 60) atrás. O número vive em
+ * `scripts/lib/overnight-stall-threshold.ts`, junto do rationale do piso.
  *
  * Ação em caso de stall:
- *   (a) Append em stall_events no plan.json (com dedup por janela de 30 min)
+ *   (a) Append em stall_events no plan.json (dedup por janela de `max(limiar/2,
+ *       15 min)` — 22,5 min com o limiar atual de 45; era 30 min quando o
+ *       limiar era 60, #5568)
  *   (b) Emite evento no run-log via scripts/log-event.ts
  *   (c) Renderiza halt banner via scripts/render-halt-banner.ts
  *   (d) Push por e-mail (#5341 — via `scripts/lib/push-notify.ts`, reusa a
@@ -68,7 +72,8 @@
  *
  * Flags:
  *   --dry-run          Apenas diagnóstico; sem writes nem alertas.
- *   --threshold <min>  Override do limiar (default: 60 ou OVERNIGHT_WATCHDOG_STALL_MIN).
+ *   --threshold <min>  Override do limiar (default: OVERNIGHT_STALL_THRESHOLD_MIN
+ *                      ou a env OVERNIGHT_WATCHDOG_STALL_MIN).
  *
  * GUARD DE PUBLICAÇÃO: este script é só observabilidade/alerta.
  * NUNCA toca Beehiiv/LinkedIn/Facebook/Brevo, PRs, nem merge.
@@ -108,6 +113,10 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
+import {
+  CI_WAIT_TIMEOUT_MIN,
+  OVERNIGHT_STALL_THRESHOLD_MIN,
+} from "./lib/overnight-stall-threshold.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -132,7 +141,7 @@ export interface PlanJson {
 export function detectStall(
   lastActivityMs: number,
   nowMs: number,
-  thresholdMin: number = 60,
+  thresholdMin: number = OVERNIGHT_STALL_THRESHOLD_MIN,
 ): boolean {
   return nowMs - lastActivityMs >= thresholdMin * 60_000;
 }
@@ -653,18 +662,77 @@ function emitRunLogEvent(
 // CLI arg parsing
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): {
+/**
+ * Resolve as flags da invocação. Precedência: `--threshold` > env
+ * `OVERNIGHT_WATCHDOG_STALL_MIN` > `OVERNIGHT_STALL_THRESHOLD_MIN`.
+ *
+ * **Exportada e com `env`/`warn` injetáveis desde o #5568** — antes era
+ * privada e sem teste algum, o que a tornava o ponto cego mais perigoso
+ * deste script: é ELA que resolve o limiar que o systemd timer usa de fato
+ * em produção (`detectStall` é sempre chamado com o valor explícito que sai
+ * daqui, nunca com o default do parâmetro). O review do #5568 provou por
+ * mutação que reverter esta função para o literal `"60"` passava a suíte
+ * inteira sem uma falha — exatamente a divergência silenciosa que a
+ * extração da constante existe pra impedir, no consumidor que mais importa.
+ *
+ * **Entrada inválida AVISA em vez de ser descartada calada** (mesmo review):
+ * env vazia/`"abc"`/`"0"`/negativa e `--threshold` sem valor ou não-numérico
+ * antes caíam no default/eram ignorados sem nenhum sinal — um typo no `.env`
+ * fazia o watchdog rodar com um limiar que o operador não escolheu, e nada
+ * indicava isso. O aviso vai pra stderr (log da unit systemd) e a execução
+ * SEGUE com o default: avisar é o objetivo, abortar o watchdog por causa de
+ * um override malformado seria pior que rodar com o valor padrão.
+ *
+ * O guard de piso (`CI_WAIT_TIMEOUT_MIN`) também só avisa, nunca recusa — um
+ * limiar abaixo do timeout de CI é quase certamente engano (alarme em toda
+ * espera de CI saudável), mas pode ser intencional num teste pontual, e é
+ * justamente pra isso que `--threshold` existe.
+ */
+export function parseArgs(
+  argv: string[],
+  env: Record<string, string | undefined> = process.env,
+  warn: (msg: string) => void = (msg) => void process.stderr.write(msg),
+): {
   dryRun: boolean;
   thresholdMin: number;
 } {
   const dryRun = argv.includes("--dry-run");
-  let thresholdMin = parseInt(process.env.OVERNIGHT_WATCHDOG_STALL_MIN ?? "60", 10);
-  if (isNaN(thresholdMin) || thresholdMin < 1) thresholdMin = 60;
+
+  let thresholdMin = OVERNIGHT_STALL_THRESHOLD_MIN;
+
+  const rawEnv = env.OVERNIGHT_WATCHDOG_STALL_MIN;
+  if (rawEnv !== undefined) {
+    const v = parseInt(rawEnv, 10);
+    if (!isNaN(v) && v >= 1) {
+      thresholdMin = v;
+    } else {
+      warn(
+        `[watchdog] Aviso: OVERNIGHT_WATCHDOG_STALL_MIN="${rawEnv}" inválido — ` +
+          `usando o default de ${OVERNIGHT_STALL_THRESHOLD_MIN} min.\n`,
+      );
+    }
+  }
 
   const tIdx = argv.indexOf("--threshold");
-  if (tIdx !== -1 && argv[tIdx + 1]) {
-    const v = parseInt(argv[tIdx + 1], 10);
-    if (!isNaN(v) && v > 0) thresholdMin = v;
+  if (tIdx !== -1) {
+    const raw = argv[tIdx + 1];
+    const v = raw === undefined ? NaN : parseInt(raw, 10);
+    if (!isNaN(v) && v > 0) {
+      thresholdMin = v;
+    } else {
+      warn(
+        `[watchdog] Aviso: --threshold ${raw === undefined ? "(sem valor)" : `"${raw}"`} ` +
+          `inválido — mantendo ${thresholdMin} min.\n`,
+      );
+    }
+  }
+
+  if (thresholdMin <= CI_WAIT_TIMEOUT_MIN) {
+    warn(
+      `[watchdog] Aviso: limiar de ${thresholdMin} min está no piso ou abaixo dele ` +
+        `(timeout de espera de CI = ${CI_WAIT_TIMEOUT_MIN} min). Toda espera de CI ` +
+        `saudável tende a virar alarme falso — ver scripts/lib/overnight-stall-threshold.ts.\n`,
+    );
   }
 
   return { dryRun, thresholdMin };
@@ -898,8 +966,9 @@ async function runWatchdogForKind(
  * Kinds vigiados por esta invocação do watchdog. `continuo` foi removido
  * daqui em #5390 (15/08/2026): com o wake ocioso de `/diaria-continuo`
  * alongado pra 4h (`.claude/skills/diaria-continuo/SKILL.md`, seção
- * "Cadência do wake em modo ocioso"), o limiar de stall de 60 min
- * (`STALL_THRESHOLD_MIN`) passou a disparar em TODA sessão contínua ociosa
+ * "Cadência do wake em modo ocioso"), o limiar de stall
+ * (`OVERNIGHT_STALL_THRESHOLD_MIN` — 60 min à época desta decisão, 45 desde
+ * o #5568) passava a disparar em TODA sessão contínua ociosa
  * — o alarme virava ruído garantido, não sinal, porque não existe limiar
  * <4h que distinga "ociosa de propósito" de "travada de verdade" sem
  * disparar em toda janela ociosa saudável. O maquinário que o kind

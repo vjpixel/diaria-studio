@@ -1,0 +1,246 @@
+#!/usr/bin/env node
+/**
+ * scripts/systemd-failed-units-alarm.ts (#5563 follow-up)
+ *
+ * Task periódica: varre `systemctl --user list-units 'diaria-*.service'
+ * --state=failed` e alarma se qualquer unit deste repo estiver em estado
+ * `failed`. Sweep GENÉRICO — cobre de graça as ~34 tasks do registro
+ * (`scripts/lib/scheduled-tasks.ts`) em vez de um alarme artesanal por task.
+ *
+ * Lógica pura em `scripts/lib/systemd-failed-units-alarm.ts` — este arquivo
+ * é só I/O: `systemctl --user list-units` (SÓ LEITURA — ver guard abaixo),
+ * envio de e-mail, dedup/criação de issue via `scripts/lib/alarm-issues.ts`.
+ *
+ * **GUARD (invariável):** este script NUNCA chama `systemctl` com
+ * `start`/`stop`/`restart`/`enable`/`disable` — só `list-units` (leitura).
+ * Religar um serviço falho é ação manual do editor.
+ *
+ * **Guard de máquina sem systemd `--user`** (sessão cloud, clone fresco, ou
+ * qualquer máquina sem `systemctl`): a chamada falha com ENOENT — tratado
+ * como "nenhuma unit falha detectável nesta máquina", nunca como alarme
+ * (fail-soft honesto, mesmo padrão de `onedrive-sync-alarm.ts`).
+ *
+ * Uso:
+ *   npx tsx scripts/systemd-failed-units-alarm.ts               # avalia + alarma se necessário
+ *   npx tsx scripts/systemd-failed-units-alarm.ts --dry-run      # avalia + imprime, NÃO envia nem persiste
+ *   npx tsx scripts/systemd-failed-units-alarm.ts --to email@x   # override do destinatário
+ *
+ * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
+ * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
+ *
+ * Estado: `data/.systemd-failed-units-alarm-state.json` (dedup do e-mail) +
+ * `data/.systemd-failed-units-alarm-issues.json` (tracking de issue por
+ * achado, `alarm-issues.ts`).
+ */
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { resolve, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { sendGmailMessage } from "./lib/gmail-send.ts";
+import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import {
+  parseSystemctlListUnitsFailedOutput,
+  evaluateSystemdFailedUnits,
+  shouldSendSystemdFailedUnitsAlarm,
+  markSystemdFailedUnitsAlarmed,
+  emptySystemdFailedUnitsAlarmState,
+  buildSystemdFailedUnitsAlarmEmail,
+  isAlarmingVerdict,
+  type SystemdFailedUnitsAlarmState,
+  type SystemdFailedUnitsEvaluation,
+} from "./lib/systemd-failed-units-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+  type AlarmIssueResult,
+} from "./lib/alarm-issues.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const DATA_DIR = resolve(ROOT, "data");
+const STATE_PATH = join(DATA_DIR, ".systemd-failed-units-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".systemd-failed-units-alarm-issues.json");
+const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
+const LOG_PREFIX = "[systemd-failed-units-alarm]";
+/** Cadência recomendada é a cada 2h (ver scripts/lib/scheduled-tasks.ts) —
+ * 2 execuções limpas consecutivas = ~4h sem o achado, ordem de grandeza
+ * consistente com os outros alarmes de cadência curta do repo
+ * (`clarice-guardrail-alarm.ts`, `onedrive-sync-alarm.ts`, ambos 4h,
+ * também usam 2). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
+
+/** `null` = não foi possível consultar (systemctl ausente/erro qualquer) —
+ * caller trata como "nenhuma unit falha detectável", nunca como alarme. */
+export function readFailedUnitNames(execFn: typeof execFileSync = execFileSync): string[] | null {
+  try {
+    const out = execFn(
+      "systemctl",
+      ["--user", "list-units", "diaria-*.service", "--state=failed", "--plain", "--no-legend"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    ) as unknown as string;
+    return parseSystemctlListUnitsFailedOutput(String(out ?? ""));
+  } catch (e: unknown) {
+    const err = e as { status?: number | null; stdout?: string };
+    // Lista vazia (nenhuma unit failed) faz `systemctl list-units` sair com
+    // status != 0 em algumas versões, mas ainda escreve o (não-)resultado em
+    // stdout — mesmo padrão de `onedrive-sync-alarm.ts` (is-active). Só
+    // trata como "não foi possível consultar" quando nem stdout veio.
+    if (typeof err.stdout === "string") {
+      return parseSystemctlListUnitsFailedOutput(err.stdout);
+    }
+    return null;
+  }
+}
+
+export function toAlarmFinding(unitName: string): AlarmFinding {
+  return {
+    check: "systemd-failed-units",
+    fingerprint: unitName,
+    title: `[diar.ia.br] systemd unit falhou: ${unitName}`,
+    body: [
+      "Achado automático do alarme `Diaria-Systemd-Failed-Units-Alarm`",
+      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up).",
+      "",
+      `A unit systemd --user \`${unitName}\` está em estado \`failed\`.`,
+      "",
+      `Investigar: \`journalctl --user -u ${unitName} -n 50\` e ` +
+        `\`systemctl --user status ${unitName}\`. Religar/reiniciar é ação manual do editor ` +
+        "(este alarme nunca muta o serviço).",
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P1",
+    family: "estado",
+  };
+}
+
+function loadState(): SystemdFailedUnitsAlarmState {
+  if (!existsSync(STATE_PATH)) return emptySystemdFailedUnitsAlarmState();
+  try {
+    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Partial<SystemdFailedUnitsAlarmState>;
+    const lastAlarmedUnits = Array.isArray(raw.lastAlarmedUnits)
+      ? raw.lastAlarmedUnits.filter((u): u is string => typeof u === "string")
+      : null;
+    return { lastAlarmedUnits };
+  } catch {
+    return emptySystemdFailedUnitsAlarmState();
+  }
+}
+
+function saveState(state: SystemdFailedUnitsAlarmState): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileAtomic(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
+function loadAlarmIssuesState(): AlarmIssuesState {
+  if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(ALARM_ISSUES_STATE_PATH, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch (e) {
+    console.error(
+      `${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`,
+    );
+    return emptyAlarmIssuesState();
+  }
+}
+
+function saveAlarmIssuesState(state: AlarmIssuesState): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
+async function main(): Promise<void> {
+  loadProjectEnv(ROOT);
+  const argv = process.argv.slice(2);
+  const isDryRun = hasFlag(argv, "dry-run");
+  const toOverride = getArg(argv, "to");
+
+  const failedUnits = readFailedUnitNames();
+  if (failedUnits === null) {
+    console.log(`${LOG_PREFIX} systemctl indisponível nesta máquina (sessão cloud/sem systemd --user) — nada a checar.`);
+    return;
+  }
+
+  const evaluation: SystemdFailedUnitsEvaluation = evaluateSystemdFailedUnits(failedUnits);
+  console.log(
+    `${LOG_PREFIX} verdict=${evaluation.verdict} failedUnits=[${evaluation.failedUnits.join(", ")}]`,
+  );
+
+  const state = loadState();
+  const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
+    ? evaluation.failedUnits.map(toAlarmFinding)
+    : [];
+  const alarmState = loadAlarmIssuesState();
+  const issueRefs: AlarmIssueResult[] = [];
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    for (const outcome of findingOutcomes) {
+      const ref: AlarmIssueResult = {
+        issueNumber: outcome.issueNumber,
+        url: outcome.url,
+        action: outcome.action,
+        error: outcome.error,
+      };
+      issueRefs.push(ref);
+      if (outcome.action === "failed") {
+        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+      }
+    }
+  }
+
+  if (!shouldSendSystemdFailedUnitsAlarm(evaluation, state)) {
+    console.log(
+      isAlarmingVerdict(evaluation.verdict)
+        ? `${LOG_PREFIX} já alarmado pro mesmo conjunto de units nesta invocação anterior — não reenvia.`
+        : `${LOG_PREFIX} nenhuma unit failed — nenhum alarme necessário.`,
+    );
+    return;
+  }
+
+  const issueLines = issueRefs.length
+    ? "\n\nIssues:\n" +
+      issueRefs
+        .map((r) => (r.action === "failed" ? `  - falha ao criar/reusar (${r.error})` : `  - #${r.issueNumber} (${r.url})`))
+        .join("\n")
+    : "";
+  const { subject, body } = buildSystemdFailedUnitsAlarmEmail(evaluation, issueLines);
+  const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  if (isDryRun) {
+    console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
+    return;
+  }
+  await sendGmailMessage(to, subject, body);
+  saveState(markSystemdFailedUnitsAlarmed(evaluation.failedUnits));
+  console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`${LOG_PREFIX} erro:`, e);
+    process.exit(1);
+  });
+}

@@ -425,6 +425,8 @@ Proximo passo → /diaria-6-agendamento {AAMMDD}
 (agendamento Beehiiv + auto-reporter)
 ```
 
+**Isto e uma sugestao de proximo comando, nao uma instrucao de encadeamento.** Pare aqui e retorne o resumo ao editor. So leia `orchestrator-stage-6.md` quando este playbook foi lido como parte de `/diaria-edicao` (via `orchestrator.md`) — nunca quando foi lido a partir da skill standalone `/diaria-5-publicacao`.
+
 Se alguma parte foi pulada (ex: `chromeMcp === false`, lido do `preflight-state.json` no inicio deste stage — ver acima), incluir bloco de retomada explicito:
 
 ```

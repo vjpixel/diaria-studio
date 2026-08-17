@@ -22,6 +22,15 @@ function makeRepoRoot(): string {
   return repoRootAbs;
 }
 
+/**
+ * Stub da resolução do binário (#5549). Sem injetar isto, os testes que
+ * exercitam o caminho de invocação passariam a depender de existir um
+ * `claude` REAL no host: verdes na máquina do editor, vermelhos no CI
+ * (`ubuntu-latest` não instala o CLI). Nenhum teste daqui deve tocar o PATH
+ * real — a resolução em si é coberta por test/resolve-claude-bin.test.ts.
+ */
+const FAKE_RESOLVE_CLAUDE_BIN = () => "/fake/bin/claude";
+
 describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", () => {
   let repoRootAbs: string;
 
@@ -62,7 +71,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
 
     assert.equal(code, 0);
     assert.ok(capturedArgs, "execFn deveria ter sido chamado");
@@ -83,10 +92,31 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       throw err;
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
 
     assert.equal(code, 3);
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
     assert.match(scheduleLog, /FAIL\s+edition=260812 exit=3/);
+  });
+
+  it("resolução do binário falha -> loga FAIL com a mensagem acionável, nunca crash (#5549)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    let execCalled = false;
+    const fakeExec = (() => {
+      execCalled = true;
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, () => {
+      throw new Error("binário `claude` não encontrado. [...] defina CLAUDE_BIN [...] Tentados: /usr/bin/claude");
+    });
+
+    assert.equal(code, 1, "falha de resolução deve virar exit 1, não exceção não-tratada");
+    assert.equal(execCalled, false, "execFn não deveria ser chamado se o binário não resolveu");
+
+    const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
+    assert.match(scheduleLog, /FAIL\s+edition=260812 exit=1/);
+    assert.match(scheduleLog, /CLAUDE_BIN/, "o log precisa carregar a mensagem acionável, não um ENOENT opaco");
   });
 });

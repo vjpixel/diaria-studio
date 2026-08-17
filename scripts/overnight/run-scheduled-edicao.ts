@@ -38,6 +38,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { nextEditionDate } from "../lib/next-edition-date.ts";
+import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { runTsx } from "../lib/run-tsx.ts";
 
 const SKIP_FLAGS = "--skip newsletter,linkedin,facebook";
@@ -111,6 +112,12 @@ export function main(
   repoRootAbs: string,
   execFn: typeof execFileSync = execFileSync,
   aammddOverride?: string,
+  // Injetável pelo mesmo motivo que `execFn` (#5549): sem isto, os testes que
+  // exercitam o caminho de invocação passariam a depender de existir um
+  // `claude` de VERDADE no host — o CI (ubuntu-latest, sem o CLI instalado)
+  // quebraria, e na máquina do editor passaria por acidente. Justamente a
+  // divergência de ambiente que este módulo existe pra blindar.
+  resolveClaudeBinFn: typeof resolveClaudeBin = resolveClaudeBin,
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -150,8 +157,13 @@ export function main(
   let exitCode = 0;
   let output = "";
   try {
+    // Caminho ABSOLUTO, nunca o literal "claude" (#5549): sob systemd o PATH
+    // é o mínimo do sistema e não inclui ~/.npm-global/bin, então o nome cru
+    // dava `spawnSync claude ENOENT`. Resolver DENTRO do try faz a falha de
+    // resolução cair no mesmo caminho de log FAIL do resto — com mensagem
+    // acionável em vez do ENOENT opaco.
     output = execFn(
-      "claude",
+      resolveClaudeBinFn(),
       [
         "--print",
         "--permission-mode",

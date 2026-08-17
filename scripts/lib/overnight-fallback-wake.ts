@@ -34,7 +34,8 @@
  * subagente, o coordenador agenda um `ScheduleWakeup` (delay ~1200s / 20min)
  * que, ao acordar — MESMO sem ter recebido nenhum evento do subagente —
  * calcula `elapsed = now - timeline.dispatch` via `shouldWakeCheck` e
- * aplica o fluxo de stall do #2768 se o threshold (60 min) foi cruzado.
+ * aplica o fluxo de stall do #2768 se o threshold
+ * (`OVERNIGHT_STALL_THRESHOLD_MIN`, 45 min) foi cruzado.
  * Isso cobre exatamente o buraco que (1) deixa aberto: o coordenador não
  * depende mais de um evento externo para saber que precisa checar — ele
  * mesmo se agenda para acordar e verificar.
@@ -58,6 +59,7 @@
  */
 
 import { isMainModule } from "./cli-args.ts";
+import { OVERNIGHT_STALL_THRESHOLD_MIN } from "./overnight-stall-threshold.ts";
 
 // ---------------------------------------------------------------------------
 // shouldWakeCheck / computeElapsedMin
@@ -89,7 +91,8 @@ export function computeElapsedMin(dispatchISO: string, nowISO: string): number {
 
 /**
  * Fallback wake determinístico (#2896): retorna `true` se `now - dispatch`
- * excedeu `thresholdMin` (default 60, mesmo threshold do guard #2768) —
+ * excedeu `thresholdMin` (default `OVERNIGHT_STALL_THRESHOLD_MIN`, o MESMO
+ * limiar do guard #2768 e do watchdog externo #2688 — 45 min desde #5568) —
  * independente de qualquer evento ter chegado ao coordenador. É a checagem
  * que o coordenador roda ao acordar via `ScheduleWakeup`, mesmo com zero
  * notificações recebidas da unidade em andamento.
@@ -110,7 +113,7 @@ export function computeElapsedMin(dispatchISO: string, nowISO: string): number {
 export function shouldWakeCheck(
   dispatchISO: string,
   nowISO: string,
-  thresholdMin = 60,
+  thresholdMin = OVERNIGHT_STALL_THRESHOLD_MIN,
 ): boolean {
   const dispatchMs = Date.parse(dispatchISO);
   const nowMs = Date.parse(nowISO);
