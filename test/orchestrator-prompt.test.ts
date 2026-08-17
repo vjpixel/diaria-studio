@@ -1013,6 +1013,7 @@ describe("#5566: caminho erro-intencional-placeholder do Stage 4 referencia o fi
   });
 
   it("o parágrafo referencia explicitamente editorial-rules.md §10", () => {
+    assert.ok(checkIdx !== -1, "orchestrator-stage-4.md não menciona o check erro-intencional-placeholder (mesma causa-raiz do teste anterior)");
     const nextCheckIdx = stage4.indexOf("`secondary-items-have-summary`", checkIdx + 1);
     assert.ok(nextCheckIdx !== -1 && nextCheckIdx > checkIdx);
     const paragraph = stage4.slice(checkIdx, nextCheckIdx);
@@ -1031,6 +1032,26 @@ describe("#5566: caminho erro-intencional-placeholder do Stage 4 referencia o fi
     assert.ok(
       /GATE-BLOCKING/.test(paragraph),
       "o caminho erro-intencional-placeholder precisa continuar documentado como GATE-BLOCKING no Stage 4",
+    );
+  });
+
+  it("distingue o check de narrativa MD (erro-intencional-placeholder) do check de campos JSON (intentional-error-flagged), sem conflar os dois (achado do review consolidado)", () => {
+    assert.ok(checkIdx !== -1);
+    const nextCheckIdx = stage4.indexOf("`secondary-items-have-summary`", checkIdx + 1);
+    assert.ok(nextCheckIdx !== -1 && nextCheckIdx > checkIdx);
+    const paragraph = stage4.slice(checkIdx, nextCheckIdx);
+    // erro-intencional-placeholder cobre só a narrativa MD — não deve alegar
+    // que valida os campos estruturados do JSON (essa é responsabilidade do
+    // check irmão intentional-error-flagged, historicamente só rodado no
+    // Stage 5 — ver scripts/lib/lint-checks/intentional-error.ts).
+    assert.ok(
+      paragraph.includes("intentional-error-flagged"),
+      "#5566: o parágrafo precisa citar o check irmão intentional-error-flagged (campos JSON), não só erro-intencional-placeholder (narrativa MD) — os dois são checks distintos em scripts/lint-newsletter-md.ts",
+    );
+    assert.ok(
+      /--check erro-intencional-placeholder --md \{EDITION_DIR\}\/02-reviewed\.md/.test(paragraph) &&
+        /--check intentional-error-flagged --md \{EDITION_DIR\}\/02-reviewed\.md/.test(paragraph),
+      "#5566: o Stage 4 precisa rodar OS DOIS checks (narrativa MD + campos JSON) antes do gate, GATE-BLOCKING — não basta re-checar só erro-intencional-placeholder, que nunca lê _internal/intentional-error.json",
     );
   });
 
