@@ -125,7 +125,7 @@ function saveAlarmIssuesState(state: AlarmIssuesState): void {
  * resolução e fecharia a issue sozinha com o breach real intocado — foi
  * exatamente o que quase aconteceu com #5525 (o editor teve que retirar a
  * label `alarm` à mão pra evitar isso antes deste fix). */
-function toAlarmFinding(
+export function toAlarmFinding(
   item: BrevoCampaignListItem,
   guardrail: ReturnType<typeof evaluateSendGuardrails>,
 ): AlarmFinding {

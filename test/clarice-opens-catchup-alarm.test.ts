@@ -20,7 +20,7 @@ import {
   type OpensCatchupAlarmState,
 } from "../scripts/lib/clarice-opens-catchup-alarm.ts";
 import type { OpensCatchupStatus } from "../scripts/lib/extract-opens-catchup-status.ts";
-import { loadState, saveState } from "../scripts/clarice-opens-catchup-alarm.ts";
+import { loadState, saveState, toAlarmFinding } from "../scripts/clarice-opens-catchup-alarm.ts";
 
 const T0 = new Date("2026-08-07T08:30:00.000Z");
 const T1 = new Date("2026-08-08T08:30:00.000Z");
@@ -206,5 +206,12 @@ describe("loadState / saveState (scripts/clarice-opens-catchup-alarm.ts, I/O)", 
     const state: OpensCatchupAlarmState = { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt: T0.toISOString() };
     saveState(state, path);
     assert.deepEqual(loadState(path).lastAlarmedAt, null);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — 'o mecanismo está quebrado', resolve sozinho quando o streak volta a zero", () => {
+    const state: OpensCatchupAlarmState = { consecutiveFailures: 3, lastAlarmedAt: null, lastCheckedAt: T0.toISOString() };
+    assert.equal(toAlarmFinding(state, undefined).family, "estado");
   });
 });

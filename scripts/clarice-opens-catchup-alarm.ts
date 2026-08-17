@@ -77,7 +77,7 @@ const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
  * nunca no fingerprint — senão uma issue nova nasceria a cada dia que o
  * streak cresce). Sem PII: só contagem de streak + mensagem de erro do
  * catch-up (erro de infraestrutura/API, não dado de assinante). */
-function toAlarmFinding(state: OpensCatchupAlarmState, latestError: string | undefined): AlarmFinding {
+export function toAlarmFinding(state: OpensCatchupAlarmState, latestError: string | undefined): AlarmFinding {
   return {
     check: "clarice-opens-catchup",
     fingerprint: "streak-failing",

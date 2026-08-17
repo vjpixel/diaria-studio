@@ -24,7 +24,13 @@ import {
   buildGeoCitationStalenessAlarmEmail,
   type GeoCitationStalenessAlarmState,
 } from "../scripts/lib/geo-citation-staleness-alarm.ts";
-import { loadState, saveState, readLatestGeoCitationTs } from "../scripts/geo-citation-staleness-alarm.ts";
+import {
+  loadState,
+  saveState,
+  readLatestGeoCitationTs,
+  toStalenessFinding,
+  toMissingProviderFinding,
+} from "../scripts/geo-citation-staleness-alarm.ts";
 
 const T0 = new Date("2026-08-08T10:00:00.000Z");
 
@@ -274,5 +280,25 @@ describe("readLatestGeoCitationTs (scripts/geo-citation-staleness-alarm.ts, I/O)
 
   it("diretório inexistente no path (não só o arquivo) -> null, sem lançar", () => {
     assert.equal(readLatestGeoCitationTs(resolve(tmpDir, "subdir-inexistente", "history.jsonl")), null);
+  });
+});
+
+describe("toStalenessFinding / toMissingProviderFinding — family (#5558)", () => {
+  it("toStalenessFinding é sempre 'estado' — painel volta a registrar, resolve sozinho", () => {
+    const agg = {
+      isStale: true,
+      stalePanels: [{ panel: "geral", latestRecordTs: "2026-07-01T10:00:00.000Z", check: { staleDays: 10 } }],
+      fingerprint: "geral:2026-07-01T10:00:00.000Z",
+    };
+    assert.equal(toStalenessFinding(agg).family, "estado");
+  });
+
+  it("toMissingProviderFinding é sempre 'estado' — API key volta pro .env, resolve sozinho", () => {
+    const missingCheck = {
+      hasMissing: true,
+      panelsWithMissing: [{ panel: "geral", missingProviders: ["google"] }],
+      fingerprint: "geral:google",
+    };
+    assert.equal(toMissingProviderFinding(missingCheck).family, "estado");
   });
 });

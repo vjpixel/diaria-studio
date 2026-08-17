@@ -137,7 +137,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * e repassada a `buildHubDriftAlarmEmail`. Todo achado nasce `P2` — bug com
  * workaround (deploy manual do Worker `arquivo`), mesma prioridade de
  * `worker-drift-check.ts`. */
-function toAlarmFinding(r: HubDriftResult): AlarmFinding {
+export function toAlarmFinding(r: HubDriftResult): AlarmFinding {
   return {
     check: r.slug,
     fingerprint: hubDriftFindingKey(r),

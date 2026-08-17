@@ -37,8 +37,9 @@ import {
   saveState,
   loadAlarmIssuesState,
   saveAlarmIssuesState,
+  toAlarmFinding,
 } from "../scripts/worker-drift-check.ts";
-import { emptyWorkerDriftAlarmState, advanceState } from "../scripts/lib/worker-drift-check.ts";
+import { emptyWorkerDriftAlarmState, advanceState, type WorkerDriftResult } from "../scripts/lib/worker-drift-check.ts";
 import { emptyAlarmIssuesState, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -212,5 +213,20 @@ describe("loadAlarmIssuesState / saveAlarmIssuesState (#5339, I/O)", () => {
     const path = resolve(tmpDir, "corrompido.json");
     writeFileSync(path, "{ nao é json válido");
     assert.deepEqual(loadAlarmIssuesState(path), emptyAlarmIssuesState());
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — resolve sozinho quando o worker for redeployado", () => {
+    const r: WorkerDriftResult = {
+      workerName: "reativar",
+      workerDir: "reativar",
+      status: "drift",
+      lastDeployedAt: "2026-08-01T10:00:00Z",
+      lastCommitAt: "2026-08-05T10:00:00Z",
+      driftMs: 4 * 24 * 60 * 60 * 1000,
+      message: "commit mais recente que o último deploy publicado",
+    };
+    assert.equal(toAlarmFinding(r).family, "estado");
   });
 });

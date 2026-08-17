@@ -105,7 +105,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * semana pra um ciclo novo, então cada semana perdida é um achado distinto
  * — mesma granularidade que já governa `lastAlarmedCycle`). Sem PII — o
  * achado só cita o ciclo (`{YY}w{WW}`), nenhum dado de assinante. */
-function toAlarmFinding(cycle: string): AlarmFinding {
+export function toAlarmFinding(cycle: string): AlarmFinding {
   return {
     check: "linkedin-weekly-staleness",
     fingerprint: cycle,

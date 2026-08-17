@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { listTodayGuardReports, loadState, saveState } from "../scripts/clarice-envio-guard-alarm.ts";
+import { listTodayGuardReports, loadState, saveState, toAlarmFinding } from "../scripts/clarice-envio-guard-alarm.ts";
 import { emptyEnvioGuardAlarmState, markGuardAlarmed } from "../scripts/lib/clarice-envio-guard-alarm.ts";
 
 describe("listTodayGuardReports", () => {
@@ -84,5 +84,12 @@ describe("loadState/saveState (idempotência)", () => {
     writeFileSync(statePath, "{ nao e json valido");
     assert.deepEqual(loadState(statePath), emptyEnvioGuardAlarmState());
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'evento' — a falha de um aammdd específico é fato histórico, não se auto-resolve", () => {
+    const finding = toAlarmFinding({ verdict: "alarm-failure", reportId: "envio-260811-guard" }, "260811");
+    assert.equal(finding.family, "evento");
   });
 });

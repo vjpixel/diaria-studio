@@ -63,7 +63,7 @@ const LOG_PREFIX = "[clarice-novos-abort-alarm]";
  * valor de cadência diária usado pelos alarmes já wired (#5339). */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-function toAlarmFinding(state: NovosAbortAlarmState, latestDetail: string | undefined): AlarmFinding {
+export function toAlarmFinding(state: NovosAbortAlarmState, latestDetail: string | undefined): AlarmFinding {
   return {
     check: "clarice-novos-abort",
     fingerprint: "semaphore-streak",

@@ -17,8 +17,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { checkHub, loadState, saveState } from "../scripts/hub-drift-check.ts";
-import { emptyHubDriftAlarmState, advanceHubDriftState } from "../scripts/lib/hub-drift-check.ts";
+import { checkHub, loadState, saveState, toAlarmFinding } from "../scripts/hub-drift-check.ts";
+import { emptyHubDriftAlarmState, advanceHubDriftState, type HubDriftResult } from "../scripts/lib/hub-drift-check.ts";
 
 describe("checkHub (#4750) — fetch mockado, sem rede real", () => {
   it("200 -> httpStatus 200, fetchError null", async () => {
@@ -90,5 +90,20 @@ describe("loadState / saveState (#4750, I/O)", () => {
     const state = advanceHubDriftState(null, new Date("2026-08-08T12:00:00Z"));
     saveState(state, path);
     assert.equal(loadState(path).lastAlarmedFingerprint, null);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — hub volta a responder, resolve sozinho", () => {
+    const r: HubDriftResult = {
+      slug: "arquivo",
+      label: "Arquivo",
+      url: "https://arquivo.diar.ia.br",
+      status: "broken",
+      httpStatus: 500,
+      fetchError: null,
+      message: "HTTP 500",
+    };
+    assert.equal(toAlarmFinding(r).family, "estado");
   });
 });

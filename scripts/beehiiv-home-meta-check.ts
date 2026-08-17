@@ -198,7 +198,7 @@ export const ALARM_ALLOWLIST: AlarmAllowlist = [
  * item (`${check}:${message}`) — é isso que deixa o e-mail casar
  * `findingOutcomes` de volta contra cada `HomeMetaDriftFinding` sem
  * precisar de um id separado. */
-function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
+export function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
   return {
     check: f.check,
     fingerprint: homeMetaFindingIssueKey(f),

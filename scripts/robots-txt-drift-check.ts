@@ -141,7 +141,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * Todo achado nasce `P2` — mesmo racional de risco/gravidade dos outros
  * alarmes de drift deste lote (correção manual, sem impacto de produção
  * imediato). */
-function toAlarmFinding(r: RobotsDriftResult): AlarmFinding {
+export function toAlarmFinding(r: RobotsDriftResult): AlarmFinding {
   return {
     check: r.host,
     fingerprint: robotsDriftFindingKey(r),

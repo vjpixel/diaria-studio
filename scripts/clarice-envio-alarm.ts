@@ -115,7 +115,7 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * histórico: a checagem de amanhã avalia OUTRO dia, então este achado
  * simplesmente sai de `pending` sem que nada tenha sido corrigido. Mesmo
  * racional de `clarice-guardrail-alarm.ts` (fingerprint `campaign-{id}`). */
-function toAlarmFinding(evaluation: EnvioAlarmEvaluation, aammdd: string): AlarmFinding {
+export function toAlarmFinding(evaluation: EnvioAlarmEvaluation, aammdd: string): AlarmFinding {
   return {
     check: "clarice-envio",
     fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,

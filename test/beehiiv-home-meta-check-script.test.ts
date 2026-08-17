@@ -25,6 +25,7 @@ import {
   saveAlarmIssuesState,
   checkLatestPostPage,
   ALARM_ALLOWLIST,
+  toAlarmFinding,
 } from "../scripts/beehiiv-home-meta-check.ts";
 import {
   emptyHomeMetaAlarmState,
@@ -231,5 +232,12 @@ describe("checkLatestPostPage (#5106) — fetch mockado, sem rede real", () => {
     const r = await checkLatestPostPage(HOME_WITH_POST_LINK, mockFetch);
     assert.deepEqual(r.findings, []);
     assert.equal(r.postUrl, "https://diar.ia.br/p/edicao-mais-recente");
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — os 6 eixos deste check são condição re-checável do HTML publicado", () => {
+    const finding = toAlarmFinding({ check: "og-title-brand", message: "og:title diverge do H1" });
+    assert.equal(finding.family, "estado");
   });
 });

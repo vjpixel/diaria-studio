@@ -16,6 +16,7 @@ import {
   emptyLinkedinWeeklyStalenessAlarmState,
   buildLinkedinWeeklyStalenessAlarmEmail,
 } from "../scripts/lib/linkedin-weekly-staleness-alarm.ts";
+import { toAlarmFinding } from "../scripts/linkedin-weekly-staleness-alarm.ts";
 
 function ymd(y: number, m: number, d: number): Date {
   return new Date(y, m - 1, d);
@@ -126,5 +127,11 @@ describe("buildLinkedinWeeklyStalenessAlarmEmail", () => {
   it("#5339: sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339", () => {
     const { body } = buildLinkedinWeeklyStalenessAlarmEmail("26w32");
     assert.doesNotMatch(body, /Issue:/);
+  });
+});
+
+describe("toAlarmFinding — family (#5558)", () => {
+  it("é sempre 'estado' — mesmo com o ciclo embutido no fingerprint, a condição (artefato existe?) é re-checada toda semana (#5497)", () => {
+    assert.equal(toAlarmFinding("26w32").family, "estado");
   });
 });
