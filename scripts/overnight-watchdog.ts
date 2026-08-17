@@ -89,8 +89,8 @@
  * `hasHealthyIdleSession` pra este watchdog nunca disparar alerta nela —
  * mecanismo preservado, caso o kind volte a ser vigiado no futuro.
  *
- * Deve ser agendado externamente (Windows Task Scheduler, cron) para rodar
- * a cada 10–15 min. Ver docs/overnight-watchdog-setup.md.
+ * Deve ser agendado externamente (systemd timer, Task Scheduler, cron) para
+ * rodar a cada 10 min (cadência atual em produção). Ver docs/overnight-watchdog-setup.md.
  */
 
 import {
@@ -156,6 +156,80 @@ export function computeLastActivity(
     return { ts: planMs, source: "plan.json mtime" };
   }
   return { ts: logMs, source: "run-log" };
+}
+
+/**
+ * Diretórios de rodada reconhecidos por `findActiveRun` (#5520).
+ *
+ * `AAMMDD` com sufixo opcional de letra: a 2ª rodada de um mesmo dia é
+ * `260816b`, a 3ª `260816c`, e assim por diante. O padrão anterior
+ * (`/^\d{6}$/`) só casava a PRIMEIRA rodada do dia — e como rodada com sufixo
+ * virou o caso dominante (16/08/2026 teve 6 rodadas, 5 delas sufixadas), o
+ * watchdog não enxergava nenhuma rodada real: sobravam só diretórios antigos
+ * de 6 dígitos puros que morreram sem escrever `report.md`, e o mais recente
+ * deles (`260707`, de 7 de julho) era eleito "ativo" indefinidamente.
+ *
+ * A ordenação lexicográfica de `sort()` continua correta com o sufixo:
+ * `260816` < `260816b` < `260816f`, e `260816f` < `260817`.
+ */
+export const RUN_DIR_PATTERN = /^\d{6}[a-z]?$/;
+
+/**
+ * Idade máxima de atividade real antes de uma rodada deixar de contar como
+ * "ativa" (#5520).
+ *
+ * `findActiveRun` elege como ativa a rodada mais recente com `plan.json` e sem
+ * `report.md` — mas uma rodada que morreu sem escrever o relatório (crash,
+ * sessão morta por fora) casa esse critério PARA SEMPRE. Sem expiração, assim
+ * que a rodada legítima do dia termina e escreve `report.md`, o scan cai de
+ * volta na carcaça mais recente e recomeça a alarmar. Foi exatamente o que
+ * manteve `260707` como "rodada ativa" por 5 semanas.
+ *
+ * 24h é folgado de propósito: uma rodada overnight real jamais fica um dia
+ * inteiro sem NENHUM evento no run-log e sem tocar `plan.json` — se ficou, ou
+ * está morta, ou o stall já foi reportado muitas vezes e o alerta perdeu
+ * utilidade.
+ */
+export const ABANDONED_RUN_MAX_AGE_MS = 24 * 60 * 60_000;
+
+/**
+ * Tolerância para reconhecer o mtime de `plan.json` como escrita do PRÓPRIO
+ * watchdog (#5520).
+ *
+ * O bloco STALL grava `stall_events` de volta no `plan.json` — o que refresca
+ * o mtime que `computeLastActivity` lê como "última atividade" na execução
+ * seguinte. Numa rodada sem atividade genuína, o watchdog vira a única fonte
+ * de "atividade" da rodada que ele mesmo vigia: `elapsed_min` nunca cresce,
+ * nunca converge, e o alarme se repete a cada ciclo indefinidamente.
+ *
+ * A escrita acontece a milissegundos do `stall_event.at` registrado, então 2
+ * min cobre folgadamente qualquer lentidão de FS. Uma escrita GENUÍNA do
+ * coordenador dentro dessa janela seria mascarada, mas só até o próximo tick
+ * (10 min depois — cadência fixa do timer systemd), quando o mtime já não casa
+ * com nenhum `stall_event`. Numa rodada que nunca mais tem escrita genuína pra
+ * corrigir isso, o piso de `resolveRunActivity` (`plan.started_at`) assume.
+ */
+export const SELF_WRITE_TOLERANCE_MS = 2 * 60_000;
+
+/**
+ * Pure: o mtime de `plan.json` veio de uma escrita do próprio watchdog?
+ *
+ * Compara contra os `stall_events` que ele mesmo gravou — cada um carrega o
+ * instante exato (`at`) em que a escrita ocorreu.
+ */
+export function isSelfInflictedPlanMtime(
+  planMtimeMs: number | null,
+  stallEvents: StallEvent[] | undefined,
+  toleranceMs: number = SELF_WRITE_TOLERANCE_MS,
+): boolean {
+  if (planMtimeMs === null) return false;
+  if (!stallEvents || stallEvents.length === 0) return false;
+
+  return stallEvents.some((ev) => {
+    const at = new Date(ev.at).getTime();
+    if (isNaN(at)) return false;
+    return Math.abs(planMtimeMs - at) <= toleranceMs;
+  });
 }
 
 /**
@@ -232,6 +306,18 @@ export type WatchableKind = "overnight" | "continuo";
 export function findActiveRun(
   rootDir: string,
   kind: WatchableKind = "overnight",
+  opts: {
+    /** Instante de referência para a expiração (injetável em teste). */
+    nowMs?: number;
+    /** Idade máxima de atividade real — ver `ABANDONED_RUN_MAX_AGE_MS`. */
+    maxAgeMs?: number;
+    /**
+     * Resolve a última atividade REAL de uma rodada candidata. Injetável em
+     * teste; em produção é `resolveRunActivity` (mtime de `plan.json` sem as
+     * escritas do próprio watchdog + run-log sem os eventos próprios).
+     */
+    lastActivityOf?: (aammdd: string, planPath: string) => { ts: number; source: string };
+  } = {},
 ): {
   aammdd: string;
   planPath: string;
@@ -240,12 +326,18 @@ export function findActiveRun(
   const kindDir = join(rootDir, "data", kind);
   if (!existsSync(kindDir)) return null;
 
+  const {
+    nowMs = Date.now(),
+    maxAgeMs = ABANDONED_RUN_MAX_AGE_MS,
+    lastActivityOf = (aammdd, planPath) => resolveRunActivity(rootDir, kind, aammdd, planPath),
+  } = opts;
+
   let entries: string[];
   try {
     entries = readdirSync(kindDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
+      .filter((d) => d.isDirectory() && RUN_DIR_PATTERN.test(d.name))
       .map((d) => d.name)
-      .sort(); // lexicographic = cronológico para YYMMDD
+      .sort(); // lexicographic = cronológico para YYMMDD[a-z]
   } catch {
     return null;
   }
@@ -258,16 +350,118 @@ export function findActiveRun(
     const reportPath = join(dir, "report.md");
 
     const isActive = kind === "continuo" ? existsSync(planPath) : existsSync(planPath) && !existsSync(reportPath);
-    if (isActive) {
-      return { aammdd, planPath, reportPath };
+    if (!isActive) continue;
+
+    // #5520: rodada que casa o critério estrutural mas está sem atividade real
+    // há mais de `maxAgeMs` é carcaça, não rodada ativa — segue procurando.
+    // `ts === 0` (atividade desconhecida) NÃO expira: esse caso já tem
+    // tratamento próprio a jusante (`skip_unknown_activity`).
+    const { ts } = lastActivityOf(aammdd, planPath);
+    if (ts > 0 && nowMs - ts > maxAgeMs) {
+      console.log(
+        `[watchdog] Rodada ${aammdd} (${kind}) sem atividade há ` +
+          `${Math.round((nowMs - ts) / 3_600_000)}h — tratada como abandonada, não vigiada.`,
+      );
+      continue;
     }
+
+    return { aammdd, planPath, reportPath };
   }
   return null;
 }
 
 /**
+ * Última atividade REAL de uma rodada — `max(mtime de plan.json, último evento
+ * do run-log)`, descontando em ambas as vias as escritas do próprio watchdog
+ * (#5520).
+ *
+ * Fonte única para os dois consumidores que precisam desse número: a
+ * expiração de rodada abandonada em `findActiveRun` e o diagnóstico de stall
+ * em `runWatchdogForKind`. Antes do #5520 só o segundo existia, e computava o
+ * mtime cru — o que fazia o watchdog contar as próprias escritas de
+ * `stall_events` como atividade da rodada que ele vigia.
+ */
+export function resolveRunActivity(
+  rootDir: string,
+  kind: WatchableKind,
+  aammdd: string,
+  planPath: string,
+): { ts: number; source: string } {
+  const rawPlanMtime = mtimeMs(planPath);
+  const plan = readPlanForStallHandling(planPath);
+
+  // O desconto de escrita própria depende de conhecer os `stall_events`. Sem o
+  // plano legível, `isSelfInflictedPlanMtime` devolve `false` e o mtime CRU
+  // volta a valer — o que reabre exatamente o bug do #5520 (a escrita do
+  // watchdog contando como atividade da rodada) de forma invisível. Raro
+  // (#3353 tornou a escrita atômica), mas silencioso demais pra passar batido.
+  if (plan === null && existsSync(planPath)) {
+    process.stderr.write(
+      `[watchdog] Aviso: ${planPath} ilegível — desconto de escrita própria NÃO aplicado neste ciclo.\n`,
+    );
+  }
+
+  const planMtime = isSelfInflictedPlanMtime(rawPlanMtime, plan?.stall_events)
+    ? null
+    : rawPlanMtime;
+
+  const activity = computeLastActivity(planMtime, getLastRunLogActivity(rootDir, aammdd, kind));
+  if (activity.ts > 0) return activity;
+
+  // #5520 (achado do review): quando as DUAS fontes são descontadas por serem
+  // escrita própria, a atividade colapsa em `ts: 0` — que
+  // `diagnoseWatchdogActivity` trata como `skip_unknown_activity` (só loga) e
+  // que a expiração acima isenta de propósito. Numa rodada genuinamente morta
+  // isso é auto-perpetuante: depois do PRIMEIRO alarme legítimo, o único
+  // toque em `plan.json`/run-log passa a ser o do próprio watchdog, então todo
+  // ciclo seguinte recai em `ts: 0` — a rodada nunca mais alarma E nunca
+  // expira. Seria o bug do #5520 de novo, invertido: em vez de falso "sem
+  // stall" pra sempre, um alarme verdadeiro seguido de silêncio pra sempre.
+  //
+  // `started_at` é o piso certo porque o watchdog NUNCA o escreve: é gravado
+  // uma vez pelo coordenador ao abrir a rodada. Com ele, uma rodada morta
+  // segue alarmando (com o dedup normal) e cruza `ABANDONED_RUN_MAX_AGE_MS`
+  // no prazo, sendo aposentada como carcaça em vez de ficar num limbo mudo.
+  const startedAt = typeof plan?.started_at === "string" ? new Date(plan.started_at).getTime() : NaN;
+  if (!isNaN(startedAt) && startedAt > 0) {
+    return { ts: startedAt, source: "plan.started_at (fontes descontadas)" };
+  }
+
+  return activity;
+}
+
+/**
+ * Pure: o evento do run-log foi emitido pelo PRÓPRIO watchdog? (#5520)
+ *
+ * `emitRunLogEvent` grava `stall_detected` com `agent: kind` e
+ * `edition: aammdd` — exatamente os campos que `getLastRunLogActivity` usa
+ * pra reconhecer atividade da rodada. Numa rodada sem atividade genuína, o
+ * alarme anterior do watchdog vira a "última atividade" do alarme seguinte,
+ * fechando o mesmo loop descrito em `SELF_WRITE_TOLERANCE_MS` pela via do
+ * run-log em vez do `plan.json`.
+ *
+ * O discriminador é `details.source` (`"overnight-watchdog"` /
+ * `"continuo-watchdog"`), gravado por `emitRunLogEvent` — e não o
+ * `message: "stall_detected"` sozinho, porque o COORDENADOR também emite
+ * `stall_detected` (ex: subagente travado, #2768) e esse é sinal legítimo de
+ * que a rodada está viva.
+ */
+export function isOwnWatchdogEvent(
+  event: { message?: string; details?: { source?: string } | null },
+  kind: WatchableKind,
+): boolean {
+  return (
+    event.message === "stall_detected" &&
+    event.details?.source === `${kind}-watchdog`
+  );
+}
+
+/**
  * Extrai o timestamp mais recente do run-log para a edição/agente dado
  * (`agent`, default `"overnight"` — #5293 item 3 generaliza pra `"continuo"`).
+ *
+ * #5520: eventos emitidos pelo próprio watchdog são ignorados — ver
+ * `isOwnWatchdogEvent`.
  */
 export function getLastRunLogActivity(
   rootDir: string,
@@ -293,7 +487,10 @@ export function getLastRunLogActivity(
         agent?: string;
         edition?: string;
         timestamp?: string;
+        message?: string;
+        details?: { source?: string } | null;
       };
+      if (isOwnWatchdogEvent(event, agent)) continue;
       if (
         event.agent === agent &&
         event.edition === aammdd &&
@@ -607,11 +804,14 @@ async function runWatchdogForKind(
   const nowMs = Date.now();
   const thresholdMs = thresholdMin * 60_000;
 
-  const planMtime = mtimeMs(planPath);
-  const logLastTs = getLastRunLogActivity(ROOT, aammdd, kind);
-  const { ts: lastActivityMs, source: lastSource } = computeLastActivity(
-    planMtime,
-    logLastTs,
+  // #5520: fonte única com `findActiveRun` — desconta as escritas do próprio
+  // watchdog (`stall_events` no plan.json, eventos `stall_detected` no
+  // run-log), que antes realimentavam o alarme indefinidamente.
+  const { ts: lastActivityMs, source: lastSource } = resolveRunActivity(
+    ROOT,
+    kind,
+    aammdd,
+    planPath,
   );
   const isHealthyIdle = hasHealthyIdleSession(ROOT, kind, nowMs);
 

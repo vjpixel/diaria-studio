@@ -25,6 +25,8 @@ import {
   isDeduped,
   findActiveRun,
   getLastRunLogActivity,
+  isSelfInflictedPlanMtime,
+  resolveRunActivity,
   diagnoseWatchdogActivity,
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
@@ -940,5 +942,308 @@ describe("overnight-watchdog.ts delega leitura/escrita de plan.json pra funçõe
       source,
       /import\s*\{\s*writeFileAtomic\s*\}\s*from\s*"\.\/lib\/atomic-write\.ts"/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5520: watchdog só vigiava rodadas sem sufixo e se auto-alimentava
+// ---------------------------------------------------------------------------
+
+describe("findActiveRun: rodada com sufixo de letra (#5520)", () => {
+  let tmpRoot: string;
+
+  const mkRun = (name: string, opts: { report?: boolean } = {}) => {
+    const dir = join(tmpRoot, "data", "overnight", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "plan.json"),
+      JSON.stringify({ started_at: "2026-08-16T00:00:00Z", stall_events: [] }),
+      "utf-8",
+    );
+    if (opts.report) writeFileSync(join(dir, "report.md"), "# fim", "utf-8");
+    return dir;
+  };
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-suffix-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: rodada 260816f (com sufixo) é detectada como ativa", () => {
+    mkRun("260816f");
+
+    const result = findActiveRun(tmpRoot);
+    assert.notEqual(result, null, "rodada com sufixo tem que ser vigiada");
+    assert.equal(result!.aammdd, "260816f");
+  });
+
+  it("REGRESSÃO: com rodadas sufixadas ativas, uma carcaça antiga sem sufixo NÃO é eleita", () => {
+    // Reproduz o cenário real do #5520: 260707 morreu em julho sem report.md e
+    // era eleita "ativa" porque o filtro /^\d{6}$/ escondia as rodadas atuais.
+    mkRun("260707");
+    mkRun("260816f");
+
+    const result = findActiveRun(tmpRoot);
+    assert.equal(result!.aammdd, "260816f");
+  });
+
+  it("ordena sufixo corretamente: 260816f vence 260816b e 260816", () => {
+    mkRun("260816");
+    mkRun("260816b");
+    mkRun("260816f");
+
+    assert.equal(findActiveRun(tmpRoot)!.aammdd, "260816f");
+  });
+
+  it("volta pra rodada sufixada anterior quando a mais recente concluiu", () => {
+    mkRun("260816b");
+    mkRun("260816f", { report: true });
+
+    assert.equal(findActiveRun(tmpRoot)!.aammdd, "260816b");
+  });
+
+  it("nome inválido continua ignorado (sufixo é 1 letra minúscula, não texto livre)", () => {
+    mkRun("260816bc");
+    mkRun("260816B");
+    mkRun("rascunho");
+
+    assert.equal(findActiveRun(tmpRoot), null);
+  });
+});
+
+describe("findActiveRun: expiração de rodada abandonada (#5520)", () => {
+  let tmpRoot: string;
+  const NOW = new Date("2026-08-17T02:00:00Z").getTime();
+  const HOUR = 3_600_000;
+
+  const mkRun = (name: string) => {
+    const dir = join(tmpRoot, "data", "overnight", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }), "utf-8");
+  };
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-abandon-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: rodada sem atividade real há 5 semanas não é vigiada", () => {
+    mkRun("260707");
+
+    const result = findActiveRun(tmpRoot, "overnight", {
+      nowMs: NOW,
+      lastActivityOf: () => ({ ts: NOW - 35 * 24 * HOUR, source: "run-log" }),
+    });
+    assert.equal(result, null, "carcaça de julho não pode ser eleita rodada ativa");
+  });
+
+  it("rodada com atividade recente continua vigiada", () => {
+    mkRun("260816f");
+
+    const result = findActiveRun(tmpRoot, "overnight", {
+      nowMs: NOW,
+      lastActivityOf: () => ({ ts: NOW - 2 * HOUR, source: "run-log" }),
+    });
+    assert.equal(result!.aammdd, "260816f");
+  });
+
+  it("pula a carcaça e elege a rodada anterior que ainda tem atividade", () => {
+    mkRun("260815");
+    mkRun("260816f");
+
+    const result = findActiveRun(tmpRoot, "overnight", {
+      nowMs: NOW,
+      lastActivityOf: (aammdd) =>
+        aammdd === "260816f"
+          ? { ts: NOW - 40 * HOUR, source: "run-log" } // abandonada
+          : { ts: NOW - 10 * 60_000, source: "run-log" }, // viva
+    });
+    assert.equal(result!.aammdd, "260815");
+  });
+
+  it("atividade desconhecida (ts=0) NÃO expira — tem tratamento próprio a jusante", () => {
+    mkRun("260816f");
+
+    const result = findActiveRun(tmpRoot, "overnight", {
+      nowMs: NOW,
+      lastActivityOf: () => ({ ts: 0, source: "nenhuma" }),
+    });
+    assert.equal(result!.aammdd, "260816f");
+  });
+});
+
+describe("isSelfInflictedPlanMtime (#5520)", () => {
+  const AT = "2026-08-17T02:20:25.000Z";
+  const atMs = new Date(AT).getTime();
+  const ev = (at: string): StallEvent => ({ at, reason: "unknown", resumed_at: null });
+
+  it("REGRESSÃO: mtime coincidente com stall_event próprio é escrita do watchdog", () => {
+    assert.equal(isSelfInflictedPlanMtime(atMs + 500, [ev(AT)]), true);
+  });
+
+  it("mtime bem depois do último stall_event é atividade genuína", () => {
+    assert.equal(isSelfInflictedPlanMtime(atMs + 30 * 60_000, [ev(AT)]), false);
+  });
+
+  it("sem stall_events, nada é auto-infligido", () => {
+    assert.equal(isSelfInflictedPlanMtime(atMs, []), false);
+    assert.equal(isSelfInflictedPlanMtime(atMs, undefined), false);
+  });
+
+  it("mtime null → false", () => {
+    assert.equal(isSelfInflictedPlanMtime(null, [ev(AT)]), false);
+  });
+
+  it("stall_event com data malformada é ignorado sem lançar", () => {
+    assert.equal(isSelfInflictedPlanMtime(atMs, [ev("não-é-data")]), false);
+  });
+});
+
+describe("getLastRunLogActivity ignora eventos do próprio watchdog (#5520)", () => {
+  let tmpRoot: string;
+
+  const writeLog = (lines: object[]) => {
+    const dir = join(tmpRoot, "data");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "run-log.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n"), "utf-8");
+  };
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-selflog-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: alarme anterior do watchdog não conta como atividade da rodada", () => {
+    writeLog([
+      {
+        timestamp: "2026-07-07T10:00:00Z",
+        edition: "260707",
+        agent: "overnight",
+        message: "pr_opened",
+        details: {},
+      },
+      {
+        timestamp: "2026-08-17T02:20:26Z",
+        edition: "260707",
+        agent: "overnight",
+        message: "stall_detected",
+        details: { source: "overnight-watchdog", elapsed_min: 60 },
+      },
+    ]);
+
+    const ts = getLastRunLogActivity(tmpRoot, "260707", "overnight");
+    assert.equal(
+      ts,
+      new Date("2026-07-07T10:00:00Z").getTime(),
+      "só o evento real de julho conta — senão o watchdog realimenta o próprio alarme",
+    );
+  });
+
+  it("stall_detected do COORDENADOR (sem source de watchdog) continua contando", () => {
+    writeLog([
+      {
+        timestamp: "2026-08-14T16:35:08Z",
+        edition: "260814c",
+        agent: "overnight",
+        message: "stall_detected",
+        details: { unidade: "#5227", reason: "fixer rodou npm test completo" },
+      },
+    ]);
+
+    const ts = getLastRunLogActivity(tmpRoot, "260814c", "overnight");
+    assert.equal(ts, new Date("2026-08-14T16:35:08Z").getTime());
+  });
+
+  it("rodada cuja ÚNICA atividade são alarmes do watchdog → sem atividade conhecida", () => {
+    writeLog([
+      {
+        timestamp: "2026-08-17T01:20:02Z",
+        edition: "260707",
+        agent: "overnight",
+        message: "stall_detected",
+        details: { source: "overnight-watchdog" },
+      },
+      {
+        timestamp: "2026-08-17T02:20:26Z",
+        edition: "260707",
+        agent: "overnight",
+        message: "stall_detected",
+        details: { source: "overnight-watchdog" },
+      },
+    ]);
+
+    assert.equal(getLastRunLogActivity(tmpRoot, "260707", "overnight"), null);
+  });
+});
+
+describe("resolveRunActivity: piso started_at (#5520, achado do review)", () => {
+  let tmpRoot: string;
+  let planPath: string;
+
+  const writePlan = (startedAt: string, stallEvents: StallEvent[]) => {
+    const dir = join(tmpRoot, "data", "overnight", "260817");
+    mkdirSync(dir, { recursive: true });
+    planPath = join(dir, "plan.json");
+    writeFileSync(planPath, JSON.stringify({ started_at: startedAt, stall_events: stallEvents }), "utf-8");
+  };
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-floor-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: rodada morta não vira ts=0 depois do 1º alarme — cai em started_at", () => {
+    // Estado após o watchdog ter alarmado: o mtime do plan.json é da ESCRITA
+    // DELE, e o único evento no run-log também é dele. Sem piso, as duas fontes
+    // são descontadas, `computeLastActivity` devolve ts=0, o diagnóstico vira
+    // `skip_unknown_activity` (só loga) e a expiração isenta ts=0 — a rodada
+    // nunca mais alarma E nunca expira.
+    writePlan("2026-08-15T00:00:00Z", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    const activity = resolveRunActivity(tmpRoot, "overnight", "260817", planPath);
+    assert.notEqual(activity.ts, 0, "ts=0 silenciaria o watchdog para sempre");
+    assert.equal(activity.ts, new Date("2026-08-15T00:00:00Z").getTime());
+    assert.match(activity.source, /started_at/);
+  });
+
+  it("com o piso, a rodada morta é aposentada como carcaça em 24h", () => {
+    writePlan("2026-08-15T00:00:00Z", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    const active = findActiveRun(tmpRoot, "overnight", {
+      nowMs: new Date("2026-08-20T00:00:00Z").getTime(),
+    });
+    assert.equal(active, null, "5 dias depois do started_at tem que expirar");
+  });
+
+  it("atividade genuína recente vence o piso", () => {
+    writePlan("2026-08-15T00:00:00Z", []); // sem stall_events → mtime não é descontado
+
+    const activity = resolveRunActivity(tmpRoot, "overnight", "260817", planPath);
+    assert.equal(activity.source, "plan.json mtime");
+    assert.ok(activity.ts > new Date("2026-08-16T00:00:00Z").getTime());
+  });
+
+  it("sem started_at utilizável, mantém o ts=0 histórico (skip_unknown_activity)", () => {
+    writePlan("não-é-data", [
+      { at: new Date().toISOString(), reason: "unknown", resumed_at: null },
+    ]);
+
+    assert.equal(resolveRunActivity(tmpRoot, "overnight", "260817", planPath).ts, 0);
   });
 });

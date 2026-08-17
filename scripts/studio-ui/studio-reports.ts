@@ -138,6 +138,23 @@ export interface ReportEntry extends ReportRegistryInput {
   createdAt: string;
   /** Path servido pelo Studio — `GET {url}` (ver `server.ts`). */
   url: string;
+  /**
+   * `true` quando ALGUM registro deste `id` já disparou (ou tentou disparar) o
+   * e-mail de notificação (#5521).
+   *
+   * É a chave de dedup de e-mail — e é deliberadamente "já NOTIFICOU", não "já
+   * existe entrada". A diferença não é acadêmica: o Stage 6 registra o MESMO
+   * `edicao-{AAMMDD}` duas vezes de propósito (6b-6 com `notify:false` só pra
+   * satisfazer o invariante de conclusão do stage, 6b-8 com o default `true` —
+   * é a 2ª que deve notificar o editor, ver `send-edition-report.ts`). Dedup
+   * por existência de entrada engoliria justamente esse e-mail, que é o
+   * relatório diário da edição.
+   *
+   * Ausente nas entradas gravadas antes do #5521 — tratado como `false`, então
+   * o 1º registro pós-upgrade de uma rodada antiga ainda notifica (preferível
+   * a suprimir um e-mail legítimo por falta de dado histórico).
+   */
+  notified?: boolean;
 }
 
 export interface RegisterReportResult {
@@ -180,7 +197,29 @@ export interface RegisterReportResult {
  */
 export type ReportEmailDispatchResult =
   | { sent: true }
-  | { sent: false; skipped: "no-credentials" | "register-failed" | "notify-disabled" }
+  | {
+      sent: false;
+      skipped:
+        | "no-credentials"
+        | "register-failed"
+        | "notify-disabled"
+        /**
+         * #5521: um registro anterior deste mesmo `id` já disparou o e-mail —
+         * ou seja, é RE-registro da mesma rodada, não rodada nova.
+         *
+         * Uma rodada que fecha, é reaberta pelo editor e fecha de novo
+         * re-registra o relatório a cada fecho; antes disso cada re-registro
+         * mandava um e-mail novo, todos se apresentando como definitivos (a
+         * rodada 260816e mandou 4, com contagens diferentes entre si), e um
+         * retry mandava o MESMO assunto duas vezes (260816, 80s de intervalo).
+         *
+         * Como o registro é upsert e a URL do relatório é derivada do `id`, o
+         * link do PRIMEIRO e-mail já aponta pro conteúdo mais recente — então
+         * suprimir os e-mails seguintes não esconde nada do editor: 1 e-mail
+         * por rodada, sempre linkando a versão atual.
+         */
+        | "already-notified"
+    }
   | { sent: false; error: string };
 
 /** Dependências injetáveis do disparo de e-mail — mesmo padrão de
@@ -472,6 +511,7 @@ export function registerReport(
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
+  let alreadyNotified = false;
   const entry: ReportEntry = {
     ...input,
     id,
@@ -484,6 +524,12 @@ export function registerReport(
     const lockPath = path + ".lock";
     acquireLock(lockPath);
     try {
+      // #5521: dedup de e-mail por "já NOTIFICOU", nunca por "já existe
+      // entrada" — ver `ReportEntry.notified`.
+      alreadyNotified = readPreviousEntry(path, id)?.notified === true;
+      const willNotify = notify && !alreadyNotified;
+      entry.notified = alreadyNotified || willNotify;
+
       const otherLines = readLinesExcludingId(path, id);
       const nextLines = [...otherLines, JSON.stringify(entry)];
       const tmpPath = path + ".tmp";
@@ -496,9 +542,20 @@ export function registerReport(
       ok: true,
       entry,
       error: null,
-      emailDispatch: notify
-        ? dispatchReportEmail(rootDir, entry, emailDeps)
-        : Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" }),
+      emailDispatch: !notify
+        ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" })
+        : alreadyNotified
+          ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-notified" })
+          : // #5521: `notified` é gravado OTIMISTA (antes do disparo, que é
+            // assíncrono e fire-and-forget). Se o envio não acontecer — sem
+            // credencial, rede fora, token expirado — desfazer a marca, senão
+            // a rodada fica marcada como notificada para sempre e o e-mail se
+            // perde em silêncio: um retry veria `already-notified` e não
+            // tentaria de novo. Fail-soft como todo este caminho.
+            dispatchReportEmail(rootDir, entry, emailDeps).then((result) => {
+              if (!result.sent) clearNotifiedFlag(rootDir, id);
+              return result;
+            }),
     };
   } catch (e) {
     return {
@@ -508,6 +565,54 @@ export function registerReport(
       emailDispatch: Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "register-failed" }),
     };
   }
+}
+
+/**
+ * Desfaz `notified` quando o disparo não aconteceu (#5521) — deixa a próxima
+ * invocação livre pra tentar de novo. Fail-soft: qualquer erro aqui é
+ * engolido, porque isto roda depois do registro já ter sucedido e nunca deve
+ * transformar "e-mail falhou" em "registro falhou".
+ */
+function clearNotifiedFlag(rootDir: string, id: string): void {
+  try {
+    const path = registryPath(rootDir);
+    const lockPath = path + ".lock";
+    acquireLock(lockPath);
+    try {
+      const previous = readPreviousEntry(path, id);
+      if (!previous || previous.notified !== true) return;
+      const otherLines = readLinesExcludingId(path, id);
+      const nextLines = [...otherLines, JSON.stringify({ ...previous, notified: false })];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
+  } catch {
+    // best-effort — ver docstring.
+  }
+}
+
+/** Entrada já gravada para `id`, se houver (#5521). */
+function readPreviousEntry(path: string, id: string): Partial<ReportEntry> | null {
+  if (!existsSync(path)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as Partial<ReportEntry>;
+      if (parsed?.id === id) return parsed;
+    } catch {
+      // linha corrompida — ignorar
+    }
+  }
+  return null;
 }
 
 /**
