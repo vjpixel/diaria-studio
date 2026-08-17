@@ -89,8 +89,8 @@
  * `hasHealthyIdleSession` pra este watchdog nunca disparar alerta nela —
  * mecanismo preservado, caso o kind volte a ser vigiado no futuro.
  *
- * Deve ser agendado externamente (Windows Task Scheduler, cron) para rodar
- * a cada 10–15 min. Ver docs/overnight-watchdog-setup.md.
+ * Deve ser agendado externamente (systemd timer, Task Scheduler, cron) para
+ * rodar a cada 10 min (cadência atual em produção). Ver docs/overnight-watchdog-setup.md.
  */
 
 import {

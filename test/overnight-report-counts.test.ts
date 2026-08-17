@@ -24,6 +24,7 @@ import {
   compareTitleWithReport,
   isTitleOk,
 } from "../scripts/lib/overnight-report-counts.ts";
+import { registerReport } from "../scripts/studio-ui/studio-reports.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -347,5 +348,127 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
       [],
       "title divergente tem que sair antes de tocar data/reports/index.jsonl",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5521 (re-review): o guard tem que valer no caminho DOCUMENTADO
+// ---------------------------------------------------------------------------
+
+describe("template de --title dos SKILLs é conferível (#5521)", () => {
+  const SKILLS = [
+    ".claude/skills/diaria-overnight/SKILL.md",
+    ".claude/skills/diaria-develop/SKILL.md",
+  ];
+
+  /**
+   * REGRESSÃO do achado mais grave do re-review: o guard existia, era anunciado
+   * como "único ponto não fail-soft", e mesmo assim NÃO conferia nada no
+   * caminho que os próprios SKILLs mandam o coordenador seguir — os templates
+   * usavam "N resolvidas"/"N destravadas", vocabulário que `parseTitleCounts`
+   * ignora de propósito. Um guard que só protege caminhos que ninguém percorre
+   * é pior que guard nenhum: passa a falsa sensação de proteção.
+   */
+  for (const skill of SKILLS) {
+    it(`${skill}: o template de --title declara contagem conferível`, () => {
+      const md = readFileSync(join(ROOT, skill), "utf-8");
+      const linha = md.split("\n").find((l) => l.includes('--title "diar.ia.br'));
+      assert.ok(linha, "template de --title não encontrado no SKILL");
+
+      // O template usa placeholders ({U}, {X}); trocar por números pra parsear.
+      const comNumeros = linha.replace(/\{[A-Za-z]+\}/g, "7");
+      const counts = parseTitleCounts(comNumeros);
+      assert.ok(
+        counts.units !== null || counts.issues !== null,
+        `template não declara contagem conferível: ${linha.trim()}`,
+      );
+    });
+  }
+});
+
+describe("título sem contagem conferível é reprovado (#5521)", () => {
+  const REPORT = [
+    "<!-- unidades-mergeadas -->",
+    "| Issue(s) | PR | O quê |",
+    "|---|---|---|",
+    "| #5471 | #5473 | x |",
+    "| #5472 | #5477 | y |",
+  ].join("\n");
+
+  it("REGRESSÃO: 'N resolvidas' não passa mais como aprovação silenciosa", () => {
+    const check = compareTitleWithReport(
+      "diar.ia.br overnight 260817 — 3 resolvidas, 1 pulada, 2 findings",
+      REPORT,
+    );
+    assert.ok(!isTitleOk(check), "título não-conferível não pode passar como coerente");
+    assert.match(check.problems[0], /nenhuma contagem conferível/);
+  });
+
+  it("declarar só issues já basta", () => {
+    assert.ok(isTitleOk(compareTitleWithReport("overnight — 2 issues", REPORT)));
+  });
+
+  it("relatório sem marcador continua passando (não há o que conferir)", () => {
+    const check = compareTitleWithReport("overnight — 3 resolvidas", "# rel\n\nprosa.\n");
+    assert.ok(isTitleOk(check));
+    assert.equal(check.kind, "skipped");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5521: 1 e-mail por rodada + --no-email
+// ---------------------------------------------------------------------------
+
+describe("registerReport: e-mail único por rodada (#5521)", () => {
+  let tmpRoot: string;
+
+  const input = (title: string) => ({
+    kind: "overnight" as const,
+    sessionId: "260817",
+    title,
+    htmlPath: "data/overnight/260817/report.md",
+  });
+
+  /** Deps injetadas: nunca tocam rede nem credencial real. */
+  const deps = {
+    hasCredentials: () => true,
+    resolveEditorEmail: () => "editor@exemplo.test",
+    sendMail: async () => ({ ok: true }),
+  } as unknown as Parameters<typeof registerReport>[2];
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "reg-notify-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: re-registro da MESMA rodada não manda e-mail de novo", async () => {
+    // A rodada 260816e mandou 4 e-mails, todos se apresentando como definitivos;
+    // a 260816 mandou o mesmo assunto 2x em 80s. Como o registro é upsert e a
+    // URL deriva do id, o link do 1º e-mail já aponta pra versão atual.
+    const first = registerReport(tmpRoot, input("overnight 260817 — 1 unidades, 1 issues"), deps);
+    assert.equal(first.ok, true);
+    assert.deepEqual(await first.emailDispatch, { sent: true });
+
+    const second = registerReport(tmpRoot, input("overnight 260817 — 4 unidades, 6 issues"), deps);
+    assert.equal(second.ok, true, "o registro em si tem que ser atualizado");
+    assert.deepEqual(await second.emailDispatch, { sent: false, skipped: "already-registered" });
+  });
+
+  it("rodada DIFERENTE continua mandando e-mail", async () => {
+    await registerReport(tmpRoot, input("a — 1 unidades"), deps).emailDispatch;
+    const outra = registerReport(
+      tmpRoot,
+      { ...input("b — 1 unidades"), sessionId: "260818" },
+      deps,
+    );
+    assert.deepEqual(await outra.emailDispatch, { sent: true });
+  });
+
+  it("notify:false (o --no-email do CLI) nunca manda", async () => {
+    const r = registerReport(tmpRoot, input("x — 1 unidades"), deps, false);
+    assert.deepEqual(await r.emailDispatch, { sent: false, skipped: "notify-disabled" });
   });
 });

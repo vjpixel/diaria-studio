@@ -468,7 +468,7 @@ Timeline via `npx tsx scripts/render-overnight-timeline.ts --plan data/develop/{
 Salvar o digest completo em `data/develop/{AAMMDD}/report.md` (mesma convenção do overnight, `data/overnight/{AAMMDD}/report.md`). **Registrar na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
 ```bash
 npx tsx scripts/register-report.ts --kind develop --id {AAMMDD} \
-  --title "diar.ia.br develop {AAMMDD} — {N} destravadas/mergeadas" \
+  --title "diar.ia.br develop {AAMMDD} — {U} unidades, {N} issues destravadas/mergeadas" \
   --html-path data/develop/{AAMMDD}/report.md
 ```
 File-based (só escreve `data/reports/index.jsonl`) — nunca depende do `npm run studio` estar no ar; o comando imprime a URL em stdout, capturar pro resumo do terminal. **Não criar mais draft via `create_draft` aqui.** **Preceda a tabela de unidades do relatório com o marcador literal `<!-- unidades-mergeadas -->` (#5521)** — com ele, o número de unidades no título (`"N unidades"`/`"N PRs"`) tem que bater com as linhas da tabela e o de issues (`"N issues"`) com as issues distintas que elas cobrem; divergência sai `exit 1` sem registrar nada, e o comando imprime o sufixo correto. Sem o marcador o comando avisa em stderr que a conferência não rodou. Único ponto não fail-soft do comando, de propósito (o título vira assunto de e-mail, que não tem desfazer); rationale completo no passo equivalente de `.claude/skills/diaria-overnight/SKILL.md`. Canal primário = terminal, incluindo a linha `Relatório: {URL do Studio}`; fail-soft #738 — falha do registro (raro, é só escrita local) nunca trava a sessão, só avisa que o relatório ficou local.

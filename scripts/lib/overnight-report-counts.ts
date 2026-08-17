@@ -273,6 +273,21 @@ export function compareTitleWithReport(title: string, markdown: string): TitleCh
   const expected = deriveCounts(table.rows);
   const problems: string[] = [];
 
+  // #5521 (achado do re-review): título que não declara NENHUM dos dois números
+  // não é "coerente" — é não-conferível. Deixar isso passar como aprovação
+  // silenciosa reproduzia o bug original: os templates de `--title` dos dois
+  // SKILLs usavam justamente vocabulário que `parseTitleCounts` ignora
+  // ("N resolvidas"), então o guard sempre passaria sem checar nada enquanto o
+  // código e a documentação afirmavam que o assunto era conferido. Mesma
+  // regra que já vale pra `found`/`rows.length`: não colapsar "nada a
+  // conferir" com "não consegui conferir".
+  if (found.units === null && found.issues === null) {
+    problems.push(
+      `título não declara nenhuma contagem conferível — use "N unidades" e/ou "N issues" ` +
+        `("N resolvidas" é ambíguo entre os dois e não conta)`,
+    );
+  }
+
   if (found.units !== null && found.units !== expected.units) {
     problems.push(
       `título anuncia ${found.units} unidade(s), mas a tabela de unidades tem ${expected.units} linha(s)`,

@@ -180,7 +180,29 @@ export interface RegisterReportResult {
  */
 export type ReportEmailDispatchResult =
   | { sent: true }
-  | { sent: false; skipped: "no-credentials" | "register-failed" | "notify-disabled" }
+  | {
+      sent: false;
+      skipped:
+        | "no-credentials"
+        | "register-failed"
+        | "notify-disabled"
+        /**
+         * #5521: já existia entrada com este `id` (mesmo kind + sessionId) —
+         * ou seja, é RE-registro da mesma rodada, não rodada nova.
+         *
+         * Uma rodada que fecha, é reaberta pelo editor e fecha de novo
+         * re-registra o relatório a cada fecho; antes disso cada re-registro
+         * mandava um e-mail novo, todos se apresentando como definitivos (a
+         * rodada 260816e mandou 4, com contagens diferentes entre si), e um
+         * retry mandava o MESMO assunto duas vezes (260816, 80s de intervalo).
+         *
+         * Como o registro é upsert e a URL do relatório é derivada do `id`, o
+         * link do PRIMEIRO e-mail já aponta pro conteúdo mais recente — então
+         * suprimir os e-mails seguintes não esconde nada do editor: 1 e-mail
+         * por rodada, sempre linkando a versão atual.
+         */
+        | "already-registered"
+    }
   | { sent: false; error: string };
 
 /** Dependências injetáveis do disparo de e-mail — mesmo padrão de
@@ -472,6 +494,7 @@ export function registerReport(
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
+  let alreadyRegistered = false;
   const entry: ReportEntry = {
     ...input,
     id,
@@ -485,6 +508,9 @@ export function registerReport(
     acquireLock(lockPath);
     try {
       const otherLines = readLinesExcludingId(path, id);
+      // #5521: `readLinesExcludingId` filtra a entrada anterior desta rodada —
+      // se sumiu alguma linha, é re-registro, e o e-mail não deve sair de novo.
+      alreadyRegistered = otherLines.length < countNonEmptyLines(path);
       const nextLines = [...otherLines, JSON.stringify(entry)];
       const tmpPath = path + ".tmp";
       writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
@@ -496,9 +522,11 @@ export function registerReport(
       ok: true,
       entry,
       error: null,
-      emailDispatch: notify
-        ? dispatchReportEmail(rootDir, entry, emailDeps)
-        : Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" }),
+      emailDispatch: !notify
+        ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" })
+        : alreadyRegistered
+          ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-registered" })
+          : dispatchReportEmail(rootDir, entry, emailDeps),
     };
   } catch (e) {
     return {
@@ -521,6 +549,16 @@ export function registerReport(
  * descarta (mesma disciplina fail-soft de `listReports`, que ignora essas
  * linhas na LEITURA sem apagá-las do arquivo).
  */
+/** Quantas linhas não-vazias o registro tem hoje (0 se ainda não existe). */
+function countNonEmptyLines(path: string): number {
+  if (!existsSync(path)) return 0;
+  try {
+    return readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+  } catch {
+    return 0;
+  }
+}
+
 function readLinesExcludingId(path: string, excludeId: string): string[] {
   if (!existsSync(path)) return [];
   let raw: string;

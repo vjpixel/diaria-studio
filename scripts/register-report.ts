@@ -26,8 +26,11 @@
  *
  * Uso:
  *   npx tsx scripts/register-report.ts --kind overnight --id 260720 \
- *     --title "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas" \
+ *     --title "diar.ia.br overnight 260720 — 5 unidades, 7 issues, 2 puladas" \
  *     --html-path data/overnight/260720/report.md
+ *
+ * `--no-email` registra sem notificar — use em reexecução/auditoria/teste, que
+ * senão manda e-mail real pro editor a cada invocação (#5521).
  *
  * Imprime em stdout a URL do Studio (`http://127.0.0.1:{porta}/relatorios/{id}`)
  * — porta default 4174 (mesma de `scripts/studio-ui/server.ts`), overridável
@@ -76,8 +79,17 @@ const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
  * coordenador, e silêncio faria parecer que rodou e aprovou.
  */
 function assertTitleMatchesReport(kind: string, title: string, htmlPath: string): void {
+  const warnUnchecked = (motivo: string): void => {
+    process.stderr.write(
+      `[register-report] AVISO: título NÃO conferido — ${htmlPath} ${motivo} (#5521).\n`,
+    );
+  };
+
   if (!COUNT_CHECKED_KINDS.has(kind)) return;
-  if (!htmlPath.endsWith(".md")) return;
+  if (!htmlPath.endsWith(".md")) {
+    warnUnchecked("não é .md — a conferência só sabe ler relatório em markdown");
+    return;
+  }
 
   // Relatório ausente/ilegível é justamente a entrada mais correlacionada com
   // erro do coordenador (AAMMDD errado no `--html-path`) — e `registerReport`
@@ -86,12 +98,6 @@ function assertTitleMatchesReport(kind: string, title: string, htmlPath: string)
   // legitimamente ainda não estar em disco), mas sumir em silêncio faria
   // parecer que a conferência rodou e aprovou.
   const abs = resolve(ROOT, htmlPath);
-  const warnUnchecked = (motivo: string): void => {
-    process.stderr.write(
-      `[register-report] AVISO: título NÃO conferido — ${htmlPath} ${motivo} (#5521).\n`,
-    );
-  };
-
   if (!existsSync(abs)) {
     warnUnchecked("não existe");
     return;
@@ -135,17 +141,26 @@ async function main(): Promise<void> {
   const id = values["id"];
   const title = values["title"];
   const htmlPath = values["html-path"];
+  // #5521: sem isto, QUALQUER reexecução (auditoria, retry, teste) manda
+  // e-mail pro editor — foi assim que uma auditoria de 73 relatórios
+  // históricos disparou ~50 e-mails de uma vez em 17/08/2026.
+  const noEmail = process.argv.includes("--no-email");
 
   if (!kind || !isReportKind(kind) || !id || !title || !htmlPath) {
     console.error(
-      "Uso: register-report.ts --kind {edicao|overnight|develop|mensal} --id <sessionId> --title <title> --html-path <path relativo ao repo>",
+      "Uso: register-report.ts --kind {edicao|overnight|develop|mensal} --id <sessionId> --title <title> --html-path <path relativo ao repo> [--no-email]",
     );
     process.exit(2);
   }
 
   assertTitleMatchesReport(kind, title, htmlPath);
 
-  const result = registerReport(ROOT, { kind, sessionId: id, title, htmlPath });
+  const result = registerReport(
+    ROOT,
+    { kind, sessionId: id, title, htmlPath },
+    undefined,
+    !noEmail,
+  );
   if (!result.ok || !result.entry) {
     // Fail-soft (#3714): registro é observabilidade extra, nunca crítico —
     // exit 0 pra nunca travar o fecho de sessão que chamou este comando.
@@ -159,6 +174,13 @@ async function main(): Promise<void> {
   const port = process.env.STUDIO_PORT ?? DEFAULT_STUDIO_PORT;
   const url = `http://127.0.0.1:${port}${result.entry.url}`;
   process.stderr.write(`[register-report] registrado: ${result.entry.id} -> ${result.entry.htmlPath}\n`);
+  const dispatch = await result.emailDispatch;
+  if (!dispatch.sent && "skipped" in dispatch && dispatch.skipped === "already-registered") {
+    process.stderr.write(
+      "[register-report] e-mail suprimido: já havia relatório registrado para esta rodada — " +
+        "o link do e-mail original já aponta pra versão atual (#5521).\n",
+    );
+  }
   process.stdout.write(`${url}\n`);
 }
 
