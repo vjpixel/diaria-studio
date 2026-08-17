@@ -46,8 +46,11 @@ alternativa.** Achado ao vivo confirmado na sessão `/diaria-develop` 260817
 (ver comentários da #5522): testar os 3 braços em sequência numa mesma
 sessão de navegador fez 2 dos 3 herdarem o `utm_source` do primeiro
 cadastro (atribuição first-touch presa num cookie de 1ª parte da Beehiiv) —
-abas da mesma janela anônima compartilham cookies entre si, só janelas
-anônimas distintas isolam de verdade. Reproduzir esse erro de metodologia
+abas da mesma janela anônima compartilham cookies entre si, e janelas
+anônimas SIMULTÂNEAS também compartilham a mesma sessão off-the-record —
+só **fechar TODAS as janelas anônimas antes de abrir a próxima** zera de
+verdade (não basta "abrir mais uma janela anônima" sem fechar as
+anteriores). Reproduzir esse erro de metodologia
 produz um FALHOU espúrio no passo 7, que não é sinal real sobre o teste de
 produção.
 
@@ -142,11 +145,14 @@ avaliar todos de uma vez.
 ## Critério de pronto (das duas issues, juntas)
 
 - [ ] Passo 7 retornou `PASSOU` pros 3 braços (#5522).
+- [ ] `dataLayer`/Network confirmaram o container `GTM-TC8C65ZN` disparando
+      em `/confirmado`, checado no passo 6 (#5522, item 3 do critério de
+      aprovação original).
 - [ ] O `domain` dos cookies `_fbc`/`_fbp`/`_ga` anotado nos passos 2 e 6
       é `.diar.ia.br` nos dois pontos, e os mesmos cookies aparecem em
       `eia.diar.ia.br/confirmado` (#5543).
 - [ ] Passo 8 rodou com `--push` e os 3 e-mails de teste saíram de
       `status: active` na Beehiiv.
 
-Se os 3 itens acima baterem, as issues #5522 e #5543 podem ser fechadas
+Se os 4 itens acima baterem, as issues #5522 e #5543 podem ser fechadas
 citando este roteiro + a saída do passo 7 como evidência.
