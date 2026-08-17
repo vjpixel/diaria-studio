@@ -162,7 +162,7 @@ export interface SocialStageCheckResult {
 }
 
 export interface SocialStageLintReport {
-  stage: 4;
+  stage: 2 | 4;
   passed: boolean;
   checks: SocialStageCheckResult[];
 }
@@ -275,26 +275,97 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
   return { stage: 4, passed, checks };
 }
 
+/**
+ * Roda os checks de `.claude/agents/orchestrator-stage-2.md` §2c (cluster
+ * pré-gate, depois de humanizar+Clarice) sobre `{editionDir}/03-social.md`
+ * numa única chamada. **Não inclui** `platform-headers-unicos` (roda logo
+ * após o merge, ANTES do humanizador — ponto distinto, não faz parte deste
+ * cluster) nem `humanizer-section-coverage` (precisa de `--pre`, um snapshot
+ * por invocação do humanizador — não é um check independente do estado atual
+ * do arquivo, não cabe num agregador sem argumento extra).
+ *
+ * Severity espelha a prosa do playbook (não o exit code do CLI — TODOS os
+ * `--check` abaixo fazem `process.exit(1)` em qualquer violação; a distinção
+ * gate-blocking/warn-only é sobre o que o ORCHESTRATOR faz a seguir):
+ * `linkedin-schema` e `no-email-cta-instagram` re-disparam o `social-writer`
+ * automaticamente (gate-blocking); `relative-time`, `no-trailing-question` e
+ * `personal-post-no-newsletter-deixis` são mostrados no gate como aviso e o
+ * editor decide se reescreve (warn-only, prosa explícita "não bloquear
+ * automaticamente — editor decide" nos 3 casos).
+ */
+export function runStage2SocialLintReport(editionDir: string): SocialStageLintReport {
+  const mdPath = resolve(editionDir, "03-social.md");
+  const checks: SocialStageCheckResult[] = [];
+  const push = (
+    id: string,
+    sourceIssue: string,
+    severity: SocialStageCheckSeverity,
+    ok: boolean,
+    result: unknown,
+  ) => {
+    checks.push({ id, source_issue: sourceIssue, severity, ok, result });
+  };
+
+  if (!existsSync(mdPath)) {
+    push("md-exists", "#5416", "gate-blocking", false, {
+      error: `arquivo não encontrado: ${mdPath}`,
+    });
+    return { stage: 2, passed: false, checks };
+  }
+  const md = readFileSync(mdPath, "utf8");
+
+  runSocialCheckSafely(push, "relative-time", "#877", "warn-only", () => lintRelativeTime(md));
+
+  runSocialCheckSafely(push, "linkedin-schema", "#595", "gate-blocking", () =>
+    lintLinkedinSchema(md),
+  );
+
+  runSocialCheckSafely(push, "no-email-cta-instagram", "#2486", "gate-blocking", () =>
+    lintInstagramEmailCTA(md),
+  );
+
+  runSocialCheckSafely(push, "no-trailing-question", "#1762", "warn-only", () =>
+    lintTrailingQuestion(md),
+  );
+
+  runSocialCheckSafely(
+    push,
+    "personal-post-no-newsletter-deixis",
+    "#2148",
+    "warn-only",
+    () => lintPersonalPostNewsletterDeixis(md),
+  );
+
+  const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
+  return { stage: 2, passed, checks };
+}
+
 function main(): void {
   const parsedArgs = parseArgsStructured(process.argv.slice(2));
   const args = parsedArgs.values;
 
-  // Modo --stage 4 --json (#5416) — agregador em lote, ver docstring de
-  // runStage4SocialLintReport acima. Aditivo: não interfere com nenhum modo
-  // --check abaixo.
-  if (parsedArgs.flags.has("json") && args.stage === "4") {
+  // Modo --stage <2|4> --json (#5416) — agregador em lote, ver docstring de
+  // runStage2SocialLintReport/runStage4SocialLintReport acima. Aditivo: não
+  // interfere com nenhum modo --check abaixo.
+  if (parsedArgs.flags.has("json") && (args.stage === "2" || args.stage === "4")) {
     if (!args["edition-dir"]) {
-      console.error("Uso: lint-social-md.ts --stage 4 --json --edition-dir <edition-dir-path>");
+      console.error(
+        "Uso: lint-social-md.ts --stage <2|4> --json --edition-dir <edition-dir-path>",
+      );
       process.exit(2);
     }
     const editionDir = resolve(process.cwd(), args["edition-dir"]);
-    const report = runStage4SocialLintReport(editionDir);
+    const report =
+      args.stage === "4" ? runStage4SocialLintReport(editionDir) : runStage2SocialLintReport(editionDir);
     console.log(JSON.stringify(report, null, 2));
     const failing = report.checks.filter((c) => !c.ok);
-    console.error(`\n=== lint-social-md --stage 4 --json ===`);
-    console.error(`Checks: ${report.checks.length} (${failing.length} com violação)`);
+    console.error(`\n=== lint-social-md --stage ${args.stage} --json ===`);
+    console.error(
+      `Checks: ${report.checks.length} (${failing.length} com violação, ${failing.filter((c) => c.severity === "gate-blocking").length} gate-blocking)`,
+    );
     for (const c of failing) {
-      console.error(`  ❌ [${c.id}/${c.source_issue}] severity=${c.severity}`);
+      const tag = c.severity === "gate-blocking" ? "❌" : "⚠️";
+      console.error(`  ${tag} [${c.id}/${c.source_issue}] severity=${c.severity}`);
     }
     process.exit(report.passed ? 0 : 1);
   }

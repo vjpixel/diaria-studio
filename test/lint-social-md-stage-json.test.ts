@@ -21,10 +21,16 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   runStage4SocialLintReport,
+  runStage2SocialLintReport,
   lintPostPixelMatchesD1,
   checkNoXmlArtifacts,
   lintAntithesisReveal,
   lintTrailingEditorialHook,
+  lintRelativeTime,
+  lintLinkedinSchema,
+  lintInstagramEmailCTA,
+  lintTrailingQuestion,
+  lintPersonalPostNewsletterDeixis,
 } from "../scripts/lint-social-md.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -151,7 +157,7 @@ describe("runStage4SocialLintReport (#5416)", () => {
   it("CLI --stage 4 --json: exit 2 quando --edition-dir ausente", () => {
     const r = runCli(["--stage", "4", "--json"]);
     assert.equal(r.status, 2);
-    assert.match(r.stderr, /--stage 4 --json --edition-dir/);
+    assert.match(r.stderr, /--stage <2\|4> --json --edition-dir/);
   });
 
   it("parity: post_pixel-matches-d1 — agregador ok:false <=> --check individual exit 1", () => {
@@ -187,5 +193,144 @@ describe("runStage4SocialLintReport (#5416)", () => {
     assert.equal(out.ok, false);
     assert.equal(out.best_match, "d3");
     rmSync(editionDir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * runStage2SocialLintReport (#5416) — cluster pré-gate de `.claude/agents/
+ * orchestrator-stage-2.md` §2c (relative-time, linkedin-schema,
+ * no-email-cta-instagram, no-trailing-question, personal-post-no-newsletter-
+ * deixis). Deliberadamente NÃO inclui `platform-headers-unicos` (ponto
+ * distinto, roda antes do humanizador) nem `humanizer-section-coverage`
+ * (precisa de `--pre`, snapshot por invocação — não cabe num agregador sem
+ * argumento extra).
+ *
+ * O fixture compartilhado `buildSocialMd()` (formato legado `# LinkedIn`,
+ * posts curtos) já falha `linkedin-schema` por char count fora da faixa —
+ * conveniente pra cobrir tanto o caso "todos passam" (os outros 4) quanto
+ * "gate-blocking falha, warn-only não" na mesma fixture, sem precisar de uma
+ * 2ª variante.
+ */
+describe("runStage2SocialLintReport (#5416)", () => {
+  function makeEditionDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-social-stage2-json-"));
+    writeFileSync(join(dir, "03-social.md"), buildSocialMd());
+    return dir;
+  }
+
+  it("5 checks presentes, severities batem com a prosa do playbook (#2b/#2c)", () => {
+    const editionDir = makeEditionDir();
+    const report = runStage2SocialLintReport(editionDir);
+    const byId = new Map(report.checks.map((c) => [c.id, c]));
+    assert.deepEqual(
+      [...byId.keys()].sort(),
+      [
+        "linkedin-schema",
+        "no-email-cta-instagram",
+        "no-trailing-question",
+        "personal-post-no-newsletter-deixis",
+        "relative-time",
+      ],
+    );
+    // Re-disparo automático do social-writer (prosa: "Exit 1 = re-disparar
+    // social-writer agent") → gate-blocking.
+    assert.equal(byId.get("linkedin-schema")?.severity, "gate-blocking");
+    assert.equal(byId.get("no-email-cta-instagram")?.severity, "gate-blocking");
+    // Editor decide (prosa: "não bloquear automaticamente — editor decide")
+    // → warn-only.
+    assert.equal(byId.get("relative-time")?.severity, "warn-only");
+    assert.equal(byId.get("no-trailing-question")?.severity, "warn-only");
+    assert.equal(byId.get("personal-post-no-newsletter-deixis")?.severity, "warn-only");
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("cada check bate byte-a-byte com a função pura correspondente (oráculo)", () => {
+    const editionDir = makeEditionDir();
+    const md = buildSocialMd();
+    const report = runStage2SocialLintReport(editionDir);
+    const byId = new Map(report.checks.map((c) => [c.id, c]));
+
+    assert.deepEqual(byId.get("relative-time")?.result, lintRelativeTime(md));
+    assert.deepEqual(byId.get("linkedin-schema")?.result, lintLinkedinSchema(md));
+    assert.deepEqual(byId.get("no-email-cta-instagram")?.result, lintInstagramEmailCTA(md));
+    assert.deepEqual(byId.get("no-trailing-question")?.result, lintTrailingQuestion(md));
+    assert.deepEqual(
+      byId.get("personal-post-no-newsletter-deixis")?.result,
+      lintPersonalPostNewsletterDeixis(md),
+    );
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("passed=false: linkedin-schema (gate-blocking) falha; os 4 warn-only/ok não derrubam passed sozinhos", () => {
+    const editionDir = makeEditionDir();
+    const report = runStage2SocialLintReport(editionDir);
+    assert.equal(report.stage, 2);
+    assert.equal(report.passed, false);
+    const byId = new Map(report.checks.map((c) => [c.id, c]));
+    assert.equal(byId.get("linkedin-schema")?.ok, false);
+    assert.equal(byId.get("relative-time")?.ok, true);
+    assert.equal(byId.get("no-email-cta-instagram")?.ok, true);
+    assert.equal(byId.get("no-trailing-question")?.ok, true);
+    assert.equal(byId.get("personal-post-no-newsletter-deixis")?.ok, true);
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("03-social.md ausente: passed=false, único check md-exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-social-stage2-json-missing-"));
+    const report = runStage2SocialLintReport(dir);
+    assert.equal(report.passed, false);
+    assert.equal(report.checks.length, 1);
+    assert.equal(report.checks[0].id, "md-exists");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("CLI --stage 2 --json: exit 1 (passed=false) + JSON parseável no stdout", () => {
+    const editionDir = makeEditionDir();
+    const r = runCli(["--stage", "2", "--json", "--edition-dir", editionDir]);
+    assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.stage, 2);
+    assert.equal(out.passed, false);
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("parity: linkedin-schema — agregador ok:false <=> --check individual exit 1", () => {
+    const editionDir = makeEditionDir();
+    const mdPath = join(editionDir, "03-social.md");
+    const individual = runCli(["--check", "linkedin-schema", "--md", mdPath]);
+    const report = runStage2SocialLintReport(editionDir);
+    const aggregated = report.checks.find((c) => c.id === "linkedin-schema");
+
+    assert.equal(individual.status, 1);
+    assert.equal(aggregated?.ok, false);
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("parity: relative-time (passa neste fixture) — agregador ok:true <=> --check individual exit 0", () => {
+    const editionDir = makeEditionDir();
+    const mdPath = join(editionDir, "03-social.md");
+    const individual = runCli(["--check", "relative-time", "--md", mdPath]);
+    const report = runStage2SocialLintReport(editionDir);
+    const aggregated = report.checks.find((c) => c.id === "relative-time");
+
+    assert.equal(individual.status, 0, `stderr: ${individual.stderr}`);
+    assert.equal(aggregated?.ok, true);
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("regressão: --check relative-time isolado continua funcionando exatamente como antes (sem --stage)", () => {
+    const editionDir = makeEditionDir();
+    const mdPath = join(editionDir, "03-social.md");
+    const r = runCli(["--check", "relative-time", "--md", mdPath]);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("CLI --stage 2 --json: exit 2 quando --edition-dir ausente", () => {
+    const r = runCli(["--stage", "2", "--json"]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--stage <2\|4> --json --edition-dir/);
   });
 });
