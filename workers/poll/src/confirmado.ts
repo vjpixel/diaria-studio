@@ -49,7 +49,7 @@ import {
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
 } from "../../../scripts/lib/shared/curadoria-page.ts";
-import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
+import { renderSeoMeta, renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { DIARIA_EIA_URL, DIARIA_LIVROS_URL, DIARIA_ARQUIVO_URL } from "../../../scripts/lib/canonical-urls.ts";
 
 /** URL pública canônica desta página. */
@@ -99,6 +99,7 @@ export function renderConfirmadoPage(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderAnalyticsHead()}
 <meta name="robots" content="noindex, follow">
 <style>
 ${renderCuradoriaRootStyles()}

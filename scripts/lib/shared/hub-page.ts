@@ -70,7 +70,7 @@
  */
 import { escHtml as esc } from "../html-escape.ts";
 import { slugify } from "../slug.ts"; // #5266 — id determinístico dos H2 de seção pro índice navegável
-import { renderSeoMeta } from "./seo-meta.ts";
+import { renderSeoMeta, renderAnalyticsHead } from "./seo-meta.ts"; // #5498: container GTM
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -1390,6 +1390,7 @@ ${hub.relatedHubs.map((r) => `        <li><a href="${esc(pageUrl(r.slug))}">${es
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(pageTitle)}</title>
 ${renderSeoMeta({ title: pageTitle, description: hub.metaDescription, url, feed: { url: ARQUIVO_FEED_URL }, image: hub.coverImage })}
+${renderAnalyticsHead()}
 <meta name="robots" content="index, follow">
 <style>
 ${renderCuradoriaRootStyles()}

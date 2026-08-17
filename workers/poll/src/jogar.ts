@@ -68,6 +68,7 @@ import {
   SUBSCRIBE_UTM_SOURCE, // #3978: fonte única de verdade movida pra lib.ts — reexportada abaixo por back-compat
   todayAammddBrt,
 } from "./lib";
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // #3517: share card pós-jogo — script de wiring dos botões (Web Share API +
 // fallback copiar-link) reusado LITERALMENTE do mesmo helper que
@@ -694,6 +695,7 @@ export function renderJogarPageHtml(opts: JogarPageOptions): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   /* #1936/#3111: design system canônico via ds-tokens.generated.ts — nunca
      hardcodear cor/fonte inline (test/poll-ds-tokens.test.ts trava isso). */
@@ -2158,6 +2160,7 @@ ${identityFormScript()}`;
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
@@ -2806,6 +2809,7 @@ export function renderJogarArchiveHtml(editions: string[], year: string): string
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
@@ -3174,6 +3178,7 @@ ${inlineSignupScript("jogar")}`;
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }

@@ -38,6 +38,7 @@ import {
   renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo (mesmo tratamento de /vote)
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { corsHeaders, hmacVerify, json, votePageHtml } from "./index";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -1275,6 +1276,7 @@ function renderLeaderboardHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   /* #1936: design system canônico — importados de ds-tokens.generated.ts
      (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)
@@ -1599,6 +1601,7 @@ export function renderArchiveListHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   /* #1936: design system canônico — importados de ds-tokens.generated.ts
      (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)
@@ -1687,6 +1690,7 @@ export function renderArchiveVoteHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   /* #1936: design system canônico — importados de ds-tokens.generated.ts
      (#3111 — antes hardcoded inline aqui). Webfont Geist (Google Fonts)

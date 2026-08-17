@@ -68,6 +68,7 @@
  */
 import { CYCLE_EDITION_RE, isValidVoteEditionFormat, htmlEscape, formatEditionDateForBrand, type Brand, BRAND_INFO, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil; #4119: isValidVoteEditionFormat/CYCLE_EDITION_RE — token de share passa a aceitar edição de ciclo Clarice (formatEditionDate direto não é mais usado aqui — ver formatShareEditionDate)
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { hmacSign } from "./index";
 import {
   SHARE_UTM_CAMPAIGN as REGISTRY_SHARE_UTM_CAMPAIGN,
@@ -413,6 +414,7 @@ export function renderSharePageHtml(opts: SharePageOptions): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
@@ -690,6 +692,7 @@ export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${pageTitle}</title>
 ${seoMeta}
+${renderAnalyticsHead()}
 <style>
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }

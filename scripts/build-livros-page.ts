@@ -66,7 +66,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #3118 item 6: alinha data-themes/option value ao padrão de build-cursos-page.ts
 import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
-import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
+import { renderSeoMeta, renderAnalyticsHead } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -461,6 +461,7 @@ export function renderLivrosPage(books: Book[]): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderAnalyticsHead()}
 ${renderGeoJsonLd({
   pageUrl: PAGE_URL,
   headline: PAGE_TITLE,
