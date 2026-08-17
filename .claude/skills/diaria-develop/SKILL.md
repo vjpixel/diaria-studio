@@ -171,11 +171,14 @@ status já decidido por outra sessão de horas antes não é uma via paralela qu
 escapa das 4 checagens — é o mesmo atalho ("a issue parece bloqueada") que
 este bloco existe pra vetar, só que disfarçado de reaproveitamento. Antes de
 aceitar qualquer classificação de bloqueio herdada (categoria A-E ou `local`),
-rodar pelo menos o passo mais barato das 4 checagens acima: `gh issue view N
---json labels` e conferir se a label/marcador citado como motivo da
-classificação herdada **ainda existe** na issue (comparação de 1 campo, não
-uma investigação completa). Motivo batendo → aceitar a herança sem reabrir as
-4 checagens. Motivo NÃO batendo (label removida, nunca existiu de fato, ou o
+rodar uma checagem ainda mais barata que as 4 acima (não é a 5ª delas, é um
+pré-filtro específico pra herança): `gh issue view N --json labels` e
+conferir se a **label** citada como motivo da classificação herdada **ainda
+existe** na issue (comparação de 1 campo, não uma investigação completa —
+cobre o caso de motivo por label; motivo registrado só em marcador de
+comentário exige reler o comentário, checagem 1 acima). Motivo batendo →
+aceitar a herança sem reabrir as 4 checagens. Motivo NÃO batendo (label
+removida, nunca existiu de fato, ou o
 corpo mudou desde a classificação original) → tratar a issue como se
 estivesse sendo classificada agora pela primeira vez e rodar a verificação
 completa das 4 checagens acima — nunca propagar a classificação stale pra

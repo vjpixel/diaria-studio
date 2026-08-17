@@ -160,19 +160,29 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    aceitar a leitura de bloqueio.
 
    **Herdar classificação de rodada anterior do MESMO DIA não dispensa esta
-   verificação (#5586).** Uma rodada que começa depois de outra do mesmo dia
-   já ter triado a fila (`data/overnight/{AAMMDD}[b/c/...]/plan.json` de
-   horas antes) pode ser tentada a economizar trabalho reaproveitando o
-   status já gravado em vez de reclassificar do zero — atalho razoável em
-   teoria, mas que pula exatamente a verificação que este bloco existe pra
-   impor: herdar não é uma via paralela que escapa dele. Antes de aceitar
+   verificação (#5586).** Este arquivo não tem um passo numerado dedicado a
+   "ler o `plan.json` de uma rodada overnight anterior do mesmo dia" (ao
+   contrário do `/diaria-develop`, que tem um passo explícito — Fase 0
+   passo 2, "Herdar a triagem do overnight") — mas na prática uma rodada que
+   começa depois de outra do mesmo dia já ter triado a fila
+   (`data/overnight/{AAMMDD}[b/c/...]/plan.json` de horas antes, ou o
+   contexto de comentários que a checagem 1 acima já leria) pode ser tentada
+   a economizar trabalho reaproveitando o status já gravado em vez de
+   reclassificar do zero — atalho razoável em teoria, mas que pula
+   exatamente a verificação que este bloco existe pra impor. Não importa se
+   essa herança é um passo codificado em algum lugar ou só um julgamento ad
+   hoc da sessão no momento: herdar não é uma via paralela que escapa dele.
+   Antes de aceitar
    qualquer `bloqueada-externa`/`requer-sessao-local`/`not-this-week`/
-   `ambígua/trade-off-real` herdada de uma rodada anterior, rodar pelo menos
-   o passo mais barato das 4 checagens acima: `gh issue view N --json labels`
-   e conferir se a label/marcador citado como motivo da classificação
-   herdada **ainda existe** na issue (comparação de 1 campo, não uma
-   investigação completa). Motivo batendo → aceitar a herança sem reabrir as
-   4 checagens. Motivo NÃO batendo (label removida, nunca existiu de fato,
+   `ambígua/trade-off-real` herdada de uma rodada anterior, rodar uma
+   checagem ainda mais barata que as 4 acima (não é a 5ª delas, é um
+   pré-filtro específico pra herança): `gh issue view N --json labels` e
+   conferir se a **label** citada como motivo da classificação herdada
+   **ainda existe** na issue (comparação de 1 campo, não uma investigação
+   completa — cobre o caso de motivo por label; motivo registrado só em
+   marcador de comentário exige reler o comentário, checagem 1 acima).
+   Motivo batendo → aceitar a herança sem reabrir as 4 checagens. Motivo NÃO
+   batendo (label removida, nunca existiu de fato,
    ou o corpo mudou desde a classificação original) → tratar a issue como se
    estivesse sendo classificada agora pela primeira vez e rodar a
    verificação completa das 4 checagens acima — nunca propagar a
