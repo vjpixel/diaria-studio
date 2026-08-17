@@ -893,6 +893,40 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 4 },
     issue: "#5548",
   },
+  {
+    name: "Diaria-Systemd-Failed-Units-Alarm",
+    description:
+      "sweep generico de units systemd --user diaria-*.service em estado failed (cobre as ~34 tasks do registro de graca, #5563)",
+    steps: [{ key: "alarm", script: "scripts/systemd-failed-units-alarm.ts" }],
+    logPath: "systemd-failed-units-alarm/.alarm.log",
+    // A cada 2h — mesma cadencia de Diaria-Cursos-Error-Alarm (custo e
+    // detecção em horas, não em dias; `systemctl --user list-units` é
+    // instantâneo, sem I/O de rede além do e-mail eventual). Achado de
+    // referência (#5563): diaria-edicao-diaria.service falhou 4x em silencio
+    // porque `systemctl --user list-timers` continua "saudável" mesmo com o
+    // service morto — só `--state=failed` revela.
+    schedule: { kind: "interval", hours: 2 },
+    issue: "#5563",
+  },
+  {
+    name: "Diaria-Edicao-Diaria-Staleness-Alarm",
+    description:
+      "alarme de staleness especifico do diaria-edicao-diaria.timer (nunca disparou vs disparou-e-falhou; #5563)",
+    steps: [{ key: "alarm", script: "scripts/edicao-diaria-staleness-alarm.ts" }],
+    logPath: "edicao-diaria-staleness-alarm/.alarm.log",
+    // Diária 18:20 BRT — ~2h20 depois do disparo do diaria-edicao-diaria.timer
+    // (dom-qui 16:00 BRT, ver docs/scheduled-edicao-setup.md), dando margem
+    // pro pipeline completo (tipicamente 50-90 turnos, --max-turns 120)
+    // terminar antes da checagem rodar. Horário livre — sem colisão com
+    // nenhuma outra daily já registrada (ver grep de `kind: "daily"` neste
+    // arquivo; o slot mais próximo é 18:10, Diaria-Clarice-Novos-Abort-Alarm).
+    // O sweep genérico acima (Diaria-Systemd-Failed-Units-Alarm) cobre
+    // "disparou e falhou" via `systemctl --state=failed`; este alarme cobre
+    // o que o sweep genérico não consegue: "nunca disparou" — não há nada em
+    // `failed` pra um service que nunca foi invocado pelo timer.
+    schedule: { kind: "daily", hour: 18, minute: 20 },
+    issue: "#5563",
+  },
 ];
 
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
