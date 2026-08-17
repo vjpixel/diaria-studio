@@ -30,13 +30,68 @@
  * link impresso no terminal ser correto mesmo com o Studio numa porta
  * não-default.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { registerReport, isReportKind } from "./studio-ui/studio-reports.ts";
+import { compareTitleWithReport } from "./lib/overnight-report-counts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_STUDIO_PORT = "4174";
+
+/**
+ * Kinds cujo relatório traz a tabela "Unidades mergeadas" e, portanto, permitem
+ * conferir as contagens do título (#5521). `edicao`/`mensal` têm outro formato
+ * e não passam por esta checagem.
+ */
+const COUNT_CHECKED_KINDS = new Set(["overnight", "develop"]);
+
+/**
+ * Confere o título contra o próprio relatório antes de registrar (#5521).
+ *
+ * O título vira o assunto do e-mail que o editor recebe — na rodada 260816e ele
+ * anunciou "10 unidades, 13 issues fechadas" para um relatório cuja tabela
+ * mostrava 13 unidades e 17 issues. Ninguém percebeu porque nada comparava as
+ * duas coisas.
+ *
+ * BLOQUEANTE de propósito (`exit 1`), ao contrário do resto deste script, que é
+ * fail-soft: um relatório registrado com número errado já cumpriu o estrago no
+ * instante em que o assunto sai, e não há como desfazer depois. Falhar aqui
+ * custa ao coordenador reescrever uma linha; deixar passar custa a confiança do
+ * editor em todo assunto seguinte. Divergência é sempre erro de quem escreveu o
+ * título — a tabela vem do fecho já conferido contra o git.
+ *
+ * Degrada em silêncio quando não há o que conferir (relatório sem a tabela,
+ * arquivo ilegível, kind fora de `COUNT_CHECKED_KINDS`): a checagem existe pra
+ * pegar contradição, não pra impor formato novo a relatório antigo.
+ */
+function assertTitleMatchesReport(kind: string, title: string, htmlPath: string): void {
+  if (!COUNT_CHECKED_KINDS.has(kind)) return;
+  if (!htmlPath.endsWith(".md")) return;
+
+  const abs = resolve(ROOT, htmlPath);
+  if (!existsSync(abs)) return;
+
+  let markdown: string;
+  try {
+    markdown = readFileSync(abs, "utf-8");
+  } catch {
+    return;
+  }
+
+  const check = compareTitleWithReport(title, markdown);
+  if (check.ok) return;
+
+  process.stderr.write(
+    `[register-report] título não bate com ${htmlPath} (#5521):\n` +
+      check.problems.map((p) => `  - ${p}\n`).join("") +
+      `  Sufixo correto pela tabela: "${check.suggestion}"\n` +
+      `  Nota: ${check.issuesNote}\n` +
+      `  Corrija o --title e rode de novo (nada foi registrado, nenhum e-mail saiu).\n`,
+  );
+  process.exit(1);
+}
 
 async function main(): Promise<void> {
   const { values } = parseArgs(process.argv.slice(2));
@@ -51,6 +106,8 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
+
+  assertTitleMatchesReport(kind, title, htmlPath);
 
   const result = registerReport(ROOT, { kind, sessionId: id, title, htmlPath });
   if (!result.ok || !result.entry) {
