@@ -40,6 +40,7 @@
  * só um wrapper fino que busca via `gh` e imprime o resultado.
  */
 import { spawnSync } from "node:child_process";
+import { isMainModule } from "./cli-args.ts";
 
 export type SessionKind = "continuo" | "overnight" | "develop";
 
@@ -280,13 +281,7 @@ async function main() {
   );
 }
 
-const isDirectRun = (() => {
-  try {
-    return import.meta.url === `file://${process.argv[1]}`;
-  } catch {
-    return false;
-  }
-})();
+const isDirectRun = isMainModule(import.meta.url);
 
 if (isDirectRun) {
   main();
