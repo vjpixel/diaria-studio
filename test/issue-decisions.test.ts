@@ -22,6 +22,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   formatDecisionMarker,
   parseDecisionMarkers,
@@ -32,6 +35,8 @@ import {
   type IssueDecision,
   type ExecutionBlock,
 } from "../scripts/lib/issue-decisions.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function decision(overrides: Partial<IssueDecision> = {}): IssueDecision {
   return {
@@ -218,5 +223,39 @@ describe("latestExecutionBlockFor", () => {
     const valid = executionBlock();
     const bodies = ["<!-- bloqueio-execucao: {broken -->", formatExecutionBlockMarker(valid)];
     assert.deepEqual(latestExecutionBlockFor(bodies), valid);
+  });
+});
+
+describe("CLI wrapper (#5535 — main() precisa rodar de fato)", () => {
+  // Regressão pra um bug real: o wrapper detectava execução direta via
+  // `import.meta.url === \`file://${process.argv[1]}\`` — comparação de
+  // string que nunca bate no Windows (drive letter + separador divergem
+  // entre o path cru de process.argv[1] e o file:// URL), mesma classe do
+  // #5480. `main()` nunca rodava, e o CLI retornava stdout vazio sempre,
+  // silenciosamente, mascarando decisões/bloqueios de execução já
+  // registrados. Os testes acima cobrem só as funções puras (que nunca
+  // dependeram do wrapper) — nenhum exercitava o `isDirectRun`/`main()` em
+  // si, por isso o bug passou despercebido. Este teste falha em qualquer
+  // plataforma onde `main()` não executa: sem `--issue`, main() escreve o
+  // "uso: ..." em stderr e sai com exit 1 — se `isDirectRun` for false, o
+  // processo sai limpo (exit 0, stdout/stderr vazios) porque nada roda.
+  it("sem --issue: sai com exit 1 e imprime uso em stderr (prova que main() rodou)", () => {
+    const result = spawnSync("npx", ["tsx", "scripts/lib/issue-decisions.ts"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /uso: npx tsx scripts\/lib\/issue-decisions\.ts --issue N/);
+  });
+
+  it("--issue inválido (não-numérico): sai com exit 1 e imprime erro em stderr", () => {
+    const result = spawnSync("npx", ["tsx", "scripts/lib/issue-decisions.ts", "--issue", "abc"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--issue inválido: abc/);
   });
 });
