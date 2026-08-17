@@ -13,7 +13,7 @@ Todas as 4 tags de conversão disparam do **mesmo trigger de dataLayer**,
 exatamente o que o título da issue pedia:
 
 ```
-CE - Cadastro Concluido (signedUp)
+Newsletter Signup - signedUp
 tipo: Custom Event, casando {{_event}} == "signedUp"
 ```
 
@@ -41,7 +41,15 @@ Submit`) que `gtm-signup-tracking-setup.md` previa como contingência.
 
 O Google Ads e o LinkedIn já mediam cadastro antes desta issue (Google desde
 o fix do #4348) — o trabalho novo foi trazer Meta e Microsoft pro mesmo
-padrão, sem tocar nos dois que já funcionavam.
+padrão. **As duas tags existentes FORAM repontadas**: o acionador antigo
+(`Newsletter Form Submit`) foi removido de cada uma e trocado por
+`Newsletter Signup - signedUp` (GTM soma acionadores múltiplos com OU —
+manter os dois teria disparado a conversão 2× por cadastro). O que ficou
+intacto foi a **ação de conversão em si** — o Google Ads continua ligado ao
+mesmo `AW-17790097065`/rótulo `pKZTCKnJxdAbEKmt_aJC`, sem criar uma 2ª ação
+que quebraria a série histórica pós-31/07. O trigger antigo continua
+existindo no container, sem tags — deixado de propósito como caminho de
+volta se `signedUp` regredir.
 
 **Tag separada para a base UET** (não combinada com o evento, diferente do
 que `gtm-signup-tracking-setup.md` tinha desenhado): `Microsoft UET - Base
@@ -69,7 +77,7 @@ quando o evento de cadastro chega.
 
 ## Verificação ao vivo (17/08/2026)
 
-Confirmado por dois caminhos independentes na mesma sessão:
+Confirmado por três caminhos independentes:
 
 1. **Rede, no cadastro de teste:** `bat.bing.com/p/action/187268188.js`
    carrega e `bat.bing.com/action/0` dispara com
