@@ -70,9 +70,12 @@ export function decideSemaphoreGuard(
   if (result.plan.semaphore === "red") {
     // #5592: nomeia o(s) breaker(s) específico(s) (spam, bounce, etc. — ver
     // `describeBreachedMetrics` em weekly-plan.ts) quando disponível. Esse
-    // `reason` é a última linha de stderr deste script, capturada como
-    // "detalhe do abort" por `clarice-novos-run.ts` (`step()`) e propagada
-    // até o e-mail de alarme de aborts consecutivos (#5405 item 1,
+    // `reason` aparece na linha `🔴 semáforo VERMELHO — {reason}` impressa em
+    // stderr por este script; `clarice-novos-run.ts` (`step()`) captura as
+    // ÚLTIMAS 6 LINHAS de stderr (não só essa) como "detalhe do abort",
+    // prefixadas com `❌ {label} falhou (exit N):` — e é essa mensagem
+    // inteira (`abort.message`), truncada a 300 chars, que chega ao e-mail
+    // de alarme de aborts consecutivos (#5405 item 1,
     // `clarice-novos-abort-alarm.ts`) — antes desta mudança, o editor via só
     // "circuit breaker(s) ... rompido(s)" sem saber QUAL, mesmo o dashboard
     // já sabendo a resposta (tabela de saúde por métrica).

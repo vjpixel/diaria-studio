@@ -275,7 +275,13 @@ export function decideSemaphore(
  * semaphore.ts` nem ao e-mail de alarme (#5405 item 1) — os dois diziam só
  * "circuit breaker(s) de entregabilidade rompido(s)", sem nomear o(s)
  * breaker(s). Usado por `deriveRampVolumes` (clarice-schedule-ramp.ts) pra
- * popular `RampVolumePlan.breachedMetrics`.
+ * popular `RampVolumePlan.breachedMetrics`, que `decideSemaphoreGuard`
+ * (clarice-check-semaphore.ts) injeta na linha `🔴 semáforo VERMELHO —
+ * {reason}` impressa em stderr; `clarice-novos-run.ts` (`step()`) captura as
+ * ÚLTIMAS 6 LINHAS de stderr (não só essa) como "detalhe do abort",
+ * prefixadas com `❌ {label} falhou (exit N):`, e é essa mensagem inteira
+ * (`abort.message`), truncada a 300 chars, que chega ao e-mail de alarme —
+ * nunca este texto isolado.
  */
 export function describeBreachedMetrics(
   health: HealthAggregate,

@@ -425,6 +425,20 @@ export function deriveRampVolumes(
   // — vermelho é a única classificação onde `describeBreachedMetrics` pode
   // devolver não-vazio (ver docstring de `decideSemaphore`).
   const breachedMetrics = semaphore === "red" ? describeBreachedMetrics(health, spamSignal) : [];
+  // Guard defensivo (achado do review pré-merge #5600): `decideSemaphore` e
+  // `describeBreachedMetrics` reimplementam independentemente a mesma
+  // classificação de 5 métricas — se um dia divergirem (métrica nova só num
+  // dos dois, threshold mudado só num), `semaphore === "red"` mas
+  // `breachedMetrics` vazio degradaria silenciosamente pra mensagem genérica
+  // sem log. Nunca lança — não pode travar a decisão de abort.
+  if (semaphore === "red" && breachedMetrics.length === 0) {
+    console.error(
+      "[clarice-schedule-ramp] aviso: semáforo vermelho mas describeBreachedMetrics() não " +
+        "identificou nenhuma métrica rompida — decideSemaphore/describeBreachedMetrics " +
+        "divergiram (métrica ou threshold mudou só em um dos dois). Mensagem de abort vai " +
+        "sair genérica. Ver workers/brevo-dashboard/src/weekly-plan.ts.",
+    );
+  }
   return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume, breachedMetrics } };
 }
 

@@ -16,11 +16,14 @@ test("decideSemaphoreGuard: semáforo 'red' -> ok=false (aborta)", () => {
 });
 
 // #5592: o `reason` do abort nomeia o(s) breaker(s) específico(s) quando
-// `deriveRampVolumes` já os identificou (`breachedMetrics`) — esse texto é a
-// última linha de stderr que `clarice-novos-run.ts` captura como "detalhe do
-// abort" e propaga até o e-mail de alarme de aborts consecutivos (#5405 item
-// 1). Antes desta mudança, o texto era sempre genérico ("circuit breaker(s)
-// ... rompido(s)"), mesmo quando o dado específico já estava disponível.
+// `deriveRampVolumes` já os identificou (`breachedMetrics`) — esse texto
+// aparece na linha `🔴 semáforo VERMELHO — {reason}` impressa em stderr;
+// `clarice-novos-run.ts` (`step()`) captura as ÚLTIMAS 6 LINHAS de stderr
+// (não só essa) como "detalhe do abort", prefixadas com `❌ {label} falhou
+// (exit N):` e truncadas a 300 chars antes de chegar ao e-mail de alarme de
+// aborts consecutivos (#5405 item 1). Antes desta mudança, o texto era
+// sempre genérico ("circuit breaker(s) ... rompido(s)"), mesmo quando o
+// dado específico já estava disponível.
 test("decideSemaphoreGuard: semáforo 'red' com breachedMetrics -> reason nomeia a(s) métrica(s) (#5592)", () => {
   const result = decideSemaphoreGuard({
     ok: true,
