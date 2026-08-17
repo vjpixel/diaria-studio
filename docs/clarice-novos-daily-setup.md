@@ -94,7 +94,7 @@ systemctl --user daemon-reload && systemctl --user enable --now diaria-clarice-n
 
 ## Re-arme feito em 260816 (#5447)
 
-**Pendente, não executado nesta unidade** (worktree isolado — ver seção de arme acima). O coordenador top-level roda, no checkout principal DEPOIS do merge, pra `Diaria-Clarice-Novos` (09:00), `Diaria-Clarice-Novos-Tarde` (18:00) e `Diaria-Clarice-Novos-Abort-Alarm` (18:10) — mesma armadilha de `Persistent=true` documentada acima (usar o kill switch antes de reiniciar, ou rearmar antes da próxima ocorrência do horário novo):
+**Executado — confirmado ao vivo em 17/08/2026** (`diaria-clarice-novos` 09:00, `-tarde` 18:00, `-abort-alarm` 18:10 BRT, os três `enabled` e com disparo recente na `predator`). *(Estava pendente na unidade implementadora, worktree isolado — ver seção de arme acima.)* O coordenador top-level roda, no checkout principal DEPOIS do merge, pra `Diaria-Clarice-Novos` (09:00), `Diaria-Clarice-Novos-Tarde` (18:00) e `Diaria-Clarice-Novos-Abort-Alarm` (18:10) — mesma armadilha de `Persistent=true` documentada acima (usar o kill switch antes de reiniciar, ou rearmar antes da próxima ocorrência do horário novo):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
