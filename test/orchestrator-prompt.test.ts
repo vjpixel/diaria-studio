@@ -995,3 +995,50 @@ describe("#4942: §1x (GATE HUMANO) guarda contra auto_approve", () => {
     );
   });
 });
+
+describe("#5566: caminho erro-intencional-placeholder do Stage 4 referencia o filtro de segurança do #3808", () => {
+  // Achado ao vivo na edição 260818: o Stage 2 pulou a declaração do erro
+  // intencional e o Stage 4 precisou propor um candidato sozinho, no gate,
+  // sem nenhuma instrução no playbook lembrando de consultar
+  // context/editorial-rules.md §10 (Regra 1 — verificável sem sair do
+  // e-mail; Regra 2 — não gerar desinformação) nem o mesmo filtro de 3
+  // diretrizes já documentado em orchestrator-stage-2.md. Guard: o parágrafo
+  // do check `erro-intencional-placeholder` em §4c.2 precisa referenciar
+  // explicitamente editorial-rules.md §10 e o filtro de segurança de Stage 2.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const checkIdx = stage4.indexOf("`erro-intencional-placeholder`");
+
+  it("§4c.2 documenta o check `erro-intencional-placeholder`", () => {
+    assert.ok(checkIdx !== -1, "orchestrator-stage-4.md não menciona o check erro-intencional-placeholder");
+  });
+
+  it("o parágrafo referencia explicitamente editorial-rules.md §10", () => {
+    const nextCheckIdx = stage4.indexOf("`secondary-items-have-summary`", checkIdx + 1);
+    assert.ok(nextCheckIdx !== -1 && nextCheckIdx > checkIdx);
+    const paragraph = stage4.slice(checkIdx, nextCheckIdx);
+    assert.ok(
+      /editorial-rules\.md.*§10/.test(paragraph),
+      "#5566: o parágrafo de erro-intencional-placeholder precisa referenciar context/editorial-rules.md §10 explicitamente",
+    );
+    assert.ok(
+      /Filtro de segurança ao PROPOR candidatos/.test(paragraph) && /#3808/.test(paragraph),
+      "#5566: o parágrafo precisa referenciar o mesmo 'Filtro de segurança ao PROPOR candidatos' (#3808) documentado em orchestrator-stage-2.md",
+    );
+    assert.ok(
+      paragraph.includes("orchestrator-stage-2.md"),
+      "#5566: o parágrafo precisa apontar de volta pro orchestrator-stage-2.md, onde o filtro completo vive",
+    );
+    assert.ok(
+      /GATE-BLOCKING/.test(paragraph),
+      "o caminho erro-intencional-placeholder precisa continuar documentado como GATE-BLOCKING no Stage 4",
+    );
+  });
+
+  it("orchestrator-stage-2.md ainda documenta o filtro de segurança original (fonte da verdade não duplicada)", () => {
+    const stage2 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-2.md"), "utf8");
+    assert.ok(
+      stage2.includes("Filtro de segurança ao PROPOR candidatos"),
+      "orchestrator-stage-2.md deve seguir sendo a fonte do filtro de segurança referenciado pelo Stage 4",
+    );
+  });
+});
