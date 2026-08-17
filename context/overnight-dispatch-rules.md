@@ -46,6 +46,17 @@ cleanup de fim de rodada usa pra deletar a branch remota corretamente.
 Primeiro passo é **`npm ci`** — worktree novo não tem `node_modules/` nem a
 junction `data/`.
 
+**`npm ci`/`npm install` só dentro do worktree, NUNCA no checkout principal
+compartilhado (#5571).** O checkout principal é usado concorrentemente por
+outras sessões/tasks (Diaria-Studio-Server, outras sessões locais) — dois
+processos `npm install`/`npm ci` escrevendo no MESMO `node_modules` do
+checkout principal ao mesmo tempo já corrompeu `node_modules` num symlink
+AUTO-REFERENTE ao vivo (achado overnight 260817c), quebrando todo `npx tsx`
+nesse checkout com `FilesystemLoop`/"Too many levels of symbolic links" até
+alguém rodar `rm node_modules && npm ci` manualmente. Cada worktree isolado
+já tem seu próprio `node_modules/` — nunca há motivo pra reinstalar no
+checkout principal a partir de dentro de um worktree.
+
 ## 4. Disciplina de testes (#2959) — NUNCA a suíte completa local
 
 Testes locais = **`npx tsc --noEmit`** (typecheck) **+ só os arquivos de teste
