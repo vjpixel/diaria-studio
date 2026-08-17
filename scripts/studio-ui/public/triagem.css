@@ -199,8 +199,14 @@
    legível pra texto pequeno é 4,5:1. Ficava praticamente invisível.
    0.7 sobre `--ink` dá 6,73:1 — folga sobre o mínimo, em vez de raspar nele
    (0.6, o valor de `.track-other`, daria 4,76:1: passa, mas sem margem num
-   badge de 0.72rem). */
-.dispatch-fora-de-rodada { opacity: 0.7; }
+   badge de 0.72rem).
+   `border-color: currentColor` alinha este badge aos 3 acima, que casam borda
+   e texto na mesma cor. Sem isso ele era o único herdando a borda `--rule` do
+   `.dispatch-badge` base — 1,21:1, ainda mais apagada que o texto que já
+   estava ilegível, e o contorno sumia. `currentColor` (e não `var(--ink)`)
+   porque a regra que se quer expressar é "a borda acompanha o texto": se a
+   cor herdada mudar, a borda segue junto sem ninguém precisar lembrar. */
+.dispatch-fora-de-rodada { border-color: currentColor; opacity: 0.7; }
 
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·
