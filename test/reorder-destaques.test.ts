@@ -268,6 +268,119 @@ Aprofunde:
     assert.equal(detectTrailingNonDestaqueContent(block), false);
   });
 
+  it("#4907: 'Saiba mais:' + link do hub após Aprofunde → false (conteúdo mecânico do próprio destaque, não box)", () => {
+    // Review PR #5588: sem esta exceção explícita, TODA edição com hub
+    // temático casado (anthropic-claude/openai-chatgpt/etc, injetado por
+    // stitch-newsletter.ts) dispararia falso positivo aqui.
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus.
+
+Por que isso importa:
+
+Impacto prático.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+
+Saiba mais:
+
+[Tudo sobre Claude/Anthropic](https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter)
+`;
+    assert.equal(detectTrailingNonDestaqueContent(block), false);
+  });
+
+  it("#4907: box de divulgação DEPOIS do 'Saiba mais:' ainda é detectado → true", () => {
+    // A exceção do hub só cobre o próprio bloco "Saiba mais:" + link — não
+    // vira um passe livre pra qualquer coisa que venha depois dele.
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+Texto.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+
+Saiba mais:
+
+[Tudo sobre Claude/Anthropic](https://arquivo.diar.ia.br/temas/anthropic-claude)
+
+**Box de divulgação colado aqui [link](https://x.com)**
+`;
+    assert.equal(detectTrailingNonDestaqueContent(block), true);
+  });
+
+  it("reorderDestaquesInMd NÃO avisa sobre bloco cuja posição não muda (ex: D3 parado num swap D1<->D2)", () => {
+    // Review PR #5588: newOrder=[2,1,3] move D1 e D2, mas D3 permanece na
+    // posição 3 — mesmo que D3 carregue um box na lacuna seguinte (antes de
+    // OUTRAS NOTÍCIAS), nada relacionado a ele "viaja" neste reorder, então
+    // não há aviso útil a dar.
+    const md = `Intro...
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+
+---
+
+**DESTAQUE 2 | 💼 MERCADO**
+
+**[Mercer](https://y.com)**
+
+Texto Mercer.
+
+Aprofunde:
+
+* [Fonte 2](https://b.com) - Site B
+
+---
+
+**DESTAQUE 3 | 🇧🇷 BRASIL**
+
+**[C6](https://z.com)**
+
+Texto C6.
+
+Aprofunde:
+
+* [Fonte 3](https://c.com) - Site C
+
+**Box parado junto do D3 [link](https://x.com)**
+
+---
+
+**📰 OUTRAS NOTÍCIAS**
+
+[N1](https://n.com)
+`;
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      reorderDestaquesInMd(md, [2, 1, 3]);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(
+      warnings.length,
+      0,
+      `não esperava nenhum warning (D3 não muda de posição). Warnings capturados: ${JSON.stringify(warnings)}`,
+    );
+  });
+
   it("reorderDestaquesInMd emite console.warn quando detecta conteúdo sobrando", () => {
     const md = `Intro...
 

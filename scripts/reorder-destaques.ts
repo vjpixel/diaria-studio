@@ -451,11 +451,16 @@ export function reorderHighlightsInJson(
  * destaque anterior e vai viajar junto no reorder (ver docstring do topo do
  * arquivo).
  *
- * Ancora na seção "Aprofunde:" — última seção canônica de um bloco DESTAQUE
- * no template (`context/templates/newsletter.md`: título → parágrafos → "Por
- * que isso importa:" → "Aprofunde:" + bullets `* [Título](URL) - Fonte`).
- * Qualquer texto não-vazio depois da lista de bullets, dentro do mesmo chunk,
- * não pertence ao destaque em si.
+ * Ancora na seção "Aprofunde:" — última seção canônica ESCRITA de um bloco
+ * DESTAQUE no template (`context/templates/newsletter.md`: título →
+ * parágrafos → "Por que isso importa:" → "Aprofunde:" + bullets
+ * `* [Título](URL) - Fonte`). Qualquer texto não-vazio depois da lista de
+ * bullets, dentro do mesmo chunk, não pertence ao destaque em si — COM UMA
+ * exceção mecânica reconhecida explicitamente: o bloco "Saiba mais:" + link
+ * do hub temático (#4907), injetado automaticamente por `stitch-newsletter.ts`
+ * como o último elemento do destaque quando exatamente 1 hub casa. Sem essa
+ * exceção, toda edição com hub matched dispararia falso positivo — o link do
+ * hub é conteúdo legítimo do destaque, não um box solto na lacuna seguinte.
  *
  * Deliberadamente conservador: se "Aprofunde:" não for encontrado (formato
  * legado, ou destaque sem essa seção), retorna `false` — sem esse âncora não
@@ -479,6 +484,17 @@ export function detectTrailingNonDestaqueContent(block: string): boolean {
     // detector existe pra pegar.
     if (line === "" || /^[*-]\s/.test(line)) {
       i++;
+      continue;
+    }
+    // #4907: "Saiba mais:" + link do hub é conteúdo mecânico do PRÓPRIO
+    // destaque (nunca um box de divulgação) — reconhece e consome antes de
+    // decidir se sobrou algo de fato estranho.
+    if (line === "Saiba mais:") {
+      i++;
+      while (i < lines.length && lines[i].trim() === "") i++;
+      if (i < lines.length && /^\[[^\]]+\]\([^)]+\)$/.test(lines[i].trim())) {
+        i++;
+      }
       continue;
     }
     break;
@@ -520,14 +536,18 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   // #5585: aviso best-effort — conteúdo (ex: box de divulgação) capturado
   // dentro do chunk de um destaque vai ser reordenado/rotacionado junto com
   // ele. Nunca bloqueia; puramente informativo (ver docstring do topo).
-  blocks.forEach((block, idx) => {
-    if (detectTrailingNonDestaqueContent(block)) {
-      const headerMatch = block.match(/^\*\*DESTAQUE\s+(\d+)/);
-      const destaqueNum = headerMatch ? headerMatch[1] : String(idx + 1);
+  // Só avalia blocos que de fato MUDAM de posição sob este `newOrder` —
+  // `n - 1 === i` é a posição original ficando igual à posição final (o
+  // bloco não se move, então não há nada "viajando" pra avisar); blocos fora
+  // do escopo de `newOrder` (tail, nunca tocados) nem entram no loop.
+  newOrder.forEach((n, i) => {
+    if (n - 1 === i) return;
+    const block = blocks[n - 1];
+    if (block && detectTrailingNonDestaqueContent(block)) {
       console.warn(
-        `WARN: reorder-destaques — bloco DESTAQUE ${destaqueNum} parece conter conteúdo além do ` +
-          `destaque (ex: box de divulgação na lacuna seguinte) — esse conteúdo viaja junto no ` +
-          `reorder. Se você também mudou boxes neste turno, confira o resultado.`,
+        `WARN: reorder-destaques — bloco DESTAQUE ${n} parece conter conteúdo além do destaque ` +
+          `(ex: box de divulgação na lacuna seguinte) — esse conteúdo viaja para a posição ${i + 1} ` +
+          `junto com o destaque. Se você também mudou boxes neste turno, confira o resultado.`,
       );
     }
   });
