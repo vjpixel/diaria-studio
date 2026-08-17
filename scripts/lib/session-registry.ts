@@ -84,6 +84,14 @@ export interface SessionRecord {
   pid?: number;
   active_worktrees?: number;
   claimed_issues?: number[];
+  /**
+   * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
+   * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
+   * que a sessão provavelmente está morta mesmo sem ter cruzado o teto
+   * absoluto `MAX_SESSION_AGE_MS`. Ausente em registros lidos diretamente do
+   * disco fora de `listActiveSessions`.
+   */
+  stale?: boolean;
   [key: string]: unknown;
 }
 
@@ -92,8 +100,42 @@ interface MergeLockRecord {
   acquiredAt: string;
 }
 
-/** Mesma janela de staleness dos dois hooks irmãos (#3322/#4450) — ver docblock do topo. */
+/**
+ * Teto ABSOLUTO de segurança contra dado corrompido/clock skew — mesma janela
+ * de staleness dos dois hooks irmãos (#3322/#4450). NÃO é um sinal de
+ * liveness prático: uma sessão pode estar morta havia horas e ainda cair
+ * dentro desta janela de 24h. `SOFT_STALE_MS` abaixo é o sinal de liveness
+ * real (#5474) — `MAX_SESSION_AGE_MS` só existe para não deixar uma sessão
+ * abandonada aparecer como "ativa" para sempre.
+ */
 export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Sinal de liveness prático (#5474, sugestão 1/3 da issue) — distinto do teto
+ * absoluto `MAX_SESSION_AGE_MS` acima. Investigação ao vivo em 16/08/2026
+ * achou 2 sessões com heartbeat visivelmente morto (~3h e ~10h stale) ainda
+ * listadas como "ativas" porque o único critério existente era o TTL de 24h.
+ * Causas raiz: `/diaria-develop` só chama `session-registry.ts end` na Fase 2
+ * (crash antes disso deixa o registro órfão até o TTL); `/diaria-continuo`
+ * pausa (não encerra) ao colidir com edição em curso e nada chama `end` nesse
+ * estado se o processo morrer pausado.
+ *
+ * 90 minutos — mesma ordem de grandeza do threshold de stall já usado em
+ * outros lugares do repo (#2768/#2896, "60 min sem progresso"), com folga
+ * extra para a latência de sync do OneDrive entre máquinas (que o TTL de 24h
+ * não precisava considerar por ser tão folgado).
+ *
+ * `listActiveSessions` continua usando `MAX_SESSION_AGE_MS` como corte
+ * absoluto (sessão > 24h simplesmente não aparece na lista) — `SOFT_STALE_MS`
+ * NÃO remove a sessão da lista, só marca o campo computado `stale: true` em
+ * cada registro retornado, para visibilidade sem quebrar consumidores que
+ * dependem da lista completa (`overnight-watchdog.ts`,
+ * `cleanup-merged-worktrees.ts`). `isIssueClaimedByOther` (consumida pelo CLI
+ * `is-claimed`) é o único lugar que trata `stale: true` como sinal
+ * NÃO-bloqueante — uma claim de sessão com heartbeat morto há mais de
+ * `SOFT_STALE_MS` não impede outra sessão de reivindicar a mesma issue.
+ */
+export const SOFT_STALE_MS = 90 * 60 * 1000;
 
 /** TTL do merge lock (item 4) — merge + pull não deveria levar mais que isso. */
 export const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
@@ -278,7 +320,12 @@ export function listActiveSessions(
   }
   const out: SessionRecord[] = [];
   for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue;
+    // #5427: OneDrive (sync de `data/` entre máquinas) às vezes gera cópias de
+    // conflito com sufixo `-safeBackup-NNNN` de arquivos `data/sessions/*.json`.
+    // Uma cópia de conflito de uma sessão JÁ ENCERRADA (cujo arquivo real já foi
+    // removido por `endSession`) não deve ser lida como sessão ativa — isso
+    // bloqueava issues via `is-claimed` indefinidamente.
+    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     const record = readJsonSafe<SessionRecord>(join(dir, name));
     if (!record || !record.sessionId || !record.kind) continue;
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
@@ -295,7 +342,10 @@ export function listActiveSessions(
       continue;
     }
     if (ageMs > maxAgeMs) continue;
-    out.push(record);
+    // #5474: `stale` é só um sinal computado — nunca remove a sessão da lista
+    // (isso quebraria consumidores como `overnight-watchdog.ts`/
+    // `cleanup-merged-worktrees.ts`, que dependem da lista completa).
+    out.push({ ...record, stale: ageMs > SOFT_STALE_MS });
   }
   return out;
 }
@@ -341,6 +391,10 @@ export function isIssueClaimedByOther(
 ): SessionRecord | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
+    // #5474: claim de sessão STALE (heartbeat morto ha mais de SOFT_STALE_MS,
+    // ainda dentro do teto absoluto MAX_SESSION_AGE_MS) nao bloqueia outra
+    // sessao de reivindicar a mesma issue.
+    if (session.stale) continue;
     if ((session.claimed_issues ?? []).includes(issueNumber)) return session;
   }
   return null;

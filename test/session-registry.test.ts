@@ -26,6 +26,7 @@ import {
   releaseMergeLock,
   requireKind,
   MAX_SESSION_AGE_MS,
+  SOFT_STALE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
   type MergeLockIo,
@@ -230,6 +231,31 @@ describe("listActiveSessions", () => {
     assert.match(stderrOutput, /falha de I\/O/i, "a falha de I/O real fica visível em stderr, não silenciosa");
   });
 
+  it("ignora cópia de conflito do OneDrive com sufixo -safeBackup- (#5427)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-ok", { tag: "host-a", startedAt: new Date(NOW - ONE_HOUR_MS).toISOString() });
+    mkdirSync(sessionsDir(root), { recursive: true });
+    // Simula a cópia de conflito que o OneDrive gera para uma sessão já
+    // encerrada (o arquivo real já foi removido por endSession, mas a cópia
+    // de conflito continua no disco) — nunca deve contar como sessão ativa.
+    writeFileSync(
+      join(sessionsDir(root), "develop-host-a-sess-encerrada-safeBackup-1.json"),
+      JSON.stringify({
+        kind: "develop",
+        machineTag: "host-a",
+        sessionId: "sess-encerrada",
+        startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        claimed_issues: [],
+      }),
+      "utf8",
+    );
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].sessionId, "sess-ok");
+  });
+
   it("maxAgeMs customizável — janela menor exclui sessões que passariam no default de 24h", () => {
     const root = freshRoot();
     registerSession(root, "overnight", "sess-2h-old", {
@@ -297,6 +323,62 @@ describe("claimIssue / isIssueClaimedByOther (item 3 do #5156)", () => {
     claimIssue(root, "overnight", "sess-old", 7, "host-a");
 
     assert.equal(isIssueClaimedByOther(root, 7, "sess-b", NOW), null);
+  });
+});
+
+// ─── stale (#5474) — sinal de liveness prático distinto do teto absoluto ──
+
+describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
+  const NOW = Date.parse("2026-08-16T12:00:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+
+  it("heartbeat < SOFT_STALE_MS (90min) → listado com stale:false, claim BLOQUEIA outra sessão", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-fresh", { tag: "host-a", startedAt: new Date(NOW - 30 * ONE_MIN_MS).toISOString() });
+    claimIssue(root, "develop", "sess-fresh", 5474, "host-a", new Date(NOW - 30 * ONE_MIN_MS).toISOString());
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].stale, false);
+
+    const owner = isIssueClaimedByOther(root, 5474, "sess-outra", NOW);
+    assert.ok(owner !== null, "sessão com heartbeat fresco deve bloquear o claim");
+    assert.equal(owner.sessionId, "sess-fresh");
+  });
+
+  it("heartbeat > SOFT_STALE_MS mas < MAX_SESSION_AGE_MS → aparece em list-active com stale:true, mas NÃO bloqueia claim", () => {
+    const root = freshRoot();
+    // 3h10 stale — mesmo cenário concreto da issue (#5474, sessão develop-Neo).
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS - 10 * ONE_MIN_MS).toISOString();
+    registerSession(root, "develop", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssue(root, "develop", "sess-morta", 5416, "host-a", staleHeartbeat);
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1, "sessão stale continua VISÍVEL em list-active, só marcada");
+    assert.equal(sessions[0].stale, true);
+    assert.equal(sessions[0].sessionId, "sess-morta");
+
+    const owner = isIssueClaimedByOther(root, 5416, "sess-outra", NOW);
+    assert.equal(owner, null, "claim de sessão stale não bloqueia outra sessão de reivindicar a issue");
+  });
+
+  it("heartbeat > MAX_SESSION_AGE_MS (24h) → comportamento antigo: nem aparece em list-active", () => {
+    const root = freshRoot();
+    const veryOldHeartbeat = new Date(NOW - 25 * 60 * ONE_MIN_MS).toISOString();
+    registerSession(root, "develop", "sess-abandonada", { tag: "host-a", startedAt: veryOldHeartbeat });
+    claimIssue(root, "develop", "sess-abandonada", 1, "host-a", veryOldHeartbeat);
+
+    assert.deepEqual(listActiveSessions(root, NOW), []);
+    assert.equal(isIssueClaimedByOther(root, 1, "sess-outra", NOW), null);
+  });
+
+  it("boundary exato: heartbeat == SOFT_STALE_MS não é stale (só > é stale)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-boundary", { tag: "host-a", startedAt: new Date(NOW - SOFT_STALE_MS).toISOString() });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].stale, false);
   });
 });
 
