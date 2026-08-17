@@ -68,7 +68,25 @@ export function decideSemaphoreGuard(
     return { ok: true, semaphore: "indeterminate", reason: result.reason };
   }
   if (result.plan.semaphore === "red") {
-    return { ok: false, semaphore: "red", reason: "circuit breaker(s) de entregabilidade rompido(s) (D4, #4347) — aborte a rodada." };
+    // #5592: nomeia o(s) breaker(s) específico(s) (spam, bounce, etc. — ver
+    // `describeBreachedMetrics` em weekly-plan.ts) quando disponível. Esse
+    // `reason` aparece na linha `🔴 semáforo VERMELHO — {reason}` impressa em
+    // stderr por este script; `clarice-novos-run.ts` (`step()`) captura as
+    // ÚLTIMAS 6 LINHAS de stderr (não só essa) como "detalhe do abort",
+    // prefixadas com `❌ {label} falhou (exit N):` — e é essa mensagem
+    // inteira (`abort.message`), truncada a 300 chars, que chega ao e-mail
+    // de alarme de aborts consecutivos (#5405 item 1,
+    // `clarice-novos-abort-alarm.ts`) — antes desta mudança, o editor via só
+    // "circuit breaker(s) ... rompido(s)" sem saber QUAL, mesmo o dashboard
+    // já sabendo a resposta (tabela de saúde por métrica).
+    const detail = result.plan.breachedMetrics?.length
+      ? ` métrica(s): ${result.plan.breachedMetrics.join("; ")}.`
+      : "";
+    return {
+      ok: false,
+      semaphore: "red",
+      reason: `circuit breaker(s) de entregabilidade rompido(s) (D4, #4347) —${detail} aborte a rodada.`,
+    };
   }
   return { ok: true, semaphore: result.plan.semaphore };
 }

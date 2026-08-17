@@ -15,6 +15,33 @@ test("decideSemaphoreGuard: semáforo 'red' -> ok=false (aborta)", () => {
   assert.equal(result.semaphore, "red");
 });
 
+// #5592: o `reason` do abort nomeia o(s) breaker(s) específico(s) quando
+// `deriveRampVolumes` já os identificou (`breachedMetrics`) — esse texto
+// aparece na linha `🔴 semáforo VERMELHO — {reason}` impressa em stderr;
+// `clarice-novos-run.ts` (`step()`) captura as ÚLTIMAS 6 LINHAS de stderr
+// (não só essa) como "detalhe do abort", prefixadas com `❌ {label} falhou
+// (exit N):` e truncadas a 300 chars antes de chegar ao e-mail de alarme de
+// aborts consecutivos (#5405 item 1). Antes desta mudança, o texto era
+// sempre genérico ("circuit breaker(s) ... rompido(s)"), mesmo quando o
+// dado específico já estava disponível.
+test("decideSemaphoreGuard: semáforo 'red' com breachedMetrics -> reason nomeia a(s) métrica(s) (#5592)", () => {
+  const result = decideSemaphoreGuard({
+    ok: true,
+    plan: { volumes: [10, 10, 10], semaphore: "red", flagged: true, baseVolume: 30, breachedMetrics: ["spam 1.39% (limiar ≥0.3%)"] },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /spam 1\.39%/);
+});
+
+test("decideSemaphoreGuard: semáforo 'red' SEM breachedMetrics (fallback de compat) -> reason segue genérico, sem lançar (#5592)", () => {
+  const result = decideSemaphoreGuard({
+    ok: true,
+    plan: { volumes: [10, 10, 10], semaphore: "red", flagged: true, baseVolume: 30 },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /circuit breaker\(s\) de entregabilidade rompido\(s\)/);
+});
+
 test("decideSemaphoreGuard: semáforo 'yellow' -> ok=true (passa)", () => {
   const result = decideSemaphoreGuard({ ok: true, plan: { volumes: [10, 10, 10], semaphore: "yellow", flagged: [], baseVolume: 30 } });
   assert.equal(result.ok, true);

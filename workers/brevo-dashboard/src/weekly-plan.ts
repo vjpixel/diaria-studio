@@ -265,6 +265,49 @@ export function decideSemaphore(
   ].reduce(worseOf);
 }
 
+/**
+ * #5592: descreve, em texto curto, QUAL(is) métrica(s) romperam o semáforo —
+ * `decideSemaphore` (acima) só devolve o veredito PIOR (`Semaphore`), nunca
+ * QUAL métrica causou. O dashboard já mostra isso visualmente (tabela de
+ * saúde com cada valor colorido, `renderHealthSection`/`renderWeeklyPlanTabPanel`
+ * abaixo — "o editor vê QUAL métrica segura o semáforo"), mas essa
+ * informação nunca chegava ao TEXTO que sai do guard `clarice-check-
+ * semaphore.ts` nem ao e-mail de alarme (#5405 item 1) — os dois diziam só
+ * "circuit breaker(s) de entregabilidade rompido(s)", sem nomear o(s)
+ * breaker(s). Usado por `deriveRampVolumes` (clarice-schedule-ramp.ts) pra
+ * popular `RampVolumePlan.breachedMetrics`, que `decideSemaphoreGuard`
+ * (clarice-check-semaphore.ts) injeta na linha `🔴 semáforo VERMELHO —
+ * {reason}` impressa em stderr; `clarice-novos-run.ts` (`step()`) captura as
+ * ÚLTIMAS 6 LINHAS de stderr (não só essa) como "detalhe do abort",
+ * prefixadas com `❌ {label} falhou (exit N):`, e é essa mensagem inteira
+ * (`abort.message`), truncada a 300 chars, que chega ao e-mail de alarme —
+ * nunca este texto isolado.
+ */
+export function describeBreachedMetrics(
+  health: HealthAggregate,
+  spamSignal: SpamSignal,
+  thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+): string[] {
+  const breaches: string[] = [];
+  if (classifyMetric(health.openRate, thresholds.openRate, "higher") === "red") {
+    breaches.push(`abertura ${health.openRate.toFixed(1)}% (limiar <${thresholds.openRate.yellow}%)`);
+  }
+  if (classifyMetric(health.hardBounceRate, thresholds.hardBounceRate, "lower") === "red") {
+    breaches.push(`bounce duro ${health.hardBounceRate.toFixed(2)}% (limiar ≥${thresholds.hardBounceRate.yellow}%)`);
+  }
+  if (classifyMetric(health.bounceRate, thresholds.bounceRate, "lower") === "red") {
+    breaches.push(`bounce total ${health.bounceRate.toFixed(2)}% (limiar ≥${thresholds.bounceRate.yellow}%)`);
+  }
+  if (classifySpamSignal(spamSignal, thresholds) === "red") {
+    const pct = spamSignal.ratePct !== null ? `${spamSignal.ratePct.toFixed(2)}%` : "indeterminado";
+    breaches.push(`spam ${pct} (limiar ≥${thresholds.spamRate.yellow}%)`);
+  }
+  if (classifyMetric(health.unsubRate, thresholds.unsubRate, "lower") === "red") {
+    breaches.push(`unsub ${health.unsubRate.toFixed(2)}% (limiar ≥${thresholds.unsubRate.yellow}%)`);
+  }
+  return breaches;
+}
+
 export interface WeekPlan {
   /** 3 volumes recomendados para os próximos 3 envios (ordem: próximo, 2º, 3º). */
   volumes: [number, number, number];
