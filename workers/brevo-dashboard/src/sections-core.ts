@@ -27,6 +27,7 @@ import {
   renderRecommendationSection,
   renderTopWeekdaysSection,
   deriveEditionName,
+  groupByBrtDay, // #5490: reagrupa por dia-calendário BRT pra aggregateByDay
 } from "./weekly-plan.ts";
 import { isBounceBreach, resolveEnvioCampaignSpamCell } from "./thresholds.ts"; // #4970: resolveEnvioCampaignSpamCell
 // #3884: painel de avaliação de experimentos A/B (CTA-01) + registro
@@ -673,6 +674,17 @@ ${monthlyAbcSectionsByDate}
   const weekdaySection = weekdayRows.length > 0 || weekdayExcluded.length > 0
     ? renderWeekdaySection(weekdayRows, weekdayScopeLabel, weekdayExcluded)
     : "";
+  // #5490: "Open rate por dia" — série temporal complementar ao weekday
+  // acima (dia-calendário, não dia-da-semana). Mesmo `now` de referência
+  // pra maturação de 48h; reusa `isCampaignsWindowFull`/`campaignsWindowLimit`
+  // já computados acima (mesmo padrão de `monthlyTotalsSection`) pra decidir
+  // se a nota de "janela de N campanhas" aparece.
+  const { rows: dayOpenRateRows, excluded: dayOpenRateExcluded } = aggregateByDay(campaigns, weekdayNow);
+  const dayOpenRateSection = renderOpenRateByDaySection(
+    dayOpenRateRows,
+    dayOpenRateExcluded,
+    isCampaignsWindowFull ? campaignsWindowLimit : null,
+  );
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   // #4184: mescla os mapas de TODOS os ciclos mensais presentes na janela —
@@ -1122,6 +1134,7 @@ ${scheduledVisaoGeralSection}
   <div class="tab-panel" id="panel-envios" role="tabpanel" aria-labelledby="tablabel-envios">
 ${monthlyTotalsSection}
 ${volumeSection}
+${dayOpenRateSection}
 ${unclassifiedNote}
 ${groupMissingCellNote}
 <section class="phase2-section" id="campaigns-table">
@@ -3211,6 +3224,109 @@ export function aggregateByWeekday(
   return { rows, excluded };
 }
 
+/** Dado agregado de open rate para um dia-calendário BRT específico (#5490). */
+export interface DayOpenRateSummary {
+  /** Dia-calendário BRT no formato YYYY-MM-DD. */
+  day: string;
+  /** dd/mm pra exibição (BRT). */
+  label: string;
+  /** Número de campanhas enviadas neste dia. */
+  count: number;
+  delivered: number;
+  opens: number;
+  /** open rate do dia = opens / delivered (0 quando delivered=0). */
+  openRate: number;
+  smallSample: boolean;
+}
+
+/**
+ * Agrega open rate por DIA-CALENDÁRIO BRT (#5490) — complementa
+ * `aggregateByWeekday` (que agrega por dia da SEMANA, sem eixo temporal:
+ * "segunda" mistura dezenas de segundas-feiras diferentes). Resolve o caso
+ * do #4705: uma queda abrupta de abertura entre datas específicas (ex: 52%
+ * → 4% entre 01 e 03/08) fica invisível numa agregação por weekday — só um
+ * eixo por DATA torna a queda óbvia.
+ *
+ * Mesma disciplina de `aggregateByWeekday`:
+ * - Maturação de 48h (`WEEKDAY_MIN_AGE_HOURS`) — campanhas recentes demais
+ *   entram em `excluded`, não no agregado (evita mostrar queda falsa no
+ *   dia mais recente ainda estabilizando).
+ * - Denominador SEMPRE `delivered`, nunca `sent` (#5490 ressalva 4).
+ * - `uniqueViews` é MPP-inclusivo nas duas fontes (`pickStats`) — a curva
+ *   mede TENDÊNCIA, não nível absoluto (#5490 ressalva 2; nota no render).
+ *
+ * **Janela**: cobre só as campanhas passadas em `campaigns` — tipicamente
+ * limitada a `CAMPAIGNS_FETCH_LIMIT` (100, `brevo-api.ts`) pelo fetch
+ * upstream. NÃO é série histórica persistida — é um recorte da janela atual
+ * (decisão de escopo #5490: começar pela janela existente, mais barata;
+ * persistência de longo prazo fica pra issue separada se o editor pedir
+ * eixo de meses).
+ *
+ * Reusa `groupByBrtDay` (weekly-plan.ts, já exportado) pra agrupar por
+ * dia-calendário — mesma fonte de chave BRT usada no resto do dashboard,
+ * evita duplicar a lógica de fuso horário do `brtDayKey` privado de lá.
+ *
+ * Ordenado por dia ASCENDENTE (mais antigo → mais recente) — o que faz
+ * sentido pra uma série temporal (diferente de `aggregateByWeekday`, sem
+ * ordem cronológica intrínseca).
+ *
+ * @param campaigns - lista de campanhas (mesma janela de `aggregateByWeekday`)
+ * @param now       - instante de referência pra maturação (injetável em teste)
+ */
+export function aggregateByDay(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  now: Date = new Date(),
+): { rows: DayOpenRateSummary[]; excluded: WeekdayExcluded[] } {
+  type Acc = { count: number; delivered: number; opens: number };
+  const acc: Record<string, Acc> = {};
+  const excluded: WeekdayExcluded[] = [];
+  const minAgeMs = WEEKDAY_MIN_AGE_HOURS * 3600 * 1000;
+
+  const byDay = groupByBrtDay(campaigns);
+  for (const [day, dayCampaigns] of byDay) {
+    for (const c of dayCampaigns) {
+      if (!c.sentDate) continue;
+
+      // #2611 (mesma regra de aggregateByWeekday): excluir envios com menos
+      // de 48h — open rate ainda estabilizando.
+      const sentMs = new Date(c.sentDate).getTime();
+      if (isNaN(sentMs)) continue;
+      if (now.getTime() - sentMs < minAgeMs) {
+        excluded.push({ name: c.name, sentDate: c.sentDate });
+        continue;
+      }
+
+      const picked = pickStats(c);
+      if (!picked) continue;
+      const s = picked.stats;
+
+      if (!acc[day]) acc[day] = { count: 0, delivered: 0, opens: 0 };
+      acc[day].count += 1;
+      acc[day].delivered += s.delivered ?? 0;
+      acc[day].opens += s.uniqueViews ?? 0;
+    }
+  }
+
+  // YYYY-MM-DD ordena cronologicamente por ordenação de string simples.
+  const rows = Object.keys(acc)
+    .sort()
+    .map((day) => {
+      const d = acc[day];
+      const [, m, dd] = day.split("-");
+      return {
+        day,
+        label: `${dd}/${m}`,
+        count: d.count,
+        delivered: d.delivered,
+        opens: d.opens,
+        openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
+        smallSample: d.count < 2,
+      };
+    });
+
+  return { rows, excluded };
+}
+
 /**
  * #2989: seleciona os N (default 3) melhores dias da semana por open rate
  * agregado, entre os dias com dados (count > 0). Empates na fronteira do corte
@@ -3370,6 +3486,105 @@ export function renderWeekdaySection(
     <tbody>${tableRows}</tbody>
   </table>
   </div>
+</section>`;
+}
+
+/**
+ * #5490: definição canônica das colunas da tabela "Open rate por dia" —
+ * mesmo padrão de `WEEKDAY_COLUMNS`/`ENVIOS_COLUMNS` (fonte única usada no
+ * `title=` de cada `<th>` e no glossário via `renderColumnGlossary`).
+ * Exportado pra teste unitário.
+ */
+export const DAY_OPENRATE_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "Dia", tooltip: "Dia-calendário do envio (horário de Brasília)" },
+  { label: "Envios", tooltip: "Número de envios realizados neste dia" },
+  { label: "Delivered", tooltip: "Total entregue" },
+  { label: "Opens", tooltip: "Soma de aberturas únicas (uniqueViews, MPP-inclusivo) das campanhas enviadas neste dia." },
+  { label: "Open rate", tooltip: "Open rate do dia: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena." },
+];
+
+/**
+ * Renderiza a seção "Open rate por dia" (#5490) — série temporal por
+ * dia-calendário BRT, complementar a `renderWeekdaySection` (por dia da
+ * semana). Barra visual em spark-bar monospace (mesmo idioma visual já
+ * aprovado em `sections-kv.ts:347` — `"█".repeat(n) + "░".repeat(30-n)` —
+ * sem lib de gráfico, sobrevive ao CSP, funciona no render server-side).
+ *
+ * Carrega as 4 ressalvas da issue: nota de audiência mista
+ * (`renderMixedAudienceNote`), nota MPP-inclusiva, nota de janela de N
+ * campanhas (não é série histórica persistida — `windowLimitWhenFull`
+ * segue o mesmo padrão de `renderMonthlyTotalsSection`: só não-null quando
+ * a janela buscada estava de fato cheia), e maturação de 48h idêntica à
+ * de `aggregateByWeekday` (aplicada em `aggregateByDay`, refletida aqui só
+ * via `excluded`).
+ *
+ * Ordenado cronologicamente (mais antigo → mais recente, topo → base) —
+ * é o que faz uma queda abrupta entre dois dias saltar aos olhos (#4705).
+ * Exportado pra teste unitário.
+ */
+export function renderOpenRateByDaySection(
+  rows: DayOpenRateSummary[],
+  excluded: WeekdayExcluded[] = [],
+  windowLimitWhenFull: number | null = null,
+): string {
+  if (rows.length === 0 && excluded.length === 0) return "";
+
+  const excludedNote =
+    excluded.length > 0
+      ? `\n  <p class="section-note"><small>Envios ainda não computados (open rate &lt; ${WEEKDAY_MIN_AGE_HOURS}h, estabilizando): ${excluded.map((e) => escHtml(e.name)).join(", ")}.</small></p>`
+      : "";
+
+  if (rows.length === 0) {
+    return `
+<section class="phase2-section" id="day-openrate">
+  <h2 class="section-title">Open rate por dia</h2>
+  ${renderMixedAudienceNote()}${excludedNote}
+</section>`;
+  }
+
+  const maxRate = rows.reduce((m, r) => Math.max(m, r.openRate), 0);
+  const BAR_WIDTH = 30;
+
+  const tableRows = rows
+    .map((r) => {
+      const barFill = maxRate > 0 ? Math.round((r.openRate / maxRate) * BAR_WIDTH) : 0;
+      const bar = "█".repeat(barFill) + "░".repeat(BAR_WIDTH - barFill);
+      const smallSampleNote = r.smallSample
+        ? ` <span style="color:${DS.ink};opacity:0.6;font-size:0.8em;">(amostra pequena)</span>`
+        : "";
+      return `<tr>
+        <td><strong>${escHtml(r.label)}</strong></td>
+        <td>${r.count}</td>
+        <td>${r.delivered.toLocaleString("pt-BR")}</td>
+        <td>${r.opens.toLocaleString("pt-BR")}</td>
+        <td class="metric"><span class="spark-bar">${bar}</span>${r.openRate.toFixed(1)}%${smallSampleNote}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  // #5490 ressalva 1: a seção nunca deve ser lida como série histórica
+  // completa — deixar explícito que é a janela de campanhas carregada.
+  const windowNote = windowLimitWhenFull != null
+    ? `<p class="section-note"><small>Cobre a janela de campanhas carregada (até ${windowLimitWhenFull} envios mais recentes) — não é série histórica persistida; dias fora dessa janela não aparecem aqui.</small></p>`
+    : `<p class="section-note"><small>Cobre a janela de campanhas carregada — não é série histórica persistida.</small></p>`;
+
+  return `
+<section class="phase2-section" id="day-openrate">
+  <h2 class="section-title">Open rate por dia</h2>
+  ${renderMixedAudienceNote()}
+  <p class="section-note"><small>Aberturas (uniqueViews) são MPP-inclusivas — Apple Mail conta como aberto mesmo sem leitura humana; leia a curva como tendência, não nível absoluto.</small></p>
+  ${windowNote}
+  ${renderColumnGlossary("day-openrate", DAY_OPENRATE_COLUMNS)}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        ${DAY_OPENRATE_COLUMNS.map((c) => `<th scope="col" title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>${excludedNote}
 </section>`;
 }
 

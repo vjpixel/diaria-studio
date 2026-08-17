@@ -72,6 +72,9 @@ import {
   WEEKDAY_COLUMNS,
   renderEngagementCohortsSection,
   escHtml,
+  aggregateByDay,
+  renderOpenRateByDaySection,
+  DAY_OPENRATE_COLUMNS,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -3128,6 +3131,18 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(panel, /id="campaigns-table"/, "Envios deve estar no panel Envios");
     assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no panel Envios");
     assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no panel Envios");
+    assert.match(panel, /id="day-openrate"/, "Open rate por dia (#5490) deve estar no panel Envios");
+  });
+
+  test("#5490: panel-envios — day-openrate vem depois de volume-ciclo e antes de campaigns-table", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const panel = html.match(/id="panel-envios"[\s\S]*?(?=id="panel-rampa")/)?.[0] ?? "";
+    const idxVolume = panel.indexOf('id="volume-ciclo"');
+    const idxDayOpenRate = panel.indexOf('id="day-openrate"');
+    const idxCampaigns = panel.indexOf('id="campaigns-table"');
+    assert.ok(idxVolume > -1 && idxDayOpenRate > -1 && idxCampaigns > -1, "as 3 seções devem existir");
+    assert.ok(idxVolume < idxDayOpenRate, "day-openrate deve vir depois de volume-ciclo");
+    assert.ok(idxDayOpenRate < idxCampaigns, "day-openrate deve vir antes de campaigns-table");
   });
 
   test("panel-engajamento contém id=engagement-cohorts e weekday-openrate (day-summary removida, #2736)", () => {
@@ -3459,6 +3474,160 @@ describe("regressão #2611: aggregateByWeekday filtra envios <48h", () => {
     assert.ok(html.length > 0, "deve retornar HTML mesmo com rows=[]");
     assert.match(html, /estabilizando/, "stub deve mencionar 'estabilizando'");
     assert.match(html, /48h/, "stub deve mencionar o threshold 48h");
+  });
+});
+
+// ─── #5490: aggregateByDay / renderOpenRateByDaySection ───────────────────────
+
+describe("#5490: aggregateByDay agrega open rate por dia-calendário BRT", () => {
+  function makeCampaignHoursAgo(id: number, hoursAgo: number, now: Date, gsOverrides: Parameters<typeof makeGlobalStats>[0] = {}): typeof cycle2605Campaigns[0] {
+    const sentDate = new Date(now.getTime() - hoursAgo * 3600 * 1000).toISOString();
+    return makeCampaign(id, `Clarice News 2605 d0${id}-A`, sentDate, { sent: 100, delivered: 90, uniqueViews: 20, ...gsOverrides });
+  }
+
+  test("envio de 50h atrás é incluído no agregado (mesma maturação de 48h de aggregateByWeekday, #2611)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c50h = makeCampaignHoursAgo(1, 50, now);
+    const { rows, excluded } = aggregateByDay([c50h], now);
+    assert.equal(excluded.length, 0, "50h não deve estar no excluded");
+    assert.equal(rows.length, 1, "50h deve gerar linha no agregado");
+  });
+
+  test("envio de 10h atrás é excluído (open rate instável)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c10h = makeCampaignHoursAgo(2, 10, now);
+    const { rows, excluded } = aggregateByDay([c10h], now);
+    assert.equal(rows.length, 0, "10h não deve gerar linha no agregado");
+    assert.equal(excluded.length, 1, "10h deve estar no excluded");
+  });
+
+  test("duas campanhas do MESMO dia-calendário BRT se agregam na mesma linha", () => {
+    // Ambas enviadas de manhã BRT do mesmo dia (2026-06-10), maduras (>48h antes de "now").
+    const now = new Date("2026-06-26T12:00:00Z");
+    const a = makeCampaign(10, "Clarice News 2605 d01-A", "2026-06-10T09:05:00Z", { delivered: 100, uniqueViews: 50 });
+    const b = makeCampaign(11, "Clarice News 2605 d01-B", "2026-06-10T09:10:00Z", { delivered: 100, uniqueViews: 30 });
+    const { rows } = aggregateByDay([a, b], now);
+    assert.equal(rows.length, 1, "deve agregar em 1 único dia-calendário");
+    assert.equal(rows[0].day, "2026-06-10");
+    assert.equal(rows[0].count, 2);
+    assert.equal(rows[0].delivered, 200);
+    assert.equal(rows[0].opens, 80);
+    assert.equal(rows[0].openRate, 40, "openRate = opens/delivered = 80/200 = 40%");
+    assert.equal(rows[0].smallSample, false, "count=2 não é amostra pequena");
+  });
+
+  test("denominador é SEMPRE delivered, nunca sent (#5490 ressalva 4)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    // sent bem maior que delivered — se o denominador fosse `sent` por engano, a taxa cairia.
+    const c = makeCampaign(20, "Clarice News 2605 d03-A", "2026-06-10T09:00:00Z", { sent: 1000, delivered: 100, uniqueViews: 50 });
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows[0].openRate, 50, "openRate deve usar delivered (100), não sent (1000): 50/100 = 50%");
+  });
+
+  test("dias distintos geram linhas separadas, ordenadas cronologicamente (mais antigo primeiro)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const day2 = makeCampaign(30, "Clarice News 2605 d02-A", "2026-06-11T09:00:00Z", { delivered: 100, uniqueViews: 10 });
+    const day1 = makeCampaign(31, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 20 });
+    const { rows } = aggregateByDay([day2, day1], now);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].day, "2026-06-10", "dia mais antigo vem primeiro");
+    assert.equal(rows[1].day, "2026-06-11", "dia mais recente vem por último");
+  });
+
+  test("dia com apenas 1 campanha é marcado smallSample=true", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaignHoursAgo(40, 50, now);
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows[0].smallSample, true);
+  });
+
+  test("label é dd/mm derivado do dia YYYY-MM-DD", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(50, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 10 });
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows[0].label, "10/06");
+  });
+});
+
+describe("#5490: renderOpenRateByDaySection", () => {
+  test("rows=[] e excluded=[] retorna string vazia (seção omitida)", () => {
+    assert.equal(renderOpenRateByDaySection([], []), "");
+  });
+
+  test("rows=[] com excluded não-vazio ainda retorna HTML com nota de estabilizando (mesmo padrão de renderWeekdaySection #2619)", () => {
+    const excluded = [{ name: "Clarice News 2605 d09-A", sentDate: "2026-06-24T09:00:00Z" }];
+    const html = renderOpenRateByDaySection([], excluded);
+    assert.ok(html.length > 0, "deve retornar HTML mesmo com rows=[]");
+    assert.match(html, /id="day-openrate"/);
+  });
+
+  test("renderiza id=day-openrate e título 'Open rate por dia'", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(60, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /id="day-openrate"/);
+    assert.match(html, /Open rate por dia/);
+  });
+
+  test("inclui a nota de audiência mista (WEEKDAY_MIXED_AUDIENCE_NOTE, ressalva 3)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(61, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /fria.*quente|15%.*60%/i, "deve carregar a nota de audiência mista (renderMixedAudienceNote)");
+  });
+
+  test("inclui nota MPP-inclusiva (ressalva 2)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(62, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /MPP/, "deve mencionar MPP explicitamente");
+  });
+
+  test("sem windowLimitWhenFull, nota de janela não cita número específico de campanhas", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(63, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows, [], null);
+    assert.match(html, /janela de campanhas carregada/, "deve deixar claro que é janela, não série histórica completa (ressalva 1)");
+    assert.doesNotMatch(html, /até \d+ envios mais recentes/, "sem windowLimitWhenFull não deve citar limite específico");
+  });
+
+  test("com windowLimitWhenFull=100, nota cita o limite (#5490 ressalva 1 — janela de 100 campanhas)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(64, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows, [], 100);
+    assert.match(html, /até 100 envios mais recentes/, "deve citar explicitamente a janela de 100 campanhas");
+    assert.match(html, /não é série histórica persistida/, "deve deixar claro que não é série histórica completa");
+  });
+
+  test("linhas ordenadas cronologicamente aparecem na mesma ordem no HTML (queda visível #4705)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const day1 = makeCampaign(70, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 52 }); // 52%
+    const day2 = makeCampaign(71, "Clarice News 2605 d02-A", "2026-06-12T09:00:00Z", { delivered: 100, uniqueViews: 4 }); // 4%
+    const { rows } = aggregateByDay([day1, day2], now);
+    const html = renderOpenRateByDaySection(rows);
+    const idx10 = html.indexOf("10/06");
+    const idx12 = html.indexOf("12/06");
+    assert.ok(idx10 > -1 && idx12 > -1);
+    assert.ok(idx10 < idx12, "dia mais antigo (10/06) deve aparecer antes do mais recente (12/06)");
+  });
+
+  test("DAY_OPENRATE_COLUMNS tem 5 colunas (Dia, Envios, Delivered, Opens, Open rate)", () => {
+    assert.equal(DAY_OPENRATE_COLUMNS.length, 5);
+    assert.equal(DAY_OPENRATE_COLUMNS[0].label, "Dia");
+    assert.equal(DAY_OPENRATE_COLUMNS[4].label, "Open rate");
+  });
+
+  test("small sample (1 campanha) é anotado na linha", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(80, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /amostra pequena/, "linha com 1 campanha deve marcar amostra pequena");
   });
 });
 
