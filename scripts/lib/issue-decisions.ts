@@ -230,7 +230,13 @@ interface GhComment {
   body?: string;
 }
 
-function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
+/** Exportada (#5560) — reusada por `scripts/check-campaign-docs-sync.ts`, que
+ * também precisa buscar os comentários brutos de uma issue via `gh` antes de
+ * resolver a decisão mais recente (`latestDecisionFor`). Sem exportar, o
+ * outro módulo duplicava esta função verbatim — duas cópias da mesma lógica
+ * de I/O podendo divergir silenciosamente se uma fosse corrigida sem a
+ * outra (achado do review dedicado do PR #5560). */
+export function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
   const result = spawnSync(
     "gh",
     ["issue", "view", String(issueNumber), "--json", "comments"],
