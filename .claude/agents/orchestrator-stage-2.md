@@ -185,51 +185,23 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
 
 ### 2b. Processar newsletter
 
-- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`:
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --md {EDITION_DIR}/_internal/02-draft.md \
-    --approved {EDITION_DIR}/_internal/01-approved-capped.json
-  ```
-  Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
+**Lints consolidados (#5416):**
+```bash
+npx tsx scripts/lint-newsletter-md.ts --stage 2 --json --edition-dir {EDITION_DIR}
+```
+Substitui as 6 invocações separadas que existiam aqui antes (1 processo Node por check) por uma única chamada agregadora — mesmas funções, mesmo veredito por check, só menos overhead de processo. Output (stdout): JSON `{ stage: 2, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. Os 6 `id` (`url-bucket`, `section-counts`, `destaque-min-chars`, `destaque-max-chars`, `why-matters-length`, `aprofunde-format`) são **todos gate-blocking** — `passed` já reflete "nenhum falhou". Debug de 1 check isolado (`--check X --md {EDITION_DIR}/_internal/02-draft.md`) continua funcionando exatamente como antes (modo aditivo, não removido). Para cada `id` com `ok:false`, a ação de re-dispatch é a descrita abaixo, indexada pelo `id` — rode os re-dispatches necessários e repita a chamada acima até `passed: true` (ou esgotar as tentativas descritas por check).
 
-- **Lint section-counts (#358, #907, #1629).** Validar que cada seção secundária respeita o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante:
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check section-counts \
-    --md {EDITION_DIR}/_internal/02-draft.md \
-    --approved {EDITION_DIR}/_internal/01-approved-capped.json
-  ```
-  Exit 1 = re-disparar writer com a violação no prompt.
+`url-bucket` (#165): valida que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`. Falha = URL na seção errada ou URL fantasma (não existe no approved). Ação: **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
 
-- **Lint destaque-min-chars (#914) + destaque-max-chars (#964).** Validar mínimo e máximo de cada destaque (D1: 1000–1200, D2/D3: 900–1000):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check destaque-min-chars \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check destaque-max-chars \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
-  > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
-  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
+`section-counts` (#358, #907, #1629): valida que cada seção secundária respeita o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante. Ação: re-disparar writer com a violação no prompt.
 
-- **Lint why-matters-length (#3993).** Validar que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check why-matters-length \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 = re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
+`destaque-min-chars` (#914) + `destaque-max-chars` (#964): validam mínimo e máximo de cada destaque (D1: 1000–1200, D2/D3: 900–1000). Falha do min = destaque anêmico — re-disparar writer com instruction explícita:
+> "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
+Falha do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
 
-- **Lint aprofunde-format (#3920).** Valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check aprofunde-format \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 = item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
+`why-matters-length` (#3993): valida que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars). Ação: re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
+
+`aprofunde-format` (#3920): valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional). Ação: item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash
@@ -450,41 +422,27 @@ Exit code handling:
 - `0` → sentinel gravado com sucesso.
 - `1` → falha ao gravar (permissão, disco) — logar warn e **CONTINUAR Stage 2**. Stage 4 vai bloquear com exit 1 até o sentinel ser gravado manualmente.
 
-**Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
-```bash
-npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
-```
-Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. Exit 1 = matches encontrados. **Incluir os matches no prompt do gate** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
-
 **Lint anti-alucinação de cifras pré-gate (#1711):** após humanizar+Clarice, rodar:
 ```bash
 npx tsx scripts/lint-social-numbers.ts --social {EDITION_DIR}/03-social.md --approved {EDITION_DIR}/_internal/01-approved-capped.json
 ```
 Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (exemplo real: `docs/orchestrator-stage-narrative-history.md#stage-2-cifra-errada-exemplo`). WARN-only (exit 0) para cifras alucinadas e contagem errada. `{outros_count}` no `post_pixel` é placeholder legado (#2319, #3052 revertido em 260814 — o writer normalmente não o emite mais, mas o lint segue tolerante caso apareça) — não bloqueia por isso. **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Cifras: heurística conservadora (pode ter falso-positivo se a fonte usa formato muito diferente).
 
-**Lint schema do texto social pré-gate (#595, #3627, #3991):** `social-writer` gera 1 texto genérico por destaque (subseções `comment_diaria`/`comment_pixel` foram aposentadas, decisão do editor 260716 — postagem manual de comentários auxiliares não compensava) + `## post_pixel`. Validar (o check `linkedin-schema` adapta automaticamente o range de caracteres esperado conforme o formato — 600-900 no `# Social` novo, 1200-1500 no `# LinkedIn` legado):
+**Lints consolidados pré-gate (#5416):** após humanizar+Clarice, rodar:
 ```bash
-npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
+npx tsx scripts/lint-social-md.ts --stage 2 --json --edition-dir {EDITION_DIR}
 ```
-Falha = texto genérico ausente (missing_main) ou char count fora do range. **#3052 revertido (260814):** `## post_pixel` não é mais obrigado a abrir com `{outros_count}`/`{edition_url}` — checks post_pixel_missing_outros_count/post_pixel_missing_edition_url removidos. Exit 1 = re-disparar `social-writer` agent.
+Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, `linkedin-schema`, `no-email-cta-instagram`, `no-trailing-question`, `personal-post-no-newsletter-deixis`, 1 processo Node cada) por uma única chamada agregadora — mesmas funções, mesmo veredito por check. **Não inclui** `platform-headers-unicos` (roda logo após o merge, §2c acima, ANTES do humanizador) nem `humanizer-section-coverage` (precisa de `--pre`, um snapshot por invocação do humanizador — segue como chamada isolada onde já roda hoje). Output (stdout): JSON `{ stage: 2, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. `passed` reflete "nenhum check gate-blocking falhou" — `relative-time`, `no-trailing-question` e `personal-post-no-newsletter-deixis` são **warn-only** (nunca bloqueiam `passed`); `linkedin-schema` e `no-email-cta-instagram` são **gate-blocking**. Debug de 1 check isolado (`--check X --md {EDITION_DIR}/03-social.md`) continua funcionando exatamente como antes (modo aditivo, não removido).
 
-**Lint channel-neutral pré-gate (#2486, alvo mudou no #3991):** o texto genérico `## d1/d2/d3` não pode conter CTA de e-mail, "link na bio", "segue @...", nem qualquer menção a `diar.ia.br` — essas linhas são injetadas SÓ no publish (`scripts/lib/social-cta-lines.ts`). Validar:
-```bash
-npx tsx scripts/lint-social-md.ts --check no-email-cta-instagram --md {EDITION_DIR}/03-social.md
-```
-Exit 1 = re-disparar `social-writer` agent com a violação explicitada no prompt.
+`relative-time` (#877): detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. **WARN-ONLY** — **incluir os matches no `{violations_block}`** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
 
-**Lint pergunta-de-encerramento pré-gate (#1762):** posts social não devem fechar com pergunta (CTA-pergunta). Rodar:
-```bash
-npx tsx scripts/lint-social-md.ts --check no-trailing-question --md {EDITION_DIR}/03-social.md
-```
+`linkedin-schema` (#595, #3627, #3991): `social-writer` gera 1 texto genérico por destaque (subseções `comment_diaria`/`comment_pixel` foram aposentadas, decisão do editor 260716 — postagem manual de comentários auxiliares não compensava) + `## post_pixel` — o check adapta automaticamente o range de caracteres esperado conforme o formato (600-900 no `# Social` novo, 1200-1500 no `# LinkedIn` legado). Falha = texto genérico ausente (missing_main) ou char count fora do range. **#3052 revertido (260814):** `## post_pixel` não é mais obrigado a abrir com `{outros_count}`/`{edition_url}` — checks post_pixel_missing_outros_count/post_pixel_missing_edition_url removidos. **GATE-BLOCKING** — ação: re-disparar `social-writer` agent.
 
-**Lint deixis de newsletter em post pessoal (#2148):** `## post_pixel` é postado na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da diar.ia.br; inválido num post standalone. Rodar:
-```bash
-npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --md {EDITION_DIR}/03-social.md
-```
-Exit 1 = ocorrências de "esta newsletter", "essa newsletter", "nossa newsletter" (e variantes com "boletim", "edição") em `## post_pixel`. **Incluir ocorrências no prompt do gate** com sugestão de substituição. Fix: reescrever como fato biográfico ("a newsletter de IA que escrevo") em vez de contexto compartilhado. Não bloqueia automaticamente — editor decide se reescreve ou aceita (casos de borda: citação direta de entrevistado).
-Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. Exit 1 = **incluir os matches no prompt do gate** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
+`no-email-cta-instagram` (#2486, alvo mudou no #3991): o texto genérico `## d1/d2/d3` não pode conter CTA de e-mail, "link na bio", "segue @...", nem qualquer menção a `diar.ia.br` — essas linhas são injetadas SÓ no publish (`scripts/lib/social-cta-lines.ts`). **GATE-BLOCKING** — ação: re-disparar `social-writer` agent com a violação explicitada no prompt.
+
+`no-trailing-question` (#1762): posts social não devem fechar com pergunta (CTA-pergunta). Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. **WARN-ONLY** — **incluir os matches no `{violations_block}`** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
+
+`personal-post-no-newsletter-deixis` (#2148): `## post_pixel` é postado na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da diar.ia.br; inválido num post standalone. Flaga ocorrências de "esta newsletter", "essa newsletter", "nossa newsletter" (e variantes com "boletim", "edição") em `## post_pixel`. **WARN-ONLY** — **incluir ocorrências no `{violations_block}`** com sugestão de substituição. Fix: reescrever como fato biográfico ("a newsletter de IA que escrevo") em vez de contexto compartilhado. Não bloqueia automaticamente — editor decide se reescreve ou aceita (casos de borda: citação direta de entrevistado).
 
 ### 2d. Gate unificado
 
