@@ -261,6 +261,19 @@ re-humanização scoped dentro do loop "ajustar". Recorrência ao vivo em
 foi notada porque o editor pediu manualmente "passa o humanizador de novo".
 Sem uma re-checagem automática pós-ajuste, nada fechava esse loop sozinho.
 
+### stage-4-erro-intencional-safety-filter-gap
+
+O Filtro de segurança ao PROPOR candidatos (#3808, `context/editorial-rules.md`
+§10) só era referenciado explicitamente no fluxo do Stage 2, onde o erro
+intencional normalmente nasce. Na edição 260818, o Stage 2 tinha pulado essa
+declaração e o gate humano do Stage 4 precisou propor um candidato sozinho
+para não travar — sem nenhuma instrução no playbook lembrando de consultar o
+filtro, a proposta violou as duas regras invariáveis de §10 (um número
+plausível-mas-falso, só verificável saindo do e-mail e capaz de "vazar" como
+desinformação real se não pego). O editor pegou o problema (#5566) antes de
+aprovar o gate; a correção adiciona a mesma referência explícita ao caminho
+`erro-intencional-placeholder` do Stage 4.
+
 ## Stage 5 (publicação)
 
 (Ver `context/publishers/beehiiv-playbook.md` §Fase 3 para o histórico
