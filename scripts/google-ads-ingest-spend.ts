@@ -112,9 +112,7 @@ function reportFallback(reason: string, failureClass: GoogleAdsFailureClass): vo
     return;
   }
   if (failureClass === "empty") {
-    console.log(
-      "[google-ads-ingest-spend] ✔ API respondeu, gasto ZERO no período — conta pausada desde fev/2026.",
-    );
+    console.log("[google-ads-ingest-spend] ✔ API respondeu, sem gasto no período consultado.");
     console.log("  Não é falha: spend.csv fica como está porque não há gasto a registrar.");
     return;
   }
@@ -159,7 +157,10 @@ if (isMainModule(import.meta.url)) {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
       // aqui (as duas etapas de rede já são fail-soft), mas mantém a
       // disciplina "nunca quebra o relatório" mesmo diante de um bug aqui.
-      fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
+      // `defect`, não `fallback()` puro: por definição, uma exceção que
+      // escapou dos dois caminhos fail-soft É um bug nosso, não estado
+      // externo esperado — achado do review do PR #5591.
+      reportFallback(`erro inesperado: ${e instanceof Error ? e.message : e}`, "defect");
       process.exit(0);
     });
 }

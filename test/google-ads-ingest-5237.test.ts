@@ -137,8 +137,17 @@ describe("#5237 — refreshGoogleAdsAccessToken (fail-soft)", () => {
   });
 
   it("resposta HTTP de erro (sem access_token) devolve { error }, não lança", async () => {
+    // Forma REAL do OAuth2 (RFC 6749 §5.2): o código máquina-legível vem em
+    // `error`, não em `error_description` (que é só o texto humano). Achado
+    // do review do PR #5591, 2ª rodada — o fixture anterior colocava
+    // "invalid_grant" em error_description, uma forma que a API real nunca
+    // produz, e mascarava o bug de refreshGoogleAdsAccessToken só ler
+    // error_description.
     const fetchImpl: FetchLike = async () =>
-      new Response(JSON.stringify({ error_description: "invalid_grant" }), { status: 400 });
+      new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }),
+        { status: 400 },
+      );
     const out = await refreshGoogleAdsAccessToken(fetchImpl, AUTH);
     assert.ok("error" in out);
     assert.match(out.error, /invalid_grant/);
@@ -502,8 +511,16 @@ describe("#5237 — 'empty' não pode encobrir schema drift (achado do review do
 
 describe("#5237 — falha de refresh token é classificada (achado do review do PR #5591)", () => {
   it("invalid_grant (refresh token revogado) é 'defect' — esperar não conserta", async () => {
+    // Corpo real do endpoint de token do Google OAuth2 pra refresh token
+    // revogado/expirado — `error` (não `error_description`) carrega o
+    // código máquina-legível. 2ª rodada de review do PR #5591 achou que o
+    // fixture anterior ("invalid_grant" só em error_description) não batia
+    // com a forma real e mascarava o mesmo bug que este teste deveria travar.
     const fetchImpl: FetchLike = async () =>
-      new Response(JSON.stringify({ error_description: "invalid_grant" }), { status: 400 });
+      new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }),
+        { status: 400 },
+      );
     const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
     assert.equal(result.kind, "fallback");
     if (result.kind === "fallback") assert.equal(result.failureClass, "defect");

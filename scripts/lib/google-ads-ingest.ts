@@ -43,9 +43,11 @@ export { mergeSpendRows };
 
 /** Forma mínima de uma linha devolvida por `googleAds:search`/`searchStream`
  *  para a query `SELECT segments.date, metrics.cost_micros FROM customer
- *  WHERE segments.date DURING ...`. `costMicros` pode vir como string (a API
- *  serializa int64 como string em JSON) ou number — aceitar os dois evita um
- *  bug de parsing silencioso se o formato mudar entre versões da API. */
+ *  WHERE segments.date BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'` (ver
+ *  `buildDefaultGaqlQuery` — `DURING LAST_90_DAYS` não é literal GAQL válido,
+ *  #5237/#5591). `costMicros` pode vir como string (a API serializa int64
+ *  como string em JSON) ou number — aceitar os dois evita um bug de parsing
+ *  silencioso se o formato mudar entre versões da API. */
 export interface GaqlSpendApiRow {
   segments?: { date?: string };
   metrics?: { costMicros?: string | number };
@@ -156,23 +158,32 @@ export async function refreshGoogleAdsAccessToken(
   }
 
   const text = await res.text();
-  let payload: { access_token?: string; error_description?: string };
+  let payload: { access_token?: string; error?: string; error_description?: string };
   try {
     payload = JSON.parse(text);
   } catch {
     return { error: `renovação do access token respondeu não-JSON (HTTP ${res.status})` };
   }
   if (!res.ok || !payload.access_token) {
-    return { error: `renovação do access token falhou: ${payload.error_description ?? res.status}` };
+    // payload.error carrega o código máquina-legível do OAuth2 (RFC 6749 §5.2,
+    // ex: "invalid_grant") — é ele que `classifyGoogleAdsFailure` casa contra
+    // DEFECT_MARKERS. payload.error_description é só o texto humano; incluir
+    // só ele (achado do review do PR #5591, 2ª rodada) faz um refresh token
+    // revogado nunca classificar como `defect` — cai no default `transient`
+    // e o CLI recomenda paciência pra uma credencial permanentemente quebrada.
+    const detail = [payload.error, payload.error_description].filter(Boolean).join(": ") || String(res.status);
+    return { error: `renovação do access token falhou: ${detail}` };
   }
   return { accessToken: payload.access_token };
 }
 
 /**
  * Busca as linhas GAQL de custo diário da conta. Nunca lança — mesma
- * disciplina fail-soft de `refreshGoogleAdsAccessToken`. `DEVELOPER_TOKEN_NOT_APPROVED`
- * (estado esperado hoje, ver docstring do módulo) chega aqui como um HTTP
- * não-2xx comum e vira `{ error }`, sem tratamento especial — diferente de
+ * disciplina fail-soft de `refreshGoogleAdsAccessToken`. Todo HTTP não-2xx
+ * (inclusive `DEVELOPER_TOKEN_NOT_APPROVED`, estado esperado hoje, ver
+ * docstring do módulo) vira `{ error, failureClass }` — `classifyGoogleAdsFailure`
+ * distingue defeito real (query malformada, versão descontinuada) de estado
+ * externo esperado (Basic Access na fila) — diferente de
  * `google-ads-associate.ts`, este caminho não tenta classificar "associou
  * ou não", só decide "consegui os dados ou preciso cair pro CSV manual".
  */
@@ -330,6 +341,12 @@ const DEFECT_MARKERS = [
 const AUTH_PENDING_MARKERS = [
   "DEVELOPER_TOKEN_NOT_APPROVED",
   "USER_PERMISSION_DENIED",
+  // NÃO confirmado ao vivo contra a API real (diferente dos dois acima, que
+  // têm captura real em docs/google-ads-api-setup.md) — semanticamente pode
+  // significar conta suspensa/fechada, um estado tão permanente quanto
+  // `invalid_grant`, não "fila do Basic Access". Mantido por precaução com
+  // esta ressalva explícita; remover ou mover pra DEFECT_MARKERS se/quando
+  // reproduzir ao vivo com significado confirmado (achado do review do PR #5591).
   "CUSTOMER_NOT_ENABLED",
 ];
 
