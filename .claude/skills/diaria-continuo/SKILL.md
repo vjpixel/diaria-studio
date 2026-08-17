@@ -538,8 +538,13 @@ aqui.
      `AskUserQuestion` do passo 4.
    - **(c) Bloqueio genuíno não-decisão** — credencial-runtime, conta
      externa, ação humana fora do repo (inclusive prospecção/contato com
-     terceiros no mundo real). Comentário na issue registrando exatamente o
-     que falta; categoria **distinta** de (b) em qualquer comunicação —
+     terceiros no mundo real). **Aplicar a label `external-blocker`**
+     (`gh issue edit N --add-label external-blocker`, se ainda ausente —
+     #5462/#5533: sem ela a Triagem do Studio não enxerga a issue como
+     Bloqueada, mesmo racional do `trade-off-real` no lote de perguntas do
+     passo 4) na mesma respiração do comentário na issue registrando
+     exatamente o que falta; categoria **distinta** de (b) em qualquer
+     comunicação —
      nunca o mesmo rótulo vago ("bloqueada") cobrindo as duas.
 
    Só entra no lote de perguntas do passo 4 quem foi classificado em (b).

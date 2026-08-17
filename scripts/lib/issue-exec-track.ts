@@ -75,6 +75,25 @@ export type ExecTrack = "overnight" | "develop" | "bloqueada" | "fora-de-rodada"
 /** Fora de qualquer rodada: o editor tirou de circulação, não é "ainda não". */
 const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
 
+/**
+ * Já resolvida sem código a escrever — motivo diferente de `OUT_OF_ROUND_LABELS`
+ * acima (#5532): não é o editor tirando a issue de circulação, é a issue já
+ * ter chegado ao fim por outro caminho. `decisao-registrada` = decisão
+ * registrada em prosa que fecha o assunto (ex: `[DECISÃO] ...`); `alarm` =
+ * gerada por script de alarme, documenta no próprio corpo que se
+ * comenta/fecha sozinha quando o achado para de reproduzir.
+ *
+ * Checado DEPOIS de `bloqueada`/`develop` (não junto de `OUT_OF_ROUND_LABELS`
+ * no topo da precedência) de propósito: `decisao-registrada` também aparece
+ * em issues que só tiveram uma decisão PARCIAL registrada (ex: #4555, que
+ * carrega `decisao-registrada` + `trade-off-real` — a decisão fechou o perfil
+ * do parceiro, mas a prospecção em si continua sendo trabalho real de
+ * develop). Se esta label tivesse a mesma precedência de `on-hold`/`wontfix`,
+ * #4555 sairia como `fora-de-rodada` — errado, ainda há trabalho de verdade
+ * pendente, só que não é código. Outra label que já classifica a issue
+ * (bloqueio, `windows`, `trade-off-real`) sempre vence sobre esta. */
+const RESOLVED_BY_PROSE_LABELS = new Set(["decisao-registrada", "alarm"]);
+
 /** Bloqueio que nenhuma sessão destrava sozinha — conta de terceiro,
  * credencial, allowlist, plataforma plan-gated, ou bloqueio de execução já
  * registrado (#5373). */
@@ -163,7 +182,13 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *   2. `bloqueada`      — bloqueio externo, ou espera por data ainda vigente.
  *   3. `develop`        — precisa da máquina Windows, ou trade-off-real já
  *                         julgado pelo overnight.
- *   4. `overnight`      — sobrou.
+ *   4. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
+ *                         (`decisao-registrada`) ou alarme que se auto-resolve
+ *                         (`alarm`), e nenhuma das labels acima já decidiu por
+ *                         ela — ver docstring de `RESOLVED_BY_PROSE_LABELS`
+ *                         pro porquê desta checagem vir depois de
+ *                         `bloqueada`/`develop`, não junto da 1ª.
+ *   5. `overnight`      — sobrou.
  *
  * O default é `overnight` e não `develop` **apenas porque ambiguidade saiu do
  * classificador** (ver docstring do módulo). Todo bloqueio real tem label ou
@@ -183,6 +208,8 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
 
   if (labels.some((l) => MACHINE_DEVELOP_LABELS.has(l))) return "develop";
   if (has(TRADE_OFF_LABEL)) return "develop";
+
+  if (labels.some((l) => RESOLVED_BY_PROSE_LABELS.has(l))) return "fora-de-rodada";
 
   return "overnight";
 }
@@ -217,7 +244,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   bloqueada:
     "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou espera por data ainda vigente (marcador `aguardando-ate:`, que desarma sozinho na data).",
   "fora-de-rodada":
-    "Fora de rodada — o editor tirou de circulação (`on-hold`, `wontfix`). Não é 'ainda não', é 'não'.",
+    "Fora de rodada — três motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); ou é alarme automático que se auto-resolve (`alarm`, comenta/fecha sozinho quando o achado para de reproduzir).",
 };
 
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
