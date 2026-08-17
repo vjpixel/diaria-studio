@@ -313,6 +313,9 @@ export function alarmFindingsFor(evaluation: CursosAlarmEvaluation): AlarmFindin
     findings.push({
       check: "cursos-error",
       fingerprint: `fatal:${FATAL_PATTERN_SLUGS[m.pattern]}`,
+      // #5553 — padrão de erro RE-CHECADO por janela; resolve sozinho
+      // quando o delta voltar a zero.
+      family: "estado",
       title: `[diar.ia.br] Worker cursos: erro fatal "${m.pattern}"`,
       body: [
         "Achado automático do alarme `Diaria-Cursos-Error-Alarm`",
@@ -338,6 +341,9 @@ export function alarmFindingsFor(evaluation: CursosAlarmEvaluation): AlarmFindin
     findings.push({
       check: "cursos-error",
       fingerprint: RATE_NOT_CONFIRMED_FINGERPRINT,
+      // #5553 — taxa RE-CHECADA por janela; resolve sozinho quando a taxa
+      // voltar abaixo do limiar.
+      family: "estado",
       title: "[diar.ia.br] Worker cursos: taxa de \"?email= não confirmado\" acima do limite",
       body: [
         "Achado automático do alarme `Diaria-Cursos-Error-Alarm`",

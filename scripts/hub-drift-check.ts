@@ -141,6 +141,9 @@ function toAlarmFinding(r: HubDriftResult): AlarmFinding {
   return {
     check: r.slug,
     fingerprint: hubDriftFindingKey(r),
+    // #5553 — condição RE-CHECÁVEL (hub no ar); resolve sozinho quando
+    // voltar a responder.
+    family: "estado",
     title: `[diar.ia.br] hub "${r.label}" fora do ar (arquivo.diar.ia.br)`,
     body: [
       "Achado automático do alarme `Diaria-Hub-Drift-Check`",

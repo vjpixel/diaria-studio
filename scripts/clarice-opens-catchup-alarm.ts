@@ -81,6 +81,9 @@ function toAlarmFinding(state: OpensCatchupAlarmState, latestError: string | und
   return {
     check: "clarice-opens-catchup",
     fingerprint: "streak-failing",
+    // #5553 — "o MECANISMO está quebrado" (ver docstring acima), não um
+    // evento datado: resolve sozinho quando o streak volta a zero.
+    family: "estado",
     title: `[diar.ia.br] catch-up de opens da Clarice falhando (streak ${state.consecutiveFailures})`,
     body: [
       "Achado automático do alarme `Diaria-Clarice-Opens-Catchup-Alarm`",

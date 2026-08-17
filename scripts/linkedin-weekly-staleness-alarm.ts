@@ -109,6 +109,13 @@ function toAlarmFinding(cycle: string): AlarmFinding {
   return {
     check: "linkedin-weekly-staleness",
     fingerprint: cycle,
+    // #5553 — apesar do fingerprint embutir um ID (o ciclo), a condição
+    // observada é "o artefato existe pra ESTE ciclo?", re-checada toda
+    // semana — quando o arquivo aparece, resolve sozinho (#5497, o caso que
+    // motivou a issue #5553 confirmar como auto-close CORRETO). É exatamente
+    // este alarme que prova que "fingerprint com ID → evento" não é regra
+    // confiável — daí a declaração explícita em vez de inferida.
+    family: "estado",
     title: `[diar.ia.br] LinkedIn semanal: ciclo ${cycle} não foi produzido`,
     body: [
       "Achado automático do alarme `Diaria-LinkedIn-Weekly-Staleness-Alarm`",

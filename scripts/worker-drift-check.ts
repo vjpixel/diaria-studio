@@ -183,6 +183,9 @@ function toAlarmFinding(r: WorkerDriftResult): AlarmFinding {
   return {
     check: r.workerName,
     fingerprint: workerDriftFindingKey(r),
+    // #5553 — condição RE-CHECÁVEL (commit vs deploy); resolve sozinho
+    // quando o worker for redeployado.
+    family: "estado",
     title: `[diar.ia.br] worker "${r.workerName}" com deploy defasado`,
     body: [
       "Achado automático do alarme `Diaria-Worker-Drift-Check`",

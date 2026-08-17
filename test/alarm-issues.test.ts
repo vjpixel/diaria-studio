@@ -48,6 +48,7 @@ const FINDING_A: AlarmFinding = {
   fingerprint: "english-labels:rótulo(s) em inglês residual(is) encontrado(s): \"N min read\"",
   title: 'Home Beehiiv: rótulo em inglês residual — "N min read"',
   body: "Achado do smoke-test diário.",
+  family: "estado",
   labels: ["bug"],
 };
 
@@ -192,6 +193,37 @@ describe("ensureAlarmIssue (#5112)", () => {
     assert.match(labelArg!, /\bbug\b/);
   });
 
+  it("#5553: family 'estado' -> labels NÃO incluem 'alarm-evento'", () => {
+    let labelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        labelArg = args[args.indexOf("--label") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    ensureAlarmIssue({ ...FINDING_A, family: "estado" }, undefined, CWD, run);
+    assert.match(labelArg!, /\balarm\b/);
+    assert.doesNotMatch(labelArg!, /alarm-evento/);
+  });
+
+  it("#5553: family 'evento' -> labels incluem 'alarm' E 'alarm-evento'", () => {
+    let labelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        labelArg = args[args.indexOf("--label") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    ensureAlarmIssue({ ...FINDING_A, family: "evento" }, undefined, CWD, run);
+    const labels = labelArg!.split(",");
+    assert.ok(labels.includes("alarm"), "issue de evento continua achável por 'gh issue list --label alarm'");
+    assert.ok(labels.includes("alarm-evento"));
+  });
+
   it("corpo da issue criada carrega o marcador de dedup", () => {
     let bodyArg: string | null = null;
     const run: GhRunFn = (args) => {
@@ -300,11 +332,65 @@ describe("ensureAlarmIssue — retry fail-soft de label ausente (#5338)", () => 
       throw new Error(`unexpected: ${args.join(" ")}`);
     };
     const result = ensureAlarmIssue(findingWithExtraLabel, undefined, CWD, run);
-    assert.equal(labelCreateCalled, false, "só a label 'alarm' é auto-criável — outra label ausente não dispara self-heal");
+    assert.equal(
+      labelCreateCalled,
+      false,
+      "'nivel-inexistente' não está em SELF_HEALABLE_LABELS — outra label ausente não dispara self-heal",
+    );
     assert.equal(createAttempts, 2);
     assert.doesNotMatch(lastLabelArg ?? "", /nivel-inexistente/);
     assert.match(lastLabelArg ?? "", /\balarm\b/, "'alarm' não estava entre as ausentes -> segue no retry");
     assert.equal(result.action, "created");
+  });
+
+  it("#5553: label 'alarm-evento' ausente no repo -> self-heal generalizado cria a label, retry mantém 'alarm-evento'", () => {
+    let createAttempts = 0;
+    let labelCreateArgs: string[][] = [];
+    let lastLabelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        labelCreateArgs.push(args);
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        createAttempts++;
+        const idx = args.indexOf("--label");
+        lastLabelArg = idx >= 0 ? args[idx + 1] : null;
+        if (createAttempts === 1) return fail("could not add label: 'alarm-evento' not found");
+        return ok("https://github.com/x/y/issues/6004\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue({ ...FINDING_A, family: "evento" }, undefined, CWD, run);
+    assert.equal(labelCreateArgs.length, 1, "deveria ter tentado auto-criar só a label ausente");
+    assert.equal(labelCreateArgs[0][2], "alarm-evento");
+    assert.equal(createAttempts, 2);
+    assert.match(lastLabelArg ?? "", /\balarm-evento\b/);
+    assert.match(lastLabelArg ?? "", /\balarm\b/, "'alarm' nunca esteve ausente -> segue no retry normalmente");
+    assert.equal(result.action, "created");
+    assert.equal(result.issueNumber, 6004);
+  });
+
+  it("#5553: descrição de toda label self-healable respeita o teto de 100 chars do GitHub (regressão — 1ª tentativa de 'alarm-evento' deu HTTP 422 'description is too long')", () => {
+    const descriptions: string[] = [];
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        const idx = args.indexOf("--description");
+        descriptions.push(args[idx + 1]);
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        return fail("could not add label: 'alarm' not found, could not add label: 'alarm-evento' not found");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    ensureAlarmIssue({ ...FINDING_A, family: "evento" }, undefined, CWD, run);
+    assert.equal(descriptions.length, 2, "deveria ter tentado self-heal de 'alarm' e 'alarm-evento'");
+    for (const d of descriptions) {
+      assert.ok(d.length <= 100, `descrição com ${d.length} chars excede o teto do GitHub: "${d}"`);
+    }
   });
 });
 
@@ -382,6 +468,48 @@ describe("planAlarmReconciliation (#5112 item 3 — puro)", () => {
     };
     const actions = planAlarmReconciliation([], state, 3);
     assert.deepEqual(actions, [{ kind: "advance_streak", key }]);
+  });
+
+  describe("#5553 — família evento nunca gera comment_resolved/advance_streak/close", () => {
+    it("entry family:'evento' sumiu de pending -> NENHUMA ação (congelada, mesmo padrão da allowlist)", () => {
+      const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+      const state: AlarmIssuesState = {
+        [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null, family: "evento" },
+      };
+      assert.deepEqual(planAlarmReconciliation([], state, 2), []);
+    });
+
+    it("entry family:'evento' sumiu por MUITAS execuções (streak alto) -> ainda assim nenhuma ação, nunca fecha", () => {
+      const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+      const state: AlarmIssuesState = {
+        [key]: { issueNumber: 1, url: "u", missingStreak: 50, closedAt: null, family: "evento" },
+      };
+      assert.deepEqual(planAlarmReconciliation([], state, 2), []);
+    });
+
+    it("entry family:'estado' explícita sumiu -> comportamento normal (comment_resolved), não é afetada pela exceção acima", () => {
+      const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+      const state: AlarmIssuesState = {
+        [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null, family: "estado" },
+      };
+      const actions = planAlarmReconciliation([], state, 2);
+      assert.deepEqual(actions, [{ kind: "comment_resolved", key, issueNumber: 1 }]);
+    });
+
+    it("entry SEM `family` (state.json pré-#5553) -> tratada como 'estado', auto-close preservado", () => {
+      const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+      const state: AlarmIssuesState = {
+        [key]: { issueNumber: 1, url: "u", missingStreak: 1, closedAt: null }, // sem `family`
+      };
+      const actions = planAlarmReconciliation([], state, 2);
+      assert.deepEqual(actions, [{ kind: "close", key, issueNumber: 1 }]);
+    });
+
+    it("achado family:'evento' ainda PENDENTE continua gerando 'ensure' normalmente (a exceção é só pro lado ausente)", () => {
+      const findingEvento: AlarmFinding = { ...FINDING_A, family: "evento" };
+      const actions = planAlarmReconciliation([findingEvento], emptyAlarmIssuesState(), 2);
+      assert.deepEqual(actions, [{ kind: "ensure", finding: findingEvento }]);
+    });
   });
 });
 
@@ -559,6 +687,55 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
     assert.equal(nextState[key].closedAt, null);
     assert.equal(nextState[key].missingStreak, 0);
   });
+
+  describe("#5553 — família estampada em `ensure` + entry de evento nunca auto-fecha (regressão #5525)", () => {
+    it("`ensure` estampa `family` do finding na entry de estado (criação)", () => {
+      const run: GhRunFn = (args) => {
+        if (args[0] === "issue" && args[1] === "list") return ok("[]");
+        if (args[0] === "issue" && args[1] === "create") return ok("https://github.com/x/y/issues/9101\n");
+        throw new Error(`unexpected: ${args.join(" ")}`);
+      };
+      const eventoFinding: AlarmFinding = { ...FINDING_A, family: "evento" };
+      const { nextState } = applyAlarmReconciliation([eventoFinding], emptyAlarmIssuesState(), {
+        cwd: CWD,
+        closeAfterRuns: 2,
+        run,
+      });
+      const key = alarmIssueStateKey(eventoFinding.check, eventoFinding.fingerprint);
+      assert.equal(nextState[key].family, "evento");
+    });
+
+    it("REGRESSÃO #5525: campanha avaliada 1x (family:'evento') some de pending na execução seguinte -> " +
+      "NUNCA comenta/fecha, mesmo depois de várias execuções ausente", () => {
+      const key = alarmIssueStateKey("clarice-guardrail", "campaign-146");
+      let commentCalled = false;
+      let closeCalled = false;
+      const run: GhRunFn = (args) => {
+        if (args[0] === "issue" && args[1] === "comment") {
+          commentCalled = true;
+          return ok("");
+        }
+        if (args[0] === "issue" && args[1] === "close") {
+          closeCalled = true;
+          return ok("");
+        }
+        throw new Error(`unexpected: ${args.join(" ")}`);
+      };
+      let state: AlarmIssuesState = {
+        [key]: { issueNumber: 5525, url: "https://x/5525", missingStreak: 0, closedAt: null, family: "evento" },
+      };
+      // A campanha 146 nunca é reavaliada (markEvaluated) — `pending` fica
+      // vazio em TODAS as execuções seguintes, indefinidamente.
+      for (let i = 0; i < 5; i++) {
+        const result = applyAlarmReconciliation([], state, { cwd: CWD, closeAfterRuns: 2, run });
+        state = result.nextState;
+      }
+      assert.equal(commentCalled, false, "nunca deveria comentar 'não reproduz mais' — ninguém consertou nada");
+      assert.equal(closeCalled, false, "nunca deveria fechar sozinha — #5525 ficaria enterrada em silêncio");
+      assert.equal(state[key].closedAt, null);
+      assert.equal(state[key].missingStreak, 0, "streak nunca avança pra uma entry de evento — congelada de propósito");
+    });
+  });
 });
 
 // ─── Allowlist de achados aceitos como limitação permanente (#5364) ────────
@@ -635,6 +812,7 @@ describe("planAlarmReconciliation com allowlist (#5364)", () => {
       fingerprint: "http-self-link:algum outro achado",
       title: "outro achado",
       body: "corpo",
+      family: "estado",
     };
     const actions = planAlarmReconciliation([OTHER], emptyAlarmIssuesState(), 2, ALLOWLIST);
     assert.deepEqual(actions, [{ kind: "ensure", finding: OTHER }]);
@@ -660,6 +838,7 @@ describe("planAlarmReconciliation com allowlist (#5364)", () => {
       fingerprint: "http-self-link:algum outro achado",
       title: "outro achado",
       body: "corpo",
+      family: "estado",
     };
     const actions = planAlarmReconciliation([FINDING_A, OTHER], emptyAlarmIssuesState(), 2, ALLOWLIST);
     assert.deepEqual(actions, [{ kind: "ensure", finding: OTHER }]);
@@ -716,6 +895,7 @@ describe("applyAlarmReconciliation com allowlist (#5364) — I/O injetado", () =
       fingerprint: "http-self-link:algum outro achado",
       title: "outro achado",
       body: "corpo",
+      family: "estado",
     };
     let createCalled = false;
     const run: GhRunFn = (args) => {

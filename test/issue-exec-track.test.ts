@@ -211,6 +211,36 @@ describe("classifyExecTrack — resolvida por prosa/alarme (#5532)", () => {
   });
 });
 
+describe("classifyExecTrack — alarme de evento passado (#5553)", () => {
+  it("label alarm-evento sozinha → overnight (não existe em nenhum outro conjunto)", () => {
+    assert.equal(track(["alarm-evento"]), "overnight");
+  });
+
+  it("alarm + alarm-evento (par real, emitido junto por ensureAlarmIssue) → overnight, NÃO fora-de-rodada", () => {
+    // Regressão do bug que motivou a issue: sem uma checagem própria pra
+    // `alarm-evento` ANTES de `RESOLVED_BY_PROSE_LABELS`, a label `alarm`
+    // companheira sozinha bastaria pra classificar fora-de-rodada — exatamente
+    // o comportamento que enterrou o #5525 antes deste fix.
+    assert.equal(track(["alarm", "alarm-evento"]), "overnight");
+  });
+
+  it("alarm SEM alarm-evento (alarme de estado) continua fora-de-rodada — comportamento pré-#5553 preservado", () => {
+    assert.equal(track(["alarm"]), "fora-de-rodada");
+  });
+
+  it("alarm-evento + external-blocker → bloqueada (bloqueio real vence, mesma precedência de `alarm`)", () => {
+    assert.equal(track(["alarm", "alarm-evento", "external-blocker"]), "bloqueada");
+  });
+
+  it("alarm-evento + windows → develop (máquina vence, checado antes de alarm-evento)", () => {
+    assert.equal(track(["alarm", "alarm-evento", "windows"]), "develop");
+  });
+
+  it("alarm-evento + on-hold → fora-de-rodada (editor tirou de circulação vence tudo)", () => {
+    assert.equal(track(["alarm", "alarm-evento", "on-hold"]), "fora-de-rodada");
+  });
+});
+
 describe("classifyExecTrack — precedência", () => {
   it("fora-de-rodada vence bloqueio", () => {
     assert.equal(track(["on-hold", "external-blocker"]), "fora-de-rodada");
