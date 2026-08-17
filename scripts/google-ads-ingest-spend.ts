@@ -147,6 +147,16 @@ export async function main(): Promise<number> {
   console.log(
     `[google-ads-ingest-spend] ✔ ${spendPath} atualizado (${result.fetchedRows} linha(s) GAQL agregadas).`,
   );
+  // Perda PARCIAL (#5598) já saiu como console.warn de dentro de
+  // runGoogleAdsIngest — este eco só garante que o CAMINHO DA CSV também
+  // carregue o sinal, pra não ler como "✔ atualizado" limpo em quem só olha
+  // o log do CLI (o warn da lib pode ficar longe da linha de sucesso em
+  // scrollback/CI).
+  if (result.discardedCount > 0) {
+    console.warn(
+      `[google-ads-ingest-spend] ⚠ ${result.discardedCount} linha(s) descartada(s) por malformação — ${spendPath} pode estar SUBESTIMADO. Ver aviso acima.`,
+    );
+  }
   return 0;
 }
 
