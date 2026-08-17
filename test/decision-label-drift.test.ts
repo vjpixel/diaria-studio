@@ -137,12 +137,12 @@ describe("detectLabelDrift — dedup por (issue, padrão)", () => {
     assert.equal(findings.length, 1);
   });
 
-  it("comentário mais recente com a label correta remove o achado do comentário mais antigo", () => {
+  it("label atual satisfaz o padrão independente de qual(is) comentário(s) casaram — não há mecanismo temporal, é sempre o snapshot atual", () => {
     const findings = detectLabelDrift({
       issueNumber: 8,
       labels: ["not-this-week"],
       commentBodies: [
-        "Aguardando pré-requisito não atendido ainda.", // mais antigo, sem label na época
+        "Aguardando pré-requisito não atendido ainda.",
         "Aplicada not-this-week — issue agora reflete o estado real.",
       ],
     });

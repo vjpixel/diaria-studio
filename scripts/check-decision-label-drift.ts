@@ -37,23 +37,47 @@ interface GhIssueListItem {
 const DEFAULT_ISSUE_LIMIT = 300;
 const DEFAULT_COMMENTS_PER_ISSUE = 20;
 
-/** Busca issues abertas (número + labels) via `gh issue list`. Retorna `[]`
- * em qualquer falha (CLI ausente, sem auth, JSON malformado) — fail-soft,
- * mesma postura de `fetchCommentBodies`. */
-export function fetchOpenIssues(cwd: string, limit: number): GhIssueListItem[] {
+export interface FetchOpenIssuesResult {
+  issues: GhIssueListItem[];
+  /** Presente quando a busca falhou por qualquer motivo — o array `issues`
+   * acima fica vazio (ou parcial, nunca) nesse caso e NÃO deve ser lido como
+   * "consultei e não achei nada". `main()` imprime isto antes de seguir. */
+  error?: string;
+}
+
+/** Busca issues abertas (número + labels) via `gh issue list`. Nunca lança —
+ * qualquer falha (CLI ausente, sem auth, rate limit, JSON malformado) volta
+ * como `{ issues: [], error: "..." }` em vez de `[]` silencioso, pra `main()`
+ * poder avisar explicitamente que o resultado abaixo pode estar incompleto. */
+export function fetchOpenIssues(cwd: string, limit: number): FetchOpenIssuesResult {
   const result = spawnSync(
     "gh",
     ["issue", "list", "--state", "open", "--json", "number,labels", "--limit", String(limit)],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
-  if (result.status !== 0 || !result.stdout) return [];
+  if (result.error) {
+    return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? "").toString().trim();
+    return {
+      issues: [],
+      error: `gh issue list saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}`,
+    };
+  }
+  if (!result.stdout) {
+    return { issues: [], error: "gh issue list retornou stdout vazio" };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(result.stdout);
-  } catch {
-    return [];
+  } catch (e) {
+    return { issues: [], error: `JSON malformado de gh issue list: ${(e as Error).message}` };
   }
-  return Array.isArray(parsed) ? (parsed as GhIssueListItem[]) : [];
+  if (!Array.isArray(parsed)) {
+    return { issues: [], error: "gh issue list retornou payload que não é um array" };
+  }
+  return { issues: parsed as GhIssueListItem[] };
 }
 
 function normalizeLabels(issue: GhIssueListItem): string[] {
@@ -81,6 +105,23 @@ function printFindings(findings: DriftFinding[]): void {
   );
 }
 
+/** Resolve um flag numérico posicional (`--limit`, `--comments-per-issue`)
+ * pro default quando ausente, inválido (NaN, typo) ou não-positivo (`0`,
+ * negativo) — avisando via `console.error` sempre que o valor passado NÃO
+ * for usado, pra não cair no default silenciosamente (diferente de
+ * `--issue`, que já validava e avisava algumas linhas acima). */
+function resolvePositiveInt(raw: string | undefined, fallback: number, flagName: string): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    console.error(
+      `check-decision-label-drift: --${flagName} inválido ("${raw}") — usando default ${fallback}.`,
+    );
+    return fallback;
+  }
+  return value;
+}
+
 function main(): void {
   const { values } = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
@@ -92,14 +133,22 @@ function main(): void {
     return;
   }
 
-  const issueLimit = values.limit ? Number(values.limit) || DEFAULT_ISSUE_LIMIT : DEFAULT_ISSUE_LIMIT;
-  const commentsPerIssue = values["comments-per-issue"]
-    ? Number(values["comments-per-issue"]) || DEFAULT_COMMENTS_PER_ISSUE
-    : DEFAULT_COMMENTS_PER_ISSUE;
+  const issueLimit = resolvePositiveInt(values.limit, DEFAULT_ISSUE_LIMIT, "limit");
+  const commentsPerIssue = resolvePositiveInt(
+    values["comments-per-issue"],
+    DEFAULT_COMMENTS_PER_ISSUE,
+    "comments-per-issue",
+  );
 
+  const fetchResult = fetchOpenIssues(cwd, issueLimit);
+  if (fetchResult.error) {
+    console.error(
+      `check-decision-label-drift: falha ao consultar gh issue list — resultado abaixo pode estar incompleto: ${fetchResult.error}`,
+    );
+  }
   const issues = singleIssue
-    ? fetchOpenIssues(cwd, issueLimit).filter((i) => i.number === singleIssue)
-    : fetchOpenIssues(cwd, issueLimit);
+    ? fetchResult.issues.filter((i) => i.number === singleIssue)
+    : fetchResult.issues;
 
   if (issues.length === 0 && singleIssue) {
     // Issue pode existir mas estar fechada, ou `gh` indisponível — sempre

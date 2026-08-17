@@ -36,12 +36,20 @@
  * ## Dedup
  *
  * Um comentário pode casar o mesmo padrão mais de uma vez (múltiplas frases
- * gatilho do mesmo grupo). `detectLabelDrift` reporta no máximo 1 achado por
+ * gatilho do mesmo grupo), e vários comentários da mesma issue podem casar o
+ * mesmo padrão. `detectLabelDrift` reporta no máximo 1 achado por
  * `(issueNumber, patternId)` — o do comentário mais RECENTE que casou (bodies
  * são varridos na ordem recebida, que é cronológica ascendente via `gh`), pra
- * não inflar a mesma pendência N vezes. Se um comentário mais antigo casou
- * sem a label e um comentário mais recente casa o MESMO padrão já com a
- * label aplicada, o achado é removido — a issue foi corrigida depois.
+ * não inflar a mesma pendência N vezes.
+ *
+ * A checagem usa o snapshot ATUAL das labels da issue (`labels`, passado uma
+ * única vez pro `detectLabelDrift`), não um histórico de labels por momento
+ * do comentário — `labelSet` não muda durante o loop. Ou seja: se as labels
+ * atuais já satisfazem o padrão, NENHUM achado é registrado pra ele,
+ * independente de quantos ou quais comentários bateram (nem "o comentário
+ * mais antigo tinha gerado achado, o mais recente corrigiu" é um mecanismo
+ * real — a satisfação é constante por `(issue, patternId)`, avaliada contra
+ * o mesmo snapshot em toda iteração).
  *
  * Puro: sem I/O, sem rede, sem `gh` — recebe labels + bodies de comentário já
  * buscados. O CLI (`scripts/check-decision-label-drift.ts`) é o wrapper fino
@@ -76,7 +84,7 @@ export interface DriftPattern {
  * manual (nenhum import cruzado: este módulo é deliberadamente mais
  * permissivo/heurístico que aquele, que é a fonte de verdade sobre labels).
  */
-export const DRIFT_PATTERNS: DriftPattern[] = [
+export const DRIFT_PATTERNS: readonly DriftPattern[] = [
   {
     id: "deferred-vague",
     description:
@@ -203,10 +211,11 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
         labelSet.has(UNIVERSAL_SATISFYING_LABEL) ||
         pattern.expectedLabels.some((l) => labelSet.has(l));
       if (satisfied) {
-        // Label já bate — se um comentário mais ANTIGO tinha gerado um
-        // achado pendente pro mesmo padrão, a issue foi corrigida depois;
-        // remove o achado obsoleto.
-        byPattern.delete(pattern.id);
+        // Label já bate no snapshot atual — nenhum achado pra este padrão,
+        // independente de comentário anterior ter casado sem a label (ver
+        // docstring do módulo, seção "Dedup": `labelSet` é fixo pro loop
+        // inteiro, então `satisfied` nunca alterna de false pra true dentro
+        // de uma mesma varredura; não há achado pendente pra remover aqui).
         continue;
       }
       byPattern.set(pattern.id, {
