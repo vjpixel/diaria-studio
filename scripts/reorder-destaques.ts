@@ -11,8 +11,8 @@
  *   - `_internal/02-d{N}-prompt.md` (rename files)
  *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
  *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
- *     sufixo, e adicionou verificação `existsSync` pós-rename — ver
- *     `renameSyncVerified`)
+ *     sufixo; #5564 trocou o mecanismo de rename-em-2-passos por staging
+ *     local + escrita direta no destino — ver `stageAndWriteVerified`)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
@@ -45,8 +45,12 @@ import {
   writeFileSync,
   readdirSync,
   renameSync,
+  copyFileSync,
+  mkdtempSync,
+  rmSync,
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
@@ -66,18 +70,32 @@ import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Funções de rename/existsSync injetáveis pra teste (#5085, mesmo padrão de
+ * Funções de fs injetáveis pra teste (#5085, mesmo padrão de
  * `PlanFileReaders` em `overnight-statusline.ts`).
  */
 export interface RenameFileDeps {
   renameSync: typeof renameSync;
   existsSync: typeof existsSync;
+  copyFileSync: typeof copyFileSync;
+  readFileSync: typeof readFileSync;
 }
 
-const defaultRenameFileDeps: RenameFileDeps = { renameSync, existsSync };
+const defaultRenameFileDeps: RenameFileDeps = {
+  renameSync,
+  existsSync,
+  copyFileSync,
+  readFileSync,
+};
 
 /**
  * Rename com verificação pós-rename (#5085 — achado ao vivo edição 260812).
+ * MANTIDA como utilitário standalone (usada só em teste hoje) — mas
+ * `renameDestaqueImages`/`renameDestaquePrompts` não a usam mais desde #5564
+ * (ver `stageAndWriteVerified` abaixo): `renameSync` em sequência DENTRO do
+ * diretório sincronizado é exatamente o padrão que causava a "reversão
+ * pós-hoc" que este guard não conseguia pegar (a checagem `existsSync`
+ * acontece um instante depois do rename, mas o provedor de sync pode
+ * reverter o arquivo minutos depois — janela menor, não eliminada).
  *
  * `renameSync` retornar sem lançar NÃO garante que o arquivo de destino
  * ainda existe momentos depois: numa pasta sincronizada por um provedor tipo
@@ -108,6 +126,138 @@ export function renameSyncVerified(
         `com imagem ausente/errada — reexecute reorder-destaques.ts depois de confirmar que o ` +
         `sync terminou (ou restaure os arquivos a partir do OneDrive antes de retentar).`,
     );
+  }
+}
+
+/**
+ * Uma reordenação de arquivo pendente: nome original → nome final, ambos
+ * relativos ao diretório-alvo (editionDir ou internalDir).
+ */
+interface PendingFileRename {
+  originalName: string;
+  finalName: string;
+}
+
+/**
+ * Aplica um conjunto de renomeações de arquivo (#5564 — substitui a dança de
+ * rename-em-2-passos original→TMP→final que rodava inteiramente DENTRO do
+ * diretório sincronizado pelo OneDrive).
+ *
+ * Causa raiz do #5564: mesmo com `renameSyncVerified` (#5085), um reorder
+ * real perdeu conteúdo — a issue documentou uma "reversão pós-hoc":
+ * `existsSync` passava um instante depois do rename, mas o provedor de sync
+ * revertia o arquivo (voltava pra versão antiga) minutos depois, sem
+ * qualquer sinal de erro visível ao script. A causa é estrutural: uma
+ * sequência de 6+ renames rápidos (create+delete pairs, já que rename =
+ * delete-antigo + create-novo do ponto de vista do provedor de sync) dentro
+ * da pasta sincronizada dá ao OneDrive múltiplas oportunidades de resolução
+ * de conflito, cada uma podendo descartar a versão "perdedora" de forma
+ * assíncrona — nenhum delay de verificação pós-rename elimina essa janela,
+ * só encolhe.
+ *
+ * Fix estrutural (não só detecção): a reordenação em si roda FORA do
+ * diretório sincronizado.
+ *   1. Cada arquivo que muda de nome é COPIADO (não movido) pro um diretório
+ *      de staging local via `mkdtempSync(os.tmpdir())` — genuinamente fora
+ *      da junction do OneDrive, nunca sincronizado.
+ *   2. Só depois de TODOS os arquivos afetados terem sido capturados com
+ *      sucesso no staging, cada um é escrito (via `copyFileSync`, não
+ *      `renameSync`) DIRETO no path final dentro do diretório sincronizado —
+ *      zero nomes `TMP{N}` aparecem na pasta sincronizada, então não há
+ *      dança de rename pro provedor de sync confundir.
+ *   3. Verificação em 2 camadas: (a) checagem imediata pós-escrita
+ *      (`existsSync`, mesmo padrão do #5085), e (b) uma PASSADA FINAL, depois
+ *      que TODAS as escritas terminaram, relendo cada arquivo final e
+ *      comparando byte-a-byte contra o conteúdo staged — pega justamente a
+ *      classe "reversão pós-hoc" do #5564, que só se manifesta um pouco
+ *      DEPOIS da escrita individual reportar sucesso.
+ *   4. Se qualquer etapa falhar, rollback: para CADA arquivo afetado
+ *      (independente de sua escrita ter chegado a rodar), regrava o
+ *      conteúdo staged de volta no path ORIGINAL. Como o conteúdo original
+ *      já está capturado no staging desde o passo 1, isso é robusto a
+ *      qualquer ordem de falha — não depende de reconstruir uma pilha de
+ *      operações cronológicas como o rollback antigo (`rollbackAppliedRenames`,
+ *      #5087) precisava.
+ *
+ * Residual: o processo ainda não pode detectar uma reversão que aconteça
+ * DEPOIS que ele já terminou e saiu — mas a superfície de risco caiu de "N
+ * renames intercalados na pasta sincronizada, ao longo de toda a execução"
+ * pra "1 escrita por arquivo final, todas verificadas antes do processo
+ * retornar sucesso".
+ */
+function stageAndWriteVerified(
+  dir: string,
+  pending: PendingFileRename[],
+  deps: RenameFileDeps,
+): Array<{ from: string; to: string }> {
+  if (pending.length === 0) return [];
+
+  const stagingDir = mkdtempSync(join(tmpdir(), "reorder-destaques-staging-"));
+  const staged: Array<PendingFileRename & { stagingPath: string }> = [];
+  try {
+    // Passo 1: captura o conteúdo ATUAL de cada arquivo afetado no staging
+    // local — nunca toca o diretório sincronizado nesta etapa.
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      const stagingPath = join(stagingDir, `staged-${i}-${basename(p.originalName)}`);
+      deps.copyFileSync(join(dir, p.originalName), stagingPath);
+      staged.push({ ...p, stagingPath });
+    }
+
+    try {
+      // Passo 2: escreve cada arquivo final DIRETO no destino — sem nome
+      // temporário dentro do diretório sincronizado.
+      for (const s of staged) {
+        const finalPath = join(dir, s.finalName);
+        deps.copyFileSync(s.stagingPath, finalPath);
+        if (!deps.existsSync(finalPath)) {
+          throw new Error(
+            `reorder-destaques: escrita de ${s.finalName} retornou sem erro mas o arquivo não ` +
+              `existe no disco logo depois. Provável conflito de sync (OneDrive) descartando a ` +
+              `escrita. Abortando (#5564).`,
+          );
+        }
+      }
+      // Passo 3: passada FINAL de verificação, depois que TODAS as escritas
+      // já terminaram — pega a "reversão pós-hoc" (#5564): um arquivo que
+      // passou na checagem imediata do passo 2 mas foi revertido pelo
+      // provedor de sync enquanto os DEMAIS arquivos da sequência ainda
+      // estavam sendo escritos.
+      for (const s of staged) {
+        const finalPath = join(dir, s.finalName);
+        const expected = deps.readFileSync(s.stagingPath);
+        const actual = deps.existsSync(finalPath) ? deps.readFileSync(finalPath) : null;
+        if (actual === null || !actual.equals(expected)) {
+          throw new Error(
+            `reorder-destaques: ${s.finalName} não bate com o conteúdo esperado na verificação ` +
+              `final pós-reorder (#5564 — "reversão pós-hoc": o arquivo foi revertido pelo ` +
+              `provedor de sync depois de a escrita individual ter reportado sucesso). Abortando ` +
+              `para evitar publicação com imagem/prompt errado — reexecute reorder-destaques.ts ` +
+              `depois de confirmar que o sync do OneDrive terminou.`,
+          );
+        }
+      }
+    } catch (e) {
+      // Rollback best-effort: restaura o conteúdo ORIGINAL em cada path
+      // ORIGINAL a partir do staging — independe de quais escritas do passo
+      // 2 chegaram a rodar, então não precisa de pilha cronológica.
+      for (const s of staged) {
+        try {
+          deps.copyFileSync(s.stagingPath, join(dir, s.originalName));
+        } catch {
+          // best-effort — nunca lançar por cima do erro original.
+        }
+      }
+      throw e;
+    }
+
+    return staged.map((s) => ({ from: s.originalName, to: s.finalName }));
+  } finally {
+    try {
+      rmSync(stagingDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup — staging é local, não business-sensitive.
+    }
   }
 }
 
@@ -338,70 +488,10 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
 }
 
 /**
- * Reverte best-effort TODOS os renames de fato aplicados nesta invocação
- * quando a sequência de 2 passos (original→TMP→final) abortar no meio
- * (#5087 self-review finding do #5085 — sem rollback, um
- * `renameSyncVerified` que lança no meio da sequência deixava arquivos
- * `TMP{N}-*` órfãos no disco).
- *
- * HOTFIX (achado do review consolidado da rodada overnight que produziu
- * #5085/#5087): a versão anterior recebia só os pares "original→TMP" AINDA
- * pendentes (removidos da lista assim que promovidos ao nome final no passo
- * 2) e revertia cada TMP de volta pro `originalName` do SEU PRÓPRIO grupo.
- * Isso corrompe dado em qualquer reorder cíclico (todo swap/rotação — o caso
- * mais comum) onde pelo menos uma promoção do passo 2 tem sucesso antes de
- * outra falhar: o `originalName` de uma entrada ainda pendente pode já ter
- * sido REIVINDICADO como `finalName` por uma promoção que teve sucesso —
- * ex: TMP1 (era D1) promove com sucesso pra D2 (seu novo slot); TMP2 (era
- * D2) falha ao promover pra D1; o rollback antigo renomeava TMP2 de volta
- * pra "D2", sobrescrevendo silenciosamente o conteúdo de D1 recém-promovido
- * ali — D1 desaparecia sem chance de recuperação a partir do próprio
- * output da função.
- *
- * Fix: `applied` agora é a lista CRONOLÓGICA de TODOS os renames realmente
- * executados nesta invocação (passo 1 E passo 2, nunca removidos da lista
- * ao promover). O rollback desfaz em ordem REVERSA — cada entrada volta
- * exatamente ao nome (`from`) que tinha imediatamente ANTES daquele rename
- * específico, tratando a sequência como uma pilha de operações atômicas a
- * desfazer uma a uma, em vez de reconstruir "o nome original do grupo".
- * Isso generaliza pra qualquer ciclo (swap de 2, rotação de 3, ...): cada
- * `to` só é revertido se ainda existir com aquele nome exato — se uma
- * operação posterior já moveu o arquivo dali (caso comum quando o mesmo
- * path é reaproveitado por dois renames em sequência), a entrada mais
- * recente desfaz primeiro (ordem reversa), liberando o path na ordem certa
- * pra entrada anterior encontrar o que espera.
- *
- * Best-effort de propósito: usada dentro de um `catch`, então NUNCA lança —
- * se o próprio rollback falhar (ex: o arquivo esperado também já sumiu,
- * mesma classe de conflito de sync que motivou `renameSyncVerified` em
- * primeiro lugar), a falha é engolida em silêncio pra aquela entrada e o
- * loop continua tentando desfazer as demais. O objetivo é reduzir
- * dado-perdido/órfão, não garantir reversão perfeita — o erro original (já
- * capturado pelo caller) é o que de fato chega ao editor.
- */
-function rollbackAppliedRenames(
-  dir: string,
-  applied: Array<{ from: string; to: string }>,
-  deps: RenameFileDeps,
-): void {
-  for (let i = applied.length - 1; i >= 0; i--) {
-    const { from, to } = applied[i];
-    try {
-      const toPath = join(dir, to);
-      if (deps.existsSync(toPath)) {
-        deps.renameSync(toPath, join(dir, from));
-      }
-    } catch {
-      // best-effort — nunca lançar por cima do erro original do caller;
-      // segue tentando desfazer as demais entradas da pilha.
-    }
-  }
-}
-
-/**
- * Renomeia arquivos de imagem 04-d{N}-*.jpg conforme newOrder.
- * Estratégia: usar nomes temporários pra evitar colisão (renomeia
- * 04-d1-* → 04-tmp-d1-*, depois 04-tmp-d1-* → 04-d{newPos}-*).
+ * Renomeia arquivos de imagem 04-d{N}-*.jpg conforme newOrder — via
+ * `stageAndWriteVerified` (#5564, ver docstring lá pra causa raiz + fix
+ * estrutural completo). Nunca cria nome `TMP{N}` dentro do diretório
+ * sincronizado; toda a reordenação roda num staging local primeiro.
  *
  * #5085: regex de match do sufixo aceita hífen (`[a-z0-9-]+`, não só
  * `[a-z0-9]+`) — sem isso, `04-d{N}-4x5-nativo.jpg` (arte nativa gerada por
@@ -409,17 +499,7 @@ function rollbackAppliedRenames(
  * destaque ERRADO após um reorder, silenciosamente (nenhum erro, só o
  * arquivo órfão do slot antigo).
  *
- * #5085: cada rename passa por `renameSyncVerified` (existsSync pós-rename),
- * que lança se o destino não existir — ver docstring de `renameSyncVerified`.
- *
- * #5087 (self-review finding do #5085): se `renameSyncVerified` lançar no
- * MEIO da sequência de 2 passos, os renames já aplicados até ali (passo 1 E
- * passo 2 — ver HOTFIX na docstring de `rollbackAppliedRenames`) são
- * revertidos best-effort antes de repropagar o erro — evita órfãos
- * `04-TMP{N}-*` no disco E evita sobrescrever silenciosamente uma promoção
- * anterior que já tinha tido sucesso no mesmo reorder cíclico.
- *
- * Retorna lista de renames aplicados.
+ * Retorna lista de renames aplicados (ou que seriam aplicados, em dry-run).
  */
 export function renameDestaqueImages(
   editionDir: string,
@@ -427,58 +507,27 @@ export function renameDestaqueImages(
   dryRun: boolean,
   deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
-  const renames: Array<{ from: string; to: string }> = [];
-  if (!deps.existsSync(editionDir)) return renames;
+  if (!deps.existsSync(editionDir)) return [];
   const files = readdirSync(editionDir).filter((f) =>
     /^04-d[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
   );
-  // Build oldN → newN map
   const oldToNew = new Map<number, number>();
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  // Rastreia TODOS os renames de fato aplicados nesta invocação, em ordem
-  // cronológica — passo 1 (original→TMP) E passo 2 (TMP→final), NUNCA
-  // removidos da lista ao promover (ver HOTFIX na docstring de
-  // `rollbackAppliedRenames` — remover ao promover foi o que causava o
-  // data-loss em reorders cíclicos).
-  const appliedRenames: Array<{ from: string; to: string }> = [];
-  try {
-    // 2-step rename pra evitar colisão
-    for (const f of files) {
-      const m = f.match(/^04-d([123])-(.+)$/);
-      if (!m) continue;
-      const oldN = parseInt(m[1], 10);
-      const newN = oldToNew.get(oldN);
-      if (!newN || newN === oldN) continue;
-      const tmpName = f.replace(`04-d${oldN}-`, `04-TMP${oldN}-`);
-      if (!dryRun) {
-        renameSyncVerified(join(editionDir, f), join(editionDir, tmpName), deps);
-        appliedRenames.push({ from: f, to: tmpName });
-      }
-      renames.push({ from: f, to: tmpName });
-    }
-    // Step 2: tmp → final
-    if (!dryRun) {
-      const tmpFiles = readdirSync(editionDir).filter((f) =>
-        /^04-TMP[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
-      );
-      for (const f of tmpFiles) {
-        const m = f.match(/^04-TMP([123])-(.+)$/);
-        if (!m) continue;
-        const oldN = parseInt(m[1], 10);
-        const newN = oldToNew.get(oldN)!;
-        const finalName = `04-d${newN}-${m[2]}`;
-        renameSyncVerified(join(editionDir, f), join(editionDir, finalName), deps);
-        appliedRenames.push({ from: f, to: finalName });
-        renames.push({ from: f, to: finalName });
-      }
-    }
-  } catch (e) {
-    rollbackAppliedRenames(editionDir, appliedRenames, deps);
-    throw e;
+  const pending: PendingFileRename[] = [];
+  for (const f of files) {
+    const m = f.match(/^04-d([123])-(.+)$/);
+    if (!m) continue;
+    const oldN = parseInt(m[1], 10);
+    const newN = oldToNew.get(oldN);
+    if (!newN || newN === oldN) continue;
+    pending.push({ originalName: f, finalName: `04-d${newN}-${m[2]}` });
   }
-  return renames;
+  if (dryRun) {
+    return pending.map((p) => ({ from: p.originalName, to: p.finalName }));
+  }
+  return stageAndWriteVerified(editionDir, pending, deps);
 }
 
 /**
@@ -502,16 +551,8 @@ export function deriveTituloSubtitulo(
 }
 
 /**
- * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`.
- *
- * #5085: mesma proteção `renameSyncVerified` (existsSync pós-rename) do
- * `renameDestaqueImages` — se um provedor de sync descartar o destino entre
- * o `renameSync` e a próxima operação, aborta em vez de seguir silenciosamente.
- *
- * #5087 (self-review finding do #5085): mesmo rollback best-effort de
- * `renameDestaqueImages` (`rollbackAppliedRenames`) pra órfãos `02-TMP{N}-*`
- * — inclusive o HOTFIX de rastrear passo 1 E passo 2 (ver docstring de
- * `rollbackAppliedRenames`).
+ * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`
+ * — via `stageAndWriteVerified` (#5564), mesmo padrão de `renameDestaqueImages`.
  */
 export function renameDestaquePrompts(
   internalDir: string,
@@ -519,8 +560,7 @@ export function renameDestaquePrompts(
   dryRun: boolean,
   deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
-  const renames: Array<{ from: string; to: string }> = [];
-  if (!deps.existsSync(internalDir)) return renames;
+  if (!deps.existsSync(internalDir)) return [];
   const files = readdirSync(internalDir).filter((f) =>
     /^02-d[123]-(?:prompt\.md|sd-prompt\.json|draft\.md)$/.test(f),
   );
@@ -528,44 +568,19 @@ export function renameDestaquePrompts(
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  // Ver comentário equivalente em `renameDestaqueImages` — mesma pilha de
-  // renames aplicados (passo 1 E passo 2), nunca removida ao promover.
-  const appliedRenames: Array<{ from: string; to: string }> = [];
-  try {
-    // 2-step rename
-    for (const f of files) {
-      const m = f.match(/^02-d([123])-(.+)$/);
-      if (!m) continue;
-      const oldN = parseInt(m[1], 10);
-      const newN = oldToNew.get(oldN);
-      if (!newN || newN === oldN) continue;
-      const tmpName = f.replace(`02-d${oldN}-`, `02-TMP${oldN}-`);
-      if (!dryRun) {
-        renameSyncVerified(join(internalDir, f), join(internalDir, tmpName), deps);
-        appliedRenames.push({ from: f, to: tmpName });
-      }
-      renames.push({ from: f, to: tmpName });
-    }
-    if (!dryRun) {
-      const tmpFiles = readdirSync(internalDir).filter((f) =>
-        /^02-TMP[123]-/.test(f),
-      );
-      for (const f of tmpFiles) {
-        const m = f.match(/^02-TMP([123])-(.+)$/);
-        if (!m) continue;
-        const oldN = parseInt(m[1], 10);
-        const newN = oldToNew.get(oldN)!;
-        const finalName = `02-d${newN}-${m[2]}`;
-        renameSyncVerified(join(internalDir, f), join(internalDir, finalName), deps);
-        appliedRenames.push({ from: f, to: finalName });
-        renames.push({ from: f, to: finalName });
-      }
-    }
-  } catch (e) {
-    rollbackAppliedRenames(internalDir, appliedRenames, deps);
-    throw e;
+  const pending: PendingFileRename[] = [];
+  for (const f of files) {
+    const m = f.match(/^02-d([123])-(.+)$/);
+    if (!m) continue;
+    const oldN = parseInt(m[1], 10);
+    const newN = oldToNew.get(oldN);
+    if (!newN || newN === oldN) continue;
+    pending.push({ originalName: f, finalName: `02-d${newN}-${m[2]}` });
   }
-  return renames;
+  if (dryRun) {
+    return pending.map((p) => ({ from: p.originalName, to: p.finalName }));
+  }
+  return stageAndWriteVerified(internalDir, pending, deps);
 }
 
 function processJsonFile(
