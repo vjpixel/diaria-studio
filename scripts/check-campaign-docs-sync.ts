@@ -49,9 +49,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import { isMainModule } from "./lib/cli-args.ts";
-import { latestDecisionFor, type IssueDecision } from "./lib/issue-decisions.ts";
+import { latestDecisionFor, fetchCommentBodies, type IssueDecision } from "./lib/issue-decisions.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -171,29 +170,6 @@ export function exitCodeForReports(reports: readonly DocSyncReport[]): 0 | 1 {
 }
 
 // ─── CLI wrapper (I/O: lê os docs em disco, busca decisão via gh) ──────────
-
-interface GhComment {
-  body?: string;
-}
-
-function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
-  const result = spawnSync(
-    "gh",
-    ["issue", "view", String(issueNumber), "--json", "comments"],
-    { cwd, encoding: "utf8", timeout: 15_000 },
-  );
-  if (result.status !== 0 || !result.stdout) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return [];
-  }
-  if (typeof parsed !== "object" || parsed === null) return [];
-  const comments = (parsed as { comments?: GhComment[] }).comments;
-  if (!Array.isArray(comments)) return [];
-  return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
-}
 
 function main(): void {
   const dataDir = resolve(ROOT, "data", "aquisicao", "campanhas-260816");
