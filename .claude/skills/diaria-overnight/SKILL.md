@@ -159,6 +159,43 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    mínimo, reportar o próximo passo concreto na tabela do passo 4.5 em vez de
    aceitar a leitura de bloqueio.
 
+   **Herdar classificação de rodada anterior do MESMO DIA não dispensa esta
+   verificação (#5586).** Este arquivo não tem um passo numerado dedicado a
+   "ler o `plan.json` de uma rodada overnight anterior do mesmo dia" (ao
+   contrário do `/diaria-develop`, que tem um passo explícito — Fase 0
+   passo 2, "Herdar a triagem do overnight") — mas na prática uma rodada que
+   começa depois de outra do mesmo dia já ter triado a fila
+   (`data/overnight/{AAMMDD}[b/c/...]/plan.json` de horas antes, ou o
+   contexto de comentários que a checagem 1 acima já leria) pode ser tentada
+   a economizar trabalho reaproveitando o status já gravado em vez de
+   reclassificar do zero — atalho razoável em teoria, mas que pula
+   exatamente a verificação que este bloco existe pra impor. Não importa se
+   essa herança é um passo codificado em algum lugar ou só um julgamento ad
+   hoc da sessão no momento: herdar não é uma via paralela que escapa dele.
+   Antes de aceitar
+   qualquer `bloqueada-externa`/`requer-sessao-local`/`not-this-week`/
+   `ambígua/trade-off-real` herdada de uma rodada anterior, rodar uma
+   checagem ainda mais barata que as 4 acima (não é a 5ª delas, é um
+   pré-filtro específico pra herança): `gh issue view N --json labels` e
+   conferir se a **label** citada como motivo da classificação herdada
+   **ainda existe** na issue (comparação de 1 campo, não uma investigação
+   completa — cobre o caso de motivo por label; motivo registrado só em
+   marcador de comentário exige reler o comentário, checagem 1 acima).
+   Motivo batendo → aceitar a herança sem reabrir as 4 checagens. Motivo NÃO
+   batendo (label removida, nunca existiu de fato,
+   ou o corpo mudou desde a classificação original) → tratar a issue como se
+   estivesse sendo classificada agora pela primeira vez e rodar a
+   verificação completa das 4 checagens acima — nunca propagar a
+   classificação stale pra mais uma rodada. Achado concreto (#5586): a
+   rodada `260817c` herdou de `260817b` a classificação `bloqueada-externa:
+   label external-blocker` pra #5237 sem reler a issue; a label não existia
+   mais (a checagem de 1 campo já teria pego isso) e o corpo tinha 4 de 5
+   itens de checklist já codáveis, só 1 preso a um developer token — mesmo
+   padrão do #5379 acima, item por item. A mesma regra vale na direção
+   `/diaria-overnight` → `/diaria-develop` (ver seção correspondente em
+   `.claude/skills/diaria-develop/SKILL.md`, passo "Herdar a triagem do
+   overnight").
+
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
 
