@@ -81,6 +81,29 @@
  * fingerprint muda, e a entry da allowlist para de casar automaticamente.
  * Silenciar por acidente um achado NOVO/diferente por causa de um match
  * frouxo seria pior que o problema que este mecanismo resolve.
+ *
+ * ─── Família ESTADO × EVENTO (#5553) ────────────────────────────────────────
+ *
+ * `AlarmFinding.family` (obrigatório, ver docstring do tipo) resolve um
+ * problema estruturalmente igual ao da allowlist acima, mas na direção
+ * OPOSTA: um achado de `family: "evento"` (ex: `campaign-{id}` em
+ * `clarice-guardrail-alarm.ts`) desaparece de `pending` assim que o script
+ * PARA de reavaliar aquele ID específico — não porque alguém consertou nada.
+ * Sem tratamento, isso aciona o MESMO streak de ausência que fecha achados
+ * `"estado"` de verdade resolvidos, fechando a issue sozinha com o problema
+ * intocado (#5525). `planAlarmReconciliation` trata uma entry `"evento"`
+ * exatamente como uma allowlisted: congelada, sem `comment_resolved`/
+ * `advance_streak`/`close` — só um humano fecha. Isso também resolve de
+ * graça a preocupação de "reabrir depois de fechado": como a entry nunca
+ * ganha `closedAt` setado por este módulo (só um `gh issue close` manual do
+ * lado de fora), e `ensureAlarmIssue` sempre confere o cache/marcador ANTES
+ * de criar, o pior caso de um achado de evento reaparecer em `pending` é
+ * `action: "reused"` apontando pra uma issue que já pode estar fechada — o
+ * mesmo comportamento (documentado acima) que já existe pro caso "issue
+ * fechada manualmente + fingerprint ainda casa" da allowlist, nunca uma
+ * issue nova duplicada. `classifyExecTrack` (`scripts/lib/issue-exec-track.ts`)
+ * usa a label companheira `ALARM_EVENT_LABEL` pra rotear esses achados pro
+ * `overnight` (revisão humana) em vez de `fora-de-rodada`.
  */
 import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
 
@@ -88,13 +111,72 @@ import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
  * existir no repo — nunca existiu antes desta unidade, então `gh issue
  * create` falhava em TODA execução com "'alarm' not found" e zero achado
  * virava issue desde o #5112). Usada tanto pelo self-heal em
- * `ensureAlarmLabelExists` (chamado ao detectar o erro "not found" pra essa
+ * `ensureLabelExists` (chamado ao detectar o erro "not found" pra essa
  * label especificamente) quanto pelo setup manual documentado. */
 export const ALARM_LABEL = "alarm";
 const ALARM_LABEL_COLOR = "5319e7";
 const ALARM_LABEL_DESCRIPTION = "Achado de alarme agendado criou/reusa esta issue automaticamente (#5112)";
 
+/**
+ * #5553 — label aplicada SÓ a achados de família `"evento"` (ver `AlarmFamily`
+ * abaixo), além de `ALARM_LABEL`. Existe pra `classifyExecTrack`
+ * (`scripts/lib/issue-exec-track.ts`) distinguir os dois: `alarm` sozinho
+ * classifica `fora-de-rodada` (o achado se auto-resolve); `alarm` +
+ * `alarm-evento` classifica `overnight` (precisa de revisão humana — o achado
+ * NUNCA se auto-resolve, só sai da janela de observação do alarme com o
+ * tempo). Nunca aplicada sozinha — sempre junto de `ALARM_LABEL`, pra
+ * convivência com `gh issue list --label alarm`/dashboards existentes que já
+ * filtram por ela.
+ */
+export const ALARM_EVENT_LABEL = "alarm-evento";
+const ALARM_EVENT_LABEL_COLOR = "b60205";
+const ALARM_EVENT_LABEL_DESCRIPTION =
+  // GitHub label description tem teto de 100 chars — validado ao vivo
+  // (#5553): a 1ª tentativa (104 chars) deu HTTP 422 "description is too
+  // long" tanto no self-heal quanto na criação manual do label real.
+  "Alarme de EVENTO PASSADO (#5553) — não se auto-resolve, precisa de revisão humana";
+
+/** Metadados de toda label que este módulo sabe AUTO-CRIAR via self-heal
+ * (#5338, generalizado no #5553) — usado tanto por `ensureLabelExists` quanto
+ * pelo setup manual documentado. Adicionar uma label nova ao mecanismo de
+ * self-heal é só adicionar uma entry aqui. */
+const SELF_HEALABLE_LABELS: Record<string, { color: string; description: string }> = {
+  [ALARM_LABEL]: { color: ALARM_LABEL_COLOR, description: ALARM_LABEL_DESCRIPTION },
+  [ALARM_EVENT_LABEL]: { color: ALARM_EVENT_LABEL_COLOR, description: ALARM_EVENT_LABEL_DESCRIPTION },
+};
+
 export type AlarmPriority = "P0" | "P1" | "P2" | "P3";
+
+/**
+ * Família do achado (#5553) — decide se o alarme SE AUTO-RESOLVE ou não.
+ *
+ *   - `"estado"`: condição RE-CHECÁVEL a cada execução (arquivo existe?
+ *     drift sumiu? painel voltou a registrar?) — quando a condição observada
+ *     muda pra "ok", o achado simplesmente para de aparecer em `pending` e o
+ *     mecanismo de streak comenta/fecha a issue sozinho. Comportamento
+ *     pré-#5553, inalterado.
+ *   - `"evento"`: achado ancorado a um ID IMUTÁVEL (campanha, envio, post)
+ *     que descreve um FATO já ocorrido — nunca "para de reproduzir" por
+ *     alguém ter consertado algo; a checagem seguinte simplesmente para de
+ *     reavaliar aquele ID específico (ex: `markEvaluated` em
+ *     `clarice-guardrail-alarm.ts`) e o achado desaparece de `pending` sem
+ *     que nada tenha sido resolvido. Sem tratamento especial, isso dispara o
+ *     MESMO mecanismo de streak e fecha a issue sozinha com o achado real
+ *     intocado (#5525) — daí `planAlarmReconciliation` abaixo nunca gerar
+ *     `comment_resolved`/`advance_streak`/`close` pra uma entry `"evento"`.
+ *
+ * Explícito e OBRIGATÓRIO por decisão do #5553, não derivado do
+ * `fingerprint`: a correlação "fingerprint embute um ID imutável → evento"
+ * NÃO se sustenta em todos os alarmes já existentes —
+ * `linkedin-weekly-staleness-alarm.ts` embute o CICLO (`26w33`, um ID) no
+ * fingerprint e ainda assim é `"estado"` (a condição observada é "o artefato
+ * existe pra ESTE ciclo?", re-checada toda semana; #5497 é o caso confirmado
+ * de auto-close correto). Só quem EMITE o achado sabe se a condição pode
+ * voltar a ficar "ok", então a declaração é do script chamador — errar aqui
+ * devolve o problema original em silêncio (issue nasce invisível pro
+ * classificador E se auto-fecha sozinha).
+ */
+export type AlarmFamily = "estado" | "evento";
 
 export interface AlarmFinding {
   /** Eixo/categoria do achado (ex: "english-labels", "port-in-url") — o
@@ -110,8 +192,12 @@ export interface AlarmFinding {
   /** Corpo markdown da issue (o marcador de dedup é ANEXADO automaticamente
    * por `ensureAlarmIssue` — não incluir aqui). */
   body: string;
-  /** Labels extras além de "alarm" + a prioridade resolvida — tipicamente
-   * o tipo (`bug`/`enhancement`). */
+  /** #5553 — `"estado"` (auto-resolve) ou `"evento"` (fato histórico, nunca
+   * auto-resolve) — ver `AlarmFamily` acima. Obrigatório: toda issue de
+   * alarme precisa desta declaração explícita do script emissor. */
+  family: AlarmFamily;
+  /** Labels extras além de "alarm" (+ "alarm-evento" se `family === "evento"`)
+   * e a prioridade resolvida — tipicamente o tipo (`bug`/`enhancement`). */
   labels?: string[];
   /** Default `"P2"` (CLAUDE.md: toda issue nasce com label de prioridade). */
   priority?: AlarmPriority;
@@ -170,6 +256,12 @@ export interface AlarmIssueStateEntry {
   /** `null` enquanto a issue segue tratada como aberta pelo tracking local;
    * ISO timestamp de quando `closeAlarmIssue` teve sucesso. */
   closedAt: string | null;
+  /** #5553 — família do achado no momento do último `ensure` (ver
+   * `AlarmFamily`). `undefined` em entries persistidas ANTES do #5553 —
+   * tratado como `"estado"` em `planAlarmReconciliation` (comportamento
+   * pré-existente preservado pro `state.json` já em disco; só entries criadas
+   * a partir desta mudança carregam o valor de verdade). */
+  family?: AlarmFamily;
 }
 
 /** Chave do mapa de estado — `check:fingerprint` (fingerprint já inclui o
@@ -248,17 +340,19 @@ function extractMissingLabels(stderr: string): string[] {
   return names;
 }
 
-/** Self-heal (#5338 item 1) — best-effort, nunca lança: tenta criar a label
- * `alarm` no repo (`--force` a torna idempotente caso já exista com
- * cor/descrição diferentes de uma criação manual). Chamada só no caminho de
- * retry (vale a pena tentar 1x quando `gh issue create` já falhou por essa
- * label especificamente) — não em toda execução, pra não gastar uma chamada
- * `gh` extra quando a label já existe (caso comum após a 1ª auto-criação). */
-function ensureAlarmLabelExists(cwd: string, run: GhRunFn): boolean {
-  const res = run(
-    ["label", "create", ALARM_LABEL, "--color", ALARM_LABEL_COLOR, "--description", ALARM_LABEL_DESCRIPTION, "--force"],
-    cwd,
-  );
+/** Self-heal (#5338 item 1, generalizado no #5553) — best-effort, nunca
+ * lança: tenta criar `labelName` no repo (`--force` o torna idempotente caso
+ * já exista com cor/descrição diferentes de uma criação manual). `false` sem
+ * tocar `gh` se `labelName` não é uma das `SELF_HEALABLE_LABELS` conhecidas —
+ * só `alarm`/`alarm-evento` são auto-criáveis por este módulo. Chamada só no
+ * caminho de retry (vale a pena tentar 1x quando `gh issue create` já falhou
+ * por essa label especificamente) — não em toda execução, pra não gastar uma
+ * chamada `gh` extra quando a label já existe (caso comum após a 1ª
+ * auto-criação). */
+function ensureLabelExists(labelName: string, cwd: string, run: GhRunFn): boolean {
+  const meta = SELF_HEALABLE_LABELS[labelName];
+  if (!meta) return false;
+  const res = run(["label", "create", labelName, "--color", meta.color, "--description", meta.description, "--force"], cwd);
   return res.status === 0;
 }
 
@@ -275,9 +369,10 @@ function parseIssueCreateUrl(res: GhSpawnResult): { issueNumber: number; url: st
 
 /**
  * Cria a issue via `gh issue create` — com retry não-fatal (#5338 item 2)
- * quando a falha é EXATAMENTE "label não encontrada": tenta self-heal da
- * label `alarm` (`ensureAlarmLabelExists`) e retenta mantendo `alarm` na
- * lista se a criação deu certo, ou sem ela (e sem qualquer outra label que o
+ * quando a falha é EXATAMENTE "label não encontrada": tenta self-heal de
+ * toda label ausente que este módulo sabe auto-criar (`ensureLabelExists`,
+ * generalizado no #5553 — hoje `alarm`/`alarm-evento`) e retenta mantendo
+ * cada uma que curou com sucesso, ou sem ela (e sem qualquer outra label que o
  * `gh` também tenha acusado como ausente) caso contrário. Perder um rótulo é
  * aceitável; perder o rastreio do achado inteiro não é — nunca deixa uma
  * falha de label genuína, sem retry, virar o único motivo de a issue nunca
@@ -317,8 +412,8 @@ function createAlarmIssueWithLabelRetry(
     };
   }
 
-  const alarmLabelHealed = missing.includes(ALARM_LABEL) && ensureAlarmLabelExists(cwd, run);
-  const stillMissing = alarmLabelHealed ? missing.filter((l) => l !== ALARM_LABEL) : missing;
+  const healed = missing.filter((l) => ensureLabelExists(l, cwd, run));
+  const stillMissing = missing.filter((l) => !healed.includes(l));
   const retryLabels = labels.filter((l) => !stillMissing.includes(l));
 
   const retryRes = attempt(retryLabels);
@@ -359,7 +454,12 @@ export function ensureAlarmIssue(
   }
 
   const priority = finding.priority ?? "P2";
-  const labels = [...new Set([...(finding.labels ?? []), ALARM_LABEL, priority])];
+  // #5553 — `ALARM_EVENT_LABEL` ANEXADA (nunca substitui `ALARM_LABEL`): a
+  // issue de evento continua achável por `gh issue list --label alarm`, e
+  // `classifyExecTrack` checa `alarm-evento` ANTES de tratar `alarm` como
+  // "se auto-resolve" (ver docstring de `RESOLVED_BY_PROSE_LABELS` lá).
+  const familyLabels = finding.family === "evento" ? [ALARM_EVENT_LABEL] : [];
+  const labels = [...new Set([...(finding.labels ?? []), ALARM_LABEL, ...familyLabels, priority])];
   const marker = alarmFindingMarker(finding.check, finding.fingerprint);
   const body = `${finding.body}\n\n${marker}\n`;
 
@@ -423,6 +523,19 @@ export type AlarmReconcileAction =
  * cria/reabre issue pra ele), nem `comment_resolved`/`advance_streak`/
  * `close` do lado `state` (uma entry já existente pra esse fingerprint fica
  * congelada, tratada como fora do escopo de reconciliação a partir daqui).
+ *
+ * **#5553 — achado de família `"evento"` nunca entra no ramo `state` acima.**
+ * Pra um achado `"estado"`, sumir de `pending` significa "a condição voltou
+ * a ficar ok" — o streak de ausência é o sinal CORRETO de resolução. Pra
+ * `"evento"`, sumir de `pending` só significa "o script parou de reavaliar
+ * este ID específico" (ex: `markEvaluated` em `clarice-guardrail-alarm.ts`
+ * nunca reavalia a MESMA campanha) — não que alguém tenha corrigido nada.
+ * Sem esta exceção, o mesmo mecanismo de streak comenta "não reproduz mais"
+ * e fecha a issue automaticamente com o achado real intocado (#5525: o
+ * guardrail furado da campanha 146 nunca teve fix nem investigação — só
+ * "parou de aparecer" porque a campanha já foi avaliada). Uma entry
+ * `"evento"` fica CONGELADA (mesmo tratamento da allowlist acima) até um
+ * humano fechar a issue manualmente — nunca por streak.
  */
 export function planAlarmReconciliation(
   pending: readonly AlarmFinding[],
@@ -443,6 +556,9 @@ export function planAlarmReconciliation(
     if (allowlistedKeys.has(key)) continue;
     if (pendingKeys.has(key)) continue;
     if (entry.closedAt) continue;
+    // #5553 — entries sem `family` persistida (state.json pré-#5553) tratam
+    // como "estado", preservando o comportamento de auto-close de antes.
+    if ((entry.family ?? "estado") === "evento") continue;
     const nextStreak = entry.missingStreak + 1;
     if (nextStreak >= closeAfterRuns) {
       actions.push({ kind: "close", key, issueNumber: entry.issueNumber });
@@ -526,6 +642,10 @@ export function applyAlarmReconciliation(
         // `action === "reused"` apontando pra uma issue já fechada lá, o
         // e-mail cita a issue mesmo assim; reabrir é decisão do editor.
         closedAt: null,
+        // #5553 — sempre estampa a família ATUAL do finding, mesmo em
+        // reused/cache-hit: se o script chamador algum dia reclassificar o
+        // achado, o `state.json` se auto-corrige no próximo `ensure`.
+        family: action.finding.family,
       };
     } else if (action.kind === "comment_resolved") {
       const ok = commentAlarmIssueResolved(action.issueNumber, now, opts.cwd, run);

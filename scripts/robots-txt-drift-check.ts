@@ -145,6 +145,9 @@ function toAlarmFinding(r: RobotsDriftResult): AlarmFinding {
   return {
     check: r.host,
     fingerprint: robotsDriftFindingKey(r),
+    // #5553 — condição RE-CHECÁVEL (robots.txt servido); resolve sozinho
+    // quando o arquivo voltar a bater com o esperado.
+    family: "estado",
     title: `[diar.ia.br] drift no robots.txt de ${r.host}`,
     body: [
       "Achado automático do alarme `Diaria-Robots-Txt-Drift-Check`",

@@ -115,9 +115,16 @@ function saveAlarmIssuesState(state: AlarmIssuesState): void {
  * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
  * ("clarice-guardrail"); `fingerprint` = `campaign-{id}` — cada campanha só
  * é avaliada 1x pra sempre (`markEvaluated`, nunca reavaliada), então o
- * achado nasce e some do pendente já na execução seguinte, fechando rápido
- * via o streak de ausência. Sem PII: nome/id de CAMPANHA, não e-mail de
- * assinante — `campaignName` nunca carrega dado de contato individual. */
+ * achado some do pendente já na execução seguinte. Sem PII: nome/id de
+ * CAMPANHA, não e-mail de assinante — `campaignName` nunca carrega dado de
+ * contato individual.
+ *
+ * `family: "evento"` (#5553) — a campanha nunca é reavaliada, então o achado
+ * sumir de `pending` não significa "consertado", só "já avaliado uma vez".
+ * Sem esta declaração, `planAlarmReconciliation` trataria a ausência como
+ * resolução e fecharia a issue sozinha com o breach real intocado — foi
+ * exatamente o que quase aconteceu com #5525 (o editor teve que retirar a
+ * label `alarm` à mão pra evitar isso antes deste fix). */
 function toAlarmFinding(
   item: BrevoCampaignListItem,
   guardrail: ReturnType<typeof evaluateSendGuardrails>,
@@ -125,6 +132,7 @@ function toAlarmFinding(
   return {
     check: "clarice-guardrail",
     fingerprint: `campaign-${item.id}`,
+    family: "evento",
     title: `[diar.ia.br] Guardrail furado no envio "${item.name}"`,
     body: [
       "Achado automático do alarme `Diaria-Clarice-Guardrail-Alarm`",
@@ -139,9 +147,10 @@ function toAlarmFinding(
       "Ver o e-mail de alarme correspondente (Gmail do editor) pro detalhe completo",
       "de qual(is) limiar(es) foram furados e o próximo envio agendado.",
       "",
-      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
-      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
-      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+      "Esta issue é criada automaticamente pelo alarme (#5339) — achado de EVENTO",
+      "PASSADO (#5553): a campanha só é avaliada 1x, então esta issue NÃO se",
+      "auto-fecha quando o achado sai da checagem seguinte. Fica aberta até um",
+      "humano investigar/fechar (rota Overnight na Triagem).",
     ].join("\n"),
     labels: ["bug"],
     priority: "P2",

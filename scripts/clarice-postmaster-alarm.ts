@@ -89,6 +89,9 @@ function toAlarmFinding(state: PostmasterStaleAlarmState, entryDate: string | nu
   return {
     check: "clarice-postmaster",
     fingerprint: "signal-stale",
+    // #5553 — "o SINAL está cego" (ver docstring acima), não um evento
+    // datado: resolve sozinho quando uma leitura fresca voltar.
+    family: "estado",
     title: `[diar.ia.br] sinal de spam do Postmaster cego (streak ${state.consecutiveStale})`,
     body: [
       "Achado automático do alarme `Diaria-Postmaster-Spam-Alarm`",
@@ -120,6 +123,9 @@ function toCampaignSpamMissingFinding(state: CampaignSpamMissingAlarmState): Ala
   return {
     check: "clarice-postmaster-campaign-spam",
     fingerprint: "campaign-spam-missing",
+    // #5553 — mesma família da entry acima: condição de ausência re-checada
+    // a cada execução, não um evento datado.
+    family: "estado",
     title: `[diar.ia.br] sinal de spam POR CAMPANHA do Postmaster ausente há ${state.consecutiveMissing} dias`,
     body: [
       "Achado automático do alarme `Diaria-Postmaster-Spam-Alarm`",

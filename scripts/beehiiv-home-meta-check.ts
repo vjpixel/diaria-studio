@@ -202,6 +202,10 @@ function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
   return {
     check: f.check,
     fingerprint: homeMetaFindingIssueKey(f),
+    // #5553 — os 6 eixos deste check são todos condição RE-CHECÁVEL do HTML
+    // publicado (marca no og:title, links http, rótulos em inglês, etc.);
+    // resolvem sozinhos quando a página corrige.
+    family: "estado",
     title: `[diar.ia.br] drift na home: ${f.check}`,
     body: [
       "Achado automático do smoke-test `Diaria-Beehiiv-Home-Meta-Check`",

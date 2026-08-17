@@ -107,13 +107,19 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
 /** Converte uma avaliação NÃO-ok no `AlarmFinding` genérico que
  * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
  * ("clarice-envio"); `fingerprint` inclui `aammdd` — cada dia é seu próprio
- * achado (a rodada de amanhã é logicamente outro evento), então uma falha de
+ * achado (a rodada de amanhã é logicamente outro EVENTO), então uma falha de
  * HOJE nunca "esconde" atrás do estado de ontem. Sem PII: só `aammdd`,
- * verdict e `reportId` (nenhum e-mail de assinante entra aqui). */
+ * verdict e `reportId` (nenhum e-mail de assinante entra aqui).
+ *
+ * `family: "evento"` (#5553) — a falha de um `aammdd` específico é um fato
+ * histórico: a checagem de amanhã avalia OUTRO dia, então este achado
+ * simplesmente sai de `pending` sem que nada tenha sido corrigido. Mesmo
+ * racional de `clarice-guardrail-alarm.ts` (fingerprint `campaign-{id}`). */
 function toAlarmFinding(evaluation: EnvioAlarmEvaluation, aammdd: string): AlarmFinding {
   return {
     check: "clarice-envio",
     fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,
+    family: "evento",
     title:
       evaluation.verdict === "alarm-no-report"
         ? `[diar.ia.br] Diaria-Clarice-Envio: nenhum relatório encontrado pra ${aammdd}`
@@ -129,9 +135,10 @@ function toAlarmFinding(evaluation: EnvioAlarmEvaluation, aammdd: string): Alarm
       "Monte a onda manualmente via /diaria-clarice-envio (skill manual) se ainda",
       "não houver onda agendada pra amanhã 06:00 BRT — não espere a task de amanhã.",
       "",
-      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
-      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
-      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+      "Esta issue é criada automaticamente pelo alarme (#5339) — achado de EVENTO",
+      "PASSADO (#5553): a falha é do dia acima, não se auto-fecha quando a checagem",
+      "seguinte avaliar outro dia. Fica aberta até um humano investigar/fechar",
+      "(rota Overnight na Triagem).",
     ].join("\n"),
     labels: ["bug"],
     priority: "P2",

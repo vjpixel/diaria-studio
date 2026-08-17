@@ -161,6 +161,9 @@ function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel: strin
   return {
     check: "geo-citation-staleness",
     fingerprint: agg.fingerprint,
+    // #5553 — condição RE-CHECÁVEL (painel volta a registrar); resolve
+    // sozinho quando a task voltar a rodar.
+    family: "estado",
     title: `[diar.ia.br] monitor de citação GEO sem medição nova (${agg.stalePanels.map((p) => p.panel).join(", ")})`,
     body: lines.join("\n"),
     labels: ["bug"],
@@ -190,6 +193,9 @@ function toMissingProviderFinding(missingCheck: { hasMissing: boolean; panelsWit
   return {
     check: "geo-citation-missing-provider",
     fingerprint: missingCheck.fingerprint,
+    // #5553 — condição RE-CHECÁVEL (provider volta a aparecer); resolve
+    // sozinho quando a API key voltar pro .env.
+    family: "estado",
     title: `[diar.ia.br] monitor de citação GEO sem registro de ${allMissing.join(", ")} na última rodada`,
     body: lines.join("\n"),
     labels: ["bug"],

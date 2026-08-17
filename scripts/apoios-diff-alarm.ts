@@ -178,6 +178,9 @@ function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
   return {
     check: "apoios-diff",
     fingerprint: computeDiffFingerprint(input),
+    // #5553 — condição RE-CHECÁVEL (o diff pendente é recomputado toda
+    // execução); resolve sozinho quando alguém aplica/o diff esvazia.
+    family: "estado",
     title: `[diar.ia.br] apoio_nivel: diff pendente (${input.toApply.length} adição(ões)/troca(s), ${input.toRemove.length} remoção(ões))`,
     body: lines.join("\n"),
     labels: ["enhancement"],

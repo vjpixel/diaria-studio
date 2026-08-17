@@ -112,11 +112,16 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * `scripts/lib/alarm-issues.ts` consome (#5339). `check` fixo
  * ("clarice-envio-guard"); `fingerprint` inclui `aammdd` — cada dia é seu
  * próprio achado, mesmo racional de `clarice-envio-alarm.ts`. Sem PII: só
- * `aammdd`, verdict e `reportId`. */
+ * `aammdd`, verdict e `reportId`.
+ *
+ * `family: "evento"` (#5553) — mesmo racional de `clarice-envio-alarm.ts`:
+ * a falha de um `aammdd` específico é um fato histórico, não uma condição
+ * que "volta a ficar ok". */
 function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): AlarmFinding {
   return {
     check: "clarice-envio-guard",
     fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,
+    family: "evento",
     title:
       evaluation.verdict === "alarm-no-report"
         ? `[diar.ia.br] Diaria-Clarice-Envio-Guard: nenhum relatório encontrado pra ${aammdd}`
@@ -132,9 +137,10 @@ function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): 
       "Se a onda de hoje ainda não disparou (antes das 06:00 BRT), considere",
       "checar/suspender manualmente pelo painel Brevo.",
       "",
-      "Esta issue é criada automaticamente pelo alarme (#5339) e será",
-      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
-      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+      "Esta issue é criada automaticamente pelo alarme (#5339) — achado de EVENTO",
+      "PASSADO (#5553): a falha é do dia acima, não se auto-fecha quando a checagem",
+      "seguinte avaliar outro dia. Fica aberta até um humano investigar/fechar",
+      "(rota Overnight na Triagem).",
     ].join("\n"),
     labels: ["bug"],
     priority: "P2",

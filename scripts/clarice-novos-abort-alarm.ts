@@ -67,6 +67,9 @@ function toAlarmFinding(state: NovosAbortAlarmState, latestDetail: string | unde
   return {
     check: "clarice-novos-abort",
     fingerprint: "semaphore-streak",
+    // #5553 — o achado é "o MECANISMO está abortando", não um evento datado:
+    // resolve sozinho quando o streak volta a zero.
+    family: "estado",
     title: `[diar.ia.br] /diaria-clarice-novos abortando (streak ${state.consecutiveSemaphoreAborts})`,
     body: [
       "Achado automático do alarme `Diaria-Clarice-Novos-Abort-Alarm`",
