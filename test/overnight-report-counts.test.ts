@@ -473,6 +473,27 @@ describe("registerReport: e-mail único por rodada (#5521)", () => {
     );
   });
 
+  it("REGRESSÃO: envio que FALHA não queima a notificação — o retry tenta de novo", async () => {
+    // `notified` é gravado antes do disparo (que é assíncrono). Sem desfazer
+    // em caso de falha, uma queda de rede marcaria a rodada como notificada
+    // para sempre e o e-mail sumiria em silêncio.
+    const semCredencial = {
+      hasCredentials: () => false,
+      resolveEditorEmail: () => "editor@exemplo.test",
+      sendMail: async () => ({ ok: true }),
+    } as unknown as Parameters<typeof registerReport>[2];
+
+    const falhou = registerReport(tmpRoot, input("tentativa 1 — 1 unidades"), semCredencial);
+    assert.deepEqual(await falhou.emailDispatch, { sent: false, skipped: "no-credentials" });
+
+    const retry = registerReport(tmpRoot, input("tentativa 2 — 1 unidades"), deps);
+    assert.deepEqual(
+      await retry.emailDispatch,
+      { sent: true },
+      "com credencial de volta, o retry TEM que enviar",
+    );
+  });
+
   it("rodada DIFERENTE continua mandando e-mail", async () => {
     await registerReport(tmpRoot, input("a — 1 unidades"), deps).emailDispatch;
     const outra = registerReport(

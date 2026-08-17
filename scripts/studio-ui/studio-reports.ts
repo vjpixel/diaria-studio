@@ -546,7 +546,16 @@ export function registerReport(
         ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" })
         : alreadyNotified
           ? Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "already-notified" })
-          : dispatchReportEmail(rootDir, entry, emailDeps),
+          : // #5521: `notified` é gravado OTIMISTA (antes do disparo, que é
+            // assíncrono e fire-and-forget). Se o envio não acontecer — sem
+            // credencial, rede fora, token expirado — desfazer a marca, senão
+            // a rodada fica marcada como notificada para sempre e o e-mail se
+            // perde em silêncio: um retry veria `already-notified` e não
+            // tentaria de novo. Fail-soft como todo este caminho.
+            dispatchReportEmail(rootDir, entry, emailDeps).then((result) => {
+              if (!result.sent) clearNotifiedFlag(rootDir, id);
+              return result;
+            }),
     };
   } catch (e) {
     return {
@@ -559,16 +568,32 @@ export function registerReport(
 }
 
 /**
- * Lê `path` (se existir) e retorna todas as linhas não-vazias EXCETO a(s) que
- * tem `id` igual a `excludeId` — usado por `registerReport` pra fazer upsert
- * (#4666): as linhas restantes formam a base sobre a qual a nova entrada é
- * acrescentada.
- *
- * Linha corrompida (JSON inválido, ou sem campo `id` string) é preservada
- * verbatim — sem conseguir confirmar que é "o mesmo id", o upsert nunca a
- * descarta (mesma disciplina fail-soft de `listReports`, que ignora essas
- * linhas na LEITURA sem apagá-las do arquivo).
+ * Desfaz `notified` quando o disparo não aconteceu (#5521) — deixa a próxima
+ * invocação livre pra tentar de novo. Fail-soft: qualquer erro aqui é
+ * engolido, porque isto roda depois do registro já ter sucedido e nunca deve
+ * transformar "e-mail falhou" em "registro falhou".
  */
+function clearNotifiedFlag(rootDir: string, id: string): void {
+  try {
+    const path = registryPath(rootDir);
+    const lockPath = path + ".lock";
+    acquireLock(lockPath);
+    try {
+      const previous = readPreviousEntry(path, id);
+      if (!previous || previous.notified !== true) return;
+      const otherLines = readLinesExcludingId(path, id);
+      const nextLines = [...otherLines, JSON.stringify({ ...previous, notified: false })];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
+  } catch {
+    // best-effort — ver docstring.
+  }
+}
+
 /** Entrada já gravada para `id`, se houver (#5521). */
 function readPreviousEntry(path: string, id: string): Partial<ReportEntry> | null {
   if (!existsSync(path)) return null;
@@ -590,6 +615,17 @@ function readPreviousEntry(path: string, id: string): Partial<ReportEntry> | nul
   return null;
 }
 
+/**
+ * Lê `path` (se existir) e retorna todas as linhas não-vazias EXCETO a(s) que
+ * tem `id` igual a `excludeId` — usado por `registerReport` pra fazer upsert
+ * (#4666): as linhas restantes formam a base sobre a qual a nova entrada é
+ * acrescentada.
+ *
+ * Linha corrompida (JSON inválido, ou sem campo `id` string) é preservada
+ * verbatim — sem conseguir confirmar que é "o mesmo id", o upsert nunca a
+ * descarta (mesma disciplina fail-soft de `listReports`, que ignora essas
+ * linhas na LEITURA sem apagá-las do arquivo).
+ */
 function readLinesExcludingId(path: string, excludeId: string): string[] {
   if (!existsSync(path)) return [];
   let raw: string;
