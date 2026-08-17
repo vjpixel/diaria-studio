@@ -37,6 +37,29 @@
  * pro favicon, só não é mais a única imagem disponível.
  */
 
+/**
+ * Container GTM único, compartilhado por todos os hosts servidos por Worker
+ * deste repo — GA4, pixel Meta e tag de conversão do Google Ads são
+ * gerenciados DENTRO do container (há precedente em produção: a tag `lintrk`
+ * do LinkedIn), então uma única constante aqui cobre as 3 plataformas sem
+ * precisar de redeploy quando uma delas muda.
+ */
+export const GTM_CONTAINER_ID = "GTM-TC8C65ZN";
+
+/**
+ * Monta o snippet `<script>` do container GTM (#5498) — a mesma tag que já
+ * roda na home (`diar.ia.br`, campo nativo do Beehiiv, fora deste repo), pra
+ * que os hosts servidos por Worker (`arquivo`, `livros`, `cursos`,
+ * `especial`, `eia`) também emitam PageView rastreável. Chamar ao lado de
+ * `renderSeoMeta()` em todo `<head>` — inclusive nas 3 páginas que não
+ * passam por `renderSeoMeta()` (`render-app.ts`, `render-privacy.ts`,
+ * `gate-page.ts`). Emite só o container (nada de tags soltas de GA4/Meta/
+ * conversão — essas vivem dentro do container no console do GTM).
+ */
+export function renderAnalyticsHead(): string {
+  return `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','${GTM_CONTAINER_ID}');</script>`;
+}
+
 export interface SeoMetaOptions {
   /** Título da página — reusado em og:title / twitter:title. */
   title: string;

@@ -17,6 +17,8 @@
 // política que descreve serviço que não usamos mais é pior que política
 // curta.
 
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
+
 const UPDATED_AT = "14 de agosto de 2026";
 
 const CONTACT_EMAIL = "diariaeditor@gmail.com";
@@ -50,6 +52,7 @@ li { margin: .35rem 0; }
 a { color: #1a56db; }
 footer { margin-top: 3rem; font-size: .9rem; }
 </style>
+${renderAnalyticsHead()}
 </head>
 <body>
 <h1>Política de Privacidade</h1>

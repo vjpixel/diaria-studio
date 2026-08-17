@@ -17,6 +17,8 @@
 // o Google revalida enquanto a marca estiver verificada, então um 404 aqui
 // derruba a verificação. Ver docs/google-ads-api-setup.md.
 
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
+
 const UPDATED_AT = "14 de agosto de 2026";
 
 export function renderAppPage(): string {
@@ -52,6 +54,7 @@ code {
 }
 footer { margin-top: 3rem; font-size: .9rem; }
 </style>
+${renderAnalyticsHead()}
 </head>
 <body>
 <h1>Relatório de aquisição</h1>

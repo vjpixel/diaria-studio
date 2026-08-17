@@ -17,7 +17,7 @@
  * `Date.now()`.
  */
 import { escHtml as esc } from "../html-escape.ts";
-import { renderSeoMeta } from "./seo-meta.ts";
+import { renderSeoMeta, renderAnalyticsHead } from "./seo-meta.ts"; // #5498: container GTM
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -76,6 +76,7 @@ export function renderHubIndexPage(entries: readonly HubIndexEntry[]): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(pageTitle)}</title>
 ${renderSeoMeta({ title: pageTitle, description, url: HUB_INDEX_URL })}
+${renderAnalyticsHead()}
 <meta name="robots" content="index, follow">
 <style>
 ${renderCuradoriaRootStyles()}

@@ -58,7 +58,7 @@ import {
   renderCuradoriaCtaSubscribeForm,
   renderCuradoriaCtaSubscribeScript,
 } from "../../../scripts/lib/shared/curadoria-page.ts"; // #5167 item 1: form inline substitui o link puro pro /subscribe hospedado na Beehiiv
-import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
+import { renderSeoMeta, renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "../../../scripts/lib/shared/cover-image.ts"; // #5131
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
 import {
@@ -482,6 +482,7 @@ export function buildArchiveHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(PAGE_TITLE)}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL, feed: { url: FEED_URL }, image: coverImage })}
+${renderAnalyticsHead()}
 <meta name="robots" content="index, follow">
 <style>
 ${renderCuradoriaRootStyles()}

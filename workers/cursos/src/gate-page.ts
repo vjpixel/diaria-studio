@@ -10,6 +10,8 @@
  * (esta é uma única página curta, não vale o import cruzado scripts/→worker
  * só por CSS).
  */
+import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
+
 export function renderGatePage(): string {
   return `<!DOCTYPE html>
 <html lang="pt-br">
@@ -37,6 +39,7 @@ export function renderGatePage(): string {
   .website { position: absolute; left: -9999px; }
   a { color: var(--teal); }
 </style>
+${renderAnalyticsHead()}
 </head>
 <body>
   <div class="wrap">

@@ -38,7 +38,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
 import { escHtml as esc } from "./lib/html-escape.ts"; // #3118 item 13: era uma 3ª cópia idêntica local
 import { FONTS } from "./lib/shared/design-tokens.ts"; // #1936/#1935: DS canônico
-import { renderSeoMeta } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon
+import { renderSeoMeta, renderAnalyticsHead } from "./lib/shared/seo-meta.ts"; // #3106: meta description/OG/Twitter/canonical/favicon; #5498: container GTM
 import {
   renderCuradoriaRootStyles,
   renderCuradoriaHeaderStyles,
@@ -494,6 +494,7 @@ function renderPageBody(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderAnalyticsHead()}
 ${renderGeoJsonLd({
   pageUrl: PAGE_URL,
   headline: PAGE_TITLE,
