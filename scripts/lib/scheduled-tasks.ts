@@ -881,6 +881,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
     issue: "#5317",
   },
+  {
+    name: "Diaria-OneDrive-Sync-Alarm",
+    description: "alarme de sync do OneDrive parado (servico morto ou canario de frescor stale)",
+    steps: [{ key: "alarm", script: "scripts/onedrive-sync-alarm.ts" }],
+    logPath: "onedrive-sync-alarm/.alarm.log",
+    // A cada 4h (#5548) — mesma ordem de grandeza de outros alarmes de
+    // cadência curta do repo (`Diaria-Clarice-Guardrail-Alarm`,
+    // `Diaria-Worker-Drift-Check`). O incidente de referência (serviço morto
+    // 17h sem ninguém perceber) pede detecção em horas, não em dias.
+    schedule: { kind: "interval", hours: 4 },
+    issue: "#5548",
+  },
 ];
 
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
