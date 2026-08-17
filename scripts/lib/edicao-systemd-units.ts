@@ -17,7 +17,7 @@
  * manualmente ou por uma run anterior), o runner pula sem invocar `claude`
  * (ver docstring de `scripts/overnight/run-scheduled-edicao.ts`).
  *
- * @see scripts/overnight/setup-edicao-schedule-systemd.ts (CLI que consome este módulo — par Windows removido no #5115)
+ * @see scripts/overnight/setup-edicao-schedule-systemd.ts (CLI que consome este módulo — par Windows original removido no #5115, restaurado no #5611 com desenho diferente: wrapper `.ps1` fino que invoca `run-scheduled-edicao.ts` direto, sem consumir este módulo systemd-específico — timer Linux desabilitado desde #5611, ver docs/scheduled-edicao-setup.md)
  * @see scripts/lib/systemd-units.ts (par genérico do registry — mesmo formato de saída)
  * @see scripts/overnight/run-scheduled-edicao.ts (script que os units invocam)
  * @see docs/scheduled-edicao-setup.md

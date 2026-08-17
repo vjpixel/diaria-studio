@@ -1,5 +1,19 @@
 # Agendamento automático da edição diária
 
+> **VIA ATIVA: WINDOWS (17/08/2026, #5611)** — decisão do editor:
+> `Diaria-Edicao-Diaria` precisa rodar no Windows porque depende de acesso
+> ao navegador (Claude in Chrome). O timer systemd `diaria-edicao-diaria.timer`
+> em `predator` (Linux) foi **desabilitado** na mesma sessão
+> (`systemctl --user disable --now`) para evitar duas máquinas armadas na
+> mesma janela disparando duas rodadas. O #5611 reverte parte do cutover
+> #5115/#5162 (que tinha removido o par `.ps1` do Windows) — mas em vez de
+> recuperar aquele `.ps1` literal (que duplicava toda a lógica e antecede a
+> proteção de auth do #5608), a via Windows agora é um wrapper fino que
+> invoca o mesmo runner TS multiplataforma do Linux
+> (`scripts/overnight/run-scheduled-edicao.ts`, criado no #4998). Ver
+> §"Setup — Windows" abaixo. O par `.service`/`.timer` do Linux continua no
+> repo, pronto para reativação se a via Windows precisar de fallback.
+
 > **REATIVADA (260811, #4998)** — a task tinha sido desregistrada em 260711
 > (#3259, decisão do editor); reativada a pedido do editor com dois ajustes:
 > horário **16:00** (era 14:00) e um **guard de idempotência**: se a edição do
@@ -7,9 +21,9 @@
 > mesma task), o runner pula sem invocar `claude`. Ver §"Guard de
 > idempotência" abaixo.
 
-Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068), reativação [#4998](https://github.com/vjpixel/diaria-studio/issues/4998)
+Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068), reativação [#4998](https://github.com/vjpixel/diaria-studio/issues/4998), volta pro Windows [#5611](https://github.com/vjpixel/diaria-studio/issues/5611)
 
-O agendador local (systemd `--user`; o `.ps1` do Windows foi removido no #5115, cutover final) roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
+O agendador (Windows Task Scheduler, via ativa desde #5611; par Linux/systemd disponível mas desabilitado) roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
 
 ---
 
@@ -25,19 +39,86 @@ Isso é deliberadamente diferente de "deixar o orchestrator resumir": a resumabi
 
 | Arquivo | Função |
 |---|---|
-| `scripts/overnight/run-scheduled-edicao.ts` | Runner — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs |
-| `scripts/overnight/setup-edicao-schedule-systemd.ts` | Gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
-| `scripts/lib/edicao-systemd-units.ts` | Módulo puro que monta o conteúdo dos units systemd |
+| `scripts/overnight/run-scheduled-edicao.ts` | Runner real — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs. Multiplataforma (Node puro); é o mesmo em ambas as vias |
+| `scripts/overnight/run-scheduled-edicao.ps1` | **Windows** — wrapper fino: resolve `CLAUDE_BIN` (ver §"Setup — Windows") e invoca `npx tsx run-scheduled-edicao.ts`. Nenhuma lógica de negócio aqui |
+| `scripts/overnight/setup-edicao-schedule.ps1` | **Windows** — registra/remove a task `Diaria-Edicao-Diaria` no Task Scheduler |
+| `scripts/overnight/setup-edicao-schedule-systemd.ts` | **Linux** — gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
+| `scripts/lib/edicao-systemd-units.ts` | **Linux** — módulo puro que monta o conteúdo dos units systemd |
+| `scripts/lib/resolve-claude-bin.ts` | Resolve o binário `claude` a partir de um contexto sem o PATH do shell interativo (#5549) — escape-hatch `CLAUDE_BIN` usado pelo wrapper Windows |
 | `scripts/lib/next-edition-date.ts` | Lib TS — cálculo D+1 em `America/Sao_Paulo` (testável) |
 | Testes | `test/next-edition-date.test.ts`, `test/edicao-systemd-units.test.ts`, `test/run-scheduled-edicao.test.ts` | Cobertura do cálculo de data, geração de units e guard de idempotência |
 
-O antigo par Windows (`scripts/overnight/run-scheduled-edicao.ps1` +
-`scripts/overnight/setup-edicao-schedule.ps1`) foi removido no #5115
-(cutover final, 260812) — nenhuma tarefa `Diaria-*` roda mais no Windows.
+O par Windows original (`run-scheduled-edicao.ps1` + `setup-edicao-schedule.ps1`, que duplicava a lógica inteira em PowerShell) foi removido no #5115 (cutover final, 260812). **Restaurado no #5611 (17/08/2026)** com um desenho diferente: os `.ps1` atuais são wrappers finos que delegam 100% da lógica para `run-scheduled-edicao.ts` — a mesma fonte usada pelo Linux — em vez de duplicá-la.
 
 ---
 
-## Setup — Linux (systemd `--user`)
+## Setup — Windows (Task Scheduler) — VIA ATIVA (#5611)
+
+`setup-edicao-schedule.ps1` registra a task diretamente (sem passo de geração
+separado — ao contrário do par Linux, não há um "gerador" intermediário; o
+`.ps1` de setup já registra a task real).
+
+```powershell
+# Registrar (ou atualizar) a task — rodar no clone PERMANENTE, nunca num
+# worktree temporário (o path do runner fica embutido na Action da task):
+powershell -NoProfile -ExecutionPolicy Bypass `
+    -File .\scripts\overnight\setup-edicao-schedule.ps1
+
+# Remover:
+powershell -NoProfile -ExecutionPolicy Bypass `
+    -File .\scripts\overnight\setup-edicao-schedule.ps1 -Unregister
+```
+
+### Verificar
+
+```powershell
+Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo
+```
+
+### Pré-requisito: `claude` no PATH da sessão do Task Scheduler
+
+`run-scheduled-edicao.ps1` (o wrapper invocado pela task) resolve
+`CLAUDE_BIN` via `Get-Command claude -All | Select-Object -First 1` e
+injeta o path absoluto no ambiente antes de chamar `npx tsx
+run-scheduled-edicao.ts` — necessário porque `resolveClaudeBin()`
+(`scripts/lib/resolve-claude-bin.ts`, #5549) varre o PATH procurando o nome
+literal `claude` sem extensão, e no Windows a extensão real do executável
+varia por método de instalação — a varredura sem `CLAUDE_BIN` não resolve
+sozinha por aqui. **Extensão confirmada ao vivo nesta máquina (fleet review
+pré-merge do #5611, 260817): `claude.exe`**, instalado via instalador
+standalone em `C:\Users\{usuário}\.local\bin\claude.exe` — `Get-Command
+claude -All` retornou essa única entrada, sem `.cmd`/`.ps1` no PATH. Uma
+instalação via `npm install -g` costuma produzir `claude.cmd` em vez disso;
+o wrapper não assume nenhuma extensão fixa, só usa o que `Get-Command`
+resolver de fato na sessão que roda, então os dois casos são cobertos sem
+hardcode. Esta seção é a fonte única sobre a extensão real do executável —
+o comentário em `run-scheduled-edicao.ps1` referencia este parágrafo em vez
+de reafirmar o fato, para não divergir de novo. Se `claude` não estiver no
+PATH da sessão do usuário que a task roda, o wrapper avisa e a falha
+aparece com mensagem acionável em `data/overnight-schedule.log`.
+
+### Credenciais (`.env`)
+
+Diferente do Linux (`EnvironmentFile=-.env` explícito no unit systemd), no
+Windows as credenciais (`CLARICE_API_KEY` etc.) vêm das variáveis de
+ambiente **persistidas por usuário** (`[Environment]::SetEnvironmentVariable(...,
+"User")`, ver `CLAUDE.md` §Setup passo 1) — o Task Scheduler, rodando no
+contexto do mesmo usuário, já as herda automaticamente. Nenhum passo extra
+de carregamento de `.env` é necessário nesta via.
+
+### Guard de auth (#5608) — herdado automaticamente
+
+O filtro `CLAUDE_CLI_STRIPPED_ENV_VARS` (remove `ANTHROPIC_API_KEY` e afins
+do ambiente do processo filho antes de invocar `claude`, para a sessão
+agendada nunca trocar o login claude.ai pela API paga) vive dentro de
+`run-scheduled-edicao.ts` e vale para as duas vias sem duplicação — é
+justamente por isso que o wrapper Windows delega para esse runner em vez de
+reimplementar a lógica em PowerShell (o `.ps1` original, pré-#5115, não
+tinha essa proteção porque antecede o #5608).
+
+---
+
+## Setup — Linux (systemd `--user`) — desabilitado (ver banner no topo)
 
 Mesmo padrão de dois passos já usado pelo resto do repo (gerar → armar manualmente, ver `docs/overnight-watchdog-setup.md`): o gerador **só escreve arquivos em disco**, nunca chama `systemctl`.
 
@@ -123,7 +204,7 @@ Log simples linha-por-linha desta feature, compartilhado entre o runner Windows 
 
 O agendador pode usar um PATH diferente do terminal interativo. Solução:
 
-- **Windows**: encontrar o path completo (`(Get-Command claude).Source` no terminal onde `claude` funciona) e editar a action da task pelo Task Scheduler GUI para usar o path absoluto, ou adicionar o diretório do `claude` ao PATH do sistema (não do usuário).
+- **Windows**: `run-scheduled-edicao.ps1` já resolve isso sozinho — ver §"Pré-requisito: `claude` no PATH da sessão do Task Scheduler" acima pro mecanismo e a extensão real do executável confirmada ao vivo. Se mesmo assim falhar, é porque `claude` não está no PATH da sessão do usuário que a task Task Scheduler roda — confirme `(Get-Command claude -All).Source` **nessa mesma sessão** (não só no terminal interativo onde você testa) e adicione ao PATH do usuário se ausente.
 - **Linux**: `ExecStart=` roda com o `PATH` do systemd `--user` (normalmente herdado do login shell via `systemctl --user import-environment`, ou definido no unit). Se `claude` não for encontrado, adicionar `Environment=PATH=...` ao `.service` ou garantir que o PATH do usuário já inclui o diretório de instalação do Claude Code no momento do `systemctl --user daemon-reload`.
 
 ### MCPs indisponíveis em sessão headless
@@ -176,3 +257,11 @@ O cálculo de D+1 usa explicitamente `America/Sao_Paulo` via `Intl.DateTimeForma
 | Quinta | Sexta-feira |
 
 Sexta, sábado e domingo **não** têm disparo automático (sem edições nesses dias).
+
+---
+
+## Alarme de staleness (`Diaria-Edicao-Diaria-Staleness-Alarm`, #5563) — PAUSADO
+
+O alarme de staleness (task separada, diária 18:20 BRT, ver `docs/scheduled-tasks-registry.md`) lê `data/overnight-schedule.log` — arquivo dentro de `data/`, sincronizado por OneDrive entre as máquinas do projeto, então em princípio funcionaria igual não importa qual máquina gravou a última entrada. Mas ele **não checa se algum timer está de fato armado**, só se o log tem uma entrada pra edição de amanhã — com o timer Linux desabilitado (banner no topo) e a task Windows ainda sem confirmação de arme real (§Setup — Windows), o alarme dispararia `alarm-never-fired` todo dia sobre um estado hoje intencional (nenhuma via disparando ainda).
+
+Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026, e **fica pausado até o editor confirmar que a task `Diaria-Edicao-Diaria` do Windows está de fato registrada e habilitada** (`Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo`, ver §Setup — Windows). Reativar depois disso é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `predator` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).
