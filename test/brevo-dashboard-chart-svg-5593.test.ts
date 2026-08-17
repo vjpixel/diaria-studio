@@ -175,7 +175,71 @@ describe("#5593: renderOpenRateChartSvg", () => {
 
   test("sem legenda flutuante — rótulos de série são <text> estáticos dentro do próprio SVG", () => {
     const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
-    assert.match(svg, />● Delivered</);
-    assert.match(svg, />● Open Rate</);
+    assert.match(svg, />●<\/tspan> <tspan fill="var\(--ink\)">Delivered</);
+    assert.match(svg, />●<\/tspan> <tspan fill="var\(--ink\)">Open Rate</);
+  });
+
+  test("contraste AA do rótulo de série (#5593 fleet review): marcador mantém cor da série, texto usa --ink", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    // O bloco de rótulos de série (dentro de <text>...</text>, antes das
+    // gridlines) deve ter os marcadores "●" coloridos por série e o TEXTO
+    // ("Delivered"/"Open Rate") sempre em var(--ink) — nunca var(--brand)
+    // nem var(--alert) no texto, que é onde a falha de contraste AA mora.
+    const labelsBlock = svg.slice(svg.indexOf("<text"), svg.indexOf("Open Rate</tspan></text>") + "Open Rate</tspan></text>".length);
+    assert.match(labelsBlock, /<tspan fill="var\(--brand\)">●<\/tspan>/, "marcador Delivered usa --brand");
+    assert.match(labelsBlock, /<tspan fill="var\(--alert\)">●<\/tspan>/, "marcador Open Rate usa --alert");
+    assert.match(labelsBlock, /<tspan fill="var\(--ink\)">Delivered<\/tspan>/, "texto Delivered usa --ink (AA)");
+    assert.match(labelsBlock, /<tspan fill="var\(--ink\)">Open Rate<\/tspan>/, "texto Open Rate usa --ink (AA)");
+    // Nunca var(--brand)/var(--alert) diretamente encostado no texto da
+    // série (garante que a falha AA documentada em sections-core.ts não foi
+    // reintroduzida aqui).
+    assert.doesNotMatch(labelsBlock, /fill="var\(--brand\)">Delivered/);
+    assert.doesNotMatch(labelsBlock, /fill="var\(--alert\)">Open Rate/);
+  });
+});
+
+describe("#5593 fleet review: guards defensivos", () => {
+  test("fmt (via catmullRomToBezierPath) lança erro descritivo em coordenada NaN, nunca produz \"NaN\" no path", () => {
+    assert.throws(
+      () => catmullRomToBezierPath([{ x: NaN, y: 0 }, { x: 1, y: 1 }]),
+      /coordenada não-finita/,
+    );
+  });
+
+  test("fmt lança erro descritivo em coordenada Infinity", () => {
+    assert.throws(
+      () => catmullRomToBezierPath([{ x: 0, y: 0 }, { x: Infinity, y: 1 }]),
+      /coordenada não-finita/,
+    );
+  });
+
+  test("niceMax lança erro descritivo pra NaN/Infinity, antes do guard de value <= 0", () => {
+    assert.throws(() => niceMax(NaN), /não-finito/);
+    assert.throws(() => niceMax(Infinity), /não-finito/);
+    assert.throws(() => niceMax(-Infinity), /não-finito/);
+  });
+
+  test("openRate negativo é clampado no piso (0), não só no teto (100)", () => {
+    const originalError = console.error;
+    const calls: unknown[][] = [];
+    console.error = (...args: unknown[]) => calls.push(args);
+    try {
+      const svg = renderOpenRateChartSvg([
+        row("2026-08-10", { openRate: -20 }),
+        row("2026-08-11", { openRate: 40 }),
+      ]);
+      assert.match(svg, /<svg/);
+      assert.ok(calls.length >= 1, "clamp de openRate fora de [0,100] deve logar console.error");
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  test("openRate > 100 continua clampado no teto, sem regressão", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { openRate: 150 }),
+      row("2026-08-11", { openRate: 40 }),
+    ]);
+    assert.match(svg, /<svg/);
   });
 });

@@ -62,7 +62,13 @@ export function catmullRomToBezierPath(points: ChartPoint[]): string {
 
 function fmt(n: number): string {
   // 2 casas decimais bastam pro viewBox usado aqui — evita `1.2345678901`
-  // poluindo o markup gerado.
+  // poluindo o markup gerado. Guard defensivo: uma coordenada não-finita
+  // (NaN/Infinity) nunca deve virar a string literal "NaN"/"Infinity" dentro
+  // do atributo `d`/`cx`/`cy` do SVG — isso produziria markup malformado
+  // silenciosamente aceito pelo browser (path simplesmente não desenha).
+  if (!Number.isFinite(n)) {
+    throw new Error(`chart-svg: coordenada não-finita (${n}) — dado de entrada corrompido`);
+  }
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
@@ -125,6 +131,9 @@ const CHART = {
  * Exportado pra teste unitário.
  */
 export function niceMax(value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(`chart-svg: niceMax recebeu valor não-finito (${value}) — dado de entrada corrompido`);
+  }
   if (value <= 0) return 1;
   const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
   const normalized = value / magnitude;
@@ -155,9 +164,10 @@ function fmtDayLabel(day: string): string {
  * Renderiza o gráfico SVG inline de "Open rate por dia" (#5593) — duas
  * séries por dia-calendário BRT: Delivered (eixo Y esquerdo, escala
  * dinâmica) e Open Rate (eixo Y direito, fixo 0-100%). Curva suavizada,
- * área preenchida com gradiente (opaco no topo → transparente na base),
- * gridlines horizontais pontilhadas discretas, sem gridlines verticais, sem
- * legenda flutuante (rótulos estáticos no canto do próprio SVG).
+ * área preenchida com gradiente (mais opaco — 0.35 — no topo → transparente
+ * na base), gridlines horizontais pontilhadas discretas, sem gridlines
+ * verticais, sem legenda flutuante (rótulos estáticos no canto do próprio
+ * SVG).
  *
  * Buraco (dia sem envio, ausente de `rows`) nunca vira zero interpolado —
  * `splitIntoRuns` desenha um segmento de path por trecho contíguo de dados,
@@ -168,7 +178,7 @@ function fmtDayLabel(day: string): string {
  * fundo do "card" da tabela) em vez do círculo preenchido normal — nas duas
  * séries daquele dia, já que a flag é por-dia, não por-série.
  *
- * `rows.length < 1` retorna `""` — a seção-mãe (`renderOpenRateByDaySection`)
+ * `rows.length === 0` retorna `""` — a seção-mãe (`renderOpenRateByDaySection`)
  * já decide se a seção inteira aparece; este helper só cuida do `<svg>`.
  * `rows.length === 1` desenha só os 2 marcadores (delivered + openRate),
  * sem linha (uma linha exige ≥2 pontos por definição).
@@ -193,7 +203,13 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   const xAt = (i: number): number =>
     days.length <= 1 ? chartLeft + chartW / 2 : chartLeft + (chartW * i) / (days.length - 1);
   const yDelivered = (v: number): number => chartBottom - (chartH * v) / maxDelivered;
-  const yOpenRate = (v: number): number => chartBottom - (chartH * Math.min(v, 100)) / 100;
+  const yOpenRate = (v: number): number => {
+    const clamped = Math.max(0, Math.min(v, 100));
+    if (clamped !== v) {
+      console.error(`chart-svg: openRate fora de [0,100] (${v}) — clampado pra ${clamped}, dado de agregação suspeito upstream`);
+    }
+    return chartBottom - (chartH * clamped) / 100;
+  };
 
   const deliveredSlots: Array<{ point: ChartPoint; smallSample: boolean } | null> = slots.map((s, i) =>
     s ? { point: { x: xAt(i), y: yDelivered(s.delivered) }, smallSample: s.smallSample } : null,
@@ -270,8 +286,17 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
 
   // Rótulos estáticos de série (não é legenda flutuante — texto fixo no
   // próprio SVG, sempre visível, sem hover/JS).
-  const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700" fill="var(--brand)">● Delivered</text>
-    <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700" fill="var(--alert)">● Open Rate</text>`;
+  //
+  // Contraste AA (#5593 fleet review, code-reviewer + comment-analyzer
+  // convergiram no mesmo achado): `var(--brand)` (teal) falha AA (~3.2:1) em
+  // texto 12px/700 — `sections-core.ts` já documenta essa falha em 3 lugares
+  // (tags ▲ ABERTURA/▲ CLIQUE/▲ MELHOR DIA revertidas pra `--ink` por esse
+  // motivo). O marcador "●" É elemento gráfico (associação cor↔série, SC
+  // 1.4.11 — não exige 4.5:1) e mantém a cor da série; o TEXTO do rótulo usa
+  // `var(--ink)`, que já é a cor de alto contraste calibrada neste arquivo.
+  // Dois `<tspan>` por rótulo em vez de 1 `fill` só na `<text>`.
+  const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700"><tspan fill="var(--brand)">●</tspan> <tspan fill="var(--ink)">Delivered</tspan></text>
+    <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>`;
 
   return `<svg class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver tabela abaixo para valores exatos">
     <defs>${delivered.defs}${openRate.defs}</defs>
