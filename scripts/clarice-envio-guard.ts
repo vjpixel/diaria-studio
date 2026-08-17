@@ -99,6 +99,7 @@ import { stepWithTransientRetry as sharedStepWithTransientRetry } from "./lib/tr
 import { readLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import type { WaveProposal } from "./lib/clarice-wave-plan.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
+import { readClariceEnvioOverrideState, applyEnvioOverride } from "./lib/clarice-envio-override.ts";
 
 loadProjectEnv();
 // `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a drive
@@ -509,9 +510,25 @@ export async function runEnvioGuard(deps: EnvioGuardDeps): Promise<EnvioGuardRes
       return await handlePrereqFailure(deps, report, aammdd, cycle, now, prereqFailure);
     }
 
-    report.note(`freio fresco (05:00): ${risk!.brake.level.toUpperCase()} — ${risk!.brake.reasons.join(" ")}`);
+    // #5515 — defesa em profundidade: `clarice-envio-risk.ts` já aplica o
+    // override persistente internamente (`fetchRiskSnapshot`, ponto único
+    // de cálculo), então em produção `risk!.brake` já chega rebaixado aqui.
+    // Esta 2ª aplicação é IDEMPOTENTE (no-op quando o freio recebido já não
+    // é mais "stop") e garante que o guard nunca cancela uma onda coberta
+    // por um override ainda válido mesmo se, por qualquer motivo, o JSON
+    // recebido do subprocess não tiver passado pelo rebaixamento (ex: um
+    // caller de teste injetando `exec` com um STOP cru).
+    const override = readClariceEnvioOverrideState(deps.rootDir, now, {
+      onInvalid: (msg) => report.note(msg),
+    });
+    const { brake: effectiveBrake, overrideApplied } = applyEnvioOverride(risk!.brake, override);
+    if (overrideApplied) {
+      report.note("(guard) override do editor aplicado sobre o freio fresco — ver razão acima.");
+    }
 
-    if (risk!.brake.level !== "stop") {
+    report.note(`freio fresco (05:00): ${effectiveBrake.level.toUpperCase()} — ${effectiveBrake.reasons.join(" ")}`);
+
+    if (effectiveBrake.level !== "stop") {
       report.note("freio dentro do aceitável — onda(s) seguem pro disparo das 06:00 sem alteração.");
       const reportId = `envio-${aammdd}-guard-ok`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio guard ${aammdd} — onda confirmada`, report.build());

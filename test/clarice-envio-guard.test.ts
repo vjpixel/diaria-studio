@@ -207,6 +207,83 @@ describe("clarice-envio-guard (#5026)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  // #5515 — defesa em profundidade: mesmo que o JSON recebido do subprocess
+  // ainda venha "stop" cru (simulado aqui injetando o exec diretamente, sem
+  // passar pela demoção que `clarice-envio-risk.ts` já faz internamente), o
+  // guard consulta o override por conta própria e NÃO cancela.
+  it("override do editor ATIVO no rootDir + freio STOP cru recebido do exec => NÃO cancela (defesa em profundidade)", async () => {
+    const root = freshRoot();
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", status: "scheduled" }]),
+      "utf8",
+    );
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data", "clarice-envio-override.json"),
+      JSON.stringify({
+        brake: "hold",
+        until: "2026-08-14T00:00:00.000Z", // depois de NOW (12/08 05:00 BRT)
+        reason: "pico de campanha de 27/06 (#5487) confirmado falso-positivo",
+        decidedBy: "editor",
+        issueRef: 5487,
+        createdAt: "2026-08-11T02:05:00.000Z",
+      }),
+      "utf8",
+    );
+    let setStatusCalls = 0;
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } }),
+      "scripts/clarice-envio-risk.ts": jsonResult({ brake: { level: "stop", reasons: ["hard bounce estourou"], maxUtil: 1.3 } }),
+    });
+    const r = await runEnvioGuard(
+      baseDeps(root, { exec, setCampaignStatus: async () => { setStatusCalls++; } }),
+    );
+    assert.equal(r.code, 0);
+    assert.equal(setStatusCalls, 0, "override cobre o STOP — onda pendente NÃO é cancelada");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("override do editor EXPIRADO no rootDir + freio STOP cru => cancela normalmente (expiração é ignorada)", async () => {
+    const root = freshRoot();
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", status: "scheduled" }]),
+      "utf8",
+    );
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data", "clarice-envio-override.json"),
+      JSON.stringify({
+        brake: "hold",
+        until: "2026-08-10T00:00:00.000Z", // antes de NOW — expirado
+        reason: "override antigo, já vencido",
+        decidedBy: "editor",
+        issueRef: 1,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    const suspendCalls: Array<{ campaignId: number; status: string }> = [];
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } }),
+      "scripts/clarice-envio-risk.ts": jsonResult({ brake: { level: "stop", reasons: ["hard bounce estourou"], maxUtil: 1.3 } }),
+    });
+    const r = await runEnvioGuard(
+      baseDeps(root, {
+        exec,
+        setCampaignStatus: async (_apiKey, campaignId, status) => {
+          suspendCalls.push({ campaignId, status });
+        },
+      }),
+    );
+    assert.equal(r.code, 0);
+    assert.equal(suspendCalls.length, 1, "override vencido não protege — cancela como se não houvesse override");
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("REGRESSÃO (achado CRITICAL do silent-failure-hunter): freio STOP mas campaignId desconhecido => code 2 (NUNCA 0 — cancelamento não confirmado)", async () => {
     // Antes do fix, esta rodada retornava code:0 ("sucesso") mesmo sem
     // cancelar NENHUMA onda — o único sinal externo (exit code) mentia

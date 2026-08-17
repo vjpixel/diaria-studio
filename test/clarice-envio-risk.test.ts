@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { aggregateRisk, toOpenTrendPoints, toSpamSignalLike, fetchRiskSnapshot } from "../scripts/clarice-envio-risk.ts";
 import { TransientDashboardError } from "../scripts/lib/transient-dashboard-error.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
@@ -148,5 +151,104 @@ describe("fetchRiskSnapshot — smoke test com fetch fake (sem rede real)", () =
         return true;
       },
     );
+  });
+});
+
+// #5515 — override persistente honrado no ponto único de cálculo do freio.
+// As DUAS metades do par (`clarice-envio-run.ts` 19:00 / `clarice-envio-
+// guard.ts` 05:00) leem `RiskSnapshot` a partir deste script — cobrir aqui
+// cobre as duas por construção (a integração fina do guard, incl. a 2ª
+// aplicação defensiva, está em test/clarice-envio-guard.test.ts).
+describe("fetchRiskSnapshot — override persistente (#5515)", () => {
+  function freshRoot(label: string): string {
+    return mkdtempSync(join(tmpdir(), `clarice-envio-risk-override-${label}-`));
+  }
+
+  function writeOverride(root: string, over: Partial<Record<string, unknown>> = {}): void {
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data", "clarice-envio-override.json"),
+      JSON.stringify({
+        brake: "hold",
+        until: "2026-08-19T00:00:00.000Z",
+        reason: "pico de campanha de 27/06 (#5487) confirmado falso-positivo",
+        decidedBy: "editor",
+        issueRef: 5487,
+        createdAt: "2026-08-17T02:05:00.000Z",
+        ...over,
+      }),
+      "utf8",
+    );
+  }
+
+  // hard bounce 3% >= limiar 2% (util 150%) => STOP garantido, sem depender
+  // de nenhum outro sinal (spam indeterminate, sem envio no accel window).
+  function stopCampaigns(): BrevoCampaign[] {
+    return [
+      withGlobalStats(
+        { sentDate: "2026-08-17T09:00:00.000Z" },
+        { sent: 1000, delivered: 970, hardBounces: 30, softBounces: 0, unsubscriptions: 0, uniqueViews: 50 },
+      ),
+    ];
+  }
+
+  function fakeFetchFor(campaigns: BrevoCampaign[]): typeof fetch {
+    return (async (url: string) => {
+      if (String(url).includes("/api/campaigns")) {
+        return new Response(JSON.stringify(campaigns), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (String(url).includes("/api/postmaster-spam")) {
+        return new Response(JSON.stringify({ entry: null }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`fakeFetch: URL inesperada ${url}`);
+    }) as typeof fetch;
+  }
+
+  const now = new Date("2026-08-17T22:00:00.000Z"); // dentro da janela de override (até 19/08)
+
+  it("sem override no rootDir -> freio calculado STOP passa direto, overrideApplied false", async () => {
+    const root = freshRoot("absent");
+    const snapshot = await fetchRiskSnapshot({
+      dashboardUrl: "https://fake.example",
+      now,
+      fetchFn: fakeFetchFor(stopCampaigns()),
+      rootDir: root,
+    });
+    assert.equal(snapshot.brake.level, "stop");
+    assert.equal(snapshot.overrideApplied, false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("override ativo no rootDir -> STOP calculado é rebaixado pra HOLD, overrideApplied true, reasons cita o override", async () => {
+    const root = freshRoot("active");
+    writeOverride(root);
+    const snapshot = await fetchRiskSnapshot({
+      dashboardUrl: "https://fake.example",
+      now,
+      fetchFn: fakeFetchFor(stopCampaigns()),
+      rootDir: root,
+    });
+    assert.equal(snapshot.brake.level, "hold");
+    assert.equal(snapshot.overrideApplied, true);
+    assert.match(snapshot.brake.reasons[0], /OVERRIDE do editor/);
+    assert.match(snapshot.brake.reasons[0], /5487/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("override EXPIRADO no rootDir -> ignorado, STOP calculado passa direto (sem warning)", async () => {
+    const root = freshRoot("expired");
+    writeOverride(root, { until: "2026-08-16T00:00:00.000Z" }); // antes de `now`
+    const warnings: string[] = [];
+    const snapshot = await fetchRiskSnapshot({
+      dashboardUrl: "https://fake.example",
+      now,
+      fetchFn: fakeFetchFor(stopCampaigns()),
+      rootDir: root,
+      onInvalidOverride: (m) => warnings.push(m),
+    });
+    assert.equal(snapshot.brake.level, "stop");
+    assert.equal(snapshot.overrideApplied, false);
+    assert.deepEqual(warnings, [], "expiração é silenciosa — nunca warning");
+    rmSync(root, { recursive: true, force: true });
   });
 });

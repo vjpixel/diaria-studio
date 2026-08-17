@@ -91,6 +91,35 @@ decisão automática (a maioria PARA limpo com `exit 0`; só uma minoria é erro
 **Zero volume final** (freio `stop`, ou base ≤ 0) → sai limpo, grava
 relatório, **exit 0** (não é erro).
 
+**Override persistente do freio (#5515).** Quando o editor confirma que um
+`stop` calculado é falso-positivo (ex: pico de campanha antiga sem
+decaimento, #5487) e a correção precisa sobreviver a mais de um ciclo (o
+próximo `Diaria-Clarice-Envio` das 19:00 E o `Diaria-Clarice-Envio-Guard`
+das 05:00 seguinte recomputam o freio do zero), gravar um override em
+`data/clarice-envio-override.json` via:
+
+```bash
+npx tsx scripts/lib/clarice-envio-override.ts --set \
+  --until 2026-08-18T09:00:00.000Z \
+  --reason "pico de campanha de 27/06 (#5487) confirmado falso-positivo" \
+  --issue 5487
+```
+
+`--until` é obrigatório e deve ser um teto CURTO (sugestão ~48h — não é
+travado em código, o operador escolhe). O override só REBAIXA `stop`→`hold`
+— nunca destrava `ok` (blast radius limitado por desenho, ver docstring do
+módulo). Enquanto ativo, `clarice-envio-risk.ts`/`clarice-envio-guard.ts`
+(as DUAS metades do par) mostram no relatório "OVERRIDE do editor: freio
+calculado seria STOP, rebaixado para HOLD..." — nunca some silenciosamente
+sobre o STOP real. Expirado (`--until` no passado) é ignorado sem alarme —
+o freio volta a decidir sozinho. Revogar antes do prazo:
+
+```bash
+npx tsx scripts/lib/clarice-envio-override.ts --clear
+```
+
+Ver status atual (sem `--set`/`--clear`): `npx tsx scripts/lib/clarice-envio-override.ts`.
+
 ---
 
 ## Passo 0 — Preflight
