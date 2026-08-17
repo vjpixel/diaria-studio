@@ -67,10 +67,8 @@ const REQUIRED_ENV_VARS = [
 ] as const;
 
 /** Monta a config de auth a partir do ambiente, ou devolve os nomes das
- *  variáveis ausentes — nunca lança. `GOOGLE_PROJECT_ID` é exigido pelo
- *  MCP oficial (`.mcp.json`) mas não é usado nesta chamada REST direta;
- *  ainda assim checado aqui porque sua ausência é o mesmo sinal de setup
- *  incompleto que os demais. */
+ *  variáveis ausentes — nunca lança. Sobre `GOOGLE_PROJECT_ID` NÃO estar
+ *  entre elas, ver o comentário de `REQUIRED_ENV_VARS` acima. */
 function authConfigFromEnv(): { auth: GoogleAdsAuthConfig } | { missing: string[] } {
   const missing = REQUIRED_ENV_VARS.filter((name) => !process.env[name]);
   if (missing.length > 0) return { missing };

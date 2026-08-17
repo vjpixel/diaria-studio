@@ -239,7 +239,18 @@ export interface RunGoogleAdsIngestOptions {
 /** Janela padrão da ingestão, em dias (inclusive do dia corrente). */
 export const DEFAULT_LOOKBACK_DAYS = 90;
 
-/** `AAAA-MM-DD` em UTC — mesmo formato que `segments.date` devolve. */
+/**
+ * `AAAA-MM-DD` em UTC — mesmo formato que `segments.date` devolve.
+ *
+ * **Limitação aceita:** o `segments.date` do Google Ads é o dia-calendário no
+ * fuso DA CONTA, não em UTC. Rodando perto da meia-noite UTC com a conta em
+ * BRT (UTC-3), a borda da janela pode escorregar um dia. Não corrigido de
+ * propósito: a janela é de 90 dias e a agregação é MENSAL (`spend.csv` tem
+ * granularidade de mês), então um dia a mais ou a menos na ponta não muda
+ * nenhum valor mensal — exceto na virada de mês, onde o mês anterior seria
+ * reescrito na rodada seguinte de qualquer forma, porque a janela o recobre
+ * inteiro e o merge é idempotente por (`canal`, `mes`).
+ */
 function toGaqlDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -304,15 +315,35 @@ export type GoogleAdsFailureClass = "auth-pending" | "defect" | "transient" | "e
 /** Marcadores de defeito checados ANTES dos de auth: são inequívocos (um
  *  `queryError` nunca convive com um `authorizationError` na mesma resposta,
  *  porque o GAQL valida a query primeiro e aborta ali). */
-const DEFECT_MARKERS = ["queryError", "fieldError", "UNSUPPORTED_VERSION", "INVALID_DEVELOPER_TOKEN"];
+const DEFECT_MARKERS = [
+  "queryError",
+  "fieldError",
+  "UNSUPPORTED_VERSION",
+  "INVALID_DEVELOPER_TOKEN",
+  // Credencial quebrada, não credencial na fila: o refresh token foi
+  // revogado/expirou e precisa de re-consentimento
+  // (`google-ads-associate-token.ts --auth`). Esperar não resolve, então é
+  // defeito — não `auth-pending`, que aconselharia paciência pra sempre.
+  "OAUTH_TOKEN_INVALID",
+  "invalid_grant",
+];
 const AUTH_PENDING_MARKERS = [
   "DEVELOPER_TOKEN_NOT_APPROVED",
   "USER_PERMISSION_DENIED",
   "CUSTOMER_NOT_ENABLED",
-  "OAUTH_TOKEN_INVALID",
 ];
 
-/** @pure */
+/**
+ * **Código desconhecido cai em `transient`, não em `defect`** — escolha
+ * consciente, com um custo conhecido: um código de erro novo do Google que
+ * fosse defeito de verdade seria reportado como indisponibilidade até
+ * alguém acrescentá-lo a `DEFECT_MARKERS`, que é o velho mascaramento de
+ * volta. O contrário (chamar rede instável de defeito) gritaria DEFEITO em
+ * toda queda de rede e treinaria o leitor a ignorar o banner, o que custa
+ * mais. Se um código novo aparecer no dia a dia, adicionar à lista.
+ *
+ * @pure
+ */
 export function classifyGoogleAdsFailure(body: string): GoogleAdsFailureClass {
   if (DEFECT_MARKERS.some((m) => body.includes(m))) return "defect";
   if (AUTH_PENDING_MARKERS.some((m) => body.includes(m))) return "auth-pending";
@@ -350,7 +381,10 @@ export async function runGoogleAdsIngest(
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, opts.auth);
     if ("error" in tokenResult) {
-      failureClass = "transient";
+      // Classificar também o erro de refresh: `invalid_grant` (refresh token
+      // revogado/expirado) é permanente — esperar nunca conserta — e sair
+      // como `transient` fixo faria o CLI aconselhar paciência pra sempre.
+      failureClass = classifyGoogleAdsFailure(tokenResult.error);
       return { kind: "error", reason: tokenResult.error };
     }
 
@@ -360,12 +394,21 @@ export async function runGoogleAdsIngest(
       return { kind: "error", reason: spendResult.error };
     }
 
-    // A chamada sucedeu: daqui pra frente, um resultado vazio é gasto zero
-    // de verdade, não indisponibilidade. `runSpendIngest` transforma
-    // `rows: []` em fallback (não há o que mesclar), e é ESTE marcador que
-    // impede o CLI de reportar conta pausada como se fosse falha.
-    failureClass = "empty";
+    // A chamada sucedeu. Um resultado vazio daqui pra frente é gasto zero de
+    // verdade, não indisponibilidade — `runSpendIngest` transforma `rows: []`
+    // em fallback (não há o que mesclar), e é ESTE marcador que impede o CLI
+    // de reportar conta pausada como se fosse falha.
     const rows = aggregateGaqlSpendByMonth(spendResult.rows, { canal, moeda, fonteLabel });
+
+    // ...MAS "vazio" só é legítimo se a API também não mandou nada. Se ela
+    // devolveu N>0 linhas e a agregação descartou TODAS, o dado existe e nós
+    // é que não conseguimos lê-lo — schema drift (Google renomear
+    // `costMicros`/`segments.date`) entra exatamente por aqui, porque
+    // `aggregateGaqlSpendByMonth` pula linha malformada em silêncio por
+    // design. Chamar isso de "gasto zero" seria o mesmo mascaramento que
+    // esta issue mandou eliminar, e pior: silencioso justo quando a #5524
+    // começar a gastar de verdade.
+    failureClass = spendResult.rows.length > 0 && rows.length === 0 ? "defect" : "empty";
     return { kind: "ok", rows, fetchedCount: spendResult.rows.length };
   };
 

@@ -263,26 +263,39 @@ describe("#5237 — runGoogleAdsIngest (orquestração end-to-end, fail-soft)", 
 // Os corpos abaixo são as respostas REAIS capturadas nessa verificação.
 // ---------------------------------------------------------------------------
 
-/** Resposta real da API à query com `DURING LAST_90_DAYS` (v25, 17/08/2026). */
-const REAL_QUERY_ERROR_BODY = JSON.stringify({
-  error: {
-    code: 400,
-    message: "Request contains an invalid argument.",
-    status: "INVALID_ARGUMENT",
-    details: [
-      {
-        "@type": "type.googleapis.com/google.ads.googleads.v25.errors.GoogleAdsFailure",
-        errors: [
-          {
-            errorCode: { queryError: "INVALID_VALUE_WITH_DURING_OPERATOR" },
-            message: "Invalid date literal supplied for DURING operator: LAST_90_DAYS.",
-          },
-        ],
-        requestId: "FAk-3h1TY-uJkxzKVt6jJg",
-      },
-    ],
+/**
+ * Resposta real da API à query com `DURING LAST_90_DAYS` (v25, 17/08/2026).
+ *
+ * **Formatada com indentação de propósito** — é assim que a Google Ads API
+ * responde de fato, e é o que torna a truncagem relevante: no corpo
+ * indentado o `errorCode` só aparece depois do caractere ~300, então o
+ * `slice(0, 300)` antigo o cortava fora e o log dizia apenas "HTTP 400".
+ * Com `JSON.stringify` compacto o campo cabe em 300 e o teste passaria
+ * mesmo com a truncagem antiga — ou seja, não travaria nada.
+ */
+const REAL_QUERY_ERROR_BODY = JSON.stringify(
+  {
+    error: {
+      code: 400,
+      message: "Request contains an invalid argument.",
+      status: "INVALID_ARGUMENT",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.ads.googleads.v25.errors.GoogleAdsFailure",
+          errors: [
+            {
+              errorCode: { queryError: "INVALID_VALUE_WITH_DURING_OPERATOR" },
+              message: "Invalid date literal supplied for DURING operator: LAST_90_DAYS.",
+            },
+          ],
+          requestId: "FAk-3h1TY-uJkxzKVt6jJg",
+        },
+      ],
+    },
   },
-});
+  null,
+  2,
+);
 
 /** Resposta real com `login-customer-id` presente (403, 17/08/2026). */
 const REAL_USER_PERMISSION_DENIED_BODY = JSON.stringify({
@@ -421,7 +434,7 @@ describe("#5237 — classe de falha propagada até o CLI", () => {
     if (result.kind === "fallback") assert.equal(result.failureClass, "empty");
   });
 
-  it("gasto zero explícito (linhas com costMicros '0') também é 'empty', não defeito", async () => {
+  it("gasto zero explícito (costMicros '0') NÃO é 'empty' — é dado válido, atualiza", async () => {
     const body = JSON.stringify({
       results: [{ segments: { date: "2026-08-10" }, metrics: { costMicros: "0" } }],
     });
@@ -440,5 +453,94 @@ describe("#5237 — classe de falha propagada até o CLI", () => {
     const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
     assert.equal(result.kind, "fallback");
     if (result.kind === "fallback") assert.equal(result.failureClass, "transient");
+  });
+});
+
+describe("#5237 — 'empty' não pode encobrir schema drift (achado do review do PR #5591)", () => {
+  const tokenThen = (body: string, status = 200): FetchLike => async (url) =>
+    url.includes("oauth2.googleapis.com")
+      ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
+      : new Response(body, { status });
+
+  it("API devolve linhas mas a agregação descarta TODAS → 'defect', não 'empty'", async () => {
+    // Cenário de schema drift: o Google renomeia `costMicros`, e
+    // `aggregateGaqlSpendByMonth` (que pula linha malformada em silêncio por
+    // design) devolve zero linhas. O gasto EXISTE; nós é que não sabemos ler.
+    // Reportar isso como "gasto zero, conta pausada" seria mascarar o bug —
+    // e em silêncio justo quando a #5524 começar a gastar.
+    const drifted = JSON.stringify({
+      results: [
+        { segments: { date: "2026-08-10" }, metrics: { cost_micros_v2: "5000000" } },
+        { segments: { date: "2026-08-11" }, metrics: { cost_micros_v2: "3000000" } },
+      ],
+    });
+    const result = await runGoogleAdsIngest(tokenThen(drifted), { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "defect");
+  });
+
+  it("API devolve ZERO linhas → 'empty' (conta pausada é resposta legítima)", async () => {
+    const result = await runGoogleAdsIngest(tokenThen(JSON.stringify({ results: [] })), {
+      auth: AUTH,
+      existingRows: [],
+    });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "empty");
+  });
+
+  it("agregação parcial (algumas linhas válidas) atualiza normalmente", async () => {
+    const mixed = JSON.stringify({
+      results: [
+        { segments: { date: "2026-08-10" }, metrics: { costMicros: "5000000" } },
+        { segments: {}, metrics: { costMicros: "3000000" } }, // descartada
+      ],
+    });
+    const result = await runGoogleAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "updated");
+  });
+});
+
+describe("#5237 — falha de refresh token é classificada (achado do review do PR #5591)", () => {
+  it("invalid_grant (refresh token revogado) é 'defect' — esperar não conserta", async () => {
+    const fetchImpl: FetchLike = async () =>
+      new Response(JSON.stringify({ error_description: "invalid_grant" }), { status: 400 });
+    const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "defect");
+  });
+
+  it("falha de rede na renovação continua 'transient'", async () => {
+    const fetchImpl: FetchLike = async () => {
+      throw new Error("ECONNRESET");
+    };
+    const result = await runGoogleAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
+    assert.equal(result.kind, "fallback");
+    if (result.kind === "fallback") assert.equal(result.failureClass, "transient");
+  });
+
+  it("OAUTH_TOKEN_INVALID é defeito de credencial, não fila do Basic Access", () => {
+    assert.equal(
+      classifyGoogleAdsFailure('{"errorCode":{"authenticationError":"OAUTH_TOKEN_INVALID"}}'),
+      "defect",
+    );
+  });
+});
+
+describe("#5237 — truncagem 300→600 preserva o errorCode (regressão real)", () => {
+  it("o corpo REAL (indentado, como a API responde) esconde o errorCode em 300 chars", () => {
+    // Se isto falhar, o fixture virou compacto e o teste abaixo deixou de
+    // travar coisa nenhuma — foi exatamente o furo apontado no review.
+    assert.equal(REAL_QUERY_ERROR_BODY.slice(0, 300).includes("INVALID_VALUE_WITH_DURING_OPERATOR"), false);
+    assert.equal(REAL_QUERY_ERROR_BODY.slice(0, 600).includes("INVALID_VALUE_WITH_DURING_OPERATOR"), true);
+  });
+
+  it("fetchGoogleAdsSpendRows preserva o errorCode na mensagem de erro", async () => {
+    const fetchImpl: FetchLike = async () => new Response(REAL_QUERY_ERROR_BODY, { status: 400 });
+    const out = await fetchGoogleAdsSpendRows(fetchImpl, AUTH, "tok", "SELECT 1");
+    assert.ok("error" in out);
+    if ("error" in out) {
+      assert.match(out.error, /INVALID_VALUE_WITH_DURING_OPERATOR/);
+      assert.equal(out.failureClass, "defect");
+    }
   });
 });
