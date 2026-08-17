@@ -20,6 +20,7 @@ import {
   classifyYieldText,
   needsActiveRecheck,
 } from "../scripts/lib/overnight-fallback-wake.ts";
+import { OVERNIGHT_STALL_THRESHOLD_MIN } from "../scripts/lib/overnight-stall-threshold.ts";
 
 // ---------------------------------------------------------------------------
 // shouldWakeCheck
@@ -71,11 +72,21 @@ describe("shouldWakeCheck (#2896)", () => {
     assert.equal(shouldWakeCheck(DISPATCH, "not-a-date", 60), false);
   });
 
-  it("usa threshold default de 60 min quando omitido", () => {
-    const now61 = "2026-07-02T11:01:00Z";
-    const now59 = "2026-07-02T10:59:00Z";
-    assert.equal(shouldWakeCheck(DISPATCH, now61), true);
-    assert.equal(shouldWakeCheck(DISPATCH, now59), false);
+  // #5568: o default era o literal `60` duplicado aqui e no watchdog. Agora
+  // herda OVERNIGHT_STALL_THRESHOLD_MIN — o teste deriva as bordas da
+  // constante em vez de repetir o número, pra encurtar o limiar de novo não
+  // exigir editar este arquivo (e pra um default divergente do watchdog
+  // falhar em `test/overnight-stall-threshold.test.ts`).
+  it("usa OVERNIGHT_STALL_THRESHOLD_MIN como threshold default quando omitido", () => {
+    const dispatchMs = Date.parse(DISPATCH);
+    const justOver = new Date(
+      dispatchMs + (OVERNIGHT_STALL_THRESHOLD_MIN + 1) * 60_000,
+    ).toISOString();
+    const justUnder = new Date(
+      dispatchMs + (OVERNIGHT_STALL_THRESHOLD_MIN - 1) * 60_000,
+    ).toISOString();
+    assert.equal(shouldWakeCheck(DISPATCH, justOver), true);
+    assert.equal(shouldWakeCheck(DISPATCH, justUnder), false);
   });
 
   // -------------------------------------------------------------------------

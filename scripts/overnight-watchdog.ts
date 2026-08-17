@@ -11,7 +11,9 @@
  * Mede "última atividade" como max(mtime plan.json, último evento run-log
  * com agent:"overnight" para a edição desta rodada).
  *
- * Stall = "última atividade" > STALL_THRESHOLD_MIN (default 60) min atrás.
+ * Stall = "última atividade" > `OVERNIGHT_STALL_THRESHOLD_MIN` (45 min desde
+ * 17/08/2026, #5568 — antes 60) atrás. O número vive em
+ * `scripts/lib/overnight-stall-threshold.ts`, junto do rationale do piso.
  *
  * Ação em caso de stall:
  *   (a) Append em stall_events no plan.json (com dedup por janela de 30 min)
@@ -68,7 +70,8 @@
  *
  * Flags:
  *   --dry-run          Apenas diagnóstico; sem writes nem alertas.
- *   --threshold <min>  Override do limiar (default: 60 ou OVERNIGHT_WATCHDOG_STALL_MIN).
+ *   --threshold <min>  Override do limiar (default: OVERNIGHT_STALL_THRESHOLD_MIN
+ *                      ou a env OVERNIGHT_WATCHDOG_STALL_MIN).
  *
  * GUARD DE PUBLICAÇÃO: este script é só observabilidade/alerta.
  * NUNCA toca Beehiiv/LinkedIn/Facebook/Brevo, PRs, nem merge.
@@ -108,6 +111,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
+import { OVERNIGHT_STALL_THRESHOLD_MIN } from "./lib/overnight-stall-threshold.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -132,7 +136,7 @@ export interface PlanJson {
 export function detectStall(
   lastActivityMs: number,
   nowMs: number,
-  thresholdMin: number = 60,
+  thresholdMin: number = OVERNIGHT_STALL_THRESHOLD_MIN,
 ): boolean {
   return nowMs - lastActivityMs >= thresholdMin * 60_000;
 }
@@ -658,8 +662,11 @@ function parseArgs(argv: string[]): {
   thresholdMin: number;
 } {
   const dryRun = argv.includes("--dry-run");
-  let thresholdMin = parseInt(process.env.OVERNIGHT_WATCHDOG_STALL_MIN ?? "60", 10);
-  if (isNaN(thresholdMin) || thresholdMin < 1) thresholdMin = 60;
+  let thresholdMin = parseInt(
+    process.env.OVERNIGHT_WATCHDOG_STALL_MIN ?? String(OVERNIGHT_STALL_THRESHOLD_MIN),
+    10,
+  );
+  if (isNaN(thresholdMin) || thresholdMin < 1) thresholdMin = OVERNIGHT_STALL_THRESHOLD_MIN;
 
   const tIdx = argv.indexOf("--threshold");
   if (tIdx !== -1 && argv[tIdx + 1]) {

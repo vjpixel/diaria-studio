@@ -11,7 +11,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 1. Roda a cada 10 min via systemd timer (entre 18:00 e 09:00 do dia seguinte).
 2. Procura rodada overnight ativa: `data/overnight/{AAMMDD}/plan.json` existe mas `report.md` está ausente.
 3. Mede **última atividade** = `max(mtime(plan.json), último evento run-log com agent:"overnight")`.
-4. Se inatividade > 60 min (limiar configurável):
+4. Se inatividade > 45 min (limiar configurável — `OVERNIGHT_STALL_THRESHOLD_MIN`):
    - Registra entrada em `stall_events` no `plan.json` (com dedup: não repete na mesma janela de 30 min).
    - Emite evento `stall_detected` no `data/run-log.jsonl`.
    - Exibe halt banner no terminal/log da task.
@@ -23,7 +23,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 
 | Camada | Mecanismo | Cobre |
 |---|---|---|
-| **i) Detecção-no-wake** (#2379) | O coordenador, quando acordado por um evento (CI, task-notification), verifica se há >60 min sem progresso — e emite halt banner. | Coordenador acorda mas a issue está travada. |
+| **i) Detecção-no-wake** (#2379) | O coordenador, quando acordado por um evento (CI, task-notification), verifica se há >45 min sem progresso — e emite halt banner. | Coordenador acorda mas a issue está travada. |
 | **ii) Detecção-por-tempo** (#2688 — este watchdog) | Script externo que roda independente do coordenador, via Task Scheduler, e detecta silêncio total. | Coordenador parado — sem nenhum evento chegando. |
 
 As duas camadas são complementares. O #2379 (existente na SKILL.md) permanece como está.
@@ -138,11 +138,11 @@ Saída esperada quando não há rodada ativa:
 [watchdog] Nenhuma rodada overnight ativa detectada.
 ```
 
-Saída com rodada ativa e sem stall (ex: 5 min de inatividade com limiar 60 min):
+Saída com rodada ativa e sem stall (ex: 5 min de inatividade com limiar 45 min):
 ```
 [watchdog] DRY-RUN — rodada ativa: 260701
 [watchdog] Última atividade: 2026-07-01T23:55:00.000Z (fonte: run-log)
-[watchdog] Inatividade: 5 min (limiar: 60 min)
+[watchdog] Inatividade: 5 min (limiar: 45 min)
 [watchdog] → sem stall (dry-run, sem writes/alertas)
 ```
 
@@ -165,17 +165,23 @@ Sem credenciais OAuth configuradas, o watchdog funciona normalmente mas não env
 
 ## Configuração de threshold
 
-Limiar padrão: 60 min. Para alterar:
+Limiar padrão: **45 min** (`OVERNIGHT_STALL_THRESHOLD_MIN` em
+`scripts/lib/overnight-stall-threshold.ts` — era 60 até 17/08/2026, #5568).
+O piso é o timeout de espera de CI da SKILL do overnight (30 min): abaixo
+disso, toda espera de CI saudável viraria alarme. Pra baixar mais, o timeout
+de CI tem que cair junto.
+
+Para alterar sem mexer no código:
 
 ```env
 # Em .env:
-OVERNIGHT_WATCHDOG_STALL_MIN=45
+OVERNIGHT_WATCHDOG_STALL_MIN=30
 ```
 
 Ou via flag CLI (override pontual):
 
-```powershell
-npx tsx scripts\overnight-watchdog.ts --threshold 45
+```bash
+npx tsx scripts/overnight-watchdog.ts --threshold 30
 ```
 
 ---
