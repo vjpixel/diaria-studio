@@ -37,6 +37,31 @@
  *   - Reorder + inverso = identity (#1606 review fix: 2× só identity em 2-cycles
  *     como [2,1,3]; 3-cycles como [3,1,2] precisam 3 aplicações pra fechar).
  *     Editor que quer desfazer reorder anterior deve usar o inverso explícito.
+ *
+ * ⚠️  BOXES DE DIVULGAÇÃO VIAJAM JUNTO COM O DESTAQUE ANTERIOR (#5585).
+ *   O parser de `02-reviewed.md` (`reorderDestaquesInMd` abaixo) captura cada
+ *   bloco como "do header `**DESTAQUE N |...**` até o próximo header
+ *   reconhecido" (`DESTAQUE N+1`, `LANÇAMENTOS`, `RADAR`, etc — ver
+ *   `blockRe`). Qualquer conteúdo que caia numa lacuna entre destaques —
+ *   incluindo os boxes de divulgação/CTA dos slots 1/2/3
+ *   (`boxes_divulgacao` em `platform.config.json`, ver
+ *   `context/snippets/README.md`) — NÃO tem header próprio, então é tratado
+ *   como parte do "chunk" de texto do destaque que o precede e É
+ *   REORDENADO/ROTACIONADO JUNTO com ele. Isso não é ancoragem por
+ *   posição/lacuna — é um acidente de implementação do parser regex, que
+ *   não tem como saber (sem um formato de marcador dedicado, hoje
+ *   inexistente) onde termina o destaque e onde começa o box.
+ *
+ *   Se o editor pedir mudança de boxes E reorder de destaques no mesmo
+ *   turno: aplicar a mudança de boxes DEPOIS do reorder, nunca antes — do
+ *   contrário o reorder desfaz/embaralha a mudança manual (caso real: Stage
+ *   4 da edição 260818, boxes 1↔3 trocados manualmente e depois "levados"
+ *   de volta pela rotação D3→D1 do reorder, exigindo correção manual com
+ *   uma segunda rotação). `reorderDestaquesInMd` emite um `console.warn`
+ *   best-effort (`detectTrailingNonDestaqueContent`) quando encontra
+ *   conteúdo sobrando após a seção "Aprofunde:" de um bloco — sinal de que
+ *   há algo além do destaque ali —, mas é heurística estrutural, não
+ *   garantia: silêncio não significa "sem box".
  */
 
 import {
@@ -420,6 +445,48 @@ export function reorderHighlightsInJson(
 }
 
 /**
+ * Heurística best-effort (#5585) pra sinalizar conteúdo "sobrando" num bloco
+ * DESTAQUE N capturado por `blockRe` — sinal indireto de que um box de
+ * divulgação (ou outro conteúdo solto na lacuna) ficou embutido no chunk do
+ * destaque anterior e vai viajar junto no reorder (ver docstring do topo do
+ * arquivo).
+ *
+ * Ancora na seção "Aprofunde:" — última seção canônica de um bloco DESTAQUE
+ * no template (`context/templates/newsletter.md`: título → parágrafos → "Por
+ * que isso importa:" → "Aprofunde:" + bullets `* [Título](URL) - Fonte`).
+ * Qualquer texto não-vazio depois da lista de bullets, dentro do mesmo chunk,
+ * não pertence ao destaque em si.
+ *
+ * Deliberadamente conservador: se "Aprofunde:" não for encontrado (formato
+ * legado, ou destaque sem essa seção), retorna `false` — sem esse âncora não
+ * há como distinguir corpo-do-destaque de conteúdo extra sem arriscar falso
+ * positivo. Silêncio (`false`) NUNCA significa "confirmado sem box" — só
+ * "não detectado por esta heurística".
+ */
+export function detectTrailingNonDestaqueContent(block: string): boolean {
+  const marker = "\nAprofunde:";
+  const idx = block.indexOf(marker);
+  if (idx === -1) return false;
+
+  const lines = block.slice(idx + marker.length).split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    // Bullet item de "Aprofunde:" é "* [Título](URL) - Fonte" ou "- ...":
+    // marcador seguido de espaço. NÃO usar startsWith("*") puro — um box em
+    // formato bold-line ("**Título...**") também começa com "*" (é "**"),
+    // e seria confundido com bullet, mascarando o próprio caso que este
+    // detector existe pra pegar.
+    if (line === "" || /^[*-]\s/.test(line)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return lines.slice(i).join("\n").trim().length > 0;
+}
+
+/**
  * Reordena blocos DESTAQUE N em 02-reviewed.md. Renumera headers no
  * resultado (`DESTAQUE 1 | …` no top, `DESTAQUE 2 | …`, etc).
  *
@@ -449,6 +516,21 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   }
   // #2352: require at least as many blocks as positions in newOrder (2 or 3).
   if (blocks.length < newOrder.length) return md;
+
+  // #5585: aviso best-effort — conteúdo (ex: box de divulgação) capturado
+  // dentro do chunk de um destaque vai ser reordenado/rotacionado junto com
+  // ele. Nunca bloqueia; puramente informativo (ver docstring do topo).
+  blocks.forEach((block, idx) => {
+    if (detectTrailingNonDestaqueContent(block)) {
+      const headerMatch = block.match(/^\*\*DESTAQUE\s+(\d+)/);
+      const destaqueNum = headerMatch ? headerMatch[1] : String(idx + 1);
+      console.warn(
+        `WARN: reorder-destaques — bloco DESTAQUE ${destaqueNum} parece conter conteúdo além do ` +
+          `destaque (ex: box de divulgação na lacuna seguinte) — esse conteúdo viaja junto no ` +
+          `reorder. Se você também mudou boxes neste turno, confira o resultado.`,
+      );
+    }
+  });
 
   // Reorder + renumerar
   const reorderedBlocks = newOrder.map((n, i) => {

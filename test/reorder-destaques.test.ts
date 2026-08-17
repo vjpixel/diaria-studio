@@ -23,6 +23,7 @@ import { spawnSync } from "node:child_process";
 import {
   reorderHighlightsInJson,
   reorderDestaquesInMd,
+  detectTrailingNonDestaqueContent,
   updateIntentionalErrorLocationJson,
   reorderSocialMd,
   renameDestaqueImages,
@@ -199,6 +200,152 @@ placeholder
     const mercerIdx = result.indexOf("Mercer");
     const radarIdx = result.indexOf("RADAR");
     assert.ok(mercerIdx > 0 && mercerIdx < radarIdx);
+  });
+});
+
+describe("detectTrailingNonDestaqueContent (#5585)", () => {
+  it("bloco canônico (título → parágrafos → Por que importa → Aprofunde + bullets) → false", () => {
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus.
+
+Por que isso importa:
+
+Impacto prático.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+* [Fonte 2](https://b.com) - Site B
+`;
+    assert.equal(detectTrailingNonDestaqueContent(block), false);
+  });
+
+  it("box de divulgação colado após Aprofunde (dentro do mesmo chunk) → true", () => {
+    // Reproduz o caso real (#5585): um box (ex: livros-divulgacao.md,
+    // formato bold-line) capturado no mesmo chunk do destaque anterior por
+    // não ter header próprio reconhecido por blockRe.
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus.
+
+Por que isso importa:
+
+Impacto prático.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+
+**Confira nossa curadoria de livros sobre IA [aqui](https://livros.diar.ia.br)**
+`;
+    assert.equal(detectTrailingNonDestaqueContent(block), true);
+  });
+
+  it("sem seção 'Aprofunde:' (formato legado) → false (conservador, não arrisca falso positivo)", () => {
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus sem seção Aprofunde.
+`;
+    assert.equal(detectTrailingNonDestaqueContent(block), false);
+  });
+
+  it("'Aprofunde:' seguido só de bullets (sem trailing blank) → false", () => {
+    const block = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+Texto.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+* [Fonte 2](https://b.com) - Site B`;
+    assert.equal(detectTrailingNonDestaqueContent(block), false);
+  });
+
+  it("reorderDestaquesInMd emite console.warn quando detecta conteúdo sobrando", () => {
+    const md = `Intro...
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://x.com)**
+
+Texto Opus.
+
+Por que isso importa:
+
+Impacto.
+
+Aprofunde:
+
+* [Fonte 1](https://a.com) - Site A
+
+**Box de divulgação colado aqui [link](https://x.com)**
+
+---
+
+**DESTAQUE 2 | 💼 MERCADO**
+
+**[Mercer](https://y.com)**
+
+Texto Mercer.
+
+Por que isso importa:
+
+Impacto.
+
+Aprofunde:
+
+* [Fonte 2](https://b.com) - Site B
+
+---
+
+**DESTAQUE 3 | 🇧🇷 BRASIL**
+
+**[C6](https://z.com)**
+
+Texto C6.
+
+Por que isso importa:
+
+Impacto.
+
+Aprofunde:
+
+* [Fonte 3](https://c.com) - Site C
+
+---
+
+**📰 OUTRAS NOTÍCIAS**
+
+[N1](https://n.com)
+`;
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      reorderDestaquesInMd(md, [2, 1, 3]);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some((w) => /DESTAQUE 1/.test(w) && /divulgação/.test(w)),
+      `esperava warning mencionando DESTAQUE 1 e "divulgação". Warnings capturados: ${JSON.stringify(warnings)}`,
+    );
+    // DESTAQUE 2 e 3 são canônicos (sem conteúdo extra) — não devem gerar warning.
+    assert.ok(
+      !warnings.some((w) => /DESTAQUE 2/.test(w) || /DESTAQUE 3/.test(w)),
+      `não esperava warning para DESTAQUE 2/3. Warnings capturados: ${JSON.stringify(warnings)}`,
+    );
   });
 });
 
