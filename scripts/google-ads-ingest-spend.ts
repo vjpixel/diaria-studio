@@ -25,12 +25,13 @@
  *   npx tsx scripts/google-ads-ingest-spend.ts
  *   npx tsx scripts/google-ads-ingest-spend.ts --spend data/aquisicao/spend.csv
  *
- * Requer no ambiente (via `doppler run --` ou `.env`): GOOGLE_PROJECT_ID,
+ * Requer no ambiente (via `doppler run --` ou `.env`):
  * GOOGLE_ADS_DEVELOPER_TOKEN, GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET,
  * GOOGLE_ADS_REFRESH_TOKEN, GOOGLE_ADS_LOGIN_CUSTOMER_ID, GOOGLE_ADS_CUSTOMER_ID
- * — ver docs/google-ads-api-setup.md. **NUNCA aborta se algum faltar** —
- * degrada pro fallback acima, com o(s) nome(s) da(s) variável(is) ausente(s)
- * no aviso.
+ * — ver docs/google-ads-api-setup.md. **NÃO** requer `GOOGLE_PROJECT_ID`, que
+ * é do servidor MCP e não deste caminho REST (ver `REQUIRED_ENV_VARS`).
+ * **NUNCA aborta se algum faltar** — degrada pro fallback acima, com o(s)
+ * nome(s) da(s) variável(is) ausente(s) no aviso.
  */
 
 import { existsSync, writeFileSync } from "node:fs";
@@ -38,13 +39,25 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
-import { runGoogleAdsIngest, type GoogleAdsAuthConfig } from "./lib/google-ads-ingest.ts";
+import {
+  runGoogleAdsIngest,
+  type GoogleAdsAuthConfig,
+  type GoogleAdsFailureClass,
+} from "./lib/google-ads-ingest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
 
+/**
+ * `GOOGLE_PROJECT_ID` NÃO entra aqui de propósito (corrigido em 17/08/2026).
+ * Ele é exigido pelo servidor MCP oficial (`.mcp.json`, caminho ADC), não
+ * por esta chamada REST — que autentica com CLIENT_ID/SECRET/REFRESH_TOKEN.
+ * Exigi-lo fazia o script cair no fallback com o motivo ENGANOSO
+ * "variável de ambiente ausente: GOOGLE_PROJECT_ID" antes de tentar a
+ * chamada, escondendo o estado real da API (a var está pendente de sync no
+ * Doppler — ver docs/google-ads-api-setup.md).
+ */
 const REQUIRED_ENV_VARS = [
-  "GOOGLE_PROJECT_ID",
   "GOOGLE_ADS_DEVELOPER_TOKEN",
   "GOOGLE_ADS_CLIENT_ID",
   "GOOGLE_ADS_CLIENT_SECRET",
@@ -54,10 +67,8 @@ const REQUIRED_ENV_VARS = [
 ] as const;
 
 /** Monta a config de auth a partir do ambiente, ou devolve os nomes das
- *  variáveis ausentes — nunca lança. `GOOGLE_PROJECT_ID` é exigido pelo
- *  MCP oficial (`.mcp.json`) mas não é usado nesta chamada REST direta;
- *  ainda assim checado aqui porque sua ausência é o mesmo sinal de setup
- *  incompleto que os demais. */
+ *  variáveis ausentes — nunca lança. Sobre `GOOGLE_PROJECT_ID` NÃO estar
+ *  entre elas, ver o comentário de `REQUIRED_ENV_VARS` acima. */
 function authConfigFromEnv(): { auth: GoogleAdsAuthConfig } | { missing: string[] } {
   const missing = REQUIRED_ENV_VARS.filter((name) => !process.env[name]);
   if (missing.length > 0) return { missing };
@@ -80,6 +91,37 @@ function fallback(reason: string): void {
   console.warn("  spend.csv não foi alterado. Editar manualmente ou rodar seed-spend-csv.ts se necessário.");
 }
 
+/**
+ * Reporta a falha de acordo com a classe, para que o caso ESPERADO e o BUG
+ * não saiam com a mesma cara (exigência explícita do #5237).
+ *
+ * **Exit code continua 0 em todas as classes, inclusive `defect`.** A task
+ * agendada encadeia `google-ads-ingest-spend.ts && microsoft-ads-ingest-spend.ts`
+ * (`docs/scheduled-tasks-registry.md`), então sair não-zero calaria a
+ * ingestão do OUTRO canal — o remédio seria pior que a doença. O que
+ * distingue um defeito não é o exit code, é o banner: `defect` sai com
+ * DEFEITO + instrução de ação, `auth-pending`/`empty` saem como estado
+ * normal do dia.
+ */
+function reportFallback(reason: string, failureClass: GoogleAdsFailureClass): void {
+  if (failureClass === "defect") {
+    console.error("[google-ads-ingest-spend] ✖ DEFEITO na ingestão — NÃO é indisponibilidade externa.");
+    console.error(`  ${reason}`);
+    console.error("  A requisição está malformada ou a versão da API morreu; esperar não resolve.");
+    console.error("  Corrigir em scripts/lib/google-ads-ingest.ts (query GAQL / apiVersion).");
+    return;
+  }
+  if (failureClass === "empty") {
+    console.log("[google-ads-ingest-spend] ✔ API respondeu, sem gasto no período consultado.");
+    console.log("  Não é falha: spend.csv fica como está porque não há gasto a registrar.");
+    return;
+  }
+  if (failureClass === "auth-pending") {
+    console.warn("[google-ads-ingest-spend] acesso ainda não liberado (Basic Access na fila, #5262).");
+  }
+  fallback(reason);
+}
+
 export async function main(): Promise<number> {
   const spendPath = getStringArg(process.argv.slice(2), "spend") ?? DEFAULT_SPEND_CSV_PATH;
 
@@ -97,7 +139,7 @@ export async function main(): Promise<number> {
   });
 
   if (result.kind === "fallback") {
-    fallback(result.reason);
+    reportFallback(result.reason, result.failureClass);
     return 0;
   }
 
@@ -115,7 +157,10 @@ if (isMainModule(import.meta.url)) {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
       // aqui (as duas etapas de rede já são fail-soft), mas mantém a
       // disciplina "nunca quebra o relatório" mesmo diante de um bug aqui.
-      fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
+      // `defect`, não `fallback()` puro: por definição, uma exceção que
+      // escapou dos dois caminhos fail-soft É um bug nosso, não estado
+      // externo esperado — achado do review do PR #5591.
+      reportFallback(`erro inesperado: ${e instanceof Error ? e.message : e}`, "defect");
       process.exit(0);
     });
 }
