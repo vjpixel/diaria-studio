@@ -112,6 +112,12 @@ export function main(
   repoRootAbs: string,
   execFn: typeof execFileSync = execFileSync,
   aammddOverride?: string,
+  // Injetável pelo mesmo motivo que `execFn` (#5549): sem isto, os testes que
+  // exercitam o caminho de invocação passariam a depender de existir um
+  // `claude` de VERDADE no host — o CI (ubuntu-latest, sem o CLI instalado)
+  // quebraria, e na máquina do editor passaria por acidente. Justamente a
+  // divergência de ambiente que este módulo existe pra blindar.
+  resolveClaudeBinFn: typeof resolveClaudeBin = resolveClaudeBin,
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -157,7 +163,7 @@ export function main(
     // resolução cair no mesmo caminho de log FAIL do resto — com mensagem
     // acionável em vez do ENOENT opaco.
     output = execFn(
-      resolveClaudeBin(),
+      resolveClaudeBinFn(),
       [
         "--print",
         "--permission-mode",

@@ -7,9 +7,12 @@
  * inclui `~/.npm-global/bin`. O teste central aqui é
  * "PATH mínimo do systemd + claude em ~/.npm-global/bin ainda resolve".
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { resolveClaudeBin, CLAUDE_BIN_HOME_CANDIDATES } from "../scripts/lib/resolve-claude-bin.ts";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveClaudeBin, isExecutableFile, CLAUDE_BIN_HOME_CANDIDATES } from "../scripts/lib/resolve-claude-bin.ts";
 
 /** PATH real do `systemctl --user show-environment` no predator (260817). */
 const SYSTEMD_USER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin";
@@ -98,5 +101,62 @@ describe("resolveClaudeBin (#5549)", () => {
     });
 
     assert.equal(resolved, "/home/vjpixel/.local/bin/claude");
+  });
+
+  it("HOME e PATH ausentes, sem CLAUDE_BIN -> lança limpo, sem TypeError", () => {
+    assert.throws(
+      () => resolveClaudeBin({ env: {}, fileExists: () => false }),
+      (err: Error) => {
+        assert.doesNotMatch(err.message, /undefined|TypeError/);
+        assert.match(err.message, /CLAUDE_BIN/);
+        return true;
+      },
+    );
+  });
+
+  it("entrada RELATIVA no PATH ainda produz caminho absoluto", () => {
+    const relativeCandidate = join(process.cwd(), "bin", "claude");
+    const resolved = resolveClaudeBin({
+      env: { PATH: "bin", HOME: "/home/vjpixel" },
+      fileExists: only(relativeCandidate),
+    });
+
+    assert.equal(resolved, relativeCandidate);
+    assert.ok(resolved.startsWith("/"), `esperava absoluto, veio ${resolved}`);
+  });
+});
+
+describe("isExecutableFile — predicado default (#5549)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "resolve-claude-bin-test-"));
+
+  after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("arquivo com bit de execução -> true", () => {
+    const p = join(tmp, "exec-ok");
+    writeFileSync(p, "#!/bin/sh\n");
+    chmodSync(p, 0o755);
+    assert.equal(isExecutableFile(p), true);
+  });
+
+  it("arquivo SEM bit de execução -> false (existsSync diria true e explodiria com EACCES)", () => {
+    const p = join(tmp, "sem-exec");
+    writeFileSync(p, "nao sou executavel\n");
+    chmodSync(p, 0o644);
+    assert.equal(isExecutableFile(p), false);
+  });
+
+  it("DIRETÓRIO chamado claude -> false (existsSync diria true e explodiria com EISDIR)", () => {
+    const p = join(tmp, "claude");
+    mkdirSync(p, { recursive: true });
+    assert.equal(isExecutableFile(p), false);
+  });
+
+  it("caminho inexistente -> false, sem lançar", () => {
+    assert.equal(isExecutableFile(join(tmp, "nao-existe")), false);
+  });
+
+  it("um diretório no PATH não é aceito como binário", () => {
+    mkdirSync(join(tmp, "claude"), { recursive: true });
+    assert.throws(() => resolveClaudeBin({ env: { PATH: tmp }, fileExists: isExecutableFile }), /não encontrado/);
   });
 });
