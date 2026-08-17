@@ -18,6 +18,15 @@ name: Deploy reativar Worker
 # editor/coordenador rodar manualmente (Actions -> Deploy reativar Worker ->
 # Run workflow) depois do merge, ou esperar o próximo push em
 # `workers/reativar/**` fechar o drift sozinho.
+#
+# Atualização (#5531, 17/08/2026): "esperar o próximo push fechar sozinho"
+# NÃO se confirmou. Os 2 pushes seguintes (`0654d4e9`, `b445c179`) de fato
+# dispararam este workflow, mas ambos morreram no passo abaixo com
+# `npm error code EUSAGE` — `workers/reativar` nunca teve package-lock.json
+# commitado, e `npm ci` exige um. Ou seja: entre o merge do #5337 e o
+# #5531, este workflow existia mas nunca completou uma execução, e o drift
+# continuou aberto. Lockfile commitado e guard de regressão em
+# `test/workers-deploy-workflow-coverage.test.ts`.
 
 on:
   push:
