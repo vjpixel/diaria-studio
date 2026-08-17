@@ -45,7 +45,14 @@ systemctl --user daemon-reload
 systemctl --user enable --now diaria-on-hold-vencimento-alarm.timer
 ```
 
-**Ainda NÃO armado nesta unidade** (worktree isolado, mesma disciplina do
-#5220/#5217: o gerador de unit resolveria `WorkingDirectory=`/`ExecStart=` a
-partir do path do worktree, apagado no cleanup pós-merge) — rodar da checkout
-compartilhada (`/home/vjpixel/diaria-studio`) depois do merge.
+**Armado e confirmado ativo em `predator` em 17/08/2026** — rodado da checkout
+compartilhada (`/home/vjpixel/diaria-studio`), como a nota anterior pedia.
+Próxima corrida domingo 11:00 BRT. Motivo do arme ter saído nessa data: a
+#4556 declara `Vencimento: 2026-09-15` e o retorno na data dependia deste
+alarme, que até então nunca tinha rodado nesta máquina.
+
+O carimbo (`~/.local/share/systemd/timers/stamp-diaria-on-hold-vencimento-alarm.timer`)
+foi tocado ANTES do `enable --now`: `Persistent=true` num timer sem carimbo
+trata "nunca rodou" como ocorrência devida e dispara na hora do arme, o que
+aqui seria um e-mail real (havia 1 achado pendente). É a saída 3 do aviso que
+o próprio `setup-systemd-timers.ts` imprime.
