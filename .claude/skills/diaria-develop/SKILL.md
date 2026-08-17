@@ -446,6 +446,8 @@ Roda só se houve ≥1 merge e o diff `{base_sha}..HEAD` > ~50 linhas. Forma exe
 
 ## Fase 2 — Relatório + handoff para o overnight
 
+**Gate de re-triagem pendente (#5476), primeiro passo antes de qualquer outra coisa nesta fase:** rodar `npx tsx scripts/check-state-changed-pending.ts --plan data/develop/{AAMMDD}/plan.json`. `exit 1` → voltar pra Fase 1, reavaliar dispatch pra cada issue listada (ver regra em "Regras" acima), só então continuar. `exit 0` → seguir normalmente.
+
 **Abrir sempre com o status do Goal (#4297/#4319)**, antes de qualquer outra linha: `Goal (escopo: {descrição do escopo efetivo}, política: {exhaust_all|blocked_only}): atingido` ou `não atingido`. Escopo efetivo = `--issues`/`--only`/`--bugs`/`--priority` da invocação, resumidos (ex: `--bugs --priority P0,P1`; `nenhum filtro` se a sessão rodou sem flags de escopo). Com `goal.policy: "table_only"`, a linha vira `Goal: não avaliado (goal_policy=table_only)` — não é "não atingido", é fora de escopo por opção do editor no briefing. Com `--no-implement` ativo, a linha vira `Goal: não avaliado (--no-implement ativo)` pelo mesmo motivo (ver "Incompatibilidade estrutural com `--no-implement`").
 
 Quando não atingido, listar o resíduo **por tier**: `1a: N issues` / `1b: N` / `2: N` / `3: N (gate: auto_entered|editor_interrupted|coordinator_self_limited — ver goal.tier3_gate)`, e dentro de cada tier o motivo POR ISSUE de não ter chegado a terminal (bloqueio cat. B ainda sem conta de terceiro, token cat. A não colado, "grupo 3 não entrou nesta sessão" quando o editor interrompeu com `editor_interrupted`, ou a sessão parou por limite técnico próprio com `coordinator_self_limited` — consultado no registro por-issue do `plan.json`, `goal.remaining` guarda só os números). É o resíduo que a Seção de HANDOFF abaixo também referencia.
@@ -536,6 +538,7 @@ Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `
 - Toda issue **trabalhada ou bloqueada** recebe comentário com o que foi feito / o que falta (com dedup).
 - `data/develop/` segue o blanket gitignore de `data/`.
 - Stall passivo é inaceitável (#738): toda espera de CI usa `gh pr checks --watch` em background; timeout de CI = 30 min → tratar como CI vermelho.
+- **Ação do coordenador que muda elegibilidade de issue já conhecida da sessão vira pendência de re-triagem (#5476, mesmo mecanismo do overnight).** Aplicar `gh issue edit N --add-label {not-this-week|trade-off-real|external-blocker|...}` fora do fluxo normal de decisão do Gate 1 (ex: reconciliação ad-hoc de labels da Triagem), ou encerrar/remover manualmente uma claim de `session-registry` mid-sessão, exige registrar: `npx tsx scripts/check-state-changed-pending.ts --add-pending {N} --plan data/develop/{AAMMDD}/plan.json`. Antes de escrever o relatório da Fase 2, checar `npx tsx scripts/check-state-changed-pending.ts --plan data/develop/{AAMMDD}/plan.json` — pendência (`exit 1`) → reavaliar dispatch pra essa issue (com o editor, se cair em cat. C) antes de fechar a sessão.
 
 ## Paralelismo entre sessões (#5156)
 

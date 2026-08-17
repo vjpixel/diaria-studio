@@ -718,6 +718,19 @@ aqui.
    isso, item 3 do #5376, deliberadamente fora de escopo), é o artefato
    textual mínimo que dá ao editor algo pra auditar depois, sem o custo de
    desenhar um schema novo.
+
+   **Gate de re-triagem pendente antes de dormir (#5476).** `continuo` nunca
+   fecha uma "rodada" com relatório final como overnight/develop — o
+   equivalente aqui é o momento logo antes de ir pro passo 6 (dormir): rodar
+   `npx tsx scripts/check-state-changed-pending.ts --plan data/continuo/{AAMMDD}/plan.json`.
+   Qualquer `gh issue edit N --add-label {not-this-week|trade-off-real|external-blocker|...}`
+   aplicado fora do fluxo normal de decisão (passo 5 acima), ou claim de
+   `session-registry` encerrada/removida manualmente durante o ciclo, deve já
+   ter sido registrada na hora com `--add-pending {N}` — este é só o ponto
+   onde a pendência é COBRADA antes de dormir. `exit 1` → reavaliar dispatch
+   pra cada issue listada (mesma tabela linha-a-linha acima) antes de
+   prosseguir pro passo 6; resolver com `--remove-pending {N}` só depois de
+   reavaliar, nunca antes.
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir (`ScheduleWakeup` com
    `delaySeconds: 3600`, ver "Cadência do wake em modo ocioso" acima); ao
