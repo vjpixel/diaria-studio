@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main as runScheduledEdicaoMain } from "../scripts/overnight/run-scheduled-edicao.ts";
+import { main as runScheduledEdicaoMain, claudeCliEnv } from "../scripts/overnight/run-scheduled-edicao.ts";
 
 const AAMMDD = "260812";
 
@@ -118,5 +118,66 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
     assert.match(scheduleLog, /FAIL\s+edition=260812 exit=1/);
     assert.match(scheduleLog, /CLAUDE_BIN/, "o log precisa carregar a mensagem acionável, não um ENOENT opaco");
+  });
+});
+
+describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608)", () => {
+  let repoRootAbs = "";
+  after(() => {
+    if (repoRootAbs) rmSync(repoRootAbs, { recursive: true, force: true });
+  });
+
+  it("claudeCliEnv remove as vars de auth da API e preserva o resto", () => {
+    const filtered = claudeCliEnv({
+      ANTHROPIC_API_KEY: "sk-ant-xxx",
+      ANTHROPIC_AUTH_TOKEN: "tok",
+      CLARICE_API_KEY: "clarice",
+      PATH: "/usr/bin",
+    });
+
+    assert.equal(filtered.ANTHROPIC_API_KEY, undefined);
+    assert.equal(filtered.ANTHROPIC_AUTH_TOKEN, undefined);
+    // O EnvironmentFile=.env existe justamente pra isto (#5114) — filtrar
+    // demais quebraria o `${CLARICE_API_KEY}` do .mcp.json no launch.
+    assert.equal(filtered.CLARICE_API_KEY, "clarice");
+    assert.equal(filtered.PATH, "/usr/bin");
+  });
+
+  it("claudeCliEnv não muta o objeto recebido", () => {
+    const original = { ANTHROPIC_API_KEY: "sk-ant-xxx" };
+    claudeCliEnv(original);
+    assert.equal(original.ANTHROPIC_API_KEY, "sk-ant-xxx");
+  });
+
+  it("CLAUDE_CODE_OAUTH_TOKEN sobrevive — é o login claude.ai, não a key da API", () => {
+    const filtered = claudeCliEnv({ CLAUDE_CODE_OAUTH_TOKEN: "oauth", ANTHROPIC_API_KEY: "sk-ant-xxx" });
+    assert.equal(filtered.CLAUDE_CODE_OAUTH_TOKEN, "oauth");
+    assert.equal(filtered.ANTHROPIC_API_KEY, undefined);
+  });
+
+  it("regressão 260818: o spawn do claude recebe env SEM ANTHROPIC_API_KEY", () => {
+    repoRootAbs = makeRepoRoot();
+    const previous = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-conta-sem-credito";
+
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const fakeExec = ((_cmd: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      capturedEnv = opts?.env;
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    try {
+      runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+
+    assert.ok(capturedEnv, "o spawn precisa passar env explícito, não herdar process.env");
+    assert.equal(
+      capturedEnv!.ANTHROPIC_API_KEY,
+      undefined,
+      "com a key no ambiente o CLI prefere a conta pay-per-token: foi assim que a edição 260818 morreu com 'Credit balance is too low' e conectores desabilitados",
+    );
   });
 });
