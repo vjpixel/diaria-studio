@@ -39,9 +39,20 @@ Plano de preflight — campanha "preflight-2608"
 ```
 
 Guarde essa saída à mão — os 3 pares URL/e-mail são usados nos passos 1-6
-abaixo, um braço de cada vez, num **navegador anônimo** (aba anônima nova
-por braço, ou limpar cookies entre braços — os 3 testes não podem
-contaminar uns aos outros).
+abaixo, um braço de cada vez, num **navegador anônimo**. **Fechar a janela
+anônima INTEIRA e abrir uma nova (Ctrl+Shift+N) a cada braço — nunca só uma
+aba nova na mesma janela, e nunca contar com "limpar cookies" como
+alternativa.** Achado ao vivo confirmado na sessão `/diaria-develop` 260817
+(ver comentários da #5522): testar os 3 braços em sequência numa mesma
+sessão de navegador fez 2 dos 3 herdarem o `utm_source` do primeiro
+cadastro (atribuição first-touch presa num cookie de 1ª parte da Beehiiv) —
+abas da mesma janela anônima compartilham cookies entre si, e janelas
+anônimas SIMULTÂNEAS também compartilham a mesma sessão off-the-record —
+só **fechar TODAS as janelas anônimas antes de abrir a próxima** zera de
+verdade (não basta "abrir mais uma janela anônima" sem fechar as
+anteriores). Reproduzir esse erro de metodologia
+produz um FALHOU espúrio no passo 7, que não é sinal real sobre o teste de
+produção.
 
 (Opcional, reduz a superfície antes de abrir o navegador: `npx tsx
 scripts/probe-beehiiv-subscribe-widget.ts --url "<URL do braço>"` — reporta
@@ -90,6 +101,17 @@ aprovação — ver nota no topo deste doc.)
    este item, e o redirect da Beehiiv não os repassa de qualquer forma
    (achado já registrado na #5499).
 
+   **Item 3 do critério de aprovação da #5522 — confirmar que o GTM
+   dispara em `/confirmado`.** Ainda em `/confirmado`, abrir DevTools →
+   Console e rodar `dataLayer` (ou a aba Network, filtrando por
+   `googletagmanager.com/gtm.js`) — confirmar que o container `GTM-TC8C65ZN`
+   carregou e que algum evento de pageview/conversão aparece no `dataLayer`
+   dessa página. A instrumentação em si já foi validada por código (#5499,
+   PR #5540 — a página carrega o container), mas isto aqui é a confirmação
+   AO VIVO, com o cadastro real de teste, de que o disparo acontece na
+   prática. Sem isso, o critério de aprovação da #5522 fica só parcialmente
+   coberto pelo passo 7 (que cobre apenas utm_source/utm_campaign).
+
 Repita os passos 1-6 pros outros 2 braços antes de seguir pro passo 7 — os
 3 cadastros precisam existir na Beehiiv pro script do passo 7 conseguir
 avaliar todos de uma vez.
@@ -123,11 +145,14 @@ avaliar todos de uma vez.
 ## Critério de pronto (das duas issues, juntas)
 
 - [ ] Passo 7 retornou `PASSOU` pros 3 braços (#5522).
+- [ ] `dataLayer`/Network confirmaram o container `GTM-TC8C65ZN` disparando
+      em `/confirmado`, checado no passo 6 (#5522, item 3 do critério de
+      aprovação original).
 - [ ] O `domain` dos cookies `_fbc`/`_fbp`/`_ga` anotado nos passos 2 e 6
       é `.diar.ia.br` nos dois pontos, e os mesmos cookies aparecem em
       `eia.diar.ia.br/confirmado` (#5543).
 - [ ] Passo 8 rodou com `--push` e os 3 e-mails de teste saíram de
       `status: active` na Beehiiv.
 
-Se os 3 itens acima baterem, as issues #5522 e #5543 podem ser fechadas
+Se os 4 itens acima baterem, as issues #5522 e #5543 podem ser fechadas
 citando este roteiro + a saída do passo 7 como evidência.
