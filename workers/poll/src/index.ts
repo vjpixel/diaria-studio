@@ -158,6 +158,15 @@ export interface Env {
    * valor do secret homônimo em `workers/cursos`, são worker/domínio
    * diferentes, a chave só precisa ser secreta, não compartilhada por design. */
   COOKIE_HMAC_SECRET?: string;
+  /** #5504: Meta Conversions API — system user token com permissão no
+   * dataset `1285191740325112` (`META_CAPI_DEFAULT_DATASET_ID`,
+   * `scripts/lib/shared/meta-capi.ts`). OPCIONAL — sem este secret,
+   * `sendCompleteRegistrationEvent` retorna `not_configured` e NÃO envia
+   * nada (fail-soft, nunca bloqueia o cadastro em si). Configurar via
+   * `wrangler secret put META_CAPI_ACCESS_TOKEN` quando o editor gerar o
+   * token no Events Manager — mesmo padrão de "armamento pendente" já
+   * usado pros outros secrets deste arquivo. */
+  META_CAPI_ACCESS_TOKEN?: string;
 }
 
 // ── Brand namespacing (#1905) ─────────────────────────────────────────────────

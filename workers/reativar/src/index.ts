@@ -93,6 +93,7 @@ import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../.
 import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4530
 import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
+import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -141,6 +142,10 @@ export interface Env {
    * OBSERVABILIDADE ausente. Ver `scripts/lib/shared/reativar-alarm-counters.ts`.
    */
   REATIVAR_ALARM?: KVNamespace;
+  /** #5504: Meta Conversions API — mesmo secret/mecanismo de
+   * `workers/poll/src/index.ts` (ver docstring lá). OPCIONAL — ausente =
+   * `sendCompleteRegistrationEvent` é no-op silencioso. */
+  META_CAPI_ACCESS_TOKEN?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -635,6 +640,14 @@ export async function handleConfirm(
     // está de fato confirmada — best-effort, nunca bloqueia a página de
     // sucesso (ver docstring de `unlinkReativarFromBrevoList`).
     await unlinkReativarFromBrevoList(env, parsed.email, fetchImpl);
+    // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
+    // best-effort, DEPOIS da confirmação `active`. Fail-soft: sem
+    // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
+    // scripts/lib/shared/meta-capi.ts).
+    await sendCompleteRegistrationEvent(
+      { email: parsed.email, eventSourceUrl: url.toString() },
+      { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+    );
     return htmlResponse(renderSuccessPage(), 200);
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
