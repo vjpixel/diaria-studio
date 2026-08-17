@@ -129,6 +129,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.log(
       `${LOG_PREFIX} snapshot ${currentDate} já foi avaliado nesta rodada (idempotência por data) — nada a fazer.`,
     );
+    // #5494 item 6: "já avaliado nesta semana" e "o backup não gerou o
+    // snapshot desta semana" são indistinguíveis nesta linha — os dois
+    // resultam em `dates[-1]` == o mesmo `currentDate` de sempre. Se esse
+    // snapshot já tem mais de 7 dias, o log acima está mascarando uma falha
+    // de `Diaria-Beehiiv-Backup`, não uma idempotência normal — avisa
+    // explícito (o alarme dedicado, `beehiiv-backup-staleness-alarm.ts`,
+    // #5494, é quem manda o e-mail; aqui é só sinal pro operador que lê o
+    // journal).
+    const ageDays = (Date.now() / 1000 - snapshotDateToEpochSeconds(currentDate)) / 86400;
+    if (ageDays > 7) {
+      console.warn(
+        `${LOG_PREFIX} ATENÇÃO: snapshot mais recente (${currentDate}) tem ${Math.round(ageDays)} dia(s) — ` +
+          `"já avaliado" pode significar "Diaria-Beehiiv-Backup não gerou snapshot novo esta semana", não que ` +
+          `está tudo em dia. Ver beehiiv-backup-staleness-alarm.ts.`,
+      );
+    }
     return;
   }
 
@@ -162,21 +178,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     previousStats = computeChannelStats(previousSubs, prevWindowSince, prevWindowUntil);
   }
 
-  const { findings, nextCtrBelowBaseStreak } = detectAcquisitionHealthFindings(currentStats, previousStats, state);
+  const { findings, suppressedFindings, nextCtrBelowBaseStreak } = detectAcquisitionHealthFindings(
+    currentStats,
+    previousStats,
+    state,
+  );
 
   console.log(
     `${LOG_PREFIX} snapshot=${currentDate} canais=${currentStats.length} findings=${findings.length} ` +
-      `(3 snapshots disponíveis: ${olderDate != null}).`,
+      `suprimidos=${suppressedFindings.length} (3 snapshots disponíveis: ${olderDate != null}).`,
   );
   for (const f of findings) {
     console.log(`${LOG_PREFIX}   [${f.type}] ${f.channel}: ${f.detail}`);
+  }
+  // #5494: findings suprimidos por divergência de largura de janela NUNCA
+  // ficam invisíveis — logados sempre (nunca só quando um e-mail sai), com
+  // console.warn pra diferenciar visualmente de um finding ativo.
+  for (const f of suppressedFindings) {
+    console.warn(`${LOG_PREFIX}   [${f.type}] ${f.channel} SUPRIMIDO: ${f.detail}`);
   }
 
   const fingerprint = findings.length > 0 ? computeFindingsFingerprint(findings) : null;
   const shouldSend = fingerprint != null && fingerprint !== state.lastAlarmedFingerprint;
 
   if (shouldSend) {
-    const { subject, body } = buildAcquisitionHealthEmail(findings, currentDate);
+    const { subject, body } = buildAcquisitionHealthEmail(findings, currentDate, suppressedFindings);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

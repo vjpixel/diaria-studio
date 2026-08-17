@@ -816,6 +816,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5249",
   },
   {
+    name: "Diaria-Beehiiv-Backup-Staleness-Alarm",
+    description: "alarme de staleness do snapshot semanal do Diaria-Beehiiv-Backup (ausente/vencido/inutilizavel)",
+    steps: [{ key: "alarm", script: "scripts/beehiiv-backup-staleness-alarm.ts" }],
+    logPath: "beehiiv-backup/.staleness-alarm.log",
+    // Domingo 04:00 BRT (#5494) — depois do Diaria-Beehiiv-Backup (03:00) e
+    // do Diaria-Acquisition-Health-Alarm (03:30, acima), pegando também o
+    // caso "o alarme de aquisição não avaliou nada porque o backup não
+    // gerou snapshot novo" (item 3 da issue #5494 — antes disso, isso ficava
+    // indistinguível de "já avaliado nesta semana" no journal).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 4, minute: 0 },
+    issue: "#5494",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

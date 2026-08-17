@@ -45,6 +45,19 @@
  * - **Comparar sempre contra a base do MESMO período**: a base de CTR é
  *   recalculada a cada rodada (mediana da própria semana), nunca lida de
  *   configuração estática.
+ * - **Nunca comparar `novosNaJanela` entre janelas de largura muito
+ *   diferente (#5494)**: `canal_parou` compara contagem BRUTA de cadastros
+ *   entre a janela atual e a anterior — se um snapshot semanal for pulado
+ *   (ex.: task não armada ainda), a janela pode virar 2 dias vs 58 dias, e
+ *   9-20 cadastros acumulados em 58 dias parecem "canal secou" quando
+ *   comparados contra 2 dias sem nenhum. `windowDays` (calculado em
+ *   `computeChannelStats` a partir da janela informada pelo caller) entra em
+ *   `detectAcquisitionHealthFindings` e SUPRIME `canal_parou` quando a razão
+ *   entre as duas larguras excede `canalParouMaxWindowRatio` — a supressão
+ *   fica registrada em `suppressedFindings` (nunca silenciada), não vira
+ *   `findings` nem entra no fingerprint de idempotência do e-mail. Preferido
+ *   a extrapolar taxa (`novos/dia`): extrapolar 2 dias pra 7 inventa
+ *   precisão que o dado não tem.
  *
  * ## Assimetria de streak/known: 1ª execução nunca alarma "canal
  * desconhecido"
@@ -92,6 +105,14 @@ export interface AcquisitionHealthThresholds {
    *  Abaixo disso é ruído de canal de cauda longa esporádico (ex.: `1 → 0`),
    *  não um sinal real de canal que parou de entregar. */
   canalParouMinNovosAnterior: number;
+  /** Razão máxima ENTRE `windowDays` (largura em dias) da janela atual e da
+   *  anterior pra `canal_parou` ainda ser considerado comparável (#5494).
+   *  Acima disso (ex.: 2 dias vs 58 dias = razão 29×) o finding é SUPRIMIDO
+   *  — a comparação de contagem bruta não é honesta entre janelas de
+   *  largura tão diferente. `null`/janela ausente em qualquer um dos dois
+   *  lados NUNCA suprime (mantém o comportamento pré-#5494 quando o caller
+   *  não informa largura). */
+  canalParouMaxWindowRatio: number;
 }
 
 export const DEFAULT_ACQUISITION_HEALTH_THRESHOLDS: AcquisitionHealthThresholds = {
@@ -102,6 +123,7 @@ export const DEFAULT_ACQUISITION_HEALTH_THRESHOLDS: AcquisitionHealthThresholds 
   ctrSampleMin: 5,
   ctrWeeksBelowBase: 2,
   canalParouMinNovosAnterior: 3,
+  canalParouMaxWindowRatio: 1.5,
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +155,13 @@ export interface ChannelStats {
    *  windowUntilEpochInclusive]` — `0` quando a janela não foi informada
    *  (ver `computeChannelStats`). */
   novosNaJanela: number;
+  /** Largura (em dias, pode ser fracionária) da janela usada pra calcular
+   *  `novosNaJanela` — `null` quando `hasWindow` é falso (caller não
+   *  informou janela). Constante entre todos os canais de uma mesma chamada
+   *  de `computeChannelStats` (#5494 — usado por `detectAcquisitionHealthFindings`
+   *  pra suprimir `canal_parou` quando a janela atual e a anterior têm
+   *  larguras muito diferentes). */
+  windowDays: number | null;
 }
 
 /** Pure: agrupa `subscribers` por canal e computa as métricas de saúde.
@@ -157,6 +186,9 @@ export function computeChannelStats(
   }
 
   const hasWindow = windowSinceEpochExclusive != null && windowUntilEpochInclusive != null;
+  const windowDays = hasWindow
+    ? ((windowUntilEpochInclusive as number) - (windowSinceEpochExclusive as number)) / 86400
+    : null;
 
   const out: ChannelStats[] = [];
   for (const [channel, subs] of groups) {
@@ -197,6 +229,7 @@ export function computeChannelStats(
       amostraVazia: amostraConsiderada === 0,
       ctrAgregadoPct,
       novosNaJanela,
+      windowDays,
     });
   }
 
@@ -213,6 +246,26 @@ export function snapshotDateToEpochSeconds(date: string): number {
   }
   const [, y, mo, d] = m;
   return Math.floor(Date.UTC(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0) / 1000);
+}
+
+/** Pure (#5494): `true` quando as duas larguras de janela divergem além de
+ *  `maxRatio` (razão entre a maior e a menor). `null` em qualquer um dos
+ *  lados, ou largura `<= 0` em qualquer um dos lados (dado degenerado, não
+ *  dá pra formar razão), NUNCA diverge — mantém o comportamento anterior a
+ *  #5494 quando o caller não informou largura de janela. */
+export function windowsDivergeBeyondTolerance(
+  windowDaysCurrent: number | null,
+  windowDaysPrevious: number | null,
+  maxRatio: number,
+): boolean {
+  if (windowDaysCurrent == null || windowDaysPrevious == null) return false;
+  if (windowDaysCurrent <= 0 || windowDaysPrevious <= 0) return false;
+  const ratio = Math.max(windowDaysCurrent, windowDaysPrevious) / Math.min(windowDaysCurrent, windowDaysPrevious);
+  return ratio > maxRatio;
+}
+
+function fmtWindowDays(days: number | null): string {
+  return days == null ? "largura desconhecida" : `${Math.round(days * 10) / 10}d`;
 }
 
 /** Mediana pura de uma lista de números. `null` se vazia. */
@@ -275,6 +328,11 @@ export interface AcquisitionHealthFinding {
 
 export interface DetectAcquisitionHealthResult {
   findings: AcquisitionHealthFinding[];
+  /** Findings que TERIAM disparado mas foram suprimidos por divergência de
+   *  largura de janela (#5494 — `canalParouMaxWindowRatio`). Nunca entram em
+   *  `findings`, nunca contam pro fingerprint de idempotência do e-mail —
+   *  mas ficam aqui pra o caller logar/expor, nunca silenciar. */
+  suppressedFindings: AcquisitionHealthFinding[];
   /** Streak atualizado (não inclui `knownChannels`/`lastChecked*` — o
    *  caller monta o `AcquisitionHealthState` completo, já que só ele sabe
    *  a data do snapshot e o "agora"). */
@@ -309,6 +367,7 @@ export function detectAcquisitionHealthFindings(
   const ctrBase = median(ctrPool);
 
   const findings: AcquisitionHealthFinding[] = [];
+  const suppressedFindings: AcquisitionHealthFinding[] = [];
   const nextCtrBelowBaseStreak: Record<string, number> = {};
 
   for (const stat of current) {
@@ -364,11 +423,23 @@ export function detectAcquisitionHealthFindings(
     // (que nunca teve volume de verdade) alarmava tão alto quanto um canal
     // que de fato secou depois de entregar dezenas.
     if (prev && prev.novosNaJanela >= thresholds.canalParouMinNovosAnterior && stat.novosNaJanela === 0) {
-      findings.push({
-        type: "canal_parou",
-        channel: stat.channel,
-        detail: `${prev.novosNaJanela} cadastro(s) novo(s) na semana anterior, 0 nesta semana.`,
-      });
+      const detail = `${prev.novosNaJanela} cadastro(s) novo(s) na semana anterior, 0 nesta semana.`;
+      if (windowsDivergeBeyondTolerance(stat.windowDays, prev.windowDays, thresholds.canalParouMaxWindowRatio)) {
+        // Guard 5 (#5494): janelas de largura muito diferente (ex.: domingo
+        // pulado — 2 dias vs 58 dias) tornam a comparação bruta desonesta.
+        // Suprime SEM silenciar: fica em `suppressedFindings`, fora do
+        // fingerprint de idempotência (não dispara e-mail sozinho).
+        suppressedFindings.push({
+          type: "canal_parou",
+          channel: stat.channel,
+          detail:
+            `${detail} SUPRIMIDO (#5494): janela atual ${fmtWindowDays(stat.windowDays)} vs anterior ` +
+            `${fmtWindowDays(prev.windowDays)} — larguras divergem além da tolerância ` +
+            `(razão > ${thresholds.canalParouMaxWindowRatio}×), comparação não é honesta.`,
+        });
+      } else {
+        findings.push({ type: "canal_parou", channel: stat.channel, detail });
+      }
     }
 
     // ── Sinal 3b: canal nunca visto antes ───────────────────────────────────
@@ -384,7 +455,7 @@ export function detectAcquisitionHealthFindings(
     }
   }
 
-  return { findings, nextCtrBelowBaseStreak };
+  return { findings, suppressedFindings, nextCtrBelowBaseStreak };
 }
 
 /** Fingerprint estável dos findings (tipo+canal, ordenado) — idempotência:
@@ -421,6 +492,10 @@ const FINDING_TYPE_LABEL: Record<AcquisitionHealthFindingType, string> = {
 export function buildAcquisitionHealthEmail(
   findings: AcquisitionHealthFinding[],
   snapshotDate: string,
+  /** #5494 — findings suprimidos por divergência de largura de janela nesta
+   *  rodada. `[]` (default) preserva o corpo pré-#5494. Nunca influencia o
+   *  subject (a contagem principal é só de `findings` de verdade). */
+  suppressedFindings: AcquisitionHealthFinding[] = [],
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] Alarme de saúde de aquisição — ${findings.length} achado(s) (${snapshotDate})`;
   const lines: string[] = [
@@ -431,6 +506,17 @@ export function buildAcquisitionHealthEmail(
   ];
   for (const f of findings) {
     lines.push(`- [${FINDING_TYPE_LABEL[f.type]}] ${f.channel}: ${f.detail}`);
+  }
+  if (suppressedFindings.length > 0) {
+    lines.push(
+      "",
+      `${suppressedFindings.length} achado(s) SUPRIMIDO(S) por divergência de largura de janela (#5494) — ` +
+        `não contam pro fingerprint nem disparam e-mail sozinhos:`,
+      "",
+    );
+    for (const f of suppressedFindings) {
+      lines.push(`- [SUPRIMIDO] [${FINDING_TYPE_LABEL[f.type]}] ${f.channel}: ${f.detail}`);
+    }
   }
   lines.push("", "Detalhes/limiares: scripts/lib/acquisition-health.ts, docs/acquisition-health-alarm-setup.md.");
   return { subject, body: lines.join("\n") };
