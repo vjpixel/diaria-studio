@@ -17,6 +17,20 @@
  * **O registry é a fonte da verdade dos VALORES.** Os emissores importam daqui;
  * a UI só edita METADADOS (descrição/status) — nunca os valores, que sem uma
  * mudança correspondente no código do emissor sairiam do ar dessincronizados.
+ *
+ * **LEMBRETE (#5514): todo link novo de campanha PRECISA de `utm_source` +
+ * `utm_campaign`.** A #5514 mediu 45% da coorte de lançamento (21/07–02/08)
+ * entrando sem NENHUMA atribuição — 3× a taxa do resto da base — porque
+ * links de divulgação saíram sem UTM em superfícies que apagam referrer
+ * (navegador in-app, WhatsApp, e-mail). O dado perdido é IRRECUPERÁVEL (a
+ * API Beehiiv não guarda log de eventos por assinante). Antes de publicar
+ * copy nova com um link `diar.ia.br` — post ad-hoc, mensagem de divulgação,
+ * campo de bio de plataforma — (1) monte o link usando um perfil DESTE
+ * arquivo (`UTM_EMITTERS`/`EXTERNAL_UTM_SURFACES`/`buildExternalSurfaceUrl`
+ * conforme o caso) em vez de colar a URL crua, e (2) rode
+ * `npx tsx scripts/check-utm-coverage.ts --text "..."` (ou `--file`) —
+ * lint puro em `scripts/lib/shared/utm-link-check.ts` que aponta qualquer
+ * link `diar.ia.br` sem `utm_source`/`utm_campaign` ANTES de sair pro ar.
  */
 
 /** Ciclo de vida de um emissor, do ponto de vista editorial. */
