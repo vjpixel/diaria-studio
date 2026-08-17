@@ -466,6 +466,11 @@ export async function handleJogarSubscribe(
   request: Request,
   env: Env,
   deps: SubscribeDeps = {},
+  // #5504 hotfix: ExecutionContext OPCIONAL, mesmo padrão de handleVote/
+  // handleVoteFastPath (#3983) — habilita `ctx.waitUntil()` pro disparo CAPI
+  // abaixo SEM atrasar a resposta ao usuário. Sem `ctx` real (ex: teste que
+  // não injeta um), cai no fallback síncrono (comportamento pré-hotfix).
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const raw = await request.text();
@@ -487,16 +492,25 @@ export async function handleJogarSubscribe(
   const utm = resolveSubscribeUtm(v.source);
   const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
   if (result.ok) {
-    // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
-    // best-effort, DEPOIS que o cadastro na Beehiiv já foi confirmado.
-    // `sendCompleteRegistrationEvent` nunca lança (fail-soft, ver
+    // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
+    // — fire-and-forget best-effort, DEPOIS que o cadastro na Beehiiv já foi
+    // confirmado. `sendCompleteRegistrationEvent` nunca lança (fail-soft, ver
     // scripts/lib/shared/meta-capi.ts) — sem META_CAPI_ACCESS_TOKEN
     // configurado é no-op silencioso; qualquer erro de rede/Meta também
     // nunca chega a este handler nem afeta a resposta 200 já garantida.
-    await sendCompleteRegistrationEvent(
+    // Genuinamente fire-and-forget agora: `ctx.waitUntil()` adia o envio pra
+    // depois da resposta ao usuário — o `await` direto (achado do review
+    // pós-merge #5504) atrasava a resposta em até
+    // `META_CAPI_FETCH_TIMEOUT_MS` (8s) sempre que a Meta respondia lento.
+    const sendEvent = sendCompleteRegistrationEvent(
       { email: v.email, eventSourceUrl: request.url },
       { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
     );
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(sendEvent);
+    } else {
+      await sendEvent;
+    }
     return json({ ok: true }, 200, env);
   }
   if (result.reason === "not_configured") {

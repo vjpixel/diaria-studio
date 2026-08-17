@@ -325,7 +325,10 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  // #5504 hotfix: `ctx` (ExecutionContext) OPCIONAL — 3º parâmetro padrão do
+  // runtime Workers, threadeado até `handleGateSubscribe` pra habilitar
+  // `ctx.waitUntil()` no disparo CAPI sem atrasar a resposta ao usuário.
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     // #5097 item D: fecha o host genérico `cursos.diaria.workers.dev` —
     // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
     // paralelo ao host canônico. Redirect ANTES de qualquer outra lógica
@@ -365,7 +368,7 @@ export default {
       return handleGateVerify(request, runtimeEnv);
     }
     if (url.pathname === "/gate/subscribe" && request.method === "POST") {
-      return handleGateSubscribe(request, runtimeEnv);
+      return handleGateSubscribe(request, runtimeEnv, {}, ctx);
     }
     if (url.pathname === "/gate/logout" && request.method === "POST") {
       return json({ ok: true }, 200, runtimeEnv, { "Set-Cookie": clearSessionCookieHeader() });

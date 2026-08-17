@@ -1837,7 +1837,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // na Beehiiv. `env` CRU (o rate-limit usa `env.POLL` sem prefixo de brand;
     // a assinatura é do brand `web`). Anti-abuso (honeypot + rate-limit +
     // validação server-side) dentro do handler, ver subscribe.ts.
-    if (path === "/jogar/subscribe" && request.method === "POST") return handleJogarSubscribe(request, env);
+    // #5504 hotfix: `ctx` (ExecutionContext) propagado — habilita
+    // `ctx.waitUntil()` no disparo CompleteRegistration da Meta CAPI dentro
+    // de handleJogarSubscribe, ver rationale em subscribe.ts.
+    if (path === "/jogar/subscribe" && request.method === "POST") return handleJogarSubscribe(request, env, {}, ctx);
     // #4054: gate por rodada do caminho de fora — `env` CRU (mesmo racional
     // do resto de /jogar*: rate-limit/subscriber-check/cookie de sessão não
     // dependem de brand namespacing). Ver web-gate.ts.

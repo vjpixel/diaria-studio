@@ -612,6 +612,11 @@ export async function handleConfirm(
   env: Env,
   fetchImpl: typeof fetch = fetch,
   sleepImpl?: (ms: number) => Promise<void>,
+  // #5504 hotfix: ExecutionContext OPCIONAL — habilita `ctx.waitUntil()` pro
+  // disparo CAPI abaixo sem atrasar a resposta ao usuário (mesmo padrão de
+  // handleJogarSubscribe/handleGateSubscribe). Sem `ctx` real (ex: teste que
+  // não injeta um), cai no fallback síncrono.
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const parsed = parseEmailParam(url);
   if (!parsed.ok) {
@@ -640,21 +645,32 @@ export async function handleConfirm(
     // está de fato confirmada — best-effort, nunca bloqueia a página de
     // sucesso (ver docstring de `unlinkReativarFromBrevoList`).
     await unlinkReativarFromBrevoList(env, parsed.email, fetchImpl);
-    // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
-    // best-effort, DEPOIS da confirmação `active`. Fail-soft: sem
-    // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
-    // scripts/lib/shared/meta-capi.ts).
-    await sendCompleteRegistrationEvent(
+    // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
+    // — fire-and-forget best-effort, DEPOIS da confirmação `active`.
+    // Fail-soft: sem META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca
+    // chega aqui (ver scripts/lib/shared/meta-capi.ts). `ctx.waitUntil()`
+    // adia o envio pra depois da resposta ao usuário — o `await` direto
+    // (achado do review pós-merge #5504) atrasava a resposta em até
+    // `META_CAPI_FETCH_TIMEOUT_MS` (8s) sempre que a Meta respondia lento.
+    const sendEvent = sendCompleteRegistrationEvent(
       { email: parsed.email, eventSourceUrl: url.toString() },
       { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
     );
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(sendEvent);
+    } else {
+      await sendEvent;
+    }
     return htmlResponse(renderSuccessPage(), 200);
   }
   return htmlResponse(renderNotConfirmedPage(), 200);
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  // #5504 hotfix: `ctx` (ExecutionContext) OPCIONAL — 3º parâmetro padrão do
+  // runtime Workers, threadeado até `handleConfirm` pra habilitar
+  // `ctx.waitUntil()` no disparo CAPI sem atrasar a resposta ao usuário.
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: { ...CORS_HEADERS, "Access-Control-Allow-Methods": "GET, OPTIONS" } });
@@ -665,6 +681,6 @@ export default {
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
-    return handleConfirm(url, env);
+    return handleConfirm(url, env, fetch, undefined, ctx);
   },
 };
