@@ -3629,6 +3629,26 @@ describe("#5490: renderOpenRateByDaySection", () => {
     const html = renderOpenRateByDaySection(rows);
     assert.match(html, /amostra pequena/, "linha com 1 campanha deve marcar amostra pequena");
   });
+
+  // #5593: gráfico SVG acima da tabela — a tabela em si (asserções acima)
+  // continua intacta; aqui só confere que o `<svg>` foi embutido junto.
+  test("#5593: seção inclui o gráfico SVG ANTES da tabela (mantém a tabela abaixo)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(90, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    const svgIdx = html.indexOf("<svg");
+    const tableIdx = html.indexOf("<table>");
+    assert.ok(svgIdx > -1, "deve conter um <svg> inline");
+    assert.ok(tableIdx > -1, "a tabela deve continuar presente");
+    assert.ok(svgIdx < tableIdx, "o gráfico deve vir ANTES da tabela no markup");
+  });
+
+  test("#5593: rows=[] (só excluded) não tenta renderizar o gráfico", () => {
+    const excluded = [{ name: "Clarice News 2605 d09-A", sentDate: "2026-06-24T09:00:00Z" }];
+    const html = renderOpenRateByDaySection([], excluded);
+    assert.doesNotMatch(html, /<svg/, "sem linhas, não há dado pro gráfico");
+  });
 });
 
 // ─── #2619: renderMvStatusSection — formato de data no badge ─────────────────
