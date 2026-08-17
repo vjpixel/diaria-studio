@@ -33,6 +33,13 @@ const DEFECT_RUN =
   "  googleAds:search respondeu HTTP 400: queryError...\n" +
   "===== fim (google=0) =====\n";
 
+const DEFECT_RUN_NEXT_DAY =
+  "\n===== 2026-08-18T09:50:00.000Z - ingestão de gasto de aquisição =====\n" +
+  "----- google -----\n" +
+  "[google-ads-ingest-spend] ✖ DEFEITO na ingestão — NÃO é indisponibilidade externa.\n" +
+  "  googleAds:search respondeu HTTP 400: queryError...\n" +
+  "===== fim (google=0) =====\n";
+
 describe("parseLatestLogRun", () => {
   it("log null → null", () => {
     assert.equal(parseLatestLogRun(null), null);
@@ -185,10 +192,20 @@ describe("toAlarmFinding", () => {
     assert.equal(f.priority, "P2");
   });
 
-  it("fingerprint distingue defect (por timestamp) de no-run (fixo) — não colapsam no mesmo achado", () => {
+  it("fingerprint distingue defect de no-run, mas cada um é fixo (nunca varia por timestamp) — family 'estado' precisa disso pro auto-close por streak", () => {
     const defectFinding = toAlarmFinding(evaluateAdsSpendIngestAlarm(DEFECT_RUN, NOW));
     const noRunFinding = toAlarmFinding(evaluateAdsSpendIngestAlarm(null, NOW));
     assert.notEqual(defectFinding.fingerprint, noRunFinding.fingerprint);
     assert.equal(noRunFinding.fingerprint, "no-run");
+    assert.equal(defectFinding.fingerprint, "defect");
+
+    // Duas execuções em dias diferentes com o MESMO tipo de defeito devem
+    // produzir o MESMO fingerprint — senão cada dia com defeito abre uma
+    // issue nova em vez de acumular streak pro auto-close (mesmo padrão de
+    // `clarice-envio-alarm.ts` pros achados family "estado").
+    const defectFindingNextDay = toAlarmFinding(
+      evaluateAdsSpendIngestAlarm(DEFECT_RUN_NEXT_DAY, new Date("2026-08-18T20:00:00.000Z")),
+    );
+    assert.equal(defectFindingNextDay.fingerprint, defectFinding.fingerprint);
   });
 });

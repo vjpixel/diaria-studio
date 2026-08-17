@@ -87,7 +87,7 @@ function readLogContent(logPath: string): string | null {
 }
 
 export function toAlarmFinding(evaluation: AdsSpendIngestAlarmEvaluation): AlarmFinding {
-  const fingerprint = evaluation.verdict === "alarm-defect" ? `defect-${evaluation.latestRunAt}` : "no-run";
+  const fingerprint = evaluation.verdict === "alarm-defect" ? "defect" : "no-run";
   return {
     check: "ads-spend-ingest",
     fingerprint,
