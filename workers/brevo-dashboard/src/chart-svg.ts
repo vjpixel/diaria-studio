@@ -73,26 +73,27 @@ function fmt(n: number): string {
 }
 
 /**
- * Divide uma sequência (alinhada 1:1 a `slots`, alguns `null` = buraco —
- * dia sem envio) em "runs" contíguos de itens não-nulos, cada um com seu
- * índice original preservado. Usado pra desenhar UM segmento de linha/área
- * por trecho contíguo de dados — dia sem envio vira buraco de verdade na
- * linha (#5593), nunca um zero interpolado. Exportado pra teste unitário.
+ * Extrai os itens não-nulos de uma sequência (alinhada 1:1 a `slots`, alguns
+ * `null` = buraco — dia sem envio), preservando o índice original de cada
+ * item, e devolve UM único "run" contínuo com todos eles em ordem. Usado pra
+ * desenhar a linha/área do gráfico ATRAVESSANDO os buracos em vez de
+ * quebrá-la neles (#5610 item 2 — inverte a decisão original do #5593, que
+ * desenhava um segmento de path por trecho contíguo e deixava um buraco de
+ * verdade na linha a cada dia sem envio; o editor pediu o oposto — pediu
+ * pra conectar visualmente através dos dias sem dado, mesmo sabendo que uma
+ * linha reta atravessando um gap também pode enganar tanto quanto um zero
+ * interpolado — ver ressalva no corpo da issue #5610). O nome/assinatura da
+ * função (retorna `Array<Array<...>>`, hoje sempre com 0 ou 1 elemento) foi
+ * mantido pra não mexer no formato consumido por `renderSeries` abaixo.
+ * Exportado pra teste unitário.
  */
 export function splitIntoRuns<T>(slots: Array<T | null>): Array<Array<{ index: number; value: T }>> {
-  const runs: Array<Array<{ index: number; value: T }>> = [];
-  let current: Array<{ index: number; value: T }> = [];
+  const run: Array<{ index: number; value: T }> = [];
   for (let i = 0; i < slots.length; i++) {
     const v = slots[i];
-    if (v === null) {
-      if (current.length > 0) runs.push(current);
-      current = [];
-    } else {
-      current.push({ index: i, value: v });
-    }
+    if (v !== null) run.push({ index: i, value: v });
   }
-  if (current.length > 0) runs.push(current);
-  return runs;
+  return run.length > 0 ? [run] : [];
 }
 
 /**
@@ -169,14 +170,23 @@ function fmtDayLabel(day: string): string {
  * verticais, sem legenda flutuante (rótulos estáticos no canto do próprio
  * SVG).
  *
- * Buraco (dia sem envio, ausente de `rows`) nunca vira zero interpolado —
- * `splitIntoRuns` desenha um segmento de path por trecho contíguo de dados,
- * então o buraco é literalmente ausência de linha/área naquele trecho.
+ * Buraco (dia sem envio, ausente de `rows`) NÃO quebra mais a linha (#5610
+ * item 2 — inverte a decisão original do #5593, que desenhava um segmento
+ * de path por trecho contíguo e deixava um buraco de verdade a cada dia
+ * sem envio): `splitIntoRuns` agora devolve todos os pontos como um único
+ * run contínuo, então a linha/área atravessa os dias sem dado. Os marcadores
+ * (círculos) continuam desenhados só nos dias com dado de verdade — nunca
+ * há marcador num dia sem envio, só a linha passa por cima dele.
  *
- * Amostra pequena (`smallSample`, <2 campanhas no dia) ganha marcador
- * distinto — círculo OCO (stroke colorido, fill = var(--card), a cor de
- * fundo do "card" da tabela) em vez do círculo preenchido normal — nas duas
- * séries daquele dia, já que a flag é por-dia, não por-série.
+ * Dois marcadores distintos, combináveis no mesmo ponto:
+ * - Amostra pequena (`smallSample`, <2 campanhas no dia) — círculo OCO
+ *   (stroke colorido, fill = var(--card), a cor de fundo do "card") em vez
+ *   do círculo preenchido normal — nas duas séries daquele dia, já que a
+ *   flag é por-dia, não por-série.
+ * - Imaturo (`immature`, alguma campanha do dia <48h — #5610 item 5, dado
+ *   nunca mais é excluído do agregado) — opacidade reduzida (0.55) no
+ *   marcador, sinalizando visualmente que o open rate ainda pode subir.
+ * Legenda textual dos dois: `renderOpenRateByDaySection` (sections-core.ts).
  *
  * `rows.length === 0` retorna `""` — a seção-mãe (`renderOpenRateByDaySection`)
  * já decide se a seção inteira aparece; este helper só cuida do `<svg>`.
@@ -211,15 +221,16 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     return chartBottom - (chartH * clamped) / 100;
   };
 
-  const deliveredSlots: Array<{ point: ChartPoint; smallSample: boolean } | null> = slots.map((s, i) =>
-    s ? { point: { x: xAt(i), y: yDelivered(s.delivered) }, smallSample: s.smallSample } : null,
+  type SeriesPoint = { point: ChartPoint; smallSample: boolean; immature: boolean };
+  const deliveredSlots: Array<SeriesPoint | null> = slots.map((s, i) =>
+    s ? { point: { x: xAt(i), y: yDelivered(s.delivered) }, smallSample: s.smallSample, immature: s.immature } : null,
   );
-  const openRateSlots: Array<{ point: ChartPoint; smallSample: boolean } | null> = slots.map((s, i) =>
-    s ? { point: { x: xAt(i), y: yOpenRate(s.openRate) }, smallSample: s.smallSample } : null,
+  const openRateSlots: Array<SeriesPoint | null> = slots.map((s, i) =>
+    s ? { point: { x: xAt(i), y: yOpenRate(s.openRate) }, smallSample: s.smallSample, immature: s.immature } : null,
   );
 
   function renderSeries(
-    seriesSlots: Array<{ point: ChartPoint; smallSample: boolean } | null>,
+    seriesSlots: Array<SeriesPoint | null>,
     colorVar: string,
     gradientId: string,
     baselineY: number,
@@ -237,10 +248,15 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
         areas += `<path d="${areaPath}" fill="url(#${gradientId})" stroke="none"/>`;
       }
       for (const { value } of run) {
-        const { point, smallSample } = value;
+        const { point, smallSample, immature } = value;
+        // #5610 item 3: círculo OCO (fill=var(--card)) sinaliza amostra pequena.
+        // #5610 item 5: opacidade reduzida (sem excluir o dado) sinaliza que a
+        // campanha ainda está dentro da janela de maturação de 48h — as duas
+        // condições podem coincidir no mesmo ponto (marcador oco + semitransparente).
+        const opacity = immature ? ` opacity="0.55"` : "";
         markers += smallSample
-          ? `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="4" fill="var(--card)" stroke="var(${colorVar})" stroke-width="2"/>`
-          : `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="3" fill="var(${colorVar})"/>`;
+          ? `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="4" fill="var(--card)" stroke="var(${colorVar})" stroke-width="2"${opacity}/>`
+          : `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="3" fill="var(${colorVar})"${opacity}/>`;
       }
     }
     const defs = `<linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
@@ -298,7 +314,7 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700"><tspan fill="var(--brand)">●</tspan> <tspan fill="var(--ink)">Delivered</tspan></text>
     <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>`;
 
-  return `<svg class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver tabela abaixo para valores exatos">
+  return `<svg class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver texto acima para a janela e as legendas de marcador">
     <defs>${delivered.defs}${openRate.defs}</defs>
     ${seriesLabels}
     ${gridlines}
