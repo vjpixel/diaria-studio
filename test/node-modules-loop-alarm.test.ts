@@ -14,8 +14,8 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { tmpdir, platform } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import {
@@ -23,12 +23,21 @@ import {
   emptyNodeModulesLoopAlarmState,
   advanceNodeModulesLoopAlarmState,
   shouldAlarmNodeModulesLoop,
+  isNodeModulesLoopPending,
   nodeModulesLoopFindingKey,
   buildNodeModulesLoopAlarmEmail,
   type SymlinkLoopInput,
   type SymlinkLoopEvaluation,
 } from "../scripts/lib/node-modules-loop-alarm.ts";
-import { loadState, saveState, inspectNodeModules, toAlarmFinding } from "../scripts/node-modules-loop-alarm.ts";
+import {
+  loadState,
+  saveState,
+  inspectNodeModules,
+  toAlarmFinding,
+  type NodeModulesFsOps,
+} from "../scripts/node-modules-loop-alarm.ts";
+
+const isWindows = platform() === "win32";
 
 // Fixture de checkout construída via path.resolve (não uma string POSIX
 // hardcoded) de propósito — em produção esta checagem roda no servidor
@@ -88,6 +97,29 @@ describe("evaluateNodeModulesSymlink (#5571) — detector puro", () => {
     const r = evaluateNodeModulesSymlink({ nodeModulesPath: messy, isSymlink: true, linkTarget: NODE_MODULES });
     assert.equal(r.status, "loop");
   });
+
+  it("tolera um separador final redundante no alvo lido (achado do self-review #5571 — junction do Windows)", () => {
+    // Alguns mecanismos de symlink/junction podem devolver o alvo com um
+    // separador a mais no fim — sem a tolerância em sameResolvedPath(),
+    // isso mascararia um loop genuíno atrás de uma diferença puramente de
+    // formatação, não de destino real.
+    const r = evaluateNodeModulesSymlink(input({ isSymlink: true, linkTarget: `${NODE_MODULES}${sep}` }));
+    assert.equal(r.status, "loop");
+  });
+});
+
+describe("isNodeModulesLoopPending (#5571 self-review) — 'unresolved' também é achado", () => {
+  it("false pra status ok", () => {
+    assert.equal(isNodeModulesLoopPending({ status: "ok" }), false);
+  });
+
+  it("true pra status loop", () => {
+    assert.equal(isNodeModulesLoopPending({ status: "loop" }), true);
+  });
+
+  it("true pra status unresolved (symlink com alvo ilegível já é achado, não só um console.log)", () => {
+    assert.equal(isNodeModulesLoopPending({ status: "unresolved" }), true);
+  });
 });
 
 describe("idempotência do alarme (fingerprint + estado)", () => {
@@ -125,6 +157,12 @@ describe("idempotência do alarme (fingerprint + estado)", () => {
     // um estado gravado com o loop antigo não mascare um loop novo/diferente.
     assert.notEqual(nodeModulesLoopFindingKey(loopEval), nodeModulesLoopFindingKey(otherTarget));
   });
+
+  it("shouldAlarmNodeModulesLoop: true pra status unresolved também (#5571 self-review)", () => {
+    const unresolvedEval = evaluateNodeModulesSymlink(input({ isSymlink: true, linkTarget: null }));
+    assert.equal(unresolvedEval.status, "unresolved");
+    assert.equal(shouldAlarmNodeModulesLoop(emptyNodeModulesLoopAlarmState(), unresolvedEval), true);
+  });
 });
 
 describe("buildNodeModulesLoopAlarmEmail (puro)", () => {
@@ -152,6 +190,24 @@ describe("buildNodeModulesLoopAlarmEmail (puro)", () => {
     });
     assert.match(body, /Issue: #5571/);
   });
+
+  it("issueRef.action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh (#5571 self-review, mesmo padrão de robots-txt-drift-check.test.ts)", () => {
+    const { body } = buildNodeModulesLoopAlarmEmail(loopEval, NODE_MODULES, new Date(), {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh: not authenticated",
+    });
+    assert.match(body, /Issue: falha ao criar\/reusar \(gh: not authenticated\)/);
+  });
+
+  it("status unresolved gera assunto/corpo diferentes do loop confirmado (não afirma FilesystemLoop sem certeza)", () => {
+    const unresolvedEval = evaluateNodeModulesSymlink(input({ isSymlink: true, linkTarget: null }));
+    const { subject, body } = buildNodeModulesLoopAlarmEmail(unresolvedEval, NODE_MODULES);
+    assert.match(subject, /alvo ilegível/);
+    assert.doesNotMatch(subject, /auto-referente/);
+    assert.doesNotMatch(body, /FilesystemLoop/);
+  });
 });
 
 describe("inspectNodeModules (#5571, I/O) — sem symlink real no filesystem", () => {
@@ -168,6 +224,92 @@ describe("inspectNodeModules (#5571, I/O) — sem symlink real no filesystem", (
     try {
       const result = inspectNodeModules(tmpDir);
       assert.equal(result.isSymlink, false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("inspectNodeModules (#5571 self-review) — lstat ENOENT vs outros errno, via fsOps injetado", () => {
+  function enoentError(): NodeJS.ErrnoException {
+    const e = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+    e.code = "ENOENT";
+    return e;
+  }
+  function eaccesError(): NodeJS.ErrnoException {
+    const e = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+    e.code = "EACCES";
+    return e;
+  }
+
+  it("lstat lança ENOENT -> não é symlink, nunca propaga (mesmo comportamento fail-soft de antes)", () => {
+    const fsOps: NodeModulesFsOps = {
+      lstatSync: (() => {
+        throw enoentError();
+      }) as unknown as NodeModulesFsOps["lstatSync"],
+      readlinkSync: (() => "" ) as unknown as NodeModulesFsOps["readlinkSync"],
+    };
+    const result = inspectNodeModules(NODE_MODULES, fsOps);
+    assert.equal(result.isSymlink, false);
+    assert.equal(result.linkTarget, null);
+  });
+
+  it("lstat lança EACCES (ou outro errno != ENOENT) -> PROPAGA, nunca reporta 'ok' silenciosamente (#5571 self-review, achado do silent-failure-hunter)", () => {
+    const fsOps: NodeModulesFsOps = {
+      lstatSync: (() => {
+        throw eaccesError();
+      }) as unknown as NodeModulesFsOps["lstatSync"],
+      readlinkSync: (() => "") as unknown as NodeModulesFsOps["readlinkSync"],
+    };
+    assert.throws(() => inspectNodeModules(NODE_MODULES, fsOps), /EACCES/);
+  });
+
+  it("lstat ok + readlink lança -> linkTarget null (status unresolved), nunca propaga", () => {
+    const fsOps: NodeModulesFsOps = {
+      lstatSync: (() => ({ isSymbolicLink: () => true })) as unknown as NodeModulesFsOps["lstatSync"],
+      readlinkSync: (() => {
+        throw new Error("EIO: i/o error");
+      }) as unknown as NodeModulesFsOps["readlinkSync"],
+    };
+    const result = inspectNodeModules(NODE_MODULES, fsOps);
+    assert.equal(result.isSymlink, true);
+    assert.equal(result.linkTarget, null);
+    assert.equal(evaluateNodeModulesSymlink(result).status, "unresolved");
+  });
+
+  it("lstat + readlink ok -> isSymlink true, linkTarget preenchido", () => {
+    const fsOps: NodeModulesFsOps = {
+      lstatSync: (() => ({ isSymbolicLink: () => true })) as unknown as NodeModulesFsOps["lstatSync"],
+      readlinkSync: (() => NODE_MODULES) as unknown as NodeModulesFsOps["readlinkSync"],
+    };
+    const result = inspectNodeModules(NODE_MODULES, fsOps);
+    assert.equal(result.isSymlink, true);
+    assert.equal(result.linkTarget, NODE_MODULES);
+    assert.equal(evaluateNodeModulesSymlink(result).status, "loop");
+  });
+});
+
+describe("inspectNodeModules (#5571 self-review) — symlink REAL auto-referente no filesystem", () => {
+  it("(guardado) detecta um symlink/junction real apontando pra si mesmo — pula sem falhar se a plataforma recusar (privilégio Windows)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "node-modules-loop-alarm-real-"));
+    const realNodeModules = join(tmpDir, "node_modules");
+    try {
+      // Auto-referente de propósito: symlink cujo alvo é ELE MESMO — o
+      // sintoma exato do achado #5571. `symlinkSync(target, path)` não
+      // exige que `target` já exista, então isso funciona mesmo sem
+      // `realNodeModules` nunca ter sido um diretório de verdade.
+      symlinkSync(realNodeModules, realNodeModules, isWindows ? "junction" : "dir");
+    } catch {
+      // Ambiente sem privilégio pra symlink (ex: Windows sem Developer
+      // Mode/admin — ver memória `dev-mode-ligado-nao-basta-symlink`) —
+      // pula sem falhar, mesmo padrão de test/merge-local-pending.test.ts.
+      rmSync(tmpDir, { recursive: true, force: true });
+      return;
+    }
+    try {
+      const result = inspectNodeModules(realNodeModules);
+      assert.equal(result.isSymlink, true);
+      assert.equal(evaluateNodeModulesSymlink(result).status, "loop");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -226,5 +368,14 @@ describe("toAlarmFinding — family (#5558/#5553)", () => {
     const finding = toAlarmFinding(evaluation);
     assert.equal(finding.priority, "P2");
     assert.deepEqual(finding.labels, ["bug"]);
+  });
+
+  it("status unresolved também gera finding com family 'estado' — título diferente do loop confirmado (#5571 self-review)", () => {
+    const evaluation = evaluateNodeModulesSymlink(input({ isSymlink: true, linkTarget: null }));
+    assert.equal(evaluation.status, "unresolved");
+    const finding = toAlarmFinding(evaluation);
+    assert.equal(finding.family, "estado");
+    assert.match(finding.title, /alvo ilegível/);
+    assert.doesNotMatch(finding.title, /auto-referente/);
   });
 });

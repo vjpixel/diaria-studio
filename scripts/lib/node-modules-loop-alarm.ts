@@ -10,7 +10,8 @@
  * corromperam `node_modules` num symlink apontando pra si mesmo
  * (`node_modules -> {mesmo path absoluto}`), quebrando todo `npx tsx`/`npm`
  * nesse checkout com `FilesystemLoop`/"Too many levels of symbolic links" —
- * sem stdout, exit code opaco (216).
+ * sem stdout, exit code opaco (216 na ocorrência observada — ver #5571 pro
+ * valor exato; detalhe forense de um incidente, não uma garantia).
  *
  * `family: "estado"` (#5553) — a condição é RE-CHECÁVEL a cada execução;
  * resolve sozinha assim que alguém rodar `rm node_modules && npm ci`
@@ -52,6 +53,17 @@ export interface SymlinkLoopEvaluation {
   message: string;
 }
 
+/** Compara dois paths ABSOLUTOS já normalizados ignorando um único
+ * separador final redundante — alguns mecanismos de symlink/junction (ex:
+ * junction do Windows, achado no self-review do #5571) podem devolver o
+ * alvo lido com um separador a mais no fim; sem essa tolerância, um loop
+ * genuíno passaria por "ok" só por causa da formatação do path devolvido
+ * pelo SO, não por ele apontar pra outro lugar de verdade. */
+function sameResolvedPath(a: string, b: string): boolean {
+  const strip = (p: string) => (p.length > 1 ? p.replace(/[\\/]+$/, "") : p);
+  return strip(a) === strip(b);
+}
+
 /**
  * Pura — avalia se `input.nodeModulesPath` é um symlink auto-referente.
  * "Auto-referente" = o alvo resolvido (absolutizado contra o diretório-pai
@@ -86,7 +98,7 @@ export function evaluateNodeModulesSymlink(input: SymlinkLoopInput): SymlinkLoop
     isAbsolute(input.linkTarget) ? input.linkTarget : resolvePath(dirname(nodeModulesPath), input.linkTarget),
   );
 
-  if (resolvedTarget === nodeModulesPath) {
+  if (sameResolvedPath(resolvedTarget, nodeModulesPath)) {
     return {
       status: "loop",
       resolvedTarget,
@@ -122,25 +134,38 @@ export function nodeModulesLoopFindingKey(
   return `${evaluation.status}:${evaluation.resolvedTarget ?? "-"}`;
 }
 
+/** Pura — `true` quando o status indica algo que merece alarme/issue: loop
+ * confirmado OU symlink com alvo ILEGÍVEL (`readlink` falhou). Achado do
+ * self-review do #5571 (silent-failure-hunter): um `node_modules` cujo
+ * alvo não pôde ser lido já é, ele mesmo, uma anomalia no checkout (quebra
+ * `npx tsx`/`npm` na prática do mesmo jeito que o loop confirmado quebra)
+ * — só `status === "loop"` teria certeza absoluta da CAUSA raiz, mas
+ * `"unresolved"` já é sinal suficiente pra investigar, não só um
+ * `console.log` que ninguém vê. */
+export function isNodeModulesLoopPending(evaluation: Pick<SymlinkLoopEvaluation, "status">): boolean {
+  return evaluation.status === "loop" || evaluation.status === "unresolved";
+}
+
 /** Pura — avança o cursor. `lastAlarmedFingerprint: null` quando não há
- * loop pendente nesta checagem (re-arma pra próxima ocorrência), mesmo
+ * achado pendente nesta checagem (re-arma pra próxima ocorrência), mesmo
  * padrão de `advanceRobotsDriftState`/`advanceState` (worker-drift-check). */
 export function advanceNodeModulesLoopAlarmState(
   evaluation: SymlinkLoopEvaluation,
   now: Date,
 ): NodeModulesLoopAlarmState {
   return {
-    lastAlarmedFingerprint: evaluation.status === "loop" ? nodeModulesLoopFindingKey(evaluation) : null,
+    lastAlarmedFingerprint: isNodeModulesLoopPending(evaluation) ? nodeModulesLoopFindingKey(evaluation) : null,
     lastCheckedAt: now.toISOString(),
   };
 }
 
-/** Pura — `true` quando há loop pendente E o fingerprint difere do último já alarmado. */
+/** Pura — `true` quando há achado pendente (loop ou alvo ilegível) E o
+ * fingerprint difere do último já alarmado. */
 export function shouldAlarmNodeModulesLoop(
   state: NodeModulesLoopAlarmState,
   evaluation: SymlinkLoopEvaluation,
 ): boolean {
-  if (evaluation.status !== "loop") return false;
+  if (!isNodeModulesLoopPending(evaluation)) return false;
   return nodeModulesLoopFindingKey(evaluation) !== state.lastAlarmedFingerprint;
 }
 
@@ -156,19 +181,35 @@ export function buildNodeModulesLoopAlarmEmail(
   now: Date = new Date(),
   issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
-  const subject = "[diar.ia.br] node_modules virou symlink auto-referente no checkout principal";
+  const isLoop = evaluation.status === "loop";
+  const subject = isLoop
+    ? "[diar.ia.br] node_modules virou symlink auto-referente no checkout principal"
+    : "[diar.ia.br] node_modules é um symlink com alvo ilegível no checkout principal";
 
   const lines: string[] = [
     "O alarme de sanity `Diaria-Node-Modules-Loop-Alarm`",
     "(`scripts/node-modules-loop-alarm.ts`) detectou que node_modules do",
-    "checkout principal compartilhado virou um symlink AUTO-REFERENTE (aponta",
-    "pra si mesmo) — o mesmo sintoma do achado #5571.",
+    isLoop
+      ? "checkout principal compartilhado virou um symlink AUTO-REFERENTE (aponta"
+      : "checkout principal compartilhado é um symlink cujo ALVO NÃO PÔDE SER LIDO",
+    isLoop
+      ? "pra si mesmo) — o mesmo sintoma do achado #5571."
+      : "(readlink falhou) — sintoma correlato ao loop auto-referente do achado #5571 (#5571 self-review).",
     "",
     `Path: ${nodeModulesPath}`,
     `Detalhe: ${evaluation.message}`,
     "",
-    "Qualquer npx tsx/npm/node neste checkout vai falhar com FilesystemLoop /",
-    '"Too many levels of symbolic links", tipicamente sem stdout e com exit code opaco.',
+    ...(isLoop
+      ? [
+          "Qualquer npx tsx/npm/node neste checkout vai falhar com FilesystemLoop /",
+          '"Too many levels of symbolic links", tipicamente sem stdout e com exit code opaco.',
+        ]
+      : [
+          "Um symlink cujo alvo não pode ser lido já indica um problema no",
+          "filesystem do checkout (permissão, corrupção, ou uma condição de",
+          "corrida no meio de uma gravação) — investigar antes que vire o loop",
+          "completo, mesmo sem certeza absoluta ainda de que é o mesmo padrão.",
+        ]),
     "",
     "Recuperação (mesma usada ao vivo em #5571, sem perda de dado):",
     `  rm ${nodeModulesPath} && npm ci`,

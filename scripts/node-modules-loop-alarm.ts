@@ -27,10 +27,13 @@
  * Escopo (#5571 proposta, item 2 — item 1 é a regra documental em
  * CLAUDE.md/`context/overnight-dispatch-rules.md` §3; item 3, guard/restart
  * do `Diaria-Studio-Server`, ficou de fora — maior escopo, follow-up
- * separado). Esta task NÃO foi registrada no Task Scheduler do Windows —
- * fora do que dá pra fazer numa sessão de código (#5571 item 2, explícito);
- * rodar manualmente até alguém registrar a task (ver
- * `scripts/lib/scheduled-tasks.ts` pro padrão das demais tasks).
+ * separado). Esta task ainda NÃO tem timer registrado — fora do que dá pra
+ * fazer numa sessão de código (#5571 item 2, explícito); rodar manualmente
+ * até alguém adicionar uma entry em `scripts/lib/scheduled-tasks.ts`
+ * (achado do self-review deste PR: a via de execução real pós-#5115,
+ * 260812, é EXCLUSIVAMENTE o par `.service`/`.timer` systemd gerado por
+ * `scripts/setup-systemd-timers.ts` — os `.ps1`/Task Scheduler do Windows
+ * foram removidos do repo nesse cutover, não é mais a via viva).
  *
  * Estado (idempotência): `data/node-modules-loop-alarm/state.json`.
  *
@@ -55,6 +58,7 @@ import {
   emptyNodeModulesLoopAlarmState,
   buildNodeModulesLoopAlarmEmail,
   nodeModulesLoopFindingKey,
+  isNodeModulesLoopPending,
   type SymlinkLoopInput,
   type SymlinkLoopEvaluation,
   type NodeModulesLoopAlarmState,
@@ -128,13 +132,16 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * prioridade da issue original #5571 (bug com workaround manual: `rm
  * node_modules && npm ci`). */
 export function toAlarmFinding(evaluation: SymlinkLoopEvaluation): AlarmFinding {
+  const isLoop = evaluation.status === "loop";
   return {
     check: "node-modules-loop",
     fingerprint: nodeModulesLoopFindingKey(evaluation),
     // #5553 — condição RE-CHECÁVEL (lstat+readlink a cada execução);
     // resolve sozinha assim que alguém rodar rm node_modules && npm ci.
     family: "estado",
-    title: "[diar.ia.br] node_modules virou symlink auto-referente no checkout principal",
+    title: isLoop
+      ? "[diar.ia.br] node_modules virou symlink auto-referente no checkout principal"
+      : "[diar.ia.br] node_modules é um symlink com alvo ilegível no checkout principal",
     body: [
       "Achado automático do alarme `Diaria-Node-Modules-Loop-Alarm`",
       "(`scripts/node-modules-loop-alarm.ts`).",
@@ -160,26 +167,50 @@ export function toAlarmFinding(evaluation: SymlinkLoopEvaluation): AlarmFinding 
 
 // ─── Checagem do filesystem (I/O) ──────────────────────────────────────────
 
+/** Injeção de `lstatSync`/`readlinkSync` — só pra testabilidade determinística
+ * (simular ENOENT vs. outros errno sem depender de permissão real do SO,
+ * mesmo racional de `fetchFn` injetável nos alarmes de rede deste repo). */
+export interface NodeModulesFsOps {
+  lstatSync: typeof lstatSync;
+  readlinkSync: typeof readlinkSync;
+}
+
+const defaultFsOps: NodeModulesFsOps = { lstatSync, readlinkSync };
+
 /**
  * Inspeciona `nodeModulesPath` via `lstat` (NUNCA segue o link — seguro
  * mesmo se já for um loop) + `readlink` (lê só o alvo cru, também não
  * segue). `node_modules` ausente (clone fresco, antes do 1º `npm ci`) conta
  * como "não é symlink" — nada a alarmar.
+ *
+ * #5571 self-review (silent-failure-hunter): o catch do `lstat` é ESTREITO
+ * a `ENOENT` de propósito — qualquer outro erro (`EACCES`, `ENOTDIR`,
+ * `EIO`, ...) é, ele mesmo, uma anomalia no checkout digna de investigação
+ * (inclusive a MESMA classe de corrida concorrente que este alarme existe
+ * pra pegar) e PROPAGA pro catch de `main()` (log + `exitCode = 1`) em vez
+ * de ser silenciosamente relatado como "node_modules ok".
  */
-export function inspectNodeModules(nodeModulesPath: string = NODE_MODULES_PATH): SymlinkLoopInput {
+export function inspectNodeModules(
+  nodeModulesPath: string = NODE_MODULES_PATH,
+  fsOps: NodeModulesFsOps = defaultFsOps,
+): SymlinkLoopInput {
   let isSymlink = false;
   try {
-    isSymlink = lstatSync(nodeModulesPath).isSymbolicLink();
-  } catch {
-    return { nodeModulesPath, isSymlink: false, linkTarget: null };
+    isSymlink = fsOps.lstatSync(nodeModulesPath).isSymbolicLink();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return { nodeModulesPath, isSymlink: false, linkTarget: null };
+    }
+    throw e;
   }
 
   let linkTarget: string | null = null;
   if (isSymlink) {
     try {
-      linkTarget = readlinkSync(nodeModulesPath);
-    } catch {
+      linkTarget = fsOps.readlinkSync(nodeModulesPath);
+    } catch (e) {
       linkTarget = null;
+      console.warn(`${LOG_PREFIX} readlink falhou em ${nodeModulesPath}: ${(e as Error).message}`);
     }
   }
 
@@ -204,7 +235,7 @@ async function main(): Promise<void> {
   // issue do achado), mesmo padrão dos demais alarmes deste repo. Roda toda
   // execução não-dry-run, independente de um e-mail novo disparar nesta
   // rodada.
-  const alarmFindings: AlarmFinding[] = evaluation.status === "loop" ? [toAlarmFinding(evaluation)] : [];
+  const alarmFindings: AlarmFinding[] = isNodeModulesLoopPending(evaluation) ? [toAlarmFinding(evaluation)] : [];
   const alarmState = loadAlarmIssuesState();
   let issueRef: AlarmIssueResult | undefined;
 
