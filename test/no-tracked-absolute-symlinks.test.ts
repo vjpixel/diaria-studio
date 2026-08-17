@@ -127,19 +127,37 @@ describe("higiene do índice do git", () => {
     );
   });
 
-  it("o padrão do .gitignore não tem barra final (que casaria só diretório)", () => {
-    const patterns = readFileSync(resolve(REPO_ROOT, ".gitignore"), "utf-8")
-      .split("\n")
-      .map((l) => l.trim());
+  /**
+   * Paths que, POR DESENHO, podem existir como symlink em vez de diretório —
+   * e que portanto nunca podem ser ignorados com barra final:
+   *
+   * - `node_modules`: worktree que reaproveita as deps do checkout principal
+   *   (foi exatamente o caso do #5569).
+   * - `data`: `CLAUDE.md` § Setup passo 2b manda criar como junction/symlink
+   *   pro OneDrive em TODA máquina (`ln -s`/`New-Item -ItemType Junction`).
+   *   Este é o mais perigoso dos dois — `CLAUDE.md` classifica o conteúdo
+   *   como business-sensitive que nunca pode ir pro GitHub, e até o #5572 a
+   *   única proteção nesta máquina era uma entrada manual em
+   *   `.git/info/exclude`, que é LOCAL e não-versionada: nenhum outro clone
+   *   a tinha (achado do review do #5573).
+   */
+  const SYMLINK_PRONE = ["node_modules", "data"];
 
-    assert.ok(
-      patterns.includes("node_modules"),
-      "esperava o padrão exato `node_modules` no .gitignore",
-    );
-    assert.ok(
-      !patterns.includes("node_modules/"),
-      "`node_modules/` (com barra) casa apenas DIRETÓRIOS — foi assim que um symlink " +
-        "de mesmo nome escapou do ignore e foi commitado na #5569.",
-    );
-  });
+  for (const name of SYMLINK_PRONE) {
+    it(`padrão de \`${name}\` no .gitignore não tem barra final (que casaria só diretório)`, () => {
+      const patterns = readFileSync(resolve(REPO_ROOT, ".gitignore"), "utf-8")
+        .split("\n")
+        .map((l) => l.trim());
+
+      assert.ok(
+        patterns.includes(name),
+        `esperava o padrão exato \`${name}\` no .gitignore`,
+      );
+      assert.ok(
+        !patterns.includes(`${name}/`),
+        `\`${name}/\` (com barra) casa apenas DIRETÓRIOS — foi assim que um symlink ` +
+          `de mesmo nome escapou do ignore e foi commitado na #5569.`,
+      );
+    });
+  }
 });

@@ -13,7 +13,7 @@ dist/
 # entre máquinas. Não reverter pra exceções sem revisar essa decisão.
 # Logs append-only por fonte (data/sources/*.jsonl) também moram aqui:
 # crescem indefinidamente, valor analítico só local.
-data/
+data
 # Scheduling lockfile (ephemeral por execução)
 .claude/scheduled_tasks.lock
 # #3423: lock de arquivo do sync-code (git-sync.ts) — serializa syncCode()
