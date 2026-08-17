@@ -40,12 +40,13 @@ A Parte 1 (regen mecânica) só depende de código já commitado — roda mesmo 
 2. Se a menção é substantiva: editar `scripts/lib/entities/{slug}.ts`, adicionar a `EntityMention` (síntese própria, nunca paráfrase da manchete — ver critério anti-thin-content), e rodar `npx tsx scripts/build-entity-page.ts --entity {slug}` (ou deixar a próxima execução diária desta task regenerar o HTML sozinha, uma vez commitado).
 3. Se a menção foi vista e descartada de propósito (redundante, sem desenvolvimento próprio no corpo): adicionar o `editionSlug` a `ENTITY_EXCLUDED_EDITIONS[slug]` (`scripts/lib/entities/patterns.ts`) com uma nota curta do motivo — sem isso, o alarme repete pra sempre pela mesma edição já revisada.
 
-## Setup (ação local one-time do editor — NÃO feito nesta unidade)
+## Setup (ação local one-time do editor — feito em 17/08/2026, ver abaixo)
 
 Requer Linux/systemd + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme; a Parte 1 (regen mecânica) não depende de nenhuma credencial.
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Entity-Pages-Regen
+cp .systemd-units/diaria-entity-pages-regen.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now diaria-entity-pages-regen.timer
 ```
