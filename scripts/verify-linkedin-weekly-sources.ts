@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * scripts/verify-linkedin-weekly-sources.ts (#5108 item 3)
+ * scripts/verify-linkedin-weekly-sources.ts (#5108 item 3, swap #5538)
  *
  * Checa a acessibilidade da fonte primária de cada manchete SELECIONADA
  * (após o Passo 3/gate — nunca antes, escolha ambígua ainda pendente não
@@ -15,12 +15,37 @@
  * suficiente pra tratar como "não usar pra resumo", ver
  * `isSourceUsableForSummary`).
  *
+ * **#5538 (troca de candidato, não stub):** pra manchete `kind === "section"`
+ * (item de RADAR/LANÇAMENTOS/VÍDEOS que virou manchete por clique, não por
+ * ser destaque), o corpo levantado é só 1 linha — publicável como "corpo
+ * literal" quando a fonte segue acessível, mas fraco demais pra sustentar
+ * uma manchete inteira quando a fonte ficou inacessível e não dá pra
+ * escrever resumo. Nesse caso este script troca automaticamente pelo
+ * PRÓXIMO candidato elegível ainda não usado (`headlineCandidatesRanked`,
+ * já ranqueado por `select-linkedin-weekly.ts` — exclui comercial/própria/
+ * use_melhor/já-selecionados), verificando a fonte de cada candidato de
+ * reposição até achar um usável (`kind === "destaque"` é aceito
+ * incondicionalmente — corpo já completo/literal, isento por definição,
+ * #5108) ou esgotar o pool (nesse caso mantém o stub original, mesmo
+ * comportamento de antes, com warning explícito). `kind === "destaque"`
+ * SEMPRE mantém o comportamento anterior (nunca troca, mesmo inacessível —
+ * o corpo levantado já é substancial). Decisão do editor registrada no
+ * corpo do #5538: troca automática, sem reabrir o gate do Passo 3 — o
+ * `pendingGroup`/escolha manual já aconteceu ali; aqui é só o "próxima
+ * fonte da fila" que uma manchete `section` inacessível precisa, análogo a
+ * qualquer outro candidato que perdeu a disputa original por não ter clique
+ * suficiente.
+ *
  * Lê `data/weekly/{cycle}/_internal/ln-selection.json` (escrito por
  * `select-linkedin-weekly.ts`, já com `--picks` resolvido se havia
  * `pendingGroup`), verifica CADA `headlines[].url`, e grava de volta o
  * campo `sourceAccessibility` em cada headline — SEM tocar `title`/`body`/
- * `why` (a skill escreve o resumo autoral DEPOIS, num passo separado que lê
- * este resultado pra decidir resumir vs. manter literal).
+ * `why` de manchetes que NÃO trocaram (a skill escreve o resumo autoral
+ * DEPOIS, num passo separado que lê este resultado pra decidir resumir vs.
+ * manter literal). Manchetes trocadas (`section` inacessível → próximo
+ * candidato) saem com `title`/`body`/`why`/`kind`/`url`/etc do candidato de
+ * reposição — o campo `sourceAccessibility` reflete a fonte NOVA, não a
+ * original.
  *
  * Uso:
  *   npx tsx scripts/verify-linkedin-weekly-sources.ts --cycle 26w32
@@ -30,6 +55,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
+import { normalizeUrl } from "./lib/weekly-linkedin-clicks.ts";
 import { verify } from "./verify-accessibility.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,7 +87,25 @@ export function isSourceUsableForSummary(verdict: string, accessUncertain: boole
 interface SelectionHeadline {
   url: string;
   title: string;
+  kind?: string;
+  editionDate?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Pure (#5538): dado o pool de candidatos elegíveis a manchete (já
+ * ranqueado por `select-linkedin-weekly.ts`, gravado em
+ * `headlineCandidatesRanked` — exclui comercial/própria/use_melhor) e o
+ * conjunto de URLs JÁ USADAS nesta seleção (normalizadas — manchetes atuais
+ * + trocas já aplicadas em manchetes anteriores do mesmo loop), retorna os
+ * candidatos ainda disponíveis pra reposição, na mesma ordem do ranking
+ * (melhor taxa primeiro).
+ */
+export function candidatesAvailableForSwap(
+  pool: SelectionHeadline[],
+  usedUrls: Set<string>,
+): SelectionHeadline[] {
+  return pool.filter((c) => !usedUrls.has(normalizeUrl(String(c.url))));
 }
 
 /**
@@ -94,16 +138,67 @@ export async function main(
     console.log("Nenhuma manchete selecionada ainda — nada pra verificar.");
     return;
   }
+  const candidatePool: SelectionHeadline[] = selection.headlineCandidatesRanked ?? [];
+
+  // #5538: URLs já ocupadas por manchete (seed com as manchetes originais —
+  // atualizado a cada troca aplicada, pra nunca 2 manchetes convergirem pro
+  // mesmo candidato de reposição dentro do mesmo loop).
+  const usedUrls = new Set(headlines.map((h) => normalizeUrl(String(h.url))));
 
   const results: LinkedinWeeklySourceAccessibility[] = [];
-  for (const h of headlines) {
-    const r = await verifyFn(h.url);
-    const accessible = isSourceUsableForSummary(r.verdict, r.access_uncertain);
-    results.push({ url: h.url, verdict: r.verdict, accessible });
-    console.log(`${accessible ? "OK" : "INACESSÍVEL"} [${r.verdict}] ${h.title} — ${h.url}`);
+  const finalHeadlines: SelectionHeadline[] = [];
+  const swapNotes: string[] = [];
+
+  for (const original of headlines) {
+    let current = original;
+    let r = await verifyFn(current.url);
+    let accessible = isSourceUsableForSummary(r.verdict, r.access_uncertain);
+
+    // #5538: só `kind === "section"` troca — `kind === "destaque"`
+    // inacessível mantém o comportamento anterior (corpo levantado já é
+    // substancial, publicável como stub literal, ver docstring do módulo).
+    if (!accessible && current.kind === "section") {
+      const pool = candidatesAvailableForSwap(candidatePool, usedUrls);
+      let swapped = false;
+      for (const candidate of pool) {
+        const cr = await verifyFn(candidate.url);
+        const cAccessible = isSourceUsableForSummary(cr.verdict, cr.access_uncertain);
+        // `destaque` é aceito incondicionalmente (corpo já completo/literal,
+        // isento — #5108); `section` só entra se a própria fonte for usável.
+        const accept = candidate.kind === "destaque" || cAccessible;
+        if (!accept) continue;
+
+        swapNotes.push(
+          `Manchete "${original.title}" (${original.editionDate}) trocada por "${candidate.title}" (${candidate.editionDate}, ${candidate.kind}) — ` +
+            `fonte original [${r.verdict}] inacessível (#5538).`,
+        );
+        usedUrls.delete(normalizeUrl(String(current.url)));
+        usedUrls.add(normalizeUrl(String(candidate.url)));
+        current = candidate;
+        r = cr;
+        accessible = cAccessible;
+        swapped = true;
+        break;
+      }
+      if (!swapped) {
+        swapNotes.push(
+          `Manchete "${original.title}" (${original.editionDate}) com fonte inacessível [${r.verdict}] — nenhum candidato de reposição elegível ` +
+            `restou no pool (${pool.length} tentado(s)) — mantendo corpo levantado original (stub, #5538).`,
+        );
+      }
+    }
+
+    results.push({ url: current.url, verdict: r.verdict, accessible });
+    finalHeadlines.push(current);
+    console.log(`${accessible ? "OK" : "INACESSÍVEL"} [${r.verdict}] ${current.title} — ${current.url}`);
   }
 
-  selection.headlines = headlines.map((h, i) => ({ ...h, sourceAccessibility: results[i] }));
+  selection.headlines = finalHeadlines.map((h, i) => ({ ...h, sourceAccessibility: results[i] }));
+  if (swapNotes.length > 0) {
+    selection.warnings = [...(selection.warnings ?? []), ...swapNotes];
+    console.log("\nTrocas de candidato (#5538):");
+    for (const note of swapNotes) console.log(`  - ${note}`);
+  }
   writeFileSync(selectionPath, JSON.stringify(selection, null, 2), "utf8");
 
   const inaccessible = results.filter((r) => !r.accessible);
