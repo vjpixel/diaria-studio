@@ -442,8 +442,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 9, minute: 40 },
     // #5125: condição inegociável do editor pra publicar a 1ª página de
     // entidade fora da rodada original de 3 (Apple) — "a página nasce com
-    // regeneração automática, senão não é publicada". Não armada nesta
-    // unidade (worktree isolado) — ver CLAUDE.md.
+    // regeneração automática, senão não é publicada". Armada em 17/08/2026
+    // na checkout compartilhada (`predator`) — ver
+    // docs/entity-pages-regen-setup.md.
     issue: "#5125",
   },
   {

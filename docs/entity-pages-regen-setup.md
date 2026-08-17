@@ -40,16 +40,17 @@ A Parte 1 (regen mecânica) só depende de código já commitado — roda mesmo 
 2. Se a menção é substantiva: editar `scripts/lib/entities/{slug}.ts`, adicionar a `EntityMention` (síntese própria, nunca paráfrase da manchete — ver critério anti-thin-content), e rodar `npx tsx scripts/build-entity-page.ts --entity {slug}` (ou deixar a próxima execução diária desta task regenerar o HTML sozinha, uma vez commitado).
 3. Se a menção foi vista e descartada de propósito (redundante, sem desenvolvimento próprio no corpo): adicionar o `editionSlug` a `ENTITY_EXCLUDED_EDITIONS[slug]` (`scripts/lib/entities/patterns.ts`) com uma nota curta do motivo — sem isso, o alarme repete pra sempre pela mesma edição já revisada.
 
-## Setup (ação local one-time do editor — NÃO feito nesta unidade)
+## Setup (ação local one-time do editor — feito em 17/08/2026, ver abaixo)
 
 Requer Linux/systemd + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme; a Parte 1 (regen mecânica) não depende de nenhuma credencial.
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Entity-Pages-Regen
+cp .systemd-units/diaria-entity-pages-regen.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now diaria-entity-pages-regen.timer
 ```
 
 Isso registra a task `Diaria-Entity-Pages-Regen` (diária, 09:40 — entre `Diaria-Beehiiv-Home-Meta-Check` 09:35 e `Diaria-Apoios-Diff-Alarm` 09:45, sem colisão com nenhuma outra daily do registro). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-entity-pages-regen.timer`.
 
-**Ainda NÃO armada nesta unidade** (worktree isolado, mesma disciplina do #4320/#4382/#4490/#4534/#4723/#5123) — rodar da checkout compartilhada (`/home/vjpixel/diaria-studio`) depois do merge. A Parte 1 (regen mecânica) **foi validada ao vivo** nesta unidade (`npx tsx scripts/regenerate-entity-pages.ts --dry-run` e sem `--dry-run`, rodando contra o `data/` real via junction OneDrive — confirmou `nada divergiu (no-op)` para as 5 entidades já publicadas, incluindo a Apple recém-gerada, e `0 entrada(s) stale`); a Parte 2 (alarme) só via testes da lógica pura (`test/entity-staleness-check.test.ts`, `test/regenerate-entity-pages-script.test.ts`), sem rede/Gmail real.
+**ARMADA em 17/08/2026** na checkout compartilhada (`/home/vjpixel/diaria-studio`, Linux/systemd): units copiados de `.systemd-units/` pra `~/.config/systemd/user/`, `daemon-reload` + `enable --now`. `systemctl --user list-timers` confirma `diaria-entity-pages-regen.timer` com próximo disparo em 18/08 09:40 BRT (sem catch-up imediato — nenhuma ocorrência devida no carimbo). Validação ao vivo no mesmo dia: `--dry-run` devolveu `nada divergiu (no-op)` e `0 entrada(s) stale, 0 vencida(s)`. *(Antes disso, a task tinha sido gerada em worktree isolado e nunca armada — mesma disciplina do #4320/#4382/#4490/#4534/#4723/#5123.)* A Parte 1 (regen mecânica) **foi validada ao vivo** nesta unidade (`npx tsx scripts/regenerate-entity-pages.ts --dry-run` e sem `--dry-run`, rodando contra o `data/` real via junction OneDrive — confirmou `nada divergiu (no-op)` para as 5 entidades já publicadas, incluindo a Apple recém-gerada, e `0 entrada(s) stale`); a Parte 2 (alarme) só via testes da lógica pura (`test/entity-staleness-check.test.ts`, `test/regenerate-entity-pages-script.test.ts`), sem rede/Gmail real.
