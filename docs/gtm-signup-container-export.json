@@ -1,0 +1,87 @@
+{
+  "exportFormatVersion": 2,
+  "exportTime": "2026-08-17T00:00:00Z",
+  "containerVersion": {
+    "path": "accounts/000000000/containers/00000000/versions/0",
+    "accountId": "000000000",
+    "containerId": "00000000",
+    "containerVersionId": "0",
+    "container": {
+      "path": "accounts/000000000/containers/00000000",
+      "accountId": "000000000",
+      "containerId": "00000000",
+      "name": "diar.ia.br — Cadastro (import parcial, #5546)",
+      "publicId": "GTM-TC8C65ZN",
+      "usageContext": ["WEB"],
+      "fingerprint": "0",
+      "tagManagerUrl": "https://tagmanager.google.com/#/container/accounts/000000000/containers/00000000/workspaces?apiLink=container"
+    },
+    "tag": [
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "1",
+        "name": "Meta Pixel - CompleteRegistration (Cadastro)",
+        "type": "html",
+        "parameter": [
+          {
+            "type": "template",
+            "key": "html",
+            "value": "<script>\n(function () {\n  if (typeof fbq === 'function') {\n    fbq('track', 'CompleteRegistration', { content_name: 'newsletter_signup', status: true });\n  } else if (!window.__diaria_fbq_missing_warned) {\n    window.__diaria_fbq_missing_warned = true;\n    console.warn('[diar.ia.br GTM] fbq nao encontrado ao tentar disparar CompleteRegistration - o Meta Pixel base carrega fora do GTM (injecao nativa da Beehiiv); confirme no Preview que ele ja esta presente quando o gatilho de cadastro dispara.');\n  }\n})();\n</script>"
+          },
+          { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
+        ],
+        "firingTriggerId": ["1"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#5546 — evento de cadastro para o dataset Meta 1285191740325112. Hoje o dataset so recebe PageView; este tag adiciona um evento padrao real. Nao cria a Custom Conversion no Events Manager (acao fora do GTM, ver doc)."
+      },
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "tagId": "2",
+        "name": "Microsoft UET - Base + Cadastro (Newsletter Signup)",
+        "type": "html",
+        "parameter": [
+          {
+            "type": "template",
+            "key": "html",
+            "value": "<script>\n(function(w,d,t,r,u){\n  var f,n,i;\n  w[u]=w[u]||[],f=function(){\n    var o={ti:\"REPLACE_COM_UET_TAG_ID\", enableAutoSpaTracking:true};\n    o.q=w[u],w[u]=new UET(o),w[u].push(\"pageLoad\")\n  },\n  n=d.createElement(t),n.src=r,n.async=1,n.onload=n.onreadystatechange=function(){\n    var s=this.readyState;\n    s&&s!==\"loaded\"&&s!==\"complete\"||(f(),n.onload=n.onreadystatechange=null)\n  },\n  i=d.getElementsByTagName(t)[0],i.parentNode.insertBefore(n,i)\n})(window,document,\"script\",\"//bat.bing.com/bat.js\",\"uetq\");\nwindow.uetq = window.uetq || [];\nwindow.uetq.push('event', 'newsletter_signup', { event_category: 'signup', event_label: 'newsletter', event_value: 1 });\n</script>"
+          },
+          { "type": "boolean", "key": "supportDocumentWrite", "value": "false" }
+        ],
+        "firingTriggerId": ["1"],
+        "tagFiringOption": "ONCE_PER_EVENT",
+        "monitoringMetadata": { "type": "map" },
+        "consentSettings": { "consentStatus": "notSet" },
+        "notes": "#5546 — UET nao existe hoje no container. SUBSTITUIR 'REPLACE_COM_UET_TAG_ID' pelo Tag ID real (Microsoft Advertising -> Tools -> UET Tags) ANTES de publicar. Tag combina base UET + push do evento no mesmo disparo (nao ha tag UET 'All Pages' separada nesta entrega - ver doc, secao Fora de escopo)."
+      }
+    ],
+    "trigger": [
+      {
+        "accountId": "000000000",
+        "containerId": "00000000",
+        "triggerId": "1",
+        "name": "CE - Cadastro Concluido (signedUp)",
+        "type": "customEvent",
+        "customEventFilter": [
+          {
+            "type": "equals",
+            "parameter": [
+              { "type": "template", "key": "arg0", "value": "{{_event}}" },
+              { "type": "template", "key": "arg1", "value": "signedUp" }
+            ]
+          }
+        ],
+        "notes": "#5546 — gatilho unico proposto para substituir o 'Newsletter Form Submit' (Form Submission fragil por RegEx de Form ID). Contrato oficial documentado pela Beehiiv (Website Builder legado): evento de dataLayer 'signedUp', variavel eventProps.email. NAO CONFIRMADO no Website Builder v2 (#5500 item 1 do checklist ainda aberto) - testar no Preview antes de publicar. Se nao disparar, repontar os tags 'Meta Pixel - CompleteRegistration' e 'Microsoft UET - Base + Cadastro' para o trigger existente 'Newsletter Form Submit' (ver doc, Plano B) em vez de reimportar este arquivo."
+      }
+    ],
+    "variable": [],
+    "builtInVariable": [
+      { "accountId": "000000000", "containerId": "00000000", "type": "EVENT_NAME", "name": "Event" }
+    ],
+    "fingerprint": "0",
+    "tagManagerUrl": "https://tagmanager.google.com/#/container/accounts/000000000/containers/00000000/workspaces?apiLink=container"
+  }
+}
