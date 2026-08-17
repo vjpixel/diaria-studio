@@ -995,3 +995,61 @@ describe("#4942: §1x (GATE HUMANO) guarda contra auto_approve", () => {
     );
   });
 });
+
+describe("#5416: §2b usa o agregador --stage 2 --json em vez de 6 invocações separadas", () => {
+  // Antes deste fix, §2b (orchestrator-stage-2.md) disparava
+  // lint-newsletter-md.ts 6 vezes em sequência (url-bucket, section-counts,
+  // destaque-min-chars, destaque-max-chars, why-matters-length,
+  // aprofunde-format) — 1 processo Node por check, mesmo padrão já corrigido
+  // em §4c.2 (Stage 4) pelo mesmo #5416. `runStage2LintReport` (em
+  // scripts/lint-newsletter-md.ts) já empacotava esses 6 checks numa única
+  // chamada `--stage 2 --json` desde antes deste fix, mas o playbook do
+  // Stage 2 nunca tinha sido migrado pra usá-la.
+  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-2.md"), "utf8");
+  const section2b = content.slice(
+    content.indexOf("### 2b. Processar newsletter"),
+    content.indexOf("### 2c."),
+  );
+
+  it("§2b existe e foi isolada corretamente para o slice do teste", () => {
+    assert.ok(section2b.length > 0, "slice de §2b vazio — âncoras de indexOf não bateram");
+  });
+
+  it("§2b chama o agregador `lint-newsletter-md.ts --stage 2 --json --edition-dir`", () => {
+    assert.ok(
+      section2b.includes("lint-newsletter-md.ts --stage 2 --json --edition-dir"),
+      "§2b precisa chamar o agregador em lote, não invocações --check individuais",
+    );
+  });
+
+  it("§2b NÃO contém mais nenhuma das 6 invocações --check individuais substituídas", () => {
+    for (const oldCheck of [
+      "--check section-counts",
+      "--check destaque-min-chars",
+      "--check destaque-max-chars",
+      "--check why-matters-length",
+      "--check aprofunde-format",
+    ]) {
+      assert.ok(
+        !section2b.includes(oldCheck),
+        `§2b não deveria mais conter a invocação individual "${oldCheck}" — deveria ter sido substituída pelo agregador --stage 2 --json`,
+      );
+    }
+  });
+
+  it("§2b preserva a orientação de re-dispatch por check id (url-bucket, section-counts, destaque-min-chars, destaque-max-chars, why-matters-length, aprofunde-format)", () => {
+    for (const checkId of [
+      "url-bucket",
+      "section-counts",
+      "destaque-min-chars",
+      "destaque-max-chars",
+      "why-matters-length",
+      "aprofunde-format",
+    ]) {
+      assert.ok(
+        section2b.includes(`\`${checkId}\``),
+        `§2b precisa documentar a ação de re-dispatch para o check "${checkId}" (indexado pelo id do agregador)`,
+      );
+    }
+  });
+});

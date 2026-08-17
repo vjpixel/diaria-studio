@@ -185,51 +185,18 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
 
 ### 2b. Processar newsletter
 
-- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`:
+- **Lints consolidados (#165, #358, #907, #1629, #914, #964, #3993, #3920, #5416).** Uma única chamada agregadora roda os 6 checks abaixo sobre `_internal/02-draft.md` (mesmas funções, mesmo veredito por check que as invocações `--check X` individuais que existiam aqui antes):
   ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --md {EDITION_DIR}/_internal/02-draft.md \
-    --approved {EDITION_DIR}/_internal/01-approved-capped.json
+  npx tsx scripts/lint-newsletter-md.ts --stage 2 --json --edition-dir {EDITION_DIR}
   ```
-  Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
+  Output (stdout): JSON `{ stage: 2, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }` — todos os 6 `id` deste stage são `gate-blocking` (não há warn-only em §2b). `passed` já reflete "nenhum check falhou". Debug de 1 check isolado (`--check X --md {EDITION_DIR}/_internal/02-draft.md [--approved ...]`) continua funcionando exatamente como antes (modo aditivo, não removido). Para cada `checks[]` com `ok:false`, agir pelo `id`:
 
-- **Lint section-counts (#358, #907, #1629).** Validar que cada seção secundária respeita o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante:
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check section-counts \
-    --md {EDITION_DIR}/_internal/02-draft.md \
-    --approved {EDITION_DIR}/_internal/01-approved-capped.json
-  ```
-  Exit 1 = re-disparar writer com a violação no prompt.
-
-- **Lint destaque-min-chars (#914) + destaque-max-chars (#964).** Validar mínimo e máximo de cada destaque (D1: 1000–1200, D2/D3: 900–1000):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check destaque-min-chars \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check destaque-max-chars \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
-  > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
-  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
-
-- **Lint why-matters-length (#3993).** Validar que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check why-matters-length \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 = re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
-
-- **Lint aprofunde-format (#3920).** Valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional):
-  ```bash
-  npx tsx scripts/lint-newsletter-md.ts \
-    --check aprofunde-format \
-    --md {EDITION_DIR}/_internal/02-draft.md
-  ```
-  Exit 1 = item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
+  - `url-bucket` (#165): URL na seção errada ou URL fantasma (não existe no approved). **Re-disparar o writer** com a lista de erros (`result.errors`) explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
+  - `section-counts` (#358, #907, #1629): seção secundária estourou o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). Re-disparar writer com a violação (`result`) no prompt.
+  - `destaque-min-chars` (#914): destaque anêmico (D1: <1000, D2/D3: <900). Re-disparar writer com instruction explícita: "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
+  - `destaque-max-chars` (#964): destaque inflado (D1: >1200, D2/D3: >1000). Re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
+  - `why-matters-length` (#3993): parágrafo "Por que isso importa" fora da janela 180–300 chars (excluindo a label e o bloco "Aprofunde:"). Re-disparar o `writer-destaque` do destaque afetado com o char count medido (`result`) + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
+  - `aprofunde-format` (#3920): item malformado/lixo no bloco "Aprofunde:" dos destaques com cluster (bloco AUSENTE nunca falha, é opcional). Re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash
