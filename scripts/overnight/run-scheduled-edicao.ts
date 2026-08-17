@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 /**
- * scripts/overnight/run-scheduled-edicao.ts (#4998, reativação do #2068/#3259)
+ * scripts/overnight/run-scheduled-edicao.ts (#4998, reativação do #2068/#3259;
+ * #5611 tornou este runner o núcleo compartilhado das duas vias)
  *
- * Runner Linux/systemd da edição diária agendada — sucessor do antigo
- * `scripts/overnight/run-scheduled-edicao.ps1` (Windows Task Scheduler,
- * removido no #5115). Invocado pelo timer `diaria-edicao-diaria.timer` (dom-qui 16:00 BRT, ver
- * `scripts/lib/edicao-systemd-units.ts`).
+ * Runner MULTIPLATAFORMA da edição diária agendada — toda a lógica de
+ * negócio (cálculo de data D+1, guard de idempotência, invocação do
+ * `claude`, logging) vive aqui e só aqui. Duas vias invocam este mesmo
+ * script, nunca duplicando a lógica:
+ *   - Linux/systemd: timer `diaria-edicao-diaria.timer` (ver
+ *     `scripts/lib/edicao-systemd-units.ts`) — desabilitado desde #5611
+ *     (via ativa voltou a ser o Windows, que depende do navegador/Claude
+ *     in Chrome; o par systemd continua no repo pronto pra reativação).
+ *   - Windows: wrapper fino `scripts/overnight/run-scheduled-edicao.ps1`
+ *     (Task Scheduler, VIA ATIVA — restaurado no #5611 revertendo parte
+ *     do cutover #5115/#5162, mas como wrapper que delega 100% pra este
+ *     runner em vez de reimplementar a lógica em PowerShell).
+ * Ver docs/scheduled-edicao-setup.md pro estado operacional completo de
+ * cada via.
  *
  * Fluxo:
  *   1. Calcula AAMMDD = amanhã em America/Sao_Paulo (`nextEditionDate`).

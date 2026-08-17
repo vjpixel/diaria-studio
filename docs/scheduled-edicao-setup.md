@@ -78,15 +78,24 @@ Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo
 ### Pré-requisito: `claude` no PATH da sessão do Task Scheduler
 
 `run-scheduled-edicao.ps1` (o wrapper invocado pela task) resolve
-`CLAUDE_BIN` via `Get-Command claude` e injeta o path absoluto no ambiente
-antes de chamar `npx tsx run-scheduled-edicao.ts` — necessário porque
-`resolveClaudeBin()` (`scripts/lib/resolve-claude-bin.ts`, #5549) varre o
-PATH procurando o nome literal `claude` sem extensão, e no Windows o
-executável instalado é `claude.exe`/`claude.cmd` (confirmado ao vivo,
-#5611: a varredura sem `CLAUDE_BIN` falha mesmo com `claude.exe` presente e
-resolvível via `Get-Command`). Se `claude` não estiver no PATH da sessão do
-usuário que a task roda, o wrapper avisa e a falha aparece com mensagem
-acionável em `data/overnight-schedule.log`.
+`CLAUDE_BIN` via `Get-Command claude -All | Select-Object -First 1` e
+injeta o path absoluto no ambiente antes de chamar `npx tsx
+run-scheduled-edicao.ts` — necessário porque `resolveClaudeBin()`
+(`scripts/lib/resolve-claude-bin.ts`, #5549) varre o PATH procurando o nome
+literal `claude` sem extensão, e no Windows a extensão real do executável
+varia por método de instalação — a varredura sem `CLAUDE_BIN` não resolve
+sozinha por aqui. **Extensão confirmada ao vivo nesta máquina (fleet review
+pré-merge do #5611, 260817): `claude.exe`**, instalado via instalador
+standalone em `C:\Users\{usuário}\.local\bin\claude.exe` — `Get-Command
+claude -All` retornou essa única entrada, sem `.cmd`/`.ps1` no PATH. Uma
+instalação via `npm install -g` costuma produzir `claude.cmd` em vez disso;
+o wrapper não assume nenhuma extensão fixa, só usa o que `Get-Command`
+resolver de fato na sessão que roda, então os dois casos são cobertos sem
+hardcode. Esta seção é a fonte única sobre a extensão real do executável —
+o comentário em `run-scheduled-edicao.ps1` referencia este parágrafo em vez
+de reafirmar o fato, para não divergir de novo. Se `claude` não estiver no
+PATH da sessão do usuário que a task roda, o wrapper avisa e a falha
+aparece com mensagem acionável em `data/overnight-schedule.log`.
 
 ### Credenciais (`.env`)
 
@@ -195,7 +204,7 @@ Log simples linha-por-linha desta feature, compartilhado entre o runner Windows 
 
 O agendador pode usar um PATH diferente do terminal interativo. Solução:
 
-- **Windows**: `run-scheduled-edicao.ps1` já resolve isso sozinho — roda `Get-Command claude` e injeta `CLAUDE_BIN` no ambiente do processo filho antes de invocar o runner TS (necessário: `resolveClaudeBin()` varre o PATH só pelo nome literal `claude` sem extensão, e no Windows o executável é `claude.exe`/`claude.cmd`, então a varredura nunca resolve sozinha aqui). Se mesmo assim falhar, é porque `claude` não está no PATH da sessão do usuário que a task Task Scheduler roda — confirme `(Get-Command claude).Source` **nessa mesma sessão** (não só no terminal interativo onde você testa) e adicione ao PATH do usuário se ausente.
+- **Windows**: `run-scheduled-edicao.ps1` já resolve isso sozinho — ver §"Pré-requisito: `claude` no PATH da sessão do Task Scheduler" acima pro mecanismo e a extensão real do executável confirmada ao vivo. Se mesmo assim falhar, é porque `claude` não está no PATH da sessão do usuário que a task Task Scheduler roda — confirme `(Get-Command claude -All).Source` **nessa mesma sessão** (não só no terminal interativo onde você testa) e adicione ao PATH do usuário se ausente.
 - **Linux**: `ExecStart=` roda com o `PATH` do systemd `--user` (normalmente herdado do login shell via `systemctl --user import-environment`, ou definido no unit). Se `claude` não for encontrado, adicionar `Environment=PATH=...` ao `.service` ou garantir que o PATH do usuário já inclui o diretório de instalação do Claude Code no momento do `systemctl --user daemon-reload`.
 
 ### MCPs indisponíveis em sessão headless

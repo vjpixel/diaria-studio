@@ -33,6 +33,9 @@
     Issue: #5611 (reverte parte do #5115/#5162; história original #2068/#4998)
     Registro da task: scripts/overnight/setup-edicao-schedule.ps1
     Documentação: docs/scheduled-edicao-setup.md
+    Log de Task Scheduler: data/task-scheduler-edicao.log (achado do fleet
+    review pré-merge do #5611 — a Action do Task Scheduler não redireciona
+    stdout/stderr por padrão; ver bloco Start-Transcript abaixo)
 #>
 
 Set-StrictMode -Version Latest
@@ -44,33 +47,69 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $RunnerTs  = Join-Path $RepoRoot "scripts/overnight/run-scheduled-edicao.ts"
+$LogPath   = Join-Path $RepoRoot "data/task-scheduler-edicao.log"
 
-if (-not (Test-Path $RunnerTs)) {
-    Write-Error "Runner TS não encontrado: $RunnerTs"
-    exit 1
+# ---------------------------------------------------------------------------
+# Transcript (fleet review pré-merge do #5611, achado CRÍTICO): a Action do
+# Task Scheduler roda `powershell.exe -File <este script>` sem redirecionar
+# stdout/stderr, e o Task Scheduler não persiste output por padrão. Combinado
+# com o staleness alarm desligado na mesma sessão (docs/scheduled-edicao-setup.md),
+# uma falha ANTES do runner TS conseguir gravar em data/overnight-schedule.log
+# (data/ ausente, npx/tsx não encontrado, etc.) não deixaria rastro nenhum.
+# Start-Transcript aqui dentro, não como argumento da Action, porque
+# New-ScheduledTaskAction -Argument não tem redirecionamento nativo — fazer
+# dentro do próprio script chamado é a forma mais simples. Sem rotação por
+# ora (arquivo cresce) — fora de escopo deste fix.
+# ---------------------------------------------------------------------------
+try {
+    Start-Transcript -Path $LogPath -Append -ErrorAction Stop | Out-Null
+} catch {
+    Write-Warning "Não foi possível iniciar o transcript em $LogPath — continuando sem log de Task Scheduler."
 }
 
-# ---------------------------------------------------------------------------
-# CLAUDE_BIN explícito (achado desta issue, complementa o #5549)
-# ---------------------------------------------------------------------------
-# resolveClaudeBin() (scripts/lib/resolve-claude-bin.ts) varre o PATH
-# procurando o nome LITERAL "claude" sem extensão — suficiente no
-# Linux/systemd (onde foi escrita, #5549), mas no Windows o executável
-# instalado via npm é `claude.cmd`/`claude.ps1`, então essa varredura nunca
-# resolve sozinha por aqui. CLAUDE_BIN é o escape-hatch que a própria
-# função já expõe pra este caso — mais barato que ensinar resolveClaudeBin
-# sobre extensões do Windows para um único chamador.
-$ClaudeCmd = Get-Command "claude" -ErrorAction SilentlyContinue
-if ($ClaudeCmd) {
-    $env:CLAUDE_BIN = $ClaudeCmd.Source
-} else {
-    Write-Warning "claude CLI não encontrado no PATH desta sessão do Task Scheduler. run-scheduled-edicao.ts vai falhar ao resolver o binário, com mensagem acionável no log (data/overnight-schedule.log)."
+$ExitCode = 1
+try {
+    if (-not (Test-Path $RunnerTs)) {
+        Write-Error "Runner TS não encontrado: $RunnerTs"
+        exit 1
+    }
+
+    # -----------------------------------------------------------------------
+    # CLAUDE_BIN explícito (achado desta issue, complementa o #5549)
+    # -----------------------------------------------------------------------
+    # resolveClaudeBin() (scripts/lib/resolve-claude-bin.ts) varre o PATH
+    # procurando o nome LITERAL "claude" sem extensão — suficiente no
+    # Linux/systemd (onde foi escrita, #5549), mas no Windows a extensão
+    # real do executável varia por método de instalação (ver
+    # docs/scheduled-edicao-setup.md §"Pré-requisito: claude no PATH da
+    # sessão do Task Scheduler" pro fato confirmado ao vivo). CLAUDE_BIN é
+    # o escape-hatch que a própria função já expõe pra este caso — mais
+    # barato que ensinar resolveClaudeBin sobre extensões do Windows para
+    # um único chamador. Coleta TODOS os matches (não só o primeiro) pra
+    # avisar se houver mais de uma instalação no PATH — sem isso,
+    # `$ClaudeCmd.Source` de um array de 2+ elementos vira uma string
+    # malformada (join por espaço) sem disparar warning nenhum, porque o
+    # array continua truthy.
+    $AllClaudeCmds = @(Get-Command "claude" -ErrorAction SilentlyContinue)
+    $ClaudeCmd = $AllClaudeCmds | Select-Object -First 1
+    if ($ClaudeCmd) {
+        if ($AllClaudeCmds.Count -gt 1) {
+            Write-Warning "Múltiplas instalações de 'claude' no PATH ($($AllClaudeCmds.Count)) — usando $($ClaudeCmd.Source). Considere limpar o PATH duplicado."
+        }
+        $env:CLAUDE_BIN = $ClaudeCmd.Source
+    } else {
+        Write-Warning "claude CLI não encontrado no PATH desta sessão do Task Scheduler. run-scheduled-edicao.ts vai falhar ao resolver o binário, com mensagem acionável no log (data/overnight-schedule.log)."
+    }
+
+    # -------------------------------------------------------------------
+    # Invocar o runner TS — toda a lógica (data D+1, guard de idempotência,
+    # invocação do claude, logging) vive lá; ver docstring do topo.
+    # -------------------------------------------------------------------
+    Set-Location $RepoRoot
+    & npx tsx $RunnerTs
+    $ExitCode = $LASTEXITCODE
+} finally {
+    try { Stop-Transcript | Out-Null } catch {}
 }
 
-# ---------------------------------------------------------------------------
-# Invocar o runner TS — toda a lógica (data D+1, guard de idempotência,
-# invocação do claude, logging) vive lá; ver docstring do topo.
-# ---------------------------------------------------------------------------
-Set-Location $RepoRoot
-& npx tsx $RunnerTs
-exit $LASTEXITCODE
+exit $ExitCode
