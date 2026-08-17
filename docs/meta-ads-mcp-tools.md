@@ -101,4 +101,16 @@ Fora do escopo prático deste projeto (newsletter, sem catálogo de produto/e-co
 ## Escopo restante da issue #5238
 
 - [x] ~~Lista granular das 29 tools por nome~~ — feito acima (88 tools reais, não 29)
-- [ ] Script de ingestão pro `spend.csv` de #5236 — precisa de gasto real de campanha pra testar contra, ainda não existe (nenhuma campanha foi criada nesta sessão — decisão de gasto é do editor)
+- [x] Script de ingestão pro `spend.csv` de #5236 — `scripts/meta-ads-ingest-spend.ts` +
+      `scripts/lib/meta-ads-ingest.ts` (#5469, 17/08/2026). Construído contra fixture
+      SINTÉTICA (destrava do editor — não esperar campanha real): o envelope real
+      `{"ad_entities": "<json-string>"}` foi capturado ao vivo (zero campanhas,
+      `ad_entities: "[]"`, fixture `test/fixtures/meta-ads/ad-entities-empty.json`) e os
+      valores de gasto foram preenchidos à mão sobre esse mesmo shape
+      (`test/fixtures/meta-ads/ad-entities-synthetic.json`). Diferente de
+      Google/Microsoft, este script **não faz `fetch`** — não há `META_ADS_*` no
+      ambiente nem endpoint REST com key própria pra este projeto; ele consome um
+      dump de `ads_get_ad_entities` via `--input <path.json>`, gerado por uma sessão
+      com o conector Meta Ads. **Fixture sintética valida o parser, não o
+      contrato** — quando a campanha real da #5524 gerar o primeiro gasto,
+      re-verificar o envelope ao vivo e comentar em #5469 antes de fechá-la.
