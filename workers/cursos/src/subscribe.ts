@@ -183,7 +183,16 @@ export interface SubscribeDeps {
 /** Handler `POST /gate/subscribe`. Ao assinar com sucesso, também emite o
  * cookie de sessão (o novo assinante não precisa esperar o próximo sync KV
  * pra ver o conteúdo completo — a Beehiiv já confirmou a criação). */
-export async function handleGateSubscribe(request: Request, env: Env, deps: SubscribeDeps = {}): Promise<Response> {
+export async function handleGateSubscribe(
+  request: Request,
+  env: Env,
+  deps: SubscribeDeps = {},
+  // #5504 hotfix: ExecutionContext OPCIONAL — habilita `ctx.waitUntil()` pro
+  // disparo CAPI abaixo sem atrasar a resposta ao usuário (mesmo padrão de
+  // handleJogarSubscribe, workers/poll/src/subscribe.ts). Sem `ctx` real
+  // (ex: teste que não injeta um), cai no fallback síncrono.
+  ctx?: ExecutionContext,
+): Promise<Response> {
   // #4305: fail-closed — sem `COOKIE_HMAC_SECRET` a emissão da sessão quebra
   // (`crypto.subtle.importKey` rejeita chave de tamanho zero). Recusa ANTES de
   // criar assinante na Beehiiv: sem isso o cadastro acontece, a assinatura
@@ -233,14 +242,22 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
   const state = result.beehiivStatus === "active" ? "confirmed" : "pending";
   const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, v.email, state);
 
-  // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
-  // best-effort, DEPOIS da confirmação na Beehiiv. Fail-soft: sem
-  // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
-  // scripts/lib/shared/meta-capi.ts).
-  await sendCompleteRegistrationEvent(
+  // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API —
+  // fire-and-forget best-effort, DEPOIS da confirmação na Beehiiv. Fail-soft:
+  // sem META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
+  // scripts/lib/shared/meta-capi.ts). `ctx.waitUntil()` adia o envio pra
+  // depois da resposta ao usuário — o `await` direto (achado do review
+  // pós-merge #5504) atrasava a resposta em até `META_CAPI_FETCH_TIMEOUT_MS`
+  // (8s) sempre que a Meta respondia lento.
+  const sendEvent = sendCompleteRegistrationEvent(
     { email: v.email, eventSourceUrl: request.url },
     { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
   );
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(sendEvent);
+  } else {
+    await sendEvent;
+  }
 
   return json({ ok: true }, 200, env, { "Set-Cookie": setCookie });
 }
