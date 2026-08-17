@@ -55,17 +55,25 @@ export interface BeehiivBackupStalenessEvaluation {
  *
  *  `firstExpectedRunEpochSeconds`: epoch a partir do qual "nenhum snapshot"
  *  vira alarme de verdade — antes disso (task ainda não teve a chance de
- *  rodar 1x) é `ok-too-early`, nunca `alarm-missing`. Default: `now - 7 dias`
- *  (dá 1 semana de folga desde "agora" pra 1ª rodada acontecer; o caller
- *  normalmente passa a data de arme real da task quando conhecida — ver
- *  `docs/beehiiv-backup-setup.md`). */
+ *  rodar 1x) é `ok-too-early`, nunca `alarm-missing`. Default:
+ *  `firstExpectedRunEpochSeconds = 0` (epoch Unix) — ou seja, "já era pra ter
+ *  rodado" sempre que o caller não informar um marco explícito, porque
+ *  `Diaria-Beehiiv-Backup` (#5229) já está armado e com snapshots reais
+ *  desde 260814; ausência de snapshot na produção real É um erro, nunca
+ *  "task nova que ainda não teve a chance de rodar". **Cuidado**: um default
+ *  derivado de `nowEpochSeconds` (ex.: `nowEpochSeconds - N dias`) é
+ *  self-referencial e NUNCA produz `ok-too-early` sozinho — `nowEpochSeconds
+ *  >= nowEpochSeconds - N` é sempre verdadeiro pra qualquer N>0 (achado no
+ *  self-review do #5494; se algum caller precisar de fato de uma janela de
+ *  graça, tem que passar um `firstExpectedRunEpochSeconds` fixo, nunca
+ *  relativo ao próprio `now` da chamada). */
 export function evaluateBeehiivBackupStalenessAlarm(
   nowEpochSeconds: number,
   latestSnapshotDate: string | null,
   latestSnapshotEpochSeconds: number | null,
   usable: boolean,
   maxAgeDays: number = 7,
-  firstExpectedRunEpochSeconds: number = nowEpochSeconds - 7 * 86400,
+  firstExpectedRunEpochSeconds: number = 0,
 ): BeehiivBackupStalenessEvaluation {
   if (latestSnapshotDate == null || latestSnapshotEpochSeconds == null) {
     return {
