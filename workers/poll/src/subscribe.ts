@@ -53,6 +53,7 @@ import { json } from "./index";
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
+import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -485,7 +486,19 @@ export async function handleJogarSubscribe(
 
   const utm = resolveSubscribeUtm(v.source);
   const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
-  if (result.ok) return json({ ok: true }, 200, env);
+  if (result.ok) {
+    // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
+    // best-effort, DEPOIS que o cadastro na Beehiiv já foi confirmado.
+    // `sendCompleteRegistrationEvent` nunca lança (fail-soft, ver
+    // scripts/lib/shared/meta-capi.ts) — sem META_CAPI_ACCESS_TOKEN
+    // configurado é no-op silencioso; qualquer erro de rede/Meta também
+    // nunca chega a este handler nem afeta a resposta 200 já garantida.
+    await sendCompleteRegistrationEvent(
+      { email: v.email, eventSourceUrl: request.url },
+      { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+    );
+    return json({ ok: true }, 200, env);
+  }
   if (result.reason === "not_configured") {
     return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
   }

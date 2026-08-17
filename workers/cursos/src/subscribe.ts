@@ -17,6 +17,7 @@ import { json } from "./index";
 import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
+import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -231,5 +232,15 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
   // este gap pro worker irmão.
   const state = result.beehiivStatus === "active" ? "confirmed" : "pending";
   const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, v.email, state);
+
+  // #5504: CompleteRegistration pra Meta Conversions API — fire-and-forget
+  // best-effort, DEPOIS da confirmação na Beehiiv. Fail-soft: sem
+  // META_CAPI_ACCESS_TOKEN é no-op; qualquer erro nunca chega aqui (ver
+  // scripts/lib/shared/meta-capi.ts).
+  await sendCompleteRegistrationEvent(
+    { email: v.email, eventSourceUrl: request.url },
+    { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
+  );
+
   return json({ ok: true }, 200, env, { "Set-Cookie": setCookie });
 }

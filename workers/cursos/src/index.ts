@@ -65,6 +65,10 @@ export interface Env {
   BEEHIIV_NAME_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
+  /** #5504: Meta Conversions API — mesmo secret/mecanismo de
+   * `workers/poll/src/index.ts` (ver docstring lá). OPCIONAL — ausente =
+   * `sendCompleteRegistrationEvent` é no-op silencioso. */
+  META_CAPI_ACCESS_TOKEN?: string;
 }
 
 export function corsHeaders(env: Env): Record<string, string> {
