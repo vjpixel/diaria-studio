@@ -16,7 +16,11 @@ import {
   applyOrigemOverride,
   countLeitoresV1,
   CHANNEL_GROUP_KEYS,
+  CHANNEL_KEY_SPECS,
+  RESERVED_CHANNEL_NAMES,
+  assertValidChannelKeySpecs,
   subscribersForChannel,
+  subscribersForChannelSpec,
   BOOST_ESTIMATE_ANCHOR,
   computeBoostRange,
   computeMeasuredRow,
@@ -28,9 +32,11 @@ import {
   DEGRADATION_THRESHOLD_PCT,
   type CacMeasuredRow,
   type CacBoostRow,
+  type ChannelKeySpec,
 } from "../scripts/lib/cac.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
+import { parseSinceToEpochSeconds, parseUntilToEpochSecondsExclusive } from "../scripts/cohort-engagement.ts";
 
 function sub(overrides: Partial<BeehiivBackupSubscriber> = {}): BeehiivBackupSubscriber {
   return {
@@ -372,5 +378,214 @@ describe("computeMonthBudgetUsage", () => {
     const usage = computeMonthBudgetUsage([spend({ mes: "2026-01" })], "2026-08");
     assert.equal(usage.spentBrl, 0);
     assert.equal(usage.fractionUsed, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CHANNEL_KEY_SPECS — sub-canal + janela ambígua (#5496) + Meta/Microsoft
+// deliberadamente bloqueados (#5493)
+// ---------------------------------------------------------------------------
+
+describe("assertValidChannelKeySpecs", () => {
+  it("lança quando uma spec ambígua não tem janela", () => {
+    const bad: ChannelKeySpec[] = [{ canal: "Google Ads", subcanal: "Search", keys: ["google.com"], ambigua: true }];
+    assert.throws(() => assertValidChannelKeySpecs(bad), /janela obrigatória/);
+  });
+
+  it("não lança quando a spec ambígua tem janela", () => {
+    const ok: ChannelKeySpec[] = [
+      {
+        canal: "Google Ads",
+        subcanal: "Search",
+        keys: ["google.com"],
+        ambigua: true,
+        janela: { since: parseSinceToEpochSeconds("2025-12-01"), untilExclusive: parseUntilToEpochSecondsExclusive("2026-02-28") },
+      },
+    ];
+    assert.doesNotThrow(() => assertValidChannelKeySpecs(ok));
+  });
+
+  it("não lança pra spec não-ambígua sem janela", () => {
+    assert.doesNotThrow(() => assertValidChannelKeySpecs([{ canal: "LinkedIn", keys: ["linkedin"] }]));
+  });
+
+  it("CHANNEL_KEY_SPECS real (módulo) passa na própria validação (sanity — já rodou no import)", () => {
+    assert.doesNotThrow(() => assertValidChannelKeySpecs(CHANNEL_KEY_SPECS));
+  });
+});
+
+describe("CHANNEL_GROUP_KEYS derivado — nunca inclui chave ambígua", () => {
+  it("Google Ads (legado, sem sub-canal) NÃO inclui google.com", () => {
+    assert.ok(!CHANNEL_GROUP_KEYS["Google Ads"].includes("google.com"));
+  });
+
+  it("subscribersForChannel(subs, 'Google Ads') não casa google.com mesmo dentro da janela da campanha", () => {
+    const subs = [sub({ utm_source: "google.com", created: parseSinceToEpochSeconds("2026-01-15") })];
+    assert.deepEqual(subscribersForChannel(subs, "Google Ads"), []);
+  });
+});
+
+describe("RESERVED_CHANNEL_NAMES (#5493) — Meta/Microsoft Advertising canônicos, sem spec ainda", () => {
+  it("nomes canônicos fixados", () => {
+    assert.deepEqual(RESERVED_CHANNEL_NAMES, ["Meta", "Microsoft Advertising"]);
+  });
+
+  it("nenhum dos dois tem entrada em CHANNEL_GROUP_KEYS ainda (bloqueado por observação real)", () => {
+    for (const canal of RESERVED_CHANNEL_NAMES) {
+      assert.equal(CHANNEL_GROUP_KEYS[canal], undefined);
+    }
+  });
+
+  it("tráfego orgânico de Instagram (instagram.com/instagram-diaria/instagram-pessoal) nunca cai em canal pago", () => {
+    const subs = [
+      sub({ utm_source: "instagram.com" }),
+      sub({ utm_source: "instagram-diaria" }),
+      sub({ utm_source: "instagram-pessoal" }),
+    ];
+    // Nenhum canal conhecido (Google Ads, LinkedIn) casa esses referrers —
+    // e não existe spec "Meta" ainda pra casar também (#5493).
+    assert.deepEqual(subscribersForChannel(subs, "Google Ads"), []);
+    assert.deepEqual(subscribersForChannel(subs, "LinkedIn"), []);
+    for (const spec of CHANNEL_KEY_SPECS) {
+      assert.deepEqual(subscribersForChannelSpec(subs, spec), [], `spec ${spec.canal}/${spec.subcanal ?? ""} não deveria casar Instagram orgânico`);
+    }
+  });
+});
+
+describe("subscribersForChannelSpec — sub-canal PMax/Search (#5496)", () => {
+  const pmaxSpec = CHANNEL_KEY_SPECS.find((s) => s.canal === "Google Ads" && s.subcanal === "PMax")!;
+  const searchSpec = CHANNEL_KEY_SPECS.find((s) => s.canal === "Google Ads" && s.subcanal === "Search")!;
+
+  it("PMax casa android.googlequicksearchbox, não casa google.com", () => {
+    const subs = [sub({ utm_source: "android.googlequicksearchbox" }), sub({ utm_source: "google.com" })];
+    assert.equal(subscribersForChannelSpec(subs, pmaxSpec).length, 1);
+  });
+
+  it("Search casa google.com (sem aplicar a janela sozinho — isso é responsabilidade do orquestrador)", () => {
+    const subs = [sub({ utm_source: "google.com" }), sub({ utm_source: "direct" })];
+    assert.equal(subscribersForChannelSpec(subs, searchSpec).length, 1);
+  });
+
+  it("spec Search tem janela dez/2025-fev/2026 (campanha real, #4466/#5254/#5496)", () => {
+    assert.ok(searchSpec.ambigua);
+    assert.ok(searchSpec.janela);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCacReport com sub-canal (#5496) — PMax/Search não fundidos, guard de
+// dupla-contagem, google.com só dentro da janela
+// ---------------------------------------------------------------------------
+
+describe("buildCacReport — sub-canal (#5496)", () => {
+  it("linha com subcanal='PMax' mede só as chaves de PMax", () => {
+    const spendRows: SpendRow[] = [spend({ canal: "Google Ads", subcanal: "PMax", valor: 718.39 })];
+    const subs = [sub({ utm_source: "android.googlequicksearchbox" }), sub({ utm_source: "google.com", created: parseSinceToEpochSeconds("2026-01-15") })];
+    const report = buildCacReport(spendRows, subs);
+    const row = report.rows[0] as CacMeasuredRow;
+    assert.equal(row.leitores, 1);
+    assert.equal(row.spend.subcanal, "PMax");
+  });
+
+  it("linha com subcanal='Search' só conta google.com DENTRO da janela dez/2025-fev/2026", () => {
+    const spendRows: SpendRow[] = [spend({ canal: "Google Ads", subcanal: "Search", valor: 239.62 })];
+    const subs = [
+      sub({ email: "dentro@example.com", utm_source: "google.com", created: parseSinceToEpochSeconds("2026-01-15") }),
+      sub({ email: "fora@example.com", utm_source: "google.com", created: parseSinceToEpochSeconds("2026-05-01") }),
+    ];
+    const report = buildCacReport(spendRows, subs);
+    const row = report.rows[0] as CacMeasuredRow;
+    assert.equal(row.cadastros, 1, "só o cadastro dentro da janela da campanha deveria contar");
+  });
+
+  it("PMax e Search não se fundem — 2 linhas distintas, cada uma com seu subcanal", () => {
+    const spendRows: SpendRow[] = [
+      spend({ canal: "Google Ads", subcanal: "PMax", valor: 718.39 }),
+      spend({ canal: "Google Ads", subcanal: "Search", valor: 239.62 }),
+    ];
+    const report = buildCacReport(spendRows, []);
+    assert.equal(report.rows.length, 2);
+    assert.deepEqual(
+      report.rows.map((r) => r.spend.subcanal).sort(),
+      ["PMax", "Search"],
+    );
+  });
+
+  it("canal/subcanal sem spec correspondente vira unmapped (ex: Google Ads/Display, sem spec)", () => {
+    const spendRows: SpendRow[] = [spend({ canal: "Google Ads", subcanal: "Display", valor: 10 })];
+    const report = buildCacReport(spendRows, []);
+    assert.deepEqual(report.unmappedChannels, ["Google Ads/Display"]);
+  });
+
+  it("linha de canal inteiro + linha de sub-canal no MESMO canal/mês lança (dupla-contagem)", () => {
+    const spendRows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-02", valor: 956.21 }), // canal inteiro, sem subcanal
+      spend({ canal: "Google Ads", mes: "2026-02", subcanal: "PMax", valor: 718.39 }),
+    ];
+    assert.throws(() => buildCacReport(spendRows, []), /dupla contagem/);
+  });
+
+  it("mensagem de erro identifica o canal/mês corretamente mesmo com canal multi-palavra (regressão: replace(' ', ...) ingênuo casava o espaço DENTRO de 'Google Ads')", () => {
+    const spendRows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-02", valor: 956.21 }),
+      spend({ canal: "Google Ads", mes: "2026-02", subcanal: "PMax", valor: 718.39 }),
+    ];
+    assert.throws(() => buildCacReport(spendRows, []), /Google Ads \/ mês 2026-02/);
+  });
+
+  it("linha de canal inteiro + linha de sub-canal em MESES DIFERENTES não lança", () => {
+    const spendRows: SpendRow[] = [
+      spend({ canal: "Google Ads", mes: "2026-01", valor: 100 }),
+      spend({ canal: "Google Ads", mes: "2026-02", subcanal: "PMax", valor: 50 }),
+    ];
+    assert.doesNotThrow(() => buildCacReport(spendRows, []));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCacReport — janela global --desde/--ate (#5495)
+// ---------------------------------------------------------------------------
+
+describe("buildCacReport — janela global (#5495)", () => {
+  it("sem window: comportamento idêntico a antes (window=null, excludedMissingCreated=0)", () => {
+    const report = buildCacReport([spend()], [sub()]);
+    assert.equal(report.window, null);
+    assert.equal(report.excludedMissingCreated, 0);
+  });
+
+  it("com window: cadastro fora da janela não entra na base nem no canal", () => {
+    const window = { since: parseSinceToEpochSeconds("2026-08-01"), untilExclusive: parseUntilToEpochSecondsExclusive("2026-08-16") };
+    const subs = [
+      sub({ email: "dentro@example.com", utm_source: "android.googlequicksearchbox", created: parseSinceToEpochSeconds("2026-08-10") }),
+      sub({ email: "fora@example.com", utm_source: "android.googlequicksearchbox", created: parseSinceToEpochSeconds("2026-01-01") }),
+    ];
+    const report = buildCacReport([spend()], subs, { window });
+    assert.equal(report.window, window);
+    assert.equal(report.base.amostraConsiderada, 1);
+    const row = report.rows[0] as CacMeasuredRow;
+    assert.equal(row.cadastros, 1);
+    assert.deepEqual(row.window, window);
+  });
+
+  it("assinante sem created é descartado (nunca assumido dentro/fora) e contado em excludedMissingCreated", () => {
+    const window = { since: parseSinceToEpochSeconds("2026-08-01"), untilExclusive: null };
+    const subs = [sub({ created: undefined as unknown as number })];
+    const report = buildCacReport([spend()], subs, { window });
+    assert.equal(report.excludedMissingCreated, 1);
+    assert.equal(report.base.amostraConsiderada, 0);
+  });
+
+  it("janela global + janela do sub-canal ambíguo se combinam por intersecção", () => {
+    // Janela global mais estreita que a da campanha de Search — só a
+    // intersecção (jan/2026) deveria sobrar.
+    const window = { since: parseSinceToEpochSeconds("2026-01-01"), untilExclusive: parseUntilToEpochSecondsExclusive("2026-01-31") };
+    const spendRows: SpendRow[] = [spend({ canal: "Google Ads", subcanal: "Search", valor: 100 })];
+    const subs = [
+      sub({ email: "jan@example.com", utm_source: "google.com", created: parseSinceToEpochSeconds("2026-01-15") }),
+      sub({ email: "dez@example.com", utm_source: "google.com", created: parseSinceToEpochSeconds("2025-12-15") }), // fora da janela GLOBAL
+    ];
+    const report = buildCacReport(spendRows, subs, { window });
+    const row = report.rows[0] as CacMeasuredRow;
+    assert.equal(row.cadastros, 1, "só o cadastro de janeiro deveria sobreviver à intersecção");
   });
 });

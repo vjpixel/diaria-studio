@@ -151,6 +151,7 @@ function measuredRowHtml(row, baseAbertura) {
   const degradedBadge = row.degradado === true ? ` <span class="state-badge state-overdue">degradou</span>` : "";
   return `
     <td><strong>${escapeHtml(row.canal)}</strong></td>
+    <td>${escapeHtml(row.spend.subcanal || "—")}</td>
     <td class="mono">${fmtBrl(row.custoPorLeitor)}</td>
     <td>${row.leitores}</td>
     <td>${row.ativos}</td>
@@ -167,6 +168,7 @@ function measuredRowHtml(row, baseAbertura) {
 function boostRowHtml(row) {
   return `
     <td><strong>${escapeHtml(row.canal)}</strong></td>
+    <td>${escapeHtml(row.spend.subcanal || "—")}</td>
     <td class="mono">${fmtBrl(row.range.custoPorLeitorMin)}–${fmtBrl(row.range.custoPorLeitorMax)}</td>
     <td>${row.range.leitoresMin}–${row.range.leitoresMax}</td>
     <td>${row.range.ativosMin}–${row.range.ativosMax}</td>
@@ -195,6 +197,7 @@ function renderTable(report) {
   if (report.unmappedChannels && report.unmappedChannels.length > 0) {
     warnings.push(`canal(is) desconhecido(s) em spend.csv: ${report.unmappedChannels.join(", ")}.`);
   }
+  if (report.window) warnings.push("janela de cadastro aplicada — números recortados por período.");
   el.warnings.textContent = warnings.join(" ");
 }
 
@@ -236,7 +239,8 @@ async function refresh(forceRefresh) {
     renderSummary(data);
     renderTable(data.report);
     setFetchStatus("ok", `${data.report.rows.length} canal(is)${data.cached ? " (cache)" : ""}`);
-    el.lastUpdated.textContent = data.generatedAt ? `gerado em ${fmtTime(data.generatedAt)}` : "";
+    const snapshotLabel = data.snapshot && data.snapshot.date ? ` · snapshot ${data.snapshot.date}` : "";
+    el.lastUpdated.textContent = data.generatedAt ? `gerado em ${fmtTime(data.generatedAt)}${snapshotLabel}` : "";
   } catch (e) {
     el.error.hidden = false;
     el.error.textContent = `Falha ao carregar ads: ${e.message}`;
