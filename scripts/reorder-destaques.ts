@@ -48,6 +48,7 @@ import {
   copyFileSync,
   mkdtempSync,
   rmSync,
+  unlinkSync,
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -78,6 +79,10 @@ export interface RenameFileDeps {
   existsSync: typeof existsSync;
   copyFileSync: typeof copyFileSync;
   readFileSync: typeof readFileSync;
+  // Opcional (#5581): deps existentes em testes/callers não precisam ser
+  // atualizadas para continuar válidas — `stageAndWriteVerified` cai no
+  // `unlinkSync` real via `defaultRenameFileDeps` quando omitido.
+  unlinkSync?: typeof unlinkSync;
 }
 
 const defaultRenameFileDeps: RenameFileDeps = {
@@ -85,6 +90,7 @@ const defaultRenameFileDeps: RenameFileDeps = {
   existsSync,
   copyFileSync,
   readFileSync,
+  unlinkSync,
 };
 
 /**
@@ -178,6 +184,26 @@ interface PendingFileRename {
  *      qualquer ordem de falha — não depende de reconstruir uma pilha de
  *      operações cronológicas como o rollback antigo (`rollbackAppliedRenames`,
  *      #5087) precisava.
+ *   5. (#5581) Só DEPOIS que TODO o lote foi escrito e verificado com
+ *      sucesso — nunca dentro do try/catch de escrita, e nunca antes de
+ *      todas as escritas terem terminado — apaga (`unlinkSync`) cada
+ *      `originalName` que NÃO é `finalName` de nenhuma entrada do MESMO
+ *      lote. Corrige a regressão do #5564: trocar `renameSync` (move, o
+ *      nome antigo deixa de existir) por `copyFileSync` (copy, o nome
+ *      antigo nunca é removido) resolveu a corrida de sync do #5564, mas só
+ *      não deixa arquivo órfão quando o conjunto de nomes finais é uma
+ *      PERMUTAÇÃO FECHADA do conjunto de nomes originais — ex: swap D1↔D2
+ *      quando os dois têm exatamente os mesmos sufixos. Quando os
+ *      destaques têm conjuntos de arquivo ASSIMÉTRICOS (`4x5-nativo.jpg`
+ *      só existe pro destaque que teve imagem gerada nativamente), o
+ *      arquivo antigo sobrevivia intocado sob o slot ERRADO, sem nenhum
+ *      sinal de erro. Comparar contra o `finalName` de TODO o lote (não só
+ *      da própria entrada) evita apagar um arquivo que ainda serve de
+ *      destino final de OUTRA entrada do mesmo lote (ex: rotação de 3 onde
+ *      `originalName` de uma entrada é `finalName` de outra) — o staging já
+ *      capturou o conteúdo de cada `originalName` ANTES de qualquer escrita
+ *      (passo 1), então apagar depois de tudo verificado não reintroduz a
+ *      corrida original do #5564.
  *
  * Residual: o processo ainda não pode detectar uma reversão que aconteça
  * DEPOIS que ele já terminou e saiu — mas a superfície de risco caiu de "N
@@ -249,6 +275,30 @@ function stageAndWriteVerified(
         }
       }
       throw e;
+    }
+
+    // Passo 4 (#5581): agora que TODO o lote foi escrito + verificado com
+    // sucesso, remove cada `originalName` que não é `finalName` de nenhuma
+    // entrada do lote — evita o arquivo órfão sob o slot antigo quando o
+    // conjunto de sufixos é assimétrico entre destaques (ex: `4x5-nativo`
+    // presente no D1 e ausente no D2). `finalNames` inclui o lote inteiro,
+    // não só a própria entrada, para nunca apagar um `originalName` que
+    // ainda é o `finalName` de OUTRA entrada pendente (ex: rotação de 3).
+    const finalNames = new Set(staged.map((s) => s.finalName));
+    for (const s of staged) {
+      if (finalNames.has(s.originalName)) continue;
+      try {
+        (deps.unlinkSync ?? unlinkSync)(join(dir, s.originalName));
+      } catch (e) {
+        // Best-effort: o lote já está integralmente escrito e verificado
+        // nesse ponto — falhar a operação inteira por causa de um unlink
+        // que não conseguiu limpar o órfão seria pior que deixar o órfão
+        // (que ainda é detectável/limpável manualmente) e reportar sucesso
+        // silencioso do reorder em si.
+        console.warn(
+          `WARN: reorder-destaques — não foi possível remover ${s.originalName} (órfão pós-reorder, #5581): ${e}`,
+        );
+      }
     }
 
     return staged.map((s) => ({ from: s.originalName, to: s.finalName }));

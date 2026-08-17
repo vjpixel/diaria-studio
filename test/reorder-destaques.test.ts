@@ -677,6 +677,79 @@ describe("renameDestaqueImages / renameDestaquePrompts (#5564 — rollback via s
   });
 });
 
+describe("renameDestaqueImages (#5581 — conjunto de imagens assimétrico entre destaques não deixa órfão)", () => {
+  // Reprodução exata do corpo da issue: D1 tem 4x5-nativo (imagem gerada
+  // nativamente), D2 e D3 não. Antes do fix, `stageAndWriteVerified` usava
+  // `copyFileSync` (copy, nunca remove o original) sem nenhum passo de
+  // deleção — `04-d1-4x5-nativo.jpg` sobrevivia intocado com o conteúdo do
+  // D1 PRÉ-reorder, ao lado do novo `04-d2-4x5-nativo.jpg` correto.
+  it("swap D1<->D2 com 4x5-nativo só em D1: órfão 04-d1-4x5-nativo.jpg é removido, sem perda de conteúdo válido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-assimetrico-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "D1_1x1");
+      writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "D1_4x5_NATIVO");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "D2_1x1");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "D3_1x1");
+
+      renameDestaqueImages(dir, [2, 1, 3], false);
+
+      // O órfão não pode sobreviver: 04-d1-4x5-nativo.jpg (nome antigo do
+      // D1) só deve existir se ainda for o finalName de alguma entrada do
+      // lote — não é o caso aqui (D2 não tinha 4x5-nativo, então nada
+      // reescreve esse path de volta).
+      assert.deepEqual(
+        readdirSync(dir).sort(),
+        ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d2-4x5-nativo.jpg", "04-d3-1x1.jpg"],
+        "04-d1-4x5-nativo.jpg (órfão) não deveria sobreviver ao reorder",
+      );
+
+      // Conteúdo correto: D1 (slot novo) tem os bytes do antigo D2; o novo
+      // 04-d2-4x5-nativo.jpg tem os bytes do 4x5-nativo original do D1
+      // (migrou pro slot D2 junto com o resto do destaque).
+      assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "D2_1x1");
+      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "D1_1x1");
+      assert.equal(
+        readFileSync(join(dir, "04-d2-4x5-nativo.jpg"), "utf8"),
+        "D1_4x5_NATIVO",
+      );
+      assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "D3_1x1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rotação de 3 com 4x5-nativo só em D1: nenhum arquivo órfão sobrevive, ciclo fechado preserva todo conteúdo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-assimetrico-3cycle-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "D1_1x1");
+      writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "D1_4x5_NATIVO");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "D2_1x1");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "D3_1x1");
+
+      // newOrder=[3,1,2]: oldToNew = {3→1, 1→2, 2→3}. D1 (com nativo) vira
+      // D2; D2 vira D3; D3 vira D1. Nenhum destino recebe 4x5-nativo além
+      // do novo D2 — o antigo 04-d1-4x5-nativo.jpg vira 04-d2-4x5-nativo.jpg
+      // e não deve sobrar cópia órfã sob o nome antigo.
+      renameDestaqueImages(dir, [3, 1, 2], false);
+
+      assert.deepEqual(
+        readdirSync(dir).sort(),
+        ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d2-4x5-nativo.jpg", "04-d3-1x1.jpg"],
+        "04-d1-4x5-nativo.jpg (órfão) não deveria sobreviver à rotação",
+      );
+      assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "D3_1x1");
+      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "D1_1x1");
+      assert.equal(
+        readFileSync(join(dir, "04-d2-4x5-nativo.jpg"), "utf8"),
+        "D1_4x5_NATIVO",
+      );
+      assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "D2_1x1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("renameDestaqueImages (#5564 — regressão central: 'reversão pós-hoc' detectada mesmo com escrita individual OK)", () => {
   // Reproduz a causa raiz reportada na issue: `renameSyncVerified` (#5085)
   // já checava `existsSync` logo após CADA rename — mas isso não pegava o
