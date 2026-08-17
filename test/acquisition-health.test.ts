@@ -17,6 +17,7 @@ import {
   buildAcquisitionHealthEmail,
   snapshotDateToEpochSeconds,
   median,
+  windowsDivergeBeyondTolerance,
   emptyAcquisitionHealthState,
   DEFAULT_ACQUISITION_HEALTH_THRESHOLDS,
   type AcquisitionHealthState,
@@ -51,6 +52,31 @@ describe("median", () => {
   });
   it("vazio: null", () => {
     assert.equal(median([]), null);
+  });
+});
+
+describe("windowsDivergeBeyondTolerance", () => {
+  it("2 dias vs 58 dias (caso real da #5494) diverge além da tolerância padrão (1.5x)", () => {
+    assert.equal(windowsDivergeBeyondTolerance(2, 58, 1.5), true);
+  });
+
+  it("7 dias vs 7 dias nunca diverge", () => {
+    assert.equal(windowsDivergeBeyondTolerance(7, 7, 1.5), false);
+  });
+
+  it("14 dias vs 7 dias (domingo pulado 1x) diverge (razão 2 > 1.5)", () => {
+    assert.equal(windowsDivergeBeyondTolerance(14, 7, 1.5), true);
+  });
+
+  it("null em qualquer lado nunca diverge (comportamento pré-#5494 preservado)", () => {
+    assert.equal(windowsDivergeBeyondTolerance(null, 58, 1.5), false);
+    assert.equal(windowsDivergeBeyondTolerance(2, null, 1.5), false);
+    assert.equal(windowsDivergeBeyondTolerance(null, null, 1.5), false);
+  });
+
+  it("largura <= 0 em qualquer lado nunca diverge (dado degenerado)", () => {
+    assert.equal(windowsDivergeBeyondTolerance(0, 58, 1.5), false);
+    assert.equal(windowsDivergeBeyondTolerance(2, -1, 1.5), false);
   });
 });
 
@@ -133,6 +159,16 @@ describe("computeChannelStats", () => {
     assert.equal(withoutWindow.novosNaJanela, 0);
   });
 
+  it("windowDays = largura da janela em dias; null quando sem janela informada (#5494)", () => {
+    const since = snapshotDateToEpochSeconds("2026-06-17");
+    const until = snapshotDateToEpochSeconds("2026-08-14"); // 58 dias
+    const [withWindow] = computeChannelStats([sub({ utm_source: "canal-f" })], since, until);
+    assert.equal(withWindow.windowDays, 58);
+
+    const [withoutWindow] = computeChannelStats([sub({ utm_source: "canal-f" })], null, null);
+    assert.equal(withoutWindow.windowDays, null);
+  });
+
   it("ordena por cadastros decrescente", () => {
     const subs = [
       sub({ email: "a@x.com", utm_source: "pequeno" }),
@@ -160,6 +196,7 @@ function bigChannelStats(overrides: Partial<ChannelStats> = {}): ChannelStats {
     amostraVazia: false,
     ctrAgregadoPct: 5,
     novosNaJanela: 10,
+    windowDays: 7, // caso "normal" — janela atual e anterior sempre 7×7 a menos que o teste diga o contrário
     ...overrides,
   };
 }
@@ -293,6 +330,42 @@ describe("detectAcquisitionHealthFindings — sinal 3a (canal_parou)", () => {
     const { findings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState(), strict);
     assert.ok(!findings.some((f) => f.type === "canal_parou"), "4 < piso customizado de 10 — não deveria alarmar");
   });
+
+  // ── Guard 5 (#5494) — janelas de largura muito diferente ──────────────
+  it("guard 5 (#5494) — janelas de 2 e 58 dias (caso real 16/08) NÃO geram canal_parou, mas ficam em suppressedFindings", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0, windowDays: 2 })];
+    const previous = [bigChannelStats({ novosNaJanela: 20, windowDays: 58 })];
+    const { findings, suppressedFindings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(!findings.some((f) => f.type === "canal_parou"), "janelas 2d vs 58d não deveriam alarmar canal_parou");
+    assert.ok(
+      suppressedFindings.some((f) => f.type === "canal_parou" && f.channel === "canal-x"),
+      "a supressão deve ficar registrada, nunca silenciada",
+    );
+  });
+
+  it("guard 5 (#5494) — janelas 7×7 (caso normal) seguem alarmando canal_parou normalmente", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0, windowDays: 7 })];
+    const previous = [bigChannelStats({ novosNaJanela: 20, windowDays: 7 })];
+    const { findings, suppressedFindings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(findings.some((f) => f.type === "canal_parou"), "janelas 7x7 devem continuar alarmando canal_parou");
+    assert.equal(suppressedFindings.length, 0);
+  });
+
+  it("guard 5 (#5494) — janela 14 vs 7 (1 domingo pulado) também suprime", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0, windowDays: 14 })];
+    const previous = [bigChannelStats({ novosNaJanela: 20, windowDays: 7 })];
+    const { findings, suppressedFindings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(!findings.some((f) => f.type === "canal_parou"));
+    assert.ok(suppressedFindings.some((f) => f.type === "canal_parou"));
+  });
+
+  it("guard 5 (#5494) — windowDays ausente (null) em qualquer lado NÃO suprime (comportamento pré-#5494)", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0, windowDays: null })];
+    const previous = [bigChannelStats({ novosNaJanela: 20, windowDays: 58 })];
+    const { findings, suppressedFindings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(findings.some((f) => f.type === "canal_parou"));
+    assert.equal(suppressedFindings.length, 0);
+  });
 });
 
 describe("detectAcquisitionHealthFindings — sinal 3b (canal_desconhecido)", () => {
@@ -370,6 +443,15 @@ describe("buildAcquisitionHealthEmail", () => {
     assert.match(body, /sparkloop/);
     assert.match(body, /google-ads/);
   });
+
+  it("#5494 — findings suprimidos aparecem no corpo, marcados, sem alterar o subject", () => {
+    const findings = [{ type: "sobrevivencia_baixa" as const, channel: "google-ads", detail: "sobrevivência 10%." }];
+    const suppressed = [{ type: "canal_parou" as const, channel: "instagram-diaria", detail: "SUPRIMIDO: janela 2d vs 58d." }];
+    const { subject, body } = buildAcquisitionHealthEmail(findings, "2026-08-16", suppressed);
+    assert.match(subject, /1 achado/); // subject só conta findings ativos
+    assert.match(body, /SUPRIMIDO/);
+    assert.match(body, /instagram-diaria/);
+  });
 });
 
 describe("DEFAULT_ACQUISITION_HEALTH_THRESHOLDS", () => {
@@ -382,6 +464,7 @@ describe("DEFAULT_ACQUISITION_HEALTH_THRESHOLDS", () => {
       ctrSampleMin: 5,
       ctrWeeksBelowBase: 2,
       canalParouMinNovosAnterior: 3,
+      canalParouMaxWindowRatio: 1.5,
     });
   });
 });
