@@ -11,7 +11,9 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
   readStateChangedIssues,
   addStateChangedIssue,
@@ -22,6 +24,9 @@ import {
   checkStateChangedPending,
   type PlanWithStateChanged,
 } from "../scripts/lib/state-changed-tracker.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = resolve(ROOT, "scripts/check-state-changed-pending.ts");
 
 let root: string | null = null;
 afterEach(() => {
@@ -146,5 +151,54 @@ describe("orquestração I/O contra plan.json em tmpdir", () => {
     assert.deepEqual(checkStateChangedPending(planPath), { status: "pending", issues: [5480] });
     removePendingFromPlan(planPath, 5480);
     assert.deepEqual(checkStateChangedPending(planPath), { status: "ok" });
+  });
+});
+
+describe("CLI (scripts/check-state-changed-pending.ts)", () => {
+  function run(args: string[]) {
+    return spawnSync(process.execPath, ["--import", "tsx", CLI, ...args], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env: { ...process.env },
+    });
+  }
+
+  it("--plan sozinho sobre plan.json vazio → exit 0, 'ok'", () => {
+    const planPath = writePlanFixture({ state_changed_issues: [] });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /ok — nenhuma pendência de re-triagem/);
+  });
+
+  it("--plan sozinho sobre plan.json com pendências → exit 1, lista as issues", () => {
+    const planPath = writePlanFixture({ state_changed_issues: [5480, 5474] });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5474/);
+    assert.match(r.stderr, /#5480/);
+  });
+
+  it("--add-pending grava e --remove-pending resolve, refletindo em --plan", () => {
+    const planPath = writePlanFixture({ state_changed_issues: [] });
+    run(["--add-pending", "5480", "--plan", planPath]);
+    assert.equal(run(["--plan", planPath]).status, 1);
+    run(["--remove-pending", "5480", "--plan", planPath]);
+    assert.equal(run(["--plan", planPath]).status, 0);
+  });
+
+  it("plan.json ausente → erro acionável (path citado) e exit 2, nunca stack trace cru", () => {
+    root = mkdtempSync(join(tmpdir(), "state-changed-tracker-cli-"));
+    const missing = join(root, "plan.json");
+    const r = run(["--plan", missing]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /plan\.json não encontrado/);
+    assert.match(r.stderr, new RegExp(missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(r.stderr, /at readFileSync/);
+  });
+
+  it("sem --plan → uso + exit 2", () => {
+    const r = run([]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /uso: --plan/);
   });
 });

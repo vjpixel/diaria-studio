@@ -25,6 +25,7 @@
  * @see .claude/skills/diaria-continuo/SKILL.md
  */
 
+import { existsSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   addPendingToPlan,
@@ -48,6 +49,11 @@ if (isMainModule(import.meta.url)) {
     console.error(
       "[check-state-changed-pending] uso: --plan {path} [--add-pending N | --remove-pending N]",
     );
+    process.exit(2);
+  }
+
+  if (!existsSync(planPath)) {
+    console.error(`[check-state-changed-pending] plan.json não encontrado: ${planPath}`);
     process.exit(2);
   }
 
