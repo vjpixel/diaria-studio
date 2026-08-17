@@ -5,7 +5,12 @@
  * fallback envergonhado — o canal LinkedIn vai depender disto
  * PERMANENTEMENTE (não há MCP oficial pra Ads do LinkedIn, e a Marketing
  * API exige aprovação sem SLA previsível). `data/aquisicao/spend.csv`,
- * cinco colunas: `canal,mes,moeda,valor,fonte`.
+ * cinco colunas obrigatórias: `canal,mes,moeda,valor,fonte`, mais uma coluna
+ * OPCIONAL `subcanal` (#5496 — ver `SpendRow.subcanal` e
+ * `scripts/lib/cac.ts` → `ChannelKeySpec`) pra recortar um canal em
+ * sub-canais (ex: "Google Ads" em "PMax"/"Search"). Arquivo sem a coluna
+ * `subcanal` parseia idêntico a antes do #5496 — cada linha vira "o canal
+ * inteiro", como sempre foi.
  *
  * ## Formato de `valor`
  *
@@ -51,6 +56,11 @@ export interface SpendRow {
   moeda: string;
   valor: number;
   fonte: string;
+  /** Coluna OPCIONAL (#5496) — recorte dentro do canal (ex: "PMax", "Search").
+   *  Ausente/vazia = "o canal inteiro" (comportamento de hoje, sem mudança).
+   *  Não faz parte de `SPEND_CSV_HEADERS` de propósito: uma linha sem esta
+   *  coluna continua parseando idêntico a antes de #5496 existir. */
+  subcanal?: string;
 }
 
 export interface SpendRowError {
@@ -94,6 +104,7 @@ export function parseSpendCsv(content: string): ParseSpendCsvResult {
     const moeda = (raw.moeda ?? "").trim();
     const fonte = (raw.fonte ?? "").trim();
     const valorRaw = (raw.valor ?? "").trim();
+    const subcanalRaw = (raw.subcanal ?? "").trim();
 
     const missingFields = [
       !canal && "canal",
@@ -122,7 +133,7 @@ export function parseSpendCsv(content: string): ParseSpendCsvResult {
       return;
     }
 
-    rows.push({ canal, mes, moeda, valor, fonte });
+    rows.push(subcanalRaw ? { canal, mes, moeda, valor, fonte, subcanal: subcanalRaw } : { canal, mes, moeda, valor, fonte });
   });
 
   return { rows, errors };
@@ -209,11 +220,16 @@ function csvEscape(value: string): string {
 }
 
 /** Serializa linhas no formato `spend.csv` (header + linhas), CRLF-free.
- *  @pure */
+ *  Inclui a coluna `subcanal` no header/linhas só quando pelo menos uma linha
+ *  a usa (#5496) — mantém o seed de sempre (nenhuma linha com subcanal) byte-
+ *  a-byte idêntico ao formato pré-#5496. @pure */
 export function formatSpendCsv(rows: SpendRow[] = SPEND_SEED_ROWS): string {
-  const header = SPEND_CSV_HEADERS.join(",");
-  const lines = rows.map((r) =>
-    [r.canal, r.mes, r.moeda, String(r.valor), r.fonte].map(csvEscape).join(","),
-  );
-  return [header, ...lines].join("\n") + "\n";
+  const hasSubcanal = rows.some((r) => r.subcanal);
+  const headers = hasSubcanal ? [...SPEND_CSV_HEADERS, "subcanal"] : [...SPEND_CSV_HEADERS];
+  const lines = rows.map((r) => {
+    const cols = [r.canal, r.mes, r.moeda, String(r.valor), r.fonte];
+    if (hasSubcanal) cols.push(r.subcanal ?? "");
+    return cols.map(csvEscape).join(",");
+  });
+  return [headers.join(","), ...lines].join("\n") + "\n";
 }

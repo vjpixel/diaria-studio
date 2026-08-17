@@ -146,3 +146,53 @@ describe("formatSpendCsv / round-trip com parseSpendCsv", () => {
     assert.deepEqual(reparsed, rows);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Coluna opcional `subcanal` (#5496)
+// ---------------------------------------------------------------------------
+
+describe("subcanal (#5496) — coluna opcional, não faz parte de SPEND_CSV_HEADERS", () => {
+  it("SPEND_CSV_HEADERS continua só as 5 obrigatórias (subcanal NÃO entra)", () => {
+    assert.equal((SPEND_CSV_HEADERS as readonly string[]).includes("subcanal"), false);
+  });
+
+  it("arquivo SEM a coluna subcanal parseia idêntico a antes do #5496 (nenhuma linha tem .subcanal)", () => {
+    const csv = "canal,mes,moeda,valor,fonte\nGoogle Ads,2026-02,BRL,956.21,painel Ads\n";
+    const { rows, errors } = parseSpendCsv(csv);
+    assert.deepEqual(errors, []);
+    assert.equal(rows[0].subcanal, undefined);
+    assert.deepEqual(Object.keys(rows[0]).sort(), ["canal", "fonte", "mes", "moeda", "valor"]);
+  });
+
+  it("arquivo COM a coluna subcanal preenchida popula SpendRow.subcanal", () => {
+    const csv = "canal,mes,moeda,valor,fonte,subcanal\nGoogle Ads,2026-02,BRL,718.39,painel Ads,PMax\n";
+    const { rows, errors } = parseSpendCsv(csv);
+    assert.deepEqual(errors, []);
+    assert.equal(rows[0].subcanal, "PMax");
+  });
+
+  it("coluna subcanal presente mas célula vazia -> subcanal fica undefined (não string vazia)", () => {
+    const csv = "canal,mes,moeda,valor,fonte,subcanal\nGoogle Ads,2026-02,BRL,718.39,painel Ads,\n";
+    const { rows, errors } = parseSpendCsv(csv);
+    assert.deepEqual(errors, []);
+    assert.equal(rows[0].subcanal, undefined);
+  });
+
+  it("formatSpendCsv omite a coluna subcanal quando nenhuma linha a usa (round-trip idêntico ao seed)", () => {
+    const csv = formatSpendCsv(SPEND_SEED_ROWS);
+    assert.equal(csv.startsWith("canal,mes,moeda,valor,fonte\n"), true);
+    assert.equal(csv.includes("subcanal"), false);
+  });
+
+  it("formatSpendCsv inclui a coluna subcanal quando pelo menos uma linha a usa, e faz round-trip", () => {
+    const rows = [
+      { canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 718.39, fonte: "painel Ads", subcanal: "PMax" },
+      { canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 239.62, fonte: "painel Ads", subcanal: "Search" },
+    ];
+    const csv = formatSpendCsv(rows);
+    assert.equal(csv.startsWith("canal,mes,moeda,valor,fonte,subcanal\n"), true);
+    const { rows: reparsed, errors } = parseSpendCsv(csv);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(reparsed, rows);
+  });
+});

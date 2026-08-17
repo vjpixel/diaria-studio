@@ -55,6 +55,12 @@ import {
   type CacRow,
   type OrigemEntryFields,
 } from "./lib/cac.ts";
+import {
+  parseSinceToEpochSeconds,
+  parseUntilToEpochSecondsExclusive,
+  resolveWindowGuardError,
+  type CohortWindow,
+} from "./cohort-engagement.ts";
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -110,6 +116,10 @@ export interface CacReportCliArgs {
   snapshotDate: string | null;
   json: boolean;
   register: boolean;
+  /** `--desde AAAA-MM-DD` cru, como passado — `null` = sem borda inferior (#5495). */
+  desde: string | null;
+  /** `--ate AAAA-MM-DD` cru, como passado (INCLUSIVO — o dia inteiro entra) — `null` = sem borda superior. */
+  ate: string | null;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -120,7 +130,24 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     snapshotDate: getStringArg(argv, "snapshot") ?? null,
     json: hasFlag(argv, "json"),
     register: !hasFlag(argv, "no-register"),
+    desde: getStringArg(argv, "desde") ?? null,
+    ate: getStringArg(argv, "ate") ?? null,
   };
+}
+
+/** Resolve `--desde`/`--ate` crus (strings AAAA-MM-DD) numa `CohortWindow`
+ *  epoch, reusando os parsers/guard de `cohort-engagement.ts` (#5495 —
+ *  "reusar filterWindow, nunca reimplementar" vale igual pro parsing da
+ *  janela). Lança com a mesma mensagem de erro do CLI de `cohort-engagement.ts`
+ *  se o formato for inválido ou `--desde` vier depois de `--ate`. `null`
+ *  quando nenhuma das duas flags foi passada (sem janela). */
+export function resolveCacReportWindow(args: Pick<CacReportCliArgs, "desde" | "ate">): CohortWindow | null {
+  if (args.desde == null && args.ate == null) return null;
+  const since = args.desde != null ? parseSinceToEpochSeconds(args.desde) : null;
+  const untilExclusive = args.ate != null ? parseUntilToEpochSecondsExclusive(args.ate) : null;
+  const guardError = resolveWindowGuardError({ since, untilExclusive }, { since: args.desde, until: args.ate });
+  if (guardError) throw new Error(`[cac-report] ${guardError}`);
+  return { since, untilExclusive };
 }
 
 function fmtPct(frac: number | null): string {
@@ -140,10 +167,40 @@ function amostraQualifier(row: Extract<CacRow, { kind: "measured" }>): string {
   return "";
 }
 
+/** Metadados de procedência opcionais (#5495 — "o relatório precisa ser
+ *  auto-suficiente quando copiado pra fora do arquivo"). Sempre opcionais:
+ *  chamadores existentes (testes, callers antigos) continuam funcionando sem
+ *  passar nada — as linhas correspondentes só aparecem quando informadas. */
+export interface CacReportProvenance {
+  /** ISO — momento em que ESTE relatório foi apurado (não o do snapshot). */
+  apuradoEm?: string;
+  /** Data do snapshot Beehiiv usado (`YYYY-MM-DD`). */
+  snapshotDate?: string;
+}
+
 /** @pure */
-export function formatCacReportMarkdown(report: CacReport, budget: ReturnType<typeof computeMonthBudgetUsage>): string {
+export function formatCacReportMarkdown(
+  report: CacReport,
+  budget: ReturnType<typeof computeMonthBudgetUsage>,
+  provenance: CacReportProvenance = {},
+): string {
   const lines: string[] = [];
   lines.push(`# Custo por leitor por canal`, "");
+  if (provenance.apuradoEm) lines.push(`Apurado em: ${provenance.apuradoEm}.`);
+  if (provenance.snapshotDate) lines.push(`Snapshot Beehiiv usado: ${provenance.snapshotDate}.`);
+  if (report.window) {
+    const sinceLabel = report.window.since != null ? new Date(report.window.since * 1000).toISOString().slice(0, 10) : "(sem borda inferior)";
+    const untilLabel =
+      report.window.untilExclusive != null
+        ? new Date(report.window.untilExclusive * 1000 - 86_400_000).toISOString().slice(0, 10)
+        : "(sem borda superior)";
+    lines.push(`Janela de cadastro aplicada (--desde/--ate): ${sinceLabel} a ${untilLabel} (inclusive).`);
+    if (report.excludedMissingCreated > 0) {
+      lines.push(`⚠ ${report.excludedMissingCreated} assinante(s) descartado(s) da base por falta de \`created\` sob a janela.`);
+    }
+  } else {
+    lines.push(`Nenhuma janela de cadastro aplicada (--desde/--ate) — números acumulados desde sempre, não recortados por período.`);
+  }
   lines.push(`Base (todos os ativos, todos os canais): abertura agregada ${fmtPct(report.base.aberturaAgregada)} (n=${report.base.amostraConsiderada}).`);
   lines.push(`Orçamento do mês ${budget.monthKey}: ${fmtBrl(budget.spentBrl)} de ${fmtBrl(budget.budgetFloorBrl)} (${fmtPct(budget.fractionUsed)}).`);
   if (report.internalFiltered > 0) {
@@ -157,11 +214,12 @@ export function formatCacReportMarkdown(report: CacReport, budget: ReturnType<ty
   }
   lines.push("");
   lines.push(
-    "| Canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",
+    "| Canal | Sub-canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",
   );
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
 
   for (const row of report.rows) {
+    const subcanal = row.spend.subcanal ?? "—";
     if (row.kind === "measured") {
       const versusBase =
         row.aberturaAgregada != null && report.base.aberturaAgregada != null
@@ -169,11 +227,11 @@ export function formatCacReportMarkdown(report: CacReport, budget: ReturnType<ty
           : "—";
       const degradedFlag = row.degradado === true ? " ⚠ degradou" : "";
       lines.push(
-        `| ${row.canal} | ${fmtBrl(row.custoPorLeitor)} | ${row.leitores} | ${row.ativos} | ${row.cadastros} | ${fmtPct(row.aberturaAgregada)}${degradedFlag} | ${versusBase} | ${row.amostraConsiderada} | ${amostraQualifier(row) || "—"} | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
+        `| ${row.canal} | ${subcanal} | ${fmtBrl(row.custoPorLeitor)} | ${row.leitores} | ${row.ativos} | ${row.cadastros} | ${fmtPct(row.aberturaAgregada)}${degradedFlag} | ${versusBase} | ${row.amostraConsiderada} | ${amostraQualifier(row) || "—"} | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
       );
     } else {
       lines.push(
-        `| ${row.canal} | ${fmtBrl(row.range.custoPorLeitorMin)}–${fmtBrl(row.range.custoPorLeitorMax)} | ${row.range.leitoresMin}–${row.range.leitoresMax} | ${row.range.ativosMin}–${row.range.ativosMax} | — | — | — | — | estimado (não medido) | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
+        `| ${row.canal} | ${subcanal} | ${fmtBrl(row.range.custoPorLeitorMin)}–${fmtBrl(row.range.custoPorLeitorMax)} | ${row.range.leitoresMin}–${row.range.leitoresMax} | ${row.range.ativosMin}–${row.range.ativosMax} | — | — | — | — | estimado (não medido) | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
       );
     }
   }
@@ -198,8 +256,17 @@ function reportSpendErrorsToLines(errors: SpendRowError[]): string[] {
  * tmpdir aqui pra nunca escrever/registrar contra `data/reports/index.jsonl`
  * de verdade.
  */
-export function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT): void {
+export function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT, now: () => Date = () => new Date()): void {
   const args = parseCacReportArgs(argv);
+
+  let window: CohortWindow | null;
+  try {
+    window = resolveCacReportWindow(args);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+    return;
+  }
 
   let spendResult: { rows: SpendRow[]; errors: SpendRowError[] };
   try {
@@ -240,21 +307,38 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     ? loadPreparedSubscribers(args.backupRoot, previousDate, origemIndex).subs
     : undefined;
 
-  const report = buildCacReport(spendResult.rows, subs, { previousSubs, originApplied, internalFiltered });
+  let report: CacReport;
+  try {
+    report = buildCacReport(spendResult.rows, subs, { previousSubs, originApplied, internalFiltered, window: window ?? undefined });
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+    return;
+  }
   const monthKey = snapshotDate.slice(0, 7); // "YYYY-MM-DD" -> "YYYY-MM"
   const budget = computeMonthBudgetUsage(spendResult.rows, monthKey, MONTHLY_BUDGET_FLOOR_BRL);
+  const apuradoEm = now().toISOString();
+  const provenance = { apuradoEm, snapshotDate };
 
   if (args.json) {
-    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget }, null, 2));
+    console.log(JSON.stringify({ snapshotDate, previousDate, report, budget, apuradoEm }, null, 2));
   } else {
-    console.log(formatCacReportMarkdown(report, budget));
+    console.log(formatCacReportMarkdown(report, budget, provenance));
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget);
+    const markdown = formatCacReportMarkdown(report, budget, provenance);
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
-    const id = snapshotDate;
+    // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas
+    // apurações não se sobrescreverem"): sem flags de janela, o id continua
+    // igual a sempre (só `snapshotDate`) — comportamento OBSERVÁVEL
+    // inalterado pro caso default, coberto pelos testes de regressão já
+    // existentes. Com janela, o sufixo garante que rodar o relatório com
+    // duas janelas diferentes no mesmo dia produz dois arquivos/registros
+    // distintos em vez de um sobrescrever o outro silenciosamente.
+    const windowSuffix = args.desde || args.ate ? `--w${args.desde ?? "x"}_${args.ate ?? "x"}` : "";
+    const id = `${snapshotDate}${windowSuffix}`;
     const relPath = `data/aquisicao/cac-reports/${id}.md`;
     writeFileSync(resolve(rootDir, relPath), markdown, "utf8");
     const result = registerReport(rootDir, {
