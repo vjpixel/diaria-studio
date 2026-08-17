@@ -180,6 +180,37 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
   });
 });
 
+describe("classifyExecTrack — resolvida por prosa/alarme (#5532)", () => {
+  it("label decisao-registrada sozinha → fora-de-rodada", () => {
+    assert.equal(track(["decisao-registrada"]), "fora-de-rodada");
+  });
+
+  it("label alarm sozinha → fora-de-rodada", () => {
+    assert.equal(track(["alarm"]), "fora-de-rodada");
+  });
+
+  it("decisao-registrada + trade-off-real (caso real #4555) → develop, não fora-de-rodada", () => {
+    // #4555 carrega as duas labels: a decisão registrada fechou só o PERFIL
+    // do parceiro, mas a prospecção em si é trabalho real de develop
+    // (trade-off editorial de qual parceiro escolher). Reclassificar como
+    // fora-de-rodada só por ganhar a checagem de decisao-registrada estaria
+    // errado — ainda sobra trabalho de verdade, só que não é código.
+    assert.equal(track(["decisao-registrada", "trade-off-real"]), "develop");
+  });
+
+  it("decisao-registrada + windows → develop (outra label já classifica)", () => {
+    assert.equal(track(["decisao-registrada", "windows"]), "develop");
+  });
+
+  it("alarm + external-blocker → bloqueada (bloqueio real vence)", () => {
+    assert.equal(track(["alarm", "external-blocker"]), "bloqueada");
+  });
+
+  it("decisao-registrada + on-hold → fora-de-rodada (mesma resposta, motivo diferente)", () => {
+    assert.equal(track(["decisao-registrada", "on-hold"]), "fora-de-rodada");
+  });
+});
+
 describe("classifyExecTrack — precedência", () => {
   it("fora-de-rodada vence bloqueio", () => {
     assert.equal(track(["on-hold", "external-blocker"]), "fora-de-rodada");
