@@ -16,13 +16,46 @@
  * nunca competem pelo mesmo evento — não há precedência a resolver. Fonte:
  * docs oficiais da Beehiiv via MCP ("Double opt-in and Smart Nudge: How
  * they work and why they matter" + "Adding signup flows to your website
- * subscribe forms"), lidas ao vivo em 14/08/2026. **Item 8 segue PENDENTE
- * de execução** — `save_publication_settings` foi bloqueado pelo
- * classificador de auto-mode desta sessão (mudança de config de produção,
- * tratada com cautela por princípio do projeto); gravá-lo requer sessão com
- * essa permissão liberada, ou o editor fazer manualmente em Settings →
- * Emails → Preset Emails → Double Opt-in Email → Opt-in Redirect URL,
- * valor `https://eia.diar.ia.br/confirmado` (ver #5167).
+ * subscribe forms"), lidas ao vivo em 14/08/2026. **Item 8 EXECUTADO em
+ * 16/08/2026 (#5499)** — `save_publication_settings` seguiu bloqueado pelo
+ * gate de plano da Beehiiv (`not available on your current plan`); o campo
+ * foi gravado pelo painel (Settings → Emails → Preset Emails → Double
+ * Opt-in Email → Opt-in Redirect URL) e confirmado via `get_publication_settings`
+ * (`opt_in_redirect_url: "https://eia.diar.ia.br/confirmado"`) — a cadeia
+ * completa (`opt_in_redirect_url` → esta página → GTM já embutido, ver
+ * abaixo) está no ar.
+ *
+ * **#5499 item 5 (instrumentar esta página com GTM) — já coberto pelo #5498**
+ * antes mesmo de virar item explícito da #5499: `renderAnalyticsHead()`
+ * abaixo (import já anotado `#5498`) injeta o container GTM canônico
+ * (`GTM_CONTAINER_ID`, `scripts/lib/shared/seo-meta.ts`) no `<head>` desta
+ * página, mesmo padrão de TODO host servido por Worker deste repo — coberto
+ * pelo sweep de `test/analytics-head-instrumentation.test.ts` e, desde este
+ * commit, também por uma asserção dedicada em
+ * `test/poll-confirmado-5167.test.ts` amarrada à #5499. GA4/Meta Pixel não
+ * são tags soltas hardcoded aqui — vivem DENTRO do container GTM (console
+ * do GTM), então nenhum ID de GA4/pixel aparece literal no HTML desta
+ * página (nem deveria — ver docstring de `renderAnalyticsHead`).
+ *
+ * **#5499 item 7 (captura de `gclid`/`fbclid`/`msclkid`/`li_fat_id`) — NÃO
+ * se aplica a esta página, decisão registrada, não reabrir sem dado novo.**
+ * O item 7 da issue é escopado explicitamente ao "step novo do item 2"
+ * (uma página tipo `/quase-la`, disparada no SUBMIT do formulário, ainda
+ * não construída) — não a esta página. Mesmo ignorando esse escopo literal,
+ * `/confirmado` estruturalmente não pode receber esses parâmetros: quem
+ * chega aqui clicou no link de confirmação DENTRO DO E-MAIL (ver item 9
+ * acima), não no anúncio — a navegação que traz o clique original (com
+ * `gclid`/`fbclid`/`msclkid` na query string) e a que traz o clique de
+ * confirmação são duas sessões/dispositivos desconectados, muitas vezes
+ * horas depois. A própria issue #5499 (item 6) já registra que esses IDs
+ * "viajam por query string, não por cookie, e o redirect da Beehiiv não os
+ * repassa" — `opt_in_redirect_url` é uma string fixa no painel da Beehiiv,
+ * sem suporte a passthrough dinâmico de query. Não há parâmetro pra
+ * capturar nem allowlist a aplicar aqui; o desenho anti-spoofing
+ * server-side de `workers/poll/src/subscribe.ts` (`resolveSubscribeUtm` +
+ * `SUBSCRIBE_UTM_BY_SOURCE`) segue sendo o precedente certo — só se aplica
+ * quando/se o step do item 2 for construído, o que fica fora do escopo
+ * desta unidade.
  *
  * **Por que o Worker `poll` (eia.diar.ia.br), não um Worker novo nem
  * `arquivo`.** Levantamento antes de decidir: `workers/poll` já hospeda
