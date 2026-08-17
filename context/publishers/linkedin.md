@@ -268,6 +268,22 @@ silêncio. Menções a "diar.ia.br" em PROSA (fora de um link intencional)
 podem ficar — viram link automático sem UTM pra home, que é tráfego de
 brinde e não atrapalha a medição dos CTAs.
 
+### 3. Imagem de capa (#5536)
+
+O LinkedIn Article Editor tem um campo nativo de cover image (ícone de
+imagem no topo do editor, acima do título). `render-linkedin-weekly.ts`
+(Passo 7 da skill) copia mecanicamente `04-d1-2x1.jpg` — a imagem 2:1 da
+edição de origem da manchete #1 — pra `data/weekly/{cycle}/04-d1-2x1.jpg`;
+não existe API pra subir essa imagem, então o upload continua **manual**,
+igual ao resto do artigo:
+
+1. Clicar no ícone de imagem de capa do editor (topo, acima do título).
+2. Selecionar `data/weekly/{cycle}/04-d1-2x1.jpg` do disco.
+3. Se `ln-{cycle}.json` (Passo 7 da skill) trouxe `coverImagePath: null`
+   (edição de origem arquivada ou sem a imagem — fail-soft, não bloqueia o
+   resto do artigo), publicar sem capa é aceitável — não há imagem
+   alternativa determinística pra usar no lugar.
+
 ### Nota técnica: colagem programática no corpo (ProseMirror)
 
 O corpo do artigo é um editor ProseMirror (mesma família de tecnologia do
