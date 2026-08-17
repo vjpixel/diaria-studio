@@ -144,9 +144,24 @@ describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608
   });
 
   it("claudeCliEnv não muta o objeto recebido", () => {
-    const original = { ANTHROPIC_API_KEY: "sk-ant-xxx" };
+    const original = { ANTHROPIC_API_KEY: "sk-ant-xxx", ANTHROPIC_AUTH_TOKEN: "tok" };
     claudeCliEnv(original);
     assert.equal(original.ANTHROPIC_API_KEY, "sk-ant-xxx");
+    assert.equal(original.ANTHROPIC_AUTH_TOKEN, "tok");
+  });
+
+  it("as vars de roteamento Bedrock/Vertex também saem", () => {
+    const filtered = claudeCliEnv({
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_CODE_USE_VERTEX: "1",
+      ANTHROPIC_BASE_URL: "https://proxy.interno",
+    });
+
+    assert.equal(filtered.CLAUDE_CODE_USE_BEDROCK, undefined);
+    assert.equal(filtered.CLAUDE_CODE_USE_VERTEX, undefined);
+    // Fora da lista de propósito: não autentica sozinha, e filtrar quebraria
+    // em silêncio um proxy legítimo configurado no futuro.
+    assert.equal(filtered.ANTHROPIC_BASE_URL, "https://proxy.interno");
   });
 
   it("CLAUDE_CODE_OAUTH_TOKEN sobrevive — é o login claude.ai, não a key da API", () => {

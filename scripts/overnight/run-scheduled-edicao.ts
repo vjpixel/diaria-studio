@@ -67,8 +67,25 @@ const MAX_TURNS = "120";
  * tsx` à mão, ou um agendador futuro — e é testável sem ler arquivo de unit.
  * `CLAUDE_CODE_OAUTH_TOKEN` **não** entra na lista: esse É o login claude.ai,
  * removê-lo desautenticaria a sessão em vez de consertá-la.
+ *
+ * **A lista é enumerada, não exaustiva** (achado do review do PR #5609). A
+ * própria mensagem do CLI diz "ANTHROPIC_API_KEY **or another auth source**",
+ * e a superfície de auth do Claude Code inclui outras vars que roteiam pra
+ * um provider diferente do login. As 4 abaixo cobrem o incidente observado
+ * (as 2 de key) mais o roteamento Bedrock/Vertex — nenhuma delas aparece em
+ * `.env.example` hoje, então remover é no-op no ambiente atual e blindagem
+ * pra quando alguma entrar no `.env` por outro motivo. `ANTHROPIC_BASE_URL`
+ * ficou de FORA de propósito: ela não autentica sozinha, e um proxy
+ * legítimo configurado no futuro seria quebrado em silêncio por um filtro
+ * que ninguém lembraria de estar aqui. Se aparecer um caso novo de auth
+ * shadowing, o conserto é acrescentar a var a esta lista — com o motivo.
  */
-export const CLAUDE_CLI_STRIPPED_ENV_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+export const CLAUDE_CLI_STRIPPED_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+] as const;
 
 /** Cópia do ambiente sem as vars acima. Não muta o `process.env` do runner —
  * só o filho vê o ambiente filtrado (outros passos do mesmo processo, se
