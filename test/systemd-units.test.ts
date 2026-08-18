@@ -172,6 +172,46 @@ describe("buildSystemdUnitFiles", () => {
   });
 });
 
+// #5615/#5592: abort intencional do semáforo D4 (clarice-novos-run.ts, exit
+// 3) não deve fazer `systemctl --user list-units --state=failed` marcar a
+// unit como `failed` — o mecanismo é `SuccessExitStatus=` no `.service`.
+describe("buildSystemdUnitFiles — SuccessExitStatus= (#5615/#5592)", () => {
+  const repoRootAbs = "/home/editor/diaria-studio";
+
+  it("task SEM successExitCodes -> nenhuma linha SuccessExitStatus= no .service", () => {
+    const task = getScheduledTaskByName("Diaria-Apoios-Diff-Alarm")!;
+    assert.equal(task.successExitCodes, undefined);
+    const files = buildSystemdUnitFiles(task, repoRootAbs);
+    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
+  });
+
+  it("Diaria-Clarice-Novos declara successExitCodes=[3] -> .service emite SuccessExitStatus=3", () => {
+    const task = getScheduledTaskByName("Diaria-Clarice-Novos")!;
+    assert.deepEqual(task.successExitCodes, [3]);
+    const files = buildSystemdUnitFiles(task, repoRootAbs);
+    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
+  });
+
+  it("Diaria-Clarice-Novos-Tarde declara a mesma exceção (mesmo script, mesmo guard D4)", () => {
+    const task = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde")!;
+    assert.deepEqual(task.successExitCodes, [3]);
+    const files = buildSystemdUnitFiles(task, repoRootAbs);
+    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
+  });
+
+  it("múltiplos códigos -> uma linha só, códigos separados por espaço", () => {
+    const task = { ...getScheduledTaskByName("Diaria-Apoios-Diff-Alarm")!, successExitCodes: [3, 42] };
+    const files = buildSystemdUnitFiles(task, repoRootAbs);
+    assert.match(files.serviceContent, /^SuccessExitStatus=3 42$/m);
+  });
+
+  it("successExitCodes: [] (array vazio) -> tratado como ausente, nenhuma linha emitida", () => {
+    const task = { ...getScheduledTaskByName("Diaria-Apoios-Diff-Alarm")!, successExitCodes: [] };
+    const files = buildSystemdUnitFiles(task, repoRootAbs);
+    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
+  });
+});
+
 describe("generateSystemdUnits — escreve arquivos em disco, nunca chama systemctl", () => {
   let outDir: string;
 

@@ -124,6 +124,17 @@ export interface ScheduledTaskDefinition {
   logPath: string;
   schedule: ScheduledTaskSchedule;
   guard?: ScheduledTaskGuard;
+  /** Exit codes ALÉM de 0 que representam sucesso (ou "abort intencional
+   * correto", não uma falha) desta task — viram `SuccessExitStatus=` no
+   * unit `.service` gerado (`scripts/lib/systemd-units.ts`), pra
+   * `systemctl --user list-units --state=failed` (consumido por
+   * `scripts/systemd-failed-units-alarm.ts`) não marcar a unit como
+   * `failed` nesses casos. #5615/#5592: `Diaria-Clarice-Novos`/`-Tarde`
+   * usam `[3]` — `clarice-novos-run.ts` sai com exit 3 quando aborta por
+   * semáforo D4 vermelho (`NOVOS_SEMAPHORE_ABORT_EXIT_CODE`), circuit
+   * breaker de entregabilidade rompido, comportamento CORRETO do guard, não
+   * um erro do serviço. Default (campo ausente): só 0 é sucesso. */
+  successExitCodes?: number[];
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
 }
@@ -482,7 +493,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
     },
-    issue: "#4347, #4941, #5140, #5445, #5447",
+    // #5615/#5592: exit 3 = abort intencional do semáforo D4 (circuit
+    // breaker de entregabilidade rompido) — comportamento CORRETO do guard,
+    // não deve contar como unit `failed` no systemd (ver docstring do campo
+    // e de NOVOS_SEMAPHORE_ABORT_EXIT_CODE em clarice-novos-run.ts).
+    successExitCodes: [3],
+    issue: "#4347, #4941, #5140, #5445, #5447, #5615, #5592",
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
@@ -544,6 +560,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // antes de `Diaria-Clarice-Envio` (19:00) — o ganho de latência de
     // 18:00→18:30 é de só 0,1h, não vale comer essa margem.
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
+    // #5615/#5592: mesma distinção de exit code do par das 09:00 — exit 3 =
+    // abort intencional do semáforo D4, não conta como unit `failed`.
+    successExitCodes: [3],
     // Log próprio (não compartilha arquivo com Diaria-Clarice-Novos) — cada
     // task do registro tem seu logPath dedicado (convenção do arquivo
     // inteiro), e misturar as duas rodadas no mesmo log tornaria a
@@ -564,7 +583,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registro — logo já vale automaticamente pras duas tasks sem lógica
     // nova (confirmado lendo `scripts/clarice-novos-run.ts`, sem precisar
     // de um 2o toggle).
-    issue: "#4347, #4941, #5185, #5410, #5445, #5447",
+    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5615, #5592",
   },
   {
     name: "Diaria-Clarice-Novos-Abort-Alarm",

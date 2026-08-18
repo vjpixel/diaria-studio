@@ -38,6 +38,7 @@ const OUTCOME_LABEL = {
   ok: "sucesso",
   failed: "falha",
   guard_skip: "pulada (guard)",
+  guard_abort: "abortada (guard)",
   unknown: "desconhecido",
 };
 

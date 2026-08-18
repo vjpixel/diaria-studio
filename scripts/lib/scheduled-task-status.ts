@@ -300,7 +300,7 @@ function finalizeRun(
   return { startedAt: block.startedAt, description: block.description, guardAborted, steps, raw };
 }
 
-export type TaskRunOutcome = "ok" | "failed" | "guard_skip" | "unknown";
+export type TaskRunOutcome = "ok" | "failed" | "guard_skip" | "guard_abort" | "unknown";
 
 /**
  * Classifica o resultado de UM `TaskLogRun` contra a definição da task —
@@ -310,17 +310,37 @@ export type TaskRunOutcome = "ok" | "failed" | "guard_skip" | "unknown";
  * (trailer legado desalinhado do registro atual, ex:
  * `run-clarice-sync-daily.ps1` hoje só emite `sync`/`summary`, sem o
  * `extract` do #4740) é tratado como NÃO best-effort — conservador: melhor
- * reportar falha suspeita do que engolir uma de verdade. @pure
+ * reportar falha suspeita do que engolir uma de verdade.
+ *
+ * **`successExitCodes` (#5592/#5615, generalizado de `systemd-units.ts`
+ * neste PR):** um passo NÃO best-effort cujo `code` está em
+ * `def.successExitCodes` (ex: exit 3 de `clarice-novos-run.ts` = abort
+ * intencional do semáforo D4) nunca é `"failed"` — mas também não é
+ * indistinguível de `"ok"`, porque a run de fato abortou por guard, ela só
+ * não é um crash. Vira `"guard_abort"`: mesmo espírito distintivo de
+ * `"guard_skip"` (guard PRÉ-execução, `def.guard`/`ScheduledTaskGuard`) só
+ * que pra guard DENTRO de um passo, detectado pelo exit code do processo em
+ * vez de um marcador de trailer dedicado. Sem isto, a página `/tarefas` do
+ * Studio mostrava um abort D4 correto como `"failed"` — o mesmo problema de
+ * visibilidade que este PR resolveu pro alarme systemd, só que nesta
+ * segunda superfície de consumo do mesmo registro. @pure
  */
 export function classifyTaskRunResult(run: TaskLogRun, def: ScheduledTaskDefinition): TaskRunOutcome {
   if (run.guardAborted) return "guard_skip";
   if (run.steps.length === 0) return "unknown"; // "noop" sem nenhum passo — não deveria ocorrer numa task real
   const bestEffortByKey = new Map(def.steps.map((s) => [s.key, !!s.bestEffort]));
+  const successExitCodes = new Set(def.successExitCodes ?? []);
+  let sawGuardAbort = false;
   for (const step of run.steps) {
     const isBestEffort = bestEffortByKey.get(step.key) ?? false;
-    if (!isBestEffort && step.code !== 0) return "failed";
+    if (isBestEffort || step.code === 0) continue;
+    if (step.code !== null && successExitCodes.has(step.code)) {
+      sawGuardAbort = true;
+      continue;
+    }
+    return "failed";
   }
-  return "ok";
+  return sawGuardAbort ? "guard_abort" : "ok";
 }
 
 // ---------------------------------------------------------------------------
