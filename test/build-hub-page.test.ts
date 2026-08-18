@@ -678,20 +678,18 @@ describe("checkUpdatedDateCeiling (#5124 item 3) — heurístico, nunca bloqueia
     assert.deepEqual(checkUpdatedDateCeiling({ ...baseCeiling, updatedDate: "não-é-data" }), []);
   });
 
-  it("os 6 hubs reais de HUB_LOADERS: só brasil-regulacao dispara warning hoje (48 dias medidos em 12/08/2026, #5124) — os outros 5 ficam dentro do limiar", () => {
-    // #5124 item 5 (decisão do editor, fora de escopo desta issue): o gap do
-    // brasil-regulacao É real — o #5071 genuinamente revisou a prosa
-    // (removeu 6 de 11 links) em 12/08, só que sem fonte nova pra citar. O
-    // warning aqui é o comportamento CORRETO (torna a defasagem visível),
-    // não um bug — não "consertar" mudando updatedDate pra silenciar.
+  it("os 6 hubs reais de HUB_LOADERS: nenhum dispara warning hoje (#5632 regenerou google-gemini/brasil-regulacao, fechando o gap de #5124)", () => {
+    // #5632 (18/08/2026): `generate-hub-sources.ts --hub google-gemini` e
+    // `--hub brasil-regulacao` trouxeram fonte nova (cobertura até 17/08 e
+    // 04/08 respectivamente), fechando o gap que o #5124 tinha detectado
+    // (brasil-regulacao chegou a 48 dias em 12/08). Sem gap real >= 21 dias
+    // hoje em nenhum dos 6 hubs — este teste volta a exigir warnings vazios
+    // em todos, e passa a servir de guard de regressão pra defasagem futura
+    // (se um hub voltar a estourar o limiar, é este assert que quebra).
     for (const slug of Object.keys(HUB_LOADERS)) {
       const hub = HUB_LOADERS[slug]();
       const warnings = checkUpdatedDateCeiling(hub);
-      if (slug === "brasil-regulacao") {
-        assert.ok(warnings.length > 0, "brasil-regulacao deveria disparar o warning de teto (gap conhecido, #5124)");
-      } else {
-        assert.deepEqual(warnings, [], `hub "${slug}" tem warning de teto inesperado: ${warnings.join("; ")}`);
-      }
+      assert.deepEqual(warnings, [], `hub "${slug}" tem warning de teto inesperado: ${warnings.join("; ")}`);
     }
   });
 });

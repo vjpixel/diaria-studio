@@ -144,5 +144,17 @@
       "https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/julho/gestao-lanca-matriz-de-competencias-em-inteligencia-artificial"
     ],
     "editionTitle": "Governo dos EUA pode virar sócio da OpenAI"
+  },
+  {
+    "date": "2026-08-04",
+    "editionSlug": "hacker-chines-usa-deepseek-em-ataques-autonomos",
+    "url": "https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos",
+    "matchedHeadlines": [
+      "A Inteligência Artificial já entrou na medicina. O próximo desafio é saber quem governa essa inteligência"
+    ],
+    "primarySourceUrls": [
+      "https://saudedigitalnews.com.br/03/08/2026/a-inteligencia-artificial-ja-entrou-na-medicina-o-proximo-desafio-e-saber-quem-governa-essa-inteligencia/"
+    ],
+    "editionTitle": "Hacker chinês usa DeepSeek em ataques autônomos"
   }
 ]
