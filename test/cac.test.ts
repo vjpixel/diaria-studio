@@ -290,6 +290,31 @@ describe("computeBoostRange", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeMeasuredRow", () => {
+  it("expõe o passo 3 do funil (pending/inativos/invalid/outros) na linha — §8.8 do teste 2608", () => {
+    const row = computeMeasuredRow(spend(), [
+      sub({ email: "a@x.com", status: "active" }),
+      sub({ email: "b@x.com", status: "pending" }),
+      sub({ email: "c@x.com", status: "pending" }),
+      sub({ email: "d@x.com", status: "inactive" }),
+      sub({ email: "e@x.com", status: "invalid" }),
+      sub({ email: "f@x.com", status: "validating" as BeehiivBackupSubscriber["status"] }),
+    ]);
+    assert.equal(row.cadastros, 6);
+    assert.equal(row.ativos, 1);
+    assert.equal(row.pending, 2);
+    assert.equal(row.inativos, 1);
+    assert.equal(row.invalid, 1);
+    assert.equal(row.outrosStatus, 1);
+    // Regressão do bug que a #8.8 descreve: os quatro campos existiam em
+    // computeGroupEngagement mas morriam lá dentro. Se alguém voltar a
+    // esquecê-los no objeto retornado, isto quebra.
+    assert.equal(
+      row.ativos + row.pending + row.inativos + row.invalid + row.outrosStatus,
+      row.cadastros,
+      "o funil tem de fechar com cadastros — nenhum status descartado em silêncio",
+    );
+  });
+
   it("leitores=0 produz custoPorLeitor null (nunca Infinity silencioso)", () => {
     const row = computeMeasuredRow(spend(), []);
     assert.equal(row.leitores, 0);
