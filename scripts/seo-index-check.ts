@@ -37,6 +37,18 @@
  * `index-status-{suffix}-{data}.json`/`.md` sem precisar escrever os 2 paths
  * à mão — ignorado se `--out` for passado.
  *
+ * **#5618: rótulo "órfã (sem link interno)" era uma afirmação de causa que o
+ * HTML servido podia refutar.** `referringUrls` mede o que o GOOGLE já sabe,
+ * não o que existe na página — os dois divergem por semanas (lag de crawl).
+ * O relatório rotulava toda URL com `referringUrls` vazio como órfã, mesmo
+ * quando a página tinha link interno real (achado ao vivo 18/08: os 6 hubs
+ * de `arquivo.diar.ia.br` estão linkados da home, mas o Google ainda não
+ * tinha recrawleado). `describeReferrerNote` substitui a afirmação categórica
+ * por uma nota honesta sobre a FONTE do dado; quando `main()` consegue buscar
+ * a home do site (`fetchKnownInternalLinks`, fail-soft — falha de rede não
+ * aborta a rodada), a nota distingue "tem link conhecido, é lag de crawl" de
+ * "sem link conhecido, pode ser órfã de verdade".
+ *
  * **3 defeitos corrigidos no #5118:**
  * 1. `--limit` cortava as URLs MAIS ANTIGAS (sitemap é newest-first — ver
  *    `applyLimit`) sem deixar marca no output; a cota real (2.000/dia) tinha
@@ -368,6 +380,73 @@ async function inspectUrl(site: string, url: string): Promise<IndexStatus> {
   }
 }
 
+/** Remove barra final pra comparar URLs de forma tolerante a `/` vs sem `/`. */
+export function normalizeUrlForCompare(url: string): string {
+  return url.replace(/\/$/, "");
+}
+
+/**
+ * Extrai links internos (mesma origem) de um HTML (#5618). Best-effort por
+ * regex — não é um parser DOM completo, mas basta pra achar `href="/temas/..."`
+ * e `href="https://mesmo-host/..."` numa home renderizada estaticamente, que é
+ * exatamente o que o `curl | grep` manual do #5618 fez pra refutar o rótulo
+ * "órfã" dos hubs.
+ */
+export function extractInternalLinks(html: string, origin: string): Set<string> {
+  const out = new Set<string>();
+  const re = /href="([^"]+)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    let href = m[1];
+    if (href.startsWith("http")) {
+      if (!href.startsWith(origin)) continue;
+    } else if (href.startsWith("/")) {
+      href = origin + href;
+    } else {
+      continue;
+    }
+    out.add(normalizeUrlForCompare(href.split("#")[0].split("?")[0]));
+  }
+  return out;
+}
+
+/**
+ * Busca a home do host de `sitemapUrl` e extrai os links internos, pra
+ * distinguir "órfã de verdade" de "só o Google ainda não sabe" (#5618).
+ * Fail-soft: qualquer falha de rede/parse retorna `null` (não aborta a
+ * rodada, só degrada de volta pro rótulo genérico sem cross-check).
+ */
+export async function fetchKnownInternalLinks(sitemapUrl: string): Promise<Set<string> | null> {
+  try {
+    const origin = new URL(sitemapUrl).origin;
+    const res = await fetch(origin + "/", { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } });
+    if (!res.ok) return null;
+    return extractInternalLinks(await res.text(), origin);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nota exibida ao lado de uma URL sem NENHUM referrer (#5618). Antes o
+ * relatório afirmava categoricamente "órfã (sem link interno)" — uma causa
+ * que o HTML servido podia refutar, porque `referringUrls` reflete o que o
+ * GOOGLE já sabe, não o que existe na página. `knownLinked` (quando
+ * disponível via `fetchKnownInternalLinks`) distingue lag de crawl de
+ * orfandade real; `undefined` (cross-check indisponível) cai no rótulo
+ * honesto genérico, sem afirmar nem uma coisa nem outra.
+ */
+export function describeReferrerNote(referringUrls: string[] | undefined, knownLinked?: boolean): string {
+  if ((referringUrls?.length ?? 0) > 0) return "";
+  if (knownLinked === true) {
+    return " — Google ainda não registra referrer (a página TEM link interno conhecido; provável lag de crawl, não orfandade)";
+  }
+  if (knownLinked === false) {
+    return " — sem link interno conhecido nem referrer no Google (órfã)";
+  }
+  return " — Google não registra referrer (pode ser lag de crawl; não confirma orfandade)";
+}
+
 export function renderMd(
   rows: IndexStatus[],
   sum: IndexSummary,
@@ -375,6 +454,7 @@ export function renderMd(
   date: string,
   truncated?: { dropped: number; limit: number },
   regressions?: IndexRegression[],
+  knownInternalLinks?: Set<string>,
 ): string {
   const lines = [
     `# Cobertura de indexação — ${site} (${date})`,
@@ -402,8 +482,9 @@ export function renderMd(
   if (notIndexed.length) {
     lines.push("", `## Não indexadas (${notIndexed.length})`, "");
     for (const r of notIndexed.slice(0, 100)) {
-      const orphan = (r.referringUrls?.length ?? 0) === 0 ? " — órfã (sem link interno)" : "";
-      lines.push(`- ${r.url} — ${r.coverageState ?? r.verdict ?? "?"}${orphan}`);
+      const knownLinked = knownInternalLinks ? knownInternalLinks.has(normalizeUrlForCompare(r.url)) : undefined;
+      const note = describeReferrerNote(r.referringUrls, knownLinked);
+      lines.push(`- ${r.url} — ${r.coverageState ?? r.verdict ?? "?"}${note}`);
     }
     if (notIndexed.length > 100) lines.push(`- … +${notIndexed.length - 100} (ver JSON)`);
   }
@@ -471,6 +552,11 @@ async function main(nowMs: number): Promise<number> {
     console.error(`[seo-index-check] aviso: ${regressions.length} URL(s) perderam indexação desde a rodada anterior`);
   }
 
+  // #5618: best-effort cross-check contra o HTML servido — distingue "lag de
+  // crawl" de "órfã de verdade" no rótulo do .md. Fail-soft: `null` degrada
+  // pro rótulo genérico sem cross-check, nunca aborta a rodada.
+  const knownInternalLinks = (await fetchKnownInternalLinks(sitemapUrl)) ?? undefined;
+
   // #5118 item 3b: só sufixa se `requestedJsonPath` já existir em disco (2ª+
   // rodada do mesmo dia) — a 1ª rodada do dia mantém o nome limpo de sempre.
   const jsonPath = resolveCollisionSafeJsonPath(requestedJsonPath, nowMs);
@@ -479,7 +565,7 @@ async function main(nowMs: number): Promise<number> {
     jsonPath,
     JSON.stringify({ site, date, sitemap: sitemapUrl, summary: sum, truncated, regressions, rows }, null, 2),
   );
-  writeFileSync(mdPath, renderMd(rows, sum, site, date, truncated, regressions));
+  writeFileSync(mdPath, renderMd(rows, sum, site, date, truncated, regressions, knownInternalLinks));
   console.log(JSON.stringify({ site, date, ...sum, truncated, regressions: regressions.length, out: jsonPath, outMd: mdPath }, null, 2));
   if (rows.length === 0 && limit !== 0) {
     console.error(`[seo-index-check] nenhuma URL inspecionada — o sitemap ${sitemapUrl} não rendeu URL alguma após o filtro`);

@@ -561,8 +561,15 @@ export default {
     // #4909 item 2: arquivo de chave do IndexNow — só casa quando a var
     // está configurada (ver docstring de Env.INDEXNOW_KEY); sem ela, este
     // `if` nunca é verdadeiro e o pathname cai no 404 normal, igual antes.
-    if (env.INDEXNOW_KEY && url.pathname === `/${env.INDEXNOW_KEY}.txt`) {
-      return indexNowKeyResponse(env.INDEXNOW_KEY);
+    // #5620: `.trim()` no valor lido da secret — `wrangler secret put` via
+    // `echo` (em vez de `printf`) grava um `\n` de sobra no valor, que nunca
+    // casa contra `url.pathname` (pathname jamais contém newline) e faz esta
+    // rota 404 silenciosamente mesmo com a secret "presente". Comparar e
+    // servir a versão trimada é defensivo contra esse modo de gravação
+    // errado, sem depender de regravar a secret certo pra funcionar.
+    const indexNowKey = env.INDEXNOW_KEY?.trim();
+    if (indexNowKey && url.pathname === `/${indexNowKey}.txt`) {
+      return indexNowKeyResponse(indexNowKey);
     }
     // #4558 Parte A: hubs temáticos — HTML já gerado e commitado
     // (`hubs/registry.ts`), servido tal qual, sem fetch/render em runtime.

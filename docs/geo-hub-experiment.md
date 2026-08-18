@@ -85,7 +85,7 @@ produzem citação. São perguntas diferentes, e só a primeira segue
 respondível com o desenho atual (N=3, sem randomização, sem controle).
 
 Se o resultado em outubro for "zero citação" (ou próximo disso), existem
-pelo menos **quatro explicações concorrentes**, já levantadas por esta
+pelo menos **cinco explicações concorrentes**, já levantadas por esta
 auditoria, e **nenhuma delas é separável com o desenho atual**:
 
 1. **O instrumento não pergunta sobre o tema.** As 8 perguntas originais de
@@ -102,7 +102,22 @@ auditoria, e **nenhuma delas é separável com o desenho atual**:
    respondem — achado de demanda desta auditoria (#4908), ainda não medido
    com dado real de query.
 4. **A tese GEO pode não se sustentar no volume de acervo atual** — esta é a
-   única das quatro que a regra de parada original de fato testa.
+   única das cinco que a regra de parada original de fato testa.
+5. **As páginas podem estar descobertas mas não indexadas — mensurável AGORA,
+   diferente das outras quatro (#5619).** Medição de 18/08/2026:
+   `data/seo/index-status-arquivo-2026-08-16.md` mostra 6 das 8 URLs do
+   `arquivo.diar.ia.br` fora do índice do Google (2/8 indexadas). Entre as
+   ausentes, 5 dos 6 hubs temáticos — `openai-chatgpt`, `google-gemini`,
+   `meta-ai`, `brasil-regulacao`, `mercado-trabalho` — e o índice `/temas/`;
+   só `anthropic-claude` e a home entraram. Diferente do item 2 (descoberta:
+   "o buscador sabe que a página existe?"), este é sobre indexação
+   ("o buscador colocou a página no índice de onde ele cita?") — as páginas já
+   passaram pelo problema do item 2 e ainda assim majoritariamente não
+   entraram no índice. O checkpoint de ~07/out vai perguntar "os hubs geraram
+   citação?" sobre páginas que, em boa parte, o Google não indexou — isso não
+   invalida o checkpoint, mas é uma explicação alternativa que precisa estar
+   escrita antes do número, pela mesma lógica que produziu os quatro itens
+   acima.
 
 **Nota sobre o item 1, pra não confundir leitura futura:** em 10/08/2026 (já
 no mesmo dia da decisão registrada acima, #4900) foi ativado um painel

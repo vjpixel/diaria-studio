@@ -24,6 +24,9 @@ import {
   extractSnapshotFamily,
   findPreviousSnapshotPath,
   computeRegressions,
+  normalizeUrlForCompare,
+  extractInternalLinks,
+  describeReferrerNote,
   type IndexStatus,
 } from "../scripts/seo-index-check.ts";
 
@@ -342,12 +345,34 @@ describe("mapLimit (#4105)", () => {
 });
 
 describe("renderMd (#4105)", () => {
-  it("marca órfãs e mostra a taxa de cobertura", () => {
+  it("marca não-referenciadas (sem afirmar órfã) e mostra a taxa de cobertura", () => {
     const rows = [parseInspection("https://diar.ia.br/p/x", DISCOVERED)];
     const md = renderMd(rows, summarize(rows), GSC_DEFAULT_SITE, "2026-07-27");
     assert.match(md, /0\/1 indexadas \(0%\)/);
-    assert.match(md, /órfã \(sem link interno\)/);
+    // #5618: sem cross-check disponível, o rótulo não afirma causa —
+    // "órfã (sem link interno)" era uma afirmação categórica que o HTML
+    // servido podia refutar (achado ao vivo: hubs do arquivo linkados da
+    // home, mas sem referringUrls no Google por lag de crawl).
+    assert.match(md, /Google não registra referrer \(pode ser lag de crawl; não confirma orfandade\)/);
+    assert.ok(!md.includes("órfã (sem link interno)"));
     assert.match(md, /sc-domain:diar\.ia\.br/);
+  });
+
+  it("#5618: com cross-check de HTML servido, distingue lag de crawl de órfã real", () => {
+    const rows = [
+      parseInspection("https://arquivo.diar.ia.br/temas/openai-chatgpt", DISCOVERED),
+      parseInspection("https://arquivo.diar.ia.br/temas/pagina-de-verdade-orfa", DISCOVERED),
+    ];
+    const known = new Set(["https://arquivo.diar.ia.br/temas/openai-chatgpt"]);
+    const md = renderMd(rows, summarize(rows), GSC_DEFAULT_SITE, "2026-08-18", undefined, undefined, known);
+    assert.match(
+      md,
+      /openai-chatgpt — Detectada, mas não indexada no momento — Google ainda não registra referrer \(a página TEM link interno conhecido; provável lag de crawl, não orfandade\)/,
+    );
+    assert.match(
+      md,
+      /pagina-de-verdade-orfa — Detectada, mas não indexada no momento — sem link interno conhecido nem referrer no Google \(órfã\)/,
+    );
   });
 
   it("#5118 item 1b: sem truncamento (dropped=0), não imprime a seção 'Truncado'", () => {
@@ -377,6 +402,56 @@ describe("renderMd (#4105)", () => {
     ]);
     assert.match(md, /Regressões/);
     assert.match(md, /https:\/\/diar\.ia\.br\/p\/x — Enviada e indexada → Rastreada, mas não indexada no momento/);
+  });
+});
+
+describe("normalizeUrlForCompare + extractInternalLinks (#5618)", () => {
+  it("normalizeUrlForCompare remove só a barra final", () => {
+    assert.equal(normalizeUrlForCompare("https://arquivo.diar.ia.br/temas/x/"), "https://arquivo.diar.ia.br/temas/x");
+    assert.equal(normalizeUrlForCompare("https://arquivo.diar.ia.br/temas/x"), "https://arquivo.diar.ia.br/temas/x");
+  });
+
+  it("extrai links internos absolutos e relativos, ignora externos", () => {
+    const html = `
+      <a href="/temas/openai-chatgpt">OpenAI</a>
+      <a href="https://arquivo.diar.ia.br/temas/google-gemini/">Gemini</a>
+      <a href="https://outro-site.com/x">externo</a>
+      <a href="mailto:oi@diar.ia.br">email</a>
+    `;
+    const links = extractInternalLinks(html, "https://arquivo.diar.ia.br");
+    assert.ok(links.has("https://arquivo.diar.ia.br/temas/openai-chatgpt"));
+    assert.ok(links.has("https://arquivo.diar.ia.br/temas/google-gemini"));
+    assert.ok(!links.has("https://outro-site.com/x"));
+    assert.equal(links.size, 2);
+  });
+
+  it("descarta query string e hash ao normalizar", () => {
+    const html = `<a href="/temas/x?utm_source=y#topo">x</a>`;
+    const links = extractInternalLinks(html, "https://arquivo.diar.ia.br");
+    assert.ok(links.has("https://arquivo.diar.ia.br/temas/x"));
+  });
+});
+
+describe("describeReferrerNote (#5618 — a afirmação categórica de órfã podia ser falsa)", () => {
+  it("com referringUrls não-vazio, não retorna nota (não é o caso órfão)", () => {
+    assert.equal(describeReferrerNote(["https://diar.ia.br/archive"]), "");
+  });
+
+  it("sem referringUrls e sem cross-check disponível, rótulo genérico honesto (não afirma órfã)", () => {
+    const note = describeReferrerNote([], undefined);
+    assert.match(note, /Google não registra referrer/);
+    assert.ok(!note.includes("órfã (sem link interno)"));
+  });
+
+  it("sem referringUrls e knownLinked=true, aponta lag de crawl (regressão do achado #5618)", () => {
+    const note = describeReferrerNote([], true);
+    assert.match(note, /TEM link interno conhecido/);
+    assert.match(note, /lag de crawl/);
+  });
+
+  it("sem referringUrls e knownLinked=false, aí sim afirma órfã", () => {
+    const note = describeReferrerNote([], false);
+    assert.match(note, /sem link interno conhecido nem referrer no Google \(órfã\)/);
   });
 });
 

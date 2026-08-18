@@ -31,6 +31,15 @@
  *     `related` sem nenhum marcador de domínio (IA/tecnologia) antes de
  *     persistir — o `raw` da chamada continua intacto pra auditoria (mesma
  *     disciplina do resto do arquivo), só o campo parseado é filtrado.
+ *
+ *     **#5624 (achado ao vivo em 18/ago/2026, pull `bing-keywords-2026-08-18.json`):
+ *     o mesmo artefato voltou por SUFIXO.** Semente `newsletter de ia` →
+ *     `detector de ia`, `viver de ia`, `humanizador de ia gratuito` — toda
+ *     query que contém "de ia", sem relação temática nenhuma; o marcador de
+ *     domínio isolado ("ia") casa nos dois lados sem provar relação. Fix:
+ *     `filterRelevantRelated`/`isRelatedToSeed` ganharam um 2º gate — com a
+ *     semente disponível, exige sobreposição de pelo menos 1 token
+ *     SIGNIFICATIVO (não-stopword, não-"ia") entre semente e relacionado.
  *   - `links`    (#5130) → `GetLinkCounts`/`GetUrlLinks` — instrumento de
  *     AUTORIDADE (backlinks). Sem instrumento até aqui, o critério de
  *     sucesso pré-registrado pro checkpoint de ~29/set ("≥5 domínios
@@ -110,6 +119,11 @@
  * Pra consultar a 2ª propriedade verificada (modos `site`/`links`):
  *   npx tsx scripts/bing-pull.ts --site https://arquivo.diar.ia.br/
  *
+ * `--mode site --site all` (#5621) itera os 4 hosts de `BING_KNOWN_SITES`
+ * (`scripts/lib/bing.ts`), 1 pull por host, falha per-site tolerada (host
+ * ainda não verificado no BWT não derruba os demais):
+ *   npx tsx scripts/bing-pull.ts --mode site --site all
+ *
  * Env: BING_WEBMASTER_API_KEY (`.env`, ver `.env.example`).
  *
  * Exit: 0 ok (grava JSON); 1 erro de API ou credencial ausente; 2 erro de uso
@@ -121,7 +135,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { BING_DEFAULT_SITE, BING_API_BASE } from "./lib/bing.ts";
+import { BING_DEFAULT_SITE, BING_API_BASE, BING_KNOWN_SITES } from "./lib/bing.ts";
 
 const SCRIPT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -514,16 +528,83 @@ export function isAiDomainRelevant(query: string): boolean {
   return AI_DOMAIN_MARKERS.some((m) => q.includes(m));
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// #5624 — o artefato de substring do #5253 voltou por SUFIXO ("de ia")
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Palavras funcionais pt-BR ignoradas ao extrair tokens "significativos" de
+ * uma query (#5624) — artigos/preposições/conjunções curtas que aparecem em
+ * quase toda query e não carregam o tema em si (ex: o "de" de "newsletter
+ * de ia"). Não precisa ser exaustiva — só precisa não deixar passar as mais
+ * comuns em query curta de busca.
+ */
+const PT_STOPWORDS: ReadonlySet<string> = new Set([
+  "de", "da", "do", "das", "dos", "a", "o", "as", "os", "e", "ou",
+  "para", "pra", "com", "em", "no", "na", "nos", "nas", "por", "sobre",
+  "que", "um", "uma", "uns", "umas", "se", "ao", "aos",
+]);
+
+/**
+ * Tokens "significativos" de uma query (#5624): minúsculo/sem acento,
+ * quebrado por qualquer não-alfanumérico, excluindo stopwords e o próprio
+ * "ia" (marcador de domínio genérico demais pra servir de sinal de
+ * sobreposição — é exatamente o token que faz "newsletter de ia" e
+ * "detector de ia" parecerem relacionados sem ser). Pure.
+ */
+function meaningfulTokens(query: string): Set<string> {
+  const q = normalizeForMatch(query);
+  const out = new Set<string>();
+  for (const t of q.split(/[^a-z0-9]+/)) {
+    if (!t || t === "ia" || t.length <= 2 || PT_STOPWORDS.has(t)) continue;
+    out.add(t);
+  }
+  return out;
+}
+
+/**
+ * #5624 — sucessor do #5253: o mesmo artefato de casamento por substring da
+ * `GetRelatedKeywords` (lá era por PREFIXO genérico — "o que aconteceu
+ * com..." devolvendo fofoca de celebridade; achado de 18/08/2026 mostrou o
+ * mesmo problema por SUFIXO — semente `newsletter de ia` devolvendo
+ * `detector de ia`, `viver de ia`, `humanizador de ia gratuito`: toda query
+ * que contém "de ia", sem relação temática nenhuma). `isAiDomainRelevant`
+ * sozinho não pega esse caso porque "ia" isolado casa em ambos os lados.
+ *
+ * Gate adicional: com `seedQuery` informada, exige que `relatedQuery`
+ * compartilhe pelo menos 1 token SIGNIFICATIVO (não-stopword, não-"ia") com
+ * a semente — é esse token que distingue "newsletter" de "detector". Sem
+ * `seedQuery` (chamada legada, #5253) ou quando a semente em si não tem
+ * nenhum token significativo (ex: semente literalmente "ia" sozinha — não
+ * há o que comparar), cai de volta no gate só de `isAiDomainRelevant`, pra
+ * não super-filtrar um caso em que a comparação não faz sentido.
+ */
+export function isRelatedToSeed(relatedQuery: string, seedQuery?: string): boolean {
+  if (!isAiDomainRelevant(relatedQuery)) return false;
+  if (!seedQuery) return true;
+  const seedTokens = meaningfulTokens(seedQuery);
+  if (seedTokens.size === 0) return true;
+  const relatedTokens = meaningfulTokens(relatedQuery);
+  for (const t of relatedTokens) {
+    if (seedTokens.has(t)) return true;
+  }
+  return false;
+}
+
 /**
  * Filtra `related` descartando linhas sem relação com o domínio do projeto
  * (#5253 item 4 — a Bing casa `GetRelatedKeywords` por prefixo genérico da
  * query, não por tema; achado real: "o que aconteceu com" devolvendo fofoca
- * de celebridade brasileira pra uma semente sobre IA). Nunca aplicado a
- * `stats` (série do MESMO termo semeado, relevante por construção) nem ao
- * `raw` bruto (auditoria — ver docstring do arquivo). Pure.
+ * de celebridade brasileira pra uma semente sobre IA) **e**, quando
+ * `seedQuery` é passada, sem sobreposição de token significativo com a
+ * semente (#5624 — mesmo artefato de substring, agora por sufixo: "newsletter
+ * de ia" → "detector de ia" tinha `isAiDomainRelevant` batendo nos dois lados
+ * sem nenhuma relação temática real). Nunca aplicado a `stats` (série do
+ * MESMO termo semeado, relevante por construção) nem ao `raw` bruto
+ * (auditoria — ver docstring do arquivo). Pure.
  */
-export function filterRelevantRelated(related: BingKeywordRow[]): BingKeywordRow[] {
-  return related.filter((r) => isAiDomainRelevant(r.query));
+export function filterRelevantRelated(related: BingKeywordRow[], seedQuery?: string): BingKeywordRow[] {
+  return related.filter((r) => isRelatedToSeed(r.query, seedQuery));
 }
 
 export interface BingKeywordSummaryRow {
@@ -785,10 +866,11 @@ async function mainKeywords(nowMs: number, values: Record<string, string>): Prom
   for (const term of terms) {
     const keyword = await safeBingCall(() => pullBingKeyword(term, country, language, startDate, endDate, apiKey));
     const relatedRaw = await safeBingCall(() => pullBingRelatedKeywords(term, country, language, startDate, endDate, apiKey));
-    // #5253 item 4: filtra `related` sem relação com o domínio ANTES de
-    // persistir o campo parseado — o `raw` da chamada (dentro de
-    // `relatedRaw`) segue intacto pra auditoria, só `data` é filtrado.
-    const related = relatedRaw.ok ? { ...relatedRaw, data: filterRelevantRelated(relatedRaw.data) } : relatedRaw;
+    // #5253 item 4 + #5624: filtra `related` sem relação com o domínio E sem
+    // sobreposição de token com a SEMENTE (`term`) ANTES de persistir o campo
+    // parseado — o `raw` da chamada (dentro de `relatedRaw`) segue intacto
+    // pra auditoria, só `data` é filtrado.
+    const related = relatedRaw.ok ? { ...relatedRaw, data: filterRelevantRelated(relatedRaw.data, term) } : relatedRaw;
     const stats = await safeBingCall(() => pullBingKeywordStats(term, country, language, apiKey));
     entries.push({ term, keyword, related, stats });
   }
@@ -902,9 +984,47 @@ async function mainLinks(nowMs: number, values: Record<string, string>): Promise
   return 0;
 }
 
+/** Pull de 1 site — extraído de `mainSite` (#5621) pra ser reusável tanto no
+ * caso `--site {host}` (1 site) quanto `--site all` (itera `BING_KNOWN_SITES`,
+ * falha per-site tolerada — ver docstring de `BING_KNOWN_SITES`). Grava o
+ * JSON e retorna o resumo impresso; `null` em erro (logado pelo chamador). */
+export async function pullOneSite(
+  site: string,
+  apiKey: string,
+  nowMs: number,
+  seoDir: string,
+  outOverride?: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ site: string; pulled_at: string; total_query_rows: number; total_traffic_rows: number; out: string } | null> {
+  let queryRows: BingQueryRow[];
+  let trafficRows: BingTrafficRow[];
+  try {
+    [queryRows, trafficRows] = await Promise.all([
+      pullBingQueryStats(site, apiKey, fetchImpl),
+      pullBingTrafficStats(site, apiKey, fetchImpl),
+    ]);
+  } catch (e) {
+    console.error(`[bing-pull] ${site}: ${(e as Error).message}`);
+    return null;
+  }
+
+  const pulledAt = isoDate(nowMs);
+  const slug = bingSiteSlug(site);
+  const jsonPath = outOverride ?? resolve(seoDir, `bing-${slug}-${pulledAt}.json`);
+  const output = buildBingPullOutput(site, pulledAt, queryRows, trafficRows);
+  writeFileSync(jsonPath, JSON.stringify(output, null, 2));
+  return {
+    site,
+    pulled_at: pulledAt,
+    total_query_rows: output.total_query_rows,
+    total_traffic_rows: output.total_traffic_rows,
+    out: jsonPath,
+  };
+}
+
 async function mainSite(nowMs: number, values: Record<string, string>): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const site = String(values["site"] ?? BING_DEFAULT_SITE);
+  const siteArg = String(values["site"] ?? BING_DEFAULT_SITE);
 
   const apiKey = process.env.BING_WEBMASTER_API_KEY;
   if (!apiKey) {
@@ -912,35 +1032,32 @@ async function mainSite(nowMs: number, values: Record<string, string>): Promise<
     return 1;
   }
 
-  let queryRows: BingQueryRow[];
-  let trafficRows: BingTrafficRow[];
-  try {
-    [queryRows, trafficRows] = await Promise.all([pullBingQueryStats(site, apiKey), pullBingTrafficStats(site, apiKey)]);
-  } catch (e) {
-    console.error(`[bing-pull] ${(e as Error).message}`);
-    return 1;
-  }
-
   const seoDir = resolve(ROOT, "data", "seo");
   if (!existsSync(seoDir)) mkdirSync(seoDir, { recursive: true });
-  const pulledAt = isoDate(nowMs);
-  const slug = bingSiteSlug(site);
-  const jsonPath = String(values["out"] ?? resolve(seoDir, `bing-${slug}-${pulledAt}.json`));
-  const output = buildBingPullOutput(site, pulledAt, queryRows, trafficRows);
-  writeFileSync(jsonPath, JSON.stringify(output, null, 2));
-  console.log(
-    JSON.stringify(
-      {
-        site,
-        pulled_at: pulledAt,
-        total_query_rows: output.total_query_rows,
-        total_traffic_rows: output.total_traffic_rows,
-        out: jsonPath,
-      },
-      null,
-      2,
-    ),
-  );
+
+  // #5621: `--site all` itera os 4 hosts conhecidos (`BING_KNOWN_SITES`),
+  // com falha per-site tolerada — um host ainda não verificado no BWT (ex:
+  // livros/cursos antes do AddSite) não derruba os outros 3 já verificados.
+  // `--out` fica sem efeito nesse modo (path é sempre derivado por host, senão
+  // os 4 pulls colidiriam no mesmo arquivo).
+  if (siteArg === "all") {
+    const results: Array<{ site: string; pulled_at: string; total_query_rows: number; total_traffic_rows: number; out: string }> = [];
+    let anyFailed = false;
+    for (const site of BING_KNOWN_SITES) {
+      const r = await pullOneSite(site, apiKey, nowMs, seoDir);
+      if (r) results.push(r);
+      else anyFailed = true;
+    }
+    console.log(JSON.stringify({ mode: "site", site: "all", total_sites: BING_KNOWN_SITES.length, ok: results.length, results }, null, 2));
+    // Sucesso parcial ainda é sucesso — um host não-verificado é esperado até
+    // o AddSite/verificação DNS do #5621 rodar; não travar a rotina inteira
+    // por causa disso. Só reprova se TODOS falharem.
+    return results.length === 0 && anyFailed ? 1 : 0;
+  }
+
+  const result = await pullOneSite(siteArg, apiKey, nowMs, seoDir, values["out"] !== undefined ? String(values["out"]) : undefined);
+  if (!result) return 1;
+  console.log(JSON.stringify(result, null, 2));
   return 0;
 }
 

@@ -669,6 +669,19 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(res.status, 404);
   });
 
+  it("#5620: secret gravada com \\n de sobra (echo em vez de printf) ainda serve 200 — .trim() defensivo", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("arquivo de chave do IndexNow não deveria depender de rede");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(
+      new Request("https://arquivo.diar.ia.br/minha-chave-opaca.txt"),
+      { INDEXNOW_KEY: "minha-chave-opaca\n" },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "minha-chave-opaca");
+  });
+
   it("sem INDEXNOW_KEY configurada, qualquer /*.txt cai no 404 normal (comportamento idêntico a antes)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("não deveria fazer fetch nenhum");

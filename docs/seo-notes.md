@@ -554,6 +554,57 @@ checkpoint de citação por assistente (`Diaria-Geo-Citation-Monitor`,
 domingos) não confunda "zero demanda medida" com "zero citação por causa da
 prosa" quando cruzar os dois dados.
 
+## Fato 11b — `livros`/`cursos` cadastro no BWT: ferramenta pronta, execução ao vivo PENDENTE (#5621, 18/ago/2026)
+
+`scripts/bing-add-site.ts` (novo) e `scripts/lib/bing.ts` → `BING_KNOWN_SITES`
+(os 4 hosts do projeto) foram implementados pra fechar o achado do #5621:
+`livros.diar.ia.br` e `cursos.diar.ia.br` não são propriedades no BWT (só
+`diar.ia.br` e `arquivo.diar.ia.br` estão, ver §Fato 3). `bing-pull.ts --mode
+site --site all` agora itera os 4 hosts com falha per-site tolerada (host
+ainda não cadastrado não derruba os já verificados).
+
+**Não executado ao vivo nesta sessão** — worktree isolado sem
+`BING_WEBMASTER_API_KEY`/`CLOUDFLARE_API_TOKEN` no ambiente (mesma disciplina
+dos #4320/#4382/#4490/#4534: nenhuma escrita contra API de terceiro roda sem
+credencial real presente). `scripts/bing-add-site.ts` cobre `AddSite` +
+confirmação via `GetUserSites` (nunca tratando `202` como sucesso, armadilha
+1 do §Fato 3) + `SubmitFeed`, mas **não automatiza a verificação por DNS** —
+o valor exato do registro CNAME que o Bing exige não tem endpoint de API
+confirmado nesta sessão; completar manualmente via BWT UI + API da Cloudflare,
+mesmo caminho já percorrido em 11/ago/2026 para os outros 2 hosts (ver §Fato
+3). Pendente pra uma sessão com as credenciais: `AddSite` dos 2 hosts →
+verificação DNS → `SubmitFeed` dos 2 sitemaps (1 URL cada, correto — ver #5622).
+
+## Fato 12 — baseline de 18/ago/2026: GSC 28 dias, backfill de 16 meses, Bing, backlinks (#5619)
+
+Registrado ANTES do checkpoint de citação por assistente (~07/out, #4558) e
+do de autoridade (~29/set, #4469/#4547) — pela mesma disciplina do "Quando
+adicionar entry aqui" abaixo: um número lido depois, sem isto escrito antes,
+vira "descoberta" em vez de linha de base.
+
+- **GSC, 28 dias (21/07–18/08):** 20 impressões, **0 cliques**, 5 páginas, 18
+  linhas `(page, query)`.
+- **GSC, backfill de 16 meses:** 16 impressões, 0 cliques. Praticamente todas
+  as impressões que o site já teve estão nas últimas ~4 semanas — não há
+  histórico anterior relevante escondido fora da janela de 28 dias.
+- **Composição das 20 impressões:** ~4 linhas são query de robô (sintaxe
+  `-site:reddit.com -site:wykop.pl`), 3 são erro de digitação alheio (`tartar
+  ia`, `comunidade lendár ia`), 2 são a marca (`diar`, posição 9-10), 5 são
+  intenção genuína (todas em `livros.diar.ia.br` — ver #5622), 4 são casuais.
+- **Bing, mesma janela:** 2 queries com impressão, posições **3 e 6** — ordem
+  de grandeza melhor que as posições 44-90 do Google pras mesmas queries de
+  `livros` (ver #5622).
+- **Backlinks:** 0 domínios distintos.
+- **Cobertura de indexação, `arquivo.diar.ia.br` (16/08):** 2/8 URLs
+  indexadas — 6 fora, incluindo 5 dos 6 hubs temáticos e `/temas/`. Ver
+  `docs/geo-hub-experiment.md` item 5 da lista de explicações concorrentes
+  (#5619) e #5618 (o relatório rotulava essas 6 como "órfã (sem link
+  interno)", afirmação que o HTML servido refutava — corrigido).
+
+**Ação:** nenhuma mudança de código associada a esta entry — é só o registro
+do número. Ações derivadas (Bing WMT para `livros`/`cursos`, investigação de
+`livros.diar.ia.br`) vivem em issues próprias (#5621, #5622).
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
