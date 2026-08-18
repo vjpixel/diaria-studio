@@ -94,16 +94,15 @@ systemctl --user daemon-reload && systemctl --user enable --now diaria-clarice-n
 
 ## Re-arme feito em 260816 (#5447)
 
-**Executado — confirmado ao vivo em 17/08/2026** (`diaria-clarice-novos` 09:00, `-tarde` 18:00, `-abort-alarm` 18:10 BRT, os três `enabled` e com disparo recente na `predator`). *(Estava pendente na unidade implementadora, worktree isolado — ver seção de arme acima.)* O coordenador top-level roda, no checkout principal DEPOIS do merge, pra `Diaria-Clarice-Novos` (09:00), `Diaria-Clarice-Novos-Tarde` (18:00) e `Diaria-Clarice-Novos-Abort-Alarm` (18:10) — mesma armadilha de `Persistent=true` documentada acima (usar o kill switch antes de reiniciar, ou rearmar antes da próxima ocorrência do horário novo):
+**Histórico, aposentado pelo #5660:** o alarm `Diaria-Clarice-Novos-Abort-Alarm` foi removido do registro porque o guard D4 deixou de existir neste caminho. O coordenador top-level roda, no checkout principal DEPOIS do merge, apenas pra `Diaria-Clarice-Novos` (09:00) e `Diaria-Clarice-Novos-Tarde` (18:00):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos-Tarde
-npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos-Abort-Alarm
-cp .systemd-units/diaria-clarice-novos.timer .systemd-units/diaria-clarice-novos-tarde.timer .systemd-units/diaria-clarice-novos-abort-alarm.timer ~/.config/systemd/user/   # SÓ os .timer
+cp .systemd-units/diaria-clarice-novos.timer .systemd-units/diaria-clarice-novos-tarde.timer ~/.config/systemd/user/   # SÓ os .timer
 systemctl --user daemon-reload
-systemctl --user restart diaria-clarice-novos.timer diaria-clarice-novos-tarde.timer diaria-clarice-novos-abort-alarm.timer
-systemctl --user list-timers diaria-clarice-novos.timer diaria-clarice-novos-tarde.timer diaria-clarice-novos-abort-alarm.timer
+systemctl --user restart diaria-clarice-novos.timer diaria-clarice-novos-tarde.timer
+systemctl --user list-timers diaria-clarice-novos.timer diaria-clarice-novos-tarde.timer
 ```
 
 **Achado desta unidade, não corrigido aqui (fora do escopo exato da #5447):** `Diaria-Clarice-Novos` (09:00) agora colide, no minuto exato, com `Diaria-Clarice-Opens-Catchup-Alarm` (também 09:00, `#4740`/`#4722` item 4). São dois timers systemd independentes, sem recurso compartilhado óbvio (um lê um relatório de catch-up de opens; o outro toca Stripe/MV/Brevo), então não é um conflito funcional — mas quebra a convenção do resto do registro de manter dailies em minutos distintos, e nenhum teste do arquivo pega colisões globais (só pares específicos comentados task a task). Documentado aqui e no self-review do PR para o coordenador decidir se vale desencostar um dos dois horários numa unidade futura.

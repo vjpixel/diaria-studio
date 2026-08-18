@@ -662,48 +662,8 @@ describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd
   });
 });
 
-describe("#5405 — Diaria-Clarice-Novos-Abort-Alarm registrada, diária 18:10 (#5447, sucede 15:10), depois das 2 rodadas do novos", () => {
-  it("está presente no registro, com o step apontando pro script correto, 18:10 BRT", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm");
-    assert.ok(t, "Diaria-Clarice-Novos-Abort-Alarm ausente de SCHEDULED_TASKS");
-    assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/clarice-novos-abort-alarm.ts"],
-    );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 18, minute: 10 });
-  });
-
-  it("roda DEPOIS de Diaria-Clarice-Novos-Tarde (18:00) — lê o status da rodada mais recente do dia", () => {
-    const alarm = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm")!;
-    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde")!;
-    assert.equal(alarm.schedule.kind, "daily");
-    assert.equal(tarde.schedule.kind, "daily");
-    const alarmSchedule = alarm.schedule as { kind: "daily"; hour: number; minute: number };
-    const tardeSchedule = tarde.schedule as { kind: "daily"; hour: number; minute: number };
-    const alarmMinutes = alarmSchedule.hour * 60 + alarmSchedule.minute;
-    const tardeMinutes = tardeSchedule.hour * 60 + tardeSchedule.minute;
-    assert.ok(alarmMinutes > tardeMinutes, "Diaria-Clarice-Novos-Abort-Alarm deveria rodar depois de Diaria-Clarice-Novos-Tarde");
-  });
-
-  it("18:10 não colide com nenhuma outra daily", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm")!;
-    assert.equal(t.schedule.kind, "daily");
-    const mine = t.schedule as { kind: "daily"; hour: number; minute: number };
-    for (const other of SCHEDULED_TASKS) {
-      if (other.name === t.name) continue;
-      if (other.schedule.kind === "daily") {
-        assert.ok(
-          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
-          `colisão de horário com ${other.name} (${mine.hour}:${mine.minute})`,
-        );
-      }
-    }
-  });
-
-  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm")!;
-    const script = t.steps[0].script;
-    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
-    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+describe("#5405 — alarme removido pelo #5660", () => {
+  it("não está mais registrado porque clarice-novos-run não produz semaphore-red", () => {
+    assert.equal(getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm"), undefined);
   });
 });

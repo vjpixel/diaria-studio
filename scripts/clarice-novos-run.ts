@@ -38,16 +38,6 @@
  *       terminal — mesma semântica de exit 2 do `clarice-schedule-group.ts
  *       --send-now`) — NÃO declarar sucesso; a rodada de amanhã reconcilia
  *       (idempotente por key/campanha).
- *   3 — abort INTENCIONAL do semáforo D4 (`clarice-check-semaphore.ts`,
- *       #4347) — circuit breaker de entregabilidade rompido. Comportamento
- *       CORRETO (não é bug), distinto de exit 1 desde #5615/#5592: antes os
- *       dois casos saíam com o MESMO código, e a task systemd `--user`
- *       tratava um abort D4 correto como `failed` genérico (alarme
- *       `Diaria-Systemd-Failed-Units-Alarm` disparando P1 todo dia em que o
- *       semáforo ficasse vermelho). `NOVOS_SEMAPHORE_ABORT_EXIT_CODE` abaixo;
- *       units systemd deste task precisam declarar
- *       `SuccessExitStatus=3` (`scripts/lib/systemd-units.ts`,
- *       `successExitCodes` no registro) pra não contar como `failed`.
  *
  * Uso:
  *   npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] \
@@ -78,7 +68,7 @@ import { isClariceNovosEnabled } from "./lib/clarice-novos-enabled.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
 import { writeNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
-import { writeNovosRunStatus, isSemaphoreAbortMessage, type NovosRunStatusValue } from "./lib/clarice-novos-run-status.ts";
+import { writeNovosRunStatus, type NovosRunStatusValue } from "./lib/clarice-novos-run-status.ts";
 import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
@@ -171,11 +161,6 @@ export class NovosAbort extends Error {
   }
 }
 
-/** #5615/#5592 — exit code dedicado pra abort INTENCIONAL do semáforo D4
- * (comportamento correto do guard, distinto de erro genérico). Ver docstring
- * do módulo pro contrato completo de exit codes e o que o unit systemd
- * precisa declarar (`SuccessExitStatus=`) pra não contar como `failed`. */
-export const NOVOS_SEMAPHORE_ABORT_EXIT_CODE = 3 as const;
 
 // ---------------------------------------------------------------------------
 // Opções da CLI
@@ -251,7 +236,7 @@ export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
 // ---------------------------------------------------------------------------
 
 export interface NovosRunResult {
-  code: 0 | 1 | 2 | 3;
+  code: 0 | 1 | 2;
   reportId: string;
   reportMarkdown: string;
 }
@@ -409,11 +394,8 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       step(deps, report, "clarice-build-db (pós-MV, #4362)", "scripts/clarice-build-db.ts", []);
     }
 
-    // --- Semáforo (D4) ---
-    report.section("Passo 3 — Grupo 'novos' (D13 + D4)");
-    step(deps, report, "clarice-check-semaphore", "scripts/clarice-check-semaphore.ts", []);
-
     // --- Grupo novos (--hold juridico obrigatório, #4542) ---
+    report.section("Passo 3 — Grupo 'novos' (D13)");
     const segmentArgs = [
       "--group",
       "novos",
@@ -665,19 +647,12 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — abortado`, report.build());
     // #5405: nunca gravado em --dry-run (não é uma tentativa de produção) —
     // mesma decisão de `writeNovosCutoff`. Kill switch pausado nunca chega
-    // aqui (retorna antes do try). `isSemaphoreAbortMessage` distingue o
-    // motivo D4 (semáforo) de qualquer outro abort — só o primeiro conta pro
-    // streak do alarme (#5405 item 1).
-    const isSemaphoreAbort = isSemaphoreAbortMessage(abort.message);
+    // aqui (retorna antes do try). O status continua registrando erros reais;
+    // o antigo status `semaphore-red` não é mais produzido desde #5660.
     if (!opts.dryRun) {
-      noteRunStatus(deps, now, isSemaphoreAbort ? "semaphore-red" : "other-error", abort.message);
+      noteRunStatus(deps, now, "other-error", abort.message);
     }
-    // #5615/#5592: abort D4 (semáforo) sai com um exit code DIFERENTE de
-    // erro genérico — mesmo em --dry-run (a distinção é sobre a NATUREZA do
-    // abort, não sobre se a rodada persistiu state). Ver
-    // NOVOS_SEMAPHORE_ABORT_EXIT_CODE.
-    const code = isSemaphoreAbort ? NOVOS_SEMAPHORE_ABORT_EXIT_CODE : abort.code;
-    return { code, reportId, reportMarkdown: report.build() };
+    return { code: abort.code, reportId, reportMarkdown: report.build() };
   }
 }
 
