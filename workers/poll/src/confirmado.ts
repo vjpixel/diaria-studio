@@ -83,7 +83,12 @@ import {
   renderCuradoriaFooter,
 } from "../../../scripts/lib/shared/curadoria-page.ts";
 import { renderSeoMeta, renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
-import { DIARIA_EIA_URL, DIARIA_LIVROS_URL, DIARIA_ARQUIVO_URL } from "../../../scripts/lib/canonical-urls.ts";
+import {
+  DIARIA_EIA_URL,
+  DIARIA_LIVROS_URL,
+  DIARIA_ARQUIVO_URL,
+  DIARIA_CURSOS_URL,
+} from "../../../scripts/lib/canonical-urls.ts";
 
 /** URL pública canônica desta página. */
 export const PAGE_URL = `${DIARIA_EIA_URL}/confirmado`;
@@ -159,6 +164,10 @@ ${renderCuradoriaFooterStyles()}
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>
+          <li>
+            <a href="${DIARIA_CURSOS_URL}/">Cursos gratuitos de IA →</a>
+            <p>Cursos verificados sobre inteligência artificial, a maioria gratuita, filtráveis por idioma, nível e plataforma.</p>
+          </li>
           <li>
             <a href="${DIARIA_LIVROS_URL}/">Livros sobre IA →</a>
             <p>Uma lista curada de livros sobre inteligência artificial, filtrável por idioma, nível e tema.</p>

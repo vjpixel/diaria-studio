@@ -57,11 +57,17 @@ describe("renderConfirmadoPage (#5167 item 7) — unit", () => {
     assert.match(html, /primeira edição chega/);
   });
 
-  it("linka as 3 portas — livros, jogo, arquivo", () => {
+  it("linka as 4 portas — cursos, livros, jogo, arquivo", () => {
     const html = renderConfirmadoPage();
+    assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">/);
     assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">/);
     assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/jogar">/);
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">/);
+  });
+
+  it("porta de cursos (#5518 B4) cumpre a promessa do e-mail de confirmação", () => {
+    const html = renderConfirmadoPage();
+    assert.match(html, /Cursos gratuitos de IA/);
   });
 
   it("CTA pro survey de interesses f7528798 (URL confirmada via MCP get_survey)", () => {
