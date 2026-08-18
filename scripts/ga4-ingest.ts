@@ -4,8 +4,9 @@
  * CLI fino em cima de `scripts/lib/ga4-ingest.ts` (núcleo puro/testável).
  * Roda um relatório básico (usuários ativos, sessões, pageviews por dia,
  * segmentado por canal) na propriedade GA4 `Diaria` (property ID
- * `378028168`, confirmado ao vivo — ver #5248) e salva um snapshot JSON em
- * `data/ga4-snapshots/`.
+ * `516813959`, confirmado ao vivo — ver #5248; #5625 corrigiu esta
+ * referência — `378028168` é o Account ID, não o Property ID) e salva um
+ * snapshot JSON em `data/ga4-snapshots/`.
  *
  * ## Por que snapshot solto em vez de integrar no cac-report.ts
  *
