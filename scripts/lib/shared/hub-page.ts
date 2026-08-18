@@ -937,8 +937,33 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // presente: o defeito é a publicação no lugar de sujeito, não o tempo
     // verbal. Ainda é uma denylist e por construção não é exaustiva — o
     // limite conhecido está travado por teste.
+    //
+    // #5628: 3º ramo da alternação — ORDEM INVERTIDA (verbo antes do sujeito,
+    // "perguntou a diar.ia.br em 20/01/2026"). Falha literal da forma
+    // original, não caso novo: a regra já dizia "a publicação está no lugar
+    // de sujeito", só não cobria a ordem estilística mais comum de discurso
+    // direto em português ("X, perguntou Y" em vez de "Y perguntou X").
+    // Mesma lista de verbos do 1º ramo, sem o `(?:\S+\s){0,2}` (a ordem
+    // invertida não tem o mesmo padrão de advérbio interposto que motivou
+    // aquele absorvedor no 1º ramo).
+    //
+    // #5636 review: "pergunt" saiu da lista comum do 3º ramo e virou um 4º
+    // ramo à parte, com `(?<!\p{L}\s)` na frente. Motivo: "perguntar A
+    // alguém" usa "a" majoritariamente como preposição DATIVA (destinatário
+    // da pergunta), não como artigo de sujeito posposto — "Um leitor
+    // perguntou a diar.ia.br sobre X" tem diar.ia.br como DESTINATÁRIO, não
+    // como narrador, mas o 3º ramo original casava mesmo assim (só olhava
+    // pro que vem DEPOIS do verbo). O lookbehind distingue os dois casos
+    // pela presença de um sujeito explícito logo antes do verbo: se houver
+    // uma palavra terminada por espaço imediatamente antes ("leitor "), há
+    // sujeito e a regra não deve marcar; se o verbo abre a oração (início de
+    // frase, ou depois de aspas/vírgula de discurso direto, como em `"X?"
+    // perguntou a diar.ia.br`), não há sujeito concorrente e a marca segue
+    // válida — é aí que diar.ia.br está de fato no lugar do sujeito
+    // invertido. Os outros verbos do ramo (apur/chec/levant/etc.) ficam como
+    // estavam — não têm o mesmo padrão predominantemente dativo de uso.
     pattern:
-      /\ba diar\.ia\.br (?:\S+\s){0,2}(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion)(?:ou|a|am|ando|indo|iu|e|aram)?\b|\ba diar\.ia\.br (?:nunca|jamais|passou a)\b/i,
+      /\ba diar\.ia\.br (?:\S+\s){0,2}(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion)(?:ou|a|am|ando|indo|iu|e|aram)?\b|\ba diar\.ia\.br (?:nunca|jamais|passou a)\b|\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|apur|chec|levant)(?:ou|a|am|ando|indo|iu|e|aram)?\s+a diar\.ia\.br\b|(?<!\p{L}\s)\bpergunt(?:ou|a|am|ando|indo|iu|e|aram)?\s+a diar\.ia\.br\b/iu,
     message:
       "a publicação está no lugar de sujeito de um verbo de cobertura — o fato vira predicado " +
       "da cobertura. Ponha o fato no sujeito. Afirmação sobre o próprio arquivo " +
@@ -974,6 +999,42 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
       'saíram na mesma edição saíram "no mesmo dia", que é o que de fato os relaciona.',
   },
   {
+    // #5628. Gêmeo temático de `prosa-sem-publicacao-como-sujeito`, mas o
+    // sujeito aqui não é a marca — é a MOLDURA que a auditoria de 18/08/2026
+    // ("Raio-X de /temas/") achou substituindo a marca depois que #4930/#4938
+    // fecharam a forma original: "a cobertura registrou...", "o arco fecha...",
+    // "a edição mais antiga do período já trazia...". Mesmo critério do
+    // docstring de HUB_PROSE_RULES ("a cobertura é o assunto, ou é o
+    // recipiente?") — aqui o recipiente (cobertura/arquivo/arco/edição) age
+    // como se fosse o narrador do fato, no lugar do próprio fato.
+    // Exige que o substantivo de moldura seja SUJEITO (verbo narrativo até 2
+    // palavras depois) — não pega uso legítimo como OBJETO, que é exatamente
+    // a forma que o docstring protege ("só fica visível olhando o arquivo
+    // inteiro", "toda a cobertura sobre X"): ali o substantivo vem DEPOIS do
+    // verbo/preposição, nunca antes dele.
+    //
+    // #5636 review: o stem "gir" saiu da lista de verbos. "Girar em torno de
+    // X" não é um verbo de REPORTAGEM (cobrir/registrar/publicar/destacar —
+    // um ato de noticiar um fato específico) — é uma descrição de ESCOPO
+    // temático ("sobre o que foi X"), legítima mesmo com "a cobertura"/"o
+    // arquivo" como sujeito (prova ao vivo: o PR #5636 teve que reescrever
+    // "a cobertura girou em torno de valuation..." para "as manchetes
+    // giraram em torno de..." só pra escapar do regex, sinal de que a regra
+    // estava mais ampla que a intenção da issue #5628 — proibir CONSTRUÇÃO
+    // de narração de um fato específico, não proibir a idiomática "girar em
+    // torno de"). Os demais stems (cobr/notici/.../ampli/fech/descrev)
+    // continuam de pé — são todos atos de reportagem/narração, não
+    // descrição de escopo.
+    id: "prosa-sem-moldura-de-cobertura",
+    appliesTo: "prose",
+    pattern:
+      /\b(a cobertura|o arquivo|o arco|a edição mais \S+ do período)\s+(?:\S+\s){0,2}\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|ampli|fech|descrev)(?:ou|a|am|ando|indo|iu|e|aram)?\b/i,
+    message:
+      "a cobertura/o arquivo/o arco/a edição está no lugar de sujeito de um verbo narrativo — o " +
+      "recipiente vira narrador do fato. Ponha o fato (ou a data) no sujeito. Uso como OBJETO " +
+      '("só fica visível olhando o arquivo inteiro") é permitido e não casa esta regra.',
+  },
+  {
     // #4917. Parágrafo que diz "este hub" é incompleto lido isolado — e o
     // JSON-LD reproduz respostas de FAQ com os links removidos
     // (`stripMarkdownLinks`, geo-faq.ts), então o dêitico viaja sem resolução.
@@ -1001,10 +1062,19 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // demonstrou — "a seção X, com crescimento acima DA média" é dado, não
     // ponteiro. Ponteiro real ("a seção sobre segurança acima traz") nunca é
     // seguido de artigo.
-    pattern: /seç(ão|ões)[^.]{0,60}\s(acima|abaixo)\b(?!\s+d[aeo]\b)/i,
+    //
+    // #5628: 2º ramo — ponteiro que NÃO usa a palavra "seção" ("Cada um
+    // desses pontos aparece detalhado adiante", presente nos 6 hubs antes
+    // deste fix). Mesmo defeito da forma original (irresolvível: sem href de
+    // âncora, sem "próxima seção" navegável fora do próprio HTML renderizado
+    // que o assistente lê), só que a forma estrita `/seç(ão|ões).../` nunca
+    // teria pego porque a frase nem menciona "seção".
+    pattern:
+      /seç(ão|ões)[^.]{0,60}\s(acima|abaixo)\b(?!\s+d[aeo]\b)|\b(aparece[m]?|detalhad[ao]s?|listad[ao]s?)\s+(adiante|a seguir|abaixo)\b/i,
     message:
-      'ponteiro para outro trecho ("seção acima/abaixo") — irresolvível: os assets não têm ' +
-      "nenhum href de âncora, e âncora foi descartada pela auditoria. Repita o fato no lugar.",
+      'ponteiro para outro trecho ("seção acima/abaixo", "aparece adiante", "detalhado a seguir") — ' +
+      "irresolvível: os assets não têm nenhum href de âncora, e âncora foi descartada pela auditoria. " +
+      "Repita o fato no lugar.",
   },
 ];
 

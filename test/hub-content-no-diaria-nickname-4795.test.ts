@@ -20,23 +20,60 @@
  * implementação) continuam NÃO cobertos — não aparecem em nenhuma página,
  * trocar é opcional (ver corpo da #4795).
  *
- * `NICKNAME_RE` exige que não haja letra imediatamente antes de "a"/"A"
- * (lookbehind), pra não casar substantivos femininos terminados em "a" que
- * antecedem "diária" como adjetivo comum ("rotina diária", "cadência
- * diária"). "à diária" nunca aparece nas construções deste conteúdo
- * ("segundo/da/pela a diária" não exigem crase), e "a Diária" maiúscula só
- * ocorre em início de frase — cobrir os dois casos de capitalização (início
- * de sentença vs. no meio) é suficiente.
+ * `NICKNAME_RE` exige que não haja letra imediatamente antes do artigo/
+ * contração (lookbehind), pra não casar substantivos femininos terminados
+ * em "a" que antecedem "diária" como adjetivo comum ("rotina diária",
+ * "cadência diária", "toda diária"). "à diária" nunca aparece nas
+ * construções deste conteúdo ("segundo/da/pela a diária" não exigem crase),
+ * e "a Diária" maiúscula só ocorre em início de frase — cobrir os dois casos
+ * de capitalização (início de sentença vs. no meio) é suficiente.
+ *
+ * #5626: a forma original (`/(?<![\p{L}])[Aa] diária/u`) exigia o artigo
+ * ISOLADO "a"/"A" — "da diária"/"na diária"/"pela diária" (contrações de
+ * preposição+artigo) não casavam, apesar do próprio docstring acima
+ * (linhas 8-9) declarar essas variantes como cobertas. 3 ocorrências vivas
+ * em `brasil-regulacao` passaram por essa lacuna sem o teste acusar nada —
+ * mesmo modo de falha do #4899 (guard estreito demais deixa hub passar em
+ * silêncio). Ampliada pra alternância de artigo/contração antes de
+ * "diária", mantendo o mesmo lookbehind (nenhuma letra imediatamente
+ * antes) — "toda diária"/"rotina diária" continuam não casando, porque a
+ * letra anterior ao "d"/"n"/"p" da contração reprova o lookbehind.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import { collectReaderFacingStrings } from "../scripts/lib/shared/hub-page.ts";
 
-const NICKNAME_RE = /(?<![\p{L}])[Aa] diária/u;
+const NICKNAME_RE = /(?<![\p{L}])(?:[aàA]|[Dd][ae]|[Nn][ae]|[Pp]el[ae])\s+diária\b/u;
 
 const HUBS = Object.entries(HUB_LOADERS).map(([slug, load]) => ({ slug, content: load() }));
 
+
+describe("#5626 — NICKNAME_RE casa artigo isolado E contrações de preposição", () => {
+  const positive = [
+    "a diária",
+    "A diária",
+    "à diária",
+    "da diária",
+    "Da diária",
+    "na diária",
+    "Na diária",
+    "pela diária",
+    "Pela diária",
+  ];
+  for (const text of positive) {
+    it(`casa "${text}"`, () => {
+      assert.ok(NICKNAME_RE.test(text), `esperava match em "${text}"`);
+    });
+  }
+
+  const negative = ["rotina diária", "cadência diária", "edição diária", "toda diária", "vida diária"];
+  for (const text of negative) {
+    it(`NÃO casa "${text}" (adjetivo comum)`, () => {
+      assert.ok(!NICKNAME_RE.test(text), `não esperava match em "${text}"`);
+    });
+  }
+});
 
 describe("#4795 — hubs temáticos usam 'a diar.ia.br', nunca o apelido 'a diária', no texto reader-facing", () => {
   it("cobre TODO hub de HUB_LOADERS, não uma lista escrita à mão (#4899)", () => {

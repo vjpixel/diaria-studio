@@ -52,6 +52,14 @@
  * seção 1, seção 2 e FAQ — narra essa cronologia corrigida, com as fontes
  * oficiais linkadas.
  *
+ * **#5630 — este hub NÃO ganhou a tabela de cronologia derivada (Onda 2/
+ * #5260).** O padrão de maior volume, `MARCO_LEGAL_PATTERN`, tem 4
+ * ocorrências no dataset — abaixo do piso de ≥6 documentado em
+ * `buildLaunchChronologyTable` (`scripts/lib/shared/hub-page.ts`); os demais
+ * padrões (`eleitoral`, `cfm`, `anatel`, `pbia`, `riscoLei`) têm ainda menos.
+ * Tabela de 2-4 linhas não sustenta a mecânica — decisão registrada, não
+ * esquecimento.
+ *
  * Regenerar depois de qualquer `beehiiv-sync.ts` novo:
  *   npx tsx scripts/generate-hub-sources.ts --hub brasil-regulacao
  *   npx tsx scripts/build-hub-page.ts --hub brasil-regulacao
@@ -93,8 +101,17 @@ const PUBLISHED_DATE = "2026-08-11";
  * remanescente reflete cobertura real mais rala do tema nesse intervalo
  * (a alternativa que a issue #5124 tinha levantado, mas o editor não
  * escolheu) fica parcialmente corroborada pelos dados: havia conteúdo pra
- * adicionar, mas não o bastante pra fechar os 21 dias do limiar. */
-const UPDATED_DATE = "2026-08-14";
+ * adicionar, mas não o bastante pra fechar os 21 dias do limiar.
+ *
+ * 2026-08-18 (#5627): reescrita substancial da errata do Marco Legal —
+ * intro/seção 1/FAQ paravam de narrar a manchete errada 4x e passaram a
+ * afirmar a cronologia corrigida direto, com a ressalva de procedência
+ * movida pra `methodologyNote`. Bump por mudança de CORPO, não por fonte
+ * nova — `sourceEditions[0].date` continua 2026-07-03, então o warning de
+ * `checkUpdatedDateCeiling` (#5124) só cresce; é esperado até o #5632
+ * regenerar `brasil-regulacao-sources.generated.json` com fontes mais
+ * recentes. */
+const UPDATED_DATE = "2026-08-18";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 5 hubs). */
@@ -143,12 +160,12 @@ export function buildBrasilRegulacaoFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quantas manchetes acompanharam o trâmite do Marco Legal da IA entre a Câmara e o Senado?",
-      answer: `Foram ${marcoLegal} manchetes só sobre a tramitação do Marco Legal (PL 2338/23) entre fevereiro e junho de 2026: [Hugo Motta priorizando o texto](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a Câmara agendando voto para 27 de maio](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt), [uma edição que descreveu o Senado aprovando o texto em 22 de maio](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) — checagem contra o rastreamento oficial do Senado (matéria 157233) mostra que essa aprovação já tinha ocorrido em dezembro de 2024, antes de fevereiro de 2026 — o início do intervalo fevereiro-junho de 2026 usado para contar essas manchetes —, e que o texto está na Câmara desde março de 2025 — e [a Câmara buscando nova data em junho, articulada com o Redata no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia).`,
+      answer: `Foram ${marcoLegal} manchetes só sobre a tramitação do Marco Legal (PL 2338/23) entre fevereiro e junho de 2026: [Hugo Motta priorizando o texto](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a Câmara agendando voto para 27 de maio](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt), [uma manchete sobre a aprovação do Senado no Marco Legal](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) e [a Câmara buscando nova data em junho, articulada com o Redata no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia).`,
     },
     {
       question: "O Marco Legal da IA já tem autoridade reguladora definida?",
       answer:
-        'Ainda não claramente: [o texto em tramitação previa um Sistema Nacional de IA "ainda em disputa quanto à autonomia"](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), e o texto que o Senado aprovou — [em dezembro de 2024, não em maio de 2026 como uma edição da diária chegou a noticiar](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) [fonte primária](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233) — já cria "a autoridade reguladora que vai fiscalizar" sem detalhar o desenho institucional. A definição final dependia da revisão em curso na Câmara, que só devolve o texto ao Senado se o emendar.',
+        'Ainda não claramente: [o texto em tramitação previa um Sistema Nacional de IA "ainda em disputa quanto à autonomia"](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), e [o texto que o Senado aprovou em dezembro de 2024](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) [fonte primária](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233) já cria "a autoridade reguladora que vai fiscalizar" sem detalhar o desenho institucional. A definição final dependia da revisão em curso na Câmara, que só devolve o texto ao Senado se o emendar.',
     },
     {
       question: "Que multas ou sanções o texto do Marco Legal da IA previa para quem descumprisse as regras?",
@@ -213,8 +230,8 @@ function buildIntro(sources: HubSourceEntry[]): [string, string] {
   // prosa-sem-ponteiro-de-secao proíbe especificamente essa segunda forma).
   // O relato completo, com fonte oficial, mora só em sections[0].paragraphs[2].
   return [
-    `Entre ${between}, a regulação de inteligência artificial no Brasil apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. O fio mais longo é o Marco Legal da IA, o PL 2338/23: aprovado pelo Plenário do Senado em dezembro de 2024 e remetido à Câmara dos Deputados em março de 2025, o texto seguiu em revisão na Câmara ao longo de todo o período coberto aqui — uma audiência pública sobre direitos autorais em setembro de 2025, um voto agendado para 27 de maio de 2026 que a Câmara adiou, e o relator articulando o texto com o Senado, em junho, pra tentar votar antes do recesso de julho sem precisar de uma segunda rodada de emendas. Uma edição da diária, em maio de 2026, chegou a descrever essa aprovação do Senado como um evento daquele mês — a cronologia corrigida, com fonte oficial, está detalhada mais adiante, no relato completo do trâmite.`,
-    `Fora do Marco Legal, uma lei distinta de classificação de sistemas por risco entrou em circulação em maio de 2026 exigindo auditoria obrigatória para sistemas de alto risco e responsabilidade solidária de quem desenvolve ou só implanta o modelo, o Conselho Federal de Medicina normatizou o uso de IA como apoio à decisão clínica, a Anatel contratou nuvem soberana para dados sob sigilo fiscal e bancário, e o TSE limitou conteúdo sintético nas 72 horas antes e nas 24 horas depois do voto de outubro de 2026. Já em junho e julho de 2026, a regulação girou em torno de aplicações mais pontuais: a Câmara avançou com regras de trânsito específicas para óculos inteligentes com IA, e o governo federal publicou a primeira matriz de competências em IA para o funcionalismo público, amarrada ao PBIA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`,
+    `Entre ${between}, a regulação de inteligência artificial no Brasil apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. O fio mais longo é o Marco Legal da IA, o PL 2338/23: aprovado pelo Plenário do Senado em dezembro de 2024 e remetido à Câmara dos Deputados em março de 2025, o texto seguiu em revisão na Câmara ao longo de todo o período coberto aqui — uma audiência pública sobre direitos autorais em setembro de 2025, um voto agendado para 27 de maio de 2026 que a Câmara adiou, e o relator articulando o texto com o Senado, em junho, pra tentar votar antes do recesso de julho sem precisar de uma segunda rodada de emendas.`,
+    `Fora do Marco Legal, uma lei distinta de classificação de sistemas por risco entrou em circulação em maio de 2026 exigindo auditoria obrigatória para sistemas de alto risco e responsabilidade solidária de quem desenvolve ou só implanta o modelo, o Conselho Federal de Medicina normatizou o uso de IA como apoio à decisão clínica, a Anatel contratou nuvem soberana para dados sob sigilo fiscal e bancário, e o TSE limitou conteúdo sintético nas 72 horas antes e nas 24 horas depois do voto de outubro de 2026. Já em junho e julho de 2026, a regulação girou em torno de aplicações mais pontuais: a Câmara avançou com regras de trânsito específicas para óculos inteligentes com IA, e o governo federal publicou a primeira matriz de competências em IA para o funcionalismo público, amarrada ao PBIA.`,
   ];
 }
 
@@ -237,7 +254,7 @@ export function getBrasilRegulacaoHub(): HubContent {
           "Em 10 de setembro de 2025, [a Comissão Especial de IA da Câmara dos Deputados realizou uma audiência pública sobre o PL 2338/23, que regulamenta o uso ético da IA generativa e os direitos autorais](https://diar.ia.br/p/estudo-de-harvard-estima-92-mi-de-empregos-esta-o-em-risco). O texto já classificava os sistemas de IA por risco e limitava o uso de conteúdo protegido por direitos autorais no treinamento de modelos a instituições de pesquisa, jornalismo, museus, bibliotecas e organizações educacionais. Qualquer outro uso passaria a exigir autorização dos titulares.",
           "146 dias depois, em 3 de fevereiro de 2026, [o projeto entrou na fase final do Congresso, com votação prevista na Câmara e sanção presidencial ainda em 2026](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), servindo de base para o Plano Brasileiro de Inteligência Artificial. O texto previa multas de até 2% do faturamento (teto de R$ 50 milhões), responsabilidade objetiva para sistemas de alto risco e restrições ao uso de IA no Judiciário. No mesmo dia, Hugo Motta passou a priorizar o Marco Legal.",
           "Em 6 de maio de 2026, [a Câmara agendou para 27 de maio a votação do marco legal, com o relatório final saindo em 19 de maio](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt). O Senado não estava esperando esse resultado para votar — ele já tinha votado: o Plenário aprovou o PL 2338/23 em 10 de dezembro de 2024, com a consulta pública fechada em 35.806 votos a favor e 31.547 contra, e remeteu o texto à Câmara dos Deputados em 17 de março de 2025, com o desenho de uma autoridade reguladora para fiscalizar a lei [fonte primária](https://www25.senado.leg.br/web/atividade/materias/-/materia/157233).",
-          "[Uma edição da diária, em 22 de maio de 2026, descreveu essa aprovação do Senado como um evento do dia](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) — o rastreamento oficial do Senado mostra que ela já era passado havia mais de um ano; a cronologia corrigida é esta. Cinco dias depois da data que a Câmara tinha marcado, em 1º de junho, [o texto ainda buscava nova data de votação, agora articulado com o Redata, a lei de proteção de dados que avança em paralelo no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia): o relator Aguinaldo Ribeiro (PP-PB) buscava um texto já negociado com os senadores porque, segundo ele, qualquer emenda da Câmara obriga o projeto a voltar ao Senado antes da sanção.",
+          "Cinco dias depois da data que a Câmara tinha marcado, em 1º de junho, [o texto ainda buscava nova data de votação, agora articulado com o Redata, a lei de proteção de dados que avança em paralelo no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia): o relator Aguinaldo Ribeiro (PP-PB) buscava um texto já negociado com os senadores porque, segundo ele, qualquer emenda da Câmara obriga o projeto a voltar ao Senado antes da sanção.",
         ],
       },
       {
@@ -267,6 +284,11 @@ export function getBrasilRegulacaoHub(): HubContent {
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM,
-    methodologyNote: defaultMethodologyNote(SOURCES),
+    // #5627: ressalva de procedência da errata do Marco Legal — o único
+    // lugar do hub que ainda menciona a manchete de 22/05/2026 que tratou a
+    // aprovação do Senado como evento daquele mês (`prosa-sem-deixis` isenta
+    // este campo, ver docstring de HUB_PROSE_RULES). Uma linha, não quatro —
+    // a prosa de intro/seção/FAQ acima já narra só a cronologia corrigida.
+    methodologyNote: `${defaultMethodologyNote(SOURCES)} Uma manchete de 22/05/2026 tratou a aprovação do Marco Legal da IA pelo Senado como evento daquele mês; o rastreamento oficial (senado.leg.br, matéria 157233) mostra que essa aprovação ocorreu em 10/12/2024, com remessa à Câmara em 17/03/2025 — a prosa acima usa a cronologia corrigida.`,
   };
 }

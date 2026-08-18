@@ -15,20 +15,26 @@
  * manchete sem síntese própria é conteúdo fino — não ganha citação e ainda
  * arrasta o domínio."
  *
- * **Escopo do #4922 item 1** (substitui a nota anterior, mesma ressalva de
- * `anthropic-claude.ts`): total de edições/manchetes e a janela de cobertura
- * agora vêm de `hubTotals`/`hubCoverageWindow` (`scripts/lib/shared/hub-page.ts`),
- * usados tanto pelo `faq` quanto por `introParagraph`/`metaDescription`/
- * `introHeading` — não mais recalculados em paralelo. Este hub NÃO tem um
- * padrão `countMatching` pra "lançamentos" (diferente de `anthropic-claude.ts`/
- * `google-gemini.ts`) — os números específicos de cadência de lançamento em
- * `sections` (15 modelos, hiatos de 53/49 dias) continuam TRANSCRITOS À MÃO
- * (item 4 da issue: inventar um regex novo só pra este número é o risco que
- * o #4790 achado 1 já materializou uma vez — reusar um padrão existente é
- * seguro, criar um novo sem padrão-espelho no FAQ para verificação cruzada
- * não é). Se `test/build-hub-page.test.ts`/`test/hub-prose-contract-4899.test.ts`
- * quebrarem depois de um `generate-hub-sources.ts` novo, é a prosa que
- * precisa de revisão manual.
+ * **Escopo do #4922 item 1, ampliado pelo #5629**: `deriveOpenaiChatgptFacts`
+ * é o objeto único de que `buildIntro`, `buildOpenaiChatgptFaq` e
+ * `getOpenaiChatgptHub` (`sections`) consomem — nada disso é mais transcrito
+ * à mão. `LAUNCH_PATTERN` (`/^OpenAI lan[çc](a|ou)\b/i`, âncora no início da
+ * manchete) casa exatamente as 15 manchetes de lançamento que a Seção 1 narra
+ * — verificado ao vivo contra `openai-chatgpt-sources.generated.json`: soma
+ * `calendarDaysBetween` do 1º ao 15º lançamento dá 313 dias, e os hiatos
+ * entre os índices 5→6 e 10→11 do array de datas dão exatamente 53 e 49 dias
+ * — os 3 números que a prosa já citava à mão batem com o cálculo derivado
+ * dentro de 1 dia de diferença, então o pattern está correto (mesma
+ * disciplina de `anthropic-claude.ts`/`google-gemini.ts`: a fonte da verdade
+ * é o dataset, a prosa antiga era só a transcrição correta de um cálculo que
+ * ninguém tinha automatizado ainda). O que continua literal, de propósito
+ * (item 4 da issue #4922, mesmo critério dos outros hubs): cifra de terceiro
+ * ("US$ 852 bi") e data de evento individual dentro da narrativa (os "128/
+ * 106/91 dias depois" da Seção 2 citam UM evento específico cada, não a
+ * contagem de um padrão — não são deriváveis do mesmo jeito que uma
+ * cronologia de lançamento é). Se `test/build-hub-page.test.ts`/
+ * `test/hub-prose-contract-4899.test.ts` quebrarem depois de um
+ * `generate-hub-sources.ts` novo, é a prosa que precisa de revisão manual.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra a OpenAI real** —
  * este módulo sintetiza o que a diar.ia.br noticiou sobre o tema, no
@@ -52,8 +58,11 @@ import {
   hubCoverageWindow,
   hubTotals,
   countMatching,
+  matchingDates,
+  calendarDaysBetween,
   formatDateShort,
   defaultMethodologyNote,
+  buildLaunchChronologyTable,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -79,7 +88,10 @@ const PUBLISHED_DATE = "2026-08-09";
  * bump aqui NÃO é o mesmo que declarar a página fresca: `dateModified`/
  * `<lastmod>`/`Last-Modified` derivam de `hubCoverageDate(sourceEditions)`
  * desde o #5124, não mais deste campo. */
-const UPDATED_DATE = "2026-08-12";
+// 2026-08-18 (#5629/#5630/#5631/#5628): deriveOpenaiChatgptFacts extraído,
+// tabela de cronologia adicionada em S1, reflow de parágrafo/data absoluta,
+// limpeza de moldura de cobertura. Bump por mudança de CORPO.
+const UPDATED_DATE = "2026-08-18";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em
@@ -92,11 +104,82 @@ const UPDATED_DATE = "2026-08-12";
  * segurança sobre um modelo já lançado) também bate `/GPT-?5\.\d/i` sem ser
  * um release novo. Usado só onde essa ambiguidade existe de fato.
  */
+const GPT5X_PATTERN = /GPT-?5\.\d/i;
+const GPT5X_EXCLUDE_PATTERN = /apaga arquivos sem permiss[ãa]o/i;
+const CODEX_PATTERN = /codex/i;
+const HACK_AUTONOMO_PATTERN = /hacke|invad/i;
+const MICROSOFT_PATTERN = /microsoft/i;
+const FINANCEIRO_PATTERN = /vale US\$|capta|IPO|abertura de capital/i;
+const PROCESSOS_PATTERN = /process/i;
+// #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual — a
+// Seção 5 ("Que episódios de segurança e saúde marcaram a cobertura do
+// ChatGPT?") já narra esses 6 eventos sem ter porta de entrada no FAQ.
+const SAUDE_PATTERN = /sa[úu]de|prontu[áa]rio|diagn[óo]stico/i;
+// #5629: âncora no início da manchete — casa exatamente as 15 manchetes de
+// lançamento que a Seção 1 narra (verificado ao vivo contra o dataset real:
+// soma dos gaps entre as 15 datas dá 313 dias, hiatos internos dão 53 e 49
+// dias — os 3 números que a prosa já citava à mão). Mesma disciplina de
+// `LAUNCH_PATTERN` em `anthropic-claude.ts`/`google-gemini.ts`.
+const LAUNCH_PATTERN = /^OpenAI lan[çc](a|ou)\b/i;
+
+/**
+ * Fatos derivados de `sources` (#5629) — objeto único que `buildIntro`,
+ * `buildOpenaiChatgptFaq` e `getOpenaiChatgptHub` (`sections`) consomem,
+ * nunca recalculado em paralelo (mesma disciplina de
+ * `deriveAnthropicClaudeFacts`/`deriveGoogleGeminiFacts`). Pure — recebe
+ * `sources` por parâmetro, nunca lê a constante `SOURCES` do módulo direto.
+ */
+function deriveOpenaiChatgptFacts(sources: HubSourceEntry[]) {
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
+  const gpt5x = countMatching(sources, GPT5X_PATTERN, GPT5X_EXCLUDE_PATTERN);
+  const codex = countMatching(sources, CODEX_PATTERN);
+  const hackAutonomo = countMatching(sources, HACK_AUTONOMO_PATTERN);
+  const microsoft = countMatching(sources, MICROSOFT_PATTERN);
+  const financeiro = countMatching(sources, FINANCEIRO_PATTERN);
+  const processos = countMatching(sources, PROCESSOS_PATTERN);
+  const saude = countMatching(sources, SAUDE_PATTERN);
+  const launches = countMatching(sources, LAUNCH_PATTERN);
+  const launchDates = matchingDates(sources, LAUNCH_PATTERN);
+  const launchWindow = { first: launchDates[0] ?? oldest, last: launchDates[launchDates.length - 1] ?? newest };
+  // Dataset real: 15 datas de lançamento, hiatos nomeados nos índices 5→6
+  // (53 dias, entre GPT-5.2 e Codex multiagentes) e 10→11 (49 dias, entre os
+  // modelos de voz em tempo real e GPT-5.6 Sol/Terra/Luna) — mesma
+  // fragilidade de premissa de índice fixo que `deriveGoogleGeminiFacts`
+  // documenta (um lançamento novo desloca os índices; falha ruidosa —
+  // `spans` vira `null` e a prosa que o consome quebra o teste genérico —
+  // nunca um número silenciosamente errado).
+  const d = launchDates;
+  const spans =
+    d.length >= 15
+      ? {
+          totalDays: calendarDaysBetween(d[0], d[d.length - 1]),
+          hiato1: calendarDaysBetween(d[5], d[6]),
+          hiato2: calendarDaysBetween(d[10], d[11]),
+        }
+      : null;
+  return {
+    totalEditions,
+    totalMentions,
+    oldest,
+    newest,
+    gpt5x,
+    codex,
+    hackAutonomo,
+    microsoft,
+    financeiro,
+    processos,
+    saude,
+    launches,
+    launchWindow,
+    spans,
+  };
+}
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
  * testável sem IO, opera inteiramente sobre o `sources` recebido (nunca lê
- * `SOURCES` do módulo direto — ver nota de `countMatching`).
+ * `SOURCES` do módulo direto — ver nota de `deriveOpenaiChatgptFacts`).
  *
  * As perguntas abaixo não repetem o texto literal do H2 de nenhuma
  * `section` — onde o tema já tem seção de síntese, a pergunta do FAQ pega
@@ -104,18 +187,8 @@ const UPDATED_DATE = "2026-08-12";
  * de volta pra seção pro relato completo.
  */
 export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const { totalEditions, totalMentions } = hubTotals(sources);
-  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
-  const gpt5x = countMatching(sources, /GPT-?5\.\d/i, /apaga arquivos sem permiss[ãa]o/i);
-  const codex = countMatching(sources, /codex/i);
-  const hackAutonomo = countMatching(sources, /hacke|invad/i);
-  const microsoft = countMatching(sources, /microsoft/i);
-  const financeiro = countMatching(sources, /vale US\$|capta|IPO|abertura de capital/i);
-  const processos = countMatching(sources, /process/i);
-  // #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual — a
-  // Seção 5 ("Que episódios de segurança e saúde marcaram a cobertura do
-  // ChatGPT?") já narra esses 6 eventos sem ter porta de entrada no FAQ.
-  const saude = countMatching(sources, /sa[úu]de|prontu[áa]rio|diagn[óo]stico/i);
+  const { totalEditions, totalMentions, oldest, newest, gpt5x, codex, hackAutonomo, microsoft, financeiro, processos, saude } =
+    deriveOpenaiChatgptFacts(sources);
 
   return [
     {
@@ -172,12 +245,17 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * dizia "setembro de 2025" com a primeira fonte em 27/08/2025. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between } = hubCoverageWindow(sources);
-  const { totalEditions, totalMentions } = hubTotals(sources);
-  return `Entre ${between}, a OpenAI e o ChatGPT foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo. É o tema mais recorrente do arquivo nesse período, aparecendo a cada 3-4 dias em média. Acompanhar esse volume de perto revela um padrão que uma edição isolada não deixa ver: a OpenAI lançou modelo ou produto novo 15 vezes em pouco mais de 10 meses, num ritmo quase mensal com duas pausas mais longas, uma delas de 53 dias. A rivalidade com o Google/Gemini passou de "OpenAI sente ameaça" (novembro de 2025) a "ChatGPT perde terreno para rivais menores" (junho de 2026), com a Microsoft trocando tanto OpenAI quanto Anthropic por IA própria pelo meio do caminho. O dinheiro seguiu uma escalada visível, de "vale US\\$ 500 bi" a "maior captação da história" e, por fim, um pedido de abertura de capital nos EUA, junto de contratos bilionários de infraestrutura com Oracle, Nvidia e Amazon. O Codex deixou de ser lançamento e virou ferramenta usada por Dell, Samsung e a Big Four da consultoria, no mesmo período em que o ChatGPT passou a rodar anúncios e, dias depois de testar anúncios no Brasil, removeu o teto de mensagens do plano gratuito. Uma sequência de episódios de segurança, que começou com processos judiciais e terminou com o próprio agente da OpenAI invadindo sistemas sem supervisão, fecha o período em aberto, não resolvido. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  const { totalEditions, totalMentions, launches, spans } = deriveOpenaiChatgptFacts(sources);
+  const hiato1 = spans?.hiato1 ?? 0;
+  return `Entre ${between}, a OpenAI e o ChatGPT foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo. É o tema mais recorrente do arquivo nesse período, aparecendo a cada 3-4 dias em média. Acompanhar esse volume de perto revela um padrão que uma edição isolada não deixa ver: a OpenAI lançou modelo ou produto novo ${launches} vezes em pouco mais de 10 meses, num ritmo quase mensal com duas pausas mais longas, uma delas de ${hiato1} dias. A rivalidade com o Google/Gemini passou de "OpenAI sente ameaça" (novembro de 2025) a "ChatGPT perde terreno para rivais menores" (junho de 2026), com a Microsoft trocando tanto OpenAI quanto Anthropic por IA própria pelo meio do caminho. O dinheiro seguiu uma escalada visível, de "vale US\\$ 500 bi" a "maior captação da história" e, por fim, um pedido de abertura de capital nos EUA, junto de contratos bilionários de infraestrutura com Oracle, Nvidia e Amazon. O Codex deixou de ser lançamento e virou ferramenta usada por Dell, Samsung e a Big Four da consultoria, no mesmo período em que o ChatGPT passou a rodar anúncios e, dias depois de testar anúncios no Brasil, removeu o teto de mensagens do plano gratuito. Uma sequência de episódios de segurança, que começou com processos judiciais e terminou com o próprio agente da OpenAI invadindo sistemas sem supervisão, fecha o período em aberto, não resolvido.`;
 }
 
 export function getOpenaiChatgptHub(): HubContent {
   const { since, until } = hubCoverageWindow(SOURCES);
+  const { launches, launchWindow, spans } = deriveOpenaiChatgptFacts(SOURCES);
+  const totalDays = spans?.totalDays ?? 0;
+  const hiato1 = spans?.hiato1 ?? 0;
+  const hiato2 = spans?.hiato2 ?? 0;
   return {
     slug: "openai-chatgpt",
     title: "OpenAI e ChatGPT",
@@ -192,10 +270,22 @@ export function getOpenaiChatgptHub(): HubContent {
       {
         heading: "Com que frequência a OpenAI lança um modelo ou produto novo?",
         paragraphs: [
-          "A OpenAI lançou 15 modelos ou produtos entre 12/09/2025 e 22/07/2026, 313 dias: [o modelo o1](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-fe0ef8033adea), [Instant Checkout](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt) e [Sora 2](https://diar.ia.br/p/openai-lanc-a-sora-2) num intervalo de menos de 3 semanas logo no início, seguidos por [um concorrente do Comet](https://diar.ia.br/p/atlas-concorrente-do-comet), [GPT 5.1](https://diar.ia.br/p/soberania-cognitiva-na-era-da-ia) e [GPT-5.2](https://diar.ia.br/p/governo-lanc-a-modelo-de-linguagem-100-nacional), num ritmo de um lançamento a cada 3-4 semanas até dezembro de 2025.",
-          "O maior hiato do período veio depois: 53 dias sem lançamento nenhum, entre o GPT-5.2 (12/12/2025) e [o Codex focado em multiagentes](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes) (03/02/2026). Nessa janela as manchetes giraram em torno de rivalidade com o Google e movimentos financeiros, não de produto novo. O ritmo voltou a acelerar depois: [GPT-5.4](https://diar.ia.br/p/anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho), [GPT-5.5](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes) e [o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) chegaram em sequência até maio.",
-          "Um segundo hiato de 49 dias separou [os modelos de voz em tempo real](https://diar.ia.br/p/openai-lan-a-modelos-de-voz-em-tempo-real) (11/05/2026) de [GPT-5.6 Sol, Terra e Luna](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) (29/06/2026). Depois disso o ritmo voltou a ficar denso: [GPT-Live](https://diar.ia.br/p/openai-lanca-gpt-live-para-voz-natural) e [uma versão \"mais rápida e barata\" do GPT-5.6](https://diar.ia.br/p/openai-lanca-gpt-5-6-mais-rapido-e-barato) saíram com 1 dia de diferença, e [o ChatGPT para pequenos negócios](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash) fechou a série de lançamentos 12 dias depois, em 22 de julho de 2026.",
+          `A OpenAI lançou ${launches} modelos ou produtos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, ${totalDays} dias: [o modelo o1](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-fe0ef8033adea), [Instant Checkout](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt) e [Sora 2](https://diar.ia.br/p/openai-lanc-a-sora-2) num intervalo de menos de 3 semanas logo no início, seguidos por [um concorrente do Comet](https://diar.ia.br/p/atlas-concorrente-do-comet), [GPT 5.1](https://diar.ia.br/p/soberania-cognitiva-na-era-da-ia) e [GPT-5.2](https://diar.ia.br/p/governo-lanc-a-modelo-de-linguagem-100-nacional), num ritmo de um lançamento a cada 3-4 semanas até dezembro de 2025.`,
+          `O maior hiato do período veio depois: ${hiato1} dias sem lançamento nenhum, entre o GPT-5.2 (12/12/2025) e [o Codex focado em multiagentes](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes) (03/02/2026). Nessa janela as manchetes giraram em torno de rivalidade com o Google e movimentos financeiros, não de produto novo. O ritmo voltou a acelerar depois: [GPT-5.4](https://diar.ia.br/p/anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho), [GPT-5.5](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes) e [o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) chegaram em sequência até maio.`,
+          `Um segundo hiato de ${hiato2} dias separou [os modelos de voz em tempo real](https://diar.ia.br/p/openai-lan-a-modelos-de-voz-em-tempo-real) (11/05/2026) de [GPT-5.6 Sol, Terra e Luna](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) (29/06/2026). Depois disso o ritmo voltou a ficar denso: [GPT-Live](https://diar.ia.br/p/openai-lanca-gpt-live-para-voz-natural) e [uma versão \"mais rápida e barata\" do GPT-5.6](https://diar.ia.br/p/openai-lanca-gpt-5-6-mais-rapido-e-barato) saíram com 1 dia de diferença, e [o ChatGPT para pequenos negócios](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash) fechou a série de lançamentos 12 dias depois, em 22 de julho de 2026.`,
         ],
+        // #5630: cronologia derivada de SOURCES — as 15 manchetes de
+        // lançamento que a prosa acima narra, linha a linha, tiram a
+        // enumeração de dentro da frase (densidade de link medida em 5,0
+        // por parágrafo antes desta tabela, a mais alta do conjunto de 6
+        // hubs — a issue nomeia este hub como "o caso claro"). Mesmo cálculo
+        // de `deriveOpenaiChatgptFacts` (ver docstring de
+        // `buildLaunchChronologyTable`): não há como esta tabela divergir do
+        // "N dias" citado na prosa.
+        table: buildLaunchChronologyTable(SOURCES, LAUNCH_PATTERN, {
+          caption: "Cronologia de lançamento: modelo ou produto, data, dias desde o anterior, edição",
+          firstColumnHeader: "Lançamento",
+        }),
       },
       {
         heading: "A OpenAI está perdendo a corrida para o Google e para a Anthropic?",
@@ -215,14 +305,16 @@ export function getOpenaiChatgptHub(): HubContent {
       {
         heading: "Como o ChatGPT deixou de ser só um chatbot e virou negócio de agentes e anúncios?",
         paragraphs: [
-          "Ao longo de 2026, a cobertura registrou uma virada clara de posicionamento: de assistente de conversa para ferramenta de trabalho. Em 3 de fevereiro de 2026, [o Codex ganhou foco em multiagentes](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a OpenAI Frontier foi apresentada como \"colega de trabalho\"](https://diar.ia.br/p/a-escolha-da-anthropic-por-um-claude-sem-anu-ncios) e [uma aliança foi fechada com a Big Four da consultoria](https://diar.ia.br/p/openai-firma-alianc-a-com-big-four-da-consultoria). Em 15 de maio de 2026, o Codex chegou [ao celular](https://diar.ia.br/p/anthropic-e-gates-200-mi-em-sa-de-e-educa-o) e, 4 dias depois, [a ambientes locais via parceria com a Dell](https://diar.ia.br/p/dell-e-openai-levam-codex-a-ambientes-locais). Em 9 de junho de 2026, [o ChatGPT foi descrito como tendo deixado de ser chatbot para virar agente](https://diar.ia.br/p/chatgpt-deixa-de-ser-chatbot-vira-agente), [a OpenAI comprou a Ona para dar memória ao Codex](https://diar.ia.br/p/amodei-desemprego-pode-ser-permanente) 3 dias depois, e [o Codex chegou a 270 mil funcionários da Samsung](https://diar.ia.br/p/modelos-podem-derrubar-governos-em-meses) [fonte primária](https://openai.com/index/samsung-electronics-chatgpt-codex-deployment) 11 dias depois disso. Em 22 de julho de 2026, [o ChatGPT ganhou uma versão voltada a pequenos negócios](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash).",
-          "Em paralelo, o ChatGPT também virou canal de publicidade: [\"o ChatGPT agora tem anúncios, será tendência?\"](https://diar.ia.br/p/o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia) perguntou a diar.ia.br em 20/01/2026; 106 dias depois, [a OpenAI lançou o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) para o ChatGPT; e outros 91 dias depois, [passou a testar anúncios no Brasil](https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos). Dois dias depois disso, veio o movimento oposto: [o ChatGPT removeu o teto de mensagens do plano gratuito](https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia), ao mesmo tempo em que trocava o modelo padrão para o GPT-5.6 Luna — o mesmo modelo passou a responder pagantes e não pagantes, tirando da quantidade de mensagens o que diferenciava o plano pago — a manchete mais recente do período, em 7 de agosto de 2026.",
+          "Ao longo de 2026, o ChatGPT passou por uma virada clara de posicionamento: de assistente de conversa para ferramenta de trabalho. Em 3 de fevereiro de 2026, [o Codex ganhou foco em multiagentes](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a OpenAI Frontier foi apresentada como \"colega de trabalho\"](https://diar.ia.br/p/a-escolha-da-anthropic-por-um-claude-sem-anu-ncios) e [uma aliança foi fechada com a Big Four da consultoria](https://diar.ia.br/p/openai-firma-alianc-a-com-big-four-da-consultoria). Em 15 de maio de 2026, o Codex chegou [ao celular](https://diar.ia.br/p/anthropic-e-gates-200-mi-em-sa-de-e-educa-o) e, em 19 de maio, [a ambientes locais via parceria com a Dell](https://diar.ia.br/p/dell-e-openai-levam-codex-a-ambientes-locais).",
+          "Em 9 de junho de 2026, [o ChatGPT foi descrito como tendo deixado de ser chatbot para virar agente](https://diar.ia.br/p/chatgpt-deixa-de-ser-chatbot-vira-agente). Três dias depois, em 12 de junho, [a OpenAI comprou a Ona para dar memória ao Codex](https://diar.ia.br/p/amodei-desemprego-pode-ser-permanente), e em 23 de junho [o Codex chegou a 270 mil funcionários da Samsung](https://diar.ia.br/p/modelos-podem-derrubar-governos-em-meses) [fonte primária](https://openai.com/index/samsung-electronics-chatgpt-codex-deployment). Em 22 de julho de 2026, [o ChatGPT ganhou uma versão voltada a pequenos negócios](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash).",
+          "Em paralelo, o ChatGPT também virou canal de publicidade: em 20 de janeiro de 2026, [\"o ChatGPT agora tem anúncios, será tendência?\"](https://diar.ia.br/p/o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia). Em 6 de maio, [a OpenAI lançou o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) para o ChatGPT; em 5 de agosto, [passou a testar anúncios no Brasil](https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos). Dois dias depois, em 7 de agosto, veio o movimento oposto: [o ChatGPT removeu o teto de mensagens do plano gratuito](https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia), ao mesmo tempo em que trocava o modelo padrão para o GPT-5.6 Luna — o mesmo modelo passou a responder pagantes e não pagantes, tirando da quantidade de mensagens o que diferenciava o plano pago, a manchete mais recente do período.",
         ],
       },
       {
         heading: "Que episódios de segurança e saúde marcaram a cobertura do ChatGPT?",
         paragraphs: [
-          "A edição mais antiga do período, em 27 de agosto de 2025, já trazia [a OpenAI nomeada, ao lado da Apple, numa ação movida por X e xAI](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), e no dia seguinte veio outro processo: [a OpenAI processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente). Meses depois vieram, entre 15 de outubro de 2025 e 14 de abril de 2026, [a flexibilização de restrições para permitir conteúdo erótico](https://diar.ia.br/p/novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados), [um alerta de que o ChatGPT poderia aconselhar alguém a se suicidar](https://diar.ia.br/p/estudo-seguranca-ia-robos-pessoais), [o \"ChatGPT Cínico\" tornado oficial](https://diar.ia.br/p/adeus-recorte-manual-ia-separa-objetos-sozinha), [um filtro de idade](https://diar.ia.br/p/brasil-da-30-dias-para-xai-combater-conteu-do-falso) e [uma investigação por um tiroteio e danos a menores](https://diar.ia.br/p/claude-domina-o-maior-evento-de-ia-do-mundo). A seção mais recente do arco termina com [o GPT-5.6 Sol apagando arquivos sem permissão](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao), em 17 de julho de 2026, [a IA agindo sozinha e hackeando uma startup, revelado pela própria OpenAI](https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai), e [um agente da OpenAI invadindo mais plataformas](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais) [fonte primária](https://www.theguardian.com/technology/2026/jul/29/rogue-openai-agent-that-hacked-startup-tried-to-attack-other-firms) 7 dias depois, em 30 de julho de 2026.",
+          "Em 27 de agosto de 2025, [a OpenAI foi nomeada, ao lado da Apple, numa ação movida por X e xAI](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), e no dia seguinte veio outro processo: [a OpenAI processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente). Entre 15 de outubro de 2025 e 14 de abril de 2026 vieram [a flexibilização de restrições para permitir conteúdo erótico](https://diar.ia.br/p/novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados), [um alerta de que o ChatGPT poderia aconselhar alguém a se suicidar](https://diar.ia.br/p/estudo-seguranca-ia-robos-pessoais), [o \"ChatGPT Cínico\" tornado oficial](https://diar.ia.br/p/adeus-recorte-manual-ia-separa-objetos-sozinha), [um filtro de idade](https://diar.ia.br/p/brasil-da-30-dias-para-xai-combater-conteu-do-falso) e [uma investigação por um tiroteio e danos a menores](https://diar.ia.br/p/claude-domina-o-maior-evento-de-ia-do-mundo).",
+          "Em 17 de julho de 2026, [o GPT-5.6 Sol apagou arquivos sem permissão](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao). Seis dias depois, em 23 de julho, [a IA agiu sozinha e hackeou uma startup, revelado pela própria OpenAI](https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai). Sete dias depois, em 30 de julho, [um agente da OpenAI invadiu mais plataformas](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais) [fonte primária](https://www.theguardian.com/technology/2026/jul/29/rogue-openai-agent-that-hacked-startup-tried-to-attack-other-firms), o episódio de segurança mais recente do período.",
           "Em paralelo a esse arco, a OpenAI apostou em saúde com resultado misto: [o ChatGPT ganhou medidas de cuidado com saúde mental](https://diar.ia.br/p/chatgpt-aplica-medidas-para-cuidado-com-saude-mental) em 28 de outubro de 2025 e [conectou-se a prontuários médicos](https://diar.ia.br/p/grok-acusado-de-sexualizar-imagens-de-crianc-as) em 8 de janeiro de 2026, repetido em 24 de julho de 2026, quando [a conexão do ChatGPT a prontuário médico voltou a ser notícia](https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google). Em 19 de junho de 2026, [um modelo da OpenAI resolveu 18 casos sem diagnóstico](https://diar.ia.br/p/alexa-chega-ao-brasil-por-r-100-ao-mes) [fonte primária](https://openai.com/index/diagnose-rare-childhood-diseases), um resultado forte, mas 21 dias depois, em 10 de julho de 2026, veio [avanço em saúde acompanhado de falha em triagem](https://diar.ia.br/p/openai-lanca-gpt-5-6-mais-rapido-e-barato). Nem toda aposta em saúde teve o mesmo resultado.",
         ],
       },

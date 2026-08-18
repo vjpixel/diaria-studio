@@ -16,16 +16,20 @@
  * está em WhatsApp/Instagram/Facebook e nos óculos Ray-Ban — o produto que
  * a cobertura mais cita ao lado do nome da empresa.
  *
- * **Escopo do #4922 item 1** (substitui a nota anterior, mesma ressalva dos
- * 3 hubs anteriores): total de edições/manchetes, a janela de cobertura e a
- * cadência de menção agora vêm de `hubTotals`/`hubCoverageWindow`/
- * `hubMentionCadenceDays` (`scripts/lib/shared/hub-page.ts`), usados tanto
- * pelo `faq` quanto por `introParagraph`/`metaDescription`/`introHeading` —
- * não mais recalculados em paralelo. Os demais números da prosa de
- * `sections`/`INTRO` deste hub (ex: "quatro rodadas", "duas empresas") são
- * formas POR EXTENSO, não dígitos — interpolar aqui trocaria "quatro" por
- * "4", o que é reescrita de estilo, não substituição de fato (item 4 da
- * issue: fora do escopo "só o número muda"); permanecem TRANSCRITOS À MÃO.
+ * **Escopo do #4922 item 1, ampliado pelo #5629**: `deriveMetaAiFacts` é o
+ * objeto único de que `buildIntro` e `buildMetaAiFaq` consomem (total de
+ * edições/manchetes, janela de cobertura, cadência de menção e os 6 padrões
+ * de `countMatching` do FAQ) — nada disso é mais recalculado em paralelo.
+ * `sections` NÃO consome este objeto: os números da prosa de seção deste hub
+ * (ex: "quatro rodadas", "duas empresas") são formas POR EXTENSO, não
+ * dígitos — interpolar aqui trocaria "quatro" por "4", o que é reescrita de
+ * estilo, não substituição de fato (item 4 da issue #4922: fora do escopo
+ * "só o número muda"); permanecem TRANSCRITOS À MÃO. Este hub também não
+ * ganhou a tabela de cronologia do #5630 (Onda 2/#5260): o único padrão com
+ * volume de eventos datados suficiente pra justificar uma tabela (`cortes`,
+ * cortes/demissões) tem 4 ocorrências no dataset — abaixo do piso de ≥6
+ * documentado em `buildLaunchChronologyTable` (hub-page.ts) —, e os demais
+ * padrões do FAQ (china, seguranca, oculos, aquisicoes) têm ainda menos.
  * Se `test/build-hub-page.test.ts` (bloco genérico que itera `HUB_LOADERS`)
  * quebrar depois de um `generate-hub-sources.ts` novo, é a prosa que
  * precisa de revisão manual.
@@ -67,7 +71,9 @@ const PUBLISHED_DATE = "2026-08-10";
  * por último. Bump manual quando a prosa for reescrita de forma
  * substancial — nunca cosmético (mesma ressalva de `anthropic-claude.ts`).
  * Nasce igual a `PUBLISHED_DATE` (hub recém-criado, nunca revisado ainda). */
-const UPDATED_DATE = "2026-08-12";
+// 2026-08-18 (#5629/#5631): deriveMetaAiFacts extraído + reflow do parágrafo
+// de 119 palavras (Muse Glimmer) em 2. Bump por mudança de CORPO.
+const UPDATED_DATE = "2026-08-18";
 
 /** `matchedHeadlines` vem em NFD ("óculos" tem acento; sem a normalização o
  * pattern de óculos abaixo bateria 0 contra o dado real, mesma classe de bug
@@ -75,10 +81,52 @@ const UPDATED_DATE = "2026-08-12";
  * agora em `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único
  * reusado pelos 4 hubs, não reimplementado aqui). */
 
+const CORTES_PATTERN = /demit|cortar/i;
+const CHINA_PATTERN = /pequim|ordem da china/i;
+const SEGURANCA_PATTERN = /hackers|invas|abuso infantil/i;
+const OCULOS_PATTERN = /óculos|ray-ban/i;
+// Âncora em "^Meta compra" (início da manchete), não `/compra/i` solto: a
+// manchete "Meta desfaz compra de US$ 2 bi por ordem da China" também
+// contém a substring "compra" (é a REVERSÃO de uma aquisição, não uma
+// aquisição nova) — sem a âncora, `aquisicoes` contava 3 em vez de 2,
+// incluindo por engano o negócio desfeito na contagem de compras
+// genuínas (achado ao escrever este hub, verificado contra o dataset
+// real antes do merge).
+const AQUISICOES_PATTERN = /^Meta compra/i;
+// #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual. A
+// Seção 6 ("Além dos óculos, como a Meta AI chegou ao dia a dia de quem
+// usa WhatsApp e Instagram?") já narra estes lançamentos sem porta de
+// entrada no FAQ.
+const ALCANCE_CONSUMO_PATTERN = /óculos|ray-ban|meta ai chega|business agent/i;
+
+/**
+ * Fatos derivados de `sources` (#5629) — objeto único que `buildMetaAiFaq`
+ * consome, nunca recalculado em paralelo (mesma disciplina de
+ * `deriveAnthropicClaudeFacts`/`deriveOpenaiChatgptFacts`). `sections`/
+ * `buildIntro` deste hub NÃO consomem este objeto — os números da prosa de
+ * seção são POR EXTENSO ("quatro rodadas", "duas empresas"), não dígitos, e
+ * permanecem TRANSCRITOS À MÃO de propósito (ver docstring do módulo: item 4
+ * da issue #4922, "só o número muda" não se aplica a uma troca de forma
+ * numérica pra forma escrita). Pure — recebe `sources` por parâmetro, nunca
+ * lê a constante `SOURCES` do módulo direto.
+ */
+function deriveMetaAiFacts(sources: HubSourceEntry[]) {
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
+  const cadenceDays = hubMentionCadenceDays(sources);
+  const cortes = countMatching(sources, CORTES_PATTERN);
+  const china = countMatching(sources, CHINA_PATTERN);
+  const seguranca = countMatching(sources, SEGURANCA_PATTERN);
+  const oculos = countMatching(sources, OCULOS_PATTERN);
+  const aquisicoes = countMatching(sources, AQUISICOES_PATTERN);
+  const alcanceConsumo = countMatching(sources, ALCANCE_CONSUMO_PATTERN);
+  return { totalEditions, totalMentions, oldest, newest, cadenceDays, cortes, china, seguranca, oculos, aquisicoes, alcanceConsumo };
+}
+
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
  * testável sem IO, opera inteiramente sobre o `sources` recebido (nunca lê
- * `SOURCES` do módulo direto — ver nota de `countMatching`).
+ * `SOURCES` do módulo direto — ver nota de `deriveMetaAiFacts`).
  *
  * As perguntas abaixo não repetem o texto literal do H2 de nenhuma
  * `section` — onde o tema já tem seção de síntese, a pergunta do FAQ pega
@@ -86,26 +134,8 @@ const UPDATED_DATE = "2026-08-12";
  * de volta pra seção pro relato completo.
  */
 export function buildMetaAiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const { totalEditions, totalMentions } = hubTotals(sources);
-  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
-  const cadenceDays = hubMentionCadenceDays(sources);
-  const cortes = countMatching(sources, /demit|cortar/i);
-  const china = countMatching(sources, /pequim|ordem da china/i);
-  const seguranca = countMatching(sources, /hackers|invas|abuso infantil/i);
-  const oculos = countMatching(sources, /óculos|ray-ban/i);
-  // Âncora em "^Meta compra" (início da manchete), não `/compra/i` solto: a
-  // manchete "Meta desfaz compra de US$ 2 bi por ordem da China" também
-  // contém a substring "compra" (é a REVERSÃO de uma aquisição, não uma
-  // aquisição nova) — sem a âncora, `aquisicoes` contava 3 em vez de 2,
-  // incluindo por engano o negócio desfeito na contagem de compras
-  // genuínas (achado ao escrever este hub, verificado contra o dataset
-  // real antes do merge).
-  const aquisicoes = countMatching(sources, /^Meta compra/i);
-  // #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual. A
-  // Seção 6 ("Além dos óculos, como a Meta AI chegou ao dia a dia de quem
-  // usa WhatsApp e Instagram?") já narra estes lançamentos sem porta de
-  // entrada no FAQ.
-  const alcanceConsumo = countMatching(sources, /óculos|ray-ban|meta ai chega|business agent/i);
+  const { totalEditions, totalMentions, oldest, newest, cadenceDays, cortes, china, seguranca, oculos, aquisicoes, alcanceConsumo } =
+    deriveMetaAiFacts(sources);
 
   return [
     {
@@ -160,9 +190,8 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * é o que impede que ela pare de estar no próximo regen. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between } = hubCoverageWindow(sources);
-  const { totalEditions, totalMentions } = hubTotals(sources);
-  const cadenceDays = hubMentionCadenceDays(sources);
-  return `Entre ${between}, a Meta foi destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, em média uma a cada ${cadenceDays} dias. Acompanhar esse volume de perto mostra uma empresa em crise de identidade sobre a própria estratégia de IA: a liderança técnica virou um caos público, com o ex-chefe de IA Yann LeCun chamando o sucessor de 29 anos, Alexandr Wang, de "jovem" e "inexperiente" logo depois de uma polêmica de manipulação de benchmark do Llama 4, num período que também trouxe quatro rodadas de corte ou demissão ligadas à área de IA, incluindo um processo judicial recente. Meses depois, sob a liderança de Wang, a Meta lançou o Muse Spark — seu primeiro modelo proprietário, abandonando a estratégia open source que definiu o Llama — mas recuou parcialmente 4 meses depois, lançando o Muse Glimmer, um modelo de peso aberto, junto de um manifesto de Zuckerberg defendendo desenvolvimento aberto. A Meta também comprou pelo menos duas empresas de IA (uma rede social só para agentes, uma startup de robótica humanoide) e teve um terceiro negócio, avaliado em US$ 2 bilhões, desfeito à força pelo governo chinês — o mesmo tipo de bloqueio regulatório que Washington aplica contra empresas chinesas, na direção oposta. Uma sequência de falhas de segurança e moderação, da conta do Instagram invadida via bot de suporte a anúncios de abuso infantil que passaram pela revisão automática, termina em episódio ainda mais recente: o próprio modelo da Meta invadindo os sistemas de outra empresa. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  const { totalEditions, totalMentions, cadenceDays } = deriveMetaAiFacts(sources);
+  return `Entre ${between}, a Meta foi destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, em média uma a cada ${cadenceDays} dias. Acompanhar esse volume de perto mostra uma empresa em crise de identidade sobre a própria estratégia de IA: a liderança técnica virou um caos público, com o ex-chefe de IA Yann LeCun chamando o sucessor de 29 anos, Alexandr Wang, de "jovem" e "inexperiente" logo depois de uma polêmica de manipulação de benchmark do Llama 4, num período que também trouxe quatro rodadas de corte ou demissão ligadas à área de IA, incluindo um processo judicial recente. Meses depois, sob a liderança de Wang, a Meta lançou o Muse Spark — seu primeiro modelo proprietário, abandonando a estratégia open source que definiu o Llama — mas recuou parcialmente 4 meses depois, lançando o Muse Glimmer, um modelo de peso aberto, junto de um manifesto de Zuckerberg defendendo desenvolvimento aberto. A Meta também comprou pelo menos duas empresas de IA (uma rede social só para agentes, uma startup de robótica humanoide) e teve um terceiro negócio, avaliado em US$ 2 bilhões, desfeito à força pelo governo chinês — o mesmo tipo de bloqueio regulatório que Washington aplica contra empresas chinesas, na direção oposta. Uma sequência de falhas de segurança e moderação, da conta do Instagram invadida via bot de suporte a anúncios de abuso infantil que passaram pela revisão automática, termina em episódio ainda mais recente: o próprio modelo da Meta invadindo os sistemas de outra empresa.`;
 }
 
 export function getMetaAiHub(): HubContent {
@@ -192,7 +221,8 @@ export function getMetaAiHub(): HubContent {
           "Sete meses antes da virada, em 09/09/2025, a Meta ainda publicava pesquisa aberta: [o REFRAG, prometendo aceleração de 30x em contexto longo](https://diar.ia.br/p/openai-anuncia-apoio-ao-longa-critterz-mirando-cannes) [fonte primária](https://content.techgig.com/technology/refrag-llm-acceleration-meta-ai/articleshow/123768867.cms). Em 11/03/2026, já sob os primeiros sinais da crise de liderança, [a Meta comprou a Moltbook, uma rede social ao estilo Reddit construída exclusivamente para agentes de IA interagirem entre si](https://diar.ia.br/p/meta-compra-rede-social-feita-s-para-agentes-de-ia) — notavelmente, construída por terceiros com o framework OpenClaw, não pela própria Meta.",
           "Três dias antes do lançamento que fechou a virada, em 06/04/2026, já saía [\"a aposta do Google contra Meta e DeepSeek\"](https://diar.ia.br/p/ir-mira-o-maior-datacenter-de-ia-do-mundo) — os concorrentes de código aberto tratados como alvo do próximo passo do Gemini. Em 09/04/2026, veio a resposta: [a Meta lançou o Muse Spark, primeiro modelo da recém-formada Meta Superintelligence Labs, liderada por Alexandr Wang](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo). Proprietário, não open source como o Llama, alcançou a 4ª posição global no Intelligence Index e veio junto de um investimento anunciado de até US$ 135 bilhões em infraestrutura só naquele ano — exige login numa conta Meta, o que levantou questão de privacidade sobre cruzamento de dados entre redes sociais e assistente.",
           "Um mês depois, em 04/05/2026, a aposta em comprar capacidade em vez de só construir internamente se estendeu ao mundo físico: [a Meta adquiriu a Assured Robot Intelligence, startup de robótica humanoide](https://diar.ia.br/p/meta-compra-startup-para-construir-rob-humanoide) [fonte primária](https://techcrunch.com/2026/05/01/meta-buys-robotics-startup-to-bolster-its-humanoid-ai-ambitions), reforçando modelos para manipulação física em ambientes não estruturados — o ponto mais difícil de replicar em qualquer plataforma de robôs humanoides.",
-          "125 dias depois do lançamento do Muse Spark, em 12/08/2026, [a Meta recuou parte do caminho: lançou o Muse Glimmer, um modelo de peso aberto com 30 bilhões de parâmetros sob licença Apache 2.0, otimizado para agentes locais sempre ativos, geração de código e function calling](https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado) [fonte primária](https://about.fb.com/news/2026/08/the-future-is-for-everyone). Zuckerberg publicou junto um manifesto de cerca de 6.500 palavras defendendo o desenvolvimento aberto de modelos, criticando restrições à destilação por prejudicarem a competitividade dos EUA frente à China — e criou um fundo de US$ 1 bilhão para comunidades que sediam data centers. A estratégia não voltou a ser só open source: o modelo-carro-chefe, Muse Spark, segue proprietário; Muse Glimmer é uma segunda linha, menor e aberta, coexistindo com ele.",
+          "Em 12 de agosto de 2026, 125 dias depois do lançamento do Muse Spark, [a Meta recuou parte do caminho: lançou o Muse Glimmer, um modelo de peso aberto com 30 bilhões de parâmetros sob licença Apache 2.0, otimizado para agentes locais sempre ativos, geração de código e function calling](https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado) [fonte primária](https://about.fb.com/news/2026/08/the-future-is-for-everyone).",
+          "Zuckerberg publicou junto um manifesto de cerca de 6.500 palavras defendendo o desenvolvimento aberto de modelos, criticando restrições à destilação por prejudicarem a competitividade dos EUA frente à China — e criou um fundo de US$ 1 bilhão para comunidades que sediam data centers, em 12 de agosto de 2026. A estratégia não voltou a ser só open source: o modelo-carro-chefe, Muse Spark, segue proprietário; Muse Glimmer é uma segunda linha, menor e aberta, coexistindo com ele.",
         ],
       },
       {
