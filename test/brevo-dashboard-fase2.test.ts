@@ -75,6 +75,10 @@ import {
   aggregateByDay,
   renderOpenRateByDaySection,
   DAY_OPENRATE_WINDOW_DAYS,
+  deriveDayOpenRateCohortBucket,
+  aggregateByDayByCohort,
+  DAY_OPENRATE_COHORT_BUCKETS,
+  DAY_OPENRATE_COHORT_LABELS,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -3582,6 +3586,122 @@ describe("#5490: aggregateByDay agrega open rate por dia-calendário BRT", () =>
     const { rows } = aggregateByDay([c], now);
     assert.equal(rows[0].label, "10/06");
   });
+
+  // ─── #5640 A4: confounders (bounce/spam/CTOR) por dia ───────────────────
+  test("#5640 A4: bounceRate/hardBounceRate/spamRate/ctor agregados por dia, denominador sent", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(90, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", {
+      sent: 200, delivered: 190, uniqueViews: 50, uniqueClicks: 10,
+      hardBounces: 4, softBounces: 2, complaints: 1,
+    });
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows[0].sent, 200);
+    assert.equal(rows[0].bounces, 6, "hardBounces + softBounces");
+    assert.equal(rows[0].hardBounces, 4);
+    assert.equal(rows[0].bounceRate, 3, "6/200 = 3%");
+    assert.equal(rows[0].hardBounceRate, 2, "4/200 = 2%");
+    assert.equal(rows[0].spam, 1);
+    assert.equal(rows[0].spamRate, 0.5, "1/200 = 0.5%");
+    assert.equal(rows[0].clicks, 10);
+    assert.equal(rows[0].ctor, 20, "clicks/opens = 10/50 = 20%");
+  });
+
+  test("#5640 A4: sent=0 (sem campanha válida somada) não gera NaN — todas as taxas caem pra 0", () => {
+    // #2254 pickStats já filtra campanha sem stats reais (sent=0) antes de
+    // chegar no acumulador — este teste garante que o branch sent>0 do
+    // agregado não é alcançável com sent=0 residual (guard defensivo).
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(91, "Clarice News 2605 d02-A", "2026-06-10T09:00:00Z", { sent: 0, delivered: 0, uniqueViews: 0 });
+    const { rows } = aggregateByDay([c], now);
+    assert.equal(rows.length, 0, "campanha sem stats reais (sent=0) é ignorada por pickStats, nem gera linha");
+  });
+
+  test("#5640 A4: dois dias somam confounders independentemente", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const day1 = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { sent: 100, hardBounces: 1, softBounces: 1, complaints: 0 });
+    const day2 = makeCampaign(93, "Clarice News 2605 d02-A", "2026-06-11T09:00:00Z", { sent: 100, hardBounces: 0, softBounces: 0, complaints: 2 });
+    const { rows } = aggregateByDay([day1, day2], now);
+    assert.equal(rows[0].bounces, 2);
+    assert.equal(rows[0].spam, 0);
+    assert.equal(rows[1].bounces, 0);
+    assert.equal(rows[1].spam, 2);
+  });
+});
+
+// ─── #5640 A2: deriveDayOpenRateCohortBucket / aggregateByDayByCohort ─────
+
+describe("#5640 A2: deriveDayOpenRateCohortBucket", () => {
+  test("reconhece os 4 baldes por substring, case-insensitive", () => {
+    assert.equal(deriveDayOpenRateCohortBucket("Lista assinantes-ativos"), "assinantes-ativos");
+    assert.equal(deriveDayOpenRateCohortBucket("EX-ASSINANTES jun/2026"), "ex-assinantes");
+    assert.equal(deriveDayOpenRateCohortBucket("leads-2026-06"), "leads");
+    assert.equal(deriveDayOpenRateCohortBucket("Clarice 2607-08 Novos (cadastro recente)"), "novos");
+  });
+
+  test("ex-assinantes NÃO cai em assinantes-ativos (ordem de match importa)", () => {
+    assert.equal(deriveDayOpenRateCohortBucket("Lista Ex-Assinantes"), "ex-assinantes");
+  });
+
+  test("listName sem sinal reconhecível retorna null (grupos de estratégia como 'engajados'/'reativacao'/'ramp-warm' não carregam cohort no nome)", () => {
+    assert.equal(deriveDayOpenRateCohortBucket("Clarice Retenção Jun/2026 engajados — Engajados (retenção)"), null);
+    assert.equal(deriveDayOpenRateCohortBucket("Clarice 2607-08 Ramp warm (1º envio seguro)"), null);
+    assert.equal(deriveDayOpenRateCohortBucket("List 42"), null);
+  });
+
+  test("listName ausente/undefined retorna null", () => {
+    assert.equal(deriveDayOpenRateCohortBucket(undefined), null);
+  });
+
+  test("DAY_OPENRATE_COHORT_BUCKETS tem os 4 baldes na ordem esperada, com rótulo pt-BR", () => {
+    assert.deepEqual(DAY_OPENRATE_COHORT_BUCKETS, ["assinantes-ativos", "ex-assinantes", "leads", "novos"]);
+    for (const b of DAY_OPENRATE_COHORT_BUCKETS) {
+      assert.ok(DAY_OPENRATE_COHORT_LABELS[b], `balde ${b} deve ter rótulo`);
+    }
+  });
+});
+
+describe("#5640 A2: aggregateByDayByCohort", () => {
+  test("particiona campanhas pelos 4 baldes, cada um agregado independentemente por dia", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const ativos = { ...makeCampaign(94, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 60 }), listName: "assinantes-ativos" };
+    const leads = { ...makeCampaign(95, "Clarice News 2605 d01-B", "2026-06-10T09:05:00Z", { delivered: 100, uniqueViews: 10 }), listName: "leads-2026-06" };
+    const { panels, unclassifiedCount } = aggregateByDayByCohort([ativos, leads], now);
+    assert.equal(panels.length, 4, "sempre os 4 baldes, mesmo os vazios");
+    const ativosPanel = panels.find((p) => p.bucket === "assinantes-ativos")!;
+    const leadsPanel = panels.find((p) => p.bucket === "leads")!;
+    const novosPanel = panels.find((p) => p.bucket === "novos")!;
+    assert.equal(ativosPanel.rows.length, 1);
+    assert.equal(ativosPanel.rows[0].openRate, 60);
+    assert.equal(leadsPanel.rows.length, 1);
+    assert.equal(leadsPanel.rows[0].openRate, 10);
+    assert.equal(novosPanel.rows.length, 0, "balde sem campanha continua presente, com rows vazio");
+    assert.equal(unclassifiedCount, 0);
+  });
+
+  test("campanha com listName não-reconhecido conta em unclassifiedCount, fora de todos os painéis", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = { ...makeCampaign(96, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 }), listName: "Clarice Retenção Jun/2026 engajados — Engajados (retenção)" };
+    const { panels, unclassifiedCount } = aggregateByDayByCohort([c], now);
+    assert.equal(unclassifiedCount, 1);
+    for (const p of panels) assert.equal(p.rows.length, 0, "campanha não classificada não entra em nenhum balde");
+  });
+
+  test("campanha sem stats reais (sent=0) não conta em unclassifiedCount mesmo sem listName reconhecível", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = { ...makeCampaign(97, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { sent: 0, delivered: 0, uniqueViews: 0 }), listName: "List 97" };
+    const { unclassifiedCount } = aggregateByDayByCohort([c], now);
+    assert.equal(unclassifiedCount, 0, "campanha sem stats reais nunca teria contribuído pro agregado de qualquer forma");
+  });
+
+  test("mesma janela (windowDays) é aplicada a todos os baldes — dia fora da janela some de todos", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const dentro = { ...makeCampaign(98, "Clarice News 2605 d06-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 }), listName: "assinantes-ativos" }; // 16 dias atrás
+    const fora = { ...makeCampaign(99, "Clarice News 2604 d01-A", "2026-05-01T09:00:00Z", { delivered: 100, uniqueViews: 40 }), listName: "assinantes-ativos" }; // ~56 dias atrás
+    const { panels } = aggregateByDayByCohort([dentro, fora], now, 30);
+    const ativosPanel = panels.find((p) => p.bucket === "assinantes-ativos")!;
+    assert.equal(ativosPanel.rows.length, 1, "só o dia dentro da janela de 30 dias deve aparecer");
+    assert.equal(ativosPanel.rows[0].day, "2026-06-10");
+  });
 });
 
 describe("#5490/#5610: renderOpenRateByDaySection", () => {
@@ -3853,6 +3973,54 @@ describe("#5490/#5610: renderOpenRateByDaySection", () => {
       const html = renderOpenRateByDaySection([]);
       assert.equal(html, "", "seção vazia continua retornando string vazia — sem script solto");
     });
+  });
+});
+
+describe("#5640 A2/A4: renderOpenRateByDaySection — cohortResult (small multiples + confounders)", () => {
+  test("cohortResult omitido (chamador antigo/2 args) não quebra e não renderiza a faixa 'Por coorte'", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(150, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /Por coorte/, "sem cohortResult, faixa A2 não aparece");
+  });
+
+  test("com cohortResult.panels, renderiza 'Por coorte' + 1 mini-gráfico por balde", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const ativos = { ...makeCampaign(151, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 60 }), listName: "assinantes-ativos" };
+    const { rows } = aggregateByDay([ativos], now);
+    const cohortResult = aggregateByDayByCohort([ativos], now);
+    const html = renderOpenRateByDaySection(rows, DAY_OPENRATE_WINDOW_DAYS, cohortResult);
+    assert.match(html, /Por coorte/);
+    assert.match(html, /Assinantes ativos/);
+    assert.match(html, /class="cohort-multiples-grid"/);
+  });
+
+  test("unclassifiedCount > 0 gera nota textual explicando quantas campanhas ficaram de fora", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const semCoorte = { ...makeCampaign(152, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 }), listName: "Clarice Retenção engajados — Engajados (retenção)" };
+    const { rows } = aggregateByDay([semCoorte], now);
+    const cohortResult = aggregateByDayByCohort([semCoorte], now);
+    const html = renderOpenRateByDaySection(rows, DAY_OPENRATE_WINDOW_DAYS, cohortResult);
+    assert.match(html, /1 campanha do período sem coorte identificável/);
+  });
+
+  test("sempre renderiza a faixa 'Confounders' (sparkline de bounce/spam/CTOR), independente de cohortResult", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(153, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40, hardBounces: 2, complaints: 1 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /Confounders/);
+    assert.match(html, /class="confounders-sparkline-chart"/);
+  });
+
+  test("nota de confounders nunca usa 'causou'/'por causa de' (guarda-corpo de honestidade A5)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(154, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /causou/i);
+    assert.doesNotMatch(html, /por causa de/i);
   });
 });
 
