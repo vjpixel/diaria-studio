@@ -861,8 +861,35 @@ ${monthlyAbcSectionsByDate}
   /* #5593: wrapper do gráfico SVG "Open rate por dia" — mesmo idioma visual
      de card do .table-wrap acima (fundo --card, borda --hair), formato faixa
      larga e baixa pedido no benchmark. */
-  .chart-wrap { background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 4px; margin-bottom: 12px; }
+  .chart-wrap { position: relative; background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 12px 4px; margin-bottom: 12px; }
   .day-openrate-chart { display: block; }
+  /* #5640 B1-B4: hit area de coluna (cursor de feedback) + tooltip
+     compartilhado (delivered+openRate juntos, texto sempre --ink — mesma
+     regra de contraste AA documentada em chart-svg.ts). position:absolute
+     dentro de .chart-wrap (agora position:relative acima), reposicionado
+     via JS a cada hover — nunca via CSS estático, porque o ponto de ancoragem
+     muda por coluna. */
+  .chart-hit-rect { cursor: crosshair; }
+  #day-openrate-tooltip {
+    position: absolute;
+    display: none;
+    z-index: 5;
+    top: 0;
+    left: 0;
+    max-width: 260px;
+    padding: 8px 10px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--ink);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    box-shadow: 0 2px 8px rgba(23,20,17,0.18);
+    pointer-events: none;
+    white-space: normal;
+  }
+  #day-openrate-tooltip strong { display: block; margin-bottom: 2px; }
+  #day-openrate-tooltip small { display: block; opacity: 0.75; margin-top: 2px; }
   td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
     font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
@@ -3531,6 +3558,14 @@ export function renderWeekdaySection(
  * Ordenado cronologicamente (mais antigo → mais recente, topo → base) —
  * é o que faz uma queda abrupta entre dois dias saltar aos olhos (#4705).
  * Exportado pra teste unitário.
+ *
+ * **#5640 (B1-B4):** o `<div class="chart-wrap">` ganha um tooltip HTML
+ * (`#day-openrate-tooltip`, posicionado via JS) e um `<script>` inline
+ * (mesmo padrão do paginador de `#envios-tbody` acima — IIFE ES5, sem
+ * dependência externa, feature-detect early return) que liga os hit rects
+ * e o crosshair emitidos por `renderOpenRateChartSvg` (chart-svg.ts). B5-B9
+ * (sticky/Esc, teclado/leitor de tela, gridlines verticais, affordance,
+ * motion) ficam fora desta fatia.
  */
 export function renderOpenRateByDaySection(
   rows: DayOpenRateSummary[],
@@ -3558,8 +3593,108 @@ export function renderOpenRateByDaySection(
   ${renderMixedAudienceNote()}
   <p class="section-note"><small>Aberturas (uniqueViews) são MPP-inclusivas — Apple Mail conta como aberto mesmo sem leitura humana; leia a curva como tendência, não nível absoluto.</small></p>
   ${windowNote}
-  <div class="chart-wrap">${renderOpenRateChartSvg(rows)}</div>
+  <div class="chart-wrap">${renderOpenRateChartSvg(rows)}<div id="day-openrate-tooltip" role="status" aria-hidden="true"></div></div>
   ${legendNote}
+<script>
+(function() {
+  var svg = document.getElementById('day-openrate-svg');
+  var wrap = svg ? svg.closest('.chart-wrap') : null;
+  var tooltip = document.getElementById('day-openrate-tooltip');
+  var crosshair = svg ? document.getElementById('day-openrate-crosshair') : null;
+  if (!svg || !wrap || !tooltip || !crosshair) return;
+
+  var hitRects = Array.prototype.slice.call(svg.querySelectorAll('.chart-hit-rect'));
+  if (!hitRects.length) return;
+
+  var activeIdx = null;
+
+  // #5640 B3: destaque do ponto ativo — aumenta o raio dos 2 marcadores
+  // (delivered + openRate) do dia sob o ponteiro; decisão de implementação
+  // (a issue deixava em aberto): NÃO reduz a opacidade do resto da série —
+  // preserva a leitura de tendência do gráfico inteiro enquanto o leitor
+  // navega, e evita reabrir a discussão de contraste AA documentada acima.
+  function setMarkerHighlight(idx, active) {
+    var markers = svg.querySelectorAll('.chart-marker[data-day-index="' + idx + '"]');
+    for (var i = 0; i < markers.length; i++) {
+      var m = markers[i];
+      var baseR = parseFloat(m.getAttribute('data-r')) || 3;
+      m.setAttribute('r', String(active ? baseR + 3 : baseR));
+    }
+  }
+
+  function buildTooltipHtml(rect) {
+    var dayLabel = rect.getAttribute('data-daylabel') || '';
+    var html = '<strong>' + dayLabel + '</strong>';
+    if (rect.getAttribute('data-hasdata') !== '1') {
+      html += 'Sem envio neste dia.';
+      return html;
+    }
+    var count = rect.getAttribute('data-count') || '0';
+    var delivered = Number(rect.getAttribute('data-delivered') || 0);
+    var opens = Number(rect.getAttribute('data-opens') || 0);
+    var openRate = rect.getAttribute('data-openrate') || '0';
+    html += count + (count === '1' ? ' campanha' : ' campanhas')
+      + ' · Delivered ' + delivered.toLocaleString('pt-BR')
+      + ' · Opens ' + opens.toLocaleString('pt-BR')
+      + ' · Open rate ' + openRate + '%';
+    if (rect.getAttribute('data-smallsample') === '1') {
+      html += '<small>Amostra pequena — menos de 2 campanhas enviadas neste dia.</small>';
+    }
+    if (rect.getAttribute('data-immature') === '1') {
+      html += '<small>Dia ainda dentro da janela de maturação (menos de 48h) — o open rate pode subir.</small>';
+    }
+    return html;
+  }
+
+  // #5640 B4: flip de posição perto das bordas — nunca deixa o tooltip
+  // escapar do card (clamp horizontal contra a largura de .chart-wrap) nem
+  // cobrir o ponto que descreve (por default fica ACIMA da coluna inteira;
+  // se não houver espaço no topo do card, desce pra ABAIXO da coluna).
+  function positionTooltip(rect) {
+    var wrapRect = wrap.getBoundingClientRect();
+    var rectBox = rect.getBoundingClientRect();
+    var centerX = rectBox.left + rectBox.width / 2 - wrapRect.left;
+    var tw = tooltip.offsetWidth;
+    var th = tooltip.offsetHeight;
+    var left = centerX - tw / 2;
+    var maxLeft = wrap.clientWidth - tw - 4;
+    if (left < 4) left = 4;
+    if (left > maxLeft) left = Math.max(4, maxLeft);
+    var top = rectBox.top - wrapRect.top - th - 10;
+    if (top < 4) top = rectBox.bottom - wrapRect.top + 10;
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+  }
+
+  function activate(idx) {
+    if (activeIdx === idx) return;
+    if (activeIdx !== null) setMarkerHighlight(activeIdx, false);
+    activeIdx = idx;
+    setMarkerHighlight(idx, true);
+    var rect = hitRects[idx];
+    var x = rect.getAttribute('data-x');
+    crosshair.setAttribute('x1', x);
+    crosshair.setAttribute('x2', x);
+    crosshair.style.opacity = '1';
+    tooltip.innerHTML = buildTooltipHtml(rect);
+    tooltip.style.display = 'block';
+    positionTooltip(rect);
+  }
+
+  function deactivate() {
+    if (activeIdx !== null) setMarkerHighlight(activeIdx, false);
+    activeIdx = null;
+    crosshair.style.opacity = '0';
+    tooltip.style.display = 'none';
+  }
+
+  hitRects.forEach(function(rect, idx) {
+    rect.addEventListener('mouseenter', function() { activate(idx); });
+    rect.addEventListener('mousemove', function() { activate(idx); });
+  });
+  svg.addEventListener('mouseleave', deactivate);
+})();
+</script>
 </section>`;
 }
 

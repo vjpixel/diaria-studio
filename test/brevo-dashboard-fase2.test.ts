@@ -3673,8 +3673,15 @@ describe("#5490/#5610: renderOpenRateByDaySection", () => {
     const b = makeCampaign(83, "Clarice News 2605 d01-B", "2026-06-10T09:10:00Z", { delivered: 100, uniqueViews: 30 });
     const { rows } = aggregateByDay([a, b], now); // count=2 => smallSample=false; 16 dias atrás => immature=false
     const html = renderOpenRateByDaySection(rows);
-    assert.doesNotMatch(html, /amostra pequena/i);
-    assert.doesNotMatch(html, /maturação/i);
+    // #5640: o <script> inline do tooltip (B1) carrega o vocabulário
+    // "amostra pequena"/"maturação" ESTATICAMENTE (é código JS reusável pra
+    // qualquer dia que o leitor passar o mouse, não SSR condicional) — a
+    // legenda textual (`legendNote`, o que este teste sempre testou) segue
+    // condicional e vem ANTES do `<script>` no markup; escopar a asserção a
+    // essa fatia evita falso-positivo pelo script sempre presente.
+    const beforeScript = html.slice(0, html.indexOf("<script>"));
+    assert.doesNotMatch(beforeScript, /amostra pequena/i);
+    assert.doesNotMatch(beforeScript, /maturação/i);
   });
 
   test("#5610 item 5: dia imaturo gera legenda textual sobre a janela de maturação de 48h", () => {
@@ -3694,6 +3701,67 @@ describe("#5490/#5610: renderOpenRateByDaySection", () => {
     const html = renderOpenRateByDaySection(rows);
     const svgIdx = html.indexOf("<svg");
     assert.ok(svgIdx > -1, "deve conter um <svg> inline");
+  });
+
+  // #5640 B1-B4: crosshair + tooltip compartilhado + hit area + posicionamento.
+  describe("#5640: interatividade do gráfico (crosshair + tooltip + hit area)", () => {
+    test("inclui o div do tooltip DENTRO de .chart-wrap (ancoragem position:relative)", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(91, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const wrapStart = html.indexOf('<div class="chart-wrap">');
+      const wrapEnd = html.indexOf("</div>", html.indexOf("</svg>"));
+      assert.ok(wrapStart > -1 && wrapEnd > wrapStart, "chart-wrap deve existir e envolver o svg");
+      const wrapInner = html.slice(wrapStart, wrapEnd);
+      assert.match(wrapInner, /<div id="day-openrate-tooltip"/, "tooltip deve ser filho de .chart-wrap, não solto na seção");
+    });
+
+    test("tooltip nasce com aria-hidden (mirror aria-live é B6, fora desta fatia) e sem conteúdo estático", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      assert.match(html, /<div id="day-openrate-tooltip" role="status" aria-hidden="true"><\/div>/, "tooltip nasce vazio — conteúdo é injetado via JS no hover");
+    });
+
+    test("inclui exatamente 1 <script> inline (sem <script src=...> — CSP self/unsafe-inline)", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(93, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const scriptTags = [...html.matchAll(/<script[^>]*>/g)];
+      assert.equal(scriptTags.length, 1, "1 único <script> pra este widget");
+      assert.doesNotMatch(scriptTags[0][0], /src=/, "sem script externo — CDN quebraria o CSP self/unsafe-inline do Studio");
+    });
+
+    test("script referencia os ids/classes emitidos por renderOpenRateChartSvg (svg, crosshair, hit rects, marcadores)", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(94, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const scriptBody = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+      assert.match(scriptBody, /getElementById\('day-openrate-svg'\)/);
+      assert.match(scriptBody, /getElementById\('day-openrate-crosshair'\)/);
+      assert.match(scriptBody, /getElementById\('day-openrate-tooltip'\)/);
+      assert.match(scriptBody, /querySelectorAll\('\.chart-hit-rect'\)/);
+      assert.match(scriptBody, /chart-marker\[data-day-index/);
+    });
+
+    test("script é um IIFE com early-return defensivo (mesmo padrão do paginador de Envios, #2622) — não lança se os elementos não existirem", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(95, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const scriptBody = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+      assert.match(scriptBody, /\(function\(\)\s*\{/, "IIFE");
+      assert.match(scriptBody, /if \(!svg \|\| !wrap \|\| !tooltip \|\| !crosshair\) return;/, "early-return se algum elemento faltar");
+    });
+
+    test("rows=[] (seção não renderiza) não deixa script/tooltip órfão", () => {
+      const html = renderOpenRateByDaySection([]);
+      assert.equal(html, "", "seção vazia continua retornando string vazia — sem script solto");
+    });
   });
 });
 
