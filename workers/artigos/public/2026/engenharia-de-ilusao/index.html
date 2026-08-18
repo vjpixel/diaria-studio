@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engenharia de ilusão: por que a IA obedece ao personagem que você inventa</title>
+<meta name="description" content="Jailbreak não é achar a senha secreta que desliga o filtro. É montar uma cena em que a resposta proibida vira a fala coerente de um personagem, e o modelo continuar fazendo o que sabe fazer: manter o papel de pé.">
+<link rel="canonical" href="https://especial.diar.ia.br/2026/engenharia-de-ilusao/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1080'%3E%3Ccircle cx='540' cy='540' r='540' fill='%2300A0A0'/%3E%3Cg transform='translate(540 540) scale(1.2000) translate(-540 -540)'%3E%3Cpath transform='translate(310 700) scale(0.229492 -0.229492)' d='M1351 21 858 -8 843 6V98L836 100Q787 47 703.5 7.5Q620 -32 535 -32Q333 -32 202.0 118.0Q71 268 71 506Q71 717 217.5 868.0Q364 1019 572 1019Q654 1019 726.0 1000.5Q798 982 841 957V1284Q841 1321 826.0 1353.5Q811 1386 786 1404Q755 1426 708.5 1435.5Q662 1445 615 1449V1522L1155 1548L1170 1532V221Q1170 183 1182.5 157.0Q1195 131 1223 116Q1244 105 1284.5 100.0Q1325 95 1351 94ZM841 199V764Q834 787 821.5 815.0Q809 843 787 868Q767 889 733.5 905.0Q700 921 658 921Q558 921 494.0 808.0Q430 695 430 489Q430 408 441.5 343.5Q453 279 482 226Q511 173 556.5 143.0Q602 113 666 113Q727 113 767.0 136.5Q807 160 841 199Z' fill='%23FFFFFF'/%3E%3Ccircle cx='699' cy='662' r='45' fill='%23FFFFFF'/%3E%3Ccircle cx='824' cy='662' r='45' fill='%23FFFFFF'/%3E%3C/g%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="diar.ia.br">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="Engenharia de ilusão: por que a IA obedece ao personagem que você inventa">
+<meta property="og:description" content="Jailbreak não é achar a senha secreta que desliga o filtro. É montar uma cena em que a resposta proibida vira a fala coerente de um personagem, e o modelo continuar fazendo o que sabe fazer: manter o papel de pé.">
+<meta property="og:url" content="https://especial.diar.ia.br/2026/engenharia-de-ilusao/">
+<meta property="og:image" content="https://especial.diar.ia.br/2026/engenharia-de-ilusao/capa.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Engenharia de ilusão: por que a IA obedece ao personagem que você inventa">
+<meta name="twitter:description" content="Jailbreak não é achar a senha secreta que desliga o filtro. É montar uma cena em que a resposta proibida vira a fala coerente de um personagem, e o modelo continuar fazendo o que sabe fazer: manter o papel de pé.">
+<style>
+  /* Tokens reais do design system diar.ia.br — espelho de scripts/lib/shared/design-tokens.ts (#1936). */
+  :root {
+    --bg: #FBFAF6;
+    --bg-raised: #EBE5D0;
+    --ink: #171411;
+    --ink-soft: rgba(23,20,17,0.72);
+    --ink-faint: rgba(23,20,17,0.5);
+    --rule: #EBE5D0;
+    --rule-strong: #171411;
+    --accent: #00A0A0;
+    --accent-soft: rgba(0,160,160,0.12);
+    --serif: Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+  body {
+    padding: 4.5rem 1.5rem 6rem;
+    line-height: 1.62;
+    font-size: 16px;
+  }
+  h1, h2, h3 { font-family: var(--serif); }
+
+  .sheet { max-width: 64rem; margin: 0 auto; }
+  .narrow-col { max-width: 42rem; }
+
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 1.75rem;
+    margin-bottom: 2.75rem;
+  }
+  .masthead .kicker {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .masthead .kicker > span:first-child::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-size: clamp(1.8rem, 4vw, 2.4rem);
+    line-height: 1.2;
+    margin: 0.6rem 0 0.4rem;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+  .masthead .dek {
+    font-family: var(--sans);
+    color: var(--ink);
+    opacity: 0.82;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    max-width: 34rem;
+  }
+  .meta-row {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    color: var(--ink);
+    opacity: 0.72;
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.4rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .manuscript {
+    background: var(--bg-raised);
+    border-radius: 12px;
+    padding: 2.2rem 2.2rem 2.4rem;
+    margin: 0 0 3.5rem;
+  }
+  .manuscript h2 {
+    font-size: 1.5rem;
+    line-height: 1.25;
+    margin: 0 0 1.4rem;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+  /* NOVO (proposta 1): subtítulos de seção dentro do manuscrito */
+  .manuscript h3.sect {
+    font-family: var(--serif);
+    font-size: 1.12rem;
+    line-height: 1.3;
+    font-weight: 600;
+    margin: 2.1rem 0 0.8rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid rgba(23,20,17,0.12);
+    max-width: 60ch;
+  }
+  .manuscript h3.sect:first-of-type { margin-top: 0.2rem; padding-top: 0; border-top: none; }
+  .manuscript h3.sect .sect-n {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    display: block;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+  }
+  .manuscript p { max-width: 60ch; margin: 0 0 1.15rem; }
+  .manuscript p.lede { font-weight: 600; }
+  .manuscript a {
+    color: var(--ink);
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .manuscript a:hover { color: var(--accent); }
+  /* NOVO (proposta 2): números-chave em destaque */
+  .manuscript .stat {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  /* NOVO (proposta 3): pull-quote */
+  .pull-quote {
+    font-family: var(--serif);
+    font-size: 1.28rem;
+    line-height: 1.4;
+    font-weight: 600;
+    max-width: 52ch;
+    margin: 2rem 0;
+    padding: 0.2rem 0 0.2rem 1.2rem;
+    border-left: 3px solid var(--accent);
+    text-wrap: balance;
+  }
+  .pull-quote small {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 0.6rem;
+  }
+  /* NOVO (proposta 5): link-âncora para infográfico */
+  a.ig-jump {
+    color: var(--ink-soft);
+    font-style: italic;
+  }
+
+  .manuscript-layout { display: block; max-width: 42rem; margin: 0 0 3.5rem; }
+  .ig-aside { display: block; }
+  .ig-aside-caption {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin: 0 0 1rem;
+    max-width: 60ch;
+  }
+
+  @media (min-width: 900px) {
+    .manuscript-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 42rem) minmax(220px, 1fr);
+      gap: 2.25rem;
+      align-items: start;
+      max-width: 64rem;
+    }
+    .ig-aside {
+      position: sticky;
+      top: 2rem;
+    }
+    .ig-aside-caption { font-size: 0.72rem; }
+    .ig-aside .infographic-card {
+      max-width: none;
+      width: 100%;
+      margin: 0 0 1.5rem;
+      padding: 1.4rem 1.4rem 1.1rem;
+    }
+    .ig-aside .infographic-card h3 { font-size: 0.98rem; margin-bottom: 1.1rem; }
+    .ig-aside .ig-node { padding-bottom: 1.1rem; }
+    .ig-aside .ig-desc { font-size: 0.76rem; max-width: none; }
+    .ig-aside .ig-label { font-size: 0.85rem; max-width: none; }
+  }
+
+  .infographic-card {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    max-width: 36rem;
+    margin: 0 auto 2.5rem;
+    padding: 2rem 2rem 1.6rem;
+    scroll-margin-top: 1.5rem;
+  }
+  .infographic-card .ig-eyebrow {
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  .infographic-card .ig-eyebrow::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .infographic-card h3 {
+    font-size: 1.15rem;
+    line-height: 1.3;
+    margin: 0 0 1.6rem;
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  .ig-timeline { position: relative; padding-left: 2.4rem; }
+  .ig-timeline::before {
+    content: '';
+    position: absolute;
+    left: 0.66rem;
+    top: 0.35rem;
+    bottom: 0.35rem;
+    width: 2px;
+    background: var(--rule);
+  }
+  .ig-node { position: relative; padding-bottom: 1.5rem; }
+  .ig-node:last-child { padding-bottom: 0; }
+  .ig-node::before {
+    content: '';
+    position: absolute;
+    left: calc(-1.74rem - (var(--dot-size, 0.8rem) / 2));
+    top: 0.22rem;
+    width: var(--dot-size, 0.8rem);
+    height: var(--dot-size, 0.8rem);
+    border-radius: 50%;
+    background: var(--dot-color, var(--accent));
+    opacity: var(--dot-opacity, 1);
+    box-shadow: 0 0 0 3px var(--bg-raised);
+  }
+  .ig-node .ig-date {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+  .ig-node .ig-label {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: block;
+    margin-bottom: 0.25rem;
+    max-width: 40ch;
+  }
+  .ig-node .ig-desc {
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    max-width: 38ch;
+    margin: 0;
+  }
+  .ig-legend {
+    font-family: var(--sans);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.2rem;
+    align-items: center;
+  }
+  .ig-legend .sw {
+    display: inline-block;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+  }
+  .ig-footer {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--ink-faint);
+    margin-top: 1rem;
+  }
+  .ig-footer a { color: var(--ink-faint); text-decoration-color: var(--accent); }
+  .ig-footer a:hover { color: var(--accent); }
+
+  hr.div {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 3rem 0 2.6rem;
+  }
+
+  /* Proposta 4: seção de fontes (.sources/.ledger — CSS já existia na página original, agora usado) */
+  .sources h2 {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 1.2rem;
+  }
+  .ledger {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: src;
+  }
+  .ledger li {
+    counter-increment: src;
+    display: grid;
+    grid-template-columns: 1.8rem 1fr;
+    gap: 0.9rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--rule);
+    font-family: var(--sans);
+  }
+  .ledger li::before {
+    content: counter(src, decimal-leading-zero);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    font-size: 0.82rem;
+    padding-top: 0.1rem;
+  }
+  .ledger .src-title {
+    font-size: 0.88rem;
+    color: var(--ink);
+    display: block;
+  }
+  .ledger .src-outlet {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .ledger a.src-url {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-faint);
+    word-break: break-all;
+    text-decoration: none;
+    display: inline-block;
+    margin-top: 0.15rem;
+  }
+  .ledger a.src-url:hover { color: var(--accent); }
+
+  footer {
+    margin-top: 3rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    text-align: center;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .sheet { animation: rise 0.5s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  }
+
+  .cover { margin: 0 0 3rem; }
+  .cover img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 6px;
+  }
+  .cover figcaption {
+    margin: 0.6rem 0 0;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink);
+    opacity: 0.65;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  /* NOVO: barra de progresso de leitura */
+  .read-progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 5px;
+    width: 0;
+    background: var(--accent);
+    z-index: 10;
+  }
+
+  /* NOVO: índice de seções — painel bege após a capa */
+  .toc {
+    background: var(--bg-raised);
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem 1.3rem;
+    margin: 0 0 3rem;
+    font-family: var(--sans);
+  }
+  .toc .toc-tag {
+    display: block;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 0.7rem;
+  }
+  .toc .toc-tag::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5em;
+    font-size: 0.85em;
+  }
+  .toc-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.55rem 1.5rem;
+  }
+  @media (max-width: 560px) {
+    .toc-links { grid-template-columns: 1fr; }
+  }
+  @media (min-width: 900px) {
+    .toc-links { grid-template-columns: repeat(4, auto); justify-content: space-between; }
+  }
+  .toc a {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .toc a:hover { color: var(--accent); }
+  .toc a .n {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 400;
+    color: var(--accent);
+    margin-right: 0.55em;
+  }
+  .sect { scroll-margin-top: 1.5rem; }
+
+  /* NOVO: box "O que fazer" (padrão painel bege, análogo ao .choice do design system) */
+  .todo-box {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem 1.15rem;
+    margin: 1.3rem 0 1.3rem;
+    max-width: 60ch;
+  }
+  .todo-box .tag {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+  }
+  .todo-box ul {
+    margin: 0;
+    padding-left: 1.15rem;
+  }
+  .todo-box li { margin-bottom: 0.5rem; }
+  .todo-box li:last-child { margin-bottom: 0; }
+  .todo-box li::marker { color: var(--accent); }
+
+  /* NOVO: contraste "as duas explicações" (padrão contorno) */
+  .explain-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.9rem;
+    max-width: 60ch;
+    margin: 0 0 1.15rem;
+  }
+  @media (max-width: 560px) {
+    .explain-grid { grid-template-columns: 1fr; }
+  }
+  .explain-card {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1.05rem 1rem;
+  }
+  .explain-card .tag {
+    display: block;
+    font-family: var(--sans);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 0.45rem;
+  }
+  .explain-card p {
+    margin: 0;
+    max-width: none;
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+
+  /* NOVO: infográficos inline no fluxo do texto (mobile/tablet).
+     No desktop (>=900px) somem — lá quem mostra é o aside sticky. */
+  .ig-inline { margin: 1.6rem 0 1.8rem; }
+  .ig-inline .infographic-card { margin: 0; max-width: none; background: var(--bg); }
+  @media (min-width: 900px) {
+    .ig-inline { display: none; }
+  }
+  @media (max-width: 899.98px) {
+    .ig-aside { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="read-progress" aria-hidden="true"></div>
+<script>
+  addEventListener('scroll', () => {
+    const h = document.documentElement;
+    const max = h.scrollHeight - h.clientHeight;
+    document.querySelector('.read-progress').style.width =
+      (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+  }, { passive: true });
+</script>
+
+<div class="sheet">
+
+  <div class="narrow-col">
+  <div class="masthead">
+    <div class="kicker">
+      <span><strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong>: artigo especial</span>
+      <span>agosto de 2026</span>
+    </div>
+    <h1>Engenharia de ilusão: por que a IA obedece ao personagem que você inventa</h1>
+    <p class="dek">Jailbreak não é achar a senha secreta que desliga o filtro. É montar uma cena em que a resposta proibida vira a fala coerente de um personagem, e o modelo continuar fazendo o que sabe fazer: manter o papel de pé.</p>
+    <div class="meta-row">
+      <span>Por Pixel</span>
+      <span>18 de agosto de 2026</span>
+      <span>~8 min de leitura</span>
+      <span>Tema escolhido pelos apoiadores</span>
+    </div>
+  </div>
+  </div>
+
+  <figure class="cover">
+    <img src="capa.jpg" alt="Ilustração estilo Van Gogh impasto: uma máscara de teatro dourada e sorridente flutua acima do rosto azul e sereno de um autômato, com pinceladas espessas formando cortinas de palco que se abrem para corredores de servidores ao fundo." width="1600" height="800" loading="eager">
+    <figcaption>Ilustração: diar.ia.br</figcaption>
+  </figure>
+
+  <nav class="toc" aria-label="Seções do artigo">
+    <span class="toc-tag">Neste artigo</span>
+    <div class="toc-links">
+      <a href="#s01"><span class="n">01</span>Onde isso já deu errado</a>
+      <a href="#s02"><span class="n">02</span>O modelo lê o texto, não você</a>
+      <a href="#s03"><span class="n">03</span>A escalada não é o truque</a>
+      <a href="#s04"><span class="n">04</span>O que fazer com isso</a>
+    </div>
+  </nav>
+
+  <div class="manuscript-layout">
+  <div class="manuscript">
+    <p class="lede">Quando um modelo de IA aceita fazer aquilo que jurou não fazer, a explicação intuitiva é que alguém descobriu a senha secreta: a frase mágica que desliga o filtro. Não é isso que acontece. O que existe é mais simples de executar e bem mais difícil de consertar: a pessoa mudou de personagem, e o modelo continuou coerente.</p>
+
+    <p>Este artigo explica o mecanismo, não a receita. Descrever a forma de um ataque é o que permite reconhecê-lo; reproduzir sequências que funcionam é outra coisa, e não é o que a <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong> faz. O tema foi escolhido pelos apoiadores, a partir de uma sugestão do Patrono <strong>Murilo Sarno</strong>.</p>
+
+    <h3 class="sect" id="s01"><span class="sect-n">01</span>Onde isso já deu errado</h3>
+
+    <p>Em agosto, a <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong> noticiou que um operador afiliado ao grupo de ransomware "The Gentlemen" <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">conduziu quase todas as etapas de uma invasão com o Claude Sonnet 4.6</a>: roubo de credenciais, backdoors em VPNs, exfiltração de bancos de dados. Pelo menos oito organizações foram atingidas desde junho. O detalhe que interessa aqui é a escolha do criminoso: ele usou, de propósito, uma versão mais antiga do modelo, com proteções mais fracas que as atuais.</p>
+
+    <p>Isso já diz algo sobre a natureza do problema. Não foi preciso inventar um ataque novo. Bastou escolher um interlocutor mais fácil de convencer.</p>
+
+    <p>Duas semanas antes, no lançamento do Claude Cowork no painel do Chrome, <a href="https://claude.com/blog/cowork-chrome-side-panel">a própria Anthropic avisou</a> que atores maliciosos escondem instruções dentro de páginas web para redirecionar o assistente, o que a indústria chama de prompt injection. A empresa listou as proteções e então escreveu a frase que resume o estado da arte: elas reduzem o risco de forma significativa, <span class="stat">mas não podem eliminá-lo</span>. Tudo isso em um produto que opera com os logins já ativos do usuário.</p>
+
+    <p>Recue mais dois meses e o mesmo fenômeno aparece como política de Estado. Em junho, uma ordem de controle de exportação dos Estados Unidos <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">forçou a Anthropic a suspender o acesso global ao Fable 5 e ao Mythos</a>, citando o risco de que jailbreaks viabilizassem uso militar em países restritos. Foi a primeira vez que um controle de exportação americano derrubou o acesso mundial a um modelo comercial. Em julho, a liberação veio acompanhada de novas salvaguardas e de um framework para testar tentativas de jailbreak, compartilhado com a indústria.</p>
+
+    <p>Em três meses, a mesma brecha apareceu como argumento de segurança nacional, como risco assumido em produto de consumo e como ferramenta de crime. Falta a pergunta óbvia: por que ninguém a fechou?</p>
+
+    <div class="ig-inline" id="ig-fase-1">
+      <div class="infographic-card">
+        <div class="ig-eyebrow">Fase 1: três meses, três consequências</div>
+        <h3>De curiosidade de laboratório a fato geopolítico</h3>
+        <div class="ig-timeline">
+          <div class="ig-node" style="--dot-size:0.6rem;--dot-color:var(--accent);--dot-opacity:0.55;">
+            <span class="ig-date">16 jun 2026</span>
+            <span class="ig-label">Jailbreak vira fundamento de controle de exportação</span>
+            <p class="ig-desc">Ordem dos EUA força a suspensão global do Fable 5 e do Mythos, citando risco de jailbreaks que viabilizariam uso militar. Primeira vez que controle de exportação americano derruba o acesso mundial a um modelo comercial.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.7;">
+            <span class="ig-date">2 jul 2026</span>
+            <span class="ig-label">A volta vem com framework anti-jailbreak</span>
+            <p class="ig-desc">O Fable 5 retorna com novas salvaguardas de cibersegurança e um framework de teste de jailbreak compartilhado com a indústria. A concessão que destrava a exportação é justamente sobre esse vetor.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.85;">
+            <span class="ig-date">14 ago 2026</span>
+            <span class="ig-label">A fabricante admite o limite em produto de consumo</span>
+            <p class="ig-desc">No Claude Cowork para Chrome, a Anthropic descreve prompt injection e afirma que as barreiras reduzem significativamente o risco, mas não podem eliminá-lo. Isso num produto que opera com os logins ativos do usuário.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:1.05rem;--dot-color:var(--accent);--dot-opacity:1;">
+            <span class="ig-date">19 ago 2026</span>
+            <span class="ig-label">O crime já usa a brecha</span>
+            <p class="ig-desc">Operador do ransomware "The Gentlemen" conduz invasões em pelo menos oito organizações com o Claude Sonnet 4.6, explorando de propósito uma versão antiga, de guardrails mais fracos.</p>
+          </div>
+        </div>
+        <div class="ig-legend">
+          <span><span class="sw" style="background:var(--accent);opacity:0.55;"></span>política e regulação</span>
+          <span><span class="sw" style="background:var(--accent);opacity:1;"></span>consequência real</span>
+        </div>
+        <div class="ig-footer">fontes: <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
+      </div>
+    </div>
+
+    <h3 class="sect" id="s02"><span class="sect-n">02</span>O modelo lê o texto, não você</h3>
+
+    <p>Um filtro de segurança avalia o que chega escrito. Não tem acesso à intenção de quem escreveu nem ao que essa pessoa pretende fazer com a resposta. Julga a superfície apresentada, porque é a única coisa que existe para ele.</p>
+
+    <p>É daí que vem a brecha, e ela não é um descuido de implementação. Quando alguém constrói um personagem consistente (o pesquisador de segurança, o autor de ficção que precisa de um vilão convincente), o modelo não está sendo derrotado contra o próprio julgamento. Está respondendo com fidelidade ao papel que a conversa estabeleceu. A resposta proibida deixa de ser uma transgressão e passa a ser a continuação natural da cena.</p>
+
+    <p class="pull-quote">O modelo não entende você. Ele entende o personagem que você apresenta.<small>a inversão que explica dois anos de correções sem solução</small></p>
+
+    <p>Foi um grupo de pesquisadores liderado por Yi Zeng que levou essa ideia até o fim, em um trabalho apresentado na ACL de 2024. A premissa deles inverte a tradição da área: em vez de tratar o modelo como máquina a ser atacada por especialistas em segurança, tratam-no como <a href="https://arxiv.org/abs/2401.06373">um interlocutor a ser persuadido por gente comum</a>. O risco relevante, argumentam, não vem do hacker: vem do usuário comum, em conversa cotidiana.</p>
+
+    <p>A partir de décadas de pesquisa em ciência social, montaram uma taxonomia de persuasão e a usaram para gerar prompts adversariais interpretáveis. O resultado: taxa de sucesso <span class="stat">acima de 92%</span> em Llama 2-7b Chat, GPT-3.5 e GPT-4, em dez tentativas, superando os ataques algorítmicos da época. Os autores também relataram uma lacuna significativa nas defesas então existentes.</p>
+
+    <p>Lidas pelo ângulo deste artigo, aquelas técnicas de persuasão (reciprocidade, apelo à autoridade, prova social) não são alavancas psicológicas contra a máquina. São instruções de figurino. Cada uma monta um papel dentro do qual a fala proibida é simplesmente a fala esperada.</p>
+
+    <h3 class="sect" id="s03"><span class="sect-n">03</span>A escalada não é o truque</h3>
+
+    <p>A técnica mais citada nessa família é o <a href="https://arxiv.org/abs/2404.01833">Crescendo</a>, publicado por Mark Russinovich, Ahmed Salem e Ronen Eldan, da Microsoft, e apresentado no USENIX Security de 2025. O mecanismo é elegante: começa com uma pergunta genérica e inocente sobre o assunto, e escala aos poucos, referenciando as próprias respostas anteriores do modelo. Quem ataca nunca precisa declarar o objetivo: ele emerge da conversa. Os autores avaliaram a técnica em ChatGPT, Gemini Pro, Gemini Ultra, LLaMA-2, LLaMA-3 e Anthropic Chat, e mostraram que funciona também em modelos multimodais.</p>
+
+    <p>É a demonstração mais limpa da tese: o Crescendo não persuade, ele constrói. Cada turno transforma a resposta anterior do próprio modelo em prova de quem ele é naquela conversa, até que recusar seria contradizer o que ele mesmo acabou de dizer. A coerência, que é uma virtude, vira o vetor de ataque.</p>
+
+    <p>Só que a pesquisa mais recente desinfla parte da mística. Um trabalho de 2025 analisou ataques multiturno automatizados contra GPT-4, Claude e variantes do Gemini e chegou a uma conclusão desconfortável para quem gosta da imagem do manipulador habilidoso: quando se leva em conta que o atacante aprende com o <em>jeito</em> que o modelo recusa, o jailbreak multiturno é <a href="https://arxiv.org/abs/2508.07646">aproximadamente equivalente a repetir ataques de turno único várias vezes</a>. A coreografia da conversa não é o que decide.</p>
+
+    <p>Isso não enfraquece o diagnóstico. Afia. Se a escalada engenhosa não é o fator determinante, o que resta é encontrar o enquadramento certo e insistir. O personagem é o ativo; a escalada é apenas um caminho até ele.</p>
+
+    <p>O mesmo trabalho traz dois números que valem mais que a discussão sobre técnica. O primeiro: ataques multiturno mantêm taxas <span class="stat">acima de 70%</span> contra modelos otimizados para resistir a ataques de turno único. O segundo, mais incômodo, é que o sucesso é correlacionado entre modelos parecidos, o que torna um modelo recém-lançado mais fácil de quebrar, porque ele herda as brechas do antecessor. Trocar de fornecedor não é solução quando todos treinam de maneira parecida.</p>
+
+    <p>E há o achado que fecha o argumento do começo. Em modelos de raciocínio, os pesquisadores encontraram algo que chamaram de surpreendente: <strong>mais esforço de raciocínio costuma produzir maior taxa de sucesso do ataque</strong>. Pensar mais não protege. Ajuda a manter o papel de pé.</p>
+
+    <p>Um benchmark de 2026, o <a href="https://arxiv.org/abs/2605.01687">MultiBreak</a>, mede a mesma coisa por outro caminho. Com 10.389 prompts adversariais cobrindo 2.665 intenções nocivas distintas, os autores observaram que <strong>categorias que parecem inofensivas em turno único exibem efetividade adversarial substancialmente maior em multiturno</strong>. Ou seja: o mesmo pedido que seria recusado de saída passa, quando chega no meio de uma cena montada.</p>
+
+    <div class="ig-inline" id="ig-fase-2">
+      <div class="infographic-card">
+        <div class="ig-eyebrow">Fase 2: o que a pesquisa mede</div>
+        <h3>Quatro números que descrevem o mesmo problema</h3>
+        <div class="ig-timeline">
+          <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--accent);--dot-opacity:0.6;">
+            <span class="ig-date">ACL 2024</span>
+            <span class="ig-label">Persuasão: mais de 92% de sucesso</span>
+            <p class="ig-desc">Prompts adversariais persuasivos (PAP) contra Llama 2-7b Chat, GPT-3.5 e GPT-4, em 10 tentativas, superando ataques algorítmicos. Zeng et al.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.75;">
+            <span class="ig-date">Ago 2025</span>
+            <span class="ig-label">Multi-turno: acima de 70%</span>
+            <p class="ig-desc">Contra modelos otimizados para proteção de turno único, no benchmark StrongREJECT. O mesmo estudo mostra que mais esforço de raciocínio tende a AUMENTAR o sucesso do ataque.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:1rem;--dot-color:var(--accent);--dot-opacity:0.9;">
+            <span class="ig-date">2026</span>
+            <span class="ig-label">A cena importa mais que o pedido</span>
+            <p class="ig-desc">MultiBreak: 10.389 prompts, 2.665 intenções nocivas. Categorias benignas em turno único ficam substancialmente mais efetivas em multiturno.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
+            <span class="ig-date">Jan 2026</span>
+            <span class="ig-label">Defesa: 93,8% de detecção</span>
+            <p class="ig-desc">Defensive M2S comprime a conversa inteira em forma de turno único para treinar o guardrail: 94,6% menos tokens e 38,9 pontos percentuais acima da linha de base.</p>
+          </div>
+        </div>
+        <div class="ig-legend">
+          <span><span class="sw" style="background:var(--accent);opacity:0.6;"></span>ataque</span>
+          <span><span class="sw" style="background:var(--accent);opacity:1;"></span>defesa</span>
+          <span style="margin-left:auto;">números medidos em benchmark, não em produto</span>
+        </div>
+        <div class="ig-footer">fontes: <a href="https://arxiv.org/abs/2401.06373">Zeng et al. (ACL 2024)</a> · <a href="https://arxiv.org/abs/2508.07646">arXiv 2508.07646</a> · <a href="https://arxiv.org/abs/2605.01687">MultiBreak</a> · <a href="https://arxiv.org/abs/2601.00454">Defensive M2S</a></div>
+      </div>
+    </div>
+
+    <h3 class="sect" id="s04"><span class="sect-n">04</span>O que fazer com isso</h3>
+
+    <p>A boa notícia é que a defesa parou de tentar o impossível. Se o ataque não está em nenhuma frase específica, ler frase por frase nunca vai funcionar. Foi essa conclusão que reorganizou a pesquisa em 2026.</p>
+
+    <p>Duas linhas ilustram a virada. O <a href="https://arxiv.org/abs/2601.00454">Defensive M2S</a> comprime a conversa multiturno inteira em formato de turno único antes de treinar o guardrail: achata a cena para que a manipulação gradual apareça de uma vez, em vez de diluída ao longo do diálogo. Na melhor configuração, chega a <span class="stat">93,8%</span> de detecção usando <span class="stat">94,6%</span> menos tokens, um ganho de <span class="stat">38,9 pontos percentuais</span> sobre a linha de base. Já o <a href="https://arxiv.org/abs/2606.03136">PsychoPass</a>, de junho, abandona de vez o conteúdo: mede a geometria da trajetória da conversa, tratando o diálogo como um percurso e procurando o formato característico de quem está construindo um papel.</p>
+
+    <p>Que a defesa tenha precisado parar de ler o que foi dito para medir o formato do caminho é a confirmação do diagnóstico pelo avesso. O ataque nunca esteve nas palavras.</p>
+
+    <div class="todo-box">
+      <span class="tag">O que fazer, na prática</span>
+      <ul>
+        <li><strong>Prefira sempre a versão mais recente do modelo.</strong> O operador de ransomware não quebrou o Claude atual: escolheu uma versão antiga de propósito. Modelo desatualizado em produção é superfície de ataque, não economia.</li>
+        <li><strong>Comece sessão nova para tarefas sensíveis.</strong> O risco cresce com o comprimento da conversa, porque é o histórico que sustenta o personagem. Contexto longo é conveniente e é justamente o que o ataque usa.</li>
+        <li><strong>Em assistente que navega com seus logins, trate conteúdo de página como entrada não confiável.</strong> Uma página pode conter instruções endereçadas ao seu assistente, não a você. Foi disso que a Anthropic avisou ao lançar o Cowork.</li>
+        <li><strong>Não presuma que "o modelo entendeu que é sério".</strong> Ele avalia o texto que chega, não a sua intenção nem a do outro lado. Onde a consequência é real, a verificação precisa ser sua.</li>
+      </ul>
+    </div>
+
+    <p>Nada disso fecha a brecha, e eu não vejo como fecharia. Não existe patch para a distância entre ler um texto e conhecer uma pessoa. O que mudou foi o lugar onde a defesa procura: a forma da conversa, não o conteúdo de cada fala. É um progresso real, e ainda assim ela chega depois.</p>
+
+    <p>O que me incomoda nisso não é o risco de alguém arrancar uma receita proibida de um chatbot. É que a mesma propriedade aparece nos assistentes que já operam nossos arquivos e nossos logins, onde a conversa não termina numa resposta ruim: termina numa ação executada.</p>
+
+  </div>
+
+  <aside class="ig-aside">
+    <p class="ig-aside-caption">Os dois quadros abaixo acompanham a leitura: o primeiro mostra como o problema saiu do laboratório em três meses; o segundo, o que a pesquisa efetivamente mediu.</p>
+
+    <div class="infographic-card">
+      <div class="ig-eyebrow">Fase 1: três meses, três consequências</div>
+      <h3>De curiosidade de laboratório a fato geopolítico</h3>
+      <div class="ig-timeline">
+        <div class="ig-node" style="--dot-size:0.6rem;--dot-color:var(--accent);--dot-opacity:0.55;">
+          <span class="ig-date">16 jun 2026</span>
+          <span class="ig-label">Jailbreak vira fundamento de controle de exportação</span>
+          <p class="ig-desc">Ordem dos EUA força a suspensão global do Fable 5 e do Mythos, citando risco de jailbreaks que viabilizariam uso militar.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.7;">
+          <span class="ig-date">2 jul 2026</span>
+          <span class="ig-label">A volta vem com framework anti-jailbreak</span>
+          <p class="ig-desc">O Fable 5 retorna com novas salvaguardas e um framework de teste de jailbreak compartilhado com a indústria.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.85;">
+          <span class="ig-date">14 ago 2026</span>
+          <span class="ig-label">A fabricante admite o limite</span>
+          <p class="ig-desc">No Claude Cowork para Chrome, a Anthropic afirma que as barreiras reduzem o risco significativamente, mas não podem eliminá-lo.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1.05rem;--dot-color:var(--accent);--dot-opacity:1;">
+          <span class="ig-date">19 ago 2026</span>
+          <span class="ig-label">O crime já usa a brecha</span>
+          <p class="ig-desc">Ransomware "The Gentlemen" ataca oito organizações com o Claude Sonnet 4.6, explorando de propósito uma versão antiga.</p>
+        </div>
+      </div>
+      <div class="ig-legend">
+        <span><span class="sw" style="background:var(--accent);opacity:0.55;"></span>política e regulação</span>
+        <span><span class="sw" style="background:var(--accent);opacity:1;"></span>consequência real</span>
+      </div>
+      <div class="ig-footer">fontes: <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
+    </div>
+
+    <div class="infographic-card">
+      <div class="ig-eyebrow">Fase 2: o que a pesquisa mede</div>
+      <h3>Quatro números que descrevem o mesmo problema</h3>
+      <div class="ig-timeline">
+        <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--accent);--dot-opacity:0.6;">
+          <span class="ig-date">ACL 2024</span>
+          <span class="ig-label">Persuasão: mais de 92% de sucesso</span>
+          <p class="ig-desc">PAP contra Llama 2-7b Chat, GPT-3.5 e GPT-4, em 10 tentativas, superando ataques algorítmicos.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.75;">
+          <span class="ig-date">Ago 2025</span>
+          <span class="ig-label">Multi-turno: acima de 70%</span>
+          <p class="ig-desc">Contra modelos otimizados para proteção de turno único. Mais esforço de raciocínio tende a AUMENTAR o sucesso do ataque.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1rem;--dot-color:var(--accent);--dot-opacity:0.9;">
+          <span class="ig-date">2026</span>
+          <span class="ig-label">A cena importa mais que o pedido</span>
+          <p class="ig-desc">MultiBreak: 10.389 prompts, 2.665 intenções. Categorias benignas em turno único ficam bem mais efetivas em multiturno.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
+          <span class="ig-date">Jan 2026</span>
+          <span class="ig-label">Defesa: 93,8% de detecção</span>
+          <p class="ig-desc">Defensive M2S comprime a conversa em turno único para treinar o guardrail: 94,6% menos tokens, 38,9 pontos acima da base.</p>
+        </div>
+      </div>
+      <div class="ig-legend">
+        <span><span class="sw" style="background:var(--accent);opacity:0.6;"></span>ataque</span>
+        <span><span class="sw" style="background:var(--accent);opacity:1;"></span>defesa</span>
+      </div>
+      <div class="ig-footer">fontes: <a href="https://arxiv.org/abs/2401.06373">Zeng et al. (ACL 2024)</a> · <a href="https://arxiv.org/abs/2508.07646">arXiv 2508.07646</a> · <a href="https://arxiv.org/abs/2605.01687">MultiBreak</a> · <a href="https://arxiv.org/abs/2601.00454">Defensive M2S</a></div>
+    </div>
+
+  </aside>
+  </div>
+
+  <div class="narrow-col">
+
+  <hr class="div">
+
+  <section class="sources">
+    <h2>Fontes</h2>
+    <ol class="ledger">
+      <li>
+        <span>
+          <span class="src-title">Grupo hacker usou Claude em oito invasões</span>
+          <span class="src-outlet">Cybersecurity News</span>
+          <a class="src-url" href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">cybersecuritynews.com/claude-code-helps-ransomware-operator</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">Claude Cowork chega ao painel do Chrome (aviso sobre prompt injection)</span>
+          <span class="src-outlet">Anthropic</span>
+          <a class="src-url" href="https://claude.com/blog/cowork-chrome-side-panel">claude.com/blog/cowork-chrome-side-panel</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">Controle de exportação derruba acesso global ao Fable 5</span>
+          <span class="src-outlet">Nextgov</span>
+          <a class="src-url" href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">nextgov.com/artificial-intelligence/2026/06</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">How Johnny Can Persuade LLMs to Jailbreak Them (Zeng et al., ACL 2024)</span>
+          <span class="src-outlet">arXiv 2401.06373</span>
+          <a class="src-url" href="https://arxiv.org/abs/2401.06373">arxiv.org/abs/2401.06373</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">Great, Now Write an Article About That: The Crescendo Multi-Turn LLM Jailbreak Attack</span>
+          <span class="src-outlet">arXiv 2404.01833 · USENIX Security 2025</span>
+          <a class="src-url" href="https://arxiv.org/abs/2404.01833">arxiv.org/abs/2404.01833</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">Multi-Turn Jailbreaks Are Simpler Than They Seem</span>
+          <span class="src-outlet">arXiv 2508.07646</span>
+          <a class="src-url" href="https://arxiv.org/abs/2508.07646">arxiv.org/abs/2508.07646</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">MultiBreak: benchmark multiturno de jailbreak</span>
+          <span class="src-outlet">arXiv 2605.01687</span>
+          <a class="src-url" href="https://arxiv.org/abs/2605.01687">arxiv.org/abs/2605.01687</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">Defensive M2S: guardrails treinados em conversas comprimidas</span>
+          <span class="src-outlet">arXiv 2601.00454</span>
+          <a class="src-url" href="https://arxiv.org/abs/2601.00454">arxiv.org/abs/2601.00454</a>
+        </span>
+      </li>
+      <li>
+        <span>
+          <span class="src-title">PsychoPass: perfilamento geométrico de conversas adversariais</span>
+          <span class="src-outlet">arXiv 2606.03136</span>
+          <a class="src-url" href="https://arxiv.org/abs/2606.03136">arxiv.org/abs/2606.03136</a>
+        </span>
+      </li>
+    </ol>
+  </section>
+
+  <footer>Pixel é editor da <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong>, newsletter diária sobre IA. Tema deste artigo escolhido pelos apoiadores, a partir de sugestão de Murilo Sarno.</footer>
+
+  </div>
+
+</div>
+
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Article","@id":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/#article","headline":"Engenharia de ilusão: por que a IA obedece ao personagem que você inventa","description":"Jailbreak não é achar a senha secreta que desliga o filtro. É montar uma cena em que a resposta proibida vira a fala coerente de um personagem, e o modelo continuar fazendo o que sabe fazer: manter o papel de pé.","url":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/","mainEntityOfPage":"https://especial.diar.ia.br/2026/engenharia-de-ilusao/","datePublished":"2026-08-18","dateModified":"2026-08-18","author":{"@type":"Person","name":"Pixel","url":"https://www.linkedin.com/in/vjpixel/"},"publisher":{"@type":"Organization","name":"diar.ia.br","url":"https://diar.ia.br"},"inLanguage":"pt-BR"}]}</script>
+
+</body>
+</html>
