@@ -47,7 +47,10 @@ import {
 import { renderBrevoDiariaTabPanel, type BrevoDiariaTabData } from "./brevo-diaria.ts";
 // #5593: gráfico SVG inline (duas séries, spline + área com gradiente) pra
 // "Open rate por dia" — módulo à parte, puro/testável sem fixture de Worker.
-import { renderOpenRateChartSvg } from "./chart-svg.ts";
+// #5640 A2/A4: enumerateDayRange (domínio X compartilhado),
+// renderCohortSmallMultipleSvg (small multiples por coorte),
+// renderConfoundersSparklineSvg (sparkline de bounce/spam/CTOR).
+import { renderOpenRateChartSvg, enumerateDayRange, renderCohortSmallMultipleSvg, renderConfoundersSparklineSvg } from "./chart-svg.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -683,7 +686,11 @@ ${monthlyAbcSectionsByDate}
   // (#5610 item 4 — não usa mais `isCampaignsWindowFull`/`campaignsWindowLimit`,
   // que contavam CAMPANHAS carregadas, não dias de calendário).
   const { rows: dayOpenRateRows } = aggregateByDay(campaigns, weekdayNow);
-  const dayOpenRateSection = renderOpenRateByDaySection(dayOpenRateRows);
+  // #5640 A2: small multiples por coorte — mesma janela/`now`, campanha
+  // não classificada (listName sem sinal de cohort reconhecível) fica de
+  // fora dos painéis (ver `deriveDayOpenRateCohortBucket`).
+  const dayOpenRateCohortResult = aggregateByDayByCohort(campaigns, weekdayNow);
+  const dayOpenRateSection = renderOpenRateByDaySection(dayOpenRateRows, DAY_OPENRATE_WINDOW_DAYS, dayOpenRateCohortResult);
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   // #4184: mescla os mapas de TODOS os ciclos mensais presentes na janela —
@@ -918,6 +925,17 @@ ${monthlyAbcSectionsByDate}
     white-space: nowrap;
     border: 0;
   }
+  /* #5640 A2/A4: small multiples por coorte + sparkline de confounders,
+     ambos abaixo do gráfico principal "Open rate por dia". */
+  .section-subtitle { font-size: 1rem; margin: 16px 0 4px 0; color: var(--ink); }
+  .cohort-multiples-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .cohort-multiple { background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 8px 6px; }
+  .cohort-multiple-note { font-size: 0.75rem; color: var(--ink); opacity: 0.6; text-align: center; margin: 4px 0 0 0; }
   td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
     font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
@@ -3306,6 +3324,34 @@ export interface DayOpenRateSummary {
    * em vez de omitir o dado.
    */
   immature: boolean;
+  /**
+   * #5640 A4: confounders observáveis já existentes por campanha (bounce,
+   * spam, CTOR) — mesmos campos que `MonthlyTotalRow` (sections-kv.ts)
+   * agrega por MÊS, aqui agregados por DIA (mesma janela/campanhas de
+   * `aggregateByDay`, sem fonte de dado nova). `spam`/`spamRate` usam
+   * `complaints` da Brevo — a MESMA fonte de `MonthlyTotalRow`, não o pico
+   * do Postmaster Tools (`resolveEnvioCampaignSpamCell`, usado só na tabela
+   * de Envios por campanha individual, #4970) — trazer Postmaster pro
+   * agregado diário é escopo maior (cruzamento por data de publicação do
+   * relatório, não por `sentDate`) e fica de fora desta fatia.
+   */
+  sent: number;
+  /** hardBounces + softBounces do dia. */
+  bounces: number;
+  /** Subconjunto de `bounces` — só hard bounces. */
+  hardBounces: number;
+  /** bounces / sent (0 quando sent=0). */
+  bounceRate: number;
+  /** hardBounces / sent (0 quando sent=0). */
+  hardBounceRate: number;
+  /** Soma de `complaints` (Brevo) do dia. */
+  spam: number;
+  /** spam / sent (0 quando sent=0). */
+  spamRate: number;
+  /** Soma de cliques únicos do dia. */
+  clicks: number;
+  /** CTOR do dia = clicks / opens (0 quando opens=0) — mesmo padrão de `aggregateByWeekday`. */
+  ctor: number;
 }
 
 /** #5610 item 4: janela fixa de dias-calendário cobertos por `aggregateByDay`/`renderOpenRateByDaySection` (30 = ~1 mês). */
@@ -3351,7 +3397,18 @@ export function aggregateByDay(
   now: Date = new Date(),
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
 ): { rows: DayOpenRateSummary[] } {
-  type Acc = { count: number; delivered: number; opens: number; immature: boolean };
+  type Acc = {
+    count: number;
+    delivered: number;
+    opens: number;
+    immature: boolean;
+    // #5640 A4:
+    sent: number;
+    bounces: number;
+    hardBounces: number;
+    spam: number;
+    clicks: number;
+  };
   const acc: Record<string, Acc> = {};
   const minAgeMs = WEEKDAY_MIN_AGE_HOURS * 3600 * 1000;
   // #5610 item 4: cutoff BRT — mesmo idioma en-CA usado alhures no arquivo
@@ -3375,11 +3432,19 @@ export function aggregateByDay(
       if (!picked) continue;
       const s = picked.stats;
 
-      if (!acc[day]) acc[day] = { count: 0, delivered: 0, opens: 0, immature: false };
+      if (!acc[day]) {
+        acc[day] = { count: 0, delivered: 0, opens: 0, immature: false, sent: 0, bounces: 0, hardBounces: 0, spam: 0, clicks: 0 };
+      }
       acc[day].count += 1;
       acc[day].delivered += s.delivered ?? 0;
       acc[day].opens += s.uniqueViews ?? 0;
       acc[day].immature = acc[day].immature || isImmature;
+      // #5640 A4: mesmos campos que aggregateByMonth já soma — aqui por DIA.
+      acc[day].sent += s.sent ?? 0;
+      acc[day].bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
+      acc[day].hardBounces += s.hardBounces ?? 0;
+      acc[day].spam += s.complaints ?? 0;
+      acc[day].clicks += s.uniqueClicks ?? 0;
     }
   }
 
@@ -3398,10 +3463,135 @@ export function aggregateByDay(
         openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
         smallSample: d.count < 2,
         immature: d.immature,
+        // #5640 A4:
+        sent: d.sent,
+        bounces: d.bounces,
+        hardBounces: d.hardBounces,
+        bounceRate: d.sent > 0 ? (d.bounces / d.sent) * 100 : 0,
+        hardBounceRate: d.sent > 0 ? (d.hardBounces / d.sent) * 100 : 0,
+        spam: d.spam,
+        spamRate: d.sent > 0 ? (d.spam / d.sent) * 100 : 0,
+        clicks: d.clicks,
+        ctor: d.opens > 0 ? (d.clicks / d.opens) * 100 : 0,
       };
     });
 
   return { rows };
+}
+
+/**
+ * #5640 A2: os 4 baldes de coorte pedidos na issue pros small multiples —
+ * `assinantes-ativos`, `ex-assinantes`, `leads-*` (agregado, não separado
+ * por safra — a issue pede "leads-*" como 1 painel, não 1 por safra mensal)
+ * e `novos` (grupo de 1º envio recente, `NamedGroupKey` em
+ * `clarice-segment.ts`, dimensão de ESTRATÉGIA de envio, não de cohort de
+ * pagamento — ver nota em `deriveDayOpenRateCohortBucket` abaixo).
+ */
+export const DAY_OPENRATE_COHORT_BUCKETS = ["assinantes-ativos", "ex-assinantes", "leads", "novos"] as const;
+export type DayOpenRateCohortBucket = (typeof DAY_OPENRATE_COHORT_BUCKETS)[number];
+
+/** Rótulo pt-BR de exibição por balde (small multiples, #5640 A2). */
+export const DAY_OPENRATE_COHORT_LABELS: Record<DayOpenRateCohortBucket, string> = {
+  "assinantes-ativos": "Assinantes ativos",
+  "ex-assinantes": "Ex-assinantes",
+  leads: "Leads",
+  novos: "Novos",
+};
+
+/**
+ * #5640 A2: deriva o balde de coorte de uma campanha a partir do `listName`
+ * — heurística por SUBSTRING, não a taxonomia formal (`resolveCohortArg`/
+ * `isKnownCohortSlug`, `scripts/lib/clarice-segment.ts`+`cohorts.ts`).
+ *
+ * **Limitação conhecida, documentada aqui de propósito (não é o que a issue
+ * sugeria e merece registro explícito):** `resolveCohortArg` normaliza um
+ * SLUG de cohort já resolvido (ex: `--cohort leads-2026-06` num CLI) — não
+ * um `listName` de campanha em formato livre. O fluxo de envio hoje 100%
+ * ativo (`--group` em `clarice-import-waves.ts`/`clarice-segment.ts`) nomeia
+ * listas por ESTRATÉGIA de envio (`engajados`/`reativacao`/`ramp-warm`/
+ * `novos` — `NamedGroupDef.label`), não por cohort de pagamento; `ramp-warm`
+ * e `engajados`/`reativacao`, por exemplo, misturam internamente várias
+ * cohorts (assinantes-ativos + leads de safras diferentes) sem que o nome
+ * da lista denuncie a composição. Não existe hoje, em nenhum lugar do
+ * codebase, um mapeamento confiável listName→cohort de pagamento pro fluxo
+ * de envio ativo (confirmado por busca ampla no repo antes desta
+ * implementação — só `cold`/`warm` são recuperáveis do `listName`, ver
+ * `parseAbcAudienceCampaign`).
+ *
+ * Dado isso, esta função reconhece só os casos em que o `listName` carrega
+ * o SINAL DIRETO (substring do slug/rótulo do balde) — cobre listas
+ * nomeadas manualmente ou por fluxos legados que ainda incluem o cohort no
+ * nome, e o grupo `novos` do fluxo `--group` (`"Novos (cadastro recente)"`
+ * bate no balde `novos` por conter a palavra). Campanhas cujo `listName` não
+ * carrega nenhum desses sinais retornam `null` — ficam de fora dos small
+ * multiples, contabilizadas em `unclassifiedCount` (nunca silenciosamente
+ * incluídas num balde errado). Ordem de match importa: `ex-assinantes`
+ * ANTES de `assinantes-ativos` (uma substring não é prefixo da outra aqui,
+ * mas a ordem deixa a intenção explícita); `leads` casa qualquer forma
+ * (`leads-2026-06`, `leads-2025h2`, `leads-caudao`, "Leads").
+ */
+export function deriveDayOpenRateCohortBucket(listName: string | undefined): DayOpenRateCohortBucket | null {
+  if (!listName) return null;
+  const s = listName.toLowerCase();
+  if (/ex[\s-]?assinantes/.test(s)) return "ex-assinantes";
+  if (/assinantes[\s-]?ativ/.test(s)) return "assinantes-ativos";
+  if (/\bleads?\b/.test(s)) return "leads";
+  if (/\bnovos?\b/.test(s)) return "novos";
+  return null;
+}
+
+/** Um painel small-multiple já agregado por dia (#5640 A2). */
+export interface DayOpenRateCohortPanel {
+  bucket: DayOpenRateCohortBucket;
+  label: string;
+  rows: DayOpenRateSummary[];
+}
+
+/**
+ * #5640 A2: como `aggregateByDay`, mas particionado pelos 4 baldes de
+ * coorte de `DAY_OPENRATE_COHORT_BUCKETS` — MESMA janela/`now`/campanhas
+ * (reusa a mesma chamada a `aggregateByDay` por balde, sem duplicar a
+ * lógica de agregação por dia). Campanhas cujo `listName` não bate em
+ * nenhum balde (`deriveDayOpenRateCohortBucket` retorna `null`) ficam FORA
+ * dos painéis — contadas em `unclassifiedCount`, nunca atribuídas a um
+ * balde por adivinhação. Painéis sempre vêm na ordem fixa de
+ * `DAY_OPENRATE_COHORT_BUCKETS`, mesmo os sem nenhuma campanha no período
+ * (`rows: []` — quem renderiza decide se omite ou mostra "sem envios").
+ */
+export function aggregateByDayByCohort(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  now: Date = new Date(),
+  windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
+): { panels: DayOpenRateCohortPanel[]; unclassifiedCount: number } {
+  const byBucket: Record<DayOpenRateCohortBucket, Array<BrevoCampaign & { listName?: string; listSize?: number }>> = {
+    "assinantes-ativos": [],
+    "ex-assinantes": [],
+    leads: [],
+    novos: [],
+  };
+  let unclassifiedCount = 0;
+  for (const c of campaigns) {
+    const bucket = deriveDayOpenRateCohortBucket(c.listName);
+    if (bucket) {
+      byBucket[bucket].push(c);
+      continue;
+    }
+    // Só conta como "não classificada" quem de fato contribuiria pro
+    // agregado (tem sentDate + stats reais) — campanha sem stats já é
+    // ignorada por `aggregateByDay` independente de cohort, não deve inflar
+    // a nota de "N campanhas sem coorte identificada". Aproximado: não
+    // reaplica o corte de `windowDays`/cutoff BRT (duplicaria a lógica de
+    // `groupByBrtDay` só pra uma contagem informativa) — pode incluir
+    // alguma campanha fora da janela nesta contagem; aceitável pro texto de
+    // nota (ordem de grandeza, não número exato usado em cálculo).
+    if (c.sentDate && pickStats(c)) unclassifiedCount += 1;
+  }
+  const panels = DAY_OPENRATE_COHORT_BUCKETS.map((bucket) => ({
+    bucket,
+    label: DAY_OPENRATE_COHORT_LABELS[bucket],
+    rows: aggregateByDay(byBucket[bucket], now, windowDays).rows,
+  }));
+  return { panels, unclassifiedCount };
 }
 
 /**
@@ -3616,11 +3806,40 @@ export function renderWeekdaySection(
  *
  * B7 (gridlines/rótulos intermediários do eixo X) fica fora — reabre uma
  * decisão consciente do benchmark original, pendente de confirmação do
- * editor (ver issue). A1-A5 (decomposição causal) são partes separadas.
+ * editor (ver issue).
+ *
+ * **#5640 A2 (small multiples por coorte):** `cohortResult.panels`
+ * (default `[]` — chamadores antigos continuam funcionando sem os
+ * painéis) vira uma faixa de mini-gráficos ABAIXO do gráfico principal —
+ * mesma janela de dias (`enumerateDayRange` sobre o range do agregado
+ * principal, não o range próprio de cada coorte, pra todos os painéis
+ * compartilharem o MESMO domínio X mesmo quando uma coorte não tem envio
+ * em algum dia), mesmo eixo Y (0-100% fixo), sem eixo duplo — só a linha de
+ * open rate (`renderCohortSmallMultipleSvg`, chart-svg.ts). Painel sem
+ * nenhum envio no período (`rows: []`) ainda aparece, com nota "sem envios
+ * na janela" — omiti-lo silenciosamente esconderia que aquela coorte não
+ * recebeu nada, que é em si um sinal. `cohortResult.unclassifiedCount > 0`
+ * gera uma nota textual (nunca some o número sem explicação — ver
+ * `deriveDayOpenRateCohortBucket`).
+ *
+ * **#5640 A4 (confounders):** uma faixa fina de sparklines (bounce rate,
+ * spam rate, CTOR) ABAIXO da faixa de small multiples, ALINHADA ao mesmo
+ * eixo X do gráfico principal (`renderConfoundersSparklineSvg` reusa a
+ * mesma constante `CHART` — padLeft/padRight/viewBoxW — pra que a posição
+ * X de cada dia bata pixel-a-pixel com o gráfico principal). **Decisão de
+ * escopo, registrada aqui:** o crosshair compartilhado (B1-B4) NÃO foi
+ * estendido pra esta faixa nem pra os small multiples — acoplar os 3 SVGs
+ * a um único crosshair/tooltip JS multiplicaria a superfície de risco desta
+ * unidade (3 grades de hit-rects sincronizadas em vez de 1) pelo ganho de
+ * "não precisar olhar 2 pontos alinhados visualmente", que já funciona sem
+ * JS pela alinhamento em X puro. Fica pra uma unidade futura se o editor
+ * pedir. A3 (scatter delivered×openRate com lag) fica fora desta fatia —
+ * ver issue, "o mais analítico e mais dispensável dos cinco".
  */
 export function renderOpenRateByDaySection(
   rows: DayOpenRateSummary[],
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
+  cohortResult: { panels: DayOpenRateCohortPanel[]; unclassifiedCount: number } = { panels: [], unclassifiedCount: 0 },
 ): string {
   if (rows.length === 0) return "";
 
@@ -3647,6 +3866,44 @@ export function renderOpenRateByDaySection(
   // acima na página) em vez de duplicar os 30 dias numa 2ª tabela.
   const tableFallbackNote = `<p class="section-note"><small>Detalhe de cada envio também disponível na <a href="#envios-table">tabela de Envios</a> abaixo.</small></p>`;
 
+  // #5640 A2/A4: domínio X compartilhado — MESMO range de dias do gráfico
+  // principal (não o range próprio de cada coorte), pra small multiples e
+  // sparkline de confounders alinharem com o gráfico principal mesmo em
+  // dias sem envio de uma coorte específica.
+  const sharedDays = enumerateDayRange(rows[0].day, rows[rows.length - 1].day);
+
+  // #5640 A2: faixa de small multiples — só renderiza se algum painel foi
+  // passado (cohortResult.panels vazio = chamador antigo/teste, seção A2
+  // simplesmente não aparece, sem quebrar nada).
+  const cohortPanelsSection = cohortResult.panels.length > 0
+    ? (() => {
+        const cards = cohortResult.panels
+          .map((p) => {
+            const panelNote = p.rows.length === 0
+              ? `<p class="cohort-multiple-note">sem envios na janela</p>`
+              : "";
+            return `<div class="cohort-multiple">${renderCohortSmallMultipleSvg(sharedDays, p.label, p.rows)}${panelNote}</div>`;
+          })
+          .join("\n");
+        const unclassifiedNote = cohortResult.unclassifiedCount > 0
+          ? `<p class="section-note"><small>${cohortResult.unclassifiedCount} ${cohortResult.unclassifiedCount === 1 ? "campanha" : "campanhas"} do período sem coorte identificável pelo nome da lista (fora dos painéis abaixo) — mesmos marcadores do gráfico principal (○ amostra pequena, ◐ imaturo).</small></p>`
+          : "";
+        return `
+  <h3 class="section-subtitle">Por coorte</h3>
+  <p class="section-note"><small>Mesma janela, mesmo eixo Y (0-100%), sem eixo duplo — uma coorte que cai sozinha aponta pra causa específica dela; queda uniforme em todas aponta pra causa comum (reputação, provedor, template).</small></p>
+  <div class="cohort-multiples-grid">${cards}</div>
+  ${unclassifiedNote}`;
+      })()
+    : "";
+
+  // #5640 A4: sparklines de bounce/spam/CTOR, alinhadas em X ao gráfico
+  // principal (mesmo `sharedDays`) — nunca "causou"/"por causa de" na nota,
+  // só o vocabulário de co-movimento (A5, guarda-corpo de honestidade).
+  const confoundersSection = `
+  <h3 class="section-subtitle">Confounders</h3>
+  <p class="section-note"><small>Bounce, spam (complaints Brevo) e CTOR do mesmo período, alinhados ao eixo X acima — não implica causa: abertura caindo com bounce/spam estáveis aponta pra mix de audiência; abertura caindo junto com bounce/spam subindo aponta pra reputação/entregabilidade.</small></p>
+  <div class="chart-wrap">${renderConfoundersSparklineSvg(sharedDays, rows)}</div>`;
+
   return `
 <section class="phase2-section" id="day-openrate">
   <h2 class="section-title">Open rate por dia</h2>
@@ -3657,6 +3914,8 @@ export function renderOpenRateByDaySection(
   <div class="chart-wrap">${renderOpenRateChartSvg(rows)}<div id="day-openrate-tooltip" aria-hidden="true"></div><div id="day-openrate-live" class="visually-hidden" aria-live="polite"></div></div>
   ${legendNote}
   ${tableFallbackNote}
+  ${cohortPanelsSection}
+  ${confoundersSection}
 <script>
 (function() {
   var svg = document.getElementById('day-openrate-svg');

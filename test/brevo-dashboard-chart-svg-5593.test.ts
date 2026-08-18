@@ -17,6 +17,8 @@ import {
   niceMax,
   renderOpenRateChartSvg,
   fmtDayLabelLong,
+  renderCohortSmallMultipleSvg,
+  renderConfoundersSparklineSvg,
 } from "../workers/brevo-dashboard/src/chart-svg.ts";
 import type { DayOpenRateSummary } from "../workers/brevo-dashboard/src/sections-core.ts";
 
@@ -31,6 +33,17 @@ function row(day: string, opts: Partial<DayOpenRateSummary> = {}): DayOpenRateSu
     openRate: 40,
     smallSample: false,
     immature: false,
+    // #5640 A4: confounders — defaults neutros (sem bounce/spam, CTOR 0),
+    // sobrescritos pelos testes que exercitam `renderConfoundersSparklineSvg`.
+    sent: 100,
+    bounces: 0,
+    hardBounces: 0,
+    bounceRate: 0,
+    hardBounceRate: 0,
+    spam: 0,
+    spamRate: 0,
+    clicks: 0,
+    ctor: 0,
     ...opts,
   };
 }
@@ -406,5 +419,93 @@ describe("#5640 B6: renderOpenRateChartSvg — svg focável, title/desc acessív
     assert.ok(descMatch, "desc deve existir");
     assert.match(descMatch![1], /setas/i);
     assert.match(descMatch![1], /Esc/);
+  });
+});
+
+describe("#5640 A2: renderCohortSmallMultipleSvg", () => {
+  const sharedDays = ["2026-08-10", "2026-08-11", "2026-08-12"];
+
+  test("renderiza <svg>, título com o label da coorte, e a linha de openRate (só 1 série, sem eixo duplo)", () => {
+    const svg = renderCohortSmallMultipleSvg(sharedDays, "Assinantes ativos", [
+      row("2026-08-10", { openRate: 30 }),
+      row("2026-08-11", { openRate: 40 }),
+      row("2026-08-12", { openRate: 20 }),
+    ]);
+    assert.match(svg, /<svg/);
+    assert.match(svg, /<title>Assinantes ativos<\/title>/);
+    assert.match(svg, /<path d="M [\d.]+,[\d.]+ C /, "3+ pontos deve produzir path com curva");
+    assert.doesNotMatch(svg, /Delivered/, "small multiple não mostra a série Delivered (só openRate)");
+  });
+
+  test("coorte sem nenhum envio no período (rows=[]) ainda desenha o svg com nota 'sem envios'", () => {
+    const svg = renderCohortSmallMultipleSvg(sharedDays, "Novos", []);
+    assert.match(svg, /<svg/);
+    assert.match(svg, /sem envios/);
+    assert.doesNotMatch(svg, /<path d=/, "sem dado, não há linha pra desenhar");
+  });
+
+  test("dia sem dado (buraco no meio do domínio compartilhado) não gera marcador nesse dia, mas a linha atravessa (mesmo padrão do gráfico principal)", () => {
+    const svg = renderCohortSmallMultipleSvg(sharedDays, "Leads", [
+      row("2026-08-10", { openRate: 30 }),
+      row("2026-08-12", { openRate: 10 }),
+    ]);
+    // 2 pontos só (dia 11 é buraco) => path L reto, não C.
+    assert.match(svg, /<path d="M [\d.]+,[\d.]+ L [\d.]+,[\d.]+"/);
+  });
+
+  test("amostra pequena (smallSample) usa marcador oco (fill=var(--card)); dia imaturo reduz opacidade", () => {
+    const svg = renderCohortSmallMultipleSvg(sharedDays, "Ex-assinantes", [
+      row("2026-08-10", { openRate: 30, smallSample: true }),
+      row("2026-08-11", { openRate: 40, immature: true }),
+    ]);
+    assert.match(svg, /fill="var\(--card\)" stroke="var\(--alert\)"/, "smallSample = círculo oco");
+    assert.match(svg, /opacity="0\.55"/, "immature = opacidade reduzida");
+  });
+
+  test("nota do total de envios no canto (contagem, não valor de métrica)", () => {
+    const svg = renderCohortSmallMultipleSvg(sharedDays, "Novos", [
+      row("2026-08-10", { count: 3 }),
+      row("2026-08-11", { count: 2 }),
+    ]);
+    assert.match(svg, />5 envios</);
+  });
+});
+
+describe("#5640 A4: renderConfoundersSparklineSvg", () => {
+  const sharedDays = ["2026-08-10", "2026-08-11", "2026-08-12"];
+
+  test("renderiza as 3 sparklines rotuladas (Bounce/Spam/CTOR), nunca usa a palavra 'causou'/'por causa de'", () => {
+    const svg = renderConfoundersSparklineSvg(sharedDays, [
+      row("2026-08-10", { bounceRate: 1, spamRate: 0.1, ctor: 10 }),
+      row("2026-08-11", { bounceRate: 2, spamRate: 0.2, ctor: 12 }),
+      row("2026-08-12", { bounceRate: 1.5, spamRate: 0.15, ctor: 11 }),
+    ]);
+    assert.match(svg, />Bounce</);
+    assert.match(svg, />Spam</);
+    assert.match(svg, />CTOR</);
+    assert.doesNotMatch(svg, /causou/i);
+    assert.doesNotMatch(svg, /por causa de/i);
+  });
+
+  test("mesma viewBoxW/padLeft/padRight do gráfico principal (CHART) — alinhamento em X", () => {
+    const svg = renderConfoundersSparklineSvg(sharedDays, [row("2026-08-10"), row("2026-08-11"), row("2026-08-12")]);
+    assert.match(svg, /viewBox="0 0 1450 /, "viewBoxW deve bater com CHART.viewBoxW do gráfico principal");
+  });
+
+  test("rótulo do último valor reflete a métrica mais recente (não a primeira nem uma média)", () => {
+    const svg = renderConfoundersSparklineSvg(sharedDays, [
+      row("2026-08-10", { bounceRate: 1 }),
+      row("2026-08-11", { bounceRate: 2 }),
+      row("2026-08-12", { bounceRate: 9.5 }),
+    ]);
+    assert.match(svg, />9\.5%</, "último valor de bounceRate (dia mais recente) deve aparecer no rótulo");
+  });
+
+  test("dia sem dado no domínio não quebra — rótulo cai pro último valor conhecido", () => {
+    const svg = renderConfoundersSparklineSvg(sharedDays, [
+      row("2026-08-10", { bounceRate: 3 }),
+      // 2026-08-11 e 2026-08-12 ausentes de `rows` — buraco no fim.
+    ]);
+    assert.match(svg, />3\.0%</);
   });
 });

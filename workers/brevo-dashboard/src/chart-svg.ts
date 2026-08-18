@@ -133,8 +133,15 @@ export function enumerateDayRange(startDay: string, endDay: string): string[] {
   return days;
 }
 
-/** Config de layout do chart — extraído pra constantes nomeadas testáveis. */
-const CHART = {
+/**
+ * Config de layout do chart — extraído pra constantes nomeadas testáveis.
+ * Exportado (#5640 A4) pra `renderConfoundersSparklineSvg` reusar
+ * `padLeft`/`padRight`/`viewBoxW` — mesma matemática de `xAt` do gráfico
+ * principal, garantindo alinhamento pixel-a-pixel em X sem acoplar os dois
+ * SVGs via JS/crosshair compartilhado (decisão de escopo documentada em
+ * `renderOpenRateByDaySection`, sections-core.ts).
+ */
+export const CHART = {
   viewBoxW: 1450,
   viewBoxH: 300,
   padLeft: 52,
@@ -471,5 +478,172 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     ${xLabels}
     ${crosshair}
     ${hitRects}
+  </svg>`;
+}
+
+/**
+ * #5640 A2: layout de cada mini-gráfico de coorte (small multiples) — bem
+ * menor que `CHART` (gráfico principal), sem eixo duplo (só openRate,
+ * 0-100% fixo, sem `niceMax`/eixo Delivered).
+ */
+const COHORT_CHART = {
+  viewBoxW: 400,
+  viewBoxH: 130,
+  padLeft: 34,
+  padRight: 10,
+  padTop: 22,
+  padBottom: 20,
+} as const;
+
+/**
+ * Renderiza UM mini-gráfico de "open rate por dia" pra uma coorte (#5640
+ * A2, small multiples) — mesmos marcadores/semântica visual do gráfico
+ * principal (círculo oco = amostra pequena, opacidade reduzida = imaturo),
+ * SÓ a linha de open rate (sem Delivered, sem eixo duplo), Y fixo 0-100%.
+ *
+ * `days` é o domínio X COMPARTILHADO entre todas as coortes (calculado uma
+ * vez pelo chamador a partir do range do gráfico principal — ver
+ * `renderOpenRateByDaySection`, sections-core.ts) — não o range próprio de
+ * `rows`, que pode ser mais estreito (coorte sem envio nos primeiros/
+ * últimos dias da janela) ou vazio. `rows.length === 0` ainda desenha o
+ * eixo/gridline vazio com uma nota "sem envios na janela" — deixa explícito
+ * que a coorte existe e não recebeu nada, em vez de omitir o painel
+ * (omitir esconderia justamente o sinal "essa coorte ficou de fora").
+ * Exportado pra teste unitário.
+ */
+export function renderCohortSmallMultipleSvg(days: string[], label: string, rows: DayOpenRateSummary[]): string {
+  const { viewBoxW, viewBoxH, padLeft, padRight, padTop, padBottom } = COHORT_CHART;
+  const chartLeft = padLeft;
+  const chartRight = viewBoxW - padRight;
+  const chartTop = padTop;
+  const chartBottom = viewBoxH - padBottom;
+  const chartW = chartRight - chartLeft;
+  const chartH = chartBottom - chartTop;
+
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  const slots: Array<DayOpenRateSummary | null> = days.map((d) => byDay.get(d) ?? null);
+
+  const xAt = (i: number): number =>
+    days.length <= 1 ? chartLeft + chartW / 2 : chartLeft + (chartW * i) / (days.length - 1);
+  const yAt = (v: number): number => {
+    const clamped = Math.max(0, Math.min(v, 100));
+    return chartBottom - (chartH * clamped) / 100;
+  };
+
+  type P = { point: ChartPoint; smallSample: boolean; immature: boolean };
+  const pointSlots: Array<P | null> = slots.map((s, i) =>
+    s ? { point: { x: xAt(i), y: yAt(s.openRate) }, smallSample: s.smallSample, immature: s.immature } : null,
+  );
+
+  const runs = splitIntoRuns(pointSlots);
+  let line = "";
+  let markers = "";
+  for (const run of runs) {
+    const pts = run.map((r) => r.value.point);
+    if (pts.length >= 2) {
+      line = `<path d="${catmullRomToBezierPath(pts)}" fill="none" stroke="var(--alert)" stroke-width="2" stroke-linecap="round"/>`;
+    }
+    for (const { value } of run) {
+      const { point, smallSample, immature } = value;
+      const opacity = immature ? ` opacity="0.55"` : "";
+      const r = smallSample ? 3.5 : 2.5;
+      markers += smallSample
+        ? `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="${r}" fill="var(--card)" stroke="var(--alert)" stroke-width="1.5"${opacity}/>`
+        : `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="${r}" fill="var(--alert)"${opacity}/>`;
+    }
+  }
+
+  const gridY = chartTop + chartH * 0.5;
+  const gridline = `<line x1="${fmt(chartLeft)}" y1="${fmt(gridY)}" x2="${fmt(chartRight)}" y2="${fmt(gridY)}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>`;
+
+  const totalCampaigns = rows.reduce((sum, r) => sum + r.count, 0);
+  const countLabel = rows.length === 0 ? "sem envios" : `${totalCampaigns} ${totalCampaigns === 1 ? "envio" : "envios"}`;
+
+  return `<svg class="cohort-multiple-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Open rate por dia — ${escAttr(label)} — ${escAttr(countLabel)}">
+    <title>${escAttr(label)}</title>
+    <text x="${chartLeft}" y="15" font-size="12" font-weight="700" fill="var(--ink)">${escAttr(label)}</text>
+    <text x="${chartRight}" y="15" text-anchor="end" font-size="10" fill="var(--ink)" opacity="0.6">${escAttr(countLabel)}</text>
+    ${gridline}
+    ${line}
+    ${markers}
+  </svg>`;
+}
+
+/**
+ * #5640 A4: uma sparkline por métrica ("confounder"), stacked verticalmente
+ * — bounce rate, spam rate (complaints Brevo, mesma fonte de
+ * `MonthlyTotalRow`), CTOR. Reusa `CHART.padLeft`/`padRight`/`viewBoxW` do
+ * gráfico principal (não `COHORT_CHART`) pra que a coordenada X de cada dia
+ * bata pixel-a-pixel com `renderOpenRateChartSvg` — é o mecanismo de
+ * "alinhado ao mesmo eixo X" sem precisar compartilhar crosshair/JS (ver
+ * decisão de escopo em `renderOpenRateByDaySection`, sections-core.ts).
+ * `days` é o mesmo domínio X compartilhado usado pelos small multiples
+ * (A2) — computado uma vez pelo chamador. Cada linha usa sua PRÓPRIA
+ * escala Y (bounce/spam tipicamente <10%, CTOR tipicamente 0-40%) — eixo Y
+ * nunca é mostrado numericamente aqui (é sparkline, não gráfico de eixo
+ * completo); só o valor mais recente é rotulado à direita. Buracos (dia
+ * sem envio) atravessam a linha, mesmo comportamento de `splitIntoRuns` no
+ * gráfico principal (#5610 item 2). Exportado pra teste unitário.
+ */
+export function renderConfoundersSparklineSvg(days: string[], rows: DayOpenRateSummary[]): string {
+  const { viewBoxW, padLeft, padRight } = CHART;
+  const chartLeft = padLeft;
+  const chartRight = viewBoxW - padRight;
+  const chartW = chartRight - chartLeft;
+
+  const ROW_H = 34;
+  const ROW_GAP = 4;
+  const LABEL_H = 12; // reserva pro rótulo de métrica/último valor no topo de cada linha
+  const metrics: Array<{ key: "bounceRate" | "spamRate" | "ctor"; label: string; colorVar: string; minMax: number }> = [
+    { key: "bounceRate", label: "Bounce", colorVar: "--alert", minMax: 5 },
+    { key: "spamRate", label: "Spam", colorVar: "--alert", minMax: 0.5 },
+    { key: "ctor", label: "CTOR", colorVar: "--brand", minMax: 20 },
+  ];
+  const viewBoxH = metrics.length * (ROW_H + ROW_GAP) + ROW_GAP;
+
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  const slots: Array<DayOpenRateSummary | null> = days.map((d) => byDay.get(d) ?? null);
+  const xAt = (i: number): number =>
+    days.length <= 1 ? chartLeft + chartW / 2 : chartLeft + (chartW * i) / (days.length - 1);
+
+  let out = "";
+  metrics.forEach((metric, rowIdx) => {
+    const rowTop = ROW_GAP + rowIdx * (ROW_H + ROW_GAP);
+    const plotTop = rowTop + LABEL_H;
+    const plotBottom = rowTop + ROW_H;
+    const values = slots.map((s) => (s ? s[metric.key] : null));
+    const finiteValues = values.filter((v): v is number => v != null);
+    const maxV = Math.max(metric.minMax, ...finiteValues);
+    const yAt = (v: number): number => {
+      if (maxV <= 0) return plotBottom;
+      return plotBottom - ((plotBottom - plotTop) * Math.min(v, maxV)) / maxV;
+    };
+
+    const pointSlots: Array<{ point: ChartPoint } | null> = slots.map((s, i) =>
+      s ? { point: { x: xAt(i), y: yAt(s[metric.key]) } } : null,
+    );
+    const runs = splitIntoRuns(pointSlots);
+    let path = "";
+    for (const run of runs) {
+      const pts = run.map((r) => r.value.point);
+      if (pts.length >= 2) {
+        path += `<path d="${catmullRomToBezierPath(pts)}" fill="none" stroke="var(${metric.colorVar})" stroke-width="1.5" stroke-linecap="round" opacity="0.85"/>`;
+      } else if (pts.length === 1) {
+        path += `<circle cx="${fmt(pts[0].x)}" cy="${fmt(pts[0].y)}" r="1.5" fill="var(${metric.colorVar})"/>`;
+      }
+    }
+
+    const lastVal = [...finiteValues].pop();
+    const lastLabel = lastVal != null ? `${lastVal.toFixed(1)}%` : "—";
+
+    out += `<text x="${chartLeft}" y="${rowTop + 9}" font-size="10" fill="var(--ink)" opacity="0.65">${escAttr(metric.label)}</text>
+    <text x="${chartRight}" y="${rowTop + 9}" text-anchor="end" font-size="10" fill="var(--ink)" opacity="0.65">${lastLabel}</text>
+    <line x1="${fmt(chartLeft)}" y1="${fmt(plotBottom)}" x2="${fmt(chartRight)}" y2="${fmt(plotBottom)}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="1,3"/>
+    ${path}`;
+  });
+
+  return `<svg class="confounders-sparkline-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Bounce rate, spam rate e CTOR por dia — confounders do open rate, mesma janela do gráfico principal">
+    <title>Confounders — bounce, spam, CTOR por dia</title>
+    ${out}
   </svg>`;
 }
