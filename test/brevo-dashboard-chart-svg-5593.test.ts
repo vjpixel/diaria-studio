@@ -16,6 +16,7 @@ import {
   enumerateDayRange,
   niceMax,
   renderOpenRateChartSvg,
+  fmtDayLabelLong,
 } from "../workers/brevo-dashboard/src/chart-svg.ts";
 import type { DayOpenRateSummary } from "../workers/brevo-dashboard/src/sections-core.ts";
 
@@ -197,7 +198,14 @@ describe("#5593: renderOpenRateChartSvg", () => {
     const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
     // `\s` depois de "line" distingue `<line ...>` (gridline) de
     // `<linearGradient ...>` (que também começa com o prefixo "<line").
-    const lineTags = [...svg.matchAll(/<line\s[^>]*>/g)].map((m) => m[0]);
+    // #5640 B1: o crosshair (`class="chart-crosshair"`) É uma linha vertical
+    // de propósito (segue o ponteiro, invisível por default via
+    // `opacity:0`) — excluído aqui porque esta asserção é sobre GRIDLINE
+    // estática (pedido explícito do benchmark original, #5593), não sobre
+    // "nenhuma linha vertical existe no SVG" (o que deixou de ser verdade
+    // com o crosshair, B7 — reabertura de gridline vertical de VERDADE —
+    // segue fora de escopo desta fatia).
+    const lineTags = [...svg.matchAll(/<line\s[^>]*>/g)].map((m) => m[0]).filter((tag) => !tag.includes('class="chart-crosshair"'));
     assert.ok(lineTags.length > 0, "deve ter gridlines horizontais");
     for (const tag of lineTags) {
       const y1 = tag.match(/y1="([^"]+)"/)?.[1];
@@ -295,5 +303,83 @@ describe("#5593 fleet review: guards defensivos", () => {
       row("2026-08-11", { openRate: 40 }),
     ]);
     assert.match(svg, /<svg/);
+  });
+});
+
+describe("#5640 B1: fmtDayLabelLong — data por extenso pt-BR pro tooltip", () => {
+  test("formata dia YYYY-MM-DD com dia da semana + mês por extenso", () => {
+    // 2026-08-16 é um domingo.
+    assert.equal(fmtDayLabelLong("2026-08-16"), "domingo, 16 de agosto de 2026");
+  });
+
+  test("atravessa fronteira de mês/ano corretamente (sem deslocamento de fuso)", () => {
+    // 2026-01-01 é uma quinta-feira.
+    assert.equal(fmtDayLabelLong("2026-01-01"), "quinta-feira, 1 de janeiro de 2026");
+  });
+});
+
+describe("#5640 B1+B2: renderOpenRateChartSvg — hit rects de coluna (não o marcador)", () => {
+  test("emite 1 <rect class=\"chart-hit-rect\"> por DIA da janela, inclusive dias sem envio", () => {
+    // 01 e 03 têm dado; 02 é um buraco (sem campanha) — ainda assim deve
+    // ganhar um hit rect (B2: hover funciona em qualquer coluna, com ou sem dado).
+    const svg = renderOpenRateChartSvg([row("2026-08-01"), row("2026-08-03")]);
+    const rects = [...svg.matchAll(/<rect class="chart-hit-rect"[^>]*>/g)];
+    assert.equal(rects.length, 3, "3 dias na janela (01, 02 buraco, 03) => 3 hit rects");
+  });
+
+  test("hit rect de dia SEM envio tem data-hasdata=\"0\" e nenhum outro data-* numérico", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-01"), row("2026-08-03")]);
+    const holeRect = [...svg.matchAll(/<rect class="chart-hit-rect"[^>]*>/g)].map((m) => m[0])
+      .find((tag) => tag.includes('data-day="2026-08-02"'));
+    assert.ok(holeRect, "deve existir um hit rect pro dia-buraco 2026-08-02");
+    assert.match(holeRect!, /data-hasdata="0"/);
+    assert.doesNotMatch(holeRect!, /data-delivered=/, "dia sem dado não deve carregar data-delivered");
+  });
+
+  test("hit rect de dia COM envio carrega count/delivered/opens/openrate/smallsample/immature", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10", { count: 3, delivered: 150, opens: 60, openRate: 40, smallSample: false, immature: true })]);
+    const rect = svg.match(/<rect class="chart-hit-rect"[^>]*>/)?.[0] ?? "";
+    assert.match(rect, /data-hasdata="1"/);
+    assert.match(rect, /data-count="3"/);
+    assert.match(rect, /data-delivered="150"/);
+    assert.match(rect, /data-opens="60"/);
+    assert.match(rect, /data-openrate="40"/);
+    assert.match(rect, /data-smallsample="0"/);
+    assert.match(rect, /data-immature="1"/);
+  });
+
+  test("hit rects cobrem a largura toda do chart, sem sobreposição nem buraco entre colunas", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-01"), row("2026-08-02"), row("2026-08-03")]);
+    const rects = [...svg.matchAll(/<rect class="chart-hit-rect"[^>]*>/g)].map((m) => m[0]);
+    const spans = rects.map((tag) => {
+      const x = Number(tag.match(/x="([^"]+)"/)?.[1]);
+      const w = Number(tag.match(/width="([^"]+)"/)?.[1]);
+      return { x, x2: x + w };
+    });
+    for (let i = 1; i < spans.length; i++) {
+      assert.equal(spans[i - 1].x2, spans[i].x, `coluna ${i - 1} deve terminar exatamente onde a coluna ${i} começa (sem gap/overlap)`);
+    }
+  });
+});
+
+describe("#5640 B1: renderOpenRateChartSvg — crosshair invisível por default", () => {
+  test("emite <line class=\"chart-crosshair\"> com opacity:0 (invisível até o hover ligar via JS)", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    assert.match(svg, /<line id="day-openrate-crosshair" class="chart-crosshair"[^>]*style="opacity:0;pointer-events:none;"/);
+  });
+});
+
+describe("#5640 B3: renderOpenRateChartSvg — marcadores carregam data-day-index/data-r pro destaque de hover", () => {
+  test("cada marcador tem data-day-index (mesmo índice do hit rect do dia) e data-r (raio original)", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11", { smallSample: true, count: 1 })]);
+    const markers = [...svg.matchAll(/<circle class="chart-marker"[^>]*>/g)].map((m) => m[0]);
+    // 2 dias × 2 séries (delivered + openRate) = 4 marcadores.
+    assert.equal(markers.length, 4);
+    const day0 = markers.filter((m) => m.includes('data-day-index="0"'));
+    const day1 = markers.filter((m) => m.includes('data-day-index="1"'));
+    assert.equal(day0.length, 2, "dia 0 deve ter 2 marcadores (delivered + openRate)");
+    assert.equal(day1.length, 2, "dia 1 deve ter 2 marcadores (delivered + openRate)");
+    for (const m of day0) assert.match(m, /data-r="3"/, "dia 0 não é smallSample — raio original 3");
+    for (const m of day1) assert.match(m, /data-r="4"/, "dia 1 é smallSample — raio original 4 (marcador oco)");
   });
 });

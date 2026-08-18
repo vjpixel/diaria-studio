@@ -178,6 +178,33 @@ function fmtDayLabel(day: string): string {
   return `${mon} ${d}`;
 }
 
+/** Nomes completos de mês pt-BR — só usado no tooltip (#5640 B1, "data por extenso"). */
+const PT_MONTHS_FULL = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
+/** Nomes completos de dia da semana pt-BR — idem, só pro tooltip. */
+const PT_WEEKDAYS_FULL = [
+  "domingo", "segunda-feira", "terça-feira", "quarta-feira",
+  "quinta-feira", "sexta-feira", "sábado",
+];
+
+/**
+ * Formata um dia YYYY-MM-DD por extenso em pt-BR pro tooltip do crosshair
+ * (#5640 B1) — ex: "sábado, 16 de agosto de 2026". Usa `Date.UTC` (mesmo
+ * padrão de `enumerateDayRange` acima) pra não reintroduzir deslocamento de
+ * fuso horário — a chave já chega em BRT, a aritmética é pura sobre a data
+ * calendário. Exportado pra teste unitário.
+ */
+export function fmtDayLabelLong(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const weekday = PT_WEEKDAYS_FULL[dt.getUTCDay()];
+  const mon = PT_MONTHS_FULL[m - 1] ?? String(m);
+  return `${weekday}, ${d} de ${mon} de ${y}`;
+}
+
 /**
  * Renderiza o gráfico SVG inline de "Open rate por dia" (#5593) — duas
  * séries por dia-calendário BRT: Delivered (eixo Y esquerdo, escala
@@ -209,6 +236,27 @@ function fmtDayLabel(day: string): string {
  * já decide se a seção inteira aparece; este helper só cuida do `<svg>`.
  * `rows.length === 1` desenha só os 2 marcadores (delivered + openRate),
  * sem linha (uma linha exige ≥2 pontos por definição).
+ *
+ * **#5640 (B1-B4): crosshair + tooltip compartilhado + hit area de coluna +
+ * destaque do ponto ativo.** Elementos adicionados, todos consumidos pelo
+ * `<script>` inline em `renderOpenRateByDaySection` (sections-core.ts) — este
+ * módulo só emite markup/dados, zero JS aqui (mantém a separação já existente
+ * entre "gera SVG" e "liga interatividade"):
+ * - `<rect class="chart-hit-rect">` — um por DIA (não por dado; dias sem
+ *   envio também ganham rect, cobrindo a faixa vertical inteira da coluna,
+ *   largura = distância até o ponto médio pros vizinhos, B2) carregando
+ *   `data-*` com tudo que o tooltip precisa (`data-day`, `data-daylabel`,
+ *   `data-x`, `data-hasdata`, e quando há dado: `data-count`,
+ *   `data-delivered`, `data-opens`, `data-openrate`, `data-smallsample`,
+ *   `data-immature` — as mesmas duas flags de `DayOpenRateSummary`, sem
+ *   inventar novo campo).
+ * - `<line class="chart-crosshair">` — 1 linha vertical, `opacity:0` por
+ *   default, reposicionada via `x1`/`x2` pelo script ao entrar numa coluna.
+ * - Marcadores (`<circle>`) ganham `class="chart-marker"`, `data-day-index`
+ *   (índice do dia, pra achar os 2 marcadores — delivered + openRate — do
+ *   dia ativo) e `data-r` (raio original, pra restaurar ao sair do hover).
+ * B6 (teclado/leitor de tela) e B7 (gridlines/rótulos verticais do eixo X)
+ * ficam fora desta fatia — só B1-B4.
  */
 export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   if (rows.length === 0) return "";
@@ -284,16 +332,22 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
         const areaPath = `${linePath} L ${fmt(pts[pts.length - 1].x)},${fmt(baselineY)} L ${fmt(pts[0].x)},${fmt(baselineY)} Z`;
         areas += `<path d="${areaPath}" fill="url(#${gradientId})" stroke="none"/>`;
       }
-      for (const { value } of run) {
+      for (const { index, value } of run) {
         const { point, smallSample, immature } = value;
         // #5610 item 3: círculo OCO (fill=var(--card)) sinaliza amostra pequena.
         // #5610 item 5: opacidade reduzida (sem excluir o dado) sinaliza que a
         // campanha ainda está dentro da janela de maturação de 48h — as duas
         // condições podem coincidir no mesmo ponto (marcador oco + semitransparente).
         const opacity = immature ? ` opacity="0.55"` : "";
+        // #5640 B3: `class`/`data-day-index`/`data-r` — usados pelo script
+        // inline de `renderOpenRateByDaySection` pra achar e destacar (raio
+        // maior) os 2 marcadores do dia sob o ponteiro. `data-r` guarda o
+        // raio ORIGINAL (3 ou 4) pra restaurar ao sair do hover sem precisar
+        // recalcular a regra smallSample no JS.
+        const r = smallSample ? 4 : 3;
         markers += smallSample
-          ? `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="4" fill="var(--card)" stroke="var(${colorVar})" stroke-width="2"${opacity}/>`
-          : `<circle cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="3" fill="var(${colorVar})"${opacity}/>`;
+          ? `<circle class="chart-marker" data-day-index="${index}" data-r="${r}" cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="${r}" fill="var(--card)" stroke="var(${colorVar})" stroke-width="2"${opacity}/>`
+          : `<circle class="chart-marker" data-day-index="${index}" data-r="${r}" cx="${fmt(point.x)}" cy="${fmt(point.y)}" r="${r}" fill="var(${colorVar})"${opacity}/>`;
       }
     }
     const defs = `<linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
@@ -351,7 +405,46 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700"><tspan fill="var(--brand)">●</tspan> <tspan fill="var(--ink)">Delivered</tspan></text>
     <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>`;
 
-  return `<svg class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver texto acima para a janela e as legendas de marcador">
+  // #5640 B1: linha vertical do crosshair — invisível por default
+  // (`opacity:0`, sem `pointer-events` pra não competir com os hit rects
+  // logo abaixo), reposicionada via `x1`/`x2` pelo script inline ao entrar
+  // numa coluna. `id` fixo — só existe 1 instância deste gráfico por página
+  // (único call site, `renderOpenRateByDaySection`), então não há colisão.
+  const crosshair = `<line id="day-openrate-crosshair" class="chart-crosshair" x1="${fmt(chartLeft)}" y1="${fmt(chartTop)}" x2="${fmt(chartLeft)}" y2="${fmt(chartBottom)}" stroke="var(--rule)" stroke-width="1" style="opacity:0;pointer-events:none;"/>`;
+
+  // #5640 B1+B2: hit area de COLUNA (não do marcador de 3px) — 1 `<rect>`
+  // transparente por DIA-CALENDÁRIO da janela inteira (`days`, não só
+  // `rows` — dias sem envio também recebem um rect, pra hover funcionar em
+  // qualquer ponto da faixa; `data-hasdata="0"` sinaliza ausência de dado
+  // pro tooltip). Largura da coluna = distância até o ponto médio com os
+  // dias vizinhos (nearest-x sem posição livre do mouse); nas duas pontas a
+  // coluna vai até a borda do chart. `data-x` guarda a posição EXATA do
+  // ponto (mesma coordenada dos marcadores) pro crosshair alinhar com o
+  // marcador, não com o centro da coluna (que pode divergir 1px nas pontas).
+  const boundaries: number[] = [chartLeft];
+  for (let i = 1; i < days.length; i++) {
+    boundaries.push((xAt(i - 1) + xAt(i)) / 2);
+  }
+  boundaries.push(chartRight);
+
+  let hitRects = "";
+  for (let i = 0; i < days.length; i++) {
+    const x0 = boundaries[i];
+    const x1 = boundaries[i + 1];
+    const s = slots[i];
+    const dataAttrs = [
+      `data-idx="${i}"`,
+      `data-day="${escAttr(days[i])}"`,
+      `data-daylabel="${escAttr(fmtDayLabelLong(days[i]))}"`,
+      `data-x="${fmt(xAt(i))}"`,
+      s
+        ? `data-hasdata="1" data-count="${s.count}" data-delivered="${s.delivered}" data-opens="${s.opens}" data-openrate="${fmt(s.openRate)}" data-smallsample="${s.smallSample ? "1" : "0"}" data-immature="${s.immature ? "1" : "0"}"`
+        : `data-hasdata="0"`,
+    ].join(" ");
+    hitRects += `<rect class="chart-hit-rect" x="${fmt(x0)}" y="${fmt(chartTop)}" width="${fmt(x1 - x0)}" height="${fmt(chartH)}" fill="transparent" ${dataAttrs}/>`;
+  }
+
+  return `<svg id="day-openrate-svg" class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver texto acima para a janela e as legendas de marcador">
     <defs>${delivered.defs}${openRate.defs}</defs>
     ${seriesLabels}
     ${gridlines}
@@ -362,5 +455,7 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     ${delivered.markers}
     ${openRate.markers}
     ${xLabels}
+    ${crosshair}
+    ${hitRects}
   </svg>`;
 }
