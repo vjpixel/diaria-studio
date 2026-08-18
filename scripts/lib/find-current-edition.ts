@@ -16,7 +16,8 @@
  *       dispatch; 05-published.json é escrito mid-stage e causaria falso-done se
  *       social falhasse — #1694 finding 3).
  *
- * "Em curso" = todos os prereqs presentes E ao menos um output ausente.
+ * "Em curso" = todos os prereqs presentes, o prereq mais recente tem no máximo
+ * 7 dias, E ao menos um output ausente.
  *
  * CLI:
  *   npx tsx scripts/lib/find-current-edition.ts --stage 2
@@ -70,6 +71,7 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
 };
 
 const EDITIONS_DIR = "data/editions";
+const MAX_PREREQUISITE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const AAMMDD_RE = /^\d{6}$/;
 const AAMM_RE = /^\d{4}$/;
 
@@ -162,8 +164,21 @@ export function findEditionsInProgress(
   const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
 
   for (const [entry, editionDir] of editionDirsByAammdd) {
-    const prereqOk = reqs.prereq.every((f) => existsSync(join(editionDir, f)));
-    if (!prereqOk) continue;
+    const prereqPaths = reqs.prereq.map((f) => join(editionDir, f));
+    if (!prereqPaths.every((path) => existsSync(path))) continue;
+
+    // Abandoned editions lack their output sentinel forever. Only treat an edition
+    // as in progress while its most recently updated prerequisite is still recent.
+    let newestPrereqMtimeMs = -Infinity;
+    try {
+      for (const path of prereqPaths) {
+        newestPrereqMtimeMs = Math.max(newestPrereqMtimeMs, statSync(path).mtimeMs);
+      }
+    } catch {
+      // A prerequisite may disappear between existsSync and statSync; skip it.
+      continue;
+    }
+    if (Date.now() - newestPrereqMtimeMs > MAX_PREREQUISITE_AGE_MS) continue;
 
     const outputDone = reqs.output.every((f) => existsSync(join(editionDir, f)));
     if (outputDone) continue;
