@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findEditionsInProgress, resolveEditionDir } from "../scripts/lib/find-current-edition.ts";
@@ -94,6 +94,39 @@ describe("findEditionsInProgress", () => {
       ]);
     } finally {
       cleanup();
+    }
+  });
+
+  it("ignores editions whose newest prerequisite is older than seven days for every stage", () => {
+    const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const scenarios: Array<{ stage: 2 | 3 | 4 | 5 | 6; prereq: string[] }> = [
+      { stage: 2, prereq: ["_internal/01-approved.json"] },
+      { stage: 3, prereq: ["_internal/01-approved.json"] },
+      { stage: 4, prereq: ["02-reviewed.md", "03-social.md"] },
+      { stage: 5, prereq: ["_internal/.step-4-done.json"] },
+      { stage: 6, prereq: ["_internal/.step-5-done.json"] },
+    ];
+
+    for (const { stage, prereq } of scenarios) {
+      const { root, cleanup } = setupSandbox();
+      try {
+        const staleEdition = `26080${stage}`;
+        const freshEdition = `26081${stage}`;
+        makeEdition(root, staleEdition, prereq);
+        makeEdition(root, freshEdition, prereq);
+        for (const file of prereq) {
+          const path = join(root, "data/editions", staleEdition, file);
+          utimesSync(path, staleTime, staleTime);
+        }
+
+        assert.deepEqual(
+          findEditionsInProgress(stage, root),
+          [freshEdition],
+          `Stage ${stage} should exclude only the stale edition`,
+        );
+      } finally {
+        cleanup();
+      }
     }
   });
 
