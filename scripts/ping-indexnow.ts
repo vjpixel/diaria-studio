@@ -70,6 +70,16 @@ export interface PingResult {
   error: string | null;
 }
 
+/**
+ * #5620: a IndexNow API responde **202** para "URL recebida, validação de
+ * chave PENDENTE" — não é sucesso confirmado, e `res.ok` (que cobre todo o
+ * range 200-299) não distinguia os dois, deixando o step do CI verde pra
+ * sempre mesmo quando a chave nunca validou (achado ao vivo: arquivo de
+ * chave 404ando em produção com o ping reportando sucesso). Só 200 é
+ * sucesso confirmado aqui; 202 vira falha explícita com essa explicação.
+ */
+export const INDEXNOW_PENDING_KEY_VALIDATION_STATUS = 202;
+
 /** I/O isolado — o único ponto deste módulo que faz uma chamada de rede
  * real. `fetchFn` injetável pra teste (nunca chamado com o `fetch` global
  * em teste — ver `test/ping-indexnow.test.ts`). `payload === null` (gate
@@ -85,9 +95,55 @@ export async function pingIndexNow(
       headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify(payload),
     });
+    if (res.status === INDEXNOW_PENDING_KEY_VALIDATION_STATUS) {
+      return {
+        ok: false,
+        status: res.status,
+        error:
+          "202 — URL recebida mas validação de chave PENDENTE (não é sucesso confirmado); " +
+          "confira se GET {keyLocation} responde 200 com o conteúdo da chave",
+      };
+    }
     if (!res.ok) {
       const body = (await res.text()).slice(0, 300);
       return { ok: false, status: res.status, error: body };
+    }
+    return { ok: true, status: res.status, error: null };
+  } catch (e) {
+    return { ok: false, status: null, error: (e as Error).message };
+  }
+}
+
+export interface KeyLocationCheckResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+}
+
+/**
+ * #5620: confirma que `GET {keyLocation}` responde 200 com o CONTEÚDO da
+ * própria chave antes de pingar — sem isso, o IndexNow aceita o POST (200 ou
+ * 202) mesmo que a chave nunca vá validar, porque a validação da chave é
+ * assíncrona do lado do Bing. Checar o arquivo aqui, síncrono e antes do
+ * ping, é o único jeito de saber ANTES de reportar sucesso.
+ */
+export async function checkKeyLocationServed(
+  keyLocation: string,
+  expectedKey: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<KeyLocationCheckResult> {
+  try {
+    const res = await fetchFn(keyLocation);
+    if (!res.ok) {
+      return { ok: false, status: res.status, error: `GET ${keyLocation} → ${res.status} (esperado 200)` };
+    }
+    const body = (await res.text()).trim();
+    if (body !== expectedKey) {
+      return {
+        ok: false,
+        status: res.status,
+        error: `GET ${keyLocation} respondeu 200 mas o corpo não bate com a chave esperada`,
+      };
     }
     return { ok: true, status: res.status, error: null };
   } catch (e) {
@@ -108,6 +164,19 @@ async function main(): Promise<number> {
       `${LOG_PREFIX} gate fechado (nenhum .generated.ts na lista de ${changedFiles.length} arquivo(s), ou --key/INDEXNOW_KEY ausente) — nada a pingar.`,
     );
     return 0;
+  }
+
+  // #5620: confirma que o arquivo de chave está de fato servido ANTES de
+  // pingar — sem isso, um 404 no keyLocation (ex: secret gravada com \n de
+  // sobra no Worker) só seria descoberto quando o Bing tentasse validar,
+  // assíncrono e invisível pro CI.
+  const keyCheck = await checkKeyLocationServed(payload.keyLocation, payload.key);
+  if (!keyCheck.ok) {
+    console.error(
+      `${LOG_PREFIX} falha: arquivo de chave não está acessível em ${payload.keyLocation} — ${keyCheck.error} ` +
+        `(a submissão IndexNow nunca vai validar; regrave a secret no Worker antes de tentar de novo)`,
+    );
+    return 1;
   }
 
   console.log(

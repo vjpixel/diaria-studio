@@ -3,8 +3,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   parseBingQueryStatsResponse,
@@ -27,6 +28,7 @@ import {
   parseBingKeywordSeedsCsv,
   loadBingKeywordSeeds,
   isAiDomainRelevant,
+  isRelatedToSeed,
   filterRelevantRelated,
   summarizeBingKeywordTerms,
   buildBingKeywordsPullOutput,
@@ -36,12 +38,14 @@ import {
   pullBingLinkCounts,
   pullBingUrlLinks,
   buildBingLinksPullOutput,
+  pullOneSite,
   type BingQueryRow,
   type BingTrafficRow,
   type BingKeywordRow,
   type BingKeywordTermEntry,
   type BingLinksPageDetail,
 } from "../scripts/bing-pull.ts";
+import { BING_KNOWN_SITES } from "../scripts/lib/bing.ts";
 import { GEO_HUB_QUESTIONS } from "../scripts/lib/geo-citation-monitor.ts";
 
 describe("parseBingDate (#4908)", () => {
@@ -515,6 +519,54 @@ describe("isAiDomainRelevant / filterRelevantRelated (#5253 item 4)", () => {
   });
 });
 
+describe("isRelatedToSeed / filterRelevantRelated com seedQuery (#5624 — artefato de substring por SUFIXO)", () => {
+  it("caso real do achado: semente 'newsletter de ia' descarta 'detector de ia' (só 'ia' em comum, marcador genérico)", () => {
+    assert.equal(isRelatedToSeed("detector de ia", "newsletter de ia"), false);
+    assert.equal(isRelatedToSeed("viver de ia", "newsletter de ia"), false);
+    assert.equal(isRelatedToSeed("humanizador de ia gratuito", "newsletter de ia"), false);
+  });
+
+  it("relacionado que de fato compartilha token significativo com a semente é mantido", () => {
+    assert.equal(isRelatedToSeed("newsletter de ia gratuita", "newsletter de ia"), true);
+    assert.equal(isRelatedToSeed("melhor newsletter sobre ia", "newsletter de ia"), true);
+  });
+
+  it("genéricos de topo (chatgpt/gpt) sem token em comum com a semente são descartados mesmo sendo AI-relevantes", () => {
+    // Achado: 'inteligência artificial substitui programador' e 'ferramentas
+    // de inteligência artificial' devolviam a MESMA lista encabeçada por
+    // chatgpt/gpt — nenhum dos dois tem relação de token com nenhuma semente.
+    assert.equal(isRelatedToSeed("chatgpt", "ferramentas de inteligência artificial"), false);
+    assert.equal(isRelatedToSeed("gpt", "inteligência artificial substitui programador"), false);
+  });
+
+  it("sem seedQuery (chamada legada #5253), cai no gate só de isAiDomainRelevant", () => {
+    assert.equal(isRelatedToSeed("detector de ia"), true);
+    assert.equal(isRelatedToSeed("receita de bolo"), false);
+  });
+
+  it("semente sem token significativo (ex: 'ia' sozinha) não tem o que comparar — cai de volta pro gate de domínio", () => {
+    assert.equal(isRelatedToSeed("chatgpt de graça", "ia"), true);
+    assert.equal(isRelatedToSeed("receita de bolo", "ia"), false);
+  });
+
+  it("relacionado sem NENHUM marcador de domínio é descartado independente de token overlap", () => {
+    // "receita de bolo" compartilha token nenhum com a semente E não tem
+    // marcador de domínio — falha os dois gates, não só o de token.
+    assert.equal(isRelatedToSeed("receita de bolo", "newsletter de ia"), false);
+  });
+
+  it("filterRelevantRelated(related, seedQuery) filtra o caso real do #5624 de ponta a ponta", () => {
+    const rows: BingKeywordRow[] = [
+      { query: "detector de ia", date: null, impressions: 4098, broadImpressions: 5000 },
+      { query: "detector de ia gratuito", date: null, impressions: 339, broadImpressions: 400 },
+      { query: "viver de ia", date: null, impressions: 244, broadImpressions: 300 },
+      { query: "newsletter de ia diária", date: null, impressions: 10, broadImpressions: 12 },
+    ];
+    const filtered = filterRelevantRelated(rows, "newsletter de ia");
+    assert.deepEqual(filtered, [rows[3]]);
+  });
+});
+
 describe("summarizeBingKeywordTerms (#5253 itens 3 e 5)", () => {
   const okEntry = (term: string, impressions: number): BingKeywordTermEntry => ({
     term,
@@ -701,5 +753,45 @@ describe("buildBingLinksPullOutput (#5130 item 2 — SEM scoreOpportunities, só
     const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, pages);
     assert.deepEqual(out.pages[0].raw, [rawA]);
     assert.deepEqual(out.pages[2].raw, rawEmpty); // count=0 → nenhuma chamada GetUrlLinks feita
+  });
+});
+
+describe("BING_KNOWN_SITES (#5621)", () => {
+  it("tem os 4 hosts do projeto, cada um com barra final", () => {
+    assert.deepEqual(BING_KNOWN_SITES, [
+      "https://diar.ia.br/",
+      "https://arquivo.diar.ia.br/",
+      "https://livros.diar.ia.br/",
+      "https://cursos.diar.ia.br/",
+    ]);
+  });
+});
+
+describe("pullOneSite (#5621) — usado por `--mode site --site all`", () => {
+  it("grava o JSON no path derivado e retorna o resumo", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bing-pull-test-"));
+    try {
+      const fetchStub = fakeFetchJson({ d: [] });
+      const result = await pullOneSite("https://livros.diar.ia.br/", "KEY", Date.parse("2026-08-18T00:00:00Z"), dir, undefined, fetchStub);
+      assert.ok(result);
+      assert.equal(result!.site, "https://livros.diar.ia.br/");
+      assert.equal(result!.pulled_at, "2026-08-18");
+      assert.ok(result!.out.endsWith("bing-livros-diar-ia-br-2026-08-18.json"));
+      const written = JSON.parse(readFileSync(result!.out, "utf8"));
+      assert.equal(written.site, "https://livros.diar.ia.br/");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falha (ex: host não-verificado no BWT) -> null, sem lançar (falha per-site tolerada)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bing-pull-test-"));
+    try {
+      const fetchStub = (async () => ({ ok: false, status: 403, text: async () => "site not verified" })) as unknown as typeof fetch;
+      const result = await pullOneSite("https://cursos.diar.ia.br/", "KEY", Date.now(), dir, undefined, fetchStub);
+      assert.equal(result, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

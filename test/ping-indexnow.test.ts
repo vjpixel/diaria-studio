@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readChangedFiles, pingIndexNow } from "../scripts/ping-indexnow.ts";
+import { readChangedFiles, pingIndexNow, checkKeyLocationServed } from "../scripts/ping-indexnow.ts";
 import { buildIndexNowPayload } from "../scripts/lib/indexnow.ts";
 
 describe("readChangedFiles (#4909)", () => {
@@ -99,6 +99,52 @@ describe("pingIndexNow (#4909) — fetch sempre mockado, nunca rede real", () =>
     const result = await pingIndexNow(payload, fetchStub);
     assert.equal(result.ok, false);
     assert.equal(result.status, null);
+    assert.match(result.error ?? "", /ECONNRESET/);
+  });
+});
+
+describe("pingIndexNow (#5620) — 202 não é sucesso confirmado", () => {
+  it("status 202 -> ok:false, mensagem explica a validação pendente", async () => {
+    const payload = buildIndexNowPayload(["workers/arquivo/src/hubs/anthropic-claude.generated.ts"], "chave-teste");
+    assert.ok(payload);
+    const fetchStub = (async () => new Response("", { status: 202 })) as unknown as typeof fetch;
+
+    const result = await pingIndexNow(payload, fetchStub);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 202);
+    assert.match(result.error ?? "", /validação de chave PENDENTE/);
+  });
+});
+
+describe("checkKeyLocationServed (#5620) — confirma o arquivo de chave ANTES de pingar", () => {
+  it("keyLocation responde 200 com o conteúdo exato da chave -> ok:true", async () => {
+    const fetchStub = (async () => new Response("chave-teste")) as unknown as typeof fetch;
+    const result = await checkKeyLocationServed("https://arquivo.diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 200);
+  });
+
+  it("keyLocation 404 -> ok:false (o achado real do #5620)", async () => {
+    const fetchStub = (async () => new Response("not found", { status: 404 })) as unknown as typeof fetch;
+    const result = await checkKeyLocationServed("https://arquivo.diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 404);
+    assert.match(result.error ?? "", /404/);
+  });
+
+  it("keyLocation 200 mas com corpo divergente da chave esperada -> ok:false", async () => {
+    const fetchStub = (async () => new Response("outra-coisa")) as unknown as typeof fetch;
+    const result = await checkKeyLocationServed("https://arquivo.diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /não bate/);
+  });
+
+  it("falha de rede -> ok:false, error com a mensagem", async () => {
+    const fetchStub = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    const result = await checkKeyLocationServed("https://arquivo.diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
+    assert.equal(result.ok, false);
     assert.match(result.error ?? "", /ECONNRESET/);
   });
 });
