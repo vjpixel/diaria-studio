@@ -487,6 +487,20 @@ export interface CacMeasuredRow {
   cadastros: number;
   ativos: number;
   leitores: number;
+  /**
+   * Passo 3 do funil da §5 do protocolo do teste 2608 (#8.8). `computeGroupEngagement`
+   * sempre calculou estes quatro; até esta issue eles morriam dentro da função e o
+   * relatório só via `cadastros`/`ativos`/`leitores` — quem quisesse o funil tinha de
+   * rodar `cohort-engagement.ts` por braço à mão e transcrever.
+   *
+   * `pending` é o mais informativo deste teste: é o cadastro que clicou no anúncio e
+   * não confirmou, exatamente o segmento que o canal `brevo_diaria` mira (ver §7.3b).
+   */
+  pending: number;
+  inativos: number;
+  invalid: number;
+  /** Status fora dos quatro acima (validating, paused, needs_attention…) — nunca descartado em silêncio. */
+  outrosStatus: number;
   /** `null` quando `leitores === 0` (sem dado, nunca "custo infinito" silencioso). */
   custoPorLeitor: number | null;
   aberturaAgregada: number | null;
@@ -562,6 +576,10 @@ export function computeMeasuredRow(
     cadastros: engagement.cadastros,
     ativos: engagement.ativos,
     leitores,
+    pending: engagement.pending,
+    inativos: engagement.inativos,
+    invalid: engagement.invalid,
+    outrosStatus: engagement.outros_status,
     window,
     excludedMissingCreated,
     custoPorLeitor: leitores > 0 ? spend.valor / leitores : null,

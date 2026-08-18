@@ -241,6 +241,30 @@ export function formatCacReportMarkdown(
     }
   }
 
+  // Funil por braço (§5 / §8.8 do protocolo 2608). Tabela separada de propósito:
+  // a tabela acima já tem 13 colunas, e o funil responde outra pergunta — não
+  // "quanto custou o leitor", mas "onde o cadastro parou".
+  const measuredRows = report.rows.filter((r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured");
+  if (measuredRows.length > 0) {
+    lines.push("");
+    lines.push("### Funil por canal");
+    lines.push("");
+    lines.push(
+      "Passo 3 da §5. `Pending` é o cadastro que clicou e não confirmou — o mais informativo " +
+        "deste teste, e o segmento que o canal `brevo_diaria` mira (§7.3b).",
+    );
+    lines.push("");
+    lines.push("| Canal | Sub-canal | Cadastros | Pending | % pending | Inativos | Invalid | Outros | Ativos | Leitores |");
+    lines.push("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for (const row of measuredRows) {
+      const pctPending = row.cadastros > 0 ? fmtPct(row.pending / row.cadastros) : "—";
+      lines.push(
+        `| ${row.canal} | ${row.spend.subcanal ?? "—"} | ${row.cadastros} | ${row.pending} | ${pctPending} | ` +
+          `${row.inativos} | ${row.invalid} | ${row.outrosStatus} | ${row.ativos} | ${row.leitores} |`,
+      );
+    }
+  }
+
   lines.push("");
   lines.push(`Total medido (exclui estimativas): ${fmtBrl(report.totalGastoMedido)}.`);
   const boostRow = report.rows.find((r): r is Extract<CacRow, { kind: "boost-estimate" }> => r.kind === "boost-estimate");
