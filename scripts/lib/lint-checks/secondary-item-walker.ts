@@ -126,6 +126,8 @@ export interface SecondaryItemFound {
   descriptionLine: number;
   /** Texto do título — sem colchetes/bold no formato inline (grupo capturado); raw trimmed no formato 2-linhas. */
   title: string;
+  /** URL do item, extraída do link markdown. */
+  url: string;
   /** Texto da descrição, já trimmed. */
   description: string;
   /** true = título+descrição na mesma linha; false = formato legado 2-linhas. */
@@ -138,6 +140,14 @@ export interface SecondaryItemMissing {
   titleLine: number;
   /** Raw trimmed do título (com colchetes/bold, como aparece no MD). */
   title: string;
+}
+
+/** Extrai a URL de um link markdown com parênteses balanceados. */
+function extractItemUrl(raw: string): string {
+  const match = raw.match(
+    new RegExp(String.raw`\]\((${URL_WITH_BALANCED_PARENS_RE_PART})\)`),
+  );
+  return match?.[1] ?? "";
 }
 
 export interface SecondaryItemWalkerOptions {
@@ -214,6 +224,7 @@ export function forEachSecondaryItem(md: string, opts: SecondaryItemWalkerOption
         titleLine: i + 1,
         descriptionLine: i + 1,
         title: inlineMatch[1],
+        url: extractItemUrl(raw),
         description: inlineMatch[2].trim(),
         inline: true,
       });
@@ -241,6 +252,7 @@ export function forEachSecondaryItem(md: string, opts: SecondaryItemWalkerOption
           titleLine: i + 1,
           descriptionLine: j + 1,
           title: t,
+          url: extractItemUrl(raw),
           description: lines[j].trim(),
           inline: false,
         });

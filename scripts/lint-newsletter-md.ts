@@ -71,6 +71,11 @@ import {
   type SecondaryItemSummaryReport,
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
 import {
+  checkSecondaryItemCoherence,
+  type SecondaryItemCoherenceError,
+  type SecondaryItemCoherenceReport,
+} from "./lib/lint-checks/secondary-item-coherence.ts"; // #5663
+import {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
   type TitlePublisherSuffixError,
@@ -209,6 +214,11 @@ export {
   type SecondaryItemSummaryError,
   type SecondaryItemSummaryReport,
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
+export {
+  checkSecondaryItemCoherence,
+  type SecondaryItemCoherenceError,
+  type SecondaryItemCoherenceReport,
+} from "./lib/lint-checks/secondary-item-coherence.ts"; // #5663
 export {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
@@ -483,6 +493,15 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     runCheckSafely(push, "secondary-items-have-summary", "#2545", "gate-blocking", () =>
       checkSecondaryItemsHaveSummary(md),
     );
+
+    if (existsSync(approvedPath)) {
+      runCheckSafely(push, "secondary-item-coherence", "#5663", "gate-blocking", () =>
+        checkSecondaryItemCoherence(
+          md,
+          JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson,
+        ),
+      );
+    }
 
     runCheckSafely(push, "no-untranslated-summary", "#3196", "gate-blocking", () =>
       checkNoUntranslatedSummary(md),
@@ -1312,6 +1331,40 @@ function main(): void {
       console.error(
         `Causa provável: cache-miss no enrich-inbox-articles (body não cacheado no 1i). Re-rodar Etapa 1 ou adicionar descrição manualmente.`,
       );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check secondary-item-coherence (#5663) — backstop estrutural
+  // cruzando descrições secundárias com o summary bruto do approved.
+  if (args.check === "secondary-item-coherence") {
+    if (!args.md || !args.approved) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check secondary-item-coherence --md <md-path> --approved <01-approved.json>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    const approvedPath = resolve(ROOT, args.approved);
+    if (!existsSync(mdPath) || !existsSync(approvedPath)) {
+      console.error(
+        `Arquivo não encontrado: ${!existsSync(mdPath) ? mdPath : approvedPath}`,
+      );
+      process.exit(2);
+    }
+    const result = checkSecondaryItemCoherence(
+      readFileSync(mdPath, "utf8"),
+      JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson,
+    );
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ secondary-item-coherence: ${result.errors.length} item(ns) secundário(s) com saída incoerente:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  ${e.kind} — ${e.section} linha ${e.line}: "${e.titleExcerpt}"`);
+      }
       process.exit(1);
     }
     return;
