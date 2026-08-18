@@ -511,7 +511,7 @@ Daqui em diante `tmp-scored.json` tem o **mesmo contrato** de antes (`highlights
 
 **`--finalists` (#3916/#3918):** habilita o backstop determinístico de `ensureNegativeImpactHighlight` (`scripts/lib/negative-impact-promotion.ts`) — se `scorer-select` não garantiu (nem documentou promoção próprio de) ≥1 highlight `negative_impact:true`, o script promove deterministicamente o melhor candidato tagueado do pool de finalistas (nunca demove o D1/maior score) antes de escrever `tmp-scored.json`. No-op silencioso quando os highlights já cumprem a regra, ou quando nenhum finalista tem a tag (pool sem candidato digno — caso legítimo, `has-negative-impact-highlight` avisa no gate). Stderr loga a promoção quando ela ocorre (`[assemble-scored] backstop determinístico promoveu ...`).
 
-**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Sonnet, #2772) passando `categorized` (de `tmp-dates-reviewed.json`) e `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
+**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Sonnet, #2772) passando `categorized` do `tmp-scoring-pool.json` quando esse arquivo existir (ele preserva as anotações determinísticas de `split-articles-for-scoring.ts`, inclusive `primary_source:true`); se o split não chegou a gravar o pool, usar `tmp-dates-reviewed.json` como fallback de último recurso. `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
 
 ### 1r. Validação pós-scorer (#104)
 
