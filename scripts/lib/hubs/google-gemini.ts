@@ -82,6 +82,12 @@ const PUBLISHED_DATE = "2026-08-09";
  * desaconselha. */
 // 2026-08-18 (#5628): limpeza de prosa (moldura de cobertura/ponteiro sem
 // "seção") — bump por mudança de CORPO, não por fonte nova.
+// 2026-08-18 (#5632): `generate-hub-sources.ts --hub google-gemini` trouxe
+// 2 fontes novas (cobertura de 30/07 pra 17/08, fechando a defasagem de 19
+// dias que a issue mediu) — todo número em `faq`/`introParagraph`/`sections`
+// é derivado de `SOURCES` via `deriveGoogleGeminiFacts`/`countMatching`, sem
+// literal transcrito à mão, então o regen não precisou de reescrita de
+// prosa (mesmo mecanismo que já valia antes; só documentando o bump aqui).
 const UPDATED_DATE = "2026-08-18";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —

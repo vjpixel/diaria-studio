@@ -110,7 +110,25 @@ const PUBLISHED_DATE = "2026-08-11";
  * nova — `sourceEditions[0].date` continua 2026-07-03, então o warning de
  * `checkUpdatedDateCeiling` (#5124) só cresce; é esperado até o #5632
  * regenerar `brasil-regulacao-sources.generated.json` com fontes mais
- * recentes. */
+ * recentes.
+ *
+ * 2026-08-18 (#5632): `generate-hub-sources.ts --hub brasil-regulacao`
+ * rodado — o regex casa só título/subtítulo (`destaques`), então ele
+ * SOBRESCREVE o JSON inteiro sem merge (ver o comentário de
+ * `HUB_KEYWORD_PATTERNS["brasil-regulacao"]` em `generate-hub-sources.ts`)
+ * e apaga as 2 entradas manuais de RADAR já documentadas ali
+ * (`como-ter-acesso-alexa`, `governo-dos-eua-pode-virar-socio-da-openai`).
+ * Ambas foram re-adicionadas à mão no `.generated.json` depois do regen, e
+ * uma 3ª entrada de RADAR entrou pela mesma via: a edição de 04/08/2026
+ * (`hacker-chines-usa-deepseek-em-ataques-autonomos`) traz uma coluna sobre
+ * a Resolução CFM nº 2.454/2026 — o mesmo evento regulatório já narrado em
+ * `sections[3]`/FAQ #8 (edição de 27/02/2026), então não abriu seção nova:
+ * é mais cobertura do MESMO fato, não um fato novo, e a prosa que cita esse
+ * evento (`sections[3]`, FAQ #8) já descreve a resolução sem enumerar toda
+ * cobertura que a cita — nada ficou desatualizado. O ganho real de
+ * cobertura é a janela: `sourceEditions[0].date` avança de 2026-07-03 pra
+ * 2026-08-04, fechando a defasagem de 46 dias que a issue mediu (nova
+ * defasagem: 14 dias, abaixo do limiar de 21 do #5124). */
 const UPDATED_DATE = "2026-08-18";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
