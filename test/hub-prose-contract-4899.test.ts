@@ -130,6 +130,22 @@ describe("#4899 — contrato de prosa dos hubs", () => {
       }
     });
 
+    it("prosa-sem-publicacao-como-sujeito NÃO pega 'perguntou a diar.ia.br' quando diar.ia.br é DESTINATÁRIO, não narrador (#5636 review)", () => {
+      // Achado do code-reviewer: "perguntar A alguém" usa "a" majoritariamente
+      // como preposição dativa (destinatário da pergunta), não como artigo de
+      // sujeito posposto — diferente de "apurou a diar.ia.br", onde não há
+      // sentido dativo (não existe "apurar A alguém" com esse papel). Aqui há
+      // um sujeito explícito ("um leitor") antes do verbo, então diar.ia.br
+      // está no papel de destinatário, não de narrador.
+      for (const p of [
+        "Um leitor perguntou a diar.ia.br sobre o preço do plano anual.",
+        "Alguém já perguntou a diar.ia.br se o Claude tem plano gratuito.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.deepEqual(proseErrors(hub, "prosa-sem-publicacao-como-sujeito"), [], p);
+      }
+    });
+
     it("prosa-sem-moldura-de-cobertura: cobertura/arquivo/arco como sujeito de verbo narrativo (#5628)", () => {
       for (const p of [
         "Ao longo de 2026, a cobertura registrou uma virada clara de posicionamento.",
@@ -149,6 +165,21 @@ describe("#4899 — contrato de prosa dos hubs", () => {
       for (const p of [
         "Isso só fica visível olhando o arquivo inteiro, não uma edição isolada.",
         "É o ponto mais concreto de toda a cobertura sobre o tema no período.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.deepEqual(proseErrors(hub, "prosa-sem-moldura-de-cobertura"), [], p);
+      }
+    });
+
+    it("prosa-sem-moldura-de-cobertura NÃO pega 'girar em torno de' — descrição de escopo, não ato de narração (#5636 review)", () => {
+      // Achado do code-reviewer: "girar em torno de" descreve TEMA/escopo,
+      // não atribui um ato de reportagem (diferente de "cobriu"/"registrou"/
+      // "publicou" etc., que narram um fato específico). O PR #5636 teve que
+      // reescrever esse trecho real só pra escapar do regex antigo — prova
+      // ao vivo de que a regra estava mais ampla que a intenção do #5628.
+      for (const p of [
+        "Depois veio um hiato sem lançamento novo, período em que a cobertura girou em torno de valuation, parcerias e do início do confronto, não de produto novo.",
+        "Nesse trecho, o debate gira em torno de dois modelos específicos, não do produto em si.",
       ]) {
         const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
         assert.deepEqual(proseErrors(hub, "prosa-sem-moldura-de-cobertura"), [], p);

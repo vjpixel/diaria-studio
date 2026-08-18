@@ -946,8 +946,24 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // Mesma lista de verbos do 1º ramo, sem o `(?:\S+\s){0,2}` (a ordem
     // invertida não tem o mesmo padrão de advérbio interposto que motivou
     // aquele absorvedor no 1º ramo).
+    //
+    // #5636 review: "pergunt" saiu da lista comum do 3º ramo e virou um 4º
+    // ramo à parte, com `(?<!\p{L}\s)` na frente. Motivo: "perguntar A
+    // alguém" usa "a" majoritariamente como preposição DATIVA (destinatário
+    // da pergunta), não como artigo de sujeito posposto — "Um leitor
+    // perguntou a diar.ia.br sobre X" tem diar.ia.br como DESTINATÁRIO, não
+    // como narrador, mas o 3º ramo original casava mesmo assim (só olhava
+    // pro que vem DEPOIS do verbo). O lookbehind distingue os dois casos
+    // pela presença de um sujeito explícito logo antes do verbo: se houver
+    // uma palavra terminada por espaço imediatamente antes ("leitor "), há
+    // sujeito e a regra não deve marcar; se o verbo abre a oração (início de
+    // frase, ou depois de aspas/vírgula de discurso direto, como em `"X?"
+    // perguntou a diar.ia.br`), não há sujeito concorrente e a marca segue
+    // válida — é aí que diar.ia.br está de fato no lugar do sujeito
+    // invertido. Os outros verbos do ramo (apur/chec/levant/etc.) ficam como
+    // estavam — não têm o mesmo padrão predominantemente dativo de uso.
     pattern:
-      /\ba diar\.ia\.br (?:\S+\s){0,2}(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion)(?:ou|a|am|ando|indo|iu|e|aram)?\b|\ba diar\.ia\.br (?:nunca|jamais|passou a)\b|\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|pergunt|apur|chec|levant)(?:ou|a|am|ando|indo|iu|e|aram)?\s+a diar\.ia\.br\b/i,
+      /\ba diar\.ia\.br (?:\S+\s){0,2}(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion)(?:ou|a|am|ando|indo|iu|e|aram)?\b|\ba diar\.ia\.br (?:nunca|jamais|passou a)\b|\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|apur|chec|levant)(?:ou|a|am|ando|indo|iu|e|aram)?\s+a diar\.ia\.br\b|(?<!\p{L}\s)\bpergunt(?:ou|a|am|ando|indo|iu|e|aram)?\s+a diar\.ia\.br\b/iu,
     message:
       "a publicação está no lugar de sujeito de um verbo de cobertura — o fato vira predicado " +
       "da cobertura. Ponha o fato no sujeito. Afirmação sobre o próprio arquivo " +
@@ -996,10 +1012,23 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // a forma que o docstring protege ("só fica visível olhando o arquivo
     // inteiro", "toda a cobertura sobre X"): ali o substantivo vem DEPOIS do
     // verbo/preposição, nunca antes dele.
+    //
+    // #5636 review: o stem "gir" saiu da lista de verbos. "Girar em torno de
+    // X" não é um verbo de REPORTAGEM (cobrir/registrar/publicar/destacar —
+    // um ato de noticiar um fato específico) — é uma descrição de ESCOPO
+    // temático ("sobre o que foi X"), legítima mesmo com "a cobertura"/"o
+    // arquivo" como sujeito (prova ao vivo: o PR #5636 teve que reescrever
+    // "a cobertura girou em torno de valuation..." para "as manchetes
+    // giraram em torno de..." só pra escapar do regex, sinal de que a regra
+    // estava mais ampla que a intenção da issue #5628 — proibir CONSTRUÇÃO
+    // de narração de um fato específico, não proibir a idiomática "girar em
+    // torno de"). Os demais stems (cobr/notici/.../ampli/fech/descrev)
+    // continuam de pé — são todos atos de reportagem/narração, não
+    // descrição de escopo.
     id: "prosa-sem-moldura-de-cobertura",
     appliesTo: "prose",
     pattern:
-      /\b(a cobertura|o arquivo|o arco|a edição mais \S+ do período)\s+(?:\S+\s){0,2}\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|gir|ampli|fech|descrev)(?:ou|a|am|ando|indo|iu|e|aram)?\b/i,
+      /\b(a cobertura|o arquivo|o arco|a edição mais \S+ do período)\s+(?:\S+\s){0,2}\b(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion|ampli|fech|descrev)(?:ou|a|am|ando|indo|iu|e|aram)?\b/i,
     message:
       "a cobertura/o arquivo/o arco/a edição está no lugar de sujeito de um verbo narrativo — o " +
       "recipiente vira narrador do fato. Ponha o fato (ou a data) no sujeito. Uso como OBJETO " +
