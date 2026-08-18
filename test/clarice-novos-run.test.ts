@@ -26,6 +26,7 @@ import {
   parseStepJson,
   todayAammdd,
   NovosAbort,
+  NOVOS_SEMAPHORE_ABORT_EXIT_CODE,
   type NovosRunDeps,
   type StepResult,
   type ExecFn,
@@ -450,15 +451,16 @@ describe("clarice-novos-run (#4941)", () => {
 
   // ── guards abortam ─────────────────────────────────────────────────────
 
-  describe("guards abortam (exit 1), sem chamar passos de escrita subsequentes", () => {
-    it("semáforo vermelho -> aborta antes de montar o grupo", async () => {
+  describe("guards abortam (exit 1, ou exit 3 pro semáforo — #5615/#5592), sem chamar passos de escrita subsequentes", () => {
+    it("semáforo vermelho -> aborta antes de montar o grupo, com exit 3 (não 1 — #5615/#5592: abort D4 é comportamento CORRETO, distinto de erro genérico)", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 1);
+      assert.equal(result.code, NOVOS_SEMAPHORE_ABORT_EXIT_CODE);
+      assert.equal(result.code, 3);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
       rmSync(root, { recursive: true, force: true });
     });
@@ -470,10 +472,21 @@ describe("clarice-novos-run (#4941)", () => {
       const { exec } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 1);
+      assert.equal(result.code, NOVOS_SEMAPHORE_ABORT_EXIT_CODE);
       const cutoff = readNovosCutoff(resolve(root, "data", "clarice-subscribers"));
       assert.ok(cutoff, "cutoff deveria ter sido persistido antes do semáforo abortar");
       assert.equal(cutoff!.cutoffIso, "2026-08-01"); // `since` devolvido por goldenHandlers().clarice-stripe-delta.ts
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5615/#5592: abort por QUALQUER OUTRO motivo (não-semáforo) continua saindo exit 1, não 3 — a distinção é específica do guard D4", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ error: "cap exceeded" }, 1);
+      const { exec } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 1);
       rmSync(root, { recursive: true, force: true });
     });
 
