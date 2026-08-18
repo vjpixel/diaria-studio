@@ -10,6 +10,8 @@ import {
   hostMatchesBucket,
   computeArmRetention,
   evaluateRetentionCut,
+  exitCodeForOutcome,
+  countInatribuiveis,
   renderRetentionMarkdown,
   type ArmRetention,
 } from "../scripts/lib/utm-retention.ts";
@@ -156,44 +158,63 @@ function arm(canal: string, atribuidos: number, orfaos: number): ArmRetention {
 }
 
 describe("evaluateRetentionCut", () => {
-  it("passa quando todos os braços estão acima do mínimo e juntos", () => {
+  it("passa quando TODOS os braços estão medidos, acima do mínimo e juntos", () => {
     const v = evaluateRetentionCut([arm("A", 95, 5), arm("B", 96, 4), arm("C", 94, 6)]);
-    assert.equal(v.passa, true);
+    assert.equal(v.outcome, "passa");
     assert.deepEqual(v.motivos, []);
   });
 
   it("reprova braço abaixo de RETENTION_MIN", () => {
     const v = evaluateRetentionCut([arm("A", 80, 20), arm("B", 95, 5)]);
-    assert.equal(v.passa, false);
-    assert.ok(v.motivos.some((m) => m.includes("A") && m.includes("retenção")));
+    assert.equal(v.outcome, "reprova");
+    assert.ok(v.motivos.some((m) => m.includes("A") && m.includes("reten")));
   });
 
-  it("limiar é exclusivo: exatamente RETENTION_MIN passa", () => {
+  it("limiar do mínimo é exclusivo: exatamente RETENTION_MIN passa", () => {
     const exato = arm("A", 85, 15);
     assert.equal(exato.retencao, RETENTION_MIN);
-    const v = evaluateRetentionCut([exato]);
-    assert.equal(v.passa, true);
+    assert.equal(evaluateRetentionCut([exato]).outcome, "passa");
   });
 
-  it("reprova divergência acima de RETENTION_MAX_SPREAD mesmo com todos acima do mínimo", () => {
-    // 100% e 86% — os dois passam no mínimo, mas divergem 14 pontos... ok;
-    // 100% e 84% divergem 16 e um deles já falha. Construir o caso puro:
-    const v = evaluateRetentionCut([arm("A", 100, 0), arm("B", 86, 14)]);
-    assert.equal(v.spread! > 0.13, true);
-    // 14 pontos < 15 -> ainda passa
-    assert.equal(v.passa, true);
-
-    const v2 = evaluateRetentionCut([arm("A", 1000, 0), arm("B", 840, 160)]);
-    assert.equal(v2.passa, false);
-    assert.ok(v2.motivos.some((m) => m.includes("divergência")));
+  it("limiar do spread é exclusivo: exatamente RETENTION_MAX_SPREAD passa", () => {
+    // O corte é `spread > RETENTION_MAX_SPREAD`. Sem este teste, trocar `>` por
+    // `>=` passaria despercebido — o mínimo tinha teste de borda e o spread não
+    // tinha (achado da revisão do PR #5643).
+    const v = evaluateRetentionCut([arm("A", 1000, 0), arm("B", 850, 150)]);
+    assert.equal(Math.round(v.spread! * 1000) / 1000, RETENTION_MAX_SPREAD);
+    assert.equal(v.outcome, "passa", "exatamente 15 pontos NAO reprova");
   });
 
-  it("braço sem dado não aprova nem reprova — aparece em semDado", () => {
-    const v = evaluateRetentionCut([arm("A", 95, 5), arm("B", 0, 0)]);
-    assert.equal(v.passa, true);
-    assert.deepEqual(v.semDado, ["B"]);
-    // e não entra no spread
-    assert.equal(v.spread, null);
+  it("reprova divergência acima de RETENTION_MAX_SPREAD", () => {
+    const v = evaluateRetentionCut([arm("A", 1000, 0), arm("B", 840, 160)]);
+    assert.equal(v.outcome, "reprova");
+    assert.ok(v.motivos.some((m) => m.includes("diverg")));
+  });
+
+  it("anota amostra pequena no motivo quando o braço que reprova tem n baixo", () => {
+    const v = evaluateRetentionCut([arm("A", 1, 4)]);
+    assert.equal(v.outcome, "reprova");
+    assert.ok(v.motivos[0].includes("amostra pequena"), v.motivos[0]);
+  });
+
+  it("braço sem dado NÃO aprova — vira incompleto, mesmo com os outros limpos", () => {
+    // P1 da revisão: com `passa: boolean`, 2 de 3 braços limpos devolvia
+    // aprovação e um canal inteiro sumia da comparação em silêncio.
+    const v = evaluateRetentionCut([arm("A", 95, 5), arm("B", 96, 4), arm("C", 0, 0)]);
+    assert.equal(v.outcome, "incompleto");
+    assert.deepEqual(v.semDado, ["C"]);
+  });
+
+  it("ZERO braços medidos é incompleto, nunca passa", () => {
+    assert.equal(evaluateRetentionCut([arm("A", 0, 0), arm("B", 0, 0)]).outcome, "incompleto");
+  });
+
+  it("lista vazia de braços também é incompleto — recusar é a resposta conservadora", () => {
+    assert.equal(evaluateRetentionCut([]).outcome, "incompleto");
+  });
+
+  it("reprova vence incompleto: violação real importa mais que dado faltando", () => {
+    assert.equal(evaluateRetentionCut([arm("A", 50, 50), arm("B", 0, 0)]).outcome, "reprova");
   });
 
   it("spread é null com menos de 2 braços medidos", () => {
@@ -201,11 +222,57 @@ describe("evaluateRetentionCut", () => {
   });
 });
 
+describe("exitCodeForOutcome", () => {
+  it("mapeia os 3 estados pra códigos DISTINTOS — 2 e 3 exigem ações humanas diferentes", () => {
+    assert.equal(exitCodeForOutcome("passa"), 0);
+    assert.equal(exitCodeForOutcome("reprova"), 2);
+    assert.equal(exitCodeForOutcome("incompleto"), 3);
+  });
+
+  it("só 'passa' sai com 0 — regressão do bug de aprovação silenciosa", () => {
+    for (const o of ["reprova", "incompleto"] as const) {
+      assert.notEqual(exitCodeForOutcome(o), 0, o + " nao pode sair com 0");
+    }
+  });
+
+  it("nenhum colide com o exit 1, reservado a erro de operação", () => {
+    for (const o of ["passa", "reprova", "incompleto"] as const) {
+      assert.notEqual(exitCodeForOutcome(o), 1);
+    }
+  });
+});
+
+describe("countInatribuiveis", () => {
+  it("conta cadastro sem utm_source e sem referrer reconhecido", () => {
+    const n = countInatribuiveis([
+      sub({ utm_source: "", referring_site: "" }),
+      sub({ utm_source: "", referring_site: "https://algum-blog.com.br/" }),
+    ]);
+    assert.equal(n, 2);
+  });
+
+  it("não conta quem tem utm_source, nem quem cai em balde conhecido", () => {
+    const n = countInatribuiveis([
+      sub({ utm_source: "meta-ads" }),
+      sub({ utm_source: "organico-qualquer" }),
+      sub({ utm_source: "", referring_site: "https://l.facebook.com/" }),
+      sub({ utm_source: "", referring_site: "bing.com" }),
+    ]);
+    assert.equal(n, 0);
+  });
+
+  it("é o buraco que faz a retenção medida ser SUPERESTIMADA, não subestimada", () => {
+    const subs = [sub({ utm_source: "meta-ads" }), sub({ utm_source: "", referring_site: "" })];
+    assert.equal(computeArmRetention(subs, META).retencao, 1, "medida diz 100%...");
+    assert.equal(countInatribuiveis(subs), 1, "...mas 1 cadastro sumiu da conta");
+  });
+});
+
 describe("renderRetentionMarkdown", () => {
   it("declara o limite inferior e o veredito", () => {
     const arms = [arm("A", 95, 5), arm("B", 90, 10)];
     const md = renderRetentionMarkdown(arms, evaluateRetentionCut(arms));
-    assert.ok(md.includes("limite inferior"), "tem de avisar que o número é conservador");
+    assert.ok(md.includes("opostas"), "tem de declarar as DUAS fontes de erro");
     assert.ok(md.includes("PASSA"));
   });
 
@@ -218,20 +285,32 @@ describe("renderRetentionMarkdown", () => {
     for (const m of v.motivos) assert.ok(md.includes(m));
   });
 
-  it("com ZERO braços medidos não diz PASSA — aprovação por ausência de dado é o bug que a §8.4 mata", () => {
+  it("com ZERO braços medidos não diz PASSA — e o exit code concorda com a prosa", () => {
     const arms = [arm("A", 0, 0), arm("B", 0, 0), arm("C", 0, 0)];
     const v = evaluateRetentionCut(arms);
-    assert.equal(v.passa, true, "não há violação a reportar...");
     const md = renderRetentionMarkdown(arms, v);
-    assert.ok(!md.includes("PASSA"), "...mas o markdown NÃO pode dizer PASSA");
-    assert.ok(md.includes("NÃO AVALIADO"));
+    assert.ok(!md.includes("PASSA"), "markdown NAO pode dizer PASSA");
+    assert.ok(md.includes("INCOMPLETO"));
     assert.ok(md.includes("Isto não é aprovação"));
+    assert.notEqual(exitCodeForOutcome(v.outcome), 0, "e o exit code tambem nao pode aprovar");
+  });
+
+  it("declara os inatribuíveis quando há, avisando que a tabela está superestimada", () => {
+    const arms = [arm("A", 95, 5)];
+    const md = renderRetentionMarkdown(arms, evaluateRetentionCut(arms), 42);
+    assert.ok(md.includes("Inatribuíveis: 42"));
+    assert.ok(md.includes("SUPERESTIMADA"));
+  });
+
+  it("omite o bloco de inatribuíveis quando é zero", () => {
+    const arms = [arm("A", 95, 5)];
+    assert.ok(!renderRetentionMarkdown(arms, evaluateRetentionCut(arms), 0).includes("Inatribu"));
   });
 
   it("braço sem dado aparece explicitamente, nunca some da tabela", () => {
     const arms = [arm("A", 95, 5), arm("B", 0, 0)];
     const md = renderRetentionMarkdown(arms, evaluateRetentionCut(arms));
-    assert.ok(md.includes("sem dado"));
+    assert.ok(md.includes("Sem denominador"));
     assert.ok(md.includes("B"));
   });
 });

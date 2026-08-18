@@ -24,18 +24,27 @@
  * - **órfãos** = cadastros da MESMA janela cujo `referring_site` é de uma
  *   plataforma do braço E cujo `utm_source` está vazio.
  *
- * ## Por que o número é um LIMITE INFERIOR (e por que isso é bom)
+ * ## Duas fontes de erro, em direções OPOSTAS — leia antes de confiar no número
  *
- * Nesses baldes de referrer também cai tráfego **orgânico** — o projeto publica
- * em Facebook, Instagram e LinkedIn, e recebe busca orgânica do Google e do
- * Bing. Um cadastro orgânico vindo de `instagram.com` sem UTM é contado aqui
- * como órfão, embora nunca tenha sido pago. Isso EMPURRA a retenção medida para
- * baixo, nunca para cima.
+ * **(1) Contaminação orgânica — empurra a retenção medida para BAIXO.** Nesses
+ * baldes de referrer também cai tráfego orgânico: o projeto publica em
+ * Facebook, Instagram e LinkedIn, e recebe busca orgânica do Google e do Bing.
+ * Um cadastro orgânico vindo de `instagram.com` sem UTM é contado como órfão,
+ * embora nunca tenha sido pago. Contra ESTA fonte de erro a métrica é
+ * conservadora: ela reprova braço bom, nunca aprova braço ruim.
  *
- * A consequência é a que interessa: a métrica é **conservadora na direção
- * certa**. Se a retenção medida passa no corte, a real também passa. O erro
- * possível é reprovar um braço bom, nunca aprovar um braço que estava perdendo
- * cadastros em silêncio.
+ * **(2) Cadastro inatribuível — empurra a retenção medida para CIMA.** Um
+ * cadastro que perde o UTM *e* chega com referrer vazio ou irreconhecível
+ * (privacidade do navegador, app que não manda referrer, encurtador) não entra
+ * nem no numerador nem no denominador de braço nenhum: some. Se ele era um
+ * clique pago que perdeu o UTM — exatamente o cenário que esta métrica existe
+ * pra pegar — a retenção medida fica MAIOR que a real.
+ *
+ * Por isso a garantia **não é** "se passou no corte, está limpo". Ela é: passar
+ * no corte descarta a perda por referrer conhecido, e nada mais. O tamanho do
+ * buraco (2) é contado por `countInatribuiveis` e sai no relatório ao lado da
+ * tabela — um número grande ali invalida a leitura da tabela, por mais bonita
+ * que ela esteja.
  *
  * ## O corte
  *
@@ -65,6 +74,13 @@ export const RETENTION_MAX_SPREAD = 0.15;
  * Não suprime o número (nunca esconder dado) — só marca.
  */
 export const RETENTION_SMALL_SAMPLE = 20;
+
+/**
+ * Folga para comparar o spread contra `RETENTION_MAX_SPREAD`. Muito menor que
+ * qualquer diferença que importe (1e-9 de fração = 1e-7 pontos percentuais) e
+ * grande o bastante pra absorver o erro de uma subtração de doubles.
+ */
+export const FLOAT_TOLERANCE = 1e-9;
 
 export interface ArmRetentionSpec {
   /** Nome do braço, igual ao usado na coluna `canal` de `spend.csv`. */
@@ -199,15 +215,80 @@ export function computeArmRetention(
   };
 }
 
+/**
+ * Três estados, não um booleano — e a razão é um bug real que a 1ª versão tinha.
+ *
+ * Com `passa: boolean`, "não dá pra avaliar" não era representável: um braço sem
+ * denominador não gerava motivo de reprovação, então `passa` saía `true` e o
+ * exit code do CLI dizia "siga" exatamente no cenário que esta métrica existe
+ * pra pegar. O markdown imprimia um aviso, mas o contrato de máquina aprovava.
+ * Duas revisões independentes acharam a mesma coisa por caminhos diferentes (o
+ * caso "nenhum braço medido" e o caso "2 de 3 medidos").
+ *
+ * - `passa` — todos os braços medidos, nenhum violou o corte.
+ * - `reprova` — algum braço violou o corte (§3.3 regra (a)): comparação morta.
+ * - `incompleto` — nenhuma violação, mas ALGUM braço não tem denominador. Não é
+ *   falha: o protocolo (§248) permite declarar o teste de 2 braços. Mas isso tem
+ *   de ser uma DECLARAÇÃO humana, nunca uma inferência silenciosa de um script.
+ */
+export type RetentionOutcome = "passa" | "reprova" | "incompleto";
+
 export interface RetentionVerdict {
-  /** `false` = a comparação de custo entre braços está morta (regra (a) §3.3). */
-  passa: boolean;
-  /** Motivos legíveis. Vazio quando `passa === true`. */
+  /** Fonte única da verdade. Não existe `passa: boolean` derivado ao lado — um
+   *  booleano guardado junto do dado que o determina dessincroniza. */
+  outcome: RetentionOutcome;
+  /** Violações do corte. Vazio quando `outcome !== "reprova"`. */
   motivos: string[];
   /** Maior diferença em pontos entre dois braços com retenção medida, ou `null`. */
   spread: number | null;
-  /** Braços sem denominador — não entram no veredito, mas nunca somem do relatório. */
+  /** Braços sem denominador — nunca somem do relatório, e forçam `incompleto`. */
   semDado: string[];
+}
+
+/**
+ * Exit code do CLI por veredito. Códigos DISTINTOS de propósito: um wrapper de
+ * apuração precisa distinguir "reprovou" de "não deu pra avaliar" — as duas
+ * exigem ação humana, mas ações diferentes.
+ *
+ * @pure
+ */
+export function exitCodeForOutcome(outcome: RetentionOutcome): number {
+  switch (outcome) {
+    case "passa":
+      return 0;
+    case "reprova":
+      return 2;
+    case "incompleto":
+      return 3;
+  }
+}
+
+/**
+ * Cadastros que não são atribuíveis a braço NENHUM: `utm_source` vazio e
+ * referrer que não bate em nenhum balde de nenhuma spec.
+ *
+ * Este é o buraco (2) da docstring do módulo, e é a razão de a retenção medida
+ * poder ser MAIOR que a real. Contar isso é o que torna o buraco visível em vez
+ * de implícito — sem este número, um "PASSA" na tabela pode significar só "não
+ * capturamos referrer suficiente pra reprovar".
+ *
+ * Não é dividido por braço de propósito: por construção não dá pra saber a qual
+ * braço cada um pertencia — se desse, não seriam inatribuíveis.
+ *
+ * @pure
+ */
+export function countInatribuiveis(
+  subs: readonly BeehiivBackupSubscriber[],
+  specs: readonly ArmRetentionSpec[] = ARM_RETENTION_SPECS,
+): number {
+  let n = 0;
+  for (const sub of subs) {
+    if ((sub.utm_source ?? "").trim() !== "") continue;
+    const host = referrerHost(sub.referring_site);
+    if (host && specs.some((s) => s.referrerBuckets.some((b) => hostMatchesBucket(host, b)))) continue;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -223,7 +304,6 @@ export function evaluateRetentionCut(arms: readonly ArmRetention[]): RetentionVe
   const motivos: string[] = [];
   const semDado = arms.filter((a) => a.retencao == null).map((a) => a.canal);
   const medidos = arms.filter((a): a is ArmRetention & { retencao: number } => a.retencao != null);
-
   for (const arm of medidos) {
     if (arm.retencao < RETENTION_MIN) {
       motivos.push(
@@ -238,7 +318,12 @@ export function evaluateRetentionCut(arms: readonly ArmRetention[]): RetentionVe
   if (medidos.length >= 2) {
     const valores = medidos.map((a) => a.retencao);
     spread = Math.max(...valores) - Math.min(...valores);
-    if (spread > RETENTION_MAX_SPREAD) {
+    // Tolerância obrigatória: `spread` vem de uma SUBTRAÇÃO, que introduz erro
+    // de ponto flutuante. Sem isto, 100% vs 85% dá 0.15000000000000002 e uma
+    // divergência de exatamente 15 pontos reprovava — contra o que a §8.4
+    // define. (Achado pelo teste de fronteira exata; o corte do mínimo não
+    // sofre disso porque compara um literal com um literal.)
+    if (spread > RETENTION_MAX_SPREAD + FLOAT_TOLERANCE) {
       const melhor = medidos.reduce((a, b) => (a.retencao >= b.retencao ? a : b));
       const pior = medidos.reduce((a, b) => (a.retencao <= b.retencao ? a : b));
       motivos.push(
@@ -248,18 +333,39 @@ export function evaluateRetentionCut(arms: readonly ArmRetention[]): RetentionVe
     }
   }
 
-  return { passa: motivos.length === 0, motivos, spread, semDado };
+  const outcome: RetentionOutcome =
+    motivos.length > 0 ? "reprova" : semDado.length > 0 || medidos.length === 0 ? "incompleto" : "passa";
+
+  return { outcome, motivos, spread, semDado };
 }
 
-/** Renderiza o bloco markdown pro relatório congelado. @pure */
-export function renderRetentionMarkdown(arms: readonly ArmRetention[], verdict: RetentionVerdict): string {
+/**
+ * Renderiza o bloco markdown pro relatório congelado.
+ *
+ * `inatribuiveis` vem de `countInatribuiveis` — passar sempre. É o buraco (2) da
+ * docstring do módulo, e omiti-lo devolve o relatório à versão que alegava uma
+ * garantia que o código não dá.
+ *
+ * @pure
+ */
+export function renderRetentionMarkdown(
+  arms: readonly ArmRetention[],
+  verdict: RetentionVerdict,
+  inatribuiveis?: number,
+): string {
   const lines: string[] = [];
   lines.push("### Retenção de UTM por braço (§8.4)");
   lines.push("");
   lines.push(
     "`retenção = atribuídos ÷ (atribuídos + órfãos)`, onde órfão = cadastro sem `utm_source` " +
-      "cujo referrer é da plataforma do braço. Tráfego orgânico também cai nesses baldes, então " +
-      "**este número é um limite inferior** da retenção real — conservador na direção certa.",
+      "cujo referrer é da plataforma do braço.",
+  );
+  lines.push("");
+  lines.push(
+    "Duas fontes de erro, em direções opostas: tráfego **orgânico** nesses baldes empurra a " +
+      "retenção medida para BAIXO (conservador); cadastro que perde o UTM **e** chega sem " +
+      "referrer reconhecível some da conta e empurra para CIMA. Passar no corte descarta a " +
+      "perda por referrer conhecido — e nada além disso.",
   );
   lines.push("");
   lines.push("| Braço | utm_source | Atribuídos | Órfãos | Retenção | Amostra |");
@@ -270,27 +376,41 @@ export function renderRetentionMarkdown(arms: readonly ArmRetention[], verdict: 
     lines.push(`| ${a.canal} | ${a.utmSource} | ${a.atribuidos} | ${a.orfaos} | ${ret} | ${amostra} |`);
   }
   lines.push("");
-  const nenhumMedido = arms.length > 0 && arms.every((a) => a.retencao == null);
-  if (nenhumMedido) {
-    // Sem nenhum braço medido, "PASSA" leria como aprovação — e aprovação por
-    // ausência de dado é precisamente o silêncio que a §8.4 existe pra matar.
-    lines.push(
-      "**Corte da §8.4: NÃO AVALIADO — nenhum braço tem denominador.** Isto não é aprovação: " +
-        "ou o teste ainda não veiculou, ou o `utm_source` não está chegando ao snapshot em " +
-        "braço nenhum (que seria o pior caso do §8.1). Reavaliar com dado antes de publicar " +
-        "qualquer comparação de custo.",
-    );
-  } else if (verdict.passa) {
-    const spreadTxt = verdict.spread == null ? "n/d" : `${(verdict.spread * 100).toFixed(1)} pontos`;
-    lines.push(`**Corte da §8.4: PASSA.** Divergência entre braços: ${spreadTxt}.`);
-  } else {
+  // A prosa deriva do MESMO `outcome` que o exit code. Antes havia um
+  // `nenhumMedido` recomputado aqui, e foi essa duplicação que deixou markdown e
+  // exit code contando histórias diferentes.
+  if (verdict.outcome === "reprova") {
     lines.push("**Corte da §8.4: REPROVA — a comparação de custo entre braços está morta (regra (a) da §3.3).**");
     for (const m of verdict.motivos) lines.push(`- ${m}`);
+  } else if (verdict.outcome === "incompleto") {
+    const todos = verdict.semDado.length === arms.length;
+    lines.push(
+      `**Corte da §8.4: INCOMPLETO — ${todos ? "nenhum braço tem" : "há braço sem"} denominador. ` +
+        "Isto não é aprovação.**",
+    );
+    lines.push(
+      todos
+        ? "  Ou o teste ainda não veiculou, ou o `utm_source` não está chegando ao snapshot em " +
+          "braço nenhum (o pior caso do §8.1)."
+        : "  Um braço sem dado não pode entrar numa comparação de custo como se estivesse limpo. " +
+          "O protocolo permite declarar o teste de 2 braços (§248) — mas isso é uma declaração " +
+          "humana registrada, nunca uma inferência silenciosa deste script.",
+    );
+  } else {
+    const spreadTxt = verdict.spread == null ? "n/d" : `${(verdict.spread * 100).toFixed(1)} pontos`;
+    lines.push(`**Corte da §8.4: PASSA.** Divergência entre braços: ${spreadTxt}.`);
   }
   if (verdict.semDado.length > 0) {
     lines.push("");
+    lines.push(`Sem denominador: ${verdict.semDado.join(", ")}.`);
+  }
+  if (inatribuiveis != null && inatribuiveis > 0) {
+    lines.push("");
     lines.push(
-      `Sem denominador (não entram no veredito, nem como aprovação): ${verdict.semDado.join(", ")}.`,
+      `**Inatribuíveis: ${inatribuiveis}** cadastro(s) sem \`utm_source\` e sem referrer reconhecido — ` +
+        "não entram em numerador nem denominador de braço nenhum. Se parte disso for clique pago " +
+        "que perdeu o UTM, a retenção da tabela acima está SUPERESTIMADA. Número grande aqui " +
+        "invalida a leitura da tabela.",
     );
   }
   return lines.join("\n") + "\n";
