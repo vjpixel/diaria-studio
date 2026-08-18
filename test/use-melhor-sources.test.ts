@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   isUseMelhorSource,
+  isPrimarySource,
   sourceHost,
   sourcePrefix,
   loadUseMelhorPrefixes,
@@ -28,6 +29,15 @@ describe("isUseMelhorSource (#1899)", () => {
     assert.equal(isUseMelhorSource({ use_melhor: "" }), false);
     assert.equal(isUseMelhorSource({ use_melhor: "0" }), false);
     assert.equal(isUseMelhorSource({}), false);
+  });
+});
+
+describe("isPrimarySource (#5665)", () => {
+  it("reconhece apenas Tipo=Primária", () => {
+    assert.equal(isPrimarySource({ Tipo: "Primária" }), true);
+    assert.equal(isPrimarySource({ Tipo: " primária " }), true);
+    assert.equal(isPrimarySource({ Tipo: "Pesquisa" }), false);
+    assert.equal(isPrimarySource({}), false);
   });
 });
 
@@ -133,10 +143,10 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
   // Simula o cenário real: blog.google host-only (não use_melhor) + blog.google/intl/pt-br (use_melhor)
   const fakeEntries: SourcePrefixEntry[] = [
     // Ordenado por comprimento desc (como loadAllSourcePrefixMap retorna)
-    { prefix: "blog.google/intl/pt-br/novidades/tecnologia", useMelhor: true, index: 1 },
-    { prefix: "blog.google", useMelhor: false, index: 0 },
-    { prefix: "fast.ai", useMelhor: true, index: 2 },
-    { prefix: "canaltech.com.br/inteligencia-artificial", useMelhor: false, index: 3 },
+    { prefix: "blog.google/intl/pt-br/novidades/tecnologia", useMelhor: true, primary: false, index: 1 },
+    { prefix: "blog.google", useMelhor: false, primary: false, index: 0 },
+    { prefix: "fast.ai", useMelhor: true, primary: false, index: 2 },
+    { prefix: "canaltech.com.br/inteligencia-artificial", useMelhor: false, primary: false, index: 3 },
   ];
 
   it("#2176: URL em blog.google/intl/pt-br/novidades/tecnologia → use_melhor=true (path específico vence)", () => {
@@ -196,9 +206,9 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
       // Dois entries com o MESMO prefix (mesmo comprimento) — situação real de dois
       // cadastros redundantes no seed: use_melhor=false (índice 0) e true (índice 1).
       // A lista está ordenada por (length desc, index asc) — comprimentos iguais.
-      { prefix: "example.com/section", useMelhor: false, index: 0 },
-      { prefix: "example.com/section", useMelhor: true, index: 1 },
-      { prefix: "example.com", useMelhor: false, index: 2 },
+      { prefix: "example.com/section", useMelhor: false, primary: false, index: 0 },
+      { prefix: "example.com/section", useMelhor: true, primary: false, index: 1 },
+      { prefix: "example.com", useMelhor: false, primary: false, index: 2 },
     ];
     // A URL casa com AMBOS os prefixos "example.com/section" (comprimento máximo=19)
     const url = "https://example.com/section/post";
@@ -210,8 +220,8 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
   it("desempate por índice: empate de comprimento e use_melhor → menor índice CSV vence (desempate 3)", () => {
     // Dois prefixos do MESMO comprimento e MESMO use_melhor=false: vence o de menor índice
     const sameLenSameUmEntries: SourcePrefixEntry[] = [
-      { prefix: "example.com/sec-a", useMelhor: false, index: 0 },
-      { prefix: "example.com/sec-b", useMelhor: false, index: 1 },
+      { prefix: "example.com/sec-a", useMelhor: false, primary: false, index: 0 },
+      { prefix: "example.com/sec-b", useMelhor: false, primary: false, index: 1 },
     ];
     // URL que casa com example.com/sec-a (índice 0)
     const urlA = "https://example.com/sec-a/post";
@@ -251,7 +261,7 @@ describe("resolveUseMelhorBySpecificity (#2176)", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAllSourcePrefixMap (#2197)", () => {
-  const fakeEntry: SourcePrefixEntry = { prefix: "fast.ai", useMelhor: true, index: 0 };
+  const fakeEntry: SourcePrefixEntry = { prefix: "fast.ai", useMelhor: true, primary: false, index: 0 };
 
   it("(a) loader lança → emite console.warn '#2176 FIX NÃO ATIVO' e retorna []", () => {
     const warns: string[] = [];

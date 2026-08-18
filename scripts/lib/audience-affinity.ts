@@ -30,6 +30,7 @@ import { resolve } from "node:path";
 import { mtimeMs } from "./mtime.ts";
 import { parseCtrFromCsv } from "../update-audience.ts";
 import { isTutorialAcademy, hasHowToBrSignal, isHowtoBrAllowlisted } from "./use-melhor-curation.ts"; // #2276 #2278
+import { loadAllSourcePrefixMap, resolveSourceBySpecificity, type SourcePrefixEntry } from "./use-melhor-sources.ts"; // #5665
 
 export const AUDIENCE_AFFINITY_FRESHNESS_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
@@ -615,6 +616,32 @@ export function annotateHandsOnAllBuckets(
         };
       }
       count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Anota `primary_source:true` em todos os buckets usando a fonte cadastrada
+ * mais específica no seed. Independente de dados de audiência, o scorer recebe
+ * a marca determinística (inclusive quando `audience_affinity` antes ausente).
+ */
+export function annotatePrimarySourceAllBuckets(
+  categorized: Record<string, Array<{ url?: string; audience_affinity?: AudienceAffinity | null; [key: string]: unknown }>>,
+  entries: SourcePrefixEntry[] = loadAllSourcePrefixMap(),
+): number {
+  let count = 0;
+  for (const items of Object.values(categorized)) {
+    for (const item of items ?? []) {
+      const source = resolveSourceBySpecificity(item.url ?? "", entries);
+      if (!source?.primary) continue;
+      if (!item.audience_affinity) {
+        item.audience_affinity = { affinity: 0, matched: [], hands_on: false };
+      }
+      if (!item.audience_affinity.matched.includes("primary_source:true")) {
+        item.audience_affinity.matched.push("primary_source:true");
+        count++;
+      }
     }
   }
   return count;

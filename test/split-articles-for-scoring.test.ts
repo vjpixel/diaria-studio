@@ -274,6 +274,31 @@ describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de es
   });
 });
 
+describe("#5665 — split propaga primary_source ao payload do scorer", () => {
+  it("marca host primário e não herda classificação do path mais específico", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-5665-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    try {
+      writeFileSync(categorizedPath, JSON.stringify({ categorized: {
+        lancamento: [
+          { url: "https://blog.google/products/gemini", title: "Global" },
+          { url: "https://blog.google/intl/pt-br/novidades/tecnologia/ia", title: "Brasil" },
+        ], radar: [], use_melhor: [], video: [],
+      } }));
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+      const payload = JSON.parse(readFileSync(join(chunksDir, "scoring-chunk-0.json"), "utf8"));
+      const articles = Object.values(payload.categorized).flat() as Array<{ url: string; audience_affinity?: { matched: string[] } }>;
+      const global = articles.find((article) => article.url === "https://blog.google/products/gemini");
+      const brasil = articles.find((article) => article.url === "https://blog.google/intl/pt-br/novidades/tecnologia/ia");
+      assert.deepEqual(global?.audience_affinity?.matched, ["primary_source:true"]);
+      assert.equal(brasil?.audience_affinity, undefined);
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+});
+
 // #2496 — --pool-out emite pool capado (pós dedup/cap use_melhor) para merge
 describe("#2496 — split emite pool capado via --pool-out", () => {
   // Categorized com muitos use_melhor (simulando o caso 260623: 31→15 após cap).
