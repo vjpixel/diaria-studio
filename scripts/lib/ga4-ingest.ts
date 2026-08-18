@@ -12,8 +12,9 @@
  * GA4 confirmado COLETANDO ao vivo (checagem de painel via Claude in
  * Chrome, 16/08/2026, ver comentários da issue): propriedade `Diaria`,
  * stream Web único, measurement ID `G-SGXBD0R9CD`, property ID
- * `378028168`. Decisão do editor: "se coletar, consertar e ingerir via
- * Data API (cota gratuita)". Este módulo é essa ingestão.
+ * `516813959` (#5625 corrigiu esta referência — `378028168` é o Account
+ * ID, não o Property ID). Decisão do editor: "se coletar, consertar e
+ * ingerir via Data API (cota gratuita)". Este módulo é essa ingestão.
  *
  * ## Fail-soft total — mesma disciplina do #5237
  *
