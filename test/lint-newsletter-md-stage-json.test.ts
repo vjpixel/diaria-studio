@@ -180,7 +180,7 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("15 checks presentes (14 do MD + agradecimento-hardcoded)", () => {
+  it("16 checks presentes (15 do MD + agradecimento-hardcoded)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -191,6 +191,7 @@ describe("runStage4LintReport (#5416)", () => {
       "no-untranslated-summary",
       "no-xml-artifacts",
       "orphan-box-in-gap",
+      "secondary-item-coherence",
       "secondary-items-have-summary",
       "section-links-resolve",
       "snippet-staleness",
@@ -421,8 +422,8 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.ok(trailingPeriod, "title-trailing-period deveria continuar presente");
     assert.deepEqual(trailingPeriod.result, checkTitleTrailingPeriod(buildMd()));
 
-    // Todos os 15 checks continuam presentes — nenhum foi engolido.
-    assert.equal(out.checks.length, 15);
+    // Todos os 16 checks continuam presentes — nenhum foi engolido.
+    assert.equal(out.checks.length, 16);
 
     rmSync(dir, { recursive: true, force: true });
   });

@@ -169,6 +169,22 @@ describe("nunca especular além do summary — sem WebFetch por design (#4000)",
   }
 });
 
+describe("fidelidade de itens secundários (#5663)", () => {
+  for (const [nome, path] of [
+    ["writer.md", WRITER_MD],
+    ["writer-destaque.md", WRITER_DESTAQUE_MD],
+  ] as const) {
+    it(`${nome} exige resumo representativo, citações fechadas e sem reticência fabricada`, () => {
+      const content = readFileSync(path, "utf8");
+      assert.match(content, /#5663/);
+      assert.match(content, /fato central.*summary|summary.*fato central/i);
+      assert.match(content, /cita[cç][aã]o.*meio|aspas fechadas/i);
+      assert.match(content, /fabrique.*retic|fabrique.*`\.\.\.`|reticências/);
+      assert.match(content, /secondary-item-coherence/);
+    });
+  }
+});
+
 describe("caveat de nomes de produto/modelo — Gemini Nano ≠ Nano Banana (#2685)", () => {
   // Ambos os writers (default × destaque) devem carregar o guard, senão vira gap
   // silencioso em prod (padrão writer-agents-keep-in-sync).
