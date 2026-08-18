@@ -117,6 +117,55 @@ describe("#4899 — contrato de prosa dos hubs", () => {
       }
     });
 
+    it("prosa-sem-publicacao-como-sujeito: ORDEM INVERTIDA — verbo antes da marca (#5628)", () => {
+      // Falha literal da forma original: a regra ancorava só em "a diar.ia.br
+      // <verbo>", nunca em "<verbo> a diar.ia.br" — a ordem de discurso
+      // direto que "'X?' perguntou a diar.ia.br em DD/MM" usa.
+      for (const p of [
+        '"O ChatGPT agora tem anúncios, será tendência?" perguntou a diar.ia.br em 20/01/2026.',
+        "Apurou a diar.ia.br que o caso teve desdobramento.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-publicacao-como-sujeito").length, 1, p);
+      }
+    });
+
+    it("prosa-sem-moldura-de-cobertura: cobertura/arquivo/arco como sujeito de verbo narrativo (#5628)", () => {
+      for (const p of [
+        "Ao longo de 2026, a cobertura registrou uma virada clara de posicionamento.",
+        "O arco fecha 146 dias depois do último curso, de um jeito quase irônico.",
+        "Vinte e sete dias depois, a cobertura ampliou o adversário citado.",
+        "Em pouco tempo, o arquivo já mostrou um padrão diferente.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-moldura-de-cobertura").length, 1, p);
+      }
+    });
+
+    it("prosa-sem-moldura-de-cobertura NÃO pega uso como OBJETO (achado só fica visível olhando...)", () => {
+      // Mesmo critério do CASO NEGATIVO geral: afirmação sobre o próprio
+      // arquivo é o que justifica a página — aqui isso significa "arquivo"/
+      // "cobertura" como OBJETO de verbo/preposição, nunca como sujeito.
+      for (const p of [
+        "Isso só fica visível olhando o arquivo inteiro, não uma edição isolada.",
+        "É o ponto mais concreto de toda a cobertura sobre o tema no período.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.deepEqual(proseErrors(hub, "prosa-sem-moldura-de-cobertura"), [], p);
+      }
+    });
+
+    it("prosa-sem-ponteiro-de-secao: ponteiro sem a palavra 'seção' (#5628)", () => {
+      for (const p of [
+        "Cada um desses pontos aparece detalhado adiante, com data e link.",
+        "O restante do episódio é detalhado a seguir.",
+        "Os demais casos estão listados abaixo.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-ponteiro-de-secao").length, 1, p);
+      }
+    });
+
     it("prosa-sem-qualificador-atributivo: a moldura 'segundo a…' em PROSA, não só em heading", () => {
       // O gêmeo em heading já existia; em prosa não havia regra, e é onde a
       // construção é mais provável (achado do review da PR #4938).
@@ -237,7 +286,7 @@ describe("#4899 — contrato de prosa dos hubs", () => {
           heading: "Quanto vale, segundo a cobertura?",
           paragraphs: [
             "A diar.ia.br cobriu o caso na mesma edição em que saiu o modelo, e a seção sobre isso acima detalha o período coberto por este hub.",
-            "Segundo a diar.ia.br, o modelo foi lançado em julho de 2026.",
+            "Segundo a diar.ia.br, o modelo foi lançado em julho de 2026. A cobertura registrou o desfecho em agosto.",
           ],
         },
       ],
@@ -252,6 +301,7 @@ describe("#4899 — contrato de prosa dos hubs", () => {
       "prosa-sem-publicacao-como-sujeito",
       "prosa-sem-qualificador-atributivo",
       "prosa-sem-moldura-de-edicao",
+      "prosa-sem-moldura-de-cobertura",
       "prosa-sem-deixis",
       "prosa-sem-ponteiro-de-secao",
     ];

@@ -367,14 +367,23 @@ describe('tagline não aparece entre <h1> e <h2 class="geo-h2"> (#4912)', () => 
 
 describe("consistência FAQ × prosa da S1 de lançamento — generalizado sobre HUB_LOADERS (#4922 item 1)", () => {
   // Generalização do bloco Anthropic-específico acima: nos hubs que citam
-  // "Foram N lançamentos" no FAQ (anthropic-claude, google-gemini — os 2
-  // que têm um padrão countMatching pra "lançamento"; openai-chatgpt e
-  // meta-ai não, ver docstring dos respectivos módulos), a S1 abre com
-  // "[Empresa] lançou N modelos/ferramentas" citando o MESMO N. Antes do
-  // #4922, os dois números eram independentes (um computado, um
+  // "Foram N lançamentos" no FAQ (anthropic-claude, google-gemini), a S1
+  // abre com "[Empresa] lançou N modelos/ferramentas" citando o MESMO N.
+  // Antes do #4922, os dois números eram independentes (um computado, um
   // transcrito à mão) — agora ambos leem do mesmo objeto derivado, então
   // este teste é a rede que pega se algum dos dois voltar a divergir (ex:
   // edição manual futura que mexa só num dos dois lugares).
+  //
+  // openai-chatgpt (desde #5629) também deriva `launches`/`spans` de
+  // `LAUNCH_PATTERN`, mas o FAQ não usa a frase "Foram N lançamentos" (a
+  // pergunta de FAQ correspondente é sobre versões do GPT-5.x, um recorte
+  // diferente) — este bloco continua pulando o hub por não achar o padrão
+  // textual, não por falta de objeto derivado. A proteção equivalente pra
+  // openai-chatgpt vem do bloco "cronologia de lançamento (section.table)"
+  // abaixo (#5630): `rows.length` da tabela é o MESMO `LAUNCH_PATTERN` que
+  // `launches`/`spans.totalDays`/`spans.hiato1`/`spans.hiato2` usam — não há
+  // como divergir por construção. meta-ai segue sem padrão de "lançamento"
+  // (números de seção são por extenso, ver docstring do módulo).
   let matched = 0;
   for (const slug of Object.keys(HUB_LOADERS)) {
     const hub = HUB_LOADERS[slug]();
@@ -1142,6 +1151,66 @@ describe("cronologia de lançamento (S1.table) do hub anthropic-claude — deriv
     assert.match(sectionHtml, /<thead>/);
     const trCount = (sectionHtml.match(/<tbody>[\s\S]*?<\/tbody>/)![0].match(/<tr>/g) ?? []).length;
     assert.equal(trCount, launchSection!.table!.rows.length);
+  });
+});
+
+// #5630 "Teste": generaliza o bloco de consistência acima (que era só do
+// anthropic-claude) pra TODO hub de HUB_LOADERS que declare `section.table` —
+// hub futuro que ganhar tabela herda esta cobertura automaticamente, sem
+// precisar de um describe hand-written próprio. Não reimplementa o check
+// específico de "hiato bate com FAQ" (fraseado `/hiato de N dias/` não é
+// uniforme entre os hubs — google-gemini cita "3 surtos" em vez de um hiato
+// singular) — cobre os invariantes ESTRUTURAIS da tabela, que são os mesmos
+// em qualquer hub.
+describe("cronologia de lançamento (section.table) — invariantes estruturais sobre TODO hub que declare tabela (#5630)", () => {
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    const hub = HUB_LOADERS[slug]();
+    const sectionsWithTable = hub.sections.filter((s) => s.table);
+    if (sectionsWithTable.length === 0) continue;
+
+    describe(`hub "${slug}"`, () => {
+      for (const section of sectionsWithTable) {
+        describe(`seção "${section.heading}"`, () => {
+          const table = section.table!;
+
+          it("headers e cada row têm a mesma aridade", () => {
+            for (const row of table.rows) assert.equal(row.length, table.headers.length);
+          });
+
+          it("rows não está vazio", () => {
+            assert.ok(table.rows.length > 0);
+          });
+
+          it("linhas em ordem cronológica ASCENDENTE por data (coluna 2, DD/MM/AAAA)", () => {
+            const toIso = (label: string) => {
+              const [d, m, y] = label.split("/");
+              return `${y}-${m}-${d}`;
+            };
+            for (let i = 1; i < table.rows.length; i++) {
+              assert.ok(
+                toIso(table.rows[i][1]) >= toIso(table.rows[i - 1][1]),
+                `linha ${i} ("${table.rows[i][1]}") vem antes da linha ${i - 1} ("${table.rows[i - 1][1]}") — deveria ser ascendente`,
+              );
+            }
+          });
+
+          it('primeira linha não tem "dias desde o anterior" — usa "—"', () => {
+            assert.equal(table.rows[0][2], "—");
+          });
+
+          it("coluna 'Edição' é sempre um link markdown pra diar.ia.br (nunca prosa solta)", () => {
+            for (const row of table.rows) {
+              assert.match(row[row.length - 1], /^\[Ver edição\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\)$/);
+            }
+          });
+        });
+      }
+    });
+  }
+
+  it("sanity: pelo menos 1 hub de HUB_LOADERS declara section.table (senão os testes acima rodam vazios em silêncio)", () => {
+    const anyTable = Object.keys(HUB_LOADERS).some((slug) => HUB_LOADERS[slug]().sections.some((s) => s.table));
+    assert.ok(anyTable, "nenhum hub com section.table — regressão?");
   });
 });
 
