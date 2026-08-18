@@ -357,6 +357,40 @@ describe("classifyTaskRunResult (#4799)", () => {
     const r = run({ steps: [] });
     assert.equal(classifyTaskRunResult(r, def), "unknown");
   });
+
+  describe("successExitCodes (#5592/#5615)", () => {
+    const defWithAbortCode = fakeDef({
+      steps: [{ key: "run", script: "clarice-novos-run.ts" }],
+      successExitCodes: [3],
+    });
+
+    it("passo saiu com code em successExitCodes -> 'guard_abort', não 'failed'", () => {
+      const r = run({ steps: [{ key: "run", code: 3, raw: "3" }] });
+      assert.equal(classifyTaskRunResult(r, defWithAbortCode), "guard_abort");
+    });
+
+    it("passo saiu com code FORA de successExitCodes -> continua 'failed'", () => {
+      const r = run({ steps: [{ key: "run", code: 1, raw: "1" }] });
+      assert.equal(classifyTaskRunResult(r, defWithAbortCode), "failed");
+    });
+
+    it("code em successExitCodes num passo, mas outro passo falha de verdade -> 'failed' (falha real vence)", () => {
+      const defTwoSteps = fakeDef({
+        steps: [
+          { key: "sync", script: "s.ts" },
+          { key: "run", script: "clarice-novos-run.ts" },
+        ],
+        successExitCodes: [3],
+      });
+      const r = run({
+        steps: [
+          { key: "sync", code: 1, raw: "1" },
+          { key: "run", code: 3, raw: "3" },
+        ],
+      });
+      assert.equal(classifyTaskRunResult(r, defTwoSteps), "failed");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

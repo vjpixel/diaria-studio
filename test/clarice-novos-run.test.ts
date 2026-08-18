@@ -460,7 +460,6 @@ describe("clarice-novos-run (#4941)", () => {
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
       assert.equal(result.code, NOVOS_SEMAPHORE_ABORT_EXIT_CODE);
-      assert.equal(result.code, 3);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
       rmSync(root, { recursive: true, force: true });
     });

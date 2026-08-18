@@ -16,6 +16,7 @@
 .state-outcome-ok { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
 .state-outcome-failed { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
 .state-outcome-guard_skip { background: var(--paper-alt); opacity: 0.75; }
+.state-outcome-guard_abort { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .state-outcome-unknown { background: var(--paper-alt); opacity: 0.55; }
 
 /* atraso — sinal que a issue #4799 chama de "hoje não existe em lugar nenhum" */
