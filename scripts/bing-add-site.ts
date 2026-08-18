@@ -28,6 +28,17 @@
  * barra devolve `200` e aparece. Este script normaliza `--host` removendo a
  * barra final antes de chamar `AddSite`.
  *
+ * **Bug corrigido #5621 (confirmado ao vivo 260818): `AddSite`/`SubmitFeed`
+ * exigem POST, não GET.** Uma tentativa real de cadastro (`--host
+ * https://livros.diar.ia.br` / `https://cursos.diar.ia.br`) devolveu
+ * `AddSite status=405` (Method Not Allowed) pra ambos — a API JSON do BWT só
+ * aceita GET nos endpoints de LEITURA (`GetUserSites`, usado por
+ * `bing-pull.ts`); endpoints que MUTAM estado exigem POST com corpo JSON.
+ * Não há doc oficial acessível nesta sessão confirmando o shape exato do
+ * corpo — `{siteUrl}` / `{siteUrl, feedUrl}` é a leitura mais provável (nomes
+ * de campo já usados como query param antes da correção, padrão REST comum),
+ * mas fica sinalizado como suposição, não certeza confirmada pela Microsoft.
+ *
  * Env: BING_WEBMASTER_API_KEY (`.env`, ver `.env.example`).
  *
  * Exit: 0 ok; 1 erro de API/credencial ausente; 2 uso.
@@ -48,6 +59,12 @@ export function normalizeHostForAddSite(host: string): string {
 
 function buildUrl(endpoint: string, params: Record<string, string>, apiKey: string): string {
   const search = new URLSearchParams({ ...params, apikey: apiKey });
+  return `${BING_API_BASE}${endpoint}?${search.toString()}`;
+}
+
+/** Só `apikey` como query param (mutação vai no corpo POST, não em params). */
+function buildUrlKeyOnly(endpoint: string, apiKey: string): string {
+  const search = new URLSearchParams({ apikey: apiKey });
   return `${BING_API_BASE}${endpoint}?${search.toString()}`;
 }
 
@@ -93,6 +110,7 @@ export function isSiteRegistered(sites: BingSiteRow[], hostNoSlash: string): boo
   return sites.some((s) => normalizeHostForAddSite(s.url).toLowerCase() === target);
 }
 
+/** Endpoints de LEITURA (`GetUserSites`, etc.) — GET puro, `params` na query. */
 async function bingCall(endpoint: string, params: Record<string, string>, apiKey: string, fetchImpl: typeof fetch): Promise<unknown> {
   const res = await fetchImpl(buildUrl(endpoint, params, apiKey));
   if (!res.ok) {
@@ -102,11 +120,29 @@ async function bingCall(endpoint: string, params: Record<string, string>, apiKey
   return res.json();
 }
 
+/** Endpoints que MUTAM estado (`AddSite`, `SubmitFeed`) — a API JSON do BWT
+ * exige POST com corpo JSON pra esses; GET puro devolve `405 Method Not
+ * Allowed` (confirmado ao vivo #5621, `AddSite status=405` contra
+ * `https://livros.diar.ia.br` e `https://cursos.diar.ia.br`). `apikey`
+ * continua como query param (auth do BWT é sempre por query param, não muda
+ * entre GET/POST); o corpo carrega só os campos de negócio (`siteUrl`,
+ * `feedUrl`). Shape do corpo não tem doc oficial acessível nesta sessão —
+ * `{siteUrl}`/`{siteUrl, feedUrl}` é a leitura mais provável dado o padrão
+ * REST comum e os nomes dos parâmetros que a API já usava via query string;
+ * sinalizado como suposição no PR, não confirmação. */
+async function bingMutate(endpoint: string, body: Record<string, string>, apiKey: string, fetchImpl: typeof fetch): Promise<Response> {
+  return fetchImpl(buildUrlKeyOnly(endpoint, apiKey), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 /** `AddSite` — cadastra `hostNoSlash` (SEM barra final, ver armadilha da
  * docstring). Retorna o status HTTP cru: **nunca tratar como confirmação**
  * — o chamador deve confirmar via `getUserSites`/`isSiteRegistered`. */
 export async function addSite(hostNoSlash: string, apiKey: string, fetchImpl: typeof fetch = fetch): Promise<number> {
-  const res = await fetchImpl(buildUrl("AddSite", { siteUrl: hostNoSlash }, apiKey));
+  const res = await bingMutate("AddSite", { siteUrl: hostNoSlash }, apiKey, fetchImpl);
   return res.status;
 }
 
@@ -115,14 +151,19 @@ export async function getUserSites(apiKey: string, fetchImpl: typeof fetch = fet
 }
 
 /** `SubmitFeed` — **não** `SubmitSitemap` (esse método 404a com corpo HTML,
- * ver `docs/seo-notes.md` §Fato 3 armadilha 1). Campo `feedUrl`. */
+ * ver `docs/seo-notes.md` §Fato 3 armadilha 1). Campo `feedUrl`. POST com
+ * corpo JSON — mesmo motivo de `addSite` (endpoint de mutação, GET dá 405). */
 export async function submitFeed(
   siteUrl: string,
   feedUrl: string,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  await bingCall("SubmitFeed", { siteUrl, feedUrl }, apiKey, fetchImpl);
+  const res = await bingMutate("SubmitFeed", { siteUrl, feedUrl }, apiKey, fetchImpl);
+  if (!res.ok) {
+    const respBody = await res.text();
+    throw new Error(`Bing WMT SubmitFeed ${res.status}: ${respBody.slice(0, 200)}`);
+  }
 }
 
 async function main(): Promise<number> {

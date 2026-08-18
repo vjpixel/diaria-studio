@@ -22,6 +22,17 @@ function fakeFetchJson(body: unknown, ok = true, status = 200): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
+/** Captura método/headers/body/URL da última chamada — usado pelos testes de
+ * `addSite`/`submitFeed` que verificam a mecânica POST (#5621, GET dava 405). */
+function fakeFetchCapture(body: unknown = {}, ok = true, status = 200) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
 describe("normalizeHostForAddSite (#5621 — armadilha da barra final)", () => {
   it("remove barra final", () => {
     assert.equal(normalizeHostForAddSite("https://livros.diar.ia.br/"), "https://livros.diar.ia.br");
@@ -88,22 +99,46 @@ describe("addSite / getUserSites / submitFeed (#5621) — fetch sempre mockado",
     assert.equal(status, 202);
   });
 
+  it("addSite faz POST com Content-Type: application/json e siteUrl no corpo (#5621 — GET puro dava 405)", async () => {
+    const { fetchImpl, calls } = fakeFetchCapture({}, true, 200);
+    await addSite("https://livros.diar.ia.br", "KEY", fetchImpl);
+    assert.equal(calls.length, 1);
+    const { url, init } = calls[0];
+    assert.equal(init?.method, "POST");
+    assert.equal((init?.headers as Record<string, string>)?.["Content-Type"], "application/json");
+    assert.deepEqual(JSON.parse(String(init?.body)), { siteUrl: "https://livros.diar.ia.br" });
+    // apikey continua como query param — auth do BWT não muda entre GET/POST.
+    assert.match(url, /\/AddSite\?apikey=KEY/);
+    // siteUrl NÃO vai mais na query string (foi pro corpo).
+    assert.doesNotMatch(url, /siteUrl=/);
+  });
+
   it("getUserSites faz o round-trip parse", async () => {
     const fetchStub = fakeFetchJson({ d: [{ Url: "https://diar.ia.br/", IsVerified: true }] });
     const sites = await getUserSites("KEY", fetchStub);
     assert.deepEqual(sites, [{ url: "https://diar.ia.br/", verified: true }]);
   });
 
-  it("submitFeed monta a URL com siteUrl + feedUrl (não SubmitSitemap)", async () => {
-    let capturedUrl = "";
-    const fetchStub = (async (url: string | URL) => {
-      capturedUrl = String(url);
-      return { ok: true, status: 200, json: async () => ({}), text: async () => "" } as unknown as Response;
-    }) as unknown as typeof fetch;
-    await submitFeed("https://livros.diar.ia.br", "https://livros.diar.ia.br/sitemap.xml", "KEY", fetchStub);
-    assert.match(capturedUrl, /\/SubmitFeed\?/);
-    assert.match(capturedUrl, /siteUrl=https%3A%2F%2Flivros\.diar\.ia\.br/);
-    assert.match(capturedUrl, /feedUrl=https%3A%2F%2Flivros\.diar\.ia\.br%2Fsitemap\.xml/);
+  it("submitFeed faz POST com siteUrl + feedUrl no corpo (não SubmitSitemap, #5621 — GET dava 405)", async () => {
+    const { fetchImpl, calls } = fakeFetchCapture({}, true, 200);
+    await submitFeed("https://livros.diar.ia.br", "https://livros.diar.ia.br/sitemap.xml", "KEY", fetchImpl);
+    assert.equal(calls.length, 1);
+    const { url, init } = calls[0];
+    assert.match(url, /\/SubmitFeed\?apikey=KEY/);
+    assert.equal(init?.method, "POST");
+    assert.equal((init?.headers as Record<string, string>)?.["Content-Type"], "application/json");
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      siteUrl: "https://livros.diar.ia.br",
+      feedUrl: "https://livros.diar.ia.br/sitemap.xml",
+    });
+  });
+
+  it("submitFeed lança com o corpo quando a resposta não é ok", async () => {
+    const { fetchImpl } = fakeFetchCapture({ error: "quota" }, false, 500);
+    await assert.rejects(
+      () => submitFeed("https://livros.diar.ia.br", "https://livros.diar.ia.br/sitemap.xml", "KEY", fetchImpl),
+      /Bing WMT SubmitFeed 500/,
+    );
   });
 
   it("resposta não-ok lança com o corpo (mesma disciplina de erro do bing-pull.ts irmão)", async () => {
