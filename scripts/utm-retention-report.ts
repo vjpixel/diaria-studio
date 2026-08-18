@@ -26,11 +26,17 @@
  * coisa que "li e não havia dado" — a 1ª versão disto confundia os dois:
  * `readSnapshotSubscribers` devolve `[]` (não lança) quando o diretório não
  * existe, então um typo na data virava "sem dado" com exit 0.
+ *
+ * `main()` é exportado e recebe `snapshotRoot` opcional (#5650) pra permitir
+ * teste de processo real (fixture em tmpdir) sem `process.exit` matando o
+ * runner — segue o mesmo padrão de `cac-report.ts`: nunca chama
+ * `process.exit` diretamente, só seta `process.exitCode` e retorna.
  */
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   latestSnapshotDate,
   readSnapshotSubscribers,
@@ -50,23 +56,31 @@ import {
   resolveWindowGuardError,
 } from "./cohort-engagement.ts";
 
-const SNAPSHOT_ROOT = "data/beehiiv-backup";
+const DEFAULT_SNAPSHOT_ROOT = "data/beehiiv-backup";
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+function arg(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 ? argv[i + 1] : undefined;
 }
 
-function abort(msg: string): never {
-  console.error(`erro: ${msg}`);
-  process.exit(1);
-}
+/**
+ * `snapshotRoot` default `DEFAULT_SNAPSHOT_ROOT` (caminho relativo ao cwd,
+ * comportamento CLI inalterado). Testes injetam um tmpdir aqui pra nunca
+ * depender de `data/beehiiv-backup` real. Nunca chama `process.exit` — só
+ * seta `process.exitCode` e retorna, pra ser seguro de invocar dentro do
+ * próprio processo de teste (`node:test`) sem encerrá-lo.
+ */
+export function main(argv: string[] = process.argv.slice(2), snapshotRoot: string = DEFAULT_SNAPSHOT_ROOT): void {
+  function abort(msg: string): void {
+    console.error(`erro: ${msg}`);
+    process.exitCode = 1;
+  }
 
-function main(): void {
-  const json = process.argv.includes("--json");
-  const snapshot = arg("snapshot") ?? latestSnapshotDate(SNAPSHOT_ROOT);
-  if (!snapshot) abort(`nenhum snapshot em ${SNAPSHOT_ROOT}/ e --snapshot não foi passado.`);
-  if (!arg("snapshot")) {
+  const json = argv.includes("--json");
+  const snapshotArg = arg(argv, "snapshot");
+  const snapshot = snapshotArg ?? latestSnapshotDate(snapshotRoot);
+  if (!snapshot) return abort(`nenhum snapshot em ${snapshotRoot}/ e --snapshot não foi passado.`);
+  if (!snapshotArg) {
     console.error(
       `aviso: --snapshot não informado, usando o mais recente (${snapshot}). ` +
         `Pra apuração congelada, passe o MESMO snapshot do cac-report.`,
@@ -76,19 +90,19 @@ function main(): void {
   // Guard explícito: `readSnapshotSubscribers` NÃO lança com diretório ausente,
   // devolve []. Sem isto, um typo na data produziria "nenhum braço medido" —
   // indistinguível de um teste que ainda não veiculou.
-  if (!existsSync(join(SNAPSHOT_ROOT, snapshot))) {
-    abort(`snapshot ${snapshot} não existe em ${SNAPSHOT_ROOT}/. Confira a data.`);
+  if (!existsSync(join(snapshotRoot, snapshot))) {
+    return abort(`snapshot ${snapshot} não existe em ${snapshotRoot}/. Confira a data.`);
   }
 
   let subs: BeehiivBackupSubscriber[];
   try {
-    subs = readSnapshotSubscribers(SNAPSHOT_ROOT, snapshot);
+    subs = readSnapshotSubscribers(snapshotRoot, snapshot);
   } catch (err) {
-    abort(`não consegui ler o snapshot ${snapshot}: ${(err as Error).message}`);
+    return abort(`não consegui ler o snapshot ${snapshot}: ${(err as Error).message}`);
   }
 
-  const desde = arg("desde");
-  const ate = arg("ate");
+  const desde = arg(argv, "desde");
+  const ate = arg(argv, "ate");
   let since: number | null = null;
   let untilExclusive: number | null = null;
   try {
@@ -97,14 +111,14 @@ function main(): void {
   } catch (err) {
     // Sem isto o processo morre com stack trace cru de cohort-engagement.ts,
     // inconsistente com o resto do arquivo e pior pra quem depura.
-    abort(`data inválida em --desde/--ate: ${(err as Error).message}`);
+    return abort(`data inválida em --desde/--ate: ${(err as Error).message}`);
   }
 
   // Janela invertida devolveria zero assinantes com exit 0 — resultado vazio que
   // parece "não veiculou", quando é erro de digitação. Mesmo guard que
   // cohort-engagement.ts já aplica.
   const guardErr = resolveWindowGuardError({ since, untilExclusive }, { since: desde, until: ate });
-  if (guardErr) abort(guardErr);
+  if (guardErr) return abort(guardErr);
 
   let semCreated = 0;
   const naJanela = subs.filter((s) => {
@@ -148,7 +162,9 @@ function main(): void {
     }
   }
 
-  process.exit(exitCodeForOutcome(verdict.outcome));
+  process.exitCode = exitCodeForOutcome(verdict.outcome);
 }
 
-main();
+if (isMainModule(import.meta.url)) {
+  main();
+}
