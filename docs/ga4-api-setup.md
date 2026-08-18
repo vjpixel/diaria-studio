@@ -9,7 +9,7 @@ coletando → consertar e ingerir via Data API (cota gratuita)".
 | O quê | Valor |
 |---|---|
 | Propriedade GA4 | `Diaria` |
-| Property ID | `378028168` |
+| Property ID | `516813959` |
 | Measurement ID | `G-SGXBD0R9CD` |
 | Stream | Web único, URL `https://diaria.beehiiv.com` |
 | ID de fluxo (stream) | `13159305621` |
@@ -53,8 +53,10 @@ Não é a única opção — é a que reaproveita infraestrutura já validada.
    com a conta que tem acesso de leitura à propriedade `Diaria` no GA4) e
    capturar o `refresh_token` da resposta do token endpoint → grava em
    `GA4_REFRESH_TOKEN`, direto no Doppler (nunca em texto solto).
-6. **Property ID**: já conhecido — `378028168` (default em `.env.example`,
-   normalmente não precisa mudar).
+6. **Property ID**: já conhecido — `516813959` (default em `.env.example`,
+   normalmente não precisa mudar; não confundir com o Account ID
+   `378028168` — engano já cometido uma vez, ver último comentário do
+   #5248 e #5625).
 
 Todos os quatro (`GA4_PROPERTY_ID`, `GA4_CLIENT_ID`, `GA4_CLIENT_SECRET`,
 `GA4_REFRESH_TOKEN`) vão para o Doppler (`diaria-studio` / `dev`), nunca
