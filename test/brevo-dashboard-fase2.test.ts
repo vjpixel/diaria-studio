@@ -3717,12 +3717,103 @@ describe("#5490/#5610: renderOpenRateByDaySection", () => {
       assert.match(wrapInner, /<div id="day-openrate-tooltip"/, "tooltip deve ser filho de .chart-wrap, não solto na seção");
     });
 
-    test("tooltip nasce com aria-hidden (mirror aria-live é B6, fora desta fatia) e sem conteúdo estático", () => {
+    test("tooltip (mouse, decorativo) nasce aria-hidden, sem role=status, e sem conteúdo estático", () => {
       const now = new Date("2026-06-26T12:00:00Z");
       const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
       const { rows } = aggregateByDay([c], now);
       const html = renderOpenRateByDaySection(rows);
-      assert.match(html, /<div id="day-openrate-tooltip" role="status" aria-hidden="true"><\/div>/, "tooltip nasce vazio — conteúdo é injetado via JS no hover");
+      assert.match(html, /<div id="day-openrate-tooltip" aria-hidden="true"><\/div>/, "tooltip nasce vazio — conteúdo é injetado via JS no hover");
+      // #5640 B6: o par contraditório role="status"+aria-hidden="true" do #5645
+      // some — o tooltip de mouse é puramente decorativo agora, o "status" de
+      // verdade é o mirror aria-live abaixo.
+      assert.doesNotMatch(html, /id="day-openrate-tooltip"[^>]*role="status"/, "role=status contraditório com aria-hidden não deve mais existir no tooltip de mouse");
+    });
+
+    test("#5640 B6: mirror aria-live existe, com aria-live=polite e classe visually-hidden, nascendo vazio", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      assert.match(html, /<div id="day-openrate-live" class="visually-hidden" aria-live="polite"><\/div>/, "mirror aria-live deve nascer vazio, populado só via JS");
+    });
+
+    test("#5640 B6: script mirrora o tooltip pro aria-live via tooltip.textContent, não reimplementa formatação", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const scriptBody = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+      assert.match(scriptBody, /getElementById\('day-openrate-live'\)/);
+      assert.match(scriptBody, /live\.textContent = tooltip\.textContent/, "mirror reusa o mesmo texto já formatado no tooltip, não duplica buildTooltipHtml");
+    });
+
+    test("#5640 B6: svg tem tabindex=0 e o script liga navegação por teclado (setas/Home/End/Esc)", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const svgIdx = html.indexOf("<svg");
+      const svgTagEnd = html.indexOf(">", svgIdx);
+      const svgOpenTag = html.slice(svgIdx, svgTagEnd);
+      assert.match(svgOpenTag, /tabindex="0"/, "svg deve entrar na ordem de foco (WCAG 2.1.1)");
+      const scriptBody = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+      assert.match(scriptBody, /'ArrowRight'/);
+      assert.match(scriptBody, /'ArrowLeft'/);
+      assert.match(scriptBody, /'Home'/);
+      assert.match(scriptBody, /'End'/);
+      assert.match(scriptBody, /'Escape'/);
+    });
+
+    test("#5640 B6: svg tem <title> e <desc> (fallback de nome/descrição acessível)", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      assert.match(html, /<title>[^<]+<\/title>/);
+      assert.match(html, /<desc id="day-openrate-svg-desc">[^<]+<\/desc>/);
+      assert.match(html, /aria-describedby="day-openrate-svg-desc"/);
+    });
+
+    test("#5640 B5: script implementa sticky — clique fixa/solta, e Esc/clique-fora soltam", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const scriptBody = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+      assert.match(scriptBody, /var locked = false;/);
+      assert.match(scriptBody, /function lock\(idx\)/);
+      assert.match(scriptBody, /function unlock\(\)/);
+      assert.match(scriptBody, /rect\.addEventListener\('click'/, "hit rects precisam de listener de click pro sticky");
+      assert.match(scriptBody, /document\.addEventListener\('click'/, "clique fora do card solta o sticky");
+      assert.match(scriptBody, /document\.addEventListener\('keydown'/, "Esc solta o sticky mesmo sem foco no svg");
+    });
+
+    test("#5640 B8: nota de affordance aparece antes do .chart-wrap", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      const affordanceIdx = html.search(/passe o mouse/i);
+      const wrapIdx = html.indexOf('<div class="chart-wrap">');
+      assert.ok(affordanceIdx > -1, "affordance note deve existir");
+      assert.ok(affordanceIdx < wrapIdx, "affordance note deve vir ANTES do chart-wrap");
+    });
+
+    test("#5640 B6: fallback tabular — link âncora pra #envios-table", () => {
+      const now = new Date("2026-06-26T12:00:00Z");
+      const c = makeCampaign(92, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+      const { rows } = aggregateByDay([c], now);
+      const html = renderOpenRateByDaySection(rows);
+      assert.match(html, /<a href="#envios-table">tabela de Envios<\/a>/);
+    });
+
+    test("#5640 B9: transição de tooltip/crosshair respeita prefers-reduced-motion", () => {
+      // CSS estático vive no <style> da página (renderDashboardHtml), não em
+      // renderOpenRateByDaySection (que só emite a seção) — mesmo padrão do
+      // teste #3129 acima ("sem teste ABC mensal → nenhuma seção mensal").
+      const html = renderDashboardHtml(allCampaigns);
+      assert.match(html, /#day-openrate-tooltip\s*\{[^}]*transition:\s*opacity\s*120ms/s);
+      assert.match(html, /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*transition:\s*none;/s);
     });
 
     test("inclui exatamente 1 <script> inline (sem <script src=...> — CSP self/unsafe-inline)", () => {

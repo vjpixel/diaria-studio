@@ -383,3 +383,28 @@ describe("#5640 B3: renderOpenRateChartSvg — marcadores carregam data-day-inde
     for (const m of day1) assert.match(m, /data-r="4"/, "dia 1 é smallSample — raio original 4 (marcador oco)");
   });
 });
+
+describe("#5640 B6: renderOpenRateChartSvg — svg focável, title/desc acessíveis", () => {
+  test("svg tem tabindex=0, role=img, aria-label preservado, e aria-describedby apontando pro <desc>", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    const openTag = svg.slice(0, svg.indexOf(">") + 1);
+    assert.match(openTag, /tabindex="0"/, "svg deve entrar na ordem de foco (WCAG 2.1.1)");
+    assert.match(openTag, /role="img"/, "role=img mantido como fallback");
+    assert.match(openTag, /aria-label="[^"]+"/, "aria-label mantido como fallback (nome acessível)");
+    assert.match(openTag, /aria-describedby="day-openrate-svg-desc"/);
+  });
+
+  test("svg emite <title> e <desc id=day-openrate-svg-desc> com texto não-vazio", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    assert.match(svg, /<title>[^<]+<\/title>/);
+    assert.match(svg, /<desc id="day-openrate-svg-desc">[^<]+<\/desc>/);
+  });
+
+  test("<desc> menciona a navegação por teclado (setas/Home/End/Esc)", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    const descMatch = svg.match(/<desc id="day-openrate-svg-desc">([^<]+)<\/desc>/);
+    assert.ok(descMatch, "desc deve existir");
+    assert.match(descMatch![1], /setas/i);
+    assert.match(descMatch![1], /Esc/);
+  });
+});

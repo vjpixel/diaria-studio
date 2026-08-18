@@ -255,8 +255,14 @@ export function fmtDayLabelLong(day: string): string {
  * - Marcadores (`<circle>`) ganham `class="chart-marker"`, `data-day-index`
  *   (índice do dia, pra achar os 2 marcadores — delivered + openRate — do
  *   dia ativo) e `data-r` (raio original, pra restaurar ao sair do hover).
- * B6 (teclado/leitor de tela) e B7 (gridlines/rótulos verticais do eixo X)
- * ficam fora desta fatia — só B1-B4.
+ *
+ * **#5640 B6: teclado e leitor de tela.** `<svg>` ganha `tabindex="0"` (entra
+ * na ordem de foco — o script de `renderOpenRateByDaySection` liga
+ * ←/→/Home/End/Esc) e `aria-describedby` apontando pro `<desc>` abaixo do
+ * `<title>` — o `role="img"` + `aria-label` existentes são mantidos como
+ * fallback (nome acessível), `<title>`/`<desc>` cobrem leitores/ferramentas
+ * que não resolvem `aria-label` em `<svg>`. B7 (gridlines/rótulos
+ * verticais do eixo X) fica fora desta fatia.
  */
 export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   if (rows.length === 0) return "";
@@ -444,7 +450,15 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     hitRects += `<rect class="chart-hit-rect" x="${fmt(x0)}" y="${fmt(chartTop)}" width="${fmt(x1 - x0)}" height="${fmt(chartH)}" fill="transparent" ${dataAttrs}/>`;
   }
 
-  return `<svg id="day-openrate-svg" class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Delivered e Open Rate por dia-calendário — ver texto acima para a janela e as legendas de marcador">
+  // #5640 B6: <title>/<desc> — nome/descrição acessível redundante ao
+  // aria-label (robustez pra AT que não resolve aria-label em <svg>). A
+  // <desc> também documenta a navegação por teclado, já que não há outro
+  // jeito de descobrir isso sem ler o affordance note fora do SVG.
+  const svgDesc = `Série temporal com ${days.length} dias, de ${escAttr(xLabelFirst)} a ${escAttr(xLabelLast)}. Use as setas do teclado para navegar dia a dia, Home e End para as pontas, Esc para sair. O detalhe de cada dia também está na tabela de Envios abaixo.`;
+
+  return `<svg id="day-openrate-svg" class="day-openrate-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" tabindex="0" aria-describedby="day-openrate-svg-desc" aria-label="Delivered e Open Rate por dia-calendário — ver texto acima para a janela e as legendas de marcador">
+    <title>Delivered e Open Rate por dia-calendário</title>
+    <desc id="day-openrate-svg-desc">${svgDesc}</desc>
     <defs>${delivered.defs}${openRate.defs}</defs>
     ${seriesLabels}
     ${gridlines}

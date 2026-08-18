@@ -870,9 +870,19 @@ ${monthlyAbcSectionsByDate}
      via JS a cada hover — nunca via CSS estático, porque o ponto de ancoragem
      muda por coluna. */
   .chart-hit-rect { cursor: crosshair; }
+  /* #5640 B6: svg focável (tabindex=0) — mesmo idioma de anel de foco já
+     usado nas abas (#tab-*:focus-visible acima). */
+  .day-openrate-chart:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  /* #5640 B9: tooltip/crosshair entram com transição curta (~120ms);
+     prefers-reduced-motion: reduce desliga as duas abaixo. Tooltip trocou
+     display:none/block (não anima) por visibility+opacity — o script
+     inline (renderOpenRateByDaySection) agora alterna a classe
+     is-visible em vez de style.display. */
   #day-openrate-tooltip {
     position: absolute;
-    display: none;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 120ms ease-out;
     z-index: 5;
     top: 0;
     left: 0;
@@ -888,8 +898,26 @@ ${monthlyAbcSectionsByDate}
     pointer-events: none;
     white-space: normal;
   }
+  #day-openrate-tooltip.is-visible { visibility: visible; opacity: 1; }
   #day-openrate-tooltip strong { display: block; margin-bottom: 2px; }
   #day-openrate-tooltip small { display: block; opacity: 0.75; margin-top: 2px; }
+  .chart-crosshair { transition: opacity 120ms ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    #day-openrate-tooltip, .chart-crosshair { transition: none; }
+  }
+  /* #5640 B6: mirror aria-live — mesmo texto do tooltip de mouse, nunca
+     visível na tela (leitor de tela só). Padrão "sr-only" clássico. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
     font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
@@ -3563,9 +3591,32 @@ export function renderWeekdaySection(
  * (`#day-openrate-tooltip`, posicionado via JS) e um `<script>` inline
  * (mesmo padrão do paginador de `#envios-tbody` acima — IIFE ES5, sem
  * dependência externa, feature-detect early return) que liga os hit rects
- * e o crosshair emitidos por `renderOpenRateChartSvg` (chart-svg.ts). B5-B9
- * (sticky/Esc, teclado/leitor de tela, gridlines verticais, affordance,
- * motion) ficam fora desta fatia.
+ * e o crosshair emitidos por `renderOpenRateChartSvg` (chart-svg.ts).
+ *
+ * **#5640 (B5+B6+B8+B9):**
+ * - **B5 (sticky):** clique numa coluna FIXA o tooltip (`locked`, no
+ *   script); Esc, clique fora do `.chart-wrap`, ou clique de novo na mesma
+ *   coluna soltam. É o que faz o gráfico funcionar em toque.
+ * - **B6 (teclado/leitor de tela):** `<svg>` ganha `tabindex="0"`
+ *   (`chart-svg.ts`) — ←/→ andam dia a dia, Home/End vão pras pontas, Esc
+ *   sai. `#day-openrate-tooltip` (mouse, decorativo) perdeu `role="status"`
+ *   — o par contraditório `role="status"` + `aria-hidden="true"` do #5645
+ *   vira `#day-openrate-live` (`aria-live="polite"`, classe
+ *   `.visually-hidden`), espelhando **o mesmo texto** do tooltip via
+ *   `tooltip.textContent` (reusa `buildTooltipHtml`, não duplica
+ *   formatação). Fallback tabular: link âncora pra `#envios-table` (a
+ *   tabela de Envios já existente no mesmo painel) — mais barato que
+ *   duplicar os 30 dias numa 2ª tabela, dado que o HTML da tabela de Envios
+ *   já é gerado. `<title>`/`<desc>` do SVG documentados em `chart-svg.ts`.
+ * - **B8 (affordance):** nota curta acima do gráfico avisando a interação
+ *   (hover/setas) — sem isso, ninguém descobre.
+ * - **B9 (motion):** transição de opacity ~120ms no tooltip/crosshair (CSS,
+ *   ver `.chart-crosshair`/`#day-openrate-tooltip` acima), desligada sob
+ *   `prefers-reduced-motion: reduce`.
+ *
+ * B7 (gridlines/rótulos intermediários do eixo X) fica fora — reabre uma
+ * decisão consciente do benchmark original, pendente de confirmação do
+ * editor (ver issue). A1-A5 (decomposição causal) são partes separadas.
  */
 export function renderOpenRateByDaySection(
   rows: DayOpenRateSummary[],
@@ -3587,14 +3638,25 @@ export function renderOpenRateByDaySection(
   // (não mais "janela de campanhas carregadas", #5490 ressalva 1 original).
   const windowNote = `<p class="section-note"><small>Cobre os últimos ${windowDays} dias corridos — não é série histórica persistida; dias fora dessa janela não aparecem aqui.</small></p>`;
 
+  // #5640 B8: affordance — interação invisível é interação que ninguém
+  // descobre. Nota curta acima do gráfico, antes do .chart-wrap.
+  const affordanceNote = `<p class="section-note"><small>Passe o mouse — ou use as setas do teclado — para ver o detalhe do dia. Clique numa coluna para fixar o detalhe.</small></p>`;
+
+  // #5640 B6: fallback tabular — link âncora pra tabela de Envios já
+  // existente no mesmo painel (`#envios-table`, ver renderOpenRateSection
+  // acima na página) em vez de duplicar os 30 dias numa 2ª tabela.
+  const tableFallbackNote = `<p class="section-note"><small>Detalhe de cada envio também disponível na <a href="#envios-table">tabela de Envios</a> abaixo.</small></p>`;
+
   return `
 <section class="phase2-section" id="day-openrate">
   <h2 class="section-title">Open rate por dia</h2>
   ${renderMixedAudienceNote()}
   <p class="section-note"><small>Aberturas (uniqueViews) são MPP-inclusivas — Apple Mail conta como aberto mesmo sem leitura humana; leia a curva como tendência, não nível absoluto.</small></p>
   ${windowNote}
-  <div class="chart-wrap">${renderOpenRateChartSvg(rows)}<div id="day-openrate-tooltip" role="status" aria-hidden="true"></div></div>
+  ${affordanceNote}
+  <div class="chart-wrap">${renderOpenRateChartSvg(rows)}<div id="day-openrate-tooltip" aria-hidden="true"></div><div id="day-openrate-live" class="visually-hidden" aria-live="polite"></div></div>
   ${legendNote}
+  ${tableFallbackNote}
 <script>
 (function() {
   var svg = document.getElementById('day-openrate-svg');
@@ -3606,7 +3668,15 @@ export function renderOpenRateByDaySection(
   var hitRects = Array.prototype.slice.call(svg.querySelectorAll('.chart-hit-rect'));
   if (!hitRects.length) return;
 
+  // #5640 B6: mirror aria-live — opcional (não bloqueia o resto do widget
+  // se faltar; degrada pra "sem anúncio de leitor de tela", nunca lança).
+  var live = document.getElementById('day-openrate-live');
+
   var activeIdx = null;
+  // #5640 B5: sticky — true depois de um clique numa coluna; enquanto
+  // locked, hover (mouseenter/mousemove) deixa de trocar o dia mostrado,
+  // só Esc/clique-fora/clique-na-mesma-coluna soltam.
+  var locked = false;
 
   // #5640 B3: destaque do ponto ativo — aumenta o raio dos 2 marcadores
   // (delivered + openRate) do dia sob o ponteiro; decisão de implementação
@@ -3677,22 +3747,84 @@ export function renderOpenRateByDaySection(
     crosshair.setAttribute('x2', x);
     crosshair.style.opacity = '1';
     tooltip.innerHTML = buildTooltipHtml(rect);
-    tooltip.style.display = 'block';
+    tooltip.classList.add('is-visible');
     positionTooltip(rect);
+    // #5640 B6: mirror aria-live — MESMA frase que o tooltip de mouse
+    // mostra, lida do próprio DOM (.textContent depois do innerHTML
+    // acima) em vez de reimplementar a formatação de buildTooltipHtml.
+    if (live) live.textContent = tooltip.textContent;
   }
 
   function deactivate() {
     if (activeIdx !== null) setMarkerHighlight(activeIdx, false);
     activeIdx = null;
     crosshair.style.opacity = '0';
-    tooltip.style.display = 'none';
+    tooltip.classList.remove('is-visible');
+    if (live) live.textContent = '';
+  }
+
+  // #5640 B5: sticky — clique numa coluna fixa; clique na mesma coluna,
+  // Esc ou clique fora do card soltam.
+  function lock(idx) {
+    locked = true;
+    activate(idx);
+  }
+  function unlock() {
+    locked = false;
   }
 
   hitRects.forEach(function(rect, idx) {
-    rect.addEventListener('mouseenter', function() { activate(idx); });
-    rect.addEventListener('mousemove', function() { activate(idx); });
+    rect.addEventListener('mouseenter', function() { if (!locked) activate(idx); });
+    rect.addEventListener('mousemove', function() { if (!locked) activate(idx); });
+    rect.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (locked && activeIdx === idx) {
+        unlock();
+        deactivate();
+      } else {
+        lock(idx);
+      }
+    });
   });
-  svg.addEventListener('mouseleave', deactivate);
+  svg.addEventListener('mouseleave', function() { if (!locked) deactivate(); });
+  svg.addEventListener('blur', function() { if (!locked) deactivate(); });
+
+  document.addEventListener('click', function(e) {
+    if (!locked) return;
+    if (wrap.contains(e.target)) return;
+    unlock();
+    deactivate();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && locked) {
+      unlock();
+      deactivate();
+    }
+  });
+
+  // #5640 B6: teclado — ←/→ andam dia a dia, Home/End vão pras pontas, Esc
+  // sai do modo de navegação (some o tooltip/crosshair, mantém o foco no
+  // svg pra retomar com uma seta). keyboardIdx guarda a última posição
+  // navegada mesmo depois de Esc, pra retomar de onde parou.
+  var keyboardIdx = 0;
+  svg.addEventListener('keydown', function(e) {
+    var key = e.key;
+    if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Home' && key !== 'End' && key !== 'Escape') return;
+    e.preventDefault();
+    if (key === 'Escape') {
+      unlock();
+      deactivate();
+      return;
+    }
+    var base = activeIdx !== null ? activeIdx : keyboardIdx;
+    var next = base;
+    if (key === 'ArrowRight') next = Math.min(base + 1, hitRects.length - 1);
+    else if (key === 'ArrowLeft') next = Math.max(base - 1, 0);
+    else if (key === 'Home') next = 0;
+    else if (key === 'End') next = hitRects.length - 1;
+    keyboardIdx = next;
+    activate(next);
+  });
 })();
 </script>
 </section>`;
