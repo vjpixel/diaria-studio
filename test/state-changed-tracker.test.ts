@@ -31,6 +31,7 @@ import {
   checkStateChangedPending,
   collectKnownIssueNumbers,
   findMissingConvergenceIssues,
+  filterIssuesByRoundScope,
   checkConvergenceScan,
   recordConvergenceScan,
   type PlanWithStateChanged,
@@ -363,6 +364,29 @@ describe("findMissingConvergenceIssues — só issue nova E classificável overn
   });
 });
 
+describe("filterIssuesByRoundScope — filtro --bugs/--priority", () => {
+  it("bugs_only ausente e priority_filter ausente → passa tudo", () => {
+    const plan: PlanWithGoal = {};
+    const openIssues: ConvergenceScanIssue[] = [{ number: 1, labels: ["enhancement"] }];
+    assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), openIssues);
+  });
+
+  it("bugs_only: true remove issue sem label bug", () => {
+    const plan: PlanWithGoal = { bugs_only: true };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 1, labels: ["enhancement"] },
+      { number: 2, labels: ["bug"] },
+    ];
+    assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), [{ number: 2, labels: ["bug"] }]);
+  });
+
+  it("priority_filter shape errado (não-array) é ignorado, fail-open", () => {
+    const plan: PlanWithGoal = { priority_filter: "P0" };
+    const openIssues: ConvergenceScanIssue[] = [{ number: 1, labels: [] }];
+    assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), openIssues);
+  });
+});
+
 describe("checkConvergenceScan — veredito puro combinando os dois", () => {
   it("(a) target_set cobre todas as abertas → ok, novas_encontradas: 0", () => {
     const plan: PlanWithGoal = { goal: { target_set: [100, 101] } };
@@ -396,6 +420,67 @@ describe("checkConvergenceScan — veredito puro combinando os dois", () => {
     assert.deepEqual(checkConvergenceScan(plan, openIssues, now), {
       status: "ok",
       novas_encontradas: 0,
+    });
+  });
+
+  // Achado do fleet review (#5713): rodada --bugs/--priority restringe o
+  // conjunto-alvo por DESENHO — issue elegível fora do filtro nunca entra em
+  // target_set/tiers/issues[], e sem filtrar o scan pelo mesmo critério ela
+  // vira ruído permanente ("issue nova") em toda rodada filtrada.
+  it("--bugs (bugs_only: true): issue enhancement fora do target_set NÃO é ruído", () => {
+    const plan: PlanWithGoal = { goal: { target_set: [] }, bugs_only: true };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 700, labels: ["enhancement"] },
+      { number: 701, labels: ["bug"] },
+    ];
+    assert.deepEqual(checkConvergenceScan(plan, openIssues), {
+      status: "missing",
+      issues: [701],
+      novas_encontradas: 1,
+    });
+  });
+
+  it("--priority P0,P1 (priority_filter): issue P2 fora do target_set NÃO é ruído", () => {
+    const plan: PlanWithGoal = {
+      goal: { target_set: [] },
+      priority_filter: ["P0", "P1"],
+    };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 800, labels: ["P2"] },
+      { number: 801, labels: ["P0"] },
+    ];
+    assert.deepEqual(checkConvergenceScan(plan, openIssues), {
+      status: "missing",
+      issues: [801],
+      novas_encontradas: 1,
+    });
+  });
+
+  it("--bugs --priority combinados: só issue que bate os dois critérios conta", () => {
+    const plan: PlanWithGoal = {
+      goal: { target_set: [] },
+      bugs_only: true,
+      priority_filter: ["P0"],
+    };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 900, labels: ["bug", "P1"] }, // bug mas prioridade errada
+      { number: 901, labels: ["enhancement", "P0"] }, // prioridade certa mas não é bug
+      { number: 902, labels: ["bug", "P0"] }, // bate os dois
+    ];
+    assert.deepEqual(checkConvergenceScan(plan, openIssues), {
+      status: "missing",
+      issues: [902],
+      novas_encontradas: 1,
+    });
+  });
+
+  it("sem bugs_only/priority_filter (rodada sem filtro): comportamento inalterado", () => {
+    const plan: PlanWithGoal = { goal: { target_set: [] } };
+    const openIssues: ConvergenceScanIssue[] = [{ number: 950, labels: ["enhancement"] }];
+    assert.deepEqual(checkConvergenceScan(plan, openIssues), {
+      status: "missing",
+      issues: [950],
+      novas_encontradas: 1,
     });
   });
 });

@@ -66,10 +66,11 @@ interface FetchOpenIssuesResult {
 }
 
 // Folga generosa sobre o backlog aberto real (34 issues na medição de
-// 260819) — não um teto pensado pra nunca estourar. `main()` compara
-// `fetched.issues.length` contra este valor e avisa em stderr se bateram
-// exatamente (sinal de truncamento silencioso do `gh issue list --limit`),
-// em vez de assumir cobertura completa sem checar.
+// 260819) — não um teto pensado pra nunca estourar.
+// `fetchOpenIssuesForConvergence` compara `issues.length` contra este valor
+// e trata bater exatamente como fetch INCOMPLETO (sinal de truncamento
+// silencioso do `gh issue list --limit`) em vez de assumir cobertura
+// completa sem checar — ver o comentário dentro dessa função.
 const CONVERGENCE_ISSUE_LIMIT = 200;
 
 /** Busca as issues abertas (até `CONVERGENCE_ISSUE_LIMIT`, número + labels +
@@ -122,6 +123,19 @@ function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResult {
       .filter((n): n is string => typeof n === "string" && n.length > 0),
     body: raw.body ?? null,
   }));
+  // Achado do fleet review (#5713): `--limit N` bate exatamente em N sem
+  // sinalizar truncamento — se o backlog aberto real passar do limite, as
+  // excedentes ficam invisíveis e o gate reportaria "ok" com issue nova de
+  // verdade fora da varredura. Tratado como o MESMO caminho "não avaliado"
+  // de qualquer outra falha de fetch (nunca como sucesso parcial) — o
+  // chamador cai no fail-soft de `gh` indisponível, que já é honesto sobre
+  // não ter rodado (Achado 1 do mesmo review).
+  if (issues.length === CONVERGENCE_ISSUE_LIMIT) {
+    return {
+      issues: [],
+      error: `gh issue list retornou exatamente ${CONVERGENCE_ISSUE_LIMIT} issues (o limite) — resultado pode estar truncado, backlog aberto pode ser maior; tratando como fetch incompleto`,
+    };
+  }
   return { issues };
 }
 
@@ -187,11 +201,6 @@ if (isMainModule(import.meta.url)) {
         `[check-state-changed-pending] gh indisponível — pulando re-varredura de convergência (fail-soft, #738): ${fetched.error}`,
       );
     } else {
-      if (fetched.issues.length === CONVERGENCE_ISSUE_LIMIT) {
-        console.error(
-          `[check-state-changed-pending] gh retornou exatamente ${CONVERGENCE_ISSUE_LIMIT} issues (o limite) — resultado pode estar truncado; backlog aberto pode ser maior.`,
-        );
-      }
       let planRaw: unknown;
       try {
         planRaw = JSON.parse(readFileSync(planPath, "utf8"));
