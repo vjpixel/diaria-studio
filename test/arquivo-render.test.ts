@@ -1063,6 +1063,70 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
       assert.equal(res.status, 502);
     });
   });
+
+  describe("GET /sitemap.xml cobre o acervo INTEIRO (#5722)", () => {
+    const FAKE_SITEMAP_WITH_EDITIONS = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://diar.ia.br/p/edicao-um</loc><lastmod>2026-08-01</lastmod></url>
+  <url><loc>https://diar.ia.br/p/edicao-dois</loc><lastmod>2026-08-02</lastmod></url>
+  <url><loc>https://diar.ia.br/</loc><lastmod>2026-08-02</lastmod></url>
+  <url><loc>https://diar.ia.br/archive</loc><lastmod>2026-08-02</lastmod></url>
+</urlset>`;
+
+    it("fetch ao vivo OK → sitemap inclui 1 <url> por edição (/p/*), com <lastmod>", async () => {
+      globalThis.fetch = (async () => new Response(FAKE_SITEMAP_WITH_EDITIONS, { status: 200 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
+      assert.equal(res.status, 200);
+      const body = await res.text();
+      assert.match(body, /<loc>https:\/\/diar\.ia\.br\/p\/edicao-um<\/loc>\s*<lastmod>2026-08-01<\/lastmod>/);
+      assert.match(body, /<loc>https:\/\/diar\.ia\.br\/p\/edicao-dois<\/loc>\s*<lastmod>2026-08-02<\/lastmod>/);
+      // entradas que não são /p/* (home, archive) continuam excluídas —
+      // mesmo filtro de resolveEditions() que a raiz já usa.
+      assert.doesNotMatch(body, /<loc>https:\/\/diar\.ia\.br\/<\/loc>\s*<lastmod>2026-08-02/);
+      assert.doesNotMatch(body, /<loc>https:\/\/diar\.ia\.br\/archive<\/loc>/);
+      // continua incluindo raiz + hub — o bloco fixo não some.
+      assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/<\/loc>/);
+    });
+
+    it("fetch OK → grava o XML completo no KV (cache:arquivo-sitemap:xml-v1)", async () => {
+      globalThis.fetch = (async () => new Response(FAKE_SITEMAP_WITH_EDITIONS, { status: 200 })) as unknown as typeof fetch;
+      const kv = makeFakeKv();
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      const raw = kv._map.get("cache:arquivo-sitemap:xml-v1");
+      assert.ok(raw, "esperava o KV populado após um fetch bem-sucedido");
+      const parsed = JSON.parse(raw!);
+      assert.match(parsed.xml, /edicao-um/);
+      assert.ok(parsed.generatedAt, "esperava generatedAt no cache");
+    });
+
+    it("upstream falha + KV com fallback bom → 200 com o sitemap completo cacheado, NUNCA 502", async () => {
+      const kv = makeFakeKv();
+      const cachedXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://diar.ia.br/p/edicao-cacheada</loc><lastmod>2026-08-01</lastmod></url>\n</urlset>\n`;
+      await kv.put("cache:arquivo-sitemap:xml-v1", JSON.stringify({ xml: cachedXml, generatedAt: "2026-08-10T00:00:00.000Z" }));
+      globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /edicao-cacheada/);
+      // mesmo padrão da raiz (#5134 item 3): TTL de edge mais curto pra uma
+      // cópia servida em modo degradado.
+      assert.equal(res.headers.get("Cache-Control"), "public, max-age=300");
+    });
+
+    it("upstream falha E KV sem cache nenhum → fallback ESTÁTICO (hub + raiz, sem edições), nunca 502", async () => {
+      const kv = makeFakeKv();
+      globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      const body = await res.text();
+      assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/<\/loc>/);
+      assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude<\/loc>/);
+    });
+  });
 });
 
 /**
