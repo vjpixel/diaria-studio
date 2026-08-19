@@ -472,7 +472,7 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   });
 
   it("merge tag de e-mail cru preservada no É IA? — modo merge-tag sem sig (#1186, revertido #4581)", () => {
-    assert.ok(html.includes("email={{email}}&edition="), "merge tag {{email}} ausente na vote URL");
+    assert.match(html, /\/vote\/\d{6}\/[AB]\?email=\{\{email\}\}/, "merge tag {{email}} ausente na vote URL");
     assert.ok(
       !html.includes("{{poll_token}}"),
       "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
