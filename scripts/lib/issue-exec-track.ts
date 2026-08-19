@@ -136,6 +136,25 @@ const BLOCKED_LABELS = new Set([
   "bloqueio-execucao",
 ]);
 
+/**
+ * #5694 — subcaso de `external-blocker` mais barato de destravar: a
+ * credencial JÁ EXISTE, só falta escopo/permission (achado real do #5641 —
+ * token Cloudflare existente só precisava de 2 permissions novas no
+ * dashboard, sem trocar o valor secreto). Isso é cat. A (credencial-runtime)
+ * do `/diaria-develop` por definição — o editor destrava ao vivo em minutos,
+ * diferente do resto de `BLOCKED_LABELS` (conta nova, allowlist GitHub,
+ * decisão de produto), que exige mais que uma edição de escopo.
+ *
+ * Cancela o efeito terminal de `external-blocker` **especificamente**
+ * (`isCredentialScopeUnblock` em `classifyExecTrack`) — não de qualquer
+ * label de `BLOCKED_LABELS`. Uma issue com `kit-migration`/`beehiiv`/
+ * `bloqueio-execucao` continua `bloqueada` mesmo carregando esta label: o
+ * subcaso é específico de credencial, não um passe geral pra sair de
+ * `bloqueada`. Aplicar esta label sem `external-blocker` não tem efeito —
+ * nenhum branch a consulta sozinha.
+ */
+const CREDENCIAL_ESCOPO_LABEL = "credencial-escopo";
+
 /** Deferimento por tempo — trabalhável, só não agora. Vago (sem data
  * legível), diferente do marcador `aguardando-ate:` abaixo, que desarma
  * sozinho e classifica `agendada`, não `bloqueada` (#5682). Checado DEPOIS
@@ -220,6 +239,11 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *
  *   1. `fora-de-rodada` — o editor tirou de circulação; nada mais importa.
  *   2. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
+ *                         Exceção (#5694): `external-blocker` acompanhada de
+ *                         `credencial-escopo` NÃO conta aqui — vira `develop`
+ *                         no passo 5. Qualquer outra label de
+ *                         `BLOCKED_LABELS` (`kit-migration`, `beehiiv`,
+ *                         `bloqueio-execucao`) continua vencendo normalmente.
  *   3. `agendada`       — (#5682) marcador `aguardando-ate:` com data futura,
  *                         e nenhum bloqueio real acima já decidiu por ela.
  *                         Bloqueio real vence sobre data: a issue é
@@ -229,8 +253,10 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         propósito: quem escreveu uma data disse algo mais
  *                         específico que "not-this-week", então a data vence
  *                         sobre o deferimento vago quando as duas coexistem.
- *   5. `develop`        — precisa da máquina Windows, ou trade-off-real já
- *                         julgado pelo overnight.
+ *   5. `develop`        — precisa da máquina Windows, trade-off-real já
+ *                         julgado pelo overnight, ou (#5694) `external-blocker`
+ *                         + `credencial-escopo` (credencial já existe, só
+ *                         falta escopo — cat. A do develop).
  *   6. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
  *                         checado ANTES do passo 7 pra vencer a label `alarm`
  *                         companheira, que sozinha cairia em fora-de-rodada.
@@ -259,7 +285,17 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
 
   if (labels.some((l) => OUT_OF_ROUND_LABELS.has(l))) return "fora-de-rodada";
 
-  if (labels.some((l) => BLOCKED_LABELS.has(l))) return "bloqueada";
+  // #5694 — `external-blocker` + `credencial-escopo` sai de `BLOCKED_LABELS`
+  // (vira `develop` no passo 5 abaixo). Só essa combinação específica: outra
+  // label de `BLOCKED_LABELS` presente na mesma issue continua bloqueando.
+  const isCredentialScopeUnblock = has("external-blocker") && has(CREDENCIAL_ESCOPO_LABEL);
+
+  if (
+    labels.some(
+      (l) => BLOCKED_LABELS.has(l) && !(l === "external-blocker" && isCredentialScopeUnblock),
+    )
+  )
+    return "bloqueada";
 
   const waitUntil = parseWaitUntil(body);
   if (waitUntil && waitUntil.getTime() > now.getTime()) return "agendada";
@@ -268,6 +304,7 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
 
   if (labels.some((l) => MACHINE_DEVELOP_LABELS.has(l))) return "develop";
   if (has(TRADE_OFF_LABEL)) return "develop";
+  if (isCredentialScopeUnblock) return "develop";
 
   if (has(ALARM_EVENT_LABEL)) return "overnight";
 
@@ -303,11 +340,11 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   overnight:
     "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0) e o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão).",
   develop:
-    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), ou é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C).",
+    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), ou (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A).",
   agendada:
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
-    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista.",
+    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
   "fora-de-rodada":
     "Fora de rodada — três motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); ou é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui).",
 };

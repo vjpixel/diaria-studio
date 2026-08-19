@@ -98,6 +98,51 @@ describe("classifyExecTrack — bloqueio", () => {
   }
 });
 
+describe("classifyExecTrack — credencial-escopo (#5694)", () => {
+  it("external-blocker sozinho → bloqueada (comportamento atual, sem regressão)", () => {
+    assert.equal(track(["external-blocker"]), "bloqueada");
+  });
+
+  it("external-blocker + credencial-escopo → develop (credencial já existe, só falta escopo)", () => {
+    assert.equal(track(["external-blocker", "credencial-escopo"]), "develop");
+  });
+
+  it("credencial-escopo sozinha (sem external-blocker) não classifica nada — overnight", () => {
+    assert.equal(track(["credencial-escopo"]), "overnight");
+  });
+
+  it("credencial-escopo não destrava outra label de BLOCKED_LABELS (kit-migration continua bloqueada)", () => {
+    assert.equal(track(["kit-migration", "credencial-escopo"]), "bloqueada");
+  });
+
+  it("credencial-escopo não destrava beehiiv", () => {
+    assert.equal(track(["beehiiv", "credencial-escopo"]), "bloqueada");
+  });
+
+  it("credencial-escopo não destrava bloqueio-execucao", () => {
+    assert.equal(track(["bloqueio-execucao", "credencial-escopo"]), "bloqueada");
+  });
+
+  it("external-blocker + credencial-escopo + outra label de bloqueio real → bloqueada (o outro bloqueio vence)", () => {
+    assert.equal(track(["external-blocker", "credencial-escopo", "kit-migration"]), "bloqueada");
+  });
+
+  it("fora-de-rodada vence external-blocker + credencial-escopo", () => {
+    assert.equal(track(["on-hold", "external-blocker", "credencial-escopo"]), "fora-de-rodada");
+  });
+
+  it("deferimento vago (not-this-week) vence external-blocker + credencial-escopo", () => {
+    assert.equal(track(["external-blocker", "credencial-escopo", "not-this-week"]), "bloqueada");
+  });
+
+  it("marcador de data futura vence external-blocker + credencial-escopo (mesmo comportamento de windows/trade-off-real, #5682)", () => {
+    assert.equal(
+      track(["external-blocker", "credencial-escopo"], "<!-- aguardando-ate: 2026-09-01 -->"),
+      "agendada",
+    );
+  });
+});
+
 describe("classifyExecTrack — marcador aguardando-ate", () => {
   it("data futura → agendada (#5682, era bloqueada antes)", () => {
     assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 -->"), "agendada");
