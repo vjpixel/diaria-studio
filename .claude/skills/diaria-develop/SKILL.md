@@ -547,10 +547,11 @@ Reusa o schema do overnight (**inclusive `started_at` — ISO 8601 real capturad
   "findings_depth": 1,
   "tier3_gate": [
     { "asked_at": "2026-07-29T20:10:03Z", "decision": "auto_entered", "selected": null }
-  ]
+  ],
+  "last_convergence_scan": { "at": "2026-08-19T20:05:00Z", "novas_encontradas": 0 }
 }
 ```
-Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `tier3_gate`, decisão `auto_entered` — default desde #5321); um bug novo apareceu depois numa re-checagem e reabriu o tier `1a` — por isso `current_tier` voltou pra `"1a"` mesmo já tendo passado pelo grupo 3 (regra de reabertura da seção "Re-varredura sem cap"). Se a sessão retornar ao grupo 3 depois de esgotar esse `1a` reaberto, é um disparo **novo**, que vira um segundo item no array `tier3_gate`.
+Exemplo: sessão já esgotou o grupo 3 uma vez (o único disparo registrado em `tier3_gate`, decisão `auto_entered` — default desde #5321); um bug novo apareceu depois numa re-checagem e reabriu o tier `1a` — por isso `current_tier` voltou pra `"1a"` mesmo já tendo passado pelo grupo 3 (regra de reabertura da seção "Re-varredura sem cap"). Se a sessão retornar ao grupo 3 depois de esgotar esse `1a` reaberto, é um disparo **novo**, que vira um segundo item no array `tier3_gate`. `last_convergence_scan` (#5706) é gravado pelo gate da Fase 2 (ver "Gate de re-triagem pendente + convergência" acima) a cada varredura bem-sucedida — timestamp + quantas issues novas a varredura achou naquela chamada; ausente até a primeira invocação do gate rodar.
 
 `policy` ∈ `exhaust_all` (default, #4319) | `blocked_only` (escopo original #2636/#4297) | `table_only` = `goal_policy` do briefing, copiado aqui pra não precisar re-ler a Fase 0.5 — **transiente `null`** entre a escrita inicial da Fase 0 passo 9 e o preenchimento da Fase 0.5 (ou direto `table_only` se `--no-implement`); nenhuma fase entre esses dois pontos lê `goal.policy`, então o `null` nunca é observado por lógica que dependa dele.
 
