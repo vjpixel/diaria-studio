@@ -52,6 +52,7 @@ import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./cli-args.ts";
 import type { BrakeDecision } from "./clarice-envio-policy.ts";
+import { clearWaitUntilMarkerOnIssue, readIssueRefForClear, syncWaitUntilMarkerOnIssue } from "./wait-until-sync.ts";
 
 /** `brake` é um literal de 1 valor de propósito — ver restrição 1 na
  * docstring do módulo. O tipo por si só já impede `setClariceEnvioOverride`
@@ -261,8 +262,21 @@ export function applyEnvioOverride(
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   if (hasFlag(argv, "clear")) {
+    // Lido ANTES de apagar o arquivo (#5724) — `--clear` também limpa o
+    // marcador `aguardando-ate:` da issue que o override tinha referenciado,
+    // senão uma issue revogada antes do prazo natural fica presa em
+    // `agendada` até a data que não vale mais nada.
+    const issueRefToClear = readIssueRefForClear(process.cwd());
     clearClariceEnvioOverride(process.cwd());
     console.log("cleared");
+    if (issueRefToClear !== undefined) {
+      const marker = clearWaitUntilMarkerOnIssue(issueRefToClear, process.cwd());
+      if (!marker.ok) {
+        console.warn(
+          `[clarice-envio-override] override limpo, marcador NÃO removido da issue #${issueRefToClear}: ${marker.error}`,
+        );
+      }
+    }
   } else if (hasFlag(argv, "set")) {
     const until = getStringArg(argv, "until", { example: "2026-08-18T09:00:00.000Z" });
     const reason = getStringArg(argv, "reason", { example: "pico de campanha confirmado falso-positivo" });
@@ -279,6 +293,15 @@ if (isMainModule(import.meta.url)) {
       createdAt: new Date().toISOString(),
     });
     console.log(JSON.stringify(state, null, 2));
+    // Override local é a função PRIMÁRIA do comando — já gravado acima e
+    // NUNCA revertido por falha aqui (#5724, no espírito do #738: fail-soft
+    // com warning inequívoco, nunca silêncio).
+    const marker = syncWaitUntilMarkerOnIssue(issue, until, process.cwd());
+    if (!marker.ok) {
+      console.warn(
+        `[clarice-envio-override] override gravado, marcador NÃO sincronizado na issue #${issue}: ${marker.error}`,
+      );
+    }
   } else {
     const state = readClariceEnvioOverrideState(process.cwd(), new Date());
     console.log(state ? JSON.stringify(state, null, 2) : "sem override ativo");
