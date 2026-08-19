@@ -61,6 +61,34 @@ achar porque não aparece na busca por "UET"), disparando em
 evento porque o próprio template do GTM avisa: sem ela, `uetq` não existe
 quando o evento de cadastro chega.
 
+## Fallback trigger — subscriber_id na URL (v12, 19/08/2026)
+
+Além do gatilho primário `signedUp` acima (custom event — **caminho
+primário, confirmado funcionando ao vivo**, ver "Verificação ao vivo"
+abaixo), foi adicionado um trigger de **fallback** às 4 tags de conversão,
+publicado como container **v12** em 19/08/2026 via sessão `/diaria-develop`
+usando Claude in Chrome.
+
+- **Nome:** `Newsletter Signup - URL subscriber_id`.
+- **Tipo:** History Change, condicionado à presença de `subscriber_id=` na
+  URL.
+- **Onde entrou:** nas 4 tags (Meta `CompleteRegistration`, Google Ads,
+  Microsoft UET `187268188`, LinkedIn `29163954`), em **OU** com o trigger
+  `Newsletter Signup - signedUp` já existente — GTM soma acionadores
+  múltiplos com OU, então é estritamente **aditivo**: não substitui, não
+  desliga o `signedUp`, que continua sendo o caminho primário.
+- **Por quê:** rede de segurança contra falso-negativo — se o Website
+  Builder v2 parar de emitir `signedUp` (regressão, mudança upstream da
+  Beehiiv), a URL de confirmação ainda carrega `subscriber_id`, então a
+  conversão não fica cega.
+- **Armadilha de teste registrada:** a extensão **Tag Assistant Companion**
+  sobrepõe o formulário de cadastro na página e interfere no clique/submit
+  ao testar, produzindo falso-negativo — o relato anterior de que
+  `signedUp` estava quebrado tinha essa causa, não um problema real.
+  Validar clicando de verdade no formulário renderizado (ou setando o valor
+  via setter nativo do React, não `execCommand`/preenchimento sintético) —
+  não confiar na primeira leitura.
+
 ## IDs de referência
 
 - **Container GTM:** `GTM-TC8C65ZN` (conta `6328623289`, container
