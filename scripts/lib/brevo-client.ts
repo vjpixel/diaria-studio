@@ -9,7 +9,51 @@
  * #2275: todas as funções públicas agora retentam em 429, honrando o header
  * `retry-after` / `x-sib-ratelimit-reset` da Brevo com backoff capped.
  * Semântica dos headers: ver comentário em brevoRateLimitWait() abaixo.
+ *
+ * #5697: toda resposta da família `/v3/emailCampaigns*` (a que tem o teto
+ * apertado de 100 req/HORA por CONTA, ver docs/brevo-rate-limits.md) também
+ * grava `x-sib-ratelimit-remaining`/`-limit` em `brevo-rate-state.ts` — via
+ * `maybeRecordCampaignRateLimit`, chamado de `brevoRawFetch` e `brevoGet`
+ * (os dois pontos de `fetch` reais deste módulo). Consumidores read-only
+ * chamam `assertCampaignQuotaHeadroom()` antes de um sweep em lote pra não
+ * esgotar a cota que o caminho de ESCRITA (`clarice-build-segment.ts`/
+ * `clarice-plan-wave.ts`) precisa — esses dois NUNCA chamam esse assert, são
+ * o beneficiário da reserva, não quem a respeita.
  */
+
+import { recordCampaignQuotaRemaining } from "./brevo-rate-state.ts";
+
+// #5697: re-exportado pra quem já importa tudo de brevo-client.ts — a
+// implementação/estado vivem em brevo-rate-state.ts (módulo dedicado,
+// testável sem mockar `fetch`), mas o entrypoint de consumo fica visível
+// aqui também, junto do resto da API pública deste client.
+export {
+  assertCampaignQuotaHeadroom,
+  BrevoCampaignQuotaLowError,
+  readCampaignQuotaState,
+  type BrevoCampaignQuotaState,
+} from "./brevo-rate-state.ts";
+
+/**
+ * #5697: se `url` for da família `/emailCampaigns*`, registra
+ * `x-sib-ratelimit-remaining`/`-limit` (quando presentes) no arquivo de
+ * estado de cota. Fail-soft por natureza (delega a `recordCampaignQuotaRemaining`,
+ * que nunca lança) — nunca deve interferir na resposta real sendo processada.
+ */
+function maybeRecordCampaignRateLimit(url: string, headers: Headers | undefined | null): void {
+  if (!url.includes("/emailCampaigns")) return;
+  // Defensivo: alguns mocks de teste (ex: test/brevo-send-now-4347.test.ts)
+  // devolvem Response sem `headers` — rastrear cota nunca deve quebrar a
+  // chamada real (mesma disciplina fail-soft do resto deste módulo).
+  if (headers == null || typeof headers.get !== "function") return;
+  const remainingRaw = headers.get("x-sib-ratelimit-remaining");
+  if (remainingRaw == null) return;
+  const remaining = Number(remainingRaw);
+  if (Number.isNaN(remaining)) return;
+  const limitRaw = headers.get("x-sib-ratelimit-limit");
+  const limit = limitRaw != null && !Number.isNaN(Number(limitRaw)) ? Number(limitRaw) : undefined;
+  recordCampaignQuotaRemaining(remaining, limit);
+}
 
 /**
  * Lê os headers de rate-limit da Brevo e retorna quantos milissegundos
@@ -110,6 +154,7 @@ async function brevoRawFetch(
   init: RequestInit,
 ): Promise<Response> {
   const res = await fetch(url, init);
+  maybeRecordCampaignRateLimit(url, res.headers); // #5697
   if (res.status === 429) {
     throw new Brevo429Signal(res);
   }
@@ -317,6 +362,7 @@ export async function brevoGet(
     const r = await fetch(`https://api.brevo.com/v3${path}`, {
       headers: { "api-key": apiKey, Accept: "application/json" },
     });
+    maybeRecordCampaignRateLimit(path, r.headers); // #5697
     if (r.status === 429 || r.status >= 500) {
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
       // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.
@@ -468,25 +514,49 @@ interface BrevoDraftCampaignsResponse {
   campaigns?: BrevoDraftCampaignRaw[];
 }
 
+/** Status aceitos por `GET /v3/emailCampaigns?status=`. */
+export type BrevoCampaignStatus = "draft" | "queued" | "sent";
+
 /**
- * `GET /v3/emailCampaigns?status=draft`, paginado — todas as campanhas
- * Brevo em rascunho. Chamada direta à Brevo (mesmo padrão de
- * `fetchCampaignListIdsByStatus` acima): a key já está disponível
- * localmente (`BREVO_CLARICE_API_KEY`), então não precisa de nenhum
- * endpoint novo no Worker `brevo-dashboard` pra fechar este guard.
+ * `GET /v3/emailCampaigns?status={status}`, paginado (`limit=50`) — devolve
+ * os objetos COMPLETOS de campanha (id/name/subject/status/sentDate/
+ * scheduledAt/recipients), não só list ids como
+ * `fetchCampaignListIdsByStatus` acima. Custo de cota CONSTANTE
+ * independente do número de campanhas do status pedido: ~1 chamada a cada
+ * 50 campanhas, nunca 1 por campanha (#5697 — extraído do que antes era só
+ * `fetchDraftCampaigns`, generalizado pra qualquer status; usado também por
+ * `scripts/clarice-audit-overlap.ts` pra auditoria de sobreposição de
+ * destinatários com custo fixo, ~2 chamadas totais).
  */
-export async function fetchDraftCampaigns(apiKey: string): Promise<BrevoDraftCampaignRaw[]> {
+export async function fetchCampaignsByStatus(
+  apiKey: string,
+  status: BrevoCampaignStatus,
+): Promise<BrevoDraftCampaignRaw[]> {
   const out: BrevoDraftCampaignRaw[] = [];
   let offset = 0;
   const limit = 50;
   for (;;) {
-    const { body } = await brevoGet(apiKey, `/emailCampaigns?status=draft&limit=${limit}&offset=${offset}`);
+    const { body } = await brevoGet(apiKey, `/emailCampaigns?status=${status}&limit=${limit}&offset=${offset}`);
     const campaigns = (body as BrevoDraftCampaignsResponse)?.campaigns ?? [];
     out.push(...campaigns);
     if (campaigns.length < limit) break;
     offset += limit;
   }
   return out;
+}
+
+/**
+ * `GET /v3/emailCampaigns?status=draft`, paginado — todas as campanhas
+ * Brevo em rascunho. Chamada direta à Brevo (mesmo padrão de
+ * `fetchCampaignListIdsByStatus` acima): a key já está disponível
+ * localmente (`BREVO_CLARICE_API_KEY`), então não precisa de nenhum
+ * endpoint novo no Worker `brevo-dashboard` pra fechar este guard.
+ *
+ * #5697: agora um alias fino sobre `fetchCampaignsByStatus(apiKey, "draft")`
+ * — mesmo comportamento/URLs, sem duplicar a paginação.
+ */
+export async function fetchDraftCampaigns(apiKey: string): Promise<BrevoDraftCampaignRaw[]> {
+  return fetchCampaignsByStatus(apiKey, "draft");
 }
 
 // ---------------------------------------------------------------------------
