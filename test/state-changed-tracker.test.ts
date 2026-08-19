@@ -16,7 +16,15 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  copyFileSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,7 +53,19 @@ const CLI = resolve(ROOT, "scripts/check-state-changed-pending.ts");
 let root: string | null = null;
 afterEach(() => {
   if (root) {
-    rmSync(root, { recursive: true, force: true });
+    // `maxRetries`/`retryDelay`: cleanup do `gh` fake (cópia de `node.exe`,
+    // ver `setupFakeGh`) esbarra em `EPERM` no Windows — AV/indexador
+    // segura um handle no binário recém-executado por um tempo variável
+    // depois do processo terminar (observado ao vivo: sobrevive a 5
+    // retries de 100ms). `rmSync` só tenta de novo em EBUSY/EPERM/etc.
+    // quando `maxRetries` > 0 (comportamento documentado). Falha residual
+    // após os retries vira warning, não falha de teste — é resíduo de
+    // tmpdir do SO, não um sintoma de bug no código sob teste.
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (e) {
+      console.warn(`[state-changed-tracker.test] cleanup residual de ${root}: ${(e as Error).message}`);
+    }
     root = null;
   }
 });
@@ -251,17 +271,121 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     assert.doesNotMatch(r.stdout, /nenhuma issue nova fora da varredura/);
   });
 
-  // Um `gh` real (fake) end-to-end via `spawnSync` sem `shell: true` — o
-  // mesmo padrão do código de produção — ficou platform-dependente demais
-  // pra entrar aqui: `.cmd`/`.bat` no Windows exige `shell: true` pro
-  // `spawnSync` conseguir executá-los (`EINVAL` sem isso; confirmado ao
-  // vivo), o que a produção corretamente NÃO usa (mesmo padrão de
-  // `check-decision-label-drift.ts`, que também nunca testa sua própria
-  // `fetchOpenIssues` end-to-end pelo mesmo motivo). Cobertura do wiring
-  // real (`fetchOpenIssuesForConvergence`'s success/non-zero-exit/malformed-
-  // JSON branches) fica como gap conhecido, mesma classe do precedente já
-  // aceito no repo — não introduzido por este PR.
+  // Achado do fleet review (#5713, confiança alta, "provado por mutation
+  // testing"): nenhum teste até aqui roda a CLI com um `gh` que devolva
+  // dados de verdade — todos passam `--skip-convergence` ou exercitam só o
+  // caminho "gh indisponível". Um reviewer chegou a reverter a condição de
+  // exit pro bug original do #5706 e os 40 testes daquela época seguiram
+  // verdes, provando o buraco.
+  //
+  // A tentativa anterior deste bloco (comentário removido) tentou um `gh`
+  // fake via `.cmd`/`.bat` no PATH invocado com `spawnSync("gh", ...)` sem
+  // `shell: true` (mesmo padrão da produção) — no Windows isso dá `ENOENT`
+  // (confirmado ao vivo): sem `shell: true`, o `CreateProcess` do Win32 só
+  // resolve extensão `.exe` implicitamente, nunca `.cmd`/`.bat` (que
+  // dependem do `cmd.exe` pra interpretar). A saída adotada aqui: em vez de
+  // um script de shell, o `gh` fake é uma CÓPIA do próprio binário `node`
+  // (que O PRÓPRIO Win32 acha via a resolução implícita de `.exe`, e que no
+  // POSIX é um executável de verdade também) — `NODE_OPTIONS=--require
+  // {preload}` injeta um preload que lê a resposta fixture de variáveis de
+  // ambiente, escreve no stdout e chama `process.exit` ANTES do `node`
+  // tentar resolver `argv[1]` ("issue", vindo de `gh issue list ...`) como
+  // um módulo — que é o que causaria o crash sem o preload. Funciona nos
+  // dois SO sem `shell: true` em lugar nenhum, espelhando fielmente o
+  // `spawnSync("gh", [...])` sem-shell da produção.
+  function setupFakeGh(ghResponse: {
+    stdout?: string;
+    exitCode?: number;
+  }): { planPath: string; env: NodeJS.ProcessEnv } {
+    root = mkdtempSync(join(tmpdir(), "state-changed-tracker-gh-"));
+    const planPath = join(root, "plan.json");
+    writeFileSync(planPath, JSON.stringify({ goal: { target_set: [] } }, null, 2), "utf8");
 
+    const ghDir = join(root, "bin");
+    mkdirSync(ghDir);
+    const ghBinName = process.platform === "win32" ? "gh.exe" : "gh";
+    const ghBinPath = join(ghDir, ghBinName);
+    copyFileSync(process.execPath, ghBinPath);
+    if (process.platform !== "win32") chmodSync(ghBinPath, 0o755);
+
+    // `NODE_OPTIONS` é herdado por QUALQUER processo node no ambiente —
+    // inclusive o processo da CLI-sob-teste em si (spawnado logo abaixo com
+    // esse mesmo `env`), não só o `gh` fake. O preload por isso só age
+    // quando reconhece a assinatura de invocação do `gh issue list ...`:
+    // "issue" é o 1º argumento passado pela produção, e o `node`
+    // copiado-como-`gh` o trata como o "script" a rodar (já que não temos
+    // como injetar argv customizado) — só que ele CHEGA em `process.argv[1]`
+    // já resolvido pro path absoluto (`{cwd}/issue`, confirmado ao vivo),
+    // não a string crua "issue"; daí o `basename` abaixo em vez de
+    // comparação direta. Em qualquer outra invocação (a CLI real,
+    // `--import tsx {CLI}`), o preload não faz nada e a carga normal do
+    // módulo prossegue.
+    const preloadPath = join(ghDir, "gh-fake-preload.cjs");
+    writeFileSync(
+      preloadPath,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "if (process.argv[1] && path.basename(process.argv[1]) === 'issue') {",
+        "  const respPath = process.env.GH_FAKE_RESPONSE_FILE;",
+        "  if (respPath) process.stdout.write(fs.readFileSync(respPath, 'utf8'));",
+        "  process.exit(Number(process.env.GH_FAKE_EXIT_CODE || 0));",
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+    const respPath = join(ghDir, "gh-fake-response.json");
+    writeFileSync(respPath, ghResponse.stdout ?? "[]", "utf8");
+
+    return {
+      planPath,
+      env: {
+        ...process.env,
+        PATH: ghDir,
+        Path: ghDir,
+        NODE_OPTIONS: `--require ${preloadPath}`,
+        GH_FAKE_RESPONSE_FILE: respPath,
+        GH_FAKE_EXIT_CODE: String(ghResponse.exitCode ?? 0),
+      },
+    };
+  }
+
+  it("gh real (fake) acha issue nova → exit 1 com a issue nomeada na saída", () => {
+    const { planPath, env } = setupFakeGh({
+      stdout: JSON.stringify([{ number: 555, labels: [{ name: "bug" }], body: null }]),
+    });
+    const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env,
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /re-varredura de convergência/);
+    assert.match(r.stderr, /#555/);
+    const written = JSON.parse(readFileSync(planPath, "utf8"));
+    assert.equal(written.goal.last_convergence_scan.novas_encontradas, 1);
+  });
+
+  it("gh real (fake) sem novidade → exit 0, goal.last_convergence_scan: 0", () => {
+    const { planPath, env } = setupFakeGh({ stdout: "[]" });
+    const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env,
+    });
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /ok — nenhuma pendência de re-triagem, nenhuma issue nova fora da varredura/);
+    const written = JSON.parse(readFileSync(planPath, "utf8"));
+    assert.equal(written.goal.last_convergence_scan.novas_encontradas, 0);
+  });
+
+  // Regressão específica do Achado 1 do #5713: com `gh` indisponível, o
+  // stdout de sucesso NÃO pode conter a afirmação de que a varredura
+  // rodou — já coberto acima ("gh indisponível ... PATH sem o binário"),
+  // repetido aqui só como ponte de leitura entre os dois blocos de teste
+  // (fake-gh de sucesso vs PATH quebrado) pra deixar claro que os três
+  // vereditos (ok/missing/não-avaliado) têm cobertura ponta-a-ponta via CLI
+  // real, não só via as funções puras.
 });
 
 describe("collectKnownIssueNumbers — issues já conhecidas pelo plano", () => {
