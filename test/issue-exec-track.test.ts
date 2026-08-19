@@ -131,6 +131,10 @@ describe("classifyExecTrack — credencial-escopo (#5694)", () => {
     assert.equal(track(["on-hold", "external-blocker", "credencial-escopo"]), "fora-de-rodada");
   });
 
+  it("deferimento vago (not-this-week) vence external-blocker + credencial-escopo", () => {
+    assert.equal(track(["external-blocker", "credencial-escopo", "not-this-week"]), "bloqueada");
+  });
+
   it("marcador de data futura vence external-blocker + credencial-escopo (mesmo comportamento de windows/trade-off-real, #5682)", () => {
     assert.equal(
       track(["external-blocker", "credencial-escopo"], "<!-- aguardando-ate: 2026-09-01 -->"),
