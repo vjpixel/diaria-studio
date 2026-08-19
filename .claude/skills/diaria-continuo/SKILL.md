@@ -732,10 +732,25 @@ aqui.
    aplicado fora do fluxo normal de decisão (passo 5 acima), ou claim de
    `session-registry` encerrada/removida manualmente durante o ciclo, deve já
    ter sido registrada na hora com `--add-pending {N}` — este é só o ponto
-   onde a pendência é COBRADA antes de dormir. `exit 1` → reavaliar dispatch
-   pra cada issue listada (mesma tabela linha-a-linha acima) antes de
-   prosseguir pro passo 6; resolver com `--remove-pending {N}` só depois de
-   reavaliar, nunca antes.
+   onde a pendência é COBRADA antes de dormir. Desde #5706 o mesmo comando
+   também roda a re-varredura de convergência: `gh issue list` completo
+   contra o `issues[]` já conhecido pelo plano (`continuo` reusa o schema
+   do overnight — não grava `goal.target_set`/`goal.tiers`, exclusivos do
+   develop; `issues[]` é a ÚNICA fonte de "já conhecido" aqui) — `exit 1` →
+   reavaliar dispatch pra cada issue listada (pendência explícita ou nova
+   de convergência, mesma tabela linha-a-linha acima) antes de prosseguir
+   pro passo 6; resolver com `--remove-pending {N}` só depois de reavaliar,
+   nunca antes. Cada varredura bem-sucedida grava `goal.last_convergence_scan:
+   {at, novas_encontradas}` no `plan.json` — como `goal` não existe no
+   schema herdado do overnight, a primeira varredura de cada dia CRIA esse
+   objeto só com esse campo (a rotação diária, `scripts/lib/continuo-plan-rotation.ts`,
+   não carrega `goal` adiante — só `bugs_only`/`priority_filter`/
+   `idle_scan_streak`/`last_scan_at`, ver `SESSION_SCOPED_FIELDS` — então
+   `goal.last_convergence_scan` reseta a cada rotação de dia, mesmo em
+   sessão contínua). Sem `gh`/rede, degrada sozinho pra só a pendência
+   explícita (fail-soft #738) — o stdout de sucesso nesse caso é explícito
+   que a re-varredura NÃO rodou, nunca afirma "nenhuma issue nova fora da
+   varredura" sem ter checado.
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir (`ScheduleWakeup` com
    `delaySeconds: 3600`, ver "Cadência do wake em modo ocioso" acima); ao
