@@ -476,8 +476,9 @@ describe("clarice-envio-guard (#5026)", () => {
         baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
       );
       assert.equal(r.code, 0, r.reportMarkdown);
-      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou-nao-ok");
       assert.deepEqual(suspendCalls, [999]);
+      assert.match(r.reportMarkdown, /freio da noite foi MEDIDO como STOP/);
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -497,9 +498,10 @@ describe("clarice-envio-guard (#5026)", () => {
         baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
       );
       assert.equal(r.code, 0, r.reportMarkdown);
-      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou-ausente");
       assert.deepEqual(suspendCalls, [999]);
       assert.match(r.reportMarkdown, /NÃO-OK \(fail-closed\)/);
+      assert.match(r.reportMarkdown, /nenhum snapshot de freio da rodada das 19:00 foi encontrado/);
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -522,7 +524,7 @@ describe("clarice-envio-guard (#5026)", () => {
         baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
       );
       assert.equal(r.code, 0, r.reportMarkdown);
-      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou-ausente");
       assert.deepEqual(suspendCalls, [999]);
       rmSync(root, { recursive: true, force: true });
     });
@@ -547,7 +549,7 @@ describe("clarice-envio-guard (#5026)", () => {
         }),
       );
       assert.equal(r.code, 2, r.reportMarkdown);
-      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelamento-incompleto");
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelamento-incompleto-nao-ok");
       rmSync(root, { recursive: true, force: true });
     });
 

@@ -383,15 +383,28 @@ async function handlePrereqFailure(
     return { code: 0, reportId, reportMarkdown: report.build() };
   }
 
-  report.note("fallback: freio da noite NÃO era OK (ou ausente/ilegível) — suspendendo por precaução (escopo reduzido: cancela, não recria — ver docstring do arquivo).");
+  // #5698 — "snapshot ausente" (nunca gravado, ex: rodada de ontem parou no
+  // short-circuit de onda-já-existente antes do #5698, ou o run de ontem
+  // abortou antes de ler o risco) e "freio medido NÃO-OK" (stop/hold, valor
+  // real lido às 19:00) colapsavam na MESMA mensagem de suspensão — mas não
+  // são a mesma evidência: um é ausência de dado, o outro é um freio ATIVO.
+  // Distinguir aqui não muda a DECISÃO (as duas ainda suspendem, fail-closed
+  // — ver docstring do arquivo), só a mensagem/reportId, pra quem lê o
+  // relatório (ou audita depois) saber qual dos dois motivou a suspensão.
+  const suspensionCause = lastBrake === null ? "ausente" : "nao-ok";
+  report.note(
+    lastBrake === null
+      ? "fallback: nenhum snapshot de freio da rodada das 19:00 foi encontrado (ausente ou ilegível) — suspendendo por precaução (escopo reduzido: cancela, não recria — ver docstring do arquivo)."
+      : `fallback: freio da noite foi MEDIDO como ${lastBrake.brake.toUpperCase()} (não-OK) — suspendendo por precaução (escopo reduzido: cancela, não recria — ver docstring do arquivo).`,
+  );
   const { allConfirmed } = await cancelPendingWaves(deps, report, cycle, pending);
   const code = allConfirmed ? 0 : 2;
   const reportId = allConfirmed
-    ? `envio-${aammdd}-guard-prereq-fallback-cancelou`
-    : `envio-${aammdd}-guard-prereq-fallback-cancelamento-incompleto`;
+    ? `envio-${aammdd}-guard-prereq-fallback-cancelou-${suspensionCause}`
+    : `envio-${aammdd}-guard-prereq-fallback-cancelamento-incompleto-${suspensionCause}`;
   const title = allConfirmed
-    ? `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ pré-requisito falhou, onda suspensa por precaução (fallback)`
-    : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️⚠️ pré-requisito falhou E cancelamento de fallback INCOMPLETO, agir manualmente`;
+    ? `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ pré-requisito falhou, onda suspensa por precaução (fallback, freio ${suspensionCause})`
+    : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️⚠️ pré-requisito falhou E cancelamento de fallback INCOMPLETO, agir manualmente (freio ${suspensionCause})`;
   if (!allConfirmed) {
     report.note("⚠️  NEM TODA onda pendente foi confirmada suspensa no fallback — a campanha pode disparar às 06:00. Verificar o painel Brevo manualmente antes do disparo.");
   }
