@@ -21,9 +21,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { EnvBackupError, LocalOnlyEnvKeysError, syncEnv } from "../scripts/sync-env.ts";
+
+const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
 describe("syncEnv", () => {
   it("não sobrescreve .env quando o Doppler falha", () => {
@@ -252,5 +255,48 @@ describe("syncEnv", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("entrypoint guard (#5679)", () => {
+  it("roda main() quando o script é invocado diretamente como processo filho", () => {
+    // Regressão específica: o guard antigo (`import.meta.url ===
+    // \`file://${process.argv[1]}\``) comparava uma URL file:// contra o
+    // path NATIVO de argv[1] — no Windows essa comparação nunca bate
+    // (barras invertidas + sem o prefixo file:///), então main() nunca
+    // rodava e o script saía silencioso com exit 0. Um teste que só importa
+    // o módulo (como os `describe("syncEnv", ...)` acima) não exercita essa
+    // condição — ela só é alcançada rodando o arquivo como entrypoint de
+    // verdade via subprocesso. Não dá pra reproduzir o bug do Windows em si
+    // num runner Linux (a comparação de string bate nos dois formatos por
+    // acaso quando native path == URL path), mas dá pra travar que a
+    // condição SEMPRE usa `fileURLToPath` (paths nativos dos dois lados) em
+    // vez de reconstruir uma URL a partir de argv[1] — checando que main()
+    // roda de fato quando invocado como script.
+    //
+    // Remove `doppler` do PATH do subprocesso pra forçar uma falha rápida e
+    // determinística (ENOENT) em vez de uma chamada de rede real — o que
+    // importa aqui é só confirmar que main() RODOU (e portanto imprimiu
+    // algo em vez de sair silencioso), não o resultado do sync em si.
+    const strippedPath = process.env.PATH?.split(":")
+      .filter((entry) => !existsSync(join(entry, "doppler")))
+      .join(":");
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", join(repoRoot, "scripts", "sync-env.ts")],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: strippedPath ?? "" },
+      },
+    );
+
+    // main() rodou: tentou chamar `doppler` (ausente do PATH stripado),
+    // capturou o erro no catch de main() e reportou via stderr + exit
+    // code != 0. Um script que saísse silencioso (bug original) teria
+    // stdout/stderr vazios e exit code 0.
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Falha ao sincronizar \.env via Doppler/);
   });
 });

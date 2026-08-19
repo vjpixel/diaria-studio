@@ -418,7 +418,7 @@ describe("publish-daily-brevo.ts main() — --send-test (#5086)", () => {
     }
   });
 
-  it("sem --send-test: comportamento anterior ao #5086 preservado — nenhum sendTest disparado, nenhum brevo-diaria-published.json escrito", async () => {
+  it("sem --send-test: nenhum sendTest disparado; brevo-diaria-published.json É escrito como status draft (#5677 — antes ficava sem rastro, o que causava campanha duplicada no --send-test seguinte)", async () => {
     const root = mkTmpRoot();
     try {
       writePlatformConfig(root);
@@ -435,7 +435,91 @@ describe("publish-daily-brevo.ts main() — --send-test (#5086)", () => {
       assert.ok(!calls.some((c) => c.pathname.endsWith("/sendTest")), "sendTest nunca deveria ser chamado sem --send-test");
 
       const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
-      assert.equal(existsSync(publishedPath), false, "sem --send-test, nenhum arquivo de estado novo deveria existir (#5086 não-escopo)");
+      assert.ok(existsSync(publishedPath), "#5677: o rascunho criado precisa deixar rastro, senão uma invocação futura não sabe reaproveitá-lo");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(published.status, "draft");
+      assert.equal(published.campaign_id, 999);
+      assert.equal(published.test_email, undefined, "status draft não tem test_email ainda");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#5677: 2ª invocação com --send-test reaproveita a campanha do rascunho já criado, não cria uma 2ª (regressão do incidente 260819, ids 24/25)", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      // 1ª invocação: só cria o rascunho (sem --send-test).
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+      const firstCampaignCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
+      assert.equal(firstCampaignCalls.length, 1, "1ª invocação deveria criar exatamente 1 campanha");
+
+      // 2ª invocação: --send-test. Router reinstalado (calls zerado) pra
+      // isolar as chamadas desta invocação especificamente.
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test",
+      ];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      const secondCampaignCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
+      assert.equal(
+        secondCampaignCalls.length,
+        0,
+        "2ª invocação NÃO deveria criar uma nova campanha — deveria reaproveitar a do rascunho (#5677)",
+      );
+      const sendTestCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.ok(sendTestCall, "sendTest deveria ter sido disparado sobre a campanha reaproveitada (id=999)");
+
+      const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(published.status, "test_sent");
+      assert.equal(published.campaign_id, 999, "campaign_id da campanha reaproveitada, não uma nova");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#5677: --force cria uma 2ª campanha de propósito mesmo com rascunho já registrado", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--force",
+      ];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      const secondCampaignCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
+      assert.equal(secondCampaignCalls.length, 1, "--force deveria ter criado uma 2ª campanha de propósito");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

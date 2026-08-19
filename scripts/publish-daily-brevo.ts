@@ -59,6 +59,7 @@
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy \
  *     --send-test [--send-test-to <email>]
+ *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy --force
  *
  * `--i-reviewed-the-copy`: obrigatória pra qualquer ação fora de `--dry-run`
  * — confirmação explícita de que o editor revisou a cópia RASCUNHO do bloco
@@ -68,16 +69,26 @@
  * compliance, não um detalhe de copy qualquer.
  *
  * `--send-test` (#5086, espelha `publish-monthly.ts`): depois de criar o
- * rascunho, dispara `POST /emailCampaigns/{id}/sendTest` pro destinatário
- * resolvido (`--send-test-to <email>`, senão `brevo_diaria.test_email` de
+ * rascunho (ou reaproveitar um já existente, ver #5677 abaixo), dispara
+ * `POST /emailCampaigns/{id}/sendTest` pro destinatário resolvido
+ * (`--send-test-to <email>`, senão `brevo_diaria.test_email` de
  * `platform.config.json`). Sem nenhum dos dois, o script recusa ANTES de
  * qualquer chamada de rede (`checkSendTestGuards`) — nunca manda `sendTest`
  * pra um destinatário indefinido. `--send-test-to` sem `--send-test` também é
- * rejeitado (mesma regra do publisher mensal). Registra o envio em
- * `<edition-dir>/_internal/brevo-diaria-published.json` (`test_email` +
- * `test_sent_at`) — só quando `--send-test` de fato dispara; a criação do
- * rascunho SEM `--send-test` continua sem nenhum arquivo de estado novo
- * (comportamento anterior ao #5086 preservado).
+ * rejeitado (mesma regra do publisher mensal).
+ *
+ * Idempotência de campanha (#5677): `<edition-dir>/_internal/brevo-diaria-published.json`
+ * é escrito assim que a campanha é criada (status `"draft"`), ANTES de
+ * qualquer `--send-test` — não só quando o teste dispara (mudança em relação
+ * ao comportamento original do #5086). Uma invocação seguinte pra MESMA
+ * edição (com ou sem `--send-test`) reaproveita o `campaign_id` já
+ * registrado em vez de criar uma 2ª campanha (`decideCreateCampaignAction`)
+ * — fecha o gap que causava 2 rascunhos duplicados na Brevo pro mesmo envio
+ * (achado ao vivo na edição 260819, ids 24/25). `--force` cria uma campanha
+ * nova mesmo com uma já registrada (mesmo escape hatch de
+ * `publish-monthly-apoiadores-brevo.ts`). Quando `--send-test` de fato
+ * dispara, o estado é atualizado pra status `"test_sent"` com `test_email` +
+ * `test_sent_at`.
  *
  * Sem `--send-now`/`--schedule-at` (#4398 review: removida a menção no uso
  * acima — o script nunca implementou essa flag; a campanha sempre sai como
@@ -122,20 +133,124 @@ interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
 }
 
-/** #5086 — mirror mínimo de `MonthlyPublished` (`publish-monthly.ts`), escrito
- * só quando `--send-test` de fato dispara (ver docstring do módulo). Não
- * tenta ser um registro completo de publicação como o mensal (sem
- * `--send-now`/`--schedule-at` aqui ainda, #4980) — cobre só o que a issue
- * #5086 pediu: um rastro persistido do envio de teste. */
+/** #5086/#5677 — mirror mínimo de `MonthlyPublished` (`publish-monthly.ts`).
+ * Não tenta ser um registro completo de publicação como o mensal (sem
+ * `--send-now`/`--schedule-at` aqui ainda, #4980).
+ *
+ * `status: "draft"` (#5677): escrito assim que a campanha é criada, ANTES de
+ * qualquer `--send-test` — fecha o gap que causava campanha duplicada
+ * (rodar sem `--send-test` não deixava rastro nenhum; uma 2ª invocação com
+ * `--send-test` não tinha como saber que já existia um rascunho e criava
+ * uma 2ª campanha). `status: "test_sent"` (#5086) segue escrito só quando
+ * `--send-test` de fato dispara, preservando `campaign_id`/`subject`/
+ * `preview_text`/`list_id`/`created_at` do estado anterior (ver
+ * `buildTestSentPublishedState`) — `test_email`/`test_sent_at` só existem
+ * nesse status. */
 export interface BrevoDiariaPublished {
   campaign_id: number;
   subject: string;
   preview_text: string;
-  status: "test_sent";
+  status: "draft" | "test_sent";
   list_id: number;
-  test_email: string;
-  test_sent_at: string;
+  test_email?: string;
+  test_sent_at?: string;
   created_at: string;
+}
+
+/** Path do state file de publicação, sob `_internal/` da edição — mesma convenção de `05-published.json`/`06-social-published.json`. */
+export function brevoDiariaPublishedPath(editionDir: string): string {
+  return resolve(editionDir, "_internal", "brevo-diaria-published.json");
+}
+
+/**
+ * Lê `_internal/brevo-diaria-published.json`. Tolerante (#5677, mesmo
+ * padrão de `readApoiadoresState` em `monthly-apoiadores-state.ts`):
+ * ausente/corrompido/shape inesperado → `null` ("nenhuma campanha criada
+ * ainda pra esta edição"), nunca lança — um estado ilegível não deveria
+ * travar o publisher, só reabrir a janela de criar uma campanha nova (o
+ * pior caso é o mesmo de antes do #5677 existir).
+ */
+export function readBrevoDiariaPublished(editionDir: string): BrevoDiariaPublished | null {
+  const path = brevoDiariaPublishedPath(editionDir);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<BrevoDiariaPublished>;
+    if (typeof parsed.campaign_id !== "number") return null;
+    if (parsed.status !== "draft" && parsed.status !== "test_sent") return null;
+    return {
+      campaign_id: parsed.campaign_id,
+      subject: typeof parsed.subject === "string" ? parsed.subject : "",
+      preview_text: typeof parsed.preview_text === "string" ? parsed.preview_text : "",
+      status: parsed.status,
+      list_id: typeof parsed.list_id === "number" ? parsed.list_id : 0,
+      test_email: typeof parsed.test_email === "string" ? parsed.test_email : undefined,
+      test_sent_at: typeof parsed.test_sent_at === "string" ? parsed.test_sent_at : undefined,
+      created_at: typeof parsed.created_at === "string" ? parsed.created_at : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Escreve o state file (`_internal/` criado se faltar). */
+export function writeBrevoDiariaPublished(editionDir: string, state: BrevoDiariaPublished): void {
+  const internalDir = resolve(editionDir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+  writeFileSync(brevoDiariaPublishedPath(editionDir), JSON.stringify(state, null, 2) + "\n");
+}
+
+export type CreateCampaignDecision = { action: "create" } | { action: "reuse"; campaignId: number };
+
+/**
+ * Pura/testável (#5677) — espelha `decidePublishBrevoAction` de
+ * `monthly-apoiadores-state.ts`: decide se `main()` cria uma campanha Brevo
+ * NOVA ou reaproveita a já registrada em `brevo-diaria-published.json` pra
+ * esta edição. Sem `--force`, qualquer `campaign_id` já registrado (status
+ * `draft` OU `test_sent` — ambos significam "a campanha já existe na
+ * Brevo") é reaproveitado; `--force` sempre cria uma nova, de propósito
+ * (mesmo escape hatch do publisher mensal).
+ */
+export function decideCreateCampaignAction(
+  existing: BrevoDiariaPublished | null,
+  force: boolean,
+): CreateCampaignDecision {
+  if (!force && existing && typeof existing.campaign_id === "number") {
+    return { action: "reuse", campaignId: existing.campaign_id };
+  }
+  return { action: "create" };
+}
+
+/** Pura (#5677) — estado gravado assim que a campanha (nova) é criada, ANTES de qualquer `--send-test`. */
+export function buildDraftPublishedState(params: {
+  campaignId: number;
+  subject: string;
+  previewText: string;
+  listId: number;
+  createdAt: string;
+}): BrevoDiariaPublished {
+  return {
+    campaign_id: params.campaignId,
+    subject: params.subject,
+    preview_text: params.previewText,
+    status: "draft",
+    list_id: params.listId,
+    created_at: params.createdAt,
+  };
+}
+
+/**
+ * Pura (#5677/#5086) — estado gravado depois de um `--send-test` bem-
+ * sucedido. Preserva `campaign_id`/`subject`/`preview_text`/`list_id`/
+ * `created_at` do `base` (draft recém-criado OU reaproveitado de uma
+ * invocação anterior) por spread — só `status`/`test_email`/`test_sent_at`
+ * mudam. Mesma disciplina de `buildSentState` em `monthly-apoiadores-state.ts`.
+ */
+export function buildTestSentPublishedState(
+  base: BrevoDiariaPublished,
+  testEmail: string,
+  testSentAt: string,
+): BrevoDiariaPublished {
+  return { ...base, status: "test_sent", test_email: testEmail, test_sent_at: testSentAt };
 }
 
 /** `06-public-images.json` vive na RAIZ da edição (produzido por
@@ -483,6 +598,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const reviewedCopy = hasFlag(argv, "i-reviewed-the-copy");
   const sendTest = hasFlag(argv, "send-test"); // #5086
   const sendTestTo = getStringArg(argv, "send-test-to", { example: "voce@dominio.com" }); // #5086
+  const force = hasFlag(argv, "force"); // #5677 — permite criar uma 2ª campanha de propósito
   const log = (msg: string) => process.stderr.write(`[publish-daily-brevo] ${msg}\n`);
 
   // #4651: os process.exit() abaixo até o 1º `await` de rede (brevoGetList,
@@ -651,20 +767,52 @@ export async function main(rootDirOverride?: string): Promise<void> {
       `${injectionResult.skipped_already_correct} já corretos, ${injectionResult.total_contacts} contato(s) na lista.`,
   );
 
-  const campaignResp = (await brevoPost(apiKey!, "/emailCampaigns", {
-    name: `diar.ia.br diária — ${new Date().toISOString().slice(0, 16)}`,
-    subject,
-    previewText,
-    sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },
-    recipients: { listIds: [brevoDiaria!.list_id] },
-    htmlContent: html,
-  })) as Record<string, unknown>;
+  // #5677: antes de criar uma campanha nova, checa se esta edição já tem uma
+  // registrada em `brevo-diaria-published.json` — sem isso, rodar o script
+  // 2x (ex: draft primeiro, depois `--send-test` — o fluxo normal do Passo 7
+  // do SKILL.md) criava uma 2ª campanha duplicada na Brevo (achado ao vivo
+  // na edição 260819, ids 24/25). `--force` cria mesmo assim, de propósito.
+  const existingPublished = readBrevoDiariaPublished(editionDir);
+  const createDecision = decideCreateCampaignAction(existingPublished, force);
 
-  if (typeof campaignResp.id !== "number") {
-    throw new Error(`Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`);
+  let campaignId: number;
+  let baseState: BrevoDiariaPublished;
+
+  if (createDecision.action === "reuse") {
+    campaignId = createDecision.campaignId;
+    baseState = existingPublished!;
+    log(
+      `reaproveitando campanha Brevo já criada pra esta edição: id=${campaignId} (status "${baseState.status}", ` +
+        `registrada em ${baseState.created_at}) — nenhuma campanha nova criada. Use --force pra criar outra de propósito.`,
+    );
+  } else {
+    const campaignResp = (await brevoPost(apiKey!, "/emailCampaigns", {
+      name: `diar.ia.br diária — ${new Date().toISOString().slice(0, 16)}`,
+      subject,
+      previewText,
+      sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },
+      recipients: { listIds: [brevoDiaria!.list_id] },
+      htmlContent: html,
+    })) as Record<string, unknown>;
+
+    if (typeof campaignResp.id !== "number") {
+      throw new Error(`Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`);
+    }
+    campaignId = campaignResp.id;
+    log(`campanha criada: id=${campaignId} (rascunho — schedule/send é ação manual separada, mesma cautela do publisher mensal)`);
+
+    // #5677: persiste o estado "draft" já aqui — ANTES de qualquer
+    // --send-test — pra que uma invocação futura (com ou sem --send-test)
+    // consiga detectar que a campanha já existe em vez de criar outra.
+    baseState = buildDraftPublishedState({
+      campaignId,
+      subject,
+      previewText,
+      listId: brevoDiaria!.list_id as number,
+      createdAt: new Date().toISOString(),
+    });
+    writeBrevoDiariaPublished(editionDir, baseState);
   }
-  const campaignId = campaignResp.id;
-  log(`campanha criada: id=${campaignId} (rascunho — schedule/send é ação manual separada, mesma cautela do publisher mensal)`);
 
   // #5086: --send-test, espelhando publish-monthly.ts — dispara DEPOIS do
   // rascunho existir (sendTest do Brevo opera sobre um campaign_id já criado).
@@ -677,25 +825,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
     const source = sendTestTo ? "--send-test-to flag" : "brevo_diaria.test_email";
     log(`Email de teste enviado para: ${testRecipient} (fonte: ${source})`);
 
-    // Mirror de `published.test_sent_at` do canal mensal (publish-monthly.ts)
-    // — só escrito quando --send-test de fato dispara; a criação do rascunho
-    // sem --send-test continua sem nenhum arquivo de estado novo (#5086, ver
-    // "Não-escopo" na issue).
-    const published: BrevoDiariaPublished = {
-      campaign_id: campaignId,
-      subject,
-      preview_text: previewText,
-      status: "test_sent",
-      list_id: brevoDiaria!.list_id as number,
-      test_email: testRecipient,
-      test_sent_at: testSentAt,
-      created_at: testSentAt,
-    };
-    const internalDir = resolve(editionDir, "_internal");
-    mkdirSync(internalDir, { recursive: true });
-    const publishedPath = resolve(internalDir, "brevo-diaria-published.json");
-    writeFileSync(publishedPath, JSON.stringify(published, null, 2) + "\n");
-    log(`estado do teste salvo em ${publishedPath}`);
+    // #5677: mescla sobre `baseState` (draft recém-criado OU reaproveitado)
+    // em vez de montar do zero — preserva campaign_id/subject/preview_text/
+    // list_id/created_at do estado anterior.
+    const published = buildTestSentPublishedState(baseState, testRecipient, testSentAt);
+    writeBrevoDiariaPublished(editionDir, published);
+    log(`estado do teste salvo em ${brevoDiariaPublishedPath(editionDir)}`);
   }
 }
 
