@@ -436,6 +436,7 @@ import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 // #5236: custo por leitor por canal — qual canal traz leitor mais barato,
 // abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
 import { buildAdsData } from "./studio-ads.ts";
+import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -529,6 +530,14 @@ export interface StudioServerOptions {
    * ao vivo, ver doc-comment de `studio-integrations.ts`). Produção usa o
    * default (`fetch` global) de `buildIntegrationsData`. */
   integrationsFetchImpl?: typeof fetch;
+  /** #5674: observa as árvores importadas pelo server e permite ao processo
+   * principal reiniciar quando o código server-rendered mudar. Desligado por
+   * padrão para manter testes e consumidores programáticos sob controle. */
+  enableSourceWatch?: boolean;
+  /** Intervalo do watcher de mtime do código server-rendered. */
+  sourceWatchPollIntervalMs?: number;
+  /** Callback injetável para observar uma mudança sem matar o processo (testes). */
+  onSourceChange?: (change: StudioSourceChange) => void;
 }
 
 export interface StudioServer {
@@ -2293,6 +2302,19 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const snapshotWatch: StudioSnapshotWatchHandle | null = opts.enableSnapshotPush
     ? watchAndPushStudioSnapshot(rootDir, { intervalMs: opts.snapshotPushIntervalMs })
     : null;
+  // #5674: módulos server-rendered ficam em cache no processo; o watcher é
+  // opt-in para a API programática e ligado pela CLI abaixo. O callback da
+  // CLI encerra o processo para que systemd (Restart=always) suba um boot
+  // limpo, em vez de tentar invalidar parcialmente o cache ESM.
+  const sourceWatch: StudioSourceWatchHandle | null = opts.enableSourceWatch
+    ? watchStudioSource(
+        rootDir,
+        (change) => {
+          opts.onSourceChange?.(change);
+        },
+        { pollIntervalMs: opts.sourceWatchPollIntervalMs },
+      )
+    : null;
 
   let closed = false;
   return {
@@ -2308,6 +2330,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         closed = true;
         pushNotifyWatch.close();
         snapshotWatch?.close();
+        sourceWatch?.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
       }),
   };
@@ -2329,7 +2352,16 @@ async function main(): Promise<void> {
   // pushStudioSnapshot's skippedReason="missing-credentials"), nunca lança.
   const enableSnapshotPush = !parseCliArgs(process.argv.slice(2)).flags.has("no-snapshot-push");
 
-  const server = await startStudioServer({ port, rootDir, enableSnapshotPush });
+  const server = await startStudioServer({
+    port,
+    rootDir,
+    enableSnapshotPush,
+    enableSourceWatch: true,
+    onSourceChange: (change) => {
+      console.warn(`[studio-server] código server-rendered mudou em ${change.path}; reiniciando`);
+      process.kill(process.pid, "SIGTERM");
+    },
+  });
   console.log(`[studio-server] ${server.url} (rootDir=${server.rootDir})`);
 
   const shutdown = () => {
