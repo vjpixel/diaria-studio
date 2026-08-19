@@ -31,7 +31,7 @@
  * equivalente de forma reproduzível/testável (mesmo padrão de
  * `buildSystemdUnitFiles`) — não substitui nem reconcilia o que já foi
  * armado manualmente nesta máquina (fora de escopo desta unidade: não tocar
- * o systemd real de `predator`, ver instruções da issue).
+ * o systemd real de `helios`, ver instruções da issue).
  *
  * @see scripts/overnight/setup-watchdog-schedule-systemd.ts (CLI que consome este módulo — par Windows removido no #5115)
  * @see scripts/lib/systemd-units.ts (par genérico do registry — mesmo formato de saída)

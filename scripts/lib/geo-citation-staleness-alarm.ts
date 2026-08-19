@@ -294,7 +294,7 @@ export function buildGeoCitationStalenessAlarmEmail(
 // #5316 — provider ausente da ÚLTIMA RODADA não fica invisível pra este
 // alarme só porque os outros providers continuam gravando.
 //
-// Achado ao vivo (issue #5316): a Anthropic ficou muda em `predator` desde
+// Achado ao vivo (issue #5316): a Anthropic ficou muda em `helios` desde
 // 11/ago/2026 (`ANTHROPIC_API_KEY` some do `.env` local depois do #5155 e
 // nunca foi reposta ali) e este alarme nunca disparou — Google e OpenAI
 // seguiam gravando normalmente, então `history.jsonl` não parava de crescer

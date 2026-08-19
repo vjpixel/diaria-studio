@@ -45,7 +45,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now diaria-on-hold-vencimento-alarm.timer
 ```
 
-**Armado e confirmado ativo em `predator` em 17/08/2026** — rodado da checkout
+**Armado e confirmado ativo em `helios` em 17/08/2026** — rodado da checkout
 compartilhada (`/home/vjpixel/diaria-studio`), como a nota anterior pedia.
 Próxima corrida domingo 11:00 BRT. Motivo do arme ter saído nessa data: a
 #4556 declara `Vencimento: 2026-09-15` e o retorno na data dependia deste

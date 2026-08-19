@@ -5,7 +5,7 @@
  * partir do Node ≥22.5 (docstring de `clarice-db.ts`: "Node ≥22.5 / 24").
  * Node do sistema/distro (ex: Ubuntu via `apt`) costuma vir mais antigo — o
  * achado ao vivo do #4823 foi Node 20.20.2 derrubando o Studio server em
- * `predator` com `Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in
+ * `helios` com `Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in
  * module: node:sqlite`, um erro nativo opaco sem nenhum sinal do requisito
  * real. CI nunca bateu nisso: todo `.github/workflows/*.yml` fixa
  * `node-version: '24'` explicitamente.

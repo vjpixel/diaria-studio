@@ -1,6 +1,6 @@
 # Setup do cliente OneDrive (`onedrive.service`, systemd --user)
 
-Issue: [#5548](https://github.com/vjpixel/diaria-studio/issues/5548) — "Sync do OneDrive parado há 17h no `predator`: `data/` divergiu nas duas pontas em silêncio (causou o skip da #5526)".
+Issue: [#5548](https://github.com/vjpixel/diaria-studio/issues/5548) — "Sync do OneDrive parado há 17h no `helios`: `data/` divergiu nas duas pontas em silêncio (causou o skip da #5526)".
 
 **Item 1 da issue (religar o serviço) já foi resolvido antes desta unidade** — verificado ao vivo pelo coordenador em 17/08 14:47 UTC: `systemctl --user status onedrive` mostrava `active (running)` desde `2026-08-17T14:33:34Z`, com uploads/downloads acontecendo. Este doc cobre só os itens 2-4: exclusão do escopo de sync (item 2), o alarme de sync parado (item 3, código real — ver `scripts/onedrive-sync-alarm.ts`) e o override `Restart=` (item 4).
 
@@ -60,7 +60,7 @@ systemctl --user status onedrive
 
 2. **Canário de frescor** — `data/.onedrive-sync-canary.json`. A cada execução, o script lê o `mtime` do arquivo EXISTENTE (escrito por uma execução anterior) antes de sobrescrevê-lo com o timestamp desta máquina (side A). Se o mtime anterior está mais velho que a tolerância (`--tolerance-hours`, default 6h), isso é staleness — sinaliza mesmo quando o serviço reporta `active` (rede degradada sem o daemon detectar, por exemplo). Ausência total do arquivo (1ª execução, ou `data/` nunca sincronizado nesta máquina) vira `canary-missing-baseline`, tratado como achado **informativo, nunca alarma sozinho** — distinto de staleness detectada de fato.
 
-**Limitação honesta, documentada de propósito (não é bug):** com uma única máquina (`predator`, único host 24/7 rodando alarmes deste repo hoje — ver label `server` em `CLAUDE.md`) escrevendo o canário, o sinal 2 prova primariamente "este timer está rodando + `data/` é gravável nesta máquina" — não prova, sozinho, que uma máquina PEER recebeu a escrita via OneDrive de fato. Combinado com o sinal 1 (estado do serviço), a dupla cobre o cenário real do #5548 (serviço morto, ninguém percebendo) mesmo sem um canário do lado peer (Windows do editor). Um canário bilateral de verdade (cada máquina escreve seu próprio lado, cada uma lê o lado da outra) é follow-up natural se um incidente futuro mostrar que o sinal 1 sozinho não bastou — não implementado aqui por falta de acesso à segunda máquina nesta sessão.
+**Limitação honesta, documentada de propósito (não é bug):** com uma única máquina (`helios`, único host 24/7 rodando alarmes deste repo hoje — ver label `server` em `CLAUDE.md`) escrevendo o canário, o sinal 2 prova primariamente "este timer está rodando + `data/` é gravável nesta máquina" — não prova, sozinho, que uma máquina PEER recebeu a escrita via OneDrive de fato. Combinado com o sinal 1 (estado do serviço), a dupla cobre o cenário real do #5548 (serviço morto, ninguém percebendo) mesmo sem um canário do lado peer (Windows do editor). Um canário bilateral de verdade (cada máquina escreve seu próprio lado, cada uma lê o lado da outra) é follow-up natural se um incidente futuro mostrar que o sinal 1 sozinho não bastou — não implementado aqui por falta de acesso à segunda máquina nesta sessão.
 
 ### Veredito e cadência
 

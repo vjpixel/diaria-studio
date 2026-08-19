@@ -105,7 +105,7 @@ systemctl --user daemon-reload
 **Nota de validação (#4857, reconciliação 260810):** o par gerado por
 `setup-watchdog-schedule-systemd.ts` foi comparado byte-a-byte com o que
 estava armado manualmente em `~/.config/systemd/user/` nesta máquina
-(`predator`, arme original 260810 ~06:52 UTC) — **idêntico**, quando gerado
+(`helios`, arme original 260810 ~06:52 UTC) — **idêntico**, quando gerado
 com o mesmo Node do `.nvmrc` (v24) que o arme manual usou. A expressão
 `OnCalendar=` gerada (`00..08,18..23:00/10:00 America/Sao_Paulo`) foi validada
 tanto pelo parser real (`systemd-analyze calendar`, sem lançar, próxima

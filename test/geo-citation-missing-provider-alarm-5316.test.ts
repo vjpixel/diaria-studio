@@ -1,7 +1,7 @@
 /**
  * test/geo-citation-missing-provider-alarm-5316.test.ts (#5316)
  *
- * Regressão do achado ao vivo: a Anthropic ficou muda em `predator` desde
+ * Regressão do achado ao vivo: a Anthropic ficou muda em `helios` desde
  * 11/ago/2026 (`ANTHROPIC_API_KEY` sumiu do `.env` local) e o alarme de
  * staleness (#4755) nunca disparou — Google e OpenAI seguiam gravando
  * normalmente, então `history.jsonl` não parava de crescer (o único sinal
@@ -66,7 +66,7 @@ describe("cenário real da issue: Anthropic sumiu de N rodadas recentes, os outr
     // 11/08 com os 3 (rodada manual do #4904); a ÚLTIMA rodada conhecida
     // (11/08) ainda tem os 3 — então avançamos o cenário pra depois de
     // 11/08 continuar SÓ com openai+google (a máquina nunca repôs a key),
-    // que é o estado real em `predator` na data da issue.
+    // que é o estado real em `helios` na data da issue.
     const p = historyWith([
       rec("2026-08-07", "openai"),
       rec("2026-08-07", "google"),

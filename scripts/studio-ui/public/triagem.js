@@ -111,17 +111,18 @@ function trackBadge(track) {
 // #3715/#5462 — vocabulário de Classificação (execTrack): rótulo + explicação
 // por valor, exibidos como tooltip no badge e como legenda visível.
 //
-// NÃO redeclarar os 4 valores aqui. Eles vêm do servidor em
-// `data.execTrackUi` (montado por scripts/lib/issue-exec-track.ts a partir de
-// `Record<ExecTrack, string>`, que quebra o build se um valor novo entrar sem
-// rótulo). Redeclarar criava exatamente a 2ª fonte de verdade que o #5462
-// existe pra eliminar: um 5º valor quebraria o build do servidor e passaria
-// SILENCIOSAMENTE aqui, caindo no fallback sem tradução nem tooltip (achado no
-// review do PR #5463).
+// NÃO redeclarar os valores aqui (5 desde o #5682, era 4 no #5462). Eles vêm
+// do servidor em `data.execTrackUi` (montado por
+// scripts/lib/issue-exec-track.ts a partir de `Record<ExecTrack, string>`,
+// que quebra o build se um valor novo entrar sem rótulo). Redeclarar criava
+// exatamente a 2ª fonte de verdade que o #5462 existe pra eliminar: um valor
+// novo quebraria o build do servidor e passaria SILENCIOSAMENTE aqui, caindo
+// no fallback sem tradução nem tooltip (achado no review do PR #5463).
 //
-// A ordem vem do servidor e é a de precedência do classificador, não
-// alfabética — a legenda lida de cima pra baixo explica por que uma issue com
-// 2 sinais caiu onde caiu.
+// A ordem vem do servidor e é a de LEITURA (anda sozinho hoje → não anda
+// nunca), não alfabética — ver a docstring de `EXEC_TRACK_UI` em
+// issue-exec-track.ts pra por que, desde o #5682, isso não é mais o exato
+// inverso da ordem de precedência do classificador.
 function execTrackEntry(track) {
   return (data.execTrackUi ?? []).find((e) => e.track === track);
 }

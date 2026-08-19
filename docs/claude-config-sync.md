@@ -105,19 +105,19 @@ e o bootstrap passou a clonar `re-plan` em `~/Projects/Re-plan` + rodar
    `/sprint-start`/`/day-plan`/etc. e a statusline funcionando após reiniciar
    o Claude Code.
 2. Rodar `bootstrap.sh`/`bootstrap.ps1` nas demais máquinas (incluindo
-   `predator`) e **confirmar ao vivo**.
+   `helios`) e **confirmar ao vivo**.
 
 ## Atualização (260810 — sessão `/diaria-develop`; fechamento em 260811 — overnight)
 
-`predator` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
+`helios` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
 symlinkados (`settings.json`, `agents/`, `statusline-wrapper.cjs`), `re-plan`
 popula `~/.claude/commands/` com os 5 comandos, `ccusage` instalado,
 `statusline-wrapper.cjs` executado manualmente contra um payload de
 statusline válido e respondeu sem erro. Item 2 acima está satisfeito para
-as duas máquinas conhecidas do editor (Windows + `predator`); resta apenas
+as duas máquinas conhecidas do editor (Windows + `helios`); resta apenas
 se houver uma terceira máquina no futuro.
 
-**Achado no caminho, corrigido:** o `settings.json` local em `predator`
+**Achado no caminho, corrigido:** o `settings.json` local em `helios`
 tinha `model`/`effortLevel` divergentes do valor committed no
 `claude-config`, sem nenhum aviso — como o arquivo é um symlink direto pro
 repo git, qualquer edição ao vivo da sessão escreve através do symlink pro
@@ -129,7 +129,7 @@ bloquear) com o diff resumido e as duas ações possíveis: commit+push (vira
 config permanente, compartilhada) ou `git checkout -- .` (descarta,
 mantém a máquina de origem como única fonte de verdade).
 
-O drift específico achado em `predator` (260810) foi verificado como
+O drift específico achado em `helios` (260810) foi verificado como
 resolvido organicamente numa sessão overnight posterior (260811) —
 `git status --porcelain` em `~/claude-config` veio limpo, sem working tree
 dirty. Não houve decisão explícita a tomar; o `git pull --ff-only` de uma

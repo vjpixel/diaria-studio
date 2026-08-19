@@ -41,7 +41,7 @@ const isWindows = platform() === "win32";
 
 // Fixture de checkout construída via path.resolve (não uma string POSIX
 // hardcoded) de propósito — em produção esta checagem roda no servidor
-// Linux (predator, ver #5571), mas os testes rodam em qualquer plataforma
+// Linux (helios, ver #5571), mas os testes rodam em qualquer plataforma
 // (incl. Windows, onde `path.resolve`/`.normalize` tratam um path
 // "/home/..." cru de forma inconsistente entre si por causa da letra de
 // unidade). Usar `resolve()` pra CONSTRUIR a fixture garante que ela já

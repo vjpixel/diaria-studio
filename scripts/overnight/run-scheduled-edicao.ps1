@@ -9,7 +9,7 @@
     editor de que nenhuma máquina Windows rodava mais tasks Diaria-*. O
     editor reverteu essa decisão no mesmo dia: `Diaria-Edicao-Diaria`
     precisa do navegador (Claude in Chrome), então roda no Windows — o
-    timer systemd em `predator` (Linux) foi desabilitado na mesma sessão.
+    timer systemd em `helios` (Linux) foi desabilitado na mesma sessão.
 
 .DESCRIPTION
     Ao contrário do .ps1 original (que duplicava toda a lógica em

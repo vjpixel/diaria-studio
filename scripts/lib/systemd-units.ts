@@ -56,7 +56,7 @@ function pad2(n: number): string {
  * idempotentes/best-effort como as 14 deste registro).
  */
 // Achado ao vivo (#4807, 260810): sem fuso explícito, o systemd interpreta
-// OnCalendar= no fuso do SISTEMA (Etc/UTC em predator) -- as horas do
+// OnCalendar= no fuso do SISTEMA (Etc/UTC em helios) -- as horas do
 // registry são pensadas em BRT (mesma convenção do CLAUDE.md e dos .ps1
 // legados no Windows). Sem isso, Diaria-Clarice-Sync (registry: 08:30)
 // dispararia às 08:30 UTC = 05:30 BRT -- 30min ANTES do envio canônico das

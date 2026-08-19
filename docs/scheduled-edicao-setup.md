@@ -3,7 +3,7 @@
 > **VIA ATIVA: WINDOWS (17/08/2026, #5611)** — decisão do editor:
 > `Diaria-Edicao-Diaria` precisa rodar no Windows porque depende de acesso
 > ao navegador (Claude in Chrome). O timer systemd `diaria-edicao-diaria.timer`
-> em `predator` (Linux) foi **desabilitado** na mesma sessão
+> em `helios` (Linux) foi **desabilitado** na mesma sessão
 > (`systemctl --user disable --now`) para evitar duas máquinas armadas na
 > mesma janela disparando duas rodadas. O #5611 reverte parte do cutover
 > #5115/#5162 (que tinha removido o par `.ps1` do Windows) — mas em vez de
@@ -240,7 +240,7 @@ Mesmo achado ao vivo do watchdog (#4857, incidente #4823): `buildEdicaoSystemdUn
 
 O horário de disparo é sempre pensado em BRT: `OnCalendar=` inclui
 `America/Sao_Paulo` explicitamente (`scripts/lib/edicao-systemd-units.ts`) —
-independe do fuso do sistema (`predator` roda em `Etc/UTC`).
+independe do fuso do sistema (`helios` roda em `Etc/UTC`).
 
 O cálculo de D+1 usa explicitamente `America/Sao_Paulo` via `Intl.DateTimeFormat` em ambas as plataformas (independente do fuso da máquina).
 
@@ -264,4 +264,4 @@ Sexta, sábado e domingo **não** têm disparo automático (sem edições nesses
 
 O alarme de staleness (task separada, diária 18:20 BRT, ver `docs/scheduled-tasks-registry.md`) lê `data/overnight-schedule.log` — arquivo dentro de `data/`, sincronizado por OneDrive entre as máquinas do projeto, então em princípio funcionaria igual não importa qual máquina gravou a última entrada. Mas ele **não checa se algum timer está de fato armado**, só se o log tem uma entrada pra edição de amanhã — com o timer Linux desabilitado (banner no topo) e a task Windows ainda sem confirmação de arme real (§Setup — Windows), o alarme dispararia `alarm-never-fired` todo dia sobre um estado hoje intencional (nenhuma via disparando ainda).
 
-Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026, e **fica pausado até o editor confirmar que a task `Diaria-Edicao-Diaria` do Windows está de fato registrada e habilitada** (`Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo`, ver §Setup — Windows). Reativar depois disso é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `predator` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).
+Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026, e **fica pausado até o editor confirmar que a task `Diaria-Edicao-Diaria` do Windows está de fato registrada e habilitada** (`Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo`, ver §Setup — Windows). Reativar depois disso é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `helios` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).

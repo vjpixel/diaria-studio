@@ -80,7 +80,7 @@ describe("buildWatchdogOnCalendar — validação real via systemd-analyze (quan
   }, () => {
     const onCalendar = buildWatchdogOnCalendar();
     const out = execFileSync("systemd-analyze", ["calendar", "--iterations=20", onCalendar], { encoding: "utf8" });
-    // "Next elapse"/"Iteration #N" vêm em UTC (`predator` roda em Etc/UTC) —
+    // "Next elapse"/"Iteration #N" vêm em UTC (`helios` roda em Etc/UTC) —
     // BRT = UTC-3, então a janela 18:00-08:59 BRT corresponde a 21:00-11:59
     // UTC. Extrai todos os HH:MM de cada linha e confirma que nenhum cai
     // fora dessa faixa.

@@ -39,7 +39,7 @@
  * pay-as-you-go, sistema de billing separado da assinatura do Claude Code)
  * — mas "a key existe" e "a key está no `.env` da máquina que roda a task
  * `Diaria-Geo-Citation-Monitor`" são fatos DIFERENTES: a Anthropic ficou
- * muda em `predator` (a máquina do timer) porque a key nunca foi reposta
+ * muda em `helios` (a máquina do timer) porque a key nunca foi reposta
  * lá depois do #5155, mesmo já existindo no Doppler. Os 3 providers
  * (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) rodam de
  * verdade SÓ nas máquinas cujo `.env` tem a key — confira com
@@ -1196,7 +1196,7 @@ export function detectProviderDrop(
  * do cliente OneDrive Linux (abraunegg, `-safeBackup-`) — sinal de que 2+
  * máquinas escreveram o mesmo log JSONL na mesma janela e o OneDrive
  * resolveu RENOMEANDO em vez de mesclar ou avisar (#4900 item c, achado ao
- * vivo: `history-predator-safeBackup-0001.jsonl` com 8 registros órfãos que
+ * vivo: `history-helios-safeBackup-0001.jsonl` com 8 registros órfãos que
  * só existem nesse arquivo). Esta função só DETECTA — reconciliar os dados
  * é operação manual sobre dado real de produção, deliberadamente fora de
  * escopo de qualquer PR de código (ver docstring de `listSafeBackupConflictFiles`

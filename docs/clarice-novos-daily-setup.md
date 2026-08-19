@@ -43,13 +43,13 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 
 ## Armar em UMA máquina só (#4941 E4)
 
-`data/` é junction do OneDrive sincronizada entre máquinas. `clarice-novos-resolve-key.ts` sufixa `-2`/`-3`… quando enxerga a key do dia já usada em `group-campaigns.json` — mas isso depende do OneDrive ter sincronizado esse arquivo a tempo. Duas máquinas armadas na mesma janela de latência poderiam resolver a MESMA key e criar 2 campanhas (envio duplicado real, não cosmético como o `history-predator-safeBackup-*.jsonl` do monitor GEO). Sem lock novo pra isso — se for armar numa 2ª máquina, desarme a 1ª antes (`systemctl --user disable --now diaria-clarice-novos.timer`).
+`data/` é junction do OneDrive sincronizada entre máquinas. `clarice-novos-resolve-key.ts` sufixa `-2`/`-3`… quando enxerga a key do dia já usada em `group-campaigns.json` — mas isso depende do OneDrive ter sincronizado esse arquivo a tempo. Duas máquinas armadas na mesma janela de latência poderiam resolver a MESMA key e criar 2 campanhas (envio duplicado real, não cosmético como o `history-helios-safeBackup-*.jsonl` do monitor GEO). Sem lock novo pra isso — se for armar numa 2ª máquina, desarme a 1ª antes (`systemctl --user disable --now diaria-clarice-novos.timer`).
 
 **Task NÃO armada nesta unidade quando implementada em worktree isolado** — mesma disciplina do #4320/#4382/#4490/#4534/#4723 (credencial/estado de máquina fica fora do worktree do subagente). Se implementada numa sessão local com acesso real à máquina, o arme + a 1ª rodada (pausada pelo toggle) podem acontecer na mesma sessão — ver o PR/commit pra confirmar se isso ocorreu.
 
-**Armada e confirmada ativa (#4941, 10/ago)** — `systemctl --user is-active diaria-clarice-novos.timer` retorna `active` na máquina `predator`, `Trigger: Tue 2026-08-11 20:00:00 UTC` (= 11/ago 17:00 BRT, o próximo disparo real). Kill switch confirmado no estado default seguro (`npx tsx scripts/lib/clarice-novos-enabled.ts` → `disabled`) — a 1ª rodada de amanhã sai limpo, sem tocar Stripe/MV/Brevo, até o editor liberar explicitamente. Arme feito fora de worktree isolado (sessão local direta no clone principal), então os passos acima já foram executados nesta máquina — não repetir.
+**Armada e confirmada ativa (#4941, 10/ago)** — `systemctl --user is-active diaria-clarice-novos.timer` retorna `active` na máquina `helios`, `Trigger: Tue 2026-08-11 20:00:00 UTC` (= 11/ago 17:00 BRT, o próximo disparo real). Kill switch confirmado no estado default seguro (`npx tsx scripts/lib/clarice-novos-enabled.ts` → `disabled`) — a 1ª rodada de amanhã sai limpo, sem tocar Stripe/MV/Brevo, até o editor liberar explicitamente. Arme feito fora de worktree isolado (sessão local direta no clone principal), então os passos acima já foram executados nesta máquina — não repetir.
 
-> **Re-arme feito em 260812 (#5140).** O parágrafo acima é registro HISTÓRICO: o `Trigger` de 20:00 UTC descrito ali é o das 17:00 BRT antigas. Mudar `hour` no registry **não** mexe no timer já instalado — o unit precisa ser regenerado e recarregado. Estado atual em `predator`: `active`, próximo disparo `14:00 UTC` (11:00 BRT).
+> **Re-arme feito em 260812 (#5140).** O parágrafo acima é registro HISTÓRICO: o `Trigger` de 20:00 UTC descrito ali é o das 17:00 BRT antigas. Mudar `hour` no registry **não** mexe no timer já instalado — o unit precisa ser regenerado e recarregado. Estado atual em `helios`: `active`, próximo disparo `14:00 UTC` (11:00 BRT).
 >
 > ```bash
 > npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
@@ -58,7 +58,7 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 > systemctl --user list-timers diaria-clarice-novos.timer
 > ```
 >
-> **Copiar só o `.timer`, nunca o `.service` junto.** O `ExecStart` gerado embute o caminho do Node que rodou o comando; em `predator` o service instalado usa `~/.local/node/bin/node` e uma sessão com `nvm` ativo gera `~/.nvm/versions/node/vX/bin/node`. A mudança de horário vive inteira no `.timer` — trocar o `.service` junto substitui o binário por outro sem necessidade.
+> **Copiar só o `.timer`, nunca o `.service` junto.** O `ExecStart` gerado embute o caminho do Node que rodou o comando; em `helios` o service instalado usa `~/.local/node/bin/node` e uma sessão com `nvm` ativo gera `~/.nvm/versions/node/vX/bin/node`. A mudança de horário vive inteira no `.timer` — trocar o `.service` junto substitui o binário por outro sem necessidade.
 >
 > **⚠️ `Persistent=true` dispara catch-up no re-arme.** Aconteceu em 260812: o re-arme às 16:00 BRT disparou a rodada `novos-260812` na hora (67 contatos, `sent` confirmado — rodada legítima do dia, só adiantada, sem duplicação).
 >
@@ -85,7 +85,7 @@ Mesmo script (`clarice-novos-run.ts`), mesmo guard de pré-condição, mesmo kil
 
 **Risco residual do #5185 — FECHADO pelo #5410 (16/08/2026):** a folga até `Diaria-Clarice-Envio` (19:00) já não depende mais de a campanha do `novos` ter assentado em `sent` — desde o #5410, `isNovos` e `isRampWarm` PARTICIONAM a fila de 1º envio (`segmentRampWarm` corta por `readNovosCutoff()`) em vez de um ser subconjunto do outro. É exatamente esse fechamento estrutural que libera mover a rodada da tarde de 15:00 para 18:00 sem reabrir o risco de duplicata — ver `scripts/lib/scheduled-tasks.ts` para o detalhe técnico completo. O teste `#5140` (`test/scheduled-tasks.test.ts`) mantém o piso de 4h como regressão barata mesmo com o caminho estrutural fechado.
 
-**Task NÃO armada nesta unidade** (worktree isolado do subagente implementador) — mesma disciplina de sempre. **Estado atual: ARMADA na `predator`, confirmado ao vivo em 17/08/2026** (`systemctl --user is-enabled` = `enabled`); a fonte canônica de estado de arme é `docs/scheduled-tasks-registry.md`, não esta seção, que descreve o procedimento. Arme (Linux/systemd, checkout compartilhado, DEPOIS do merge):
+**Task NÃO armada nesta unidade** (worktree isolado do subagente implementador) — mesma disciplina de sempre. **Estado atual: ARMADA na `helios`, confirmado ao vivo em 17/08/2026** (`systemctl --user is-enabled` = `enabled`); a fonte canônica de estado de arme é `docs/scheduled-tasks-registry.md`, não esta seção, que descreve o procedimento. Arme (Linux/systemd, checkout compartilhado, DEPOIS do merge):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos-Tarde
