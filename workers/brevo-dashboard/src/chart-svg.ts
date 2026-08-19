@@ -150,6 +150,9 @@ export const CHART = {
   padBottom: 30,
 } as const;
 
+/** #5640 B7: passo (em dias-calendário) entre rótulos/gridlines INTERIORES do eixo X. */
+export const X_LABEL_STEP_DAYS = 5;
+
 /**
  * "Nice max" simples pro eixo Delivered — arredonda pra cima pro próximo
  * múltiplo redondo (evita eixo terminando em número feio tipo 1.234).
@@ -268,8 +271,33 @@ export function fmtDayLabelLong(day: string): string {
  * ←/→/Home/End/Esc) e `aria-describedby` apontando pro `<desc>` abaixo do
  * `<title>` — o `role="img"` + `aria-label` existentes são mantidos como
  * fallback (nome acessível), `<title>`/`<desc>` cobrem leitores/ferramentas
- * que não resolvem `aria-label` em `<svg>`. B7 (gridlines/rótulos
- * verticais do eixo X) fica fora desta fatia.
+ * que não resolvem `aria-label` em `<svg>`.
+ *
+ * **#5640 B7 (decisão do editor 260818: implementar agora — "escolhendo uma
+ * fonte histórica disponível e adicionando rótulos/gridlines"): rótulos
+ * intermediários do eixo X + gridlines verticais.** Além dos 2 rótulos de
+ * ponta (primeiro/último dia, já existentes), 1 rótulo + 1 gridline vertical
+ * a cada `X_LABEL_STEP_DAYS` (5) dias — só nos índices INTERIORES (nunca
+ * duplica os rótulos de ponta, nem desenha um interior colado na ponta).
+ * Gridline pontilhada, mesmo idioma visual das horizontais (`var(--rule)`,
+ * `stroke-dasharray="2,3"`), opacidade um pouco mais discreta (0.35, vs 0.55
+ * do rótulo) pra não competir com o crosshair (B1 — a única linha vertical
+ * SÓLIDA, e só visível no hover).
+ *
+ * **#5640 A1 (mesma decisão do editor): 3ª série — open rate ESPERADO.**
+ * `DayOpenRateSummary.expectedOpenRate` (campo opcional, computado por
+ * `computeExpectedOpenRateByDay`, sections-core.ts, a partir do mix de
+ * coortes do dia × open rate base histórico de cada coorte — ver docstring
+ * lá) vira uma linha tracejada, cor NEUTRA (`var(--ink)`, opacidade 0.6 —
+ * nunca `--brand`/`--alert`, que já identificam Delivered/Open Rate REAL),
+ * SEM marcador e SEM área preenchida (é uma estimativa, não uma série
+ * medida — a ausência de marcador já sinaliza isso visualmente). Dia sem
+ * `expectedOpenRate` (nenhuma campanha classificável naquele dia, ou coorte
+ * sem base histórica suficiente) vira buraco na série — mesmo mecanismo de
+ * `splitIntoRuns` das outras duas séries, conecta através do buraco. Se
+ * NENHUM dia da janela tem `expectedOpenRate`, nem linha nem rótulo
+ * aparecem — chamador que não passa o campo (rows antigas, testes) não
+ * regride.
  */
 export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   if (rows.length === 0) return "";
@@ -381,9 +409,25 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   const delivered = renderSeries(deliveredSlots, "--brand", "chart-gradient-delivered", chartBottom);
   const openRate = renderSeries(openRateSlots, "--alert", "chart-gradient-openrate", chartBottom);
 
-  // Gridlines horizontais pontilhadas em 0/50/100% da altura do chart —
-  // sem gridlines verticais (pedido explícito do benchmark). Rótulos dos
-  // dois eixos na mesma altura, cada um na sua própria escala.
+  // #5640 A1: 3ª série — open rate ESPERADO (mix de coortes × base
+  // histórica). Linha tracejada só, sem área/marcador — ver docstring da
+  // função. `expectedOpenRate` é opcional em `DayOpenRateSummary`; dia sem
+  // valor vira buraco (`null`), mesmo mecanismo de `splitIntoRuns`.
+  const expectedSlots: Array<{ point: ChartPoint } | null> = slots.map((s, i) => {
+    const v = s?.expectedOpenRate;
+    return v != null ? { point: { x: xAt(i), y: yOpenRate(v) } } : null;
+  });
+  const hasExpectedData = expectedSlots.some((s) => s !== null);
+  let expectedLine = "";
+  for (const run of splitIntoRuns(expectedSlots)) {
+    const pts = run.map((r) => r.value.point);
+    if (pts.length >= 2) {
+      expectedLine += `<path d="${catmullRomToBezierPath(pts)}" fill="none" stroke="var(--ink)" stroke-width="2" stroke-dasharray="6,4" stroke-linecap="round" opacity="0.6"/>`;
+    }
+  }
+
+  // Gridlines horizontais pontilhadas em 0/50/100% da altura do chart.
+  // Rótulos dos dois eixos na mesma altura, cada um na sua própria escala.
   const gridFractions = [0, 0.5, 1];
   const gridlines = gridFractions
     .map((f) => {
@@ -404,6 +448,19 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
       <text x="${chartRight}" y="${viewBoxH - 8}" text-anchor="end" font-size="11" fill="var(--ink)" opacity="0.55">${escAttr(xLabelLast)}</text>`
       : `<text x="${(chartLeft + chartRight) / 2}" y="${viewBoxH - 8}" text-anchor="middle" font-size="11" fill="var(--ink)" opacity="0.55">${escAttr(xLabelFirst)}</text>`;
 
+  // #5640 B7: rótulos intermediários + gridlines verticais — passo fixo
+  // (`X_LABEL_STEP_DAYS`), só índices interiores (0 e days.length-1 já são
+  // os rótulos de ponta acima, nunca duplicados aqui). Janela curta
+  // (`days.length <= X_LABEL_STEP_DAYS`) não produz nenhum interior — o
+  // loop simplesmente não itera, sem caso especial.
+  let xInteriorGridlines = "";
+  let xInteriorLabels = "";
+  for (let i = X_LABEL_STEP_DAYS; i < days.length - 1; i += X_LABEL_STEP_DAYS) {
+    const x = xAt(i);
+    xInteriorGridlines += `<line x1="${fmt(x)}" y1="${fmt(chartTop)}" x2="${fmt(x)}" y2="${fmt(chartBottom)}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3" opacity="0.35"/>`;
+    xInteriorLabels += `<text x="${fmt(x)}" y="${viewBoxH - 8}" text-anchor="middle" font-size="11" fill="var(--ink)" opacity="0.55">${escAttr(fmtDayLabel(days[i]))}</text>`;
+  }
+
   // Rótulos estáticos de série (não é legenda flutuante — texto fixo no
   // próprio SVG, sempre visível, sem hover/JS).
   //
@@ -416,7 +473,8 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   // `var(--ink)`, que já é a cor de alto contraste calibrada neste arquivo.
   // Dois `<tspan>` por rótulo em vez de 1 `fill` só na `<text>`.
   const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700"><tspan fill="var(--brand)">●</tspan> <tspan fill="var(--ink)">Delivered</tspan></text>
-    <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>`;
+    <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>
+    ${hasExpectedData ? `<text x="${(chartLeft + chartRight) / 2}" y="16" text-anchor="middle" font-size="12" font-weight="700"><tspan fill="var(--ink)" opacity="0.6">┄</tspan> <tspan fill="var(--ink)">Esperado (mix)</tspan></text>` : ""}`;
 
   // #5640 B1: linha vertical do crosshair — invisível por default
   // (`opacity:0`, sem `pointer-events` pra não competir com os hit rects
@@ -469,13 +527,16 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     <defs>${delivered.defs}${openRate.defs}</defs>
     ${seriesLabels}
     ${gridlines}
+    ${xInteriorGridlines}
     ${delivered.areas}
     ${openRate.areas}
     ${delivered.lines}
     ${openRate.lines}
+    ${expectedLine}
     ${delivered.markers}
     ${openRate.markers}
     ${xLabels}
+    ${xInteriorLabels}
     ${crosshair}
     ${hitRects}
   </svg>`;
@@ -645,5 +706,155 @@ export function renderConfoundersSparklineSvg(days: string[], rows: DayOpenRateS
   return `<svg class="confounders-sparkline-chart" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Bounce rate, spam rate e CTOR por dia — confounders do open rate, mesma janela do gráfico principal">
     <title>Confounders — bounce, spam, CTOR por dia</title>
     ${out}
+  </svg>`;
+}
+
+/**
+ * #5640 A3 (decisão do editor 260818: implementar agora, junto com A1/B7 —
+ * a própria issue já classifica esta fatia como "o mais analítico e mais
+ * dispensável dos cinco" da Parte A, maior risco de má-interpretação
+ * causal). Defasagens fixas `0..3` — pra cada `k`, correlaciona
+ * `delivered[dia]` com `openRate[dia+k]` (Pearson). Pico de correlação
+ * negativa em `k=0` sugere efeito de MIX (a mesma campanha que trouxe
+ * volume trouxe também o público mais frio); pico em `k=1..3` sugere
+ * reputação respondendo com atraso — a leitura fica pro texto da seção
+ * (`renderOpenRateByDaySection`, sections-core.ts), não aqui.
+ *
+ * Opera sobre o range de CALENDÁRIO completo (`enumerateDayRange` entre o
+ * primeiro e o último `day` de `rows`), não sobre o array `rows` bruto —
+ * um buraco de calendário (dia sem envio) precisa contar como um passo de
+ * defasagem de verdade, senão `k=1` vira "próximo dia COM dado", que pode
+ * ser 3 dias de calendário adiante e falsifica a defasagem.
+ *
+ * **A5 (guarda-corpo de honestidade):** dias `immature` (open rate ainda
+ * subindo, <48h) são excluídos do PAR (`delivered[i]`/`openRate[i+k]`) se
+ * QUALQUER um dos dois lados cair num dia imaturo — mesmo padrão de reuso
+ * das flags já existentes que a issue pede pra decomposição. Amostra final
+ * com menos de 3 pares retorna `null` (correlação de 1-2 pontos não é
+ * informação, é ruído).
+ *
+ * Exportado pra teste unitário.
+ */
+export function computeLagCorrelations(rows: DayOpenRateSummary[]): Record<0 | 1 | 2 | 3, number | null> {
+  const lags: Array<0 | 1 | 2 | 3> = [0, 1, 2, 3];
+  if (rows.length === 0) {
+    return { 0: null, 1: null, 2: null, 3: null };
+  }
+  const days = enumerateDayRange(rows[0].day, rows[rows.length - 1].day);
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  const slots: Array<DayOpenRateSummary | null> = days.map((d) => byDay.get(d) ?? null);
+
+  const result = {} as Record<0 | 1 | 2 | 3, number | null>;
+  for (const k of lags) {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i + k < slots.length; i++) {
+      const a = slots[i];
+      const b = slots[i + k];
+      if (!a || !b) continue;
+      if (a.immature || b.immature) continue;
+      xs.push(a.delivered);
+      ys.push(b.openRate);
+    }
+    result[k] = pearsonCorrelation(xs, ys);
+  }
+  return result;
+}
+
+/** Coeficiente de correlação de Pearson. `< 3` pares ou variância zero em algum dos dois lados → `null`. */
+function pearsonCorrelation(xs: number[], ys: number[]): number | null {
+  const n = xs.length;
+  if (n < 3) return null;
+  const meanX = xs.reduce((s, v) => s + v, 0) / n;
+  const meanY = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let denX = 0;
+  let denY = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+    num += dx * dy;
+    denX += dx * dx;
+    denY += dy * dy;
+  }
+  if (denX === 0 || denY === 0) return null;
+  return num / Math.sqrt(denX * denY);
+}
+
+/** #5640 A3: layout do scatter delivered×openRate — dimensões próprias, sem eixo duplo (1 eixo por dimensão). */
+const SCATTER_CHART = {
+  viewBoxW: 500,
+  viewBoxH: 340,
+  padLeft: 50,
+  padRight: 16,
+  padTop: 16,
+  padBottom: 40,
+} as const;
+
+/**
+ * #5640 A3: dispersão delivered (X) × open rate (Y), 1 ponto = 1 dia — o
+ * remédio da issue pra "duas linhas sobrepostas de eixo duplo não provam
+ * relação monotônica, um scatter sim". Cor por RECÊNCIA: opacidade cresce
+ * linearmente do dia mais antigo (0.3) ao mais recente (1.0) — sem
+ * gridiente de cor nova, só opacidade sobre `var(--alert)` (mesmo token de
+ * Open Rate no gráfico principal). Dias `smallSample`/`immature` reusam os
+ * MESMOS marcadores do gráfico principal (círculo oco / opacidade extra
+ * ×0.55) — nunca inventam um 3º idioma visual pro mesmo par de flags.
+ *
+ * `rows.length < 2` retorna `""` (dispersão de 0-1 ponto não é gráfico).
+ * Exportado pra teste unitário.
+ */
+export function renderDeliveredOpenRateScatterSvg(rows: DayOpenRateSummary[]): string {
+  if (rows.length < 2) return "";
+
+  const { viewBoxW, viewBoxH, padLeft, padRight, padTop, padBottom } = SCATTER_CHART;
+  const chartLeft = padLeft;
+  const chartRight = viewBoxW - padRight;
+  const chartTop = padTop;
+  const chartBottom = viewBoxH - padBottom;
+  const chartW = chartRight - chartLeft;
+  const chartH = chartBottom - chartTop;
+
+  const maxDelivered = niceMax(rows.reduce((m, r) => Math.max(m, r.delivered), 0));
+  const xAt = (v: number): number => chartLeft + (chartW * v) / maxDelivered;
+  const yAt = (v: number): number => chartBottom - (chartH * Math.max(0, Math.min(v, 100))) / 100;
+
+  const n = rows.length;
+  let points = "";
+  rows.forEach((r, i) => {
+    const recencyOpacity = n <= 1 ? 1 : 0.3 + 0.7 * (i / (n - 1));
+    const opacity = (r.immature ? recencyOpacity * 0.55 : recencyOpacity).toFixed(2);
+    const cx = fmt(xAt(r.delivered));
+    const cy = fmt(yAt(r.openRate));
+    points += r.smallSample
+      ? `<circle cx="${cx}" cy="${cy}" r="4" fill="var(--card)" stroke="var(--alert)" stroke-width="2" opacity="${opacity}"/>`
+      : `<circle cx="${cx}" cy="${cy}" r="4" fill="var(--alert)" opacity="${opacity}"/>`;
+  });
+
+  const yGridlines = [0, 50, 100]
+    .map((v) => {
+      const y = fmt(yAt(v));
+      return `<line x1="${fmt(chartLeft)}" y1="${y}" x2="${fmt(chartRight)}" y2="${y}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>
+      <text x="${fmt(chartLeft - 8)}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="10" fill="var(--ink)" opacity="0.55">${v}%</text>`;
+    })
+    .join("\n");
+
+  const xTicks = [0, 0.5, 1]
+    .map((f) => {
+      const v = Math.round(maxDelivered * f);
+      const x = fmt(xAt(v));
+      return `<text x="${x}" y="${fmt(chartBottom + 16)}" text-anchor="middle" font-size="10" fill="var(--ink)" opacity="0.55">${v.toLocaleString("pt-BR")}</text>`;
+    })
+    .join("\n");
+
+  const axisLabels = `<text x="${fmt((chartLeft + chartRight) / 2)}" y="${viewBoxH - 6}" text-anchor="middle" font-size="10" fill="var(--ink)" opacity="0.65">Delivered</text>
+    <text x="12" y="${fmt((chartTop + chartBottom) / 2)}" text-anchor="middle" font-size="10" fill="var(--ink)" opacity="0.65" transform="rotate(-90 12 ${fmt((chartTop + chartBottom) / 2)})">Open rate (%)</text>`;
+
+  return `<svg class="scatter-delivered-openrate" viewBox="0 0 ${viewBoxW} ${viewBoxH}" width="100%" height="auto" role="img" aria-label="Dispersão delivered por open rate, 1 ponto por dia, mais opaco = mais recente — correlação, não causa">
+    <title>Delivered × Open rate — dispersão por dia</title>
+    ${yGridlines}
+    ${xTicks}
+    ${axisLabels}
+    ${points}
   </svg>`;
 }

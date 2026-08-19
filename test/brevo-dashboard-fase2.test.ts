@@ -79,6 +79,9 @@ import {
   aggregateByDayByCohort,
   DAY_OPENRATE_COHORT_BUCKETS,
   DAY_OPENRATE_COHORT_LABELS,
+  computeCohortBaseOpenRates,
+  computeExpectedOpenRateByDay,
+  COHORT_BASE_OPENRATE_WINDOW_DAYS,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { MvStatus, EiaEngagementSummary, EiaEngagementEdition } from "../workers/brevo-dashboard/src/index.ts";
 
@@ -4018,6 +4021,144 @@ describe("#5640 A2/A4: renderOpenRateByDaySection — cohortResult (small multip
     const now = new Date("2026-06-26T12:00:00Z");
     const c = makeCampaign(154, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /causou/i);
+    assert.doesNotMatch(html, /por causa de/i);
+  });
+});
+
+describe("#5640 A1: computeCohortBaseOpenRates", () => {
+  test("agrega open rate BASE por coorte numa janela mais longa que os 30 dias do gráfico principal", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    // 2 campanhas assinantes-ativos, ambas dentro dos 90 dias, fora dos 30
+    // dias exibidos no gráfico principal (>30 dias atrás de `now`).
+    const c1 = { ...makeCampaign(200, "AA d1", "2026-04-10T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const c2 = { ...makeCampaign(201, "AA d2", "2026-04-20T09:00:00Z", { delivered: 100, uniqueViews: 30 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([c1, c2], now);
+    assert.equal(rates["assinantes-ativos"], 40, "(50+30)/(100+100) = 40%");
+  });
+
+  test("coorte sem nenhum envio na janela fica AUSENTE do resultado (nunca 0)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = { ...makeCampaign(202, "AA d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([c], now);
+    assert.equal(rates["ex-assinantes"], undefined, "sem envio de ex-assinantes na janela, a chave não deve existir");
+  });
+
+  test("janela default é COHORT_BASE_OPENRATE_WINDOW_DAYS (90) — envio de 95 dias atrás fica de fora", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    assert.equal(COHORT_BASE_OPENRATE_WINDOW_DAYS, 90);
+    const foraDaJanela = { ...makeCampaign(203, "AA velho", "2026-03-15T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([foraDaJanela], now);
+    assert.equal(rates["assinantes-ativos"], undefined, "95 dias atrás está fora da janela de 90 dias");
+  });
+});
+
+describe("#5640 A1: computeExpectedOpenRateByDay", () => {
+  test("mix de 1 coorte só => esperado do dia == base histórica dessa coorte", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = { ...makeCampaign(210, "AA hoje", "2026-06-20T09:00:00Z", { delivered: 100, uniqueViews: 25 }), listName: "assinantes-ativos" };
+    const { rows: mainRows } = aggregateByDay([c], now);
+    const cohortResult = aggregateByDayByCohort([c], now);
+    const baseRates = { "assinantes-ativos": 40 };
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, baseRates);
+    assert.equal(expected.get("2026-06-20"), 40);
+  });
+
+  test("dia sem nenhuma campanha classificável em coorte => null (nunca adivinha)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const semCoorte = { ...makeCampaign(211, "sem coorte", "2026-06-20T09:00:00Z", { delivered: 100, uniqueViews: 25 }), listName: "engajados" };
+    const { rows: mainRows } = aggregateByDay([semCoorte], now);
+    const cohortResult = aggregateByDayByCohort([semCoorte], now);
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, { "assinantes-ativos": 40 });
+    assert.equal(expected.get("2026-06-20"), null);
+  });
+
+  test("coorte classificada mas SEM base histórica disponível => null", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = { ...makeCampaign(212, "leads hoje", "2026-06-20T09:00:00Z", { delivered: 100, uniqueViews: 25 }), listName: "leads-2026-06" };
+    const { rows: mainRows } = aggregateByDay([c], now);
+    const cohortResult = aggregateByDayByCohort([c], now);
+    // baseRates não tem "leads" — sem base histórica pra essa coorte.
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, {});
+    assert.equal(expected.get("2026-06-20"), null);
+  });
+
+  test("mix de 2 coortes no mesmo dia pondera pelo delivered de cada uma", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const ativos = { ...makeCampaign(213, "AA d20", "2026-06-20T10:00:00Z", { delivered: 300, uniqueViews: 100 }), listName: "assinantes-ativos" };
+    const leads = { ...makeCampaign(214, "leads d20", "2026-06-20T11:00:00Z", { delivered: 100, uniqueViews: 5 }), listName: "leads-2026-06" };
+    const { rows: mainRows } = aggregateByDay([ativos, leads], now);
+    const cohortResult = aggregateByDayByCohort([ativos, leads], now);
+    const baseRates = { "assinantes-ativos": 50, leads: 10 };
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, baseRates);
+    // (300*50 + 100*10) / 400 = (15000+1000)/400 = 40
+    assert.equal(expected.get("2026-06-20"), 40);
+  });
+});
+
+describe("#5640 A1: renderOpenRateByDaySection — nota de leitura da série esperada", () => {
+  test("sem baseRates (chamador antigo/3 args), nenhuma nota 'Esperado' aparece", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(220, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /open rate ESPERADO/);
+  });
+
+  test("com rows[].expectedOpenRate populado, nota 'esperado vs real' aparece com a leitura mix vs efeito", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(221, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const rowsWithExpected = rows.map((r) => ({ ...r, expectedOpenRate: 35 }));
+    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { panels: [], unclassifiedCount: 0 }, { "assinantes-ativos": 40 });
+    assert.match(html, /open rate ESPERADO/);
+    assert.match(html, /efeito de mix, sem dano/);
+    assert.match(html, new RegExp(String(COHORT_BASE_OPENRATE_WINDOW_DAYS)));
+  });
+
+  test("coorte sem base histórica é nomeada explicitamente na nota (nunca só um número)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(222, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
+    const { rows } = aggregateByDay([c], now);
+    const rowsWithExpected = rows.map((r) => ({ ...r, expectedOpenRate: 35 }));
+    // baseRates só tem assinantes-ativos — as outras 3 coortes ficam faltando.
+    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { panels: [], unclassifiedCount: 0 }, { "assinantes-ativos": 40 });
+    for (const bucket of ["ex-assinantes", "leads", "novos"] as const) {
+      assert.match(html, new RegExp(DAY_OPENRATE_COHORT_LABELS[bucket]));
+    }
+  });
+});
+
+describe("#5640 A3: renderOpenRateByDaySection — dispersão + correlação por defasagem", () => {
+  test("com >= 2 dias de dado, renderiza a subseção de dispersão com os 4 lags rotulados", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c1 = makeCampaign(230, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
+    const c2 = makeCampaign(231, "d2", "2026-06-11T09:00:00Z", { delivered: 200, uniqueViews: 30 });
+    const { rows } = aggregateByDay([c1, c2], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.match(html, /Dispersão delivered × open rate/);
+    assert.match(html, /class="scatter-delivered-openrate"/);
+    assert.match(html, /k=0/);
+    assert.match(html, /k=1/);
+    assert.match(html, /k=2/);
+    assert.match(html, /k=3/);
+    assert.match(html, /Correlação, não causa/);
+  });
+
+  test("com só 1 dia de dado, a subseção de dispersão NÃO aparece (renderDeliveredOpenRateScatterSvg se omite)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c = makeCampaign(232, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
+    const { rows } = aggregateByDay([c], now);
+    const html = renderOpenRateByDaySection(rows);
+    assert.doesNotMatch(html, /Dispersão delivered × open rate/);
+  });
+
+  test("nota de correlação nunca usa 'causou'/'por causa de' (A5)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const c1 = makeCampaign(233, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
+    const c2 = makeCampaign(234, "d2", "2026-06-11T09:00:00Z", { delivered: 200, uniqueViews: 30 });
+    const { rows } = aggregateByDay([c1, c2], now);
     const html = renderOpenRateByDaySection(rows);
     assert.doesNotMatch(html, /causou/i);
     assert.doesNotMatch(html, /por causa de/i);
