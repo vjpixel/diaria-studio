@@ -19,6 +19,38 @@ Conversion Import — o único caminho que amarra `gclid` a assinante de verdade
 disponível apenas para contas de administrador"*. O developer token pertence à
 MCC, e é o CID dela que vai em `login-customer-id` nas chamadas.
 
+## Verificação ao vivo (19/08/2026) — Basic Access aprovado, ingestão real rodou
+
+Basic Access aprovado por e-mail do Google (19/08/2026, 02:16 UTC). Validado
+ao vivo na mesma data, contra a API real, v25:
+
+| Chamada | Resposta |
+|---|---|
+| `customers:listAccessibleCustomers` | 200 (inalterado desde 17/08) |
+| `googleAds:search`, `login-customer-id` = MCC (`GOOGLE_ADS_LOGIN_CUSTOMER_ID`) | **403 `USER_PERMISSION_DENIED`** |
+| `googleAds:search`, `login-customer-id` = a própria conta (`GOOGLE_ADS_CUSTOMER_ID`) | **200** — zero linhas (conta pausada desde fevereiro) |
+| `googleAds:search`, sem `login-customer-id` | **200** — idêntico ao anterior |
+
+`DEVELOPER_TOKEN_NOT_APPROVED` sumiu por completo — o token não é mais de
+teste. O 403 que sobrou é outra coisa: o usuário OAuth tem acesso **direto**
+à conta de anunciante, mas não **através da hierarquia da MCC** configurada
+em `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — sintoma de vínculo MCC↔conta incompleto
+no lado do Google Ads (convite de gerenciamento pendente de aceite), não de
+credencial errada nem de fila. `fetchGoogleAdsSpendRows` (`scripts/lib/
+google-ads-ingest.ts`) agora retenta automaticamente com `login-customer-id`
+= a própria conta quando o corpo bate `USER_PERMISSION_DENIED` e o login
+configurado difere da conta-alvo — corrigido e testado
+(`test/google-ads-ingest-5237.test.ts`). Com o fix, `google-ads-ingest-spend.ts`
+roda limpo e classifica `empty` (chamada OK, gasto zero — legítimo, conta
+pausada).
+
+**Resolver o vínculo MCC↔conta continua valendo a pena** mesmo com o
+workaround no código — sem ele, qualquer chamada que dependa de acessar a
+conta *pela* MCC (ex: outras contas futuras sob a mesma MCC) esbarra no
+mesmo 403. Ação de plataforma, não de código: no Google Ads UI, verificar se
+o convite/vínculo de gerenciamento entre `623-609-4249` (MCC) e
+`236-921-9639` (conta de anúncio) está aceito dos dois lados.
+
 ## Verificação ao vivo (17/08/2026) — o que a API responde HOJE
 
 Rodada contra a API real (`googleAds:search`, v22 e v25, resultados idênticos).
@@ -89,7 +121,7 @@ verificação como fixture.
 - [x] Cliente OAuth `diaria-relatorio-aquisicao` (App para computador)
 - [x] Credenciais no Doppler
 - [ ] Token associado ao projeto (`scripts/google-ads-associate-token.ts`)
-- [ ] Basic Access sair da fila
+- [x] Basic Access sair da fila — aprovado 19/08/2026, validado ao vivo (ver seção acima)
 
 ## Verificação de marca
 
