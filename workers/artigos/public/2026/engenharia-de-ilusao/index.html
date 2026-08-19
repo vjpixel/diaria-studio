@@ -197,6 +197,9 @@
     .ig-aside {
       position: sticky;
       top: 2rem;
+      max-height: calc(100vh - 4rem);
+      overflow-y: auto;
+      scrollbar-width: thin;
     }
     .ig-aside-caption { font-size: 0.72rem; }
     .ig-aside .infographic-card {
@@ -570,7 +573,7 @@
     <div class="meta-row">
       <span>Por Pixel</span>
       <span>18 de agosto de 2026</span>
-      <span>~8 min de leitura</span>
+      <span>~9 min de leitura</span>
       <span>Tema escolhido pelos apoiadores</span>
     </div>
   </div>
@@ -593,38 +596,71 @@
 
   <div class="manuscript-layout">
   <div class="manuscript">
-    <p class="lede">Quando um modelo de IA aceita fazer aquilo que jurou não fazer, a explicação intuitiva é que alguém descobriu a senha secreta: a frase mágica que desliga o filtro. Não é isso que acontece. O que existe é mais simples de executar e bem mais difícil de consertar: a pessoa mudou de personagem, e o modelo continuou coerente.</p>
+    <p class="lede">Fazer um modelo de IA entregar aquilo que ele jurou não entregar tem nome: jailbreak. A explicação intuitiva é que alguém descobriu a senha secreta, a frase mágica que desliga o filtro. Não é isso que acontece. O que existe é mais simples de executar e bem mais difícil de consertar: a pessoa mudou de personagem, e o modelo continuou coerente.</p>
 
     <p>Este artigo explica o mecanismo, não a receita. Descrever a forma de um ataque é o que permite reconhecê-lo; reproduzir sequências que funcionam é outra coisa, e não é o que a <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong> faz. O tema foi escolhido pelos apoiadores, a partir de uma sugestão do Patrono <strong>Murilo Sarno</strong>.</p>
 
     <h3 class="sect" id="s01"><span class="sect-n">01</span>Onde isso já deu errado</h3>
 
-    <p>Em agosto, a <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong> noticiou que um operador afiliado ao grupo de ransomware "The Gentlemen" <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">conduziu quase todas as etapas de uma invasão com o Claude Sonnet 4.6</a>: roubo de credenciais, backdoors em VPNs, exfiltração de bancos de dados. Pelo menos oito organizações foram atingidas desde junho. O detalhe que interessa aqui é a escolha do criminoso: ele usou, de propósito, uma versão mais antiga do modelo, com proteções mais fracas que as atuais.</p>
+    <p>Em agosto, a <strong>diar<span style="color:var(--accent)">.</span>ia<span style="color:var(--accent)">.br</span></strong> noticiou que um operador afiliado ao grupo de ransomware "The Gentlemen" <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">conduziu quase todas as etapas de uma invasão com o Claude Sonnet 4.6</a>: roubar as senhas dos funcionários, deixar portas escondidas para voltar depois, copiar bancos de dados inteiros para fora da empresa. Pelo menos oito organizações foram atingidas desde junho. O detalhe que interessa aqui é a escolha do criminoso: ele usou, de propósito, uma versão mais antiga do modelo, com proteções mais fracas que as atuais.</p>
 
     <p>Isso já diz algo sobre a natureza do problema. Não foi preciso inventar um ataque novo. Bastou escolher um interlocutor mais fácil de convencer.</p>
 
-    <p>Quatro dias antes, no lançamento do Claude Cowork no painel do Chrome, <a href="https://claude.com/blog/cowork-chrome-side-panel">a própria Anthropic avisou</a> que atores maliciosos escondem instruções dentro de páginas web para redirecionar o assistente, o que a indústria chama de prompt injection. A empresa listou as proteções e então escreveu a frase que resume o estado da arte: elas reduzem o risco de forma significativa, <span class="stat">mas não podem eliminá-lo</span>. Tudo isso em um produto que opera com os logins já ativos do usuário.</p>
+    <p>Quatro dias antes, no lançamento do Claude Cowork no painel do Chrome, <a href="https://claude.com/blog/cowork-chrome-side-panel">a própria Anthropic avisou</a> que atores maliciosos escondem instruções dentro de páginas web para redirecionar o assistente. A indústria chama isso de prompt injection: o texto da página chega pelo mesmo canal que os seus pedidos, então o assistente o lê como ordem, e não como conteúdo. A empresa listou as proteções e então escreveu a frase que resume o estado da arte: elas reduzem o risco de forma significativa, <span class="stat">mas não podem eliminá-lo</span>. Tudo isso em um produto que opera com os logins já ativos do usuário.</p>
 
     <p>Recue mais dois meses e o mesmo fenômeno aparece como política de Estado. Em junho, uma ordem de controle de exportação dos Estados Unidos <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">forçou a Anthropic a suspender o acesso global ao Fable 5 e ao Mythos</a>, citando o risco de que jailbreaks viabilizassem uso militar em países restritos. Foi a primeira vez que um controle de exportação americano derrubou o acesso mundial a um modelo comercial. Em julho, a liberação veio acompanhada de novas salvaguardas e de um framework para testar tentativas de jailbreak, compartilhado com a indústria.</p>
 
-    <p>Em dois meses, a mesma brecha apareceu como argumento de segurança nacional, como risco assumido em produto de consumo e como ferramenta de crime. Falta a pergunta óbvia: por que ninguém a fechou?</p>
+    <p>Ainda em julho, um levantamento do Tech Against Terrorism, apoiado pelo Escritório de Contraterrorismo da ONU, mostrou o outro lado do balcão: <a href="https://canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia-para-fabricar-armas/">em canais fechados, grupos extremistas trocam prompts que furam as barreiras dos chatbots</a>, compartilham as conversas que deram certo e até rateiam o custo das assinaturas. O que circula ali é a parte que interessa a este artigo. Não é uma senha: é a conversa inteira, a cena que funcionou, pronta para ser repetida por quem não saberia montá-la sozinho.</p>
+
+    <p>Em pouco mais de um ano, a mesma brecha saiu do artigo acadêmico e virou argumento de segurança nacional, risco assumido em produto de consumo, ferramenta de grupo armado e ferramenta de crime. Falta a pergunta óbvia: por que ninguém a fechou?</p>
+
+    <p>Quatro palavras aparecem o tempo todo daqui em diante:</p>
+
+    <div class="explain-grid">
+      <div class="explain-card">
+        <span class="tag">Jailbreak</span>
+        <p>Convencer um modelo de IA a entregar aquilo que as regras dele proíbem. Acontece inteiro dentro da conversa, em texto comum, sem invadir sistema nenhum.</p>
+      </div>
+      <div class="explain-card">
+        <span class="tag">Guardrail</span>
+        <p>A camada que lê o que entra e o que sai do modelo e barra o que não deveria passar. É ela que recusa o pedido proibido, e é ela que este ataque contorna.</p>
+      </div>
+      <div class="explain-card">
+        <span class="tag">Turno único e multiturno</span>
+        <p>Um turno é uma rodada de pergunta e resposta. Ataque de turno único cabe numa mensagem só. Multiturno se espalha por muitas, usando as respostas anteriores do próprio modelo como apoio.</p>
+      </div>
+      <div class="explain-card">
+        <span class="tag">Prompt injection</span>
+        <p>Instrução escondida dentro de um conteúdo que o assistente vai ler, como uma página web. Ele obedece porque esse texto chega pelo mesmo canal que os seus pedidos.</p>
+      </div>
+    </div>
 
     <div class="ig-inline" id="ig-fase-1">
       <div class="infographic-card">
-        <div class="ig-eyebrow">Fase 1: dois meses, três consequências</div>
+        <div class="ig-eyebrow">Um ano, do laboratório à consequência real</div>
         <h3>De curiosidade de laboratório a fato geopolítico</h3>
         <div class="ig-timeline">
-          <div class="ig-node" style="--dot-size:0.6rem;--dot-color:var(--accent);--dot-opacity:0.55;">
+          <div class="ig-node" style="--dot-size:0.55rem;--dot-color:var(--accent);--dot-opacity:0.4;">
+            <span class="ig-date">Ago 2025</span>
+            <span class="ig-label">No laboratório, o problema ganha número</span>
+            <p class="ig-desc">Pesquisa mede ataques de conversa longa contra GPT-4, Claude e variantes do Gemini e conclui que a escalada elaborada pesa menos do que se imaginava. Ainda é assunto de artigo acadêmico.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.65rem;--dot-color:var(--accent);--dot-opacity:0.62;">
             <span class="ig-date">16 jun 2026</span>
             <span class="ig-label">Jailbreak vira fundamento de controle de exportação</span>
             <p class="ig-desc">Ordem dos EUA força a suspensão global do Fable 5 e do Mythos, citando risco de jailbreaks que viabilizariam uso militar. Primeira vez que controle de exportação americano derruba o acesso mundial a um modelo comercial.</p>
           </div>
-          <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.7;">
+          <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.62;">
             <span class="ig-date">2 jul 2026</span>
             <span class="ig-label">A volta vem com framework anti-jailbreak</span>
             <p class="ig-desc">O Fable 5 retorna com novas salvaguardas de cibersegurança e um framework de teste de jailbreak compartilhado com a indústria. A concessão que destrava a exportação é justamente sobre esse vetor.</p>
           </div>
-          <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.85;">
+          <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:1;">
+            <span class="ig-date">14 jul 2026</span>
+            <span class="ig-label">Grupos extremistas industrializam a prática</span>
+            <p class="ig-desc">Levantamento do Tech Against Terrorism, apoiado pelo Escritório de Contraterrorismo da ONU, encontra canais fechados onde extremistas trocam prompts que furam as barreiras, compartilham as conversas que deram certo e rateiam assinaturas.</p>
+          </div>
+          <div class="ig-node" style="--dot-size:0.95rem;--dot-color:var(--accent);--dot-opacity:0.62;">
             <span class="ig-date">14 ago 2026</span>
             <span class="ig-label">A fabricante admite o limite em produto de consumo</span>
             <p class="ig-desc">No Claude Cowork para Chrome, a Anthropic descreve prompt injection e afirma que as barreiras reduzem significativamente o risco, mas não podem eliminá-lo. Isso num produto que opera com os logins ativos do usuário.</p>
@@ -636,10 +672,11 @@
           </div>
         </div>
         <div class="ig-legend">
-          <span><span class="sw" style="background:var(--accent);opacity:0.55;"></span>política e regulação</span>
+          <span><span class="sw" style="background:var(--accent);opacity:0.4;"></span>pesquisa</span>
+          <span><span class="sw" style="background:var(--accent);opacity:0.62;"></span>política e indústria</span>
           <span><span class="sw" style="background:var(--accent);opacity:1;"></span>consequência real</span>
         </div>
-        <div class="ig-footer">fontes: <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
+        <div class="ig-footer">fontes: <a href="https://arxiv.org/abs/2508.07646">arXiv 2508.07646</a> · <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia-para-fabricar-armas/">Canaltech</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
       </div>
     </div>
 
@@ -647,13 +684,13 @@
 
     <p>Um filtro de segurança avalia o que chega escrito. Não tem acesso à intenção de quem escreveu nem ao que essa pessoa pretende fazer com a resposta. Julga a superfície apresentada, porque é a única coisa que existe para ele.</p>
 
-    <p>É daí que vem a brecha, e ela não é um descuido de implementação. Quando alguém constrói um personagem consistente (o pesquisador de segurança, o autor de ficção que precisa de um vilão convincente), o modelo não está sendo derrotado contra o próprio julgamento. Está respondendo com fidelidade ao papel que a conversa estabeleceu. A resposta proibida deixa de ser uma transgressão e passa a ser a continuação natural da cena.</p>
+    <p>É daí que vem a brecha, e ela é estrutural. Quando alguém constrói um personagem consistente (o pesquisador de segurança, o autor de ficção que precisa de um vilão convincente), o modelo responde com fidelidade ao papel que a conversa estabeleceu. A resposta proibida deixa de ser uma transgressão e passa a ser a continuação natural da cena.</p>
 
     <p class="pull-quote">O modelo não entende você. Ele entende o personagem que você apresenta.<small>a inversão que explica dois anos de correções sem solução</small></p>
 
-    <p>Foi um grupo de pesquisadores liderado por Yi Zeng que levou essa ideia até o fim, em um trabalho apresentado na ACL de 2024. A premissa deles inverte a tradição da área: em vez de tratar o modelo como máquina a ser atacada por especialistas em segurança, tratam-no como <a href="https://arxiv.org/abs/2401.06373">um interlocutor a ser persuadido por gente comum</a>. O risco relevante, argumentam, não vem do hacker: vem do usuário comum, em conversa cotidiana.</p>
+    <p>Foi um grupo de pesquisadores liderado por Yi Zeng que levou essa ideia até o fim, em um trabalho apresentado na ACL de 2024. A premissa deles inverte a tradição da área: em vez de tratar o modelo como máquina a ser atacada por especialistas em segurança, tratam-no como <a href="https://arxiv.org/abs/2401.06373">um interlocutor a ser persuadido por gente comum</a>. O risco relevante, argumentam, está no usuário comum, em conversa cotidiana.</p>
 
-    <p>A partir de décadas de pesquisa em ciência social, montaram uma taxonomia de persuasão e a usaram para gerar prompts adversariais interpretáveis. O resultado: taxa de sucesso <span class="stat">acima de 92%</span> em Llama 2-7b Chat, GPT-3.5 e GPT-4, em dez tentativas, superando os ataques algorítmicos da época. Os autores também relataram uma lacuna significativa nas defesas então existentes.</p>
+    <p>A partir de décadas de pesquisa em ciência social, montaram um catálogo de técnicas de persuasão e o usaram para escrever pedidos de ataque que qualquer pessoa consegue ler e entender. O resultado: taxa de sucesso <span class="stat">acima de 92%</span> em Llama 2-7b Chat, GPT-3.5 e GPT-4, em dez tentativas, superando os ataques algorítmicos da época. Os autores também registraram que as defesas da época não davam conta disso.</p>
 
     <p>Lidas pelo ângulo deste artigo, aquelas técnicas de persuasão (reciprocidade, apelo à autoridade, prova social) não são alavancas psicológicas contra a máquina. São instruções de figurino. Cada uma monta um papel dentro do qual a fala proibida é simplesmente a fala esperada.</p>
 
@@ -663,19 +700,19 @@
 
     <p>É a demonstração mais limpa da tese: o Crescendo não persuade, ele constrói. Cada turno transforma a resposta anterior do próprio modelo em prova de quem ele é naquela conversa, até que recusar seria contradizer o que ele mesmo acabou de dizer. A coerência, que é uma virtude, vira o vetor de ataque.</p>
 
-    <p>Só que a pesquisa mais recente desinfla parte da mística. Um trabalho de 2025 analisou ataques multiturno automatizados contra GPT-4, Claude e variantes do Gemini e chegou a uma conclusão desconfortável para quem gosta da imagem do manipulador habilidoso: quando se leva em conta que o atacante aprende com o <em>jeito</em> que o modelo recusa, o jailbreak multiturno é <a href="https://arxiv.org/abs/2508.07646">aproximadamente equivalente a repetir ataques de turno único várias vezes</a>. A coreografia da conversa não é o que decide.</p>
+    <p>Só que a pesquisa mais recente desinfla parte da mística. Um trabalho de 2025 analisou ataques multiturno automatizados, aqueles que preparam o terreno ao longo de várias mensagens, contra GPT-4, Claude e variantes do Gemini, e chegou a uma conclusão desconfortável para quem gosta da imagem do manipulador habilidoso: quando se leva em conta que o atacante aprende com o <em>jeito</em> que o modelo recusa, o jailbreak multiturno é <a href="https://arxiv.org/abs/2508.07646">aproximadamente equivalente a repetir ataques de turno único várias vezes</a>. A coreografia da conversa importa menos do que parece.</p>
 
-    <p>Isso não enfraquece o diagnóstico. Afia. Se a escalada engenhosa não é o fator determinante, o que resta é encontrar o enquadramento certo e insistir. O personagem é o ativo; a escalada é apenas um caminho até ele.</p>
+    <p>Isso não enfraquece o diagnóstico. Afia. Se a escalada engenhosa não é o fator determinante, o que resta é encontrar o enquadramento certo e insistir. O personagem é o ativo. A escalada é só um dos caminhos até ele.</p>
 
     <p>O mesmo trabalho traz dois números que valem mais que a discussão sobre técnica. O primeiro: ataques multiturno mantêm taxas <span class="stat">acima de 70%</span> contra modelos otimizados para resistir a ataques de turno único. O segundo, mais incômodo, é que o sucesso é correlacionado entre modelos parecidos, o que torna um modelo recém-lançado mais fácil de quebrar, porque ele herda as brechas do antecessor. Trocar de fornecedor não é solução quando todos treinam de maneira parecida.</p>
 
-    <p>Há ainda o achado que fecha o argumento do começo. Em modelos de raciocínio, os pesquisadores encontraram algo que chamaram de surpreendente: <strong>mais esforço de raciocínio costuma produzir maior taxa de sucesso do ataque</strong>. Pensar mais não protege. Ajuda a manter o papel de pé.</p>
+    <p>Há ainda o achado que fecha o argumento do começo. Em modelos de raciocínio, os que "pensam" antes de responder, os pesquisadores encontraram algo que chamaram de surpreendente: <strong>mais esforço de raciocínio costuma produzir maior taxa de sucesso do ataque</strong>. Pensar mais não protege. Ajuda a manter o papel de pé.</p>
 
-    <p>Um benchmark de 2026, o <a href="https://arxiv.org/abs/2605.01687">MultiBreak</a>, mede a mesma coisa por outro caminho. Com 10.389 prompts adversariais cobrindo 2.665 intenções nocivas distintas, os autores observaram que <strong>categorias que parecem inofensivas em turno único exibem efetividade adversarial substancialmente maior em multiturno</strong>. O mesmo pedido que seria recusado de saída passa, quando chega no meio de uma cena montada.</p>
+    <p>Um teste padronizado de 2026, o <a href="https://arxiv.org/abs/2605.01687">MultiBreak</a>, mede a mesma coisa por outro caminho e em escala bem maior. O achado: <strong>categorias que parecem inofensivas quando o pedido vem sozinho ficam bem mais efetivas quando ele chega no meio de uma conversa</strong>. O mesmo pedido que seria recusado de saída passa, quando chega no meio de uma cena montada.</p>
 
     <div class="ig-inline" id="ig-fase-2">
       <div class="infographic-card">
-        <div class="ig-eyebrow">Fase 2: o que a pesquisa mede</div>
+        <div class="ig-eyebrow">O que a pesquisa mede</div>
         <h3>Quatro números que descrevem o mesmo problema</h3>
         <div class="ig-timeline">
           <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--accent);--dot-opacity:0.6;">
@@ -696,7 +733,7 @@
           <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
             <span class="ig-date">Jan 2026</span>
             <span class="ig-label">Defesa: 93,8% de detecção</span>
-            <p class="ig-desc">Defensive M2S comprime a conversa inteira em forma de turno único para treinar o guardrail: 94,6% menos tokens e 38,9 pontos percentuais acima da linha de base.</p>
+            <p class="ig-desc">Defensive M2S comprime a conversa inteira em forma de turno único para treinar o guardrail: processa 94,6% menos texto e fica 38,9 pontos percentuais acima do método anterior.</p>
           </div>
         </div>
         <div class="ig-legend">
@@ -712,17 +749,19 @@
 
     <p>A boa notícia é que a defesa parou de tentar o impossível. Se o ataque não está em nenhuma frase específica, ler frase por frase nunca vai funcionar. Foi essa conclusão que reorganizou a pesquisa em 2026.</p>
 
-    <p>Duas linhas ilustram a virada. O <a href="https://arxiv.org/abs/2601.00454">Defensive M2S</a> comprime a conversa multiturno inteira em formato de turno único antes de treinar o guardrail: achata a cena para que a manipulação gradual apareça de uma vez, em vez de diluída ao longo do diálogo. Na melhor configuração, chega a <span class="stat">93,8%</span> de detecção usando <span class="stat">94,6%</span> menos tokens, um ganho de <span class="stat">38,9 pontos percentuais</span> sobre a linha de base. Já o <a href="https://arxiv.org/abs/2606.03136">PsychoPass</a>, de junho, abandona de vez o conteúdo: mede a geometria da trajetória da conversa, tratando o diálogo como um percurso e procurando o formato característico de quem está construindo um papel.</p>
+    <p>Duas linhas ilustram a virada. O <a href="https://arxiv.org/abs/2601.00454">Defensive M2S</a> comprime a conversa multiturno inteira em formato de turno único antes de treinar o guardrail: achata a cena para que a manipulação gradual apareça de uma vez, em vez de diluída ao longo do diálogo. Na melhor configuração, chega a <span class="stat">93,8%</span> de detecção processando <span class="stat">94,6%</span> menos texto, um ganho de <span class="stat">38,9 pontos percentuais</span> sobre o método anterior. Já o <a href="https://arxiv.org/abs/2606.03136">PsychoPass</a>, de junho, abandona de vez o conteúdo: mede a geometria da trajetória da conversa, tratando o diálogo como um percurso e procurando o formato característico de quem está construindo um papel.</p>
 
     <p>Que a defesa tenha precisado parar de ler o que foi dito para medir o formato do caminho é a confirmação do diagnóstico pelo avesso. O ataque nunca esteve nas palavras.</p>
 
+    <p>Vale dizer o que isso não é. Você não vai ser invadido por um jailbreak: quem faz esse ataque quer uma resposta que o modelo não deveria dar, e o alvo é o modelo, não a sua máquina. O ponto em que isso encosta em você é outro, e é justamente o que mais cresce agora: o assistente que trabalha no seu lugar, com os seus arquivos e os seus logins abertos.</p>
+
     <div class="todo-box">
-      <span class="tag">Do seu lado</span>
+      <span class="tag">Onde isso encosta em você</span>
       <ul>
-        <li><strong>Prefira sempre a versão mais recente do modelo.</strong> Cada geração chega com brechas da anterior fechadas, e quem paga a diferença é você, se o assistente convencido for o seu. Rodar versão antiga economiza pouco e entrega ao interlocutor as defesas mais fracas que o operador de ransomware foi procurar de propósito.</li>
-        <li><strong>Comece sessão nova para tarefas sensíveis.</strong> O risco cresce com o comprimento da conversa, porque é o histórico que sustenta o personagem. Contexto longo é conveniente e é justamente o que o ataque usa.</li>
-        <li><strong>Em assistente que navega com seus logins, trate conteúdo de página como entrada não confiável.</strong> Uma página pode conter instruções endereçadas ao seu assistente, não a você. Foi disso que a Anthropic avisou ao lançar o Cowork.</li>
-        <li><strong>Não presuma que "o modelo entendeu que é sério".</strong> Ele avalia o texto que chega, não a sua intenção nem a do outro lado. Onde a consequência é real, a verificação precisa ser sua.</li>
+        <li><strong>O risco é o assistente que age por você, não o chatbot que responde.</strong> Um assistente que navega logado lê a página como parte da conversa. Se a página trouxer instruções endereçadas a ele, ele não tem como saber que não vieram de você. Foi disso que a Anthropic avisou ao lançar o Cowork.</li>
+        <li><strong>Em tarefa sensível, comece do zero.</strong> Tudo que entrou na conversa continua valendo enquanto ela durar, inclusive o que veio de um documento ou de uma página aberta lá atrás. Sessão nova limpa o palco.</li>
+        <li><strong>Modelo mais recente resiste melhor.</strong> Cada geração fecha parte das brechas da anterior. É a diferença entre um interlocutor difícil e um fácil de convencer, e ela conta quando esse interlocutor está trabalhando para você.</li>
+        <li><strong>O modelo não sabe que a sua tarefa é séria.</strong> Ele avalia o texto que chega, e não a sua intenção. Onde a consequência é real (dinheiro que sai, arquivo que some, mensagem que é enviada), a conferida é sua.</li>
       </ul>
     </div>
 
@@ -733,23 +772,33 @@
   </div>
 
   <aside class="ig-aside">
-    <p class="ig-aside-caption">Os dois quadros abaixo acompanham a leitura: o primeiro mostra como o problema saiu do laboratório em dois meses; o segundo, o que a pesquisa efetivamente mediu.</p>
+    <p class="ig-aside-caption">Os dois quadros abaixo acompanham a leitura: o primeiro mostra o caminho do laboratório até a consequência real, ao longo de um ano; o segundo, o que a pesquisa efetivamente mediu.</p>
 
     <div class="infographic-card">
-      <div class="ig-eyebrow">Fase 1: dois meses, três consequências</div>
+      <div class="ig-eyebrow">Um ano, do laboratório à consequência real</div>
       <h3>De curiosidade de laboratório a fato geopolítico</h3>
       <div class="ig-timeline">
-        <div class="ig-node" style="--dot-size:0.6rem;--dot-color:var(--accent);--dot-opacity:0.55;">
+        <div class="ig-node" style="--dot-size:0.55rem;--dot-color:var(--accent);--dot-opacity:0.4;">
+          <span class="ig-date">Ago 2025</span>
+          <span class="ig-label">No laboratório, o problema ganha número</span>
+          <p class="ig-desc">Pesquisa mede ataques de conversa longa e conclui que a escalada elaborada pesa menos do que se imaginava.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.65rem;--dot-color:var(--accent);--dot-opacity:0.62;">
           <span class="ig-date">16 jun 2026</span>
           <span class="ig-label">Jailbreak vira fundamento de controle de exportação</span>
           <p class="ig-desc">Ordem dos EUA força a suspensão global do Fable 5 e do Mythos, citando risco de jailbreaks que viabilizariam uso militar.</p>
         </div>
-        <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.7;">
+        <div class="ig-node" style="--dot-size:0.75rem;--dot-color:var(--accent);--dot-opacity:0.62;">
           <span class="ig-date">2 jul 2026</span>
           <span class="ig-label">A volta vem com framework anti-jailbreak</span>
           <p class="ig-desc">O Fable 5 retorna com novas salvaguardas e um framework de teste de jailbreak compartilhado com a indústria.</p>
         </div>
-        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:0.85;">
+        <div class="ig-node" style="--dot-size:0.9rem;--dot-color:var(--accent);--dot-opacity:1;">
+          <span class="ig-date">14 jul 2026</span>
+          <span class="ig-label">Grupos extremistas industrializam a prática</span>
+          <p class="ig-desc">Tech Against Terrorism, com apoio da ONU, acha canais onde extremistas trocam prompts que furam barreiras e compartilham conversas que deram certo.</p>
+        </div>
+        <div class="ig-node" style="--dot-size:0.95rem;--dot-color:var(--accent);--dot-opacity:0.62;">
           <span class="ig-date">14 ago 2026</span>
           <span class="ig-label">A fabricante admite o limite</span>
           <p class="ig-desc">No Claude Cowork para Chrome, a Anthropic afirma que as barreiras reduzem o risco significativamente, mas não podem eliminá-lo.</p>
@@ -761,14 +810,15 @@
         </div>
       </div>
       <div class="ig-legend">
-        <span><span class="sw" style="background:var(--accent);opacity:0.55;"></span>política e regulação</span>
+        <span><span class="sw" style="background:var(--accent);opacity:0.4;"></span>pesquisa</span>
+        <span><span class="sw" style="background:var(--accent);opacity:0.62;"></span>política e indústria</span>
         <span><span class="sw" style="background:var(--accent);opacity:1;"></span>consequência real</span>
       </div>
-      <div class="ig-footer">fontes: <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
+      <div class="ig-footer">fontes: <a href="https://arxiv.org/abs/2508.07646">arXiv 2508.07646</a> · <a href="https://www.nextgov.com/artificial-intelligence/2026/06/anthropic-suspends-top-ai-models-after-us-export-control-order/414173/">Nextgov</a> · <a href="https://canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia-para-fabricar-armas/">Canaltech</a> · <a href="https://claude.com/blog/cowork-chrome-side-panel">Anthropic</a> · <a href="https://cybersecuritynews.com/claude-code-helps-ransomware-operator/">Cybersecurity News</a></div>
     </div>
 
     <div class="infographic-card">
-      <div class="ig-eyebrow">Fase 2: o que a pesquisa mede</div>
+      <div class="ig-eyebrow">O que a pesquisa mede</div>
       <h3>Quatro números que descrevem o mesmo problema</h3>
       <div class="ig-timeline">
         <div class="ig-node" style="--dot-size:0.8rem;--dot-color:var(--accent);--dot-opacity:0.6;">
@@ -789,7 +839,7 @@
         <div class="ig-node" style="--dot-size:1.1rem;--dot-color:var(--accent);--dot-opacity:1;">
           <span class="ig-date">Jan 2026</span>
           <span class="ig-label">Defesa: 93,8% de detecção</span>
-          <p class="ig-desc">Defensive M2S comprime a conversa em turno único para treinar o guardrail: 94,6% menos tokens, 38,9 pontos acima da base.</p>
+          <p class="ig-desc">Defensive M2S comprime a conversa em turno único para treinar o guardrail: 94,6% menos texto, 38,9 pontos acima do método anterior.</p>
         </div>
       </div>
       <div class="ig-legend">
@@ -809,6 +859,13 @@
   <section class="sources">
     <h2>Fontes</h2>
     <ol class="ledger">
+      <li>
+        <span>
+          <span class="src-title">ONU revela como terroristas burlam filtros de IA para fabricar armas</span>
+          <span class="src-outlet">Canaltech</span>
+          <a class="src-url" href="https://canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia-para-fabricar-armas/">canaltech.com.br/inteligencia-artificial/onu-revela-como-terroristas-burlam-filtros-de-ia</a>
+        </span>
+      </li>
       <li>
         <span>
           <span class="src-title">Grupo hacker usou Claude em oito invasões</span>
