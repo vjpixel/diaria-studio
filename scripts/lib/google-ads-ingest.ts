@@ -11,14 +11,15 @@
  *
  * ## Por que fail-soft é o comportamento CORRETO aqui, não um fallback pobre
  *
- * O developer token do projeto (`236-921-9639`) está no nível "Conta de
- * teste" — toda chamada de produção volta `DEVELOPER_TOKEN_NOT_APPROVED`
- * até o Basic Access sair da fila (#5262). Isso é o estado ESPERADO hoje,
- * não uma exceção rara: o script precisa degradar pro CSV manual
- * (`data/aquisicao/spend.csv` já mantido por `seed-spend-csv.ts`/edição
- * manual) sem quebrar `cac-report.ts` nem lançar stack cru — nunca
- * `process.exit` de dentro deste módulo, que não sabe se está rodando
- * dentro de um teste.
+ * **Atualização 19/08/2026: o Basic Access foi aprovado** (e-mail do Google,
+ * 02:16 UTC) — `DEVELOPER_TOKEN_NOT_APPROVED` deixou de ser o estado normal
+ * do dia a dia. Validado ao vivo na mesma data: `googleAds:search` contra a
+ * conta de produção (`236-921-9639`) devolve 200 (zero linhas — a conta está
+ * pausada desde fevereiro, `empty` legítimo). O fail-soft continua sendo o
+ * comportamento CORRETO mesmo assim — rede cai, quota estoura, o token pode
+ * ser revogado de novo — só que `auth-pending` volta a ser exceção, não
+ * regra; ver `fetchGoogleAdsSpendRows` para o achado de MCC↔conta que
+ * também apareceu nesta validação.
  *
  * ## Adaptador de `spend-ingest.ts` (#5502 Parte B)
  *
@@ -236,26 +237,56 @@ export async function fetchGoogleAdsSpendRows(
 ): Promise<{ rows: GaqlSpendApiRow[] } | { error: string; failureClass?: GoogleAdsFailureClass }> {
   const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
   const customerId = auth.customerId.replace(/[^0-9]/g, "");
-  const loginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
+  const configuredLoginCustomerId = auth.loginCustomerId.replace(/[^0-9]/g, "");
   const url = `https://googleads.googleapis.com/${apiVersion}/customers/${customerId}/googleAds:search`;
 
-  let res: Response;
-  try {
-    res = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "developer-token": auth.developerToken,
-        "login-customer-id": loginCustomerId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query: gaqlQuery }),
-    });
-  } catch (e) {
-    return { error: `falha de rede na chamada googleAds:search: ${e instanceof Error ? e.message : e}` };
+  const search = async (loginCustomerId: string): Promise<{ res: Response; text: string } | { networkError: string }> => {
+    let res: Response;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "developer-token": auth.developerToken,
+          "login-customer-id": loginCustomerId,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query: gaqlQuery }),
+      });
+    } catch (e) {
+      return { networkError: `falha de rede na chamada googleAds:search: ${e instanceof Error ? e.message : e}` };
+    }
+    return { res, text: await res.text() };
+  };
+
+  let attempt = await search(configuredLoginCustomerId);
+  if ("networkError" in attempt) return { error: attempt.networkError };
+
+  // Achado ao vivo 19/08/2026, mesmo dia da aprovação do Basic Access
+  // (#5237): com `login-customer-id` = MCC configurada
+  // (`GOOGLE_ADS_LOGIN_CUSTOMER_ID`), a conta de anunciante devolve 403
+  // `USER_PERMISSION_DENIED` — mas a MESMA query, na MESMA conta, com
+  // `login-customer-id` = a própria conta anunciante (`customerId`), devolve
+  // 200. `listAccessibleCustomers` também 200 pros dois IDs. Ou seja: o
+  // usuário OAuth tem acesso direto à conta de anúncio, mas não através da
+  // hierarquia da MCC configurada — sintoma de vínculo MCC↔conta incompleto
+  // no lado do Google Ads (aceitar convite / vínculo de gerenciamento), não
+  // de credencial errada nem de Basic Access ainda pendente. Retry único com
+  // a própria conta como login-customer-id resolve sem exigir reconfiguração
+  // — só dispara quando o 1º corpo bate USER_PERMISSION_DENIED E o login
+  // configurado difere da conta-alvo, então nunca mascara outra classe de
+  // 403 (ex: DEVELOPER_TOKEN_NOT_APPROVED, que continua indo pro fallback
+  // normal sem retry).
+  if (
+    attempt.res.status === 403 &&
+    attempt.text.includes("USER_PERMISSION_DENIED") &&
+    configuredLoginCustomerId !== customerId
+  ) {
+    const retry = await search(customerId);
+    if (!("networkError" in retry)) attempt = retry;
   }
 
-  const text = await res.text();
+  const { res, text } = attempt;
   if (!res.ok) {
     // 600, não 300: com 300 o `errorCode` da GoogleAdsFailure ficava CORTADO
     // (ele vem depois de `@type`/`details`), e foi por isso que o
@@ -381,6 +412,16 @@ const DEFECT_MARKERS = [
 ];
 const AUTH_PENDING_MARKERS = [
   "DEVELOPER_TOKEN_NOT_APPROVED",
+  // Confirmado ao vivo em 19/08/2026 (mesmo dia da aprovação do Basic
+  // Access): o caso mais comum de `USER_PERMISSION_DENIED` é vínculo
+  // MCC↔conta incompleto, não fila — e `fetchGoogleAdsSpendRows` já retenta
+  // automaticamente com `login-customer-id` = a própria conta antes desta
+  // classificação entrar em jogo (ver comentário lá). Chega aqui só se o
+  // retry TAMBÉM falhar — nesse caso ainda tratamos como `auth-pending`
+  // (degrada quieto) em vez de `defect`, porque o vínculo MCC pendente de
+  // aceite é uma ação de PLATAFORMA (aceitar convite no Google Ads UI, ver
+  // docs/google-ads-api-setup.md), não um bug de código — mas nem sempre foi
+  // "aguardar resolve sozinho" como a fila do Basic Access era.
   "USER_PERMISSION_DENIED",
   // NÃO confirmado ao vivo contra a API real (diferente dos dois acima, que
   // têm captura real em docs/google-ads-api-setup.md) — semanticamente pode

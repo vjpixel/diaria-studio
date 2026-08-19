@@ -238,6 +238,84 @@ describe("#5237 — fetchGoogleAdsSpendRows (fail-soft)", () => {
     const out = await fetchGoogleAdsSpendRows(fetchImpl, AUTH, "tok", "SELECT 1");
     assert.ok("error" in out);
   });
+
+  it("USER_PERMISSION_DENIED com login-customer-id = MCC retenta com login-customer-id = a própria conta (achado ao vivo 19/08/2026)", async () => {
+    const rows: GaqlSpendApiRow[] = [{ segments: { date: "2026-08-01" }, metrics: { costMicros: "1000000" } }];
+    const loginIdsSeen: string[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      const loginId = headers["login-customer-id"];
+      loginIdsSeen.push(loginId);
+      if (loginId === AUTH.loginCustomerId) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              details: [{ errors: [{ errorCode: { authorizationError: "USER_PERMISSION_DENIED" } }] }],
+            },
+          }),
+          { status: 403 },
+        );
+      }
+      // retry com login-customer-id = customerId
+      assert.equal(loginId, AUTH.customerId);
+      return new Response(JSON.stringify({ results: rows }), { status: 200 });
+    };
+    const out = await fetchGoogleAdsSpendRows(fetchImpl, AUTH, "tok", "SELECT 1");
+    assert.deepEqual(out, { rows });
+    assert.deepEqual(loginIdsSeen, [AUTH.loginCustomerId, AUTH.customerId]);
+  });
+
+  it("USER_PERMISSION_DENIED continua falhando se o retry com self-login TAMBÉM falhar", async () => {
+    const fetchImpl: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            details: [{ errors: [{ errorCode: { authorizationError: "USER_PERMISSION_DENIED" } }] }],
+          },
+        }),
+        { status: 403 },
+      );
+    const out = await fetchGoogleAdsSpendRows(fetchImpl, AUTH, "tok", "SELECT 1");
+    assert.ok("error" in out);
+    assert.equal(out.failureClass, "auth-pending");
+  });
+
+  it("não retenta quando login-customer-id configurado JÁ é a própria conta (nunca chama fetch 2x à toa)", async () => {
+    let calls = 0;
+    const auth: GoogleAdsAuthConfig = { ...AUTH, loginCustomerId: AUTH.customerId };
+    const fetchImpl: FetchLike = async () => {
+      calls++;
+      return new Response(
+        JSON.stringify({
+          error: {
+            details: [{ errors: [{ errorCode: { authorizationError: "USER_PERMISSION_DENIED" } }] }],
+          },
+        }),
+        { status: 403 },
+      );
+    };
+    const out = await fetchGoogleAdsSpendRows(fetchImpl, auth, "tok", "SELECT 1");
+    assert.ok("error" in out);
+    assert.equal(calls, 1);
+  });
+
+  it("outra classe de 403 (DEVELOPER_TOKEN_NOT_APPROVED) não dispara retry", async () => {
+    let calls = 0;
+    const fetchImpl: FetchLike = async () => {
+      calls++;
+      return new Response(
+        JSON.stringify({
+          error: {
+            details: [{ errors: [{ errorCode: { authorizationError: "DEVELOPER_TOKEN_NOT_APPROVED" } }] }],
+          },
+        }),
+        { status: 403 },
+      );
+    };
+    const out = await fetchGoogleAdsSpendRows(fetchImpl, AUTH, "tok", "SELECT 1");
+    assert.ok("error" in out);
+    assert.equal(calls, 1);
+  });
 });
 
 describe("#5237 — runGoogleAdsIngest (orquestração end-to-end, fail-soft)", () => {
