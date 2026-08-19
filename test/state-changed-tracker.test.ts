@@ -366,6 +366,36 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     assert.equal(written.goal.last_convergence_scan.novas_encontradas, 1);
   });
 
+  // Achado 4 do fleet review (#5713): `--limit 200` bate exatamente no
+  // teto sem sinalizar truncamento — se o backlog aberto real for maior,
+  // as excedentes ficam invisíveis. `fetchOpenIssuesForConvergence` trata
+  // `issues.length === CONVERGENCE_ISSUE_LIMIT` como fetch INCOMPLETO
+  // (mesmo caminho "não avaliado" do Achado 1), nunca como sucesso parcial
+  // — este teste prova isso ponta-a-ponta via CLI real, não só por leitura
+  // do código: o fake `gh` devolve exatamente 200 issues fabricadas, e o
+  // stdout tem que ser honesto que a varredura NÃO rodou (mesma frase do
+  // caminho "gh indisponível"), nunca a de sucesso "nenhuma issue nova
+  // fora da varredura" sobre um resultado potencialmente truncado.
+  it("gh real (fake) devolve exatamente CONVERGENCE_ISSUE_LIMIT (200) issues → tratado como truncamento, não-avaliado", () => {
+    const fabricatedIssues = Array.from({ length: 200 }, (_, i) => ({
+      number: 10_000 + i,
+      labels: [],
+      body: null,
+    }));
+    const { planPath, env } = setupFakeGh({ stdout: JSON.stringify(fabricatedIssues) });
+    const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env,
+    });
+    assert.equal(r.status, 0);
+    assert.match(r.stderr, /exatamente 200 issues/);
+    assert.match(r.stdout, /re-varredura de convergência NÃO executada/);
+    assert.doesNotMatch(r.stdout, /nenhuma issue nova fora da varredura/);
+    const written = JSON.parse(readFileSync(planPath, "utf8"));
+    assert.equal(written.goal.last_convergence_scan, undefined);
+  });
+
   it("gh real (fake) sem novidade → exit 0, goal.last_convergence_scan: 0", () => {
     const { planPath, env } = setupFakeGh({ stdout: "[]" });
     const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
