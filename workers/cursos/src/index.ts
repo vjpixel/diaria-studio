@@ -376,7 +376,7 @@ export default {
     // verdadeiro e o path cai no fallback normal (`env.ASSETS.fetch`),
     // idêntico ao comportamento anterior a esta rota existir.
     const indexNowKey = matchIndexNowKeyPath(url.pathname, env.INDEXNOW_KEY);
-    if (indexNowKey && request.method === "GET") {
+    if (indexNowKey) {
       return new Response(indexNowKey, {
         status: 200,
         headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
