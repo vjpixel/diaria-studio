@@ -19,6 +19,9 @@ import {
   fmtDayLabelLong,
   renderCohortSmallMultipleSvg,
   renderConfoundersSparklineSvg,
+  computeLagCorrelations,
+  renderDeliveredOpenRateScatterSvg,
+  X_LABEL_STEP_DAYS,
 } from "../workers/brevo-dashboard/src/chart-svg.ts";
 import type { DayOpenRateSummary } from "../workers/brevo-dashboard/src/sections-core.ts";
 
@@ -207,17 +210,17 @@ describe("#5593: renderOpenRateChartSvg", () => {
     assert.match(svg, />ago 17</);
   });
 
-  test("sem gridlines verticais — só <line> horizontais (mesmo y1/y2 diferente de x1/x2)", () => {
+  test("janela de 2 dias sem gridlines verticais — só <line> horizontais (mesmo y1/y2 diferente de x1/x2)", () => {
     const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
     // `\s` depois de "line" distingue `<line ...>` (gridline) de
     // `<linearGradient ...>` (que também começa com o prefixo "<line").
     // #5640 B1: o crosshair (`class="chart-crosshair"`) É uma linha vertical
     // de propósito (segue o ponteiro, invisível por default via
     // `opacity:0`) — excluído aqui porque esta asserção é sobre GRIDLINE
-    // estática (pedido explícito do benchmark original, #5593), não sobre
-    // "nenhuma linha vertical existe no SVG" (o que deixou de ser verdade
-    // com o crosshair, B7 — reabertura de gridline vertical de VERDADE —
-    // segue fora de escopo desta fatia).
+    // estática. #5640 B7 (implementado, ver describe dedicado abaixo) trouxe
+    // gridline vertical de VERDADE, mas só a partir de `X_LABEL_STEP_DAYS`
+    // dias — esta janela de 2 dias é curta demais pra gerar qualquer uma,
+    // então a asserção "só horizontais" continua válida PRA ESTE FIXTURE.
     const lineTags = [...svg.matchAll(/<line\s[^>]*>/g)].map((m) => m[0]).filter((tag) => !tag.includes('class="chart-crosshair"'));
     assert.ok(lineTags.length > 0, "deve ter gridlines horizontais");
     for (const tag of lineTags) {
@@ -507,5 +510,148 @@ describe("#5640 A4: renderConfoundersSparklineSvg", () => {
       // 2026-08-11 e 2026-08-12 ausentes de `rows` — buraco no fim.
     ]);
     assert.match(svg, />3\.0%</);
+  });
+});
+
+describe("#5640 B7: renderOpenRateChartSvg — rótulos intermediários + gridlines verticais do eixo X", () => {
+  test("janela curta (<= X_LABEL_STEP_DAYS dias) não gera nenhum rótulo/gridline interior", () => {
+    const rows = Array.from({ length: X_LABEL_STEP_DAYS }, (_, i) => row(`2026-08-${String(i + 1).padStart(2, "0")}`));
+    const svg = renderOpenRateChartSvg(rows);
+    // Só as 2 gridlines de ponta continuam ausentes de linha vertical dedicada
+    // — nenhuma <line> vertical (x1===x2) fora do crosshair (opacity:0).
+    const verticalGridlines = [...svg.matchAll(/<line\s[^>]*>/g)]
+      .map((m) => m[0])
+      .filter((tag) => !tag.includes('class="chart-crosshair"'))
+      .filter((tag) => tag.match(/x1="([^"]+)"/)?.[1] === tag.match(/x2="([^"]+)"/)?.[1]);
+    assert.equal(verticalGridlines.length, 0, "janela de exatamente X_LABEL_STEP_DAYS não deve ter gridline interior");
+  });
+
+  test("janela longa (30 dias) gera rótulos e gridlines interiores a cada X_LABEL_STEP_DAYS dias, sem duplicar os rótulos de ponta", () => {
+    const rows = Array.from({ length: 30 }, (_, i) => row(`2026-08-${String(i + 1).padStart(2, "0")}`));
+    const svg = renderOpenRateChartSvg(rows);
+    const verticalGridlines = [...svg.matchAll(/<line\s[^>]*>/g)]
+      .map((m) => m[0])
+      .filter((tag) => !tag.includes('class="chart-crosshair"'))
+      .filter((tag) => tag.match(/x1="([^"]+)"/)?.[1] === tag.match(/x2="([^"]+)"/)?.[1]);
+    // Índices interiores esperados: 5, 10, 15, 20, 25 (30 dias, índices 0-29,
+    // step 5, nunca >= days.length - 1 = 29).
+    assert.equal(verticalGridlines.length, 5, "30 dias / passo 5 => 5 gridlines interiores (5,10,15,20,25)");
+    for (const tag of verticalGridlines) {
+      const y1 = tag.match(/y1="([^"]+)"/)?.[1];
+      const y2 = tag.match(/y2="([^"]+)"/)?.[1];
+      assert.notEqual(y1, y2, "gridline interior deve ser VERTICAL (y1!==y2)");
+    }
+    // Rótulo do dia 06 (índice 5) deve existir, além dos rótulos de ponta (01, 30).
+    assert.match(svg, />ago 06</);
+    assert.match(svg, />ago 01</);
+    assert.match(svg, />ago 30</);
+  });
+});
+
+describe("#5640 A1: renderOpenRateChartSvg — 3ª série (open rate esperado)", () => {
+  test("sem expectedOpenRate em nenhum dia, nenhuma linha/rótulo 'Esperado' aparece", () => {
+    const svg = renderOpenRateChartSvg([row("2026-08-10"), row("2026-08-11")]);
+    assert.doesNotMatch(svg, /Esperado/, "chamador que não popula expectedOpenRate não deve ganhar a série");
+  });
+
+  test("com expectedOpenRate em >=2 dias, desenha path tracejado var(--ink) e o rótulo 'Esperado (mix)'", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { expectedOpenRate: 35 }),
+      row("2026-08-11", { expectedOpenRate: 38 }),
+    ]);
+    assert.match(svg, /stroke="var\(--ink\)" stroke-width="2" stroke-dasharray="6,4"/);
+    assert.match(svg, />Esperado \(mix\)</);
+  });
+
+  test("dia sem expectedOpenRate (null) no meio vira buraco — linha ainda conecta através dele (mesmo padrão das outras séries)", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { expectedOpenRate: 30 }),
+      row("2026-08-11", { expectedOpenRate: null }),
+      row("2026-08-12", { expectedOpenRate: 34 }),
+    ]);
+    const expectedLineCount = (svg.match(/stroke-dasharray="6,4"/g) ?? []).length;
+    assert.equal(expectedLineCount, 1, "1 único segmento tracejado, mesmo com buraco no meio");
+  });
+});
+
+describe("#5640 A3: computeLagCorrelations", () => {
+  test("rows=[] retorna null pros 4 lags", () => {
+    assert.deepEqual(computeLagCorrelations([]), { 0: null, 1: null, 2: null, 3: null });
+  });
+
+  test("menos de 3 pares válidos pro lag => null (amostra insuficiente)", () => {
+    const rows = [row("2026-08-10", { delivered: 100, openRate: 40 }), row("2026-08-11", { delivered: 200, openRate: 20 })];
+    const result = computeLagCorrelations(rows);
+    assert.equal(result[0], null);
+  });
+
+  test("correlação perfeitamente negativa em k=0 (delivered sobe, openRate cai monotonicamente no mesmo dia)", () => {
+    const rows = [
+      row("2026-08-01", { delivered: 100, openRate: 50 }),
+      row("2026-08-02", { delivered: 200, openRate: 40 }),
+      row("2026-08-03", { delivered: 300, openRate: 30 }),
+      row("2026-08-04", { delivered: 400, openRate: 20 }),
+    ];
+    const result = computeLagCorrelations(rows);
+    assert.ok(result[0] !== null && result[0] < -0.99, `k=0 deve ser ~-1 (perfeitamente negativo), veio ${result[0]}`);
+  });
+
+  test("dia imaturo é excluído do par em QUALQUER lado (delivered[i] ou openRate[i+k])", () => {
+    const rows = [
+      row("2026-08-01", { delivered: 100, openRate: 50 }),
+      row("2026-08-02", { delivered: 200, openRate: 40, immature: true }),
+      row("2026-08-03", { delivered: 300, openRate: 30 }),
+      row("2026-08-04", { delivered: 400, openRate: 20 }),
+    ];
+    // k=0: par (02,imaturo) excluído — sobram só 3 pares (01,03,04), ainda >= 3.
+    const result = computeLagCorrelations(rows);
+    assert.notEqual(result[0], null, "3 pares restantes (>=3) ainda produz correlação");
+  });
+
+  test("dia de calendário AUSENTE (buraco) conta como passo de defasagem de verdade — não pula pro próximo dado disponível", () => {
+    // 01 e 03 têm dado; 02 é buraco. k=1 sobre CALENDÁRIO não deve parear
+    // 01(delivered) com 03(openRate) — isso seria k=2 de verdade.
+    const rows = [row("2026-08-01", { delivered: 100, openRate: 50 }), row("2026-08-03", { delivered: 300, openRate: 20 })];
+    const result = computeLagCorrelations(rows);
+    assert.equal(result[1], null, "k=1 não deve enxergar par nenhum através do buraco de calendário (n<3 de qualquer forma)");
+  });
+});
+
+describe("#5640 A3: renderDeliveredOpenRateScatterSvg", () => {
+  test("menos de 2 rows retorna string vazia (dispersão de 0-1 ponto não é gráfico)", () => {
+    assert.equal(renderDeliveredOpenRateScatterSvg([]), "");
+    assert.equal(renderDeliveredOpenRateScatterSvg([row("2026-08-10")]), "");
+  });
+
+  test("emite 1 <circle> por dia, cor var(--alert), nunca hex hardcoded", () => {
+    const rows = [row("2026-08-10", { delivered: 100, openRate: 40 }), row("2026-08-11", { delivered: 200, openRate: 30 })];
+    const svg = renderDeliveredOpenRateScatterSvg(rows);
+    const circles = [...svg.matchAll(/<circle[^>]*>/g)];
+    assert.equal(circles.length, 2);
+    assert.match(svg, /fill="var\(--alert\)"/);
+    assert.doesNotMatch(svg, /#[0-9a-fA-F]{3,6}/, "não deve haver cor hex hardcoded");
+  });
+
+  test("dia mais recente tem opacidade maior que o mais antigo (cor por recência)", () => {
+    const rows = [row("2026-08-01", { delivered: 100, openRate: 40 }), row("2026-08-10", { delivered: 200, openRate: 30 })];
+    const svg = renderDeliveredOpenRateScatterSvg(rows);
+    const opacities = [...svg.matchAll(/<circle[^>]*opacity="([\d.]+)"[^>]*>/g)].map((m) => Number(m[1]));
+    assert.equal(opacities.length, 2);
+    assert.ok(opacities[1] > opacities[0], "2º ponto (mais recente) deve ter opacidade maior que o 1º (mais antigo)");
+  });
+
+  test("amostra pequena usa marcador oco (fill=var(--card)); dia imaturo reduz opacidade ainda mais (×0.55)", () => {
+    const rows = [
+      row("2026-08-01", { delivered: 100, openRate: 40, smallSample: true }),
+      row("2026-08-02", { delivered: 200, openRate: 30, immature: true }),
+    ];
+    const svg = renderDeliveredOpenRateScatterSvg(rows);
+    assert.match(svg, /fill="var\(--card\)" stroke="var\(--alert\)"/);
+  });
+
+  test("rotula explicitamente 'correlação, não causa' no aria-label", () => {
+    const rows = [row("2026-08-01"), row("2026-08-02")];
+    const svg = renderDeliveredOpenRateScatterSvg(rows);
+    assert.match(svg, /correlação, não causa/i);
   });
 });

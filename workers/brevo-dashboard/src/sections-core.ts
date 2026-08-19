@@ -50,7 +50,15 @@ import { renderBrevoDiariaTabPanel, type BrevoDiariaTabData } from "./brevo-diar
 // #5640 A2/A4: enumerateDayRange (domínio X compartilhado),
 // renderCohortSmallMultipleSvg (small multiples por coorte),
 // renderConfoundersSparklineSvg (sparkline de bounce/spam/CTOR).
-import { renderOpenRateChartSvg, enumerateDayRange, renderCohortSmallMultipleSvg, renderConfoundersSparklineSvg } from "./chart-svg.ts";
+// #5640 A3: computeLagCorrelations/renderDeliveredOpenRateScatterSvg (dispersão + defasagem).
+import {
+  renderOpenRateChartSvg,
+  enumerateDayRange,
+  renderCohortSmallMultipleSvg,
+  renderConfoundersSparklineSvg,
+  computeLagCorrelations,
+  renderDeliveredOpenRateScatterSvg,
+} from "./chart-svg.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -690,7 +698,22 @@ ${monthlyAbcSectionsByDate}
   // não classificada (listName sem sinal de cohort reconhecível) fica de
   // fora dos painéis (ver `deriveDayOpenRateCohortBucket`).
   const dayOpenRateCohortResult = aggregateByDayByCohort(campaigns, weekdayNow);
-  const dayOpenRateSection = renderOpenRateByDaySection(dayOpenRateRows, DAY_OPENRATE_WINDOW_DAYS, dayOpenRateCohortResult);
+  // #5640 A1: base histórica por coorte (janela mais longa,
+  // `COHORT_BASE_OPENRATE_WINDOW_DAYS`) + decomposição esperado-vs-real do
+  // dia, mesclada nas rows do gráfico principal antes de renderizar (3ª
+  // série tracejada em `renderOpenRateChartSvg`).
+  const dayOpenRateBaseRates = computeCohortBaseOpenRates(campaigns, weekdayNow);
+  const dayOpenRateExpectedByDay = computeExpectedOpenRateByDay(dayOpenRateRows, dayOpenRateCohortResult.panels, dayOpenRateBaseRates);
+  const dayOpenRateRowsWithExpected: DayOpenRateSummary[] = dayOpenRateRows.map((r) => ({
+    ...r,
+    expectedOpenRate: dayOpenRateExpectedByDay.get(r.day) ?? null,
+  }));
+  const dayOpenRateSection = renderOpenRateByDaySection(
+    dayOpenRateRowsWithExpected,
+    DAY_OPENRATE_WINDOW_DAYS,
+    dayOpenRateCohortResult,
+    dayOpenRateBaseRates,
+  );
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
   // #4184: mescla os mapas de TODOS os ciclos mensais presentes na janela —
@@ -3352,6 +3375,19 @@ export interface DayOpenRateSummary {
   clicks: number;
   /** CTOR do dia = clicks / opens (0 quando opens=0) — mesmo padrão de `aggregateByWeekday`. */
   ctor: number;
+  /**
+   * #5640 A1: open rate ESPERADO do dia, dado o mix de coortes que enviou
+   * naquele dia e o open rate BASE histórico de cada coorte (janela mais
+   * longa — ver `computeCohortBaseOpenRates`) — `null` quando nenhuma
+   * campanha do dia foi classificável em coorte (`deriveDayOpenRateCohortBucket`)
+   * ou nenhuma das coortes classificadas tem base histórica suficiente.
+   * Campo OPCIONAL: `aggregateByDay` nunca o preenche sozinho (não tem o
+   * mix por coorte nem a base histórica à mão) — é injetado pelo chamador
+   * (`renderDashboardHtml`) via `computeExpectedOpenRateByDay`, depois
+   * mesclado nas rows antes de `renderOpenRateByDaySection`. Ausente/`null`
+   * em todas as rows → a 3ª série (`chart-svg.ts`) simplesmente não aparece.
+   */
+  expectedOpenRate?: number | null;
 }
 
 /** #5610 item 4: janela fixa de dias-calendário cobertos por `aggregateByDay`/`renderOpenRateByDaySection` (30 = ~1 mês). */
@@ -3594,6 +3630,96 @@ export function aggregateByDayByCohort(
   return { panels, unclassifiedCount };
 }
 
+/** #5640 A1: janela (dias-calendário) usada pra calcular o open rate BASE de cada coorte — mais longa que a janela de 30 dias exibida no gráfico, pra estabilizar a base contra ruído de dia a dia (issue sugere 60-90; escolhido o topo da faixa). */
+export const COHORT_BASE_OPENRATE_WINDOW_DAYS = 90;
+
+/**
+ * #5640 A1: open rate BASE de cada coorte — média histórica numa janela
+ * mais longa (`windowDays`, default `COHORT_BASE_OPENRATE_WINDOW_DAYS`) que
+ * a janela de 30 dias do gráfico principal, pra não confundir "esperado"
+ * com "média dos mesmos 30 dias que estão sendo avaliados" (circular).
+ *
+ * Reusa `aggregateByDayByCohort` (mesma classificação por `listName`,
+ * mesma limitação documentada em `deriveDayOpenRateCohortBucket`) só pra
+ * somar `delivered`/`opens` de TODOS os dias da janela longa — não usa os
+ * `rows` por dia, só o total. Coorte sem nenhum envio na janela longa (ou
+ * com `delivered` total 0) fica de fora do resultado — `rates[bucket]`
+ * ausente, nunca `0` (open rate 0% de verdade e "sem dado" não podem ser
+ * confundidos por quem consome isto).
+ *
+ * Exportado pra teste unitário.
+ */
+export function computeCohortBaseOpenRates(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  now: Date = new Date(),
+  windowDays: number = COHORT_BASE_OPENRATE_WINDOW_DAYS,
+): Partial<Record<DayOpenRateCohortBucket, number>> {
+  const { panels } = aggregateByDayByCohort(campaigns, now, windowDays);
+  const rates: Partial<Record<DayOpenRateCohortBucket, number>> = {};
+  for (const panel of panels) {
+    const totalDelivered = panel.rows.reduce((sum, r) => sum + r.delivered, 0);
+    const totalOpens = panel.rows.reduce((sum, r) => sum + r.opens, 0);
+    if (totalDelivered > 0) rates[panel.bucket] = (totalOpens / totalDelivered) * 100;
+  }
+  return rates;
+}
+
+/**
+ * #5640 A1: decompõe o open rate agregado de cada dia em "esperado" (o que
+ * o MIX de coortes daquele dia produziria, se cada coorte tivesse rendido
+ * sua própria média histórica) vs o real já em `mainRows[].openRate`.
+ * Fórmula da issue: `esperado_dia = Σ_coorte (delivered_coorte,dia ×
+ * openRate_base_coorte) / delivered_dia` — `delivered_dia` é o TOTAL do
+ * dia (`mainRows`, todas as campanhas, classificadas ou não), não só a
+ * soma das campanhas classificadas. **Limitação conhecida:** se uma fração
+ * grande das campanhas do dia não é classificável em coorte
+ * (`unclassifiedCount` de `aggregateByDayByCohort`), o numerador fica sem
+ * a contribuição delas e o "esperado" tende a ficar sistematicamente mais
+ * baixo do que devia — a leitura A5 (nunca "causou") absorve essa
+ * incerteza; não há correção aqui porque a coorte real dessas campanhas é
+ * desconhecida, não estimável.
+ *
+ * Retorna `null` pra um dia quando: (a) `delivered` total do dia é 0/dia
+ * ausente de `mainRows`; ou (b) nenhuma campanha do dia foi classificável
+ * em coorte COM base histórica disponível (`baseRates`) — nunca adivinha.
+ *
+ * Exportado pra teste unitário.
+ */
+export function computeExpectedOpenRateByDay(
+  mainRows: DayOpenRateSummary[],
+  cohortPanels: DayOpenRateCohortPanel[],
+  baseRates: Partial<Record<DayOpenRateCohortBucket, number>>,
+): Map<string, number | null> {
+  const deliveredByDayBucket = new Map<string, Partial<Record<DayOpenRateCohortBucket, number>>>();
+  for (const panel of cohortPanels) {
+    for (const r of panel.rows) {
+      if (!deliveredByDayBucket.has(r.day)) deliveredByDayBucket.set(r.day, {});
+      deliveredByDayBucket.get(r.day)![panel.bucket] = r.delivered;
+    }
+  }
+
+  const result = new Map<string, number | null>();
+  for (const main of mainRows) {
+    if (main.delivered <= 0) {
+      result.set(main.day, null);
+      continue;
+    }
+    const deliveredByBucket = deliveredByDayBucket.get(main.day) ?? {};
+    let weightedSum = 0;
+    let contributingDelivered = 0;
+    for (const bucket of DAY_OPENRATE_COHORT_BUCKETS) {
+      const delivered = deliveredByBucket[bucket];
+      const rate = baseRates[bucket];
+      if (delivered && rate != null) {
+        weightedSum += delivered * rate;
+        contributingDelivered += delivered;
+      }
+    }
+    result.set(main.day, contributingDelivered > 0 ? weightedSum / main.delivered : null);
+  }
+  return result;
+}
+
 /**
  * #2989: seleciona os N (default 3) melhores dias da semana por open rate
  * agregado, entre os dias com dados (count > 0). Empates na fronteira do corte
@@ -3804,10 +3930,12 @@ export function renderWeekdaySection(
  *   ver `.chart-crosshair`/`#day-openrate-tooltip` acima), desligada sob
  *   `prefers-reduced-motion: reduce`.
  *
- * B7 (gridlines/rótulos intermediários do eixo X) fica fora — reabre uma
- * decisão consciente do benchmark original, pendente de confirmação do
- * editor (ver issue).
+ * **#5640 B7 (decisão do editor 260818): rótulos intermediários + gridlines
+ * verticais do eixo X** — implementado dentro de `renderOpenRateChartSvg`
+ * (`chart-svg.ts`), nenhuma peça nova aqui (a seção não precisa saber do
+ * passo entre rótulos, é interno ao SVG).
  *
+
  * **#5640 A2 (small multiples por coorte):** `cohortResult.panels`
  * (default `[]` — chamadores antigos continuam funcionando sem os
  * painéis) vira uma faixa de mini-gráficos ABAIXO do gráfico principal —
@@ -3833,13 +3961,29 @@ export function renderWeekdaySection(
  * unidade (3 grades de hit-rects sincronizadas em vez de 1) pelo ganho de
  * "não precisar olhar 2 pontos alinhados visualmente", que já funciona sem
  * JS pela alinhamento em X puro. Fica pra uma unidade futura se o editor
- * pedir. A3 (scatter delivered×openRate com lag) fica fora desta fatia —
- * ver issue, "o mais analítico e mais dispensável dos cinco".
+ * pedir.
+ *
+ * **#5640 A1 (decisão do editor 260818: implementar agora):** `rows[].expectedOpenRate`
+ * (mesclado pelo CHAMADOR, `renderDashboardHtml`, via
+ * `computeExpectedOpenRateByDay` — esta função não recalcula nada, só lê o
+ * campo) vira a 3ª série tracejada em `renderOpenRateChartSvg`. `baseRates`
+ * (default `{}` — chamador antigo/teste sem A1 não quebra) é usado só pra
+ * escrever a nota de cobertura: quais das 4 coortes têm base histórica
+ * disponível na janela de `COHORT_BASE_OPENRATE_WINDOW_DAYS` dias — sem
+ * isso, um leitor não sabe se a ausência da linha esperada num trecho é
+ * "mix não tem como cair" ou "sem dado histórico suficiente pra estimar".
+ *
+ * **#5640 A3 (decisão do editor 260818: implementar agora):** dispersão
+ * delivered×openRate (`renderDeliveredOpenRateScatterSvg`) + correlação de
+ * Pearson por defasagem 0-3 dias (`computeLagCorrelations`) — mesmo bloco
+ * "Correlação, não causa" (A5) do resto da Parte A; nunca "causou"/"por
+ * causa de" no texto desta subseção.
  */
 export function renderOpenRateByDaySection(
   rows: DayOpenRateSummary[],
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
   cohortResult: { panels: DayOpenRateCohortPanel[]; unclassifiedCount: number } = { panels: [], unclassifiedCount: 0 },
+  baseRates: Partial<Record<DayOpenRateCohortBucket, number>> = {},
 ): string {
   if (rows.length === 0) return "";
 
@@ -3904,6 +4048,30 @@ export function renderOpenRateByDaySection(
   <p class="section-note"><small>Bounce, spam (complaints Brevo) e CTOR do mesmo período, alinhados ao eixo X acima — não implica causa: abertura caindo com bounce/spam estáveis aponta pra mix de audiência; abertura caindo junto com bounce/spam subindo aponta pra reputação/entregabilidade.</small></p>
   <div class="chart-wrap">${renderConfoundersSparklineSvg(sharedDays, rows)}</div>`;
 
+  // #5640 A1: nota de leitura da 3ª série (esperado vs real) + cobertura de
+  // base histórica por coorte — só aparece se ALGUM dia tem expectedOpenRate.
+  const hasExpectedSeries = rows.some((r) => r.expectedOpenRate != null);
+  const missingBaseCohorts = DAY_OPENRATE_COHORT_BUCKETS.filter((b) => baseRates[b] == null);
+  const expectedNote = hasExpectedSeries
+    ? `<p class="section-note"><small>Linha tracejada = open rate ESPERADO pelo mix de coortes do dia, usando a média histórica de cada coorte nos últimos ${COHORT_BASE_OPENRATE_WINDOW_DAYS} dias. Real ≈ esperado, ambos caindo → efeito de mix, sem dano. Real bem abaixo do esperado → queda real de engajamento/entregabilidade.${
+        missingBaseCohorts.length > 0
+          ? ` Sem base histórica suficiente pra: ${missingBaseCohorts.map((b) => DAY_OPENRATE_COHORT_LABELS[b]).join(", ")} — dias dominados por essas coortes ficam sem estimativa.`
+          : ""
+      }</small></p>`
+    : "";
+
+  // #5640 A3: dispersão + correlação por defasagem — só com amostra mínima
+  // (o próprio `renderDeliveredOpenRateScatterSvg` já se omite com <2 linhas).
+  const lagCorrelations = computeLagCorrelations(rows);
+  const fmtCorr = (v: number | null): string => (v == null ? "amostra insuficiente" : v.toFixed(2));
+  const scatterSvg = renderDeliveredOpenRateScatterSvg(rows);
+  const scatterSection = scatterSvg
+    ? `
+  <h3 class="section-subtitle">Dispersão delivered × open rate</h3>
+  <p class="section-note"><small>Correlação, não causa. 1 ponto = 1 dia; cor mais opaca = dia mais recente. Correlação de Pearson entre delivered do dia e open rate k dias depois (dias imaturos excluídos): k=0 ${fmtCorr(lagCorrelations[0])} · k=1 ${fmtCorr(lagCorrelations[1])} · k=2 ${fmtCorr(lagCorrelations[2])} · k=3 ${fmtCorr(lagCorrelations[3])}. Pico negativo em k=0 sugere mix (a mesma campanha que trouxe volume trouxe público mais frio); pico em k=1-3 sugere reputação respondendo com atraso.</small></p>
+  <div class="chart-wrap">${scatterSvg}</div>`
+    : "";
+
   return `
 <section class="phase2-section" id="day-openrate">
   <h2 class="section-title">Open rate por dia</h2>
@@ -3913,9 +4081,11 @@ export function renderOpenRateByDaySection(
   ${affordanceNote}
   <div class="chart-wrap">${renderOpenRateChartSvg(rows)}<div id="day-openrate-tooltip" aria-hidden="true"></div><div id="day-openrate-live" class="visually-hidden" aria-live="polite"></div></div>
   ${legendNote}
+  ${expectedNote}
   ${tableFallbackNote}
   ${cohortPanelsSection}
   ${confoundersSection}
+  ${scatterSection}
 <script>
 (function() {
   var svg = document.getElementById('day-openrate-svg');
