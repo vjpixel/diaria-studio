@@ -20,6 +20,20 @@ name: Deploy livros Worker
 #
 # Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
 # CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+#
+# #5703: depois do deploy, pinga o IndexNow (protocolo aberto — Google NÃO
+# participa, só Bing/Yandex/Seznam) SE o push mudou `workers/livros/public/index.html`
+# (única saída de `scripts/build-livros-page.ts` — o acervo de livros não tem
+# hubs/slugs, é 1 página só) — mesmo racional/padrão de `deploy-arquivo.yml`
+# (#4909 item 2) e `deploy-cursos.yml` (irmã desta mudança), generalizado via
+# `--host`/`--watch-prefix` (`scripts/ping-indexnow.ts`, modo "página
+# única"). Requer o secret `INDEXNOW_KEY` PROVISIONADO NESTE WORKER
+# (`wrangler secret put INDEXNOW_KEY --name livros`) — sem ele, `GET
+# /{key}.txt` não existe (ver `workers/livros/src/index.ts`
+# `Env.INDEXNOW_KEY`) e o ping falharia na checagem do arquivo de chave; o
+# secret de REPO `INDEXNOW_KEY` (usado abaixo pro valor da chave em si) já
+# existe desde #4909, mas isso não configura o Worker sozinho — são dois
+# provisionamentos distintos (ver PR body do #5703 pro estado confirmado).
 
 on:
   push:
@@ -39,6 +53,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # #5703: precisa do commit ANTERIOR ao push localmente pra `git
+          # diff --name-only ${{ github.event.before }} ${{ github.sha }}`
+          # funcionar no step de detecção abaixo (mesmo padrão de
+          # deploy-arquivo.yml/deploy-cursos.yml) — fetch-depth 1 (default)
+          # só traz o HEAD.
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:
@@ -57,3 +78,46 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run deploy
+
+      - name: Detect changed livros content files
+        id: livros-diff
+        # Mesmo racional/estrutura de detecção de deploy-arquivo.yml/
+        # deploy-cursos.yml (#5006): `git diff` pode FALHAR (não só dar
+        # vazio) quando o push tem mais de 1 commit — `fetch-depth: 2` só
+        # traz HEAD + 1 pai. `set +e` isola o exit code do `git diff` do
+        # `set -e` do shell pra distinguir "o comando falhou" (warning
+        # explícito) de "o comando rodou e deu vazio". workflow_dispatch não
+        # tem `github.event.before` — gate fecha, ping não roda.
+        run: |
+          BEFORE="${{ github.event.before }}"
+          ZERO="0000000000000000000000000000000000000000"
+          CHANGED=""
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "$ZERO" ]; then
+            set +e
+            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- 'workers/livros/public/index.html')
+            DIFF_EXIT=$?
+            set -e
+            if [ "$DIFF_EXIT" -ne 0 ]; then
+              echo "::warning::git diff $BEFORE..${{ github.sha }} falhou (exit $DIFF_EXIT) -- provavelmente $BEFORE está fora do histórico raso (fetch-depth: 2, push com mais de 1 commit). Tratando como 'nenhum conteúdo mudou' por segurança -- o IndexNow pode ter sido pulado incorretamente neste push, confira manualmente."
+              CHANGED=""
+            fi
+          else
+            echo "::notice::sem commit anterior utilizável (workflow_dispatch, ou push sem github.event.before) -- pulando diff; IndexNow não será pingado nesta execução."
+          fi
+          {
+            echo "changed<<INDEXNOW_EOF"
+            echo "$CHANGED"
+            echo "INDEXNOW_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ping IndexNow (só quando o acervo de livros mudou)
+        if: steps.livros-diff.outputs.changed != ''
+        env:
+          INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
+          CHANGED_CONTENT_FILES: ${{ steps.livros-diff.outputs.changed }}
+        run: |
+          printf '%s\n' "$CHANGED_CONTENT_FILES" > "$RUNNER_TEMP/changed-livros-files.txt"
+          npx tsx scripts/ping-indexnow.ts \
+            --changed-files-file "$RUNNER_TEMP/changed-livros-files.txt" \
+            --host livros.diar.ia.br \
+            --watch-prefix workers/livros/public/index.html

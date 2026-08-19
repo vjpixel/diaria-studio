@@ -21,13 +21,23 @@
  * documentado em `workers/cursos/wrangler.toml`/`test/cursos-worker-first.test.ts`,
  * mas aqui cobrindo TODOS os paths (não só `/`), já que não há path
  * "gateado" específico — é só instrumentação, sem gate de conteúdo.
+ *
+ * #5703: ganhou também a rota `GET /{INDEXNOW_KEY}.txt` — mesmo padrão de
+ * `workers/arquivo/src/index.ts` (#4909 item 2) e `workers/cursos/src/index.ts`
+ * (irmã desta mudança). `run_worker_first = true` já garantia que o script
+ * roda pra TODO path, então esta rota só precisava do `if` — nenhuma mudança
+ * de config adicional.
  */
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts";
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 import { DIARIA_LIVROS_URL } from "../../../scripts/lib/canonical-urls.ts"; // #5097 item D
+import { matchIndexNowKeyPath } from "../../../scripts/lib/shared/indexnow-key-route.ts"; // #5703
 
 export interface Env {
   ASSETS: Fetcher;
+  /** Chave IndexNow (#5703) — mesma docstring de `workers/cursos/src/index.ts`
+   * `Env.INDEXNOW_KEY` (ver lá pro racional completo). */
+  INDEXNOW_KEY?: string;
 }
 
 export default {
@@ -43,14 +53,27 @@ export default {
       return Response.redirect(redirect.location, redirect.status);
     }
 
+    const url = new URL(request.url);
+
     try {
-      const url = new URL(request.url);
       const aiHost = matchAiReferrerHost(request.headers.get("Referer"));
       if (aiHost) logAiReferrerHit("livros", aiHost, url.pathname);
     } catch {
       // logging nunca derruba a página — fail-soft, mesma disciplina de
       // workers/cursos e workers/arquivo.
     }
+
+    // #5703: arquivo de chave do IndexNow — só casa quando `env.INDEXNOW_KEY`
+    // está configurada; ausente, cai no fallback normal (`env.ASSETS.fetch`),
+    // idêntico ao comportamento anterior a esta rota existir.
+    const indexNowKey = matchIndexNowKeyPath(url.pathname, env.INDEXNOW_KEY);
+    if (indexNowKey && request.method === "GET") {
+      return new Response(indexNowKey, {
+        status: 200,
+        headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+      });
+    }
+
     return env.ASSETS.fetch(request);
   },
 };

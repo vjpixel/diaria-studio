@@ -13,6 +13,8 @@ import {
   extractChangedHubSlugs,
   buildIndexNowUrls,
   buildIndexNowPayload,
+  hasSinglePageContentChanged,
+  buildSinglePageIndexNowPayload,
   ARQUIVO_HOST,
 } from "../scripts/lib/indexnow.ts";
 
@@ -121,5 +123,80 @@ describe("buildIndexNowPayload (#4909)", () => {
     assert.equal(payload!.host, "outro.host");
     assert.equal(payload!.keyLocation, "https://outro.host/k.txt");
     assert.deepEqual(payload!.urlList, ["https://outro.host/temas/anthropic-claude"]);
+  });
+});
+
+describe("hasSinglePageContentChanged (#5703)", () => {
+  const WATCH = ["workers/cursos/src/courses-full.generated.ts", "workers/cursos/public/index.html"];
+
+  it("arquivo alterado bate exatamente com um watchPrefix -> true", () => {
+    assert.equal(hasSinglePageContentChanged(["workers/cursos/src/courses-full.generated.ts"], WATCH), true);
+  });
+
+  it("arquivo alterado é um prefixo watched (diretório) -> true", () => {
+    assert.equal(hasSinglePageContentChanged(["workers/livros/public/index.html"], ["workers/livros/public/"]), true);
+  });
+
+  it("nenhum arquivo alterado casa -> false (o gate)", () => {
+    assert.equal(hasSinglePageContentChanged(["workers/cursos/wrangler.toml", "workers/cursos/README.md"], WATCH), false);
+  });
+
+  it("lista de arquivos vazia -> false", () => {
+    assert.equal(hasSinglePageContentChanged([], WATCH), false);
+  });
+
+  it("watchPrefixes vazio -> false, mesmo com arquivos alterados", () => {
+    assert.equal(hasSinglePageContentChanged(["workers/cursos/src/courses-full.generated.ts"], []), false);
+  });
+
+  it("normaliza separador de path Windows (\\\\ -> /)", () => {
+    assert.equal(
+      hasSinglePageContentChanged(["workers\\cursos\\src\\courses-full.generated.ts"], WATCH),
+      true,
+    );
+  });
+});
+
+describe("buildSinglePageIndexNowPayload (#5703)", () => {
+  const WATCH = ["workers/cursos/src/courses-full.generated.ts"];
+
+  it("monta payload de 1 URL (a raiz) quando o gate abre e a chave está presente", () => {
+    const payload = buildSinglePageIndexNowPayload(WATCH, "chave-cursos", {
+      host: "cursos.diar.ia.br",
+      watchPrefixes: WATCH,
+    });
+    assert.ok(payload);
+    assert.equal(payload!.host, "cursos.diar.ia.br");
+    assert.equal(payload!.key, "chave-cursos");
+    assert.equal(payload!.keyLocation, "https://cursos.diar.ia.br/chave-cursos.txt");
+    assert.deepEqual(payload!.urlList, ["https://cursos.diar.ia.br/"]);
+  });
+
+  it("nenhum watchPrefix alterado -> null (gate fechado)", () => {
+    assert.equal(
+      buildSinglePageIndexNowPayload(["workers/cursos/README.md"], "chave", {
+        host: "cursos.diar.ia.br",
+        watchPrefixes: WATCH,
+      }),
+      null,
+    );
+  });
+
+  it("chave vazia -> null, mesmo com watchPrefix alterado", () => {
+    assert.equal(
+      buildSinglePageIndexNowPayload(WATCH, "", { host: "cursos.diar.ia.br", watchPrefixes: WATCH }),
+      null,
+    );
+  });
+
+  it("baseUrl customizado é respeitado no keyLocation e na urlList", () => {
+    const payload = buildSinglePageIndexNowPayload(WATCH, "k", {
+      host: "livros.diar.ia.br",
+      baseUrl: "https://staging.example.com",
+      watchPrefixes: WATCH,
+    });
+    assert.ok(payload);
+    assert.equal(payload!.keyLocation, "https://staging.example.com/k.txt");
+    assert.deepEqual(payload!.urlList, ["https://staging.example.com/"]);
   });
 });

@@ -94,6 +94,16 @@ export interface IndexNowPayload {
  * rodar antes do editor provisionar `INDEXNOW_KEY`, sem quebrar o deploy).
  * Nunca faz I/O — o POST em si é responsabilidade exclusiva de
  * `scripts/ping-indexnow.ts`.
+ *
+ * **Específico do host `arquivo`** — o gate de mudança e a forma da URL
+ * (`/temas/{slug}`) assumem o layout de hubs temáticos de
+ * `workers/arquivo/src/hubs/`, único host do projeto com esse conceito.
+ * `opts.host`/`opts.baseUrl` já permitiam apontar pra outro host desde a
+ * origem (#4909), mas isso só fazia sentido testando contra um host de
+ * staging que espelhasse o MESMO layout de hubs — nunca serviu pra ligar
+ * IndexNow num host sem hubs (cursos, livros). Ver
+ * `buildSinglePageIndexNowPayload` abaixo (#5703) pro gate genérico usado
+ * por esses.
  */
 export function buildIndexNowPayload(
   changedFiles: readonly string[],
@@ -106,4 +116,63 @@ export function buildIndexNowPayload(
   const urlList = buildIndexNowUrls(changedFiles, baseUrl);
   if (urlList.length === 0) return null;
   return { host, key, keyLocation: `${baseUrl}/${key}.txt`, urlList };
+}
+
+/**
+ * Opções do gate genérico de página única (#5703) — usado por hosts sem
+ * conceito de hub/slug (`cursos.diar.ia.br`, `livros.diar.ia.br`): todo o
+ * conteúdo indexável mora numa única URL raiz (`{baseUrl}/`), então o
+ * "mudou desde o último deploy" não deriva um slug — só confere se
+ * QUALQUER path de `watchPrefixes` aparece na lista de arquivos alterados.
+ */
+export interface SinglePageIndexNowOptions {
+  /** Host da URL a pingar (obrigatório — sem default, ao contrário do
+   * `arquivo`, porque não há host "canônico" pra esta variante). */
+  host: string;
+  /** Default `https://{host}`. */
+  baseUrl?: string;
+  /** Paths repo-relativos (POSIX) cujo conteúdo, se alterado, representa
+   * "a página mudou de conteúdo". Casamento por igualdade OU prefixo (um
+   * diretório inteiro pode ser passado) — mesma normalização de separador
+   * (`\` → `/`) e prefixo `./` de `extractChangedHubSlugs`. */
+  watchPrefixes: readonly string[];
+}
+
+/** Pura — normaliza um path pra comparação (mesma lógica usada em
+ * `extractChangedHubSlugs`, extraída aqui pra reuso entre os dois gates). */
+function normalizeChangedPath(raw: string): string {
+  return raw.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/**
+ * Pura — `true` se algum arquivo em `changedFiles` casa (igualdade ou
+ * prefixo) com algum path de `watchPrefixes`, após normalização.
+ */
+export function hasSinglePageContentChanged(
+  changedFiles: readonly string[],
+  watchPrefixes: readonly string[],
+): boolean {
+  if (watchPrefixes.length === 0) return false;
+  return changedFiles.some((raw) => {
+    const f = normalizeChangedPath(raw);
+    return watchPrefixes.some((prefix) => f === prefix || f.startsWith(prefix));
+  });
+}
+
+/**
+ * Pura — monta o payload IndexNow pra um host de página única (#5703), ou
+ * `null` se o gate `hasSinglePageContentChanged` não abrir OU `key` vier
+ * vazia (mesma semântica de "ainda não provisionado, não erro" de
+ * `buildIndexNowPayload`). `urlList` é sempre `[{baseUrl}/]` — 1 URL só,
+ * não há slug a derivar. Nunca faz I/O.
+ */
+export function buildSinglePageIndexNowPayload(
+  changedFiles: readonly string[],
+  key: string,
+  opts: SinglePageIndexNowOptions,
+): IndexNowPayload | null {
+  if (!key) return null;
+  if (!hasSinglePageContentChanged(changedFiles, opts.watchPrefixes)) return null;
+  const baseUrl = opts.baseUrl ?? `https://${opts.host}`;
+  return { host: opts.host, key, keyLocation: `${baseUrl}/${key}.txt`, urlList: [`${baseUrl}/`] };
 }
