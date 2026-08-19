@@ -220,15 +220,21 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     assert.match(r.stderr, /uso: --plan/);
   });
 
-  it("--skip-convergence: avisa em stderr e nunca chama gh (isolado de rede)", () => {
+  it("--skip-convergence: avisa em stderr, nunca chama gh, e o stdout de sucesso NÃO afirma que a varredura rodou", () => {
     const planPath = writePlanFixture({ state_changed_issues: [] });
     const r = run(["--plan", planPath, "--skip-convergence"]);
     assert.equal(r.status, 0);
     assert.match(r.stderr, /--skip-convergence/);
     assert.match(r.stderr, /pulando re-varredura de convergência/);
+    // Achado do self-review (#5706): "ok" no stdout tem que ser honesto
+    // sobre o que rodou — senão reintroduz a mesma classe de falso-"ok" que
+    // esta issue existe pra fechar (coordenador lê "ok" achando que a
+    // convergência foi checada quando ela foi pulada).
+    assert.match(r.stdout, /re-varredura de convergência NÃO executada/);
+    assert.doesNotMatch(r.stdout, /nenhuma issue nova fora da varredura/);
   });
 
-  it("gh indisponível (PATH sem o binário) → fail-soft, sem trava e sem crash (#738)", () => {
+  it("gh indisponível (PATH sem o binário) → fail-soft, sem trava, sem crash (#738), e stdout honesto sobre o que rodou", () => {
     const planPath = writePlanFixture({ state_changed_issues: [] });
     // PATH vazio garante que `gh` não é encontrado — sem depender de rede,
     // só do spawn falhando localmente (ENOENT), exatamente o cenário
@@ -240,7 +246,21 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     });
     assert.equal(r.status, 0);
     assert.match(r.stderr, /gh indisponível/);
+    assert.match(r.stdout, /re-varredura de convergência NÃO executada/);
+    assert.doesNotMatch(r.stdout, /nenhuma issue nova fora da varredura/);
   });
+
+  // Um `gh` real (fake) end-to-end via `spawnSync` sem `shell: true` — o
+  // mesmo padrão do código de produção — ficou platform-dependente demais
+  // pra entrar aqui: `.cmd`/`.bat` no Windows exige `shell: true` pro
+  // `spawnSync` conseguir executá-los (`EINVAL` sem isso; confirmado ao
+  // vivo), o que a produção corretamente NÃO usa (mesmo padrão de
+  // `check-decision-label-drift.ts`, que também nunca testa sua própria
+  // `fetchOpenIssues` end-to-end pelo mesmo motivo). Cobertura do wiring
+  // real (`fetchOpenIssuesForConvergence`'s success/non-zero-exit/malformed-
+  // JSON branches) fica como gap conhecido, mesma classe do precedente já
+  // aceito no repo — não introduzido por este PR.
+
 });
 
 describe("collectKnownIssueNumbers — issues já conhecidas pelo plano", () => {
@@ -249,15 +269,30 @@ describe("collectKnownIssueNumbers — issues já conhecidas pelo plano", () => 
     assert.deepEqual(collectKnownIssueNumbers(plan), new Set());
   });
 
-  it("une goal.target_set + todos os tiers + issues[] top-level", () => {
+  it("une goal.target_set + todos os tiers + issues[] top-level (shape array — overnight)", () => {
     const plan: PlanWithGoal = {
       goal: {
         target_set: [100, 101],
         tiers: { "1a": [100], "1b": [], "2": [101, 102], "3": [] },
       },
-      issues: [200, { number: 201 }],
+      issues: [{ number: 200 }, { number: 201 }],
     };
     assert.deepEqual(collectKnownIssueNumbers(plan), new Set([100, 101, 102, 200, 201]));
+  });
+
+  // #5706 self-review: /diaria-develop grava `issues` como DICT chaveado por
+  // número (`{ "4800": {...} }`, ver scripts/lib/plan-issues-normalize.ts
+  // #4817/#4860), não array — é a fonte MAIS crítica de cobertura, porque em
+  // `policy: "table_only"` é a ÚNICA coisa que sobra em `known` (target_set/
+  // tiers ficam vazios a sessão inteira nessa política). Sem passar por
+  // `normalizeIssues`, este dict virava `known` vazio e toda issue aberta
+  // seria reportada como "nova" — falso positivo permanente.
+  it("issues como dict chaveado por número (shape develop) também é reconhecido", () => {
+    const plan: PlanWithGoal = {
+      goal: { target_set: [] },
+      issues: { "300": { onda: "1a" }, "301": { number: 301, onda: "2" } },
+    };
+    assert.deepEqual(collectKnownIssueNumbers(plan), new Set([300, 301]));
   });
 
   it("entries não-numéricas/malformadas são ignoradas sem lançar", () => {

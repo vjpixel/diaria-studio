@@ -50,6 +50,7 @@ import {
   checkConvergenceScan,
   recordConvergenceScan,
   type ConvergenceScanIssue,
+  type PlanWithGoal,
   removePendingFromPlan,
 } from "./lib/state-changed-tracker.ts";
 
@@ -64,13 +65,19 @@ interface FetchOpenIssuesResult {
   error?: string;
 }
 
+// Folga generosa sobre o backlog aberto real (34 issues na medição de
+// 260819) — não um teto pensado pra nunca estourar. `main()` compara
+// `fetched.issues.length` contra este valor e avisa em stderr se bateram
+// exatamente (sinal de truncamento silencioso do `gh issue list --limit`),
+// em vez de assumir cobertura completa sem checar.
 const CONVERGENCE_ISSUE_LIMIT = 200;
 
-/** Busca TODAS as issues abertas (número + labels + body) via `gh issue
- * list` — mesmo padrão fail-soft de `scripts/check-decision-label-drift.ts`
- * (`fetchOpenIssues`): nunca lança, qualquer falha (CLI ausente, sem auth,
- * rate limit, JSON malformado) volta como `{ issues: [], error }` pra
- * `main()` decidir degradar em vez de travar. */
+/** Busca as issues abertas (até `CONVERGENCE_ISSUE_LIMIT`, número + labels +
+ * body) via `gh issue list` — mesmo padrão fail-soft de
+ * `scripts/check-decision-label-drift.ts` (`fetchOpenIssues`): nunca lança,
+ * qualquer falha (CLI ausente, sem auth, rate limit, JSON malformado) volta
+ * como `{ issues: [], error }` pra `main()` decidir degradar em vez de
+ * travar. */
 function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResult {
   const result = spawnSync(
     "gh",
@@ -162,6 +169,13 @@ if (isMainModule(import.meta.url)) {
   const pendingResult = checkStateChangedPending(planPath);
 
   let convergenceMissing: number[] = [];
+  // `convergenceRan` distingue "rodou e achou zero" de "não rodou" — achado
+  // no self-review (#5706): sem essa distinção, a mensagem de sucesso final
+  // reafirmava "nenhuma issue nova fora da varredura" mesmo quando a
+  // varredura tinha sido pulada (`--skip-convergence` ou `gh` indisponível),
+  // reintroduzindo exatamente a classe de falso-"ok" que este gate existe
+  // pra fechar.
+  let convergenceRan = false;
   if (flags.has("skip-convergence")) {
     console.error(
       "[check-state-changed-pending] --skip-convergence: pulando re-varredura de convergência (não avaliada nesta invocação).",
@@ -173,15 +187,34 @@ if (isMainModule(import.meta.url)) {
         `[check-state-changed-pending] gh indisponível — pulando re-varredura de convergência (fail-soft, #738): ${fetched.error}`,
       );
     } else {
-      const planRaw = JSON.parse(readFileSync(planPath, "utf8"));
-      const convergence = checkConvergenceScan(planRaw, fetched.issues);
-      convergenceMissing = convergence.status === "missing" ? convergence.issues : [];
-      recordConvergenceScan(planPath, convergence.novas_encontradas);
+      if (fetched.issues.length === CONVERGENCE_ISSUE_LIMIT) {
+        console.error(
+          `[check-state-changed-pending] gh retornou exatamente ${CONVERGENCE_ISSUE_LIMIT} issues (o limite) — resultado pode estar truncado; backlog aberto pode ser maior.`,
+        );
+      }
+      let planRaw: unknown;
+      try {
+        planRaw = JSON.parse(readFileSync(planPath, "utf8"));
+      } catch (e) {
+        console.error(
+          `[check-state-changed-pending] plan.json malformado — pulando re-varredura de convergência (fail-soft, #738): ${(e as Error).message}`,
+        );
+        planRaw = undefined;
+      }
+      if (planRaw !== undefined) {
+        const convergence = checkConvergenceScan(planRaw as PlanWithGoal, fetched.issues);
+        convergenceMissing = convergence.status === "missing" ? convergence.issues : [];
+        recordConvergenceScan(planPath, convergence.novas_encontradas);
+        convergenceRan = true;
+      }
     }
   }
 
   if (pendingResult.status === "ok" && convergenceMissing.length === 0) {
-    console.log("ok — nenhuma pendência de re-triagem, nenhuma issue nova fora da varredura");
+    const convergenceNote = convergenceRan
+      ? "nenhuma issue nova fora da varredura"
+      : "re-varredura de convergência NÃO executada (--skip-convergence ou gh indisponível) — só pendência explícita foi checada";
+    console.log(`ok — nenhuma pendência de re-triagem, ${convergenceNote}`);
     process.exit(0);
   }
 

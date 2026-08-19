@@ -30,11 +30,12 @@
  * tratada como `[]` (fail-open, compatível com `plan.json` legado de rodadas
  * anteriores ao #5476).
  *
- * Uso CLI:
- *   npx tsx scripts/lib/state-changed-tracker.ts --plan {path}
+ * Uso CLI (este arquivo é import-only — o entrypoint de linha de comando é
+ * `scripts/check-state-changed-pending.ts`, ver esse arquivo pro `main()`):
+ *   npx tsx scripts/check-state-changed-pending.ts --plan {path}
  *     → checa; imprime pendências (se houver) e sai 1, ou "ok" e sai 0.
- *   npx tsx scripts/lib/state-changed-tracker.ts --add-pending {N} --plan {path}
- *   npx tsx scripts/lib/state-changed-tracker.ts --remove-pending {N} --plan {path}
+ *   npx tsx scripts/check-state-changed-pending.ts --add-pending {N} --plan {path}
+ *   npx tsx scripts/check-state-changed-pending.ts --remove-pending {N} --plan {path}
  *
  * @see scripts/check-overnight-token-instrumentation.ts (padrão de estilo)
  * @see .claude/skills/diaria-overnight/SKILL.md
@@ -71,6 +72,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { classifyExecTrack, type ExecTrackInput } from "./issue-exec-track.ts";
+import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 
 export interface PlanWithStateChanged {
   state_changed_issues?: unknown;
@@ -166,10 +168,19 @@ export interface ConvergenceScanIssue {
 export interface PlanWithGoal {
   goal?: {
     target_set?: unknown;
-    tiers?: Record<string, unknown> | unknown;
+    tiers?: unknown;
     [key: string]: unknown;
   };
   issues?: unknown;
+  /** `--bugs` (#3375) — quando `true`, a rodada restringiu deliberadamente
+   * o conjunto-alvo a issues com label `bug`; todo o resto está FORA DE
+   * ESCOPO por desenho, não "pulado por bloqueio". Ver uso em
+   * `filterIssuesByRoundScope`. */
+  bugs_only?: unknown;
+  /** `--priority` (#3499) — lista de labels de prioridade (`["P0","P1"]`)
+   * às quais a rodada restringiu o conjunto-alvo, ou `null`/ausente se a
+   * flag não foi usada. Mesmo tratamento de escopo do `bugs_only`. */
+  priority_filter?: unknown;
   [key: string]: unknown;
 }
 
@@ -206,6 +217,16 @@ function extractIssueNumbers(value: unknown): number[] {
  * quebrar se a partição mudar) e o `issues[]` top-level. Issue aberta fora
  * desse conjunto é candidata a "nova" — ainda passa por `classifyExecTrack`
  * antes de virar ruído (ver `findMissingConvergenceIssues`).
+ *
+ * `plan.issues` passa por `normalizeIssues` (`./plan-issues-normalize.ts`,
+ * #4817/#4860) em vez de `extractIssueNumbers` puro — achado no self-review
+ * do #5706: `/diaria-develop` grava `issues` como DICT chaveado por número
+ * (`{ "4800": {...} }`), não array, e é a ÚNICA fonte de "conhecido" que
+ * sobra quando `policy: "table_only"` (`goal.target_set`/`goal.tiers` ficam
+ * vazios a sessão inteira nessa política — ver develop/SKILL.md). Sem essa
+ * normalização, todo plano `table_only` do develop leria `known` como vazio
+ * e reportaria toda issue aberta como "nova" — exatamente a classe de falso
+ * positivo que este gate existe pra evitar.
  */
 export function collectKnownIssueNumbers(plan: PlanWithGoal): Set<number> {
   const known = new Set<number>();
@@ -219,8 +240,60 @@ export function collectKnownIssueNumbers(plan: PlanWithGoal): Set<number> {
       }
     }
   }
-  for (const n of extractIssueNumbers(plan.issues)) known.add(n);
+  // Cast seguro: `PlanWithGoal.issues` é `unknown` de propósito (o plano
+  // pode ter qualquer shape) — `normalizeIssues` já faz toda a checagem em
+  // runtime (`Array.isArray`/`typeof === "object"`), então o cast só
+  // silencia a checagem estrutural do TS, não pula validação real.
+  for (const issue of normalizeIssues<{ number: number }>(
+    plan as IssuesBearing<{ number: number }>,
+  )) {
+    if (typeof issue?.number === "number" && Number.isFinite(issue.number)) {
+      known.add(issue.number);
+    }
+  }
   return known;
+}
+
+/**
+ * Pure: normaliza `plan.bugs_only`/`plan.priority_filter` (#3375/#3499) —
+ * mesmo fail-open documentado nos dois campos: ausente/shape errado vira
+ * "sem filtro" (`bugsOnly: false`, `priorityFilter: null`), nunca lança.
+ */
+export function readRoundScopeFilters(plan: PlanWithGoal): {
+  bugsOnly: boolean;
+  priorityFilter: string[] | null;
+} {
+  const bugsOnly = plan.bugs_only === true;
+  const rawPriority = plan.priority_filter;
+  const priorityFilter =
+    Array.isArray(rawPriority) && rawPriority.every((p) => typeof p === "string")
+      ? (rawPriority as string[])
+      : null;
+  return { bugsOnly, priorityFilter };
+}
+
+/**
+ * Pure: filtra `openIssues` pelos mesmos critérios `--bugs`/`--priority`
+ * que restringiram o conjunto-alvo da rodada (#3375/#3499) — issue fora do
+ * filtro nunca entrou em `issues[]`/`goal.tiers` por DESENHO (fora de
+ * escopo do modo, não "pulada por bloqueio"; ver `.claude/skills/diaria-develop/SKILL.md`
+ * e `.claude/skills/diaria-overnight/SKILL.md`, passo 3/Fase 0 passo 3).
+ * Sem este filtro, `findMissingConvergenceIssues` reportava toda issue
+ * elegível fora do filtro como "nova não-triangulada" em TODA rodada
+ * `--bugs`/`--priority` — ruído permanente que ensina a ignorar o gate
+ * (achado de review do #5706/#5713).
+ */
+export function filterIssuesByRoundScope(
+  openIssues: ConvergenceScanIssue[],
+  plan: PlanWithGoal,
+): ConvergenceScanIssue[] {
+  const { bugsOnly, priorityFilter } = readRoundScopeFilters(plan);
+  if (!bugsOnly && !priorityFilter) return openIssues;
+  return openIssues.filter((issue) => {
+    if (bugsOnly && !issue.labels.includes("bug")) return false;
+    if (priorityFilter && !issue.labels.some((l) => priorityFilter.includes(l))) return false;
+    return true;
+  });
 }
 
 /**
@@ -250,14 +323,17 @@ export function findMissingConvergenceIssues(
 }
 
 /** Pure: veredito de convergência a partir do plano já parseado + issues
- * abertas já buscadas (I/O de busca fica no chamador — CLI ou teste). */
+ * abertas já buscadas (I/O de busca fica no chamador — CLI ou teste).
+ * Aplica `filterIssuesByRoundScope` antes de comparar contra `known`
+ * (#3375/#3499 — ver esse helper para o motivo). */
 export function checkConvergenceScan(
   plan: PlanWithGoal,
   openIssues: ConvergenceScanIssue[],
   now?: Date,
 ): ConvergenceScanResult {
   const known = collectKnownIssueNumbers(plan);
-  const missing = findMissingConvergenceIssues(openIssues, known, now);
+  const scoped = filterIssuesByRoundScope(openIssues, plan);
+  const missing = findMissingConvergenceIssues(scoped, known, now);
   if (missing.length === 0) return { status: "ok", novas_encontradas: 0 };
   return { status: "missing", issues: missing, novas_encontradas: missing.length };
 }
