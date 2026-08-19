@@ -697,13 +697,16 @@ todos verificados ao vivo:
    já estão de fato encontrando e seguindo os links do `arquivo` de volta
    pro `diar.ia.br`.
 
-**Ação concreta identificável, não executada nesta sessão:** submeter
-`sitemap.xml` de `diar.ia.br` manualmente no Google Search Console (a doc da
-Beehiiv recomenda isso pra acelerar descoberta — "Search engines can
-discover it on their own, though submitting it manually ... can help speed
-up indexing"). Resolve só pro Googlebot (GSC é ferramenta Google), não pros
-outros 12 crawlers — é passo manual de UI/Chrome, fora do escopo de código
-deste repo.
+**Correção: a submissão ao GSC já ocorreu — não é ação pendente.** O Fato 9
+acima já registra `diar.ia.br/sitemap.xml` submetido ao Google Search
+Console em **27/jul/2026, com 0 erros** (medição direta da API, confirmada
+de novo em 12/ago). `scripts/gsc-submit-sitemaps.ts` inclusive exclui esse
+sitemap da lista que ele mesmo submete — comentário no código confirma que
+já é "auto-descoberto". Ou seja, mesmo com a submissão feita, o Googlebot
+segue sem bater `/p/*` — o diagnóstico deste Fato 14 (sitemap existe e
+declarado, crawlers não o seguem) vale mesmo pra quem já leu o sitemap.
+Não há ação de GSC pendente pra este sitemap especificamente; os outros 12
+crawlers (não-Google) não usam GSC de qualquer forma.
 
 **Não fazer:** não reabrir esta investigação achando que falta um sitemap —
 ele existe e está corretamente declarado; o problema é adoção pelos
