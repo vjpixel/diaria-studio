@@ -24,6 +24,7 @@ import {
   annotateAudienceAffinity,
   annotateUseMelhorBucket,
   annotateHandsOnAllBuckets,
+  annotatePrimarySourceAllBuckets,
   checkFreshness,
   normalizeTool,
   extractSurveyTools,
@@ -271,6 +272,38 @@ describe("annotateUseMelhorBucket", () => {
   it("bucket use_melhor vazio → retorna 0", () => {
     const count = annotateUseMelhorBucket({ use_melhor: [] }, signals);
     assert.equal(count, 0);
+  });
+});
+
+// ─── annotatePrimarySourceAllBuckets (#5665) ─────────────────────────────────
+
+describe("annotatePrimarySourceAllBuckets (#5665)", () => {
+  const entries = [
+    { prefix: "blog.google/intl/pt-br", useMelhor: true, primary: false, index: 1 },
+    { prefix: "blog.google", useMelhor: false, primary: true, index: 0 },
+    { prefix: "example.com", useMelhor: false, primary: false, index: 2 },
+  ];
+
+  it("usa a especificidade host/path e cria payload mesmo sem outro sinal", () => {
+    const categorized = {
+      lancamento: [
+        { url: "https://blog.google/products/gemini", title: "Google" },
+        { url: "https://blog.google/intl/pt-br/novidades/ia", title: "Google Brasil" },
+        { url: "https://example.com/post", title: "Outro" },
+      ],
+    };
+    const count = annotatePrimarySourceAllBuckets(categorized, entries);
+    assert.equal(count, 1);
+    assert.deepEqual(categorized.lancamento[0].audience_affinity?.matched, ["primary_source:true"]);
+    assert.equal(categorized.lancamento[1].audience_affinity, undefined, "path mais específico não-primário não herda o host");
+    assert.equal(categorized.lancamento[2].audience_affinity, undefined);
+  });
+
+  it("é cumulativo e idempotente com sinais já presentes", () => {
+    const categorized = { radar: [{ url: "https://blog.google/post", audience_affinity: { affinity: 0.4, matched: ["tool:gemini"], hands_on: false } }] };
+    assert.equal(annotatePrimarySourceAllBuckets(categorized, entries), 1);
+    assert.equal(annotatePrimarySourceAllBuckets(categorized, entries), 0);
+    assert.deepEqual(categorized.radar[0].audience_affinity?.matched, ["tool:gemini", "primary_source:true"]);
   });
 });
 

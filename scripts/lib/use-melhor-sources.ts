@@ -32,6 +32,11 @@ export function isUseMelhorSource(s: { use_melhor?: string }): boolean {
   return (s.use_melhor ?? "").trim() === "1";
 }
 
+/** Pure: fonte primária conforme a coluna `Tipo` do seed. */
+export function isPrimarySource(s: { Tipo?: string }): boolean {
+  return (s.Tipo ?? "").trim().toLowerCase() === "primária";
+}
+
 /**
  * Pure: prefixo `host/path` normalizado de uma URL (lowercase, sem `www.`, sem
  * trailing slash; path "/" vira só o host). "" se inválida.
@@ -106,6 +111,7 @@ export function matchesUseMelhorPrefix(url: string, prefixes: string[]): boolean
 export interface SourcePrefixEntry {
   prefix: string;
   useMelhor: boolean;
+  primary: boolean;
   index: number;
 }
 
@@ -130,7 +136,7 @@ export function loadAllSourcePrefixMap(root: string = ROOT): SourcePrefixEntry[]
     if (!row.URL) continue;
     const p = sourcePrefix(row.URL);
     if (!p) continue;
-    entries.push({ prefix: p, useMelhor: isUseMelhorSource(row), index: i });
+    entries.push({ prefix: p, useMelhor: isUseMelhorSource(row), primary: isPrimarySource(row), index: i });
   }
   // Ordenar por especificidade (prefixo mais longo primeiro), depois por índice
   // no CSV (posição original) pra desempate estável quando comprimentos iguais.
@@ -198,45 +204,31 @@ export function resolveUseMelhorBySpecificity(
   url: string,
   allEntries: SourcePrefixEntry[],
 ): boolean | null {
+  const entry = resolveSourceBySpecificity(url, allEntries);
+  return entry ? entry.useMelhor : null;
+}
+
+/** Retorna a fonte mais específica para a URL, preservando seus metadados. */
+export function resolveSourceBySpecificity(
+  url: string,
+  allEntries: SourcePrefixEntry[],
+): SourcePrefixEntry | null {
   const target = sourcePrefix(url);
   if (!target) return null;
 
-  // allEntries está ordenado por (comprimento desc, índice asc).
-  // Precisamos: dentre todos os entries cujo prefix é prefixo do target,
-  // pegar o grupo de comprimento máximo e aplicar os desempates 2 e 3.
   let bestLength = -1;
-  let bestUseMelhor = false;
-  let foundAny = false;
-
+  let bestEntry: SourcePrefixEntry | null = null;
   for (const entry of allEntries) {
     const matches = target === entry.prefix || target.startsWith(entry.prefix + "/");
     if (!matches) continue;
-
     const len = entry.prefix.length;
-
-    if (!foundAny) {
-      // Primeiro match — inicializa.
+    if (len < bestLength) break;
+    if (len > bestLength) {
       bestLength = len;
-      bestUseMelhor = entry.useMelhor;
-      foundAny = true;
-    } else if (len === bestLength) {
-      // Mesmo comprimento — desempate 2: use_melhor=1 vence.
-      // Desempate 3 (índice) já implícito: allEntries é estável por índice
-      // (sort com a.index - b.index), então o primeiro entry de índice menor
-      // com o mesmo comprimento já foi processado. Só sobrescrevemos se o
-      // novo entry é use_melhor=1 e o atual não — um entry use_melhor=0 de
-      // índice menor NÃO vence um use_melhor=1 de índice maior no mesmo
-      // comprimento (desempate 2 > desempate 3).
-      if (entry.useMelhor && !bestUseMelhor) {
-        bestUseMelhor = true;
-      }
-    } else {
-      // len < bestLength — entries mais curtos (menos específicos).
-      // Como a lista está ordenada desc, todos os próximos também serão
-      // menores — podemos parar.
-      break;
+      bestEntry = entry;
+    } else if (entry.useMelhor && !bestEntry!.useMelhor) {
+      bestEntry = entry;
     }
   }
-
-  return foundAny ? bestUseMelhor : null;
+  return bestEntry;
 }

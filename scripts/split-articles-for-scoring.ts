@@ -38,7 +38,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { annotateUseMelhorBucket, annotateHandsOnAllBuckets, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063, #4843
+import { annotateUseMelhorBucket, annotateHandsOnAllBuckets, annotatePrimarySourceAllBuckets, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063, #4843, #5665
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
@@ -185,6 +185,16 @@ export function main(): void {
     }
   } catch (e) {
     console.error(`[split-articles-for-scoring] WARN: hands_on annotation falhou (${(e as Error).message}) — seguindo sem anotação`);
+  }
+
+  // #5665: propagar o metadado determinístico até o payload do scorer.
+  try {
+    const primaryAnnotated = annotatePrimarySourceAllBuckets(categorized);
+    if (primaryAnnotated > 0) {
+      console.error(`[split-articles-for-scoring] primary_source anotado em ${primaryAnnotated} artigo(s)`);
+    }
+  } catch (e) {
+    console.error(`[split-articles-for-scoring] WARN: primary_source annotation falhou (${(e as Error).message}) — seguindo sem anotação`);
   }
 
   // #2276: de-dup temático + cap por domínio antes de distribuir nos chunks.
