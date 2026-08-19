@@ -76,12 +76,3 @@ export function writeNovosRunStatus(status: NovosRunStatus, baseDir: string = CL
   writeFileAtomic(novosRunStatusPath(baseDir), JSON.stringify(status, null, 2) + "\n");
 }
 
-/**
- * O motivo do abort foi especificamente o semáforo (D4, `clarice-check-
- * semaphore.ts`)? Pura — inspeciona a mensagem de `NovosAbort` (que sempre
- * prefixa com o label do passo, via `step()` em `clarice-novos-run.ts`) em
- * vez de recodificar o guard aqui — fonte única do texto real.
- */
-export function isSemaphoreAbortMessage(message: string): boolean {
-  return message.includes("clarice-check-semaphore");
-}
