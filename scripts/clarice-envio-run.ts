@@ -719,6 +719,31 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
             ? " (#5064: ao menos 1 onda em DRAFT — provável --create sem --schedule de uma rodada anterior; reconcilie manualmente: rode --schedule pra essa key ou cancele o draft antes da próxima janela.)"
             : ""),
       );
+
+      // #5698 — o freio é lido e o snapshot gravado MESMO neste short-circuit
+      // (ex: onda montada à mão pelo editor durante o dia). Sem isto,
+      // `envio-{aammdd}-brake.json` nunca existe pra esta janela, e o
+      // fallback do guard das 05:00 (`handlePrereqFailure`) trata "snapshot
+      // ausente" como se fosse "freio NÃO-OK" — suspendendo a onda por
+      // precaução mesmo quando o editor tinha um override válido em vigor
+      // (override só rebaixa stop→hold, nunca produz "ok" — ver
+      // `clarice-envio-override.ts`). Falha aqui NUNCA vira abort — este
+      // ramo já é um caminho de sucesso (exit 0), e não gravar o snapshot é
+      // preferível a transformar um "nada a fazer" em erro duro.
+      const riskResult = deps.exec("scripts/clarice-envio-risk.ts", []);
+      if (riskResult.stderr.trim()) console.error(riskResult.stderr.trim());
+      const riskJson = riskResult.code === 0 ? parseStepJson<RiskSnapshot>(riskResult.stdout) : undefined;
+      if (riskJson) {
+        writeLastBrakeSnapshot(deps.rootDir, aammdd, riskJson.brake, now.toISOString());
+        report.note(
+          `freio lido mesmo com onda já existente (snapshot gravado): ${riskJson.brake.level.toUpperCase()} — ${riskJson.brake.reasons.join(" ")}`,
+        );
+      } else {
+        report.note(
+          `⚠️  clarice-envio-risk falhou/sem JSON parseável neste ramo (exit ${riskResult.code}) — snapshot de freio NÃO gravado; o guard das 05:00 tratará como AUSENTE se precisar do fallback.`,
+        );
+      }
+
       lockPath && releaseEnvioLock(lockPath);
       lockPath = null;
       const reportId = `envio-${aammdd}-onda-ja-existe`;

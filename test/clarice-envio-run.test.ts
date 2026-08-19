@@ -8,7 +8,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1023,15 +1023,29 @@ describe("clarice-envio-run (#5026)", () => {
       const { exec, calls } = makeFakeExec({
         "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
         "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
       });
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0, r.reportMarkdown);
       assert.match(r.reportMarkdown, /ONDA JÁ EXISTE/);
       assert.match(r.reportMarkdown, /d12-qua12/);
+      // #5698 — o freio AINDA é lido (pra gravar o snapshot pro fallback do
+      // guard das 05:00), mas o short-circuit continua nunca montando uma 2ª
+      // onda: build-segment (que só roda depois de decidir volume) não pode
+      // ser chamado.
       assert.ok(
-        !calls.some((c) => c.script === "scripts/clarice-envio-risk.ts" || c.script === "scripts/clarice-build-segment.ts"),
-        "onda já existente pra sendDate deve parar ANTES de calcular risco/volume — nunca monta uma 2ª onda",
+        calls.some((c) => c.script === "scripts/clarice-envio-risk.ts"),
+        "#5698 — mesmo em onda-já-existente, o freio deve ser lido pra gravar o snapshot pro fallback do guard",
       );
+      assert.ok(
+        !calls.some((c) => c.script === "scripts/clarice-build-segment.ts"),
+        "onda já existente pra sendDate deve parar ANTES de calcular volume — nunca monta uma 2ª onda",
+      );
+      assert.match(r.reportMarkdown, /snapshot gravado/);
+      const snapshotPath = resolve(root, "data", "clarice-subscribers", "envio-reports", "envio-260811-brake.json");
+      assert.ok(existsSync(snapshotPath), "#5698 — snapshot de freio deve ser gravado mesmo no ramo onda-já-existe");
+      const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+      assert.equal(snapshot.brake, "ok");
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -1074,6 +1088,7 @@ describe("clarice-envio-run (#5026)", () => {
       const { exec, calls } = makeFakeExec({
         "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
         "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
       });
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0, r.reportMarkdown);
@@ -1081,10 +1096,39 @@ describe("clarice-envio-run (#5026)", () => {
       assert.match(r.reportMarkdown, /d12-qua12/);
       assert.match(r.reportMarkdown, /status="draft"/);
       assert.match(r.reportMarkdown, /#5064/, "aponta o motivo (draft órfão) e o caminho de reconciliação, não só 'já existe'");
+      // #5698 — mesma leitura de freio (pra gravar snapshot) no ramo draft;
+      // volume/segmentação continuam nunca acontecendo.
       assert.ok(
-        !calls.some((c) => c.script === "scripts/clarice-envio-risk.ts" || c.script === "scripts/clarice-build-segment.ts"),
-        "onda em draft pra sendDate deve parar ANTES de calcular risco/volume — nunca monta uma 2ª onda",
+        calls.some((c) => c.script === "scripts/clarice-envio-risk.ts"),
+        "#5698 — mesmo em onda-em-draft, o freio deve ser lido pra gravar o snapshot pro fallback do guard",
       );
+      assert.ok(
+        !calls.some((c) => c.script === "scripts/clarice-build-segment.ts"),
+        "onda em draft pra sendDate deve parar ANTES de calcular volume — nunca monta uma 2ª onda",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("clarice-envio-risk falha no ramo onda-já-existe => NÃO aborta a rodada, só não grava o snapshot (#5698)", async () => {
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        state: {
+          cycle: CYCLE,
+          waves: [wave({ key: "d12-qua12", subject: "Já montada nesta janela", status: "queued", scheduledAt: `${SEND_DATE}T09:00:00.000Z` })],
+          volumeSum: 100000, volumeComplete: true, sentCount: 10, scheduledCount: 1, unscopedCount: 0,
+        },
+      });
+      const { exec } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-envio-risk.ts": { code: 1, stdout: "", stderr: "dashboard indisponível" },
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown, "falha do risk NÃO deve virar abort — este ramo já é sucesso (nada a fazer)");
+      assert.match(r.reportMarkdown, /ONDA JÁ EXISTE/);
+      assert.match(r.reportMarkdown, /snapshot de freio NÃO gravado/);
+      const snapshotPath = resolve(root, "data", "clarice-subscribers", "envio-reports", "envio-260811-brake.json");
+      assert.ok(!existsSync(snapshotPath), "sem risco lido, nada pra gravar");
       rmSync(root, { recursive: true, force: true });
     });
   });
