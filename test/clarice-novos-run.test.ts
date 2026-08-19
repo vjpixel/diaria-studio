@@ -26,7 +26,6 @@ import {
   parseStepJson,
   todayAammdd,
   NovosAbort,
-  NOVOS_SEMAPHORE_ABORT_EXIT_CODE,
   type NovosRunDeps,
   type StepResult,
   type ExecFn,
@@ -77,7 +76,6 @@ function goldenHandlers(opts: { cicloMensal?: string; shouldSendTest?: boolean }
     "scripts/clarice-build-db.ts": textResult(""),
     "scripts/clarice-stripe-delta.ts": jsonResult({ mode: "execute", since: "2026-08-01", rows: 12, out: "x.csv" }),
     "scripts/verify-emails-mv.ts": jsonResult({ mode: "since", since: "2026-08-01", cohorts: [], total_verified: 3 }),
-    "scripts/clarice-check-semaphore.ts": jsonResult({ ok: true, semaphore: "green" }),
     "scripts/clarice-build-segment.ts": jsonResult({ selected: 42, hold: "juridico", cycle: "2607-08", group: "novos" }),
     "scripts/clarice-novos-resolve-key.ts": jsonResult({ key: "novos-260810" }),
     "scripts/clarice-resolve-folder.ts": jsonResult({ folderId: 7, resolved: true }),
@@ -286,7 +284,6 @@ describe("clarice-novos-run (#4941)", () => {
         "scripts/clarice-build-db.ts",
         "scripts/verify-emails-mv.ts",
         "scripts/clarice-build-db.ts",
-        "scripts/clarice-check-semaphore.ts",
         "scripts/clarice-build-segment.ts",
         "scripts/clarice-novos-resolve-key.ts",
         "scripts/clarice-resolve-folder.ts",
@@ -449,55 +446,19 @@ describe("clarice-novos-run (#4941)", () => {
     });
   });
 
-  // ── guards abortam ─────────────────────────────────────────────────────
+  // ── D4 removido (#5660) ─────────────────────────────────────────────────
 
-  describe("guards abortam (exit 1, ou exit 3 pro semáforo — #5615/#5592), sem chamar passos de escrita subsequentes", () => {
-    it("semáforo vermelho -> aborta antes de montar o grupo, com exit 3 (não 1 — #5615/#5592: abort D4 é comportamento CORRETO, distinto de erro genérico)", async () => {
-      root = freshRoot();
-      const handlers = goldenHandlers();
-      handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
-      const { exec, calls } = makeFakeExec(handlers);
-      const deps = baseDeps(root, { exec });
-      const result = await runNovos([], deps);
-      assert.equal(result.code, NOVOS_SEMAPHORE_ABORT_EXIT_CODE);
-      assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
-      rmSync(root, { recursive: true, force: true });
-    });
-
-    it("#5410: cutoff (`since` do Passo 1) é persistido MESMO quando o semáforo aborta — é isto que impede ramp-warm de absorver a janela novos", async () => {
-      root = freshRoot();
-      const handlers = goldenHandlers();
-      handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
-      const { exec } = makeFakeExec(handlers);
-      const deps = baseDeps(root, { exec });
-      const result = await runNovos([], deps);
-      assert.equal(result.code, NOVOS_SEMAPHORE_ABORT_EXIT_CODE);
-      const cutoff = readNovosCutoff(resolve(root, "data", "clarice-subscribers"));
-      assert.ok(cutoff, "cutoff deveria ter sido persistido antes do semáforo abortar");
-      assert.equal(cutoff!.cutoffIso, "2026-08-01"); // `since` devolvido por goldenHandlers().clarice-stripe-delta.ts
-      rmSync(root, { recursive: true, force: true });
-    });
-
-    it("#5615/#5592: abort por QUALQUER OUTRO motivo (não-semáforo) continua saindo exit 1, não 3 — a distinção é específica do guard D4", async () => {
+  describe("D4 removido do call path (#5660)", () => {
+    it("não chama clarice-check-semaphore e chega ao build-segment mesmo sem handler D4", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-build-segment.ts"] = jsonResult({ error: "cap exceeded" }, 1);
-      const { exec } = makeFakeExec(handlers);
+      const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
       assert.equal(result.code, 1);
-      rmSync(root, { recursive: true, force: true });
-    });
-
-    it("#5405: status da rodada (last-novos-run-status.json) marca 'semaphore-red' quando o abort é especificamente do guard de semáforo", async () => {
-      root = freshRoot();
-      const handlers = goldenHandlers();
-      handlers["scripts/clarice-check-semaphore.ts"] = jsonResult({ ok: false, semaphore: "red", reason: "breaker" }, 1);
-      const { exec } = makeFakeExec(handlers);
-      const deps = baseDeps(root, { exec });
-      await runNovos([], deps);
-      const status = readNovosRunStatus(resolve(root, "data", "clarice-subscribers"));
-      assert.equal(status?.status, "semaphore-red");
+      assert.ok(calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-check-semaphore.ts"));
       rmSync(root, { recursive: true, force: true });
     });
 

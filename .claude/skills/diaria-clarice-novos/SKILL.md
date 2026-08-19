@@ -13,12 +13,12 @@ Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe
 npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] [--force] [--subject "…"] [--confirm]
 ```
 
-**Regime de execução — sem gate humano (D6).** Decisão travada do editor (#4347): os 9 guards determinísticos abaixo são a ÚNICA trava. Cada um deles **ABORTA**, nunca só avisa, fora de `--dry-run`. `--dry-run` roda os Passos 0-3 (delta Stripe em preview, MV pulado — custo real nunca gasto sem intenção — e o grupo `novos` construído com `--dry-run`) e para, sem criar lista/campanha nem enviar nada. É o modo recomendado pra 1ª invocação numa máquina nova.
+**Regime de execução — sem gate humano (D6).** Decisão travada do editor (#4347): os 8 guards determinísticos abaixo são a **ÚNICA trava.** Cada um deles **ABORTA**, nunca só avisa, fora de `--dry-run`. O guard D4 de semáforo foi removido explicitamente do caminho `clarice-novos` no #5660; a decisão consciente é deixar este fluxo enviar mesmo quando o dashboard de entregabilidade estiver vermelho. `--dry-run` roda os Passos 0-3 (delta Stripe em preview, MV pulado — custo real nunca gasto sem intenção — e o grupo `novos` construído com `--dry-run`) e para, sem criar lista/campanha nem enviar nada. É o modo recomendado pra 1ª invocação numa máquina nova.
 
 | Guard | Onde | Condição de abort |
 |---|---|---|
 | Teto de tamanho (D13) | `clarice-build-segment.ts --group novos` | grupo selecionado > 500 contatos → aborta. `--force` (repassado por `clarice-novos-run.ts`) destrava. |
-| Semáforo (D4) | `clarice-check-semaphore.ts` | circuit breakers em vermelho → aborta. |
+
 | Queued/sent | `clarice-build-segment.ts` (todos os grupos) | falha ao consultar campanhas comprometidas na Brevo → aborta fora de `--dry-run`. |
 | HTML | `clarice-novos-resolve-cycle.ts` | nenhum ciclo com preview pronto → aborta. |
 | É IA? | `clarice-novos-resolve-cycle.ts` / `checkEiaGuard` no `--send-now` | gabarito não gravado pro ciclo resolvido → aborta. |
@@ -31,7 +31,7 @@ Falha de MCP/ferramenta em qualquer passo → o sub-script falha com exit ≠ 0,
 
 **Status pós-envio conhecidos (`--send-now`) — não são guards de abort, são exit codes do GET-verify (#4364).** Além dos guards acima (que sempre abortam), o disparo em si tem 3 desfechos possíveis, propagados por `clarice-novos-run.ts` como o próprio exit code do orquestrador: `0` = confirmado (`sent`), `--finalize` gravado; `1` = erro duro; `2` = incerto (`isTerminalSendStatus` não bateu — inclui o `in_review` da Brevo, revisão automática de compliance/anti-abuso da plataforma). No `2`, `--finalize` NUNCA é chamado (não declara como enviado algo não confirmado) — a rodada de amanhã reconcilia sozinha (idempotente por key/campanha, `--send-now` de novo é seguro).
 
-**Exit 3 — abort do semáforo D4, distinto de erro genérico (#5615/#5592).** Desde esta unidade, um abort especificamente pelo guard "Semáforo (D4)" da tabela acima sai com `exit 3` (`NOVOS_SEMAPHORE_ABORT_EXIT_CODE`), não `1` — os demais 8 guards (teto D13, custo MV D8, etc.) continuam saindo `1`. A distinção existe porque D4 vermelho é comportamento CORRETO do circuit breaker (não enviar com entregabilidade comprometida), não um bug do serviço: os units systemd `Diaria-Clarice-Novos`/`-Tarde` declaram `SuccessExitStatus=3` (`scripts/lib/systemd-units.ts`, via `successExitCodes` no registro) pra `systemctl --user list-units --state=failed` não marcar a unit como `failed` nesse caso — antes disso, todo abort D4 disparava `Diaria-Systemd-Failed-Units-Alarm` (P1) em cima de um não-bug. O alarme dedicado `Diaria-Clarice-Novos-Abort-Alarm` (#5405, streak de aborts consecutivos) segue lendo `last-novos-run-status.json`, sem depender do exit code do processo.
+**Semáforo D4 e o alarme #5405 foram aposentados no caminho `novos` (#5660).** `clarice-novos-run.ts` não chama mais `clarice-check-semaphore.ts`, não produz `exit 3` e as units systemd não declaram mais `SuccessExitStatus=3`. O mecanismo de semáforo continua vivo para os demais fluxos (rampa/dashboard). O alarme dedicado `Diaria-Clarice-Novos-Abort-Alarm` foi removido do registro e seu script permanece como no-op explicitamente dormente, para não interpretar um `semaphore-red` histórico como uma nova ocorrência.
 
 **Zero elegíveis** em qualquer ponto (delta vazio, grupo `novos` vazio) → sai limpo, grava relatório "0 contatos", **exit 0** (não é erro).
 
@@ -61,7 +61,7 @@ Resolução de `{CICLO_ENVIO}`: `mostRecentActiveClariceCycle` (mesmo sinal do g
 
 Passo 2 — `verify-emails-mv.ts --since {SINCE} --cycle {CICLO_ENVIO} [--confirm]` → `clarice-build-db.ts` de novo (reingestão, #4362). Pulado inteiro em `--dry-run` (custo real).
 
-Passo 3 — `clarice-check-semaphore.ts` → `clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO} --hold juridico [--dry-run] [--force]`. `--hold juridico` é sempre passado — `clarice-novos-run.ts` confere que o resumo confirma `hold: "juridico"` antes de prosseguir (#4542).
+Passo 3 — `clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO} --hold juridico [--dry-run] [--force]`. `--hold juridico` é sempre passado — `clarice-novos-run.ts` confere que o resumo confirma `hold: "juridico"` antes de prosseguir (#4542). O antigo guard D4 não participa mais deste caminho (#5660).
 
 Passo 4 — `clarice-novos-resolve-key.ts --cycle {CICLO_ENVIO} --date {AAMMDD}` → `{KEY}` → `clarice-resolve-folder.ts --name "Clarice novos"` → `clarice-import-waves.ts --cycle {CICLO_ENVIO} --group novos --key {KEY} --label "Novos {DD/MM}" --folder-id {N} --execute` (a espera do processo assíncrono + reconciliação de contagem já é interna ao `--execute`, #4577 — o orquestrador não faz polling extra).
 

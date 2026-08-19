@@ -172,10 +172,7 @@ describe("buildSystemdUnitFiles", () => {
   });
 });
 
-// #5615/#5592: abort intencional do semáforo D4 (clarice-novos-run.ts, exit
-// 3) não deve fazer `systemctl --user list-units --state=failed` marcar a
-// unit como `failed` — o mecanismo é `SuccessExitStatus=` no `.service`.
-describe("buildSystemdUnitFiles — SuccessExitStatus= (#5615/#5592)", () => {
+describe("buildSystemdUnitFiles — SuccessExitStatus=", () => {
   const repoRootAbs = "/home/editor/diaria-studio";
 
   it("task SEM successExitCodes -> nenhuma linha SuccessExitStatus= no .service", () => {
@@ -185,18 +182,22 @@ describe("buildSystemdUnitFiles — SuccessExitStatus= (#5615/#5592)", () => {
     assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
   });
 
-  it("Diaria-Clarice-Novos declara successExitCodes=[3] -> .service emite SuccessExitStatus=3", () => {
+  it("Diaria-Clarice-Novos não declara mais um exit 3 esperado após a remoção do D4 (#5660)", () => {
     const task = getScheduledTaskByName("Diaria-Clarice-Novos")!;
-    assert.deepEqual(task.successExitCodes, [3]);
+    assert.equal(task.successExitCodes, undefined);
     const files = buildSystemdUnitFiles(task, repoRootAbs);
-    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
+    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
   });
 
-  it("Diaria-Clarice-Novos-Tarde declara a mesma exceção (mesmo script, mesmo guard D4)", () => {
+  it("Diaria-Clarice-Novos-Tarde também não declara exit 3 esperado", () => {
     const task = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde")!;
-    assert.deepEqual(task.successExitCodes, [3]);
+    assert.equal(task.successExitCodes, undefined);
     const files = buildSystemdUnitFiles(task, repoRootAbs);
-    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
+    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
+  });
+
+  it("o alarme #5405 não é mais uma task registrada após a remoção do D4", () => {
+    assert.equal(getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm"), undefined);
   });
 
   it("múltiplos códigos -> uma linha só, códigos separados por espaço", () => {

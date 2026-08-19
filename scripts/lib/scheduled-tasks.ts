@@ -493,12 +493,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
     },
-    // #5615/#5592: exit 3 = abort intencional do semáforo D4 (circuit
-    // breaker de entregabilidade rompido) — comportamento CORRETO do guard,
-    // não deve contar como unit `failed` no systemd (ver docstring do campo
-    // e de NOVOS_SEMAPHORE_ABORT_EXIT_CODE em clarice-novos-run.ts).
-    successExitCodes: [3],
-    issue: "#4347, #4941, #5140, #5445, #5447, #5615, #5592",
+    issue: "#4347, #4941, #5140, #5445, #5447, #5660",
   },
   {
     name: "Diaria-Clarice-Novos-Tarde",
@@ -560,9 +555,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // antes de `Diaria-Clarice-Envio` (19:00) — o ganho de latência de
     // 18:00→18:30 é de só 0,1h, não vale comer essa margem.
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
-    // #5615/#5592: mesma distinção de exit code do par das 09:00 — exit 3 =
-    // abort intencional do semáforo D4, não conta como unit `failed`.
-    successExitCodes: [3],
     // Log próprio (não compartilha arquivo com Diaria-Clarice-Novos) — cada
     // task do registro tem seu logPath dedicado (convenção do arquivo
     // inteiro), e misturar as duas rodadas no mesmo log tornaria a
@@ -583,20 +575,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registro — logo já vale automaticamente pras duas tasks sem lógica
     // nova (confirmado lendo `scripts/clarice-novos-run.ts`, sem precisar
     // de um 2o toggle).
-    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5615, #5592",
-  },
-  {
-    name: "Diaria-Clarice-Novos-Abort-Alarm",
-    description: "alarme de aborts consecutivos por semaforo vermelho (D4) do grupo 'novos' da Clarice",
-    steps: [{ key: "alarm", script: "scripts/clarice-novos-abort-alarm.ts" }],
-    logPath: "clarice-subscribers/.novos-abort-alarm.log",
-    // Diária 18:10 BRT — depois das DUAS rodadas do dia (09:00 e 18:00
-    // Diaria-Clarice-Novos-Tarde), lê o status da MAIS RECENTE. Mesmo
-    // padrão de "alarme roda depois do que ele observa" de
-    // Diaria-Clarice-Opens-Catchup-Alarm (09:00, depois do Diaria-Clarice-
-    // Sync das 08:30).
-    schedule: { kind: "daily", hour: 18, minute: 10 },
-    issue: "#5405, #5447",
+    issue: "#4347, #4941, #5185, #5410, #5445, #5447, #5660",
   },
   {
     name: "Diaria-Clarice-Envio",

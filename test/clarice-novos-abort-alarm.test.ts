@@ -19,10 +19,17 @@ import {
   type NovosAbortAlarmState,
 } from "../scripts/lib/clarice-novos-abort-alarm.ts";
 import { toAlarmFinding } from "../scripts/clarice-novos-abort-alarm.ts";
+import { NOVOS_ABORT_ALARM_DORMANT } from "../scripts/clarice-novos-abort-alarm.ts";
 
 const T0 = new Date("2026-08-14T11:05:00.000Z");
 const T1 = new Date("2026-08-15T11:05:00.000Z");
 const T2 = new Date("2026-08-16T11:05:00.000Z");
+
+describe("#5405 aposentado pelo #5660", () => {
+  it("fica explicitamente dormente para não alarmar com status semaphore-red histórico", () => {
+    assert.equal(NOVOS_ABORT_ALARM_DORMANT, true);
+  });
+});
 
 describe("advanceNovosAbortState (#5405)", () => {
   it("semaphore-red incrementa o streak", () => {

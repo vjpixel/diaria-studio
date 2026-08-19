@@ -140,13 +140,12 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     // vars (comportamento de hoje, sem regressão pra quem não usa credencial).
     `EnvironmentFile=-${repoRootAbs}/.env`,
     `ExecStart=${execStart}`,
-    // #5615/#5592: exit codes além de 0 que a TASK trata como "não é uma
-    // falha" (ex: abort intencional de guard, #5615/#5592) — sem isto,
-    // `systemctl --user list-units --state=failed` marca a unit como
-    // `failed` pra QUALQUER exit != 0, inclusive um abort correto por
-    // design (`Diaria-Systemd-Failed-Units-Alarm` disparando alarme P1
-    // sobre um não-bug). `SuccessExitStatus=` é feature nativa do systemd
-    // (`man systemd.exec`), não um workaround.
+    // Algumas tasks podem declarar exit codes além de 0 que representam
+    // um desfecho esperado, não uma falha. Nesses casos, sem esta linha,
+    // `systemctl --user list-units --state=failed` marcaria a unit como
+    // `failed`. `SuccessExitStatus=` é feature nativa do systemd
+    // (`man systemd.exec`), não um workaround; tasks sem essa declaração
+    // continuam tratando qualquer exit != 0 como falha.
     ...(task.successExitCodes && task.successExitCodes.length > 0
       ? [`SuccessExitStatus=${task.successExitCodes.join(" ")}`]
       : []),
