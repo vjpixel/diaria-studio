@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readChangedFiles, pingIndexNow, checkKeyLocationServed } from "../scripts/ping-indexnow.ts";
+import { readChangedFiles, readWatchPrefixes, pingIndexNow, checkKeyLocationServed } from "../scripts/ping-indexnow.ts";
 import { buildIndexNowPayload } from "../scripts/lib/indexnow.ts";
 
 describe("readChangedFiles (#4909)", () => {
@@ -44,6 +44,31 @@ describe("readChangedFiles (#4909)", () => {
 
   it("sem nenhuma das duas flags -> lista vazia", () => {
     assert.deepEqual(readChangedFiles([]), []);
+  });
+});
+
+describe("readWatchPrefixes (#5703)", () => {
+  it("aceita --watch-prefix repetido", () => {
+    assert.deepEqual(
+      readWatchPrefixes([
+        "--watch-prefix",
+        "workers/cursos/src/courses-full.generated.ts",
+        "--watch-prefix",
+        "workers/cursos/public/index.html",
+      ]),
+      ["workers/cursos/src/courses-full.generated.ts", "workers/cursos/public/index.html"],
+    );
+  });
+
+  it("sem a flag -> lista vazia", () => {
+    assert.deepEqual(readWatchPrefixes([]), []);
+  });
+
+  it("ignora outras flags misturadas no argv", () => {
+    assert.deepEqual(
+      readWatchPrefixes(["--host", "cursos.diar.ia.br", "--watch-prefix", "workers/cursos/public/index.html"]),
+      ["workers/cursos/public/index.html"],
+    );
   });
 });
 

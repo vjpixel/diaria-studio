@@ -23,9 +23,17 @@
  * mudou, quando puder revisite" (ver `docs/seo-notes.md` Fato 3 pra mesma
  * ressalva já registrada sobre `<lastmod>`).
  *
- * Uso:
+ * Uso (host `arquivo`, gate por hub — default, sem `--watch-prefix`):
  *   npx tsx scripts/ping-indexnow.ts --changed-files-file /caminho/lista.txt --key <chave>
  *   npx tsx scripts/ping-indexnow.ts --changed-file workers/arquivo/src/hubs/x.generated.ts --key <chave>
+ *
+ * Uso (host de página única — cursos/livros, #5703): passar `--host` E pelo
+ * menos 1 `--watch-prefix` (repetível) troca pro gate genérico de página
+ * única (`buildSinglePageIndexNowPayload`) — pinga só `{baseUrl}/`, uma
+ * única URL, quando algum path listado em `--watch-prefix` aparece na lista
+ * de arquivos alterados:
+ *   npx tsx scripts/ping-indexnow.ts --changed-files-file lista.txt --key <chave> \
+ *     --host cursos.diar.ia.br --watch-prefix workers/cursos/src/courses-full.generated.ts
  *
  * `--key` opcional na CLI — se omitido, cai pra `process.env.INDEXNOW_KEY`
  * (é assim que o workflow passa o secret). Sem chave (nem flag nem env) =
@@ -38,7 +46,12 @@
  */
 import { readFileSync } from "node:fs";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { buildIndexNowPayload, ARQUIVO_HOST, type IndexNowPayload } from "./lib/indexnow.ts";
+import {
+  buildIndexNowPayload,
+  buildSinglePageIndexNowPayload,
+  ARQUIVO_HOST,
+  type IndexNowPayload,
+} from "./lib/indexnow.ts";
 
 const INDEXNOW_ENDPOINT = "https://api.indexnow.org/indexnow";
 const LOG_PREFIX = "[ping-indexnow]";
@@ -151,13 +164,40 @@ export async function checkKeyLocationServed(
   }
 }
 
+/** `--watch-prefix` repetível (mesmo padrão de `--changed-file` em
+ * `readChangedFiles`) — presença de pelo menos 1 troca pro gate genérico de
+ * página única (ver docstring do topo). */
+export function readWatchPrefixes(argv: string[]): string[] {
+  const prefixes: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--watch-prefix" && argv[i + 1] !== undefined) prefixes.push(argv[i + 1]);
+  }
+  return prefixes;
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const changedFiles = readChangedFiles(argv);
   const key = getStringArg(argv, "key") ?? process.env.INDEXNOW_KEY ?? "";
-  const host = getStringArg(argv, "host") ?? ARQUIVO_HOST;
+  const watchPrefixes = readWatchPrefixes(argv);
+  const host = getStringArg(argv, "host");
 
-  const payload = buildIndexNowPayload(changedFiles, key, { host });
+  // #5703: `--watch-prefix` presente troca pro gate genérico de página
+  // única (host obrigatório, sem default — ao contrário do modo hub, que
+  // cai em ARQUIVO_HOST quando `--host` é omitido). Faltar `--host` aqui é
+  // erro de invocação (workflow mal configurado), não "gate fechado" — sem
+  // isso `buildSinglePageIndexNowPayload` montaria `keyLocation`/`urlList`
+  // com `https://` cru, um payload inválido que só falharia (silenciosamente
+  // pro autor do erro) na checagem de `keyLocation` mais abaixo.
+  if (watchPrefixes.length > 0 && !host) {
+    console.error(`${LOG_PREFIX} erro: --watch-prefix requer --host explícito (modo página única, #5703).`);
+    return 1;
+  }
+
+  const payload =
+    watchPrefixes.length > 0
+      ? buildSinglePageIndexNowPayload(changedFiles, key, { host: host!, watchPrefixes })
+      : buildIndexNowPayload(changedFiles, key, { host: host ?? ARQUIVO_HOST });
 
   if (!payload) {
     console.log(

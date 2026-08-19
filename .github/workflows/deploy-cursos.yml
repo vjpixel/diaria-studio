@@ -29,6 +29,21 @@ name: Deploy cursos Worker
 #
 # Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
 # CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+#
+# #5703: depois do deploy, pinga o IndexNow (protocolo aberto — Google NÃO
+# participa, só Bing/Yandex/Seznam) SE o push mudou o catálogo de cursos —
+# `workers/cursos/src/courses-full.generated.ts` (conteúdo completo,
+# pós-gate) OU `workers/cursos/public/index.html` (teaser público) — mesmo
+# racional/padrão de `deploy-arquivo.yml` (#4909 item 2), generalizado pra
+# este host via `--host`/`--watch-prefix` (`scripts/ping-indexnow.ts`, modo
+# "página única" — só há 1 URL indexável aqui, a raiz, sem hubs/slugs).
+# Requer o secret `INDEXNOW_KEY` PROVISIONADO NESTE WORKER (`wrangler secret
+# put INDEXNOW_KEY --name cursos`) — sem ele, `GET /{key}.txt` não existe
+# (ver `workers/cursos/src/index.ts` `Env.INDEXNOW_KEY`) e o ping falharia na
+# checagem do arquivo de chave; o secret de REPO `INDEXNOW_KEY` (usado abaixo
+# pro valor da chave em si) já existe desde #4909, mas isso não configura o
+# Worker sozinho — são dois provisionamentos distintos (ver PR body do #5703
+# pro estado confirmado).
 
 on:
   push:
@@ -48,6 +63,12 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # #5703: precisa do commit ANTERIOR ao push localmente pra `git
+          # diff --name-only ${{ github.event.before }} ${{ github.sha }}`
+          # funcionar no step de detecção abaixo (mesmo padrão de
+          # deploy-arquivo.yml) — fetch-depth 1 (default) só traz o HEAD.
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:
@@ -66,3 +87,47 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run deploy
+
+      - name: Detect changed cursos content files
+        id: cursos-diff
+        # Mesmo racional/estrutura de detecção de deploy-arquivo.yml (#5006):
+        # `git diff` pode FALHAR (não só dar vazio) quando o push tem mais de
+        # 1 commit — `fetch-depth: 2` só traz HEAD + 1 pai. O `set +e` isola
+        # o exit code do `git diff` do `set -e` do shell pra distinguir "o
+        # comando falhou" (warning explícito, trata como sem mudança) de "o
+        # comando rodou e deu vazio" (nenhum warning). workflow_dispatch não
+        # tem `github.event.before` — gate fecha, ping não roda.
+        run: |
+          BEFORE="${{ github.event.before }}"
+          ZERO="0000000000000000000000000000000000000000"
+          CHANGED=""
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "$ZERO" ]; then
+            set +e
+            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- 'workers/cursos/src/courses-full.generated.ts' 'workers/cursos/public/index.html')
+            DIFF_EXIT=$?
+            set -e
+            if [ "$DIFF_EXIT" -ne 0 ]; then
+              echo "::warning::git diff $BEFORE..${{ github.sha }} falhou (exit $DIFF_EXIT) -- provavelmente $BEFORE está fora do histórico raso (fetch-depth: 2, push com mais de 1 commit). Tratando como 'nenhum conteúdo mudou' por segurança -- o IndexNow pode ter sido pulado incorretamente neste push, confira manualmente."
+              CHANGED=""
+            fi
+          else
+            echo "::notice::sem commit anterior utilizável (workflow_dispatch, ou push sem github.event.before) -- pulando diff; IndexNow não será pingado nesta execução."
+          fi
+          {
+            echo "changed<<INDEXNOW_EOF"
+            echo "$CHANGED"
+            echo "INDEXNOW_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ping IndexNow (só quando o catálogo de cursos mudou)
+        if: steps.cursos-diff.outputs.changed != ''
+        env:
+          INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
+          CHANGED_CONTENT_FILES: ${{ steps.cursos-diff.outputs.changed }}
+        run: |
+          printf '%s\n' "$CHANGED_CONTENT_FILES" > "$RUNNER_TEMP/changed-cursos-files.txt"
+          npx tsx scripts/ping-indexnow.ts \
+            --changed-files-file "$RUNNER_TEMP/changed-cursos-files.txt" \
+            --host cursos.diar.ia.br \
+            --watch-prefix workers/cursos/src/courses-full.generated.ts \
+            --watch-prefix workers/cursos/public/index.html

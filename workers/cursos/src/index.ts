@@ -47,9 +47,21 @@ import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 import { DIARIA_CURSOS_URL } from "../../../scripts/lib/canonical-urls.ts"; // #5097 item D
+import { matchIndexNowKeyPath } from "../../../scripts/lib/shared/indexnow-key-route.ts"; // #5703
 
 export interface Env {
   ASSETS: Fetcher;
+  /** Chave IndexNow (#5703, mesmo padrão de `workers/arquivo/src/index.ts`
+   * #4909 item 2) — string opaca gerada pelo editor em
+   * indexnow.org/documentation, provisionada como Worker secret (`wrangler
+   * secret put INDEXNOW_KEY`, fora deste repo). Serve o arquivo de chave em
+   * `GET /{INDEXNOW_KEY}.txt` — é assim que o Bing confirma que quem pinga
+   * `api.indexnow.org` é dono do host. `undefined`/ausente: a rota
+   * simplesmente não casa com nenhum path (nenhum comportamento novo) —
+   * permite o Worker rodar sem a var configurada até o editor provisionar a
+   * chave (ver PR do #5703 pro estado de provisionamento).
+   */
+  INDEXNOW_KEY?: string;
   /** #4052: KV do sync de assinantes ativos — chave `subscriber:{sha256(email)}`.
    * Criar via `wrangler kv namespace create CURSOS_SUBSCRIBERS` (ver PR body). */
   CURSOS_SUBSCRIBERS: KVNamespace;
@@ -356,6 +368,19 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(runtimeEnv) });
+    }
+
+    // #5703: arquivo de chave do IndexNow — mesmo padrão de
+    // `workers/arquivo/src/index.ts` (#4909 item 2). Só casa quando
+    // `env.INDEXNOW_KEY` está configurada; ausente, este `if` nunca é
+    // verdadeiro e o path cai no fallback normal (`env.ASSETS.fetch`),
+    // idêntico ao comportamento anterior a esta rota existir.
+    const indexNowKey = matchIndexNowKeyPath(url.pathname, env.INDEXNOW_KEY);
+    if (indexNowKey) {
+      return new Response(indexNowKey, {
+        status: 200,
+        headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+      });
     }
 
     if (GATED_INDEX_PATHS.includes(url.pathname) && request.method === "GET") {
