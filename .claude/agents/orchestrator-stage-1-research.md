@@ -795,7 +795,7 @@ Apresentar ao usuário:
   Comportamento:
   - `## Destaques`: primeiras 3 linhas na ordem física viram D1/D2/D3 (rank 1/2/3, renumeradas). Se < 3, completa com candidatos do scorer por rank. Se > 3, mantém as 3 primeiras.
   - `## Lançamentos` / `## Pesquisas` / `## Notícias`: honra EXATAMENTE as URLs que o editor deixou em cada seção, na ordem física. Artigos removidos do MD são dropados. Artigos movidos entre buckets respeitam o bucket do MD final.
-  - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas.
+  - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas. Lookup determinístico de fonte primária (#5664): para cada artigo secundário aprovado que `buildPrimarySourceQuery` aceitar, disparar `discovery-searcher` com `site:{domínio-oficial} {título}`, salvar resultados reais em `{EDITION_DIR}/_internal/tmp-primary-source-search-results.json` e rodar `npx tsx scripts/resolve-primary-source.ts --approved {EDITION_DIR}/_internal/01-approved.json --search-results {EDITION_DIR}/_internal/tmp-primary-source-search-results.json`; só substituir por HTTP(S) do domínio oficial/subdomínio com `subjectSimilarity >= 0.60`, com empate por score e URL, preservando sem resultado confiável e em falha (fail-soft), antes do re-render para Stage 2.
 - **Re-renderizar o MD** a partir do `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/render-categorized-md.ts \
