@@ -732,10 +732,14 @@ aqui.
    aplicado fora do fluxo normal de decisão (passo 5 acima), ou claim de
    `session-registry` encerrada/removida manualmente durante o ciclo, deve já
    ter sido registrada na hora com `--add-pending {N}` — este é só o ponto
-   onde a pendência é COBRADA antes de dormir. `exit 1` → reavaliar dispatch
-   pra cada issue listada (mesma tabela linha-a-linha acima) antes de
-   prosseguir pro passo 6; resolver com `--remove-pending {N}` só depois de
-   reavaliar, nunca antes.
+   onde a pendência é COBRADA antes de dormir. Desde #5706 o mesmo comando
+   também roda a re-varredura de convergência (`gh issue list` completo
+   contra `goal.target_set`/`goal.tiers`/`issues[]`, fundida no mesmo gate)
+   — `exit 1` → reavaliar dispatch pra cada issue listada (pendência
+   explícita ou nova de convergência, mesma tabela linha-a-linha acima)
+   antes de prosseguir pro passo 6; resolver com `--remove-pending {N}` só
+   depois de reavaliar, nunca antes. Sem `gh`/rede, degrada sozinho pra só a
+   pendência explícita (fail-soft #738).
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir (`ScheduleWakeup` com
    `delaySeconds: 3600`, ver "Cadência do wake em modo ocioso" acima); ao
