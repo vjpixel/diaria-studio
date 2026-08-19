@@ -44,7 +44,12 @@ function fakeGh(initialBody: string, opts: { failView?: boolean; failEdit?: bool
   const run: GhRunFn = (args) => {
     if (args[0] === "issue" && args[1] === "view") {
       if (opts.failView) return { status: 1, stdout: "", stderr: "gh: not authenticated" };
-      return { status: 0, stdout: body, stderr: "" };
+      // `gh issue view --json body -q .body` real SEMPRE anexa 1 "\n" extra
+      // ao stdout, mesmo quando o corpo de verdade não termina em newline —
+      // reproduzido aqui de propósito (achado ao vivo contra a #5724) pra
+      // testar que `fetchIssueBody` (`stripGhJqTrailingNewline`) desfaz isso
+      // e nenhum ciclo fetch→edit acumula linha em branco.
+      return { status: 0, stdout: `${body}\n`, stderr: "" };
     }
     if (args[0] === "issue" && args[1] === "edit") {
       if (opts.failEdit) return { status: 1, stdout: "", stderr: "gh: rate limited" };
@@ -171,6 +176,33 @@ describe("syncWaitUntilMarkerOnIssue — I/O via GhRunFn injetado (sem rede)", (
     assert.equal(result.ok, false);
     assert.equal(result.action, "failed");
     assert.match(result.error ?? "", /rate limited/);
+  });
+
+  it("regressão: extensões sucessivas do until NÃO acumulam linha em branco (o \\n que gh -q .body sempre anexa)", () => {
+    const { run, editedBodies } = fakeGh("Corpo original.");
+    // 1ª chamada: insere o marcador.
+    const first = syncWaitUntilMarkerOnIssue(5673, "2026-08-21T09:00:00.000Z", "/repo", run);
+    assert.equal(first.action, "inserted");
+    // 2ª chamada: estende o prazo — se `fetchIssueBody` não descontasse o
+    // "\n" artificial que `gh -q .body` sempre anexa, o corpo reusado aqui
+    // já carregaria 1 linha em branco a mais, e esta 2ª edição escreveria
+    // de volta 2.
+    const second = syncWaitUntilMarkerOnIssue(5673, "2026-08-25T09:00:00.000Z", "/repo", run);
+    assert.equal(second.action, "updated");
+    // 3ª extensão, pra garantir que o padrão se mantém estável, não só na
+    // 2ª iteração.
+    const third = syncWaitUntilMarkerOnIssue(5673, "2026-08-30T09:00:00.000Z", "/repo", run);
+    assert.equal(third.action, "updated");
+
+    assert.equal(editedBodies.length, 3);
+    for (const body of editedBodies) {
+      assert.equal(
+        (body.match(/\n{2,}/g) ?? []).length,
+        1,
+        `esperado exatamente 1 bloco de linha(s) em branco (entre marcador e prosa), achou: ${JSON.stringify(body)}`,
+      );
+    }
+    assert.equal(editedBodies[2], "<!-- aguardando-ate: 2026-08-31 -->\n\nCorpo original.");
   });
 });
 

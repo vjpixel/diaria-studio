@@ -97,6 +97,21 @@ export function removeWaitUntilMarker(body: string | null | undefined): string {
   return src.replace(/^[ \t]*<!--\s*aguardando-ate:\s*\d{4}-\d{2}-\d{2}\s*-->[ \t]*\r?\n?\r?\n?/im, "");
 }
 
+/** `gh issue view --json body -q .body` (self-review, achado ao vivo contra a
+ * #5724) SEMPRE termina o stdout com exatamente um `\n` extra, mesmo quando o
+ * corpo real da issue não termina em newline — é o `-q`/`--jq` do próprio
+ * `gh` que anexa isso, não parte do corpo. Sem remover esse `\n` artificial
+ * antes de reusar o texto como base de um `gh issue edit --body`, cada ciclo
+ * fetch→edit (ex: `--set` estendendo `until` pra uma data nova) escreveria de
+ * volta um `\n` a mais, que o PRÓXIMO fetch devolveria como DOIS — linha em
+ * branco crescendo a cada extensão do override. Stripar exatamente 1 (nunca
+ * mais) recupera o corpo real: se o corpo de verdade também termina em `\n`,
+ * o `-q` ainda adiciona só mais 1 por cima, então remover 1 é sempre a
+ * operação correta, nunca destrutiva do conteúdo genuíno. */
+function stripGhJqTrailingNewline(raw: string): string {
+  return raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+}
+
 function fetchIssueBody(
   issueNumber: number,
   cwd: string,
@@ -106,7 +121,7 @@ function fetchIssueBody(
   if (res.status !== 0) {
     return { ok: false, error: res.stderr.trim() || `gh issue view falhou (status ${res.status ?? "null"})` };
   }
-  return { ok: true, body: res.stdout };
+  return { ok: true, body: stripGhJqTrailingNewline(res.stdout) };
 }
 
 function editIssueBody(
