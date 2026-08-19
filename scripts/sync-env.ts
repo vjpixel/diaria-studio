@@ -178,6 +178,13 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Comparação em paths nativos (não URLs) — no Windows, `import.meta.url` é
+// `file:///C:/Users/...` (barras normais, 3 slashes) enquanto
+// `process.argv[1]` é `C:\Users\...` (barras invertidas). Reconstruir uma
+// URL a partir de `argv[1]` (`file://${process.argv[1]}`) nunca bate nessa
+// plataforma — o script virava um no-op silencioso (exit 0, nada escrito).
+// `fileURLToPath` normaliza o lado da URL pro formato nativo do SO antes de
+// comparar (#5679).
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   void main();
 }

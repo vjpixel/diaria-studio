@@ -122,6 +122,51 @@ export function autoUpdateStageStatusOnSentinel(
 }
 
 /**
+ * Data de corte do mecanismo de sentinel (#1216, commit `8b10346a`,
+ * 2026-05-13) — edições CRIADAS a partir desta data sempre tiveram o
+ * mecanismo disponível, então nunca deveriam cair no fallback
+ * "legacy/migração" de `assert` (exit 3, warn-only). Esse fallback existe
+ * só pra edições anteriores ao #1216, que nunca chegaram a ter
+ * `.step-N-done.json`; uma edição recente que caia nele é sinal de stage
+ * rodado FORA do playbook (dispatch direto de subagentes em vez de
+ * `/diaria-N-*`), não de legado — e deveria falhar de verdade em vez de só
+ * logar warn (#5678).
+ */
+export const SENTINEL_MECHANISM_CUTOFF_AAMMDD = "260513";
+
+/** Pure: parseia `AAMMDD` pra `Date` local (meia-noite). `null` se inválido. */
+function parseAammdd(s: string): Date | null {
+  if (!/^\d{6}$/.test(s)) return null;
+  const yy = Number(s.slice(0, 2));
+  const mm = Number(s.slice(2, 4));
+  const dd = Number(s.slice(4, 6));
+  const year = 2000 + yy;
+  const d = new Date(year, mm - 1, dd);
+  // Reconfirma componentes — rejeita datas inválidas tipo 260231 (31/fev)
+  // que o construtor de Date rola silenciosamente pro mês seguinte.
+  if (d.getFullYear() !== year || d.getMonth() !== mm - 1 || d.getDate() !== dd) return null;
+  return d;
+}
+
+/**
+ * Pure (#5678): `true` quando `editionId` (AAMMDD) é anterior à data de
+ * corte do mecanismo de sentinel — só nesse caso o fallback legado de
+ * `assert` deve fazer warn em vez de falhar de verdade. `editionId`
+ * malformado (não bate o formato AAMMDD) é tratado como NÃO-legado
+ * (retorna `false`) — fail-safe: um id que não parseia não deveria herdar
+ * silenciosamente o comportamento mais permissivo.
+ */
+export function isLegacySentinelEdition(
+  editionId: string,
+  cutoff: string = SENTINEL_MECHANISM_CUTOFF_AAMMDD,
+): boolean {
+  const editionDate = parseAammdd(editionId);
+  const cutoffDate = parseAammdd(cutoff);
+  if (!editionDate || !cutoffDate) return false;
+  return editionDate.getTime() < cutoffDate.getTime();
+}
+
+/**
  * #2795: resolve o diretório alvo do sentinel. Comportamento DEFAULT inalterado
  * (compat com a diária): resolve `data/editions/{edition}`. Quando `--dir` é
  * passado explicitamente, usa esse path (relativo a `cwd`) em vez do layout
@@ -228,10 +273,26 @@ function main(): void {
           const files = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
           const missingFiles = files.filter((f) => !existsSync(resolve(editionDir, f)));
           if (missingFiles.length === 0) {
-            console.warn(
-              `[warn] sentinel step ${step} ausente mas outputs encontrados em disco (legado) — logar e continuar`,
+            // #5678: o fallback legado só vale pra edições anteriores ao
+            // mecanismo de sentinel (#1216) — uma edição recente sem
+            // sentinel mas com outputs em disco não é "legado", é um stage
+            // rodado fora do playbook, e precisa falhar de verdade (não
+            // mascarar o buraco em stage-status.json/run-log.jsonl). Escopo
+            // restrito ao layout AAMMDD da diária (`args.edition` de 6
+            // dígitos) — pipelines com id fora desse formato (ex: mensal,
+            // `2604-06`) não têm data de corte conhecida e continuam com o
+            // comportamento legado inalterado (fora do escopo do #5678).
+            const editionIsAammdd = /^\d{6}$/.test(args.edition);
+            if (!editionIsAammdd || isLegacySentinelEdition(args.edition)) {
+              console.warn(
+                `[warn] sentinel step ${step} ausente mas outputs encontrados em disco (legado) — logar e continuar`,
+              );
+              process.exit(3);
+            }
+            console.error(
+              `[error] sentinel step ${step} ausente mas outputs encontrados em disco — edição ${args.edition} é posterior à data de corte do mecanismo de sentinel (${SENTINEL_MECHANISM_CUTOFF_AAMMDD}, #1216) e não pode usar o fallback legado. Stage provavelmente rodou fora do playbook (dispatch direto em vez de /diaria-N-*) — rode o stage completo pelo fluxo padrão.`,
             );
-            process.exit(3);
+            process.exit(1);
           }
           // Some outputs missing — list them for actionable diagnosis
           console.error(
