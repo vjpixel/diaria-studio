@@ -469,6 +469,12 @@ ${renderGeoJsonLd({
   datePublished: GEO_CONTENT_DATE,
   dateModified: GEO_CONTENT_DATE,
   faq: buildLivrosFaq(books),
+  // #5622: ItemList estruturado (issue #4558 Parte B já expõe a opção,
+  // livros/cursos/arquivo nunca a usavam) — mesma lista visível dos cards,
+  // mesma ordem, `name`/`url` derivados diretamente do seed (nunca
+  // reformulado). Ação editorial de autoridade gratuita/ToS-compatível
+  // proposta e implementada no mesmo lote (#5622).
+  itemList: { name: PAGE_TITLE, items: books.map((b) => ({ name: b.title, url: b.link })) },
 })}
 <style>
 ${renderCuradoriaRootStyles()}
