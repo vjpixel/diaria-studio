@@ -74,9 +74,9 @@ describe("renderEia layout = diária (#1918)", () => {
   });
   it("NÃO tem botão de votar — a imagem é o link", () => {
     assert.ok(!html.includes("Votar: esta é IA"), "sem botão");
-    // imagem A dentro de <a href=...choice=A...&brand=clarice>
-    assert.match(html, /<a href="[^"]*choice=A[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*A\.jpg/);
-    assert.match(html, /<a href="[^"]*choice=B[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*B\.jpg/);
+    // imagem A dentro do path transport-safe e com brand=clarice
+    assert.match(html, /<a href="[^"]*\/vote\/[^\"]+\/A\?email=[^\"]*brand=clarice[^\"]*"[^>]*>\s*<img[^>]*A\.jpg/);
+    assert.match(html, /<a href="[^"]*\/vote\/[^\"]+\/B\?email=[^\"]*brand=clarice[^\"]*"[^>]*>\s*<img[^>]*B\.jpg/);
   });
   it("imagens empilhadas A acima de B, em desktop e mobile (#2541 diária)", () => {
     assert.ok(!html.includes("mob-stack"), "sem mob-stack — não é mais lado a lado");
@@ -241,7 +241,7 @@ describe("eiaEditionFromYymm (#2115)", () => {
       "https://x/B.jpg",
       "Crédito.",
     );
-    assert.ok(html.includes("edition=2605-06"), "URL de voto deve ter o ciclo 2605-06");
+    assert.ok(html.includes("/vote/2605-06/A?email="), "URL de voto deve ter o ciclo 2605-06 no path");
     assert.ok(!html.includes("edition=260531"), "não deve usar mais o formato legado AAMMDD");
   });
 });

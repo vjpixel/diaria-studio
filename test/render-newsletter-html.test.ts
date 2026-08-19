@@ -1198,11 +1198,11 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     // 2. Não usa classes poll-col (CSS de 2-colunas)
     assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir (#2541)");
     // 3. Imagem A com link choice=A está presente
-    assert.match(html, /choice=A.*01-eia-A\.jpg|01-eia-A\.jpg.*choice=A/s, "imagem A com link choice=A ausente");
+    assert.match(html, /\/vote\/[^\"]+\/A\?email=.*01-eia-A\.jpg|01-eia-A\.jpg.*\/vote\/[^\"]+\/A\?email=/s, "imagem A com link choice=A ausente");
     // 4. Imagem B com link choice=B está presente
-    assert.match(html, /choice=B.*01-eia-B\.jpg|01-eia-B\.jpg.*choice=B/s, "imagem B com link choice=B ausente");
+    assert.match(html, /\/vote\/[^\"]+\/B\?email=.*01-eia-B\.jpg|01-eia-B\.jpg.*\/vote\/[^\"]+\/B\?email=/s, "imagem B com link choice=B ausente");
     // 5. merge tag de e-mail cru (#4581) preservada nos dois links de voto
-    const tagMatches = [...html.matchAll(/email=\{\{email\}\}&edition=/g)];
+    const tagMatches = [...html.matchAll(/\/vote\/[^\"]+\/[AB]\?email=\{\{email\}\}/g)];
     assert.ok(tagMatches.length >= 2, `merge tag {{email}} deve aparecer em ambos os links de voto (encontrado ${tagMatches.length}x)`);
     // 6. A aparece antes de B no HTML (empilhamento correto: A acima de B)
     const idxA = html.indexOf("01-eia-A.jpg");
@@ -1220,9 +1220,9 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.doesNotMatch(html, /width="50%"/, "largura de 50% não deve existir no standalone");
     assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir no standalone");
     // Ambos os links com a merge tag de e-mail cru (#4581) e choice correto
-    assert.match(html, /choice=A/);
-    assert.match(html, /choice=B/);
-    const tagMatches = [...html.matchAll(/email=\{\{email\}\}&edition=/g)];
+    assert.match(html, /\/vote\/[^\"]+\/A\?email=/);
+    assert.match(html, /\/vote\/[^\"]+\/B\?email=/);
+    const tagMatches = [...html.matchAll(/\/vote\/[^\"]+\/[AB]\?email=\{\{email\}\}/g)];
     assert.ok(tagMatches.length >= 2, `{{email}} deve aparecer em ambos os links (encontrado ${tagMatches.length}x)`);
     // A antes de B
     assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");

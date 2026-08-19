@@ -284,7 +284,7 @@ describe("#4482 — draftToEmailBeehiiv", () => {
   // voto nunca chega a ser renderizado).
   it("#4510: link de voto do É IA? usa merge tag {{email}} (Beehiiv), nunca {{ contact.EMAIL }} (Brevo)", () => {
     const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
-    assert.match(html, /\/vote\?email=\{\{email\}\}&amp;edition=/);
+    assert.match(html, /\/vote\/[^\"]+\/A\?email=\{\{email\}\}/);
     assert.doesNotMatch(html, /contact\.EMAIL/);
   });
 
@@ -314,7 +314,7 @@ describe("#4482 — regressão: draftToEmail (Clarice, perfil default) inalterad
 
   it("#4510: É IA? continua usando merge tag {{ contact.EMAIL }} e brand=clarice (perfil default)", () => {
     const { html } = draftToEmail(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
-    assert.match(html, /\/vote\?email=\{\{ contact\.EMAIL \}\}&amp;edition=/);
+    assert.match(html, /\/vote\/[^\"]+\/A\?email=\{\{ contact\.EMAIL \}\}/);
     const plain = html.replace(/&amp;/g, "&");
     const brands = [...plain.matchAll(/brand=([a-z0-9_-]+)/gi)].map((m) => m[1]);
     assert.ok(brands.length > 0, "nenhum brand emitido — draft de teste sem seção É IA?/leaderboard?");

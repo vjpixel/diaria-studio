@@ -89,7 +89,7 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
       const r = run([dir, "--full", "--out", outPath]);
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       const html = readFileSync(outPath, "utf8");
-      assert.match(html, /email=\{\{email\}\}&edition=/); // #4581: e-mail cru — o token opaco do #4487 foi revertido neste ramo
+      assert.match(html, /\/vote\/260999\/[AB]\?email=\{\{email\}\}/); // #5675: edição sai no path, não na query
       assert.ok(
         !html.includes("@vote.eia.diaria.local"),
         "sem o token, o domínio do pseudo-e-mail não pode sobrar — produziria 2 arrobas (#4512)",
@@ -173,7 +173,7 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
       assert.match(r.stderr, /--split \+ --esp brevo/);
       const eiaHtml = readFileSync(join(dir, "_internal", "newsletter-eia.html"), "utf8");
       // #4581: o standalone continua Beehiiv-only, e Beehiiv agora é e-mail cru.
-      assert.match(eiaHtml, /email=\{\{email\}\}&edition=/, "newsletter-eia.html do modo split continua Beehiiv mesmo com --esp brevo");
+      assert.match(eiaHtml, /\/vote\/260999\/[AB]\?email=\{\{email\}\}/, "newsletter-eia.html do modo split continua Beehiiv mesmo com --esp brevo");
       assert.ok(
         !eiaHtml.includes("@vote.eia.diaria.local"),
         "standalone Beehiiv também não pode concatenar o domínio do token (#4581)",

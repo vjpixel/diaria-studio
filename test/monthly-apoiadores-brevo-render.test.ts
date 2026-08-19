@@ -126,7 +126,7 @@ describe("#4593 — draftToEmailApoiadoresBrevo", () => {
       "https://img/b.jpg",
     );
     const plain = html.replace(/&amp;/g, "&");
-    assert.match(plain, /\/vote\?email=\{\{ contact\.EMAIL \}\}&edition=/);
+    assert.match(plain, /\/vote\/[^\"]+\/A\?email=\{\{ contact\.EMAIL \}\}/);
     assert.doesNotMatch(plain, /email=\{\{email\}\}/);
   });
 

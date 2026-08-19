@@ -94,7 +94,8 @@ describe("reader-facing NÃO emite hosts legados *.diaria.workers.dev / diaria.b
 
   it("newsletter diária: renderEIA (link de VOTO) não emite host legado", () => {
     const html = renderEIA(EIA_FIXTURE);
-    assert.ok(html.includes("email={{email}}&edition="), "sanity: vote link deve existir (merge-tag de e-mail cru, #4581)");
+    assert.ok(html.includes("/vote/260999/A?email={{email}}"), "sanity: vote link deve usar path transport-safe (#5675)");
+    assert.doesNotMatch(html, /\/vote\/260999\/[AB]\?[^\"]*edition=/, "edition não deve voltar à query string");
     assertNoLegacyHost(html, "renderEIA");
     assert.ok(html.includes(DIARIA_EIA_URL), "renderEIA deveria emitir o domínio de marca");
   });
@@ -120,6 +121,7 @@ describe("reader-facing NÃO emite hosts legados *.diaria.workers.dev / diaria.b
     delete process.env.POLL_WORKER_URL; // força o default (não uma env var de outro teste vazando)
     try {
       const html = renderMonthlyEia("[...]", "2605", "img-a.jpg", "img-b.jpg");
+      assert.match(html, /\/vote\/2605-06\/A\?email=/, "sanity: vote link deve usar path transport-safe (#5675)");
       assert.ok(html.includes("brand=clarice"), "sanity: vote link deve existir");
       assertNoLegacyHost(html, "renderEia (mensal)");
       assert.ok(html.includes(DIARIA_EIA_URL), "renderEia (mensal) deveria emitir o domínio de marca");

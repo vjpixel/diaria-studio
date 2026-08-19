@@ -1114,8 +1114,11 @@ export function renderEia(
   // vão pro leaderboard do brand do perfil (Clarice News por default,
   // isolado do diário), com a merge tag de email que a plataforma de envio
   // dessa audiência de fato substitui (Brevo vs. Beehiiv).
-  const voteUrlA = `${workerUrl}/vote?email=${utmProfile.pollMergeTag}&amp;edition=${edition}&amp;choice=A&amp;brand=${utmProfile.pollBrand}`;
-  const voteUrlB = `${workerUrl}/vote?email=${utmProfile.pollMergeTag}&amp;edition=${edition}&amp;choice=B&amp;brand=${utmProfile.pollBrand}`;
+  // #5675: keep edition/choice out of the query string so ESP quoted-printable
+  // encoding cannot reinterpret `=26` as `&`. The poll Worker accepts this
+  // path form and normalizes it to the existing handler.
+  const voteUrlA = `${workerUrl}/vote/${edition}/A?email=${utmProfile.pollMergeTag}&amp;brand=${utmProfile.pollBrand}`;
+  const voteUrlB = `${workerUrl}/vote/${edition}/B?email=${utmProfile.pollMergeTag}&amp;brand=${utmProfile.pollBrand}`;
 
   // #1918: imagem clicável (sem botão), lado a lado e empilhando no mobile —
   // espelha o renderEIA da diária. O voto vai no clique da própria imagem.
