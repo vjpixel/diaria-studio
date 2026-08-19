@@ -47,11 +47,17 @@ if (isMainModule(import.meta.url)) {
   }
 
   console.error(
-    `[validate-develop-plan-motivo] motivo fora do vocabulário fechado (${DEVELOP_PULADA_MOTIVOS.join(", ")}):`,
+    `[validate-develop-plan-motivo] motivo fora do vocabulário fechado (${DEVELOP_PULADA_MOTIVOS.join(", ")}), ou sem evidência obrigatória:`,
   );
   for (const entry of result.entries) {
     const label = Number.isFinite(entry.number) ? `#${entry.number}` : "#?";
-    console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);
+    if (entry.reason === "missing-evidencia") {
+      console.error(
+        `  ${label} — motivo "${entry.motivo}" sem campo ja_resolvida_evidencia (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,
+      );
+    } else {
+      console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);
+    }
   }
   process.exit(1);
 }

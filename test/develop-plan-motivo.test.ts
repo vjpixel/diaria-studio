@@ -50,13 +50,43 @@ describe("findInvalidPuladaMotivos — filtro puro", () => {
     assert.deepEqual(findInvalidPuladaMotivos(issues), []);
   });
 
-  it("cada valor do vocabulário fechado passa", () => {
+  it("cada valor do vocabulário fechado passa (ja-resolvida-antes-da-sessao com evidência)", () => {
     const issues: DevelopPlanIssueLike[] = DEVELOP_PULADA_MOTIVOS.map((motivo, i) => ({
       number: 100 + i,
       status: "pulada",
       motivo,
+      ...(motivo === "ja-resolvida-antes-da-sessao"
+        ? { ja_resolvida_evidencia: "GAQL campaign.status=PAUSED, confirmado 260819" }
+        : {}),
     }));
     assert.deepEqual(findInvalidPuladaMotivos(issues), []);
+  });
+
+  it("ja-resolvida-antes-da-sessao sem ja_resolvida_evidencia é reportado com reason missing-evidencia", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5501, status: "pulada", motivo: "ja-resolvida-antes-da-sessao" },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [
+      { number: 5501, motivo: "ja-resolvida-antes-da-sessao", reason: "missing-evidencia" },
+    ]);
+  });
+
+  it("ja-resolvida-antes-da-sessao com ja_resolvida_evidencia vazia/whitespace também é reportado", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5502, status: "pulada", motivo: "ja-resolvida-antes-da-sessao", ja_resolvida_evidencia: "   " },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [
+      { number: 5502, motivo: "ja-resolvida-antes-da-sessao", reason: "missing-evidencia" },
+    ]);
+  });
+
+  it("ja-resolvida-antes-da-sessao com evidência não-string também é reportado", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5503, status: "pulada", motivo: "ja-resolvida-antes-da-sessao", ja_resolvida_evidencia: 123 },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [
+      { number: 5503, motivo: "ja-resolvida-antes-da-sessao", reason: "missing-evidencia" },
+    ]);
   });
 
   it("motivo fora do vocabulário (rótulo inventado) é reportado, na ordem de entrada", () => {
@@ -163,6 +193,31 @@ describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /#5506/);
     assert.match(r.stderr, /gated no D0/);
+  });
+
+  it("ja-resolvida-antes-da-sessao com evidência → exit 0", () => {
+    const planPath = writePlanFixture({
+      issues: [
+        {
+          number: 5501,
+          status: "pulada",
+          motivo: "ja-resolvida-antes-da-sessao",
+          ja_resolvida_evidencia: "GAQL campaign.status=PAUSED, confirmado 260819",
+        },
+      ],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
+  });
+
+  it("ja-resolvida-antes-da-sessao sem evidência → exit 1, mensagem cita ja_resolvida_evidencia", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5501, status: "pulada", motivo: "ja-resolvida-antes-da-sessao" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5501/);
+    assert.match(r.stderr, /ja_resolvida_evidencia/);
   });
 
   it("plan.json ausente → erro acionável (path citado) e exit 2, nunca stack trace cru", () => {

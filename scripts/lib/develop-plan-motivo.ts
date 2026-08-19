@@ -20,6 +20,37 @@
  * implementação de issue elegível que falha sem nunca abrir PR (Fase 1
  * passo 5 do SKILL.md) — um só valor pros dois casos, de propósito.
  *
+ * `ja-resolvida-antes-da-sessao` (#5723, 19/08/2026) — 4º valor. Cobre o
+ * desfecho que `nao-destravavel-na-sessao` NÃO descreve: a issue foi
+ * verificada AO VIVO nesta sessão e o trabalho que ela pedia **já estava
+ * feito** antes da sessão começar — nada foi executado aqui, não há
+ * bloqueio nenhum. Sem este valor, o único jeito de passar no guard era
+ * forçar `nao-destravavel-na-sessao`, que é falso (não há nada
+ * "não-destravável" — já está destravado, resolvido). Motivado por 3
+ * casos reais da rodada `260819d` que o guard reprovou: #5501 e #5506
+ * (campanha que a issue dizia "não criada" já existia, pausada, confirmado
+ * por GAQL contra a API oficial do Google Ads) e #5702 (issue dizia "3
+ * assets rejeitados"; a verificação ao vivo achou zero assets não-aprovados
+ * nas 5 páginas do asset group, `Ad components: No issues`). Nos três, o
+ * trabalho da issue não foi feito NESTA sessão — foi só constatado já
+ * pronto, por checagem contra a fonte de verdade externa (API oficial, não
+ * cache/memória — mesma disciplina do #1172).
+ *
+ * **Pressupõe evidência, mecanicamente, não só em prosa.** O histórico
+ * deste módulo é precisamente prosa-descumprida-mesmo-lida (#4740/#5716,
+ * #5708, #5721 — guard nasceu porque documentar em prosa não bastou) — um
+ * 4º valor de escape sem trava equivalente reabriria a mesma porta que os
+ * três incidentes anteriores fecharam, só que com um rótulo plausível
+ * demais pra ninguém questionar ("já tava feito" é fácil de alegar sem
+ * checar). Por isso o guard também exige, quando `motivo ===
+ * "ja-resolvida-antes-da-sessao"`, um campo `ja_resolvida_evidencia`
+ * (string não-vazia, mesmo padrão de `fora_de_codigo_evidencia` do #5441)
+ * descrevendo COMO foi verificado — nunca um secret, sempre o rastro (ex:
+ * "GAQL campaign.name='Max' status=PAUSED, confirmado {timestamp}"). Issue
+ * `pulada` com este motivo mas sem evidência é reportada pelo guard tanto
+ * quanto um motivo fora do vocabulário — ver `reason: "missing-evidencia"`
+ * em `InvalidMotivoEntry`.
+ *
  * Puro (`findInvalidPuladaMotivos`/`checkDevelopPlanMotivosFromIssues`) + I/O
  * fino (`checkDevelopPlanMotivos`, lê o plan.json do disco). CLI em
  * `scripts/validate-develop-plan-motivo.ts`.
@@ -44,7 +75,12 @@ export const DEVELOP_PULADA_MOTIVOS = [
   "nao-destravavel-na-sessao",
   "decisao-adiada",
   "claimed-por-outra-sessao",
+  "ja-resolvida-antes-da-sessao",
 ] as const;
+
+/** Campo obrigatório (string não-vazia) quando `motivo ===
+ * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
+const JA_RESOLVIDA_MOTIVO = "ja-resolvida-antes-da-sessao" satisfies DevelopPuladaMotivo;
 
 type DevelopPuladaMotivo = (typeof DEVELOP_PULADA_MOTIVOS)[number];
 
@@ -59,6 +95,9 @@ export interface DevelopPlanIssueLike {
   number?: number;
   status?: unknown;
   motivo?: unknown;
+  /** Obrigatório (string não-vazia) quando `motivo ===
+   * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
+  ja_resolvida_evidencia?: unknown;
   [key: string]: unknown;
 }
 
@@ -67,13 +106,25 @@ export interface InvalidMotivoEntry {
   /** `null` quando `motivo` está ausente ou não é string — issue `pulada`
    * sem motivo registrado é o mesmo problema, silenciosamente pior. */
   motivo: string | null;
+  /** Presente só quando o motivo em si é válido mas falta a evidência
+   * obrigatória (`ja-resolvida-antes-da-sessao` sem
+   * `ja_resolvida_evidencia`) — distingue esse caso de "motivo fora do
+   * vocabulário" pra CLI reportar a mensagem certa. Ausente (não
+   * `undefined` explícito) nos demais casos, preservando o shape antigo. */
+  reason?: "missing-evidencia";
+}
+
+function hasJaResolvidaEvidencia(issue: DevelopPlanIssueLike): boolean {
+  const evidencia = issue.ja_resolvida_evidencia;
+  return typeof evidencia === "string" && evidencia.trim().length > 0;
 }
 
 /**
  * Pure: varre as issues já normalizadas (sempre array — via
  * `normalizeIssues`, agnóstico do plan.json ter gravado array ou dict),
  * devolve as `status: "pulada"` cujo `motivo` não bate com
- * `DEVELOP_PULADA_MOTIVOS`. Nunca lança.
+ * `DEVELOP_PULADA_MOTIVOS`, OU cujo motivo é `ja-resolvida-antes-da-sessao`
+ * sem `ja_resolvida_evidencia` preenchida. Nunca lança.
  */
 export function findInvalidPuladaMotivos(
   issues: DevelopPlanIssueLike[],
@@ -82,9 +133,14 @@ export function findInvalidPuladaMotivos(
   for (const issue of issues) {
     if (issue?.status !== "pulada") continue;
     const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
-    if (motivo !== null && isDevelopPuladaMotivo(motivo)) continue;
     const number = typeof issue.number === "number" ? issue.number : Number.NaN;
-    out.push({ number, motivo });
+    if (motivo === null || !isDevelopPuladaMotivo(motivo)) {
+      out.push({ number, motivo });
+      continue;
+    }
+    if (motivo === JA_RESOLVIDA_MOTIVO && !hasJaResolvidaEvidencia(issue)) {
+      out.push({ number, motivo, reason: "missing-evidencia" });
+    }
   }
   return out;
 }
