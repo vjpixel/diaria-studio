@@ -1,0 +1,221 @@
+// PreToolUse hook — bloqueia `gh pr merge` quando a chamada vem de um
+// SUBAGENTE implementador de `/diaria-overnight`/`/diaria-develop`/
+// `/diaria-continuo`, nunca do coordenador top-level dessas rodadas (#5716).
+//
+// Incidente de origem (2ª ocorrência — a 1ª foi #4740, incidente 260806b):
+// sessão `/diaria-develop 260819d`, PR #5713. O subagente implementador leu
+// a Regra 11 de `context/overnight-dispatch-rules.md` ("nenhum subagente
+// implementador espera CI, roda fleet review, ou chama `gh pr merge` por
+// conta própria — isso é trabalho do coordenador top-level"), e a violou
+// mesmo assim: mergeou o próprio PR enquanto um fixer despachado pelo
+// coordenador ainda escrevia o teste de regressão que fechava o último
+// achado do fleet review. O fix entrou em master sem cobertura. A regra
+// existia só como prosa — nenhum hook impedia a chamada. Este hook fecha essa
+// lacuna mecanicamente.
+//
+// Mecanismo: `scripts/lib/session-registry.ts` (write-side usado pelas 3
+// skills via `register --kind overnight|develop|continuo`) grava um arquivo
+// por sessão COORDENADORA ativa em `data/sessions/{kind}-{tag}-{sessionId}.json`.
+// Subagentes implementadores despachados via `Agent` NUNCA chamam esse
+// `register` (não são as skills `/diaria-overnight`/`/diaria-develop`/
+// `/diaria-continuo` — são subagentes ad-hoc lendo um prompt de dispatch) e
+// rodam com `session_id` PRÓPRIO, diferente do coordenador que os despachou
+// (mesmo fato que `block-askuserquestion-overnight-autonomous.mjs` e
+// `pr-create-review.mjs` já assumem ao comparar `payload.session_id` contra
+// o `session_id` gravado por quem escreveu o marker/registro).
+//
+// Esse fato dá o discriminador: se existe pelo menos uma rodada
+// overnight/develop/continuo ATIVA registrada (`data/sessions/*.json`) e o
+// `session_id` da chamada ATUAL não é o de NENHUMA dessas sessões
+// registradas, a chamada não pode ser do coordenador dessa(s) rodada(s) — só
+// pode ser um subagente despachado por ela (ou, no pior caso, outra sessão
+// interativa não-relacionada rodando em paralelo na mesma máquina, ver
+// "Trade-off aceito" abaixo). Bloqueia.
+//
+// Nenhuma rodada ativa registrada → nunca bloqueia: é o caminho de uma sessão
+// interativa comum, que o #5251 já autoriza a mergear sozinha sem confirmação
+// (`gh pr merge` de sessão interativa nunca passa por `register`).
+//
+// `session_id` da chamada ATUAL bate com algum registro ativo → é o próprio
+// coordenador mergeando (ex: overnight/develop encerrando um ciclo depois do
+// Gate 2) → permite.
+//
+// Trade-off aceito (documentado, não escondido): este guard não distingue
+// "subagente desta rodada" de "outra sessão interativa não-relacionada rodando
+// em paralelo na mesma máquina enquanto uma rodada overnight/develop está
+// ativa" — ambas têm `session_id` ausente do registro. Diferente dos hooks
+// irmãos (que preferem fail-open sempre — permitir na dúvida), este guard
+// prefere bloquear na dúvida: o custo de um falso positivo aqui é a PR ficar
+// aberta esperando um merge manual (retomável, sem dano); o custo de um falso
+// negativo é exatamente o incidente que gerou a #5716 (merge sem review do
+// coordenador, dano real e mensurável). Ver item 2 da issue #5716 ("expor
+// subagente ainda vivo") — não implementado aqui, seria mitigação
+// complementar, não substituto deste guard.
+//
+// Fail-open só nos casos onde não dá pra avaliar o risco de forma alguma:
+// `session_id` da chamada ausente do payload (não dá pra comparar contra
+// nada — bloquear aqui seria travar QUALQUER Bash sem session_id, inclusive
+// de sessões legítimas), leitura de `data/sessions/` falhando (diretório
+// ausente, erro de I/O, JSON malformado — cai em "nenhuma rodada ativa
+// detectada", que já é fail-open por construção), ou qualquer exceção neste
+// hook.
+//
+// Self-contained (nenhum import de `scripts/*.ts`): mesma razão documentada
+// em `pr-create-review.mjs` — um import estático de `.ts` quebra o hook
+// inteiro, silenciosamente, num Node sem type-stripping nativo. A leitura de
+// `data/sessions/*.json` é DUPLICADA (não importada) de
+// `scripts/lib/session-registry.ts` (`listActiveSessions`) — versão mínima,
+// só o necessário pra este guard (ignora `stale`/heartbeat soft-threshold,
+// campos de fase, merge lock; usa só `kind`+`sessionId`+idade absoluta).
+//
+// Schema do hook `PreToolUse`: mesmo contrato dos hooks irmãos — JSON no
+// stdin com `session_id`/`tool_name`/`tool_input`, saída
+// `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision:
+// "deny", permissionDecisionReason: "..." } }` em stdout com exit 0 pra
+// bloquear; nenhuma saída pra permitir (equivalente a "defer").
+
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
+// `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
+// abandonada/crashada não deve manter este guard armado pra sempre.
+const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+
+const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+
+/**
+ * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
+ * vinculado. Mesmo racional/implementação dos hooks irmãos: `data/sessions/`
+ * mora na junction compartilhada, só visível a partir da raiz principal.
+ */
+export function resolveMainRepoRoot(execFn = execFileSync) {
+  try {
+    const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    }).trim();
+    return dirname(resolvePath(gitDir));
+  } catch {
+    return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  }
+}
+
+export function sessionsDir(repoRoot) {
+  return join(repoRoot, "data", "sessions");
+}
+
+/**
+ * Lê `data/sessions/*.json` e retorna os `sessionId` de sessões COORDENADORAS
+ * (`kind` em overnight/develop/continuo) ainda dentro da janela de staleness
+ * absoluta. Fail-soft em qualquer ponto: diretório ausente, erro de leitura,
+ * JSON malformado, ou entrada sem os campos esperados são simplesmente
+ * ignorados — nunca lança. Versão deliberadamente mínima de
+ * `listActiveSessions` (`scripts/lib/session-registry.ts`) — só o suficiente
+ * pra este guard, sem heartbeat/staleness "soft", `stale`, merge lock, etc.
+ */
+export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
+  const dir = sessionsDir(repoRoot);
+  const ids = new Set();
+  let entries;
+  try {
+    if (!existsSync(dir)) return ids;
+    entries = readdirSync(dir);
+  } catch {
+    return ids;
+  }
+  for (const name of entries) {
+    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (!record || typeof record !== "object") continue;
+      if (!COORDINATOR_KINDS.has(record.kind)) continue;
+      if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
+      const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
+      const heartbeatMs = Date.parse(heartbeatIso ?? "");
+      if (!Number.isFinite(heartbeatMs)) continue;
+      const ageMs = now - heartbeatMs;
+      if (ageMs < 0 || ageMs > MAX_SESSION_AGE_MS) continue;
+      ids.add(record.sessionId);
+    } catch {
+      // Entrada individual corrompida/ilegível — ignora só ela, segue as demais.
+    }
+  }
+  return ids;
+}
+
+/** `true` se `command` contém `gh pr merge` em qualquer posição (inclusive encadeado). */
+export function isGhPrMergeCommand(command) {
+  if (typeof command !== "string") return false;
+  return /\bgh\s+pr\s+merge\b/.test(command);
+}
+
+/**
+ * Função pura — decide se um `gh pr merge` deve ser bloqueado, dado o
+ * conjunto de `sessionId`s de coordenadores ativos já lido e o `session_id`
+ * da chamada ATUAL. Sem I/O, 100% testável.
+ *
+ * Bloqueia quando: existe ≥1 rodada coordenadora ativa registrada E o
+ * `session_id` da chamada não é o de nenhuma delas. Ver docblock do topo do
+ * arquivo pro racional completo (inclui o trade-off aceito de bloquear, não
+ * permitir, na ambiguidade — direção oposta da maioria dos hooks irmãos, de
+ * propósito, porque aqui o custo de um falso negativo é maior que o de um
+ * falso positivo).
+ */
+export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId) {
+  if (!activeCoordinatorSessionIds || activeCoordinatorSessionIds.size === 0) return false;
+  if (callerSessionId === undefined || callerSessionId === null || callerSessionId === "") return false;
+  return !activeCoordinatorSessionIds.has(callerSessionId);
+}
+
+/** Mensagem mostrada ao subagente quando a chamada é negada (#5716). */
+export const BLOCK_REASON =
+  "gh pr merge bloqueado pelo guard mecânico do overnight/develop (#5716): há uma rodada " +
+  "/diaria-overnight, /diaria-develop ou /diaria-continuo ativa nesta máquina (data/sessions/*.json) " +
+  "e esta chamada não pertence à sessão coordenadora registrada. Regra 11 de " +
+  "context/overnight-dispatch-rules.md: nenhum subagente implementador espera CI, roda fleet review, " +
+  "ou mergeia o próprio PR — isso é trabalho exclusivo do coordenador top-level, depois do fleet review " +
+  "pré-merge e do Gate 2. Se você é o subagente implementador: pare aqui, faça o self-review (regra 7), " +
+  "e retorne o número do PR + \"self-review: N findings\" ao coordenador — nunca chame gh pr merge você " +
+  "mesmo. Se você é de fato o coordenador vendo este bloqueio por engano (ex: sessão registrada expirou " +
+  "por staleness), rode `npx tsx scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}` " +
+  "pra renovar o registro e tente de novo.";
+
+// #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
+// entrypoint (nunca ao ser importado por test/block-gh-pr-merge-subagent-hook.test.ts).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  let data = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => (data += chunk));
+  process.stdin.on("end", () => {
+    try {
+      const payload = JSON.parse(data || "{}");
+      if (payload.tool_name && payload.tool_name !== "Bash") return;
+      const command = payload.tool_input?.command;
+      if (!isGhPrMergeCommand(command)) return;
+      const repoRoot = resolveMainRepoRoot();
+      const activeIds = readActiveCoordinatorSessionIds(repoRoot);
+      if (shouldBlockGhPrMerge(activeIds, payload.session_id)) {
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: BLOCK_REASON,
+            },
+          }),
+        );
+      }
+      // Sem bloqueio: não emitir nada — cai no fluxo normal de permissão.
+    } catch {
+      // Fail-open, sempre: um hook quebrado não pode travar `gh pr merge`
+      // legítimo de uma sessão coordenadora ou interativa comum.
+    }
+  });
+}

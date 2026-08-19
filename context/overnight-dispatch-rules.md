@@ -176,6 +176,24 @@ implementador, mesmo que o prompt de dispatch não repita isso explicitamente
 toda vez (citar este arquivo já deveria bastar; registrar aqui a regra
 explícita fecha a lacuna que permitiu o incidente).
 
+**Guard mecânico (#5716, 2ª ocorrência do incidente acima — PR #5713, sessão
+`/diaria-develop 260819d`).** A regra 11 sendo só prosa não impediu uma 2ª
+violação, com dano mensurável desta vez (fix mergeado sem o teste de
+regressão que o fleet review tinha apontado como bloqueante, commit do teste
+órfão numa branch já deletada). `.claude/hooks/block-gh-pr-merge-subagent.mjs`
+(`PreToolUse` sobre `Bash`) nega `gh pr merge` quando a chamada não pertence à
+sessão coordenadora registrada de uma rodada overnight/develop/continuo ativa
+(`data/sessions/*.json`, escrito por `scripts/lib/session-registry.ts
+register`) — mesmo padrão de identidade de sessão de
+`block-askuserquestion-overnight-autonomous.mjs`/`inject-session-id.mjs`.
+Nenhuma rodada ativa registrada → nunca bloqueia (sessão interativa comum,
+#5251). Sessão cujo `session_id` bate com o coordenador registrado → permite
+(é o próprio coordenador mergeando). Qualquer outra chamada, com rodada ativa
+→ bloqueia (subagente implementador, ou — trade-off aceito, documentado no
+próprio hook — outra sessão interativa não-relacionada rodando em paralelo).
+Itens 2 ("expor subagente ainda vivo") e 3 (auditoria via `gh pr view --json
+mergedBy`) da issue seguem como follow-up, não implementados neste guard.
+
 **Merge-gate: resolver review threads antes de `gh pr merge` (#5327 item 4,
 achado ao vivo 260814).** Isto é trabalho do COORDENADOR (não do subagente
 implementador, que nunca chega perto de `gh pr merge` — ver acima), mas
