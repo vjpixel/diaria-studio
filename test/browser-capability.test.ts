@@ -5,7 +5,7 @@
  * do ambiente real (nem de ter/não ter display gráfico ou browser instalado
  * na máquina que roda os testes). Cobre os 3 estados nos dois eixos de
  * plataforma que o repo conhece:
- *   - Linux (`predator`): `'available'` exige DISPLAY/WAYLAND_DISPLAY E
+ *   - Linux (`helios`): `'available'` exige DISPLAY/WAYLAND_DISPLAY E
  *     binário no PATH; `'unavailable'` se faltar qualquer um dos dois.
  *   - Windows (`neo`): a checagem de DISPLAY NÃO se aplica (não é um
  *     conceito da plataforma) — só o binário decide, via PATH OU diretórios
@@ -20,7 +20,7 @@ import { detectBrowserCapability } from "../scripts/lib/browser-capability.ts";
 
 const PATH_ENV = ["/usr/bin", "/usr/local/bin"].join(process.platform === "win32" ? ";" : ":");
 
-describe("detectBrowserCapability — Linux (predator)", () => {
+describe("detectBrowserCapability — Linux (helios)", () => {
   it("retorna 'available' quando DISPLAY e um binário de browser estão presentes", () => {
     const result = detectBrowserCapability({
       platform: "linux",
@@ -48,7 +48,7 @@ describe("detectBrowserCapability — Linux (predator)", () => {
     assert.equal(result, "available");
   });
 
-  it("retorna 'unavailable' quando DISPLAY e WAYLAND_DISPLAY estão ambos ausentes (predator, #5208)", () => {
+  it("retorna 'unavailable' quando DISPLAY e WAYLAND_DISPLAY estão ambos ausentes (helios, #5208)", () => {
     const result = detectBrowserCapability({
       platform: "linux",
       env: { PATH: PATH_ENV },

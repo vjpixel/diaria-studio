@@ -396,9 +396,9 @@ describe("listSafeBackupConflictFiles (scripts/geo-citation-monitor.ts, I/O real
 
   it("diretório com arquivo -safeBackup- -> devolve o nome do arquivo", () => {
     writeFileSync(resolve(tmpDir, "history.jsonl"), "");
-    writeFileSync(resolve(tmpDir, "history-predator-safeBackup-0001.jsonl"), "");
+    writeFileSync(resolve(tmpDir, "history-helios-safeBackup-0001.jsonl"), "");
     assert.deepEqual(listSafeBackupConflictFiles(resolve(tmpDir, "history.jsonl")), [
-      "history-predator-safeBackup-0001.jsonl",
+      "history-helios-safeBackup-0001.jsonl",
     ]);
   });
 

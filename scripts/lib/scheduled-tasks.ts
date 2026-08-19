@@ -454,7 +454,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // #5125: condição inegociável do editor pra publicar a 1ª página de
     // entidade fora da rodada original de 3 (Apple) — "a página nasce com
     // regeneração automática, senão não é publicada". Armada em 17/08/2026
-    // na checkout compartilhada (`predator`) — ver
+    // na checkout compartilhada (`helios`) — ver
     // docs/entity-pages-regen-setup.md.
     issue: "#5125",
   },
@@ -939,7 +939,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // cadência diária é suficiente, não precisa de intervalo curto como o
     // sweep de units failed. Achado ao vivo que motivou (#5607): 6 tasks
     // no registro (incluindo o próprio Diaria-Systemd-Failed-Units-Alarm)
-    // nunca tiveram timer armado na predator, e nenhum alarme existente
+    // nunca tiveram timer armado na helios, e nenhum alarme existente
     // pegou isso — só foram achadas por acaso.
     // NOTA (mesmo padrão documentado em docs/scheduled-tasks-registry.md
     // pras outras tasks desta unidade): ainda NÃO armada — rodar

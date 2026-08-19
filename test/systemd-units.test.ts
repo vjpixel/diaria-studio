@@ -60,7 +60,7 @@ describe("scheduleToOnCalendar", () => {
     );
   });
 
-  // Achado ao vivo (#4807, 260810, cross-session): predator roda em Etc/UTC.
+  // Achado ao vivo (#4807, 260810, cross-session): helios roda em Etc/UTC.
   // Sem fuso explícito no OnCalendar=, systemd interpreta as horas do
   // registry (pensadas em BRT) como se já fossem UTC -- Diaria-Clarice-Sync
   // (registry: 08:30) disparava às 08:30 UTC = 05:30 BRT, 30min ANTES do

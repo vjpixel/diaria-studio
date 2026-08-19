@@ -10,7 +10,7 @@
  * nunca rodado) não aparece em `failed` — não há nada pra falhar.
  *
  * Achado ao vivo que motivou esta unidade (17/08/2026): 6 tasks estavam no
- * registro e nunca tinham timer armado na `predator` — incluindo o próprio
+ * registro e nunca tinham timer armado na `helios` — incluindo o próprio
  * `Diaria-Systemd-Failed-Units-Alarm`, ou seja, a rede de segurança das
  * outras ~34 tasks estava no chão sem que nada alarmasse. Ver PR #5606
  * (armou as 6 retroativamente) e #5607 (esta unidade, o detector que devia

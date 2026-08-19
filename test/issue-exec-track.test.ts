@@ -99,8 +99,8 @@ describe("classifyExecTrack — bloqueio", () => {
 });
 
 describe("classifyExecTrack — marcador aguardando-ate", () => {
-  it("data futura → bloqueada", () => {
-    assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 -->"), "bloqueada");
+  it("data futura → agendada (#5682, era bloqueada antes)", () => {
+    assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 -->"), "agendada");
   });
 
   it("data passada → desarma sozinho, volta pro fluxo normal", () => {
@@ -138,11 +138,11 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
 
   it("marcador em linha própria entre parágrafos é encontrado", () => {
     const body = "Contexto longo.\n\n<!-- aguardando-ate: 2026-09-01 -->\n\nMais prosa.";
-    assert.equal(track([], body), "bloqueada");
+    assert.equal(track([], body), "agendada");
   });
 
   it("marcador indentado em linha própria ainda conta", () => {
-    assert.equal(track([], "texto\n   <!-- aguardando-ate: 2026-09-01 -->   \nmais"), "bloqueada");
+    assert.equal(track([], "texto\n   <!-- aguardando-ate: 2026-09-01 -->   \nmais"), "agendada");
   });
 
   // Regressão do falso positivo achado rodando o classificador contra o
@@ -175,8 +175,42 @@ describe("classifyExecTrack — marcador aguardando-ate", () => {
         "",
         "<!-- aguardando-ate: 2026-09-01 -->",
       ].join("\n");
-      assert.equal(track([], body), "bloqueada");
+      assert.equal(track([], body), "agendada");
     });
+  });
+});
+
+// Os 7 casos (a)-(g) listados na seção "Arquivos" do #5682, nomeados 1:1 com
+// o texto da issue — alguns já cobertos acima por outros describes, repetidos
+// aqui como bloco único e citável.
+describe("classifyExecTrack — casos (a)-(g) do #5682", () => {
+  it("(a) marcador futuro → agendada", () => {
+    assert.equal(track([], "<!-- aguardando-ate: 2026-09-01 -->"), "agendada");
+  });
+
+  it("(b) marcador passado → overnight (comportamento atual, não pode regredir)", () => {
+    assert.equal(track([], "<!-- aguardando-ate: 2026-08-01 -->"), "overnight");
+  });
+
+  it("(c) external-blocker + marcador futuro → bloqueada (bloqueio vence)", () => {
+    assert.equal(track(["external-blocker"], "<!-- aguardando-ate: 2026-09-01 -->"), "bloqueada");
+  });
+
+  it("(d) not-this-week + marcador futuro → agendada (data vence sobre deferimento vago)", () => {
+    assert.equal(track(["not-this-week"], "<!-- aguardando-ate: 2026-09-01 -->"), "agendada");
+  });
+
+  it("(e) not-this-week sozinho → bloqueada (não virou agendada)", () => {
+    assert.equal(track(["not-this-week"]), "bloqueada");
+  });
+
+  it("(f) on-hold sozinho → fora-de-rodada (não virou agendada)", () => {
+    assert.equal(track(["on-hold"]), "fora-de-rodada");
+  });
+
+  it("(g) marcador citado inline em prosa continua ignorado (guard do #5462)", () => {
+    const body = "Usar `<!-- aguardando-ate: 2026-09-01 -->` no corpo, no espírito de issue-decisions.ts.";
+    assert.equal(track([], body), "overnight");
   });
 });
 
@@ -265,12 +299,27 @@ describe("classifyExecTrack — precedência", () => {
   // do seu próprio cruzamento com os tiers vizinhos.
   const FUTURO = "<!-- aguardando-ate: 2026-09-01 -->";
 
-  it("data futura vence máquina (windows + espera → bloqueada)", () => {
-    assert.equal(track(["windows"], FUTURO), "bloqueada");
+  it("data futura vence máquina (windows + espera → agendada, #5682)", () => {
+    // Pré-#5682 isso caía em bloqueada (checagem de data vinha antes de
+    // máquina, mas devolvia bloqueada). Agora devolve agendada — bloqueio
+    // REAL continua vencendo (ver teste abaixo), máquina não é bloqueio real.
+    assert.equal(track(["windows"], FUTURO), "agendada");
   });
 
-  it("data futura vence trade-off-real", () => {
-    assert.equal(track(["trade-off-real"], FUTURO), "bloqueada");
+  it("data futura vence trade-off-real (→ agendada, #5682)", () => {
+    assert.equal(track(["trade-off-real"], FUTURO), "agendada");
+  });
+
+  it("bloqueio real vence data futura (→ bloqueada, não agendada)", () => {
+    assert.equal(track(["external-blocker"], FUTURO), "bloqueada");
+    assert.equal(track(["kit-migration"], FUTURO), "bloqueada");
+  });
+
+  it("data futura vence deferimento vago (not-this-week/next-month → agendada)", () => {
+    // Critério do #5682: quem escreveu uma data disse algo mais específico
+    // que "not-this-week" — a data vence.
+    assert.equal(track(["not-this-week"], FUTURO), "agendada");
+    assert.equal(track(["next-month"], FUTURO), "agendada");
   });
 
   it("fora-de-rodada vence data futura", () => {
@@ -309,8 +358,8 @@ describe("parseWaitUntil", () => {
 });
 
 describe("EXEC_TRACK_LABELS", () => {
-  it("cobre os 4 valores do tipo", () => {
-    const tracks: ExecTrack[] = ["overnight", "develop", "bloqueada", "fora-de-rodada"];
+  it("cobre os 5 valores do tipo (#5682 acrescenta agendada)", () => {
+    const tracks: ExecTrack[] = ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"];
     for (const t of tracks) {
       assert.equal(typeof EXEC_TRACK_LABELS[t], "string");
       assert.ok(EXEC_TRACK_LABELS[t].length > 0);
@@ -322,7 +371,7 @@ describe("EXEC_TRACK_LABELS", () => {
 describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
   // Este é o guard que impede a 2ª fonte de verdade voltar: `triagem.js`
   // renderiza A PARTIR daqui (via `data.execTrackUi`), em vez de redeclarar os
-  // 4 valores. Antes disso, um 5º valor quebraria o build do servidor (pelo
+  // 5 valores. Antes disso, um 6º valor quebraria o build do servidor (pelo
   // `Record<ExecTrack, string>`) e passaria silencioso no cliente, caindo no
   // fallback sem tradução nem tooltip.
   it("tem uma entrada por valor do tipo, com label e explicação preenchidas", () => {
@@ -333,12 +382,13 @@ describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
     }
   });
 
-  it("está na ordem de precedência do classificador, não alfabética", () => {
-    // A legenda é lida de cima pra baixo pra entender por que uma issue com 2
-    // sinais caiu onde caiu — ordem alfabética destruiria essa leitura.
+  it("está na ordem de leitura (anda sozinho hoje → não anda nunca), não alfabética nem de precedência", () => {
+    // #5682: `agendada` entra entre `develop` e `bloqueada` — anda sozinha
+    // *depois*, na data; não é o inverso estrito da precedência do
+    // classificador (que checa `bloqueada` antes de `agendada`).
     assert.deepEqual(
       EXEC_TRACK_UI.map((e) => e.track),
-      ["overnight", "develop", "bloqueada", "fora-de-rodada"],
+      ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"],
     );
   });
 

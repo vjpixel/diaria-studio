@@ -14,7 +14,7 @@
  *     (`DISPLAY`/`WAYLAND_DISPLAY`) + presença de binário no PATH, nunca de
  *     `data/`.
  *
- * A confusão dos dois eixos é a causa raiz do #5208: `predator` (servidor
+ * A confusão dos dois eixos é a causa raiz do #5208: `helios` (servidor
  * onde roda `/diaria-overnight`) resolve `local` no eixo do filesystem
  * (junction `data/` presente) mas é **headless** no eixo do navegador — sem
  * `DISPLAY`/`WAYLAND_DISPLAY`, sem `google-chrome`/`chromium` instalado.
@@ -74,7 +74,7 @@ import { isMainModule } from "./cli-args.ts";
  * (parâmetro `platform`), nunca pela plataforma real do processo — os
  * imports estáticos de `node:path` (`join`/`delimiter` "nus") resolvem pro
  * SO real do processo Node em execução, o que quebraria os testes deste
- * módulo: eles rodam num único processo (tipicamente Linux, `predator`) mas
+ * módulo: eles rodam num único processo (tipicamente Linux, `helios`) mas
  * precisam simular paths estilo Windows (`C:\...`, `;` como delimiter de
  * PATH) ao injetar `platform: "win32"`.
  */
@@ -155,7 +155,7 @@ function binaryExistsInWindowsInstallDirs(
  * nesta máquina.
  *
  * - **Linux**: `DISPLAY`/`WAYLAND_DISPLAY` ambos ausentes/vazios →
- *   `'unavailable'` (sessão headless — é o caso motivador, `predator`, #5208).
+ *   `'unavailable'` (sessão headless — é o caso motivador, `helios`, #5208).
  *   Display presente mas nenhum binário conhecido no PATH → `'unavailable'`.
  *   Display presente E binário encontrado → `'available'`.
  * - **Windows/macOS**: a checagem de display é ignorada (não é um conceito

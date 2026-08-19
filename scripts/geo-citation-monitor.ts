@@ -12,7 +12,7 @@
  * `OPENAI_API_KEY` / `GEMINI_API_KEY` no `.env`** — não é um fato fixo por
  * data, é estado por máquina, e pode divergir da máquina do editor (#5316:
  * a Anthropic chegou a ficar ativa em 11/ago/2026, mas ficou muda em
- * `predator`, a máquina que roda o timer, porque a key nunca foi reposta
+ * `helios`, a máquina que roda o timer, porque a key nunca foi reposta
  * ali depois do #5155 — o alarme de staleness #4755 não pegava esse
  * sintoma, o alarme de provider ausente que fecha o #5316 pega). Confira
  * localmente com `--dry-run` (abaixo) ou `npm run sync-env` se a key

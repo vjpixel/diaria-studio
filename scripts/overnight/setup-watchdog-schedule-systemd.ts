@@ -14,7 +14,7 @@
  * `test/watchdog-systemd-units.test.ts` pela ausência de qualquer capacidade
  * de spawn de subprocesso). ARMAR (copiar pra `~/.config/systemd/user/` +
  * `systemctl --user enable --now`) é ação humana na máquina real — esta
- * unidade (worktree isolado, #4857) não toca o systemd real de `predator`,
+ * unidade (worktree isolado, #4857) não toca o systemd real de `helios`,
  * onde o watchdog já foi armado manualmente em 260810 (ver comentário de
  * fechamento da issue).
  *

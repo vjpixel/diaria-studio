@@ -1,8 +1,9 @@
 /**
- * scripts/lib/issue-exec-track.ts (#5462)
+ * scripts/lib/issue-exec-track.ts (#5462, #5682)
  *
  * Responde UMA pergunta sobre uma issue aberta: **qual sessão consegue
- * trabalhar isso?** — `overnight` | `develop` | `bloqueada` | `fora-de-rodada`.
+ * trabalhar isso?** — `overnight` | `develop` | `agendada` | `bloqueada` |
+ * `fora-de-rodada`.
  *
  * Até aqui essa regra só existia em prosa, espalhada pela Fase 0 de
  * `.claude/skills/diaria-overnight/SKILL.md` (passo 4, classificação) e pela
@@ -61,6 +62,18 @@
  * Linux ele responde `local` inclusive para uma issue que exige a máquina
  * Windows.
  *
+ * ## Agendada (#5682)
+ *
+ * `agendada` = a issue tem uma **data específica** recomendada para ser
+ * resolvida — nada mais. Não é "adiada", não é "esperando", não é "o editor
+ * não quer agora". O único sinal de entrada é o marcador `aguardando-ate:`
+ * com data futura; deferimento vago (`not-this-week`, `next-month`,
+ * `on-hold`) **não** é `agendada` — decisão explícita do editor, ver
+ * `classifyExecTrack`. `agendada` fica entre `bloqueada` (bloqueio real
+ * vence sobre data) e o resto do deferimento vago (data vence sobre
+ * deferimento vago) — ver a docstring de `classifyExecTrack` pra precedência
+ * completa.
+ *
  * Puro: sem I/O, sem rede, sem `gh`. Recebe labels + corpo já buscados.
  *
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 4
@@ -69,8 +82,8 @@
  */
 
 /** Qual sessão consegue trabalhar a issue. Exclusivo — exatamente um valor
- * por issue, e a união dos quatro cobre o backlog aberto inteiro. */
-export type ExecTrack = "overnight" | "develop" | "bloqueada" | "fora-de-rodada";
+ * por issue, e a união dos cinco cobre o backlog aberto inteiro. */
+export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "fora-de-rodada";
 
 /** Fora de qualquer rodada: o editor tirou de circulação, não é "ainda não". */
 const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
@@ -125,7 +138,9 @@ const BLOCKED_LABELS = new Set([
 
 /** Deferimento por tempo — trabalhável, só não agora. Vago (sem data
  * legível), diferente do marcador `aguardando-ate:` abaixo, que desarma
- * sozinho. */
+ * sozinho e classifica `agendada`, não `bloqueada` (#5682). Checado DEPOIS
+ * do marcador de propósito: uma issue com data explícita disse algo mais
+ * específico que "not-this-week" — a data vence sobre o deferimento vago. */
 const DEFERRED_LABELS = new Set(["not-this-week", "next-month"]);
 
 /** Exige a máquina Windows do editor (Chrome logado, ComfyUI) — o overnight
@@ -145,6 +160,12 @@ const TRADE_OFF_LABEL = "trade-off-real";
  * Data-só (sem hora) é intencional: a granularidade útil aqui é o dia, e
  * comparar em UTC evita que a issue reapareça/desapareça conforme o fuso de
  * quem abriu a Triagem.
+ *
+ * Mecanismo exclusivo de `agendada` (#5682) — não existe outro sinal de
+ * entrada. Uma data futura aqui vence deferimento vago (`not-this-week`,
+ * `next-month`), mas perde pra bloqueio real (`BLOCKED_LABELS`): issue
+ * bloqueada por credencial/conta de terceiro continua `bloqueada` mesmo com
+ * marcador, porque a data é irrelevante enquanto o bloqueio existir.
  *
  * **O marcador precisa estar SOZINHO na própria linha** (`^...$` com flag `m`)
  * — não basta aparecer em qualquer lugar do corpo. Achado na verificação
@@ -198,20 +219,34 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * precedência, não conveniência:
  *
  *   1. `fora-de-rodada` — o editor tirou de circulação; nada mais importa.
- *   2. `bloqueada`      — bloqueio externo, ou espera por data ainda vigente.
- *   3. `develop`        — precisa da máquina Windows, ou trade-off-real já
+ *   2. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
+ *   3. `agendada`       — (#5682) marcador `aguardando-ate:` com data futura,
+ *                         e nenhum bloqueio real acima já decidiu por ela.
+ *                         Bloqueio real vence sobre data: a issue é
+ *                         `bloqueada`, não `agendada`, se carregar as duas.
+ *   4. `bloqueada`      — (2ª checagem) deferimento vago (`not-this-week`,
+ *                         `next-month`) — checado DEPOIS de `agendada` de
+ *                         propósito: quem escreveu uma data disse algo mais
+ *                         específico que "not-this-week", então a data vence
+ *                         sobre o deferimento vago quando as duas coexistem.
+ *   5. `develop`        — precisa da máquina Windows, ou trade-off-real já
  *                         julgado pelo overnight.
- *   4. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
- *                         checado ANTES do passo 5 pra vencer a label `alarm`
+ *   6. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
+ *                         checado ANTES do passo 7 pra vencer a label `alarm`
  *                         companheira, que sozinha cairia em fora-de-rodada.
- *   5. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
+ *   7. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
  *                         (`decisao-registrada`) ou alarme de ESTADO que se
  *                         auto-resolve (`alarm`, sem `alarm-evento`), e
  *                         nenhuma das labels acima já decidiu por ela — ver
  *                         docstring de `RESOLVED_BY_PROSE_LABELS` pro porquê
  *                         desta checagem vir depois de `bloqueada`/`develop`,
  *                         não junto da 1ª.
- *   6. `overnight`      — sobrou.
+ *   8. `overnight`      — sobrou.
+ *
+ * `bloqueada` é retornada de dois pontos (passos 2 e 4) — preço de encaixar
+ * `agendada` entre bloqueio-duro e deferimento-vago (#5682); os dois branches
+ * seguem semanticamente distintos (bloqueio real vs. deferimento vago), só
+ * compartilham o valor de saída.
  *
  * O default é `overnight` e não `develop` **apenas porque ambiguidade saiu do
  * classificador** (ver docstring do módulo). Todo bloqueio real tem label ou
@@ -225,9 +260,11 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
   if (labels.some((l) => OUT_OF_ROUND_LABELS.has(l))) return "fora-de-rodada";
 
   if (labels.some((l) => BLOCKED_LABELS.has(l))) return "bloqueada";
-  if (labels.some((l) => DEFERRED_LABELS.has(l))) return "bloqueada";
+
   const waitUntil = parseWaitUntil(body);
-  if (waitUntil && waitUntil.getTime() > now.getTime()) return "bloqueada";
+  if (waitUntil && waitUntil.getTime() > now.getTime()) return "agendada";
+
+  if (labels.some((l) => DEFERRED_LABELS.has(l))) return "bloqueada";
 
   if (labels.some((l) => MACHINE_DEVELOP_LABELS.has(l))) return "develop";
   if (has(TRADE_OFF_LABEL)) return "develop";
@@ -248,6 +285,7 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
 export const EXEC_TRACK_LABELS: Record<ExecTrack, string> = {
   overnight: "Overnight",
   develop: "Develop",
+  agendada: "Agendada",
   bloqueada: "Bloqueada",
   "fora-de-rodada": "Fora de rodada",
 };
@@ -266,23 +304,27 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
     "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0) e o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão).",
   develop:
     "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), ou é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C).",
+  agendada:
+    "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
-    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou espera por data ainda vigente (marcador `aguardando-ate:`, que desarma sozinho na data).",
+    "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista.",
   "fora-de-rodada":
     "Fora de rodada — três motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); ou é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui).",
 };
 
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
- * sozinho hoje à noite até o que não anda de jeito nenhum. É o INVERSO da
- * ordem de precedência do classificador (que checa `fora-de-rodada` primeiro
- * e cai em `overnight` por último) — de propósito: a legenda responde "o que
- * eu consigo tocar?", não "em que ordem o código testa?".
+ * sozinho hoje à noite até o que não anda de jeito nenhum — `agendada` entra
+ * entre `develop` e `bloqueada` (#5682): anda sozinha *depois*, na data; não
+ * anda de jeito nenhum é exclusividade de `bloqueada`. Não é o inverso
+ * estrito da ordem de precedência do classificador (que checa `bloqueada`
+ * antes de `agendada`) — de propósito: a legenda responde "o que eu consigo
+ * tocar, e quando?", não "em que ordem o código testa?".
  *
  * É isto que `GET /api/issues` serve em `meta.execTrack`, e que o front
- * renderiza. O front NÃO redeclara os 4 valores: fazia isso antes e criava
+ * renderiza. O front NÃO redeclara os 5 valores: fazia isso antes e criava
  * exatamente a 2ª fonte de verdade que este módulo existe pra eliminar —
- * um 5º valor quebraria o build no servidor e passaria silenciosamente no
+ * um 6º valor quebraria o build no servidor e passaria silenciosamente no
  * cliente, caindo no fallback sem tradução nem tooltip (#5462, review). */
 export const EXEC_TRACK_UI: Array<{ track: ExecTrack; label: string; explain: string }> = (
-  ["overnight", "develop", "bloqueada", "fora-de-rodada"] as const
+  ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"] as const
 ).map((track) => ({ track, label: EXEC_TRACK_LABELS[track], explain: EXEC_TRACK_EXPLAIN[track] }));

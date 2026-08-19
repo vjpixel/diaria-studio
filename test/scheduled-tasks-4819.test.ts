@@ -10,7 +10,7 @@
  *
  * Verificado ao vivo (sessão #4819, 260810): as 3 já estavam no registro
  * declarativo `scripts/lib/scheduled-tasks.ts` e já tinham timers systemd
- * armados e ativos em `predator`. Este teste EXISTE pra travar essa
+ * armados e ativos em `helios`. Este teste EXISTE pra travar essa
  * regressão especificamente: se alguém no futuro remover uma das 3 do
  * registro (ex: refactor desavisado), a task some do registro sem nenhum
  * outro sinal — o alarme correspondente simplesmente para de rodar em

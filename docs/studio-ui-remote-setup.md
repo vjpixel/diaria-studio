@@ -139,12 +139,12 @@ E remover a Access Application correspondente no painel Cloudflare (Zero Trust �
 | Item | Status |
 |---|---|
 | `studio-server` bind loopback-only | ✅ Já era assim desde #3555 (confirmado, não precisou mudar) |
-| Script de setup — Linux (`scripts/studio/setup-remote-tunnel-linux.sh`, `setup-studio-service-linux.sh`, #4808) | ✅ Pronto e **ativado ao vivo em `predator`** (260810) — Studio server + tunnel systemd `enabled`, `studio.diar.ia.br` respondendo 302 → Cloudflare Access |
+| Script de setup — Linux (`scripts/studio/setup-remote-tunnel-linux.sh`, `setup-studio-service-linux.sh`, #4808) | ✅ Pronto e **ativado ao vivo em `helios`** (260810) — Studio server + tunnel systemd `enabled`, `studio.diar.ia.br` respondendo 302 → Cloudflare Access |
 | Smoke-test de verificação (`scripts/studio/verify-remote-tunnel.ts`) | ✅ Pronto, com testes unitários |
 | Este doc | ✅ Pronto |
-| `cloudflared tunnel login` (OAuth na conta CF) | ✅ Linux (`predator`): feito |
-| Rodar o script de setup (cria tunnel + DNS + service) | ✅ Linux (`predator`): feito |
+| `cloudflared tunnel login` (OAuth na conta CF) | ✅ Linux (`helios`): feito |
+| Rodar o script de setup (cria tunnel + DNS + service) | ✅ Linux (`helios`): feito |
 | Configurar o Cloudflare Access (allowlist + policy) | ✅ Já configurado (mesma Access Application cobre qualquer conector do tunnel, independente da máquina) |
-| Rodar o smoke-test pós-ativação | ✅ Rodado contra `predator` (260810) — `exit 0`, Access bloqueando corretamente |
+| Rodar o smoke-test pós-ativação | ✅ Rodado contra `helios` (260810) — `exit 0`, Access bloqueando corretamente |
 
 O par Windows (`scripts/studio/setup-remote-tunnel.ps1`, `scripts/studio/setup-studio-service.ps1`) foi removido no #5115 (cutover final, 260812) — nenhuma tarefa `Diaria-*` roda mais no Windows (política de 260811, #5074); esse lado já estava desarmado de propósito desde o #4808 (dois conectores ativos pro mesmo tunnel simultaneamente causam roteamento imprevisível).

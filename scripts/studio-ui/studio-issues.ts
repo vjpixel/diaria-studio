@@ -29,8 +29,9 @@
  * conflito de `studio-waves.ts`, removida no #4004; a extração em si
  * continua, é o dado bruto que a coluna de Classificação da Triagem usa) e
  * `execTrack` (qual sessão consegue trabalhar a issue — overnight/develop/
- * bloqueada/fora-de-rodada, ver `scripts/lib/issue-exec-track.ts`; sucede o
- * `dispatchTrack` elegível/bloqueada/ambígua do #4004, aposentado no #5462).
+ * agendada/bloqueada/fora-de-rodada, ver `scripts/lib/issue-exec-track.ts`;
+ * sucede o `dispatchTrack` elegível/bloqueada/ambígua do #4004, aposentado
+ * no #5462; `agendada` acrescentado no #5682).
  * `TriagePr` ganhou `ciState` (resumo de `statusCheckRollup`) e
  * `reviewDecision` (repasse cru da API) — visão de "PRs em voo" pedida pelo
  * #3562. Isso exige incluir `body` no `gh issue list` e

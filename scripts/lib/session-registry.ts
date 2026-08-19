@@ -26,7 +26,7 @@
  * ver `scripts/overnight-session-marker.ts` e os dois hooks que o consomem.
  * Migrar esses dois mecanismos pra dentro deste registro foi avaliado e
  * descartado: a rodada `/diaria-overnight` que estava genuinamente ativa em
- * OUTRA máquina (`predator`) no momento em que este PR foi escrito usa o
+ * OUTRA máquina (`helios`) no momento em que este PR foi escrito usa o
  * formato antigo (sem `session_id`) — qualquer migração que exigisse reescrever
  * esse marker quebraria a rodada em voo. Este registro é aditivo: cobre os
  * itens 3/4/6/7/9 do #5156 (claim de issue, merge lock, teto de concorrência,

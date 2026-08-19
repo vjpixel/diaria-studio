@@ -54,7 +54,7 @@ Isso registra a task `Diaria-Beehiiv-Backup` (domingos 03:00 BRT / 06:00 UTC). I
 
 **1ª task registrada depois do cutover systemd (épica #4798) — sem `.ps1`/Task Scheduler de propósito**, só o par `.service`/`.timer` gerado pelo registry declarativo (`scripts/lib/scheduled-tasks.ts`). Nenhuma tarefa `Diaria-*` roda no Windows (#5074).
 
-**Armado e confirmado ativo em `predator` (260814):** `systemctl --user is-active diaria-beehiiv-backup.timer` devolve `active`, próximo disparo domingo 2026-08-16 06:00:00 UTC.
+**Armado e confirmado ativo em `helios` (260814):** `systemctl --user is-active diaria-beehiiv-backup.timer` devolve `active`, próximo disparo domingo 2026-08-16 06:00:00 UTC.
 
 ## Log
 

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveClaudeBin, isExecutableFile, CLAUDE_BIN_HOME_CANDIDATES } from "../scripts/lib/resolve-claude-bin.ts";
 
-/** PATH real do `systemctl --user show-environment` no predator (260817). */
+/** PATH real do `systemctl --user show-environment` no helios (260817). */
 const SYSTEMD_USER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin";
 
 /** `fileExists` de mentira: só os caminhos listados existem. */
