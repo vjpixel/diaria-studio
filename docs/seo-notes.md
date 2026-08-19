@@ -639,6 +639,79 @@ diretamente (fora do CLI) precisa da mesma checagem antes.
 chamar) já fecha o caso prático. Não rodar `AddSite` como "smoke test" de
 verificação — usar `--list` (só leitura) pra isso.
 
+## Fato 14 — `/archive` da Beehiiv não é configurável via API/doc; sitemap.xml já existe mas nenhum dos 13 crawlers o usa pra achar `/p/*` (#5692, 19/ago/2026)
+
+Investigação do #5692 (issue-filha do #5642, "234 posts órfãos"). Achados,
+todos verificados ao vivo:
+
+1. **`/archive` sem JS expõe só 5 links `/p/*` únicos** (`curl` com UA de
+   Googlebot); a home expõe 7 (união dos dois: 7 slugs distintos) — atualiza
+   pra baixo o "~10-12" citado no #5642/#5692.
+2. **`https://diar.ia.br/sitemap.xml` já existe, é gerado automaticamente
+   pela Beehiiv (Website Builder, sem setup — confirmado via
+   `search_documentation`/`read_documentation` MCP), é server-side puro (sem
+   JS) e lista as 241 URLs `/p/*` únicas** — praticamente o arquivo inteiro.
+   Está declarado em `robots.txt` (`Sitemap:
+   https://diar.ia.br/sitemap.xml`, grupo `User-agent: *`). Ou seja, o
+   mecanismo que a issue perguntava se existia ("lista completa sem JS")
+   **já existe e já está publicado**, sem precisar mexer em nada.
+3. **Mas nenhum dos crawlers reais está usando esse sitemap pra chegar em
+   `/p/*`.** `get_crawler_analytics` (Beehiiv MCP, `last_4_weeks`, dado
+   nativo da plataforma) mostra `page_requests.total = 2903`, e os únicos 2
+   paths em `top_paths` são `/` (2682) e `/archive` (221) —
+   **2682+221=2903, bate exato com o total: zero requisições de página a
+   qualquer `/p/{slug}`**, confirmando o achado do #5642 com dado
+   determinístico em vez de inferência. 13 crawlers reais batendo o site
+   (Googlebot 8375 req totais, Applebot 7915, Meta-ExternalAgent 2758,
+   Bingbot 1921, Bytespider 865, ClaudeBot 415, OAI-SearchBot 156,
+   ChatGPT-User 66, PerplexityBot 50, GPTBot 48, CCBot 25, Claude-User 23,
+   DuckDuckBot 8), **`blocked_requests.total = 0`** — não é bloqueio de
+   borda/Cloudflare (confirmado também manualmente: UAs reais de
+   GPTBot/ClaudeBot/CCBot passam com 200 em `diar.ia.br/robots.txt` e
+   `/p/*`; só UA genérico de `curl` sem identificação toma o desafio JS da
+   Cloudflare, que é comportamento esperado, não um bug). O diagnóstico
+   correto não é "falta sitemap", é "o sitemap existe e ninguém o segue" —
+   os crawlers descobrem página por link-following a partir de `/` e
+   `/archive`, não por parsing de sitemap (comportamento normal pra
+   crawlers de treino de IA; Googlebot em tese lê sitemap mas só depois de
+   submissão manual no GSC — não confirmado que essa submissão já rodou pra
+   `diar.ia.br` propriamente, distinto dos hubs de curadoria do Fato 9).
+4. **Nenhuma opção de configuração exposta via API/doc pra `/archive`** —
+   `list_pages` (que teria os settings de página, incluindo paginação)
+   retorna erro de upgrade de plano (`Launch`/free não inclui). A doc oficial
+   (`SEO settings for your website`) só documenta o toggle global/por-página
+   "Discoverable on the web" (liga/desliga indexação, não afeta
+   paginação/SSR) e a existência do sitemap automático — nada sobre
+   forçar mais itens no HTML inicial do Archive ou desligar o "load more".
+   Isso é comportamento fechado do Website Builder, não wiring deste repo.
+5. **`arquivo.diar.ia.br` (Worker próprio) já resolve isso hoje, sem
+   precisar de nenhuma mudança.** `curl` sem JS na home do Worker retorna
+   as **241 URLs `/p/*` únicas numa página só, sem paginação**, mais um
+   `feed.xml` funcional (50 itens) e `robots.txt` permissivo
+   (`Content-Signal: ai-train=yes,use=reference`, ver seção "Crawlers de IA
+   ficam liberados" do CLAUDE.md). Ou seja, o fallback que a issue cogitava
+   ("considerar `arquivo.diar.ia.br` como superfície canônica") não é uma
+   proposta a implementar — **já está no ar e já cobre o que o `/archive` da
+   Beehiiv não cobre**. O que falta verificar (fora do escopo desta sessão,
+   sem acesso a analytics do Cloudflare Worker por aqui) é se os crawlers
+   já estão de fato encontrando e seguindo os links do `arquivo` de volta
+   pro `diar.ia.br`.
+
+**Correção: a submissão ao GSC já ocorreu — não é ação pendente.** O Fato 9
+acima já registra `diar.ia.br/sitemap.xml` submetido ao Google Search
+Console em **27/jul/2026, com 0 erros** (medição direta da API, confirmada
+de novo em 12/ago). `scripts/gsc-submit-sitemaps.ts` inclusive exclui esse
+sitemap da lista que ele mesmo submete — comentário no código confirma que
+já é "auto-descoberto". Ou seja, mesmo com a submissão feita, o Googlebot
+segue sem bater `/p/*` — o diagnóstico deste Fato 14 (sitemap existe e
+declarado, crawlers não o seguem) vale mesmo pra quem já leu o sitemap.
+Não há ação de GSC pendente pra este sitemap especificamente; os outros 12
+crawlers (não-Google) não usam GSC de qualquer forma.
+
+**Não fazer:** não reabrir esta investigação achando que falta um sitemap —
+ele existe e está corretamente declarado; o problema é adoção pelos
+crawlers, não ausência de mecanismo.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
