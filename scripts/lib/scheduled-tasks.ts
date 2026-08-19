@@ -949,6 +949,40 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 18, minute: 30 },
     issue: "#5607",
   },
+  {
+    name: "Diaria-Google-Ads-Spend-Ingest",
+    description: "ingestao diaria de gasto do Google Ads (GAQL) para data/aquisicao/spend.csv",
+    steps: [{ key: "ingest", script: "scripts/google-ads-ingest-spend.ts" }],
+    logPath: "aquisicao/.google-ads-ingest.log",
+    // 09:50 BRT — item 4 do #5704 (itens 1-3, credenciais GOOGLE_ADS_*, ja
+    // confirmados funcionais ao vivo em 19/08/2026: consulta GAQL real
+    // devolveu 200 com dados). O script agrega por MES sobre uma janela de
+    // 90 dias (ver docstring de toGaqlDate em google-ads-ingest.ts) -- nao
+    // depende do gasto do dia corrente ja ter consolidado, entao "manha
+    // cedo" nao e sobre esperar o dado fechar, e sobre rodar depois da
+    // virada do dia-calendario no fuso da conta (BRT, UTC-3) ja ter
+    // passado havia horas, evitando a borda descrita naquele docstring.
+    // Horario dentro do cluster matinal de checks/syncs (09:00-09:45 ja
+    // ocupados por Clarice-Novos/Opens-Catchup-Alarm/Hub-Staleness-Check/
+    // Beehiiv-Home-Meta-Check/Entity-Pages-Regen/Apoios-Diff-Alarm -- ver
+    // grep de `kind: "daily"` neste arquivo), sem colidir com nenhum:
+    // 09:50 fica livre, e retoma o horario ja proposto (nao armado) pro
+    // #5502 Parte C mais acima neste arquivo -- mesma janela, escopo
+    // reduzido aqui a so Google Ads (Microsoft Ads segue sem credencial,
+    // #5502, fora do escopo do #5704).
+    //
+    // Fail-soft por design (#5237): sem credencial ou com a API
+    // indisponivel, o script sai limpo com exit 0 sem tocar spend.csv --
+    // esta task nunca falha "de verdade" por falta de campanha rodando.
+    //
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607 acima) -- maquina Windows
+    // nao roda mais tasks Diaria (#5074); arme real e acao POSTERIOR do
+    // editor via `scripts/setup-systemd-timers.ts` na checkout
+    // compartilhada (helios).
+    schedule: { kind: "daily", hour: 9, minute: 50 },
+    issue: "#5704",
+  },
 ];
 
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
