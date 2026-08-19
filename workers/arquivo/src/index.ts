@@ -19,30 +19,47 @@
  * renderiza on-the-fly. `Cache-Control: public, max-age=3600` + edge cache
  * do Cloudflare absorvem o resto (o sitemap não muda mais que 1x/dia).
  *
- * Rotas: GET / → HTML completo. GET /sitemap.xml → 1 `<url>` pra esta página
- * (#4546) + 1 `<url>` por hub temático publicado, cada um com `<lastmod>`
- * (#4909 — sem `[assets]` neste Worker, então é a rota que precisa servir o
- * XML, diferente de cursos/livros, que servem via `public/sitemap.xml`
- * estático). GET /robots.txt → mesmo raciocínio, mesmo motivo de não poder
- * ser estático (`scripts/lib/shared/robots-txt.ts`, compartilhado com
- * cursos/livros — ver #4546). GET /{INDEXNOW_KEY}.txt → arquivo de chave do
- * IndexNow (#4909 item 2), só quando a var `INDEXNOW_KEY` está configurada
- * — sem ela, path nenhum casa e o comportamento é idêntico a antes.
- * Qualquer outro path → 404.
+ * Rotas: GET / → HTML completo. GET /sitemap.xml → sitemap PRÓPRIO cobrindo
+ * o acervo INTEIRO (#5722): 1 `<url>` pra esta página + 1 por hub temático
+ * publicado + 1 `<url>` por edição (`/p/*`, mesma fonte que a raiz consome).
+ * Até o #5722 este sitemap enumerava só hub+raiz, delegando a cobertura das
+ * edições ao sitemap do host principal (`https://diar.ia.br/sitemap.xml`)
+ * — decisão revertida porque É justamente esse sitemap que nenhum crawler
+ * segue (zero requisições medidas a `/p/*` em 4 semanas, #5692); promover
+ * `arquivo.diar.ia.br` como superfície canônica de crawler exige que o SEU
+ * PRÓPRIO sitemap cubra o acervo, não dependa de um sitemap que ninguém lê.
+ * Cadeia de fallback de 3 níveis (`sitemapRoute` abaixo, mesma disciplina
+ * do #5134 item 3 pra raiz): fetch+parse OK → completo, grava KV, serve;
+ * falha → última versão completa cacheada no KV; sem cache nenhum → hub+raiz
+ * estático (nunca 502 — sitemap é superfície de descoberta demais
+ * importante pra crawler pra falhar seca). GET /robots.txt → mesmo
+ * raciocínio de não poder ser estático que motivou `/sitemap.xml` virar rota
+ * em código, sem depender de fetch (`scripts/lib/shared/robots-txt.ts`,
+ * compartilhado com cursos/livros — ver #4546). GET /{INDEXNOW_KEY}.txt →
+ * arquivo de chave do IndexNow (#4909 item 2), só quando a var
+ * `INDEXNOW_KEY` está configurada — sem ela, path nenhum casa e o
+ * comportamento é idêntico a antes. Qualquer outro path → 404.
  *
- * Falha de fetch/parse do sitemap NUNCA lança sem tratamento (#5134 item 3):
- * a raiz serve a última renderização bem-sucedida guardada em KV como
- * fallback (ver `readRootCache`/`writeRootCache` abaixo) — só cai na página
- * de erro simples (502) quando nenhum fallback existe (1º request desde o
- * deploy, ou KV indisponível). GET/HEAD condicional (`If-None-Match`/
+ * Falha de fetch/parse do sitemap NUNCA lança sem tratamento (#5134 item 3,
+ * estendido ao sitemap próprio pelo #5722): a raiz serve a última
+ * renderização bem-sucedida guardada em KV como fallback (ver
+ * `readRootCache`/`writeRootCache` abaixo) — só cai na página de erro
+ * simples (502) quando nenhum fallback existe (1º request desde o deploy,
+ * ou KV indisponível). GET/HEAD condicional (`If-None-Match`/
  * `If-Modified-Since`) contra `/temas/{slug}` devolve `304` corpo vazio
  * quando casa com o `ETag`/`Last-Modified` já emitidos (#5134 itens 1-2).
+ *
+ * Linking interno (#5722): confirmado ao vivo (`curl -A Googlebot`) que a
+ * raiz (`/`) já expõe as 241 edições publicadas como `<a href>` reais, sem
+ * JS — o mesmo `curl` contra `/archive` da Beehiiv (o problema original do
+ * #4105) mostrava só 5. Nenhuma mudança necessária nesse ponto — já
+ * satisfeito desde #4265.
  *
  * Próximo passo (fora de escopo deste Worker): linkar esta página a partir
  * de diar.ia.br (Beehiiv Website Builder — 3rd-party hosted, não é código
  * deste repo) pra que o Googlebot de fato a descubra. Ver PR body de #4105.
  */
-import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
+import { parseSitemap, type SitemapEntry } from "../../../scripts/lib/fetch-sitemap.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 import {
@@ -51,7 +68,7 @@ import {
   aiFetchReferrerCounterKey,
   incrementAiFetchCounter,
 } from "../../../scripts/lib/shared/ai-fetch-counters.ts"; // #4902, F-17 do #4558
-import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
+import { buildArchiveHtml, resolveEditions, esc, PAGE_URL } from "./render-archive.ts";
 import { buildArchiveFeedXml, FEED_URL } from "./render-feed.ts"; // #5127: GET /feed.xml
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
 import { HUB_INDEX_HTML, HUB_INDEX_LASTMOD, HUB_NOT_FOUND_HTML } from "./hubs/index-page.generated.ts"; // #5256: página-índice /temas/ + mini-página 404
@@ -107,20 +124,21 @@ const ROOT_LASTMOD: string | undefined = Object.values(HUB_LASTMOD).reduce<strin
 );
 
 /**
- * Sitemap PRÓPRIO desta página (#4546) — `PAGE_URL` + 1 `<url>` por hub
- * temático publicado (#4558 Parte A, `HUB_REGISTRY` — cresce sozinho a
- * cada hub novo, sem editar esta lista). NÃO enumera as ~246 edições
- * individuais (essas já vivem no sitemap do host principal,
- * `https://diar.ia.br/sitemap.xml`, consumido acima via `fetchSitemapXml`)
- * — o objetivo aqui é só dar ao Google um caminho de descoberta pra ESTAS
- * páginas, que por sua vez listam `<a href>` reais pra cada edição.
- * `<lastmod>` por `<url>` (#4909) vem de `HUB_LASTMOD` — mesma data de
- * COBERTURA (#5124, `hubCoverageDate`) que já alimenta `dateModified` no
- * JSON-LD de cada hub, nunca um valor inventado à parte.
+ * Bloco fixo (hub + índice de temas + raiz) do sitemap PRÓPRIO desta página
+ * (#4546/#4558 Parte A) — `PAGE_URL` + `/temas/` + 1 `<url>` por hub
+ * temático publicado (`HUB_REGISTRY` — cresce sozinho a cada hub novo, sem
+ * editar esta lista). `<lastmod>` por `<url>` (#4909) vem de `HUB_LASTMOD`
+ * — mesma data de COBERTURA (#5124, `hubCoverageDate`) que já alimenta
+ * `dateModified` no JSON-LD de cada hub, nunca um valor inventado à parte.
+ *
+ * Usado por `buildArquivoSitemapXml` (caminho normal, com as ~250 edições
+ * anexadas) E como fallback estático de ÚLTIMO nível (#5722) quando nem o
+ * fetch ao vivo do sitemap do host principal nem o cache de KV
+ * (`readSitemapCache`) estão disponíveis — nesse caso o sitemap ainda serve
+ * um documento válido (hub + raiz), só sem as edições individuais, em vez
+ * de 502 (mesma disciplina fail-soft de `readRootCache`/`errorPage` abaixo).
  */
-const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
+const ARQUIVO_SITEMAP_FIXED_URLS = `  <url>
     <loc>${PAGE_URL}</loc>${ROOT_LASTMOD ? `\n    <lastmod>${ROOT_LASTMOD}</lastmod>` : ""}
   </url>
   <url>
@@ -131,18 +149,117 @@ ${Object.keys(HUB_REGISTRY)
     const lastmod = HUB_LASTMOD[slug];
     return `  <url>\n    <loc>${PAGE_URL}temas/${slug}</loc>${lastmod ? `\n    <lastmod>${lastmod}</lastmod>` : ""}\n  </url>`;
   })
-  .join("\n")}
+  .join("\n")}`;
+
+/** Fallback estático — sem nenhuma edição, só hub + raiz (comportamento
+ * idêntico a antes do #5722). Único caso em que o sitemap não cobre o
+ * acervo inteiro; ver docstring de `ARQUIVO_SITEMAP_FIXED_URLS` acima. */
+const ARQUIVO_SITEMAP_XML_STATIC_FALLBACK = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${ARQUIVO_SITEMAP_FIXED_URLS}
 </urlset>
 `;
 
-function sitemapResponse(): Response {
-  return new Response(ARQUIVO_SITEMAP_XML, {
+/**
+ * Sitemap COMPLETO (#5722) — bloco fixo + 1 `<url>` por edição publicada
+ * (`/p/*`), derivadas do MESMO sitemap do host principal que a raiz (`/`)
+ * já consome via `fetchSitemapXml`/`resolveEditions`. Até o #5722 este
+ * sitemap enumerava só hub+raiz, assumindo que `https://diar.ia.br/sitemap.xml`
+ * já cobria as edições — a decisão do #5692/#5722 é que ISSO é justamente o
+ * sitemap que nenhum crawler segue (zero requisições medidas a `/p/*` em 4
+ * semanas), então promover `arquivo.diar.ia.br` como superfície canônica
+ * exige que o SEU PRÓPRIO sitemap cubra o acervo inteiro, não delegue essa
+ * cobertura a um sitemap que não é consumido. `<lastmod>` de cada edição é a
+ * `date` efetiva já resolvida por `resolveEditions` (título/data reais do
+ * cache quando disponíveis — mesma fonte que a raiz usa pra exibir/agrupar).
+ * `esc()` escapa a URL/data antes de entrar no XML — defensivo contra
+ * caracteres especiais em `loc`, mesmo padrão de `buildArchiveHtml`.
+ */
+function buildArquivoSitemapXml(entries: SitemapEntry[]): string {
+  const editions = resolveEditions(entries);
+  const editionUrls = editions
+    .map((e) => `  <url>\n    <loc>${esc(e.loc)}</loc>\n    <lastmod>${esc(e.date)}</lastmod>\n  </url>`)
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${ARQUIVO_SITEMAP_FIXED_URLS}
+${editionUrls}
+</urlset>
+`;
+}
+
+function sitemapResponse(xml: string, cacheControl = "public, max-age=3600"): Response {
+  return new Response(xml, {
     status: 200,
     headers: {
       "Content-Type": "application/xml;charset=utf-8",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": cacheControl,
     },
   });
+}
+
+// ── Cache do sitemap completo (#5722, mesmo padrão do fallback de KV da
+// raiz — #5134 item 3) ───────────────────────────────────────────────────
+const SITEMAP_CACHE_KV_KEY = "cache:arquivo-sitemap:xml-v1";
+
+interface SitemapCacheEntry {
+  xml: string;
+  generatedAt: string;
+}
+
+/** Mesma disciplina de `readRootCache` — nunca lança, `null` é "sem
+ * fallback disponível". */
+async function readSitemapCache(kv: KVNamespace | undefined): Promise<SitemapCacheEntry | null> {
+  if (!kv) return null;
+  try {
+    const raw = await kv.get(SITEMAP_CACHE_KV_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SitemapCacheEntry>;
+    if (typeof parsed.xml !== "string" || typeof parsed.generatedAt !== "string") return null;
+    return { xml: parsed.xml, generatedAt: parsed.generatedAt };
+  } catch {
+    return null;
+  }
+}
+
+/** Mesma disciplina fail-soft de `writeRootCache` — falha de escrita nunca
+ * derruba a resposta 200 já pronta. */
+async function writeSitemapCache(kv: KVNamespace | undefined, xml: string): Promise<void> {
+  if (!kv) return;
+  try {
+    const entry: SitemapCacheEntry = { xml, generatedAt: new Date().toISOString() };
+    await kv.put(SITEMAP_CACHE_KV_KEY, JSON.stringify(entry));
+  } catch {
+    // fail-soft — ver docstring da função.
+  }
+}
+
+/**
+ * `GET /sitemap.xml` (#5722) — busca o sitemap AO VIVO (mesma fonte da
+ * raiz) e monta o XML completo (hub + raiz + 1 `<url>` por edição). Cadeia
+ * de fallback de 3 níveis, mesma disciplina de `readRootCache`/`errorPage`:
+ * (1) fetch+parse OK → monta completo, grava no KV, serve; (2) fetch/parse
+ * falha → serve a última versão completa cacheada no KV, se existir; (3)
+ * sem cache nenhum (1º request desde o deploy, ou KV indisponível) → serve
+ * o fallback ESTÁTICO (hub + raiz, sem edições) — nunca 502, o sitemap é
+ * uma superfície de descoberta demais importante pra crawler pra falhar
+ * "seca".
+ */
+async function sitemapRoute(env: Env): Promise<Response> {
+  let xml: string;
+  try {
+    const rawXml = await fetchSitemapXml();
+    xml = buildArquivoSitemapXml(parseSitemap(rawXml));
+  } catch (e) {
+    console.error(
+      "[arquivo] /sitemap.xml: falha ao buscar/parsear sitemap upstream:",
+      e instanceof Error ? e.message : String(e),
+    );
+    const fallback = await readSitemapCache(env.CURSOS_SUBSCRIBERS);
+    return sitemapResponse(fallback?.xml ?? ARQUIVO_SITEMAP_XML_STATIC_FALLBACK, fallback ? ROOT_FALLBACK_CACHE_CONTROL : undefined);
+  }
+  await writeSitemapCache(env.CURSOS_SUBSCRIBERS, xml);
+  return sitemapResponse(xml);
 }
 
 /**
@@ -535,7 +652,7 @@ export default {
       // mesma disciplina fail-soft do bloco de Referer acima.
     }
     if (url.pathname === "/sitemap.xml") {
-      return sitemapResponse();
+      return sitemapRoute(env);
     }
     if (url.pathname === "/robots.txt") {
       return robotsResponse();
