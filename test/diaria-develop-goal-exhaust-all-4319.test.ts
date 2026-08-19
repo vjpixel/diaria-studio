@@ -298,9 +298,12 @@ describe("diaria-overnight — só o cap de findings_depth permanece (#4319, #52
     );
   });
 
-  it("Fallback de ausência e os gates bloqueantes do develop continuam intactos (não afrouxados por #4319); gate do grupo 3 virou automático por decisão explícita do #5321", () => {
+  it("Fallback de ausência e os gates bloqueantes do develop continuam intactos (não afrouxados por #4319); gate do grupo 3 e Gate de Onda viraram automáticos por decisão explícita do #5321/#5695", () => {
     assert.match(develop, /\*\*Fallback de ausência\*\* segue intacto/);
-    assert.match(develop, /Gate 1, Gate de Onda e Gate B \*\*não\*\* viram automáticos/);
-    assert.match(develop, /gate do grupo 3 já é automático por padrão desde o #5321/);
+    assert.match(develop, /Gate 1 \(cat\. C\/E-com-custo\) e Gate B \*\*não\*\* viram automáticos/);
+    assert.match(
+      develop,
+      /O gate do grupo 3 \(#5321\) e o Gate de Onda \(#5695\) já são automáticos por padrão/,
+    );
   });
 });

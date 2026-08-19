@@ -46,9 +46,14 @@ export const DEVELOP_PULADA_MOTIVOS = [
   "claimed-por-outra-sessao",
 ] as const;
 
-export type DevelopPuladaMotivo = (typeof DEVELOP_PULADA_MOTIVOS)[number];
+type DevelopPuladaMotivo = (typeof DEVELOP_PULADA_MOTIVOS)[number];
 
 const VALID_SET: ReadonlySet<string> = new Set(DEVELOP_PULADA_MOTIVOS);
+
+/** Type guard: `motivo` pertence ao vocabulário fechado `DEVELOP_PULADA_MOTIVOS`. */
+function isDevelopPuladaMotivo(motivo: string): motivo is DevelopPuladaMotivo {
+  return VALID_SET.has(motivo);
+}
 
 export interface DevelopPlanIssueLike {
   number?: number;
@@ -77,7 +82,7 @@ export function findInvalidPuladaMotivos(
   for (const issue of issues) {
     if (issue?.status !== "pulada") continue;
     const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
-    if (motivo !== null && VALID_SET.has(motivo)) continue;
+    if (motivo !== null && isDevelopPuladaMotivo(motivo)) continue;
     const number = typeof issue.number === "number" ? issue.number : Number.NaN;
     out.push({ number, motivo });
   }
