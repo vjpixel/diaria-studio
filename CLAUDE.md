@@ -128,7 +128,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
   - **Ambiguidade não é motivo para parar.** Fazer tudo que não depende da resposta, aplicar o default no que depende, e dizer no fim o que foi assumido.
   - **Pergunta cuja resposta é sempre a mesma vira default automático** (o que o #4498 fez com `attack_order`). Se uma pergunta saiu com a mesma resposta 3 vezes seguidas, ela é dívida, não gate.
   - **Confirmação pós-sucesso é proibida** — já é a regra de merge desde o #5251 (ver abaixo); vale para qualquer "terminei X, quer que eu faça o passo seguinte óbvio?".
-  - **Nunca perguntar por educação/checagem de humor** ("quer que eu continue?", "faço agora ou depois?", "posso criar a issue?").
+  - **Nunca perguntar por educação/checagem de humor** ("quer que eu continue?", "faço agora ou depois?", "posso criar a issue?", "quer que eu siga?", "posso prosseguir?", "devo atacar as demais?"). A forma correta não é só o silêncio — é a substituição: informar o que vai ser feito em vez de pedir permissão para fazer ("Sigo para #X e #Y" no lugar de "quer que eu siga nelas agora?", #5721).
 
   **Não afeta:** os dois gates humanos de projeto da diária (Stage 4 revisão, Stage 6 agendamento — critério 1/2), o guard mecânico do overnight pós-briefing (Regra 1, já implementa esta política nesse fluxo), nem os gates de segurança do #738 (MCP indisponível) e #3938 (`AskUserQuestion` falhando) — parar por falha de infra não é "fazer pergunta". Inventário completo de onde o sistema perguntava e o veredito aplicado a cada ponto: #5321.
 

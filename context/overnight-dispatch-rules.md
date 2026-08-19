@@ -370,3 +370,26 @@ respiração, sem esperar o editor perguntar.
 cobre este item — reavaliar a MESMA issue com o MESMO critério errado
 produz a MESMA conclusão errada. O que fecha a lacuna é aplicar o checklist
 acima **antes** de decidir adiar, não repetir a decisão depois.
+
+## 17. Fim de turno: nunca pergunte se deve continuar (#5721)
+
+Mesmo espírito da regra 11 (nenhum subagente espera confirmação pra mergear),
+mas para o **coordenador**, no texto de resposta ao editor: ao terminar uma
+unidade de trabalho com outras ainda pendentes no `target_set`/plano da
+rodada, **continue e informe depois** — nunca feche o turno com uma pergunta
+pedindo permissão pra seguir. "Quer que eu siga nelas agora?", "posso
+prosseguir?", "devo atacar as demais?" são a mesma confirmação pós-sucesso já
+proibida pelo CLAUDE.md (seção "Perguntar é exceção", #5321) — nenhum dos 4
+critérios que justificam parar (irreversível pra terceiros, trade-off
+editorial genuíno, gasto real acima do trivial, resposta muda materialmente
+o trabalho) se aplica a "seguir para a próxima issue já aprovada no plano".
+
+**Forma correta — substituição, não só proibição:** informar o que vai ser
+feito, não perguntar se pode ("Sigo para #5419 e #5692" no lugar de "quer que
+eu siga nelas agora?"). Incidente de referência: sessão `/diaria-develop
+260819d`, o coordenador fechou o turno com essa pergunta depois de entregar a
+#5700, e o editor corrigiu ao vivo ("você nem deveria me perguntar") — a
+regra já existia em prosa no CLAUDE.md e foi violada assim mesmo, porque não
+havia ponto de interceptação mecânico (é texto livre, não uma chamada de
+ferramenta) — só o registro explícito no ponto de uso, aqui e no CLAUDE.md,
+reduz a chance de recorrência.
