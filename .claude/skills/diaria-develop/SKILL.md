@@ -274,6 +274,68 @@ live chat de um fornecedor (tipo 2). Contraste: cat. B esperando o editor
 **criar** uma conta nova em outro serviço é tipo 1 — não é uma ação de
 segundos, é abrir/configurar algo que não existe ainda.
 
+**Surfacear NA HORA, não só no fim da rodada — vale para qualquer esforço,
+não só o tipo 2 de segundos acima (#5727, 19/08/2026).** O tipo 2 já cobre a
+ação de segundos com `AskUserQuestion` ao vivo. O que faltava era o resto do
+espectro: bloqueio que exige do editor mais que segundos — preencher um
+formulário de cadastro, rodar 2 edições da diária, enviar um documento,
+logar numa conta que não estava logada — e que hoje só vira comentário na
+issue + linha no HANDOFF do relatório final. O editor descobre depois, se ler
+o relatório; a vantagem central do develop sobre o overnight (editor
+presente **agora**) se perde exatamente nesse tipo de bloqueio, que é comum.
+Ao descobrir isso mid-sessão, **surfacear imediatamente para o editor** —
+nunca esperar o fim da onda/rodada, e nunca só o comentário na issue.
+
+Isto **não** é um novo `AskUserQuestion` (não há opções a escolher — o
+trabalho simplesmente para até o editor agir) nem contradiz #5321/#5721
+("perguntar é exceção", "nunca pergunte se deve continuar"): não é uma
+DECISÃO que a sessão poderia tomar sozinha, é um BLOQUEIO que só o editor
+destrava — não há premissa pra registrar e seguir, o trabalho para de fato.
+É uma frase informativa no meio do fluxo normal de texto, não uma pergunta
+estruturada — a sessão não trava esperando resposta, só relata o que precisa
+e segue.
+
+**Forma do pedido (não da pergunta) — o padrão que funcionou no #5658, não
+"tem uma pendência sua" genérico:**
+(a) **o que precisa** — a ação concreta, não o sintoma;
+(b) **o caminho exato** — onde clicar/entrar, não "resolva isso lá";
+(c) **estimativa de esforço** — segundos, minutos, "precisa logar antes";
+(d) **o que a sessão faz sozinha depois** — o que já foi feito enquanto
+    espera, e o que retoma assim que o editor confirmar.
+Contraste registrado no #5727: #5658 ("preciso de você, ~30s, Business
+Suite → Contas do Instagram → Entrar") foi destravado em minutos porque
+tinha as 4 partes; #5659/#5419/#5710 viraram comentário + linha de HANDOFF
+sem nenhuma das 4 e ficaram parados a rodada inteira sem o editor saber.
+
+**Agrupar bloqueios da mesma onda num pedido só** — se mais de um bloqueio
+deste tipo aparece na mesma onda/wave de dispatch paralelo, esperar a onda
+terminar de identificar todos e emitir **1** mensagem com a lista, em vez de
+interromper o fluxo a cada achado individual (o #5658 funcionou por ser
+específico, não por ser instantâneo).
+
+**A sessão continua trabalhando enquanto espera** — surfacear não é parar:
+seguir para a próxima issue do plano (exatamente como aconteceu no #5658,
+onde outras issues avançaram enquanto o editor logava) e retomar a
+bloqueada quando o editor responder, sem re-perguntar o que já foi
+surfaceado.
+
+**Guard mecânico de fim de rodada — NÃO implementado, follow-up (#5727 item
+5).** A issue propõe um campo `surfaced_at` por issue em `plan.json` (junto
+de `what_unblocks`/`unblock_status`) + um gate mecânico na Fase 2 que falha
+se alguma issue terminar com bloqueio tipo-editor sem `surfaced_at`
+preenchido — mesmo molde do `check-state-changed-pending.ts`
+(#5476/#5706). Avaliado e **adiado nesta unidade**: diferente do gate de
+re-triagem (que já existia como script e só precisava de mais um modo),
+isto exigiria um campo novo no schema informal de `plan.json`, um
+script/gate novo, testes, e wiring numa fase já densa (Fase 2) — não é uma
+extensão barata de infraestrutura existente, é uma peça nova. A prosa acima
+(surfacear imediato, forma do pedido, agrupamento, continuar trabalhando) já
+é o enforcement disponível por ora; o guard mecânico fica para uma issue
+própria se a prosa sozinha não bastar na prática (mesmo critério que
+motivou o guard mecânico da regra 11 em
+`context/overnight-dispatch-rules.md` — só depois de uma 2ª violação
+registrada).
+
 ## Goal de esgotamento (#4297, expandido em #4319)
 
 Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock — e desde #4319 o alvo default é o backlog aberto **inteiro**, não só o bloqueado.
