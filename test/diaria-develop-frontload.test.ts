@@ -68,11 +68,24 @@ describe("diaria-develop Fase 0.5 — briefing front-loaded (#2966)", () => {
   });
 
   it("wave_policy default = auto (onda livre-de-colisão por construção)", () => {
-    assert.match(content, /Default sugerido: `auto`/, "wave_policy default auto");
+    assert.match(
+      content,
+      /a onda é livre-de-colis[ãa]o por constru[çc][ãa]o/,
+      "wave_policy default auto — onda livre de colisão por construção",
+    );
+    assert.match(
+      content,
+      /A skill aplica `auto` automaticamente, sem `AskUserQuestion`/,
+      "wave_policy=auto aplicada automaticamente, sem pergunta (#5695)",
+    );
   });
 
-  it("Gate de Onda é pulável via wave_policy=auto; Gate B via catD_preauth=preapproved", () => {
-    assert.match(content, /Pul[áa]vel com `--serial` OU `wave_policy = auto`/, "Gate de Onda pulável por auto");
+  it("Gate de Onda é bloqueante só com wave_policy=per_wave; Gate B via catD_preauth=preapproved", () => {
+    assert.match(
+      content,
+      /Bloqueante de volta com `--serial` OU `wave_policy = per_wave`/,
+      "Gate de Onda volta a bloquear só com per_wave (default é auto, #5695)",
+    );
     assert.match(content, /opt-out por sess[ãa]o via `catD_preauth = preapproved`/, "Gate B opt-out via preapproved");
   });
 

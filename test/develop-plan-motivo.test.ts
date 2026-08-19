@@ -1,0 +1,182 @@
+/**
+ * test/develop-plan-motivo.test.ts (#5708)
+ *
+ * Cobertura de `scripts/lib/develop-plan-motivo.ts` + a CLI
+ * `scripts/validate-develop-plan-motivo.ts`: funções puras (motivo
+ * válido/inválido/ausente, filtro por status, ordenação da saída), a
+ * orquestração I/O (`checkDevelopPlanMotivos` contra fixtures de
+ * `plan.json` em tmpdir, array E dict — #4860), e o CLI (exit codes,
+ * mensagens acionáveis).
+ */
+import { describe, it, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import {
+  DEVELOP_PULADA_MOTIVOS,
+  findInvalidPuladaMotivos,
+  checkDevelopPlanMotivosFromIssues,
+  checkDevelopPlanMotivos,
+  type DevelopPlanIssueLike,
+} from "../scripts/lib/develop-plan-motivo.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = resolve(ROOT, "scripts/validate-develop-plan-motivo.ts");
+
+let root: string | null = null;
+afterEach(() => {
+  if (root) {
+    rmSync(root, { recursive: true, force: true });
+    root = null;
+  }
+});
+
+function writePlanFixture(plan: Record<string, unknown>): string {
+  root = mkdtempSync(join(tmpdir(), "develop-plan-motivo-"));
+  const planPath = join(root, "plan.json");
+  writeFileSync(planPath, JSON.stringify(plan, null, 2), "utf8");
+  return planPath;
+}
+
+describe("findInvalidPuladaMotivos — filtro puro", () => {
+  it("ignora issues que não são status pulada", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 1, status: "mergeada" },
+      { number: 2, status: "pendente" },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), []);
+  });
+
+  it("cada valor do vocabulário fechado passa", () => {
+    const issues: DevelopPlanIssueLike[] = DEVELOP_PULADA_MOTIVOS.map((motivo, i) => ({
+      number: 100 + i,
+      status: "pulada",
+      motivo,
+    }));
+    assert.deepEqual(findInvalidPuladaMotivos(issues), []);
+  });
+
+  it("motivo fora do vocabulário (rótulo inventado) é reportado, na ordem de entrada", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5506, status: "pulada", motivo: "gated no D0" },
+      { number: 5419, status: "pulada", motivo: "timing do editor" },
+    ];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [
+      { number: 5506, motivo: "gated no D0" },
+      { number: 5419, motivo: "timing do editor" },
+    ]);
+  });
+
+  it("motivo ausente é reportado com motivo null, não descartado silenciosamente", () => {
+    const issues: DevelopPlanIssueLike[] = [{ number: 42, status: "pulada" }];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [{ number: 42, motivo: null }]);
+  });
+
+  it("motivo não-string (ex: número por engano) também é reportado", () => {
+    const issues: DevelopPlanIssueLike[] = [{ number: 42, status: "pulada", motivo: 123 }];
+    assert.deepEqual(findInvalidPuladaMotivos(issues), [{ number: 42, motivo: null }]);
+  });
+
+  it("issue sem number vira NaN, nunca lança", () => {
+    const issues: DevelopPlanIssueLike[] = [{ status: "pulada", motivo: "inventado" }];
+    const result = findInvalidPuladaMotivos(issues);
+    assert.equal(result.length, 1);
+    assert.ok(Number.isNaN(result[0].number));
+  });
+});
+
+describe("checkDevelopPlanMotivosFromIssues — veredito puro, ordenado por número", () => {
+  it("sem issues inválidas → ok", () => {
+    assert.deepEqual(checkDevelopPlanMotivosFromIssues([{ number: 1, status: "pendente" }]), {
+      status: "ok",
+    });
+  });
+
+  it("issues inválidas saem ordenadas por número, independente da ordem de entrada", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5506, status: "pulada", motivo: "gated no D0" },
+      { number: 5419, status: "pulada", motivo: "timing do editor" },
+    ];
+    assert.deepEqual(checkDevelopPlanMotivosFromIssues(issues), {
+      status: "invalid",
+      entries: [
+        { number: 5419, motivo: "timing do editor" },
+        { number: 5506, motivo: "gated no D0" },
+      ],
+    });
+  });
+});
+
+describe("checkDevelopPlanMotivos — I/O, array e dict (#4860)", () => {
+  it("plan.issues como array — motivo válido → ok", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5658, status: "pulada", motivo: "decisao-adiada" }],
+    });
+    assert.deepEqual(checkDevelopPlanMotivos(planPath), { status: "ok" });
+  });
+
+  it("plan.issues como dict (shape real do develop, #4817/#4860) — motivo inválido detectado", () => {
+    const planPath = writePlanFixture({
+      issues: {
+        "5506": { status: "pulada", motivo: "gated no D0" },
+        "5658": { status: "mergeada" },
+      },
+    });
+    assert.deepEqual(checkDevelopPlanMotivos(planPath), {
+      status: "invalid",
+      entries: [{ number: 5506, motivo: "gated no D0" }],
+    });
+  });
+
+  it("plan.json sem campo issues → ok (fail-open, mesmo padrão de normalizeIssues)", () => {
+    const planPath = writePlanFixture({ started_at: "2026-08-19T18:48:00Z" });
+    assert.deepEqual(checkDevelopPlanMotivos(planPath), { status: "ok" });
+  });
+});
+
+describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
+  function run(args: string[]) {
+    return spawnSync(process.execPath, ["--import", "tsx", CLI, ...args], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env: { ...process.env },
+    });
+  }
+
+  it("motivos todos válidos → exit 0, 'ok'", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 1, status: "pulada", motivo: "nao-destravavel-na-sessao" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /vocabulário fechado/);
+  });
+
+  it("motivo inventado → exit 1, lista a issue e o motivo real", () => {
+    const planPath = writePlanFixture({
+      issues: [{ number: 5506, status: "pulada", motivo: "gated no D0" }],
+    });
+    const r = run(["--plan", planPath]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#5506/);
+    assert.match(r.stderr, /gated no D0/);
+  });
+
+  it("plan.json ausente → erro acionável (path citado) e exit 2, nunca stack trace cru", () => {
+    root = mkdtempSync(join(tmpdir(), "develop-plan-motivo-cli-"));
+    const missing = join(root, "plan.json");
+    const r = run(["--plan", missing]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /plan\.json não encontrado/);
+    assert.doesNotMatch(r.stderr, /at readFileSync/);
+  });
+
+  it("sem --plan → uso + exit 2", () => {
+    const r = run([]);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /uso: --plan/);
+  });
+});
