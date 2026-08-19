@@ -22,9 +22,12 @@ import {
   setClariceEnvioOverride,
   clearClariceEnvioOverride,
   applyEnvioOverride,
+  runCli,
   type ClariceEnvioOverrideState,
+  type CliIO,
 } from "../scripts/lib/clarice-envio-override.ts";
 import type { BrakeDecision } from "../scripts/lib/clarice-envio-policy.ts";
+import type { GhRunFn } from "../scripts/lib/wait-until-sync.ts";
 
 const NOW = new Date("2026-08-17T02:00:00.000Z");
 
@@ -311,5 +314,135 @@ describe("applyEnvioOverride — cobre stop→hold, nunca destrava ok, nunca esc
     assert.equal(twice.overrideApplied, false, "2ª aplicação é no-op — o freio recebido já não é mais stop");
     assert.equal(twice.brake, once.brake);
     assert.equal(once.brake.reasons.filter((r) => r.includes("OVERRIDE do editor")).length, 1);
+  });
+});
+
+describe("runCli — wiring do --set/--clear com a sincronização do marcador (#5729, achado de mutação do self-review)", () => {
+  function freshCliRoot(label: string): string {
+    return mkdtempSync(join(tmpdir(), `clarice-envio-override-cli-${label}-`));
+  }
+
+  /** Stub de `GhRunFn` no mesmo formato de `test/wait-until-sync.test.ts` —
+   * serve `gh issue view`/`gh issue edit` a partir de um corpo em memória,
+   * reproduzindo o `\n` extra que o `gh` real sempre anexa em `-q .body`. */
+  function fakeGh(initialBody: string): { run: GhRunFn; editedBodies: string[] } {
+    let body = initialBody;
+    const editedBodies: string[] = [];
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        return { status: 0, stdout: `${body}\n`, stderr: "" };
+      }
+      if (args[0] === "issue" && args[1] === "edit") {
+        const idx = args.indexOf("--body");
+        body = args[idx + 1];
+        editedBodies.push(body);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    return { run, editedBodies };
+  }
+
+  function collectingIo(): { io: CliIO; logs: string[]; warnings: string[] } {
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    return { io: { log: (m) => logs.push(m), warn: (m) => warnings.push(m) }, logs, warnings };
+  }
+
+  it("--set ESCREVE o marcador na issue (prova de mutação: reverta a chamada de sync e este teste falha)", () => {
+    const root = freshCliRoot("set-writes-marker");
+    const { run, editedBodies } = fakeGh("Contexto original da issue.");
+    const { io } = collectingIo();
+
+    const exitCode = runCli(
+      ["--set", "--until", "2026-08-21T09:00:00.000Z", "--reason", "teste", "--issue", "5673"],
+      root,
+      run,
+      io,
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(editedBodies.length, 1, "runCli --set deveria ter chamado gh issue edit exatamente 1x");
+    assert.match(editedBodies[0], /^<!-- aguardando-ate: 2026-08-22 -->/);
+    // e o override local também foi gravado (função primária do comando).
+    const onDisk = JSON.parse(readFileSync(resolve(root, "data", "clarice-envio-override.json"), "utf8"));
+    assert.equal(onDisk.issueRef, 5673);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("--clear REMOVE o marcador da issue que o override referenciava (prova de mutação equivalente)", () => {
+    const root = freshCliRoot("clear-removes-marker");
+    setClariceEnvioOverride(root, {
+      until: "2026-08-21T09:00:00.000Z",
+      reason: "teste",
+      decidedBy: "teste",
+      issueRef: 5673,
+      createdAt: "2026-08-19T01:03:00.000Z",
+    });
+    const { run, editedBodies } = fakeGh("<!-- aguardando-ate: 2026-08-22 -->\n\nContexto original.");
+    const { io } = collectingIo();
+
+    const exitCode = runCli(["--clear"], root, run, io);
+
+    assert.equal(exitCode, 0);
+    assert.equal(editedBodies.length, 1, "runCli --clear deveria ter chamado gh issue edit exatamente 1x");
+    assert.equal(editedBodies[0], "Contexto original.");
+    assert.equal(existsSync(resolve(root, "data", "clarice-envio-override.json")), false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("--set com falha de gh: override local gravado, exit code 2, warning inequívoco", () => {
+    const root = freshCliRoot("set-gh-fails");
+    const failingRun: GhRunFn = () => ({ status: 1, stdout: "", stderr: "gh: not authenticated" });
+    const { io, warnings } = collectingIo();
+
+    const exitCode = runCli(
+      ["--set", "--until", "2026-08-21T09:00:00.000Z", "--reason", "teste", "--issue", "5673"],
+      root,
+      failingRun,
+      io,
+    );
+
+    assert.equal(exitCode, 2);
+    assert.ok(warnings.some((w) => w.includes("marcador NÃO sincronizado")));
+    // override local sobrevive à falha de rede — função primária do comando.
+    const onDisk = JSON.parse(readFileSync(resolve(root, "data", "clarice-envio-override.json"), "utf8"));
+    assert.equal(onDisk.issueRef, 5673);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("--clear com JSON local corrompido: 'cleared' NUNCA aparece sozinho — vem com warning inequívoco + exit code 2", () => {
+    const root = freshCliRoot("clear-corrupted");
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(resolve(root, "data", "clarice-envio-override.json"), "{ isto não é json válido", "utf8");
+    const { run, editedBodies } = fakeGh("Corpo qualquer.");
+    const { io, logs, warnings } = collectingIo();
+
+    const exitCode = runCli(["--clear"], root, run, io);
+
+    assert.equal(exitCode, 2);
+    assert.ok(logs.includes("cleared"), "o arquivo local foi de fato removido — 'cleared' continua verdade");
+    assert.ok(
+      warnings.some((w) => w.includes("NÃO FOI POSSÍVEL determinar a issue")),
+      "precisa qualificar o 'cleared' com um aviso inequívoco quando o issueRef não pôde ser determinado",
+    );
+    // sem issueRef determinável, nenhuma tentativa de gh issue edit acontece.
+    assert.equal(editedBodies.length, 0);
+    assert.equal(existsSync(resolve(root, "data", "clarice-envio-override.json")), false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("--clear em arquivo AUSENTE continua silencioso (regressão zero pro caso comum, sem warning espúrio)", () => {
+    const root = freshCliRoot("clear-absent");
+    const { run, editedBodies } = fakeGh("Corpo qualquer.");
+    const { io, logs, warnings } = collectingIo();
+
+    const exitCode = runCli(["--clear"], root, run, io);
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(logs, ["cleared"]);
+    assert.deepEqual(warnings, []);
+    assert.equal(editedBodies.length, 0);
+    rmSync(root, { recursive: true, force: true });
   });
 });

@@ -200,7 +200,11 @@ const TRADE_OFF_LABEL = "trade-off-real";
  * Menção inline é sempre documentação; marcador de verdade é sempre linha
  * própria.
  */
-const WAIT_UNTIL_RE = /^[ \t]*<!--\s*aguardando-ate:\s*(\d{4}-\d{2}-\d{2})\s*-->[ \t]*$/im;
+/** Exportado (#5724) pra `scripts/lib/wait-until-sync.ts` reusar a MESMA
+ * definição ao inserir/atualizar/remover o marcador no corpo da issue via
+ * `gh issue edit` — fonte única entre leitura (aqui) e escrita (lá), nunca
+ * duas regexes que podem divergir. */
+export const WAIT_UNTIL_RE = /^[ \t]*<!--\s*aguardando-ate:\s*(\d{4}-\d{2}-\d{2})\s*-->[ \t]*$/im;
 
 export interface ExecTrackInput {
   /** Nomes de label da issue (já normalizados, sem o objeto do `gh`). */
