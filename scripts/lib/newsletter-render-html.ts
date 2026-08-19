@@ -1324,10 +1324,15 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // decodifica automaticamente antes de `isValidVoteEmailFormat`/`handleVote`
   // rodarem, então o token resolvido é idêntico — só deixa de parecer um
   // e-mail cru pro parser de link da Brevo antes do envio.
+  // #5675: Beehiiv's quoted-printable encoder turns `=26` in the query into
+  // `&26` in the delivered MIME body. Keep edition/choice out of the query
+  // string entirely; the Worker normalizes this path form back to /vote's
+  // existing handler. The identity remains a query parameter because merge
+  // tags need to be expanded by the ESP.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
-      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
-      : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
+      ? `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}`
+      : `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{email}}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width={EIA_IMG_WIDTH} em pixels (container − sidePad×2 padding

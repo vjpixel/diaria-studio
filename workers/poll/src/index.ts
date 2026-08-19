@@ -335,7 +335,8 @@ export function requiredSecretsForRoute(
  * vs accidentalmente set como `""`).
  */
 export function missingSecretsForRoute(env: Env, path: string, method: string): string[] {
-  const required = requiredSecretsForRoute(path, method);
+  const normalizedPath = /^\/vote\/(?:\d{6}|\d{4}-\d{2})\/[AB]$/.test(path) ? "/vote" : path;
+  const required = requiredSecretsForRoute(normalizedPath, method);
   return required.filter((name) => {
     const v = env[name];
     return typeof v !== "string" || v.length === 0;
@@ -1887,6 +1888,18 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // handleVoteFastPath).
     // #4054: 6º arg `request` — habilita a identidade pós-gate do caminho de
     // fora (cookie de sessão, brand "web"), ver rationale em vote.ts.
+    // #5675: ESP quoted-printable encoders can corrupt query values such as
+    // `edition=260819` (`=26` becomes `&`). Accept /vote/{edition}/{choice}
+    // as a transport-safe equivalent and feed the canonical params to the
+    // existing handler, preserving all validation and accounting behavior.
+    const votePathMatch = path.match(/^\/vote\/(\d{6}|\d{4}-\d{2})\/([AB])$/);
+    if (votePathMatch && request.method === "GET") {
+      const canonicalVoteUrl = new URL(url);
+      canonicalVoteUrl.pathname = "/vote";
+      canonicalVoteUrl.searchParams.set("edition", votePathMatch[1]);
+      canonicalVoteUrl.searchParams.set("choice", votePathMatch[2]);
+      return handleVote(canonicalVoteUrl, bEnv, brand, env, ctx, request);
+    }
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx, request);
     // #4118: 4º arg `env` (cru) — handleStats lê o gabarito `correct:{edition}`
     // dele (brand-independente, mesmo padrão de handleVote/#3600 e
