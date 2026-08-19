@@ -205,6 +205,9 @@ function installRouter(opts: { totalSubscribers: number; contactsPages: Array<Ar
       if (method === "POST" && url.pathname === "/v3/emailCampaigns") {
         return jsonRes(201, { id: 999 });
       }
+      if (method === "PUT" && url.pathname === "/v3/emailCampaigns/999") {
+        return noContentRes(204);
+      }
       if (method === "POST" && url.pathname === "/v3/emailCampaigns/999/sendTest") {
         return jsonRes(204, {});
       }
@@ -520,6 +523,112 @@ describe("publish-daily-brevo.ts main() — --send-test (#5086)", () => {
 
       const secondCampaignCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
       assert.equal(secondCampaignCalls.length, 1, "--force deveria ter criado uma 2ª campanha de propósito");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#5689: reuse com conteúdo divergente atualiza a campanha via PUT (subject/preview/html novos) ANTES do sendTest reaproveitar o id — regressão do #5687", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      // 1ª invocação: cria o rascunho com o conteúdo V1 ("Título um").
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      const editionDir = join(root, "data/editions", EDITION_DATE);
+      const publishedPath = join(editionDir, "_internal/brevo-diaria-published.json");
+      const draftPublished = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(draftPublished.subject, "Título um", "subject V1 registrado no rascunho");
+
+      // Editor corrige 02-reviewed.md entre as duas invocações (conteúdo V2).
+      const editedMd = REVIEWED_MD.replace("Título um", "Título um CORRIGIDO");
+      writeFileSync(join(editionDir, "02-reviewed.md"), editedMd, "utf8");
+
+      // 2ª invocação: --send-test. Router reinstalado (calls zerado) pra
+      // isolar as chamadas desta invocação.
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test",
+      ];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      // Nenhuma campanha nova — mesmo campaign_id reaproveitado (#5677).
+      const createCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
+      assert.equal(createCalls.length, 0, "reuse não deveria criar uma 2ª campanha");
+
+      // O CORAÇÃO do #5689: PUT /emailCampaigns/999 com o conteúdo V2 recalculado.
+      const putCalls = calls.filter((c) => c.method === "PUT" && c.pathname === "/v3/emailCampaigns/999");
+      assert.equal(putCalls.length, 1, "reuse deveria disparar exatamente 1 PUT de atualização de conteúdo");
+      const putBody = putCalls[0].body as { subject: string; previewText: string; htmlContent: string };
+      assert.equal(putBody.subject, "Título um CORRIGIDO", "PUT deveria levar o subject RECALCULADO (V2), não o V1 registrado");
+      assert.ok(
+        putBody.htmlContent.includes("Título um CORRIGIDO"),
+        "PUT deveria levar o html recalculado com o título corrigido",
+      );
+
+      // Ordem: PUT de atualização acontece ANTES do sendTest reaproveitar o id
+      // (senão o teste sairia com o conteúdo V1 antigo — o próprio bug do #5689).
+      const putIdx = calls.findIndex((c) => c.method === "PUT" && c.pathname === "/v3/emailCampaigns/999");
+      const sendTestIdx = calls.findIndex((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.ok(putIdx >= 0 && sendTestIdx >= 0, "ambas as chamadas deveriam ter acontecido");
+      assert.ok(putIdx < sendTestIdx, "PUT de atualização deveria acontecer ANTES do sendTest");
+
+      // Estado final reflete o conteúdo V2 (não fica preso ao V1 registrado na 1ª invocação).
+      const finalPublished = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(finalPublished.subject, "Título um CORRIGIDO");
+      assert.equal(finalPublished.campaign_id, 999);
+      assert.equal(finalPublished.status, "test_sent");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#5689: reuse SEM --send-test também atualiza via PUT e persiste o subject/preview recalculados no state file", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      const editionDir = join(root, "data/editions", EDITION_DATE);
+      const editedMd = REVIEWED_MD.replace("Título um", "Título um V2");
+      writeFileSync(join(editionDir, "02-reviewed.md"), editedMd, "utf8");
+
+      // 2ª invocação: sem --send-test — só reaproveita o rascunho.
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      await main(root);
+      assert.equal(exitCode, null);
+
+      const putCalls = calls.filter((c) => c.method === "PUT" && c.pathname === "/v3/emailCampaigns/999");
+      assert.equal(putCalls.length, 1, "reuse sem --send-test ainda deveria atualizar o conteúdo via PUT");
+      const sendTestCalls = calls.filter((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.equal(sendTestCalls.length, 0, "sem --send-test, nenhum sendTest deveria disparar");
+
+      const publishedPath = join(editionDir, "_internal/brevo-diaria-published.json");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(published.subject, "Título um V2", "state file deveria refletir o subject V2, não ficar preso ao V1");
+      assert.equal(published.status, "draft", "reuse sem --send-test mantém status draft");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

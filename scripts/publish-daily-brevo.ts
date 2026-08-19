@@ -111,7 +111,7 @@ import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.t
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // #4687
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-intro.ts";
-import { brevoPost, brevoGetList } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 
@@ -200,6 +200,29 @@ export function writeBrevoDiariaPublished(editionDir: string, state: BrevoDiaria
 }
 
 export type CreateCampaignDecision = { action: "create" } | { action: "reuse"; campaignId: number };
+
+/**
+ * Pura/testável (#5689) — compara o subject/previewText RECALCULADOS do
+ * disco nesta invocação contra o que está registrado em
+ * `brevo-diaria-published.json` da invocação anterior. Usado só pra decidir
+ * se vale logar o aviso de divergência em `reuse` — a atualização em si
+ * (`PUT /emailCampaigns/{id}`) roda incondicionalmente no branch `reuse`
+ * (idempotente: recalcular e sobrescrever o mesmo conteúdo é barato e
+ * elimina qualquer classe de drift, inclusive drift só no `html` — que não é
+ * persistido no state file, então não dá pra comparar, mas o PUT
+ * incondicional cobre esse caso de qualquer forma).
+ */
+export function campaignContentDiverges(params: {
+  existingSubject: string;
+  existingPreviewText: string;
+  newSubject: string;
+  newPreviewText: string;
+}): boolean {
+  return (
+    params.existingSubject !== params.newSubject ||
+    params.existingPreviewText !== params.newPreviewText
+  );
+}
 
 /**
  * Pura/testável (#5677) — espelha `decidePublishBrevoAction` de
@@ -780,11 +803,43 @@ export async function main(rootDirOverride?: string): Promise<void> {
 
   if (createDecision.action === "reuse") {
     campaignId = createDecision.campaignId;
-    baseState = existingPublished!;
+    const previousState = existingPublished!;
     log(
-      `reaproveitando campanha Brevo já criada pra esta edição: id=${campaignId} (status "${baseState.status}", ` +
-        `registrada em ${baseState.created_at}) — nenhuma campanha nova criada. Use --force pra criar outra de propósito.`,
+      `reaproveitando campanha Brevo já criada pra esta edição: id=${campaignId} (status "${previousState.status}", ` +
+        `registrada em ${previousState.created_at}) — nenhuma campanha nova criada. Use --force pra criar outra de propósito.`,
     );
+
+    // #5689: reaproveitar o campaign_id NÃO significa que o conteúdo na
+    // Brevo já está em dia — subject/previewText/html continuam sendo
+    // recalculados do disco em TODA invocação (achado do #5687: uma 2ª
+    // invocação depois do editor corrigir 02-reviewed.md/03-social.md
+    // mandava --send-test com o conteúdo V1 antigo, silenciosamente). PUT
+    // roda incondicionalmente aqui (idempotente — sobrescrever com o mesmo
+    // conteúdo é barato) ANTES de qualquer --send-test reaproveitar o id.
+    const diverges = campaignContentDiverges({
+      existingSubject: previousState.subject,
+      existingPreviewText: previousState.preview_text,
+      newSubject: subject,
+      newPreviewText: previewText,
+    });
+    if (diverges) {
+      log(
+        `AVISO: conteúdo recalculado diverge do registrado na campanha ${campaignId} — ` +
+          `subject/preview mudaram desde a última invocação. Atualizando via PUT antes de prosseguir.`,
+      );
+    }
+    await brevoPut(apiKey!, `/emailCampaigns/${campaignId}`, {
+      subject,
+      previewText,
+      htmlContent: html,
+    });
+    log(`campanha ${campaignId} atualizada via PUT com o conteúdo recalculado desta invocação.`);
+
+    baseState = { ...previousState, subject, preview_text: previewText };
+    // #5689: persiste subject/preview_text atualizados mesmo sem --send-test
+    // — senão a PRÓXIMA invocação comparia contra o registro antigo de novo
+    // (campaignContentDiverges nunca veria a divergência já corrigida).
+    writeBrevoDiariaPublished(editionDir, baseState);
   } else {
     const campaignResp = (await brevoPost(apiKey!, "/emailCampaigns", {
       name: `diar.ia.br diária — ${new Date().toISOString().slice(0, 16)}`,
