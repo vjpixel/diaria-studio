@@ -45,7 +45,7 @@ describe('renderEIA(eia, "brevo") — @ do token percent-encoded (#4692)', () =>
 
   it("%40 decodifica de volta pro mesmo pseudo-email que o Worker espera (URL.searchParams como no Worker real)", () => {
     const html = renderEIA(baseEia, "brevo");
-    const m = html.match(/href="[^"]*[?&]email=([^&"]+)&amp;edition=/);
+    const m = html.match(/href="[^"]*\/vote\/[^\"]+\/[AB]\?email=([^&"]+)/);
     assert.ok(m, "href de voto não encontrado");
     const rawParam = m![1]; // ainda com o merge tag não substituído
     // Simula a substituição de merge tag (Brevo) + o parse real do Worker

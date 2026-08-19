@@ -134,11 +134,9 @@ function installRouter(email: string): { putBodies: Array<Record<string, string>
 
 /** Extrai o valor de `?email=` do href de voto dentro do HTML do painel É IA?.
  * Não usa URL() pra parse — o merge tag ainda não foi substituído neste ponto,
- * então a string não é uma URL válida ainda. O ramo Brevo escapa o separador
- * como `&amp;`; o Beehiiv usa `&` cru. */
+ * então a string não é uma URL válida ainda. */
 function extractVoteEmailParam(html: string, choice: "A" | "B"): string {
-  const sep = "(?:&amp;|&)";
-  const re = new RegExp(`href="[^"]*[?&]email=([^&"]+)${sep}edition=[^&"]+${sep}choice=${choice}`);
+  const re = new RegExp(String.raw`href="[^"]*\/vote\/[^"]+\/${choice}\?email=([^&"]+)`);
   const m = html.match(re);
   assert.ok(m, `href de voto (choice=${choice}) não encontrado no HTML renderizado`);
   return decodeURIComponent(m![1]);

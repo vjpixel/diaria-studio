@@ -111,7 +111,7 @@ describe("renderEIA NÃO embute mais o link do arquivo no rodapé do painel — 
 
   it("regressão: painel É IA? continua em modo merge-tag, de volta ao e-mail cru (#1186, revertido #4581)", () => {
     const html = renderEIA(baseEia);
-    assert.match(html, /email=\{\{email\}\}&edition=/);
+    assert.match(html, /\/vote\/[^\"]+\/[AB]\?email=\{\{email\}\}/);
     assert.ok(
       !html.includes("{{poll_token}}"),
       "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
