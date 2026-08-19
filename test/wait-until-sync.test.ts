@@ -13,7 +13,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseWaitUntil } from "../scripts/lib/issue-exec-track.ts";
@@ -239,9 +239,52 @@ describe("readIssueRefForClear", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("arquivo ausente devolve undefined, sem lançar", () => {
+  it("arquivo ausente devolve undefined, SEM chamar onInvalid (caso normal, silencioso)", () => {
     root = freshRoot("read-ref-missing");
-    assert.equal(readIssueRefForClear(root), undefined);
+    const invalidCalls: string[] = [];
+    assert.equal(
+      readIssueRefForClear(root, { onInvalid: (m) => invalidCalls.push(m) }),
+      undefined,
+    );
+    assert.deepEqual(invalidCalls, [], "ausência de arquivo é o caso normal — nunca deve soar alarme");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("JSON quebrado devolve undefined COM onInvalid chamado (self-review #5729: ausente ≠ corrompido)", () => {
+    root = freshRoot("read-ref-broken-json");
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(resolve(root, "data", "clarice-envio-override.json"), "{ não é json", "utf8");
+    const invalidCalls: string[] = [];
+    assert.equal(
+      readIssueRefForClear(root, { onInvalid: (m) => invalidCalls.push(m) }),
+      undefined,
+    );
+    assert.equal(invalidCalls.length, 1, "arquivo presente mas ilegível PRECISA soar alarme, diferente de ausência");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("issueRef ausente/não-numérico devolve undefined COM onInvalid chamado", () => {
+    root = freshRoot("read-ref-bad-shape");
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data", "clarice-envio-override.json"),
+      JSON.stringify({ brake: "hold", until: "2026-08-21T09:00:00.000Z", issueRef: "não é número" }),
+      "utf8",
+    );
+    const invalidCalls: string[] = [];
+    assert.equal(
+      readIssueRefForClear(root, { onInvalid: (m) => invalidCalls.push(m) }),
+      undefined,
+    );
+    assert.equal(invalidCalls.length, 1);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("default onInvalid é console.warn quando nenhum é passado (não lança)", () => {
+    root = freshRoot("read-ref-default-warn");
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(resolve(root, "data", "clarice-envio-override.json"), "{ quebrado", "utf8");
+    assert.doesNotThrow(() => readIssueRefForClear(root));
     rmSync(root, { recursive: true, force: true });
   });
 });

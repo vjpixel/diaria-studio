@@ -89,12 +89,25 @@ export function upsertWaitUntilMarker(body: string | null | undefined, ymd: stri
   return rest.length > 0 ? `${marker}\n\n${rest}` : `${marker}\n`;
 }
 
+/** Derivado de `WAIT_UNTIL_RE.source` (self-review do #5729: uma regex
+ * própria redigitando o padrão do marcador contradiria o próprio propósito
+ * do export — "fonte única entre leitura e escrita, nunca duas regexes que
+ * podem divergir"). `WAIT_UNTIL_RE` termina em `$` (fim de linha, não
+ * consome o `\n`); pra remoção precisamos engolir também a(s) quebra(s) de
+ * linha que seguem o marcador — troca o `$` final pelo sufixo que consome
+ * até 2 newlines (CRLF-safe), sem tocar o resto do padrão (sintaxe do
+ * comentário + formato da data continuam vindo de `WAIT_UNTIL_RE`). */
+const WAIT_UNTIL_MARKER_AND_TRAILING_BLANK_RE = new RegExp(
+  `${WAIT_UNTIL_RE.source.replace(/\$$/, "")}\\r?\\n?\\r?\\n?`,
+  "im",
+);
+
 /** Remove o marcador (e a linha em branco que normalmente o segue) do
  * corpo. No-op (devolve o `body` original) se não houver marcador. */
 export function removeWaitUntilMarker(body: string | null | undefined): string {
   const src = body ?? "";
   if (!WAIT_UNTIL_RE.test(src)) return src;
-  return src.replace(/^[ \t]*<!--\s*aguardando-ate:\s*\d{4}-\d{2}-\d{2}\s*-->[ \t]*\r?\n?\r?\n?/im, "");
+  return src.replace(WAIT_UNTIL_MARKER_AND_TRAILING_BLANK_RE, "");
 }
 
 /** `gh issue view --json body -q .body` (self-review, achado ao vivo contra a
@@ -190,29 +203,67 @@ export function clearWaitUntilMarkerOnIssue(
   return { ok: true, action: "removed" };
 }
 
+export interface ReadIssueRefForClearOptions {
+  /** Chamado quando o arquivo EXISTE mas não deu pra determinar o
+   * `issueRef` (JSON quebrado, shape errado, `issueRef` ausente/não-numérico)
+   * — NUNCA chamado por ausência de arquivo (mesma convenção de
+   * `ReadClariceEnvioOverrideOptions.onInvalid`: ausência é o caso normal,
+   * silencioso; presente-mas-ilegível é sinal de PROBLEMA). Default
+   * `console.warn`. */
+  onInvalid?: (message: string) => void;
+}
+
 /** Lê só o `issueRef` cru do arquivo de override, sem passar pela validação
  * de `readClariceEnvioOverrideState` (que devolve `null` pra override
  * EXPIRADO — mas `--clear` precisa saber qual issue tinha o marcador
  * mesmo que o `until` já tenha passado, ex: revogação manual antes do
- * prazo natural). Fail-soft: arquivo ausente/ilegível/shape errado →
- * `undefined`, nunca lança — `--clear` do JSON local segue funcionando
- * independente disso. */
-export function readIssueRefForClear(rootDir: string): number | undefined {
+ * prazo natural).
+ *
+ * **Self-review do #5729 — 3 desfechos, não 2:** a versão original desta
+ * função colapsava "arquivo ausente" (caso normal — nunca houve override, ou
+ * já foi limpo antes) e "arquivo presente mas ilegível" (JSON corrompido,
+ * shape errado, `issueRef` malformado) no MESMO `undefined` silencioso. O
+ * cenário real que isso escondia: JSON local corrompido enquanto existe um
+ * marcador válido numa issue de um `--set` anterior bem-sucedido — o
+ * `--clear` apagava o override e imprimia só `"cleared"`, sem tocar o
+ * marcador nem avisar que não conseguiu determinar QUAL issue precisava de
+ * limpeza. A issue ficava presa em `agendada` até o prazo expirar sozinho,
+ * sem sinal nenhum de que algo tinha saído errado.
+ *
+ * Agora: ausência de arquivo → `undefined`, SEM chamar `opts.onInvalid`
+ * (comportamento normal). Presente mas ilegível/malformado → `undefined`,
+ * COM `opts.onInvalid` chamado — o caller (`runCli` em
+ * `clarice-envio-override.ts`) usa isso pra imprimir um aviso inequívoco em
+ * vez de deixar `"cleared"` sozinho insinuar que nada ficou pra trás. */
+export function readIssueRefForClear(rootDir: string, opts: ReadIssueRefForClearOptions = {}): number | undefined {
+  const warn = opts.onInvalid ?? ((m: string) => console.warn(m));
   const p = resolve(rootDir, "data", "clarice-envio-override.json");
   if (!existsSync(p)) return undefined;
+
+  let raw: unknown;
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
-    if (
-      typeof raw === "object" &&
-      raw !== null &&
-      !Array.isArray(raw) &&
-      typeof (raw as Record<string, unknown>).issueRef === "number" &&
-      Number.isInteger((raw as Record<string, unknown>).issueRef)
-    ) {
-      return (raw as Record<string, unknown>).issueRef as number;
-    }
-  } catch {
-    // fail-soft — mesmo espírito de readClariceEnvioOverrideState.
+    raw = JSON.parse(readFileSync(p, "utf8"));
+  } catch (e) {
+    warn(
+      `[wait-until-sync] ${p} existe mas não deu pra ler/parsear (${(e as Error).message}) — ` +
+        `não dá pra determinar qual issue tinha o marcador.`,
+    );
+    return undefined;
   }
-  return undefined;
+
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    warn(`[wait-until-sync] ${p} existe mas não é um objeto JSON — não dá pra determinar qual issue tinha o marcador.`);
+    return undefined;
+  }
+
+  const issueRef = (raw as Record<string, unknown>).issueRef;
+  if (typeof issueRef !== "number" || !Number.isInteger(issueRef)) {
+    warn(
+      `[wait-until-sync] ${p} sem "issueRef" numérico válido (${JSON.stringify(issueRef)}) — ` +
+        `não dá pra determinar qual issue tinha o marcador.`,
+    );
+    return undefined;
+  }
+
+  return issueRef;
 }

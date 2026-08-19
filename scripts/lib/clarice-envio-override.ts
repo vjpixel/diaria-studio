@@ -52,7 +52,13 @@ import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./cli-args.ts";
 import type { BrakeDecision } from "./clarice-envio-policy.ts";
-import { clearWaitUntilMarkerOnIssue, readIssueRefForClear, syncWaitUntilMarkerOnIssue } from "./wait-until-sync.ts";
+import {
+  clearWaitUntilMarkerOnIssue,
+  readIssueRefForClear,
+  syncWaitUntilMarkerOnIssue,
+  type GhRunFn,
+} from "./wait-until-sync.ts";
+import { spawnGhSync } from "../studio-ui/gh-run.ts";
 
 /** `brake` é um literal de 1 valor de propósito — ver restrição 1 na
  * docstring do módulo. O tipo por si só já impede `setClariceEnvioOverride`
@@ -259,25 +265,72 @@ export function applyEnvioOverride(
 // CLI
 // ---------------------------------------------------------------------------
 
-if (isMainModule(import.meta.url)) {
-  const argv = process.argv.slice(2);
+/** Saída injetável pra teste — produção sempre usa `console` (default). */
+export interface CliIO {
+  log: (message: string) => void;
+  warn: (message: string) => void;
+}
+
+const defaultCliIo: CliIO = { log: (m) => console.log(m), warn: (m) => console.warn(m) };
+
+/**
+ * Corpo executável da CLI (`--set`/`--clear`/leitura), extraído do guard
+ * `isMainModule` (#5729, self-review do fleet: sem esta extração, nada testava
+ * o WIRING — só as funções de biblioteca chamadas diretamente. O revisor
+ * removeu a chamada de `syncWaitUntilMarkerOnIssue` do branch `--set` como
+ * prova, e os 20 testes originais continuaram todos verdes; alguém podia
+ * reverter a integração de 2 linhas do #5724 e o CI nunca perceberia).
+ * `ghRun`/`io` injetáveis (mesmo padrão de `GhRunFn`) pra testar sem rede —
+ * produção sempre usa `spawnGhSync`/`console` (defaults).
+ *
+ * Devolve o exit code: `0` em sucesso completo; `2` quando o override LOCAL
+ * foi gravado/removido com sucesso mas a sincronização do marcador na issue
+ * falhou ou não pôde ser determinada — nunca silencioso (#738), e nunca
+ * reverte o efeito local já aplicado (esse é sempre o passo anterior,
+ * irreversível por esta função).
+ */
+export function runCli(argv: string[], cwd: string, ghRun: GhRunFn = spawnGhSync, io: CliIO = defaultCliIo): number {
   if (hasFlag(argv, "clear")) {
     // Lido ANTES de apagar o arquivo (#5724) — `--clear` também limpa o
     // marcador `aguardando-ate:` da issue que o override tinha referenciado,
     // senão uma issue revogada antes do prazo natural fica presa em
     // `agendada` até a data que não vale mais nada.
-    const issueRefToClear = readIssueRefForClear(process.cwd());
-    clearClariceEnvioOverride(process.cwd());
-    console.log("cleared");
+    let invalidReason: string | undefined;
+    const issueRefToClear = readIssueRefForClear(cwd, {
+      onInvalid: (m) => {
+        invalidReason = m;
+      },
+    });
+    clearClariceEnvioOverride(cwd);
+    io.log("cleared");
+
+    if (invalidReason !== undefined) {
+      // Arquivo local existia mas estava ilegível — "cleared" acima é
+      // verdade (o arquivo foi removido), mas NUNCA fica sozinho/ambíguo:
+      // sem saber o issueRef, não há como saber se sobrou marcador obsoleto
+      // numa issue (achado do self-review — antes disso, esse caso imprimia
+      // só "cleared" e nada mais, indistinguível do caminho feliz).
+      io.warn(
+        `[clarice-envio-override] override local removido, mas NÃO FOI POSSÍVEL determinar a issue a limpar ` +
+          `(arquivo ilegível) — verifique manualmente se ficou marcador "aguardando-ate:" obsoleto em alguma ` +
+          `issue. Detalhe: ${invalidReason}`,
+      );
+      return 2;
+    }
+
     if (issueRefToClear !== undefined) {
-      const marker = clearWaitUntilMarkerOnIssue(issueRefToClear, process.cwd());
+      const marker = clearWaitUntilMarkerOnIssue(issueRefToClear, cwd, ghRun);
       if (!marker.ok) {
-        console.warn(
+        io.warn(
           `[clarice-envio-override] override limpo, marcador NÃO removido da issue #${issueRefToClear}: ${marker.error}`,
         );
+        return 2;
       }
     }
-  } else if (hasFlag(argv, "set")) {
+    return 0;
+  }
+
+  if (hasFlag(argv, "set")) {
     const until = getStringArg(argv, "until", { example: "2026-08-18T09:00:00.000Z" });
     const reason = getStringArg(argv, "reason", { example: "pico de campanha confirmado falso-positivo" });
     const issue = getIntArg(argv, "issue", { min: 1 });
@@ -285,25 +338,32 @@ if (isMainModule(import.meta.url)) {
     if (!until) throw new Error("--set requer --until ISO (ex: --until 2026-08-18T09:00:00.000Z).");
     if (!reason) throw new Error("--set requer --reason \"...\".");
     if (issue === undefined) throw new Error("--set requer --issue N (issue GitHub que motivou a decisão).");
-    const state = setClariceEnvioOverride(process.cwd(), {
+    const state = setClariceEnvioOverride(cwd, {
       until,
       reason,
       decidedBy,
       issueRef: issue,
       createdAt: new Date().toISOString(),
     });
-    console.log(JSON.stringify(state, null, 2));
+    io.log(JSON.stringify(state, null, 2));
     // Override local é a função PRIMÁRIA do comando — já gravado acima e
     // NUNCA revertido por falha aqui (#5724, no espírito do #738: fail-soft
     // com warning inequívoco, nunca silêncio).
-    const marker = syncWaitUntilMarkerOnIssue(issue, until, process.cwd());
+    const marker = syncWaitUntilMarkerOnIssue(issue, until, cwd, ghRun);
     if (!marker.ok) {
-      console.warn(
+      io.warn(
         `[clarice-envio-override] override gravado, marcador NÃO sincronizado na issue #${issue}: ${marker.error}`,
       );
+      return 2;
     }
-  } else {
-    const state = readClariceEnvioOverrideState(process.cwd(), new Date());
-    console.log(state ? JSON.stringify(state, null, 2) : "sem override ativo");
+    return 0;
   }
+
+  const state = readClariceEnvioOverrideState(cwd, new Date());
+  io.log(state ? JSON.stringify(state, null, 2) : "sem override ativo");
+  return 0;
+}
+
+if (isMainModule(import.meta.url)) {
+  process.exitCode = runCli(process.argv.slice(2), process.cwd());
 }
