@@ -795,14 +795,7 @@ Apresentar ao usuário:
   Comportamento:
   - `## Destaques`: primeiras 3 linhas na ordem física viram D1/D2/D3 (rank 1/2/3, renumeradas). Se < 3, completa com candidatos do scorer por rank. Se > 3, mantém as 3 primeiras.
   - `## Lançamentos` / `## Pesquisas` / `## Notícias`: honra EXATAMENTE as URLs que o editor deixou em cada seção, na ordem física. Artigos removidos do MD são dropados. Artigos movidos entre buckets respeitam o bucket do MD final.
-  - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas.
-- **1y-bis. Lookup determinístico de fonte primária (#5664), depois de aplicar o gate e antes de re-renderizar:** para cada artigo secundário aprovado (em `highlights[].article` ou nos buckets aprovados) que `buildPrimarySourceQuery` aceitar, disparar uma busca `discovery-searcher` com a query exata `site:{domínio-oficial} {título}`. Consolidar os resultados reais (sem inventar URLs) em `{EDITION_DIR}/_internal/tmp-primary-source-search-results.json`, no formato `{ "<URL secundária>": [{ "url": "...", "title": "...", "accessible": true }] }`; `accessible: false` é rejeitado. Rodar:
-  ```bash
-  npx tsx scripts/resolve-primary-source.ts \
-    --approved {EDITION_DIR}/_internal/01-approved.json \
-    --search-results {EDITION_DIR}/_internal/tmp-primary-source-search-results.json
-  ```
-  O helper só substitui quando a URL é HTTP(S), pertence ao domínio oficial (ou subdomínio) citado e o título tem `subjectSimilarity >= 0.60`; empate: score maior, depois URL lexicograficamente menor. Sem resultado confiável, preserva a URL secundária e registra `primary_source_lookup` com `status: "preserved"` e motivo. Substituição registra `from`, `to`, query e score, sem mover o item de bucket nem tomar decisão editorial adicional. Re-renderizar o MD depois deste passo para que Stage 2 leia a URL final. Falha de busca/arquivo deve ser fail-soft: executar o helper com mapa vazio quando necessário, preservando os links.
+  - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas. Lookup determinístico de fonte primária (#5664): para cada artigo secundário aprovado que `buildPrimarySourceQuery` aceitar, disparar `discovery-searcher` com `site:{domínio-oficial} {título}`, salvar resultados reais em `{EDITION_DIR}/_internal/tmp-primary-source-search-results.json` e rodar `npx tsx scripts/resolve-primary-source.ts --approved {EDITION_DIR}/_internal/01-approved.json --search-results {EDITION_DIR}/_internal/tmp-primary-source-search-results.json`; só substituir por HTTP(S) do domínio oficial/subdomínio com `subjectSimilarity >= 0.60`, com empate por score e URL, preservando sem resultado confiável e em falha (fail-soft), antes do re-render para Stage 2.
 - **Re-renderizar o MD** a partir do `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/render-categorized-md.ts \
