@@ -192,8 +192,12 @@ export type ConvergenceScanResult =
  * array de números, array de objetos `{ number }`, ou qualquer outra coisa
  * (ignorada, nunca lança). Serve tanto pra `goal.target_set`/`goal.tiers[*]`
  * quanto pro `issues[]` top-level legado, que pode guardar registros
- * `{ number, ... }` por issue em vez de números crus. */
-function extractIssueNumbers(value: unknown): number[] {
+ * `{ number, ... }` por issue em vez de números crus.
+ *
+ * Exportado (#5718) pra reuso por `develop-target-set-coverage.ts`, que
+ * precisa da mesma extração pra ler `goal.target_set` isoladamente (sem os
+ * outros campos que `collectKnownIssueNumbers` funde). */
+export function extractIssueNumbers(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   const out: number[] = [];
   for (const entry of value) {
