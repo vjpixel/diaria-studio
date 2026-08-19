@@ -605,6 +605,40 @@ vira "descoberta" em vez de linha de base.
 do número. Ações derivadas (Bing WMT para `livros`/`cursos`, investigação de
 `livros.diar.ia.br`) vivem em issues próprias (#5621, #5622).
 
+## Fato 13 — `livros`/`cursos` verificados no BWT + sitemaps submetidos; achado ao vivo de bug no `AddSite` (#5621/#5623, 19/ago/2026)
+
+Fechamento do Fato 11b: `livros.diar.ia.br` e `cursos.diar.ia.br` foram
+verificados no BWT nesta sessão, via o mesmo caminho do §Fato 3 (CNAME criado
+por API da Cloudflare + botão "Verify" na UI do BWT). Confirmado via
+`GetUserSites`: os 4 hosts do projeto (`diar.ia.br`, `arquivo.diar.ia.br`,
+`livros.diar.ia.br`, `cursos.diar.ia.br`) estão hoje `verified: true`.
+Sitemaps dos 2 hosts novos submetidos via `SubmitFeed` (`submitFeed()`
+chamado direto, sem passar por `AddSite` — ver bug abaixo), 1 URL cada,
+sem erro.
+
+**Achado ao vivo: `AddSite` não é idempotente — reinvocar num host JÁ
+verificado reseta o status pra não-verificado**, sem erro de HTTP nem aviso
+no corpo da resposta. Reproduzido 2× nesta sessão: logo depois de verificar
+`livros`/`cursos` (confirmado por `--list`), rodar `bing-add-site.ts --host
+...` de novo nos mesmos hosts (pra tentar `--submit-feed` num único comando)
+os fez voltar a `verified: false` — confirmado tanto por `GetUserSites`
+quanto ao vivo na UI (`URL Inspection` passou a devolver "User is
+unauthorized to access the site" pro host recém-verificado). Precisou
+re-verificar os dois pela UI uma segunda vez (mesmo CNAME, já propagado —
+"Verify" funcionou de novo sem esperar).
+
+**Corrigido em `scripts/bing-add-site.ts`:** o script agora chama
+`GetUserSites` **antes** de `AddSite` e pula a chamada quando o host já
+está `verified: true`. Efeito prático: `--host` deixou de ser seguro pra
+"rodar de novo só pra garantir" em host que talvez já esteja verificado —
+o script agora se protege sozinho, mas quem for chamar `addSite()`
+diretamente (fora do CLI) precisa da mesma checagem antes.
+
+**Não fazer:** não reabrir #5621 pra investigar a causa raiz do lado do BWT
+(não é código deste repo) — o mecanismo de mitigação (checar antes de
+chamar) já fecha o caso prático. Não rodar `AddSite` como "smoke test" de
+verificação — usar `--list` (só leitura) pra isso.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em

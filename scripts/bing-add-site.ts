@@ -7,16 +7,24 @@
  * `AddSite` como confirmação, ver armadilha 3 de `docs/seo-notes.md` §Fato 3)
  * + `SubmitFeed` do sitemap quando o host já estiver verificado.
  *
- * **Não automatiza a verificação por DNS.** O #5621 pede "mesmo caminho
- * usado em 11/08 para os outros dois hosts" — mas esse caminho (CNAME criado
- * via API da Cloudflare) foi executado ad-hoc numa sessão anterior, sem
- * script commitado, e o valor exato do registro CNAME que o Bing pede é
- * obtido pela UI/fluxo de verificação do BWT (não confirmado como endpoint
- * de API estável nesta sessão — nenhuma tentativa ao vivo foi feita aqui,
- * ver PR). Este script cadastra o site (`AddSite`) e reporta o estado de
+ * **Não automatiza a verificação por DNS.** O valor exato do registro CNAME
+ * que o Bing pede não tem endpoint de API estável confirmado (só aparece no
+ * fluxo "Add & verify site" da UI do BWT, seção "Add CNAME record to DNS") —
+ * completar manualmente: BWT UI pra pegar `name`/`value`, API da Cloudflare
+ * pra criar o CNAME (`POST /zones/{zone}/dns_records`), botão "Verify" na
+ * mesma UI. Este script cadastra o site (`AddSite`) e reporta o estado de
  * verificação (`GetUserSites`); se o site não estiver verificado, imprime a
- * instrução de completar a verificação por DNS manualmente (mesmo passo que
- * o editor já fez pros outros 2 hosts) antes de rodar `--submit-feed`.
+ * instrução acima antes de rodar `--submit-feed`.
+ *
+ * **Bug ao vivo #5623 (19/ago/2026): `AddSite` NÃO é idempotente — reinvocar
+ * num host JÁ verificado reseta o status pra não-verificado**, sem erro no
+ * HTTP nem aviso no corpo da resposta (confirmado em `livros`/`cursos`: dois
+ * hosts que a sessão tinha acabado de verificar por CNAME voltaram a
+ * `verified: false` só por eu ter rodado `--host` de novo neles, sem passar
+ * por `AddSite` outra vez de propósito). Corrigido aqui: o script agora
+ * checa `GetUserSites` ANTES de chamar `AddSite` e pula a chamada se o host
+ * já estiver `verified: true`. **Não rodar `AddSite` "só pra garantir" em
+ * host já verificado** — se precisar confirmar o estado, use `--list`.
  *
  * Uso:
  *   npx tsx scripts/bing-add-site.ts --host https://livros.diar.ia.br
@@ -110,6 +118,17 @@ export function isSiteRegistered(sites: BingSiteRow[], hostNoSlash: string): boo
   return sites.some((s) => normalizeHostForAddSite(s.url).toLowerCase() === target);
 }
 
+/** `true` só quando `AddSite` precisa ser chamado — host ausente OU presente
+ * mas não verificado. Pura, sem I/O. #5623: reinvocar `AddSite` num host JÁ
+ * verificado reseta o status pra não-verificado no BWT (confirmado ao vivo,
+ * sem erro de HTTP) — este guard existe pra nunca chamar `AddSite` num host
+ * que já está `verified: true`. */
+export function shouldCallAddSite(sites: BingSiteRow[], hostNoSlash: string): boolean {
+  const target = normalizeHostForAddSite(hostNoSlash).toLowerCase();
+  const row = sites.find((s) => normalizeHostForAddSite(s.url).toLowerCase() === target);
+  return !row?.verified;
+}
+
 /** Endpoints de LEITURA (`GetUserSites`, etc.) — GET puro, `params` na query. */
 async function bingCall(endpoint: string, params: Record<string, string>, apiKey: string, fetchImpl: typeof fetch): Promise<unknown> {
   const res = await fetchImpl(buildUrl(endpoint, params, apiKey));
@@ -188,11 +207,22 @@ async function main(): Promise<number> {
   }
   const host = normalizeHostForAddSite(hostRaw);
 
-  console.log(`${LOG_PREFIX} AddSite ${host}`);
-  const addStatus = await addSite(host, apiKey);
-  console.log(`${LOG_PREFIX} AddSite status=${addStatus} (202 NÃO é confirmação — reconferindo via GetUserSites)`);
+  // #5623: reconferir ANTES de chamar AddSite — confirmado ao vivo em
+  // 19/ago/2026 que reinvocar AddSite num host JÁ verificado reseta o
+  // status pra não-verificado no lado do BWT (sem aviso, sem erro no
+  // status HTTP). AddSite deixou de ser idempotente na prática; só chamar
+  // quando o host ainda não está registrado OU não está verificado.
+  let sites = await getUserSites(apiKey);
+  if (!shouldCallAddSite(sites, host)) {
+    console.log(`${LOG_PREFIX} ${host} já cadastrado e verificado — pulando AddSite (#5623: reinvocar reseta a verificação).`);
+  } else {
+    console.log(`${LOG_PREFIX} AddSite ${host}`);
+    const addStatus = await addSite(host, apiKey);
+    console.log(`${LOG_PREFIX} AddSite status=${addStatus} (202 NÃO é confirmação — reconferindo via GetUserSites)`);
+    sites = await getUserSites(apiKey);
+  }
+  const row = sites.find((s) => normalizeHostForAddSite(s.url).toLowerCase() === host.toLowerCase());
 
-  const sites = await getUserSites(apiKey);
   const registered = isSiteRegistered(sites, host);
   console.log(`${LOG_PREFIX} GetUserSites: ${registered ? "cadastrado" : "AUSENTE"} — ${sites.length} propriedade(s) na conta.`);
 
@@ -204,7 +234,6 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const row = sites.find((s) => normalizeHostForAddSite(s.url).toLowerCase() === host.toLowerCase());
   if (!row?.verified) {
     console.log(
       `${LOG_PREFIX} ${host} cadastrado mas AINDA NÃO VERIFICADO. A API do BWT não expõe (nesta sessão, sem ` +

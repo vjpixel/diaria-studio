@@ -11,6 +11,7 @@ import {
   normalizeHostForAddSite,
   parseBingUserSitesResponse,
   isSiteRegistered,
+  shouldCallAddSite,
   addSite,
   getUserSites,
   submitFeed,
@@ -89,6 +90,32 @@ describe("isSiteRegistered (#5621)", () => {
 
   it("case-insensitive", () => {
     assert.ok(isSiteRegistered(sites, "https://DIAR.IA.BR"));
+  });
+});
+
+describe("shouldCallAddSite (#5623 — AddSite não é idempotente, nunca chamar em host já verificado)", () => {
+  it("host ausente -> true (precisa cadastrar)", () => {
+    assert.equal(shouldCallAddSite([], "https://livros.diar.ia.br"), true);
+  });
+
+  it("host presente mas não verificado -> true (precisa completar verificação)", () => {
+    const sites = [{ url: "https://livros.diar.ia.br/", verified: false }];
+    assert.equal(shouldCallAddSite(sites, "https://livros.diar.ia.br"), true);
+  });
+
+  it("host presente e verified: null -> true (não inventa 'já verificado' sem confirmação)", () => {
+    const sites = [{ url: "https://livros.diar.ia.br/", verified: null }];
+    assert.equal(shouldCallAddSite(sites, "https://livros.diar.ia.br"), true);
+  });
+
+  it("host presente e verificado -> false (chamar AddSite de novo resetaria a verificação, #5623)", () => {
+    const sites = [{ url: "https://livros.diar.ia.br/", verified: true }];
+    assert.equal(shouldCallAddSite(sites, "https://livros.diar.ia.br"), false);
+  });
+
+  it("tolerante a barra final e case, mesma disciplina de isSiteRegistered", () => {
+    const sites = [{ url: "https://LIVROS.diar.ia.br/", verified: true }];
+    assert.equal(shouldCallAddSite(sites, "https://livros.diar.ia.br"), false);
   });
 });
 
