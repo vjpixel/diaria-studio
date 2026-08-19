@@ -339,14 +339,27 @@ describe("estrutura GEO (#4558 Parte B)", () => {
     assert.match(html, /Por <a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author">Pixel<\/a>/);
   });
 
-  it("JSON-LD FAQPage + Article presente e válido no <head>", () => {
+  it("JSON-LD FAQPage + Article + ItemList presente e válido no <head>", () => {
     const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
     assert.ok(m, "deve ter <script type=application/ld+json>");
     const jsonLd = JSON.parse(m![1]);
     const types = jsonLd["@graph"].map((n: { "@type": string }) => n["@type"]);
-    assert.deepEqual(types.sort(), ["Article", "FAQPage"]);
+    assert.deepEqual(types.sort(), ["Article", "FAQPage", "ItemList"]);
     const article = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "Article");
     assert.equal(article.author.name, "Pixel");
+  });
+
+  it("ItemList do JSON-LD bate com os livros do seed — mesma contagem, mesma ordem (#5622)", () => {
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html)![1]);
+    const itemList = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "ItemList");
+    assert.ok(itemList, "deve ter node ItemList");
+    assert.equal(itemList.numberOfItems, books.length);
+    assert.equal(itemList.itemListElement.length, books.length);
+    itemList.itemListElement.forEach((el: { position: number; name: string; url: string }, i: number) => {
+      assert.equal(el.position, i + 1);
+      assert.equal(el.name, books[i].title);
+      assert.equal(el.url, books[i].link);
+    });
   });
 
   it("FAQPage.mainEntity bate com buildLivrosFaq(books) — nunca diverge do visível", () => {
