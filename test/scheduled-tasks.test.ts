@@ -667,3 +667,34 @@ describe("#5405 — alarme removido pelo #5660", () => {
     assert.equal(getScheduledTaskByName("Diaria-Clarice-Novos-Abort-Alarm"), undefined);
   });
 });
+
+describe("#5704 — Diaria-Google-Ads-Spend-Ingest registrada, diária, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:50", () => {
+    const t = getScheduledTaskByName("Diaria-Google-Ads-Spend-Ingest");
+    assert.ok(t, "Diaria-Google-Ads-Spend-Ingest ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/google-ads-ingest-spend.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 50 });
+    assert.equal(t!.issue, "#5704");
+  });
+
+  it("horário de 09:50 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Google-Ads-Spend-Ingest" && t.schedule.hour === 9 && t.schedule.minute === 50,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Google-Ads-Spend-Ingest")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+});
