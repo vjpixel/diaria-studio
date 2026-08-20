@@ -110,6 +110,69 @@ seção Goal abaixo). Registrar em `plan.json` (`status: "pulada"`,
 agregada ("N issues elegíveis deixadas para o helios: #A, #B, ...") — não
 issue a issue na resposta ao editor.
 
+## Regra permanente: narração terminal é parada indevida, mesmo sem pergunta (#5769)
+
+Complementa o #5751 acima, não sobrepõe — aquela seção decide **o quê** esta
+sessão trabalha (filtro do `helios`); esta decide **por quanto tempo seguido**
+ela trabalha antes de devolver o turno ao editor. Pedido direto do editor,
+20/08/2026, na sequência imediata do #5751: terminar item N de uma issue
+reivindicada com "o próximo passo é X, mas antes vale dizer o estado..." tem
+o mesmo efeito prático de perguntar — o editor precisa responder pra sessão
+continuar — mesmo sem nenhum ponto de interrogação. O #5321 ("Perguntar é
+exceção") e o #5721 ("nunca perguntar por educação") já proíbem a pergunta
+literal; esta seção nomeia a forma que escapava das duas: um relatório de
+estado com convite implícito no fim do turno.
+
+**Teste comportamental, aplicar em TODO fim de turno:** *se o editor não
+responder nada, o trabalho para?* Se sim — foi uma pergunta, mesmo escrita
+como afirmação, e o turno não devia ter terminado ali.
+
+**Anti-padrões nomeados — nunca escrever isto no fim de um turno (exemplos
+reais da sessão que motivou a issue, todos meus, #5769):**
+
+| Frase escrita | Por que é narração terminal | O que fazer em vez disso |
+|---|---|---|
+| "O próximo passo natural é o Google, para fechar os três painéis. Mas antes disso vale dizer o estado..." | relatório de estado + adiamento do óbvio | auditar o Google, sem anunciar antes |
+| "Se você quiser que eu pegue mesmo assim, é só dizer" | devolve decisão que a sessão já podia tomar | decidir e seguir |
+| "Sigo nessa ordem se você não redirecionar" | convite a redirecionar sem necessidade | seguir, sem abrir a janela |
+| "Começo nela assim que este review voltar" | trata review/CI em background como bloqueio de turno | pegar a próxima unidade agora, retomar quando notificar (item 3 abaixo) |
+| "Aviso quando o fleet voltar" | mesmo padrão do anterior, fim de turno em vez de log | mesma correção — continuar trabalhando, não anunciar espera |
+
+**As 3 resoluções concretas que valem a partir daqui (a 4ª — o que continua
+parando a sessão — é o parágrafo seguinte, sem afrouxamento):**
+
+1. **Default de encadeamento dentro de uma unidade reivindicada.** Terminar o
+   item N de uma issue já reivindicada por esta sessão e ter item N+1 na
+   mesma issue = seguir direto pro N+1 — sem relatório intermediário, sem
+   confirmação, sem anunciar a transição. O relatório ao editor vai no fim da
+   issue **inteira**, não entre os itens dela.
+2. **Trabalho paralelo enquanto algo bloqueia.** Review de fleet rodando, CI
+   rodando, um agente em background — nenhum dos três é motivo pra parar o
+   turno: é motivo pra pegar a **próxima unidade** da fila e voltar quando o
+   mecanismo assíncrono notificar. Mesmo padrão que este coordenador overnight
+   já segue pra nunca ficar ocioso esperando CI — aplicar ao develop também:
+   nunca um turno que termina "esperando X", sempre um turno que segue
+   trabalhando enquanto X corre em paralelo.
+3. **Escolher a próxima unidade sem consultar.** Ao esgotar uma issue, a
+   seguinte sai da fila pelo critério já documentado desta skill (prioridade +
+   trilha + não-reivindicada + `OPEN`) — sem apresentar opções ao editor.
+   Apresentar opções **já é** perguntar, mesmo sem interrogação.
+
+**O que continua parando a sessão — inalterado, esta issue não afrouxa nada
+disto.** Os 4 critérios do #5321 (irreversível pra terceiros, trade-off
+editorial genuíno, gasto real acima do trivial, resposta que muda
+materialmente o trabalho), os dois gates de projeto da diária (Stage 4
+revisão, Stage 6 agendamento), e os guards de infra (#738 MCP indisponível,
+#3938 `AskUserQuestion` falhando). Também intactos: o Gate 1 residual (cat.
+C/E-com-custo) e o Gate B desta skill, que seguem `AskUserQuestion` bloqueante
+por design — a diferença desta seção é só o que acontece **depois** de um gate
+responder ou de uma unidade fechar, nunca o gate em si. E o item 2 do
+"Surfacear NA HORA" (seção acima, #5727) continua sendo a exceção correta pro
+bloqueio tipo-editor genuíno — aquilo é uma frase informativa sobre um
+impedimento real que só o editor destrava, não um convite disfarçado; a
+diferença que esta seção ataca é a narração de status sem nenhum bloqueio
+real por trás.
+
 ## Argumentos
 
 - **`AAMMDD` (opcional)** — data-rótulo da sessão (nomeia `data/develop/{AAMMDD}/plan.json`). **Não é data de edição** (nenhum stage editorial destrutivo depende dela; a regra D+1 não se aplica). O default de hoje é seguro, mas a skill **confirma** ("sessão develop de hoje, {AAMMDD}? s/n") em vez de inferir em silêncio. Fixar no `plan.json` e reler dele (a sessão pode cruzar meia-noite).
