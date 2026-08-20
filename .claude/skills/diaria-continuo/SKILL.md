@@ -316,8 +316,10 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
 - **Registra-se em `session-registry.ts` com `kind: "continuo"`** (novo
   nesta unidade, #5293 item 2) — `npx tsx scripts/lib/session-registry.ts
   register --kind continuo` (session-id auto-injetado pelo hook
-  `inject-session-id.mjs`, mesmo mecanismo do overnight/develop). Isso
-  habilita **claim de issue** (`claim-issue --kind continuo --issue N`) e
+  `inject-session-id.mjs`, mesmo mecanismo do overnight/develop — **sempre
+  como comando standalone, nunca em `&&`/`;`/pipe/heredoc**, senão a
+  injeção não acontece; `context/overnight-dispatch-rules.md` item 18,
+  #5751). Isso habilita **claim de issue** (`claim-issue --kind continuo --issue N`) e
   **merge lock** (`acquireMergeLock`/`releaseMergeLock`) — os dois
   mecanismos que evitam corrida com uma rodada overnight/develop rodando em
   paralelo na mesma máquina ou em máquinas diferentes sincronizadas por
