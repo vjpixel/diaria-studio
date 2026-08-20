@@ -4095,6 +4095,19 @@ describe("#5640 A1: computeExpectedOpenRateByDay", () => {
     // (300*50 + 100*10) / 400 = (15000+1000)/400 = 40
     assert.equal(expected.get("2026-06-20"), 40);
   });
+
+  test("dia PARCIALMENTE classificável pondera só o classificado — não divide pelo total do dia", () => {
+    // Regressão: o denominador era `delivered` TOTAL do dia, então metade
+    // não-classificável cortava o esperado pela metade (30% virava 15%) e o
+    // real parecia sistematicamente acima do esperado.
+    const now = new Date("2026-06-26T12:00:00Z");
+    const ativos = { ...makeCampaign(215, "AA d20", "2026-06-20T10:00:00Z", { delivered: 100, uniqueViews: 30 }), listName: "assinantes-ativos" };
+    const semCoorte = { ...makeCampaign(216, "sem coorte d20", "2026-06-20T11:00:00Z", { delivered: 100, uniqueViews: 30 }), listName: "engajados" };
+    const { rows: mainRows } = aggregateByDay([ativos, semCoorte], now);
+    const cohortResult = aggregateByDayByCohort([ativos, semCoorte], now);
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, { "assinantes-ativos": 30 });
+    assert.equal(expected.get("2026-06-20"), 30, "esperado = base da única coorte conhecida, não 15 (metade)");
+  });
 });
 
 describe("#5640 A1: renderOpenRateByDaySection — nota de leitura da série esperada", () => {
