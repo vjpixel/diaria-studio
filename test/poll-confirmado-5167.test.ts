@@ -78,6 +78,30 @@ describe("renderConfirmadoPage (#5167 item 7) — unit", () => {
     );
   });
 
+  it("(#5800) CTA do formulário de interesses sem seta — só os 4 links de curadoria mantêm \" →\"", () => {
+    const html = renderConfirmadoPage();
+    assert.match(
+      html,
+      /<a href="https:\/\/diar\.ia\.br\/forms\/f7528798-f8d5-4fcd-98c2-dc113e8c268b">Responder o formulário de interesses<\/a>/,
+    );
+    assert.doesNotMatch(html, /Responder o formulário de interesses →/);
+  });
+
+  it("(#5800) formulário de interesses vem ANTES das 4 portas de curadoria", () => {
+    const html = renderConfirmadoPage();
+    const surveyIdx = html.indexOf('<div class="confirmado-survey">');
+    const portasIdx = html.indexOf('<div class="confirmado-portas">');
+    assert.ok(surveyIdx >= 0 && portasIdx >= 0, "seções ausentes do HTML");
+    assert.ok(surveyIdx < portasIdx, "survey deveria vir antes de portas");
+  });
+
+  it("(#5800) CTA do survey estilizado como botão preenchido, não link sublinhado", () => {
+    const html = renderConfirmadoPage();
+    assert.match(html, /\.confirmado-survey a \{[^}]*background: var\(--teal\)/);
+    assert.match(html, /\.confirmado-survey a \{[^}]*border-radius: 4px/);
+    assert.doesNotMatch(html, /\.confirmado-survey a \{[^}]*border-bottom: 1px solid var\(--teal\)/);
+  });
+
   it("<title> e canonical batem com PAGE_URL", () => {
     const html = renderConfirmadoPage();
     assert.match(html, /<title>Assinatura confirmada — diar\.ia\.br<\/title>/);
