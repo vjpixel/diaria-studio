@@ -22,14 +22,21 @@ const NOW = new Date("2026-08-20T20:00:00-03:00");
 const PAST = "2026-08-20T10:00:00-03:00";
 const FUTURE = "2026-08-21T10:00:00-03:00";
 
-/** Réplica fiel da forma real de uma edição: 3 destaques × 5 canais. */
+/**
+ * Réplica fiel da forma real de uma edição: 3 destaques × 5 canais, PÓS
+ * reconciliação (#5766 — `verify-social-worker-dispatch.ts` roda antes deste
+ * check e reconcilia LinkedIn/Instagram/Threads contra o Worker, então numa
+ * edição saudável eles chegam aqui já `published`; só Twitter permanece
+ * `scheduled` por não ter reconciliador).
+ */
 function realisticEdition(fbStatus = "published") {
   const posts = [];
   for (const d of ["d1", "d2", "d3"]) {
     posts.push({ platform: "facebook", destaque: d, status: fbStatus, scheduled_at: PAST });
-    for (const p of ["linkedin", "instagram", "threads", "twitter"]) {
-      posts.push({ platform: p, destaque: d, status: "scheduled", scheduled_at: PAST });
+    for (const p of ["linkedin", "instagram", "threads"]) {
+      posts.push({ platform: p, destaque: d, status: "published", scheduled_at: PAST });
     }
+    posts.push({ platform: "twitter", destaque: d, status: "scheduled", scheduled_at: PAST });
   }
   return posts;
 }
@@ -40,12 +47,13 @@ describe("prev-social-status — o falso alarme diário (#5756)", () => {
 
     // Antes do #5756 este mesmo input produzia "12 posts sociais com
     // status=scheduled e scheduled_at já passado" — todo dia, para sempre.
+    // Pós-#5766, só Twitter (sem reconciliador contra Worker) fica terminal.
     assert.deepEqual(r.findings, []);
-    assert.equal(r.terminalByDesign, 12);
+    assert.equal(r.terminalByDesign, 3);
     assert.equal(r.total, 15);
   });
 
-  it("os 4 canais fire-and-forget nunca viram achado por 'vencido'", () => {
+  it("o canal fire-and-forget restante (Twitter, #5766) nunca vira achado por 'vencido'", () => {
     const posts = [...FIRE_AND_FORGET_PLATFORMS].map((platform) => ({
       platform,
       destaque: "d1",
@@ -56,7 +64,20 @@ describe("prev-social-status — o falso alarme diário (#5756)", () => {
     }));
     const r = analyzePrevSocial(posts, NOW);
     assert.deepEqual(r.findings, []);
-    assert.equal(r.terminalByDesign, 4);
+    assert.equal(r.terminalByDesign, 1);
+    assert.deepEqual([...FIRE_AND_FORGET_PLATFORMS], ["twitter"]);
+  });
+
+  it("#5766 LinkedIn/Instagram/Threads vencidos em 'scheduled' AGORA são achado — reconciliação não rodou/falhou", () => {
+    const posts = ["linkedin", "instagram", "threads"].map((platform) => ({
+      platform,
+      destaque: "d1",
+      status: "scheduled",
+      scheduled_at: PAST,
+    }));
+    const r = analyzePrevSocial(posts, NOW);
+    assert.equal(r.findings.length, 3);
+    assert.ok(r.findings.every((f) => f.reason === "overdue-pollable"));
   });
 
   it("Facebook vencido em 'scheduled' É achado — ali o silêncio significa algo", () => {
@@ -104,7 +125,7 @@ describe("prev-social-status — o falso alarme diário (#5756)", () => {
 
   it("platform com caixa diferente ainda é reconhecida", () => {
     const r = analyzePrevSocial(
-      [{ platform: "LinkedIn", destaque: "d1", status: "scheduled", scheduled_at: PAST }],
+      [{ platform: "Twitter", destaque: "d1", status: "scheduled", scheduled_at: PAST }],
       NOW,
     );
     assert.deepEqual(r.findings, []);
@@ -178,7 +199,7 @@ describe("check-prev-social-status CLI (#5756, lacuna do review da PR #5762)", (
       // O playbook decide entre alertar e seguir pelo texto desta linha —
       // se ela mudar, o §0l passa a interpretar errado.
       assert.match(r.stdout, /nenhum post social exige atenção/);
-      assert.match(r.stdout, /12 em estado terminal por desenho/);
+      assert.match(r.stdout, /3 em estado terminal por desenho/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
