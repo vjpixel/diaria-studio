@@ -29,6 +29,7 @@
 
 import { stratify } from "../clarice-build-edition-sends.ts";
 import { hourCellLabel, waveKey } from "./clarice-wave-plan.ts";
+import type { ClariceHourTestState } from "./clarice-hour-test.ts";
 
 /** Uma entrada de manifest, no shape que `clarice-import-waves.ts` já lê. */
 export interface CellManifestEntry {
@@ -235,6 +236,35 @@ export function resolveCellStrategy(argv: string[]): CellStrategy {
   return noCells ? { kind: "single" } : { kind: "cells" };
 }
 
+/**
+ * #5827: `strategy.kind === "single"` (`--no-cells`, assunto travado)
+ * fragmentaria SILENCIOSAMENTE a amostra do teste de HORÁRIO (#5140) se ele
+ * estiver `ativo` — os dois testes (assunto e horário) são independentes, e
+ * nada verificava isso antes de escrever uma onda real (achado ao vivo
+ * 260820: onda `d24-sex21` saiu inteira às 06:00, zerando o braço das 10:00
+ * de um teste rodando desde 16/08).
+ *
+ * PURA (recebe o estado já lido, não lê disco) pra ser testável sem fixture
+ * de filesystem. Devolve a mensagem de erro (para abortar) quando o choque é
+ * real, ou `null` quando é seguro seguir — `ignoreHourTest` é o escape hatch
+ * explícito (`--ignore-hour-test`) pra quando "onda única mesmo com teste
+ * ativo" é intencional.
+ */
+export function checkSingleStrategyAgainstHourTest(
+  strategy: CellStrategy,
+  hourTestState: ClariceHourTestState,
+  ignoreHourTest: boolean,
+): string | null {
+  if (strategy.kind !== "single" || ignoreHourTest) return null;
+  if (hourTestState.status !== "ativo") return null;
+  const hours = hourTestState.hoursBrt.join(",");
+  return (
+    `--no-cells pedido, mas o teste de HORÁRIO (#5140) está ATIVO (braços ${hours} BRT desde ${hourTestState.startedAt}). ` +
+    `Isso fragmentaria a amostra do dia em silêncio. Use --hour-cells ${hours} no lugar de --no-cells, ` +
+    `ou passe --ignore-hour-test se "onda única mesmo assim" for intencional.`
+  );
+}
+
 /** Lê `--nome valor` ou `--nome=valor` do argv. Devolve null se ausente. */
 function readFlagValue(argv: string[], name: string): string | null {
   for (let i = 0; i < argv.length; i += 1) {
@@ -254,7 +284,7 @@ function readFlagValue(argv: string[], name: string): string | null {
  * travado, fragmentando a audiência em 3 listas pro mesmo assunto, sem nada
  * no log que distinguisse isso de um teste A/B/C legítimo (#4660).
  */
-export const SPLIT_GROUP_CELLS_FLAGS = new Set(["no-cells", "dry-run"]);
+export const SPLIT_GROUP_CELLS_FLAGS = new Set(["no-cells", "dry-run", "ignore-hour-test"]);
 
 /** Flags passadas que não são reconhecidas — provável typo. Pura. */
 export function unknownFlags(argv: string[], known: Set<string> = SPLIT_GROUP_CELLS_FLAGS): string[] {

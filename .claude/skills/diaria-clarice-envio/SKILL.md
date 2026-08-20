@@ -432,6 +432,25 @@ vira meia-noite UTC = 21:00 BRT do dia anterior, o incidente da campanha #119).
 Use sempre `{YYYY-MM-DD}T09:00:00Z` (09:00 UTC = 06:00 BRT, o horário
 canônico) a menos que o horário pretendido seja outro de propósito.
 
+**Antes de escolher entre os dois fluxos abaixo, checar o teste de HORÁRIO
+(#5140) — é independente do teste de assunto e pode estar rodando mesmo
+quando o A/B/C já está `travado`:**
+
+```bash
+npx tsx scripts/lib/clarice-hour-test.ts   # imprime "ativo"/"inativo"/"encerrado"
+```
+
+Achado ao vivo 260820: segui direto pro fluxo "sem teste A/B/C" (assunto
+travado) sem checar isto, e a onda saiu inteira numa campanha única às 06:00
+— zerando a amostra do dia pro braço das 10:00 de um teste que estava `ativo`
+desde 16/08. Quando o teste de horário está `ativo` **e** o A/B/C está
+`travar`, `clarice-envio-run.ts` (o caminho automático) já resolve isso
+sozinho (`--hour-cells` em `clarice-split-group-cells.ts`, mesma lista/
+assunto, metade agendada em cada hora) — mas o fluxo MANUAL abaixo não
+verifica isso por conta própria. Se o teste de horário estiver `ativo`, usar
+`--hour-cells {h1},{h2}` no passo 2 de `clarice-split-group-cells.ts` no
+lugar de `--no-cells`, mesmo com o A/B/C de assunto travado. Ver #5824.
+
 Com teste A/B/C (recomendação `iniciar`/`continuar` do Passo 2), para cada
 onda `d{N}` da proposta:
 
