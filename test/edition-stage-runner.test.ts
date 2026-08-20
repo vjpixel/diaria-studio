@@ -25,7 +25,7 @@ import {
   formatStagesSummary,
   FAILURE_TAIL_LINES,
 } from "../scripts/lib/edition-stage-runner.ts";
-import { planThrough, main as cliMain } from "../scripts/run-edition-stages.ts";
+import { planThrough, main as cliMain, DEFAULT_THROUGH } from "../scripts/run-edition-stages.ts";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -282,10 +282,19 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
     assert.equal(prompts.length, 0);
   });
 
-  it("default sem --through vai até o Stage 4; --through 3 para no 3", () => {
+  it("default sem --through PARA no Stage 3 — nunca auto-aprova o gate de revisão", () => {
     const a = makeDeps();
     cliMain(["--edition", "260820"], a.deps);
-    assert.equal(a.prompts.length, 4);
+
+    // Achado do review da PR #5753: o default era 4, e como todo stage
+    // spawnado recebe `--no-gates`, um comando incompleto (debug, uso ad hoc)
+    // auto-aprovava em silêncio o gate humano de revisão — um dos dois gates
+    // de projeto. O default seguro é parar antes dele.
+    assert.equal(a.prompts.length, DEFAULT_THROUGH);
+    assert.ok(
+      !a.prompts.some((p) => p.includes("diaria-4-revisao")),
+      "o default jamais pode spawnar o Stage 4 headless",
+    );
 
     const b = makeDeps();
     cliMain(["--edition", "260820", "--through", "3"], b.deps);
@@ -293,6 +302,13 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
       b.prompts.map((p) => p.split(" ")[0]),
       ["/diaria-1-pesquisa", "/diaria-2-escrita", "/diaria-3-imagens"],
     );
+  });
+
+  it("--through 4 é possível, mas só por escrito", () => {
+    const { deps, prompts } = makeDeps();
+    cliMain(["--edition", "260820", "--through", "4"], deps);
+    assert.equal(prompts.length, 4);
+    assert.ok(prompts[3].includes("diaria-4-revisao"));
   });
 
   it("progresso vai pro stderr; stdout carrega SÓ o resumo", () => {

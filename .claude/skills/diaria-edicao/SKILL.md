@@ -132,11 +132,12 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 5 §5b; se não-vazio, Stage 5 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
 
 
-Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
-- **§ 0 Setup** — resume detection, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
-- **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → auto-approve
-- **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → auto-approve
-- **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → auto-approve
+Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde o #5744, entrar direto na § 4** — as três primeiras já rodaram nos processos spawnados no Passo 2, e a § 0 junto com elas:
+
+- ~~**§ 0 Setup**~~ — **NÃO re-executar.** `/diaria-1-pesquisa` roda a § 0 inteira por conta própria (refresh de `past-editions.md`, inbox drain, probes de MCP), e o resultado já está persistido em disco pelo #5414. Repetir aqui gasta de novo os checks que o subprocesso do Stage 1 acabou de fazer — que é exatamente o custo que o Passo 2 existe para cortar. O resume-aware da § 0b evitaria reprocessar os Stages 1-3, mas não evita repetir os checks.
+- ~~**§ 1 Etapa 1 — Pesquisa**~~ — feita no Passo 2 (sentinela em disco)
+- ~~**§ 2 Etapa 2 — Escrita**~~ — feita no Passo 2 (sentinela em disco)
+- ~~**§ 3 Etapa 3 — Imagens**~~ — feita no Passo 2 (sentinela em disco)
 - **§ 4 Etapa 4 — Revisão** (#1694):
   1. Pré-render técnico (HTML + imagens + upload Worker + close-poll)
   2. **GATE HUMANO** — apresenta resumo consolidado: destaques, títulos, links, lints, preview HTML + social ao editor

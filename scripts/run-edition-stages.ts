@@ -16,19 +16,25 @@
  * auto-aprovados em `/diaria-edicao` (`auto_approve = true`, pre-gate mode
  * #1523), então spawná-los headless não custa nenhum gate. O Stage 4
  * (revisão) e o Stage 6 (agendamento) são os dois gates humanos de projeto e
- * precisam rodar NA sessão do editor — quem chama passa `--through 3` e segue
- * com o Stage 4 inline. O runner agendado, que roda desassistido, passa
- * `--through 4`.
+ * precisam rodar NA sessão do editor — a skill passa `--through 3` e segue com
+ * o Stage 4 inline.
+ *
+ * **O runner agendado NÃO passa por aqui.** Ele chama `runEditionStages()`
+ * direto da lib, com o `STAGE_PLAN` completo. Este CLI existe só para quem
+ * precisa invocar o laço a partir de um shell — hoje, a skill interativa.
  *
  * O ganho está no Stage 4: ele era 581M dos 999M de tokens de entrada da
  * edição 260814 justamente porque herdava o contexto dos stages anteriores.
  * Com 1-3 fora da sessão, ele começa quase limpo — 163M na medição do #5738.
  *
- * **O stdout dos stages nunca volta pra sessão.** Este script imprime só um
- * resumo por stage (ver `formatStagesSummary`). Despejar o `--print` inteiro
- * de 3 stages na conversa do editor recriaria exatamente o contexto que o
- * laço existe para evitar — seria possível "implementar" o #5744 e não
- * economizar nada.
+ * **O stdout dos stages nunca volta pra sessão.** Quem garante isso é o
+ * descarte do stdout do processo `claude` filho dentro de `runEditionStages`
+ * — não o split stderr/stdout daqui, que serve para o `--json` sair
+ * parseável (o Bash tool entrega os dois fluxos ao agente de qualquer jeito).
+ * Este script imprime só um resumo por stage. Despejar o `--print` inteiro de
+ * 3 stages na conversa do editor recriaria exatamente o contexto que o laço
+ * existe para evitar — seria possível "implementar" o #5744 e não economizar
+ * nada.
  *
  * Uso:
  *   npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json]
@@ -53,6 +59,17 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AAMMDD_RE = /^\d{6}$/;
+
+/**
+ * Stage até onde o CLI vai quando `--through` é omitido.
+ *
+ * **3, não 4.** O Stage 4 (revisão) carrega um dos dois gates humanos de
+ * projeto, e todo stage spawnado por aqui recebe `--no-gates` — o default
+ * antigo (4) transformava um comando incompleto num auto-aprovar silencioso
+ * do gate de revisão. Quem quer o Stage 4 headless (só o caminho agendado
+ * desassistido) passa `--through 4` por escrito.
+ */
+export const DEFAULT_THROUGH = 3;
 
 /**
  * Corta `STAGE_PLAN` no stage pedido.
@@ -110,7 +127,12 @@ export function main(
 
   let plan: EditionStage[];
   try {
-    plan = planThrough(values["through"] ? parseInt(values["through"], 10) : 4);
+    // Default 3, NÃO 4 (achado do review da PR #5753). Rodar este CLI sem
+    // `--through` — debug, uso ad hoc — spawnaria o Stage 4 headless com
+    // `--no-gates`, auto-aprovando em silêncio o gate humano de revisão, que é
+    // um dos dois gates de projeto. O único consumidor real já passa `--through 3`
+    // explicitamente; quem quiser o Stage 4 headless pede por escrito.
+    plan = planThrough(values["through"] ? parseInt(values["through"], 10) : DEFAULT_THROUGH);
   } catch (e) {
     stderr((e as Error).message);
     return 2;
@@ -127,7 +149,11 @@ export function main(
     plan,
     execFn,
     ...(sentinelExistsFn ? { sentinelExistsFn } : {}),
-    onProgress: stderr, // progresso vai pro stderr; stdout fica só com o resumo
+    // Progresso no stderr deixa o stdout parseável quando `--json` é usado.
+    // NÃO é o que protege o contexto da sessão — o Bash tool entrega os dois
+    // fluxos ao agente de qualquer forma. A proteção real é o descarte do
+    // stdout do processo `claude` filho dentro de `runEditionStages`.
+    onProgress: stderr,
   });
 
   if (flags.has("json")) {
