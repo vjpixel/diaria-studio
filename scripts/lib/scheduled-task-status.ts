@@ -314,14 +314,16 @@ export type TaskRunOutcome = "ok" | "failed" | "guard_skip" | "guard_abort" | "u
  *
  * **`successExitCodes` (#5592/#5615, generalizado de `systemd-units.ts`
  * neste PR):** um passo NÃO best-effort cujo `code` está em
- * `def.successExitCodes` (ex: exit 3 de `clarice-novos-run.ts` = abort
- * intencional do semáforo D4) nunca é `"failed"` — mas também não é
- * indistinguível de `"ok"`, porque a run de fato abortou por guard, ela só
- * não é um crash. Vira `"guard_abort"`: mesmo espírito distintivo de
- * `"guard_skip"` (guard PRÉ-execução, `def.guard`/`ScheduledTaskGuard`) só
- * que pra guard DENTRO de um passo, detectado pelo exit code do processo em
- * vez de um marcador de trailer dedicado. Sem isto, a página `/tarefas` do
- * Studio mostrava um abort D4 correto como `"failed"` — o mesmo problema de
+ * `def.successExitCodes` (na época: exit 3 de `clarice-novos-run.ts` = abort
+ * intencional do semáforo D4 — guard removido no #5660, valor reaproveitado
+ * no #5743 pra "disparo incerto", ver docstring do módulo) nunca é
+ * `"failed"` — mas também não é indistinguível de `"ok"`, porque a run de
+ * fato terminou num desfecho não-trivial, só não é um crash. Vira
+ * `"guard_abort"`: mesmo espírito distintivo de `"guard_skip"` (guard
+ * PRÉ-execução, `def.guard`/`ScheduledTaskGuard`) só que pra um desfecho
+ * DENTRO de um passo, detectado pelo exit code do processo em vez de um
+ * marcador de trailer dedicado. Sem isto, a página `/tarefas` do Studio
+ * mostrava esses desfechos como `"failed"` — o mesmo problema de
  * visibilidade que este PR resolveu pro alarme systemd, só que nesta
  * segunda superfície de consumo do mesmo registro. @pure
  */

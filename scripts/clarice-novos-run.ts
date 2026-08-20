@@ -33,11 +33,27 @@
  * Exit codes:
  *   0 — sucesso (disparado / rodada vazia / pausado pelo toggle / dry-run concluído)
  *   1 — erro duro (guard abortou POR MOTIVO GENUÍNO — sub-script falhou,
- *       exceção inesperada, teto D13, guard de custo D8 etc.)
- *   2 — disparo INCERTO (POST sendNow aceito, GET-verify não confirmou status
- *       terminal — mesma semântica de exit 2 do `clarice-schedule-group.ts
- *       --send-now`) — NÃO declarar sucesso; a rodada de amanhã reconcilia
- *       (idempotente por key/campanha).
+ *       exceção inesperada, teto D13, guard de custo D8 etc.) — inclui POST
+ *       `sendNow` RECUSADO pela Brevo (`clarice-schedule-group.ts` exit != 0/2).
+ *   3 — disparo INCERTO (POST sendNow ACEITO pela Brevo, mas o GET-verify
+ *       pós-disparo — com retry — não confirmou status terminal; mesmo
+ *       evento de origem do exit 2 de `clarice-schedule-group.ts --send-now`,
+ *       remapeado aqui pra um código PRÓPRIO). NÃO declarar sucesso — mas
+ *       NÃO é um erro do serviço: é lag assíncrono normal da Brevo saindo de
+ *       "queued", a rodada de amanhã reconcilia sozinha (idempotente por
+ *       key/campanha). #5743 — antes deste código existir, este caso saía
+ *       com exit 2 puro, sem nenhum `successExitCodes` declarado no registro
+ *       (`scripts/lib/scheduled-tasks.ts`), então a unit systemd
+ *       (`diaria-clarice-novos-tarde.service`) ficava `failed` mesmo quando
+ *       a campanha saía 100% entregue (achado ao vivo 20/08/2026: 69/69
+ *       delivered, unit `failed` do mesmo jeito) — `Diaria-Systemd-Failed-
+ *       Units-Alarm` abria issue automática pra um não-evento (2ª ocorrência
+ *       do mesmo padrão da #5615, unit diferente). Distinto de propósito do
+ *       antigo exit 3 do semáforo D4 (#5615/#5592, removido no #5660 —
+ *       nunca coexistiram, o código ficou livre). Unit systemd correspondente
+ *       precisa declarar `SuccessExitStatus=3` (`successExitCodes: [3]` no
+ *       registro) pra não contar como `failed` — feito neste mesmo PR para
+ *       `Diaria-Clarice-Novos`/`-Tarde`; nenhuma outra task chama este script.
  *
  * Uso:
  *   npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] \
@@ -148,10 +164,10 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
 // Abort tipado — carrega o motivo até o relatório final.
 // ---------------------------------------------------------------------------
 
-/** Sempre `code: 1` — o exit code 2 ("disparo incerto") NUNCA passa por
+/** Sempre `code: 1` — o exit code 3 ("disparo incerto") NUNCA passa por
  * exceção, é um `return` antecipado dentro de `runNovos` (o desfecho não é
  * um erro, é um resultado ambíguo que a rodada de amanhã reconcilia
- * sozinha). Um `1 | 2` no tipo aqui sugeria uma uniformidade que não
+ * sozinha). Um `1 | 3` no tipo aqui sugeria uma uniformidade que não
  * existe no controle de fluxo real — achado do review do #4949. */
 export class NovosAbort extends Error {
   readonly code = 1 as const;
@@ -160,6 +176,18 @@ export class NovosAbort extends Error {
     this.name = "NovosAbort";
   }
 }
+
+/** #5743 — exit code dedicado pra "disparo INCERTO" (POST sendNow aceito
+ * pela Brevo, GET-verify pós-disparo não confirmou status terminal dentro
+ * da janela de retry). Distinto de exit 1 (erro duro genuíno — POST
+ * recusado, sub-script falhou) e do exit 2 puro de `clarice-schedule-group.ts`
+ * (que este script continua checando como sinal de ENTRADA — `sendNow.code
+ * === 2` —, só o valor de SAÍDA deste orquestrador muda). Reusa o valor 3,
+ * livre desde a remoção do guard de semáforo D4 no #5660 (nunca coexistiram
+ * com este significado). Ver docstring do módulo pro contrato completo de
+ * exit codes e o que o unit systemd precisa declarar (`SuccessExitStatus=`)
+ * pra não contar como `failed`. */
+export const NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE = 3 as const;
 
 
 // ---------------------------------------------------------------------------
@@ -236,7 +264,7 @@ export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
 // ---------------------------------------------------------------------------
 
 export interface NovosRunResult {
-  code: 0 | 1 | 2;
+  code: 0 | 1 | 3;
   reportId: string;
   reportMarkdown: string;
 }
@@ -563,7 +591,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       );
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
       noteRunStatus(deps, now, "uncertain");
-      return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
+      return { code: NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     if (sendNow.code !== 0) {
       throw new NovosAbort(`❌ clarice-schedule-group --send-now falhou (exit ${sendNow.code}): ${sendNow.stderr.trim().split("\n").slice(-6).join(" | ")}`);
@@ -573,7 +601,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     // sem re-disparar quando o status AO VIVO já é "queued" (retry manual
     // da MESMA key/campanha, fora do fluxo deste orquestrador — que sempre
     // resolve uma key nova, mas um chamador direto de
-    // clarice-schedule-group.ts poderia). Tratar como incerto (código 2) em
+    // clarice-schedule-group.ts poderia). Tratar como incerto (código 3) em
     // vez de assumir sucesso — nunca declarar "confirmado" sem o status
     // literal "sent" no resumo.
     if (sendJson?.status !== "sent") {
@@ -583,7 +611,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       );
       writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
       noteRunStatus(deps, now, "uncertain");
-      return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
+      return { code: NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     report.note(`✅ disparo confirmado (status="sent") — ${selected} contato(s).`);
 

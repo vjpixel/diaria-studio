@@ -182,18 +182,18 @@ describe("buildSystemdUnitFiles — SuccessExitStatus=", () => {
     assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
   });
 
-  it("Diaria-Clarice-Novos não declara mais um exit 3 esperado após a remoção do D4 (#5660)", () => {
+  it("Diaria-Clarice-Novos declara exit 3 esperado de novo, agora por #5743 (disparo incerto, não mais D4)", () => {
     const task = getScheduledTaskByName("Diaria-Clarice-Novos")!;
-    assert.equal(task.successExitCodes, undefined);
+    assert.deepEqual(task.successExitCodes, [3]);
     const files = buildSystemdUnitFiles(task, repoRootAbs);
-    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
+    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
   });
 
-  it("Diaria-Clarice-Novos-Tarde também não declara exit 3 esperado", () => {
+  it("Diaria-Clarice-Novos-Tarde também declara exit 3 esperado (#5743)", () => {
     const task = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde")!;
-    assert.equal(task.successExitCodes, undefined);
+    assert.deepEqual(task.successExitCodes, [3]);
     const files = buildSystemdUnitFiles(task, repoRootAbs);
-    assert.doesNotMatch(files.serviceContent, /SuccessExitStatus=/);
+    assert.match(files.serviceContent, /^SuccessExitStatus=3$/m);
   });
 
   it("o alarme #5405 não é mais uma task registrada após a remoção do D4", () => {
