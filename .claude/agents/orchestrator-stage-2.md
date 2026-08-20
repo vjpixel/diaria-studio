@@ -531,5 +531,11 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
     ```
     Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 
+  - **Snapshot pós-Stage 2 para derivação de pedidos editoriais (#5731).** Após o gate unificado, criar snapshots dos arquivos finais para permitir derivação determinística posterior de mudanças editoriais:
+    ```bash
+    npx tsx scripts/derive-editor-requests.ts snapshot-stage2 --edition {AAMMDD}
+    ```
+    Exit code handling: `0` = snapshots criados; `!=0` = logar warn, não bloquear.
+
   - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 2` (#3441) — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` reais a partir do transcript local da sessão; sem transcript local, sai sem escrever (fail-soft). Ler o JSON de stdout: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel acima — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.

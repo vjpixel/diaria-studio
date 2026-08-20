@@ -306,6 +306,12 @@ node -e "
 "
 ```
 
+**Derivar pedidos editoriais do diff (#5731).** No gate de agendamento, derivar pedidos comparando snapshots vs estado atual (captura mudanças pós-Stage 4, se houver):
+```bash
+npx tsx scripts/derive-editor-requests.ts derive-stage6 --edition {AAMMDD}
+```
+Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = logar warn, não bloquear.
+
 ### 6f. Escrever sentinel de conclusao
 
 ```bash

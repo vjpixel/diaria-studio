@@ -81,6 +81,7 @@ export type RequestTarget =
   | "newsletter";
 
 export type Resolution = "accepted" | "partial" | "declined";
+export type RequestSource = "manual" | "derived";
 
 export interface EditorRequestEntry {
   timestamp: string;
@@ -90,6 +91,7 @@ export interface EditorRequestEntry {
   target: RequestTarget;
   description: string;
   resolution: Resolution;
+  source: RequestSource;
   context?: Record<string, unknown>;
 }
 
@@ -150,7 +152,7 @@ function main(): void {
   const missing = required.filter((k) => !args[k]);
   if (missing.length > 0) {
     console.error(
-      "Uso: log-editor-request.ts --edition AAMMDD --stage N --request-type <type> --target <target> --description \"...\" --resolution accepted|partial|declined [--context '<json>']\n" +
+      "Uso: log-editor-request.ts --edition AAMMDD --stage N --request-type <type> --target <target> --description \"...\" --resolution accepted|partial|declined [--source manual|derived] [--context '<json>']\n" +
         `Faltam: ${missing.join(", ")}`,
     );
     process.exit(2);
@@ -171,6 +173,12 @@ function main(): void {
   const resolution = args.resolution as Resolution;
   if (!VALID_RESOLUTIONS.includes(resolution)) {
     console.error(`resolution inválida: ${resolution}. Aceitos: ${VALID_RESOLUTIONS.join(", ")}`);
+    process.exit(2);
+  }
+
+  const source = (args.source as RequestSource) ?? "manual";
+  if (source !== "manual" && source !== "derived") {
+    console.error(`source inválido: ${source}. Aceitos: manual, derived`);
     process.exit(2);
   }
 
@@ -209,6 +217,7 @@ function main(): void {
     target,
     description: args.description,
     resolution,
+    source,
     context,
   });
 
