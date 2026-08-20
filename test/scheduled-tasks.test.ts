@@ -405,6 +405,16 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     assert.deepEqual(t!.schedule, { kind: "daily", hour: 19, minute: 0 });
   });
 
+  it("#5826: Diaria-Clarice-Envio trata exit 4 (lock de concorrência) como sucesso, não falha", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(t, "Diaria-Clarice-Envio ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.successExitCodes,
+      [4],
+      "exit 4 = lock já travado por outra sessão (abort seguro, runEnvio nunca tocou Brevo) — não deveria marcar a unit systemd como failed",
+    );
+  });
+
   it("Diaria-Clarice-Envio-Guard: presente, 05:00 diário, step aponta pro guard correto", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Envio-Guard");
     assert.ok(t, "Diaria-Clarice-Envio-Guard ausente de SCHEDULED_TASKS");

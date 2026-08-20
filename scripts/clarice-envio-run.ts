@@ -239,7 +239,15 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
 // ---------------------------------------------------------------------------
 
 export interface EnvioRunResult {
-  code: 0 | 1 | 2;
+  // #5826: 4 = lock de concorrência já estava travado (abort SEGURO, sem
+  // tocar Brevo — nunca uma falha genuína). Distinto de 1 (EnvioAbort real)
+  // de propósito: `Diaria-Clarice-Envio` (scheduled-tasks.ts) marca 4 em
+  // `successExitCodes` pra `systemctl --user list-units --state=failed`
+  // parar de acusar essa rodada como falha. 3 já está em uso por
+  // `Diaria-Clarice-Novos`/`-Tarde` (disparo incerto, outro script) — 4 evita
+  // colisão semântica mesmo não havendo colisão de fato (exit code é escopado
+  // por task/unit systemd, nunca comparado entre scripts diferentes).
+  code: 0 | 1 | 2 | 4;
   reportId: string;
   reportMarkdown: string;
 }
@@ -1172,7 +1180,10 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       report.note(e.message);
       const reportId = `envio-${aammdd}-lock-held`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — rodada concorrente em curso`, report.build());
-      return { code: 1, reportId, reportMarkdown: report.build() };
+      // #5826: code 4, não 1 — abort SEGURO (lock já travado por outra
+      // sessão, nunca tocou Brevo), não uma falha genuína. `code: 1` fazia o
+      // `Diaria-Systemd-Failed-Units-Alarm` disparar como se fosse erro real.
+      return { code: 4, reportId, reportMarkdown: report.build() };
     }
     const abort = e instanceof EnvioAbort ? e : new EnvioAbort(`❌ erro inesperado: ${(e as Error).message}`);
     report.note(abort.message);

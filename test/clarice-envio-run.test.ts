@@ -506,17 +506,23 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("lock detido por outra rodada => aborta ANTES do Passo 1 (code 1), zero exec, guard #4765", async () => {
+    it("lock detido por outra rodada => aborta ANTES do Passo 1 (code 4, abort seguro), zero exec, guard #4765", async () => {
       // Fecha o gap de teste do pr-test-analyzer: a trava de concorrência
       // (scripts/lib/clarice-envio-lock.ts) existe especificamente pra
       // prevenir o incidente real do #4765 (52/1.963 contatos escaparam do
       // dedup por escrita concorrente) — mas nunca tinha teste de ponta a
       // ponta confirmando que runEnvio de fato respeita o lock.
+      //
+      // #5826: code 4 (não 1) — este abort é SEGURO (lock já travado por
+      // outra sessão, nunca tocou Brevo), distinto de uma falha genuína.
+      // `Diaria-Clarice-Envio` (scheduled-tasks.ts) marca 4 em
+      // `successExitCodes` pra o alarme de units systemd falhas não disparar
+      // falso-positivo em cima disto.
       const root = freshRoot();
       acquireEnvioLock(root, CYCLE, "sessao-manual-concorrente", new Date(NOW.getTime() - 60_000));
       const { exec, calls } = makeFakeExec({ "scripts/clarice-check-derived-stale.ts": textResult("fresh") });
       const r = await runEnvio(baseDeps(root, { exec }));
-      assert.equal(r.code, 1);
+      assert.equal(r.code, 4);
       assert.match(r.reportMarkdown, /concorrente/);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-plan-wave.ts"), "lock detido aborta ANTES de qualquer chamada de rede");
       rmSync(root, { recursive: true, force: true });
