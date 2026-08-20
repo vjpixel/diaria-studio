@@ -64,7 +64,7 @@
  *   npx tsx scripts/sunset-dead-subscribers.ts --push --force-blast-radius
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -84,6 +84,7 @@ import {
   DEFAULT_STORE_PATH,
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
+import { computeAvailableSlots, computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SUNSET_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-log.jsonl");
@@ -242,6 +243,40 @@ export function evaluateBlastRadiusGuard(
   const ratio = matureActiveCount > 0 ? selectedCount / matureActiveCount : 0;
   const blocked = !force && ratio > threshold;
   return { blocked, selectedCount, matureActiveCount, ratio };
+}
+
+/** Fallback se `daily_send_cap` não estiver em `platform.config.json` — mesmo
+ *  valor default de `sync-pending-to-brevo.ts::DEFAULT_QUEUE_CAP`. */
+export const DEFAULT_QUEUE_CAP = 300;
+
+/**
+ * Pura — trunca a seleção pra caber nos slots livres da MESMA fila
+ * compartilhada com `sync-pending-to-brevo.ts` (`brevo_diaria.daily_send_cap`,
+ * `data/brevo-diaria/contacts.json`). Sem este gate, um `--push` deste
+ * script poderia empurrar `store.contacts` com `status=in_brevo` além do cap
+ * combinado com o segmento Pending — os dois scripts escrevem no MESMO store
+ * e na MESMA lista Brevo, então o cap é uma propriedade da FILA, não de cada
+ * script isoladamente (spec da issue #5807, item 4: "respeitando o fluxo
+ * existente... cap da fila").
+ *
+ * Prioriza quem tem engajamento mais baixo primeiro (open rate ascendente —
+ * desempate por `totalReceived` descendente, mais dado = mais confiança no
+ * "morto") — se o cap não couber todo mundo nesta rodada, os candidatos mais
+ * inequivocamente mortos saem primeiro; o resto permanece elegível pra
+ * próxima rodada (dedup pelo store, mesma disciplina de `computeContactsToIngest`).
+ */
+export function applyQueueCapGate(
+  selected: readonly SunsetInput[],
+  availableSlots: number,
+): SunsetInput[] {
+  if (availableSlots <= 0) return [];
+  const ordered = [...selected].sort((a, b) => {
+    const rateA = computeOpenRatePct(a.totalUniqueOpened, a.totalReceived);
+    const rateB = computeOpenRatePct(b.totalUniqueOpened, b.totalReceived);
+    if (rateA !== rateB) return rateA - rateB;
+    return b.totalReceived - a.totalReceived;
+  });
+  return ordered.slice(0, availableSlots);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,9 +461,34 @@ async function main(): Promise<void> {
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[sunset-dead-subscribers]");
 
   let store = readStore(DEFAULT_STORE_PATH);
+
+  // Cap da fila compartilhada com sync-pending-to-brevo.ts (item 4 da spec —
+  // "respeitando o fluxo existente... cap da fila"). Lido de
+  // platform.config.json → brevo_diaria.daily_send_cap, mesmo campo/fallback
+  // de sync-pending-to-brevo.ts::DEFAULT_QUEUE_CAP.
+  let cap = DEFAULT_QUEUE_CAP;
+  try {
+    const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+      brevo_diaria?: { daily_send_cap?: number };
+    };
+    cap = platformConfig.brevo_diaria?.daily_send_cap ?? DEFAULT_QUEUE_CAP;
+  } catch (e) {
+    log(`aviso: falha ao ler platform.config.json (${(e as Error).message}) — usando cap default ${DEFAULT_QUEUE_CAP}.`);
+  }
+  const currentActiveCount = computeCurrentActiveCount(store.contacts);
+  const availableSlots = computeAvailableSlots(currentActiveCount, cap);
+  const toApply = applyQueueCapGate(selection.selected, availableSlots);
+  log(`fila compartilhada (sync-pending-to-brevo.ts): ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s).`);
+  if (toApply.length < selection.selected.length) {
+    log(
+      `${selection.selected.length - toApply.length} candidato(s) NÃO aplicado(s) nesta rodada por falta de slot na ` +
+        `fila (permanecem elegíveis pra próxima rodada — dedup pelo store).`,
+    );
+  }
+
   let applied = 0;
   let failed = 0;
-  for (const s of selection.selected) {
+  for (const s of toApply) {
     const { result, nextStore } = await applySunsetOne(
       s,
       date,

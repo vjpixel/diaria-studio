@@ -20,6 +20,7 @@ import {
   sunsetInputFromBeehiivSubscriber,
   selectDeadSubscribers,
   evaluateBlastRadiusGuard,
+  applyQueueCapGate,
   unsubscribeFromBeehiiv,
   appendSunsetLog,
   applySunsetOne,
@@ -215,6 +216,46 @@ describe("evaluateBlastRadiusGuard", () => {
     const guard = evaluateBlastRadiusGuard(0, 0, false);
     assert.equal(guard.blocked, false);
     assert.equal(guard.ratio, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyQueueCapGate — cap da fila compartilhada com sync-pending-to-brevo.ts
+// ---------------------------------------------------------------------------
+
+describe("applyQueueCapGate", () => {
+  it("sem slots disponíveis → nenhum candidato aplicado", () => {
+    assert.deepEqual(applyQueueCapGate([sub({ email: "a@b.com" })], 0), []);
+  });
+
+  it("slots suficientes → todos aplicados", () => {
+    const candidates = [sub({ email: "a@b.com" }), sub({ email: "c@d.com" })];
+    const out = applyQueueCapGate(candidates, 5);
+    assert.equal(out.length, 2);
+  });
+
+  it("slots insuficientes → prioriza open rate mais baixo (mais inequivocamente morto) primeiro", () => {
+    const candidates = [
+      sub({ email: "less-dead@b.com", totalReceived: 30, totalUniqueOpened: 3, totalUniqueClicked: 0 }), // 10%
+      sub({ email: "very-dead@a.com", totalReceived: 30, totalUniqueOpened: 0, totalUniqueClicked: 0 }), // 0%
+    ];
+    const out = applyQueueCapGate(candidates, 1);
+    assert.deepEqual(
+      out.map((s) => s.email),
+      ["very-dead@a.com"],
+    );
+  });
+
+  it("empate no open rate desempata por mais recebidas (mais dado, mais confiança)", () => {
+    const candidates = [
+      sub({ email: "less-data@a.com", totalReceived: 20, totalUniqueOpened: 0, totalUniqueClicked: 0 }), // 0%
+      sub({ email: "more-data@b.com", totalReceived: 100, totalUniqueOpened: 0, totalUniqueClicked: 0 }), // 0%
+    ];
+    const out = applyQueueCapGate(candidates, 1);
+    assert.deepEqual(
+      out.map((s) => s.email),
+      ["more-data@b.com"],
+    );
   });
 });
 
