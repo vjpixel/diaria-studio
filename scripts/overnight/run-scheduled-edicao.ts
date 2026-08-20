@@ -56,7 +56,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { nextEditionDate } from "../lib/next-edition-date.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
-import { sentinelExists } from "../lib/pipeline-state.ts";
+import { assertSentinel } from "../lib/pipeline-state.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { STAGE_PLAN as STAGE_PLAN_IMPL, runEditionStages } from "../lib/edition-stage-runner.ts";
 import { runTsx } from "../lib/run-tsx.ts";
@@ -201,17 +201,19 @@ export function main(
   resolveClaudeBinFn: typeof resolveClaudeBin = resolveClaudeBin,
   // Injetável pelo mesmo motivo que `execFn` (#5738): permite testar o laço
   // resumível — "stage 2 já concluído, pula direto pro 3" — sem montar uma
-  // árvore de sentinelas em disco a cada caso de teste.
-  sentinelExistsFn: typeof sentinelExists = sentinelExists,
+  // árvore de sentinelas em disco a cada caso de teste. `assertSentinel` e não
+  // `sentinelExists` desde o #5744: sentinela órfã (output apagado) não conta
+  // como stage concluído.
+  assertSentinelFn: typeof assertSentinel = assertSentinel,
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
   const pid = process.pid;
 
   log(
-    repoRootAbs,
+      repoRootAbs,
     dataDir,
-    aammdd,
+      aammdd,
     `START edition=${aammdd} pid=${pid}`,
     "info",
     "scheduled-edicao: início",
@@ -243,7 +245,7 @@ export function main(
   // de inferir a partir da existência de um diretório. Edição pela metade
   // é retomada de onde parou; edição completa não gasta uma sessão para
   // constatar que não há o que fazer.
-  const pendingStages = STAGE_PLAN_IMPL.filter(({ stage }) => !sentinelExistsFn(editionDir, stage));
+  const pendingStages = STAGE_PLAN_IMPL.filter(({ stage }) => !assertSentinelFn(editionDir, stage).ok);
   if (existsSync(editionDir) && pendingStages.length === 0) {
     log(
       repoRootAbs,
@@ -295,17 +297,41 @@ export function main(
   // -------------------------------------------------------------------
   // UM SPAWN POR STAGE — laço compartilhado em `lib/edition-stage-runner.ts`
   // (#5738 criou, #5744 extraiu para o caminho interativo reusar).
-  const runResult = runEditionStages({
-    aammdd,
-    editionDir,
-    repoRootAbs,
-    resolveClaudeBin: resolveClaudeBinFn,
-    env: claudeCliEnv(process.env),
-    plan: STAGE_PLAN_IMPL,
-    execFn,
-    sentinelExistsFn,
-    onProgress: (m) => console.log(`[${nowIso()}] ${m}`),
-  });
+  // try/catch em volta (achado P3 do review da PR #5753): `assertNoPublishStage`
+  // lança, e hoje isso é inalcançável pelos dois callers — mas se um dia for
+  // alcançado, uma exceção crua aqui pularia todo o `log()` estruturado abaixo.
+  // O operador veria um stack trace no journal do systemd e nenhuma linha
+  // `FAIL edition=... stage=...` no schedule log, que é justamente onde ele
+  // procura.
+  let runResult: ReturnType<typeof runEditionStages>;
+  try {
+    runResult = runEditionStages({
+      aammdd,
+      editionDir,
+      repoRootAbs,
+      resolveClaudeBin: resolveClaudeBinFn,
+      env: claudeCliEnv(process.env),
+      plan: STAGE_PLAN_IMPL,
+      execFn,
+      assertSentinelFn,
+      onProgress: (m) => console.log(`[${nowIso()}] ${m}`),
+    });
+  } catch (e) {
+    runResult = {
+      outcomes: [],
+      exitCode: 1,
+      failedStage: null,
+    };
+    console.error(`[${nowIso()}] erro de configuração do plano de stages: ${(e as Error).message}`);
+    runResult.outcomes.push({
+      stage: -1,
+      skill: "(plano)",
+      status: "failed",
+      exitCode: 1,
+      durationMs: 0,
+      failureTail: (e as Error).message,
+    });
+  }
   const exitCode = runResult.exitCode;
   const failedStage = runResult.failedStage;
   const tail = runResult.outcomes.find((o) => o.status === "failed")?.failureTail ?? "";

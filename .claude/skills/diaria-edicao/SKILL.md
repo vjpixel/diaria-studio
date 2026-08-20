@@ -103,11 +103,17 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 
 **Rodar PRIMEIRO, antes de ler `orchestrator.md`:**
 
+**Rodar em BACKGROUND** (`run_in_background: true` no tool Bash):
+
 ```bash
 npx tsx scripts/run-edition-stages.ts --edition $1 --through 3
 ```
 
-Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário). Passar `timeout: 600000` no tool Bash: são três stages completos, tipicamente ~40min somados.
+Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
+
+**Por que background e não `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
+
+Enquanto roda, **não ficar consultando o progresso** — cada consulta traz saída para a conversa, que é o contexto que este passo existe para não carregar. Esperar a notificação de término.
 
 **Por que isto importa mais que qualquer outra otimização do pipeline.** Na edição 260814 o Stage 4 sozinho custou 581M dos 999M de tokens de entrada da edição inteira — não porque faça mais trabalho, mas porque herdava o contexto acumulado dos stages anteriores. Rodando com contexto limpo, caiu para 163M (#5738). Tirar os Stages 1-3 desta sessão faz o Stage 4 começar quase do zero, que é onde está o corte.
 

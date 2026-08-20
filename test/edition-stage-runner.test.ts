@@ -31,6 +31,54 @@ import { join } from "node:path";
 
 const AAMMDD = "260820";
 
+/**
+ * Mundo de sentinelas fake — modela DISCO, não contagem de chamadas (#5744).
+ *
+ * A primeira versão contava invocações ("1ª = antes de spawnar, 2ª = depois"),
+ * e quebrou assim que outro ponto do código passou a consultar o mesmo stage:
+ * a contagem saía do compasso e todo stage era pulado. Modelar o estado — um
+ * conjunto de concluídos que o spawn ATUALIZA — é fiel ao real e imune à
+ * ordem/número de consultas.
+ *
+ * `neverCompletes`: stages cujo processo sai 0 sem escrever sentinela — o
+ * cenário do `--max-turns` esgotado, que a pós-condição existe para pegar.
+ */
+function sentinelWorld(doneUpTo = 0, neverCompletes: number[] = []) {
+  const done = new Set<number>();
+  for (let i = 1; i <= doneUpTo; i++) done.add(i);
+  return {
+    assertFn: (_dir: string, step: number) =>
+      done.has(step)
+        ? { ok: true as const }
+        : { ok: false as const, reason: "sentinel_missing" as const },
+    complete: (step: number) => {
+      if (!neverCompletes.includes(step)) done.add(step);
+    },
+  };
+}
+
+function spawnInto(
+  world: ReturnType<typeof sentinelWorld>,
+  prompts: string[],
+  failOn?: { stage: string; code: number },
+  stdout = "",
+) {
+  return ((_cmd: string, args: string[]) => {
+    const prompt = args[args.length - 1];
+    prompts.push(prompt);
+    if (failOn && prompt.includes(failOn.stage)) {
+      const e = new Error("falhou") as Error & { status?: number };
+      e.status = failOn.code;
+      throw e;
+    }
+    const m = prompt.match(/diaria-(\d)-/);
+    if (m) world.complete(Number(m[1]));
+    return stdout;
+  }) as unknown as typeof import("node:child_process").execFileSync;
+}
+
+let W = sentinelWorld();
+
 function makeOpts(overrides: Record<string, unknown> = {}) {
   return {
     aammdd: AAMMDD,
@@ -38,7 +86,7 @@ function makeOpts(overrides: Record<string, unknown> = {}) {
     repoRootAbs: "/fake/repo",
     resolveClaudeBin: () => "/fake/bin/claude",
     env: {} as NodeJS.ProcessEnv,
-    sentinelExistsFn: () => false,
+    assertSentinelFn: W.assertFn,
     nowMs: () => 0,
     ...overrides,
   } as Parameters<typeof runEditionStages>[0];
@@ -46,8 +94,9 @@ function makeOpts(overrides: Record<string, unknown> = {}) {
 
 describe("edition-stage-runner — contrato de saída (#5744)", () => {
   it("stdout de sucesso NÃO volta para o chamador", () => {
+    W = sentinelWorld(0);
     const huge = "x".repeat(50_000);
-    const execFn = (() => huge) as unknown as typeof import("node:child_process").execFileSync;
+    const execFn = spawnInto(W, [], undefined, huge);
 
     const result = runEditionStages(makeOpts({ execFn }));
 
@@ -61,6 +110,7 @@ describe("edition-stage-runner — contrato de saída (#5744)", () => {
   });
 
   it("stdout de FALHA volta, mas truncado", () => {
+    W = sentinelWorld(0);
     const noisy = Array.from({ length: 200 }, (_, i) => `linha ${i}`).join("\n");
     const execFn = (() => {
       const err = new Error("boom") as Error & { status?: number; stdout?: string };
@@ -81,6 +131,7 @@ describe("edition-stage-runner — contrato de saída (#5744)", () => {
 
 describe("edition-stage-runner — guard de publicação", () => {
   it("plano com Stage 5 LANÇA, nunca só avisa", () => {
+    W = sentinelWorld(0);
     assert.throws(
       () => assertNoPublishStage([{ stage: 5, skill: "diaria-5-publicacao" }]),
       /publicação|#1326/i,
@@ -89,6 +140,7 @@ describe("edition-stage-runner — guard de publicação", () => {
   });
 
   it("runEditionStages recusa o plano antes de spawnar qualquer coisa", () => {
+    W = sentinelWorld(0);
     let spawned = 0;
     const execFn = (() => {
       spawned++;
@@ -106,11 +158,13 @@ describe("edition-stage-runner — guard de publicação", () => {
   });
 
   it("STAGE_PLAN em si nunca contém publicação", () => {
+    W = sentinelWorld(0);
     assert.doesNotThrow(() => assertNoPublishStage(STAGE_PLAN));
     assert.ok(STAGE_PLAN.every((p) => p.stage <= 4));
   });
 
   it("planThrough recusa --through 5 com mensagem legível", () => {
+    W = sentinelWorld(0);
     assert.throws(() => planThrough(5), /--through inválido/);
     assert.throws(() => planThrough(0), /--through inválido/);
     assert.deepEqual(
@@ -126,11 +180,9 @@ describe("edition-stage-runner — guard de publicação", () => {
 
 describe("edition-stage-runner — laço", () => {
   it("todo prompt carrega --no-gates (achado P0 do review #5739)", () => {
+    W = sentinelWorld(0);
     const prompts: string[] = [];
-    const execFn = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const execFn = spawnInto(W, prompts);
 
     runEditionStages(makeOpts({ execFn }));
 
@@ -139,11 +191,9 @@ describe("edition-stage-runner — laço", () => {
   });
 
   it("--through 3 spawna só 1-3 — o corte do caminho interativo", () => {
+    W = sentinelWorld(0);
     const prompts: string[] = [];
-    const execFn = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const execFn = spawnInto(W, prompts);
 
     runEditionStages(makeOpts({ execFn, plan: planThrough(3) }));
 
@@ -159,17 +209,9 @@ describe("edition-stage-runner — laço", () => {
   });
 
   it("falha interrompe o laço: stages seguintes não spawnam", () => {
+    W = sentinelWorld(0);
     const prompts: string[] = [];
-    const execFn = ((_cmd: string, args: string[]) => {
-      const prompt = args[args.length - 1];
-      prompts.push(prompt);
-      if (prompt.includes("diaria-2-escrita")) {
-        const err = new Error("falhou") as Error & { status?: number };
-        err.status = 9;
-        throw err;
-      }
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const execFn = spawnInto(W, prompts, { stage: "diaria-2-escrita", code: 9 });
 
     const result = runEditionStages(makeOpts({ execFn }));
 
@@ -178,15 +220,54 @@ describe("edition-stage-runner — laço", () => {
     assert.equal(prompts.length, 2, "stages 3 e 4 não deveriam ter rodado sobre o output ausente do 2");
   });
 
-  it("sentinela presente pula sem spawnar, e o resultado registra o skip", () => {
+  it("stage sai 0 SEM escrever sentinela -> FALHA, nunca 'ok' (o buraco do --max-turns)", () => {
+    W = sentinelWorld(0, [2]); // stage 2 "roda", sai 0, e não completa nada
     const prompts: string[] = [];
-    const execFn = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const execFn = spawnInto(W, prompts);
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    // Este é o pior desfecho possível do mecanismo, e o motivo de a
+    // pós-condição existir: `execFileSync` só lança quando o filho sai != 0,
+    // e uma sessão que esgota `--max-turns 120` no meio do trabalho pode sair
+    // 0. Sem esta checagem o laço marcaria "ok", seguiria para o Stage 3, e o
+    // editor chegaria ao gate de revisão sobre uma edição incompleta — sem
+    // nada em lugar nenhum indicando que faltou trabalho.
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.failedStage, 2);
+    const failed = result.outcomes.find((o) => o.status === "failed");
+    assert.match(failed?.failureTail ?? "", /saiu com código 0 mas não completou/);
+    assert.equal(prompts.length, 2, "o stage 3 não pode rodar sobre o trabalho ausente do 2");
+  });
+
+  it("sentinela órfã (output apagado) NÃO conta como stage concluído", () => {
+    const prompts: string[] = [];
+    // `assertSentinel` distingue "arquivo existe" de "existe e os outputs
+    // declarados continuam em disco". Com a versão fraca (`sentinelExists`),
+    // uma sentinela cujo output foi apagado — edição manual do editor, debug —
+    // faria o stage ser pulado e o pipeline seguir sobre conteúdo ausente.
+    const orphan = {
+      assertFn: (_d: string, step: number) =>
+        step === 1
+          ? { ok: false as const, reason: "outputs_missing" as const, missingOutputs: ["01-categorized.md"] }
+          : { ok: true as const },
+      complete: () => {},
+    };
+    runEditionStages(makeOpts({ execFn: spawnInto(orphan as never, prompts), assertSentinelFn: orphan.assertFn }));
+
+    assert.ok(
+      prompts.some((p) => p.includes("diaria-1-pesquisa")),
+      "stage com output ausente precisa rodar de novo, não ser pulado",
+    );
+  });
+
+  it("sentinela presente pula sem spawnar, e o resultado registra o skip", () => {
+    W = sentinelWorld(2);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
 
     const result = runEditionStages(
-      makeOpts({ execFn, sentinelExistsFn: (_d: string, step: number) => step <= 2 }),
+      makeOpts({ execFn, assertSentinelFn: W.assertFn }),
     );
 
     assert.deepEqual(prompts, [
@@ -200,6 +281,7 @@ describe("edition-stage-runner — laço", () => {
   });
 
   it("resolveClaudeBin é chamado DENTRO do try — falha vira resultado, não crash (#5549)", () => {
+    W = sentinelWorld(0);
     const result = runEditionStages(
       makeOpts({
         resolveClaudeBin: () => {
@@ -218,6 +300,7 @@ describe("edition-stage-runner — laço", () => {
 
 describe("edition-stage-runner — resumo", () => {
   it("formatStagesSummary nomeia o stage que falhou e avisa que o resto não rodou", () => {
+    W = sentinelWorld(0);
     const out = formatStagesSummary(
       {
         outcomes: [
@@ -235,8 +318,9 @@ describe("edition-stage-runner — resumo", () => {
   });
 
   it("summarizeFailure achata e corta", () => {
+    W = sentinelWorld(0);
     assert.equal(summarizeFailure("a\n\n  b  \nc"), "a | b | c");
-    assert.equal(summarizeFailure(""), "");
+    assert.match(summarizeFailure(""), /sem stdout/);
   });
 });
 
@@ -246,12 +330,9 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
     const err: string[] = [];
     const prompts: string[] = [];
     const deps = {
-      execFn: ((_c: string, args: string[]) => {
-        prompts.push(args[args.length - 1]);
-        return "";
-      }) as unknown as typeof import("node:child_process").execFileSync,
+      execFn: spawnInto(W, prompts),
       resolveClaudeBinFn: () => "/fake/bin/claude",
-      sentinelExistsFn: () => false,
+      assertSentinelFn: W.assertFn,
       env: { SAFE: "1" } as NodeJS.ProcessEnv,
       stdout: (l: string) => out.push(l),
       stderr: (l: string) => err.push(l),
@@ -262,6 +343,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   }
 
   it("--edition ausente ou malformado -> exit 2 com mensagem de uso, sem spawnar", () => {
+    W = sentinelWorld(0);
     for (const argv of [[], ["--edition", "26082"], ["--edition", "abcdef"]]) {
       const { deps, err, prompts } = makeDeps();
       const code = cliMain(argv, deps);
@@ -272,6 +354,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("--through 5 -> exit 2 com a mensagem legível, sem spawnar (fim a fim)", () => {
+    W = sentinelWorld(0);
     const { deps, err, prompts } = makeDeps();
     const code = cliMain(["--edition", "260820", "--through", "5"], deps);
     // A função pura já era testada; o que faltava era o CAMINHO REAL — o
@@ -283,6 +366,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("default sem --through PARA no Stage 3 — nunca auto-aprova o gate de revisão", () => {
+    W = sentinelWorld(0);
     const a = makeDeps();
     cliMain(["--edition", "260820"], a.deps);
 
@@ -296,6 +380,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
       "o default jamais pode spawnar o Stage 4 headless",
     );
 
+    W = sentinelWorld(0); // mundo novo: o bloco acima já concluiu 1-3
     const b = makeDeps();
     cliMain(["--edition", "260820", "--through", "3"], b.deps);
     assert.deepEqual(
@@ -305,6 +390,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("--through 4 é possível, mas só por escrito", () => {
+    W = sentinelWorld(0);
     const { deps, prompts } = makeDeps();
     cliMain(["--edition", "260820", "--through", "4"], deps);
     assert.equal(prompts.length, 4);
@@ -312,6 +398,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("progresso vai pro stderr; stdout carrega SÓ o resumo", () => {
+    W = sentinelWorld(0);
     const { deps, out, err } = makeDeps();
     cliMain(["--edition", "260820", "--through", "3"], deps);
 
@@ -324,10 +411,9 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("--json troca o resumo por JSON, e o JSON também não carrega stdout de stage", () => {
+    W = sentinelWorld(0);
     const huge = "y".repeat(40_000);
-    const { deps, out } = makeDeps({
-      execFn: (() => huge) as unknown as typeof import("node:child_process").execFileSync,
-    });
+    const { deps, out } = makeDeps({ execFn: spawnInto(W, [], undefined, huge) });
     cliMain(["--edition", "260820", "--through", "3", "--json"], deps);
 
     assert.equal(out.length, 1);
@@ -337,16 +423,8 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
   });
 
   it("falha de stage propaga o exit code do stage pro exit code do CLI", () => {
-    const { deps } = makeDeps({
-      execFn: ((_c: string, args: string[]) => {
-        if (args[args.length - 1].includes("diaria-2-escrita")) {
-          const e = new Error("x") as Error & { status?: number };
-          e.status = 6;
-          throw e;
-        }
-        return "";
-      }) as unknown as typeof import("node:child_process").execFileSync,
-    });
+    W = sentinelWorld(0);
+    const { deps } = makeDeps({ execFn: spawnInto(W, [], { stage: "diaria-2-escrita", code: 6 }) });
     assert.equal(cliMain(["--edition", "260820", "--through", "3"], deps), 6);
   });
 });

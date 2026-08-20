@@ -36,7 +36,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { sentinelExists as sentinelExistsImpl } from "./pipeline-state.ts";
+import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -126,7 +126,20 @@ export interface RunEditionStagesOptions {
   /** Subconjunto de `STAGE_PLAN` a executar. */
   plan?: ReadonlyArray<EditionStage>;
   execFn?: typeof execFileSync;
-  sentinelExistsFn?: typeof sentinelExistsImpl;
+  /**
+   * `assertSentinel`, NÃO `sentinelExists` (achados P0/P1 do review da PR #5753).
+   *
+   * A versão fraca só pergunta "o arquivo `.step-N-done.json` existe?".
+   * `assertSentinel` também confere se os outputs que o sentinel declara
+   * continuam em disco. A diferença morde nos dois sentidos:
+   *
+   *   - **pular**: um sentinel órfão — output apagado por edição manual, ou
+   *     escrito à mão num debug — faria o stage inteiro ser pulado como
+   *     "já pronto", e o pipeline seguiria para o gate de revisão sobre
+   *     conteúdo ausente.
+   *   - **confirmar**: ver abaixo, é o que fecha o buraco do `--max-turns`.
+   */
+  assertSentinelFn?: typeof assertSentinelImpl;
   /** Callback de progresso — o chamador decide se imprime e como. */
   onProgress?: (message: string) => void;
   nowMs?: () => number;
@@ -158,12 +171,15 @@ export function assertNoPublishStage(plan: ReadonlyArray<EditionStage>): void {
 
 /** Últimas `FAILURE_TAIL_LINES` linhas não-vazias, achatadas em uma linha. */
 export function summarizeFailure(raw: string): string {
-  return raw
+  const flattened = raw
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "")
     .slice(-FAILURE_TAIL_LINES)
     .join(" | ");
+  // Um traço nu no resumo ("FALHOU exit=1 — ") é pior que verboso: o leitor
+  // não sabe se não houve saída ou se ela se perdeu no caminho.
+  return flattened === "" ? "(sem stdout/stderr/message capturados — checar o log do processo claude)" : flattened;
 }
 
 /**
@@ -182,7 +198,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     env,
     plan = STAGE_PLAN,
     execFn = execFileSync,
-    sentinelExistsFn = sentinelExistsImpl,
+    assertSentinelFn = assertSentinelImpl,
     onProgress = () => {},
     nowMs = () => Date.now(),
   } = opts;
@@ -197,8 +213,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     // Resumabilidade no nível do DRIVER: stage concluído nem chega a
     // spawnar, em vez de gastar uma sessão inteira só para o orquestrador
     // constatar que não há o que fazer.
-    if (sentinelExistsFn(editionDir, stage)) {
-      onProgress(`SKIP stage ${stage} (/${skill}) — sentinela já presente`);
+    const before = assertSentinelFn(editionDir, stage);
+    if (before.ok) {
+      onProgress(`SKIP stage ${stage} (/${skill}) — sentinela e outputs já em disco`);
       outcomes.push({ stage, skill, status: "skipped", exitCode: 0, durationMs: 0 });
       continue;
     }
@@ -230,6 +247,35 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       );
       // O stdout do sucesso é DESCARTADO aqui, e é o ponto central do #5744:
       // devolvê-lo recriaria na sessão-mãe o contexto que o laço evita.
+
+      // PÓS-CONDIÇÃO (achado P0 do review da PR #5753). Sair com código 0 não
+      // prova que o stage fez o trabalho — prova só que o processo terminou
+      // sem erro. O caso concreto que isso fecha: uma sessão que esgota
+      // `--max-turns 120` no meio do stage pode muito bem sair 0, e o
+      // comportamento do CLI aqui não é verificável a partir deste repo. Sem
+      // esta checagem, o laço marcaria "ok", seguiria para o próximo stage, e
+      // o editor chegaria ao gate de revisão sobre uma edição incompleta —
+      // exatamente o pior desfecho possível deste mecanismo. A verificação é
+      // barata e não depende de adivinhar a semântica de exit code do harness.
+      const after = assertSentinelFn(editionDir, stage);
+      if (!after.ok) {
+        const detail =
+          after.reason === "outputs_missing"
+            ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
+            : "sentinela não foi escrita";
+        exitCode = 1;
+        failedStage = stage;
+        outcomes.push({
+          stage,
+          skill,
+          status: "failed",
+          exitCode: 1,
+          durationMs: nowMs() - startedAt,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}`,
+        });
+        break;
+      }
+
       outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };

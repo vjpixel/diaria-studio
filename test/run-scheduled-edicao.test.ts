@@ -35,6 +35,51 @@ function makeRepoRoot(): string {
  */
 const FAKE_RESOLVE_CLAUDE_BIN = () => "/fake/bin/claude";
 
+/**
+ * Mundo de sentinelas fake — modela DISCO, não contagem de chamadas (#5744).
+ *
+ * A primeira versão deste helper contava invocações ("1ª = antes, 2ª =
+ * depois"), e quebrou assim que o guard de idempotência passou a consultar
+ * cada stage antes do laço: a contagem saía do compasso e todos os stages
+ * eram pulados. Modelar o estado — um conjunto de stages concluídos que o
+ * spawn ATUALIZA — é fiel ao que acontece de verdade e imune à ordem/número
+ * de consultas.
+ *
+ * `neverCompletes`: stages cujo processo sai 0 sem escrever sentinela — o
+ * cenário do `--max-turns` esgotado, que a pós-condição existe para pegar.
+ */
+function sentinelWorld(doneUpTo = 0, neverCompletes: number[] = []) {
+  const done = new Set<number>();
+  for (let i = 1; i <= doneUpTo; i++) done.add(i);
+  return {
+    assertFn: (_dir: string, step: number) =>
+      done.has(step)
+        ? { ok: true as const }
+        : { ok: false as const, reason: "sentinel_missing" as const },
+    complete: (step: number) => {
+      if (!neverCompletes.includes(step)) done.add(step);
+    },
+  };
+}
+
+/** `execFn` fake que registra prompts e "completa" o stage no mundo dado. */
+function spawnInto(world: ReturnType<typeof sentinelWorld>, prompts: string[], failOn?: { stage: string; code: number }) {
+  return ((_cmd: string, args: string[]) => {
+    const prompt = args[args.length - 1];
+    prompts.push(prompt);
+    if (failOn && prompt.includes(failOn.stage)) {
+      const e = new Error("falhou") as Error & { status?: number };
+      e.status = failOn.code;
+      throw e;
+    }
+    const m = prompt.match(/diaria-(\d)-/);
+    if (m) world.complete(Number(m[1]));
+    return "";
+  }) as unknown as typeof import("node:child_process").execFileSync;
+}
+
+let W = sentinelWorld();
+
 describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", () => {
   let repoRootAbs: string;
 
@@ -43,6 +88,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("edição existe E todos os stages concluídos -> SKIP, nunca chama execFn (#4998, refinado #5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
     mkdirSync(join(repoRootAbs, "data", "editions", AAMMDD), { recursive: true });
 
@@ -52,7 +98,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => true);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, sentinelWorld(99).assertFn);
 
     assert.equal(code, 0);
     assert.equal(execCalled, false, "edição completa não deveria spawnar sessão nenhuma");
@@ -67,15 +113,13 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("data/editions/{AAMMDD}/ NÃO existe -> UM spawn por stage, um prompt de skill cada (#5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts);
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
 
     assert.equal(code, 0);
     // É o coração do #5738: uma sessão POR STAGE, não uma sessão pra edição
@@ -95,15 +139,13 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("guard de publicação é ESTRUTURAL: nenhum prompt invoca Stage 5/6 (#5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts);
 
-    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
 
     // Antes do #5738 a garantia dependia de `--skip newsletter,linkedin,facebook`
     // ser respeitado pipeline adentro. Agora depende de os stages simplesmente
@@ -118,13 +160,11 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("stage com sentinela já presente é PULADO, sem spawnar (#5738)", () => {
+    W = sentinelWorld(2);
     repoRootAbs = makeRepoRoot();
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts);
 
     // Stages 1 e 2 concluídos; retomada deve começar direto no 3.
     const code = runScheduledEdicaoMain(
@@ -132,7 +172,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       fakeExec,
       AAMMDD,
       FAKE_RESOLVE_CLAUDE_BIN,
-      (_dir: string, step: number) => step <= 2,
+      W.assertFn,
     );
 
     assert.equal(code, 0);
@@ -140,6 +180,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("edição JÁ EXISTE em disco mas com stages pendentes -> RETOMA, não pula (#5738)", () => {
+    W = sentinelWorld(2);
     repoRootAbs = makeRepoRoot();
     // Cenário real de retry: o Stage 1 cria o diretório da edição assim que
     // começa. Com o guard antigo ("diretório existe? -> SKIP"), toda
@@ -148,17 +189,14 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     mkdirSync(join(repoRootAbs, "data", "editions", AAMMDD), { recursive: true });
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts);
 
     const code = runScheduledEdicaoMain(
       repoRootAbs,
       fakeExec,
       AAMMDD,
       FAKE_RESOLVE_CLAUDE_BIN,
-      (_dir: string, step: number) => step <= 2,
+      W.assertFn,
     );
 
     assert.equal(code, 0);
@@ -166,15 +204,13 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("todo prompt carrega --no-gates: sem isso o headless trava no gate (#5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      prompts.push(args[args.length - 1]);
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts);
 
-    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
 
     // `/diaria-edicao` setava `auto_approve = true` internamente para os
     // Stages 1-3 (#1523). Invocando as skills standalone esse auto-approve
@@ -190,6 +226,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("todos os stages já concluídos -> nenhum spawn, retorna 0 (#5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     let execCalled = false;
@@ -198,13 +235,14 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => true);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, sentinelWorld(99).assertFn);
 
     assert.equal(code, 0);
     assert.equal(execCalled, false, "edição já completa não deveria spawnar sessão nenhuma");
   });
 
   it("execFn (claude) lança (exit != 0) -> propaga o exit code e loga FAIL", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     const fakeExec = (() => {
@@ -214,7 +252,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       throw err;
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
 
     assert.equal(code, 3);
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
@@ -224,21 +262,13 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
   });
 
   it("falha no meio do laço interrompe: stages seguintes não spawnam (#5738)", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
 
     const prompts: string[] = [];
-    const fakeExec = ((_cmd: string, args: string[]) => {
-      const prompt = args[args.length - 1];
-      prompts.push(prompt);
-      if (prompt.includes("diaria-2-escrita")) {
-        const err = new Error("stage 2 explodiu") as Error & { status?: number };
-        err.status = 7;
-        throw err;
-      }
-      return "";
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    const fakeExec = spawnInto(W, prompts, { stage: "diaria-2-escrita", code: 7 });
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
 
     assert.equal(code, 7);
     // Sem o `break`, os stages 3 e 4 rodariam sobre o output ausente do 2 —
@@ -317,12 +347,14 @@ describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608
   });
 
   it("CLAUDE_CODE_OAUTH_TOKEN sobrevive — é o login claude.ai, não a key da API", () => {
+    W = sentinelWorld(0);
     const filtered = claudeCliEnv({ CLAUDE_CODE_OAUTH_TOKEN: "oauth", ANTHROPIC_API_KEY: "sk-ant-xxx" });
     assert.equal(filtered.CLAUDE_CODE_OAUTH_TOKEN, "oauth");
     assert.equal(filtered.ANTHROPIC_API_KEY, undefined);
   });
 
   it("regressão 260818: o spawn do claude recebe env SEM ANTHROPIC_API_KEY", () => {
+    W = sentinelWorld(0);
     repoRootAbs = makeRepoRoot();
     const previous = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-ant-conta-sem-credito";
@@ -334,7 +366,7 @@ describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608
     }) as unknown as typeof import("node:child_process").execFileSync;
 
     try {
-      runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
+      runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, W.assertFn);
     } finally {
       if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = previous;

@@ -97,7 +97,7 @@ export function planThrough(through: number, plan: ReadonlyArray<EditionStage> =
 export interface MainDeps {
   execFn: typeof execFileSync;
   resolveClaudeBinFn: () => string;
-  sentinelExistsFn?: (editionDir: string, step: number) => boolean;
+  assertSentinelFn?: typeof import("./lib/pipeline-state.ts").assertSentinel;
   env: NodeJS.ProcessEnv;
   stdout: (line: string) => void;
   stderr: (line: string) => void;
@@ -111,7 +111,7 @@ export function main(
   const {
     execFn = execFileSync,
     resolveClaudeBinFn = resolveClaudeBin,
-    sentinelExistsFn,
+    assertSentinelFn,
     env = claudeCliEnv(process.env),
     stdout = (l: string) => console.log(l),
     stderr = (l: string) => console.error(l),
@@ -132,6 +132,14 @@ export function main(
     // `--no-gates`, auto-aprovando em silêncio o gate humano de revisão, que é
     // um dos dois gates de projeto. O único consumidor real já passa `--through 3`
     // explicitamente; quem quiser o Stage 4 headless pede por escrito.
+    // `--through` sem valor (ex: `--through --json`) cai em `flags`, não em
+    // `values` — sem este guard o `?:` mascararia a ausência e rodaria o plano
+    // default em silêncio, com o usuário achando que restringiu (achado P3 do
+    // review da PR #5753).
+    if (flags.has("through")) {
+      stderr("--through exige um número (1..4). Ex: --through 3");
+      return 2;
+    }
     plan = planThrough(values["through"] ? parseInt(values["through"], 10) : DEFAULT_THROUGH);
   } catch (e) {
     stderr((e as Error).message);
@@ -148,7 +156,7 @@ export function main(
     env,
     plan,
     execFn,
-    ...(sentinelExistsFn ? { sentinelExistsFn } : {}),
+    ...(assertSentinelFn ? { assertSentinelFn } : {}),
     // Progresso no stderr deixa o stdout parseável quando `--json` é usado.
     // NÃO é o que protege o contexto da sessão — o Bash tool entrega os dois
     // fluxos ao agente de qualquer forma. A proteção real é o descarte do
