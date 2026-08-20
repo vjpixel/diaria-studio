@@ -499,7 +499,7 @@ done
 
 **Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Sonnet, #2772) escolhe automaticamente como fallback no Passo 7.
 
-**Se `--no-gate`/`--no-gates`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
+**Se `--no-gate`/`--no-gates`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário), 7b e 7c (sentinel, #5792), e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
 
 **Caso contrário:** apresentar ao usuário (omitir seções não geradas se `$2` limitou o escopo):
 
@@ -524,7 +524,7 @@ Posts gerados:
 Aprovar (sim) / pedir retry / editar manualmente?
 ```
 
-Aguardar resposta. Se "sim", **continuar para Passo 7 (title-picker fallback)**. Se "retry", re-rodar Passo 2 em diante. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`.
+Aguardar resposta. Se "sim", **continuar para Passo 7 (title-picker fallback), 7b e 7c (sentinel)**. Se "retry", re-rodar Passo 2 em diante. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`.
 
 ## Passo 7 — Title-picker fallback pós-aprovação (newsletter, se não pulado)
 
@@ -568,6 +568,16 @@ Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicion
 
 ```bash
 [ -f {EDIR}/_internal/02-pre-clarice.md ] && rm {EDIR}/_internal/02-pre-clarice.md
+```
+
+## Passo 7c — Escrever sentinel de conclusão (#5792)
+
+Ponto de convergência dos dois caminhos de finalização da Etapa 2 — gate humano aprovado no Passo 6 ("sim") **e** `--no-gate`/`--no-gates` (que pula o Passo 6 direto pro Passo 7) chegam ambos aqui, depois do title-picker fallback (Passo 7) e do insert de TÍTULO/SUBTÍTULO (Passo 7b) já terem rodado. Escrever o sentinel **só neste ponto** — nunca antes do title-picker, para não gerar sentinel prematuro:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 --step 2 \
+  --outputs "02-reviewed.md,03-social.md"
 ```
 
 ## Outputs
