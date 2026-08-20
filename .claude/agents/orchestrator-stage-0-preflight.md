@@ -400,7 +400,7 @@ fi
 ```
 **A classificação é determinística desde o #5756** — não julgar em prosa (regra #573 do CLAUDE.md):
 ```bash
-npx tsx scripts/check-prev-social-status.ts --prev-dir "$PREV_SOCIAL_DIR" --prev-edition {PREV}
+npx tsx scripts/check-prev-social-status.ts --prev-dir "$PREV_SOCIAL_DIR"   --prev-edition "$(basename "$PREV_SOCIAL_DIR")"
 ```
 Sai 0 sempre. Se imprimir uma linha começando com `edição anterior {PREV}:`, alertar o editor com ela. Se imprimir `nenhum post social exige atenção`, seguir em silêncio. Arquivo ausente também é silencioso.
 

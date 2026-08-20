@@ -8,6 +8,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   analyzePrevSocial,
   formatPrevSocialSummary,
@@ -123,6 +127,94 @@ describe("prev-social-status — resumo", () => {
     const s = formatPrevSocialSummary(analyzePrevSocial(realisticEdition("scheduled"), NOW), "260819");
     assert.ok(s);
     assert.match(s, /260819/);
-    assert.match(s, /facebook\/d1 \(overdue-pollable\)/);
+    // Rótulo em pt-BR, não a tag interna: a frase é lida pelo editor.
+    assert.match(s, /facebook\/d1 \(agendado e não publicado\)/);
+    assert.ok(!s.includes("overdue-pollable"), "tag técnica não deve vazar para a frase do editor");
+  });
+});
+
+describe("check-prev-social-status CLI (#5756, lacuna do review da PR #5762)", () => {
+  it("arquivo ausente é SILENCIOSO e exit 0 — primeira edição não é alarme", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prev-social-"));
+    try {
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/check-prev-social-status.ts", "--prev-dir", dir, "--json"],
+        { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, "edição sem posts sociais não pode falhar o preflight");
+      const out = JSON.parse(r.stdout.trim());
+      assert.deepEqual(out.findings, []);
+      assert.equal(out.file, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --file nem --prev-dir sai 2 com mensagem de uso", () => {
+    const r = spawnSync(process.execPath, ["--import", "tsx", "scripts/check-prev-social-status.ts"], {
+      cwd: join(import.meta.dirname, ".."),
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /Uso: npx tsx scripts\/check-prev-social-status\.ts/);
+  });
+
+  it("edição saudável imprime a linha de silêncio, não um alarme", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prev-social-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "06-social-published.json"),
+        JSON.stringify({ posts: realisticEdition() }),
+        "utf8",
+      );
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/check-prev-social-status.ts", "--prev-dir", dir],
+        { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
+      );
+      assert.equal(r.status, 0);
+      // O playbook decide entre alertar e seguir pelo texto desta linha —
+      // se ela mudar, o §0l passa a interpretar errado.
+      assert.match(r.stdout, /nenhum post social exige atenção/);
+      assert.match(r.stdout, /12 em estado terminal por desenho/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("Facebook vencido imprime a linha de alerta com a edição nomeada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prev-social-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // Data explicitamente antiga: os testes de unidade fixam `NOW`, mas o
+      // CLI usa o relógio real — uma fixture "hoje às 10h" pode estar no
+      // futuro dependendo da hora em que a suíte roda, e o teste passaria ou
+      // falharia conforme o horário.
+      const posts = realisticEdition("scheduled").map((p) => ({
+        ...p,
+        scheduled_at: "2020-01-01T10:00:00-03:00",
+      }));
+      writeFileSync(join(dir, "_internal", "06-social-published.json"), JSON.stringify({ posts }), "utf8");
+      const r = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/check-prev-social-status.ts",
+          "--prev-dir",
+          dir,
+          "--prev-edition",
+          "260819",
+        ],
+        { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, "o check é informativo — nunca bloqueia a edição, mesmo com achado");
+      assert.match(r.stdout, /edição anterior 260819:/);
+      assert.match(r.stdout, /3 post\(s\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

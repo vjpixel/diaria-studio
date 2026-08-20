@@ -102,9 +102,15 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
   return { findings, terminalByDesign, total: posts.length };
 }
 
+/** Rótulo em pt-BR por motivo — a frase é lida pelo editor, não pelo código. */
+const REASON_LABEL: Record<PrevSocialFinding["reason"], string> = {
+  failed: "dispatch falhou",
+  "overdue-pollable": "agendado e não publicado",
+};
+
 /** Resumo de uma linha para o log/terminal. `null` quando não há o que dizer. */
 export function formatPrevSocialSummary(report: PrevSocialReport, prevEdition: string): string | null {
   if (report.findings.length === 0) return null;
-  const parts = report.findings.map((f) => `${f.platform}/${f.destaque} (${f.reason})`);
+  const parts = report.findings.map((f) => `${f.platform}/${f.destaque} (${REASON_LABEL[f.reason]})`);
   return `edição anterior ${prevEdition}: ${report.findings.length} post(s) social(is) exigem atenção — ${parts.join(", ")}`;
 }
