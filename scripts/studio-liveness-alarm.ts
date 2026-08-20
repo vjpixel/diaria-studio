@@ -242,31 +242,30 @@ async function main(): Promise<void> {
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
     );
-    return;
-  }
-
-  const { nextState: nextAlarmState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
-    cwd: ROOT,
-    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
-  });
-  saveAlarmIssuesState(nextAlarmState);
-  for (const outcome of findingOutcomes) {
-    const ref: AlarmIssueResult = {
-      issueNumber: outcome.issueNumber,
-      url: outcome.url,
-      action: outcome.action,
-      error: outcome.error,
-    };
-    issueRefs.push(ref);
-    if (outcome.action === "failed") {
-      console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
-    } else {
-      console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+  } else {
+    const { nextState: nextAlarmState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextAlarmState);
+    for (const outcome of findingOutcomes) {
+      const ref: AlarmIssueResult = {
+        issueNumber: outcome.issueNumber,
+        url: outcome.url,
+        action: outcome.action,
+        error: outcome.error,
+      };
+      issueRefs.push(ref);
+      if (outcome.action === "failed") {
+        console.error(`${LOG_PREFIX} issue não criada/reusada: ${outcome.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} issue #${outcome.issueNumber} (${outcome.action}): ${outcome.url}`);
+      }
     }
   }
 
   if (!shouldSendStudioLivenessAlarm(evaluation, state)) {
-    saveState(nextState);
+    if (!isDryRun) saveState(nextState);
     console.log(
       isAlarmingVerdict(evaluation.verdict)
         ? `${LOG_PREFIX} já alarmado pro mesmo streak de falhas — não reenvia.`
@@ -285,6 +284,7 @@ async function main(): Promise<void> {
   const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
     return;
   }
   await sendGmailMessage(to, subject, body);
