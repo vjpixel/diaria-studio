@@ -48,19 +48,24 @@ publicações no Instagram do diar.ia.br. Ambos da conta `reboloinstituto`
 
 6. **Diferença de engajamento entre os 2 formatos** (biografia completa vs.
    deep-dive de uma obra): o carrossel biográfico completo teve ~7× mais
-   likes e compartilhamentos que o de uma obra só — sugere que arco narrativo
-   pessoal (superação, trajetória) engaja mais que análise de uma peça
-   isolada, pelo menos nesta conta de referência.
+   likes e ~4,5× mais compartilhamentos que o de uma obra só — sugere que
+   arco narrativo pessoal (superação, trajetória) engaja mais que análise
+   de uma peça isolada, pelo menos nesta conta de referência.
 
 ## Onde aplicar
 
-- **`social-writer`/`social-curto`** (texto do post) — adotar a estrutura de
-  gancho dramático + CTA explícito de comentário/compartilhamento na legenda,
-  em vez de resumo do destaque.
-- **Stage 3 (imagens)** — se o Instagram vier a ganhar um formato de carrossel
-  próprio (hoje só gera 1 imagem por destaque, 1x1/4x5), o padrão de "1 slide
-  = 1 batida narrativa" com texto grande sobre a imagem é o modelo a seguir,
-  não um resumo estático do artigo.
+- **`social-writer`** (texto do post — é quem serve Instagram/LinkedIn/Facebook,
+  #3991; `social-curto` é Twitter/X e Threads, não tem relação com Instagram)
+  — adotar a estrutura de gancho dramático + CTA explícito de comentário/
+  compartilhamento na legenda, em vez de resumo do destaque.
+- **Stage 3 (imagens, pipeline diário)** — hoje só gera 1 imagem por destaque
+  (2x1/1x1/4x5); se vier a ganhar formato de carrossel próprio, o padrão de
+  "1 slide = 1 batida narrativa" com texto grande sobre a imagem é o modelo a
+  seguir, não um resumo estático do artigo. **Carrossel no Instagram já existe
+  fora do pipeline diário**, na skill `/diaria-instagram-semanal`
+  (`scripts/lib/weekly-carousel-news-card.ts`) — vale conferir esse código
+  antes de reimplementar do zero, ele já se aproxima do padrão "1 slide = 1
+  batida".
 
 **Fora de escopo desta análise**: implementação em si (mudar
 `social-writer`/pipeline de imagens) — a issue #5815 pede só a extração e
