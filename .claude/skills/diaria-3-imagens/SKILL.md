@@ -17,6 +17,7 @@ Dispara a Etapa 3 da edição diar.ia.br: coleta o resultado do `eia-composer` (
   - Sem argumento → roda É IA? + todas as imagens de destaque (d1, d2, d3)
   - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
   - `d1` / `d2` / `d3` → regenera só aquela imagem de destaque
+- `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/overnight/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca.
 
 ## Placeholders
 
@@ -75,7 +76,9 @@ Apresentar ao usuário para confirmação/retry:
 Aprovar aqui (sim) / tentar dia anterior / pedir retry?
 ```
 
-Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer com data D-1.
+**Se `--no-gates` (#5738):** pular este gate — assumir "sim" e continuar.
+
+Caso contrário, aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer com data D-1.
 
 ## Parte 2 — Imagens de destaque (pular se `$2 = eia`)
 
@@ -135,7 +138,9 @@ Imagens de destaque:
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```
 
-Aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para aquela imagem. "retry" → re-rodar Parte 2 completa.
+**Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto. É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
+
+Caso contrário, aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para aquela imagem. "retry" → re-rodar Parte 2 completa.
 
 ## Outputs
 

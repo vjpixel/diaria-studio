@@ -57,6 +57,7 @@ import { isMainModule } from "../lib/cli-args.ts";
 import { nextEditionDate } from "../lib/next-edition-date.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { sentinelExists } from "../lib/pipeline-state.ts";
+import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { runTsx } from "../lib/run-tsx.ts";
 
 /**
@@ -82,6 +83,25 @@ export const STAGE_PLAN: ReadonlyArray<{ stage: number; skill: string }> = [
   { stage: 3, skill: "diaria-3-imagens" },
   { stage: 4, skill: "diaria-4-revisao" },
 ];
+
+/**
+ * `--no-gates` em TODO stage — não é conveniência, é requisito de correção
+ * (achado P0 do review do #5739).
+ *
+ * `/diaria-edicao` setava `auto_approve = true` internamente para os Stages
+ * 1-3 ("pre-gate mode", #1523) e resolvia o gate do Stage 4 pelo próprio
+ * `--no-gates`. Ao trocar essa invocação por skills standalone, esse
+ * auto-approve DESAPARECEU: `orchestrator-stage-0-preflight` recebe
+ * `auto_approve` com default `false`, então cada skill apresentaria seu gate.
+ * Em `--print` não há quem responda — a sessão gastaria os 120 turnos
+ * tentando e morreria sem escrever sentinela nenhuma. O pipeline agendado
+ * simplesmente não fecharia o Stage 1.
+ *
+ * O blast radius disso continua contido pelo mesmo motivo de sempre: os
+ * Stages 5/6 não estão em `STAGE_PLAN`, então "auto-aprovar tudo" aqui não
+ * alcança publicação nenhuma.
+ */
+export const HEADLESS_FLAGS = "--no-gates";
 
 /**
  * Teto de turnos POR STAGE desde #5738 — antes era o teto da edição
@@ -239,19 +259,48 @@ export function main(
   // -------------------------------------------------------------------
   // Guard de idempotência (#4998): não disparar se a edição já existe.
   // -------------------------------------------------------------------
-  const editionDir = join(dataDir, "editions", aammdd);
-  if (existsSync(editionDir)) {
+  // Layout flat legado E nested (`{AAMM}/{AAMMDD}`, #3025/#3530) — o guard
+  // antigo só olhava o flat, o que era inofensivo enquanto ele apenas
+  // respondia "existe?". Agora este mesmo path resolve SENTINELAS: no layout
+  // nested, um path flat faria `sentinelExists` retornar false para todos os
+  // stages, e a retomada re-rodaria trabalho já concluído em silêncio.
+  const editionDir = resolveEditionDir(join(dataDir, "editions"), aammdd);
+  // O guard mudou de PERGUNTA no #5738, e a diferença importa.
+  //
+  // Antes: "o diretório da edição existe?" → SKIP. Isso funcionava enquanto
+  // uma invocação era tudo-ou-nada. Com um spawn por stage, passou a ser um
+  // bug: o Stage 1 cria o diretório assim que começa, então QUALQUER
+  // reinvocação (retry após falha no meio do laço, segunda passada da task)
+  // batia aqui e saía — a retomada por sentinela nunca era alcançada, e o
+  // laço só pulava stages dentro de um mesmo processo, onde nunca há
+  // sentinela pré-existente. O mecanismo inteiro era letra morta.
+  //
+  // Agora: "todos os stages do plano já concluíram?" → SKIP. É a mesma
+  // intenção declarada no #4998 ("não DISPARAR quando não há motivo"),
+  // só que respondida com precisão: sabemos exatamente o que falta, em vez
+  // de inferir a partir da existência de um diretório. Edição pela metade
+  // é retomada de onde parou; edição completa não gasta uma sessão para
+  // constatar que não há o que fazer.
+  const pendingStages = STAGE_PLAN.filter(({ stage }) => !sentinelExistsFn(editionDir, stage));
+  if (existsSync(editionDir) && pendingStages.length === 0) {
     log(
       repoRootAbs,
       dataDir,
       aammdd,
-      `SKIP  edition=${aammdd} reason=already-started end=${nowIso()}`,
+      `SKIP  edition=${aammdd} reason=already-complete end=${nowIso()}`,
       "info",
-      "scheduled-edicao: pulado (edição já iniciada)",
-      `{"edition":"${aammdd}","reason":"already-started"}`,
+      "scheduled-edicao: pulado (todos os stages do plano já concluídos)",
+      `{"edition":"${aammdd}","reason":"already-complete"}`,
     );
-    console.log(`[${nowIso()}] SKIP — data/editions/${aammdd}/ já existe, edição já foi iniciada. Nada a fazer.`);
+    console.log(`[${nowIso()}] SKIP — todos os stages de STAGE_PLAN já têm sentinela. Nada a fazer.`);
     return 0;
+  }
+  if (existsSync(editionDir)) {
+    console.log(
+      `[${nowIso()}] Edição já iniciada — retomando nos stages pendentes: ${pendingStages
+        .map((p) => p.stage)
+        .join(", ")}`,
+    );
   }
 
   // -------------------------------------------------------------------
@@ -268,6 +317,7 @@ export function main(
     try {
       runTsx(syncScript, [], { cwd: repoRootAbs, stdout: "ignore" });
     } catch (e) {
+      console.warn(`[${nowIso()}] sync-code falhou (fail-soft, edição segue): ${(e as Error).message}`);
       log(
         repoRootAbs,
         dataDir,
@@ -312,7 +362,7 @@ export function main(
       continue;
     }
 
-    const prompt = `/${skill} ${aammdd}`;
+    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}`;
     console.log(`[${nowIso()}] Stage ${stage}: claude -p '${prompt}'`);
 
     try {

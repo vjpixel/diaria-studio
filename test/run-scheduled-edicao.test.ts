@@ -42,7 +42,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     if (repoRootAbs) rmSync(repoRootAbs, { recursive: true, force: true });
   });
 
-  it("data/editions/{AAMMDD}/ já existe -> SKIP, nunca chama execFn (claude), retorna 0", () => {
+  it("edição existe E todos os stages concluídos -> SKIP, nunca chama execFn (#4998, refinado #5738)", () => {
     repoRootAbs = makeRepoRoot();
     mkdirSync(join(repoRootAbs, "data", "editions", AAMMDD), { recursive: true });
 
@@ -52,13 +52,13 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => true);
 
     assert.equal(code, 0);
-    assert.equal(execCalled, false, "execFn (claude) não deveria ser chamado quando a edição já existe");
+    assert.equal(execCalled, false, "edição completa não deveria spawnar sessão nenhuma");
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
-    assert.match(scheduleLog, /SKIP\s+edition=260812 reason=already-started/);
+    assert.match(scheduleLog, /SKIP\s+edition=260812 reason=already-complete/);
     // run-log.jsonl (via scripts/log-event.ts subprocess) não é asserido aqui:
     // o subprocess resolve o script relativo a `repoRootAbs`, que neste teste
     // é um repo FAKE sem scripts/log-event.ts — falha esperada, engolida por
@@ -84,10 +84,10 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     // anterior sem nada quebrar — só este teste denuncia.
     assert.equal(prompts.length, STAGE_PLAN.length);
     assert.deepEqual(prompts, [
-      "/diaria-1-pesquisa 260812",
-      "/diaria-2-escrita 260812",
-      "/diaria-3-imagens 260812",
-      "/diaria-4-revisao 260812",
+      "/diaria-1-pesquisa 260812 --no-gates",
+      "/diaria-2-escrita 260812 --no-gates",
+      "/diaria-3-imagens 260812 --no-gates",
+      "/diaria-4-revisao 260812 --no-gates",
     ]);
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
@@ -136,7 +136,57 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     );
 
     assert.equal(code, 0);
-    assert.deepEqual(prompts, ["/diaria-3-imagens 260812", "/diaria-4-revisao 260812"]);
+    assert.deepEqual(prompts, ["/diaria-3-imagens 260812 --no-gates", "/diaria-4-revisao 260812 --no-gates"]);
+  });
+
+  it("edição JÁ EXISTE em disco mas com stages pendentes -> RETOMA, não pula (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+    // Cenário real de retry: o Stage 1 cria o diretório da edição assim que
+    // começa. Com o guard antigo ("diretório existe? -> SKIP"), toda
+    // reinvocação saía aqui e a retomada por sentinela nunca era alcançada —
+    // o mecanismo era letra morta fora de um mesmo processo.
+    mkdirSync(join(repoRootAbs, "data", "editions", AAMMDD), { recursive: true });
+
+    const prompts: string[] = [];
+    const fakeExec = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const code = runScheduledEdicaoMain(
+      repoRootAbs,
+      fakeExec,
+      AAMMDD,
+      FAKE_RESOLVE_CLAUDE_BIN,
+      (_dir: string, step: number) => step <= 2,
+    );
+
+    assert.equal(code, 0);
+    assert.deepEqual(prompts, ["/diaria-3-imagens 260812 --no-gates", "/diaria-4-revisao 260812 --no-gates"]);
+  });
+
+  it("todo prompt carrega --no-gates: sem isso o headless trava no gate (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    const prompts: string[] = [];
+    const fakeExec = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+
+    // `/diaria-edicao` setava `auto_approve = true` internamente para os
+    // Stages 1-3 (#1523). Invocando as skills standalone esse auto-approve
+    // some, e `orchestrator-stage-0-preflight` tem default `false` — cada
+    // stage apresentaria seu gate a ninguém, em `--print`, até queimar os
+    // 120 turnos sem escrever sentinela. Este teste é o que impede a flag de
+    // cair fora num refactor futuro: o sintoma seria o pipeline agendado
+    // parar de fechar, sem erro de compilação nem teste vermelho.
+    assert.ok(prompts.length > 0, "deveria ter spawnado ao menos um stage");
+    for (const prompt of prompts) {
+      assert.match(prompt, /--no-gates$/);
+    }
   });
 
   it("todos os stages já concluídos -> nenhum spawn, retorna 0 (#5738)", () => {
@@ -193,7 +243,7 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     assert.equal(code, 7);
     // Sem o `break`, os stages 3 e 4 rodariam sobre o output ausente do 2 —
     // gerando lixo em disco que parece progresso legítimo na próxima retomada.
-    assert.deepEqual(prompts, ["/diaria-1-pesquisa 260812", "/diaria-2-escrita 260812"]);
+    assert.deepEqual(prompts, ["/diaria-1-pesquisa 260812 --no-gates", "/diaria-2-escrita 260812 --no-gates"]);
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
     assert.match(scheduleLog, /FAIL\s+edition=260812 stage=2 exit=7/);
