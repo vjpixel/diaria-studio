@@ -119,7 +119,13 @@ Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Par
 
 ### 2d. Gate unificado de imagens
 
-**Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada` e finalizar.
+**Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada`, escrever o sentinel (#5793) e finalizar:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 --step 3 \
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+```
 
 **Caso contrário:**
 
@@ -138,9 +144,17 @@ Imagens de destaque:
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```
 
-**Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto. É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
+**Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto (escrever o sentinel abaixo antes de retornar). É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
 
-Caso contrário, aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para aquela imagem. "retry" → re-rodar Parte 2 completa.
+Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar Parte 2 para aquela imagem. "retry" → re-rodar Parte 2 completa.
+
+**Escrever sentinel de conclusão (#5793)** — cobre tanto `--no-gates` quanto o "sim" respondido organicamente pelo editor:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 --step 3 \
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+```
 
 ## Outputs
 
