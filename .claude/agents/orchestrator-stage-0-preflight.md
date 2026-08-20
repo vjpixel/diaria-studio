@@ -398,11 +398,11 @@ if [ -n "$PREV_SOCIAL_DIR" ] && [ -f "$PREV_SOCIAL_DIR/_internal/06-social-publi
   PREV_SOCIAL="$PREV_SOCIAL_DIR/_internal/06-social-published.json"
 fi
 ```
-Se o arquivo existir:
-1. Posts com `status === "scheduled"` e `scheduled_at < now` (prazo passou): alertar editor com a lista.
-2. Posts com `status === "failed"`: alertar editor com a lista.
-3. Tudo ok ou arquivo não existe: silencioso.
-Não bloqueia — alertas são informativos para o editor resolver antes de começar a nova edição.
+**Classificação determinística desde o #5756** — não julgar em prosa (regra #573):
+```bash
+npx tsx scripts/check-prev-social-status.ts --prev-dir "$PREV_SOCIAL_DIR" --prev-edition "$(basename "$PREV_SOCIAL_DIR")"
+```
+Sai 0 sempre. Linha `edição anterior ...:` → alertar o editor com ela; `nenhum post social exige atenção` ou arquivo ausente → seguir em silêncio. A regra anterior (`scheduled` + prazo vencido) supunha que todo canal vira `published` — só o Facebook vira —, gerando ~12 falsos alarmes por edição, todo dia. Racional e medição: docstring de `scripts/lib/prev-social-status.ts`. Não bloqueia — alertas são informativos para o editor resolver antes de começar a nova edição.
 
 **Importante (#565):** ao logar esses alertas via `scripts/log-event.ts`, **incluir flag `--informational`** pra evitar que o auto-reporter promova esses warns a issues GitHub falsas. Exemplo:
 ```bash
