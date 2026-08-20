@@ -343,6 +343,8 @@ export interface Stage0RunDeps {
   mkdirSync: (p: string) => void;
   readFile: (p: string) => string;
   writeFile: (path: string, content: string) => void;
+  /** Checa presença (não-vazia) de uma env var — injetável pra teste, sem ler process.env direto no meio da lógica. */
+  hasEnv: (name: string) => boolean;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
@@ -355,6 +357,7 @@ export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
     mkdirSync: (p) => mkdirSync(p, { recursive: true }),
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
+    hasEnv: (name) => Boolean(process.env[name]),
   };
 }
 
@@ -795,7 +798,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     logEvent(deps, opts.edition, "warn", "find-pending-issue-drafts falhou");
   }
 
-  // --- 0k: verificação FB + social worker da edição anterior (fail-soft) ---
+  // --- 0k: verificação FB + social worker + Twitter da edição anterior (fail-soft) ---
   const prevFbResult = deps.exec("scripts/find-last-edition-with-fb.ts", ["--current", opts.edition]);
   const prevDir = prevFbResult.code === 0 ? prevFbResult.stdout.trim() : "";
   if (prevDir) {
@@ -803,6 +806,12 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
       softStep(deps, report, "verify-facebook-posts (0k)", "scripts/verify-facebook-posts.ts", ["--edition-dir", `${prevDir}/`]);
     }
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
+    // #5766 — Twitter via API GraphQL do Buffer, token vem de env (não de
+    // arquivo, diferente do fb-credentials.json acima) — checagem via
+    // deps.hasEnv em vez de deps.existsSync.
+    if (deps.hasEnv("BUFFER_ACCESS_TOKEN")) {
+      softStep(deps, report, "verify-twitter-posts (0k)", "scripts/verify-twitter-posts.ts", ["--edition-dir", `${prevDir}/`]);
+    }
   }
 
   // --- 0l: status determinístico de social da edição anterior ---
