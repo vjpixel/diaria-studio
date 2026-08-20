@@ -1,7 +1,7 @@
 /**
  * test/convite-amigo-whatsapp-5794.test.ts (#5794)
  *
- * Bloco fixo "Convide um amigo a assinar" — `scripts/lib/newsletter-render-html.ts`
+ * Bloco fixo "Convide pelo WhatsApp" — `scripts/lib/newsletter-render-html.ts`
  * (`buildConviteAmigoBlock`, `buildConviteAmigoUrl`, `buildConviteAmigoShareLink`,
  * `renderConviteAmigo`). Pedido de leitor (WhatsApp, 20/08/2026): o bloco
  * `renderWhatsappShare` existente (#4486/#4570) compartilha a NOTÍCIA (D1); este
@@ -13,10 +13,17 @@
  *   - UTM tem os 3 params certos (utm_source=whatsapp, utm_medium=referral,
  *     utm_campaign=convite-leitor) — fixo, não varia por edição.
  *   - Link `wa.me/?text=` bem formado, com o texto pré-preenchido correto.
- *   - Bloco renderiza no HTML final, no FIM da newsletter (depois de "Para
- *     encerrar"), sempre presente (não depende de destaques/edição).
- *   - Rotulado de forma DISTINTA do botão "Compartilhar no WhatsApp"
- *     existente (renderWhatsappShare) — evita a confusão relatada pelo leitor.
+ *   - Bloco renderiza no HTML final, após o último destaque e ANTES de "Para
+ *     encerrar" (posição decidida na issue — corrigido em 260821 após achado
+ *     ao vivo no gate do Stage 4: a 1ª implementação, PR #5802, tinha
+ *     colocado DEPOIS de "Para encerrar", sem a frase de convite nem o box
+ *     bege decididos, e com rótulo de botão diferente do combinado), sempre
+ *     presente (não depende de destaques/edição).
+ *   - Box bege (painel `SURFACE`, sem borda) com a frase "Conhece alguém que
+ *     ia gostar de receber esta newsletter?" seguida do botão "Convide pelo
+ *     WhatsApp →" — rotulado de forma DISTINTA do botão "Compartilhar no
+ *     WhatsApp" existente (renderWhatsappShare) — evita a confusão relatada
+ *     pelo leitor.
  *   - A entry nova em scripts/lib/shared/utm-registry.ts é coerente com os
  *     valores emitidos (mesmo padrão do #4041 — emissor deriva do registry).
  */
@@ -96,9 +103,9 @@ describe("#5794 — buildConviteAmigoShareLink", () => {
 });
 
 describe("#5794 — renderConviteAmigo (HTML)", () => {
-  it("renderiza o botão 'Convide um amigo a assinar', rotulado DISTINTO de 'Compartilhar no WhatsApp'", () => {
+  it("renderiza o botão 'Convide pelo WhatsApp', rotulado DISTINTO de 'Compartilhar no WhatsApp'", () => {
     const html = renderConviteAmigo();
-    assert.match(html, /Convide um amigo a assinar/);
+    assert.match(html, /Convide pelo WhatsApp/);
     assert.ok(!html.includes("Compartilhar no WhatsApp"), "não deve reusar o rótulo do bloco existente (evita a confusão da issue)");
   });
 
@@ -119,6 +126,12 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
     assert.match(style, /border-radius:999px/);
   });
 
+  it("box bege (painel SURFACE) envolvendo a frase de convite + botão — opção B decidida na issue", () => {
+    const html = renderConviteAmigo();
+    assert.match(html, /Conhece alguém que ia gostar de receber esta newsletter\?/);
+    assert.match(html, /background:#EBE5D0;border-radius:12px/i);
+  });
+
   it("não depende de destaques — renderiza sempre, ao contrário de renderWhatsappShare (que retorna vazio sem D1)", () => {
     assert.equal(renderWhatsappShare([], "260801"), "", "sanity: renderWhatsappShare precisa de D1");
     const html = renderConviteAmigo();
@@ -126,7 +139,7 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
   });
 });
 
-describe("#5794 — posição no corpo da newsletter: FIM, perto das caixas de divulgação", () => {
+describe("#5794 — posição no corpo da newsletter: após o último destaque, ANTES de 'Para encerrar'", () => {
   const content: NewsletterContent = {
     title: "Edição teste",
     subtitle: "Teste",
@@ -138,25 +151,25 @@ describe("#5794 — posição no corpo da newsletter: FIM, perto das caixas de d
     encerrar: "Apoie a curadoria em [apoia.se/diaria](https://apoia.se/diaria).",
   };
 
-  it("bloco 'Convide um amigo' aparece no HTML final, DEPOIS de 'Para encerrar'", () => {
+  it("bloco 'Convide pelo WhatsApp' aparece no HTML final, ANTES de 'Para encerrar'", () => {
     const html = renderHTML(content);
     const idxEncerrar = html.indexOf("Para encerrar");
-    const idxConvite = html.indexOf("Convide um amigo a assinar");
+    const idxConvite = html.indexOf("Convide pelo WhatsApp");
     assert.ok(idxEncerrar !== -1, "'Para encerrar' ausente do render completo");
     assert.ok(idxConvite !== -1, "bloco 'Convide um amigo' ausente do render completo");
-    assert.ok(idxEncerrar < idxConvite, "bloco 'Convide um amigo' deve vir DEPOIS de 'Para encerrar'");
+    assert.ok(idxConvite < idxEncerrar, "bloco 'Convide um amigo' deve vir ANTES de 'Para encerrar' (decisão da issue #5794)");
   });
 
   it("os dois botões WhatsApp (compartilhar notícia + convidar amigo) coexistem, sem colidir", () => {
     const html = renderHTML(content);
     assert.match(html, /Compartilhar no WhatsApp/);
-    assert.match(html, /Convide um amigo a assinar/);
+    assert.match(html, /Convide pelo WhatsApp/);
   });
 
   it("edição sem destaques (defensivo, nunca deveria acontecer): bloco 'Convide um amigo' ainda aparece — não depende de D1", () => {
     const contentSemDestaques: NewsletterContent = { ...content, destaques: [] };
     const html = renderHTML(contentSemDestaques);
-    assert.match(html, /Convide um amigo a assinar/);
+    assert.match(html, /Convide pelo WhatsApp/);
   });
 });
 

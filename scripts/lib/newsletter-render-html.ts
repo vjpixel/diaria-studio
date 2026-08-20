@@ -1792,27 +1792,30 @@ export function buildConviteAmigoShareLink(): string {
 
 /**
  * Renderiza o bloco fixo "CONVIDE UM AMIGO A ASSINAR" (#5794, pedido de
- * leitor) — botão WhatsApp que compartilha o CONVITE DE ASSINATURA (link pra
- * home, texto de convite), rotulado de forma DISTINTA do botão por-destaque
- * `renderWhatsappShare` ("Compartilhar no WhatsApp" — compartilha a notícia
- * D1) para evitar exatamente a confusão relatada pelo leitor na issue de
- * origem. Fixo — não depende de destaques nem de edição, sempre renderiza.
- *
- * Mesmo padrão visual pill dos demais CTAs do template (fundo
- * `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
- * `border-radius:999px`), centralizado — mesmo `buttonStyle` de
- * `renderWhatsappShare`.
+ * leitor) — box bege (opção B decidida na issue, sem kicker) com a frase
+ * "Conhece alguém que ia gostar de receber esta newsletter?" seguida do
+ * botão "Convide pelo WhatsApp →", que compartilha o CONVITE DE ASSINATURA
+ * (link pra home, texto de convite) — rotulado de forma DISTINTA do botão
+ * por-destaque `renderWhatsappShare` ("Compartilhar no WhatsApp" —
+ * compartilha a notícia D1) para evitar exatamente a confusão relatada pelo
+ * leitor na issue de origem. Fixo — não depende de destaques nem de edição,
+ * sempre renderiza. Painel bege (fundo `${SURFACE}`, sem borda,
+ * `border-radius:12px`) — mesmo padrão do box de Sorteio/É IA?, não o pill
+ * de contorno usado no botão de compartilhar notícia.
  */
 export function renderConviteAmigo(): string {
   const shareLink = buildConviteAmigoShareLink();
   const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
 
   return `<!-- Convide um amigo a assinar -->
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
-    <div style="text-align:center;">
-      <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Convide um amigo a assinar →</a>
-    </div>
-  </td></tr></table>`;
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
+      ${bodyP("0", "Conhece alguém que ia gostar de receber esta newsletter?")}
+      <div style="text-align:center;margin-top:12px;">
+        <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Convide pelo WhatsApp →</a>
+      </div>
+    </td>
+  </tr></table>`;
 }
 
 /**
@@ -2341,14 +2344,15 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // #4570: bloco encaminhável por WhatsApp saiu daqui — agora renderiza na
   // lacuna D1/D2 (ver o loop de destaques acima, i===0). Posição antiga era
   // ANTES de "Para encerrar" (decisão original #4486/#4487).
-  if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
-
   // #5794: bloco fixo "Convide um amigo a assinar" — DIFERENTE do WhatsApp
   // share acima (compartilha a NOTÍCIA D1) — este compartilha a ASSINATURA
-  // em si. Renderiza no FIM da newsletter, perto das caixas de divulgação
-  // (pedido explícito do editor na issue), depois de "Para encerrar" —
-  // sempre presente, não depende de destaques/edição.
+  // em si. Posição decidida na issue: após o último destaque, ANTES de "Para
+  // encerrar" (não colado no D1, pra não competir com o "Compartilhar no
+  // WhatsApp" que vive dentro do D1 desde #5152) — sempre presente, não
+  // depende de destaques/edição.
   parts.push(renderConviteAmigo());
+
+  if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
   // #1936/#1945 (DS): container do corpo, máx. LAYOUT.containerWidth
   // (email-safe — Outlook corta acima disso, cf. checkWideTables — #5176
