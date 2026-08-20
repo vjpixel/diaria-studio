@@ -129,6 +129,41 @@ describe("registerSession / heartbeat / endSession", () => {
 
     assert.doesNotThrow(() => endSession(root, "develop", "sess-4", "host-a"));
   });
+
+  // ─── #5797 — endSession distingue "removeu de fato" de "não havia nada" ──
+
+  it("endSession retorna true quando removeu um registro que existia", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-5797a", { tag: "host-a" });
+    const removed = endSession(root, "develop", "sess-5797a", "host-a");
+    assert.equal(removed, true);
+    assert.equal(existsSync(sessionFilePath(root, "develop", "host-a", "sess-5797a")), false);
+  });
+
+  it("endSession retorna false (não finge sucesso) quando não havia registro pra remover", () => {
+    const root = freshRoot();
+    const removed = endSession(root, "develop", "sess-inexistente", "host-a");
+    assert.equal(removed, false);
+  });
+
+  it("endSession com --tag de OUTRA máquina remove o registro dessa máquina de fato (#5797 Defeito 4)", () => {
+    const root = freshRoot();
+    // Registro "de outra máquina" (Neo) — arquivo em disco carrega a tag Neo.
+    registerSession(root, "develop", "sess-cross-machine", { tag: "Neo" });
+    const path = sessionFilePath(root, "develop", "Neo", "sess-cross-machine");
+    assert.ok(existsSync(path));
+
+    // Sem --tag, o default é machineTag() LOCAL ("helios" aqui) — nunca
+    // encontra o registro de "Neo": reproduz o bug relatado na issue.
+    const removedWithoutTag = endSession(root, "develop", "sess-cross-machine", "helios");
+    assert.equal(removedWithoutTag, false, "sem o tag certo, nada é removido");
+    assert.ok(existsSync(path), "registro de outra máquina continua intacto");
+
+    // Com --tag explícito da máquina certa, o CLI consegue encerrar de fato.
+    const removedWithTag = endSession(root, "develop", "sess-cross-machine", "Neo");
+    assert.equal(removedWithTag, true);
+    assert.equal(existsSync(path), false);
+  });
 });
 
 // ─── listActiveSessions ─────────────────────────────────────────────────────
