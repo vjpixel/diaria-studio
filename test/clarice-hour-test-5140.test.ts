@@ -23,7 +23,7 @@ import {
   scheduledAtForDate,
   waveKey,
 } from "../scripts/lib/clarice-wave-plan.ts";
-import { buildHourCells } from "../scripts/lib/clarice-group-cells.ts";
+import { buildHourCells, checkSingleStrategyAgainstHourTest } from "../scripts/lib/clarice-group-cells.ts";
 import { groupCellListNameFor, isGroupCellWave } from "../scripts/clarice-import-waves.ts";
 import {
   closeClariceHourTest,
@@ -360,5 +360,50 @@ describe("#5171: normalizeHours alinhada com brtHourToUtcHourSameDay", () => {
       assert.equal(st.degraded, true);
       assert.match(st.degradedReason ?? "", /hora.*inválida.*22|dia seguinte em UTC/i);
     });
+  });
+});
+
+describe("#5827: --no-cells não pode fragmentar um teste de horário ativo em silêncio", () => {
+  it("REGRESSÃO: --no-cells + teste ativo ABORTA (onda d24-sex21, 260820 — 7500 contatos saíram inteiros às 06h)", () => {
+    const msg = checkSingleStrategyAgainstHourTest(
+      { kind: "single" },
+      { status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" },
+      false,
+    );
+    assert.match(msg ?? "", /teste de HORÁRIO.*ATIVO/);
+    assert.match(msg ?? "", /--hour-cells 6,10/);
+  });
+
+  it("--no-cells + teste inativo segue normalmente (null = sem choque)", () => {
+    const msg = checkSingleStrategyAgainstHourTest(
+      { kind: "single" },
+      { status: "inativo" },
+      false,
+    );
+    assert.equal(msg, null);
+  });
+
+  it("--no-cells + teste encerrado segue normalmente (só 'ativo' bloqueia)", () => {
+    const msg = checkSingleStrategyAgainstHourTest(
+      { kind: "single" },
+      { status: "encerrado", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00Z", decidedAt: "2026-08-15T00:00:00Z", decidedBy: "editor", winnerBrt: 10, rationale: "x" },
+      false,
+    );
+    assert.equal(msg, null);
+  });
+
+  it("--ignore-hour-test é o escape hatch explícito — bypassa mesmo com teste ativo", () => {
+    const msg = checkSingleStrategyAgainstHourTest(
+      { kind: "single" },
+      { status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" },
+      true,
+    );
+    assert.equal(msg, null);
+  });
+
+  it("estratégia 'hours' ou 'cells' nunca choca com o teste de horário (só 'single' fragmenta)", () => {
+    const ativo = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" };
+    assert.equal(checkSingleStrategyAgainstHourTest({ kind: "hours", hoursBrt: [6, 10] }, ativo, false), null);
+    assert.equal(checkSingleStrategyAgainstHourTest({ kind: "cells" }, ativo, false), null);
   });
 });

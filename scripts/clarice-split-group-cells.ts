@@ -27,7 +27,11 @@
  *               proposta; continua a numeração do ciclo, nunca reinicia).
  *   --date D    OBRIGATÓRIO — YYYY-MM-DD do envio (explícita, nunca inferida).
  *   --from P    OBRIGATÓRIO — CSV de origem, relativo ao dir do ciclo.
- *   --no-cells  1 lista só (assunto travado, sem teste A/B/C).
+ *   --no-cells  1 lista só (assunto travado, sem teste A/B/C). ABORTA se o
+ *               teste de HORÁRIO (#5140) estiver ativo — ver
+ *               --ignore-hour-test.
+ *   --ignore-hour-test  escape hatch pra `--no-cells` com o teste de horário
+ *               ativo, quando "onda única mesmo assim" é intencional (#5827).
  *   --force     sobrescreve um manifest já existente (ver guarda abaixo).
  *   --dry-run   só imprime o plano.
  */
@@ -36,13 +40,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg, REPO_ROOT } from "./lib/clarice-paths.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import {
   buildGroupCells,
   buildHourCells,
   buildSingleWave,
   cellManifestFileName,
+  checkSingleStrategyAgainstHourTest,
   manifestOf,
   resolveCellStrategy,
   unknownFlags,
@@ -99,6 +105,32 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const strategy = resolveCellStrategy(argv);
+
+  // #5827: ver docstring de `checkSingleStrategyAgainstHourTest` — evita que
+  // `--no-cells` fragmente em silêncio a amostra de um teste de horário
+  // ativo (independente do teste de assunto). `REPO_ROOT` (não `process.cwd()`)
+  // pelo mesmo motivo de `clarice-plan-wave.ts:395` — resolve
+  // `data/clarice-hour-test.json` mesmo se o script for invocado de um cwd
+  // diferente da raiz do repo (review do PR #5828, achado 2).
+  const hourTestState = readClariceHourTestState(REPO_ROOT);
+  if (hourTestState.degraded) {
+    // Mesmo aviso de `clarice-envio-run.ts:1039` — estado ilegível degrada
+    // pra "inativo" (fail-soft do próprio `readClariceHourTestState`), mas
+    // silenciar isso aqui reintroduziria a classe de bug que este PR fecha:
+    // um teste ATIVO de verdade, só com o arquivo corrompido, passaria como
+    // inativo sem nenhum sinal (review do PR #5828, achado 1).
+    console.error(`⚠️  estado do teste de horário ilegível — seguindo como SE fosse inativo. ${hourTestState.degradedReason}`);
+  }
+  const hourTestClash = checkSingleStrategyAgainstHourTest(
+    strategy,
+    hourTestState,
+    hasFlag(argv, "ignore-hour-test"),
+  );
+  if (hourTestClash) {
+    console.error(`❌ ${hourTestClash}`);
+    process.exit(1);
+  }
+
   const artifact =
     strategy.kind === "single"
       ? buildSingleWave(rows, wave, date)
