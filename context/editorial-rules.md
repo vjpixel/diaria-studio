@@ -113,10 +113,10 @@ O leitor deve poder detectar o erro a partir do próprio email, sem clicar na fo
 - **Conhecimento comum do público** (✅): qualquer leitor de IA sabe que está errado de cabeça. Ex: "Amodei, CEO da DeepMind" (é da Anthropic).
 
 Proibido:
-- **Precisa da fonte** (❌): erro só confirmável clicando no link. Ex: trocar data de viralização, mudar número de uma pesquisa.
+- **Precisa da fonte** (❌): erro só confirmável clicando no link. Ex: trocar data de viralização, mudar número de uma pesquisa. Caso real rejeitado (edição 260820): trocar "11 prompts" por "9 prompts" num item de USE MELHOR — só verificável abrindo o artigo linkado e contando, nunca lendo só o email.
 
 **Regra 2 — Não gerar desinformação.**
-O erro não pode ser fato ou estatística plausível-mas-falso que, se não for pego, o leitor passa a acreditar. Ex: trocar "30%" por "50%" num estudo; trocar dívida de US$ 570 bi por US$ 750 bi. Erros numéricos e de data "vazam" como desinformação real para quem não percebe. Preferir contradições internas autoevidentes ou trocas que o público corrige de cabeça.
+O erro não pode ser fato ou estatística plausível-mas-falso que, se não for pego, o leitor passa a acreditar. Ex: trocar "30%" por "50%" num estudo; trocar dívida de US$ 570 bi por US$ 750 bi. Erros numéricos e de data "vazam" como desinformação real para quem não percebe. Preferir contradições internas autoevidentes ou trocas que o público corrige de cabeça. Casos reais rejeitados (edição 260820): trocar o ano de um evento real no box de divulgação ("SXSW 2027" → "SXSW 2026" — cria um dado factualmente errado sobre um evento real, mesmo lateral); trocar o nome de um coautor real de livro (planta uma crença falsa sobre autoria, não é uma inconsistência óbvia).
 
 Categorias de frontmatter por risco:
 - ✅ Seguras por design: `attribution`, `version_inconsistency`, `ortografico`, `factual_synthetic`
@@ -129,8 +129,13 @@ Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/i
 Preferências de forma (não-obrigatórias, mas defaults ao propor candidato):
 - Preferir erro **cômico/leve** — trocadilho, erro ortográfico bobo, nome trocado de forma óbvia (ex: "Craude" em vez de "Claude"), detalhe de trivia/crédito secundário — em vez de inflação de magnitude sobre um fato real.
 - Preferir plantar em menção **lateral/secundária** do texto (ex: uma referência de passagem, não a frase que carrega a informação principal do destaque).
+- **Padrão de maior taxa de aceite (#5742): erro ortográfico bobo em nome de entidade MUITO conhecida do público da newsletter** (empresa de IA, produto, fundador), mencionado dentro do próprio corpo da edição — nunca uma obra/evento externo que o leitor precisaria saber de cor. Atende às duas regras invariáveis ao mesmo tempo: o leitor reconhece a marca de cor (verificável sem sair do email) e o "erro" nunca vira crença falsa, porque é obviamente digitação, não um dado (zero risco de desinformação). Exemplos aceitos: "Hugging Race" em vez de "Hugging Face"; "Anthropik" em vez de "Anthropic" (260820); "Craude" em vez de "Claude" (260721, ver caso real abaixo).
 
-Caso real (edição 260721): o editor rejeitou 2 rodadas de propostas (erros numéricos sutis nos destaques, depois inflações de ordem de grandeza) antes de escolher "chamar Claude de Craude" — erro ortográfico sem conteúdo informacional, plantado numa menção lateral. Quem propõe candidatos de erro intencional (orchestrator, no chat com o editor) deve aplicar este filtro por padrão — ver `.claude/agents/orchestrator-stage-2.md` §"Filtro de segurança ao PROPOR candidatos".
+Caso real (edição 260721): o editor rejeitou 2 rodadas de propostas (erros numéricos sutis nos destaques, depois inflações de ordem de grandeza) antes de escolher "chamar Claude de Craude" — erro ortográfico sem conteúdo informacional, plantado numa menção lateral.
+
+Caso real (edição 260820, #5742): o editor rejeitou 3 propostas na mesma revisão — numérico verificável só pela fonte (Regra 1), ano de evento real (Regra 2), nome de coautor de livro (Regra 2) — antes de aplicar o padrão de erro ortográfico bobo em nome de entidade conhecida ("Anthropik"). As duas regras já eram invariáveis; o que mudou foi reforçar, com exemplos concretos, que erro numérico/data/nome-próprio-externo falha quase sempre uma das duas, enquanto erro ortográfico em marca conhecida do próprio corpo do texto passa nas duas de saída.
+
+Quem propõe candidatos de erro intencional (orchestrator, no chat com o editor) deve aplicar este filtro por padrão — ver `.claude/agents/orchestrator-stage-2.md` §"Filtro de segurança ao PROPOR candidatos".
 
 ---
 

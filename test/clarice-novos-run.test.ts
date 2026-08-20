@@ -526,26 +526,29 @@ describe("clarice-novos-run (#4941)", () => {
 
   // ── send-now: incerto vs erro duro ──────────────────────────────────────
 
-  describe("--send-now: incerto (exit 2) vs erro duro (exit 1)", () => {
-    it("exit 2 (GET-verify não confirmou terminal) -> code=2, NUNCA chama --finalize", async () => {
+  describe("--send-now: incerto (exit 3, #5743) vs erro duro (exit 1)", () => {
+    it("sub-script (clarice-schedule-group.ts) sai exit 2 (GET-verify não confirmou terminal) -> runNovos code=3, NUNCA chama --finalize", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-schedule-group.ts"] = [
         jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
         jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "send-test" }),
+        // exit 2 aqui é o contrato do SUB-script (clarice-schedule-group.ts
+        // --send-now, inalterado) — runNovos remapeia sua PRÓPRIA saída pra
+        // 3 (#5743), distinto do exit 2 puro do sub-script.
         jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "send-now", status: "in_review" }, 2),
       ];
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 2);
+      assert.equal(result.code, 3, "#5743: disparo incerto sai com exit code DEDICADO (3), nunca o 2 do sub-script nem o 1 de erro duro");
       const finalizeCalls = calls.filter((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize"));
-      assert.equal(finalizeCalls.length, 0, "exit 2 NUNCA deve chamar --finalize (não confirma como enviado)");
+      assert.equal(finalizeCalls.length, 0, "exit 3 NUNCA deve chamar --finalize (não confirma como enviado)");
       assert.match(result.reportMarkdown, /INCERTO/);
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("exit 1 duro do --send-now -> code=1, sem --finalize", async () => {
+    it("POST sendNow RECUSADO (sub-script exit 1, falha real) -> runNovos code=1, sem --finalize — nunca confundido com o 3 de disparo incerto", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-schedule-group.ts"] = [
@@ -557,11 +560,12 @@ describe("clarice-novos-run (#4941)", () => {
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
       assert.equal(result.code, 1);
+      assert.notEqual(result.code, 3, "#5743: POST recusado é erro duro (1), nunca o código de disparo incerto (3)");
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize")));
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("exit 0 mas status!=='sent' (#4949 achado 2) -> tratado como INCERTO (code=2), NUNCA chama --finalize", async () => {
+    it("exit 0 mas status!=='sent' (#4949 achado 2) -> tratado como INCERTO (code=3, #5743), NUNCA chama --finalize", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
       handlers["scripts/clarice-schedule-group.ts"] = [
@@ -574,7 +578,7 @@ describe("clarice-novos-run (#4941)", () => {
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 2);
+      assert.equal(result.code, 3);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize")));
       assert.match(result.reportMarkdown, /INCERTO/);
       rmSync(root, { recursive: true, force: true });
@@ -656,7 +660,7 @@ describe("clarice-novos-run (#4941)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("NovosAbort sempre carrega code=1 (o código 2 nunca passa por exceção, ver #4949)", () => {
+  it("NovosAbort sempre carrega code=1 (o código de disparo incerto, 3 desde #5743, nunca passa por exceção, ver #4949)", () => {
     const e = new NovosAbort("x");
     assert.equal(e.code, 1);
   });
