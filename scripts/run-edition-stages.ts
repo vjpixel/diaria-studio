@@ -75,11 +75,36 @@ export function planThrough(through: number, plan: ReadonlyArray<EditionStage> =
   return plan.filter((p) => p.stage <= through);
 }
 
-function main(): number {
-  const { values, flags } = parseArgsLib(process.argv.slice(2));
+/** Dependências injetáveis — existem só para `main` ser testável sem tocar
+ * o `claude` real nem o disco. Mesmo padrão de `run-scheduled-edicao.ts`. */
+export interface MainDeps {
+  execFn: typeof execFileSync;
+  resolveClaudeBinFn: () => string;
+  sentinelExistsFn?: (editionDir: string, step: number) => boolean;
+  env: NodeJS.ProcessEnv;
+  stdout: (line: string) => void;
+  stderr: (line: string) => void;
+  repoRootAbs: string;
+}
+
+export function main(
+  argv: string[] = process.argv.slice(2),
+  deps: Partial<MainDeps> = {},
+): number {
+  const {
+    execFn = execFileSync,
+    resolveClaudeBinFn = resolveClaudeBin,
+    sentinelExistsFn,
+    env = claudeCliEnv(process.env),
+    stdout = (l: string) => console.log(l),
+    stderr = (l: string) => console.error(l),
+    repoRootAbs = ROOT,
+  } = deps;
+
+  const { values, flags } = parseArgsLib(argv);
   const aammdd = values["edition"];
   if (!aammdd || !AAMMDD_RE.test(aammdd)) {
-    console.error("Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json]");
+    stderr("Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json]");
     return 2;
   }
 
@@ -87,27 +112,28 @@ function main(): number {
   try {
     plan = planThrough(values["through"] ? parseInt(values["through"], 10) : 4);
   } catch (e) {
-    console.error((e as Error).message);
+    stderr((e as Error).message);
     return 2;
   }
 
-  const editionDir = resolveEditionDir(join(ROOT, "data", "editions"), aammdd);
+  const editionDir = resolveEditionDir(join(repoRootAbs, "data", "editions"), aammdd);
 
   const result = runEditionStages({
     aammdd,
     editionDir,
-    repoRootAbs: ROOT,
-    resolveClaudeBin,
-    env: claudeCliEnv(process.env),
+    repoRootAbs,
+    resolveClaudeBin: resolveClaudeBinFn,
+    env,
     plan,
-    execFn: execFileSync,
-    onProgress: (m) => console.error(m), // progresso vai pro stderr; stdout fica só com o resumo
+    execFn,
+    ...(sentinelExistsFn ? { sentinelExistsFn } : {}),
+    onProgress: stderr, // progresso vai pro stderr; stdout fica só com o resumo
   });
 
   if (flags.has("json")) {
-    console.log(JSON.stringify(result, null, 2));
+    stdout(JSON.stringify(result, null, 2));
   } else {
-    console.log(formatStagesSummary(result, aammdd));
+    stdout(formatStagesSummary(result, aammdd));
   }
   return result.exitCode;
 }

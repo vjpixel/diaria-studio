@@ -25,7 +25,9 @@ import {
   formatStagesSummary,
   FAILURE_TAIL_LINES,
 } from "../scripts/lib/edition-stage-runner.ts";
-import { planThrough } from "../scripts/run-edition-stages.ts";
+import { planThrough, main as cliMain } from "../scripts/run-edition-stages.ts";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 const AAMMDD = "260820";
 
@@ -235,5 +237,124 @@ describe("edition-stage-runner — resumo", () => {
   it("summarizeFailure achata e corta", () => {
     assert.equal(summarizeFailure("a\n\n  b  \nc"), "a | b | c");
     assert.equal(summarizeFailure(""), "");
+  });
+});
+
+describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR #5753)", () => {
+  function makeDeps(over: Record<string, unknown> = {}) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const prompts: string[] = [];
+    const deps = {
+      execFn: ((_c: string, args: string[]) => {
+        prompts.push(args[args.length - 1]);
+        return "";
+      }) as unknown as typeof import("node:child_process").execFileSync,
+      resolveClaudeBinFn: () => "/fake/bin/claude",
+      sentinelExistsFn: () => false,
+      env: { SAFE: "1" } as NodeJS.ProcessEnv,
+      stdout: (l: string) => out.push(l),
+      stderr: (l: string) => err.push(l),
+      repoRootAbs: "/fake/repo",
+      ...over,
+    };
+    return { deps, out, err, prompts };
+  }
+
+  it("--edition ausente ou malformado -> exit 2 com mensagem de uso, sem spawnar", () => {
+    for (const argv of [[], ["--edition", "26082"], ["--edition", "abcdef"]]) {
+      const { deps, err, prompts } = makeDeps();
+      const code = cliMain(argv, deps);
+      assert.equal(code, 2, `argv ${JSON.stringify(argv)} deveria falhar`);
+      assert.match(err.join("\n"), /Uso: npx tsx scripts\/run-edition-stages\.ts/);
+      assert.equal(prompts.length, 0, "não deveria spawnar com edição inválida");
+    }
+  });
+
+  it("--through 5 -> exit 2 com a mensagem legível, sem spawnar (fim a fim)", () => {
+    const { deps, err, prompts } = makeDeps();
+    const code = cliMain(["--edition", "260820", "--through", "5"], deps);
+    // A função pura já era testada; o que faltava era o CAMINHO REAL — o
+    // editor digitando --through 5 por engano precisa ver a mensagem e não
+    // um stack trace, e nenhum stage pode ter rodado antes da recusa.
+    assert.equal(code, 2);
+    assert.match(err.join("\n"), /--through inválido/);
+    assert.equal(prompts.length, 0);
+  });
+
+  it("default sem --through vai até o Stage 4; --through 3 para no 3", () => {
+    const a = makeDeps();
+    cliMain(["--edition", "260820"], a.deps);
+    assert.equal(a.prompts.length, 4);
+
+    const b = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3"], b.deps);
+    assert.deepEqual(
+      b.prompts.map((p) => p.split(" ")[0]),
+      ["/diaria-1-pesquisa", "/diaria-2-escrita", "/diaria-3-imagens"],
+    );
+  });
+
+  it("progresso vai pro stderr; stdout carrega SÓ o resumo", () => {
+    const { deps, out, err } = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3"], deps);
+
+    // O split não é cosmético: é o que permite a sessão do editor ler um
+    // resumo curto em vez do rastro de execução dos 3 stages.
+    assert.equal(out.length, 1, "stdout deveria ter exatamente o resumo");
+    assert.match(out[0], /Edição 260820/);
+    assert.ok(err.some((l) => l.includes("Stage 1")), "progresso deveria estar no stderr");
+    assert.ok(!out[0].includes("claude -p"), "stdout não deveria conter linhas de progresso");
+  });
+
+  it("--json troca o resumo por JSON, e o JSON também não carrega stdout de stage", () => {
+    const huge = "y".repeat(40_000);
+    const { deps, out } = makeDeps({
+      execFn: (() => huge) as unknown as typeof import("node:child_process").execFileSync,
+    });
+    cliMain(["--edition", "260820", "--through", "3", "--json"], deps);
+
+    assert.equal(out.length, 1);
+    const parsed = JSON.parse(out[0]);
+    assert.equal(parsed.exitCode, 0);
+    assert.ok(!out[0].includes(huge), "--json não pode virar a porta dos fundos do vazamento de contexto");
+  });
+
+  it("falha de stage propaga o exit code do stage pro exit code do CLI", () => {
+    const { deps } = makeDeps({
+      execFn: ((_c: string, args: string[]) => {
+        if (args[args.length - 1].includes("diaria-2-escrita")) {
+          const e = new Error("x") as Error & { status?: number };
+          e.status = 6;
+          throw e;
+        }
+        return "";
+      }) as unknown as typeof import("node:child_process").execFileSync,
+    });
+    assert.equal(cliMain(["--edition", "260820", "--through", "3"], deps), 6);
+  });
+});
+
+describe("wiring da skill /diaria-edicao (#5744)", () => {
+  it("SKILL.md cita o script, e o script citado existe de fato", () => {
+    const skill = readFileSync(
+      join(import.meta.dirname, "..", ".claude", "skills", "diaria-edicao", "SKILL.md"),
+      "utf8",
+    );
+    const cited = skill.match(/npx tsx (scripts\/run-edition-stages\.ts)/);
+    assert.ok(cited, "Passo 2 da skill precisa invocar run-edition-stages.ts");
+    // Sem esta segunda metade o teste seria decorativo: o valor está em
+    // pegar o dia em que o script for renomeado/movido e a skill continuar
+    // mandando a sessão rodar um path que não existe — falha que só
+    // apareceria no meio de uma edição real.
+    assert.ok(
+      existsSync(join(import.meta.dirname, "..", cited[1])),
+      `SKILL.md cita ${cited[1]}, que não existe no repo`,
+    );
+    assert.match(skill, /--through 3/, "a skill deve parar no Stage 3; 4-6 ficam no top-level");
+    assert.ok(
+      !/--through\s*[456]/.test(skill),
+      "a skill nunca pode mandar spawnar Stage 4+ headless — são os gates humanos",
+    );
   });
 });
