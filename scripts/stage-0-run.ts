@@ -210,11 +210,17 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
 // Abort tipado.
 // ---------------------------------------------------------------------------
 
+/** Sempre `code: 1` — o HALT (código 2, 0d.bis) NUNCA passa por exceção, é
+ * um `return` antecipado dentro de `runContinue` (não é um erro de código,
+ * é um resultado operacional que precisa do JSON completo — `editionDir`,
+ * `haltRequired` etc — no retorno, o que uma exceção capturada no topo não
+ * carregaria sem duplicar campos). Mesma lição já documentada em
+ * `NovosAbort` (`scripts/clarice-novos-run.ts`, achado do review #4949):
+ * um tipo `1 | 2` aqui sugeriria uma uniformidade que não existe no
+ * controle de fluxo real. */
 export class Stage0Abort extends Error {
-  constructor(
-    message: string,
-    readonly code: 1 | 2 = 1,
-  ) {
+  readonly code = 1 as const;
+  constructor(message: string) {
     super(message);
     this.name = "Stage0Abort";
   }
