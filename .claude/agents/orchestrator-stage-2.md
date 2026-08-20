@@ -266,7 +266,7 @@ Falha do max = destaque inflado — re-disparar writer com instruction de trimar
      npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'
      ```
 
-     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Se `clariceRest === false` (lido do `preflight-state.json` no início deste stage — ver acima), pular direto pro halt banner — sem chance de fallback bem-sucedido.
+     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx ou timeout em TODAS as tentativas (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). **Exit 5 (#5755) = guard de staleness do `--corrected-out`** — mtime do arquivo escrito é anterior ao início da chamada (no-op silencioso: nenhuma requisição HTTP nova, conteúdo de execução ANTERIOR) — halt, nunca consumir esse arquivo, re-rodar em foreground. Se `clariceRest === false` (lido do `preflight-state.json` no início deste stage — ver acima), pular direto pro halt banner — sem chance de fallback bem-sucedido.
 
      **Skip consciente (#2320).** Se editor aprovar o skip após halt (MCP + REST falharam):
      ```bash

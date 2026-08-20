@@ -280,7 +280,7 @@ Exit 0 = sucesso. **Em sucesso, NÃO rodar o passo 4 (`clarice-apply.ts`)** — 
 ```bash
 cp {EDIR}/_internal/02-clarice-corrected.md {EDIR}/_internal/02-draft.md
 ```
-Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt.
+Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt. **Exit 5 (#5755) = guard de staleness do `--corrected-out`** — o script detectou que o arquivo escrito tem mtime anterior ao início da própria chamada (sinal de no-op silencioso: nenhuma requisição HTTP nova foi de fato disparada, e `02-clarice-corrected.md` ficou com conteúdo de uma execução ANTERIOR, potencialmente já obsoleto) — **halt**, nunca copiar esse arquivo pro working draft; re-rodar o comando acima em **foreground** (não background) antes de seguir.
 Sempre logar warn no run-log quando cair no fallback (não silenciar — o editor precisa saber que o caminho normal falhou, mesmo que o fallback tenha funcionado).
 
 Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.

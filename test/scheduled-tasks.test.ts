@@ -698,3 +698,61 @@ describe("#5704 — Diaria-Google-Ads-Spend-Ingest registrada, diária, systemd-
     assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
   });
 });
+
+describe("#5754 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, NÃO armada", () => {
+  it("está presente no registro, com o step apontando pro build-hub-page.ts com --all --check-facts, domingo 08:05", () => {
+    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build");
+    assert.ok(t, "Diaria-Hub-Pages-Build ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/build-hub-page.ts"],
+    );
+    // `--check-facts` é o que garante que a task NÃO contorna o gate de
+    // fact-check de hub (#5060/#5102) — `--all` sozinho não aciona esse
+    // gate (ver docstring de scripts/build-hub-page.ts).
+    assert.deepEqual(t!.steps[0].args, ["--all", "--check-facts"]);
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 8, minute: 5 });
+    assert.equal(t!.issue, "#5754");
+  });
+
+  it("domingo 08:05 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
+    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
+    assert.equal(t.schedule.kind, "weekly");
+    const mine = t.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+
+    for (const other of SCHEDULED_TASKS) {
+      if (other.name === t.name) continue;
+      if (other.schedule.kind === "weekly" && other.schedule.dayOfWeek === mine.dayOfWeek) {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com ${other.name} (${mine.dayOfWeek} ${mine.hour}:${mine.minute})`,
+        );
+      }
+      if (other.schedule.kind === "interval" && other.schedule.hours > 1) {
+        assert.ok(
+          mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
+          `08:00 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
+        );
+      }
+    }
+  });
+
+  it("08:00 fica antes da janela 09:30-10:20 dos checks de drift/staleness de hub (motivo do horário, #5754)", () => {
+    const build = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
+    const buildMinutes = (build.schedule as { hour: number; minute: number }).hour * 60 + (build.schedule as { hour: number; minute: number }).minute;
+    for (const name of ["Diaria-Hub-Staleness-Check", "Diaria-Hub-Drift-Check", "Diaria-Robots-Txt-Drift-Check"]) {
+      const t = getScheduledTaskByName(name);
+      assert.ok(t, `${name} ausente de SCHEDULED_TASKS`);
+      const schedule = t!.schedule as { hour: number; minute: number };
+      const otherMinutes = schedule.hour * 60 + schedule.minute;
+      assert.ok(buildMinutes < otherMinutes, `Diaria-Hub-Pages-Build (${build.schedule.hour}:${build.schedule.minute}) deveria rodar antes de ${name}`);
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+});

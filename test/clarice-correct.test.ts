@@ -10,6 +10,7 @@ import {
   correctChunkViaParagraphs,
   correctTextViaParagraphs,
   isFatalHttpError,
+  checkCorrectedOutFreshness,
   PARAGRAPH_FALLBACK_TIMEOUT_MS,
   type RetryPolicy,
   type ChunkedResult,
@@ -1242,5 +1243,89 @@ describe("correctTextChunked (#5082) — fallback por-parágrafo também no cami
       () => correctTextChunked({ apiKey: "k", text: fullText, fetchImpl }, undefined, undefined, { enabled: false }),
       /HTTP 503/,
     );
+  });
+});
+
+describe("checkCorrectedOutFreshness (#5755) — guard de staleness do --corrected-out", () => {
+  // Testes puros via statFn injetado — sem tocar o filesystem real (mesmo
+  // padrão de injeção que o resto do módulo já usa pra fetch/sleep).
+
+  it("mtime ANTERIOR ao início da chamada → stale: true (cenário do #5755: no-op silencioso deixou conteúdo antigo)", () => {
+    const callStartMs = 2_000_000;
+    const staleMtimeMs = 1_000_000; // arquivo escrito numa execução anterior
+    const statFn = () => staleMtimeMs;
+
+    const result = checkCorrectedOutFreshness("/fake/corrected-out.md", callStartMs, statFn);
+
+    assert.equal(result.stale, true);
+    assert.equal(result.mtimeMs, staleMtimeMs);
+    assert.equal(result.callStartMs, callStartMs);
+  });
+
+  it("mtime POSTERIOR ao início da chamada → stale: false (escrita real aconteceu nesta execução)", () => {
+    const callStartMs = 1_000_000;
+    const freshMtimeMs = 2_000_000; // arquivo escrito DEPOIS do início desta chamada
+    const statFn = () => freshMtimeMs;
+
+    const result = checkCorrectedOutFreshness("/fake/corrected-out.md", callStartMs, statFn);
+
+    assert.equal(result.stale, false);
+    assert.equal(result.mtimeMs, freshMtimeMs);
+  });
+
+  it("mtime igual ao início da chamada (borda) → stale: false (>= callStartMs conta como fresco)", () => {
+    const callStartMs = 1_000_000;
+    const statFn = () => callStartMs;
+
+    const result = checkCorrectedOutFreshness("/fake/corrected-out.md", callStartMs, statFn);
+
+    assert.equal(result.stale, false);
+  });
+
+  it("arquivo ausente (statFn retorna null) → stale: false (ausência não é staleness, ver docstring)", () => {
+    const result = checkCorrectedOutFreshness("/fake/corrected-out.md", 1_000_000, () => null);
+
+    assert.equal(result.stale, false);
+    assert.equal(result.mtimeMs, null);
+  });
+
+  it("integração com filesystem real: arquivo com mtime forçado pro passado é detectado como stale", async () => {
+    const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = mkdtempSync(join(tmpdir(), "clarice-correct-freshness-"));
+    const filePath = join(dir, "corrected-out.md");
+    try {
+      writeFileSync(filePath, "conteudo de execucao ANTERIOR", "utf8");
+      const pastDate = new Date(Date.now() - 10 * 60 * 1000); // 10min no passado
+      utimesSync(filePath, pastDate, pastDate);
+
+      const callStartMs = Date.now(); // "agora" — depois do mtime forçado acima
+      const result = checkCorrectedOutFreshness(filePath, callStartMs);
+
+      assert.equal(result.stale, true, "arquivo com mtime 10min no passado deveria ser detectado como stale");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("integração com filesystem real: arquivo recém-escrito (mtime >= callStartMs) não é stale", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = mkdtempSync(join(tmpdir(), "clarice-correct-freshness-"));
+    const filePath = join(dir, "corrected-out.md");
+    try {
+      const callStartMs = Date.now(); // captura ANTES do write, como main() faz
+      writeFileSync(filePath, "conteudo desta execucao", "utf8"); // write acontece DEPOIS
+
+      const result = checkCorrectedOutFreshness(filePath, callStartMs);
+
+      assert.equal(result.stale, false, "arquivo escrito depois do callStartMs deveria ser fresco");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
