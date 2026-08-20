@@ -14,6 +14,7 @@ import {
   unsubscribe,
   cleanupOneArm,
   formatResultsTable,
+  buildAdhocPlan,
   type CleanupResult,
 } from "../scripts/cleanup-preflight-subscribers.ts";
 import { buildPreflightPlan } from "../scripts/lib/preflight-utm-arms.ts";
@@ -160,6 +161,62 @@ describe("cleanupOneArm (#5545) — fluxo end-to-end com fetch mockado", () => {
     const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
     assert.equal(putCalled, false);
     assert.equal(result.outcome, "not_found");
+  });
+});
+
+describe("buildAdhocPlan (#5736) — pura", () => {
+  it("aceita qualquer e-mail literal, sem exigir o padrão vjpixel+test-preflight-{arm}-{campaign}", () => {
+    const plan = buildAdhocPlan("vjpixel+preflightgoogle@gmail.com");
+    assert.equal(plan.email, "vjpixel+preflightgoogle@gmail.com");
+    assert.equal(plan.arm.key, "adhoc");
+  });
+
+  it("reconhece e-mail fora do padrão de nomeação do plano scriptado (achado #5736)", () => {
+    // O caso real da issue: e-mails cadastrados numa rodada de preflight mal
+    // executada, sem o prefixo test-preflight- exigido por preflight-utm-arms.ts.
+    const plan = buildAdhocPlan("vjpixel+preflightmicrosoft@gmail.com");
+    assert.equal(plan.email, "vjpixel+preflightmicrosoft@gmail.com");
+  });
+});
+
+describe("cleanupOneArm com plano avulso (#5736) — fluxo end-to-end com fetch mockado", () => {
+  it("--push num e-mail avulso: chama PUT quando active, reporta unsubscribed", async () => {
+    const plan = buildAdhocPlan("vjpixel+preflightgoogle@gmail.com");
+    let putCalled = false;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putCalled = true;
+        return new Response(null, { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { status: "active" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await cleanupOneArm("pub_1", "key", plan, true, fetchImpl);
+    assert.equal(putCalled, true);
+    assert.equal(result.outcome, "unsubscribed");
+    assert.equal(result.email, "vjpixel+preflightgoogle@gmail.com");
+  });
+
+  it("dry-run num e-mail avulso: não chama PUT", async () => {
+    const plan = buildAdhocPlan("vjpixel+preflightmicrosoft@gmail.com");
+    let putCalled = false;
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putCalled = true;
+        return new Response(null, { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { status: "active" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await cleanupOneArm("pub_1", "key", plan, false, fetchImpl);
+    assert.equal(putCalled, false);
+    assert.equal(result.outcome, "skipped_dry_run");
   });
 });
 
