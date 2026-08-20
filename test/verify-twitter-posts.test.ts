@@ -4,6 +4,7 @@ import {
   reconcileTwitterPost,
   verifyTwitterPublished,
   resolveSocialPublishedPath,
+  defaultFetchBufferPost,
   type BufferPostResponse,
 } from "../scripts/verify-twitter-posts.ts";
 import type { PostEntry, SocialPublished } from "../scripts/lib/social-published-store.ts";
@@ -115,6 +116,33 @@ describe("verifyTwitterPublished", () => {
     assert.equal(changes, 1);
     assert.equal(updated.posts[0].status, "scheduled"); // status preservado
     assert.ok((updated.posts[0].verification_note as string).includes("buffer_api_error"));
+  });
+});
+
+describe("defaultFetchBufferPost", () => {
+  it("HTTP não-ok (ex: 401 token expirado) vira queryError, nunca é interpretado como 'resposta sem data.post' genérico", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = (async () =>
+      new Response("Unauthorized", { status: 401 })) as typeof fetch;
+    try {
+      const result = await defaultFetchBufferPost("some-id", "expired-token");
+      assert.ok(result.queryError?.startsWith("HTTP 401"), `esperava queryError com HTTP 401, veio: ${result.queryError}`);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("HTTP ok com body GraphQL válido: passa direto, sem queryError espúrio", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ data: { post: { status: "sent" } } }), { status: 200 })) as typeof fetch;
+    try {
+      const result = await defaultFetchBufferPost("some-id", "valid-token");
+      assert.equal(result.queryError, undefined);
+      assert.equal(result.status, "sent");
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });
 

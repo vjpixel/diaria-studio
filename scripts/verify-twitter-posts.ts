@@ -72,6 +72,14 @@ export async function defaultFetchBufferPost(
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ query: POST_STATUS_QUERY, variables: { id: postId } }),
   });
+  if (!res.ok) {
+    // Erro HTTP-level (401 token expirado, 429 rate limit, 5xx) nunca chega a
+    // virar um corpo GraphQL válido — sem este check, cairia no "resposta sem
+    // data.post" genérico abaixo, escondendo a causa real (achado do fleet
+    // review pré-merge, #5819).
+    const text = await res.text().catch(() => "");
+    return { queryError: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  }
   const body = (await res.json()) as {
     data?: { post?: BufferPostResponse };
     errors?: Array<{ message: string }>;
