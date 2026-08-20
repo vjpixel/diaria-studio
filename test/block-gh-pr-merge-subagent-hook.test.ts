@@ -30,6 +30,7 @@ describe("isGhPrMergeCommand (#5716)", () => {
   it("detecta mesmo dentro de comando encadeado", () => {
     assert.equal(isGhPrMergeCommand("cd worktree && gh pr merge 5713 --squash"), true);
     assert.equal(isGhPrMergeCommand("gh pr checks 5713 --watch; gh pr merge 5713"), true);
+    assert.equal(isGhPrMergeCommand("gh pr checks 5713 --watch | gh pr merge 5713"), true);
   });
 
   it("não detecta 'gh pr create'/'gh pr view'/'gh pr list'", () => {
@@ -40,6 +41,31 @@ describe("isGhPrMergeCommand (#5716)", () => {
 
   it("não detecta 'merge' fora do contexto 'gh pr' (ex: git merge)", () => {
     assert.equal(isGhPrMergeCommand("git merge origin/master"), false);
+  });
+
+  it("não detecta 'gh pr merge' citado dentro de um argumento (#5787 Defeito 3)", () => {
+    // O erro antigo: `gh issue create --body "...gh pr merge bloqueado pelo guard..."` era negado.
+    assert.equal(
+      isGhPrMergeCommand('gh issue create --body "gh pr merge bloqueado pelo guard do overnight"'),
+      false,
+    );
+    assert.equal(
+      isGhPrMergeCommand('echo "o comando gh pr merge foi bloqueado"'),
+      false,
+    );
+    assert.equal(
+      isGhPrMergeCommand('grep "gh pr merge" .claude/hooks/block-gh-pr-merge-subagent.mjs'),
+      false,
+    );
+  });
+
+  it("não detecta 'gh pr merge' no meio de um --body em linha de comando (#5787)", () => {
+    assert.equal(
+      isGhPrMergeCommand(
+        'gh issue create --title "Teste" --body "Comando: gh pr merge 5713 --squash" --label bug',
+      ),
+      false,
+    );
   });
 
   it("não lança em input não-string", () => {
@@ -115,26 +141,29 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("sessão kind=overnight fresca → incluída", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-host-a-sess1.json", {
+    writeSession(root, "overnight-helios-sess1.json", {
       kind: "overnight",
       sessionId: "sess1",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess1"]));
   });
 
   it("sessão kind=develop e kind=continuo também contam", () => {
     const root = freshRoot();
-    writeSession(root, "develop-host-a-sess2.json", {
+    writeSession(root, "develop-helios-sess2.json", {
       kind: "develop",
       sessionId: "sess2",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
-    writeSession(root, "continuo-host-a-sess3.json", {
+    writeSession(root, "continuo-helios-sess3.json", {
       kind: "continuo",
       sessionId: "sess3",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess2", "sess3"]));
   });
@@ -151,20 +180,22 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("sessão mais velha que MAX_SESSION_AGE_MS (24h) é ignorada — rodada abandonada não trava o guard pra sempre", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-host-a-sess5.json", {
+    writeSession(root, "overnight-helios-sess5.json", {
       kind: "overnight",
       sessionId: "sess5",
       startedAt: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
 
   it("timestamp no futuro é ignorado (clock skew/corrupção nunca vira sessão ativa)", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-host-a-sess6.json", {
+    writeSession(root, "overnight-helios-sess6.json", {
       kind: "overnight",
       sessionId: "sess6",
       startedAt: new Date(NOW + 10 * ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
@@ -172,11 +203,12 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
   it("JSON malformado em uma entrada não derruba a leitura das demais", () => {
     const root = freshRoot();
     mkdirSync(sessionsDir(root), { recursive: true });
-    writeFileSync(join(sessionsDir(root), "overnight-host-a-broken.json"), "{not valid json", "utf8");
-    writeSession(root, "overnight-host-a-sess7.json", {
+    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
+    writeSession(root, "overnight-helios-sess7.json", {
       kind: "overnight",
       sessionId: "sess7",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess7"]));
   });
@@ -194,10 +226,11 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
 
   it("ignora cópias de conflito do OneDrive (-safeBackup-)", () => {
     const root = freshRoot();
-    writeSession(root, "overnight-host-a-sess8-safeBackup-0001.json", {
+    writeSession(root, "overnight-helios-sess8-safeBackup-0001.json", {
       kind: "overnight",
       sessionId: "sess8",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "helios",
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });

@@ -78,11 +78,19 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostname } from "node:os";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
 // `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
 // abandonada/crashada não deve manter este guard armado pra sempre.
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+
+// #5787 Defeito 1: janela de liveness PRÁTICA (não só a janela absoluta de
+// 24h). Uma sessão coordenadora VIVA bata heartbeat de minutos em minutos —
+// 90 min de silêncio já é morte para efeito deste guard. O custo de errar
+// pra permissivo aqui é limitado: sessão sem heartbeat há 90 min não tem
+// subagente ativo pra proteger.
+const SOFT_STALE_MS = 90 * 60 * 1000;
 
 const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
 
@@ -109,12 +117,19 @@ export function sessionsDir(repoRoot) {
 
 /**
  * Lê `data/sessions/*.json` e retorna os `sessionId` de sessões COORDENADORAS
- * (`kind` em overnight/develop/continuo) ainda dentro da janela de staleness
- * absoluta. Fail-soft em qualquer ponto: diretório ausente, erro de leitura,
- * JSON malformado, ou entrada sem os campos esperados são simplesmente
- * ignorados — nunca lança. Versão deliberadamente mínima de
- * `listActiveSessions` (`scripts/lib/session-registry.ts`) — só o suficiente
- * pra este guard, sem heartbeat/staleness "soft", `stale`, merge lock, etc.
+ * (`kind` em overnight/develop/continuo) que são:
+ *   (a) de MESMA MÁQUINA que o hook roda (`record.machineTag` bate com o
+ *       hostname atual — #5787 Defeito 2: `data/sessions/` é compartilhado
+ *       entre máquinas via OneDrive, e um coordenador em outra máquina não
+ *       pode despachar subagente deste checkout);
+ *   (b) com heartbeat recente (`now - lastHeartbeat ≤ SOFT_STALE_MS`, 90 min —
+ *       #5787 Defeito 1: janela de liveness prática, não só o teto absoluto
+ *       de 24h. Uma sessão que morreu sem chamar `end` não armava o guard
+ *       por 24h inteiro).
+ *
+ * Fail-soft em qualquer ponto: diretório ausente, erro de leitura, JSON
+ * malformado, ou entrada sem os campos esperados são simplesmente ignorados —
+ * nunca lança.
  */
 export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
   const dir = sessionsDir(repoRoot);
@@ -126,6 +141,7 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
   } catch {
     return ids;
   }
+  const myTag = machineTag();
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     try {
@@ -133,11 +149,19 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
       if (!record || typeof record !== "object") continue;
       if (!COORDINATOR_KINDS.has(record.kind)) continue;
       if (typeof record.sessionId !== "string" || record.sessionId === "") continue;
+      // #5787 Defeito 2: ignora sessões de outras máquinas — `data/sessions/`
+      // é compartilhado via OneDrive, e um coordenador em outra máquina não
+      // pode despachar subagente deste checkout.
+      if (typeof record.machineTag !== "string" || record.machineTag !== myTag) continue;
       const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
       const heartbeatMs = Date.parse(heartbeatIso ?? "");
       if (!Number.isFinite(heartbeatMs)) continue;
       const ageMs = now - heartbeatMs;
       if (ageMs < 0 || ageMs > MAX_SESSION_AGE_MS) continue;
+      // #5787 Defeito 1: janela de liveness prática (90 min). Uma sessão que
+      // não bateu heartbeat há mais de SOFT_STALE_MS está morta para efeito
+      // deste guard — não tem subagente ativo pra proteger.
+      if (ageMs > SOFT_STALE_MS) continue;
       ids.add(record.sessionId);
     } catch {
       // Entrada individual corrompida/ilegível — ignora só ela, segue as demais.
@@ -146,10 +170,38 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
   return ids;
 }
 
-/** `true` se `command` contém `gh pr merge` em qualquer posição (inclusive encadeado). */
+/** Resolve a tag de máquina atual — mesma função usada em `session-registry.ts`
+ * (`machineTag()`), duplicada aqui porque o hook é self-contained (sem import
+ * de `.ts`). #5787 Defeito 2: preciso comparar `record.machineTag` contra a
+ * máquina onde o hook roda, já que `data/sessions/` é compartilhado via
+ * OneDrive entre helios/Neo/predator.
+ */
+export function machineTag() {
+  try {
+    return (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+  } catch {
+    return "unknown";
+  }
+}
+
+/** `true` se `command` contém `gh pr merge` como um comando REAL — só no
+ * início da string ou depois de separador de comando (`&&`/`;`/`/`|`/`||`).
+ * #5787 Defeito 3: o regex antigo `/\\bgh\\s+pr\\s+merge\\b/` rodava sobre a
+ * string inteira e casava com a CITAÇÃO da mensagem de erro dentro do corpo
+ * de uma issue — qualquer comando que MENCIONASSE a expressão era negado.
+ * Hoje casa só no início do comando ou depois de um separador, quando é de
+ * fato um comando que o shell executaria.
+ */
 export function isGhPrMergeCommand(command) {
   if (typeof command !== "string") return false;
-  return /\bgh\s+pr\s+merge\b/.test(command);
+  // Match `gh pr merge` at start of string or after a command separator.
+  // Separators: && ; | || newline (the shell never treats `gh pr merge`
+  // appearing mid-argument as a command).
+  // Match `gh pr merge` at start of string or after a shell command
+  // separator (`&&`, `;`, `|`, `||`, newline). Separators are matched
+  // explicitly — `gh pr merge` appearing mid-argument (inside quotes, as
+  // part of a `--body`, etc.) is never a command the shell would execute.
+  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\||\|\|)\s*gh\s+pr\s+merge\b/.test(command);
 }
 
 /**
