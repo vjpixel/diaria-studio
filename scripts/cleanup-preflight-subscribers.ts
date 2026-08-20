@@ -27,6 +27,18 @@
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608          # dry-run
  *   npx tsx scripts/cleanup-preflight-subscribers.ts --campaign preflight-2608 --push    # executa
  *
+ * `--email` (#5736, endurecimento): limpa UM endereço avulso passado
+ * literalmente, sem exigir `--campaign` nem que o e-mail bata o padrão
+ * `vjpixel+test-preflight-{arm}-{campaign}@gmail.com` de
+ * `preflight-utm-arms.ts`. Existe pra cobrir o caso já visto ao vivo
+ * (#5736): uma rodada de preflight cadastrou e-mails fora do padrão
+ * combinado (`vjpixel+preflightgoogle@gmail.com` em vez do formato do
+ * plano), e o cleanup normal — que só conhece os 3 e-mails derivados de
+ * `--campaign` — não os enxerga, deixando a limpeza como trabalho manual
+ * na UI da Beehiiv. Mutuamente exclusivo com `--campaign`.
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com          # dry-run
+ *   npx tsx scripts/cleanup-preflight-subscribers.ts --email vjpixel+preflightgoogle@gmail.com --push    # executa
+ *
  * Guard de publicação: em `--push` faz um `PUT` real na Beehiiv — não é
  * "publicação" no sentido do guard de dispatch (não cria/agenda/envia
  * campanha; é remoção de 3 cadastros de teste que o próprio fluxo de teste
@@ -112,10 +124,28 @@ export function decideOutcome(statusBefore: string | null, push: boolean): Clean
   return push ? "unsubscribed" : "skipped_dry_run";
 }
 
+/**
+ * Forma estrutural mínima que `cleanupOneArm` precisa — `PreflightArmPlan`
+ * satisfaz isto, mas também satisfaz um plano avulso construído por
+ * `buildAdhocPlan` (#5736), cujo `arm.key` não pertence à união fechada de
+ * `PreflightUtmArm["key"]`.
+ */
+export interface CleanupPlanLike {
+  arm: { key: string };
+  email: string;
+}
+
+/** Pura — monta um "plano" de 1 e-mail avulso pra `--email` (#5736), fora do
+ *  padrão de nomeação `preflight-utm-arms.ts`. `arm.key` é só um rótulo pra
+ *  aparecer na tabela de resultado, não participa de nenhum lookup. */
+export function buildAdhocPlan(email: string): CleanupPlanLike {
+  return { arm: { key: "adhoc" }, email };
+}
+
 export async function cleanupOneArm(
   publicationId: string,
   apiKey: string,
-  plan: PreflightArmPlan,
+  plan: CleanupPlanLike,
   push: boolean,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CleanupResult> {
@@ -143,9 +173,15 @@ export function formatResultsTable(results: CleanupResult[], push: boolean): str
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const campaign = getStringArg(argv, "campaign", { example: "preflight-2608" });
-  if (!campaign) {
+  const adhocEmail = getStringArg(argv, "email", { example: "vjpixel+preflightgoogle@gmail.com" });
+
+  if (campaign && adhocEmail) {
+    process.stderr.write(`[cleanup-preflight-subscribers] --campaign e --email são mutuamente exclusivos\n`);
+    process.exit(2);
+  }
+  if (!campaign && !adhocEmail) {
     process.stderr.write(
-      `[cleanup-preflight-subscribers] --campaign é obrigatório (ex: --campaign preflight-2608)\n`,
+      `[cleanup-preflight-subscribers] passe --campaign preflight-2608 (os 3 e-mails do plano) OU --email um@endereco.avulso (#5736, e-mail fora do padrão)\n`,
     );
     process.exit(2);
   }
@@ -153,7 +189,7 @@ if (isMainModule(import.meta.url)) {
   const push = argv.includes("--push");
 
   const cfg = loadBeehiivConfig("[cleanup-preflight-subscribers]");
-  const plans = buildPreflightPlan(campaign, baseEmail);
+  const plans: CleanupPlanLike[] = adhocEmail ? [buildAdhocPlan(adhocEmail)] : buildPreflightPlan(campaign!, baseEmail);
 
   Promise.all(plans.map((plan) => cleanupOneArm(cfg.publicationId, cfg.apiKey, plan, push)))
     .then((results) => {

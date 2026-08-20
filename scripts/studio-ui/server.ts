@@ -361,6 +361,7 @@ import {
 // data/studio-chat-enabled.json, lido/escrito tanto por este server quanto
 // por sessões de automação externas (ver docstring do módulo).
 import { readChatEnabledState, setChatEnabled, isChatEnabled } from "../lib/studio-chat-enabled.ts";
+import { shutdownWithTimeout } from "../lib/shutdown-with-timeout.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
 import {
@@ -2365,7 +2366,16 @@ async function main(): Promise<void> {
   console.log(`[studio-server] ${server.url} (rootDir=${server.rootDir})`);
 
   const shutdown = () => {
-    server.close().finally(() => process.exit(0));
+    // #5737: server.close() pode nunca resolver (conexões penduradas, SSE de
+    // /api/events, keep-alive) — sem timeout, o processo fica vivo sem
+    // escutar a porta e o Restart=always do systemd nunca dispara porque o
+    // PID nunca sai de fato.
+    shutdownWithTimeout(() => server.close(), {
+      onTimeout: () =>
+        console.error(
+          "[studio-server] server.close() não completou a tempo; forçando saída para permitir Restart=always",
+        ),
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

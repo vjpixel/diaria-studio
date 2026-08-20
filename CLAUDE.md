@@ -111,6 +111,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 - Prompt de imagem: Van Gogh impasto, 2:1, SEM resolução em pixels, SEM Noite Estrelada.
 - Output final sem markdown (nada de `**`, `#`, `- `).
 - **LANÇAMENTOS só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → NOTÍCIAS. Validar com `scripts/validate-lancamentos.ts`.
+- **No máximo 2 URLs do mesmo domínio registrável por edição** (#5735). Conta a edição inteira (destaques + pool), sem allowlist de plataforma. Validar com `scripts/validate-domain-diversity.ts`.
 
 ## Princípios operacionais invariáveis
 
