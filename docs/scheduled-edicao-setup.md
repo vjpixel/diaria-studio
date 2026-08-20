@@ -1,5 +1,17 @@
 # Agendamento automático da edição diária
 
+> **CANCELADO POR DECISÃO DO EDITOR (19/08/2026).** Não há edição diária agendada em máquina
+> nenhuma, e isso é intencional — a edição passou a ser rodada à mão. O Windows nunca chegou a
+> assumir a via que o #5611 previu, o timer Linux segue desligado desde então, e a última
+> execução registrada em `data/overnight-schedule.log` é de 17/08 (FAIL, `Credit balance is too
+> low` — #5608). O alarme de staleness continua desarmado pelo mesmo motivo: não há o que vigiar.
+> Tudo abaixo descreve o mecanismo, que continua íntegro e pronto para rearme se o editor decidir
+> voltar — **não descreve o estado atual**. Rearmar é decisão nova, não pendência aberta.
+>
+> Contexto sobre o custo: o #5738 fez este runner spawnar uma sessão por stage (efeito `/clear`
+> entre stages, ganho medido de −72% no Stage 4). Esse ganho está latente enquanto nada roda por
+> aqui. Quem entrega economia no caminho MANUAL é a #5744.
+
 > **VIA ATIVA: WINDOWS (17/08/2026, #5611)** — decisão do editor:
 > `Diaria-Edicao-Diaria` precisa rodar no Windows porque depende de acesso
 > ao navegador (Claude in Chrome). O timer systemd `diaria-edicao-diaria.timer`
