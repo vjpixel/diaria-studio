@@ -423,6 +423,14 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
     const pts = run.map((r) => r.value.point);
     if (pts.length >= 2) {
       expectedLine += `<path d="${catmullRomToBezierPath(pts)}" fill="none" stroke="var(--ink)" stroke-width="2" stroke-dasharray="6,4" stroke-linecap="round" opacity="0.6"/>`;
+    } else {
+      // Run de 1 ponto só (dia isolado com estimativa entre dois dias sem):
+      // sem este caso o dado sumia da tela por completo — `pts.length >= 2`
+      // não desenha path, e a série esperada não tem marcador por design.
+      // Um traço curto centrado no ponto mantém o dado visível SEM virar
+      // marcador de série medida (mesma cor/espessura/opacidade da linha).
+      const p = pts[0];
+      expectedLine += `<line x1="${fmt(p.x - 5)}" y1="${fmt(p.y)}" x2="${fmt(p.x + 5)}" y2="${fmt(p.y)}" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" opacity="0.6"/>`;
     }
   }
 
@@ -474,7 +482,15 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
   // Dois `<tspan>` por rótulo em vez de 1 `fill` só na `<text>`.
   const seriesLabels = `<text x="${chartLeft}" y="16" font-size="12" font-weight="700"><tspan fill="var(--brand)">●</tspan> <tspan fill="var(--ink)">Delivered</tspan></text>
     <text x="${chartRight}" y="16" text-anchor="end" font-size="12" font-weight="700"><tspan fill="var(--alert)">●</tspan> <tspan fill="var(--ink)">Open Rate</tspan></text>
-    ${hasExpectedData ? `<text x="${(chartLeft + chartRight) / 2}" y="16" text-anchor="middle" font-size="12" font-weight="700"><tspan fill="var(--ink)" opacity="0.6">┄</tspan> <tspan fill="var(--ink)">Esperado (mix)</tspan></text>` : ""}`;
+    ${
+      // Swatch = `<line>` de verdade com o MESMO `stroke-dasharray` da série,
+      // não o glyph `┄` (U+2504): fonte sem esse caractere renderiza tofu, e
+      // mesmo quando existe o tracejado do glyph não bate com o da linha.
+      hasExpectedData
+        ? `<line x1="${fmt((chartLeft + chartRight) / 2 - 66)}" y1="12" x2="${fmt((chartLeft + chartRight) / 2 - 50)}" y2="12" stroke="var(--ink)" stroke-width="2" stroke-dasharray="6,4" stroke-linecap="round" opacity="0.6"/>
+    <text x="${fmt((chartLeft + chartRight) / 2 - 44)}" y="16" text-anchor="start" font-size="12" font-weight="700" fill="var(--ink)">Esperado (mix)</text>`
+        : ""
+    }`;
 
   // #5640 B1: linha vertical do crosshair — invisível por default
   // (`opacity:0`, sem `pointer-events` pra não competir com os hit rects
@@ -509,7 +525,12 @@ export function renderOpenRateChartSvg(rows: DayOpenRateSummary[]): string {
       `data-daylabel="${escAttr(fmtDayLabelLong(days[i]))}"`,
       `data-x="${fmt(xAt(i))}"`,
       s
-        ? `data-hasdata="1" data-count="${s.count}" data-delivered="${s.delivered}" data-opens="${s.opens}" data-openrate="${fmt(s.openRate)}" data-smallsample="${s.smallSample ? "1" : "0"}" data-immature="${s.immature ? "1" : "0"}"`
+        ? `data-hasdata="1" data-count="${s.count}" data-delivered="${s.delivered}" data-opens="${s.opens}" data-openrate="${fmt(s.openRate)}" data-smallsample="${s.smallSample ? "1" : "0"}" data-immature="${s.immature ? "1" : "0"}"${
+            // A linha tracejada só serve pra comparar com o real; sem o valor
+            // no tooltip/leitor de tela o leitor só consegue estimar o gap a
+            // olho. Ausente quando o dia não tem estimativa (nunca "0%").
+            s.expectedOpenRate != null ? ` data-expected="${fmt(s.expectedOpenRate)}"` : ""
+          }`
         : `data-hasdata="0"`,
     ].join(" ");
     hitRects += `<rect class="chart-hit-rect" x="${fmt(x0)}" y="${fmt(chartTop)}" width="${fmt(x1 - x0)}" height="${fmt(chartH)}" fill="transparent" ${dataAttrs}/>`;

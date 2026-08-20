@@ -563,13 +563,46 @@ describe("#5640 A1: renderOpenRateChartSvg — 3ª série (open rate esperado)",
     assert.match(svg, />Esperado \(mix\)</);
   });
 
+  test("hit rect do dia carrega data-expected (tooltip/leitor de tela leem o valor da tracejada)", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { expectedOpenRate: 35 }),
+      row("2026-08-11", { expectedOpenRate: null }),
+    ]);
+    assert.match(svg, /data-day="2026-08-10"[^>]*data-expected="35"/);
+    const semEstimativa = svg.match(/data-day="2026-08-11"[^>]*>/)?.[0] ?? "";
+    assert.ok(!semEstimativa.includes("data-expected"), "dia sem estimativa não vira 0% no tooltip");
+  });
+
+  test("único dia com expectedOpenRate na janela desenha um traço curto — não some da tela", () => {
+    // Regressão: run de 1 ponto caía no `pts.length >= 2` e não desenhava
+    // nada; a série esperada não tem marcador, então o dado sumia inteiro.
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { expectedOpenRate: null }),
+      row("2026-08-11", { expectedOpenRate: 33 }),
+      row("2026-08-12", { expectedOpenRate: null }),
+    ]);
+    assert.match(svg, /<line [^>]*stroke="var\(--ink\)" stroke-width="2" stroke-linecap="round" opacity="0\.6"/);
+    assert.match(svg, />Esperado \(mix\)</);
+  });
+
+  test("swatch da legenda usa <line> tracejada, nunca o glyph ┄", () => {
+    const svg = renderOpenRateChartSvg([
+      row("2026-08-10", { expectedOpenRate: 35 }),
+      row("2026-08-11", { expectedOpenRate: 38 }),
+    ]);
+    assert.ok(!svg.includes("┄"), "glyph U+2504 vira tofu em fonte sem esse caractere");
+    assert.match(svg, /<line [^>]*stroke-dasharray="6,4"[^>]*\/>\s*<text[^>]*>Esperado \(mix\)</);
+  });
+
   test("dia sem expectedOpenRate (null) no meio vira buraco — linha ainda conecta através dele (mesmo padrão das outras séries)", () => {
     const svg = renderOpenRateChartSvg([
       row("2026-08-10", { expectedOpenRate: 30 }),
       row("2026-08-11", { expectedOpenRate: null }),
       row("2026-08-12", { expectedOpenRate: 34 }),
     ]);
-    const expectedLineCount = (svg.match(/stroke-dasharray="6,4"/g) ?? []).length;
+    // Conta só `<path>` — o swatch da legenda também usa `stroke-dasharray="6,4"`
+    // (de propósito: mesmo tracejado da série, ver chart-svg.ts).
+    const expectedLineCount = (svg.match(/<path [^>]*stroke-dasharray="6,4"/g) ?? []).length;
     assert.equal(expectedLineCount, 1, "1 único segmento tracejado, mesmo com buraco no meio");
   });
 });

@@ -3674,10 +3674,13 @@ export function computeCohortBaseOpenRates(
  * soma das campanhas classificadas. **Limitação conhecida:** se uma fração
  * grande das campanhas do dia não é classificável em coorte
  * (`unclassifiedCount` de `aggregateByDayByCohort`), o numerador fica sem
- * a contribuição delas e o "esperado" tende a ficar sistematicamente mais
- * baixo do que devia — a leitura A5 (nunca "causou") absorve essa
- * incerteza; não há correção aqui porque a coorte real dessas campanhas é
- * desconhecida, não estimável.
+ * a contribuição delas — por isso o denominador é o delivered CLASSIFICADO
+ * (`contributingDelivered`), não `delivered_dia`: o esperado é a média
+ * ponderada do mix CONHECIDO do dia, e o não-classificado simplesmente não
+ * entra na conta (em vez de entrar como se tivesse open rate zero, que era
+ * o efeito de dividir pelo total). Continua sendo uma estimativa sob a
+ * hipótese de que o não-classificado se parece com o classificado — a
+ * leitura A5 (nunca "causou") absorve essa incerteza.
  *
  * Retorna `null` pra um dia quando: (a) `delivered` total do dia é 0/dia
  * ausente de `mainRows`; ou (b) nenhuma campanha do dia foi classificável
@@ -3715,7 +3718,15 @@ export function computeExpectedOpenRateByDay(
         contributingDelivered += delivered;
       }
     }
-    result.set(main.day, contributingDelivered > 0 ? weightedSum / main.delivered : null);
+    // #5640 A1 (corrigido): o denominador é o delivered das coortes que de
+    // fato CONTRIBUÍRAM pro numerador — não o total do dia. Usar o total
+    // enviesava a linha pra BAIXO na exata proporção do que não foi
+    // classificado (dia 50% não-classificável rendia um "esperado" pela
+    // metade), fazendo o real parecer sistematicamente melhor que o
+    // esperado. Ponderar só pelo que foi classificado responde a pergunta
+    // certa — "o mix CONHECIDO do dia renderia quanto?" — e é não-enviesado
+    // sob a hipótese de que o não-classificado se parece com o classificado.
+    result.set(main.day, contributingDelivered > 0 ? weightedSum / contributingDelivered : null);
   }
   return result;
 }
@@ -4136,6 +4147,15 @@ export function renderOpenRateByDaySection(
       + ' · Delivered ' + delivered.toLocaleString('pt-BR')
       + ' · Opens ' + opens.toLocaleString('pt-BR')
       + ' · Open rate ' + openRate + '%';
+    // Valor da linha tracejada + gap real-esperado: sem isto o leitor só
+    // consegue estimar a distância entre as duas curvas a olho, e leitor de
+    // tela (que espelha este texto) não a percebe de jeito nenhum.
+    var expectedAttr = rect.getAttribute('data-expected');
+    if (expectedAttr !== null) {
+      var gap = Number(openRate) - Number(expectedAttr);
+      html += ' · Esperado ' + expectedAttr + '%'
+        + ' (' + (gap >= 0 ? '+' : '') + gap.toFixed(1) + ' p.p.)';
+    }
     if (rect.getAttribute('data-smallsample') === '1') {
       html += '<small>Amostra pequena — menos de 2 campanhas enviadas neste dia.</small>';
     }
