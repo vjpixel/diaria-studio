@@ -529,6 +529,14 @@ export const HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pro 7º hub temático publicado — 1º hub por SETOR DE
+ * APLICAÇÃO (os 6 anteriores são de ator ou eixo regulatório): medicina e
+ * saúde (`scripts/lib/hubs/medicina-saude.ts`, #5741). */
+export const HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM = {
+  source: "hub-medicina-saude",
+  medium: "footer-nav",
+} as const;
+
 /** Box rotativo de divulgação dos hubs temáticos na newsletter (#5263,
  * `scripts/lib/shared/hub-divulgacao-box.ts`) — 1 hub por edição, escolhido
  * por rotação determinística. `medium` distinto de `HUB_*_FOOTER_NAV_UTM`
@@ -1374,6 +1382,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Mercado de trabalho ' +
       "e IA (#4558, 6º hub temático — 2º TEMÁTICO transversal, sessão develop 260812).",
+    status: "ativo",
+  },
+  {
+    id: "hub-medicina-saude-footer-nav",
+    label: "Hub Medicina e saúde — link de rodapé pra diar.ia.br",
+    source: HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM.source,
+    medium: HUB_MEDICINA_SAUDE_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-medicina-saude-footer-nav",
+    originFile: "scripts/lib/hubs/medicina-saude.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Medicina e saúde ' +
+      "(#5741, 7º hub temático — 1º hub por SETOR DE APLICAÇÃO).",
     status: "ativo",
   },
   {

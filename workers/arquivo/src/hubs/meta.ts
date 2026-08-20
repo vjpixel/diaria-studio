@@ -51,4 +51,5 @@ export const HUB_META: readonly HubMeta[] = [
   { slug: "meta-ai", label: "Meta e Meta AI" },
   { slug: "brasil-regulacao", label: "Regulação de IA no Brasil" },
   { slug: "mercado-trabalho", label: "Mercado de trabalho e IA" },
+  { slug: "medicina-saude", label: "Medicina e saúde" },
 ];
