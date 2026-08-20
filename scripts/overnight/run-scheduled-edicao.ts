@@ -28,17 +28,23 @@
  *      "Retomar edição interrompida") já cobre o caso de retomar uma run
  *      que ficou pela metade — esse guard é sobre não DISPARAR de novo
  *      quando não há motivo.
- *   3. Senão, invoca `claude --print /diaria-edicao {AAMMDD} --skip
- *      newsletter,linkedin,facebook` — Stages 0-3 + pré-render do Stage 4,
- *      sem publicar nada (mesmo contrato do runner Windows, ver
- *      docs/scheduled-edicao-setup.md).
+ *   3. Senão, sincroniza o código UMA vez e roda UM `claude --print` POR
+ *      STAGE (`STAGE_PLAN`, #5738) — `/diaria-1-pesquisa`,
+ *      `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`.
+ *      Cada spawn é uma sessão nova, portanto contexto limpo: é o efeito
+ *      de um `/clear` entre stages, que a própria sessão não consegue
+ *      produzir em si mesma. Stage concluído (sentinela em disco) nem
+ *      chega a spawnar. Falha em um stage interrompe o laço e o log
+ *      registra QUAL stage falhou.
  *   4. Loga resultado em data/overnight-schedule.log (linha simples,
  *      compartilhado com o runner Windows) e data/run-log.jsonl (via
  *      scripts/log-event.ts, agent="scheduled-edicao").
  *
  * GUARD DE PUBLICAÇÃO: este script prepara conteúdo (Stages 0-3) e
  * pré-renderiza o Stage 4, mas NÃO dispatcha nenhum canal — publicação
- * requer ação explícita do editor (/diaria-5-publicacao).
+ * requer ação explícita do editor (/diaria-5-publicacao). Desde #5738 essa
+ * garantia é ESTRUTURAL: os Stages 5/6 não estão em `STAGE_PLAN` e nunca
+ * são invocados, em vez de depender de um `--skip` respeitado lá dentro.
  *
  * @see scripts/overnight/setup-edicao-schedule-systemd.ts (gera os units que invocam este script)
  * @see docs/scheduled-edicao-setup.md
@@ -50,9 +56,39 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { nextEditionDate } from "../lib/next-edition-date.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
+import { sentinelExists } from "../lib/pipeline-state.ts";
 import { runTsx } from "../lib/run-tsx.ts";
 
-const SKIP_FLAGS = "--skip newsletter,linkedin,facebook";
+/**
+ * Stages que o runner agendado executa, um `claude --print` por entrada
+ * (#5738). Cada spawn é uma sessão nova — contexto limpo por construção,
+ * que é o efeito de um `/clear` entre stages.
+ *
+ * **O guard de publicação virou ESTRUTURAL.** Antes, o runner invocava
+ * `/diaria-edicao` inteiro e segurava a publicação com
+ * `--skip newsletter,linkedin,facebook`; a garantia dependia de a flag ser
+ * respeitada pipeline adentro. Agora os Stages 5 (publicação) e 6
+ * (agendamento) simplesmente NÃO ESTÃO nesta lista e nunca são invocados —
+ * não há flag a respeitar nem a esquecer. Publicar segue exigindo ação
+ * explícita do editor (`/diaria-5-publicacao`).
+ *
+ * O Stage 0 (preflight) não tem entrada própria porque não tem skill
+ * própria: `/diaria-1-pesquisa` já refresca dedup e drena o inbox
+ * editorial (CLAUDE.md, "Etapa 1").
+ */
+export const STAGE_PLAN: ReadonlyArray<{ stage: number; skill: string }> = [
+  { stage: 1, skill: "diaria-1-pesquisa" },
+  { stage: 2, skill: "diaria-2-escrita" },
+  { stage: 3, skill: "diaria-3-imagens" },
+  { stage: 4, skill: "diaria-4-revisao" },
+];
+
+/**
+ * Teto de turnos POR STAGE desde #5738 — antes era o teto da edição
+ * INTEIRA. Não é um detalhe de refactor: só o Stage 4 da edição 260814
+ * gastou 587 turnos, então o teto de 120 para tudo era, na prática, um
+ * truncamento silencioso do pipeline agendado. Por stage, 120 é folgado.
+ */
 const MAX_TURNS = "120";
 
 /**
@@ -181,6 +217,10 @@ export function main(
   // quebraria, e na máquina do editor passaria por acidente. Justamente a
   // divergência de ambiente que este módulo existe pra blindar.
   resolveClaudeBinFn: typeof resolveClaudeBin = resolveClaudeBin,
+  // Injetável pelo mesmo motivo que `execFn` (#5738): permite testar o laço
+  // resumível — "stage 2 já concluído, pula direto pro 3" — sem montar uma
+  // árvore de sentinelas em disco a cada caso de teste.
+  sentinelExistsFn: typeof sentinelExists = sentinelExists,
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -214,41 +254,100 @@ export function main(
     return 0;
   }
 
-  const prompt = `/diaria-edicao ${aammdd} ${SKIP_FLAGS}`;
-  console.log(`[${nowIso()}] Iniciando: claude -p '${prompt}'`);
+  // -------------------------------------------------------------------
+  // Sync de código UMA vez, antes do laço (#5738).
+  //
+  // CLAUDE.md manda sincronizar "só no início, nunca mid-edição". Com uma
+  // sessão por stage, deixar cada skill sincronizar por conta própria
+  // violaria isso 4 vezes — e pior, com o pipeline já em andamento. Fail-soft
+  // invariável, igual ao Passo 0 de `/diaria-edicao`: qualquer falha de sync
+  // vira warning e a edição segue.
+  // -------------------------------------------------------------------
+  const syncScript = resolve(repoRootAbs, "scripts/sync-code.ts");
+  if (existsSync(syncScript)) {
+    try {
+      runTsx(syncScript, [], { cwd: repoRootAbs, stdout: "ignore" });
+    } catch (e) {
+      log(
+        repoRootAbs,
+        dataDir,
+        aammdd,
+        `WARN  edition=${aammdd} sync-code falhou: ${(e as Error).message}`,
+        "warn",
+        "scheduled-edicao: sync-code falhou (fail-soft, edição segue)",
+        `{"edition":"${aammdd}"}`,
+      );
+    }
+  }
 
+  // -------------------------------------------------------------------
+  // UM SPAWN POR STAGE (#5738) — o efeito de `/clear` entre stages.
+  //
+  // O pedido do editor era literalmente "que /diaria-edicao faça o /clear
+  // entre os stages". Não dá para fazer ao pé da letra: `/clear` é comando
+  // de usuário do CLI e uma sessão não limpa a própria janela. Mas cada
+  // `claude --print` é um PROCESSO NOVO, e portanto uma sessão com contexto
+  // limpo por construção — o driver consegue o que o orquestrador não
+  // consegue.
+  //
+  // O ganho medido antes desta mudança (`_internal/stage-status.json` de 14
+  // edições, ver #5738): o Stage 4 sozinho, que era 40-60% do custo da
+  // edição, cai de uma mediana de 581M para 163M tokens de entrada.
+  //
+  // O estado entre stages viaja por DISCO, não pela conversa — é exatamente
+  // o que o #5414 destravou ao persistir os 17 valores que antes só existiam
+  // no contexto da sessão.
+  // -------------------------------------------------------------------
   let exitCode = 0;
   let output = "";
-  try {
-    // Caminho ABSOLUTO, nunca o literal "claude" (#5549): sob systemd o PATH
-    // é o mínimo do sistema e não inclui ~/.npm-global/bin, então o nome cru
-    // dava `spawnSync claude ENOENT`. Resolver DENTRO do try faz a falha de
-    // resolução cair no mesmo caminho de log FAIL do resto — com mensagem
-    // acionável em vez do ENOENT opaco.
-    output = execFn(
-      resolveClaudeBinFn(),
-      [
-        "--print",
-        "--permission-mode",
-        "acceptEdits",
-        "--max-turns",
-        MAX_TURNS,
-        "--output-format",
-        "text",
-        "--no-session-persistence",
-        prompt,
-      ],
-      {
-        cwd: repoRootAbs,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: claudeCliEnv(process.env),
-      },
-    ) as unknown as string;
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
-    exitCode = err.status ?? 1;
-    output = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
+  let failedStage: number | null = null;
+
+  for (const { stage, skill } of STAGE_PLAN) {
+    // Resumabilidade no nível do DRIVER (#5738): antes, retomar uma edição
+    // pela metade dependia da skill detectar sozinha os sentinelas em disco,
+    // o que custava uma sessão inteira só para descobrir que não havia nada
+    // a fazer. Agora o stage concluído nem chega a spawnar.
+    if (sentinelExistsFn(editionDir, stage)) {
+      console.log(`[${nowIso()}] SKIP stage ${stage} (/${skill}) — sentinela já presente`);
+      continue;
+    }
+
+    const prompt = `/${skill} ${aammdd}`;
+    console.log(`[${nowIso()}] Stage ${stage}: claude -p '${prompt}'`);
+
+    try {
+      // Caminho ABSOLUTO, nunca o literal "claude" (#5549): sob systemd o PATH
+      // é o mínimo do sistema e não inclui ~/.npm-global/bin, então o nome cru
+      // dava `spawnSync claude ENOENT`. Resolver DENTRO do try faz a falha de
+      // resolução cair no mesmo caminho de log FAIL do resto — com mensagem
+      // acionável em vez do ENOENT opaco.
+      output = execFn(
+        resolveClaudeBinFn(),
+        [
+          "--print",
+          "--permission-mode",
+          "acceptEdits",
+          "--max-turns",
+          MAX_TURNS,
+          "--output-format",
+          "text",
+          "--no-session-persistence",
+          prompt,
+        ],
+        {
+          cwd: repoRootAbs,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          env: claudeCliEnv(process.env),
+        },
+      ) as unknown as string;
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
+      exitCode = err.status ?? 1;
+      output = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
+      failedStage = stage;
+      break;
+    }
   }
 
   const runEnd = nowIso();
@@ -269,14 +368,17 @@ export function main(
       .filter((l) => l !== "")
       .slice(-20)
       .join(" | ");
+    // `stage=` no log: sem ele, uma falha no Stage 3 e uma no Stage 1 ficam
+    // indistinguíveis na linha de schedule — e com 4 spawns em vez de 1, saber
+    // ONDE parou é a diferença entre retomar e reprocessar tudo.
     log(
       repoRootAbs,
       dataDir,
       aammdd,
-      `FAIL  edition=${aammdd} exit=${exitCode} end=${runEnd} tail=${tail}`,
+      `FAIL  edition=${aammdd} stage=${failedStage ?? "?"} exit=${exitCode} end=${runEnd} tail=${tail}`,
       "error",
-      `scheduled-edicao: falha (exit ${exitCode})`,
-      `{"edition":"${aammdd}","exit_code":${exitCode}}`,
+      `scheduled-edicao: falha no stage ${failedStage ?? "?"} (exit ${exitCode})`,
+      `{"edition":"${aammdd}","exit_code":${exitCode},"failed_stage":${failedStage ?? "null"}}`,
     );
   }
 

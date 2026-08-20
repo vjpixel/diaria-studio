@@ -12,7 +12,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main as runScheduledEdicaoMain, claudeCliEnv } from "../scripts/overnight/run-scheduled-edicao.ts";
+import {
+  main as runScheduledEdicaoMain,
+  claudeCliEnv,
+  STAGE_PLAN,
+} from "../scripts/overnight/run-scheduled-edicao.ts";
 
 const AAMMDD = "260812";
 
@@ -62,24 +66,92 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     // produção repoRootAbs é o checkout real, onde o script existe.
   });
 
-  it("data/editions/{AAMMDD}/ NÃO existe -> chama execFn (claude) com o prompt esperado", () => {
+  it("data/editions/{AAMMDD}/ NÃO existe -> UM spawn por stage, um prompt de skill cada (#5738)", () => {
     repoRootAbs = makeRepoRoot();
 
-    let capturedArgs: string[] | undefined;
+    const prompts: string[] = [];
     const fakeExec = ((_cmd: string, args: string[]) => {
-      capturedArgs = args;
+      prompts.push(args[args.length - 1]);
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN);
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
 
     assert.equal(code, 0);
-    assert.ok(capturedArgs, "execFn deveria ter sido chamado");
-    const prompt = capturedArgs![capturedArgs!.length - 1];
-    assert.equal(prompt, "/diaria-edicao 260812 --skip newsletter,linkedin,facebook");
+    // É o coração do #5738: uma sessão POR STAGE, não uma sessão pra edição
+    // inteira. Se algum dia isso voltar a ser 1 chamada, o efeito `/clear`
+    // entre stages desapareceu silenciosamente e o custo volta ao patamar
+    // anterior sem nada quebrar — só este teste denuncia.
+    assert.equal(prompts.length, STAGE_PLAN.length);
+    assert.deepEqual(prompts, [
+      "/diaria-1-pesquisa 260812",
+      "/diaria-2-escrita 260812",
+      "/diaria-3-imagens 260812",
+      "/diaria-4-revisao 260812",
+    ]);
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
     assert.match(scheduleLog, /OK\s+edition=260812 exit=0/);
+  });
+
+  it("guard de publicação é ESTRUTURAL: nenhum prompt invoca Stage 5/6 (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    const prompts: string[] = [];
+    const fakeExec = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+
+    // Antes do #5738 a garantia dependia de `--skip newsletter,linkedin,facebook`
+    // ser respeitado pipeline adentro. Agora depende de os stages simplesmente
+    // não existirem em STAGE_PLAN — uma garantia que não pode ser esquecida.
+    for (const prompt of prompts) {
+      assert.doesNotMatch(prompt, /diaria-5-publicacao|diaria-6-agendamento/);
+    }
+    assert.ok(
+      STAGE_PLAN.every((s) => s.stage <= 4),
+      "STAGE_PLAN nunca pode conter Stage 5/6 — publicação exige ação explícita do editor",
+    );
+  });
+
+  it("stage com sentinela já presente é PULADO, sem spawnar (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    const prompts: string[] = [];
+    const fakeExec = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    // Stages 1 e 2 concluídos; retomada deve começar direto no 3.
+    const code = runScheduledEdicaoMain(
+      repoRootAbs,
+      fakeExec,
+      AAMMDD,
+      FAKE_RESOLVE_CLAUDE_BIN,
+      (_dir: string, step: number) => step <= 2,
+    );
+
+    assert.equal(code, 0);
+    assert.deepEqual(prompts, ["/diaria-3-imagens 260812", "/diaria-4-revisao 260812"]);
+  });
+
+  it("todos os stages já concluídos -> nenhum spawn, retorna 0 (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    let execCalled = false;
+    const fakeExec = (() => {
+      execCalled = true;
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => true);
+
+    assert.equal(code, 0);
+    assert.equal(execCalled, false, "edição já completa não deveria spawnar sessão nenhuma");
   });
 
   it("execFn (claude) lança (exit != 0) -> propaga o exit code e loga FAIL", () => {
@@ -96,7 +168,35 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
 
     assert.equal(code, 3);
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
-    assert.match(scheduleLog, /FAIL\s+edition=260812 exit=3/);
+    // `stage=1` no log é o que o #5738 acrescenta: com 4 spawns, "a edição
+    // falhou" sem dizer ONDE obriga a reprocessar tudo pra descobrir.
+    assert.match(scheduleLog, /FAIL\s+edition=260812 stage=1 exit=3/);
+  });
+
+  it("falha no meio do laço interrompe: stages seguintes não spawnam (#5738)", () => {
+    repoRootAbs = makeRepoRoot();
+
+    const prompts: string[] = [];
+    const fakeExec = ((_cmd: string, args: string[]) => {
+      const prompt = args[args.length - 1];
+      prompts.push(prompt);
+      if (prompt.includes("diaria-2-escrita")) {
+        const err = new Error("stage 2 explodiu") as Error & { status?: number };
+        err.status = 7;
+        throw err;
+      }
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const code = runScheduledEdicaoMain(repoRootAbs, fakeExec, AAMMDD, FAKE_RESOLVE_CLAUDE_BIN, () => false);
+
+    assert.equal(code, 7);
+    // Sem o `break`, os stages 3 e 4 rodariam sobre o output ausente do 2 —
+    // gerando lixo em disco que parece progresso legítimo na próxima retomada.
+    assert.deepEqual(prompts, ["/diaria-1-pesquisa 260812", "/diaria-2-escrita 260812"]);
+
+    const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
+    assert.match(scheduleLog, /FAIL\s+edition=260812 stage=2 exit=7/);
   });
 
   it("resolução do binário falha -> loga FAIL com a mensagem acionável, nunca crash (#5549)", () => {
@@ -116,7 +216,9 @@ describe("run-scheduled-edicao.ts main() — guard de idempotência (#4998)", ()
     assert.equal(execCalled, false, "execFn não deveria ser chamado se o binário não resolveu");
 
     const scheduleLog = readFileSync(join(repoRootAbs, "data", "overnight-schedule.log"), "utf8");
-    assert.match(scheduleLog, /FAIL\s+edition=260812 exit=1/);
+    // `stage=1` desde o #5738: a resolução do binário falha no primeiro
+    // spawn, então o stage reportado é o 1 — e o log passa a dizer isso.
+    assert.match(scheduleLog, /FAIL\s+edition=260812 stage=1 exit=1/);
     assert.match(scheduleLog, /CLAUDE_BIN/, "o log precisa carregar a mensagem acionável, não um ENOENT opaco");
   });
 });
