@@ -1,0 +1,454 @@
+/**
+ * test/edition-stage-runner.test.ts (#5744)
+ *
+ * Cobre o laço compartilhado "uma sessão `claude` por stage"
+ * (`scripts/lib/edition-stage-runner.ts`), extraído do runner agendado do
+ * #5738 para o caminho interativo reusar.
+ *
+ * O que estes testes protegem, em ordem de importância:
+ *   1. O stdout de sucesso NUNCA volta para o chamador — é a premissa
+ *      inteira do #5744; se voltar, a sessão do editor recria o contexto
+ *      que o laço existe para evitar e o ganho some sem nada quebrar.
+ *   2. Nenhum plano pode conter Stage 5/6 — eles spawnariam com
+ *      `--no-gates`, e o default do Stage 5 sem `--skip` é dispatchar todos
+ *      os canais (#1326).
+ *   3. `--no-gates` presente em todo prompt (achado P0 do review do #5739).
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  STAGE_PLAN,
+  HEADLESS_FLAGS,
+  runEditionStages,
+  assertNoPublishStage,
+  summarizeFailure,
+  formatStagesSummary,
+  FAILURE_TAIL_LINES,
+} from "../scripts/lib/edition-stage-runner.ts";
+import { planThrough, main as cliMain, DEFAULT_THROUGH } from "../scripts/run-edition-stages.ts";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+const AAMMDD = "260820";
+
+/**
+ * Mundo de sentinelas fake — modela DISCO, não contagem de chamadas (#5744).
+ *
+ * A primeira versão contava invocações ("1ª = antes de spawnar, 2ª = depois"),
+ * e quebrou assim que outro ponto do código passou a consultar o mesmo stage:
+ * a contagem saía do compasso e todo stage era pulado. Modelar o estado — um
+ * conjunto de concluídos que o spawn ATUALIZA — é fiel ao real e imune à
+ * ordem/número de consultas.
+ *
+ * `neverCompletes`: stages cujo processo sai 0 sem escrever sentinela — o
+ * cenário do `--max-turns` esgotado, que a pós-condição existe para pegar.
+ */
+function sentinelWorld(doneUpTo = 0, neverCompletes: number[] = []) {
+  const done = new Set<number>();
+  for (let i = 1; i <= doneUpTo; i++) done.add(i);
+  return {
+    assertFn: (_dir: string, step: number) =>
+      done.has(step)
+        ? { ok: true as const }
+        : { ok: false as const, reason: "sentinel_missing" as const },
+    complete: (step: number) => {
+      if (!neverCompletes.includes(step)) done.add(step);
+    },
+  };
+}
+
+function spawnInto(
+  world: ReturnType<typeof sentinelWorld>,
+  prompts: string[],
+  failOn?: { stage: string; code: number },
+  stdout = "",
+) {
+  return ((_cmd: string, args: string[]) => {
+    const prompt = args[args.length - 1];
+    prompts.push(prompt);
+    if (failOn && prompt.includes(failOn.stage)) {
+      const e = new Error("falhou") as Error & { status?: number };
+      e.status = failOn.code;
+      throw e;
+    }
+    const m = prompt.match(/diaria-(\d)-/);
+    if (m) world.complete(Number(m[1]));
+    return stdout;
+  }) as unknown as typeof import("node:child_process").execFileSync;
+}
+
+let W = sentinelWorld();
+
+function makeOpts(overrides: Record<string, unknown> = {}) {
+  return {
+    aammdd: AAMMDD,
+    editionDir: "/fake/data/editions/2608/260820",
+    repoRootAbs: "/fake/repo",
+    resolveClaudeBin: () => "/fake/bin/claude",
+    env: {} as NodeJS.ProcessEnv,
+    assertSentinelFn: W.assertFn,
+    nowMs: () => 0,
+    ...overrides,
+  } as Parameters<typeof runEditionStages>[0];
+}
+
+describe("edition-stage-runner — contrato de saída (#5744)", () => {
+  it("stdout de sucesso NÃO volta para o chamador", () => {
+    W = sentinelWorld(0);
+    const huge = "x".repeat(50_000);
+    const execFn = spawnInto(W, [], undefined, huge);
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    // A premissa inteira do #5744. Se este teste cair, o laço continua
+    // "funcionando" e economizando ZERO — a sessão-mãe volta a carregar o
+    // conteúdo dos stages, só que por outro caminho.
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes(huge), "o stdout do stage vazou no resultado");
+    assert.ok(serialized.length < 2000, `resultado grande demais (${serialized.length}) — algo está vazando`);
+    assert.ok(result.outcomes.every((o) => o.status === "ok"));
+  });
+
+  it("stdout de FALHA volta, mas truncado", () => {
+    W = sentinelWorld(0);
+    const noisy = Array.from({ length: 200 }, (_, i) => `linha ${i}`).join("\n");
+    const execFn = (() => {
+      const err = new Error("boom") as Error & { status?: number; stdout?: string };
+      err.status = 4;
+      err.stdout = noisy;
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    assert.equal(result.exitCode, 4);
+    const tail = result.outcomes.find((o) => o.status === "failed")?.failureTail ?? "";
+    assert.ok(tail.includes("linha 199"), "deveria preservar o fim, que é onde o erro está");
+    assert.ok(!tail.includes("linha 0"), "não deveria preservar o começo inteiro");
+    assert.equal(tail.split(" | ").length, FAILURE_TAIL_LINES);
+  });
+});
+
+describe("edition-stage-runner — guard de publicação", () => {
+  it("plano com Stage 5 LANÇA, nunca só avisa", () => {
+    W = sentinelWorld(0);
+    assert.throws(
+      () => assertNoPublishStage([{ stage: 5, skill: "diaria-5-publicacao" }]),
+      /publicação|#1326/i,
+      "Stage 5 spawnaria com --no-gates e dispatcharia todos os canais",
+    );
+  });
+
+  it("runEditionStages recusa o plano antes de spawnar qualquer coisa", () => {
+    W = sentinelWorld(0);
+    let spawned = 0;
+    const execFn = (() => {
+      spawned++;
+      return "";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    assert.throws(() =>
+      runEditionStages(
+        makeOpts({ execFn, plan: [{ stage: 1, skill: "diaria-1-pesquisa" }, { stage: 6, skill: "diaria-6-agendamento" }] }),
+      ),
+    );
+    // Recusar DEPOIS de rodar o stage 1 seria pior que não recusar: deixaria
+    // a edição pela metade com o editor achando que nada aconteceu.
+    assert.equal(spawned, 0, "nenhum stage deveria ter spawnado");
+  });
+
+  it("STAGE_PLAN em si nunca contém publicação", () => {
+    W = sentinelWorld(0);
+    assert.doesNotThrow(() => assertNoPublishStage(STAGE_PLAN));
+    assert.ok(STAGE_PLAN.every((p) => p.stage <= 4));
+  });
+
+  it("planThrough recusa --through 5 com mensagem legível", () => {
+    W = sentinelWorld(0);
+    assert.throws(() => planThrough(5), /--through inválido/);
+    assert.throws(() => planThrough(0), /--through inválido/);
+    assert.deepEqual(
+      planThrough(3).map((p) => p.stage),
+      [1, 2, 3],
+    );
+    assert.deepEqual(
+      planThrough(4).map((p) => p.stage),
+      [1, 2, 3, 4],
+    );
+  });
+});
+
+describe("edition-stage-runner — laço", () => {
+  it("todo prompt carrega --no-gates (achado P0 do review #5739)", () => {
+    W = sentinelWorld(0);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
+
+    runEditionStages(makeOpts({ execFn }));
+
+    assert.equal(prompts.length, STAGE_PLAN.length);
+    for (const p of prompts) assert.ok(p.endsWith(HEADLESS_FLAGS), `prompt sem ${HEADLESS_FLAGS}: ${p}`);
+  });
+
+  it("--through 3 spawna só 1-3 — o corte do caminho interativo", () => {
+    W = sentinelWorld(0);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
+
+    runEditionStages(makeOpts({ execFn, plan: planThrough(3) }));
+
+    assert.deepEqual(prompts, [
+      `/diaria-1-pesquisa ${AAMMDD} --no-gates`,
+      `/diaria-2-escrita ${AAMMDD} --no-gates`,
+      `/diaria-3-imagens ${AAMMDD} --no-gates`,
+    ]);
+    // O Stage 4 fica de fora porque é onde está o gate humano de revisão —
+    // ele roda NA sessão do editor, já com o contexto limpo que os 3 spawns
+    // acima preservaram.
+    assert.ok(!prompts.some((p) => p.includes("diaria-4-revisao")));
+  });
+
+  it("falha interrompe o laço: stages seguintes não spawnam", () => {
+    W = sentinelWorld(0);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts, { stage: "diaria-2-escrita", code: 9 });
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    assert.equal(result.exitCode, 9);
+    assert.equal(result.failedStage, 2);
+    assert.equal(prompts.length, 2, "stages 3 e 4 não deveriam ter rodado sobre o output ausente do 2");
+  });
+
+  it("stage sai 0 SEM escrever sentinela -> FALHA, nunca 'ok' (o buraco do --max-turns)", () => {
+    W = sentinelWorld(0, [2]); // stage 2 "roda", sai 0, e não completa nada
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    // Este é o pior desfecho possível do mecanismo, e o motivo de a
+    // pós-condição existir: `execFileSync` só lança quando o filho sai != 0,
+    // e uma sessão que esgota `--max-turns 120` no meio do trabalho pode sair
+    // 0. Sem esta checagem o laço marcaria "ok", seguiria para o Stage 3, e o
+    // editor chegaria ao gate de revisão sobre uma edição incompleta — sem
+    // nada em lugar nenhum indicando que faltou trabalho.
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.failedStage, 2);
+    const failed = result.outcomes.find((o) => o.status === "failed");
+    assert.match(failed?.failureTail ?? "", /saiu com código 0 mas não completou/);
+    assert.equal(prompts.length, 2, "o stage 3 não pode rodar sobre o trabalho ausente do 2");
+  });
+
+  it("sentinela órfã (output apagado) NÃO conta como stage concluído", () => {
+    const prompts: string[] = [];
+    // `assertSentinel` distingue "arquivo existe" de "existe e os outputs
+    // declarados continuam em disco". Com a versão fraca (`sentinelExists`),
+    // uma sentinela cujo output foi apagado — edição manual do editor, debug —
+    // faria o stage ser pulado e o pipeline seguir sobre conteúdo ausente.
+    const orphan = {
+      assertFn: (_d: string, step: number) =>
+        step === 1
+          ? { ok: false as const, reason: "outputs_missing" as const, missingOutputs: ["01-categorized.md"] }
+          : { ok: true as const },
+      complete: () => {},
+    };
+    runEditionStages(makeOpts({ execFn: spawnInto(orphan as never, prompts), assertSentinelFn: orphan.assertFn }));
+
+    assert.ok(
+      prompts.some((p) => p.includes("diaria-1-pesquisa")),
+      "stage com output ausente precisa rodar de novo, não ser pulado",
+    );
+  });
+
+  it("sentinela presente pula sem spawnar, e o resultado registra o skip", () => {
+    W = sentinelWorld(2);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
+
+    const result = runEditionStages(
+      makeOpts({ execFn, assertSentinelFn: W.assertFn }),
+    );
+
+    assert.deepEqual(prompts, [
+      `/diaria-3-imagens ${AAMMDD} --no-gates`,
+      `/diaria-4-revisao ${AAMMDD} --no-gates`,
+    ]);
+    assert.deepEqual(
+      result.outcomes.filter((o) => o.status === "skipped").map((o) => o.stage),
+      [1, 2],
+    );
+  });
+
+  it("resolveClaudeBin é chamado DENTRO do try — falha vira resultado, não crash (#5549)", () => {
+    W = sentinelWorld(0);
+    const result = runEditionStages(
+      makeOpts({
+        resolveClaudeBin: () => {
+          throw new Error("binário `claude` não encontrado. Defina CLAUDE_BIN");
+        },
+      }),
+    );
+
+    // Resolver fora do try faria isto ser uma exceção não-tratada no
+    // chamador, perdendo a mensagem acionável que o #5549 construiu.
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.failedStage, 1);
+    assert.match(result.outcomes[0].failureTail ?? "", /CLAUDE_BIN/);
+  });
+});
+
+describe("edition-stage-runner — resumo", () => {
+  it("formatStagesSummary nomeia o stage que falhou e avisa que o resto não rodou", () => {
+    W = sentinelWorld(0);
+    const out = formatStagesSummary(
+      {
+        outcomes: [
+          { stage: 1, skill: "diaria-1-pesquisa", status: "ok", exitCode: 0, durationMs: 60_000 },
+          { stage: 2, skill: "diaria-2-escrita", status: "failed", exitCode: 3, durationMs: 1000, failureTail: "boom" },
+        ],
+        exitCode: 3,
+        failedStage: 2,
+      },
+      AAMMDD,
+    );
+    assert.match(out, /stage 1 .*OK \(60s\)/);
+    assert.match(out, /stage 2 .*FALHOU exit=3/);
+    assert.match(out, /Interrompido no stage 2/);
+  });
+
+  it("summarizeFailure achata e corta", () => {
+    W = sentinelWorld(0);
+    assert.equal(summarizeFailure("a\n\n  b  \nc"), "a | b | c");
+    assert.match(summarizeFailure(""), /sem stdout/);
+  });
+});
+
+describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR #5753)", () => {
+  function makeDeps(over: Record<string, unknown> = {}) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const prompts: string[] = [];
+    const deps = {
+      execFn: spawnInto(W, prompts),
+      resolveClaudeBinFn: () => "/fake/bin/claude",
+      assertSentinelFn: W.assertFn,
+      env: { SAFE: "1" } as NodeJS.ProcessEnv,
+      stdout: (l: string) => out.push(l),
+      stderr: (l: string) => err.push(l),
+      repoRootAbs: "/fake/repo",
+      ...over,
+    };
+    return { deps, out, err, prompts };
+  }
+
+  it("--edition ausente ou malformado -> exit 2 com mensagem de uso, sem spawnar", () => {
+    W = sentinelWorld(0);
+    for (const argv of [[], ["--edition", "26082"], ["--edition", "abcdef"]]) {
+      const { deps, err, prompts } = makeDeps();
+      const code = cliMain(argv, deps);
+      assert.equal(code, 2, `argv ${JSON.stringify(argv)} deveria falhar`);
+      assert.match(err.join("\n"), /Uso: npx tsx scripts\/run-edition-stages\.ts/);
+      assert.equal(prompts.length, 0, "não deveria spawnar com edição inválida");
+    }
+  });
+
+  it("--through 5 -> exit 2 com a mensagem legível, sem spawnar (fim a fim)", () => {
+    W = sentinelWorld(0);
+    const { deps, err, prompts } = makeDeps();
+    const code = cliMain(["--edition", "260820", "--through", "5"], deps);
+    // A função pura já era testada; o que faltava era o CAMINHO REAL — o
+    // editor digitando --through 5 por engano precisa ver a mensagem e não
+    // um stack trace, e nenhum stage pode ter rodado antes da recusa.
+    assert.equal(code, 2);
+    assert.match(err.join("\n"), /--through inválido/);
+    assert.equal(prompts.length, 0);
+  });
+
+  it("default sem --through PARA no Stage 3 — nunca auto-aprova o gate de revisão", () => {
+    W = sentinelWorld(0);
+    const a = makeDeps();
+    cliMain(["--edition", "260820"], a.deps);
+
+    // Achado do review da PR #5753: o default era 4, e como todo stage
+    // spawnado recebe `--no-gates`, um comando incompleto (debug, uso ad hoc)
+    // auto-aprovava em silêncio o gate humano de revisão — um dos dois gates
+    // de projeto. O default seguro é parar antes dele.
+    assert.equal(a.prompts.length, DEFAULT_THROUGH);
+    assert.ok(
+      !a.prompts.some((p) => p.includes("diaria-4-revisao")),
+      "o default jamais pode spawnar o Stage 4 headless",
+    );
+
+    W = sentinelWorld(0); // mundo novo: o bloco acima já concluiu 1-3
+    const b = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3"], b.deps);
+    assert.deepEqual(
+      b.prompts.map((p) => p.split(" ")[0]),
+      ["/diaria-1-pesquisa", "/diaria-2-escrita", "/diaria-3-imagens"],
+    );
+  });
+
+  it("--through 4 é possível, mas só por escrito", () => {
+    W = sentinelWorld(0);
+    const { deps, prompts } = makeDeps();
+    cliMain(["--edition", "260820", "--through", "4"], deps);
+    assert.equal(prompts.length, 4);
+    assert.ok(prompts[3].includes("diaria-4-revisao"));
+  });
+
+  it("progresso vai pro stderr; stdout carrega SÓ o resumo", () => {
+    W = sentinelWorld(0);
+    const { deps, out, err } = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3"], deps);
+
+    // O split não é cosmético: é o que permite a sessão do editor ler um
+    // resumo curto em vez do rastro de execução dos 3 stages.
+    assert.equal(out.length, 1, "stdout deveria ter exatamente o resumo");
+    assert.match(out[0], /Edição 260820/);
+    assert.ok(err.some((l) => l.includes("Stage 1")), "progresso deveria estar no stderr");
+    assert.ok(!out[0].includes("claude -p"), "stdout não deveria conter linhas de progresso");
+  });
+
+  it("--json troca o resumo por JSON, e o JSON também não carrega stdout de stage", () => {
+    W = sentinelWorld(0);
+    const huge = "y".repeat(40_000);
+    const { deps, out } = makeDeps({ execFn: spawnInto(W, [], undefined, huge) });
+    cliMain(["--edition", "260820", "--through", "3", "--json"], deps);
+
+    assert.equal(out.length, 1);
+    const parsed = JSON.parse(out[0]);
+    assert.equal(parsed.exitCode, 0);
+    assert.ok(!out[0].includes(huge), "--json não pode virar a porta dos fundos do vazamento de contexto");
+  });
+
+  it("falha de stage propaga o exit code do stage pro exit code do CLI", () => {
+    W = sentinelWorld(0);
+    const { deps } = makeDeps({ execFn: spawnInto(W, [], { stage: "diaria-2-escrita", code: 6 }) });
+    assert.equal(cliMain(["--edition", "260820", "--through", "3"], deps), 6);
+  });
+});
+
+describe("wiring da skill /diaria-edicao (#5744)", () => {
+  it("SKILL.md cita o script, e o script citado existe de fato", () => {
+    const skill = readFileSync(
+      join(import.meta.dirname, "..", ".claude", "skills", "diaria-edicao", "SKILL.md"),
+      "utf8",
+    );
+    const cited = skill.match(/npx tsx (scripts\/run-edition-stages\.ts)/);
+    assert.ok(cited, "Passo 2 da skill precisa invocar run-edition-stages.ts");
+    // Sem esta segunda metade o teste seria decorativo: o valor está em
+    // pegar o dia em que o script for renomeado/movido e a skill continuar
+    // mandando a sessão rodar um path que não existe — falha que só
+    // apareceria no meio de uma edição real.
+    assert.ok(
+      existsSync(join(import.meta.dirname, "..", cited[1])),
+      `SKILL.md cita ${cited[1]}, que não existe no repo`,
+    );
+    assert.match(skill, /--through 3/, "a skill deve parar no Stage 3; 4-6 ficam no top-level");
+    assert.ok(
+      !/--through\s*[456]/.test(skill),
+      "a skill nunca pode mandar spawnar Stage 4+ headless — são os gates humanos",
+    );
+  });
+});

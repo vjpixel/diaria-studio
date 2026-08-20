@@ -99,7 +99,33 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 
    Interpretar: vazia / "ok" / "sim" → default 4; inteiro N ≥ 1 → `window_days = N`; outra coisa → repetir.
 
-## Passo 2 — Executar o playbook diretamente no top-level (#207)
+## Passo 2 — Stages 1-3 em sessões próprias, Stage 4+ no top-level (#5744)
+
+**Rodar PRIMEIRO, antes de ler `orchestrator.md`:**
+
+**Rodar em BACKGROUND** (`run_in_background: true` no tool Bash):
+
+```bash
+npx tsx scripts/run-edition-stages.ts --edition $1 --through 3
+```
+
+Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
+
+**Por que background e não `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
+
+Enquanto roda, **não ficar consultando o progresso** — cada consulta traz saída para a conversa, que é o contexto que este passo existe para não carregar. Esperar a notificação de término.
+
+**Por que isto importa mais que qualquer outra otimização do pipeline.** Na edição 260814 o Stage 4 sozinho custou 581M dos 999M de tokens de entrada da edição inteira — não porque faça mais trabalho, mas porque herdava o contexto acumulado dos stages anteriores. Rodando com contexto limpo, caiu para 163M (#5738). Tirar os Stages 1-3 desta sessão faz o Stage 4 começar quase do zero, que é onde está o corte.
+
+**O que NÃO fazer com a saída.** O script imprime só um resumo por stage (ok/pulado/falhou, duração). Ele descarta o stdout dos stages de propósito. **Não rodar de novo com `--json` "para ver o que aconteceu", não pedir o log completo, não colar a saída dos stages na conversa** — qualquer uma dessas coisas recria nesta sessão exatamente o contexto que o comando existe para evitar, e o ganho evapora sem que nada quebre.
+
+**Se um stage falhar**, o script para ali (não roda os seguintes), devolve exit code != 0 e nomeia o stage no resumo. Reportar ao editor qual stage falhou e o tail da falha; não tentar consertar spawnando de novo às cegas. Reinvocar o mesmo comando é seguro e retoma de onde parou — stage com sentinela em disco não re-spawna.
+
+**Depois que o comando voltar com exit 0**, seguir a partir da **§ 4 Etapa 4 — Revisão** do playbook, no top-level, como descrito abaixo. Os Stages 1-3 já estão feitos e seus sentinelas estão em disco; **não re-executar § 1, § 2 nem § 3.**
+
+Os Stages 4, 5 e 6 continuam no top-level porque é onde ficam os dois gates humanos de projeto (revisão e agendamento) e o `javascript_tool` do `publish-newsletter`, que é restrito ao top-level.
+
+## Passo 2b — Executar o restante do playbook no top-level (#207)
 
 **Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-writer` (#3991, reverte #3486), `social-curto` (#3992), `auto-reporter` em paralelo conforme cada stage prescreve. **`publish-newsletter` também é executado pelo top-level direto como playbook (#1054)** — não dispatchá-lo via `Agent` porque `javascript_tool` é restrita ao top-level e o paste-into-htmlSnippet falha em subagentes.
 
@@ -107,16 +133,17 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `edition_date = $1` (AAMMDD)
 - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
 - `window_days = {valor confirmado no Passo 1}`
-- `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523)
+- `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523). **Desde o #5744 os Stages 1-3 nem rodam aqui** (ver Passo 2): eles são spawnados por `run-edition-stages.ts`, que já passa `--no-gates` a cada um. Esta linha só continua valendo para uma execução manual do playbook inteiro no top-level, fora do fluxo normal.
 - `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate de revisão; Stage 5 apresenta confirmação de canais)
 - `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 5 §5b; se não-vazio, Stage 5 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
 
 
-Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
-- **§ 0 Setup** — resume detection, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
-- **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → auto-approve
-- **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → auto-approve
-- **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → auto-approve
+Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde o #5744, entrar direto na § 4** — as três primeiras já rodaram nos processos spawnados no Passo 2, e a § 0 junto com elas:
+
+- ~~**§ 0 Setup**~~ — **NÃO re-executar.** `/diaria-1-pesquisa` roda a § 0 inteira por conta própria (refresh de `past-editions.md`, inbox drain, probes de MCP), e o resultado já está persistido em disco pelo #5414. Repetir aqui gasta de novo os checks que o subprocesso do Stage 1 acabou de fazer — que é exatamente o custo que o Passo 2 existe para cortar. O resume-aware da § 0b evitaria reprocessar os Stages 1-3, mas não evita repetir os checks.
+- ~~**§ 1 Etapa 1 — Pesquisa**~~ — feita no Passo 2 (sentinela em disco)
+- ~~**§ 2 Etapa 2 — Escrita**~~ — feita no Passo 2 (sentinela em disco)
+- ~~**§ 3 Etapa 3 — Imagens**~~ — feita no Passo 2 (sentinela em disco)
 - **§ 4 Etapa 4 — Revisão** (#1694):
   1. Pré-render técnico (HTML + imagens + upload Worker + close-poll)
   2. **GATE HUMANO** — apresenta resumo consolidado: destaques, títulos, links, lints, preview HTML + social ao editor
