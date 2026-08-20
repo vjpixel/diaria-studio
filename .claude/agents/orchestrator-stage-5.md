@@ -11,7 +11,7 @@ description: Detalhe da Etapa 5 (publicacao auto — draft Beehiiv + social agen
 
 Stage 5 e **dispatch puro** — sem gate proprio. O gate de revisao editorial esta no Stage 4; o gate de agendamento esta no Stage 6 (Agendamento).
 
-Tres acoes em paralelo: (1) criar rascunho Beehiiv + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`).
+Quatro acoes em paralelo: (1) criar rascunho Beehiiv + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`); (4) **canal Brevo diária** (`brevo_diaria`) — cria a campanha como RASCUNHO (#5772), agendamento fica pro Stage 6, mesma divisão do Beehiiv.
 
 **PARA antes do Schedule do Beehiiv** — a newsletter fica como RASCUNHO com test email enviado e o loop review concluido. O clique de "Schedule" NAO acontece no Stage 5 — e responsabilidade do Stage 6.
 
@@ -126,7 +126,7 @@ Casos:
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
   --message "Etapa 5 auto-approved via --no-gates: canais dispatchados sem confirmacao por canal" \
-  --details '{"channels":["newsletter","linkedin","facebook","instagram","threads"]}'
+  --details '{"channels":["newsletter","linkedin","facebook","instagram","threads","brevo"]}'
 ```
 
 **Skip flag path (`--skip newsletter,facebook`, etc):**
@@ -141,7 +141,7 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista-de-ca
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info \
   --message "Stage 5 dispatch auto (sem gate — Stage 4 revisao aprovado)" \
-  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram","threads"]}'
+  --details '{"source":"default_auto","channels":["newsletter","linkedin","facebook","instagram","threads","brevo"]}'
 ```
 
 **#1238 trade-off atualizado em #1380**: O user-activation guard do Beehiiv **so atinge o click de Schedule** — nao o "Send test email". Validado em 260519 (4x test emails enviados consecutivamente via Chrome MCP). O trigger correto pra Send test email e o **chevron dropdown** ao lado do botao Preview:
@@ -236,6 +236,7 @@ npx tsx scripts/render-halt-banner.ts \
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir {EDITION_DIR}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
 3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte A — antes deste fix o Instagram publicava tudo junto no instante do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn (`channel: "instagram"`, #3817/#3818), que dispara nos mesmos horarios (d1 10:00/d2 12:30/d3 17:30 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Graph API (container → media_publish) no MOMENTO do disparo. **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Graph API roda dentro do Worker no momento do disparo) e `_internal/06-public-images.json` populado (gerado no 5c-pre). Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
 4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte B — antes deste fix o Threads publicava na hora do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn/Instagram (`channel: "threads"`, #3944 Parte B), que dispara nos mesmos horarios (d1 10:00/d2 12:30/d3 17:30 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Threads API (container → threads_publish) no MOMENTO do disparo. **Suporta so posts de 1 chunk (≤500 chars)** — chunking agendado (thread multi-post via reply_to_id) nao e implementado no Worker (risco de duplicar posts em retry automatico); textos maiores falham no enqueue com `status: "failed"` e motivo claro, sem abortar os demais destaques — publique esse destaque manualmente sem `--schedule` ou encurte o texto. **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Threads API roda dentro do Worker no momento do disparo). Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486, mesmo padrao do Instagram).
+5. **So se `consent.brevo === "auto"`** (#5772): `Bash("npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir {EDITION_DIR}/")` — canal Brevo diária (segmento Pending, reativação); NAO depende de `{edition_url}`, so agrupado aqui por conveniência. Resolve `--max-add` sozinho (`N = max(0, stage5_target_total - total_atual)`, nunca pergunta) e cria **só o RASCUNHO** (Passos 1-7 de `/diaria-brevo-diaria`, SEM Passo 8/agendamento — isso é Stage 6, §6d-brevo). Imprime JSON `{status: "ok"|"already_done"|"skipped"|"failed", ...}` em stdout — **fail-soft: qualquer status ≠ `"ok"`/`"already_done"` é WARNING** (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "brevo-diaria stage5 dispatch: {status}" --details '{json de saída}'`), nunca aborta os demais canais; `"already_done"` é caminho feliz de resume, logar `info`.
 
 Aguardar todos retornarem antes de prosseguir.
 
@@ -420,9 +421,10 @@ Publicacao dispatchada — edicao {AAMMDD}
   Facebook: agendado x 3
   Instagram: agendado x 3 (ou "env vars ausentes — pular" se nao configurado)
   Threads: agendado x N (ou "env vars ausentes — pular" se nao configurado; destaques >500 chars ficam de fora, ver failed em 06-social-published.json)
+  Brevo diária: rascunho criado (campaign_id {N}, max-add {N}) — agendamento no Stage 6 (ou "pulado — {motivo}" se status skipped/failed, #5772)
 
 Proximo passo → /diaria-6-agendamento {AAMMDD}
-(agendamento Beehiiv + auto-reporter)
+(agendamento Beehiiv + Brevo diária + auto-reporter)
 ```
 
 **Isto e uma sugestao de proximo comando, nao uma instrucao de encadeamento.** Pare aqui e retorne o resumo ao editor. So leia `orchestrator-stage-6.md` quando este playbook foi lido como parte de `/diaria-edicao` (via `orchestrator.md`) — nunca quando foi lido a partir da skill standalone `/diaria-5-publicacao`.

@@ -1,9 +1,18 @@
 ---
 name: diaria-brevo-diaria
-description: Empacota o envio da edição diária pelo canal Brevo próprio do editor (segmento Pending da Beehiiv — reativação, `platform.config.json` → `brevo_diaria`). Skill manual e separada do fluxo 0-5 de `/diaria-edicao` (Beehiiv continua sendo o canal principal automático) — o editor decide quando disparar este canal extra. Uso — `/diaria-brevo-diaria AAMMDD`.
+description: Empacota o envio da edição diária pelo canal Brevo próprio do editor (segmento Pending da Beehiiv — reativação, `platform.config.json` → `brevo_diaria`). Desde #5772 (20/08/2026) este canal também faz parte do dispatch AUTOMÁTICO da Etapa 5/6 de `/diaria-edicao` (rascunho na 5, agendamento na 6) — esta skill continua existindo pro disparo MANUAL/ad-hoc (retry, execução fora do fluxo normal, `--max-add`/horário customizados). Uso — `/diaria-brevo-diaria AAMMDD`.
 ---
 
 # /diaria-brevo-diaria
+
+**Desde #5772 (20/08/2026), este canal NÃO é mais exclusivamente manual** — a
+Etapa 5 de `/diaria-edicao` (`brevo-diaria-stage5-dispatch.ts`) já cria o
+rascunho automaticamente (`--max-add` derivado sem gate) e a Etapa 6
+(`schedule-daily-brevo.ts`) já agenda junto com o Schedule Beehiiv, sob o
+mesmo gate humano. Esta skill segue existindo pro caminho **manual/ad-hoc**:
+retry de um disparo que falhou na Etapa 5/6, execução fora do fluxo normal
+da edição diária, ou quando o editor quer `--max-add`/horário diferentes do
+default automático.
 
 Empacota `scripts/publish-daily-brevo.ts` (#4266) — hoje só invocável manualmente
 via CLI — no mesmo padrão de skill manual já usado por `/diaria-mensal-apoiadores`:

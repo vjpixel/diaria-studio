@@ -244,7 +244,14 @@ describe("orchestrator-prompt (#634)", () => {
       // #4966: +34 linhas (§6b2 — revisão de pedidos editoriais registrados
       // no gate 6, novo passo entre §6b e §6c). Arquivo foi a 545 linhas.
       // Teto bumped de 510→560 com headroom pequeno.
-      "orchestrator-stage-6.md": 560,
+      // #5772: +33 linhas (agendamento do canal Brevo diária dentro do
+      // MESMO gate humano do Schedule Beehiiv — leitura de
+      // brevo-diaria-published.json em §6a, linha no resumo §6b, bloco no
+      // prompt do gate §6c, e a seção nova §6d-brevo que invoca
+      // schedule-daily-brevo.ts fail-soft após o Schedule Beehiiv
+      // confirmado). Arquivo foi a 593 linhas. Teto bumped de 560→600 com
+      // headroom pequeno.
+      "orchestrator-stage-6.md": 600,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

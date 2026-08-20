@@ -194,8 +194,8 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-12 → null (#3994: range estendido pra Twitter/X)", () => {
-    assert.equal(parseEditorResponse("13"), null);
+  it("número fora do range 1-14 → null (#3994/#5772: range estendido pra Twitter/X + Brevo diária)", () => {
+    assert.equal(parseEditorResponse("15"), null);
     assert.equal(parseEditorResponse("0,1"), null);
   });
 
@@ -306,6 +306,84 @@ describe("allChannelsSkipped (#1238)", () => {
   it("false quando threads não-skipped mas resto skipped (#2479)", () => {
     assert.equal(
       allChannelsSkipped({ newsletter: "skipped", linkedin: "skipped", facebook: "skipped", instagram: "skipped", threads: "manual", source: "x" }),
+      false,
+    );
+  });
+});
+
+describe("canal Brevo diária (#5772)", () => {
+  it("autoApproveConsent/defaultAutoConsent incluem brevo auto", () => {
+    assert.equal(autoApproveConsent().brevo, "auto");
+    assert.equal(defaultAutoConsent().brevo, "auto");
+  });
+
+  it("defaultManualConsent inclui brevo manual", () => {
+    assert.equal(defaultManualConsent().brevo, "manual");
+  });
+
+  it("'brevo' é canal válido em --skip", () => {
+    const c = parseSkipFlag("brevo");
+    assert.ok(c, "brevo deve ser um canal válido em --skip");
+    assert.equal(c.brevo, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+  });
+
+  it("--skip brevo,linkedin → ambos manual, resto auto", () => {
+    const c = parseSkipFlag("brevo,linkedin");
+    assert.ok(c);
+    assert.equal(c.brevo, "manual");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.facebook, "auto");
+  });
+
+  it("'13' → Brevo diária auto (canais não mencionados ficam manual)", () => {
+    const c = parseEditorResponse("13");
+    assert.ok(c);
+    assert.equal(c.brevo, "auto");
+    assert.equal(c.newsletter, "manual");
+  });
+
+  it("'14' → Brevo diária manual", () => {
+    const c = parseEditorResponse("14");
+    assert.ok(c);
+    assert.equal(c.brevo, "manual");
+  });
+
+  it("'all' → brevo auto; 'none' → brevo skipped", () => {
+    assert.equal(parseEditorResponse("all")?.brevo, "auto");
+    assert.equal(parseEditorResponse("none")?.brevo, "skipped");
+  });
+
+  it("hasAnyAutoChannel true quando só brevo é auto", () => {
+    assert.equal(
+      hasAnyAutoChannel({
+        newsletter: "manual",
+        linkedin: "manual",
+        facebook: "manual",
+        instagram: "manual",
+        threads: "manual",
+        twitter: "manual",
+        brevo: "auto",
+        source: "x",
+      }),
+      true,
+    );
+  });
+
+  it("allChannelsSkipped false quando brevo não-skipped mas resto skipped", () => {
+    assert.equal(
+      allChannelsSkipped({
+        newsletter: "skipped",
+        linkedin: "skipped",
+        facebook: "skipped",
+        instagram: "skipped",
+        threads: "skipped",
+        twitter: "skipped",
+        brevo: "manual",
+        source: "x",
+      }),
       false,
     );
   });

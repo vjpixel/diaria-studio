@@ -22,6 +22,8 @@ export interface PublishConsent {
   threads: Mode;
   /** #3994 — Twitter/X. Best-effort, como Threads/Instagram. Default "auto". */
   twitter: Mode;
+  /** #5772 — canal Brevo diária (segmento Pending, reativação). Default "auto" como os demais. */
+  brevo: Mode;
   /** Origem da decisão pra rastreabilidade no run-log. */
   source: string;
 }
@@ -38,6 +40,7 @@ export function autoApproveConsent(): PublishConsent {
     instagram: "auto",
     threads: "auto",
     twitter: "auto",
+    brevo: "auto",
     source: "auto_approve_default",
   };
 }
@@ -55,6 +58,7 @@ export function defaultAutoConsent(): PublishConsent {
     instagram: "auto",
     threads: "auto",
     twitter: "auto",
+    brevo: "auto",
     source: "default_auto",
   };
 }
@@ -72,6 +76,7 @@ export function defaultManualConsent(): PublishConsent {
     instagram: "manual",
     threads: "manual",
     twitter: "manual",
+    brevo: "manual",
     source: "default_manual",
   };
 }
@@ -93,7 +98,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter"]);
+  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo"]);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -106,6 +111,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     instagram: skipped.has("instagram") ? "manual" : "auto",
     threads: skipped.has("threads") ? "manual" : "auto",
     twitter: skipped.has("twitter") ? "manual" : "auto",
+    brevo: skipped.has("brevo") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
@@ -121,6 +127,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  *     7=Instagram auto, 8=Instagram manual
  *     9=Threads auto, 10=Threads manual
  *     11=Twitter/X auto, 12=Twitter/X manual
+ *     13=Brevo diária auto, 14=Brevo diária manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -138,6 +145,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       instagram: "auto",
       threads: "auto",
       twitter: "auto",
+      brevo: "auto",
       source: "editor_response_all",
     };
   }
@@ -149,6 +157,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       instagram: "skipped",
       threads: "skipped",
       twitter: "skipped",
+      brevo: "skipped",
       source: "editor_response_none",
     };
   }
@@ -158,7 +167,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 12)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 14)) {
     return null;
   }
 
@@ -166,6 +175,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
   // #49: Instagram = 7 (auto) / 8 (manual).
   // #2479: Threads = 9 (auto) / 10 (manual).
   // #3994: Twitter/X = 11 (auto) / 12 (manual).
+  // #5772: Brevo diária = 13 (auto) / 14 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",
@@ -173,6 +183,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     instagram: "manual",
     threads: "manual",
     twitter: "manual",
+    brevo: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {
@@ -188,6 +199,8 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 10) out.threads = "manual";
     else if (n === 11) out.twitter = "auto";
     else if (n === 12) out.twitter = "manual";
+    else if (n === 13) out.brevo = "auto";
+    else if (n === 14) out.brevo = "manual";
   }
   return out;
 }
@@ -195,6 +208,8 @@ export function parseEditorResponse(input: string): PublishConsent | null {
 /**
  * True se algum canal está auto — pra orchestrator saber se precisa
  * rodar `upload-images-public.ts` (pre-req do dispatch automático).
+ * `brevo` não depende de imagem pública (#5772) — incluído aqui só pela
+ * semântica geral de "algum canal ativo", não porque acione o upload.
  */
 export function hasAnyAutoChannel(consent: PublishConsent): boolean {
   return (
@@ -203,7 +218,8 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
     consent.facebook === "auto" ||
     consent.instagram === "auto" ||
     consent.threads === "auto" ||
-    consent.twitter === "auto"
+    consent.twitter === "auto" ||
+    consent.brevo === "auto"
   );
 }
 
@@ -218,6 +234,7 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
     consent.facebook === "skipped" &&
     consent.instagram === "skipped" &&
     consent.threads === "skipped" &&
-    consent.twitter === "skipped"
+    consent.twitter === "skipped" &&
+    consent.brevo === "skipped"
   );
 }
