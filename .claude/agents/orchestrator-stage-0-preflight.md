@@ -398,10 +398,16 @@ if [ -n "$PREV_SOCIAL_DIR" ] && [ -f "$PREV_SOCIAL_DIR/_internal/06-social-publi
   PREV_SOCIAL="$PREV_SOCIAL_DIR/_internal/06-social-published.json"
 fi
 ```
-Se o arquivo existir:
-1. Posts com `status === "scheduled"` e `scheduled_at < now` (prazo passou): alertar editor com a lista.
-2. Posts com `status === "failed"`: alertar editor com a lista.
-3. Tudo ok ou arquivo não existe: silencioso.
+**A classificação é determinística desde o #5756** — não julgar em prosa (regra #573 do CLAUDE.md):
+```bash
+npx tsx scripts/check-prev-social-status.ts --prev-dir "$PREV_SOCIAL_DIR" --prev-edition {PREV}
+```
+Sai 0 sempre. Se imprimir uma linha começando com `edição anterior {PREV}:`, alertar o editor com ela. Se imprimir `nenhum post social exige atenção`, seguir em silêncio. Arquivo ausente também é silencioso.
+
+**Por que virou script.** A regra anterior era "`status === "scheduled"` e `scheduled_at < now` → alertar", e ela assumia que todo canal eventualmente vira `published`. Quatro dos cinco nunca viram: LinkedIn, Instagram e Threads roteiam pela fila do Worker Cloudflare e Twitter vai via Buffer — todos gravam `scheduled` no enqueue e nunca reconsultam, porque o disparo real acontece fora do repo sem callback. Só o Facebook é pollable, e o `verify-facebook-posts.ts` do check 0k acima de fato o atualiza para `published`. Medição em todas as edições de agosto: Facebook `published` 31× / `scheduled` 11×; os outros quatro, `scheduled` **42 de 42 cada, `published` zero**.
+
+Resultado da regra antiga: warning de ~12 "posts atrasados" em TODA edição, TODO dia, sobre um estado correto. Alarme que sempre dispara treina o leitor a ignorar a categoria inteira — e o dia em que o Facebook de fato falhar, o aviso estaria no meio do mesmo ruído.
+
 Não bloqueia — alertas são informativos para o editor resolver antes de começar a nova edição.
 
 **Importante (#565):** ao logar esses alertas via `scripts/log-event.ts`, **incluir flag `--informational`** pra evitar que o auto-reporter promova esses warns a issues GitHub falsas. Exemplo:
