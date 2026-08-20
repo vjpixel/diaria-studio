@@ -184,24 +184,78 @@ export function machineTag() {
   }
 }
 
+/**
+ * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
+ * tudo fora deles — inclusive newlines. Usado para que `gh pr merge`
+ * aparecendo dentro de uma string entre aspas (single-line OU multi-line,
+ * ex: um `--body "...\ngh pr merge...\n..."`) nunca seja visto pelo matcher
+ * de separadores de comando (#5805 — ver docstring de `isGhPrMergeCommand`).
+ *
+ * Aspas simples: sem escape interno (semântica de shell — `\` dentro de
+ * `'...'` é literal). Aspas duplas: `\"` escapada não fecha o span. Aspa não
+ * fechada até o fim da string: tudo dali em diante é tratado como dentro do
+ * span (mesmo trade-off de "comando malformado degrada pra fail-closed
+ * nessa cauda" já aceito pelo restante do guard — ver topo do arquivo).
+ */
+export function stripQuotedSpans(command) {
+  let result = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      let j = i + 1;
+      while (j < n && command[j] !== "'") j++;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\") j++;
+        j++;
+      }
+      i = j + 1;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
 /** `true` se `command` contém `gh pr merge` como um comando REAL — só no
- * início da string ou depois de separador de comando (`&&`/`;`/`/`|`/`||`).
+ * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
+ * newline).
+ *
  * #5787 Defeito 3: o regex antigo `/\\bgh\\s+pr\\s+merge\\b/` rodava sobre a
  * string inteira e casava com a CITAÇÃO da mensagem de erro dentro do corpo
  * de uma issue — qualquer comando que MENCIONASSE a expressão era negado.
- * Hoje casa só no início do comando ou depois de um separador, quando é de
+ * O fix casou só no início do comando ou depois de um separador, quando é de
  * fato um comando que o shell executaria.
+ *
+ * #5805: o conjunto de separadores declarado no comentário ("&& ; | ||
+ * newline") nunca incluiu newline no regex — `^` sem a flag `m` ancora só no
+ * início da STRING inteira, não de cada linha, então um comando Bash
+ * multi-linha cuja 1ª linha não é `gh pr merge` mas contém a chamada numa
+ * linha posterior (ex: heredoc, `cmd1\ncmd2`) passava direto pelo guard.
+ * Adicionar `\n` à alternação de separadores sozinho reabriria o Defeito 3
+ * em variante multi-linha: um `--body` com newline LITERAL dentro das aspas
+ * (`--body "linha1\ngh pr merge citado\nlinha3"`) teria a citação vista como
+ * comando real, porque o regex não entende quoting.
+ *
+ * Por isso o matcher roda sobre `stripQuotedSpans(command)`, não sobre
+ * `command` bruto: todo conteúdo entre aspas (single-line OU multi-line) é
+ * removido antes do regex de separadores rodar, então `gh pr merge` citado
+ * dentro de um `--body`/`--title`/string nunca é visto como comando real —
+ * independente de ter newline dentro das aspas ou não — e um `gh pr merge`
+ * genuíno depois de um separador (incluindo `\n`) fora de qualquer aspas
+ * continua detectado normalmente.
  */
 export function isGhPrMergeCommand(command) {
   if (typeof command !== "string") return false;
-  // Match `gh pr merge` at start of string or after a command separator.
-  // Separators: && ; | || newline (the shell never treats `gh pr merge`
-  // appearing mid-argument as a command).
-  // Match `gh pr merge` at start of string or after a shell command
-  // separator (`&&`, `;`, `|`, `||`, newline). Separators are matched
-  // explicitly — `gh pr merge` appearing mid-argument (inside quotes, as
-  // part of a `--body`, etc.) is never a command the shell would execute.
-  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\||\|\|)\s*gh\s+pr\s+merge\b/.test(command);
+  const stripped = stripQuotedSpans(command);
+  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+merge\b/.test(stripped);
 }
 
 /**

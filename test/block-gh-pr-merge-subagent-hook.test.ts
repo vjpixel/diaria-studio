@@ -74,6 +74,36 @@ describe("isGhPrMergeCommand (#5716)", () => {
     assert.equal(isGhPrMergeCommand(null), false);
     assert.equal(isGhPrMergeCommand(42), false);
   });
+
+  it("detecta 'gh pr merge' depois de separador newline puro (#5805)", () => {
+    // Regressão: o regex antigo não incluía \n na alternação de separadores
+    // (só && ; | ||), então um comando Bash multi-linha cuja 1ª linha não é
+    // `gh pr merge` mas contém a chamada numa linha posterior passava direto.
+    assert.equal(isGhPrMergeCommand("git fetch\ngh pr merge 123 --squash"), true);
+    assert.equal(
+      isGhPrMergeCommand("cd worktree\ngit fetch origin\ngh pr merge 5713 --squash --delete-branch"),
+      true,
+    );
+  });
+
+  it("não reabre o Defeito 3 (#5787) em variante multi-linha: 'gh pr merge' citado dentro de aspas com newline literal", () => {
+    // Se o fix do #5805 tivesse adicionado \n à alternação de separadores
+    // sem tratar quoting, um --body multi-linha com a citação numa linha
+    // posterior (mas ainda DENTRO das aspas) voltaria a ser negado por
+    // engano — exatamente o falso-positivo que o #5787 Defeito 3 corrigiu.
+    assert.equal(
+      isGhPrMergeCommand(
+        'gh issue create --title "Teste" --body "Comando:\ngh pr merge 5713 --squash\nfoi bloqueado" --label bug',
+      ),
+      false,
+    );
+    assert.equal(
+      isGhPrMergeCommand(
+        "gh pr comment 5805 --body 'linha 1\ngh pr merge citado aqui\nlinha 3'",
+      ),
+      false,
+    );
+  });
 });
 
 describe("shouldBlockGhPrMerge (#5716)", () => {
