@@ -50,18 +50,49 @@ export interface EngagementCohorts {
 
 // #2609: status MillionVerifier por grupo de contatos, gravado por
 // scripts/clarice-mv-status.ts sob a chave KV `mv:status`.
+//
+// #5820: "verified" antes significava só "≥1 contato do cohort tem
+// mv_bucket preenchido NESTE ciclo" — TOCADO, não COMPLETO. Isso levou a
+// reportar um cohort como "já verificado" quando só 43,6% dos contatos
+// tinham `mv_bucket` preenchido (achado ao vivo: leads-2024h1, 34.422 de
+// 78.181). Semântica corrigida:
+//   - "t01"     : N/A, validado por pagamento Stripe (inalterado).
+//   - "pending" : NENHUM contato do cohort tem `mv_bucket` preenchido NESTE
+//                 ciclo (inalterado).
+//   - "partial" : ALGUNS contatos do cohort foram verificados neste ciclo,
+//                 mas o cohort como um todo (`verifiedPct`, cumulativo
+//                 across TODOS os ciclos — verificação é "skip forever",
+//                 #2886) ainda não chegou a 100%. NOVO — este é o estado que
+//                 antes saía incorretamente como "verified".
+//   - "verified": o cohort como um todo está 100% verificado
+//                 (`verifiedPct === 100`) — só agora esta palavra significa
+//                 "completo", nunca "só tocado".
 export interface MvGroupStatus {
   /** Identificador do grupo (ex: "t01-assinantes-ativos", "t02-ex-assinantes"). */
   group: string;
   /** Ciclo em que a verificação foi feita (ex: "2605-06"). */
   cycle: string;
-  /** "verified" = tem mv-export-*-verified.csv; "t01" = N/A por pagamento Stripe; "pending" = sem arquivo. */
-  status: "verified" | "t01" | "pending";
+  /** Ver comentário do tipo acima — "verified"/"partial" agora distinguem completo de só-tocado. */
+  status: "verified" | "t01" | "pending" | "partial";
   /** ISO date do mtime do arquivo verified.csv (ou null). */
   verifiedAt: string | null;
+  /** #5820: verificados NESTE ciclo específico (cohort, mv_cycle). */
   verified: number;
+  /** #5820: rejeitados NESTE ciclo específico. */
   rejected: number;
+  /** #5820: inconclusivos NESTE ciclo específico. */
   unknown: number;
+  /**
+   * #5820: fração (0-100) de TODO o cohort (cumulativo, todos os ciclos —
+   * `mv_bucket` preenchido / total de contatos do cohort) que já tem
+   * `mv_bucket` preenchido. `null` só quando o cohort não tem nenhum contato
+   * (denominador 0 — nunca ocorre na prática, o cohort só existe no store
+   * por ter ≥1 contato, mas o tipo permite o caso degenerado sem `NaN`).
+   * Mesmo valor em TODAS as linhas do mesmo `group` (é uma propriedade do
+   * cohort, não do ciclo específico da linha) — repetido por linha porque o
+   * payload é uma lista achatada de (cohort × ciclo), não aninhada.
+   */
+  verifiedPct: number | null;
 }
 
 export interface MvStatus {

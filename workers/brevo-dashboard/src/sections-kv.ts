@@ -1251,6 +1251,14 @@ export function renderMvStatusSection(
     } else if (g.status === "verified" && g.verifiedAt) {
       const dateFmt = new Date(g.verifiedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
       badge = `<span style="color:${DS.ink}">✓ MV ${dateFmt} — ${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos</span>`;
+    } else if (g.status === "partial") {
+      // #5820: cohort TOCADO neste ciclo, mas ainda não 100% verificado —
+      // nunca mais confundível com "verified" (completo).
+      const dateFmt = g.verifiedAt
+        ? new Date(g.verifiedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" })
+        : null;
+      const pctFmt = g.verifiedPct != null ? `${g.verifiedPct.toFixed(1)}%` : "—";
+      badge = `<span style="color:var(--alert)">◐ MV PARCIAL${dateFmt ? ` ${dateFmt}` : ""} — ${pctFmt} do cohort verificado (${g.verified.toLocaleString("pt-BR")} ok / ${g.rejected.toLocaleString("pt-BR")} excluídos / ${g.unknown.toLocaleString("pt-BR")} inconclusivos neste ciclo)</span>`;
     } else {
       badge = `<span style="color:var(--alert)">MV pendente</span>`;
     }

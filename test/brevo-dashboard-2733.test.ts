@@ -616,6 +616,7 @@ describe("normalizeMvStatus (#3077 — mv:status)", () => {
     assert.equal(s?.groups[0]?.verified, 0);
     assert.equal(s?.groups[0]?.rejected, 0);
     assert.equal(s?.groups[0]?.unknown, 0);
+    assert.equal(s?.groups[0]?.verifiedPct, null, "verifiedPct ausente vira null");
     assert.doesNotThrow(() => renderMvStatusSection(s));
   });
 
@@ -623,8 +624,8 @@ describe("normalizeMvStatus (#3077 — mv:status)", () => {
     const raw = {
       generatedAt: "2026-07-01T00:00:00.000Z",
       groups: [
-        { group: "t01-assinantes-ativos", cycle: "2606-07", status: "t01" as const, verifiedAt: null, verified: 0, rejected: 0, unknown: 0 },
-        { group: "t02-ex-assinantes", cycle: "2606-07", status: "verified" as const, verifiedAt: "2026-06-30T00:00:00.000Z", verified: 40, rejected: 5, unknown: 1 },
+        { group: "t01-assinantes-ativos", cycle: "2606-07", status: "t01" as const, verifiedAt: null, verified: 0, rejected: 0, unknown: 0, verifiedPct: null },
+        { group: "t02-ex-assinantes", cycle: "2606-07", status: "verified" as const, verifiedAt: "2026-06-30T00:00:00.000Z", verified: 40, rejected: 5, unknown: 1, verifiedPct: 100 },
       ],
     };
     const s = normalizeMvStatus(raw);
@@ -632,6 +633,33 @@ describe("normalizeMvStatus (#3077 — mv:status)", () => {
     const html = renderMvStatusSection(s);
     assert.ok(html.includes("t02-ex-assinantes"), "grupo renderizado");
     assert.ok(!html.includes("Dados ainda não gerados"));
+  });
+
+  // #5820: status "partial" — cohort TOCADO no ciclo, mas ainda não 100%
+  // verificado. Normalização aceita o status e o render distingue de
+  // "verified" (nunca mais confundível como "já verificado").
+  it("#5820: status 'partial' passa pela normalização e renderiza badge distinto de 'verified'", () => {
+    const raw = {
+      generatedAt: "2026-07-01T00:00:00.000Z",
+      groups: [
+        {
+          group: "t02-leads-2024h1",
+          cycle: "2607-08",
+          status: "partial" as const,
+          verifiedAt: "2026-06-30T00:00:00.000Z",
+          verified: 30000,
+          rejected: 3000,
+          unknown: 1422,
+          verifiedPct: 43.6,
+        },
+      ],
+    };
+    const s = normalizeMvStatus(raw);
+    assert.deepEqual(s, raw, "status 'partial' e verifiedPct sobrevivem à normalização");
+    const html = renderMvStatusSection(s);
+    assert.ok(html.includes("PARCIAL"), "badge distinto renderizado pro status parcial");
+    assert.ok(html.includes("43.6%"), "percentual de conclusão do cohort aparece no badge");
+    assert.ok(!/✓ MV/.test(html), "nunca usa o badge de 'verified' completo pra um cohort parcial");
   });
 });
 

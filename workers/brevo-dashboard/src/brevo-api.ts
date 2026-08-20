@@ -1004,7 +1004,8 @@ export function normalizeMvStatus(raw: unknown): MvStatus | null {
   if (!Array.isArray(s.groups)) return null;
 
   const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-  const validStatuses = new Set(["verified", "t01", "pending"]);
+  // #5820: "partial" — cohort tocado neste ciclo mas ainda não 100% verificado.
+  const validStatuses = new Set(["verified", "t01", "pending", "partial"]);
 
   // #3164: `Array.isArray(s.groups)` acima estreita `s.groups` pro tipo CONCRETO
   // `MvGroupStatus[]` (herdado de `Partial<MvStatus>`), não `unknown[]` — o cast
@@ -1026,6 +1027,9 @@ export function normalizeMvStatus(raw: unknown): MvStatus | null {
       verified: numOr0(g.verified),
       rejected: numOr0(g.rejected),
       unknown: numOr0(g.unknown),
+      // #5820: null é um valor válido (cohort sem denominador) — só cai pro
+      // default `null` quando o campo não é um número finito no payload cru.
+      verifiedPct: typeof g.verifiedPct === "number" && Number.isFinite(g.verifiedPct) ? g.verifiedPct : null,
     }));
 
   return {
