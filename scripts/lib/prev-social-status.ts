@@ -7,10 +7,10 @@
  * **O problema que isto resolve.** O check 0l era prosa no playbook: "posts
  * com `status === "scheduled"` e `scheduled_at < now` → alertar o editor".
  * Essa regra assume que todo canal eventualmente vira `published` — e quatro
- * dos cinco nunca viram, por construção:
+ * dos cinco nunca viravam, por construção:
  *
  *   - **LinkedIn, Instagram, Threads** roteiam via fila do Worker Cloudflare.
- *     O script local grava `scheduled` no momento do enqueue e nunca volta a
+ *     O script local grava `scheduled` no momento do enqueue e nunca voltava a
  *     consultar: o disparo real acontece dentro do Worker, sem callback para
  *     o repo.
  *   - **Twitter** (via Buffer) tem o mesmo padrão — `scheduled` na criação,
@@ -29,10 +29,30 @@
  * que sempre dispara não é alarme; ele treina o leitor a ignorar a categoria
  * inteira, e o dia em que o Facebook de fato falhar o aviso vai estar no meio
  * do mesmo ruído.
+ *
+ * **#5766 — LinkedIn/Instagram/Threads saíram deste conjunto.** O check 0k
+ * ganhou um vizinho, `verify-social-worker-dispatch.ts` (0k-2), que reconcilia
+ * esses 3 canais contra `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`
+ * ANTES deste check 0l rodar — o mesmo papel que `verify-facebook-posts.ts`
+ * cumpre pro Facebook, reusando endpoints que o Worker já expõe (não precisou
+ * tocar o Worker). Instagram/Threads saem de lá como `published` com
+ * confirmação real de entrega (a chamada de publish da própria Graph API já
+ * respondeu com sucesso); LinkedIn sai como `published` com confiança mais
+ * fraca (só confirma que o webhook Make foi aceito — ver `verification_note`
+ * na entry). Falha genuína (DLQ do Worker) vira `failed` nos 3. Consequência
+ * pra este módulo: se depois dessa reconciliação uma entry desses 3 canais
+ * AINDA está `scheduled` e vencida, isso agora significa algo real (Worker
+ * inalcançável, cron/alarm ainda não processou, ou reconciliação não rodou) —
+ * voltou a ser `overdue-pollable`, não mais terminal-by-design. **Twitter
+ * continua fora** — não passa pelo Worker (via Buffer MCP, chamado direto
+ * pelo orchestrator), sem reconciliador equivalente ainda.
  */
 
-/** Canais cujo `scheduled` é ESTADO TERMINAL — não há poll pós-dispatch. */
-export const FIRE_AND_FORGET_PLATFORMS = new Set(["linkedin", "instagram", "threads", "twitter"]);
+/** Canais cujo `scheduled` é ESTADO TERMINAL — não há poll pós-dispatch.
+ * Ver #5766 acima: LinkedIn/Instagram/Threads saíram deste conjunto porque
+ * `verify-social-worker-dispatch.ts` agora reconcilia os 3 antes deste check
+ * rodar. Só Twitter (via Buffer, sem reconciliador) permanece. */
+export const FIRE_AND_FORGET_PLATFORMS = new Set(["twitter"]);
 
 export interface SocialPostLike {
   platform?: string;

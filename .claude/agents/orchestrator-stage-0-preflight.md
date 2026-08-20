@@ -377,16 +377,16 @@ Processar agora? [s/n/d]
 - Se `n`: logar `info "deferred {count} pending drafts"`.
 - Se `d`: gravar `_internal/issues-reported.json` com `dismissed: true` + array vazio cobrindo todos signals para cada edição pendente.
 
-### 0k. Verify FB posts da edição anterior (#78)
+### 0k. Verify FB + LinkedIn/Instagram/Threads da edição anterior (#78, #5766)
 
-Sempre roda, silencioso. Reconcilia posts Facebook agendados da edição anterior (status `scheduled` → `published`/`failed` via Graph API):
+Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, e (#5766) LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron` (Twitter, via Buffer, sem reconciliador). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`.
 ```bash
 PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
 if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
-  npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"
-fi
+  npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"; fi
+[ -n "$PREV" ] && (npx tsx scripts/verify-social-worker-dispatch.ts --edition-dir "$PREV/" || echo "verify-social-worker failed (non-fatal)")
 ```
-Não bloqueia — se credenciais FB não existem ou nenhuma edição anterior tem `_internal/06-social-published.json`, logar `warn` e seguir.
+Não bloqueia — credenciais/Worker ausentes ou inalcançáveis logam `warn` e seguem (fail-soft nos dois).
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366)
 
