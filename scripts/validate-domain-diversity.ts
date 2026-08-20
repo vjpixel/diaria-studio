@@ -1,16 +1,27 @@
 /**
- * validate-domain-diversity.ts (#5735)
+ * validate-domain-diversity.ts (#5735, gate GATE-BLOCKING desde #5813)
  *
  * Regra editorial: uma edição tem no máximo 2 URLs do mesmo domínio
- * registrável (eTLD+1), contando TODOS os links da edição somados —
- * destaques (D1/D2/D3) + RADAR + USE MELHOR + LANÇAMENTOS + vídeo, não por
- * seção. Ver `context/editorial-rules.md` (seção de links) para o texto
- * completo da regra e o racional.
+ * registrável (eTLD+1), contando TODOS os links EDITORIAIS da edição
+ * somados — destaques (D1/D2/D3) + RADAR + USE MELHOR + LANÇAMENTOS + vídeo,
+ * não por seção. Ver `context/editorial-rules.md` (seção de links) para o
+ * texto completo da regra e o racional.
  *
  * Mesmo contrato de `scripts/validate-lancamentos.ts`/`validate-domains.ts`:
  * lê um MD, extrai URLs com número de linha, agrupa por domínio registrável
  * (`scripts/lib/registrable-domain.ts` — `blog.openai.com` e `openai.com`
  * contam como o mesmo domínio, sem allowlist de exceção pra plataformas).
+ *
+ * #5813: hosts NÃO-editoriais (`scripts/lib/ctr-utils.ts` →
+ * `isNonEditorialHost`/`NON_EDITORIAL_HOST_FAMILIES` — rodapé, crédito de
+ * imagem, link de casa) são excluídos ANTES do agrupamento. Sem isso, o
+ * rodapé fixo da própria diar.ia.br (Cursos/Livros/Arquivo/É IA?/posts
+ * relacionados — 6-8 links pra subdomínios *.diar.ia.br em toda edição)
+ * acusava violação em 100% das edições, o que tornaria este check
+ * GATE-BLOCKING inviável (bloquearia o Stage 4 sempre). Reusa o mesmo
+ * conceito já usado pra excluir ruído não-editorial do cálculo de CTR
+ * (#4839) — mesma definição de "link de casa/rodapé", propósito adjacente
+ * (diversidade de domínio EDITORIAL, não contagem de todo link do arquivo).
  *
  * Uso:
  *   npx tsx scripts/validate-domain-diversity.ts <md-path>
@@ -23,16 +34,17 @@
  *
  * Output JSON em stdout: { ok, max_per_domain, violations[] }
  *
- * Integração no gate do Stage 1 (seleção) e no `validate-stage-4-completeness.ts`
- * do Stage 4 é trabalho de playbook, deixado como próximo passo — este
- * script é o validador standalone que esses pontos de integração chamam.
+ * Integração: chamado como script separado GATE-BLOCKING em
+ * `.claude/agents/orchestrator-stage-4.md` §4c.2, mesmo padrão de
+ * `validate-lancamentos.ts` (fora do agregador `lint-newsletter-md.ts`).
  */
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractUrlsWithLines } from "./validate-domains.ts";
-import { registrableDomain } from "./lib/registrable-domain.ts";
+import { extractHostname, registrableDomain } from "./lib/registrable-domain.ts";
+import { isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
 export const DEFAULT_MAX_PER_DOMAIN = 2;
@@ -52,7 +64,10 @@ export interface DomainDiversityReport {
  * Agrupa URLs (já extraídas com linha) por domínio registrável e reporta
  * qualquer grupo que exceda `maxPerDomain`. URLs que não parseiam (host
  * inválido) são ignoradas — mesma postura fail-soft de `validate-domains.ts`
- * pro que não é uma URL http(s) reconhecível.
+ * pro que não é uma URL http(s) reconhecível. Hosts não-editoriais (#5813 —
+ * `isNonEditorialHost`: rodapé/link de casa/crédito de imagem, ex:
+ * *.diar.ia.br, linkedin.com, apoia.se) são excluídos ANTES do agrupamento —
+ * o cap mede diversidade de FONTE editorial, não todo link do arquivo.
  * @pure
  */
 export function validateDomainDiversity(
@@ -63,6 +78,8 @@ export function validateDomainDiversity(
   const byDomain = new Map<string, Array<{ url: string; line: number }>>();
 
   for (const entry of urls) {
+    const hostname = extractHostname(entry.url);
+    if (hostname && isNonEditorialHost(hostname)) continue;
     const domain = registrableDomain(entry.url);
     if (!domain) continue;
     const list = byDomain.get(domain) ?? [];
