@@ -11,6 +11,7 @@ Executa só a Etapa 1 da pipeline.
 
 - `$1` = data da edição (`AAMMDD`, ex: `260423`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 - `--window N` / `--window-days N` (opcional, #1751) = janela em dias (inteiro ≥ 1). Presente → usa N direto, sem perguntar. Ausente → default 4 dias silenciosamente, sem gate.
+- `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/overnight/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca.
 
 ## Passo 1 — Confirmar janela de publicação aceita (sempre, antes do orchestrator)
 
@@ -59,6 +60,7 @@ Antes de criar qualquer task nova, varrer `TaskList()` e marcar como `completed`
    - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
    - `window_days = {valor confirmado no Passo 1}`
    - `stop_after_stage = 1` (parar após o gate do Stage 1)
+   - `auto_approve = true` **se e somente se `--no-gates` foi passado** (#5738); ausente a flag, `false` — que é o default de `orchestrator-stage-0-preflight` e mantém o gate do Stage 1 exatamente como sempre foi em invocação manual. É esta linha que faz a flag valer alguma coisa: sem ela, `--no-gates` seria aceito e ignorado.
 
    O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eia-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → **pre-gate validator** → GATE.
 

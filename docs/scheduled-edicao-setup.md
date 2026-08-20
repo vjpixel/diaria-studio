@@ -23,7 +23,11 @@
 
 Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068), reativação [#4998](https://github.com/vjpixel/diaria-studio/issues/4998), volta pro Windows [#5611](https://github.com/vjpixel/diaria-studio/issues/5611)
 
-O agendador (Windows Task Scheduler, via ativa desde #5611; par Linux/systemd disponível mas desabilitado) roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
+O agendador (Windows Task Scheduler, via ativa desde #5611; par Linux/systemd disponível mas desabilitado) roda a edição **um stage por sessão** (`STAGE_PLAN`, #5738) de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada**.
+
+**Desde #5738 cada stage roda numa sessão `claude` própria** — `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, nessa ordem. Sessão nova nasce com contexto limpo, que é o efeito de um `/clear` entre stages: a própria sessão não consegue se auto-limpar (`/clear` é comando de usuário), mas o driver consegue, porque cada spawn é um processo novo. O estado entre stages viaja por DISCO — foi o #5414 que tornou isso possível, ao persistir os 17 valores que antes só existiam no contexto da conversa. Ganho medido em `_internal/stage-status.json` de 14 edições: o Stage 4, sozinho 40–60% do custo, caiu de uma mediana de 581M para 163M tokens de entrada.
+
+**O guard de publicação virou estrutural.** Antes, a run invocava `/diaria-edicao` inteiro e segurava a publicação com `--skip newsletter,linkedin,facebook`. Agora os Stages 5 e 6 simplesmente não estão em `STAGE_PLAN` e nunca são invocados — não há flag a respeitar nem a esquecer. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
 
 ---
 
@@ -157,20 +161,28 @@ systemctl --user daemon-reload
 1. O agendador dispara às 16:00 (dom-qui).
 2. Runner calcula `AAMMDD = amanhã em BRT` via `scripts/lib/next-edition-date.ts`.
 3. **Guard de idempotência**: se `data/editions/{AAMMDD}/` já existe, loga `SKIP` e encerra (exit 0) sem invocar `claude`.
-4. Senão, invoca: `claude --print --permission-mode acceptEdits --max-turns 120 --output-format text --no-session-persistence /diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook`.
-5. Orchestrator executa Stages 0–3 (pesquisa → escrita → imagens) em modo auto-approve.
-6. No Stage 4 (Revisão), executa o pré-render completo (HTML + imagens + upload Worker + close-poll) + resumo consolidado. Com `--skip newsletter,linkedin,facebook`, o Stage 5 (Publicação) vai usar `build-publish-consent.ts --skip "newsletter,linkedin,facebook"` (path 1 de §5b) — sem gate interativo, sem fallback default-auto (#1326/#2068). Todos os canais ficam `pending_manual` no `_internal/05-publish-consent.json`. (#1694: Stage 4 escreve sentinel `.step-4-done.json`; Stage 5 lê isso como prereq.)
-7. A run termina naturalmente após o Stage 4 (Revisão). O Stage 5 (Publicação) não é disparado — requer input do editor. Não aguarda confirmação nem fica travada no gate.
+4. Senão, roda `scripts/sync-code.ts` uma vez (fail-soft) e então invoca, **um por stage**:
+   `claude --print --permission-mode acceptEdits --max-turns 120 --output-format text --no-session-persistence /diaria-{N}-{skill} {AAMMDD}`
+   para cada entrada de `STAGE_PLAN` (1 pesquisa → 2 escrita → 3 imagens → 4 revisão). Stage cujo sentinela `_internal/.step-N-done.json` já existe é pulado sem spawnar; falha em um stage interrompe o laço e o log registra `stage=N`.
+5. Cada stage roda em sua própria sessão, com `--no-gates` (#5738). A flag é **requisito de correção, não conveniência**: `/diaria-edicao` setava `auto_approve = true` internamente para os Stages 1-3 (pre-gate mode, #1523), e ao invocar as skills isoladamente esse auto-approve desaparece — `orchestrator-stage-0-preflight` recebe `auto_approve` com default `false`. Sem a flag, cada stage apresentaria seu gate a ninguém em modo `--print`, queimando os 120 turnos sem escrever sentinela.
+6. No Stage 4 (Revisão), executa o pré-render completo (HTML + imagens + upload Worker + close-poll) + resumo consolidado, e escreve `.step-4-done.json` (#1694). **O Stage 5 não é invocado**, então nada de `build-publish-consent.ts` roda nesta execução — `_internal/05-publish-consent.json` nem chega a existir. (Antes do #5738 o runner passava por `/diaria-edicao` inteiro com `--skip newsletter,linkedin,facebook`, e o Stage 5 rodava gravando todos os canais como `pending_manual`; ver a seção "Por que `--skip`..." abaixo, marcada como histórica.)
+7. A run termina após o Stage 4 (Revisão) — não porque "termina naturalmente", mas porque `STAGE_PLAN` acaba ali. O Stage 5 (Publicação) requer input do editor.
 8. Logs gravados em `data/run-log.jsonl` e `data/overnight-schedule.log`.
 9. Editor revisa os outputs (Stage 1-4 + pré-render) e dispara `/diaria-5-publicacao {AAMMDD}` quando pronto.
 
-### Por que `--skip` em vez de deixar o pre-gate expirar?
+### Por que `--skip` em vez de deixar o pre-gate expirar? (histórico — superado pelo #5738)
+
+**Desde #5738 esta seção descreve o mecanismo ANTIGO.** O runner não invoca mais `/diaria-edicao`, e portanto não passa mais `--skip`: os Stages 5 e 6 não estão em `STAGE_PLAN` e nunca chegam a ser invocados. A garantia deixou de depender de uma flag ser respeitada pipeline adentro. O raciocínio abaixo continua válido para quem invocar `/diaria-edicao` à mão em modo headless.
 
 `--skip newsletter,linkedin,facebook` é o mecanismo correto. Sem ele, o Stage 5 (Publicação) chega ao gate interativo e, como não há resposta em modo headless, o default do invariante #1326 é **tudo automático** — disparando os 3 canais sem supervisão. Com `--skip`, o consent é gravado deterministicamente como `pending_manual` em todos os canais, e a run termina limpa. (#1694: o `--skip` é encaminhado pelo orchestrator ao Stage 5; o Stage 4 tem seu próprio gate de revisão que no scheduled run é auto-aprovado por `auto_approve = true` para stages 1-4.)
 
 ### Por que `--max-turns 120`?
 
-O pipeline completo (Stages 0–4 + pré-render) tipicamente usa 50–90 turnos. `120` dá margem para slowdowns sem bloquear indefinidamente. É um safety net — a run termina naturalmente antes de atingir o limite na maioria dos casos.
+**Desde #5738 o teto é POR STAGE, não para a edição inteira** — e isso corrige um problema real, não é só consequência do refactor.
+
+A justificativa original desta seção dizia que "o pipeline completo usa 50–90 turnos". A telemetria do #5413 mostrou que isso está errado por uma ordem de grandeza: a edição 260814 teve **1.433 turnos**, dos quais **587 só no Stage 4**. Um teto de 120 para a edição inteira era, na prática, um truncamento silencioso do pipeline agendado — a run batia no limite e parava, sem que nada denunciasse a causa.
+
+Por stage, `120` volta a ser o safety net que a seção original descrevia.
 
 Nota: o auto-reporter ao final do Stage 5 pode apresentar gate humano (issues GitHub). Em headless ele não recebe resposta e a run expira pelo `--max-turns`; isso é benigno — tudo que importa (consent, pré-render) já foi gravado antes do auto-reporter.
 

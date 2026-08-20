@@ -16,6 +16,7 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 1 aprovado e Stage 2 incompleto. Rode /diaria-1-pesquisa primeiro ou passe AAMMDD explicitamente.`
   - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 - `$2` (opcional) = `newsletter` | `social` — re-roda só um dos dois. Sem este argumento, roda ambos em paralelo.
+- `--no-gates` (opcional, #5738) = auto-aprova o gate deste stage. Existe para o runner AGENDADO (`scripts/overnight/run-scheduled-edicao.ts`), que desde o #5738 invoca uma skill `/diaria-N-*` por sessão em modo `--print`: sem esta flag o gate seria apresentado e ninguém responderia, queimando os turnos da sessão sem escrever sentinela. Equivale ao `auto_approve = true` que `/diaria-edicao` já setava internamente para os Stages 1-3 (pre-gate mode, #1523). **Nunca alcança publicação** — Stages 5/6 não estão em `STAGE_PLAN` e o runner nunca os invoca. **`--no-gate` (singular) é a grafia legada do #874 e continua aceita como sinônimo** — toda checagem no corpo desta skill honra as duas.
 
 ## Placeholders
 
@@ -79,7 +80,7 @@ Comportamentos por opção:
 - Opção (2): copiar `_internal/02-pre-clarice.md` → `_internal/02-draft.md` (restaurar estado pré-Clarice limpo) e retomar do Passo 3b (Clarice). **Nunca** re-aplicar Clarice em cima do estado humanizado-pós-Clarice-parcial.
 - Opção (3): apagar outputs e rodar Passo 1 em diante.
 
-**Sem snapshot pré-Clarice** (resume "antigo" de antes do #874): preservar comportamento original. Sem `--no-gate`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate. Com `--no-gate`: assumir que está OK, pular regeneração.
+**Sem snapshot pré-Clarice** (resume "antigo" de antes do #874): preservar comportamento original. Sem `--no-gate`/`--no-gates`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate. Com `--no-gate`/`--no-gates`: assumir que está OK, pular regeneração.
 
 Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — sem o gancho mid-Clarice (social não tem snapshot pré-Clarice; double-apply em social é menos danoso porque seções são curtas).
 
@@ -484,7 +485,7 @@ Falha **não bloqueia**.
 
 ## Passo 5 — Cleanup dos snapshots intermediários
 
-Limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`):
+Limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`/`--no-gates`):
 
 ```bash
 for f in \
@@ -498,7 +499,7 @@ done
 
 **Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Sonnet, #2772) escolhe automaticamente como fallback no Passo 7.
 
-**Se `--no-gate`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
+**Se `--no-gate`/`--no-gates`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
 
 **Caso contrário:** apresentar ao usuário (omitir seções não geradas se `$2` limitou o escopo):
 
