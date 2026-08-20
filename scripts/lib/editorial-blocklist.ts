@@ -15,6 +15,7 @@ export const EDITORIAL_BLOCKLIST: ReadonlySet<string> = new Set<string>([
   "simonwillison.net", // editor 260603 (#1760) — não incluir conteúdo do Simon Willison
   "sempreupdate.com.br", // editor 260730 — conteúdo genérico tipo listicle sem profundidade (ex: "Como construir seu fluxo de trabalho automatizado com agentes de IA: guia passo a passo para iniciantes")
   "langchain.com", // editor 260806 — blog corporativo publica case study/anúncio de produto sob a categoria "Tutoriais" do seed/sources.csv; review-use-melhor.ts flagou repetidamente como não-tutorial (ex: edição 260806, "Evaluating code review agents with ReviewBench")
+  "tiktok.com", // editor 260821 — vídeo de terceiro sem substância verificável como tutorial (ex: edição 260821, "Como Usar O Chat Gpt Para Estudar Para Concurso" no USE MELHOR)
 ]);
 
 /**
