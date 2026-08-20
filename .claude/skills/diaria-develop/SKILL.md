@@ -173,6 +173,64 @@ impedimento real que só o editor destrava, não um convite disfarçado; a
 diferença que esta seção ataca é a narração de status sem nenhum bloqueio
 real por trás.
 
+## Regra permanente: responder ao editor não encerra o turno (#5773)
+
+Complementa o #5751 e o #5769 acima, não sobrepõe — aquelas duas seções
+decidem **o quê** esta sessão trabalha e **como** ela nomeia o fim de um
+turno; esta nomeia a causa que produz os dois sintomas: **responder a uma
+mensagem do editor é tratado como se fosse o turno inteiro.** Auditando os 5
+pontos de parada reais de uma sessão (issue #5773, 20/08/2026), todos
+aconteceram **imediatamente depois de responder o editor** — nenhum por
+pedido explícito de parar. A pergunta do editor virou o escopo do turno
+inteiro; o trabalho que já estava em andamento desapareceu do escopo, sem
+ter sido concluído nem redirecionado.
+
+**A correção, em 3 passos — responder é uma tarefa a mais dentro do turno,
+não o turno:**
+
+1. **Responder ao que foi perguntado** — completo, sem economizar.
+2. **Na mesma volta, retomar o trabalho interrompido** — sem anunciar que vai
+   retomar (isso seria a narração terminal do #5769 outra vez), apenas
+   retomando.
+3. **O turno termina quando o TRABALHO para, não quando a resposta acaba.**
+
+**Teste operacional, verificável:** *se havia trabalho em andamento quando a
+mensagem chegou, e o turno terminou sem nenhuma ferramenta de trabalho
+(implementação, teste, PR, review — qualquer tool call que não seja só texto
+de resposta) ter sido chamada depois da resposta, foi parada indevida.*
+
+**Exceção única — redirecionamento explícito.** Quando a mensagem do editor
+redireciona o trabalho ("pare isso", "faça aquilo primeiro", "esquece por
+enquanto"), o trabalho antigo é abandonado ou reordenado **de propósito**, e
+é o trabalho novo (não o antigo) que precisa continuar na mesma volta —
+retomar o item errado depois de um redirecionamento explícito seria ignorar
+o editor, não obedecer a esta regra.
+
+**Caso especial — perguntas de status.** "Como está?", "quantas faltam?",
+"qual o próximo passo?" são as mais perigosas, porque a resposta *parece*
+ser o produto do turno. Não é — são perguntas sobre um trabalho que deveria
+estar acontecendo, e responder sobre ele sem continuá-lo transforma a sessão
+numa consulta de status, com o editor como único motor. Sintoma diagnóstico:
+**se o editor precisa perguntar "como está?", a sessão já parou** — a
+pergunta é o alarme, não o pedido.
+
+**Relação com as issues irmãs (mesma cadeia, quatro ângulos do mesmo
+comportamento — #5773 é a causa; as outras três são sintoma/forma):**
+
+| Issue | O que cobre |
+|---|---|
+| #5321 | política geral ("perguntar é exceção") — cobre a pergunta explícita |
+| #5721 | proíbe pergunta por educação — cobre a forma |
+| #5769 | proíbe terminar o turno com convite implícito — cobre o FIM do turno |
+| #5773 (esta) | proíbe que responder CONSUMA o turno — cobre a CAUSA das outras três |
+
+Nada nesta seção afrouxa o que já para a sessão de propósito: os 4 critérios
+do #5321, os dois gates de projeto da diária, os guards de infra (#738,
+#3938), e o Gate 1 residual (cat. C/E-com-custo)/Gate B desta skill — todos
+seguem bloqueantes por design. O que esta seção corrige é só o instante logo
+**depois** de uma resposta completa e sem gate pendente: nesse instante, se
+existe trabalho em voo, ele continua na mesma volta.
+
 ## Argumentos
 
 - **`AAMMDD` (opcional)** — data-rótulo da sessão (nomeia `data/develop/{AAMMDD}/plan.json`). **Não é data de edição** (nenhum stage editorial destrutivo depende dela; a regra D+1 não se aplica). O default de hoje é seguro, mas a skill **confirma** ("sessão develop de hoje, {AAMMDD}? s/n") em vez de inferir em silêncio. Fixar no `plan.json` e reler dele (a sessão pode cruzar meia-noite).
