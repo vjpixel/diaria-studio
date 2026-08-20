@@ -28,10 +28,10 @@ import {
   unescapeMd,
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
-import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486
+import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
-import { deriveEditionUrl, appendUtmToEditionUrl } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home
+import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
 import type { AprofundeItem, HubLink } from "../extract-destaques.ts"; // #3920 / #4907
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -1757,6 +1757,65 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
 }
 
 /**
+ * Texto pré-preenchido do bloco "Convide um amigo a assinar" (#5794, pedido
+ * de leitor via WhatsApp) — 100% DERIVADO/determinístico (TS puro, sem LLM/
+ * gate), mesmo padrão de `buildWhatsappShareBlock`. DIFERENTE em propósito:
+ * `renderWhatsappShare`/`buildWhatsappShareBlock` compartilham a NOTÍCIA (D1)
+ * de uma edição específica; este bloco convida a ASSINAR — não referencia
+ * nenhum destaque, é o mesmo texto todo dia.
+ */
+export function buildConviteAmigoBlock(homeUrl: string): string {
+  return `Eu leio a diar.ia.br — resumo diário de IA em português, grátis. Assina aqui: ${homeUrl}`;
+}
+
+/**
+ * URL da HOME (`https://diar.ia.br/`, não a edição) com o triplo UTM fixo de
+ * `CONVITE_AMIGO_UTM` — `campaign` não varia por edição (o link/texto é o
+ * mesmo todo dia), ao contrário de `buildWhatsappEditionUrl`.
+ */
+export function buildConviteAmigoUrl(): string {
+  return appendUtmToEditionUrl(`${BEEHIIV_BASE_URL}/`, {
+    source: CONVITE_AMIGO_UTM.source,
+    medium: CONVITE_AMIGO_UTM.medium,
+    campaign: CONVITE_AMIGO_UTM.campaign,
+  });
+}
+
+/**
+ * Link `wa.me/?text=` pronto pro botão "Convide um amigo a assinar" — reusa
+ * `buildWhatsappShareLink` (mesmo helper do bloco de compartilhar notícia,
+ * #5794).
+ */
+export function buildConviteAmigoShareLink(): string {
+  return buildWhatsappShareLink(buildConviteAmigoBlock(buildConviteAmigoUrl()));
+}
+
+/**
+ * Renderiza o bloco fixo "CONVIDE UM AMIGO A ASSINAR" (#5794, pedido de
+ * leitor) — botão WhatsApp que compartilha o CONVITE DE ASSINATURA (link pra
+ * home, texto de convite), rotulado de forma DISTINTA do botão por-destaque
+ * `renderWhatsappShare` ("Compartilhar no WhatsApp" — compartilha a notícia
+ * D1) para evitar exatamente a confusão relatada pelo leitor na issue de
+ * origem. Fixo — não depende de destaques nem de edição, sempre renderiza.
+ *
+ * Mesmo padrão visual pill dos demais CTAs do template (fundo
+ * `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
+ * `border-radius:999px`), centralizado — mesmo `buttonStyle` de
+ * `renderWhatsappShare`.
+ */
+export function renderConviteAmigo(): string {
+  const shareLink = buildConviteAmigoShareLink();
+  const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
+
+  return `<!-- Convide um amigo a assinar -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
+    <div style="text-align:center;">
+      <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Convide um amigo a assinar →</a>
+    </div>
+  </td></tr></table>`;
+}
+
+/**
  * Pure (#1076): renderiza o bloco 🙋🏼‍♀️ PARA ENCERRAR. Lista `- item` no MD
  * vira `<ul><li>...`; resto vira parágrafos.
  */
@@ -2283,6 +2342,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // lacuna D1/D2 (ver o loop de destaques acima, i===0). Posição antiga era
   // ANTES de "Para encerrar" (decisão original #4486/#4487).
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
+
+  // #5794: bloco fixo "Convide um amigo a assinar" — DIFERENTE do WhatsApp
+  // share acima (compartilha a NOTÍCIA D1) — este compartilha a ASSINATURA
+  // em si. Renderiza no FIM da newsletter, perto das caixas de divulgação
+  // (pedido explícito do editor na issue), depois de "Para encerrar" —
+  // sempre presente, não depende de destaques/edição.
+  parts.push(renderConviteAmigo());
 
   // #1936/#1945 (DS): container do corpo, máx. LAYOUT.containerWidth
   // (email-safe — Outlook corta acima disso, cf. checkWideTables — #5176

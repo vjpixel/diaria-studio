@@ -704,6 +704,20 @@ export const WHATSAPP_SHARE_UTM = {
   campaignPattern: "{edition}",
 } as const;
 
+/** Bloco fixo "Convide um amigo a assinar" (#5794, pedido de leitor) — botão
+ * WhatsApp DISTINTO do `WHATSAPP_SHARE_UTM` acima: aquele compartilha a
+ * NOTÍCIA (D1, `utm_campaign` = AAMMDD da edição); este compartilha o
+ * CONVITE DE ASSINATURA em si, apontando pra HOME (`diar.ia.br/`), com
+ * `utm_campaign` FIXO (`convite-leitor`) — não varia por edição, porque o
+ * texto/link em si não muda de uma edição pra outra (mesmo padrão de campanha
+ * fixa de `hub-index-footer-nav`). Fonte dos valores:
+ * `scripts/lib/newsletter-render-html.ts::buildConviteAmigoLink`. */
+export const CONVITE_AMIGO_UTM = {
+  source: "whatsapp",
+  medium: "referral",
+  campaign: "convite-leitor",
+} as const;
+
 /** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
  * (ex: `ln-26w31`), `utm_content` varia por posição (`mencao-abertura`/`cta-abertura`/
  * `lista`/`cta-usemelhor`/`cta-fim` — `item-01`/`02`/`03` SAÍRAM quando o link por
@@ -1222,6 +1236,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "fixo pensado pra colar/encaminhar no WhatsApp — dentro do D1 desde " +
       "#5152, era entre D1 e D2 (#4486, posição/conteúdo revisados em " +
       "#4570) — utm_campaign = AAMMDD da edição que gerou o encaminhamento.",
+    status: "ativo",
+  },
+  {
+    id: "convite-amigo-whatsapp",
+    label: "Bloco 'Convide um amigo a assinar' (e-mail diário)",
+    source: CONVITE_AMIGO_UTM.source,
+    medium: CONVITE_AMIGO_UTM.medium,
+    campaignPattern: CONVITE_AMIGO_UTM.campaign,
+    originFile: "scripts/lib/newsletter-render-html.ts",
+    description:
+      "Botão WhatsApp fixo no fim da newsletter (#5794, pedido de leitor) — DISTINTO " +
+      "do whatsapp-share-block acima: aquele compartilha a notícia D1, este convida " +
+      "a ASSINAR (link pra home diar.ia.br/, texto pré-preenchido de convite). " +
+      "utm_campaign fixo (convite-leitor), não varia por edição.",
     status: "ativo",
   },
   {
