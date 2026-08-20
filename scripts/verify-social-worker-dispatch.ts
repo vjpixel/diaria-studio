@@ -295,9 +295,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
-
   try {
+    const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
     const { updated, changes } = await verifyWorkerDispatch(published, workerUrl, workerToken);
     if (changes > 0) {
       writeFileSync(publishedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");

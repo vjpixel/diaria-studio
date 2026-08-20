@@ -149,4 +149,51 @@ describe("scheduleDailyBrevo (#5772)", () => {
     await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
     assert.equal(writeCalled, false);
   });
+
+  it("#5781 — status já 'scheduled' → retorna ok cedo sem chamar PUT/GET/writePublished de novo", async () => {
+    let putCalled = false;
+    let getCalled = false;
+    let writeCalled = false;
+    const deps = makeDeps({
+      readPublished: () => draftState({ status: "scheduled", scheduled_at: SCHEDULED_AT }),
+      putSchedule: async () => {
+        putCalled = true;
+        return {};
+      },
+      getCampaign: async () => {
+        getCalled = true;
+        return { status: "queued", scheduledAt: SCHEDULED_AT };
+      },
+      writePublished: () => {
+        writeCalled = true;
+      },
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.campaignId, 42);
+      assert.equal(result.scheduledAt, SCHEDULED_AT);
+      assert.equal(result.status, "already_scheduled");
+      assert.equal(result.alreadyScheduled, true);
+    }
+    assert.equal(putCalled, false, "PUT nunca deveria ser chamado — campanha Brevo agendada é imutável");
+    assert.equal(getCalled, false);
+    assert.equal(writeCalled, false);
+  });
+
+  it("#5781 — status 'draft'/'test_sent' (ainda não agendado) → segue fluxo normal, chama PUT", async () => {
+    for (const status of ["draft", "test_sent"] as const) {
+      let putCalled = false;
+      const deps = makeDeps({
+        readPublished: () => draftState({ status }),
+        putSchedule: async () => {
+          putCalled = true;
+          return {};
+        },
+      });
+      const result = await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
+      assert.equal(putCalled, true, `status=${status} deveria seguir o fluxo normal e chamar PUT`);
+      assert.equal(result.ok, true);
+    }
+  });
 });
