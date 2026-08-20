@@ -206,6 +206,31 @@ export function runScheduledTask(
     appendFileSync(tempLogPath, text.endsWith("\n") ? text : `${text}\n`, "utf8");
   };
 
+  // #5639 — task desabilitada via `enabled: false` no registro.
+  if (def.enabled === false) {
+    appendTemp(`===== ${now().toISOString()} - ${def.description} =====`);
+    appendTemp("SKIP: task disabled (enabled: false)");
+    appendTemp("===== fim (skip:disabled) =====");
+    // Anexa o log temporário ao final (mesmo fluxo de sucesso)
+    let logAppendOk = false;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const tempContent = readFileSync(tempLogPath, "utf8");
+        appendLog(logPath, tempContent);
+        logAppendOk = true;
+        break;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 3) sleepSync(300 * attempt);
+      }
+    }
+    if (logAppendOk) {
+      try { rmSync(tempLogPath, { force: true }); } catch {}
+    }
+    return { code: 0, steps: [], guardAborted: false, logAppendOk, logPath, tempLogPath: logAppendOk ? "" : tempLogPath };
+  }
+
   appendTemp("");
   appendTemp(`===== ${now().toISOString()} - ${def.description} =====`);
 
