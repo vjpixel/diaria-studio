@@ -172,6 +172,15 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   // do brasil-regulacao.
   "Como a IA está mudando o mercado de trabalho?",
   "Quantas empresas já demitiram citando a IA como motivo?",
+  // #5741 (7º hub, medicina-saude, sessão overnight) — acrescentadas por
+  // `test/geo-hub-questions-cobrem-hubs-4900.test.ts` (guard que exige 1+
+  // pergunta por hub publicado), MID-SÉRIE como as adições de
+  // brasil-regulacao/mercado-trabalho acima: `Diaria-Geo-Citation-Monitor`
+  // já roda semanalmente desde 07/08/2026. Mesma decisão de não resetar o
+  // baseline sozinho — fica para o editor/coordenador, ver a nota completa
+  // na adição do brasil-regulacao.
+  "O que a IA já mudou na medicina e na saúde?",
+  "O CFM já regulamentou o uso de IA por médicos no Brasil?",
 ] as const;
 
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */

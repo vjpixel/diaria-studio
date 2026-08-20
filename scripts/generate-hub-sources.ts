@@ -313,6 +313,52 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   //     público-alvo direto do produto) — mesmo padrão dos demais itens.
   "mercado-trabalho":
     /\bemprego(s)?\b|\bdesemprego\b|demiss|demit|\bvagas?\b|mercado de trabalho|\btrabalho(s)?\b|\btrabalhador(es)?\b|\bcarreira\b|\bcontratacao\b|para contratar|vies ao contratar|recontrat|\bcort(ar|am|e|es|ando)\b|corta 10% da equipe|brasil emprega mais|rh algoritmico|entrevistas tecnicas|certificados contra o apagao|aeroportos automatizam tarifas|horas por semana corrigindo erros|candidatos burlam triagem/i,
+  // #5741 (7º hub, 3º TEMÁTICO transversal — setor de aplicação, não ator
+  // nem eixo regulatório). Tema é IA aplicada a medicina/saúde: diagnóstico
+  // assistido por modelo, normatização profissional (CFM), adoção
+  // hospitalar/SUS, pesquisa clínica (câncer, doenças genéticas), e o risco
+  // de segurança do paciente que o uso não-supervisionado carrega — não
+  // "saúde" como bem-estar genérico de produtividade pessoal (esse já é
+  // território de USE MELHOR). Verificado ao vivo contra os 249 posts
+  // confirmados de `data/beehiiv-cache/posts` (20/08/2026) — 21 edições, cada
+  // uma lida no CORPO completo do post (não só o título) antes de entrar
+  // aqui:
+  //   - `\bmedicin[a-z]*\b`/`\bmedico(s)?\b`/`\bhospital(es)?\b`/
+  //     `\bpaciente(s)?\b`/`diagnostic`/`\bcfm\b`/`clinic`/`cirurgi`/
+  //     `\banvisa\b`/`\bsus\b`/`enfermeir`/`radiologia`/`\blaudo(s)?\b`/
+  //     `\bexame(s)?\b`/`oncolog`/`\bfda\b`/`farmac` cobrem o núcleo
+  //     profissional/regulatório do tema (ex: "CFM normatiza o uso da IA na
+  //     medicina", "IA do Google detecta câncer raro no SUS", "Sistema do
+  //     Google iguala médicos em teste").
+  //   - `\bsaude\b` é substantivo isolado, sem forma verbal — sonda inicial
+  //     confirmou que toda ocorrência real no corpus é sobre saúde (bem-
+  //     estar/sistema de saúde), sem falso positivo detectado (ex: "ChatGPT
+  //     aplica medidas para cuidado com saúde mental").
+  //   - `cancer`/`doenc`/`vacina`/`prontuari`/`terapi` são raízes soltas
+  //     adicionadas depois da sonda inicial (achado: "câncer"/"doenças"/
+  //     "vacina"/"prontuário"/"terapia" concentram 8 das 21 manchetes reais
+  //     e nenhuma delas usa o núcleo profissional acima) — auditado contra
+  //     o corpus atual, sem colisão com termo de outro tema (ex: "terapia"
+  //     aqui é sempre terapia em saúde mental, não "terapia de choque"
+  //     econômica ou análogo).
+  //   - Overlap deliberado com hubs já publicados é esperado por design
+  //     (issue #4558: "um hub pode aparecer em mais de um painel temático"),
+  //     mas não há colisão real hoje — nenhuma das 21 manchetes bate
+  //     `mercado-trabalho`/`brasil-regulacao`/hub de empresa.
+  //
+  // **Candidato irmão `direito-juridico` NÃO tem lastro comparável e não
+  // foi publicado (#5741).** Sonda equivalente contra o mesmo corpus, com
+  // pattern generoso (`juridic|direito|advogad|tribunal|juiz|justica|oab|
+  // stf|stj|processo judicial|peticion|sentenca|julgament|penal|criminal|
+  // magistrad|supremo|condenad|absolvid|indeniza|direitos autorais|plagio`),
+  // achou só 6 edições — mesmo incluindo "golpe"/"fraude" com deepfake
+  // (crime financeiro, não conteúdo de direito/jurídico como profissão),
+  // o total sobe pra 7. Muito abaixo do hub mais magro já publicado
+  // (`brasil-regulacao`, 14 edições) — decisão de não publicar documentada
+  // no PR/comentário da issue, contrato do #4899 ("hub com poucas fontes é
+  // pior que hub nenhum").
+  "medicina-saude":
+    /\bmedicin[a-z]*\b|\bsaude\b|\bhospital(es)?\b|\bmedico(s)?\b|diagnostic|\bpaciente(s)?\b|\bcfm\b|clinic|cirurgi|\banvisa\b|\bsus\b|enfermeir|radiologia|\blaudo(s)?\b|\bexame(s)?\b|oncolog|\bfda\b|farmac|cancer|doenc|vacina|prontuari|terapi/i,
 };
 
 /** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma
