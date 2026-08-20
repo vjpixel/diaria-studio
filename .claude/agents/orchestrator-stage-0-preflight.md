@@ -379,16 +379,14 @@ Processar agora? [s/n/d]
 
 ### 0k. Verify FB + LinkedIn/Instagram/Threads + Twitter da edição anterior (#78, #5766, #5801)
 
-Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766, fechado 20/08/2026) Twitter via API GraphQL do Buffer (`https://api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`.
+Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766) Twitter via API GraphQL do Buffer (`api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`. Não bloqueia — credenciais/Worker/token ausentes logam `warn` e seguem.
 ```bash
 PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
 if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
   npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"; fi
 [ -n "$PREV" ] && (npx tsx scripts/verify-social-worker-dispatch.ts --edition-dir "$PREV/" || echo "verify-social-worker failed (non-fatal)")
-if [ -n "$PREV" ] && [ -n "$BUFFER_ACCESS_TOKEN" ]; then
-  npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal)"; fi
+[ -n "$PREV" ] && [ -n "$BUFFER_ACCESS_TOKEN" ] && (npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal)")
 ```
-Não bloqueia — credenciais/Worker/token ausentes ou inalcançáveis logam `warn` e seguem (fail-soft nos três).
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366)
 
