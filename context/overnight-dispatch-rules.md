@@ -393,3 +393,32 @@ regra já existia em prosa no CLAUDE.md e foi violada assim mesmo, porque não
 havia ponto de interceptação mecânico (é texto livre, não uma chamada de
 ferramenta) — só o registro explícito no ponto de uso, aqui e no CLAUDE.md,
 reduz a chance de recorrência.
+
+## 18. `session-registry.ts claim-issue`/`is-claimed` — nunca em comando encadeado (#5751)
+
+**Escopo diferente dos itens 1-14**: como os itens 15-17, este é critério do
+**coordenador** (overnight/develop/continuo) — é ele quem chama
+`session-registry.ts`, não o subagente implementador. `.claude/hooks/
+inject-session-id.mjs` só injeta `--session-id` em comando **NÃO-encadeado**
+(`isChainedCommand` rejeita qualquer `&&`/`;`/`|`/newline, de propósito — ver
+o comentário do próprio hook) — chamar `claim-issue`/`is-claimed` dentro de
+um pipe (`... | head`), com `&&`/`;`, ou dentro de um heredoc/bloco composto
+faz a injeção **não acontecer**. O script já falha alto quando isso acontece
+(`requireSessionId` em `scripts/lib/session-registry.ts` lança erro
+explícito + `process.exitCode = 1` — avaliado e decidido **não** endurecer
+mais que isso, #5751: a mensagem já explica a causa raiz e já não tem
+workaround silencioso possível), mas um comando composto pode devolver esse
+erro num ponto onde o coordenador não olha o exit code (ex: só lê o
+`stdout` truncado por `| head`, sem checar `stderr`/exit code) — e se o erro
+for ignorado, a reivindicação nunca aconteceu, mas o fluxo segue como se
+tivesse reivindicado, reabrindo exatamente a corrida entre sessões que
+`claim-issue` existe pra evitar (achado ao vivo #5751: overnight com #5738
+em `claimed_issues` enquanto uma sessão interativa a implementava e
+mergeava em paralelo, PR #5739).
+
+**Regra:** chamar `session-registry.ts is-claimed`/`claim-issue` sempre como
+comando **standalone** — nunca dentro de `&&`/`;`/pipe/heredoc. Se o comando
+retornar erro (`session-registry: erro — --session-id ausente...` no
+stderr, ou `exit 1`), tratar como **falha real da reivindicação**, nunca
+como ruído a ignorar — parar e diagnosticar antes de seguir pro dispatch,
+mesma disciplina de qualquer outro `exit 1` inesperado.
