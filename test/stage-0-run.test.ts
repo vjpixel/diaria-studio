@@ -10,6 +10,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync as nodeMkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   runStage0,
   parseStage0RunArgs,
@@ -71,6 +74,9 @@ function baseDeps(overrides: Partial<Stage0RunDeps> = {}): Stage0RunDeps {
     execAsync,
     existsSync: () => false,
     mkdirSync: () => {},
+    writeFile: (p) => {
+      throw new Error(`writeFile não mockado: ${p}`);
+    },
     readFile: (p) => {
       if (p.endsWith("platform.config.json")) {
         return JSON.stringify({ newsletter_auto_capture: { enabled: false, senders: [], since_hours: 48 } });
@@ -414,7 +420,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     // Stage 0 nunca foi marcado done.
   });
 
-  it("0h.2 — posts_needing_clicks não-vazio vira pendingAgentDispatch, grava manifest, nunca dispatcha Agent sozinho", async () => {
+  it("0h.2 — posts_needing_clicks não-vazio vira pendingAgentDispatch, grava manifest de verdade (dir temp real), nunca dispatcha Agent sozinho", async () => {
     const manifest = [{ id: "post_1", title: "Título A" }];
     const { exec } = makeFakeExec(
       happyExecHandlers({
@@ -426,10 +432,71 @@ describe("runStage0 --phase continue — caminho feliz", () => {
         "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
       }),
     );
-    const writes: Array<{ path: string; content: string }> = [];
+    const root = mkdtempSync(join(tmpdir(), "stage-0-run-0h2-"));
+    try {
+      const deps = baseDeps({
+        rootDir: root,
+        exec,
+        execAsync,
+        writeFile: (p, c) => writeFileSync(p, c, "utf8"),
+        mkdirSync: (p) => {
+          // find-current-edition.ts é mockado (retorna path fixo), então
+          // ninguém cria o diretório de verdade — criar aqui pro
+          // writeFile real do manifest ter onde escrever.
+          try {
+            nodeMkdirSync(p, { recursive: true });
+          } catch {
+            /* noop */
+          }
+        },
+        readFile: (p) => {
+          if (p.endsWith("platform.config.json")) return JSON.stringify({ newsletter_auto_capture: { enabled: false } });
+          throw new Error(`unmocked readFile: ${p}`);
+        },
+      });
+      // O manifest é escrito sob editionDir/_internal — garantir que o
+      // diretório existe (find-current-edition.ts é mockado, não roda de
+      // verdade, então ninguém cria a árvore de pastas).
+      nodeMkdirSync(join(root, "data/editions/2604/260423/_internal"), { recursive: true });
+
+      const result = await runStage0(
+        ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+        deps,
+      );
+
+      assert.equal(result.code, 0);
+      assert.equal(result.pendingAgentDispatch.length, 1);
+      assert.equal(result.pendingAgentDispatch[0].step, "0h.2");
+      assert.equal(result.pendingAgentDispatch[0].agent, "beehiiv-clicks-enricher");
+      assert.ok(result.pendingAgentDispatch[0].manifestPath?.includes("posts-needing-clicks.json"));
+
+      // Assertar o CONTEÚDO gravado de verdade, não só a forma do dispatch.
+      const manifestPath = join(root, result.pendingAgentDispatch[0].manifestPath!);
+      const written = JSON.parse(readFileSync(manifestPath, "utf8"));
+      assert.deepEqual(written, manifest);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("0h.2 — falha ao gravar o manifest não gera pendingAgentDispatch (sem manifest fantasma), fica fail-soft", async () => {
+    const manifest = [{ id: "post_1", title: "Título A" }];
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(
+      happyExecAsyncHandlers({
+        "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
+      }),
+    );
     const deps = baseDeps({
       exec,
       execAsync,
+      writeFile: () => {
+        throw new Error("disco cheio");
+      },
       readFile: (p) => {
         if (p.endsWith("platform.config.json")) return JSON.stringify({ newsletter_auto_capture: { enabled: false } });
         throw new Error(`unmocked readFile: ${p}`);
@@ -441,11 +508,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
       deps,
     );
 
+    // fail-soft: Stage 0 não aborta.
     assert.equal(result.code, 0);
-    assert.equal(result.pendingAgentDispatch.length, 1);
-    assert.equal(result.pendingAgentDispatch[0].step, "0h.2");
-    assert.equal(result.pendingAgentDispatch[0].agent, "beehiiv-clicks-enricher");
-    assert.ok(result.pendingAgentDispatch[0].manifestPath?.includes("posts-needing-clicks.json"));
+    // mas SEM manifest fantasma: nenhum dispatch pendente pro enricher.
+    assert.equal(result.pendingAgentDispatch.length, 0);
   });
 
   it("0g — dedup freshness stale vira pendingHumanDecision, não aborta o Stage 0", async () => {
