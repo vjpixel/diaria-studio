@@ -545,6 +545,25 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
   }
 
   if (persist) {
+    // Persistir os 5 sinais de preflight (#5414) — ANTES do init de
+    // stage-status.md, mesma ordem do playbook (§0c). `opts.mcp*` já foram
+    // validados como não-undefined por `parseStage0RunArgs` quando
+    // `opts.phase === "continue"` (única chamada com persist=true).
+    step(deps, report, "preflight-state (persist)", "scripts/lib/preflight-state.ts", [
+      "--edition-dir",
+      editionDir,
+      "--chrome-mcp",
+      String(opts.mcpChrome),
+      "--gmail-mcp",
+      String(opts.mcpGmail),
+      "--beehiiv-mcp",
+      String(opts.mcpBeehiiv),
+      "--clarice-rest",
+      String(clariceRest),
+      "--cloudflare-token-ok",
+      String(cloudflareTokenOk),
+    ]);
+
     // Inicialização do stage-status.md (0c) — idempotente em resume.
     step(deps, report, "update-stage-status --init", "scripts/update-stage-status.ts", ["--edition-dir", editionDir, "--init"]);
     step(deps, report, "update-stage-status --reconcile-running", "scripts/update-stage-status.ts", ["--edition-dir", editionDir, "--reconcile-running"]);
@@ -614,22 +633,6 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
 
   const phaseA = await runPhaseA(deps, opts, report, true);
   const { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, cloudflareTokenOk } = phaseA;
-
-  // --- Persistir os 5 sinais de preflight (#5414) ---
-  step(deps, report, "preflight-state (persist)", "scripts/lib/preflight-state.ts", [
-    "--edition-dir",
-    editionDir,
-    "--chrome-mcp",
-    String(opts.mcpChrome),
-    "--gmail-mcp",
-    String(opts.mcpGmail),
-    "--beehiiv-mcp",
-    String(opts.mcpBeehiiv),
-    "--clarice-rest",
-    String(clariceRest),
-    "--cloudflare-token-ok",
-    String(cloudflareTokenOk),
-  ]);
 
   // --- 0d: refresh-dedup — falha dura (#895: nunca prosseguir com dedup stale) ---
   const dedup = step(deps, report, "refresh-dedup (0d)", "scripts/refresh-dedup.ts", []);
