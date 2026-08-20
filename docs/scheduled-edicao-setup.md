@@ -2,9 +2,14 @@
 
 > **CANCELADO POR DECISÃO DO EDITOR (19/08/2026).** Não há edição diária agendada em máquina
 > nenhuma, e isso é intencional — a edição passou a ser rodada à mão. O Windows nunca chegou a
-> assumir a via que o #5611 previu, o timer Linux segue desligado desde então, e a última
-> execução registrada em `data/overnight-schedule.log` é de 17/08 (FAIL, `Credit balance is too
-> low` — #5608). O alarme de staleness continua desarmado pelo mesmo motivo: não há o que vigiar.
+> assumir a via que o #5611 previu (**confirmado ao vivo em 19/08/2026**: `Get-ScheduledTask -TaskName
+> 'Diaria*'` nesta máquina devolve uma única task, `Diaria-Overnight-Watchdog`, `Disabled`).
+> **O estado do `helios` NÃO foi reconsultado nesta sessão** — não há SSH configurado na máquina do
+> editor e o unit não é versionado, então a afirmação sobre o timer Linux vem do registro do #5611
+> (17/08), não de um `systemctl` rodado agora. Para certeza: `systemctl --user list-timers --all |
+> grep diaria` em `helios`.
+> A última execução registrada em `data/overnight-schedule.log` é de 17/08 (FAIL, `Credit balance
+> is too low` — #5608), e não há nenhuma depois dela. O alarme de staleness continua desarmado pelo mesmo motivo: não há o que vigiar.
 > Tudo abaixo descreve o mecanismo, que continua íntegro e pronto para rearme se o editor decidir
 > voltar — **não descreve o estado atual**. Rearmar é decisão nova, não pendência aberta.
 >
@@ -288,4 +293,4 @@ Sexta, sábado e domingo **não** têm disparo automático (sem edições nesses
 
 O alarme de staleness (task separada, diária 18:20 BRT, ver `docs/scheduled-tasks-registry.md`) lê `data/overnight-schedule.log` — arquivo dentro de `data/`, sincronizado por OneDrive entre as máquinas do projeto, então em princípio funcionaria igual não importa qual máquina gravou a última entrada. Mas ele **não checa se algum timer está de fato armado**, só se o log tem uma entrada pra edição de amanhã — com o timer Linux desabilitado (banner no topo) e a task Windows ainda sem confirmação de arme real (§Setup — Windows), o alarme dispararia `alarm-never-fired` todo dia sobre um estado hoje intencional (nenhuma via disparando ainda).
 
-Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026, e **fica pausado até o editor confirmar que a task `Diaria-Edicao-Diaria` do Windows está de fato registrada e habilitada** (`Get-ScheduledTask -TaskName 'Diaria-Edicao-Diaria' | Get-ScheduledTaskInfo`, ver §Setup — Windows). Reativar depois disso é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `helios` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).
+Por isso ele foi desabilitado junto com o timer Linux, na mesma sessão de 17/08/2026. **A redação anterior desta seção dizia que ele ficava "pausado até o editor confirmar que a task Windows está registrada e habilitada" — isso deixou de valer em 19/08/2026**: o editor informou que cancelou o agendamento da edição diária **de propósito**, e a edição passou a ser rodada à mão. Não há confirmação pendente e não há arme a esperar; o alarme segue desarmado porque **não há o que vigiar**. Reativá-lo só faz sentido se o agendamento voltar, o que é decisão nova do editor e não tarefa em aberto. Se voltar, reativar é só `systemctl --user enable --now diaria-edicao-diaria-staleness-alarm.timer` em `helios` — o alarme em si não precisa de nenhuma mudança de código para funcionar cross-platform (ele já lê o log compartilhado, não distingue qual runner gravou a linha).
