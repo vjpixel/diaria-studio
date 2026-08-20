@@ -76,7 +76,7 @@ export const PR_ACCOUNTED_STATUSES: ReadonlySet<string> = new Set([
  * item 2) mais o `fix/` legado citado explicitamente na issue #5831. */
 export const SESSION_BRANCH_PREFIXES: readonly string[] = ["develop/", "overnight/", "fix/"];
 
-export type PrTerminalDivergenceKind = "registered-not-terminal" | "unregistered-branch-candidate";
+type PrTerminalDivergenceKind = "registered-not-terminal" | "unregistered-branch-candidate";
 
 export interface RegisteredNotTerminalDivergence {
   kind: "registered-not-terminal";
@@ -95,7 +95,7 @@ export interface UnregisteredBranchCandidate {
   headRefName: string;
 }
 
-export type PrTerminalDivergence = RegisteredNotTerminalDivergence | UnregisteredBranchCandidate;
+type PrTerminalDivergence = RegisteredNotTerminalDivergence | UnregisteredBranchCandidate;
 
 export interface PrTerminalStateVerdict {
   status: "ok" | "divergent";
