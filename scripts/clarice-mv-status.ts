@@ -5,14 +5,18 @@
  * grava no KV do worker `clarice-dashboard` sob `mv:status`. O worker só lê e
  * renderiza o JSON — nunca varre o filesystem em runtime.
  *
- * Semântica por grupo:
+ * Semântica por grupo (#5820 — corrigida; ver comentário de `MvGroupStatus`
+ * em `lib/dashboard-kv-types.ts` para o histórico completo do bug):
  *   - cohort `assinantes-ativos` (T01, verify_risk 1): status="t01" — N/A,
  *     validado por pagamento Stripe. NUNCA "pending".
- *   - Demais cohorts (`ex-assinantes`, `leads-*`, etc): "verified" quando
- *     existe pelo menos 1 contato do cohort com `mv_bucket` preenchido para o
- *     ciclo (`mv_cycle`); "pending" quando o ciclo existe (i.e. outro cohort
- *     já foi verificado nele) mas este cohort ainda não tem nenhum contato
- *     verificado nesse ciclo.
+ *   - Demais cohorts (`ex-assinantes`, `leads-*`, etc), por (cohort, ciclo):
+ *     "pending" quando o ciclo existe (outro cohort já foi verificado nele)
+ *     mas este cohort não tem NENHUM contato com `mv_bucket` preenchido
+ *     neste ciclo; "partial" quando este ciclo tem ≥1 contato verificado
+ *     mas o COHORT COMO UM TODO (cumulativo, todos os ciclos) ainda não
+ *     chegou a 100% (`verifiedPct < 100`); "verified" só quando o cohort
+ *     como um todo está 100% verificado (`verifiedPct === 100`) — nunca
+ *     mais "tocado" é reportado como "completo".
  *
  * MIGRAÇÃO (#2886 PR2 — SOURCE eliminada, fonte agora é o store):
  * Antes este script varria `data/clarice-subscribers/` por diretórios de
@@ -24,10 +28,15 @@
  * existindo como TRANSPORT (import Brevo / auditoria), mas deixaram de ser a
  * fonte deste relatório.
  *
- * Mapeamento exato do predicado (CSV-scan antigo → store-query novo):
+ * Mapeamento exato do predicado (CSV-scan antigo → store-query novo). Nota
+ * histórica (#2886 PR2, migração de fonte) — a coluna "verified" abaixo
+ * documenta a query original; o CRITÉRIO de quando o status vira
+ * "verified"/"partial" foi corrigido depois em #5820, ver a função
+ * `computeMvStatusFromStore` mais abaixo pro comportamento atual:
  *   - "t01"     : havia `stripe-export-t01-*.csv` na base
  *               → existe ≥1 linha em `clarice_users` com `cohort = 'assinantes-ativos'`.
- *   - "verified": existia `mv-export-{grupo}-verified.csv` no dir do ciclo;
+ *   - verified/rejected/unknown (contagem, não status): existia
+ *                 `mv-export-{grupo}-verified.csv` no dir do ciclo;
  *                 verified/rejected/unknown = contagem de linhas (menos header)
  *                 de cada um dos 3 arquivos `mv-export-{grupo}-{estado}.csv`
  *               → existe ≥1 linha com `cohort = ? AND mv_cycle = ? AND
@@ -132,6 +141,7 @@ export function computeMvStatusFromStore(db: DatabaseSync, now: Date = new Date(
       verified: 0,
       rejected: 0,
       unknown: 0,
+      verifiedPct: null,
     });
   }
 
@@ -159,22 +169,49 @@ export function computeMvStatusFromStore(db: DatabaseSync, now: Date = new Date(
     WHERE cohort = ? AND mv_cycle = ?
   `);
 
+  // #5820: denominador/numerador CUMULATIVOS do cohort — TODOS os ciclos,
+  // não só o ciclo desta linha. `mv_bucket` preenchido = já processado pelo
+  // MillionVerifier (verified/rejected/unknown, qualquer um conta como
+  // "tocado" pra fins de completude — só `mv_bucket` vazio é "não
+  // processado", mesma convenção falsy de `MV_NEVER_VERIFIED_SQL`).
+  // Query separada (não reusa `aggStmt`) porque o filtro é só por `cohort`,
+  // sem `mv_cycle` — é uma pergunta cohort-wide, feita 1x por cohort (fora
+  // do loop de ciclos) e reaproveitada em toda linha desse cohort.
+  const cohortCompletionStmt = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN mv_bucket IS NOT NULL AND mv_bucket != '' THEN 1 ELSE 0 END) as done
+    FROM clarice_users
+    WHERE cohort = ?
+  `);
+  const verifiedPctByCohort = new Map<string, number | null>();
+  for (const cohort of cohorts) {
+    const row = cohortCompletionStmt.get(cohort) as unknown as { total: number; done: number | null };
+    verifiedPctByCohort.set(cohort, row.total > 0 ? ((row.done ?? 0) / row.total) * 100 : null);
+  }
+
   for (const cycle of cycles) {
     for (const cohort of cohorts) {
       const row = aggStmt.get(cohort, cycle) as unknown as AggRow;
       const verified = row.verified ?? 0;
       const rejected = row.rejected ?? 0;
       const unknown = row.unknown ?? 0;
+      const verifiedPct = verifiedPctByCohort.get(cohort) ?? null;
 
       if (verified + rejected + unknown > 0) {
+        // #5820: este ciclo TOCOU o cohort — mas só é "verified" (completo)
+        // se o cohort INTEIRO (cumulativo, todos os ciclos) chegou a 100%.
+        // Abaixo disso é "partial" — o estado que antes saía incorretamente
+        // como "verified" (ver comentário do tipo `MvGroupStatus`).
         groups.push({
           group: cohort,
           cycle,
-          status: "verified",
+          status: verifiedPct === 100 ? "verified" : "partial",
           verifiedAt: row.verifiedAt ?? null,
           verified,
           rejected,
           unknown,
+          verifiedPct,
         });
       } else {
         groups.push({
@@ -185,6 +222,7 @@ export function computeMvStatusFromStore(db: DatabaseSync, now: Date = new Date(
           verified: 0,
           rejected: 0,
           unknown: 0,
+          verifiedPct,
         });
       }
     }

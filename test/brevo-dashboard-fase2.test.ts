@@ -4027,11 +4027,12 @@ describe("#5640 A2/A4: renderOpenRateByDaySection — cohortResult (small multip
   });
 });
 
-describe("#5640 A1: computeCohortBaseOpenRates", () => {
+describe("#5640 A1 / #5786: computeCohortBaseOpenRates", () => {
   test("agrega open rate BASE por coorte numa janela mais longa que os 30 dias do gráfico principal", () => {
     const now = new Date("2026-06-26T12:00:00Z");
-    // 2 campanhas assinantes-ativos, ambas dentro dos 90 dias, fora dos 30
-    // dias exibidos no gráfico principal (>30 dias atrás de `now`).
+    // 2 campanhas assinantes-ativos, ambas dentro da janela [hoje-120,
+    // hoje-30), fora dos 30 dias exibidos no gráfico principal (>30 dias
+    // atrás de `now`).
     const c1 = { ...makeCampaign(200, "AA d1", "2026-04-10T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
     const c2 = { ...makeCampaign(201, "AA d2", "2026-04-20T09:00:00Z", { delivered: 100, uniqueViews: 30 }), listName: "assinantes-ativos" };
     const rates = computeCohortBaseOpenRates([c1, c2], now);
@@ -4040,17 +4041,55 @@ describe("#5640 A1: computeCohortBaseOpenRates", () => {
 
   test("coorte sem nenhum envio na janela fica AUSENTE do resultado (nunca 0)", () => {
     const now = new Date("2026-06-26T12:00:00Z");
-    const c = { ...makeCampaign(202, "AA d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const c = { ...makeCampaign(202, "AA d1", "2026-04-10T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
     const rates = computeCohortBaseOpenRates([c], now);
     assert.equal(rates["ex-assinantes"], undefined, "sem envio de ex-assinantes na janela, a chave não deve existir");
   });
 
-  test("janela default é COHORT_BASE_OPENRATE_WINDOW_DAYS (90) — envio de 95 dias atrás fica de fora", () => {
+  // #5786: decisão do editor (20/08/2026) — janela EXCLUDENTE
+  // `[hoje-120, hoje-30)`. Antes desta issue, a janela ia de `hoje-90` até
+  // `hoje` (continha os 30 dias exibidos, contaminando a base) — os 3 testes
+  // abaixo travam a nova semântica.
+  test("envio DENTRO dos últimos 30 dias (janela exibida) NÃO entra na base — janela excludente", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    // 10 dias atrás de `now` — dentro do período que o gráfico principal
+    // exibe/avalia, por isso precisa ficar fora da base histórica.
+    const recente = { ...makeCampaign(204, "AA recente", "2026-06-16T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([recente], now);
+    assert.equal(rates["assinantes-ativos"], undefined, "envio de 10 dias atrás está dentro do buraco excludente de 30 dias");
+  });
+
+  test("envio 95 dias atrás ENTRA na base — dentro de [hoje-120, hoje-30)", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     assert.equal(COHORT_BASE_OPENRATE_WINDOW_DAYS, 90);
-    const foraDaJanela = { ...makeCampaign(203, "AA velho", "2026-03-15T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
-    const rates = computeCohortBaseOpenRates([foraDaJanela], now);
-    assert.equal(rates["assinantes-ativos"], undefined, "95 dias atrás está fora da janela de 90 dias");
+    // Sob a semântica antiga (janela 0-90d terminando em `now`), 95 dias
+    // atrás ficava de fora. Sob a janela excludente [hoje-120, hoje-30),
+    // 95 dias atrás está DENTRO — o teste trava a inversão intencional.
+    const dentroDaNovaJanela = { ...makeCampaign(203, "AA 95d", "2026-03-23T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([dentroDaNovaJanela], now);
+    assert.equal(rates["assinantes-ativos"], 50, "95 dias atrás está dentro de [hoje-120, hoje-30)");
+  });
+
+  test("envio além de 120 dias atrás fica de fora do limite inferior da janela excludente", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    const foraDoLimiteInferior = { ...makeCampaign(205, "AA 125d", "2026-02-21T09:00:00Z", { delivered: 100, uniqueViews: 50 }), listName: "assinantes-ativos" };
+    const rates = computeCohortBaseOpenRates([foraDoLimiteInferior], now);
+    assert.equal(rates["assinantes-ativos"], undefined, "125 dias atrás está além do limite inferior hoje-120");
+  });
+
+  test("coorte com envios só dentro dos últimos 30 dias produz BURACO na decomposição esperado-vs-real (nunca cai pro dado contaminado)", () => {
+    const now = new Date("2026-06-26T12:00:00Z");
+    // Toda a atividade da coorte é recente (dentro do buraco excludente) —
+    // não há base histórica disponível, então o dia avaliado deve ficar
+    // sem estimativa de esperado (`null`), não usar os próprios dados
+    // recentes como se fossem a base.
+    const soRecente = { ...makeCampaign(206, "AA só recente", "2026-06-20T09:00:00Z", { delivered: 100, uniqueViews: 25 }), listName: "assinantes-ativos" };
+    const baseRates = computeCohortBaseOpenRates([soRecente], now);
+    assert.equal(baseRates["assinantes-ativos"], undefined, "sem base histórica fora do buraco de 30 dias");
+    const { rows: mainRows } = aggregateByDay([soRecente], now);
+    const cohortResult = aggregateByDayByCohort([soRecente], now);
+    const expected = computeExpectedOpenRateByDay(mainRows, cohortResult.panels, baseRates);
+    assert.equal(expected.get("2026-06-20"), null, "buraco honesto na série — não usa o próprio dado recente como base");
   });
 });
 
@@ -4310,6 +4349,48 @@ describe("regressão #2619/#2886 bug D: computeMvStatusFromStore emite 'pending'
       const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
       assert.equal(result.groups.length, 1, "só a entrada t01 (nenhum ciclo conhecido pra cross-join)");
       assert.equal(result.groups[0].status, "t01");
+    } finally {
+      db.close();
+    }
+  });
+
+  // #5820: regressão do bug — "verified" antes significava só "≥1 contato
+  // tocado neste ciclo", não "cohort completo". Achado ao vivo:
+  // leads-2024h1 reportado como "já verificado" com só 43,6% processado.
+  test("#5820: cohort PARCIALMENTE verificado neste ciclo (não 100% do cohort) vira status 'partial', nunca 'verified'", () => {
+    const db = seededDb([
+      // Cohort com 5 contatos ao todo; só 2 foram verificados neste ciclo —
+      // 40% do cohort, longe de completo.
+      { email: "v1@x.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "verified" },
+      { email: "v2@x.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "rejected" },
+      { email: "u1@x.com", cohort: COHORT_EX_ASSINANTES }, // ainda não processado
+      { email: "u2@x.com", cohort: COHORT_EX_ASSINANTES },
+      { email: "u3@x.com", cohort: COHORT_EX_ASSINANTES },
+    ]);
+    try {
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
+      const row = result.groups.find((g) => g.group === COHORT_EX_ASSINANTES && g.cycle === "2605-06");
+      assert.equal(row?.status, "partial", "40% verificado não é 'verified' — é 'partial'");
+      assert.equal(row?.verified, 1);
+      assert.equal(row?.rejected, 1);
+      assert.equal(row?.verifiedPct, 40, "2 de 5 contatos com mv_bucket preenchido = 40%");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("#5820: cohort 100% verificado (cumulativo, todos os ciclos) mantém status 'verified'", () => {
+    const db = seededDb([
+      { email: "v1@x.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2605-06", mv_bucket: "verified" },
+      { email: "v2@x.com", cohort: COHORT_EX_ASSINANTES, mv_cycle: "2606-07", mv_bucket: "verified" },
+    ]);
+    try {
+      const result = computeMvStatusFromStore(db, new Date("2026-06-26T12:00:00Z"));
+      // 2 linhas (uma por ciclo) — ambas 100% do cohort já processado no total.
+      for (const row of result.groups.filter((g) => g.group === COHORT_EX_ASSINANTES)) {
+        assert.equal(row.status, "verified");
+        assert.equal(row.verifiedPct, 100);
+      }
     } finally {
       db.close();
     }

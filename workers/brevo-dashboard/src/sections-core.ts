@@ -698,10 +698,11 @@ ${monthlyAbcSectionsByDate}
   // não classificada (listName sem sinal de cohort reconhecível) fica de
   // fora dos painéis (ver `deriveDayOpenRateCohortBucket`).
   const dayOpenRateCohortResult = aggregateByDayByCohort(campaigns, weekdayNow);
-  // #5640 A1: base histórica por coorte (janela mais longa,
-  // `COHORT_BASE_OPENRATE_WINDOW_DAYS`) + decomposição esperado-vs-real do
-  // dia, mesclada nas rows do gráfico principal antes de renderizar (3ª
-  // série tracejada em `renderOpenRateChartSvg`).
+  // #5640 A1/#5786: base histórica por coorte (janela EXCLUDENTE,
+  // `[hoje-120, hoje-30)` com os defaults de `computeCohortBaseOpenRates` —
+  // nunca contém os `DAY_OPENRATE_WINDOW_DAYS` dias exibidos no gráfico) +
+  // decomposição esperado-vs-real do dia, mesclada nas rows do gráfico
+  // principal antes de renderizar (3ª série tracejada em `renderOpenRateChartSvg`).
   const dayOpenRateBaseRates = computeCohortBaseOpenRates(campaigns, weekdayNow);
   const dayOpenRateExpectedByDay = computeExpectedOpenRateByDay(dayOpenRateRows, dayOpenRateCohortResult.panels, dayOpenRateBaseRates);
   const dayOpenRateRowsWithExpected: DayOpenRateSummary[] = dayOpenRateRows.map((r) => ({
@@ -3427,11 +3428,17 @@ export const DAY_OPENRATE_WINDOW_DAYS = 30;
  * @param campaigns  - lista de campanhas (mesma janela de `aggregateByWeekday`)
  * @param now        - instante de referência pra janela/maturação (injetável em teste)
  * @param windowDays - tamanho da janela fixa em dias-calendário (#5610 item 4)
+ * @param excludeRecentDays - #5786: quando > 0, EXCLUI os `excludeRecentDays`
+ *   dias mais recentes (contados a partir de `now`) do agregado — usado por
+ *   `computeCohortBaseOpenRates` pra calcular uma base histórica que não
+ *   contém os dias que o gráfico está avaliando (janela excludente). `0`
+ *   (default) preserva o comportamento original — sem corte superior.
  */
 export function aggregateByDay(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   now: Date = new Date(),
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
+  excludeRecentDays: number = 0,
 ): { rows: DayOpenRateSummary[] } {
   type Acc = {
     count: number;
@@ -3452,10 +3459,19 @@ export function aggregateByDay(
   const cutoffDay = new Date(now.getTime() - windowDays * 24 * 3600 * 1000).toLocaleDateString("en-CA", {
     timeZone: "America/Sao_Paulo",
   });
+  // #5786: corte superior opcional — exclui os `excludeRecentDays` dias mais
+  // recentes (janela excludente da base histórica de coorte).
+  const excludeFromDay =
+    excludeRecentDays > 0
+      ? new Date(now.getTime() - excludeRecentDays * 24 * 3600 * 1000).toLocaleDateString("en-CA", {
+          timeZone: "America/Sao_Paulo",
+        })
+      : null;
 
   const byDay = groupByBrtDay(campaigns);
   for (const [day, dayCampaigns] of byDay) {
     if (day < cutoffDay) continue; // #5610 item 4: fora da janela fixa de windowDays
+    if (excludeFromDay !== null && day >= excludeFromDay) continue; // #5786: dentro dos dias excluídos (mais recentes)
     for (const c of dayCampaigns) {
       if (!c.sentDate) continue;
 
@@ -3598,6 +3614,7 @@ export function aggregateByDayByCohort(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   now: Date = new Date(),
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
+  excludeRecentDays: number = 0,
 ): { panels: DayOpenRateCohortPanel[]; unclassifiedCount: number } {
   const byBucket: Record<DayOpenRateCohortBucket, Array<BrevoCampaign & { listName?: string; listSize?: number }>> = {
     "assinantes-ativos": [],
@@ -3625,25 +3642,39 @@ export function aggregateByDayByCohort(
   const panels = DAY_OPENRATE_COHORT_BUCKETS.map((bucket) => ({
     bucket,
     label: DAY_OPENRATE_COHORT_LABELS[bucket],
-    rows: aggregateByDay(byBucket[bucket], now, windowDays).rows,
+    rows: aggregateByDay(byBucket[bucket], now, windowDays, excludeRecentDays).rows,
   }));
   return { panels, unclassifiedCount };
 }
 
-/** #5640 A1: janela (dias-calendário) usada pra calcular o open rate BASE de cada coorte — mais longa que a janela de 30 dias exibida no gráfico, pra estabilizar a base contra ruído de dia a dia (issue sugere 60-90; escolhido o topo da faixa). */
+/** #5640 A1: janela (dias-calendário) usada pra calcular o open rate BASE de cada coorte — mais longa que a janela de 30 dias exibida no gráfico, pra estabilizar a base contra ruído de dia a dia (issue sugere 60-90; escolhido o topo da faixa). #5786: continua sendo a LARGURA da janela — o que mudou é o ponto de partida, ver `computeCohortBaseOpenRates`. */
 export const COHORT_BASE_OPENRATE_WINDOW_DAYS = 90;
 
 /**
- * #5640 A1: open rate BASE de cada coorte — média histórica numa janela
- * mais longa (`windowDays`, default `COHORT_BASE_OPENRATE_WINDOW_DAYS`) que
- * a janela de 30 dias do gráfico principal, pra não confundir "esperado"
- * com "média dos mesmos 30 dias que estão sendo avaliados" (circular).
+ * #5640 A1: open rate BASE de cada coorte — média histórica numa janela de
+ * `windowDays` dias (default `COHORT_BASE_OPENRATE_WINDOW_DAYS`).
+ *
+ * **#5786 (decisão do editor, 20/08/2026): a janela é EXCLUDENTE, não só
+ * "mais longa".** Até aqui o docstring afirmava que uma janela de 90 dias
+ * terminando em `now` evitava confundir "esperado" com "média dos mesmos 30
+ * dias que estão sendo avaliados" — falso: uma janela de 90d terminando
+ * hoje CONTÉM os 30 dias exibidos no gráfico (~1/3 da base), então uma
+ * queda real e sustentada nos últimos 30 dias contaminava a própria
+ * referência contra a qual estava sendo comparada. A janela agora é
+ * `[hoje - windowDays - excludeRecentDays, hoje - excludeRecentDays)` —
+ * concretamente `[hoje-120, hoje-30)` com os defaults atuais — obtida
+ * passando `excludeRecentDays` (default `DAY_OPENRATE_WINDOW_DAYS`, os
+ * mesmos 30 dias exibidos no gráfico principal) pra `aggregateByDay` via
+ * `aggregateByDayByCohort`. Coorte sem `delivered` suficiente dentro dessa
+ * janela excludente fica **sem base** (ver abaixo) — de propósito NÃO cai
+ * de volta pros 90d antigos contaminados; buraco honesto na série vale mais
+ * que linha errada (racional do editor).
  *
  * Reusa `aggregateByDayByCohort` (mesma classificação por `listName`,
  * mesma limitação documentada em `deriveDayOpenRateCohortBucket`) só pra
- * somar `delivered`/`opens` de TODOS os dias da janela longa — não usa os
- * `rows` por dia, só o total. Coorte sem nenhum envio na janela longa (ou
- * com `delivered` total 0) fica de fora do resultado — `rates[bucket]`
+ * somar `delivered`/`opens` de TODOS os dias da janela — não usa os `rows`
+ * por dia, só o total. Coorte sem nenhum envio na janela (ou com
+ * `delivered` total 0) fica de fora do resultado — `rates[bucket]`
  * ausente, nunca `0` (open rate 0% de verdade e "sem dado" não podem ser
  * confundidos por quem consome isto).
  *
@@ -3653,8 +3684,14 @@ export function computeCohortBaseOpenRates(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   now: Date = new Date(),
   windowDays: number = COHORT_BASE_OPENRATE_WINDOW_DAYS,
+  excludeRecentDays: number = DAY_OPENRATE_WINDOW_DAYS,
 ): Partial<Record<DayOpenRateCohortBucket, number>> {
-  const { panels } = aggregateByDayByCohort(campaigns, now, windowDays);
+  // #5786: `windowDays` é a LARGURA da janela base (90) — o limite inferior
+  // efetivo passado pra `aggregateByDay` precisa somar o deslocamento de
+  // `excludeRecentDays` (30) pra chegar em `hoje-120`; `excludeRecentDays`
+  // sozinho vira o corte superior (`hoje-30`), formando a janela excludente
+  // `[hoje-120, hoje-30)`.
+  const { panels } = aggregateByDayByCohort(campaigns, now, windowDays + excludeRecentDays, excludeRecentDays);
   const rates: Partial<Record<DayOpenRateCohortBucket, number>> = {};
   for (const panel of panels) {
     const totalDelivered = panel.rows.reduce((sum, r) => sum + r.delivered, 0);
@@ -4064,7 +4101,7 @@ export function renderOpenRateByDaySection(
   const hasExpectedSeries = rows.some((r) => r.expectedOpenRate != null);
   const missingBaseCohorts = DAY_OPENRATE_COHORT_BUCKETS.filter((b) => baseRates[b] == null);
   const expectedNote = hasExpectedSeries
-    ? `<p class="section-note"><small>Linha tracejada = open rate ESPERADO pelo mix de coortes do dia, usando a média histórica de cada coorte nos últimos ${COHORT_BASE_OPENRATE_WINDOW_DAYS} dias. Real ≈ esperado, ambos caindo → efeito de mix, sem dano. Real bem abaixo do esperado → queda real de engajamento/entregabilidade.${
+    ? `<p class="section-note"><small>Linha tracejada = open rate ESPERADO pelo mix de coortes do dia, usando a média histórica de cada coorte nos ${COHORT_BASE_OPENRATE_WINDOW_DAYS} dias anteriores aos últimos ${DAY_OPENRATE_WINDOW_DAYS} dias exibidos (janela excludente, #5786 — a base nunca inclui o período que está sendo avaliado). Real ≈ esperado, ambos caindo → efeito de mix, sem dano. Real bem abaixo do esperado → queda real de engajamento/entregabilidade.${
         missingBaseCohorts.length > 0
           ? ` Sem base histórica suficiente pra: ${missingBaseCohorts.map((b) => DAY_OPENRATE_COHORT_LABELS[b]).join(", ")} — dias dominados por essas coortes ficam sem estimativa.`
           : ""
