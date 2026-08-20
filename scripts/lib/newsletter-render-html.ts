@@ -110,7 +110,8 @@ export interface RenderWarningEvent {
     | "divulgacao_box_dropped_no_gap"
     | "divulgacao_box_dropped_cap" // #5232
     | "whatsapp_share_no_d1"
-    | "whatsapp_share_d1_mismatch";
+    | "whatsapp_share_d1_mismatch"
+    | "convite_amigo_snippet_missing"; // #5794 (achado do review do PR #5817)
   edition: string;
   slot?: number;
 }
@@ -1808,12 +1809,20 @@ export function buildConviteAmigoShareLink(): string {
  * nunca chama `renderDivulgacaoSeparator` (decisão explícita do editor).
  * Fixo — não depende de destaques nem de edição, sempre renderiza quando o
  * snippet existe. Fail-soft: snippet ausente (clone fresco/sessão cloud sem
- * `data/`) → retorna string vazia, não lança (mesma convenção de
- * `readSnippetFile`).
+ * `data/`, ou o arquivo apagado/renomeado por engano no painel Caixas do
+ * Studio) → retorna string vazia, não lança (mesma convenção de
+ * `readSnippetFile`) — mas emite `convite_amigo_snippet_missing` (achado do
+ * review do PR #5817: este bloco é "sempre presente", mesma categoria de
+ * `renderWhatsappShare`/`whatsapp_share_no_d1` logo acima, que já loga
+ * quando não consegue renderizar; sem o warning, o bloco podia sumir de
+ * TODA edição sem nenhum sinal até um leitor notar).
  */
-export function renderConviteAmigo(rootDir?: string): string {
+export function renderConviteAmigo(rootDir?: string, edition?: string): string {
   const box = readSnippetFile("convite-amigo-whatsapp.md", rootDir);
-  if (!box) return "";
+  if (!box) {
+    if (edition) emitRenderWarning({ event: "convite_amigo_snippet_missing", edition });
+    return "";
+  }
   // plainFirstParagraph=true: a frase de convite é prosa corrida, não título
   // serif 26px — mesmo tratamento do box de agradecimento a apoiadores
   // (isAgradecimentoBox), que também tem 1º parágrafo + CTA pill sem título.
@@ -2353,7 +2362,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // encerrar" (não colado no D1, pra não competir com o "Compartilhar no
   // WhatsApp" que vive dentro do D1 desde #5152) — sempre presente, não
   // depende de destaques/edição.
-  parts.push(renderConviteAmigo(opts.rootDir));
+  parts.push(renderConviteAmigo(opts.rootDir, content.eia.edition));
 
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 

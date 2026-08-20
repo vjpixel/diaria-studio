@@ -1336,9 +1336,12 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
  * scripts/lib/newsletter-render-html.ts) emite eventos estruturados quando
  * conteúdo editorial/comercial some silenciosamente do render — caixa de
  * divulgação sem lacuna livre (`divulgacao_box_dropped_no_gap`, #4624),
- * bloco WhatsApp sem D1 (`whatsapp_share_no_d1`), e — desde #5152 —
- * divergência entre os dois sinais que decidem "isto é D1"
- * (`whatsapp_share_d1_mismatch`, nunca deveria disparar, guard defensivo).
+ * bloco WhatsApp sem D1 (`whatsapp_share_no_d1`), divergência entre os dois
+ * sinais que decidem "isto é D1" (`whatsapp_share_d1_mismatch`, desde #5152,
+ * nunca deveria disparar, guard defensivo), e — desde #5794/#5817 — o
+ * snippet `data/snippets/convite-amigo-whatsapp.md` ausente
+ * (`convite_amigo_snippet_missing`, bloco "sempre presente" que sumiria de
+ * TODA edição em silêncio sem este sinal).
  * Antes deste check, ficavam só no `console.error` de qualquer terminal que
  * por acaso estava rodando o render — nunca chegavam no resumo consolidado
  * do gate que o editor de fato revisa antes de publicar. O CLI (§4b step 2
@@ -1401,6 +1404,18 @@ function checkRenderWarnings(editionDir: string): InvariantViolation[] {
           `D1. Fix: investigar por que o array de destaques não está na ordem 1, 2, 3 — ` +
           `provável bug no parsing/extração de 02-reviewed.md, não algo pra corrigir manualmente na edição.`,
         source_issue: "#5152",
+        severity: "warning",
+        file: path,
+      });
+    } else if (w.event === "convite_amigo_snippet_missing") {
+      violations.push({
+        rule: "convite-amigo-snippet-missing",
+        message:
+          `Bloco "Convide um amigo" não foi renderizado — data/snippets/convite-amigo-whatsapp.md ` +
+          `ausente ou vazio (edição pós-#5794/#5817, deveria estar sempre presente). Fix: confirmar ` +
+          `que o arquivo existe (não foi apagado/renomeado por engano no painel Caixas do Studio) ` +
+          `antes de publicar.`,
+        source_issue: "#5817",
         severity: "warning",
         file: path,
       });
@@ -1603,7 +1618,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "render-warnings-consumed",
-    description: "eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch) surfaced no gate (#4673, warning-only)",
+    description: "eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only)",
     source_issue: "#4673",
     stage: 4,
     run: checkRenderWarnings,

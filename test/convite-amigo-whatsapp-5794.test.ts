@@ -54,6 +54,8 @@ import {
   renderConviteAmigo,
   renderWhatsappShare,
   renderHTML,
+  resetRenderWarnings,
+  getRenderWarnings,
 } from "../scripts/lib/newsletter-render-html.ts";
 import { CONVITE_AMIGO_UTM, findUtmEmitter } from "../scripts/lib/shared/utm-registry.ts";
 import { BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
@@ -168,6 +170,23 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
     assert.equal(renderWhatsappShare([], "260801"), "", "sanity: renderWhatsappShare precisa de D1");
     const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
     assert.notEqual(html, "", "renderConviteAmigo nunca deve ficar vazio");
+  });
+
+  it("snippet ausente: retorna vazio (fail-soft) MAS emite convite_amigo_snippet_missing (achado do review #5817)", () => {
+    resetRenderWarnings();
+    const emptyRoot = mkdtempSync(join(tmpdir(), "convite-amigo-empty-fixture-"));
+    mkdirSync(join(emptyRoot, "data", "snippets"), { recursive: true });
+    try {
+      const html = renderConviteAmigo(emptyRoot, "260821");
+      assert.equal(html, "", "sem snippet, o bloco deve ficar vazio — nunca lançar");
+      const warnings = getRenderWarnings();
+      assert.ok(
+        warnings.some((w) => w.event === "convite_amigo_snippet_missing" && w.edition === "260821"),
+        "evento convite_amigo_snippet_missing ausente — bloco 'sempre presente' sumiria em silêncio",
+      );
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   });
 });
 
