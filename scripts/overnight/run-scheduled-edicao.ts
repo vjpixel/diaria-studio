@@ -114,6 +114,25 @@ export const CLAUDE_CLI_STRIPPED_ENV_VARS = [
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
+  // #5791 — hipótese, não causa raiz confirmada. Achado ao vivo 260821: um
+  // `execFileSync` de `claude --print` DENTRO de uma sessão Claude Code já
+  // ativa (ex: `/diaria-edicao` rodando `run-edition-stages.ts` a partir do
+  // Bash tool da própria sessão) saiu com exit 0 em 62s sem escrever nenhum
+  // output; o MESMO comando rodado manualmente num shell puro (sem sessão
+  // pai) completou normal em ~13min. As 4 vars abaixo identificam a sessão
+  // PAI e nunca foram filtradas — um `claude --print` filho as herdando pode
+  // se comportar como se estivesse aninhado na sessão pai (que já teria
+  // encerrado seu turno) em vez de abrir uma sessão nova e independente,
+  // batendo com um exit rápido e silencioso. Não confirmado via repro
+  // controlado (child_process spawnado por automação de navegador não é o
+  // mesmo caminho do Bash tool nativo da sessão) — é defensivo: um filho que
+  // pede `--no-session-persistence` não deveria herdar identidade de sessão
+  // de qualquer forma, então a filtragem é correta mesmo se não for a causa.
+  // Se o bug se repetir depois deste fix, é sinal de que a hipótese está
+  // errada — não reabrir a filtragem, procurar em outro lugar.
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDECODE",
 ] as const;
 
 /** Cópia do ambiente sem as vars acima. Não muta o `process.env` do runner —

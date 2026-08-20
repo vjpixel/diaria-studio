@@ -346,6 +346,20 @@ describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608
     assert.equal(filtered.ANTHROPIC_BASE_URL, "https://proxy.interno");
   });
 
+  it("vars de identidade de sessão saem — filho não deve herdar a sessão pai (#5791)", () => {
+    const filtered = claudeCliEnv({
+      CLAUDE_CODE_SESSION_ID: "parent-session-abc",
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDECODE: "1",
+      PATH: "/usr/bin",
+    });
+
+    assert.equal(filtered.CLAUDE_CODE_SESSION_ID, undefined);
+    assert.equal(filtered.CLAUDE_CODE_CHILD_SESSION, undefined);
+    assert.equal(filtered.CLAUDECODE, undefined);
+    assert.equal(filtered.PATH, "/usr/bin");
+  });
+
   it("CLAUDE_CODE_OAUTH_TOKEN sobrevive — é o login claude.ai, não a key da API", () => {
     W = sentinelWorld(0);
     const filtered = claudeCliEnv({ CLAUDE_CODE_OAUTH_TOKEN: "oauth", ANTHROPIC_API_KEY: "sk-ant-xxx" });
