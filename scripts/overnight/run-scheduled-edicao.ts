@@ -58,58 +58,20 @@ import { nextEditionDate } from "../lib/next-edition-date.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { sentinelExists } from "../lib/pipeline-state.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
+import { STAGE_PLAN as STAGE_PLAN_IMPL, runEditionStages } from "../lib/edition-stage-runner.ts";
 import { runTsx } from "../lib/run-tsx.ts";
 
 /**
- * Stages que o runner agendado executa, um `claude --print` por entrada
- * (#5738). Cada spawn é uma sessão nova — contexto limpo por construção,
- * que é o efeito de um `/clear` entre stages.
+ * `STAGE_PLAN` e `HEADLESS_FLAGS` mudaram de casa no #5744.
  *
- * **O guard de publicação virou ESTRUTURAL.** Antes, o runner invocava
- * `/diaria-edicao` inteiro e segurava a publicação com
- * `--skip newsletter,linkedin,facebook`; a garantia dependia de a flag ser
- * respeitada pipeline adentro. Agora os Stages 5 (publicação) e 6
- * (agendamento) simplesmente NÃO ESTÃO nesta lista e nunca são invocados —
- * não há flag a respeitar nem a esquecer. Publicar segue exigindo ação
- * explícita do editor (`/diaria-5-publicacao`).
- *
- * O Stage 0 (preflight) não tem entrada própria porque não tem skill
- * própria: `/diaria-1-pesquisa` já refresca dedup e drena o inbox
- * editorial (CLAUDE.md, "Etapa 1").
+ * O laço "uma sessão por stage" nasceu aqui (#5738) e passou a ser necessário
+ * também no caminho INTERATIVO (`/diaria-edicao`). Duas cópias do mesmo laço
+ * divergem na primeira mudança — e a segunda cópia é sempre a que esquece o
+ * `--no-gates`, o guard de sentinela ou o `resolveEditionDir`. Então o laço,
+ * o plano e as flags moram em `lib/edition-stage-runner.ts` e este runner os
+ * consome. Re-exportados para não quebrar quem importava daqui.
  */
-export const STAGE_PLAN: ReadonlyArray<{ stage: number; skill: string }> = [
-  { stage: 1, skill: "diaria-1-pesquisa" },
-  { stage: 2, skill: "diaria-2-escrita" },
-  { stage: 3, skill: "diaria-3-imagens" },
-  { stage: 4, skill: "diaria-4-revisao" },
-];
-
-/**
- * `--no-gates` em TODO stage — não é conveniência, é requisito de correção
- * (achado P0 do review do #5739).
- *
- * `/diaria-edicao` setava `auto_approve = true` internamente para os Stages
- * 1-3 ("pre-gate mode", #1523) e resolvia o gate do Stage 4 pelo próprio
- * `--no-gates`. Ao trocar essa invocação por skills standalone, esse
- * auto-approve DESAPARECEU: `orchestrator-stage-0-preflight` recebe
- * `auto_approve` com default `false`, então cada skill apresentaria seu gate.
- * Em `--print` não há quem responda — a sessão gastaria os 120 turnos
- * tentando e morreria sem escrever sentinela nenhuma. O pipeline agendado
- * simplesmente não fecharia o Stage 1.
- *
- * O blast radius disso continua contido pelo mesmo motivo de sempre: os
- * Stages 5/6 não estão em `STAGE_PLAN`, então "auto-aprovar tudo" aqui não
- * alcança publicação nenhuma.
- */
-export const HEADLESS_FLAGS = "--no-gates";
-
-/**
- * Teto de turnos POR STAGE desde #5738 — antes era o teto da edição
- * INTEIRA. Não é um detalhe de refactor: só o Stage 4 da edição 260814
- * gastou 587 turnos, então o teto de 120 para tudo era, na prática, um
- * truncamento silencioso do pipeline agendado. Por stage, 120 é folgado.
- */
-const MAX_TURNS = "120";
+export { STAGE_PLAN, HEADLESS_FLAGS } from "../lib/edition-stage-runner.ts";
 
 /**
  * Vars de auth da API que, se presentes no ambiente, o CLI `claude` PREFERE
@@ -281,7 +243,7 @@ export function main(
   // de inferir a partir da existência de um diretório. Edição pela metade
   // é retomada de onde parou; edição completa não gasta uma sessão para
   // constatar que não há o que fazer.
-  const pendingStages = STAGE_PLAN.filter(({ stage }) => !sentinelExistsFn(editionDir, stage));
+  const pendingStages = STAGE_PLAN_IMPL.filter(({ stage }) => !sentinelExistsFn(editionDir, stage));
   if (existsSync(editionDir) && pendingStages.length === 0) {
     log(
       repoRootAbs,
@@ -298,7 +260,7 @@ export function main(
   if (existsSync(editionDir)) {
     console.log(
       `[${nowIso()}] Edição já iniciada — retomando nos stages pendentes: ${pendingStages
-        .map((p) => p.stage)
+        .map((p: { stage: number }) => p.stage)
         .join(", ")}`,
     );
   }
@@ -331,74 +293,22 @@ export function main(
   }
 
   // -------------------------------------------------------------------
-  // UM SPAWN POR STAGE (#5738) — o efeito de `/clear` entre stages.
-  //
-  // O pedido do editor era literalmente "que /diaria-edicao faça o /clear
-  // entre os stages". Não dá para fazer ao pé da letra: `/clear` é comando
-  // de usuário do CLI e uma sessão não limpa a própria janela. Mas cada
-  // `claude --print` é um PROCESSO NOVO, e portanto uma sessão com contexto
-  // limpo por construção — o driver consegue o que o orquestrador não
-  // consegue.
-  //
-  // O ganho medido antes desta mudança (`_internal/stage-status.json` de 14
-  // edições, ver #5738): o Stage 4 sozinho, que era 40-60% do custo da
-  // edição, cai de uma mediana de 581M para 163M tokens de entrada.
-  //
-  // O estado entre stages viaja por DISCO, não pela conversa — é exatamente
-  // o que o #5414 destravou ao persistir os 17 valores que antes só existiam
-  // no contexto da sessão.
-  // -------------------------------------------------------------------
-  let exitCode = 0;
-  let output = "";
-  let failedStage: number | null = null;
-
-  for (const { stage, skill } of STAGE_PLAN) {
-    // Resumabilidade no nível do DRIVER (#5738): antes, retomar uma edição
-    // pela metade dependia da skill detectar sozinha os sentinelas em disco,
-    // o que custava uma sessão inteira só para descobrir que não havia nada
-    // a fazer. Agora o stage concluído nem chega a spawnar.
-    if (sentinelExistsFn(editionDir, stage)) {
-      console.log(`[${nowIso()}] SKIP stage ${stage} (/${skill}) — sentinela já presente`);
-      continue;
-    }
-
-    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}`;
-    console.log(`[${nowIso()}] Stage ${stage}: claude -p '${prompt}'`);
-
-    try {
-      // Caminho ABSOLUTO, nunca o literal "claude" (#5549): sob systemd o PATH
-      // é o mínimo do sistema e não inclui ~/.npm-global/bin, então o nome cru
-      // dava `spawnSync claude ENOENT`. Resolver DENTRO do try faz a falha de
-      // resolução cair no mesmo caminho de log FAIL do resto — com mensagem
-      // acionável em vez do ENOENT opaco.
-      output = execFn(
-        resolveClaudeBinFn(),
-        [
-          "--print",
-          "--permission-mode",
-          "acceptEdits",
-          "--max-turns",
-          MAX_TURNS,
-          "--output-format",
-          "text",
-          "--no-session-persistence",
-          prompt,
-        ],
-        {
-          cwd: repoRootAbs,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          env: claudeCliEnv(process.env),
-        },
-      ) as unknown as string;
-    } catch (e) {
-      const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
-      exitCode = err.status ?? 1;
-      output = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
-      failedStage = stage;
-      break;
-    }
-  }
+  // UM SPAWN POR STAGE — laço compartilhado em `lib/edition-stage-runner.ts`
+  // (#5738 criou, #5744 extraiu para o caminho interativo reusar).
+  const runResult = runEditionStages({
+    aammdd,
+    editionDir,
+    repoRootAbs,
+    resolveClaudeBin: resolveClaudeBinFn,
+    env: claudeCliEnv(process.env),
+    plan: STAGE_PLAN_IMPL,
+    execFn,
+    sentinelExistsFn,
+    onProgress: (m) => console.log(`[${nowIso()}] ${m}`),
+  });
+  const exitCode = runResult.exitCode;
+  const failedStage = runResult.failedStage;
+  const tail = runResult.outcomes.find((o) => o.status === "failed")?.failureTail ?? "";
 
   const runEnd = nowIso();
   if (exitCode === 0) {
@@ -412,12 +322,6 @@ export function main(
       `{"edition":"${aammdd}","exit_code":0}`,
     );
   } else {
-    const tail = output
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l !== "")
-      .slice(-20)
-      .join(" | ");
     // `stage=` no log: sem ele, uma falha no Stage 3 e uma no Stage 1 ficam
     // indistinguíveis na linha de schedule — e com 4 spawns em vez de 1, saber
     // ONDE parou é a diferença entre retomar e reprocessar tudo.
