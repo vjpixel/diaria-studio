@@ -5,9 +5,17 @@
  * reconciliação de LinkedIn/Instagram/Threads contra o Worker Cloudflare
  * `diaria-linkedin-cron` (`/list` + `/dlq`). NENHUM teste aqui faz chamada de
  * rede real: `verifyWorkerDispatch` recebe um `fetchJson` stub em memória.
+ *
+ * O bloco "main() CLI — fail-soft" (#5783) roda o script real via spawnSync
+ * (sem stub de rede — a leitura/parse do JSON corrompido é o que precisa ser
+ * exercitado, e isso acontece ANTES de qualquer chamada de rede).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import {
   reconcileWorkerEntry,
@@ -163,5 +171,66 @@ describe("verifyWorkerDispatch — orquestra list+dlq+reconcile sem rede real", 
       url.endsWith("/list") ? { count: 0, items: [] } : { count: 0, items: [] };
     const { changes } = await verifyWorkerDispatch(published, "https://worker.example/", "tok", fetchJson, NOW);
     assert.equal(changes, 0);
+  });
+});
+
+describe("main() CLI — fail-soft (#5783)", () => {
+  const PROJECT_ROOT = join(import.meta.dirname, "..");
+  const SCRIPT_PATH = join(PROJECT_ROOT, "scripts", "verify-social-worker-dispatch.ts");
+
+  function runCli(editionDir: string, env: Record<string, string> = {}) {
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", SCRIPT_PATH, "--edition-dir", editionDir],
+      {
+        cwd: PROJECT_ROOT,
+        encoding: "utf8",
+        timeout: 15000,
+        env: {
+          ...process.env,
+          // Credenciais presentes o bastante pra passar do early-return de
+          // #738/#5783 e chegar no bloco try que lê o JSON — sem elas, o
+          // script sai antes de sequer tentar ler o arquivo.
+          DIARIA_LINKEDIN_CRON_URL: "https://worker.example/",
+          DIARIA_LINKEDIN_CRON_TOKEN: "fake-token",
+          ...env,
+        },
+      },
+    );
+  }
+
+  it("JSON corrompido/truncado em 06-social-published.json → warning + exit 0, nunca exit 1/stack trace", () => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-social-worker-corrupt-"));
+    try {
+      const editionDir = join(dir, "260820");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      // JSON truncado — simula corrupção de sync do OneDrive citada no header.
+      writeFileSync(join(internalDir, "06-social-published.json"), '{"posts": [ { "platform": "instagr', "utf8");
+
+      const r = runCli(editionDir);
+
+      assert.equal(r.status, 0, `esperado exit 0 (fail-soft), obtido ${r.status}. stderr: ${r.stderr}`);
+      assert.match(r.stderr, /falhou \(non-fatal\)/);
+      // Nunca deveria escapar até main().catch() (stack trace + exit 1).
+      assert.doesNotMatch(r.stderr, /at main /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("06-social-published.json ausente → skip limpo, exit 0 (comportamento pré-existente, não deve regredir)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-social-worker-missing-"));
+    try {
+      const editionDir = join(dir, "260820");
+      mkdirSync(editionDir, { recursive: true });
+
+      const r = runCli(editionDir);
+
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /nenhum 06-social-published\.json/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

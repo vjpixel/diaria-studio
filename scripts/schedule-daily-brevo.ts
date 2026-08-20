@@ -55,7 +55,7 @@ interface PlatformConfig {
 }
 
 export type ScheduleDailyBrevoResult =
-  | { ok: true; campaignId: number; scheduledAt: string; status: string }
+  | { ok: true; campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
   | { ok: false; code: 2 | 3 | 4; reason: string };
 
 /**
@@ -86,6 +86,20 @@ export async function scheduleDailyBrevo(
     };
   }
   const campaignId = published.campaign_id;
+
+  // Idempotência (#5781): campanha Brevo agendada é imutável (docstring
+  // acima) — resume após sucesso mas antes do sentinel do Stage 6 não deve
+  // re-tentar o PUT (falharia de novo pelo mesmo motivo). Espelha
+  // "already_done" de brevo-diaria-stage5-dispatch.ts.
+  if (published.status === "scheduled" && typeof published.scheduled_at === "string") {
+    return {
+      ok: true,
+      campaignId,
+      scheduledAt: published.scheduled_at,
+      status: "already_scheduled",
+      alreadyScheduled: true,
+    };
+  }
 
   try {
     await deps.putSchedule(campaignId, scheduledAtIso);

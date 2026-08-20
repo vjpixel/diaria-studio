@@ -207,6 +207,58 @@ describe("derive-editor-requests.ts (#5731)", () => {
     }
   });
 
+  it("#5782 — mudança real entre os 2 HTMLs do snapshot stage4-pre-render e o estado atual gera ao menos 1 pedido derivado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-html-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<html><body>V1</body></html>", "utf8");
+      writeFileSync(join(internalDir, "social-preview.html"), "<html><body>Social V1</body></html>", "utf8");
+
+      assert.equal(runCli(["snapshot-stage4", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      // Simula re-render disparado por "ajustar" em §4d.1 — HTML final muda antes do gate ser aprovado.
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<html><body>V2 (ajustado)</body></html>", "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+
+      const entries = readEntries(editionDir);
+      assert.equal(entries.length, 1, "mudança no newsletter-final.html deveria gerar 1 pedido derivado");
+      assert.equal(entries[0].request_type, "other");
+      assert.equal(entries[0].target, "newsletter");
+      assert.equal(entries[0].source, "derived");
+      assert.equal(entries[0].stage, 4);
+      assert.equal((entries[0].context as Record<string, unknown>).subtype, "html-final-changed");
+
+      // social-preview.html ficou idêntico — não deveria gerar pedido adicional.
+      assert.equal(entries.filter((e) => e.target === "social").length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5782 — snapshot stage4-pre-render idêntico ao estado atual não gera pedido nenhum", () => {
+    const dir = mkdtempSync(join(tmpdir(), "derive-html-noop-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const html = "<html><body>Sem mudança</body></html>";
+      writeFileSync(join(internalDir, "newsletter-final.html"), html, "utf8");
+      writeFileSync(join(internalDir, "social-preview.html"), html, "utf8");
+
+      assert.equal(runCli(["snapshot-stage4", "--edition", "260811", "--editions-dir", dir]).status, 0);
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(readEntries(editionDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejeita comando desconhecido / edição inexistente", () => {
     const dir = mkdtempSync(join(tmpdir(), "derive-errs-"));
     try {

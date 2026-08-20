@@ -378,6 +378,42 @@ function classifyApprovedDiff(oldContent: string, newContent: string): Array<{
 }
 
 /**
+ * Classifica diferenças nos HTMLs finais do Stage 4 pre-render
+ * (`_internal/newsletter-final.html`, `_internal/social-preview.html`).
+ *
+ * Diferente de `classifyNewsletterDiff`/`classifySocialDiff` (que operam
+ * sobre o markdown-fonte estruturado, com seções endereçáveis por destaque),
+ * HTML final renderizado não tem uma taxonomia granular óbvia a replicar —
+ * é o output de `render-newsletter-html.ts`/`substitute-image-urls.ts`, não
+ * algo o editor edita diretamente. Classificação genérica (#5782): só
+ * confirma QUE o HTML mudou entre o snapshot pré-gate e o estado no
+ * momento da aprovação (evidência de que o loop "ajustar" de §4d.1 re-
+ * renderizou o HTML), sem tentar decompor O QUE mudou dentro dele — isso já
+ * é coberto com granularidade pelo diff do markdown-fonte em
+ * `classifyNewsletterDiff`/`classifySocialDiff` no mesmo gate.
+ */
+function classifyHtmlDiff(target: RequestTarget): (oldContent: string, newContent: string) => Array<{
+  request_type: RequestType;
+  target: RequestTarget;
+  description: string;
+  resolution: Resolution;
+  context?: Record<string, unknown>;
+}> {
+  return (oldContent: string, newContent: string) => {
+    if (oldContent === newContent) return [];
+    return [
+      {
+        request_type: "other" as RequestType,
+        target,
+        description: `HTML final do Stage 4 pre-render mudou entre o snapshot pré-gate e a aprovação (re-render disparado por "ajustar" em §4d.1 ou correção automática).`,
+        resolution: "accepted" as Resolution,
+        context: { subtype: "html-final-changed", old_length: oldContent.length, new_length: newContent.length },
+      },
+    ];
+  };
+}
+
+/**
  * Cria snapshots dos arquivos especificados.
  *
  * Preserva a subestrutura de diretórios do arquivo original dentro do
@@ -485,6 +521,14 @@ function buildStage2FilesClassifierMap(): Map<string, (oldC: string, newC: strin
   ]);
 }
 
+/** Classificador do snapshot "stage4-pre-render" (#5782) — ver classifyHtmlDiff. */
+function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: string) => any[]> {
+  return new Map<string, (oldC: string, newC: string) => any[]>([
+    ["_internal/newsletter-final.html", classifyHtmlDiff("newsletter")],
+    ["_internal/social-preview.html", classifyHtmlDiff("social")],
+  ]);
+}
+
 /**
  * Função principal - deriva requests no gate do Stage 4
  *
@@ -496,18 +540,29 @@ function buildStage2FilesClassifierMap(): Map<string, (oldC: string, newC: strin
  * Ao final, o checkpoint é REFRESCADO para o estado atual: isso evita que
  * `deriveStage6` re-derive as mesmas mudanças já logadas aqui — Stage 6 só
  * vê o que mudou DEPOIS desta chamada.
+ *
+ * Diffa também o checkpoint "stage4-pre-render" (criado por `snapshotStage4`
+ * logo após o pre-render técnico, ainda dentro do Stage 4) contra o estado
+ * atual dos HTMLs finais — captura re-renders disparados pelo loop
+ * "ajustar" de §4d.1 (#5782). Classificação genérica via `classifyHtmlDiff`
+ * (ver docstring). O checkpoint também é refrescado ao final, mesmo padrão
+ * do "stage2-post-gate" acima.
  */
 function deriveStage4(editionDir: string, edition: string): number {
-  const classifierMap = buildStage2FilesClassifierMap();
-  const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, classifierMap, 4);
+  const stage2ClassifierMap = buildStage2FilesClassifierMap();
+  const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, stage2ClassifierMap, 4);
+
+  const stage4ClassifierMap = buildStage4FilesClassifierMap();
+  const derivedHtml = diffAndClassify(editionDir, "stage4-pre-render", STAGE4_SNAPSHOT_FILES, stage4ClassifierMap, 4);
 
   let count = 0;
-  for (const entry of derived) {
+  for (const entry of [...derived, ...derivedHtml]) {
     appendEditorRequest(editionDir, { ...entry, edition, source: "derived" });
     count++;
   }
 
   createSnapshots(editionDir, STAGE2_SNAPSHOT_FILES, "stage2-post-gate");
+  createSnapshots(editionDir, STAGE4_SNAPSHOT_FILES, "stage4-pre-render");
 
   console.log(`[derive-editor-requests] Stage 4 gate: ${count} pedidos derivados`);
   return count;
