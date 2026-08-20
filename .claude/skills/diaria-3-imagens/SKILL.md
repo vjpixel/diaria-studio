@@ -117,14 +117,42 @@ Se a imagem já existir e não quiser regenerar, script sai com exit 0. Para for
 
 Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Para ComfyUI, setar `image_generator: "comfyui"` em `platform.config.json`.
 
+### 2c. Card 4:5 do feed com título embutido (#4114, #5822)
+
+**Este passo NÃO é opcional pra feature existir — mesmo texto de `.claude/agents/orchestrator-stage-3.md` §3b.** `publish-facebook.ts`/`publish-instagram.ts` escolhem a imagem via `selectSocialCardImageFile` (`04-d{N}-4x5.jpg` se existir, senão cai pro `1x1` sem título, **em silêncio**). Sem os 2 comandos abaixo o card com título nunca existe — só as imagens 2:1/1:1 do passo 2b.
+
+Para cada destaque presente (o mesmo conjunto processado no passo 2b):
+
+```bash
+# 1. arte 4:5 nativa → 04-d{N}-4x5-nativo.jpg (não é crop do 2:1 — o card é retrato, precisa da altura que o 2:1 descarta)
+npx tsx scripts/image-generate.ts \
+  --editorial {EDIR}/_internal/02-d{N}-prompt.md \
+  --out-dir {EDIR}/ \
+  --destaque d{N} \
+  --ratio 4x5
+
+# 2. compõe o card final (imagem + título) → 04-d{N}-4x5.jpg, todos os destaques prontos de uma vez
+npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDIR}/
+```
+
+**Falha aqui é BLOQUEANTE (#4090).** Se qualquer um dos dois comandos sair com código ≠ 0 para qualquer destaque, **PARAR** — não seguir para o gate 2d. Mostrar ao editor o stderr completo: a causa mais comum é `assertBrandSerifAvailable` (fonte de marca Georgia ausente nesta máquina) abortando — instalar a fonte, ou setar `DIARIA_ALLOW_FONT_FALLBACK=1` como escape hatch deliberado. Skip-if-exists vale igual aos outros geradores — não passar `--force` automaticamente.
+
 ### 2d. Gate unificado de imagens
+
+Antes do gate, rodar o invariant check (defesa em profundidade — mesmo comando que `.claude/agents/orchestrator-stage-3.md` roda no pre-gate, cobre a regra `card-4x5-exists` entre outras):
+
+```bash
+npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDIR}/
+```
+
+Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo correspondente (2b ou 2c) antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
 
 **Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada`, escrever o sentinel (#5793) e finalizar:
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
 ```
 
 **Caso contrário:**
@@ -137,23 +165,23 @@ Etapa 3 — Imagens prontas.
   📁 {EDIR}/01-eia-B.jpg
 
 Imagens de destaque:
-  📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
-  📁 {EDIR}/04-d2-1x1.jpg
-  📁 {EDIR}/04-d3-1x1.jpg
+  📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg, 04-d1-4x5.jpg)
+  📁 {EDIR}/04-d2-1x1.jpg  (+ 04-d2-4x5.jpg)
+  📁 {EDIR}/04-d3-1x1.jpg  (+ 04-d3-4x5.jpg)
 
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```
 
 **Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto (escrever o sentinel abaixo antes de retornar). É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
 
-Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar Parte 2 para aquela imagem. "retry" → re-rodar Parte 2 completa.
+Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar Parte 2 (2b + 2c) para aquela imagem. "retry" → re-rodar Parte 2 completa.
 
 **Escrever sentinel de conclusão (#5793)** — cobre tanto `--no-gates` quanto o "sim" respondido organicamente pelo editor:
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 3 \
-  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+  --outputs "01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-4x5.jpg,04-d2-4x5.jpg,04-d3-4x5.jpg"
 ```
 
 ## Outputs
@@ -163,6 +191,8 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - `{EDIR}/01-eia-B.jpg` — slot B (oposto de A)
 - `{EDIR}/_internal/01-eia-meta.json` — metadata com `ai_side`
 - `{EDIR}/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
+- `{EDIR}/04-d1-4x5-nativo.jpg`, `04-d2-4x5-nativo.jpg`, `04-d3-4x5-nativo.jpg` — arte 4:5 nativa, insumo do card
+- `{EDIR}/04-d1-4x5.jpg`, `04-d2-4x5.jpg`, `04-d3-4x5.jpg` — card final com título embutido (#4114), o que `selectSocialCardImageFile` escolhe pro feed Facebook/Instagram
 - `{EDIR}/04-d{N}-sd-prompt.json` — prompts usados na geração
 
 ## Notas
