@@ -985,6 +985,32 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
 ];
 
+/**
+ * Nomes de tasks deliberadamente REMOVIDAS deste registro, mas cujo unit
+ * systemd (`.service`/`.timer`) ainda pode estar ativo numa máquina até a
+ * limpeza manual do editor acontecer (#5733) — a remoção do registro em si
+ * não desarma o timer instalado. `run-task.ts` consulta este set para tratar
+ * uma invocação com um desses nomes como no-op explícito (exit 0, log
+ * informativo) em vez de "task desconhecida" (exit 1) — que é o tratamento
+ * certo só para typo/nome que nunca existiu.
+ *
+ * - `"Diaria-Clarice-Novos-Abort-Alarm"` — removida no #5660 (o guard D4 que
+ *   produzia `semaphore-red` foi retirado do caminho `clarice-novos`, então
+ *   o alarme não tem mais estado pra ler). `scripts/clarice-novos-abort-alarm.ts`
+ *   já é dormente por si só; o problema fechado aqui (#5733) é anterior a
+ *   isso — `run-task.ts` nem chegava a invocar esse script, porque a
+ *   resolução do NOME já falhava em `getScheduledTaskByName`. A limpeza do
+ *   unit systemd em si (`~/.config/systemd/user/diaria-clarice-novos-abort-alarm.{service,timer}`
+ *   + mirror `.systemd-units/`) continua pendente como ação manual do
+ *   editor — isto só faz o exit code parar de falhar todas as noites.
+ */
+export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set(["Diaria-Clarice-Novos-Abort-Alarm"]);
+
+/** `true` quando `name` é uma task retirada conhecida (ver `RETIRED_TASK_NAMES`). */
+export function isRetiredTaskName(name: string): boolean {
+  return RETIRED_TASK_NAMES.has(name);
+}
+
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
 export function getScheduledTaskByName(name: string): ScheduledTaskDefinition | undefined {
   return SCHEDULED_TASKS.find((t) => t.name === name);

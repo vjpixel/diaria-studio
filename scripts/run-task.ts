@@ -14,12 +14,15 @@
  *
  * Exit code: propagado de `runScheduledTask` (ver docstring de
  * task-runner.ts) — 1 quando `--task` está ausente/desconhecido, ANTES de
- * rodar qualquer passo.
+ * rodar qualquer passo. Exceção: nome de task RETIRADA conhecida
+ * (`RETIRED_TASK_NAMES`, ver `scripts/lib/scheduled-tasks.ts`) sai 0 — é o
+ * caso de um unit systemd instalado que ainda invoca um nome removido do
+ * registro (#5733), diferente de um nome que nunca existiu (typo).
  */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { getScheduledTaskByName, listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
+import { getScheduledTaskByName, isRetiredTaskName, listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
 import { runScheduledTask } from "./lib/task-runner.ts";
 
 function usage(): string {
@@ -46,6 +49,13 @@ export function main(argv: string[], repoRootAbs: string): number {
 
   const def = getScheduledTaskByName(taskName);
   if (!def) {
+    if (isRetiredTaskName(taskName)) {
+      console.log(
+        `Task "${taskName}" foi retirada do registro (ver RETIRED_TASK_NAMES em scripts/lib/scheduled-tasks.ts, #5733). ` +
+          `Nenhuma ação necessária — o unit systemd correspondente ainda precisa ser removido manualmente pelo editor.`,
+      );
+      return 0;
+    }
     console.error(`Task desconhecida: "${taskName}".\n\n${usage()}`);
     return 1;
   }

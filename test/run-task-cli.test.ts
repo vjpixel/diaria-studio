@@ -49,6 +49,28 @@ describe("run-task.ts main() — em processo (unit)", () => {
     }
   });
 
+  // #5733: unit systemd instalado ainda invoca `Diaria-Clarice-Novos-Abort-Alarm`,
+  // removida do registro no #5660. Isto deve virar no-op (exit 0), não "task
+  // desconhecida" (exit 1) — diferente de um nome que nunca existiu (typo real,
+  // caso coberto pelo teste acima).
+  it("--task com nome RETIRADO conhecido -> retorna 0, no-op (nunca 'task desconhecida')", () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    const logLines: string[] = [];
+    const errorLines: string[] = [];
+    console.log = (msg: string) => logLines.push(msg);
+    console.error = (msg: string) => errorLines.push(msg);
+    try {
+      const code = runTaskMain(["--task", "Diaria-Clarice-Novos-Abort-Alarm"], ROOT);
+      assert.equal(code, 0);
+      assert.match(logLines.join("\n"), /retirada do registro/);
+      assert.doesNotMatch(errorLines.join("\n"), /Task desconhecida/);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+  });
+
   it("--task sem valor (flag solta) -> retorna 1 (getStringArg lança, main captura)", () => {
     const originalError = console.error;
     const lines: string[] = [];
@@ -81,5 +103,15 @@ describe("run-task.ts — spawn real do processo CLI (argumentos)", () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Task desconhecida/);
+  });
+
+  it("--task retirado conhecido (#5733) -> exit 0 (processo real, sem side effects)", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", SCRIPT, "--task", "Diaria-Clarice-Novos-Abort-Alarm"],
+      { cwd: ROOT, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /retirada do registro/);
   });
 });
