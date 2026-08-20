@@ -8,6 +8,7 @@ import {
   shouldBlockGhPrMerge,
   readActiveCoordinatorSessionIds,
   sessionsDir,
+  machineTag,
   BLOCK_REASON,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
@@ -146,7 +147,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       sessionId: "sess1",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess1"]));
   });
@@ -157,13 +158,13 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       kind: "develop",
       sessionId: "sess2",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     writeSession(root, "continuo-helios-sess3.json", {
       kind: "continuo",
       sessionId: "sess3",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess2", "sess3"]));
   });
@@ -178,13 +179,25 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
 
+  it("sessão de OUTRA máquina é ignorada — data/sessions/ é compartilhado via OneDrive (#5787 Defeito 2)", () => {
+    const root = freshRoot();
+    writeSession(root, "overnight-outra-maquina-sess-outra.json", {
+      kind: "overnight",
+      sessionId: "sess-outra-maquina",
+      startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+      machineTag: "outra-maquina-diferente",
+    });
+    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
+  });
+
   it("sessão mais velha que MAX_SESSION_AGE_MS (24h) é ignorada — rodada abandonada não trava o guard pra sempre", () => {
     const root = freshRoot();
     writeSession(root, "overnight-helios-sess5.json", {
       kind: "overnight",
       sessionId: "sess5",
       startedAt: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
@@ -195,7 +208,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       kind: "overnight",
       sessionId: "sess6",
       startedAt: new Date(NOW + 10 * ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
@@ -208,7 +221,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       kind: "overnight",
       sessionId: "sess7",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess7"]));
   });
@@ -230,7 +243,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       kind: "overnight",
       sessionId: "sess8",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
-      machineTag: "helios",
+      machineTag: machineTag(),
     });
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
   });
