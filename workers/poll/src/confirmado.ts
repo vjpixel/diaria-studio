@@ -121,11 +121,12 @@ function renderConfirmadoStyles(): string {
     color: var(--ink); text-decoration: none; }
   .confirmado-portas a:hover { color: var(--teal); }
   .confirmado-portas p { font-size: 14px; line-height: 1.5; color: var(--ink); opacity: 0.75; margin: 4px 0 0; }
-  .confirmado-survey { padding: 22px 26px; background: var(--card); border: 1px solid var(--rule); border-radius: 2px; }
-  .confirmado-survey p { font-size: 15px; line-height: 1.5; color: var(--ink); margin: 0 0 12px; }
+  .confirmado-survey { padding: 22px 26px; background: var(--card); border: 1px solid var(--rule); border-radius: 2px; margin: 0 0 40px; }
+  .confirmado-survey p { font-size: 15px; line-height: 1.5; color: var(--ink); margin: 0 0 14px; }
   .confirmado-survey a { display: inline-block; font-family: Georgia, 'Times New Roman', serif; font-size: 15px;
-    font-weight: 700; color: var(--teal); text-decoration: none; border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
-  .confirmado-survey a:hover { opacity: 0.75; }`;
+    font-weight: 700; color: var(--paper); background: var(--teal); text-decoration: none; padding: 10px 20px;
+    border-radius: 4px; }
+  .confirmado-survey a:hover { opacity: 0.85; }`;
 }
 
 /** Puro — sem I/O, sem env. Testável direto. */
@@ -161,6 +162,10 @@ ${renderCuradoriaFooterStyles()}
     <div class="wrap">
       <p class="confirmado-lede">Pronto — você já está na lista. Obrigado por confirmar.</p>
       <p class="confirmado-timing">Sua primeira edição chega numa manhã de segunda a sexta, direto no seu e-mail: 5 minutos de leitura com as notícias e tutoriais de IA que importam.</p>
+      <div class="confirmado-survey">
+        <p>Quer receber notícias mais alinhadas com o seu interesse? Um formulário rápido ajuda a gente a calibrar o que entra na curadoria.</p>
+        <a href="${INTEREST_SURVEY_URL}">Responder o formulário de interesses</a>
+      </div>
       <div class="confirmado-portas">
         <h2>Enquanto isso</h2>
         <ul>
@@ -181,10 +186,6 @@ ${renderCuradoriaFooterStyles()}
             <p>Todas as edições já publicadas da diar.ia.br, agrupadas por mês.</p>
           </li>
         </ul>
-      </div>
-      <div class="confirmado-survey">
-        <p>Quer receber notícias mais alinhadas com o seu interesse? Um formulário rápido ajuda a gente a calibrar o que entra na curadoria.</p>
-        <a href="${INTEREST_SURVEY_URL}">Responder o formulário de interesses →</a>
       </div>
     </div>
   </main>
