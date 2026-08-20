@@ -114,6 +114,24 @@ describe("resolveClaudeBin (#5549)", () => {
     );
   });
 
+  it("REGRESSÃO #5790: só claude.exe existe no PATH (sem claude sem sufixo) -> resolve o .exe", () => {
+    const resolved = resolveClaudeBin({
+      env: { PATH: "/home/vjpix/.local/bin", HOME: "/home/vjpix" },
+      fileExists: only("/home/vjpix/.local/bin/claude.exe"),
+    });
+
+    assert.equal(resolved, "/home/vjpix/.local/bin/claude.exe");
+  });
+
+  it("REGRESSÃO #5790: só claude.exe existe em CLAUDE_BIN_HOME_CANDIDATES (caso real da issue: C:\\Users\\vjpix\\.local\\bin\\claude.exe) -> resolve o .exe", () => {
+    const resolved = resolveClaudeBin({
+      env: { PATH: "", HOME: "/home/vjpix" },
+      fileExists: only("/home/vjpix/.local/bin/claude.exe"),
+    });
+
+    assert.equal(resolved, "/home/vjpix/.local/bin/claude.exe");
+  });
+
   it("entrada RELATIVA no PATH ainda produz caminho absoluto", () => {
     const relativeCandidate = join(process.cwd(), "bin", "claude");
     const resolved = resolveClaudeBin({

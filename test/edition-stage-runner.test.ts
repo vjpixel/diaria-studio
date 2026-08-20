@@ -240,6 +240,34 @@ describe("edition-stage-runner — laço", () => {
     assert.equal(prompts.length, 2, "o stage 3 não pode rodar sobre o trabalho ausente do 2");
   });
 
+  it("stage sai 0 sem sentinela: as últimas linhas do stdout do filho aparecem no failureTail (#5791)", () => {
+    W = sentinelWorld(0, [1]); // stage 1 "roda", sai 0, e não completa nada
+    const stdoutFromChild = Array.from({ length: 100 }, (_, i) => `log linha ${i}`).join("\n") + "\ntail-marker-final";
+    const execFn = spawnInto(W, [], undefined, stdoutFromChild);
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    const failed = result.outcomes.find((o) => o.status === "failed");
+    // Antes do #5791 este branch não tinha NENHUMA visibilidade do que o
+    // processo filho escreveu — só "sentinela não foi escrita". A captura
+    // não é opcional: sem ela, a próxima ocorrência do achado 260821
+    // (exit 0 em 62s sem output, vs ~13min rodando manualmente) fica sem
+    // nenhum sinal pra diagnosticar.
+    assert.match(failed?.failureTail ?? "", /saiu com código 0 mas não completou/);
+    assert.match(failed?.failureTail ?? "", /tail-marker-final/, "deveria incluir o fim do stdout capturado");
+    assert.doesNotMatch(failed?.failureTail ?? "", /log linha 0\b/, "só as últimas linhas, não o log inteiro");
+  });
+
+  it("stage sai 0 sem sentinela e SEM nenhum stdout: failureTail não fica em branco (#5791)", () => {
+    W = sentinelWorld(0, [1]);
+    const execFn = spawnInto(W, [], undefined, "");
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    const failed = result.outcomes.find((o) => o.status === "failed");
+    assert.match(failed?.failureTail ?? "", /sem stdout/, "ausência de captura deve ser explícita, não um buraco silencioso");
+  });
+
   it("sentinela órfã (output apagado) NÃO conta como stage concluído", () => {
     const prompts: string[] = [];
     // `assertSentinel` distingue "arquivo existe" de "existe e os outputs

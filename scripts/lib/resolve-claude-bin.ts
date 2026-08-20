@@ -74,6 +74,21 @@ export interface ResolveClaudeBinOptions {
 }
 
 /**
+ * Sufixos tentados para cada candidato de nome (#5790).
+ *
+ * Sempre os dois, em qualquer plataforma — não só quando
+ * `process.platform === "win32"`. Tentar `.exe` em Linux/Mac não tem custo
+ * real (o arquivo simplesmente não existe lá, `fileExists` responde `false`
+ * na hora), e evita depender de `process.platform` bater com o SO real do
+ * ambiente de execução (WSL, container cross-compilado, teste). Achado ao
+ * vivo 260821: `where claude` no Windows aponta pro binário real em
+ * `claude.exe`, mas todo candidato gerado aqui tentava só o nome sem sufixo
+ * — `resolveClaudeBin` nunca batia mesmo com o binário presente e
+ * HOME/PATH corretos.
+ */
+const BIN_SUFFIXES = ["", ".exe"] as const;
+
+/**
  * Devolve o caminho absoluto do `claude` executável.
  *
  * @throws {Error} quando nenhum candidato existe — a mensagem enumera o que
@@ -97,17 +112,21 @@ export function resolveClaudeBin(options: ResolveClaudeBinOptions = {}): string 
 
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (dir === "") continue;
-    const candidate = resolvePath(dir, "claude");
-    if (fileExists(candidate)) return candidate;
-    tried.push(candidate);
+    for (const suffix of BIN_SUFFIXES) {
+      const candidate = resolvePath(dir, `claude${suffix}`);
+      if (fileExists(candidate)) return candidate;
+      tried.push(candidate);
+    }
   }
 
   const home = env.HOME?.trim();
   if (home) {
     for (const relative of CLAUDE_BIN_HOME_CANDIDATES) {
-      const candidate = resolvePath(home, relative);
-      if (fileExists(candidate)) return candidate;
-      tried.push(candidate);
+      for (const suffix of BIN_SUFFIXES) {
+        const candidate = resolvePath(home, `${relative}${suffix}`);
+        if (fileExists(candidate)) return candidate;
+        tried.push(candidate);
+      }
     }
   }
 

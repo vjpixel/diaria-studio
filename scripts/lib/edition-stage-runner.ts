@@ -225,7 +225,18 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     const startedAt = nowMs();
 
     try {
-      execFn(
+      // Capturado sempre (#5791), mesmo que o caminho feliz descarte a
+      // variável logo abaixo sem nunca a incluir em `outcomes`. O ponto do
+      // #5791 é exatamente este: no branch de sucesso-mas-sentinela-ausente
+      // (ver a checagem de pós-condição abaixo), até agora não havia NENHUMA
+      // visibilidade do que o processo filho realmente escreveu — achado ao
+      // vivo 260821, Stage 1 saiu com exit 0 em 62s sem gravar nenhum output
+      // (rodando o mesmo comando manualmente no shell, completou em ~13min).
+      // `execFileSync` só devolve STDOUT no caminho de sucesso (stderr só é
+      // populado em `err.stderr` quando o processo lança) — a captura aqui é
+      // parcial por essa limitação da API, não por escolha; `stdio: "pipe"`
+      // já custava o mesmo antes, o que muda é só usar ou não o buffer.
+      const stdout = execFn(
         resolveClaudeBin(),
         [
           "--print",
@@ -245,8 +256,10 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           env,
         },
       );
-      // O stdout do sucesso é DESCARTADO aqui, e é o ponto central do #5744:
-      // devolvê-lo recriaria na sessão-mãe o contexto que o laço evita.
+      // O stdout do sucesso é DESCARTADO no caminho feliz, e é o ponto
+      // central do #5744: devolvê-lo recriaria na sessão-mãe o contexto que
+      // o laço evita. Só é reaproveitado (truncado) abaixo, quando a
+      // pós-condição falha.
 
       // PÓS-CONDIÇÃO (achado P0 do review da PR #5753). Sair com código 0 não
       // prova que o stage fez o trabalho — prova só que o processo terminou
@@ -263,6 +276,13 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           after.reason === "outputs_missing"
             ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
             : "sentinela não foi escrita";
+        // #5791: instrumentação de observabilidade, não fix da causa raiz —
+        // a causa (`execFileSync` com stdio pipe/env saneado vs shell do
+        // editor herdando fds/env completo; comportamento específico do
+        // Windows) ainda não foi confirmada. Sem as últimas linhas do que o
+        // processo filho de fato escreveu, este branch não tinha NENHUM sinal
+        // pra diagnosticar a próxima ocorrência — só o fato "não completou".
+        const tail = summarizeFailure(typeof stdout === "string" ? stdout : "");
         exitCode = 1;
         failedStage = stage;
         outcomes.push({
@@ -271,7 +291,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
-          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}`,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail} | últimas linhas de stdout: ${tail}`,
         });
         break;
       }
