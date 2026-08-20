@@ -158,6 +158,12 @@ npx tsx scripts/render-halt-banner.ts \
    ```
    Exit 1 = pausar com violations no stderr. Editor corrige e re-roda. Inclui `image-crop-warn` (#3951, revisor de crop do Stage 3) — severity warning, nunca pausa; incluir no `{violations_block}` do gate (§4d). Inclui também `card-4x5-upload-missing` (#4090 item 4) — dispara quando `04-d{N}-4x5.jpg` existe no disco mas `06-public-images.json` não tem `d{N}_4x5.url` (upload não subiu o card); severity warning, nunca pausa, mas silêncio aqui publica o post no formato errado (1:1 sem título) — incluir no `{violations_block}` do gate (§4d). Inclui também `render-warnings-consumed` (#4673) — lê `_internal/render-warnings.json` (escrito pelo `render-newsletter-html.ts` do step 2 acima, a cada chamada) e surfaced os eventos `divulgacao_box_dropped_no_gap` (caixa de divulgação COMERCIAL que não coube em nenhuma lacuna) e `whatsapp_share_no_d1` (bloco WhatsApp sem D1); severity warning, nunca pausa — incluir no `{violations_block}` do gate (§4d).
 
+  - **Snapshot pós-Stage 4 pre-render para derivação de pedidos editoriais (#5731).** Após o pre-render completo e validação de invariantes, criar snapshots dos HTMLs finais para permitir derivação determinística posterior de mudanças no pré-render:
+    ```bash
+    npx tsx scripts/derive-editor-requests.ts snapshot-stage4 --edition {AAMMDD}
+    ```
+    Exit code handling: `0` = snapshots criados; `!=0` = logar warn, não bloquear.
+
 ### 4c. Montar resumo consolidado da edição
 
 Coletar e organizar todas as informações da edição final para apresentar ao editor. **Reusar os validate-*/lint-* existentes** para gerar o relatório — nada novo aqui, apenas consolidação.
@@ -756,6 +762,12 @@ npx tsx scripts/pipeline-sentinel.ts write \
 ```bash
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status done
 ```
+
+**Derivar pedidos editoriais do diff (#5731).** No gate de aprovação (`sim` ou `auto_approve`), derivar os pedidos comparando snapshots pós-Stage 2 vs estado atual:
+```bash
+npx tsx scripts/derive-editor-requests.ts derive-stage4 --edition {AAMMDD}
+```
+Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = logar warn, não bloquear.
 
 **Capturar custo/tokens reais (#3441):**
 ```bash
