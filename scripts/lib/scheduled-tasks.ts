@@ -152,6 +152,11 @@ export interface ScheduledTaskDefinition {
   rateAlarmExempt?: boolean;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
+  /** #5639 — enable/disable da task sem remover do registro.
+   *  Default (campo ausente): `true` — task roda normalmente.
+   *  Quando `false`, o runner pula a execução (exit 0, loga "SKIP: task disabled")
+   *  e o gerador de units systemd NÃO cria `.service`/`.timer` para ela. */
+  enabled?: boolean;
 }
 
 export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
@@ -327,7 +332,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
         "montada ainda; abortando por seguranca, NAO rodando --push.",
     },
-    issue: "#4534, #4552",
+    enabled: false,
+    issue: "#4534, #4552, #5639",
   },
   {
     name: "Diaria-Geo-Citation-Monitor",

@@ -78,6 +78,9 @@ export function main(argv: string[], repoRootAbs: string): number {
     tasks = [found];
   }
 
+  // #5639 — filtrar tasks desabilitadas (enabled: false)
+  tasks = tasks.filter((t) => t.enabled !== false);
+
   const outDirAbs = resolve(repoRootAbs, outDirArg ?? DEFAULT_OUT_DIR);
   const written = generateSystemdUnits(tasks, repoRootAbs, outDirAbs);
 

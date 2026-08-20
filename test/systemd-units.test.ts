@@ -284,7 +284,8 @@ describe("setup-systemd-timers.ts main() — CLI", () => {
       console.log = originalLog;
     }
     const entries = readdirSync(outDir);
-    assert.equal(entries.length, SCHEDULED_TASKS.length * 2);
+    const enabledTasks = SCHEDULED_TASKS.filter((t) => t.enabled !== false);
+    assert.equal(entries.length, enabledTasks.length * 2);
   });
 });
 
