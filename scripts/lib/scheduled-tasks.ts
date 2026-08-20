@@ -642,7 +642,15 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem planejar nem agendar onda.",
     },
-    issue: "#5025, #5026, #5027 (decisões do editor 260811)",
+    // #5826: exit 4 = lock de concorrência (scripts/lib/clarice-envio-lock.ts)
+    // já estava travado por outra rodada/sessão manual — abort SEGURO, sem
+    // tocar Brevo, não uma falha genuína (achado ao vivo: unit das 22:00
+    // colidiu com sessão manual do editor às 21:42, `Diaria-Systemd-Failed-
+    // Units-Alarm` disparou em cima de exit 1 indistinguível de erro real).
+    // Mesmo padrão do exit 3 de `Diaria-Clarice-Novos` acima, código
+    // diferente de propósito (ver comentário em clarice-envio-run.ts).
+    successExitCodes: [4],
+    issue: "#5025, #5026, #5027 (decisões do editor 260811), #5826",
   },
   {
     name: "Diaria-Clarice-Envio-Guard",
