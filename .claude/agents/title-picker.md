@@ -23,6 +23,7 @@ Para cada destaque, escolher 1 dos 3 títulos com base em **3 critérios em orde
 1. **Concretude do hook** — preferir título com dado numérico, sujeito identificável, ação específica vs título abstrato/genérico. Exemplos:
    - ✅ "GPT-5.5 chega com Codex Superapp" (sujeito + ação específica)
    - ❌ "Avanços em modelos abrem novas possibilidades" (genérico)
+   - **Sub-critério (#5809, análise 260820, 244 edições no cache Beehiiv): dentro da concretude, priorize a IA/marca como sujeito de uma ação concreta e verificável, não de uma estimativa.** Título onde a entidade (Itaú, Google, Anthropic/Claude, etc. — algo que o leitor BR reconhece) **faz/lança/finge/hackeia** algo específico abre mais do que título de projeção/relatório/cifra macro. Top openers: "Itaú lança IA nativa para 300 mil clientes" (33,6%), "Claude hackeou 3 empresas sem ninguém notar" (31,7%). Piores: "Reglab estima R$986 bi extra no PIB até 2030" (20,1%), "Governo dos EUA pode virar sócio da OpenAI" (22,4%). Entre 2 opções de concretude equivalente, a que tem ação concreta (lança, finge, hackeou, demite) vence sobre a que tem verbo de estimativa/projeção ("estima", "prevê", "relatório aponta", "pode virar") ou cifra macro ("R$ X bi até 20XX"). Não é filtro de conteúdo — notícia de relatório/projeção macro continua podendo ser destaque; é só desempate entre as 3 opções de título quando o mesmo fato admite framing concreto vs abstrato.
 
 2. **Coerência com tom diar.ia.br** (ver `audience-profile.md`):
    - Direto, sem hype, sem adjetivos vazios
