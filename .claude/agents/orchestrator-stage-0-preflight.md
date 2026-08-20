@@ -377,16 +377,18 @@ Processar agora? [s/n/d]
 - Se `n`: logar `info "deferred {count} pending drafts"`.
 - Se `d`: gravar `_internal/issues-reported.json` com `dismissed: true` + array vazio cobrindo todos signals para cada edição pendente.
 
-### 0k. Verify FB + LinkedIn/Instagram/Threads da edição anterior (#78, #5766)
+### 0k. Verify FB + LinkedIn/Instagram/Threads + Twitter da edição anterior (#78, #5766, #5801)
 
-Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, e (#5766) LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron` (Twitter, via Buffer, sem reconciliador). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`.
+Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766, fechado 20/08/2026) Twitter via API GraphQL do Buffer (`https://api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`.
 ```bash
 PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
 if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
   npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"; fi
 [ -n "$PREV" ] && (npx tsx scripts/verify-social-worker-dispatch.ts --edition-dir "$PREV/" || echo "verify-social-worker failed (non-fatal)")
+if [ -n "$PREV" ] && [ -n "$BUFFER_ACCESS_TOKEN" ]; then
+  npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal)"; fi
 ```
-Não bloqueia — credenciais/Worker ausentes ou inalcançáveis logam `warn` e seguem (fail-soft nos dois).
+Não bloqueia — credenciais/Worker/token ausentes ou inalcançáveis logam `warn` e seguem (fail-soft nos três).
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366)
 

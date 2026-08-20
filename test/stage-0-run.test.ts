@@ -83,6 +83,7 @@ function baseDeps(overrides: Partial<Stage0RunDeps> = {}): Stage0RunDeps {
       }
       throw new Error(`readFile não mockado: ${p}`);
     },
+    hasEnv: () => false,
     ...overrides,
   };
 }
@@ -552,6 +553,32 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.equal(result.pendingHumanDecision.length, 1);
     assert.equal(result.pendingHumanDecision[0].step, "0j");
     assert.match(result.pendingHumanDecision[0].detail, /260422/);
+  });
+
+  it("0k — verify-twitter-posts roda só quando BUFFER_ACCESS_TOKEN presente (hasEnv), nunca lê process.env direto", async () => {
+    const { exec: exec1, calls: calls1 } = makeFakeExec(happyExecHandlers());
+    const { execAsync: execAsync1 } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const depsSemToken = baseDeps({ exec: exec1, execAsync: execAsync1, hasEnv: () => false });
+    await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      depsSemToken,
+    );
+    assert.ok(!calls1.some((c) => c.script.includes("verify-twitter-posts")));
+
+    const { exec: exec2, calls: calls2 } = makeFakeExec(happyExecHandlers());
+    const { execAsync: execAsync2 } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const depsComToken = baseDeps({
+      exec: exec2,
+      execAsync: execAsync2,
+      hasEnv: (name) => name === "BUFFER_ACCESS_TOKEN",
+    });
+    await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      depsComToken,
+    );
+    const twitterCall = calls2.find((c) => c.script.includes("verify-twitter-posts"));
+    assert.ok(twitterCall);
+    assert.ok(twitterCall!.args.includes("--edition-dir"));
   });
 
   it("delegatedSteps sempre lista 0n e 0-replies, mesmo no caminho feliz", async () => {
