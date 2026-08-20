@@ -57,7 +57,12 @@
  * hook, ver acima):
  *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
- *   npx tsx scripts/lib/session-registry.ts end --kind ...
+ *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA]
+ *     (`--tag` opcional, #5797: default é o machineTag() local; passar o tag de
+ *     OUTRA máquina permite encerrar daqui um registro que não é seu — ver
+ *     "Defeito 4" do #5797. `end` também distingue "removeu de fato" de "não
+ *     havia nada pra remover": esta última reporta `exit 1` e a mensagem
+ *     "nothing to end", nunca "ended".)
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
@@ -294,10 +299,23 @@ export function heartbeat(
   return true;
 }
 
-/** Remove o registro de uma sessão. Idempotente — no-op se já ausente. */
-export function endSession(repoRoot: string, kind: SessionKind, sessionId: string, tag: string = machineTag()): void {
+/**
+ * Remove o registro de uma sessão. Idempotente — no-op se já ausente.
+ *
+ * Retorna `true` quando um registro de fato existia e foi removido, `false`
+ * quando não havia nada pra remover (#5797) — distinção que o CLI (`main()`,
+ * caso `end`) usa pra nunca reportar sucesso quando nada aconteceu. Antes do
+ * #5797 o retorno era `void`: o CLI sempre imprimia "ended" mesmo quando
+ * `--tag`/`--session-id` não batiam com nenhum arquivo em disco (ex: tentar
+ * encerrar da máquina local o registro de outra máquina sem passar `--tag`
+ * explicitamente — `tag` aqui default pra `machineTag()` local, então sem a
+ * flag o path procurado nunca é o da outra máquina).
+ */
+export function endSession(repoRoot: string, kind: SessionKind, sessionId: string, tag: string = machineTag()): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  if (existsSync(path)) rmSync(path);
+  if (!existsSync(path)) return false;
+  rmSync(path);
+  return true;
 }
 
 /**
@@ -594,8 +612,20 @@ function main(): void {
       case "end": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
-        endSession(repoRoot, kind, sessionId);
-        process.stdout.write("session-registry: ended\n");
+        // #5797: `--tag` opcional — default `machineTag()` local (comportamento
+        // pré-#5797 preservado) permite encerrar o registro de OUTRA máquina
+        // (data/sessions/ é compartilhado via OneDrive) sem exigir rodar o
+        // comando fisicamente naquela máquina.
+        const tag = values.tag ?? machineTag();
+        const removed = endSession(repoRoot, kind, sessionId, tag);
+        if (removed) {
+          process.stdout.write("session-registry: ended\n");
+        } else {
+          process.stdout.write(
+            "session-registry: nothing to end (registro não encontrado — tag/session-id conferem?)\n",
+          );
+          process.exitCode = 1;
+        }
         break;
       }
       case "claim-issue": {
@@ -637,7 +667,9 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] ...\n",
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+            "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
+            "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n",
         );
         process.exitCode = 1;
     }
