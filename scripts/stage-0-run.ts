@@ -342,6 +342,7 @@ export interface Stage0RunDeps {
   existsSync: (p: string) => boolean;
   mkdirSync: (p: string) => void;
   readFile: (p: string) => string;
+  writeFile: (path: string, content: string) => void;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
@@ -353,6 +354,7 @@ export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
     existsSync: (p) => existsSync(p),
     mkdirSync: (p) => mkdirSync(p, { recursive: true }),
     readFile: (p) => readFileSync(p, "utf8"),
+    writeFile: (p, c) => writeFileSync(p, c, "utf8"),
   };
 }
 
@@ -415,7 +417,10 @@ function logEvent(
   const args = ["--edition", edition, "--stage", "0", "--agent", "orchestrator", "--level", level, "--message", message];
   if (opts.details !== undefined) args.push("--details", JSON.stringify(opts.details));
   if (opts.informational) args.push("--informational");
-  deps.exec("scripts/log-event.ts", args);
+  const result = deps.exec("scripts/log-event.ts", args);
+  if (result.code !== 0) {
+    console.error(`⚠️  log-event.ts falhou (exit ${result.code}) ao registrar: ${message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -741,17 +746,27 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     const manifest = syncJson?.posts_needing_clicks ?? [];
     if (manifest.length > 0) {
       const manifestPath = `${editionDir}/_internal/posts-needing-clicks.json`;
+      let manifestWritten = true;
       try {
-        writeFileSync(resolve(deps.rootDir, manifestPath), JSON.stringify(manifest, null, 2) + "\n", "utf8");
-      } catch {
-        // fail-soft — mesmo padrão do resto do bloco 0h.
+        deps.writeFile(resolve(deps.rootDir, manifestPath), JSON.stringify(manifest, null, 2) + "\n");
+      } catch (err) {
+        manifestWritten = false;
+        // fail-soft — mesmo padrão do resto do bloco 0h — mas registrado,
+        // nunca engolido: um manifest fantasma faria o orchestrator
+        // despachar beehiiv-clicks-enricher sem arquivo pra ler.
+        logEvent(deps, opts.edition, "warn", "0h.2 — falha ao gravar posts-needing-clicks.json", {
+          details: { manifestPath, error: err instanceof Error ? err.message : String(err) },
+        });
+        report.note(`⚠️  0h.2 — falha ao gravar ${manifestPath}: manifest não persistido (fail-soft, não bloqueia Stage 0).`);
       }
-      pendingAgentDispatch.push({
-        step: "0h.2",
-        agent: "beehiiv-clicks-enricher",
-        detail: `${manifest.length} post(s) precisam de enrichment de clicks — dispatch via Agent(subagent_type="beehiiv-clicks-enricher"), 1 item por linha "post_id=<id> title=<title>"; validar depois com verify-clicks-enrichment.ts (#4732)`,
-        manifestPath,
-      });
+      if (manifestWritten) {
+        pendingAgentDispatch.push({
+          step: "0h.2",
+          agent: "beehiiv-clicks-enricher",
+          detail: `${manifest.length} post(s) precisam de enrichment de clicks — dispatch via Agent(subagent_type="beehiiv-clicks-enricher"), 1 item por linha "post_id=<id> title=<title>"; validar depois com verify-clicks-enrichment.ts (#4732)`,
+          manifestPath,
+        });
+      }
     }
   } else {
     logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
@@ -793,6 +808,12 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   // --- 0l: status determinístico de social da edição anterior ---
   const prevSocialArgs = prevDir ? ["--prev-dir", prevDir, "--prev-edition", prevDir.split(/[\\/]/).pop() ?? ""] : ["--prev-dir", "", "--prev-edition", ""];
   const prevStatusResult = deps.exec("scripts/check-prev-social-status.ts", [...prevSocialArgs, "--json"]);
+  if (prevStatusResult.code !== 0) {
+    logEvent(deps, opts.edition, "warn", "check-prev-social-status falhou — status social da edição anterior não verificado", {
+      details: { code: prevStatusResult.code },
+    });
+    report.note(`⚠️  0l — check-prev-social-status.ts falhou (exit ${prevStatusResult.code}): status social da edição anterior não verificado, sem alerta possível.`);
+  }
   const prevStatusJson = parseStepJson<{ findings?: Array<{ line?: string }>; total?: number }>(prevStatusResult.stdout);
   if (prevStatusJson?.total && prevStatusJson.total > 0) {
     logEvent(deps, opts.edition, "warn", "edição anterior tem posts sociais que exigem atenção", { details: prevStatusJson, informational: true });
