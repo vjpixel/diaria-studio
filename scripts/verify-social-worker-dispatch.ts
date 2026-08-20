@@ -67,9 +67,12 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 export type { PostEntry, SocialPublished };
+
+loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
