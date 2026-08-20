@@ -40,7 +40,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg, REPO_ROOT } from "./lib/clarice-paths.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import {
@@ -108,10 +108,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // #5827: ver docstring de `checkSingleStrategyAgainstHourTest` — evita que
   // `--no-cells` fragmente em silêncio a amostra de um teste de horário
-  // ativo (independente do teste de assunto).
+  // ativo (independente do teste de assunto). `REPO_ROOT` (não `process.cwd()`)
+  // pelo mesmo motivo de `clarice-plan-wave.ts:395` — resolve
+  // `data/clarice-hour-test.json` mesmo se o script for invocado de um cwd
+  // diferente da raiz do repo (review do PR #5828, achado 2).
+  const hourTestState = readClariceHourTestState(REPO_ROOT);
+  if (hourTestState.degraded) {
+    // Mesmo aviso de `clarice-envio-run.ts:1039` — estado ilegível degrada
+    // pra "inativo" (fail-soft do próprio `readClariceHourTestState`), mas
+    // silenciar isso aqui reintroduziria a classe de bug que este PR fecha:
+    // um teste ATIVO de verdade, só com o arquivo corrompido, passaria como
+    // inativo sem nenhum sinal (review do PR #5828, achado 1).
+    console.error(`⚠️  estado do teste de horário ilegível — seguindo como SE fosse inativo. ${hourTestState.degradedReason}`);
+  }
   const hourTestClash = checkSingleStrategyAgainstHourTest(
     strategy,
-    readClariceHourTestState(process.cwd()),
+    hourTestState,
     hasFlag(argv, "ignore-hour-test"),
   );
   if (hourTestClash) {
