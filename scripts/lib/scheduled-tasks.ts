@@ -921,6 +921,30 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5563",
   },
   {
+    name: "Diaria-Studio-Liveness-Alarm",
+    description:
+      "GET http://127.0.0.1:4174/ do Studio server — alarma apos 2 falhas consecutivas (ponto cego do sweep --state=failed pra unit zumbi, #5759)",
+    steps: [{ key: "alarm", script: "scripts/studio-liveness-alarm.ts" }],
+    logPath: "studio-liveness-alarm/.alarm.log",
+    // Issue sugere 10min (janela do incidente foi ~15min, precisa ser
+    // detectável em <=2 ciclos). `ScheduledTaskSchedule.interval` só suporta
+    // granularidade de HORA inteira (`hours: number`, sem `minutes` — ver
+    // `scheduleToOnCalendar` em systemd-units.ts, `0/N:00:00`); o precedente
+    // mais fino já registrado é 1h (Diaria-Clarice-Dashboard-Precompute).
+    // Estender o schema pra granularidade de minuto tocaria
+    // `scheduled-task-status.ts` (cálculo de staleness/overdue usado por
+    // várias tasks) de forma mais ampla que o escopo desta issue — decisão:
+    // usar o interval mais fino JÁ suportado (1h) em vez de expandir o
+    // schema. Efeito: 2 falhas consecutivas cobrem até ~2h de indisponibilidade
+    // não detectada (mais frouxo que os 10min sugeridos, mas ainda um
+    // limite superior conhecido — e uma melhora categórica sobre o estado
+    // anterior, "o editor é o monitor"). Se o editor quiser detecção mais
+    // apertada, o próximo passo é uma issue própria pra granularidade de
+    // minuto no schema, não um workaround ad-hoc aqui.
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#5759",
+  },
+  {
     name: "Diaria-Edicao-Diaria-Staleness-Alarm",
     description:
       "alarme de staleness especifico do diaria-edicao-diaria.timer (nunca disparou vs disparou-e-falhou; #5563)",
