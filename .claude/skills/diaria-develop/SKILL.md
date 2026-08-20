@@ -138,7 +138,8 @@ reais da sessão que motivou a issue, todos meus, #5769):**
 | "Começo nela assim que este review voltar" | trata review/CI em background como bloqueio de turno | pegar a próxima unidade agora, retomar quando notificar (item 3 abaixo) |
 | "Aviso quando o fleet voltar" | mesmo padrão do anterior, fim de turno em vez de log | mesma correção — continuar trabalhando, não anunciar espera |
 
-**As 4 resoluções concretas que valem a partir daqui:**
+**As 3 resoluções concretas que valem a partir daqui (a 4ª — o que continua
+parando a sessão — é o parágrafo seguinte, sem afrouxamento):**
 
 1. **Default de encadeamento dentro de uma unidade reivindicada.** Terminar o
    item N de uma issue já reivindicada por esta sessão e ter item N+1 na
