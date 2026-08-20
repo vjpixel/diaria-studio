@@ -35,14 +35,15 @@
  *     golden cegamente.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 
-import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
+import { renderHTML, buildConviteAmigoShareLink } from "../scripts/lib/newsletter-render-html.ts";
 import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,6 +51,22 @@ const SNAPSHOT_PATH = resolve(
   ROOT,
   "test/__snapshots__/ds-golden-full-render.snap.json",
 );
+
+// #5794 (revisão 260821): renderHTML injeta o bloco "Convide um amigo" via
+// `readSnippetFile("convite-amigo-whatsapp.md")` — sem override, ele lê a
+// `data/snippets/` REAL da máquina (gitignored, ausente em CI/clone fresco),
+// tornando este golden não-determinístico entre ambientes. Fixture isolada,
+// mesmo padrão de `test/convite-amigo-whatsapp-5794.test.ts`.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "ds-golden-snippet-fixture-"));
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+writeFileSync(
+  join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "convite-amigo-whatsapp.md"),
+  `Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](${buildConviteAmigoShareLink()})\n`,
+  "utf8",
+);
+after(() => {
+  rmSync(SNIPPETS_FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 // ── Fixture sintética completa ────────────────────────────────────────────────
 
@@ -285,7 +302,7 @@ function assertOrder(html: string, before: string, after: string): void {
 describe("ds-golden-full-render (#2108) — golden de página inteira do renderHTML", () => {
   // Renderiza UMA vez; todos os testes neste describe compartilham o mesmo output.
   // Pure — fixture determinística → output estável entre execuções.
-  const html = renderHTML(FULL_FIXTURE);
+  const html = renderHTML(FULL_FIXTURE, { rootDir: SNIPPETS_FIXTURE_ROOT });
 
   // ── Sanidade básica ───────────────────────────────────────────────────────
 
@@ -427,7 +444,15 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     // Padrão de bloco vazio: <tr><td ...></td></tr> com só whitespace dentro.
     // Detecta seções renderizadas sem items (items.length === 0 → renderSection
     // retorna "" mas erros de composição podem vazar <tr> vazio no join).
-    const emptyTd = /<td[^>]*>\s*<\/td>/g;
+    //
+    // Exceção conhecida e INTENCIONAL (#5794, revisão 260821 — achada quando o
+    // bloco "Convide um amigo" virou snippet e passou a usar o formato CTA-pill
+    // pela 1ª vez neste golden): `renderIntroCallout` (linha ~876 de
+    // newsletter-render-html.ts) fecha TODO box CTA-pill com
+    // `<td style="padding:0 0 16px;"></td>` — um espaçador de rodapé via célula
+    // vazia (truque comum em HTML de e-mail pra padding-bottom compatível com
+    // Outlook), não um bloco quebrado. Excluído explicitamente do detector.
+    const emptyTd = /<td(?![^>]*padding:0 0 16px)[^>]*>\s*<\/td>/g;
     const empties = [...html.matchAll(emptyTd)];
     // Permitir no máximo 0 — qualquer hit é candidate a bloco quebrado.
     assert.equal(

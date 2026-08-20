@@ -30,6 +30,7 @@ import {
 } from "./newsletter-parse.ts";
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
+import { readSnippetFile } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
 import type { AprofundeItem, HubLink } from "../extract-destaques.ts"; // #3920 / #4907
@@ -353,6 +354,10 @@ export interface RenderOpts {
   /** #4266 — ver `Esp`. Default `"beehiiv"` — comportamento inalterado pra
    * todo caller existente. */
   esp?: Esp;
+  /** #5794 — override de teste pra `readSnippetFile` (usado por
+   * `renderConviteAmigo`): quando fornecido, lê `data/snippets/` a partir
+   * deste root em vez da raiz real do repo. Produção nunca passa. */
+  rootDir?: string;
 }
 
 /** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
@@ -1791,31 +1796,29 @@ export function buildConviteAmigoShareLink(): string {
 }
 
 /**
- * Renderiza o bloco fixo "CONVIDE UM AMIGO A ASSINAR" (#5794, pedido de
- * leitor) — box bege (opção B decidida na issue, sem kicker) com a frase
- * "Conhece alguém que ia gostar de receber esta newsletter?" seguida do
- * botão "Convide pelo WhatsApp →", que compartilha o CONVITE DE ASSINATURA
- * (link pra home, texto de convite) — rotulado de forma DISTINTA do botão
- * por-destaque `renderWhatsappShare` ("Compartilhar no WhatsApp" —
- * compartilha a notícia D1) para evitar exatamente a confusão relatada pelo
- * leitor na issue de origem. Fixo — não depende de destaques nem de edição,
- * sempre renderiza. Painel bege (fundo `${SURFACE}`, sem borda,
- * `border-radius:12px`) — mesmo padrão do box de Sorteio/É IA?, não o pill
- * de contorno usado no botão de compartilhar notícia.
+ * Renderiza o bloco fixo "Convide um amigo" (#5794, pedido de leitor;
+ * revisado 260821 — virou snippet de verdade em vez de copy hardcoded,
+ * pedido do editor: "no mesmo padrão dos outros snippets, mas sem título").
+ * Lê `data/snippets/convite-amigo-whatsapp.md` (frase + link `wa.me/?text=`
+ * num parágrafo CTA-only) e renderiza via `renderBoxDivulgacao` — mesmo
+ * dispatcher de formato usado pelos boxes de slot 1/2/3 (o parágrafo
+ * CTA-only aciona automaticamente o formato "carrinho/CTA pill", igual aos
+ * demais snippets com botão). **Sem kicker "Divulgação"** — diferente dos
+ * slots 1/2/3, que sempre emitem o kicker incondicionalmente, este bloco
+ * nunca chama `renderDivulgacaoSeparator` (decisão explícita do editor).
+ * Fixo — não depende de destaques nem de edição, sempre renderiza quando o
+ * snippet existe. Fail-soft: snippet ausente (clone fresco/sessão cloud sem
+ * `data/`) → retorna string vazia, não lança (mesma convenção de
+ * `readSnippetFile`).
  */
-export function renderConviteAmigo(): string {
-  const shareLink = buildConviteAmigoShareLink();
-  const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
-
-  return `<!-- Convide um amigo a assinar -->
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
-      ${bodyP("0", "Conhece alguém que ia gostar de receber esta newsletter?")}
-      <div style="text-align:center;margin-top:12px;">
-        <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Convide pelo WhatsApp →</a>
-      </div>
-    </td>
-  </tr></table>`;
+export function renderConviteAmigo(rootDir?: string): string {
+  const box = readSnippetFile("convite-amigo-whatsapp.md", rootDir);
+  if (!box) return "";
+  // plainFirstParagraph=true: a frase de convite é prosa corrida, não título
+  // serif 26px — mesmo tratamento do box de agradecimento a apoiadores
+  // (isAgradecimentoBox), que também tem 1º parágrafo + CTA pill sem título.
+  return `<!-- Convide um amigo -->
+  ${renderBoxDivulgacao(box, null, false, false, false, null, true)}`;
 }
 
 /**
@@ -2350,7 +2353,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // encerrar" (não colado no D1, pra não competir com o "Compartilhar no
   // WhatsApp" que vive dentro do D1 desde #5152) — sempre presente, não
   // depende de destaques/edição.
-  parts.push(renderConviteAmigo());
+  parts.push(renderConviteAmigo(opts.rootDir));
 
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
