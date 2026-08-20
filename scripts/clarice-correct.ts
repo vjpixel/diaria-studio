@@ -70,6 +70,11 @@
  *   2 — env CLARICE_API_KEY ausente
  *   3 — HTTP non-2xx da API Clarice (todas as tentativas esgotadas)
  *   4 — I/O (read --in ou write --out/--corrected-out)
+ *   5 — guard de staleness do --corrected-out (#5755): o arquivo escrito
+ *       tem mtime ANTERIOR ao início desta chamada — sinal de que o write
+ *       não refletiu esta execução (ex: no-op silencioso do fallback REST
+ *       em background já observado ao vivo, #5755). Nunca confiar no
+ *       conteúdo nesse caso — ver `checkCorrectedOutFreshness` abaixo.
  */
 
 import "dotenv/config";
@@ -88,6 +93,7 @@ import {
 } from "./lib/clarice-chunk.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { mtimeMs } from "./lib/mtime.ts";
 
 // #2835 — núcleo REST + retry/backoff extraído pra scripts/lib/clarice-correct-engine.ts
 // (movimentação pura). Reexportado abaixo pra preservar os call-sites/imports de teste
@@ -717,6 +723,73 @@ export async function withClariceRetryChunked(
 }
 
 // ---------------------------------------------------------------------------
+// Guard de staleness do --corrected-out (#5755)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resultado de `checkCorrectedOutFreshness` — pure, sem I/O além do
+ * `statFn` injetado (default `mtimeMs`, ver `scripts/lib/mtime.ts`).
+ */
+export interface CorrectedOutFreshnessResult {
+  /** `true` quando o arquivo é mais antigo que `callStartMs` — sinal de que
+   * esta chamada NÃO reescreveu o arquivo (no-op silencioso). */
+  stale: boolean;
+  /** mtime do arquivo em ms, ou `null` se ausente/inacessível. */
+  mtimeMs: number | null;
+  callStartMs: number;
+}
+
+/**
+ * Guard determinístico (#5755, achado ao vivo na edição 260820): uma chamada
+ * em background de `--retry` pode terminar sem disparar nenhuma requisição
+ * HTTP nova (sem erro, sem entrada fresca de `clarice_rest_attempt`) e ainda
+ * assim deixar `--corrected-out` no disco com o conteúdo de uma execução
+ * ANTERIOR — risco real de "correção" reverter uma reescrita mais recente do
+ * texto se aplicada sem checagem. Este guard compara o mtime do arquivo
+ * (lido DEPOIS do write que esta própria execução tentou fazer) contra
+ * `callStartMs` — um timestamp capturado no INÍCIO da execução, antes de
+ * qualquer I/O. Um mtime anterior ao início da chamada não pode ter sido
+ * produzido por esta execução — é sempre conteúdo de uma execução anterior.
+ *
+ * `mtimeMs === null` (arquivo ausente) nunca é staleness — `writeFileSync`
+ * já teria lançado (exit 4, ver `main`) antes deste guard rodar se o write
+ * tivesse falhado a ponto do arquivo não existir.
+ *
+ * A causa raiz do no-op silencioso em si (item 1 da sugestão da issue —
+ * processo não disparando? race de working directory? cache de resultado
+ * anterior?) segue como investigação em aberto, não coberta por este guard —
+ * ver docstring do topo do arquivo. O guard é a mitigação determinística
+ * (item 2 da issue): nunca deixar o sintoma passar silenciosamente, mesmo
+ * sem a causa raiz identificada.
+ *
+ * `toleranceMs` (default `FRESHNESS_TOLERANCE_MS`) absorve a diferença entre
+ * `Date.now()` e o clock que o filesystem usa pra popular `mtime` — medido
+ * ao vivo: um `writeFileSync` seguido de `statSync` NO MESMO processo já
+ * produziu `mtimeMs` ~1-2ms ANTERIOR ao `callStartMs` capturado alguns
+ * microssegundos antes (resolução/fonte de clock distintas entre
+ * `Date.now()` e o timestamp que o kernel grava no inode). Sem tolerância,
+ * o guard falsearia positivo (abortaria uma escrita legítima desta própria
+ * execução) — o objetivo é detectar um arquivo VELHO de uma execução
+ * anterior (diferença de segundos/minutos), não uma diferença de
+ * milissegundos por jitter de clock.
+ */
+export const FRESHNESS_TOLERANCE_MS = 2_000;
+
+export function checkCorrectedOutFreshness(
+  path: string,
+  callStartMs: number,
+  statFn: (p: string) => number | null = mtimeMs,
+  toleranceMs: number = FRESHNESS_TOLERANCE_MS,
+): CorrectedOutFreshnessResult {
+  const currentMtimeMs = statFn(path);
+  return {
+    stale: currentMtimeMs !== null && currentMtimeMs < callStartMs - toleranceMs,
+    mtimeMs: currentMtimeMs,
+    callStartMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -813,6 +886,9 @@ export function parseCliArgs(argv: string[]): CliArgs | null {
 
 /** Exportado pra testes CLI end-to-end (#2798) — invocado automaticamente no bottom do arquivo. */
 export async function main(): Promise<void> {
+  // #5755 — capturado ANTES de qualquer I/O, é o "início desta chamada" que
+  // checkCorrectedOutFreshness usa como referência.
+  const callStartMs = Date.now();
   const args = parseCliArgs(process.argv.slice(2));
   if (!args) {
     console.error(
@@ -928,6 +1004,20 @@ export async function main(): Promise<void> {
     } catch (e) {
       console.error(`erro escrevendo --corrected-out: ${(e as Error).message}`);
       process.exit(4);
+    }
+
+    // #5755 — guard de staleness: falha explicitamente se o arquivo
+    // recém-escrito tiver mtime anterior ao início desta chamada (sinal de
+    // no-op silencioso — ver docstring de checkCorrectedOutFreshness).
+    const freshness = checkCorrectedOutFreshness(args.correctedOutPath, callStartMs);
+    if (freshness.stale) {
+      console.error(
+        `[clarice-correct] --corrected-out (${args.correctedOutPath}) tem mtime anterior ao início desta chamada ` +
+          `(mtime=${freshness.mtimeMs}, callStart=${freshness.callStartMs}) — provável no-op silencioso ` +
+          `(#5755). NÃO use este arquivo: rode novamente em foreground e confira se novas entradas ` +
+          `clarice_rest_attempt aparecem em data/run-log.jsonl.`,
+      );
+      process.exit(5);
     }
   }
 

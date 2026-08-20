@@ -996,6 +996,46 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 9, minute: 50 },
     issue: "#5704",
   },
+  {
+    name: "Diaria-Hub-Pages-Build",
+    description: "build semanal de todos os hubs tematicos (--all --check-facts)",
+    // `--check-facts` (#5060/#5102) roda o gate de fact-check antes de
+    // escrever cada `.generated.ts` — `--all` sozinho NÃO aciona esse gate
+    // (é opt-in por flag, ver `scripts/build-hub-page.ts`), então esta task
+    // passa a flag explicitamente pra nunca contornar a verificação de
+    // conteúdo. Sem `--skip-fact-check`: um hub sem relatório fresco de
+    // fact-check ABORTA a run inteira (`process.exit(2)`, mesmo comportamento
+    // já existente do script pra qualquer invocação `--check-facts`) — decisão
+    // deliberada (item 2 do #5754): falhar alto e visível é melhor que
+    // publicar conteúdo não verificado numa run desassistida semanal.
+    //
+    // O script só ESCREVE `{slug}.generated.ts` local — NUNCA commita nem
+    // deploya o Worker `arquivo` sozinho (decisão explícita do #5754, opção
+    // (a) da issue: "gerar e reportar diff, deploy automático de Worker é
+    // blast radius que não foi pedido aqui"). Regenerar sem commitar+deployar
+    // não muda nada em produção; cabe ao editor (ou a uma rodada
+    // overnight/develop que veja o diff) revisar e deployar manualmente.
+    steps: [{ key: "build", script: "scripts/build-hub-page.ts", args: ["--all", "--check-facts"] }],
+    logPath: "hubs/.build-all.log",
+    // Domingo 08:05 BRT (a sugestão original da issue era 08:00 em ponto —
+    // 5min de folga porque `minute:0` bateria em toda batida de interval que
+    // divide 8, ex: Diaria-Brevo-Diaria-Guardrail/Diaria-Cursos-Error-Alarm
+    // (4h/2h) — mesmo raciocínio de #5249, que moveu pra :30 pelo mesmo
+    // motivo) — antes da janela 09:30-10:20 dos checks de drift/staleness
+    // matinais (Diaria-Hub-Staleness-Check 09:30 diário, Diaria-Hub-Drift-Check
+    // 10:00 diário, Diaria-Robots-Txt-Drift-Check 10:15 diário,
+    // Diaria-Plugin-Review-Drift-Check 10:20 diário), pra que eles já vejam
+    // o resultado do build da semana. Sem colisão com nenhuma outra weekly
+    // de domingo já registrada (03:00 Beehiiv-Backup, 07:00
+    // Geo-Citation-Monitor, 10:30 Geo-Citation-Staleness-Alarm, 11:00
+    // On-Hold-Vencimento-Alarm, 22:00 LinkedIn-Weekly-Staleness-Alarm).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 8, minute: 5 },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607/#5704 acima) — arme real
+    // via `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) é ação POSTERIOR do editor.
+    issue: "#5754",
+  },
 ];
 
 /**
