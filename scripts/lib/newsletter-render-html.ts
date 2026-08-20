@@ -415,6 +415,24 @@ export function isAgradecimentoBox(text: string | null | undefined): boolean {
 }
 
 /**
+ * 260821: detecta o box "Convide um amigo" (#5794/#5817) quando colado
+ * manualmente num slot de divulgação (D1/D2, D2/D3 ou pós-D3) — pedido do
+ * editor na revisão ao vivo da edição 260821, que trocou a posição fixa
+ * (sempre antes de "Para encerrar") por um slot específico. Mesmo
+ * mecanismo de `isAgradecimentoBox`: o 1º parágrafo é uma frase de convite
+ * em prosa corrida, não um título de divulgação — sem esta detecção, o
+ * dispatcher de formato (`renderBoxDivulgacao`) trataria a frase como
+ * título serif 26px por padrão (mesmo bug que a issue original pediu pra
+ * corrigir quando o bloco era fixo, agora reaparecendo pelo caminho de
+ * slot manual). Detecta pela frase exata usada em
+ * `data/snippets/convite-amigo-whatsapp.md` — se o texto do convite mudar
+ * lá, atualizar aqui também.
+ */
+export function isConviteAmigoBox(text: string | null | undefined): boolean {
+  return !!text && /^\s*Conhece algu[ée]m que ia gostar de receber esta newsletter\?/iu.test(text);
+}
+
+/**
  * #3269: movido pra scripts/lib/shared/email-components.ts — 1º componente
  * genuinamente compartilhado entre diária e mensal (era um import cruzado
  * ad-hoc de monthly-render.ts direto pra este arquivo, ver #3181 e a análise
@@ -2313,6 +2331,10 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           assignedBox.imageExplicit,
           assignedBox.imagePortrait,
           assignedBox.imageAlt,
+          // #5794/#5817 (260821): "Convide um amigo" colado manualmente num
+          // slot tem 1º parágrafo em prosa corrida (frase de convite), não
+          // título de divulgação — mesmo tratamento de isAgradecimentoBox.
+          isConviteAmigoBox(assignedBox.content),
         ),
       );
     }
