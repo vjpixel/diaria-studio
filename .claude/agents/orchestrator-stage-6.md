@@ -51,6 +51,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   node -e "const s='{AAMMDD}';const d=new Date('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6)+'T09:00:00Z');process.stdout.write(d.toISOString())"
   ```
+- **Ler `_internal/brevo-diaria-published.json` (#5772), se existir** → extrair `campaign_id`, `status`. Ausente = canal Brevo pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) — nada a agendar aqui, pular §6d-brevo abaixo sem erro.
 
 **Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
 
@@ -64,6 +65,7 @@ Compor o resumo que sera exibido no gate:
   - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo`; se issues → listar.
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
 - **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`).
+- **Brevo diária (#5772):** se `_internal/brevo-diaria-published.json` existe, `campaign_id` + status atual ("rascunho pronto pra agendar"). Se ausente, omitir esta linha (canal pulado/falhou na Etapa 5).
 
 ### 6b2. Revisao de pedidos editoriais registrados (#4966)
 
@@ -105,7 +107,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 ### 6c. GATE HUMANO — Schedule Beehiiv
 
-**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar default (amanha 06:00 BRT). Logar:
+**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar default (amanha 06:00 BRT) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
   --message "Stage 6 auto-agendado via --no-gates: {scheduled_at_iso}" \
@@ -139,6 +141,9 @@ Social agendado:
   LinkedIn  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
   Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
 
+{bloco Brevo diária, SÓ se _internal/brevo-diaria-published.json existir:}
+Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv no mesmo horário abaixo (#5772)
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel
 Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
@@ -147,11 +152,11 @@ Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
 {POST_PIXEL_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Agendar envio da newsletter no Beehiiv?
+Agendar envio da newsletter no Beehiiv{ + " e a campanha Brevo diária" se o bloco acima apareceu}?
 
   sim          → agenda para amanha 06:00 BRT (default)
   sim HH:MM    → agenda para amanha {horario informado} BRT
-  abortar      → nao agenda; rascunho permanece, sentinel nao escrito
+  abortar      → nao agenda nenhum dos dois; rascunhos permanecem, sentinel nao escrito
   Qualquer outra entrada → repetir (fail-closed)
 ```
 
@@ -160,6 +165,8 @@ Aguardar resposta do editor. Interpretar:
 - `sim HH:MM` → `scheduled_at` = amanha `HH:MM` BRT; validar HH 0-23, MM 0-59.
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
+
+**Um único `scheduled_at` serve os dois canais (#5772)** — decisão do editor: o gate não pergunta o horário 2×. Se a campanha Brevo não existir (`_internal/brevo-diaria-published.json` ausente), o bloco acima nunca aparece e §6d-brevo (abaixo) é pulado sem erro — a resposta do editor vale só pro Beehiiv nesse caso.
 
 Logar resposta:
 ```bash
@@ -290,6 +297,35 @@ o guard (passo 2 acima, mesmo `--out`) — repetir até sair `0`. Só então
 prosseguir para §6e.
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
+
+### 6d-brevo. Agendar campanha Brevo diária (#5772)
+
+**Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c (Beehiiv) — decisão do editor, #5772: um único gate, um único horário pros dois canais.
+
+```bash
+npx tsx scripts/schedule-daily-brevo.ts \
+  --edition-dir {EDITION_DIR}/ \
+  --scheduled-at {scheduled_at_iso}
+```
+
+O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
+
+Exit codes:
+| Exit | Significado | Ação |
+|------|-------------|------|
+| `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". |
+| `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
+| `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
+| `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
+  --level {info se exit 0, warn se 3/4, info se 2} \
+  --message "brevo-diaria stage6 schedule: exit {code}" \
+  --details '{json de saída do script}'
+```
+
+**Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
@@ -551,5 +587,7 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 **#3714:** incluir a linha `Relatório: {studio_report_url}` (valor lido do summary JSON de 6b-8) — é o link primário do relatório desta edição agora que o draft de Gmail foi removido. Se `studio_report_url` vier `null` (registro falhou, fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir a linha.
 
 **#4924:** se 6b-9 imprimiu algo, incluir `⚠ Hubs temáticos defasados` no resumo, após a linha do Relatório. Stdout vazio → omitir a seção (sem afirmar "hubs em dia").
+
+**#5772:** se `_internal/brevo-diaria-published.json` existia em §6a, incluir a linha `Brevo diária: agendado para {scheduled_at} ✓` (exit 0 de §6d-brevo) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4) no resumo. Se o arquivo nunca existiu (canal pulado/falhou na Etapa 5), omitir a linha por completo — não afirmar "Brevo diária: pulado" quando o canal nunca fez parte desta edição.
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e metricas finais.

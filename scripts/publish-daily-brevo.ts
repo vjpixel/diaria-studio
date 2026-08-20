@@ -145,15 +145,22 @@ interface PlatformConfig {
  * `--send-test` de fato dispara, preservando `campaign_id`/`subject`/
  * `preview_text`/`list_id`/`created_at` do estado anterior (ver
  * `buildTestSentPublishedState`) — `test_email`/`test_sent_at` só existem
- * nesse status. */
+ * nesse status.
+ *
+ * `status: "scheduled"` (#5772): escrito por `scripts/schedule-daily-brevo.ts`
+ * na Etapa 6, depois que o PUT de agendamento é confirmado via GET (nunca
+ * a partir só do PUT) — mesma divisão 5/6 já usada pro Beehiiv (rascunho na
+ * 5, agendamento na 6). `scheduled_at` só existe nesse status. */
 export interface BrevoDiariaPublished {
   campaign_id: number;
   subject: string;
   preview_text: string;
-  status: "draft" | "test_sent";
+  status: "draft" | "test_sent" | "scheduled";
   list_id: number;
   test_email?: string;
   test_sent_at?: string;
+  /** #5772 — ISO 8601, só presente quando `status === "scheduled"`. */
+  scheduled_at?: string;
   created_at: string;
 }
 
@@ -176,7 +183,7 @@ export function readBrevoDiariaPublished(editionDir: string): BrevoDiariaPublish
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<BrevoDiariaPublished>;
     if (typeof parsed.campaign_id !== "number") return null;
-    if (parsed.status !== "draft" && parsed.status !== "test_sent") return null;
+    if (parsed.status !== "draft" && parsed.status !== "test_sent" && parsed.status !== "scheduled") return null;
     return {
       campaign_id: parsed.campaign_id,
       subject: typeof parsed.subject === "string" ? parsed.subject : "",
@@ -185,6 +192,7 @@ export function readBrevoDiariaPublished(editionDir: string): BrevoDiariaPublish
       list_id: typeof parsed.list_id === "number" ? parsed.list_id : 0,
       test_email: typeof parsed.test_email === "string" ? parsed.test_email : undefined,
       test_sent_at: typeof parsed.test_sent_at === "string" ? parsed.test_sent_at : undefined,
+      scheduled_at: typeof parsed.scheduled_at === "string" ? parsed.scheduled_at : undefined,
       created_at: typeof parsed.created_at === "string" ? parsed.created_at : "",
     };
   } catch {
@@ -274,6 +282,16 @@ export function buildTestSentPublishedState(
   testSentAt: string,
 ): BrevoDiariaPublished {
   return { ...base, status: "test_sent", test_email: testEmail, test_sent_at: testSentAt };
+}
+
+/**
+ * Pura (#5772) — estado gravado pela Etapa 6 (`scripts/schedule-daily-brevo.ts`)
+ * depois que o agendamento da campanha é confirmado via GET (nunca a partir
+ * só do PUT). Preserva o resto de `base` por spread, mesma disciplina de
+ * `buildTestSentPublishedState`.
+ */
+export function buildScheduledPublishedState(base: BrevoDiariaPublished, scheduledAt: string): BrevoDiariaPublished {
+  return { ...base, status: "scheduled", scheduled_at: scheduledAt };
 }
 
 /** `06-public-images.json` vive na RAIZ da edição (produzido por
