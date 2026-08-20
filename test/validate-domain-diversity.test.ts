@@ -92,4 +92,44 @@ https://theverge.com/d
     const report = validateDomainDiversity(md);
     assert.equal(report.ok, true);
   });
+
+  // #5813: rodapé fixo da própria diar.ia.br (Cursos/Livros/Arquivo/É IA?/posts
+  // relacionados) tem 6-8 links pra subdomínios *.diar.ia.br em TODA edição —
+  // sem excluir hosts não-editoriais, o gate GATE-BLOCKING bloquearia sempre.
+  it("rodapé com múltiplos links *.diar.ia.br não conta como violação (host não-editorial)", () => {
+    const md = `
+Curadorias:
+- [Cursos](https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape)
+- [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
+
+Da diar.ia.br:
+- [Edições anteriores](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [Jogar É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
+- [Tudo sobre OpenAI](https://arquivo.diar.ia.br/temas/openai-chatgpt)
+- [Post relacionado 1](https://diar.ia.br/p/algum-post-1)
+- [Post relacionado 2](https://diar.ia.br/p/algum-post-2)
+`;
+    const report = validateDomainDiversity(md);
+    assert.equal(report.ok, true);
+    assert.equal(report.violations.length, 0);
+  });
+
+  it("mesmo com rodapé *.diar.ia.br presente, violação de domínio editorial real (3+ URLs) continua sendo detectada", () => {
+    const md = `
+**RADAR**
+- https://canaltech.com.br/a
+- https://canaltech.com.br/b
+- https://canaltech.com.br/c
+
+Da diar.ia.br:
+- [Edições anteriores](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [Jogar É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
+- [Post relacionado](https://diar.ia.br/p/algum-post)
+`;
+    const report = validateDomainDiversity(md);
+    assert.equal(report.ok, false);
+    assert.equal(report.violations.length, 1);
+    assert.equal(report.violations[0].domain, "canaltech.com.br");
+    assert.equal(report.violations[0].urls.length, 3);
+  });
 });
