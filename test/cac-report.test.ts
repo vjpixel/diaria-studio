@@ -38,6 +38,11 @@ describe("parseCacReportArgs", () => {
     assert.equal(parseCacReportArgs(["--no-register"]).register, false);
   });
 
+  it("--strict default false, --strict liga (#5860)", () => {
+    assert.equal(parseCacReportArgs([]).strict, false);
+    assert.equal(parseCacReportArgs(["--strict"]).strict, true);
+  });
+
   it("--json/--snapshot/--root/--spend/--origem", () => {
     const args = parseCacReportArgs([
       "--json",
@@ -128,6 +133,29 @@ describe("formatCacReportMarkdown", () => {
     const md = formatCacReportMarkdown(report, budget);
     assert.match(md, /canal\(is\) desconhecido\(s\) em spend\.csv/);
     assert.match(md, /Beehiiv Boost\b/);
+  });
+
+  it("canal desconhecido produz a seção 'Gasto não atribuído' e NUNCA uma linha measured/n=0 fantasma (#5860)", () => {
+    const spendRows: SpendRow[] = [
+      { canal: "Beehiiv Boost", mes: "2026-07", moeda: "BRL", valor: 397.08, fonte: "teste" }, // typo, sem "s"
+    ];
+    const report = buildCacReport(spendRows, []);
+    const budget = computeMonthBudgetUsage(spendRows, "2026-08");
+    const md = formatCacReportMarkdown(report, budget);
+    assert.match(md, /## Gasto não atribuído/);
+    assert.match(md, /\| Beehiiv Boost \|/);
+    // A linha nunca deveria aparecer na tabela principal como measured n=0 —
+    // "Cadastros" é uma coluna só da tabela de ranking/funil; o bloco de
+    // gasto não atribuído tem só canal/gasto/mês/fonte (4 colunas).
+    assert.doesNotMatch(md, /\| Beehiiv Boost \| — \|/, "não deveria haver linha measured (Sub-canal=—) pra canal desconhecido");
+  });
+
+  it("canal reconhecido NUNCA entra na seção 'Gasto não atribuído' (#5860)", () => {
+    const spendRows: SpendRow[] = [{ canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 956.21, fonte: "teste" }];
+    const report = buildCacReport(spendRows, []);
+    const budget = computeMonthBudgetUsage(spendRows, "2026-08");
+    const md = formatCacReportMarkdown(report, budget);
+    assert.doesNotMatch(md, /## Gasto não atribuído/);
   });
 
   it("não emite aviso de canal desconhecido quando todos os canais são reconhecidos", () => {
@@ -246,6 +274,39 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
       assert.ok(entry, "entrada cac-2026-08-14 deveria existir no registry");
       assert.equal(entry.kind, "cac");
       assert.equal(entry.url, "/relatorios/cac-2026-08-14");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--strict com canal não atribuído -> exit 1; sem --strict, mesmo cenário -> exit 0 (#5860)", () => {
+    const root = mkdtempSync(join(tmpdir(), "cac-report-strict-"));
+    try {
+      const backupRoot = join(root, "beehiiv-backup");
+      const snapshotDir = join(backupRoot, "2026-08-14");
+      mkdirSync(snapshotDir, { recursive: true });
+      writeFileSync(join(snapshotDir, "subscribers.jsonl"), subscriberLine() + "\n", "utf8");
+
+      const spendPath = join(root, "spend.csv");
+      // "Beehiiv Boost" (sem "s") é um typo — canal não reconhecido.
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nBeehiiv Boost,2026-07,BRL,397.08,teste\n", "utf8");
+
+      const origemPath = join(root, "origem-inexistente.json");
+
+      const exitBefore = process.exitCode;
+
+      process.exitCode = undefined;
+      main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register"], root);
+      const exitLenient = process.exitCode;
+
+      process.exitCode = undefined;
+      main(["--root", backupRoot, "--spend", spendPath, "--origem", origemPath, "--no-register", "--strict"], root);
+      const exitStrict = process.exitCode;
+
+      process.exitCode = exitBefore;
+
+      assert.notEqual(exitLenient, 1, "sem --strict, canal não atribuído não deveria falhar o processo");
+      assert.equal(exitStrict, 1, "com --strict, canal não atribuído deveria falhar o processo");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

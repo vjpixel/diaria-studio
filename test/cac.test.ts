@@ -397,9 +397,64 @@ describe("buildCacReport", () => {
     const googleRow = report.rows.find((r) => r.canal === "Google Ads") as CacMeasuredRow;
     assert.equal(googleRow.leitores, 1);
     assert.equal(googleRow.custoPorLeitor, 956.21);
-    // LinkedIn sem assinantes -> custoPorLeitor null -> vai pro fim
-    const linkedinIdx = report.rows.findIndex((r) => r.canal === "LinkedIn");
-    assert.equal(linkedinIdx, report.rows.length - 1);
+    // LinkedIn sem assinantes -> custoPorLeitor null -> "sem dado suficiente",
+    // NUNCA no fim do ranking ordenado (regressão #5859).
+    assert.equal(report.rankedRows.findIndex((r) => r.canal === "LinkedIn"), -1, "LinkedIn não deveria aparecer em rankedRows");
+    assert.equal(report.noDataRows.length, 1);
+    assert.equal(report.noDataRows[0].canal, "LinkedIn");
+  });
+
+  // ---------------------------------------------------------------------------
+  // rankedRows/noDataRows/zeroSpendRows (#5859) — regressão dos dois bugs da
+  // issue: "sem dado" indistinguível de "caríssimo" (vira +Infinity, cai no
+  // fim), e "gasto zero" indistinguível de "eficiente" (vira 0, sobe pro topo).
+  // ---------------------------------------------------------------------------
+  describe("rankedRows/noDataRows/zeroSpendRows (#5859)", () => {
+    it("linha measured com custoPorLeitor null NUNCA aparece em rankedRows — vai pra noDataRows, nunca ordenada como se fosse caríssima", () => {
+      const noDataRows: SpendRow[] = [spend({ canal: "Google Ads", valor: 100 })];
+      const report = buildCacReport(noDataRows, []); // nenhum assinante -> leitores=0 -> custoPorLeitor null
+      assert.deepEqual(
+        report.rankedRows.map((r) => r.canal),
+        [],
+      );
+      assert.equal(report.noDataRows.length, 1);
+      assert.equal(report.noDataRows[0].canal, "Google Ads");
+      assert.equal((report.noDataRows[0] as CacMeasuredRow).custoPorLeitor, null);
+    });
+
+    it("linha measured com gasto zero E leitores>0 NUNCA aparece em rankedRows — vai pra zeroSpendRows, nunca ordenada como se fosse eficiente", () => {
+      const zeroSpendRows: SpendRow[] = [
+        spend({ canal: "Google Ads", valor: 956.21 }),
+        spend({ canal: "LinkedIn", valor: 0, mes: "2026-08" }),
+      ];
+      const subs = [
+        sub({ utm_source: "android.googlequicksearchbox", stats: { total_received: 100, total_unique_clicked: 5, total_unique_opened: 40 } }),
+        sub({ email: "outro@example.com", utm_source: "linkedin", stats: { total_received: 100, total_unique_clicked: 5, total_unique_opened: 40 } }),
+      ];
+      const report = buildCacReport(zeroSpendRows, subs);
+      // LinkedIn tem leitor (custoPorLeitor calculável = 0) mas gasto é zero
+      // -> nunca deveria competir no ranking como "canal mais barato".
+      assert.equal(report.rankedRows.findIndex((r) => r.canal === "LinkedIn"), -1);
+      assert.equal(report.zeroSpendRows.length, 1);
+      assert.equal(report.zeroSpendRows[0].canal, "LinkedIn");
+      assert.equal((report.zeroSpendRows[0] as CacMeasuredRow).custoPorLeitor, 0);
+      // Google Ads (custo real > 0) segue ranqueável normalmente.
+      assert.deepEqual(
+        report.rankedRows.map((r) => r.canal),
+        ["Google Ads"],
+      );
+    });
+
+    it("rankedRows fica vazio (nunca lança) quando NENHUMA linha tem dado válido — boost-estimate também sai do ranking se o gasto for zero", () => {
+      const allZeroOrNoData: SpendRow[] = [
+        spend({ canal: "Google Ads", valor: 100 }), // sem assinante -> noData
+        spend({ canal: "Beehiiv Boosts", valor: 0, mes: "2026-08" }), // gasto zero -> zeroSpend
+      ];
+      const report = buildCacReport(allZeroOrNoData, []);
+      assert.deepEqual(report.rankedRows, []);
+      assert.equal(report.noDataRows.length, 1);
+      assert.equal(report.zeroSpendRows.length, 1);
+    });
   });
 
   it("totalGastoMedido exclui a linha boost-estimate (nunca soma no blended, requisito da issue)", () => {
@@ -420,11 +475,14 @@ describe("buildCacReport", () => {
     assert.equal(googleRow.amostraVazia, true);
   });
 
-  it("canal com typo (ex: 'Beehiiv Boost' sem 's') vira measured vazio E entra em unmappedChannels (finding 4 #5236, PR #5276)", () => {
+  it("canal com typo (ex: 'Beehiiv Boost' sem 's') NUNCA vira measured/n=0 fantasma — vai pra unattributedSpend + unmappedChannels (#5236 finding 4, revisto pelo #5860)", () => {
     const typoRows: SpendRow[] = [spend({ canal: "Beehiiv Boost", valor: 397.08 })];
     const report = buildCacReport(typoRows, []);
-    assert.equal(report.rows[0].kind, "measured");
+    assert.equal(report.rows.length, 0, "canal desconhecido não deve produzir nenhuma linha measured/boost em rows");
     assert.deepEqual(report.unmappedChannels, ["Beehiiv Boost"]);
+    assert.equal(report.unattributedSpend.length, 1);
+    assert.equal(report.unattributedSpend[0].label, "Beehiiv Boost");
+    assert.equal(report.unattributedSpend[0].spend.valor, 397.08);
   });
 
   it("canal reconhecido (Google Ads/LinkedIn/Beehiiv Boosts) NUNCA entra em unmappedChannels", () => {

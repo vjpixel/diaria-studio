@@ -537,6 +537,15 @@ export interface CacBoostRow {
 
 export type CacRow = CacMeasuredRow | CacBoostRow;
 
+/** Gasto de `spend.csv` cujo canal (ou canal/subcanal) não bateu com nenhuma
+ *  spec de `CHANNEL_KEY_SPECS` nem com a string exata `"Beehiiv Boosts"`
+ *  (#5860). `label` é o mesmo formato de `spendChannelLabel` (inclui
+ *  sub-canal quando presente, ex: `"Google Ads/Display"`). */
+export interface UnattributedSpend {
+  label: string;
+  spend: SpendRow;
+}
+
 /** Limiar de queda de abertura (pontos percentuais) a partir do qual um
  *  canal é sinalizado como "degradado" em relação ao snapshot anterior. */
 export const DEGRADATION_THRESHOLD_PCT = 5;
@@ -617,18 +626,49 @@ export interface CacBaseMetrics {
 }
 
 export interface CacReport {
+  /** UMA linha por linha de `spend.csv` cujo canal (ou canal/subcanal) bateu
+   *  com uma spec conhecida — NÃO inclui mais canal desconhecido (#5860:
+   *  canal desconhecido nunca mais vira uma linha `measured` n=0 fantasma,
+   *  vai só em `unattributedSpend`). Ordem = a de `spend.csv` (NÃO
+   *  ranqueada — ver `rankedRows`/`noDataRows`/`zeroSpendRows` abaixo, #5859).
+   *  Continua a fonte pro funil por canal e pra contagem total exibida no
+   *  Studio. */
   rows: CacRow[];
+  /** Subconjunto de `rows` com custo por leitor VÁLIDO (não-nulo) e gasto
+   *  REAL (> 0) — o único array seguro pra "ranking de eficiência", ordenado
+   *  ascendente por custo por leitor (canal mais barato primeiro). Corrige
+   *  #5859: antes, `rows` inteiro era ordenado com `custoPorLeitor == null`
+   *  virando `+Infinity` (foi pro fim, indistinguível de "caríssimo") e
+   *  gasto zero virando `0` (foi pro topo, indistinguível de "eficiente"). */
+  rankedRows: CacRow[];
+  /** Subconjunto de `rows` SEM dado suficiente pra ranquear — `measured` com
+   *  `custoPorLeitor == null` (leitores=0). Nunca aparece em `rankedRows`,
+   *  nunca cai silenciosamente no fim de um ranking ordenado (#5859). */
+  noDataRows: CacRow[];
+  /** Subconjunto de `rows` com custo por leitor CALCULÁVEL mas gasto
+   *  registrado = 0 (`spend.valor === 0`, ex: linha placeholder antes da
+   *  campanha começar a rodar) — custo zero não é eficiência infinita,
+   *  então nunca entra em `rankedRows` mesmo tendo `leitores > 0` (#5859).
+   *  Distinto de `noDataRows`: aqui HÁ dado, só não há gasto real ainda. */
+  zeroSpendRows: CacRow[];
   base: CacBaseMetrics;
   totalGastoMedido: number;
   internalFiltered: number;
   originApplied: boolean;
   /** Canais (ou `canal/subcanal`) de `spend.csv` que não bateram com nenhuma
    *  spec de `CHANNEL_KEY_SPECS` nem com a string exata `"Beehiiv Boosts"` —
-   *  a linha ainda aparece no relatório (`measured`, n=0/vazio, nunca some),
-   *  mas cai aqui pra sinalizar "canal desconhecido, confira o nome exato
-   *  em spend.csv" em vez de virar uma linha medida vazia sem aviso
-   *  (finding 4 do self-review #5236, PR #5276). */
+   *  rótulos-only, pra manter compatibilidade com os avisos existentes.
+   *  **Desde #5860, a linha correspondente NUNCA mais entra em `rows` como
+   *  `measured` n=0** (era indistinguível de "canal medido, zero leitores")
+   *  — o dado completo (spend + rótulo) vive em `unattributedSpend` abaixo. */
   unmappedChannels: string[];
+  /** Gasto de `spend.csv` cujo canal não bateu com nenhuma spec conhecida
+   *  (#5860) — cada entrada carrega a `SpendRow` completa (mês, valor,
+   *  fonte) pra a seção "Gasto não atribuído" do `.md` ser acionável (não só
+   *  o nome do canal). Nunca vira uma linha `measured`/`boost-estimate` —
+   *  gasto não atribuído é uma categoria própria, não um canal medido com
+   *  zero de tudo. */
+  unattributedSpend: UnattributedSpend[];
   /** Inverso de `unmappedChannels` (#5502 Parte A): canais com assinantes
    *  atribuídos no snapshot mas SEM nenhuma linha em `spend.csv` — a linha
    *  simplesmente não existe no relatório (não há como aparecer "vazia"
@@ -758,13 +798,39 @@ function assertNoMixedSubcanalRows(spendRows: SpendRow[]): void {
   }
 }
 
+/** Custo por leitor "cru" de uma linha, pra fins de ranking — `null` quando
+ *  não há dado suficiente (measured com `leitores=0`; nunca acontece pra
+ *  boost, cujo `leitoresMin` do âncora é sempre > 0). Boost usa o limite
+ *  MÁXIMO/mais caro — decisão conservadora pra não posicionar uma estimativa
+ *  otimista acima de um canal medido. @pure */
+function rawRankValue(row: CacRow): number | null {
+  if (row.kind === "measured") return row.custoPorLeitor;
+  return row.range.custoPorLeitorMax;
+}
+
+/** `true` quando o gasto registrado da linha é zero — custo zero não é
+ *  eficiência infinita, então uma linha assim nunca pode competir no ranking
+ *  ordenado por custo, mesmo tendo `leitores > 0` (#5859). @pure */
+function isZeroSpendRow(row: CacRow): boolean {
+  return row.spend.valor === 0;
+}
+
 /**
- * Monta o relatório completo: 1 linha por linha de `spend.csv`, ranqueada
- * por custo por leitor (canais medidos usam o valor direto; Boost usa o
- * limite MÁXIMO/mais caro — decisão conservadora pra não posicionar uma
- * estimativa otimista acima de um canal medido; documentado aqui pra
- * self-review). Canais sem `custoPorLeitor` (measured, leitores=0) vão pro
- * fim da lista.
+ * Monta o relatório completo: 1 linha por linha de `spend.csv` cujo canal é
+ * reconhecido (`rows`, ordem de `spend.csv` — canal desconhecido vai pra
+ * `unattributedSpend`, nunca vira uma linha `measured` n=0, #5860).
+ *
+ * O RANKING por custo por leitor é um sub-produto de `rows`, particionado em
+ * três buckets nunca misturados entre si (#5859 — a versão anterior ordenava
+ * `rows` inteiro com `custoPorLeitor == null` virando `+Infinity` (foi pro
+ * fim, indistinguível de "canal medido caríssimo") e gasto zero virando `0`
+ * (foi pro topo, indistinguível de "canal eficiente")):
+ *   - `rankedRows`: custo por leitor válido E gasto > 0 — ordenado ascendente
+ *     (canal mais barato primeiro), o único array seguro pra "ranking".
+ *   - `noDataRows`: `custoPorLeitor == null` (measured, leitores=0) — "sem
+ *     dado suficiente", nunca aparece em `rankedRows`.
+ *   - `zeroSpendRows`: custo calculável mas `spend.valor === 0` — nunca
+ *     aparece em `rankedRows` mesmo tendo leitores > 0.
  *
  * `subs`/`previousSubs` já devem estar filtrados de internos/teste e com o
  * mapa de origem aplicado — este é o núcleo de composição, não quem faz
@@ -803,44 +869,60 @@ export function buildCacReport(
   const windowedSubs = window ? filterSubsByWindow(subs, window) : subs;
 
   const unmappedChannels: string[] = [];
+  const unattributedSpend: UnattributedSpend[] = [];
 
-  const rows: CacRow[] = spendRows.map((spend) => {
+  const rows: CacRow[] = [];
+  for (const spend of spendRows) {
     const resolved = resolveChannelSubs(spend, subs);
     if (resolved.matched) {
       const effectiveWindow = intersectWindows(opts.window, resolved.specWindow);
       const resolvedPrevious = opts.previousSubs ? resolveChannelSubs(spend, opts.previousSubs).subs : undefined;
-      return computeMeasuredRow(spend, resolved.subs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow });
+      rows.push(computeMeasuredRow(spend, resolved.subs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow }));
+      continue;
     }
     // Canal sem spec conhecida: tratado como boost-estimate SÓ se for
-    // literalmente "Beehiiv Boosts" — qualquer outro canal desconhecido
-    // ainda assim precisa aparecer (nunca desaparece do relatório por não
-    // estar mapeado), então cai como "measured" com 0 assinantes
-    // encontrados (honesto: n=0/vazio) em vez de silenciosamente virar uma
-    // estimativa que não pediu pra ser.
+    // literalmente "Beehiiv Boosts".
     if (!spend.subcanal && spend.canal === "Beehiiv Boosts") {
-      return computeBoostRow(spend);
+      rows.push(computeBoostRow(spend));
+      continue;
     }
     // Nem CHANNEL_KEY_SPECS nem "Beehiiv Boosts" exato: canal (ou
     // canal/subcanal) DESCONHECIDO — ex: typo "Beehiiv Boost" sem "s", ou
     // "Meta"/"Microsoft Advertising" antes da spec entrar (#5493,
-    // deliberadamente bloqueado até observação real). Warning explícito —
-    // "parser tolerante mas barulhento" (issue #5236) vale pra nome de
-    // canal não reconhecido, não só pra coluna faltando. Nunca abortar: a
-    // linha entra como measured n=0/vazio de qualquer forma.
+    // deliberadamente bloqueado até observação real). **Desde #5860: NUNCA
+    // vira uma linha `measured` n=0** (era indistinguível de "canal medido,
+    // zero leitores reais") — a linha some de `rows` e o gasto vai pra
+    // `unattributedSpend`, onde `cac-report.ts` renderiza a seção própria
+    // "Gasto não atribuído" (nunca desaparece do relatório, só muda de
+    // bucket). Warning explícito continua — "parser tolerante mas
+    // barulhento" (issue #5236) vale pra nome de canal não reconhecido, não
+    // só pra coluna faltando.
     const label = spendChannelLabel(spend);
     unmappedChannels.push(label);
+    unattributedSpend.push({ label, spend });
     console.warn(
-      `[cac] canal desconhecido "${label}" em spend.csv — linha tratada como measured vazio (n=0), confira o nome exato ` +
+      `[cac] canal desconhecido "${label}" em spend.csv — gasto não atribuído (nunca renderizado como measured n=0, #5860), confira o nome exato ` +
         `(esperado: um de ${Object.keys(CHANNEL_GROUP_KEYS).join(", ")}, um sub-canal de CHANNEL_KEY_SPECS, ou exatamente "Beehiiv Boosts").`,
     );
-    return computeMeasuredRow(spend, []);
-  });
+  }
 
-  const rankValue = (row: CacRow): number => {
-    if (row.kind === "measured") return row.custoPorLeitor ?? Number.POSITIVE_INFINITY;
-    return row.range.custoPorLeitorMax ?? Number.POSITIVE_INFINITY;
-  };
-  rows.sort((a, b) => rankValue(a) - rankValue(b));
+  // Partição de ranking (#5859) — sobre `rows` já sem os canais
+  // desconhecidos (esses nunca competem por não terem `custoPorLeitor` no
+  // sentido que este ranking mede).
+  const rankedRows: CacRow[] = [];
+  const noDataRows: CacRow[] = [];
+  const zeroSpendRows: CacRow[] = [];
+  for (const row of rows) {
+    const value = rawRankValue(row);
+    if (value == null) {
+      noDataRows.push(row);
+    } else if (isZeroSpendRow(row)) {
+      zeroSpendRows.push(row);
+    } else {
+      rankedRows.push(row);
+    }
+  }
+  rankedRows.sort((a, b) => rawRankValue(a)! - rawRankValue(b)!);
 
   const totalGastoMedido = rows
     .filter((r): r is CacMeasuredRow => r.kind === "measured")
@@ -848,6 +930,9 @@ export function buildCacReport(
 
   return {
     rows,
+    rankedRows,
+    noDataRows,
+    zeroSpendRows,
     base: computeBaseMetrics(windowedSubs),
     totalGastoMedido,
     internalFiltered: opts.internalFiltered ?? 0,
@@ -855,6 +940,7 @@ export function buildCacReport(
     window,
     excludedMissingCreated,
     unmappedChannels,
+    unattributedSpend,
     channelsMissingSpend: computeChannelsMissingSpend(spendRows, subs),
   };
 }

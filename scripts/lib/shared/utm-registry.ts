@@ -1931,6 +1931,75 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     status: "ativo",
     appliedAt: "2026-08-09",
   },
+  {
+    id: "ads-google-2608",
+    label: "Google Ads — teste de 3 canais pagos (2608)",
+    source: "google-ads",
+    // EXCEÇÃO DELIBERADA à convenção `bio` (mesmo padrão de `perfil-linkedin`
+    // acima): não é campo de bio de perfil, é o sufixo de URL final de uma
+    // campanha PAGA (#5861/#5845, teste de 3 canais §8.2). `medium=cpc` é o
+    // valor que `scripts/lib/cac.ts` (`CHANNEL_KEY_SPECS`) já espera casar em
+    // `utm_source="google-ads"` — mudar aqui sem mudar lá quebraria a medição.
+    medium: "cpc",
+    campaign: "ads-google-2608",
+    panelUrl: "https://ads.google.com",
+    field: "Configurações da campanha → Opções de URL → Sufixo de URL final",
+    description:
+      "Sufixo de URL final aplicado na campanha do teste de 3 canais pagos " +
+      "(#5845/#5838, D0=26/08/2026). `utm_source=google-ads` é EXCLUSIVO deste " +
+      "teste — não confundir com as chaves de referrer legadas de Google Ads " +
+      "(`android.googlequicksearchbox`/`googlesyndication`/`googleadservices`, " +
+      "sub-canal PMax) já cadastradas em `CHANNEL_KEY_SPECS`.",
+    status: "ativo",
+    // Data de aplicação real no painel não confirmada por esta unidade (só o
+    // registro do valor cadastrado foi feito aqui, #5861) — usar a data em
+    // que a campanha de fato começou a rodar (D0, §7.1 do protocolo) quando
+    // confirmada ao vivo, não a data desta edição do arquivo.
+    appliedAt: "2026-08-21",
+  },
+  {
+    id: "ads-microsoft-2608",
+    label: "Microsoft Advertising — teste de 3 canais pagos (2608)",
+    source: "microsoft-ads",
+    // Mesma exceção de medium que `ads-google-2608` acima, mesmo motivo.
+    medium: "cpc",
+    campaign: "ads-microsoft-2608",
+    panelUrl: "https://ads.microsoft.com",
+    field: "Configurações da campanha → URL de destino → Sufixo de URL final",
+    description:
+      "Sufixo de URL final aplicado na campanha do teste de 3 canais pagos " +
+      "(#5845/#5838, D0=26/08/2026). `utm_source=microsoft-ads` é EXCLUSIVO " +
+      "deste teste (nomes canônicos reservados desde #5493 — RESERVED_CHANNEL_NAMES " +
+      "usa \"Microsoft Advertising\" como nome de CANAL em spend.csv, distinto " +
+      "deste `utm_source`).",
+    status: "ativo",
+    // Mesma ressalva de `ads-google-2608`: data de aplicação real no painel
+    // não confirmada por esta unidade.
+    appliedAt: "2026-08-21",
+  },
+  {
+    id: "ads-meta-2608",
+    label: "Meta Ads — teste de 3 canais pagos (2608)",
+    source: "meta-ads",
+    // Mesma exceção de medium que as duas acima — aqui `paid_social`, o
+    // medium convencional pra Facebook/Instagram Ads (distinto do
+    // `organic_social` de `perfil-linkedin`, que é orgânico).
+    medium: "paid_social",
+    campaign: "ads-meta-2608",
+    panelUrl: "https://business.facebook.com/adsmanager",
+    field: "Configurações do anúncio → Rastreamento → Parâmetros de URL",
+    description:
+      "Parâmetros de URL aplicados no anúncio do teste de 3 canais pagos " +
+      "(#5845/#5838, D0=26/08/2026). `utm_source=meta-ads` é EXCLUSIVO deste " +
+      "teste — o navegador embutido da Meta corta query string com frequência " +
+      "em cliques orgânicos (`l.facebook.com`/`lm.facebook.com`), então este " +
+      "`utm_source` (escrito por NÓS na URL do anúncio) é o único sinal " +
+      "confiável, nunca um domínio de referrer (#5493).",
+    status: "ativo",
+    // Mesma ressalva de `ads-google-2608`: data de aplicação real no painel
+    // não confirmada por esta unidade.
+    appliedAt: "2026-08-21",
+  },
 ] as const;
 
 /** Busca uma superfície externa por id. `undefined` se não existe. @pure */
