@@ -35,6 +35,7 @@ import {
   pickErroIntencionalReveal,
   readBoxDivulgacaoCategoriaForSlot,
   readBoxDivulgacaoAltForSlot,
+  readBoxDivulgacaoNoTituloForSlot, // #5882
   assignDivulgacaoGaps,
   capDivulgacaoBoxes, // #5232 item 3
   DIVULGACAO_BOX_CAP, // #5232 item 3
@@ -3941,5 +3942,145 @@ describe("readBoxDivulgacaoAltForSlot (#4086, pure)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("readBoxDivulgacaoNoTituloForSlot (#5882, pure)", () => {
+  function setupRoot() {
+    const root = mkdtempSync(join(tmpdir(), "box-no-titulo-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "snippets", "sem-titulo.md"),
+      "<!--\ntitulo: false\n-->\n\nConteúdo público.",
+    );
+    writeFileSync(
+      join(root, "data", "snippets", "com-titulo-explicito.md"),
+      "<!--\ntitulo: true\n-->\n\nConteúdo público.",
+    );
+    writeFileSync(join(root, "data", "snippets", "sem-campo.md"), "# Sem campo titulo\n\ntexto");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({
+        boxes_divulgacao: {
+          slot1: "sem-titulo.md",
+          slot2: "com-titulo-explicito.md",
+          slot3: "sem-campo.md",
+        },
+      }),
+    );
+    return root;
+  }
+
+  it("slot com titulo: false declarado: true", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoNoTituloForSlot(1, root), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot com titulo: true declarado (override explícito): false", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoNoTituloForSlot(2, root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot sem o campo titulo: false (comportamento de hoje, título normal)", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoNoTituloForSlot(3, root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("platform.config.json ausente: false, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-no-titulo-noconfig-"));
+    try {
+      assert.equal(readBoxDivulgacaoNoTituloForSlot(1, root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo do snippet não existe (config aponta pra arquivo removido): false", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-no-titulo-missing-file-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "nao-existe.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoNoTituloForSlot(1, root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("renderHTML — box 'sem título' declarado por campo, não por regex de copy (#5882)", () => {
+  const d = (n: 1 | 2 | 3, url: string) => ({
+    n,
+    category: "LANÇAMENTO",
+    title: `T${n}`,
+    body: `B${n}`,
+    why: `W${n}`,
+    url,
+    emoji: "🚀",
+    imageFile: `04-d${n}-2x1.jpg`,
+  });
+  const fixt = (extras: Partial<Record<string, unknown>> = {}) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2"), d(3, "https://example.com/d3")],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [],
+    ...extras,
+  });
+
+  // Mesma FORMA estrutural do box "Convide um amigo" colado num slot, mas
+  // com a copy ALTERADA (trocar 1 palavra da frase) — cenário exato da
+  // issue #5882. Antes, `isConviteAmigoBox` casava a frase exata e falhava
+  // silenciosamente com qualquer edição de copy; agora "sem título" é uma
+  // propriedade do MAPA `boxDivulgacaoNoTitulo` (populado a partir do campo
+  // declarado `titulo: false` do header do snippet, não do texto do box).
+  const boxCopyAlterada = "Conhece alguém que ia curtir esta newsletter?\n\n[Convide pelo WhatsApp →](https://wa.me/?text=x)";
+
+  // A newsletter inteira tem outros `font-size:26px` legítimos (título h2 de
+  // cada destaque) — a asserção precisa mirar o <p> do PRÓPRIO box, não
+  // "nenhum font-size:26px em lugar nenhum do HTML". Mesmo padrão de
+  // `test/render-box-divulgacao.test.ts` (regex `<p style="[^"]*...`).
+  const TITULO_CONVITE_RE = /<p style="[^"]*font-size:26px[^"]*">Conhece alguém que ia curtir esta newsletter\?<\/p>/;
+
+  it("slot 1 com boxDivulgacaoNoTitulo[1]=true: sem título serif, mesmo com copy diferente da frase original do convite-amigo", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1: boxCopyAlterada, boxDivulgacaoNoTitulo: { 1: true } }), CONVITE_AMIGO_OPTS);
+    assert.doesNotMatch(html, TITULO_CONVITE_RE, "campo declarado deve suprimir o título, independente da copy do box");
+    assert.match(html, /Conhece alguém que ia curtir esta newsletter\?/, "copy do box preservada no HTML");
+  });
+
+  it("sanity: MESMO box, MESMA copy alterada, SEM boxDivulgacaoNoTitulo — título serif volta (prova que a detecção por regex de copy quebrava; #5882 causa raiz)", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1: boxCopyAlterada }), CONVITE_AMIGO_OPTS);
+    assert.match(html, TITULO_CONVITE_RE, "sem o campo declarado, o box com CTA-only volta a virar título serif");
+  });
+
+  it("slot 2 e slot 3 respeitam boxDivulgacaoNoTitulo independentemente (mapa por slot, não global)", () => {
+    const html = renderHTML(
+      fixt({
+        boxDivulgacao2: boxCopyAlterada,
+        boxDivulgacao3: "Outro aviso qualquer.\n\n[Ver mais](https://example.com/y)",
+        boxDivulgacaoNoTitulo: { 2: true, 3: false },
+      }),
+      CONVITE_AMIGO_OPTS,
+    );
+    assert.doesNotMatch(html, TITULO_CONVITE_RE, "slot 2 (noTitulo=true): sem título serif");
+    assert.match(
+      html,
+      /<p style="[^"]*font-size:26px[^"]*">Outro aviso qualquer\.<\/p>/,
+      "slot 3 (noTitulo=false): título serif normal, não afetado pelo slot 2",
+    );
   });
 });

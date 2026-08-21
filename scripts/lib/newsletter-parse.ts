@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
-import { parseBoxHeaderField, isRuntimeExcluded } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path
+import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
 import { buildPrevResultLine, readPrevPollStats } from "../eia-compose.ts"; // #1707 fallback
 import {
@@ -198,6 +198,15 @@ export interface NewsletterContent {
   boxDivulgacaoImagePortrait?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
   /** `alt:` do snippet de cada slot — texto alternativo da imagem do box. */
   boxDivulgacaoImageAlt?: { 0?: string | null; 1?: string | null; 2?: string | null; 3?: string | null };
+  /** #5882: `titulo: false` declarado no header do snippet de cada slot — o
+   * 1º parágrafo do box renderiza como prosa corrida (`plainFirstParagraph`
+   * em `renderBoxDivulgacao`), não como título serif 26px. Substitui a
+   * detecção por regex de copy (`isConviteAmigoBox`, aposentada) — mesmo
+   * mecanismo de leitura de `categoria:`/`alt:` acima (disco, no momento do
+   * render, via `readBoxDivulgacaoNoTituloForSlot`). Ausente/`false` no
+   * mapa -> renderiza exatamente como hoje (título quando a estrutura do box
+   * pedir um). */
+  boxDivulgacaoNoTitulo?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
   /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
   boxDivulgacao3Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 3. */
@@ -1838,6 +1847,52 @@ export function readBoxDivulgacaoAltForFile(
 }
 
 /**
+ * #5882: `true` quando o snippet (por NOME DE ARQUIVO direto) declara
+ * `titulo: false` no header — mesmo mecanismo de leitura de `alt:`
+ * (`readBoxDivulgacaoAltForFile`). `false` (comportamento de hoje) quando o
+ * arquivo não existe ou o campo está ausente/tem outro valor. Nunca lança.
+ */
+export function readBoxDivulgacaoNoTituloForFile(
+  filename: string,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  try {
+    const snippetPath = resolve(rootDir, "data", "snippets", filename);
+    if (!existsSync(snippetPath)) return false;
+    return readBoxTituloFlag(readFileSync(snippetPath, "utf8")) === false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #5882: mesmo mecanismo de leitura de `categoria:`/`alt:` do SLOT
+ * (`readBoxDivulgacaoCategoriaForSlot`/`readBoxDivulgacaoAltForSlot`) —
+ * disco, via `platform.config.json > boxes_divulgacao`, no momento do
+ * render. `true` só quando o snippet atualmente atribuído ao slot declara
+ * `titulo: false` no header; `false` (fail-soft, nunca lança) em qualquer
+ * outro caso — config ausente/corrompido, `boxes_divulgacao`
+ * ausente/malformado, slot vazio, ou arquivo do snippet não existe.
+ */
+export function readBoxDivulgacaoNoTituloForSlot(
+  slot: 0 | 1 | 2 | 3,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return false;
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const boxes = cfg?.boxes_divulgacao;
+    if (!boxes || typeof boxes !== "object") return false;
+    const filename = boxes[`slot${slot}`];
+    if (typeof filename !== "string" || !filename) return false;
+    return readBoxDivulgacaoNoTituloForFile(filename, rootDir);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * #4504: `true` se o snippet atualmente atribuído ao SLOT em
  * `boxes_divulgacao.slot{N}` (`platform.config.json`) declara `runtime:
  * false` no header (`isRuntimeExcluded`, `shared/snippet-header.ts` — movida
@@ -2026,6 +2081,17 @@ export function extractContent(editionDir: string): NewsletterContent {
     2: readBoxDivulgacaoAltForSlot(2),
     3: readBoxDivulgacaoAltForSlot(3),
   };
+  // #5882: mesmo padrão de boxDivulgacaoImageAlt — lido do disco pra TODO
+  // slot, independente de o slot ter box no reviewed.md (mesmo tratamento de
+  // boxDivulgacaoImageExplicit/Portrait acima; categoria é a exceção, porque
+  // vira texto VISÍVEL de rótulo órfão — ver comentário de
+  // boxDivulgacao1Categoria).
+  const boxDivulgacaoNoTitulo = {
+    0: readBoxDivulgacaoNoTituloForSlot(0),
+    1: readBoxDivulgacaoNoTituloForSlot(1),
+    2: readBoxDivulgacaoNoTituloForSlot(2),
+    3: readBoxDivulgacaoNoTituloForSlot(3),
+  };
   const boxDivulgacaoImagePortrait = {
     0: boxDivulgacaoImageExplicit[0] && isBoxSlotImagePortrait(editionDir, 0),
     1: boxDivulgacaoImageExplicit[1] && isBoxSlotImagePortrait(editionDir, 1),
@@ -2076,6 +2142,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     boxDivulgacaoImageExplicit,
     boxDivulgacaoImagePortrait,
     boxDivulgacaoImageAlt,
+    boxDivulgacaoNoTitulo,
   };
 }
 

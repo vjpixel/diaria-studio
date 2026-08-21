@@ -65,6 +65,28 @@ export function isRuntimeExcluded(content: string): boolean {
   return raw !== null && raw.trim().toLowerCase() === "false";
 }
 
+/** Valor do campo `titulo:` do header, normalizado — `false`/`true` quando
+ * declarado explicitamente (case-insensitive: `False`/`TRUE` contam), `null`
+ * quando o campo está ausente ou tem outro valor (o caller decide o default).
+ *
+ * #5882: "sem título" (1º parágrafo em prosa corrida, não título serif 26px
+ * — ver `renderBoxDivulgacao`/`renderIntroCallout` em
+ * `newsletter-render-html.ts`) vira uma PROPRIEDADE DECLARADA do box
+ * (`titulo: false` no header, mesmo padrão de `runtime: false` acima),
+ * editável no painel Caixas do Studio — em vez de detectada por regex
+ * casando a FRASE exata da copy (`isConviteAmigoBox`, aposentada por esta
+ * issue). Regex de copy quebrava silenciosamente com qualquer edição de
+ * texto no snippet; o campo declarado sobrevive a qualquer reescrita da
+ * copy. Nunca lança. */
+export function readBoxTituloFlag(content: string): boolean | null {
+  const raw = parseBoxHeaderField(content, "titulo");
+  if (raw === null) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "false") return false;
+  if (v === "true") return true;
+  return null;
+}
+
 /** Header inner MENOS as linhas `{key}:` de `keys` (case-insensitive),
  * trimado — o texto de "notas" que sobra pro editor livre (#3979: painel
  * "Notas", separado dos campos dedicados `nome`/`categoria`). `""` se não
