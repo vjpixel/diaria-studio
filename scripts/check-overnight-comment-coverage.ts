@@ -156,6 +156,11 @@ if (isMainModule(import.meta.url)) {
   // (#5844 — mesmo fetch cobre os dois gates, ver docstring de fetchIssueComments).
   const commentsByIssue = new Map<number, IssueCommentLike[] | null>();
   const labelsByIssue = new Map<number, string[]>();
+  // #5844 (achado do self-review): fetch falho não pode virar "label ausente"
+  // — mesma disciplina fail-soft do gate de comentário (#738). Guarda quem
+  // falhou pra excluir da checagem de label abaixo, em vez de reportar como
+  // missing por um problema de rede/gh que nada tem a ver com a label em si.
+  const labelFetchFailed = new Set<number>();
   for (const candidate of candidates) {
     const fetched = fetchIssueComments(candidate.number, cwd);
     if (fetched.error) {
@@ -164,6 +169,7 @@ if (isMainModule(import.meta.url)) {
       );
       if (fetched.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
       commentsByIssue.set(candidate.number, null);
+      labelFetchFailed.add(candidate.number);
     } else {
       commentsByIssue.set(candidate.number, fetched.value?.comments ?? []);
       labelsByIssue.set(
@@ -191,8 +197,12 @@ if (isMainModule(import.meta.url)) {
 
   // #5844: gate de LABEL — checado independente do de comentário (issue pode
   // ter o comentário e ainda faltar a label, exatamente o achado ao vivo que
-  // motivou a issue).
-  const labelCandidates: LabelCandidateIssue[] = deriveLabelCandidates(issues);
+  // motivou a issue). Exclui candidatas cujo fetch falhou (fail-soft, ver
+  // `labelFetchFailed` acima) — nunca reporta "label ausente" por um
+  // problema de rede/gh que não tem nada a ver com a label em si.
+  const labelCandidates: LabelCandidateIssue[] = deriveLabelCandidates(issues).filter(
+    (c) => !labelFetchFailed.has(c.number),
+  );
   const labelVerdict = checkLabelCoverage(labelCandidates, labelsByIssue);
 
   const commentOk = verdict.status !== "missing";
