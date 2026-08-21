@@ -47,18 +47,11 @@ import {
 import { renderBrevoDiariaTabPanel, type BrevoDiariaTabData } from "./brevo-diaria.ts";
 // #5593: gráfico SVG inline (duas séries, spline + área com gradiente) pra
 // "Open rate por dia" — módulo à parte, puro/testável sem fixture de Worker.
-// #5640 A2/A4: enumerateDayRange (domínio X compartilhado),
-// renderCohortSmallMultipleSvg (small multiples por coorte),
-// renderConfoundersSparklineSvg (sparkline de bounce/spam/CTOR).
-// #5640 A3: computeLagCorrelations/renderDeliveredOpenRateScatterSvg (dispersão + defasagem).
-import {
-  renderOpenRateChartSvg,
-  enumerateDayRange,
-  renderCohortSmallMultipleSvg,
-  renderConfoundersSparklineSvg,
-  computeLagCorrelations,
-  renderDeliveredOpenRateScatterSvg,
-} from "./chart-svg.ts";
+// #5876: os imports de A2 (small multiples por coorte)/A3 (dispersão +
+// correlação)/A4 (sparkline de confounders) foram removidos junto com as
+// funções em chart-svg.ts — ver docstring de `renderOpenRateByDaySection`
+// abaixo pro racional completo da retirada.
+import { renderOpenRateChartSvg } from "./chart-svg.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -694,9 +687,12 @@ ${monthlyAbcSectionsByDate}
   // (#5610 item 4 — não usa mais `isCampaignsWindowFull`/`campaignsWindowLimit`,
   // que contavam CAMPANHAS carregadas, não dias de calendário).
   const { rows: dayOpenRateRows } = aggregateByDay(campaigns, weekdayNow);
-  // #5640 A2: small multiples por coorte — mesma janela/`now`, campanha
-  // não classificada (listName sem sinal de cohort reconhecível) fica de
-  // fora dos painéis (ver `deriveDayOpenRateCohortBucket`).
+  // #5876: `aggregateByDayByCohort` segue viva aqui — não é mais consumida
+  // pra renderizar a faixa "Por coorte" (removida por decisão editorial,
+  // #5876), mas `.panels` ainda alimenta `computeExpectedOpenRateByDay`
+  // abaixo (A1, que fica) via `computeCohortBaseOpenRates`. Campanha não
+  // classificada (listName sem sinal de cohort reconhecível) fica de fora
+  // dos painéis (ver `deriveDayOpenRateCohortBucket`).
   const dayOpenRateCohortResult = aggregateByDayByCohort(campaigns, weekdayNow);
   // #5640 A1/#5786: base histórica por coorte (janela EXCLUDENTE,
   // `[hoje-120, hoje-30)` com os defaults de `computeCohortBaseOpenRates` —
@@ -712,7 +708,6 @@ ${monthlyAbcSectionsByDate}
   const dayOpenRateSection = renderOpenRateByDaySection(
     dayOpenRateRowsWithExpected,
     DAY_OPENRATE_WINDOW_DAYS,
-    dayOpenRateCohortResult,
     dayOpenRateBaseRates,
   );
   // #2212: seção de links agregados do período
@@ -949,17 +944,6 @@ ${monthlyAbcSectionsByDate}
     white-space: nowrap;
     border: 0;
   }
-  /* #5640 A2/A4: small multiples por coorte + sparkline de confounders,
-     ambos abaixo do gráfico principal "Open rate por dia". */
-  .section-subtitle { font-size: 1rem; margin: 16px 0 4px 0; color: var(--ink); }
-  .cohort-multiples-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 10px;
-    margin-bottom: 8px;
-  }
-  .cohort-multiple { background: var(--card); border: 1px solid var(--hair); border-radius: 8px; padding: 8px 6px; }
-  .cohort-multiple-note { font-size: 0.75rem; color: var(--ink); opacity: 0.6; text-align: center; margin: 4px 0 0 0; }
   td.metric, td.spark, .spark-bar, td .rate-inline, .volume-note strong, td strong {
     font-family: ui-monospace, 'Geist Mono', 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
@@ -3984,33 +3968,6 @@ export function renderWeekdaySection(
  * passo entre rótulos, é interno ao SVG).
  *
 
- * **#5640 A2 (small multiples por coorte):** `cohortResult.panels`
- * (default `[]` — chamadores antigos continuam funcionando sem os
- * painéis) vira uma faixa de mini-gráficos ABAIXO do gráfico principal —
- * mesma janela de dias (`enumerateDayRange` sobre o range do agregado
- * principal, não o range próprio de cada coorte, pra todos os painéis
- * compartilharem o MESMO domínio X mesmo quando uma coorte não tem envio
- * em algum dia), mesmo eixo Y (0-100% fixo), sem eixo duplo — só a linha de
- * open rate (`renderCohortSmallMultipleSvg`, chart-svg.ts). Painel sem
- * nenhum envio no período (`rows: []`) ainda aparece, com nota "sem envios
- * na janela" — omiti-lo silenciosamente esconderia que aquela coorte não
- * recebeu nada, que é em si um sinal. `cohortResult.unclassifiedCount > 0`
- * gera uma nota textual (nunca some o número sem explicação — ver
- * `deriveDayOpenRateCohortBucket`).
- *
- * **#5640 A4 (confounders):** uma faixa fina de sparklines (bounce rate,
- * spam rate, CTOR) ABAIXO da faixa de small multiples, ALINHADA ao mesmo
- * eixo X do gráfico principal (`renderConfoundersSparklineSvg` reusa a
- * mesma constante `CHART` — padLeft/padRight/viewBoxW — pra que a posição
- * X de cada dia bata pixel-a-pixel com o gráfico principal). **Decisão de
- * escopo, registrada aqui:** o crosshair compartilhado (B1-B4) NÃO foi
- * estendido pra esta faixa nem pra os small multiples — acoplar os 3 SVGs
- * a um único crosshair/tooltip JS multiplicaria a superfície de risco desta
- * unidade (3 grades de hit-rects sincronizadas em vez de 1) pelo ganho de
- * "não precisar olhar 2 pontos alinhados visualmente", que já funciona sem
- * JS pela alinhamento em X puro. Fica pra uma unidade futura se o editor
- * pedir.
- *
  * **#5640 A1 (decisão do editor 260818: implementar agora):** `rows[].expectedOpenRate`
  * (mesclado pelo CHAMADOR, `renderDashboardHtml`, via
  * `computeExpectedOpenRateByDay` — esta função não recalcula nada, só lê o
@@ -4021,16 +3978,32 @@ export function renderWeekdaySection(
  * isso, um leitor não sabe se a ausência da linha esperada num trecho é
  * "mix não tem como cair" ou "sem dado histórico suficiente pra estimar".
  *
- * **#5640 A3 (decisão do editor 260818: implementar agora):** dispersão
- * delivered×openRate (`renderDeliveredOpenRateScatterSvg`) + correlação de
- * Pearson por defasagem 0-3 dias (`computeLagCorrelations`) — mesmo bloco
- * "Correlação, não causa" (A5) do resto da Parte A; nunca "causou"/"por
- * causa de" no texto desta subseção.
+ * **#5876 (21/08/2026) — A2 (small multiples "Por coorte"), A4
+ * (sparklines de confounders bounce/spam/CTOR) e A3 (dispersão
+ * delivered×openRate + correlação de Pearson por defasagem) foram
+ * IMPLEMENTADOS no #5640 e RETIRADOS aqui por decisão editorial:** nenhum
+ * dos três estava entregando leitura acionável no estado real dos dados
+ * (coorte: 80 campanhas do período sem coorte identificável, painéis
+ * majoritariamente vazios; confounders: sparklines achatadas sem
+ * variação; dispersão: correlações fracas/instáveis, amostra pequena). Só
+ * o gráfico principal (com a 3ª série A1 acima) permanece. **Não
+ * reimplementar por engano** — se o editor pedir de volta, é #5640 no
+ * histórico do git que documenta o desenho original, não algo a inventar
+ * do zero. Nota pra quem for mexer aqui de novo: `aggregateByDayByCohort`/
+ * `deriveDayOpenRateCohortBucket`/`DAY_OPENRATE_COHORT_BUCKETS`/
+ * `DAY_OPENRATE_COHORT_LABELS` (sections-core.ts) e a constante `CHART`
+ * (chart-svg.ts) **continuam em uso** — não são órfãos do A2/A3/A4: a
+ * cadeia de coorte alimenta `computeCohortBaseOpenRates`/
+ * `computeExpectedOpenRateByDay` (A1, que ficou), e `CHART` é o layout do
+ * gráfico principal. O que saiu de fato: `cohortResult` (parâmetro desta
+ * função — o `baseRates` acima é outro parâmetro, permanece),
+ * `renderCohortSmallMultipleSvg`, `renderConfoundersSparklineSvg`,
+ * `renderDeliveredOpenRateScatterSvg` e `computeLagCorrelations`
+ * (chart-svg.ts).
  */
 export function renderOpenRateByDaySection(
   rows: DayOpenRateSummary[],
   windowDays: number = DAY_OPENRATE_WINDOW_DAYS,
-  cohortResult: { panels: DayOpenRateCohortPanel[]; unclassifiedCount: number } = { panels: [], unclassifiedCount: 0 },
   baseRates: Partial<Record<DayOpenRateCohortBucket, number>> = {},
 ): string {
   if (rows.length === 0) return "";
@@ -4058,44 +4031,6 @@ export function renderOpenRateByDaySection(
   // acima na página) em vez de duplicar os 30 dias numa 2ª tabela.
   const tableFallbackNote = `<p class="section-note"><small>Detalhe de cada envio também disponível na <a href="#envios-table">tabela de Envios</a> abaixo.</small></p>`;
 
-  // #5640 A2/A4: domínio X compartilhado — MESMO range de dias do gráfico
-  // principal (não o range próprio de cada coorte), pra small multiples e
-  // sparkline de confounders alinharem com o gráfico principal mesmo em
-  // dias sem envio de uma coorte específica.
-  const sharedDays = enumerateDayRange(rows[0].day, rows[rows.length - 1].day);
-
-  // #5640 A2: faixa de small multiples — só renderiza se algum painel foi
-  // passado (cohortResult.panels vazio = chamador antigo/teste, seção A2
-  // simplesmente não aparece, sem quebrar nada).
-  const cohortPanelsSection = cohortResult.panels.length > 0
-    ? (() => {
-        const cards = cohortResult.panels
-          .map((p) => {
-            const panelNote = p.rows.length === 0
-              ? `<p class="cohort-multiple-note">sem envios na janela</p>`
-              : "";
-            return `<div class="cohort-multiple">${renderCohortSmallMultipleSvg(sharedDays, p.label, p.rows)}${panelNote}</div>`;
-          })
-          .join("\n");
-        const unclassifiedNote = cohortResult.unclassifiedCount > 0
-          ? `<p class="section-note"><small>${cohortResult.unclassifiedCount} ${cohortResult.unclassifiedCount === 1 ? "campanha" : "campanhas"} do período sem coorte identificável pelo nome da lista (fora dos painéis abaixo) — mesmos marcadores do gráfico principal (○ amostra pequena, ◐ imaturo).</small></p>`
-          : "";
-        return `
-  <h3 class="section-subtitle">Por coorte</h3>
-  <p class="section-note"><small>Mesma janela, mesmo eixo Y (0-100%), sem eixo duplo — uma coorte que cai sozinha aponta pra causa específica dela; queda uniforme em todas aponta pra causa comum (reputação, provedor, template).</small></p>
-  <div class="cohort-multiples-grid">${cards}</div>
-  ${unclassifiedNote}`;
-      })()
-    : "";
-
-  // #5640 A4: sparklines de bounce/spam/CTOR, alinhadas em X ao gráfico
-  // principal (mesmo `sharedDays`) — nunca "causou"/"por causa de" na nota,
-  // só o vocabulário de co-movimento (A5, guarda-corpo de honestidade).
-  const confoundersSection = `
-  <h3 class="section-subtitle">Confounders</h3>
-  <p class="section-note"><small>Bounce, spam (complaints Brevo) e CTOR do mesmo período, alinhados ao eixo X acima — não implica causa: abertura caindo com bounce/spam estáveis aponta pra mix de audiência; abertura caindo junto com bounce/spam subindo aponta pra reputação/entregabilidade.</small></p>
-  <div class="chart-wrap">${renderConfoundersSparklineSvg(sharedDays, rows)}</div>`;
-
   // #5640 A1: nota de leitura da 3ª série (esperado vs real) + cobertura de
   // base histórica por coorte — só aparece se ALGUM dia tem expectedOpenRate.
   const hasExpectedSeries = rows.some((r) => r.expectedOpenRate != null);
@@ -4106,18 +4041,6 @@ export function renderOpenRateByDaySection(
           ? ` Sem base histórica suficiente pra: ${missingBaseCohorts.map((b) => DAY_OPENRATE_COHORT_LABELS[b]).join(", ")} — dias dominados por essas coortes ficam sem estimativa.`
           : ""
       }</small></p>`
-    : "";
-
-  // #5640 A3: dispersão + correlação por defasagem — só com amostra mínima
-  // (o próprio `renderDeliveredOpenRateScatterSvg` já se omite com <2 linhas).
-  const lagCorrelations = computeLagCorrelations(rows);
-  const fmtCorr = (v: number | null): string => (v == null ? "amostra insuficiente" : v.toFixed(2));
-  const scatterSvg = renderDeliveredOpenRateScatterSvg(rows);
-  const scatterSection = scatterSvg
-    ? `
-  <h3 class="section-subtitle">Dispersão delivered × open rate</h3>
-  <p class="section-note"><small>Correlação, não causa. 1 ponto = 1 dia; cor mais opaca = dia mais recente. Correlação de Pearson entre delivered do dia e open rate k dias depois (dias imaturos excluídos): k=0 ${fmtCorr(lagCorrelations[0])} · k=1 ${fmtCorr(lagCorrelations[1])} · k=2 ${fmtCorr(lagCorrelations[2])} · k=3 ${fmtCorr(lagCorrelations[3])}. Pico negativo em k=0 sugere mix (a mesma campanha que trouxe volume trouxe público mais frio); pico em k=1-3 sugere reputação respondendo com atraso.</small></p>
-  <div class="chart-wrap">${scatterSvg}</div>`
     : "";
 
   return `
@@ -4131,9 +4054,6 @@ export function renderOpenRateByDaySection(
   ${legendNote}
   ${expectedNote}
   ${tableFallbackNote}
-  ${cohortPanelsSection}
-  ${confoundersSection}
-  ${scatterSection}
 <script>
 (function() {
   var svg = document.getElementById('day-openrate-svg');

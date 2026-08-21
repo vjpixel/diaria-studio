@@ -17,10 +17,6 @@ import {
   niceMax,
   renderOpenRateChartSvg,
   fmtDayLabelLong,
-  renderCohortSmallMultipleSvg,
-  renderConfoundersSparklineSvg,
-  computeLagCorrelations,
-  renderDeliveredOpenRateScatterSvg,
   X_LABEL_STEP_DAYS,
 } from "../workers/brevo-dashboard/src/chart-svg.ts";
 import type { DayOpenRateSummary } from "../workers/brevo-dashboard/src/sections-core.ts";
@@ -36,8 +32,9 @@ function row(day: string, opts: Partial<DayOpenRateSummary> = {}): DayOpenRateSu
     openRate: 40,
     smallSample: false,
     immature: false,
-    // #5640 A4: confounders — defaults neutros (sem bounce/spam, CTOR 0),
-    // sobrescritos pelos testes que exercitam `renderConfoundersSparklineSvg`.
+    // Campos exigidos por `DayOpenRateSummary` mesmo sem teste próprio neste
+    // arquivo (#5876: o consumidor desses campos, `renderConfoundersSparklineSvg`,
+    // foi removido) — defaults neutros só pra satisfazer o tipo.
     sent: 100,
     bounces: 0,
     hardBounces: 0,
@@ -425,94 +422,6 @@ describe("#5640 B6: renderOpenRateChartSvg — svg focável, title/desc acessív
   });
 });
 
-describe("#5640 A2: renderCohortSmallMultipleSvg", () => {
-  const sharedDays = ["2026-08-10", "2026-08-11", "2026-08-12"];
-
-  test("renderiza <svg>, título com o label da coorte, e a linha de openRate (só 1 série, sem eixo duplo)", () => {
-    const svg = renderCohortSmallMultipleSvg(sharedDays, "Assinantes ativos", [
-      row("2026-08-10", { openRate: 30 }),
-      row("2026-08-11", { openRate: 40 }),
-      row("2026-08-12", { openRate: 20 }),
-    ]);
-    assert.match(svg, /<svg/);
-    assert.match(svg, /<title>Assinantes ativos<\/title>/);
-    assert.match(svg, /<path d="M [\d.]+,[\d.]+ C /, "3+ pontos deve produzir path com curva");
-    assert.doesNotMatch(svg, /Delivered/, "small multiple não mostra a série Delivered (só openRate)");
-  });
-
-  test("coorte sem nenhum envio no período (rows=[]) ainda desenha o svg com nota 'sem envios'", () => {
-    const svg = renderCohortSmallMultipleSvg(sharedDays, "Novos", []);
-    assert.match(svg, /<svg/);
-    assert.match(svg, /sem envios/);
-    assert.doesNotMatch(svg, /<path d=/, "sem dado, não há linha pra desenhar");
-  });
-
-  test("dia sem dado (buraco no meio do domínio compartilhado) não gera marcador nesse dia, mas a linha atravessa (mesmo padrão do gráfico principal)", () => {
-    const svg = renderCohortSmallMultipleSvg(sharedDays, "Leads", [
-      row("2026-08-10", { openRate: 30 }),
-      row("2026-08-12", { openRate: 10 }),
-    ]);
-    // 2 pontos só (dia 11 é buraco) => path L reto, não C.
-    assert.match(svg, /<path d="M [\d.]+,[\d.]+ L [\d.]+,[\d.]+"/);
-  });
-
-  test("amostra pequena (smallSample) usa marcador oco (fill=var(--card)); dia imaturo reduz opacidade", () => {
-    const svg = renderCohortSmallMultipleSvg(sharedDays, "Ex-assinantes", [
-      row("2026-08-10", { openRate: 30, smallSample: true }),
-      row("2026-08-11", { openRate: 40, immature: true }),
-    ]);
-    assert.match(svg, /fill="var\(--card\)" stroke="var\(--alert\)"/, "smallSample = círculo oco");
-    assert.match(svg, /opacity="0\.55"/, "immature = opacidade reduzida");
-  });
-
-  test("nota do total de envios no canto (contagem, não valor de métrica)", () => {
-    const svg = renderCohortSmallMultipleSvg(sharedDays, "Novos", [
-      row("2026-08-10", { count: 3 }),
-      row("2026-08-11", { count: 2 }),
-    ]);
-    assert.match(svg, />5 envios</);
-  });
-});
-
-describe("#5640 A4: renderConfoundersSparklineSvg", () => {
-  const sharedDays = ["2026-08-10", "2026-08-11", "2026-08-12"];
-
-  test("renderiza as 3 sparklines rotuladas (Bounce/Spam/CTOR), nunca usa a palavra 'causou'/'por causa de'", () => {
-    const svg = renderConfoundersSparklineSvg(sharedDays, [
-      row("2026-08-10", { bounceRate: 1, spamRate: 0.1, ctor: 10 }),
-      row("2026-08-11", { bounceRate: 2, spamRate: 0.2, ctor: 12 }),
-      row("2026-08-12", { bounceRate: 1.5, spamRate: 0.15, ctor: 11 }),
-    ]);
-    assert.match(svg, />Bounce</);
-    assert.match(svg, />Spam</);
-    assert.match(svg, />CTOR</);
-    assert.doesNotMatch(svg, /causou/i);
-    assert.doesNotMatch(svg, /por causa de/i);
-  });
-
-  test("mesma viewBoxW/padLeft/padRight do gráfico principal (CHART) — alinhamento em X", () => {
-    const svg = renderConfoundersSparklineSvg(sharedDays, [row("2026-08-10"), row("2026-08-11"), row("2026-08-12")]);
-    assert.match(svg, /viewBox="0 0 1450 /, "viewBoxW deve bater com CHART.viewBoxW do gráfico principal");
-  });
-
-  test("rótulo do último valor reflete a métrica mais recente (não a primeira nem uma média)", () => {
-    const svg = renderConfoundersSparklineSvg(sharedDays, [
-      row("2026-08-10", { bounceRate: 1 }),
-      row("2026-08-11", { bounceRate: 2 }),
-      row("2026-08-12", { bounceRate: 9.5 }),
-    ]);
-    assert.match(svg, />9\.5%</, "último valor de bounceRate (dia mais recente) deve aparecer no rótulo");
-  });
-
-  test("dia sem dado no domínio não quebra — rótulo cai pro último valor conhecido", () => {
-    const svg = renderConfoundersSparklineSvg(sharedDays, [
-      row("2026-08-10", { bounceRate: 3 }),
-      // 2026-08-11 e 2026-08-12 ausentes de `rows` — buraco no fim.
-    ]);
-    assert.match(svg, />3\.0%</);
-  });
-});
-
 describe("#5640 B7: renderOpenRateChartSvg — rótulos intermediários + gridlines verticais do eixo X", () => {
   test("janela curta (<= X_LABEL_STEP_DAYS dias) não gera nenhum rótulo/gridline interior", () => {
     const rows = Array.from({ length: X_LABEL_STEP_DAYS }, (_, i) => row(`2026-08-${String(i + 1).padStart(2, "0")}`));
@@ -607,84 +516,7 @@ describe("#5640 A1: renderOpenRateChartSvg — 3ª série (open rate esperado)",
   });
 });
 
-describe("#5640 A3: computeLagCorrelations", () => {
-  test("rows=[] retorna null pros 4 lags", () => {
-    assert.deepEqual(computeLagCorrelations([]), { 0: null, 1: null, 2: null, 3: null });
-  });
-
-  test("menos de 3 pares válidos pro lag => null (amostra insuficiente)", () => {
-    const rows = [row("2026-08-10", { delivered: 100, openRate: 40 }), row("2026-08-11", { delivered: 200, openRate: 20 })];
-    const result = computeLagCorrelations(rows);
-    assert.equal(result[0], null);
-  });
-
-  test("correlação perfeitamente negativa em k=0 (delivered sobe, openRate cai monotonicamente no mesmo dia)", () => {
-    const rows = [
-      row("2026-08-01", { delivered: 100, openRate: 50 }),
-      row("2026-08-02", { delivered: 200, openRate: 40 }),
-      row("2026-08-03", { delivered: 300, openRate: 30 }),
-      row("2026-08-04", { delivered: 400, openRate: 20 }),
-    ];
-    const result = computeLagCorrelations(rows);
-    assert.ok(result[0] !== null && result[0] < -0.99, `k=0 deve ser ~-1 (perfeitamente negativo), veio ${result[0]}`);
-  });
-
-  test("dia imaturo é excluído do par em QUALQUER lado (delivered[i] ou openRate[i+k])", () => {
-    const rows = [
-      row("2026-08-01", { delivered: 100, openRate: 50 }),
-      row("2026-08-02", { delivered: 200, openRate: 40, immature: true }),
-      row("2026-08-03", { delivered: 300, openRate: 30 }),
-      row("2026-08-04", { delivered: 400, openRate: 20 }),
-    ];
-    // k=0: par (02,imaturo) excluído — sobram só 3 pares (01,03,04), ainda >= 3.
-    const result = computeLagCorrelations(rows);
-    assert.notEqual(result[0], null, "3 pares restantes (>=3) ainda produz correlação");
-  });
-
-  test("dia de calendário AUSENTE (buraco) conta como passo de defasagem de verdade — não pula pro próximo dado disponível", () => {
-    // 01 e 03 têm dado; 02 é buraco. k=1 sobre CALENDÁRIO não deve parear
-    // 01(delivered) com 03(openRate) — isso seria k=2 de verdade.
-    const rows = [row("2026-08-01", { delivered: 100, openRate: 50 }), row("2026-08-03", { delivered: 300, openRate: 20 })];
-    const result = computeLagCorrelations(rows);
-    assert.equal(result[1], null, "k=1 não deve enxergar par nenhum através do buraco de calendário (n<3 de qualquer forma)");
-  });
-});
-
-describe("#5640 A3: renderDeliveredOpenRateScatterSvg", () => {
-  test("menos de 2 rows retorna string vazia (dispersão de 0-1 ponto não é gráfico)", () => {
-    assert.equal(renderDeliveredOpenRateScatterSvg([]), "");
-    assert.equal(renderDeliveredOpenRateScatterSvg([row("2026-08-10")]), "");
-  });
-
-  test("emite 1 <circle> por dia, cor var(--alert), nunca hex hardcoded", () => {
-    const rows = [row("2026-08-10", { delivered: 100, openRate: 40 }), row("2026-08-11", { delivered: 200, openRate: 30 })];
-    const svg = renderDeliveredOpenRateScatterSvg(rows);
-    const circles = [...svg.matchAll(/<circle[^>]*>/g)];
-    assert.equal(circles.length, 2);
-    assert.match(svg, /fill="var\(--alert\)"/);
-    assert.doesNotMatch(svg, /#[0-9a-fA-F]{3,6}/, "não deve haver cor hex hardcoded");
-  });
-
-  test("dia mais recente tem opacidade maior que o mais antigo (cor por recência)", () => {
-    const rows = [row("2026-08-01", { delivered: 100, openRate: 40 }), row("2026-08-10", { delivered: 200, openRate: 30 })];
-    const svg = renderDeliveredOpenRateScatterSvg(rows);
-    const opacities = [...svg.matchAll(/<circle[^>]*opacity="([\d.]+)"[^>]*>/g)].map((m) => Number(m[1]));
-    assert.equal(opacities.length, 2);
-    assert.ok(opacities[1] > opacities[0], "2º ponto (mais recente) deve ter opacidade maior que o 1º (mais antigo)");
-  });
-
-  test("amostra pequena usa marcador oco (fill=var(--card)); dia imaturo reduz opacidade ainda mais (×0.55)", () => {
-    const rows = [
-      row("2026-08-01", { delivered: 100, openRate: 40, smallSample: true }),
-      row("2026-08-02", { delivered: 200, openRate: 30, immature: true }),
-    ];
-    const svg = renderDeliveredOpenRateScatterSvg(rows);
-    assert.match(svg, /fill="var\(--card\)" stroke="var\(--alert\)"/);
-  });
-
-  test("rotula explicitamente 'correlação, não causa' no aria-label", () => {
-    const rows = [row("2026-08-01"), row("2026-08-02")];
-    const svg = renderDeliveredOpenRateScatterSvg(rows);
-    assert.match(svg, /correlação, não causa/i);
-  });
-});
+// #5876 (21/08/2026): os describes "#5640 A3: computeLagCorrelations" e
+// "#5640 A3: renderDeliveredOpenRateScatterSvg" foram removidos junto com
+// as funções que cobriam (retiradas de chart-svg.ts por decisão editorial
+// — ver docstring de `renderOpenRateByDaySection`, sections-core.ts).
