@@ -77,16 +77,20 @@ O carrossel da `nathaliaarcuri` é o único da amostra que parte de uma NOTÍCIA
 com fonte institucional (relatório do JPMorgan) em vez de uma história pessoal.
 Sete padrões que não aparecem no grupo A:
 
-7. **Template "card de tweet" repetido em TODOS os 13 slides.** Cada slide é
-   desenhado como um tweet da própria autora — avatar circular + nome em bold
-   + `@handle` no topo, sempre iguais, com o conteúdo abaixo. Não é decoração:
-   é identidade visual persistente, de modo que um slide isolado printado e
-   recompartilhado continua carregando a autoria. Custo baixo de produção
-   (um template, 13 preenchimentos) e alto de reconhecimento.
+7. **Template "card de tweet" repetido em todos os 12 slides lidos.** Cada
+   slide é desenhado como um tweet da própria autora — avatar circular + nome
+   em bold + `@handle` no topo, sempre iguais, com o conteúdo abaixo. Não é
+   decoração: é identidade visual persistente, de modo que um slide isolado
+   printado e recompartilhado continua carregando a autoria. Custo baixo de
+   produção (um template, 12 preenchimentos confirmados) e alto de
+   reconhecimento. **O 13º não foi lido** (ver tabela do padrão 9) e pode
+   perfeitamente ser a exceção — se for vídeo, como a leitura sugere, o
+   template estático não se aplica a ele.
 
 8. **CTA fixo no rodapé de cada slide**, não só na legenda: "gostou do
-   conteúdo? me siga" + ícone de seguir, no canto inferior direito de todos os
-   13. O grupo A concentra o CTA só na caption — aqui ele acompanha o leitor
+   conteúdo? me siga" + ícone de seguir, no canto inferior direito dos 12
+   slides lidos (o 13º não foi lido — mesma ressalva do padrão 7). O grupo A
+   concentra o CTA só na caption — aqui ele acompanha o leitor
    slide a slide, cobrando a ação no momento em que o interesse é maior (o
    meio do carrossel), não depois que ele já saiu.
 
@@ -96,15 +100,15 @@ Sete padrões que não aparecem no grupo A:
 
    | # | Função | Conteúdo |
    |---|---|---|
-   | 1 | gancho + contraste | "O MUNDO VAI TER QUE ESTOCAR COMIDA. (...) E o motivo não é só o clima." + foto de prateleira vazia |
-   | 2 | credencial da fonte | quem é o JPMorgan e qual relatório ("Segurança Alimentar é Segurança Nacional") |
+   | 1 | gancho + contraste (foto) | "O MUNDO VAI TER QUE ESTOCAR COMIDA. (...) E o motivo não é só o clima." + foto de prateleira vazia |
+   | 2 | credencial da fonte (foto) | quem é o JPMorgan e qual relatório ("Segurança Alimentar é Segurança Nacional") |
    | 3 | por que AGORA | os 2 riscos simultâneos (Ormuz/fertilizante; Super El Niño, 81% segundo a NOAA) |
    | 4 | por que é sobre o BRASIL | 70% das exportações de insumo no Oriente Médio; Brasil maior importador, US$ 15 bi/ano, 86% importado |
    | 5 | o número-chave | inflação global de alimentos de 2,8% (1S2026) para 5% (1S2027) |
    | 6 | cadeia causal | fertilizante ↓ produção ↓ milho e soja ↓ ração ↓ frango, carne, leite e ovos |
-   | 7 | evidência JÁ observável | café arábica +16% num único dia em julho |
-   | 8 | 2º bolso atingido | conta de luz, +8,6% (Aneel), ~R$ 17 numa conta de R$ 200 |
-   | 9 | contraponto internacional | a China já concentra metade do estoque mundial de arroz e 60% do milho |
+   | 7 | evidência JÁ observável (foto) | café arábica +16% num único dia em julho |
+   | 8 | 2º bolso atingido (foto) | conta de luz, +8,6% (Aneel), ~R$ 17 numa conta de R$ 200 |
+   | 9 | contraponto internacional (foto) | a China já concentra metade do estoque mundial de arroz e 60% do milho |
    | 10 | **de-escalação** | "Mas calma: isso não significa que VOCÊ precisa correr pro mercado" |
    | 11 | ponte pro leitor | "E o que isso tem a ver com o seu dinheiro? Tudo." |
    | 12 | fecho acionável | "Você não controla o clima (...) Mas pode se informar e preparar melhor o seu dinheiro" |
@@ -126,8 +130,9 @@ Sete padrões que não aparecem no grupo A:
     adjetivo — cada passo tem um número e uma fonte nomeada.
 
 12. **Texto puro na maioria dos slides; imagem só quando ILUSTRA.** 5 dos 12
-    slides lidos têm foto (prateleira vazia, prédio do JPMorgan, café, lâmpada,
-    silos); os 7 restantes são texto sobre fundo branco. Inverte o grupo A,
+    slides lidos têm foto — os marcados `(foto)` na tabela do padrão 9:
+    prateleira vazia (1), prédio do JPMorgan (2), café (7), lâmpada (8), silos
+    (9); os 7 restantes são texto sobre fundo branco. Inverte o grupo A,
     onde a obra é o protagonista visual. Aqui a foto é ancoragem concreta de
     uma abstração, nunca o conteúdo em si — e slides de raciocínio puro
     (a cadeia causal, a de-escalação) dispensam imagem de propósito.
@@ -165,9 +170,10 @@ unidade separada, à critério do editor sobre o que priorizar.
 ## Nota de método (#5875)
 
 A #5875 registrava, como justificativa pra exigir a máquina Windows, que
-"WebFetch alucina conteúdo de outra conta — tentativa em 260821 retornou
-descrição de um post totalmente diferente, meme de Nathalia Arcuri sobre
-inflação de alimentos, nada a ver com carrossel".
+"WebFetch dá 403/hallucina conteúdo de outra conta — tentativa em 260821
+retornou descrição de um post totalmente diferente, meme de Nathalia Arcuri
+sobre inflação de alimentos, nada a ver com carrossel" (citação verbatim do
+corpo da issue, `hallucina` no original).
 
 **Isso estava errado, e vale registrar pra não virar precedente.** O post
 `DcREk0KFTx9` É da conta `nathaliaarcuri` e É sobre inflação de alimentos — o
@@ -181,3 +187,10 @@ slide a slide. O que muda é o motivo: **"WebFetch não pagina o carrossel"**,
 não "WebFetch alucina". A distinção importa porque a segunda leitura
 desqualificaria o WebFetch como fonte pra qualquer coisa de Instagram,
 inclusive caption e engajamento, onde ele funciona.
+
+**Sobre o nome deste arquivo.** Continua `instagram-benchmarks-5815.md` mesmo
+com o título citando duas issues: o path é estável e não vale a churn de
+renomear (nenhum script o importa — conferido —, mas docs e comentários de
+issue apontam pra ele). Se um 4º benchmark entrar, o critério segue o mesmo —
+o número no nome marca a issue que CRIOU o arquivo, não o conjunto de issues
+que o alimentaram; o título é quem carrega essa lista.
