@@ -16,12 +16,35 @@
  * seguida no mesmo processo (simulação do cenário de 2 previews do Studio
  * interleavados, sem precisar de um servidor HTTP real no teste).
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { renderHTML, renderHTMLWithWarnings, getRenderWarnings } from "../scripts/lib/newsletter-render-html.ts";
 import type { NewsletterContent, RenderDestaque } from "../scripts/lib/newsletter-parse.ts";
 
 const EDITION = "260801";
+
+// #5817: `renderConviteAmigo` (chamado incondicionalmente por `renderHTML`)
+// lê `data/snippets/convite-amigo-whatsapp.md` via `readSnippetFile` — nunca
+// a `data/` real do editor (gitignored, ausente em CI/clone fresco). Sem
+// fixture, toda chamada de `renderHTML()` neste arquivo dispararia
+// `convite_amigo_snippet_missing`, poluindo os testes que existiam antes do
+// #5794/#5817 e que verificam warnings NÃO relacionados a este bloco. Mesmo
+// padrão de fixture de `test/convite-amigo-whatsapp-5794.test.ts`.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "render-html-warnings-snippet-fixture-"));
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+writeFileSync(
+  join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "convite-amigo-whatsapp.md"),
+  "Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](https://diar.ia.br/)\n",
+  "utf8",
+);
+const OPTS = { rootDir: SNIPPETS_FIXTURE_ROOT };
+
+after(() => {
+  rmSync(SNIPPETS_FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 function makeD1(overrides: Partial<RenderDestaque> = {}): RenderDestaque {
   return {
@@ -54,23 +77,23 @@ const contentClean: NewsletterContent = {
 
 describe("renderHTMLWithWarnings (#4687)", () => {
   it("retorna { html, warnings } com os eventos desta chamada", () => {
-    const { html, warnings } = renderHTMLWithWarnings(contentWithWarning);
+    const { html, warnings } = renderHTMLWithWarnings(contentWithWarning, OPTS);
     assert.ok(html.length > 0);
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].event, "whatsapp_share_no_d1");
   });
 
   it("edição limpa → warnings: []", () => {
-    const { warnings } = renderHTMLWithWarnings(contentClean);
+    const { warnings } = renderHTMLWithWarnings(contentClean, OPTS);
     assert.deepEqual(warnings, []);
   });
 
   it("2 chamadas sequenciais (simula requests concorrentes do Studio) não misturam warnings — cada resultado retornado permanece correto mesmo depois da 2ª chamada resetar o coletor", () => {
-    const resultA = renderHTMLWithWarnings(contentWithWarning); // dispara whatsapp_share_no_d1
+    const resultA = renderHTMLWithWarnings(contentWithWarning, OPTS); // dispara whatsapp_share_no_d1
     // Simula uma 2ª "request" que roda ANTES do caller de A ler
     // getRenderWarnings() separadamente — é exatamente o cenário perigoso do
     // padrão antigo (renderHTML() + getRenderWarnings() depois de um await).
-    const resultB = renderHTMLWithWarnings(contentClean); // sem warnings
+    const resultB = renderHTMLWithWarnings(contentClean, OPTS); // sem warnings
 
     // O resultado JÁ RETORNADO de A não muda por causa da chamada B —
     // renderHTMLWithWarnings copiou o array antes de B rodar.
@@ -82,15 +105,15 @@ describe("renderHTMLWithWarnings (#4687)", () => {
     // (renderHTML() + getRenderWarnings() separado) e lido DEPOIS de B rodar,
     // veria os warnings de B (ou nenhum), não os de A — a prova viva da
     // armadilha que renderHTMLWithWarnings evita.
-    renderHTML(contentWithWarning); // volta a popular o coletor global
-    renderHTML(contentClean); // último a rodar reseta pra warnings: []
+    renderHTML(contentWithWarning, OPTS); // volta a popular o coletor global
+    renderHTML(contentClean, OPTS); // último a rodar reseta pra warnings: []
     assert.deepEqual(getRenderWarnings(), [], "getRenderWarnings() cru reflete só a ÚLTIMA chamada no processo — por isso é perigoso ler depois de um await");
   });
 
   it("array retornado é cópia — mutar não afeta o coletor interno nem chamadas seguintes", () => {
-    const { warnings } = renderHTMLWithWarnings(contentWithWarning);
+    const { warnings } = renderHTMLWithWarnings(contentWithWarning, OPTS);
     warnings.push({ event: "whatsapp_share_no_d1", edition: "999999" });
-    const { warnings: warningsClean } = renderHTMLWithWarnings(contentClean);
+    const { warnings: warningsClean } = renderHTMLWithWarnings(contentClean, OPTS);
     assert.deepEqual(warningsClean, [], "mutação do array anterior não deve vazar pra próxima chamada");
   });
 });

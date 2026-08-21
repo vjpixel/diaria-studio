@@ -188,6 +188,12 @@ function main(): void {
   const format = values["format"] ?? "html";
   const outPath = values["out"] ?? null;
   const split = flags.has("split"); // #1046 — paste híbrido (body + È IA? standalone)
+  // #5817 — test-only override: `RenderOpts.rootDir` (usado por
+  // `renderConviteAmigo` pra resolver `data/snippets/`). Produção nunca
+  // passa esta flag; só existe pra permitir e2e via subprocess (spawnSync)
+  // apontar pra uma fixture isolada em vez da `data/` real do editor
+  // (gitignored, ausente em CI/clone fresco).
+  const rootDirOverride = values["root-dir"];
 
   if (!editionDir) {
     console.error(
@@ -281,7 +287,7 @@ function main(): void {
     mkdirSync(internalDir, { recursive: true });
     const bodyPath = resolve(internalDir, "newsletter-body.html");
     const eiaPath = resolve(internalDir, "newsletter-eia.html");
-    const bodyHtml = minifyEmailHtml(renderHTML(content, { excludeEia: true })); // #5232 item 2
+    const bodyHtml = minifyEmailHtml(renderHTML(content, { excludeEia: true, rootDir: rootDirOverride })); // #5232 item 2
     writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
     writeFileSync(bodyPath, bodyHtml + "\n");
     console.error(`Written body to ${bodyPath} (${bodyHtml.length} bytes)`);
@@ -313,7 +319,7 @@ function main(): void {
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
-    output = minifyEmailHtml(renderHTML(content, { fullDocument: flags.has("full"), esp })); // #5232 item 2
+    output = minifyEmailHtml(renderHTML(content, { fullDocument: flags.has("full"), esp, rootDir: rootDirOverride })); // #5232 item 2
     writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
   }
 
