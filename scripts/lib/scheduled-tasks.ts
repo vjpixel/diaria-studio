@@ -1104,6 +1104,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (`helios`) é ação POSTERIOR do editor.
     issue: "#5754",
   },
+  {
+    name: "Diaria-Ads-Test-Watch",
+    description:
+      "cobra os marcos do ciclo de vida do teste de 3 canais pagos (D0, reconciliacao diaria, condicoes de " +
+      "morte, religamento D+21, apuracao congelada) sem depender da memoria do editor",
+    steps: [{ key: "watch", script: "scripts/ads-test-watch.ts" }],
+    logPath: "aquisicao/.ads-test-watch.log",
+    // 06:30 BRT diário — depois do snapshot semanal Diaria-Beehiiv-Backup
+    // (domingo 03:00, acima) ter folga pra terminar antes desta rodar sobre
+    // um snapshot novo no dia da apuração, e antes de qualquer horário de
+    // trabalho normal do editor (reconciliação diária do §8.3 acontece
+    // durante o dia — este check olha pra ONTEM, então roda de manhã).
+    schedule: { kind: "daily", hour: 6, minute: 30 },
+    guard: {
+      requiredFile: "aquisicao/spend.csv",
+      abortMessage:
+        "spend.csv nao encontrado (data/aquisicao/spend.csv) -- provavel junction data/ nao montada ainda; " +
+        "abortando por seguranca, sem checar run-state/clicks-2608.csv.",
+    },
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5220/#5217/#5311/#5494/#5607/#5704/#5754 acima) —
+    // armar via `scripts/setup-systemd-timers.ts` na checkout compartilhada
+    // (`helios`) é ação POSTERIOR do editor.
+    issue: "#5845",
+  },
 ];
 
 /**
