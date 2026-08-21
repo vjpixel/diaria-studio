@@ -140,16 +140,18 @@ describe("orchestrator-prompt (#634)", () => {
       // #3530: +6 linhas (resolução de {EDITION_DIR} em §0a + fix nested-aware
       // em §0l + resolução da edição referenciada em §0-replies). Teto bumped
       // de 520→535 com headroom (era 521 medido pós-#3530).
-      // #5415: +74 linhas (cutover pro runner determinístico
-      // `scripts/stage-0-run.ts` — bloco novo "Runner determinístico" no
-      // topo do Stage 0 documentando o protocolo de 2 fases + interpretação
-      // do JSON de saída, e um marcador "(→ coberto por stage-0-run.ts;
-      // referência/fallback)" em cada header de subseção que o script cobre).
-      // A prosa detalhada de cada subseção foi preservada de propósito — é o
-      // fallback se o script faltar/falhar, e a documentação do que o script
-      // faz e por quê (a issue #5415 pede explicitamente "não apagar a
-      // documentação"). Arquivo foi a 609 linhas. Teto bumped de 535→625 com
-      // headroom pequeno.
+      // #5415: +75 linhas líquidas (91 inserções, 16 remoções — cutover pro
+      // runner determinístico `scripts/stage-0-run.ts`: bloco novo "Runner
+      // determinístico" no topo do Stage 0 documentando o protocolo de 2
+      // fases + interpretação do JSON de saída, e um marcador "(→ coberto
+      // por stage-0-run.ts; referência/fallback)" em cada header de
+      // subseção que o script cobre). A prosa detalhada de cada subseção
+      // foi preservada de propósito — é o fallback se o script
+      // faltar/falhar, e a documentação do que o script faz e por quê (a
+      // issue #5415 pede explicitamente "não apagar a documentação").
+      // Arquivo foi a 610 linhas (contagem de `content.split("\n").length`,
+      // igual à usada por este teste). Teto bumped de 535→625 com headroom
+      // pequeno.
       "orchestrator-stage-0-preflight.md": 625,
       // #4846: +9 linhas (novo passo 1y-bis — dispatch opcional/desligado
       // por padrão de scripts/experiment-d3-radar.ts logo após os invariants

@@ -14,7 +14,12 @@ description: Stage 0 do orchestrator diar.ia.br — setup, parâmetros, checks p
 ### Runner determinístico (`scripts/stage-0-run.ts`, #5415) — CAMINHO PRINCIPAL
 
 **Rodar `0b` (resume-aware) primeiro, como sempre** — decide se a edição já passou
-do Stage 0 e deve pular direto para outro stage. Só quando o resume aponta "começar
+do Stage 0 e deve pular direto para outro stage. `0b` opera sobre `{EDITION_DIR}`,
+que resolve com a mesma chamada barata e idempotente que o runner usa internamente
+em `0a` (`npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD}`) — rodá-la
+uma vez aqui, antes de decidir se o Stage 0 sequer começa, não duplica trabalho: a
+fase `preflight` do runner (passo 1 abaixo) chama o mesmo comando de novo e é
+seguro repetir (leitura pura, sem escrita). Só quando o resume aponta "começar
 do Stage 0" é que o runner abaixo entra em cena.
 
 A partir daí, os passos **0a, 0b-bis, 0c (só os 3 checks HTTPS/token — locks,
