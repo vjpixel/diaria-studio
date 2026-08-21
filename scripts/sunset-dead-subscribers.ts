@@ -149,17 +149,23 @@ export interface SunsetThresholds {
    *  de verdade (grupo original, mediana 101 recebidas / ~8 meses de
    *  cadastro) com gente que acabou de cruzar o piso de volume (23 casos,
    *  mediana 22 recebidas / ~1 mês de cadastro, coorte da campanha de
-   *  lançamento em medição — #5734/#4556). 4 semanas ainda cabe onboarding
-   *  ruim ou hábito não formado; 60 dias dá a folga que o piso de volume
-   *  sozinho não garante. Decisão do editor (sessão `/diaria-develop`
-   *  260821): combinar os dois pisos em vez de só subir `receivedMin`. */
+   *  lançamento em medição — #5734/#4556). Decisão registrada do editor
+   *  (marcador `decisao-editor` em #5849, 21/08/2026 18:16 UTC): 90 dias,
+   *  não 60 — o piso de idade existe pra não descadastrar a coorte de
+   *  cadastro 22/07/2026 antes das medições que dependem dela (#5734,
+   *  ~28/08; checkpoint #4556, 15/09). Com 60 dias a margem do #4556 seria
+   *  de só 5 dias (20/09 vs checkpoint 15/09) — risco real se o checkpoint
+   *  atrasar. 90 dias também alinha com a automação "Re-engagement
+   *  Automation Flow (90 day Inactivity)" já configurada na Beehiiv. (Uma
+   *  implementação paralela do #5849 mergeou com 60 antes de ver o
+   *  marcador de decisão registrado — corrigido pelo #5881.) */
   subscribedMinDays: number;
 }
 
 export const SUNSET_THRESHOLDS: SunsetThresholds = {
   receivedMin: 20,
   openRateMaxPct: 10,
-  subscribedMinDays: 60,
+  subscribedMinDays: 90,
 };
 
 /** Limiar do guard de blast radius (20% — spec da issue #5807, "~20% dos

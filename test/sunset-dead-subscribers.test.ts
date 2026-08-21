@@ -43,7 +43,7 @@ function jsonRes(status: number, body: unknown): Response {
 
 // Data de referência fixa pros testes (não usa relógio real — mesma
 // disciplina do resto do repo). `OLD_SUBSCRIBED_AT` é bem mais que
-// `subscribedMinDays` (60) antes dela, então os testes que não são sobre
+// `subscribedMinDays` (90) antes dela, então os testes que não são sobre
 // idade de cadastro continuam exercitando só o que testavam antes do #5849.
 const REFERENCE_DATE = "2026-08-16";
 const OLD_SUBSCRIBED_AT = Math.floor(Date.parse("2025-01-01T00:00:00Z") / 1000);
@@ -161,19 +161,19 @@ describe("isDeadSubscriber", () => {
           REFERENCE_DATE,
         ),
         false,
-        "30 dias de cadastro < subscribedMinDays (60) — nunca sunset, mesmo morto por todo o resto",
+        "30 dias de cadastro < subscribedMinDays (90) — nunca sunset, mesmo morto por todo o resto",
       );
     });
 
     it("cadastro exatamente no limiar (subscribedMinDays) É sunset — >=, não >", () => {
-      const subscribedAtExactly60DaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 60 * 86400;
+      const subscribedAtExactly90DaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 90 * 86400;
       assert.equal(
         isDeadSubscriber(
           sub({
             totalReceived: 30,
             totalUniqueOpened: 0,
             totalUniqueClicked: 0,
-            subscribedAt: subscribedAtExactly60DaysAgo,
+            subscribedAt: subscribedAtExactly90DaysAgo,
           }),
           REFERENCE_DATE,
         ),
@@ -186,6 +186,23 @@ describe("isDeadSubscriber", () => {
         isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 0, totalUniqueClicked: 0 }), REFERENCE_DATE),
         true,
         "sub() default já usa OLD_SUBSCRIBED_AT, bem além do piso",
+      );
+    });
+
+    // #5881: PR #5879 mergeou com subscribedMinDays=60 (implementação
+    // paralela que não viu a decisão do editor em #5849 registrar 90) —
+    // este candidato (22 recebidas / 75 dias de cadastro) é exatamente o
+    // caso que o threshold errado de 60 deixava passar (75 >= 60) e o
+    // threshold correto de 90 barra (75 < 90).
+    it("candidato com 22 recebidas / 75 dias de cadastro é EXCLUÍDO do sunset (regressão #5881)", () => {
+      const subscribedAt75DaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 75 * 86400;
+      assert.equal(
+        isDeadSubscriber(
+          sub({ totalReceived: 22, totalUniqueOpened: 0, totalUniqueClicked: 0, subscribedAt: subscribedAt75DaysAgo }),
+          REFERENCE_DATE,
+        ),
+        false,
+        "75 dias < subscribedMinDays (90) — com o threshold antigo de 60 este caso passaria incorretamente",
       );
     });
   });
@@ -240,7 +257,7 @@ describe("selectDeadSubscribers", () => {
   function backupSub(overrides: Partial<BeehiivBackupSubscriber> & { email: string }): BeehiivBackupSubscriber {
     return {
       status: "active",
-      created: OLD_SUBSCRIBED_AT, // bem além de subscribedMinDays (60) pra qualquer snapshot usado nos testes abaixo
+      created: OLD_SUBSCRIBED_AT, // bem além de subscribedMinDays (90) pra qualquer snapshot usado nos testes abaixo
       utm_source: "",
       utm_medium: "",
       utm_campaign: "",
@@ -418,7 +435,7 @@ describe("formatDryRunReport", () => {
       open_rate_before: 0.3,
       open_rate_projected: 0.35,
     });
-    assert.match(report, /cadastro >= 60 dias/);
+    assert.match(report, /cadastro >= 90 dias/);
     assert.match(report, /cadastro há 90d/);
   });
 });
