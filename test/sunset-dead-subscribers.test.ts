@@ -9,23 +9,29 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   SUNSET_THRESHOLDS,
   BLAST_RADIUS_THRESHOLD,
+  SNAPSHOT_MAX_AGE_DAYS,
   computeOpenRatePct,
   isDeadSubscriber,
   sunsetInputFromBeehiivSubscriber,
   selectDeadSubscribers,
   evaluateBlastRadiusGuard,
   applyQueueCapGate,
+  excludeAlreadyInStore,
+  computeSnapshotAgeDays,
+  ensureFreshSnapshot,
+  appendSunsetRoundLog,
   unsubscribeFromBeehiiv,
   appendSunsetLog,
   applySunsetOne,
   formatDryRunReport,
   type SunsetInput,
+  type SunsetRoundLogEntry,
 } from "../scripts/sunset-dead-subscribers.ts";
 import type { BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
@@ -531,5 +537,194 @@ describe("dry-run não faz I/O de rede/escrita", () => {
     const r1 = selectDeadSubscribers(subscribers, SUNSET_THRESHOLDS, "2026-08-16");
     const r2 = selectDeadSubscribers(subscribers, SUNSET_THRESHOLDS, "2026-08-16");
     assert.deepEqual(r1, r2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// excludeAlreadyInStore — item (c) do reescopo #5807 (rodada semanal)
+// ---------------------------------------------------------------------------
+
+describe("excludeAlreadyInStore", () => {
+  it("exclui candidato já presente no store, qualquer status", () => {
+    const store: BrevoDiariaStore = {
+      contacts: [
+        {
+          email: "already@a.com",
+          beehiiv_subscription_id: "x",
+          status: "suppressed",
+          opens_count: 0,
+          sends_count: 5,
+          last_open_rate: 0,
+          added_at: "2026-01-01T00:00:00Z",
+          last_evaluated_at: null,
+        },
+      ],
+    };
+    const selected = [sub({ email: "already@a.com" }), sub({ email: "novo@b.com" })];
+    const { toConsider, excludedEmails } = excludeAlreadyInStore(selected, store);
+    assert.deepEqual(
+      toConsider.map((s) => s.email),
+      ["novo@b.com"],
+    );
+    assert.deepEqual(excludedEmails, ["already@a.com"]);
+  });
+
+  it("store vazio não exclui ninguém", () => {
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+    const selected = [sub({ email: "a@a.com" }), sub({ email: "b@b.com" })];
+    const { toConsider, excludedEmails } = excludeAlreadyInStore(selected, emptyStore);
+    assert.equal(toConsider.length, 2);
+    assert.equal(excludedEmails.length, 0);
+  });
+
+  it("compara e-mail normalizado (case-insensitive)", () => {
+    const store: BrevoDiariaStore = {
+      contacts: [
+        {
+          email: "Already@A.com",
+          beehiiv_subscription_id: "x",
+          status: "in_brevo",
+          opens_count: 0,
+          sends_count: 5,
+          last_open_rate: 0,
+          added_at: "2026-01-01T00:00:00Z",
+          last_evaluated_at: null,
+        },
+      ],
+    };
+    const selected = [sub({ email: "already@a.com" })];
+    const { toConsider, excludedEmails } = excludeAlreadyInStore(selected, store);
+    assert.equal(toConsider.length, 0);
+    assert.deepEqual(excludedEmails, ["already@a.com"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeSnapshotAgeDays + ensureFreshSnapshot — item (a) do reescopo #5807
+// ---------------------------------------------------------------------------
+
+describe("computeSnapshotAgeDays", () => {
+  it("calcula idade em dias entre snapshot e now", () => {
+    assert.equal(computeSnapshotAgeDays("2026-08-14", new Date("2026-08-21T00:00:00Z")), 7);
+    assert.equal(computeSnapshotAgeDays("2026-08-21", new Date("2026-08-21T12:00:00Z")), 0.5);
+  });
+
+  it("data inválida retorna Infinity, nunca NaN", () => {
+    assert.equal(computeSnapshotAgeDays("not-a-date", new Date("2026-08-21T00:00:00Z")), Infinity);
+  });
+});
+
+describe("ensureFreshSnapshot", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "sunset-fresh-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("snapshot recente (dentro do limite) NÃO dispara runBackup", async () => {
+    mkdirSync(join(tmpRoot, "2026-08-20"), { recursive: true });
+    let called = false;
+    const result = await ensureFreshSnapshot({
+      root: tmpRoot,
+      runBackup: () => {
+        called = true;
+      },
+      now: new Date("2026-08-21T00:00:00Z"),
+    });
+    assert.equal(called, false);
+    assert.equal(result.triggered, false);
+    assert.equal(result.snapshotDateBefore, "2026-08-20");
+  });
+
+  it("snapshot velho demais (> SNAPSHOT_MAX_AGE_DAYS) dispara runBackup", async () => {
+    mkdirSync(join(tmpRoot, "2026-08-01"), { recursive: true });
+    let called = false;
+    const result = await ensureFreshSnapshot({
+      root: tmpRoot,
+      runBackup: async () => {
+        called = true;
+        mkdirSync(join(tmpRoot, "2026-08-21"), { recursive: true });
+      },
+      now: new Date("2026-08-21T00:00:00Z"),
+    });
+    assert.equal(called, true);
+    assert.equal(result.triggered, true);
+    assert.equal(result.snapshotDateBefore, "2026-08-01");
+    assert.equal(result.snapshotDateAfter, "2026-08-21");
+  });
+
+  it("nenhum snapshot existente dispara runBackup", async () => {
+    let called = false;
+    const result = await ensureFreshSnapshot({
+      root: tmpRoot,
+      runBackup: () => {
+        called = true;
+      },
+      now: new Date("2026-08-21T00:00:00Z"),
+    });
+    assert.equal(called, true);
+    assert.equal(result.triggered, true);
+    assert.equal(result.snapshotDateBefore, null);
+  });
+
+  it("exatamente no limiar (SNAPSHOT_MAX_AGE_DAYS) NÃO dispara — <=, não <", async () => {
+    const snapshotDate = "2026-08-14"; // 7 dias antes de 2026-08-21
+    mkdirSync(join(tmpRoot, snapshotDate), { recursive: true });
+    let called = false;
+    const result = await ensureFreshSnapshot({
+      root: tmpRoot,
+      maxAgeDays: SNAPSHOT_MAX_AGE_DAYS,
+      runBackup: () => {
+        called = true;
+      },
+      now: new Date("2026-08-21T00:00:00Z"),
+    });
+    assert.equal(called, false);
+    assert.equal(result.triggered, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendSunsetRoundLog — item (e) do reescopo #5807
+// ---------------------------------------------------------------------------
+
+describe("appendSunsetRoundLog", () => {
+  it("grava jsonl append-only com avaliados/elegíveis/movidos/pulados", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "sunset-round-log-"));
+    const logPath = join(tmpDir, "sunset-rounds.jsonl");
+    try {
+      const entry: SunsetRoundLogEntry = {
+        round_at: "2026-08-23T09:20:00.000Z",
+        push: true,
+        snapshot_date: "2026-08-23",
+        snapshot_refresh: null,
+        mature_active_count: 1000,
+        eligible_count: 40,
+        already_in_store_count: 5,
+        considered_count: 35,
+        blast_radius: { blocked: false, ratio: 0.035, threshold: BLAST_RADIUS_THRESHOLD },
+        queue: { current_active: 100, cap: 300, available_slots: 200 },
+        applied_count: 30,
+        failed_count: 0,
+        warned_count: 0,
+        skipped: [
+          { email: "a@a.com", reason: "already_in_store" },
+          { email: "b@b.com", reason: "queue_cap" },
+        ],
+      };
+      appendSunsetRoundLog(entry, logPath);
+      appendSunsetRoundLog({ ...entry, round_at: "2026-08-30T09:20:00.000Z" }, logPath);
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      assert.equal(lines.length, 2, "append-only — 2 chamadas, 2 linhas");
+      const parsed = JSON.parse(lines[0]) as SunsetRoundLogEntry;
+      assert.equal(parsed.applied_count, 30);
+      assert.equal(parsed.skipped.length, 2);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
