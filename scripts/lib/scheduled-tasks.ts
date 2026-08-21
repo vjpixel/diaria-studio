@@ -332,8 +332,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
         "montada ainda; abortando por seguranca, NAO rodando --push.",
     },
-    enabled: false,
-    issue: "#4534, #4552, #5639",
+    enabled: true,
+    issue: "#4534, #4552, #5639, #5838",
   },
   {
     name: "Diaria-Geo-Citation-Monitor",

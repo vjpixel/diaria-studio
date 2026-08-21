@@ -96,6 +96,10 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
     --ratio 4x5
 
   # 2. compõe o card final (imagem + título) → 04-d{N}-4x5.jpg, todos os destaques
+  #    (#5852: tamanho de fonte COMPARTILHADO entre os cards da mesma edição —
+  #     computeCarouselTitleFontSize pega o menor overlayFittingFontSize do
+  #     conjunto, o mais restritivo governa todos. Sem isso cada card caía no
+  #     clamp individual e saía com fontes visivelmente diferentes.)
   npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/
   ```
   A arte 4:5 é gerada de novo (não recortada do 2:1) porque o card é retrato (0,8:1) e precisa da altura que o 2:1 descarta (histórico/rationale: `docs/orchestrator-stage-narrative-history.md#stage-3-card-4x5-rationale`). O `generateCard` tem fallback (nativo → master 6:5 → 2:1) só pra não quebrar em edição antiga.

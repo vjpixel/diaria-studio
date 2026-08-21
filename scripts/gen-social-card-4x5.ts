@@ -27,6 +27,8 @@ import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { parseDestaques } from "./extract-destaques.ts";
+import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
+export { computeCarouselTitleFontSize };
 
 const W = 1080;
 const H = 1350;
@@ -390,12 +392,24 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const destaques = parseDestaques(readFileSync(mdPath, "utf8"));
+  // #5852: tamanho de fonte COMPARTILHADO entre todos os cards da edição —
+  // o menor overlayFittingFontSize do conjunto (o mais restritivo governa).
+  // Computado sobre TODOS os títulos do arquivo (não só o filtrado por
+  // --destaque), pra regeneração parcial manter consistência com os já
+  // gerados. O mecanismo já existia pro carrossel semanal (#5330); aqui
+  // nunca foi ligado.
+  const sharedFontSize = computeCarouselTitleFontSize(
+    destaques.map((d) => d.title ?? ""),
+  );
   const generated: string[] = [];
   for (let i = 0; i < destaques.length; i++) {
     const key = `d${i + 1}`;
     if (only && only !== key) continue;
     const d = destaques[i] as { title?: string; category?: string };
-    const out = await generateCard(editionDir, key, d.title ?? "", d.category ?? "", ratio, layout);
+    const out = await generateCard(
+      editionDir, key, d.title ?? "", d.category ?? "", ratio, layout,
+      { fontSizeOverride: sharedFontSize },
+    );
     if (out) generated.push(out);
     else console.error(`[gen-social-card-4x5] pulado ${key}: 04-${key}-2x1.jpg ausente`);
   }
