@@ -100,8 +100,9 @@ export { STAGE_PLAN, HEADLESS_FLAGS } from "../lib/edition-stage-runner.ts";
  * **A lista é enumerada, não exaustiva** (achado do review do PR #5609). A
  * própria mensagem do CLI diz "ANTHROPIC_API_KEY **or another auth source**",
  * e a superfície de auth do Claude Code inclui outras vars que roteiam pra
- * um provider diferente do login. As 4 abaixo cobrem o incidente observado
- * (as 2 de key) mais o roteamento Bedrock/Vertex — nenhuma delas aparece em
+ * um provider diferente do login. As 4 primeiras abaixo cobrem o incidente
+ * observado (as 2 de key) mais o roteamento Bedrock/Vertex; as 3 seguintes
+ * (#5791) cobrem identidade de sessão pai — nenhuma delas aparece em
  * `.env.example` hoje, então remover é no-op no ambiente atual e blindagem
  * pra quando alguma entrar no `.env` por outro motivo. `ANTHROPIC_BASE_URL`
  * ficou de FORA de propósito: ela não autentica sozinha, e um proxy
@@ -119,7 +120,7 @@ export const CLAUDE_CLI_STRIPPED_ENV_VARS = [
   // ativa (ex: `/diaria-edicao` rodando `run-edition-stages.ts` a partir do
   // Bash tool da própria sessão) saiu com exit 0 em 62s sem escrever nenhum
   // output; o MESMO comando rodado manualmente num shell puro (sem sessão
-  // pai) completou normal em ~13min. As 4 vars abaixo identificam a sessão
+  // pai) completou normal em ~13min. As 3 vars abaixo identificam a sessão
   // PAI e nunca foram filtradas — um `claude --print` filho as herdando pode
   // se comportar como se estivesse aninhado na sessão pai (que já teria
   // encerrado seu turno) em vez de abrir uma sessão nova e independente,
