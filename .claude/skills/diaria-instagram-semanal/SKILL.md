@@ -166,6 +166,20 @@ atual:
   script imprime um aviso e ABORTA — não publica um post materialmente
   incompleto em silêncio. Passe a flag só depois de confirmar com o editor
   que a semana curta é legítima (feriado etc.).
+- `--force-urls url1,url2,...` (#5905) — override manual da seleção
+  algorítmica: lista de URLs separadas por vírgula, na ordem desejada do
+  carrossel, substituindo `selectInstagramWeekly`/`selectInstagramHighlights`
+  por uma escolha explícita do editor. Cada URL precisa casar com um
+  candidato ELEGÍVEL do pool da semana (não-comercial/afiliado/próprio) —
+  URL fora do pool ou bloqueada pela mesma exclusão comercial aborta com erro
+  nomeando qual. Não compõe com `--mode both` (highlights e clicked têm pools
+  de candidatos diferentes — rode os modos separados pra forçar os 2). No
+  modo `clicked`, a intro da caption troca automaticamente pra uma frase
+  neutra ("Os destaques da semana"), já que "os mais clicados" deixaria de
+  ser verdade. Todo o resto do pipeline (imagem, agendamento, persistência)
+  roda igual. Uso típico: o editor revisou o ranking completo (fora desta
+  skill, ex: consultando `weekly-instagram-select.ts` diretamente) e discorda
+  do desempate por ruído da seleção automática pra esta rodada.
 
 ## Pré-requisitos
 

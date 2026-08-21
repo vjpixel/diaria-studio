@@ -146,10 +146,22 @@ function contextLine(item: InstagramWeeklyItem): string {
  * CADA item) é responsabilidade de `publish-weekly-social.ts`
  * (`resolveWeeklyImageUrls`).
  */
-export function formatInstagramWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
+/**
+ * `introOverride` (#5905): quando o editor força a seleção manualmente
+ * (`--force-urls` em `publish-weekly-social.ts`), a intro padrão do modo
+ * `clicked` ("Os mais clicados da semana") vira uma afirmação factualmente
+ * incorreta — a ordem não veio mais do ranking de clique. Passa uma intro
+ * neutra nesse caso; `undefined` preserva `INTRO_LINES[mode]` (comportamento
+ * de sempre).
+ */
+export function formatInstagramWeekly(
+  items: InstagramWeeklyItem[],
+  mode: WeeklyInstagramMode = "clicked",
+  introOverride?: string,
+): string {
   if (items.length === 0) return "";
   const body =
-    `${INTRO_LINES[mode]}\n\n` +
+    `${introOverride ?? INTRO_LINES[mode]}\n\n` +
     items
       .map((it, i) => {
         const ctx = contextLine(it);
@@ -169,10 +181,14 @@ export function formatInstagramWeekly(items: InstagramWeeklyItem[], mode: Weekly
  * aceita ~63.200 chars, muito acima do que este carrossel produz) — nenhum
  * truncamento é aplicado, diferente do Instagram.
  */
-export function formatFacebookWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
+export function formatFacebookWeekly(
+  items: InstagramWeeklyItem[],
+  mode: WeeklyInstagramMode = "clicked",
+  introOverride?: string,
+): string {
   if (items.length === 0) return "";
   return (
-    `${INTRO_LINES[mode]}\n\n` +
+    `${introOverride ?? INTRO_LINES[mode]}\n\n` +
     items
       .map((it, i) => {
         const ctx = contextLine(it);
@@ -204,10 +220,14 @@ export const THREADS_WEEKLY_CHAR_LIMIT = 500;
  * chars) preservando palavras inteiras, mesmo mecanismo de
  * `formatInstagramWeekly`.
  */
-export function formatThreadsWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
+export function formatThreadsWeekly(
+  items: InstagramWeeklyItem[],
+  mode: WeeklyInstagramMode = "clicked",
+  introOverride?: string,
+): string {
   if (items.length === 0) return "";
   const body =
-    `${INTRO_LINES[mode]}\n\n` +
+    `${introOverride ?? INTRO_LINES[mode]}\n\n` +
     items.map((it, i) => `${i + 1}. ${it.title}`).join("\n") +
     `\n\nArquivo completo: ${THREADS_ARCHIVE_URL}`;
   return truncateAtLimit(body, THREADS_WEEKLY_CHAR_LIMIT);

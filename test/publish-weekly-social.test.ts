@@ -734,6 +734,98 @@ describe("main(): dispatch mockado", () => {
       // Sem --force-urls, D1 (8%) viria antes de D2 (2%) — a ordem forçada
       // inverte isso: D2 (menos clicado) primeiro, por ter sido listado primeiro.
       assert.match(capturedBody.text, /1\. D2 pouco clicado[\s\S]*2\. D1 muito clicado/);
+      // #5905 fleet review: em modo clicked, "Os mais clicados da semana"
+      // viraria uma afirmação factualmente incorreta sob seleção manual —
+      // a intro troca pra uma frase neutra.
+      assert.match(capturedBody.text, /^Os destaques da semana na diar\.ia\.br:/);
+      assert.doesNotMatch(capturedBody.text, /mais clicados/i);
+    });
+
+    it("--force-urls sem valor (fim do argv ou seguido de outra flag) — aborta com erro explícito, nunca cai de volta pra seleção algorítmica em silêncio", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único destaque", url: "https://exemplo.com/unico" }]);
+
+      let captured = "";
+      const origError = console.error;
+      console.error = (...args: any[]) => {
+        captured += args.join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          // --force-urls é o ÚLTIMO token — parseArgs não tem valor seguinte
+          // pra atribuir, então cai em `flags`, não em `values`.
+          () => main(
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-urls"],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+          ),
+          1,
+        );
+      } finally {
+        console.error = origError;
+      }
+
+      assert.match(captured, /--force-urls foi passado sem valor/);
+    });
+
+    it("URL comercial/afiliada (ex: amazon.com.br) forçada — aborta, não bypassa a exclusão da seleção automática", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "Destaque normal", url: "https://exemplo.com/normal" },
+        { n: 2, title: "Produto na Amazon", url: "https://www.amazon.com.br/produto-x" },
+      ]);
+
+      let captured = "";
+      const origError = console.error;
+      console.error = (...args: any[]) => {
+        captured += args.join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () => main(
+            [
+              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+              "--force-urls", "https://exemplo.com/normal,https://www.amazon.com.br/produto-x",
+            ],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+          ),
+          1,
+        );
+      } finally {
+        console.error = origError;
+      }
+
+      assert.match(captured, /--force-urls contém URL\(s\) comercial\/afiliada\/própria/);
+      assert.match(captured, /amazon\.com\.br/);
+    });
+
+    it("--force-urls + --mode both — aborta cedo (pools de candidatos diferentes entre os 2 modos)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único destaque", url: "https://exemplo.com/unico" }]);
+
+      let captured = "";
+      const origError = console.error;
+      console.error = (...args: any[]) => {
+        captured += args.join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () => main(
+            [
+              "--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule",
+              "--force-urls", "https://exemplo.com/unico",
+            ],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+          ),
+          1,
+        );
+      } finally {
+        console.error = origError;
+      }
+
+      assert.match(captured, /--force-urls não é compatível com --mode both/);
     });
 
     it("URL fora do pool de candidatos elegíveis da semana — aborta sem chamar nenhum publisher", async () => {

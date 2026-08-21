@@ -460,6 +460,17 @@ export async function main(
       process.exit(1);
       return;
     }
+    // #5905: mesmo motivo do --day-offset acima — "highlights" e "clicked"
+    // têm pools de candidatos DIFERENTES (highlights só D1s da semana), então
+    // a MESMA lista de URLs forçada não faz sentido aplicada aos 2 modos
+    // simultaneamente. Quem precisar forçar os 2, roda os modos separados.
+    if (values["force-urls"] != null || flags.has("force-urls")) {
+      console.error(
+        "ERRO: --force-urls não é compatível com --mode both (highlights e clicked têm pools de candidatos diferentes). Rode cada modo separadamente.",
+      );
+      process.exit(1);
+      return;
+    }
     // #5349: --manifest-only espera 1 objeto JSON puro no stdout (o caller —
     // Passo 1 do SKILL.md — faz JSON.parse direto) — "both" emitiria 2
     // objetos em sequência, quebrando esse contrato. "highlights" também
@@ -613,16 +624,46 @@ async function runOneMode(
   // com o julgamento editorial no momento. Reusa TODO o resto do pipeline
   // (imagem, caption, agendamento, persistência) sem alteração — só troca
   // QUAIS candidatos entram em `items` e em que ordem.
+  //
+  let manualOverride = false;
+  // `--force-urls` sem valor (fim do argv, ou seguido de outra `--flag`)
+  // cai em `flags`, não em `values` — sem este guard, o script silenciosamente
+  // ignorava a intenção do editor e voltava pra seleção algorítmica sem
+  // nenhum aviso (#5905 fleet review ALTO).
+  if (flags.has("force-urls")) {
+    console.error(
+      `ERRO: --force-urls foi passado sem valor (ex: "--force-urls url1,url2,url3"). Omita a flag pra não usá-la.`,
+    );
+    return false;
+  }
   const forceUrlsArg = values["force-urls"];
   if (forceUrlsArg) {
-    const wantedUrls = forceUrlsArg.split(",").map((u) => u.trim()).filter(Boolean);
-    const byNormUrl = new Map(ranked.map((c) => [normalizeUrl(c.url), c] as const));
+    const wantedUrls = [...new Set(forceUrlsArg.split(",").map((u) => u.trim()).filter(Boolean))];
+    // #5905 fleet review ALTO: casar contra `ranked` (não-filtrado) deixava
+    // uma URL comercial/afiliada/própria passar direto — `ranked` inclui
+    // candidatos com `excluded: true`, que `selectInstagramWeekly` descarta
+    // ANTES de competir. Casar só contra os elegíveis reusa a mesma exclusão.
+    const eligible = ranked.filter((c) => !c.excluded);
+    const byNormUrl = new Map(eligible.map((c) => [normalizeUrl(c.url), c] as const));
+    const excludedByNormUrl = new Map(ranked.filter((c) => c.excluded).map((c) => [normalizeUrl(c.url), c] as const));
     const forced: InstagramRankedCandidate[] = [];
     const notFound: string[] = [];
+    const commercial: string[] = [];
     for (const u of wantedUrls) {
       const c = byNormUrl.get(normalizeUrl(u));
-      if (c) forced.push(c);
-      else notFound.push(u);
+      if (c) {
+        forced.push(c);
+      } else if (excludedByNormUrl.has(normalizeUrl(u))) {
+        commercial.push(u);
+      } else {
+        notFound.push(u);
+      }
+    }
+    if (commercial.length > 0) {
+      console.error(
+        `ERRO: --force-urls contém URL(s) comercial/afiliada/própria (bloqueada pela mesma exclusão da seleção automática): ${commercial.join(", ")}`,
+      );
+      return false;
     }
     if (notFound.length > 0) {
       console.error(
@@ -631,6 +672,7 @@ async function runOneMode(
       return false;
     }
     items = forced;
+    manualOverride = true;
     selectionWarnings = [
       `SELEÇÃO MANUAL (--force-urls): ${forced.length} item(ns) escolhidos explicitamente pelo editor, substituindo a seleção algorítmica.`,
     ];
@@ -741,15 +783,20 @@ async function runOneMode(
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
-  const caption = formatInstagramWeekly(items, mode);
+  // #5905: seleção manual (--force-urls) torna a intro padrão de "clicked"
+  // ("Os mais clicados da semana") factualmente incorreta — a ordem não vem
+  // mais do ranking. `introOverride` troca por uma frase neutra nesse caso;
+  // `undefined` preserva a intro de sempre pro caminho algorítmico.
+  const introOverride = manualOverride ? "Os destaques da semana na diar.ia.br:" : undefined;
+  const caption = formatInstagramWeekly(items, mode, introOverride);
   // #5348: MESMO carrossel/itens/ordem — só a linha final de CTA difere
   // (Facebook aceita link clicável no corpo, Instagram não). Mesmo
   // `scheduledAt`/`carouselImageUrls` que o Instagram — ver dispatch abaixo.
-  const fbCaption = formatFacebookWeekly(items, mode);
+  const fbCaption = formatFacebookWeekly(items, mode, introOverride);
   // #5348 (unidade Threads): MESMO carrossel/itens/ordem, caption compacta
   // (orçamento de 500 chars da Threads API, ver format-weekly-social.ts) —
   // mesmo `scheduledAt`/`carouselImageUrls` dos outros 2 canais.
-  const threadsCaption = formatThreadsWeekly(items, mode);
+  const threadsCaption = formatThreadsWeekly(items, mode, introOverride);
   // Chave do carrossel (#5330) — "highlights" e "clicked" do MESMO sábado
   // nunca colidem em cache de card sem foto, persisted store, nem
   // skip-existing (destaqueKey abaixo).
