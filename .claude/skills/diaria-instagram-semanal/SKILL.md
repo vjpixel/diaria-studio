@@ -1,6 +1,6 @@
 ---
 name: diaria-instagram-semanal
-description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook E Threads automaticamente, mesmo agendamento, sem flag/canal separado (#5348) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status, diferente dos outros 2). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes). `--mode both` (#5349) roda os 2 modos numa única invocação. Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
+description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook E Threads pelo #5348) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram, Facebook E Threads automaticamente, mesmo agendamento, sem flag/canal separado (#5348) — ver seção "#5348 — expansão pra Facebook e Threads" abaixo pro detalhe de cada canal (Threads exige polling obrigatório de status, diferente dos outros 2). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes). `--mode both` (#5349) roda os 2 modos numa única invocação — e é o default quando `--mode` é omitido (#5903, uso semanal normal; `clicked` isolado é só back-compat do script chamado direto). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -18,7 +18,12 @@ não como etapa do pipeline diário.
 | Modo | Conteúdo | Seleção | Publica |
 |---|---|---|---|
 | `highlights` | Os 5 D1 da semana | Ordem cronológica, SEM ranking por clique — não depende de dado de clique nenhum | **Sábado** (o próprio `AAMMDD-do-sabado`), 11:00 |
-| `clicked` (default) | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 11:00 |
+| `clicked` | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 11:00 |
+
+**Sem `--mode` explícito, a skill roda os DOIS (#5903)** — ver "Argumentos"
+abaixo. `clicked` isolado só é o default de quem chama
+`scripts/publish-weekly-social.ts` direto (back-compat, não é o comportamento
+da skill).
 
 Motivo dos dias separados: publicar os dois no mesmo dia competiria pelo
 mesmo slot de feed do leitor. `DEFAULT_MODE_DAY_OFFSET` em
@@ -131,12 +136,24 @@ atual:
   (`highlights` = o próprio sábado, `clicked` = domingo seguinte), a janela
   de conteúdo é a mesma.
 - `--mode clicked|highlights|both` — qual dos dois carrosséis rodar (ver
-  tabela acima). Default `clicked` (back-compat com invocações antigas, de
-  antes do #5330). `both` (#5349) roda os 2 numa única invocação, cada um
-  reportando sucesso/falha independente — prefira `both` pro uso semanal
-  normal; rode um modo isolado só quando precisar reagendar/corrigir um dos
-  dois sem tocar o outro. **`--day-offset` não é compatível com `--mode
-  both`** (ver seção acima).
+  tabela acima). **Se omitido na invocação da SKILL (#5903, 260821): default
+  — `both`, e imprimir banner** `--mode não informado — assumindo both (uso
+  semanal normal, os 2 carrosséis). Passe --mode clicked|highlights
+  explicitamente para rodar só um dos dois.` — mesmo padrão do
+  `AAMMDD-do-sabado` acima, nunca rodar só 1 carrossel em silêncio.
+  Achado ao vivo 260821: antes do #5903 esta mesma seção documentava
+  "Default `clicked`" pro `--mode` omitido — correto SÓ para quem chama
+  `scripts/publish-weekly-social.ts` DIRETO (back-compat de invocações de
+  antes do #5330, o script preserva esse default), mas ambíguo pra quem
+  invoca a SKILL (`/diaria-instagram-semanal`, sem args — o uso normal
+  semanal), que seguia o default do script e publicava só metade do
+  trabalho da semana sem nenhum aviso. `both` (#5349) roda os 2 modos numa
+  única invocação, cada um reportando sucesso/falha independente; o
+  preview/gate humano (Passos 2-3 abaixo) roda 2x em sequência (uma vez por
+  modo) antes de qualquer `--schedule`. `--mode clicked`/`--mode
+  highlights` explícitos continuam disponíveis pra quem quiser rodar um de
+  cada vez (ex: só reagendar um dos dois depois de corrigir algo).
+  **`--day-offset` não é compatível com `--mode both`** (ver seção acima).
 - `--schedule` — sem esta flag, a skill só mostra o PREVIEW (seleção +
   caption + horário planejado) e não agenda nada. Com a flag, agenda de
   verdade pelo Worker queue (`scheduled_at` explícito — nunca envio

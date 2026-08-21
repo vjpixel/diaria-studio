@@ -60,9 +60,22 @@
  *     [--editions-root data/editions] [--time 11:00]
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
+ *     [--force-urls url1,url2,...]
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
+ *
+ * `--force-urls` (override manual, ad-hoc — #5903 sessão 260821): lista de
+ * URLs separadas por vírgula, na ordem desejada do carrossel, substituindo a
+ * seleção algorítmica (`selectInstagramWeekly`/`selectInstagramHighlights`)
+ * por uma escolha explícita do editor. Cada URL precisa casar (via
+ * `normalizeUrl`) com um candidato do pool elegível da semana (`ranked`) —
+ * URL fora do pool aborta com erro nomeando qual não foi encontrada. Todo o
+ * resto do pipeline (resolução de imagem, caption, agendamento,
+ * persistência) roda igual, sem saber que a seleção foi manual — só `items`
+ * muda. Uso típico: o editor revisou o ranking completo (fora deste script)
+ * e discorda do desempate por ruído (`withinClickNoise`/
+ * `editorialTiebreakScore`) da seleção automática pra esta rodada.
  *
  * `--force-incomplete-week`: se menos de `WEEKLY_MIN_ITEMS` itens forem
  * selecionados (pool insuficiente de candidatos elegíveis — poucas edições
@@ -103,6 +116,7 @@ import {
   selectInstagramWeekly,
   selectInstagramHighlights,
   hasSuspiciousCommercialLanguage,
+  normalizeUrl,
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
@@ -589,11 +603,42 @@ async function runOneMode(
   // warnings/gates de completude de clique abaixo (só fazem sentido pra
   // "clicked").
   const selection = mode === "highlights" ? selectInstagramHighlights(ranked) : selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
-  const items = selection.selected;
+  let items = selection.selected;
+  let selectionWarnings = selection.warnings;
+
+  // --force-urls (override manual, ad-hoc): substitui a seleção algorítmica
+  // por uma lista explícita de URLs, na ordem dada — pedido direto do editor
+  // depois de revisar o ranking completo, quando o desempate por ruído da
+  // seleção automática (`withinClickNoise`/`editorialTiebreakScore`) não bate
+  // com o julgamento editorial no momento. Reusa TODO o resto do pipeline
+  // (imagem, caption, agendamento, persistência) sem alteração — só troca
+  // QUAIS candidatos entram em `items` e em que ordem.
+  const forceUrlsArg = values["force-urls"];
+  if (forceUrlsArg) {
+    const wantedUrls = forceUrlsArg.split(",").map((u) => u.trim()).filter(Boolean);
+    const byNormUrl = new Map(ranked.map((c) => [normalizeUrl(c.url), c] as const));
+    const forced: InstagramRankedCandidate[] = [];
+    const notFound: string[] = [];
+    for (const u of wantedUrls) {
+      const c = byNormUrl.get(normalizeUrl(u));
+      if (c) forced.push(c);
+      else notFound.push(u);
+    }
+    if (notFound.length > 0) {
+      console.error(
+        `ERRO: --force-urls contém URL(s) fora do pool de candidatos elegíveis da semana: ${notFound.join(", ")}`,
+      );
+      return false;
+    }
+    items = forced;
+    selectionWarnings = [
+      `SELEÇÃO MANUAL (--force-urls): ${forced.length} item(ns) escolhidos explicitamente pelo editor, substituindo a seleção algorítmica.`,
+    ];
+  }
 
   const editionsMissingClickData =
     mode === "clicked" ? existingCandidates.filter((c) => !windowPosts.has(c.date)).map((c) => c.date) : [];
-  const warnings = [...selection.warnings];
+  const warnings = [...selectionWarnings];
   for (const date of editionsMissingClickData) {
     warnings.push(
       `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv; candidatos dessa edição não competiram por clique real.`,

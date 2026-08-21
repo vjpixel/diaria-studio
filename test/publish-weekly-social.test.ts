@@ -685,6 +685,90 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#5903: --force-urls (override manual da seleção algorítmica)", () => {
+    it("ordem forçada vence a ordem por taxa de clique — item MENOS clicado pode vir primeiro se listado primeiro", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1 muito clicado", url: "https://exemplo.com/d1-alto" },
+        { n: 2, title: "D2 pouco clicado", url: "https://exemplo.com/d2-baixo" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      addImageFixture(dirA, 2, "https://cdn.example.com/271220-d2.jpg");
+
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: {
+          email: { clicks: 10, unique_opens: 100 },
+          clicks: [
+            { url: "https://exemplo.com/d1-alto", base_url: "https://exemplo.com/d1-alto", email: { unique_verified_clicks: 8 } },
+            { url: "https://exemplo.com/d2-baixo", base_url: "https://exemplo.com/d2-baixo", email: { unique_verified_clicks: 2 } },
+          ],
+        },
+      });
+
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }),
+          };
+        });
+
+      await main(
+        [
+          "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+          "--force-urls", "https://exemplo.com/d2-baixo,https://exemplo.com/d1-alto",
+        ],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      // Sem --force-urls, D1 (8%) viria antes de D2 (2%) — a ordem forçada
+      // inverte isso: D2 (menos clicado) primeiro, por ter sido listado primeiro.
+      assert.match(capturedBody.text, /1\. D2 pouco clicado[\s\S]*2\. D1 muito clicado/);
+    });
+
+    it("URL fora do pool de candidatos elegíveis da semana — aborta sem chamar nenhum publisher", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único destaque", url: "https://exemplo.com/unico" }]);
+
+      // Nenhum interceptor registrado — `mockAgent.disableNetConnect()`
+      // (beforeEach) faz qualquer chamada de rede não-mockada lançar, então
+      // se o script chegasse a chamar um publisher (não deveria: aborta
+      // antes) o teste falharia por essa exceção, não silenciosamente.
+      let captured = "";
+      const origError = console.error;
+      console.error = (...args: any[]) => {
+        captured += args.join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () => main(
+            [
+              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+              "--force-urls", "https://exemplo.com/url-que-nao-existe",
+            ],
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+          ),
+          1,
+        );
+      } finally {
+        console.error = origError;
+      }
+
+      assert.match(captured, /--force-urls contém URL\(s\) fora do pool/);
+    });
+  });
+
   describe("#5330: --mode highlights (os 5 D1 da semana, sem ranking, agenda no PRÓPRIO sábado)", () => {
     it("D1 de cada edição, ordem cronológica, agendado no sábado (não domingo) — ignora dado de clique inteiramente", async () => {
       const saturday = new Date(2027, 11, 25); // sábado
