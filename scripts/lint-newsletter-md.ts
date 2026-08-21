@@ -1946,6 +1946,14 @@ function main(): void {
     if (sectionErrors.length > 0) console.error(`\n❌ ${sectionErrors.length} erro(s) de seção:`);
     for (const e of sectionErrors) {
       const titleHint = e.title ? ` ("${e.title.slice(0, 60)}")` : "";
+      // #5757: duplicata de bucket em 01-approved.json — mensagem dedicada
+      // (não é "seção errada", é a mesma URL reivindicada por >1 bucket).
+      if (e.found_in_bucket === "duplicate") {
+        console.error(
+          `  ${e.url}${titleHint}\n    URL presente em MÚLTIPLOS buckets de 01-approved.json: ${(e.duplicate_buckets ?? []).join(", ")} — remover a(s) entrada(s) do(s) bucket(s) que não deveria(m) mais conter o artigo.`,
+        );
+        continue;
+      }
       console.error(
         `  ${e.section} (linha ${e.line}): ${e.url}${titleHint}\n    bucket no approved: ${e.found_in_bucket}, esperado: ${e.expected_bucket}`,
       );
