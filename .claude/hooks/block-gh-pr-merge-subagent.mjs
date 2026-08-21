@@ -174,7 +174,7 @@ export function readActiveCoordinatorSessionIds(repoRoot, now = Date.now()) {
  * (`machineTag()`), duplicada aqui porque o hook é self-contained (sem import
  * de `.ts`). #5787 Defeito 2: preciso comparar `record.machineTag` contra a
  * máquina onde o hook roda, já que `data/sessions/` é compartilhado via
- * OneDrive entre helios/Neo/predator.
+ * OneDrive entre helios/Neo.
  */
 export function machineTag() {
   try {
