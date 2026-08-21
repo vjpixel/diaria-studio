@@ -15,7 +15,8 @@
  * 3. **Verifica cada e-mail na MillionVerifier** (regra #1297 — são
  *    não-assinantes agora; mandar sem verificar arrisca bounce de 5-10% e
  *    contamina a reputação do domínio compartilhado com a base ativa).
- *    Só bucket `verified` (ok/catch_all) prossegue.
+ *    Só bucket `verified` (ok/catch_all) prossegue — `--allow-mv-unknown`
+ *    admite também `unknown` (ausência de veredito), nunca `rejected`.
  * 4. `ingestContactToBrevo` (escrita real na lista, com releitura de
  *    confirmação) e **só então** `upsertIngested` no store — a ordem cuja
  *    inversão causou o #5843.
@@ -39,6 +40,11 @@
  * `--prioritize-clicked`, que ordena por cliques (desc) ANTES do corte. Sem
  * essa flag o corte é posicional e não tem relação com engajamento: no lote de
  * referência, o 1º contato com clique está no índice 6.
+ *
+ * `--allow-mv-unknown` admite o bucket `unknown` da MV. Justificativa completa
+ * em `decideFromMvBucket`: para um lote de ex-assinantes, as dezenas de
+ * entregas já registradas são evidência mais forte que uma sondagem SMTP
+ * inconclusiva. NUNCA afrouxa `rejected` (veredito negativo do destino).
  *
  * @see scripts/lib/curated-batch-import.ts (núcleo puro)
  * @see scripts/sync-pending-to-brevo.ts (ingestContactToBrevo, cap da fila)
@@ -134,6 +140,8 @@ export async function importOneCuratedContact(params: {
   brevoListId: number;
   logPath: string;
   persistStore: (store: BrevoDiariaStore) => void;
+  /** Admite bucket `unknown` da MV — ver `decideFromMvBucket`. */
+  allowMvUnknown?: boolean;
   now?: () => string;
   verify?: (apiKey: string, email: string) => Promise<{ result: string; bucket: "verified" | "rejected" | "unknown" }>;
   ingest?: (apiKey: string, listId: number, email: string) => Promise<void>;
@@ -148,6 +156,7 @@ export async function importOneCuratedContact(params: {
     brevoListId,
     logPath,
     persistStore,
+    allowMvUnknown = false,
     now = () => new Date().toISOString(),
     verify = (apiKey, email) => verifyOnMv(apiKey, email, fetch),
     ingest = ingestContactToBrevo,
@@ -164,7 +173,7 @@ export async function importOneCuratedContact(params: {
     };
   }
 
-  const decision = decideFromMvBucket(mv.bucket);
+  const decision = decideFromMvBucket(mv.bucket, allowMvUnknown);
   if (!decision.ingest) {
     return { outcome: { kind: "skipped", reason: decision.reason, detail: mv.result }, nextStore: store };
   }
@@ -228,6 +237,7 @@ export function formatPlanReport(params: {
   skipped: SkippedEntry[];
   currentActiveCount: number;
   cap: number;
+  allowMvUnknown: boolean;
 }): string {
   const lines: string[] = [];
   lines.push(`[import-curated-batch-brevo] arquivo: ${params.inputPath}`);
@@ -241,6 +251,16 @@ export function formatPlanReport(params: {
   for (const [reason, n] of Object.entries(summary)) {
     lines.push(`[import-curated-batch-brevo]   ${n} pulado(s): ${reason}`);
   }
+  // A flag afrouxa um guard de segurança e só se manifesta no --push (o
+  // dry-run não chama a MV). Sem ecoá-la aqui, o operador não tem como
+  // confirmar que passou a flag certa antes de disparar pra valer.
+  lines.push(
+    `[import-curated-batch-brevo] MV: ${
+      params.allowMvUnknown
+        ? "bucket `unknown` ADMITIDO (--allow-mv-unknown); `rejected` segue barrado"
+        : "só bucket `verified` entra (default)"
+    }`,
+  );
   const comCliques = params.selected.filter((e) => e.clicked > 0).length;
   if (params.selected.length > 0) {
     lines.push(
@@ -256,6 +276,7 @@ async function main(): Promise<void> {
   const push = hasFlag(argv, "push");
   const inputPath = getStringArg(argv, "input");
   const limit = getIntArg(argv, "limit");
+  const allowMvUnknown = hasFlag(argv, "allow-mv-unknown");
 
   if (!inputPath) {
     log("ERRO: --input <arquivo.json> é obrigatório.");
@@ -293,6 +314,7 @@ async function main(): Promise<void> {
       total: parsed.entries.length + parsed.skipped.length,
       selected: selection.selected,
       skipped: allSkipped,
+      allowMvUnknown,
       currentActiveCount,
       cap,
     }) + "\n",
@@ -332,6 +354,7 @@ async function main(): Promise<void> {
       brevoListId: brevoTarget.listId,
       logPath: DEFAULT_CURATED_LOG_PATH,
       persistStore: (s) => writeStore(s, DEFAULT_STORE_PATH),
+      allowMvUnknown,
     });
     store = nextStore;
 

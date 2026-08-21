@@ -139,12 +139,20 @@ describe("selectCuratedCandidates (#5841)", () => {
 });
 
 describe("decideFromMvBucket (#1297)", () => {
-  it("só verified entra; rejected e unknown ficam de fora", () => {
+  it("default: só verified entra; rejected e unknown ficam de fora", () => {
     assert.deepEqual(decideFromMvBucket("verified"), { ingest: true });
     assert.deepEqual(decideFromMvBucket("rejected"), { ingest: false, reason: "mv_rejected" });
-    // unknown é conservador de propósito: lote de não-assinantes, bounce custa
-    // mais que deixar endereço duvidoso de fora.
+    // unknown é conservador de propósito: lote sem histórico de entrega, bounce
+    // custa mais que deixar endereço duvidoso de fora.
     assert.deepEqual(decideFromMvBucket("unknown"), { ingest: false, reason: "mv_unknown" });
+  });
+
+  it("allowUnknown admite unknown (ausência de veredito) mas NUNCA rejected", () => {
+    assert.deepEqual(decideFromMvBucket("unknown", true), { ingest: true });
+    // `rejected` é veredito negativo do servidor de destino (no_mailbox,
+    // mailbox_full) — evidência ativa contra, nunca afrouxada pela flag.
+    assert.deepEqual(decideFromMvBucket("rejected", true), { ingest: false, reason: "mv_rejected" });
+    assert.deepEqual(decideFromMvBucket("verified", true), { ingest: true });
   });
 });
 
@@ -193,6 +201,40 @@ describe("importOneCuratedContact — ordem das mutações (#5841/#5843)", () =>
     assert.deepEqual(outcome, { kind: "imported", mvResult: "ok" });
     assert.equal(nextStore.contacts.length, 1);
     assert.equal(nextStore.contacts[0].beehiiv_subscription_id, "curated:a@x.com");
+  });
+
+  it("allowMvUnknown propaga: unknown ingere com a flag, é pulado sem ela", async () => {
+    const run = (allowMvUnknown: boolean) =>
+      importOneCuratedContact({
+        ...base,
+        allowMvUnknown,
+        verify: async () => ({ result: "unknown", bucket: "unknown" as const }),
+        ingest: async () => {},
+        persistStore: () => {},
+        appendLog: () => {},
+      });
+
+    const com = await run(true);
+    assert.equal(com.outcome.kind, "imported");
+    assert.equal(com.nextStore.contacts.length, 1);
+
+    const sem = await run(false);
+    assert.equal(sem.outcome.kind, "skipped");
+    assert.equal(sem.outcome.kind === "skipped" && sem.outcome.reason, "mv_unknown");
+    assert.equal(sem.nextStore.contacts.length, 0);
+  });
+
+  it("allowMvUnknown NÃO afrouxa rejected", async () => {
+    const { outcome, nextStore } = await importOneCuratedContact({
+      ...base,
+      allowMvUnknown: true,
+      verify: async () => ({ result: "invalid", bucket: "rejected" as const }),
+      ingest: async () => assert.fail("não deve ingerir endereço rejeitado"),
+      persistStore: () => assert.fail("não deve persistir"),
+      appendLog: () => assert.fail("não deve logar"),
+    });
+    assert.equal(outcome.kind === "skipped" && outcome.reason, "mv_rejected");
+    assert.equal(nextStore.contacts.length, 0);
   });
 
   it("MV rejeita → NÃO ingere, NÃO toca o store", async () => {
