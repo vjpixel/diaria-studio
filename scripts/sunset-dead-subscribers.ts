@@ -84,7 +84,8 @@ import {
   DEFAULT_STORE_PATH,
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
-import { computeAvailableSlots, computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
+import { computeAvailableSlots, computeCurrentActiveCount, ingestContactToBrevo } from "./sync-pending-to-brevo.ts";
+import { loadBrevoDiariaTarget } from "./lib/brevo-diaria-target.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SUNSET_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-log.jsonl");
@@ -340,26 +341,66 @@ export interface PushOneResult {
 }
 
 /**
- * I/O — aplica sunset a 1 candidato: unsubscribe na Beehiiv, upsert no store
- * Brevo (`in_brevo`, mesmo ciclo de vida de `sync-pending-to-brevo.ts` —
- * `evaluate-brevo-diaria.ts` cuida da avaliação/promoção/supressão
- * subsequente, não reimplementado aqui), e log de auditoria. `beehiiv_subscription_id`
- * do registro do store fica `"sunset:{email}"` — este fluxo não tem (nem
- * precisa) o id de subscription Beehiiv que `sync-pending-to-brevo.ts` carrega
- * da paginação Pending; o campo é só chave de correlação, nunca usado como
- * subscription id real em nenhum caminho de código existente.
+ * I/O — aplica sunset a 1 candidato: ingestão real na lista Brevo, unsubscribe
+ * na Beehiiv, upsert no store Brevo (`in_brevo`, mesmo ciclo de vida de
+ * `sync-pending-to-brevo.ts` — `evaluate-brevo-diaria.ts` cuida da
+ * avaliação/promoção/supressão subsequente, não reimplementado aqui), e log de
+ * auditoria. `beehiiv_subscription_id` do registro do store fica
+ * `"sunset:{email}"` — este fluxo não tem (nem precisa) o id de subscription
+ * Beehiiv que `sync-pending-to-brevo.ts` carrega da paginação Pending; o campo
+ * é só chave de correlação, nunca usado como subscription id real em nenhum
+ * caminho de código existente.
+ *
+ * ## Ordem das mutações (#5843) — ingestão Brevo ANTES do unsubscribe
+ *
+ * Até o #5843 esta função chamava `upsertIngested` (função PURA, só mexe no
+ * objeto de store) sem nunca chamar `ingestContactToBrevo` — o contato saía da
+ * Beehiiv e não entrava em lista nenhuma, ficando marcado `in_brevo` num store
+ * que não correspondia a estado real. Como esse store é o dedup de
+ * `computeContactsToIngest`, o contato virava invisível pro backfill pra
+ * sempre. `sync-pending-to-brevo.ts` (linhas 883-884) sempre fez as duas na
+ * ordem certa; aqui só a segunda tinha sido copiada.
+ *
+ * A ordem é deliberada: **ingerir na Brevo primeiro, descadastrar depois**. Se
+ * a ingestão falhar, o contato segue recebendo a diária na Beehiiv (degradação
+ * segura, nada se perde). Na ordem inversa, uma falha na 2ª metade deixa a
+ * pessoa sem nenhum dos dois canais.
+ *
+ * `ingest` é injetável (default = `ingestContactToBrevo` real) porque
+ * `brevoPost`/`brevoGet` usam `fetch` global sem ponto de injeção — sem isso o
+ * teste não conseguiria CONTAR a chamada à Brevo, que é exatamente o que o
+ * mock anterior deixava passar (#5843).
  */
-export async function applySunsetOne(
-  input: SunsetInput,
-  snapshotDate: string,
-  publicationId: string,
-  beehiivApiKey: string,
-  store: BrevoDiariaStore,
-  fetchImpl: typeof fetch,
-  logPath: string,
-  now: string = new Date().toISOString(),
-): Promise<{ result: PushOneResult; nextStore: BrevoDiariaStore }> {
+export type IngestToBrevoFn = (apiKey: string, listId: number, email: string) => Promise<void>;
+
+export async function applySunsetOne(params: {
+  input: SunsetInput;
+  snapshotDate: string;
+  publicationId: string;
+  beehiivApiKey: string;
+  brevoApiKey: string;
+  brevoListId: number;
+  store: BrevoDiariaStore;
+  fetchImpl: typeof fetch;
+  logPath: string;
+  now?: string;
+  ingest?: IngestToBrevoFn;
+}): Promise<{ result: PushOneResult; nextStore: BrevoDiariaStore }> {
+  const {
+    input,
+    snapshotDate,
+    publicationId,
+    beehiivApiKey,
+    brevoApiKey,
+    brevoListId,
+    store,
+    fetchImpl,
+    logPath,
+    now = new Date().toISOString(),
+    ingest = ingestContactToBrevo,
+  } = params;
   try {
+    await ingest(brevoApiKey, brevoListId, normalizeEmail(input.email));
     await unsubscribeFromBeehiiv(publicationId, beehiivApiKey, input.email, fetchImpl);
     const nextStore = upsertIngested(
       store,
@@ -460,6 +501,16 @@ async function main(): Promise<void> {
 
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[sunset-dead-subscribers]");
 
+  // #5843: credencial + lista da Brevo são pré-condição do push. Sem elas o
+  // fluxo antigo seguia em frente descadastrando gente na Beehiiv sem entregar
+  // ninguém ao canal de destino — agora aborta antes de qualquer mutação.
+  const brevoTarget = loadBrevoDiariaTarget();
+  if (!brevoTarget.ok) {
+    log(`ERRO: ${brevoTarget.reason} — nenhuma mutação aplicada.`);
+    process.exitCode = 1;
+    return;
+  }
+
   let store = readStore(DEFAULT_STORE_PATH);
 
   // Cap da fila compartilhada com sync-pending-to-brevo.ts (item 4 da spec —
@@ -489,19 +540,21 @@ async function main(): Promise<void> {
   let applied = 0;
   let failed = 0;
   for (const s of toApply) {
-    const { result, nextStore } = await applySunsetOne(
-      s,
-      date,
+    const { result, nextStore } = await applySunsetOne({
+      input: s,
+      snapshotDate: date,
       publicationId,
       beehiivApiKey,
+      brevoApiKey: brevoTarget.apiKey,
+      brevoListId: brevoTarget.listId,
       store,
-      fetch,
-      DEFAULT_SUNSET_LOG_PATH,
-    );
+      fetchImpl: fetch,
+      logPath: DEFAULT_SUNSET_LOG_PATH,
+    });
     store = nextStore;
     if (result.ok) {
       applied++;
-      log(`  ${result.email} — unsubscribed na Beehiiv + ingerido no funil Brevo.`);
+      log(`  ${result.email} — ingerido na lista Brevo ${brevoTarget.listId} + unsubscribed na Beehiiv.`);
     } else {
       failed++;
       log(`  FALHA em ${result.email}: ${result.error}`);
