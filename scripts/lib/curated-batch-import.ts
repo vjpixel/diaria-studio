@@ -190,8 +190,31 @@ export function selectCuratedCandidates(params: {
  */
 export type MvDecision = { ingest: true } | { ingest: false; reason: SkipReason };
 
-export function decideFromMvBucket(bucket: "verified" | "rejected" | "unknown"): MvDecision {
+/**
+ * `allowUnknown` (default `false`) admite o bucket `unknown`.
+ *
+ * `unknown` NÃO é um veredito negativo — é ausência de veredito (greylisting,
+ * timeout, domínio catch-all). Barrá-lo é o default certo para um lote sem
+ * histórico: na dúvida, não arrisca bounce.
+ *
+ * Mas para um lote curado de EX-ASSINANTES a dúvida não é simétrica: cada
+ * contato carrega dezenas de entregas registradas pela Beehiiv sem ter saltado
+ * da lista por bounce. Esse histórico é evidência direta de que o endereço
+ * aceita mensagem — mais forte que uma sondagem SMTP pontual que não concluiu.
+ * Caso concreto (lote de jul/26): 3 contatos `unknown`, todos em `yahoo.com.br`
+ * e `rocketmail` (provedores legados, greylisting agressivo), com 61, 61 e 64
+ * entregas cada. Duas sondagens MV independentes devolveram `unknown` nas duas.
+ *
+ * Nunca afrouxa `rejected`: ali a MV tem veredito negativo do servidor de
+ * destino (`no_mailbox`, `mailbox_full`), que é evidência ATIVA contra, não
+ * ausência dela.
+ */
+export function decideFromMvBucket(
+  bucket: "verified" | "rejected" | "unknown",
+  allowUnknown = false,
+): MvDecision {
   if (bucket === "verified") return { ingest: true };
+  if (bucket === "unknown" && allowUnknown) return { ingest: true };
   return { ingest: false, reason: bucket === "rejected" ? "mv_rejected" : "mv_unknown" };
 }
 
