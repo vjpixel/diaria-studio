@@ -39,3 +39,17 @@
   opacity: 0.75;
   margin-top: 0.2rem;
 }
+
+/* Separador de bucket na tabela (#5871) — linha inteira com label do bucket */
+.ads-section-header {
+  background: var(--paper-alt);
+}
+.ads-section-header td {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--rule);
+}

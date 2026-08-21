@@ -185,13 +185,47 @@ function boostRowHtml(row) {
   `;
 }
 
+function sectionHeaderRow(label, colspan) {
+  const tr = document.createElement("tr");
+  tr.className = "ads-section-header";
+  tr.innerHTML = `<td colspan="${colspan}">${escapeHtml(label)}</td>`;
+  return tr;
+}
+
 function renderTable(report) {
   el.count.textContent = String(report.rows.length);
   el.tbody.innerHTML = "";
-  for (const row of report.rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = row.kind === "measured" ? measuredRowHtml(row, report.base.aberturaAgregada) : boostRowHtml(row);
-    el.tbody.appendChild(tr);
+
+  const COLS = 13;
+
+  // — Bucket 1: rankedRows (custo válido + gasto > 0, inclui boost) —
+  if (report.rankedRows.length > 0) {
+    el.tbody.appendChild(sectionHeaderRow("Ranqueado — custo por leitor válido", COLS));
+    for (const row of report.rankedRows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = row.kind === "measured" ? measuredRowHtml(row, report.base.aberturaAgregada) : boostRowHtml(row);
+      el.tbody.appendChild(tr);
+    }
+  }
+
+  // — Bucket 2: noDataRows (sem dado suficiente) —
+  if (report.noDataRows.length > 0) {
+    el.tbody.appendChild(sectionHeaderRow("Sem dado suficiente — leitores = 0, custo não calculável", COLS));
+    for (const row of report.noDataRows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = row.kind === "measured" ? measuredRowHtml(row, report.base.aberturaAgregada) : boostRowHtml(row);
+      el.tbody.appendChild(tr);
+    }
+  }
+
+  // — Bucket 3: zeroSpendRows (gasto zero) —
+  if (report.zeroSpendRows.length > 0) {
+    el.tbody.appendChild(sectionHeaderRow("Gasto zero — custo calculável mas spend.valor = 0", COLS));
+    for (const row of report.zeroSpendRows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = row.kind === "measured" ? measuredRowHtml(row, report.base.aberturaAgregada) : boostRowHtml(row);
+      el.tbody.appendChild(tr);
+    }
   }
 
   const warnings = [];
