@@ -125,6 +125,44 @@ describe("buildUrlBucketMap", () => {
     assert.equal(byUrl.get("https://p/x")?.bucket, "radar");
     assert.equal(byUrl.get("https://n/x")?.bucket, "radar");
   });
+
+  // #5757 achado 2: "mover item entre buckets" pedido pelo editor no gate do
+  // Stage 4 adicionou ao bucket novo sem remover do antigo na cópia uncapped
+  // — mesma URL sobrevivendo em `radar` E `use_melhor` simultaneamente.
+  it("URL em 2 buckets-destino distintos (radar + use_melhor) vira duplicateBucketUrls (#5757)", () => {
+    const approved = {
+      highlights: [],
+      radar: [{ url: "https://x/movido", title: "Item movido" }],
+      use_melhor: [{ url: "https://x/movido", title: "Item movido" }],
+    };
+    const { duplicateBucketUrls } = buildUrlBucketMap(approved);
+    const dup = duplicateBucketUrls.get("https://x/movido");
+    assert.ok(dup, "esperava URL detectada como duplicata de bucket");
+    assert.deepEqual([...dup!.buckets].sort(), ["radar", "use_melhor"]);
+  });
+
+  it("pesquisa + noticias mapeando pro MESMO destino (radar) NÃO conta como duplicata", () => {
+    // #1691: pesquisa e noticias são categorias diferentes que convergem pra
+    // UMA seção (RADAR) por design — não é o bug de #5757 (bucket-destino
+    // diferente), então não deve aparecer em duplicateBucketUrls.
+    const approved = {
+      highlights: [],
+      pesquisa: [{ url: "https://x/y" }],
+      noticias: [{ url: "https://x/y" }],
+    };
+    const { duplicateBucketUrls } = buildUrlBucketMap(approved);
+    assert.equal(duplicateBucketUrls.size, 0);
+  });
+
+  it("highlight não conta como duplicata mesmo reaparecendo num bucket secundário", () => {
+    const approved = {
+      highlights: [{ url: "https://x/destaque", title: "D1" }],
+      radar: [{ url: "https://x/destaque", title: "D1" }],
+      use_melhor: [{ url: "https://x/destaque", title: "D1" }],
+    };
+    const { duplicateBucketUrls } = buildUrlBucketMap(approved);
+    assert.equal(duplicateBucketUrls.size, 0);
+  });
 });
 
 describe("lintNewsletter", () => {
@@ -220,6 +258,30 @@ describe("lintNewsletter", () => {
     ].join("\n");
     const r = lintNewsletter(md, approved);
     assert.equal(r.ok, true);
+  });
+
+  // #5757 achado 2: item "movido" de RADAR pra USE MELHOR no gate do Stage 4
+  // ficou registrado em AMBOS os buckets no 01-approved.json (uncapped) — a
+  // MD só lista a URL na seção nova (USE MELHOR, o que o editor de fato viu).
+  // Antes da fix, isso produzia um falso-positivo confuso de "seção errada"
+  // (found_in_bucket: radar, esperado: use_melhor) em vez de expor a causa
+  // raiz real (a URL nunca devia estar em radar depois do "mover").
+  it("URL duplicada entre radar e use_melhor vira erro 'duplicate' claro, não falso-positivo de seção (#5757)", () => {
+    const approved = {
+      highlights: [],
+      radar: [{ url: "https://x/movido", title: "Item movido" }],
+      use_melhor: [{ url: "https://x/movido", title: "Item movido" }],
+    };
+    const md = [
+      "**🛠️ USE MELHOR**",
+      "Item movido",
+      "https://x/movido",
+    ].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1, JSON.stringify(r.errors));
+    assert.equal(r.errors[0].found_in_bucket, "duplicate");
+    assert.deepEqual([...(r.errors[0].duplicate_buckets ?? [])].sort(), ["radar", "use_melhor"]);
   });
 });
 

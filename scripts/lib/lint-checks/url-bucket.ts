@@ -93,8 +93,12 @@ export interface LintError {
   expected_bucket: Bucket;
   url: string;
   line: number;
-  found_in_bucket: Bucket | "highlights" | "missing";
+  found_in_bucket: Bucket | "highlights" | "missing" | "duplicate";
   title?: string;
+  // #5757: só presente quando found_in_bucket === "duplicate" — todos os
+  // buckets-destino distintos que a URL reivindica simultaneamente em
+  // 01-approved.json (ver duplicateBucketUrls em buildUrlBucketMap abaixo).
+  duplicate_buckets?: Bucket[];
 }
 
 export interface LintResult {
@@ -172,11 +176,25 @@ export function extractUrlsBySection(
  */
 export function buildUrlBucketMap(
   approved: ApprovedJson,
-): { byUrl: Map<string, { bucket: Bucket | "highlights"; title?: string }> } {
+): {
+  byUrl: Map<string, { bucket: Bucket | "highlights"; title?: string }>;
+  // #5757: URLs que reivindicam >1 bucket-destino DISTINTO simultaneamente em
+  // 01-approved.json (ex: mesma URL em `radar` E `use_melhor`) — sempre um
+  // bug de estado (um artigo pertence a UMA seção só), nunca decisão
+  // editorial legítima. Achado real: pedido do editor pra "mover item entre
+  // buckets" no gate do Stage 4 adicionou ao bucket novo sem remover do
+  // antigo na cópia uncapped. Sem este rastreio, `byUrl` (abaixo) silenciava
+  // a duplicata — ficava só com o 1º bucket na ordem de
+  // APPROVED_BUCKET_TO_SECTION — e o sintoma virava um falso-positivo
+  // confuso de "seção errada" no lint principal (a URL nunca "sumia": ela
+  // sempre existia em algum bucket, só não no que o mismatch apontava).
+  duplicateBucketUrls: Map<string, { buckets: Bucket[]; title?: string }>;
+} {
   const byUrl = new Map<
     string,
     { bucket: Bucket | "highlights"; title?: string }
   >();
+  const bucketsSeenByUrl = new Map<string, Set<Bucket>>();
 
   // Highlights primeiro — sobrescreve buckets se artigo é destaque.
   // #1691 review: highlights podem ter shape flat (h.url) OU nested
@@ -213,13 +231,25 @@ export function buildUrlBucketMap(
   for (const [approvedKey, sectionBucket] of Object.entries(APPROVED_BUCKET_TO_SECTION)) {
     for (const a of (approved[approvedKey] as ApprovedArticle[] | undefined) ?? []) {
       const url = a.url ? normalizeUrlForMatch(a.url) : undefined;
-      if (url && !byUrl.has(url)) {
+      if (!url) continue;
+      if (byUrl.get(url)?.bucket === "highlights") continue; // highlight sempre vence, não é duplicata (#1629)
+      const seenBuckets = bucketsSeenByUrl.get(url) ?? new Set<Bucket>();
+      seenBuckets.add(sectionBucket);
+      bucketsSeenByUrl.set(url, seenBuckets);
+      if (!byUrl.has(url)) {
         byUrl.set(url, { bucket: sectionBucket, title: a.title });
       }
     }
   }
 
-  return { byUrl };
+  const duplicateBucketUrls = new Map<string, { buckets: Bucket[]; title?: string }>();
+  for (const [url, buckets] of bucketsSeenByUrl) {
+    if (buckets.size > 1) {
+      duplicateBucketUrls.set(url, { buckets: [...buckets], title: byUrl.get(url)?.title });
+    }
+  }
+
+  return { byUrl, duplicateBucketUrls };
 }
 
 export function lintNewsletter(
@@ -227,10 +257,29 @@ export function lintNewsletter(
   approved: ApprovedJson,
 ): LintResult {
   const urlsBySection = extractUrlsBySection(md);
-  const { byUrl } = buildUrlBucketMap(approved);
+  const { byUrl, duplicateBucketUrls } = buildUrlBucketMap(approved);
 
   const errors: LintError[] = [];
   const warnings: string[] = [];
+
+  // #5757: reporta duplicatas de bucket direto de 01-approved.json, sem
+  // depender de onde (ou se) a URL aparece em 02-reviewed.md — o mismatch
+  // por-seção abaixo só pega o caso em que a MD lista a URL numa seção
+  // diferente do 1º bucket que `byUrl` guardou; se a MD só lista a URL na
+  // seção do 1º bucket (a duplicata sobrando é a que NINGUÉM referencia no
+  // texto), o mismatch por-seção nunca dispara e o approved.json corrompido
+  // passaria batido.
+  for (const [url, { buckets, title }] of duplicateBucketUrls) {
+    errors.push({
+      section: "(01-approved.json)",
+      expected_bucket: buckets[0],
+      url,
+      line: 0,
+      found_in_bucket: "duplicate",
+      duplicate_buckets: buckets,
+      title,
+    });
+  }
 
   for (const sec of SECTIONS) {
     const urls = urlsBySection[sec.label] ?? [];
@@ -238,7 +287,11 @@ export function lintNewsletter(
     for (const { url, line } of urls) {
       if (seen.has(url)) continue; // dedup markdown link [url](url)
       seen.add(url);
-      const found = byUrl.get(normalizeUrlForMatch(url));
+      const normalized = normalizeUrlForMatch(url);
+      // Já reportado acima como duplicata de bucket — não repetir como
+      // "seção errada" (mesma causa raiz, mensagem melhor já emitida).
+      if (duplicateBucketUrls.has(normalized)) continue;
+      const found = byUrl.get(normalized);
       if (!found) {
         errors.push({
           section: sec.label,
