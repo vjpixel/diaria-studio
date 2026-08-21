@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, getArg, getStringArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage, type GmailSendResult } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
@@ -126,7 +126,11 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
     clicksCsvPath: getArg(argv, "clicks-csv-path") || DEFAULT_CLICKS_CSV_PATH,
     backupRoot: getArg(argv, "backup-root") || DEFAULT_BACKUP_ROOT,
     plannedD0: getStringArg(argv, "planned-d0") ?? DEFAULT_PLANNED_D0,
-    plannedDailyBudgetBRL: Number(getArg(argv, "planned-daily-budget") || DEFAULT_PLANNED_DAILY_BUDGET_BRL),
+    // getIntArg (não Number(getArg(...) || default)) — distingue flag AUSENTE
+    // (undefined -> default) de flag PRESENTE mas vazia/inválida (lança, em
+    // vez de colapsar em 0/NaN silencioso; ver docstring de getArg em
+    // scripts/lib/cli-args.ts, guard #4573).
+    plannedDailyBudgetBRL: getIntArg(argv, "planned-daily-budget", { min: 1 }) ?? DEFAULT_PLANNED_DAILY_BUDGET_BRL,
     now: () => new Date(),
     sendEmail: sendGmailMessage,
     runBuildOrigemMap: realBuildOrigemMap,

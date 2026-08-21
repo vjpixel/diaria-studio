@@ -132,20 +132,6 @@ export function markApuracaoCompleted(state: AdsTestWatchState, nowIso: string, 
 // clicks-2608.csv — parse + cobertura + condição de morte (§3.2 item 3)
 // ---------------------------------------------------------------------------
 
-export const CLICKS_CSV_HEADERS = [
-  "canal",
-  "data_apuracao",
-  "gasto_acumulado",
-  "cliques",
-  "impressoes",
-  "cpc_medio",
-  "conversoes",
-  "custo_por_conversao",
-  "perda_orcamento",
-  "perda_ranking",
-  "fonte",
-] as const;
-
 export interface ClicksCsvRow {
   canal: string;
   data_apuracao: DateOnlyString;
