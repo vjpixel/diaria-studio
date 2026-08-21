@@ -912,6 +912,18 @@ describe("sliceCohortComposition (#4787)", () => {
   it("total maior que a fila inteira devolve tudo, sem estourar", () => {
     assert.deepEqual(sliceCohortComposition(available, 10_000), available);
   });
+
+  it("REGRESSÃO (achado ao vivo 260821): preserva mostRecentCreated de cada entrada — sem isso detectCohortInversion perde a data do lado consumido e cai no fallback 'sem data perde', disparando falso-positivo de inversão independente da cronologia real", () => {
+    const withDates = [
+      { cohort: "leads-2024h1", count: 100, mostRecentCreated: "2024-04-10T23:55:00.000Z" },
+      { cohort: "leads-2022h1", count: 50, mostRecentCreated: "2022-04-21T23:45:00.000Z" },
+    ];
+    const out = sliceCohortComposition(withDates, 120);
+    assert.deepEqual(out, [
+      { cohort: "leads-2024h1", count: 100, mostRecentCreated: "2024-04-10T23:55:00.000Z" },
+      { cohort: "leads-2022h1", count: 20, mostRecentCreated: "2022-04-21T23:45:00.000Z" },
+    ]);
+  });
 });
 
 describe("detectCohortInversion (#4787)", () => {
@@ -1026,6 +1038,24 @@ describe("detectCohortInversion (#4787)", () => {
     // abaixo falharia sem o fix de #5398.
     assert.equal(inversion!.coldestConsumedCohort, "leads-2024h2");
     assert.equal(inversion!.coldTailCount, 500 + 300);
+  });
+
+  it("REGRESSÃO (achado ao vivo 260821, onda d25-sab22 do ciclo 2607-08): consumido mais NOVO que o backlog bloqueado → null, mesmo quando ambos têm mostRecentCreated", () => {
+    // Caso real que expôs o bug: leads-2024h1 (mostRecentCreated abr/2024) é
+    // cronologicamente mais NOVO que leads-2023h2 (mostRecentCreated dez/2023)
+    // no backlog MV. Sem o fix de sliceCohortComposition (que dropava
+    // mostRecentCreated do lado consumido), este caso disparava inversão
+    // falsa — o comparador caía no fallback "sem data perde" e qualquer
+    // cohort do backlog COM data virava "mais novo" por default, invertendo
+    // o rótulo mesmo com a cronologia real apontando o contrário.
+    const consumed = [
+      { cohort: "leads-2024h1", count: 5_277, mostRecentCreated: "2024-04-10T23:55:00.000Z" },
+    ];
+    const backlog = mvBacklogFixture([
+      { cohort: "leads-2023h2", count: 81_273, mostRecentCreated: "2023-12-31T23:59:00.000Z" },
+    ]);
+    const inversion = detectCohortInversion(consumed, backlog);
+    assert.equal(inversion, null, "leads-2023h2 é mais FRIO que leads-2024h1 — não deveria ser candidato a 'bloqueado'");
   });
 });
 

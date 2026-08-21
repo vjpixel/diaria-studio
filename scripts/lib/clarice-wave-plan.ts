@@ -699,7 +699,13 @@ export function sliceCohortComposition(available: CohortComposition[], total: nu
   for (const entry of available) {
     if (remaining <= 0) break;
     const count = Math.min(entry.count, remaining);
-    if (count > 0) out.push({ cohort: entry.cohort, count });
+    if (count > 0) {
+      out.push(
+        entry.mostRecentCreated !== undefined
+          ? { cohort: entry.cohort, count, mostRecentCreated: entry.mostRecentCreated }
+          : { cohort: entry.cohort, count },
+      );
+    }
     remaining -= count;
   }
   return out;
