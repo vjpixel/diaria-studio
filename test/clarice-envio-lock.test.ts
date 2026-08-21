@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { join } from "node:path";
 import {
   acquireEnvioLock,
@@ -10,6 +10,9 @@ import {
   lockPathForCycle,
   LockHeldError,
   STALE_LOCK_MS,
+  breakEnvioLock,
+  isPidAlive,
+  main,
 } from "../scripts/lib/clarice-envio-lock.ts";
 
 let root: string;
@@ -106,5 +109,116 @@ describe("isLockStale", () => {
     writeFileSync(p, JSON.stringify({ pid: 1, host: "x", startedAt: started.toISOString(), label: "x" }), "utf8");
     assert.equal(isLockStale(p, new Date(started.getTime() + STALE_LOCK_MS)), false);
     assert.equal(isLockStale(p, new Date(started.getTime() + STALE_LOCK_MS + 1)), true);
+  });
+});
+
+describe("isPidAlive", () => {
+  it("o próprio processo de teste está vivo", () => {
+    assert.equal(isPidAlive(process.pid), true);
+  });
+
+  it("um pid que não existe é reportado como morto", () => {
+    // PID absurdamente alto — Linux/macOS/Windows não chegam nem perto disso
+    // em condições normais; se falhar por coincidência, o teste é flaky por
+    // natureza do mecanismo (mesmo risco de qualquer checagem de PID real).
+    assert.equal(isPidAlive(2_147_483_000), false);
+  });
+});
+
+describe("breakEnvioLock", () => {
+  const now = new Date("2026-08-20T22:00:00Z");
+
+  it("sem lock — nada a destravar, broken: false", () => {
+    const result = breakEnvioLock(root, "2607-08", now);
+    assert.equal(result.broken, false);
+    assert.equal(result.lockInfo, null);
+    assert.match(result.reason, /não existe/);
+  });
+
+  it("lock ilegível/corrompido — recusa (não assume morto sem dados do lock)", () => {
+    const lockPath = lockPathForCycle(root, "2607-08");
+    mkdirSync(join(root, "data", "clarice-subscribers", "2607-08"), { recursive: true });
+    writeFileSync(lockPath, "{ isto nao e json", "utf8");
+    const result = breakEnvioLock(root, "2607-08", now);
+    assert.equal(result.broken, false);
+    assert.ok(existsSync(lockPath), "arquivo ilegível não deve ser removido sem confirmação");
+    assert.match(result.reason, /ilegível/);
+  });
+
+  it("processo VIVO no mesmo host — recusa, lock permanece", () => {
+    acquireEnvioLock(root, "2607-08", "run-em-andamento", now);
+    const result = breakEnvioLock(root, "2607-08", now, {
+      checkPidAlive: () => true,
+      // acquireEnvioLock grava o hostname REAL da máquina (`os.hostname()`) —
+      // hardcodear um literal (ex: "helios") só passaria no host onde o dev
+      // escreveu o teste. Usar o mesmo hostname() garante "mesmo host" de
+      // verdade, em qualquer runner/máquina (achado ao vivo em CI, #5832).
+      currentHost: hostname(),
+    });
+    assert.equal(result.broken, false);
+    assert.match(result.reason, /ainda está rodando/);
+    assert.ok(existsSync(lockPathForCycle(root, "2607-08")), "lock de rodada viva não pode ser removido");
+  });
+
+  it("processo MORTO no mesmo host — destrava e loga quem/quando", () => {
+    acquireEnvioLock(root, "2607-08", "run-abandonado", now);
+    const result = breakEnvioLock(root, "2607-08", now, {
+      checkPidAlive: () => false,
+      currentHost: hostname(),
+    });
+    assert.equal(result.broken, true);
+    assert.match(result.reason, /destravado em/);
+    assert.match(result.reason, /run-abandonado/);
+    assert.ok(!existsSync(lockPathForCycle(root, "2607-08")), "lock deve ter sido removido");
+  });
+
+  it("host DIFERENTE — nunca destrava, mesmo com checkPidAlive dizendo morto", () => {
+    acquireEnvioLock(root, "2607-08", "run-noutra-maquina", now);
+    const result = breakEnvioLock(root, "2607-08", now, {
+      checkPidAlive: () => false, // mesmo "confirmando morto", host diferente vence — não confiável
+      currentHost: `${hostname()}-outro`, // garantidamente diferente do host real, em qualquer runner
+    });
+    assert.equal(result.broken, false);
+    assert.match(result.reason, /MESMO host/);
+    assert.ok(existsSync(lockPathForCycle(root, "2607-08")), "lock de outro host nunca é removido sem confirmação local");
+  });
+});
+
+describe("main (CLI --break)", () => {
+  const now = new Date("2026-08-20T22:00:00Z");
+  const origLog = console.log;
+  const origErr = process.stderr.write;
+  let stdout: string[];
+
+  beforeEach(() => {
+    stdout = [];
+    console.log = (...args: unknown[]) => { stdout.push(args.join(" ")); };
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    console.log = origLog;
+    process.stderr.write = origErr;
+  });
+
+  it("sem --break: uso + exit 2", () => {
+    assert.equal(main([]), 2);
+  });
+
+  it("--break sem --cycle: exit 2", () => {
+    assert.equal(main(["--break"]), 2);
+  });
+
+  it("--break --cycle com ciclo inexistente (sem lock em disco): broken false, exit 1", () => {
+    // `main()` roda contra o ROOT real do projeto (não é injetável) — por
+    // isso este teste usa um slug de ciclo que nunca existiu, garantindo
+    // que `breakEnvioLock` só faz um `existsSync` que dá `false` e não toca
+    // `data/clarice-subscribers/` real em nenhum outro caminho (nunca cria
+    // nem apaga arquivo). Cobertura do fluxo "processo morto → destrava" e
+    // "host diferente → recusa" já está em `breakEnvioLock` acima, com
+    // fixtures isoladas em `root` (tmpdir), nunca contra dado real.
+    const result = main(["--break", "--cycle", "nao-existe-cycle-de-teste-5832"]);
+    assert.equal(result, 1);
+    assert.ok(stdout.some((l) => l.includes('"broken": false')));
   });
 });

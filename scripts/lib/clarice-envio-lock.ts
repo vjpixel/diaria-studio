@@ -36,6 +36,8 @@
 import { existsSync, mkdirSync, openSync, closeSync, writeSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { hostname } from "node:os";
+import { fileURLToPath } from "node:url";
+import { parseArgs, isMainModule } from "./cli-args.ts";
 
 export interface LockInfo {
   readonly pid: number;
@@ -135,4 +137,149 @@ export function acquireEnvioLock(rootDir: string, cycle: string, label: string, 
 /** Libera o lock — fail-soft (arquivo já sumido não é erro, ver `file-lock.ts` pro mesmo padrão). */
 export function releaseEnvioLock(lockPath: string): void {
   try { unlinkSync(lockPath); } catch { /* ignore */ }
+}
+
+/**
+ * Comando `--break` (#5832) — destrava um lock ABANDONADO sem esperar
+ * `STALE_LOCK_MS` (30min) nem apagar o arquivo à mão sem confirmação.
+ *
+ * Recuperação hoje: (1) esperar o timeout de stale, ou (2) `rm` manual do
+ * lockfile — sem tooling nem prova de que o processo dono morreu mesmo.
+ * Este comando fecha a lacuna: só remove o arquivo depois de confirmar,
+ * via checagem de PID vivo, que o processo que criou o lock não está mais
+ * rodando — e SÓ quando o lock é deste mesmo host (checagem de PID entre
+ * hosts não é confiável: o mesmo número pode estar em uso por outro
+ * processo em outra máquina).
+ */
+
+/** Resultado de uma tentativa de `--break` — impresso como JSON em stdout por `main()`. */
+export interface BreakLockResult {
+  /** `true` só quando o lock foi de fato removido nesta chamada. */
+  readonly broken: boolean;
+  /** Motivo legível — sempre presente, inclusive em sucesso (auditoria/log). */
+  readonly reason: string;
+  readonly lockPath: string;
+  /** `null` quando não havia lock pra quebrar (já não existia). */
+  readonly lockInfo: LockInfo | null;
+  readonly checkedAt: string;
+}
+
+/**
+ * `true` se o processo `pid` ainda está rodando NESTE host — via
+ * `process.kill(pid, 0)` (sinal 0 não mata nada, só testa existência/
+ * permissão; lança `ESRCH` se o PID não existe). Qualquer erro que não seja
+ * "processo inexistente" (ex: `EPERM` — existe mas é de outro usuário) é
+ * tratado como "ainda vivo": mais seguro recusar destravar do que assumir
+ * morto por engano.
+ */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return code !== "ESRCH";
+  }
+}
+
+/**
+ * Tenta destravar o lock do ciclo. Puro o suficiente pra testar: recebe
+ * `checkPidAlive` injetável (default `isPidAlive`) e `currentHost` (default
+ * `hostname()`) — os testes fixam ambos pra simular processo vivo/morto e
+ * host local/remoto sem depender de PIDs reais do SO.
+ *
+ * Regras (nesta ordem):
+ * 1. Sem lock no path → nada a fazer, `broken: false`.
+ * 2. Lock de OUTRO host → nunca destrava (checagem de PID só vale no mesmo
+ *    host) — avisa e recusa.
+ * 3. Lock deste host, processo ainda vivo → recusa (rodada genuína em curso).
+ * 4. Lock deste host, processo morto → remove e loga quem/quando destravou.
+ */
+export function breakEnvioLock(
+  rootDir: string,
+  cycle: string,
+  now: Date,
+  opts: { checkPidAlive?: (pid: number) => boolean; currentHost?: string } = {},
+): BreakLockResult {
+  const checkPidAlive = opts.checkPidAlive ?? isPidAlive;
+  const currentHost = opts.currentHost ?? hostname();
+  const lockPath = lockPathForCycle(rootDir, cycle);
+  const checkedAt = now.toISOString();
+
+  const info = readLockInfo(lockPath);
+  if (!info) {
+    return {
+      broken: false,
+      reason: existsSync(lockPath)
+        ? `${lockPath} existe mas está ilegível/corrompido — não é seguro assumir dono morto sem dados do lock. Recuperação: esperar STALE_LOCK_MS ou inspecionar manualmente.`
+        : `${lockPath} não existe — nada a destravar.`,
+      lockPath,
+      lockInfo: null,
+      checkedAt,
+    };
+  }
+
+  if (info.host !== currentHost) {
+    return {
+      broken: false,
+      reason:
+        `Lock pertence ao host "${info.host}" (pid ${info.pid}, label "${info.label}", desde ${info.startedAt}) — ` +
+        `esta checagem roda em "${currentHost}". Checagem de PID vivo só é confiável no MESMO host — rode ` +
+        `\`--break --cycle ${cycle}\` a partir de "${info.host}" pra confirmar de verdade, ou espere STALE_LOCK_MS.`,
+      lockPath,
+      lockInfo: info,
+      checkedAt,
+    };
+  }
+
+  if (checkPidAlive(info.pid)) {
+    return {
+      broken: false,
+      reason:
+        `Processo dono (pid ${info.pid}, label "${info.label}", desde ${info.startedAt}) ainda está rodando em ` +
+        `"${currentHost}" — recusando destravar uma rodada genuinamente em andamento.`,
+      lockPath,
+      lockInfo: info,
+      checkedAt,
+    };
+  }
+
+  releaseEnvioLock(lockPath);
+  return {
+    broken: true,
+    reason:
+      `Lock destravado em ${checkedAt}: processo dono (pid ${info.pid}, label "${info.label}", desde ` +
+      `${info.startedAt}) confirmado morto em "${currentHost}" (process.kill(pid, 0) → ESRCH).`,
+    lockPath,
+    lockInfo: info,
+    checkedAt,
+  };
+}
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+export function main(argv: string[]): number {
+  const { flags, values } = parseArgs(argv);
+  if (!flags.has("break")) {
+    process.stderr.write(
+      "Uso: clarice-envio-lock.ts --break --cycle CONTEUDO-ENVIO\n" +
+        "  --break  destrava o lock do ciclo se o processo dono (mesmo pid/host) já morreu\n" +
+        "  --cycle  ciclo do envio (ex: 2607-08) — obrigatório\n",
+    );
+    return 2;
+  }
+  const cycle = values["cycle"];
+  if (!cycle) {
+    process.stderr.write("--cycle é obrigatório com --break (ex: --cycle 2607-08)\n");
+    return 2;
+  }
+
+  const result = breakEnvioLock(ROOT, cycle, new Date());
+  console.log(JSON.stringify(result, null, 2));
+  process.stderr.write(`${result.reason}\n`);
+  return result.broken ? 0 : 1;
+}
+
+if (isMainModule(import.meta.url)) {
+  process.exit(main(process.argv.slice(2)));
 }
