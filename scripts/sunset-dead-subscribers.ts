@@ -207,8 +207,9 @@ export function daysSinceSubscribed(subscribedAt: number, referenceDate: string)
  * `daysSinceSubscribed >= subscribedMinDays` AND `openRatePct <=
  * openRateMaxPct` AND `totalUniqueClicked === 0`.
  *
- * Dois guards críticos, nenhum dispensável (#5849 endureceu o de idade em
- * cima do que já existia):
+ * Dois guards críticos, nenhum dispensável (#5849 adicionou o guard de
+ * idade explícito, endurecendo o proxy indireto de tempo que `receivedMin`
+ * já fornecia sozinho):
  *
  * - `totalUniqueClicked === 0`, não `<= algum limiar` — QUALQUER clique na
  *   vida inteira, mesmo um só, exclui o assinante do sunset (é o mesmo

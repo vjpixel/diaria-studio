@@ -364,17 +364,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
         "montada ainda; abortando por seguranca, NAO rodando --push.",
     },
-    // DESLIGADA DE PROPOSITO (#5807, 21/08/2026) — a #5849 (relacionada,
-    // AINDA NAO resolvida) achou que receivedMin=20 nao separa "morto de
-    // verdade" de "recem-chegado dentro da janela de medicao do teste pago
-    // 2608" (23 dos 88 candidatos de uma rodada real tinham so ~4 semanas de
-    // vida, dentro da janela de campanhas em medicao — #5734/#4556).
-    // Descadastrar esses silenciosamente contaminaria a apuracao do teste em
-    // curso. O MECANISMO esta pronto (script + registro); o INTERRUPTOR fica
-    // desligado ate o editor decidir o trade-off da #5849 — reativar e trocar
-    // este campo pra `true` (uma linha) depois dessa decisao, nunca antes.
+    // DESLIGADA DE PROPOSITO (#5807, 21/08/2026). A #5849 achou que
+    // receivedMin=20 sozinho nao separava "morto de verdade" de
+    // "recem-chegado dentro da janela de medicao do teste pago 2608" (23 dos
+    // 88 candidatos de uma rodada real tinham so ~4 semanas de vida, dentro
+    // da janela de campanhas em medicao — #5734/#4556). JA RESOLVIDA (sessao
+    // /diaria-develop 260821): criterio agora combina receivedMin E
+    // subscribedMinDays (ver SunsetThresholds em sunset-dead-subscribers.ts).
+    // O MECANISMO esta pronto; o INTERRUPTOR segue desligado porque ligar a
+    // execucao automatica e decisao separada, ainda nao tomada — reativar e
+    // trocar este campo pra `true` (uma linha) quando o editor decidir.
     enabled: false,
-    issue: "#5807, refs #5849 (bloqueio)",
+    issue: "#5807, refs #5849 (resolvida — interruptor segue off por decisao separada)",
   },
   {
     name: "Diaria-Geo-Citation-Monitor",

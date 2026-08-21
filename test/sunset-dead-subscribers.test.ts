@@ -202,6 +202,11 @@ describe("daysSinceSubscribed", () => {
     assert.equal(daysSinceSubscribed(-1, REFERENCE_DATE), 0);
     assert.equal(daysSinceSubscribed(NaN, REFERENCE_DATE), 0);
   });
+
+  it("referenceDate inválido retorna 0 — fail-soft (mesma disciplina do lado subscribedAt)", () => {
+    assert.equal(daysSinceSubscribed(OLD_SUBSCRIBED_AT, "not-a-date"), 0);
+    assert.equal(daysSinceSubscribed(OLD_SUBSCRIBED_AT, ""), 0);
+  });
 });
 
 describe("sunsetInputFromBeehiivSubscriber", () => {
@@ -235,7 +240,7 @@ describe("selectDeadSubscribers", () => {
   function backupSub(overrides: Partial<BeehiivBackupSubscriber> & { email: string }): BeehiivBackupSubscriber {
     return {
       status: "active",
-      created: OLD_SUBSCRIBED_AT, // bem além do subscribedMinDays (60) do snapshot "2026-08-16" usado abaixo
+      created: OLD_SUBSCRIBED_AT, // bem além de subscribedMinDays (60) pra qualquer snapshot usado nos testes abaixo
       utm_source: "",
       utm_medium: "",
       utm_campaign: "",
