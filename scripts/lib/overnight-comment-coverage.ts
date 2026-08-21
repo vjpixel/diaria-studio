@@ -46,6 +46,28 @@
  * critério mais simples é também o mais robusto a variação de formato entre
  * skills (overnight/develop/continuo podem não compartilhar o mesmo
  * `started_at` no ponto em que este script roda).
+ *
+ * ## Cobertura de LABEL (#5844)
+ *
+ * O gate original (acima) só verifica se a issue `pulada` recebeu um
+ * COMENTÁRIO explicando o motivo — nunca se a LABEL correspondente foi de
+ * fato aplicada no GitHub. Achado ao vivo (21/08/2026): #5757/#5750/#5749/
+ * #5748 foram classificadas `not-this-week` em comentário por 2 rodadas
+ * overnight seguidas (260819c e 260820c), mas a label `not-this-week`
+ * nunca foi aplicada em nenhuma — `classifyExecTrack`
+ * (`scripts/lib/issue-exec-track.ts`) só lê labels/marcador `aguardando-ate`
+ * no corpo, nunca o texto do comentário, então a Triagem do Studio
+ * continuava mostrando as 4 como elegíveis mesmo já decididas duas vezes.
+ *
+ * `requiredLabelForMotivo`/`MOTIVO_TO_LABEL` mapeiam o `motivo` textual
+ * gravado em `plan.json` (vocabulário documentado em
+ * `.claude/skills/diaria-overnight/SKILL.md` § Fase 0 passo 4) pra label
+ * esperada no GitHub. Só motivos com label ÚNICA e inequívoca entram no
+ * mapa — `requer-sessao-local` fica de fora de propósito: a issue #5844
+ * documenta que esse motivo tem duas origens possíveis (label `windows` já
+ * presente na issue, ou o próprio `exec-mode.ts` detectando sessão cloud) e
+ * nenhuma label obrigatória única cobre as duas, então checá-la aqui daria
+ * falso-positivo sistemático.
  */
 
 export type CoverageCandidateReason = "pulada-sem-comentario" | "refs-not-closes-sem-comentario";
@@ -171,4 +193,84 @@ export function checkCoverage(
     return { status: "missing", missing: missing.sort((a, b) => a.number - b.number), unresolved };
   }
   return { status: "ok", missing: [], unresolved };
+}
+
+// ---------------------------------------------------------------------------
+// #5844 — cobertura de LABEL (motivo → label esperada), gate irmão do
+// comentário acima. Ver docblock do módulo pro rationale completo.
+// ---------------------------------------------------------------------------
+
+/** Vocabulário fechado (subconjunto): só motivos cuja label esperada é ÚNICA
+ * e inequívoca. `requer-sessao-local` fica de fora de propósito (ver
+ * docblock do módulo). Chave = `motivo` textual gravado em `plan.json`
+ * (overnight); valor = label a conferir no GitHub. */
+export const MOTIVO_TO_LABEL: Readonly<Record<string, string>> = {
+  "not-this-week": "not-this-week",
+  "bloqueio-externo": "external-blocker",
+  ambigua: "trade-off-real",
+};
+
+/** Pure: `motivo` → label esperada, ou `null` se o motivo não tem label
+ * única mapeada (`requer-sessao-local`, `sem-resposta`, `fora-do-escopo`,
+ * ausente/desconhecido). Nunca lança. */
+export function requiredLabelForMotivo(motivo: string | null | undefined): string | null {
+  if (!motivo) return null;
+  return MOTIVO_TO_LABEL[motivo] ?? null;
+}
+
+export interface LabelCandidateIssue {
+  number: number;
+  motivo: string;
+  requiredLabel: string;
+}
+
+/**
+ * Pure: entre as issues do plano já normalizadas, devolve as `status:
+ * "pulada"` cujo `motivo` mapeia pra uma label esperada (via
+ * `requiredLabelForMotivo`). Todo candidato aqui já é, por construção, um
+ * candidato de `deriveCandidateIssues` (reason `pulada-sem-comentario`) —
+ * então o CLI pode reusar o mesmo fetch de `gh issue view` (comments +
+ * labels) sem uma 2ª rodada de chamadas.
+ */
+export function deriveLabelCandidates(issues: PlanIssueLike[]): LabelCandidateIssue[] {
+  const out: LabelCandidateIssue[] = [];
+  for (const issue of issues) {
+    if (typeof issue.number !== "number" || !Number.isFinite(issue.number)) continue;
+    if (issue.status !== "pulada") continue;
+    const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
+    const requiredLabel = requiredLabelForMotivo(motivo);
+    if (requiredLabel) out.push({ number: issue.number, motivo: motivo!, requiredLabel });
+  }
+  return out;
+}
+
+export type LabelCoverageVerdictStatus = "ok" | "missing" | "not-evaluated";
+
+export interface LabelCoverageVerdict {
+  status: LabelCoverageVerdictStatus;
+  missing: LabelCandidateIssue[];
+}
+
+/**
+ * Pure: veredito final a partir das candidatas de label já derivadas + os
+ * nomes de label de cada issue (já buscados). `labelsByIssue.get(number)`
+ * ausente é tratado como "sem labels" (`[]`) — nunca lança; distinto do
+ * gate de comentário, que trata fetch-falho como `unresolved` separado —
+ * aqui não há esse 3º estado porque a label vem do MESMO fetch que já
+ * populou `commentsByIssue` (se aquele falhou, o CLI já reportou
+ * `unresolved` e este veredito de label não é nem calculado para a issue —
+ * ver `check-overnight-comment-coverage.ts`).
+ */
+export function checkLabelCoverage(
+  candidates: LabelCandidateIssue[],
+  labelsByIssue: Map<number, string[]>,
+): LabelCoverageVerdict {
+  if (candidates.length === 0) return { status: "not-evaluated", missing: [] };
+
+  const missing = candidates.filter((c) => !(labelsByIssue.get(c.number) ?? []).includes(c.requiredLabel));
+
+  if (missing.length > 0) {
+    return { status: "missing", missing: missing.sort((a, b) => a.number - b.number) };
+  }
+  return { status: "ok", missing: [] };
 }

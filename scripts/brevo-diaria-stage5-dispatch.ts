@@ -132,7 +132,18 @@ export type Stage5BrevoResult =
   | { status: "already_done"; campaignId: number }
   | { status: "skipped"; reason: string }
   | { status: "failed"; step: string; reason: string }
-  | { status: "ok"; campaignId: number; totalAtual: number; targetTotal: number; maxAdd: number };
+  | {
+      status: "ok";
+      campaignId: number;
+      totalAtual: number;
+      targetTotal: number;
+      maxAdd: number;
+      /** #5839 — recontagem real pós-`--apply` (`computeCurrentActiveCount` sobre
+       * `deps.readContacts()` relido), nunca a INTENÇÃO (`maxAdd`). Distingue
+       * "adicionei os N pedidos" de "adicionei 0" — os dois saíam como `ok`
+       * indistinguíveis antes desta issue. */
+      addedActual: number;
+    };
 
 function tailReason(execResult: ExecResult): string {
   const tail = execResult.stderr.trim().split("\n").slice(-4).join(" | ");
@@ -179,6 +190,22 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     return { status: "failed", step: "brevo-diaria-run --apply", reason: tailReason(applyResult) };
   }
 
+  // #5839 — recontagem REAL pós-`--apply`, não a intenção (`resolved.maxAdd`).
+  // `brevo-diaria-run --apply` sai 0 tanto quando adicionou os N pedidos
+  // quanto quando não havia candidato elegível nenhum ("0 de 0 elegível(is)
+  // selecionado(s)") — só relendo `deps.readContacts()` de novo (fresh do
+  // store, já mutado pelo apply) dá pra distinguir os dois casos.
+  const activeCountAfterApply = deps.storeExists()
+    ? computeCurrentActiveCount(deps.readContacts() as BrevoDiariaContact[])
+    : resolved.totalAtual;
+  const addedActual = Math.max(0, activeCountAfterApply - resolved.totalAtual);
+  if (addedActual < resolved.maxAdd) {
+    process.stderr.write(
+      `⚠️ Brevo diária: fila em ${activeCountAfterApply}/${resolved.targetTotal} — ` +
+        `${resolved.maxAdd} vaga(s) pedida(s), ${addedActual} preenchida(s) (sem candidatos elegíveis).\n`,
+    );
+  }
+
   const publishResult = deps.exec("scripts/publish-daily-brevo.ts", [editionDir, "--i-reviewed-the-copy"]);
   if (publishResult.code !== 0) {
     return { status: "failed", step: "publish-daily-brevo", reason: tailReason(publishResult) };
@@ -199,6 +226,7 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     totalAtual: resolved.totalAtual,
     targetTotal: resolved.targetTotal,
     maxAdd: resolved.maxAdd,
+    addedActual,
   };
 }
 

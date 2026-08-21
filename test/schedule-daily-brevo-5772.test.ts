@@ -181,6 +181,38 @@ describe("scheduleDailyBrevo (#5772)", () => {
     assert.equal(writeCalled, false);
   });
 
+  it("#5851 — scheduledAt recebido em offset local (-03:00) representando o MESMO instante enviado (Z) → ok, nunca code 4", async () => {
+    // Ocorrência real, edição 260821: enviado 09:00Z, a Brevo devolve
+    // 06:00-03:00 — mesmo instante, formato diferente (offset local da conta).
+    const deps = makeDeps({
+      getCampaign: async () => ({ status: "queued", scheduledAt: "2026-08-21T06:00:00.000-03:00" }),
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.scheduledAt, "2026-08-21T06:00:00.000-03:00");
+      assert.equal(result.status, "queued");
+    }
+  });
+
+  it("#5851 — scheduledAt em instante DIFERENTE (mesmo formato Z) → code 4, comparação de instante pega divergência real", async () => {
+    const deps = makeDeps({
+      getCampaign: async () => ({ status: "queued", scheduledAt: "2026-08-21T10:00:00.000Z" }),
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 4);
+  });
+
+  it("#5851 — scheduledAt malformado/NaN → code 4, nunca confirma sucesso por acidente", async () => {
+    const deps = makeDeps({
+      getCampaign: async () => ({ status: "draft", scheduledAt: "não-é-uma-data" }),
+    });
+    const result = await scheduleDailyBrevo(EDITION_DIR, SCHEDULED_AT, deps);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 4);
+  });
+
   it("#5781 — status 'draft'/'test_sent' (ainda não agendado) → segue fluxo normal, chama PUT", async () => {
     for (const status of ["draft", "test_sent"] as const) {
       let putCalled = false;

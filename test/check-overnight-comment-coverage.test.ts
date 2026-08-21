@@ -11,10 +11,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   checkCoverage,
+  checkLabelCoverage,
   deriveCandidateIssues,
+  deriveLabelCandidates,
   hasOvernightComment,
   isRefsNotClosesBody,
+  requiredLabelForMotivo,
   type CandidateIssue,
+  type LabelCandidateIssue,
   type PlanIssueLike,
 } from "../scripts/lib/overnight-comment-coverage.ts";
 
@@ -199,6 +203,98 @@ describe("checkCoverage", () => {
       [5795, []],
     ]);
     const verdict = checkCoverage(candidates, commentsByIssue);
+    assert.equal(verdict.status, "missing");
+    assert.deepEqual(
+      verdict.missing.map((c) => c.number),
+      [5795, 5800],
+    );
+  });
+});
+
+// ─── #5844 — cobertura de LABEL (motivo → label esperada) ──────────────────
+
+describe("requiredLabelForMotivo (#5844)", () => {
+  it("mapeia os 3 motivos com label única", () => {
+    assert.equal(requiredLabelForMotivo("not-this-week"), "not-this-week");
+    assert.equal(requiredLabelForMotivo("bloqueio-externo"), "external-blocker");
+    assert.equal(requiredLabelForMotivo("ambigua"), "trade-off-real");
+  });
+
+  it("requer-sessao-local não tem label única — deliberadamente fora do mapa", () => {
+    assert.equal(requiredLabelForMotivo("requer-sessao-local"), null);
+  });
+
+  it("motivo desconhecido/ausente → null, nunca lança", () => {
+    assert.equal(requiredLabelForMotivo("sem-resposta"), null);
+    assert.equal(requiredLabelForMotivo(undefined), null);
+    assert.equal(requiredLabelForMotivo(null), null);
+    assert.equal(requiredLabelForMotivo(""), null);
+  });
+});
+
+describe("deriveLabelCandidates (#5844)", () => {
+  it("só issues pulada com motivo mapeado viram candidata de label", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 5757, status: "pulada", motivo: "not-this-week" },
+      { number: 5750, status: "pulada", motivo: "requer-sessao-local" },
+      { number: 5749, status: "mergeada", motivo: "not-this-week" },
+      { number: 5748, status: "pulada" },
+    ];
+    const candidates = deriveLabelCandidates(issues);
+    assert.deepEqual(
+      candidates.map((c) => c.number),
+      [5757],
+    );
+    assert.equal(candidates[0].requiredLabel, "not-this-week");
+    assert.equal(candidates[0].motivo, "not-this-week");
+  });
+});
+
+describe("checkLabelCoverage (#5844) — o cenário que motivou a issue", () => {
+  it("comentário presente, label ausente → gate detecta (o achado real de #5757/#5750/#5749/#5748)", () => {
+    // Cenário exato da issue: a rodada comentou explicando a classificação
+    // not-this-week duas vezes, mas nunca aplicou a label correspondente.
+    const candidates: LabelCandidateIssue[] = [{ number: 5757, motivo: "not-this-week", requiredLabel: "not-this-week" }];
+    const labelsByIssue = new Map<number, string[]>([[5757, ["bug", "P2"]]]); // sem "not-this-week"
+    const verdict = checkLabelCoverage(candidates, labelsByIssue);
+    assert.equal(verdict.status, "missing");
+    assert.equal(verdict.missing.length, 1);
+    assert.equal(verdict.missing[0].number, 5757);
+    assert.equal(verdict.missing[0].requiredLabel, "not-this-week");
+  });
+
+  it("label presente → ok", () => {
+    const candidates: LabelCandidateIssue[] = [{ number: 5757, motivo: "not-this-week", requiredLabel: "not-this-week" }];
+    const labelsByIssue = new Map<number, string[]>([[5757, ["not-this-week", "P2"]]]);
+    const verdict = checkLabelCoverage(candidates, labelsByIssue);
+    assert.equal(verdict.status, "ok");
+    assert.deepEqual(verdict.missing, []);
+  });
+
+  it("issue ausente do mapa de labels (fetch nunca populou) → tratada como sem labels → missing", () => {
+    const candidates: LabelCandidateIssue[] = [{ number: 5757, motivo: "bloqueio-externo", requiredLabel: "external-blocker" }];
+    const verdict = checkLabelCoverage(candidates, new Map());
+    assert.equal(verdict.status, "missing");
+  });
+
+  it("sem candidatas → not-evaluated", () => {
+    const verdict = checkLabelCoverage([], new Map());
+    assert.equal(verdict.status, "not-evaluated");
+    assert.deepEqual(verdict.missing, []);
+  });
+
+  it("múltiplas candidatas: só as sem label entram em missing, ordenado por número", () => {
+    const candidates: LabelCandidateIssue[] = [
+      { number: 5800, motivo: "ambigua", requiredLabel: "trade-off-real" },
+      { number: 5791, motivo: "bloqueio-externo", requiredLabel: "external-blocker" },
+      { number: 5795, motivo: "not-this-week", requiredLabel: "not-this-week" },
+    ];
+    const labelsByIssue = new Map<number, string[]>([
+      [5800, []],
+      [5791, ["external-blocker"]],
+      [5795, []],
+    ]);
+    const verdict = checkLabelCoverage(candidates, labelsByIssue);
     assert.equal(verdict.status, "missing");
     assert.deepEqual(
       verdict.missing.map((c) => c.number),

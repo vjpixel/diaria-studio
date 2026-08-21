@@ -153,6 +153,73 @@ describe("runStage5BrevoDispatch — fail-soft (#5772)", () => {
   });
 });
 
+describe("runStage5BrevoDispatch — addedActual distingue intenção de resultado (#5839)", () => {
+  it("--max-add > 0 mas 0 contatos de fato adicionados → addedActual=0 + warning no stderr, status ainda 'ok'", () => {
+    const contacts = Array.from({ length: 92 }, (_, i) => ({ email: `u${i}@x.com`, status: "in_brevo" })) as unknown as readonly BrevoDiariaContact[];
+    const deps = makeDeps({
+      // `--apply` não mutou nada de fato (todos os candidatos foram excluídos
+      // por SparkLoop/etc) — readContacts() devolve a MESMA contagem antes e
+      // depois do apply, simulando o cenário real da issue.
+      readContacts: () => contacts,
+      readPublished: (() => {
+        let n = 0;
+        return () => (++n === 1 ? null : { campaign_id: 27 });
+      })(),
+    });
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    let stderrOutput = "";
+    process.stderr.write = ((chunk: string) => {
+      stderrOutput += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    let result: ReturnType<typeof runStage5BrevoDispatch>;
+    try {
+      result = runStage5BrevoDispatch(EDITION_DIR, deps);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(result.status, "ok");
+    if (result.status === "ok") {
+      assert.equal(result.addedActual, 0, "0 contatos de fato adicionados, distinto de maxAdd (198)");
+      assert.equal(result.maxAdd, 290 - 92); // 198
+    }
+    assert.match(stderrOutput, /Brevo diária: fila em 92\/290 — 198 vaga\(s\) pedida\(s\), 0 preenchida\(s\)/);
+  });
+
+  it("addedActual === maxAdd (todos os candidatos entraram) → sem warning", () => {
+    let call = 0;
+    const deps = makeDeps({
+      readContacts: () => {
+        call++;
+        // 1ª leitura (cálculo de totalAtual, pré-apply): 0 contatos.
+        // 2ª leitura (recontagem pós-apply, #5839): os 5 pedidos entraram.
+        const n = call === 1 ? 0 : 5;
+        return Array.from({ length: n }, (_, i) => ({ email: `u${i}@x.com`, status: "in_brevo" })) as unknown as readonly BrevoDiariaContact[];
+      },
+      readPlatformConfig: () => ({ brevo_diaria: { stage5_target_total: 5 } }),
+      readPublished: (() => {
+        let n = 0;
+        return () => (++n === 1 ? null : { campaign_id: 1 });
+      })(),
+    });
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    let stderrOutput = "";
+    process.stderr.write = ((chunk: string) => {
+      stderrOutput += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    let result: ReturnType<typeof runStage5BrevoDispatch>;
+    try {
+      result = runStage5BrevoDispatch(EDITION_DIR, deps);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(result.status, "ok");
+    if (result.status === "ok") assert.equal(result.addedActual, 5);
+    assert.doesNotMatch(stderrOutput, /preenchida/);
+  });
+});
+
 describe("runStage5BrevoDispatch — args passados aos sub-scripts (#5772)", () => {
   it("passa --max-add derivado e edition-dir corretos", () => {
     const calls: Array<{ script: string; args: string[] }> = [];

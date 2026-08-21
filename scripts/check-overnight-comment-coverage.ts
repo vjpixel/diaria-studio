@@ -29,9 +29,12 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import {
   checkCoverage,
+  checkLabelCoverage,
   deriveCandidateIssues,
+  deriveLabelCandidates,
   type CandidateIssue,
   type IssueCommentLike,
+  type LabelCandidateIssue,
   type PlanIssueLike,
 } from "./lib/overnight-comment-coverage.ts";
 
@@ -63,8 +66,18 @@ function fetchPrBody(pr: number, cwd: string): GhFetchResult<{ body: string | nu
   return ghJson<{ body: string | null }>(["pr", "view", String(pr), "--json", "body"], cwd);
 }
 
-function fetchIssueComments(issue: number, cwd: string): GhFetchResult<{ comments: IssueCommentLike[] }> {
-  return ghJson<{ comments: IssueCommentLike[] }>(["issue", "view", String(issue), "--json", "comments"], cwd);
+/** #5844: pede `labels` no MESMO fetch de comentários — todo candidato de
+ * label (`deriveLabelCandidates`) já é, por construção, candidato de
+ * comentário (`pulada-sem-comentario`), então não há motivo pra uma 2ª
+ * rodada de chamadas `gh issue view`. */
+function fetchIssueComments(
+  issue: number,
+  cwd: string,
+): GhFetchResult<{ comments: IssueCommentLike[]; labels: Array<{ name?: string }> }> {
+  return ghJson<{ comments: IssueCommentLike[]; labels: Array<{ name?: string }> }>(
+    ["issue", "view", String(issue), "--json", "comments,labels"],
+    cwd,
+  );
 }
 
 if (isMainModule(import.meta.url)) {
@@ -139,8 +152,10 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  // Passo 2: para cada candidata, buscar os comentários da issue.
+  // Passo 2: para cada candidata, buscar os comentários E labels da issue
+  // (#5844 — mesmo fetch cobre os dois gates, ver docstring de fetchIssueComments).
   const commentsByIssue = new Map<number, IssueCommentLike[] | null>();
+  const labelsByIssue = new Map<number, string[]>();
   for (const candidate of candidates) {
     const fetched = fetchIssueComments(candidate.number, cwd);
     if (fetched.error) {
@@ -151,6 +166,10 @@ if (isMainModule(import.meta.url)) {
       commentsByIssue.set(candidate.number, null);
     } else {
       commentsByIssue.set(candidate.number, fetched.value?.comments ?? []);
+      labelsByIssue.set(
+        candidate.number,
+        (fetched.value?.labels ?? []).map((l) => l.name).filter((n): n is string => typeof n === "string"),
+      );
     }
   }
 
@@ -170,18 +189,40 @@ if (isMainModule(import.meta.url)) {
     );
   }
 
-  if (verdict.status !== "missing") {
+  // #5844: gate de LABEL — checado independente do de comentário (issue pode
+  // ter o comentário e ainda faltar a label, exatamente o achado ao vivo que
+  // motivou a issue).
+  const labelCandidates: LabelCandidateIssue[] = deriveLabelCandidates(issues);
+  const labelVerdict = checkLabelCoverage(labelCandidates, labelsByIssue);
+
+  const commentOk = verdict.status !== "missing";
+  const labelOk = labelVerdict.status !== "missing";
+
+  if (commentOk && labelOk) {
     console.log(
-      `ok — todas as ${candidates.length} issue(s) candidata(s) (pulada/REFS-NÃO-CLOSES) têm comentário overnight`,
+      `ok — todas as ${candidates.length} issue(s) candidata(s) (pulada/REFS-NÃO-CLOSES) têm comentário overnight` +
+        (labelCandidates.length > 0 ? ` e as ${labelCandidates.length} com motivo mapeado têm a label esperada` : ""),
     );
     process.exit(0);
   }
 
-  const list = verdict.missing
-    .map((c) => `#${c.number} (${c.reason === "pulada-sem-comentario" ? "pulada" : `PR #${c.pr} REFS-NÃO-CLOSES`})`)
-    .join(", ");
-  console.error(
-    `cobertura de comentário faltando: ${list} — comente na issue com o que foi feito/falta antes de fechar a rodada`,
-  );
+  if (!commentOk) {
+    const list = verdict.missing
+      .map((c) => `#${c.number} (${c.reason === "pulada-sem-comentario" ? "pulada" : `PR #${c.pr} REFS-NÃO-CLOSES`})`)
+      .join(", ");
+    console.error(
+      `cobertura de comentário faltando: ${list} — comente na issue com o que foi feito/falta antes de fechar a rodada`,
+    );
+  }
+
+  if (!labelOk) {
+    const list = labelVerdict.missing
+      .map((c) => `#${c.number} (motivo "${c.motivo}" → label "${c.requiredLabel}" ausente)`)
+      .join(", ");
+    console.error(
+      `cobertura de label faltando (#5844): ${list} — aplique a label esperada (gh issue edit N --add-label ...) antes de fechar a rodada`,
+    );
+  }
+
   process.exit(1);
 }

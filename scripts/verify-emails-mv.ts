@@ -125,6 +125,31 @@ export function classifyResult(result: string | undefined | null): Bucket {
 }
 
 /**
+ * #5850 — `classifyResult` mapeia só `result` pro bucket de ação e descarta
+ * `subresult`, onde mora a diferença entre um `invalid` PERMANENTE
+ * (`no_mailbox` — caixa não existe, nunca mais vai funcionar) e um
+ * `invalid`/estado TRANSITÓRIO (`mailbox_full` — caixa existe, sobre quota,
+ * pode voltar a aceitar mensagem). Pra decisão de ENVIAR AGORA os dois são
+ * equivalentes hoje e o comportamento não muda (`bucket` continua vindo só
+ * de `classifyResult(result)`) — este par existe só pra a informação não se
+ * perder antes de uma decisão futura de RE-TENTATIVA (issue #5850, "não
+ * afrouxar o guard, só não descartar o dado").
+ */
+export interface ClassifiedResult {
+  bucket: Bucket;
+  /** `subresult` cru da MV, normalizado (trim); "" quando ausente. Nunca
+   * usado pra derivar `bucket` — só preservado pra auditoria/decisão futura. */
+  subresult: string;
+}
+
+export function classifyResultWithSubresult(
+  result: string | undefined | null,
+  subresult: string | undefined | null,
+): ClassifiedResult {
+  return { bucket: classifyResult(result), subresult: (subresult ?? "").trim() };
+}
+
+/**
  * Basename das SAÍDAS do MV a partir do slug de cohort. Proveniência: as saídas
  * são do MillionVerifier, então o prefixo é `mv-export-` (convenção: nome =
  * última ferramenta que processou). #2886 PR3: antes derivado do basename do
@@ -167,6 +192,11 @@ interface CachedResult {
   result: string;
   resultcode: number;
   quality: string;
+  /** #5850 — subresult cru da MV (ex: `no_mailbox`, `mailbox_full`).
+   * Opcional (não `""`) pra não quebrar checkpoint pré-#5850 em disco nem
+   * literais de teste que não populam o campo — `splitRows` trata ausência
+   * como `""`. Nunca usado pra derivar bucket — só preservado. */
+  subresult?: string;
 }
 
 type Checkpoint = Record<string, CachedResult>;
@@ -491,6 +521,9 @@ export function splitRows(
       MV_RESULT: res?.result ?? "",
       MV_QUALITY: res?.quality ?? "",
       MV_CODE: res?.resultcode != null ? String(res.resultcode) : "",
+      // #5850 — preserva o subresult (no_mailbox vs mailbox_full, etc.) sem
+      // afetar `bucket` — checkpoint pré-#5850 não tem o campo, "" é o fallback.
+      MV_SUBRESULT: res?.subresult ?? "",
     });
   }
   return out;
@@ -768,6 +801,7 @@ export async function verifyCohortList(params: {
             result: res.result ?? "",
             resultcode: res.resultcode ?? -1,
             quality: res.quality ?? "",
+            subresult: res.subresult ?? "", // #5850
           };
           if (typeof res.credits === "number") {
             lastCredits = lastCredits == null ? res.credits : Math.min(lastCredits, res.credits);
@@ -805,7 +839,7 @@ export async function verifyCohortList(params: {
 
   const outputRows = buildOutputRows(checkpoint, rows, allCohortRows, emailKey);
   const split = splitRows(outputRows, emailKey, checkpoint);
-  const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE"];
+  const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE", "MV_SUBRESULT"]; // #5850
   const writeBucket = (bucket: Bucket): number => {
     const path = resolve(cycleDir, `${base}-${bucket}.csv`);
     writeFileSync(path, Papa.unparse({ fields: outFields, data: split[bucket] }), "utf-8");
@@ -827,6 +861,7 @@ export async function verifyCohortList(params: {
     MV_RESULT: TRANSIENT_ERROR_RESULT,
     MV_QUALITY: "",
     MV_CODE: "",
+    MV_SUBRESULT: "", // #5850 — falha transitória nunca chegou a receber resposta da MV
   }));
   const errorPath = resolve(cycleDir, `${base}-error.csv`);
   writeFileSync(errorPath, Papa.unparse({ fields: outFields, data: errorRows }), "utf-8");
