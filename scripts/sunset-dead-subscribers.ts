@@ -27,19 +27,30 @@
  * item 1) — `--push` existe no código (a issue pede) mas nenhuma sessão
  * autônoma o invoca contra a Beehiiv/Brevo real; só testado com fetch mockado.
  *
- * ## Push: unsubscribe Beehiiv + funil de reativação Brevo
+ * ## Push: ingestão Brevo + unsubscribe Beehiiv + store
  *
- * `--push` faz, por selecionado: (a) `PUT .../subscriptions/by_email/{email}`
- * com `{unsubscribe:true}` na Beehiiv — único campo documentado como
- * gravável nesse endpoint (mesma disciplina de `cleanup-preflight-subscribers.ts`/
- * `evaluate-brevo-diaria.ts`: nunca DELETE, preserva histórico); (b) upsert no
- * store `data/brevo-diaria/contacts.json` via `upsertIngested` — MESMO store
- * e ciclo de vida que `sync-pending-to-brevo.ts` já usa (`in_brevo` →
- * avaliação periódica por `evaluate-brevo-diaria.ts`, cap de fila
- * `brevo_diaria.daily_send_cap` respeitado por essa maquinaria existente, não
- * reimplementado aqui). Cada sunset é registrado em
- * `data/brevo-diaria/sunset-log.jsonl` (append-only, auditoria/reversão
- * manual) — `origem: "sunset"` no registro distingue do fluxo normal Pending.
+ * `--push` faz, por selecionado, NESTA ORDEM: (a) **ingestão real na lista
+ * Brevo** via `ingestContactToBrevo` (com releitura de confirmação); (b) `PUT
+ * .../subscriptions/by_email/{email}` com `{unsubscribe:true}` na Beehiiv —
+ * único campo documentado como gravável nesse endpoint (mesma disciplina de
+ * `cleanup-preflight-subscribers.ts`/`evaluate-brevo-diaria.ts`: nunca DELETE,
+ * preserva histórico); (c) upsert no store `data/brevo-diaria/contacts.json`
+ * via `upsertIngested`, o mesmo ciclo de vida que `sync-pending-to-brevo.ts`
+ * usa (`in_brevo` → avaliação periódica por `evaluate-brevo-diaria.ts`); (d)
+ * registro em `data/brevo-diaria/sunset-log.jsonl` (append-only,
+ * auditoria/reversão manual) com `origem: "sunset"`, que distingue do fluxo
+ * normal Pending.
+ *
+ * **O passo (a) não existia até o #5843** — o script fazia só (b)+(c)+(d), e a
+ * premissa de que marcar `in_brevo` no store equivalia a estar na fila (só
+ * verdadeira em `sync-pending-to-brevo.ts`, onde a ingestão real acontece uma
+ * linha antes) era exatamente o que este header afirmava. Descrição completa
+ * da ordem, do porquê dela e do tratamento de falha parcial: JSDoc de
+ * `applySunsetOne` — fonte única, não reafirmar aqui.
+ *
+ * O cap de fila `brevo_diaria.daily_send_cap` é aplicado por este script, no
+ * `main()`, via `computeAvailableSlots`/`applyQueueCapGate` (helpers
+ * importados de `sync-pending-to-brevo.ts`, mas o corte acontece aqui).
  *
  * ## Guard de blast radius (mesmo padrão de #4436 — sync-apoio-nivel-beehiiv.ts)
  *
@@ -85,6 +96,7 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { computeAvailableSlots, computeCurrentActiveCount, ingestContactToBrevo } from "./sync-pending-to-brevo.ts";
+import { loadBrevoDiariaTarget } from "./lib/brevo-diaria-target.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SUNSET_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-log.jsonl");
@@ -333,42 +345,122 @@ export function appendSunsetLog(entry: SunsetLogEntry, path: string = DEFAULT_SU
   appendFileSync(path, JSON.stringify(entry) + "\n", "utf8");
 }
 
-export interface PushOneResult {
-  email: string;
-  ok: boolean;
-  error?: string;
-}
+/**
+ * União discriminada: `error` existe sse `ok === false`, `warnings` sse
+ * `ok === true`. O shape anterior (`ok: boolean; error?: string`) permitia
+ * `{ok: true, error: "..."}` e `{ok: false}` sem motivo — pareamento mantido
+ * só por disciplina, não pelo compilador.
+ *
+ * `warnings` (não-vazio quando presente) cobre o caso novo do #5843: a
+ * ingestão na Brevo SUCEDEU, mas uma etapa posterior (unsubscribe na Beehiiv,
+ * log de auditoria) falhou. O resultado é `ok: true` de propósito — a mutação
+ * que define o sucesso aconteceu e está registrada no store — mas o operador
+ * precisa ver o que ficou pendente.
+ */
+export type PushOneResult =
+  | { email: string; ok: true; warnings?: string[] }
+  | { email: string; ok: false; error: string };
 
 /**
- * I/O — aplica sunset a 1 candidato: unsubscribe na Beehiiv, ingere na Brevo (POST /contacts + releitura), upsert no store Brevo (`in_brevo`, mesmo ciclo de vida de `sync-pending-to-brevo.ts` — `evaluate-brevo-diaria.ts` cuida da avaliação/promoção/supressão subsequente, não reimplementado aqui), e log de auditoria. `beehiiv_subscription_id` do registro do store fica `"sunset:{email}"` — este fluxo não tem (nem precisa) o id de subscription Beehiiv que `sync-pending-to-brevo.ts` carrega da paginação Pending; o campo é só chave de correlação, nunca usado como subscription id real em nenhum caminho de código existente.
- * 
- * Ordem: ingestão na Brevo PRIMEIRO, descadastrar na Beehiiv DEPOIS. Se a ingestão falhar, o contato continua recebendo a diária — degradação segura. Na ordem antiga, uma falha na segunda metade deixava a pessoa sem nada.
+ * I/O — aplica sunset a 1 candidato: ingestão real na lista Brevo, unsubscribe
+ * na Beehiiv, upsert no store Brevo (`in_brevo`, mesmo ciclo de vida de
+ * `sync-pending-to-brevo.ts` — `evaluate-brevo-diaria.ts` cuida da
+ * avaliação/promoção/supressão subsequente, não reimplementado aqui), e log de
+ * auditoria. `beehiiv_subscription_id` do registro do store fica
+ * `"sunset:{email}"` — este fluxo não tem (nem precisa) o id de subscription
+ * Beehiiv que `sync-pending-to-brevo.ts` carrega da paginação Pending; o campo
+ * é só chave de correlação, nunca usado como subscription id real em nenhum
+ * caminho de código existente.
+ *
+ * ## Ordem das mutações (#5843) — ingestão Brevo ANTES do unsubscribe
+ *
+ * Até o #5843 esta função chamava `upsertIngested` (função PURA, só mexe no
+ * objeto de store) sem nunca chamar `ingestContactToBrevo` — o contato saía da
+ * Beehiiv e não entrava em lista nenhuma, ficando marcado `in_brevo` num store
+ * que não correspondia a estado real. Como esse store é o dedup de
+ * `computeContactsToIngest`, o contato virava invisível pro backfill pra
+ * sempre. `sync-pending-to-brevo.ts` sempre fez as duas na ordem certa — ver
+ * o par `ingestContactToBrevo` + `upsertIngested` dentro do `main()` dele;
+ * aqui só a segunda tinha sido copiada.
+ *
+ * A ordem é deliberada: **ingerir na Brevo primeiro, descadastrar depois**. Se
+ * a ingestão falhar, o contato segue recebendo a diária na Beehiiv (degradação
+ * segura, nada se perde). Na ordem inversa, uma falha na 2ª metade deixa a
+ * pessoa sem nenhum dos dois canais.
+ *
+ * `ingest` é injetável (default = `ingestContactToBrevo` real) porque
+ * `brevoPost`/`brevoGet` usam `fetch` global sem ponto de injeção — sem isso o
+ * teste não conseguiria CONTAR a chamada à Brevo, que é exatamente o que o
+ * mock anterior deixava passar (#5843).
  */
-export async function applySunsetOne(
-  input: SunsetInput,
-  snapshotDate: string,
-  publicationId: string,
-  beehiivApiKey: string,
-  store: BrevoDiariaStore,
-  fetchImpl: typeof fetch,
-  logPath: string,
-  brevoApiKey: string,
-  brevoListId: number,
-  now: string = new Date().toISOString(),
-): Promise<{ result: PushOneResult; nextStore: BrevoDiariaStore }> {
+export type IngestToBrevoFn = (apiKey: string, listId: number, email: string) => Promise<void>;
+
+export async function applySunsetOne(params: {
+  input: SunsetInput;
+  snapshotDate: string;
+  publicationId: string;
+  beehiivApiKey: string;
+  brevoApiKey: string;
+  brevoListId: number;
+  store: BrevoDiariaStore;
+  fetchImpl: typeof fetch;
+  logPath: string;
+  now?: string;
+  ingest?: IngestToBrevoFn;
+}): Promise<{ result: PushOneResult; nextStore: BrevoDiariaStore }> {
+  const {
+    input,
+    snapshotDate,
+    publicationId,
+    beehiivApiKey,
+    brevoApiKey,
+    brevoListId,
+    store,
+    fetchImpl,
+    logPath,
+    now = new Date().toISOString(),
+    ingest = ingestContactToBrevo,
+  } = params;
+  // FASE 1 — a única mutação externa que ainda pode ser abortada sem deixar
+  // rastro: se a Brevo recusar, ninguém foi tocado em lugar nenhum.
   try {
-    // 1. Ingerir na Brevo PRIMEIRO (mesma ordem e semântica de falha de sync-pending-to-brevo.ts)
-    await ingestContactToBrevo(brevoApiKey, brevoListId, input.email);
-    
-    // 2. Descadastrar na Beehiiv
+    await ingest(brevoApiKey, brevoListId, normalizeEmail(input.email));
+  } catch (e) {
+    return {
+      result: { email: input.email, ok: false, error: `ingestão Brevo falhou: ${(e as Error).message}` },
+      nextStore: store,
+    };
+  }
+
+  // A partir daqui o contato ESTÁ na lista Brevo (ingestContactToBrevo confirma
+  // por releitura). Nenhuma falha posterior pode devolver `nextStore: store` e
+  // fingir que nada aconteceu — era esse descarte que produzia contato órfão:
+  // presente na Brevo, ausente do store, e invisível pro backfill (que dedupa
+  // pelo store) e pro `evaluate-brevo-diaria.ts` (que só enxerga o store).
+  const nextStore = upsertIngested(
+    store,
+    { email: input.email, beehiiv_subscription_id: `sunset:${normalizeEmail(input.email)}` },
+    now,
+  );
+
+  // FASE 2 — unsubscribe na Beehiiv. Falha aqui deixa a pessoa nos DOIS canais
+  // temporariamente (recebendo a diária e o funil de reativação), o que é ruim
+  // mas auto-curável: ela continua `status=active` no snapshot, então volta a
+  // ser candidata na próxima rodada, e a re-ingestão na Brevo é idempotente
+  // (`updateEnabled:true`). O store JÁ registra a ingestão, então o cap da fila
+  // e o dedup ficam corretos nesse meio-tempo.
+  let unsubscribeError: string | null = null;
+  try {
     await unsubscribeFromBeehiiv(publicationId, beehiivApiKey, input.email, fetchImpl);
-    
-    // 3. Marcar no store (só depois que a ingestão confirmou)
-    const nextStore = upsertIngested(
-      store,
-      { email: input.email, beehiiv_subscription_id: `sunset:${normalizeEmail(input.email)}` },
-      now,
-    );
+  } catch (e) {
+    unsubscribeError = (e as Error).message;
+  }
+
+  // FASE 3 — auditoria. Falha de I/O aqui (disco cheio, junction `data/` do
+  // OneDrive caída no meio da rodada) NÃO pode reverter as mutações reais já
+  // feitas: o registro some, o efeito não. Vira aviso no resultado.
+  let logError: string | null = null;
+  try {
     appendSunsetLog(
       {
         email: normalizeEmail(input.email),
@@ -382,10 +474,19 @@ export async function applySunsetOne(
       },
       logPath,
     );
-    return { result: { email: input.email, ok: true }, nextStore };
   } catch (e) {
-    return { result: { email: input.email, ok: false, error: (e as Error).message }, nextStore: store };
+    logError = (e as Error).message;
   }
+
+  const warnings = [
+    unsubscribeError ? `unsubscribe Beehiiv falhou (contato segue ativo lá): ${unsubscribeError}` : null,
+    logError ? `log de auditoria falhou: ${logError}` : null,
+  ].filter((w): w is string => w !== null);
+
+  return {
+    result: { email: input.email, ok: true, warnings: warnings.length > 0 ? warnings : undefined },
+    nextStore,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,25 +564,31 @@ async function main(): Promise<void> {
 
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[sunset-dead-subscribers]");
 
-  // Load Brevo config for ingestContactToBrevo and daily_send_cap
-  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
-    brevo_diaria?: { api_key_env: string; list_id: number; daily_send_cap?: number };
-  };
-  const brevoDiaria = platformConfig.brevo_diaria;
-  const brevoApiKey = brevoDiaria ? process.env[brevoDiaria.api_key_env] : undefined;
-  const brevoListId = brevoDiaria?.list_id;
-  if (!brevoApiKey || brevoListId == null) {
-    log("ERRO: configuração Brevo (brevo_diaria.api_key_env / list_id) ausente ou inválida em platform.config.json.");
-    process.exitCode = 2;
+  // #5843: credencial + lista da Brevo são pré-condição do push. Sem elas o
+  // fluxo antigo seguia em frente descadastrando gente na Beehiiv sem entregar
+  // ninguém ao canal de destino — agora aborta antes de qualquer mutação.
+  const brevoTarget = loadBrevoDiariaTarget();
+  if (!brevoTarget.ok) {
+    log(`ERRO: ${brevoTarget.reason} — nenhuma mutação aplicada.`);
+    process.exitCode = 1;
     return;
   }
 
   let store = readStore(DEFAULT_STORE_PATH);
 
   // Cap da fila compartilhada com sync-pending-to-brevo.ts (item 4 da spec —
-  // "respeitando o fluxo existente... cap da fila").
+  // "respeitando o fluxo existente... cap da fila"). Lido de
+  // platform.config.json → brevo_diaria.daily_send_cap, mesmo campo/fallback
+  // de sync-pending-to-brevo.ts::DEFAULT_QUEUE_CAP.
   let cap = DEFAULT_QUEUE_CAP;
-  cap = brevoDiaria?.daily_send_cap ?? DEFAULT_QUEUE_CAP;
+  try {
+    const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+      brevo_diaria?: { daily_send_cap?: number };
+    };
+    cap = platformConfig.brevo_diaria?.daily_send_cap ?? DEFAULT_QUEUE_CAP;
+  } catch (e) {
+    log(`aviso: falha ao ler platform.config.json (${(e as Error).message}) — usando cap default ${DEFAULT_QUEUE_CAP}.`);
+  }
   const currentActiveCount = computeCurrentActiveCount(store.contacts);
   const availableSlots = computeAvailableSlots(currentActiveCount, cap);
   const toApply = applyQueueCapGate(selection.selected, availableSlots);
@@ -495,30 +602,42 @@ async function main(): Promise<void> {
 
   let applied = 0;
   let failed = 0;
+  let warned = 0;
   for (const s of toApply) {
-    const { result, nextStore } = await applySunsetOne(
-      s,
-      date,
+    const { result, nextStore } = await applySunsetOne({
+      input: s,
+      snapshotDate: date,
       publicationId,
       beehiivApiKey,
+      brevoApiKey: brevoTarget.apiKey,
+      brevoListId: brevoTarget.listId,
       store,
-      fetch,
-      DEFAULT_SUNSET_LOG_PATH,
-      brevoApiKey,
-      brevoListId,
-    );
+      fetchImpl: fetch,
+      logPath: DEFAULT_SUNSET_LOG_PATH,
+    });
     store = nextStore;
+    // Persistir a CADA iteração, não só no fim do loop: as mutações são reais
+    // e irreversíveis (contato na lista Brevo, descadastrado na Beehiiv), e o
+    // store é a única fonte do dedup e da contagem de cap. Um kill/crash no
+    // meio do loop com escrita só no final perderia todas as mutações já
+    // feitas — a mesma divergência store↔Brevo do #5843, pelo lado oposto.
+    // `writeFileAtomic` de um JSON pequeno custa milissegundos.
+    writeStore(store, DEFAULT_STORE_PATH);
     if (result.ok) {
       applied++;
-      log(`  ${result.email} — unsubscribed na Beehiiv + ingerido no funil Brevo.`);
+      log(`  ${result.email} — ingerido na lista Brevo ${brevoTarget.listId} + unsubscribed na Beehiiv.`);
+      for (const w of result.warnings ?? []) {
+        warned++;
+        log(`    ⚠ ${result.email}: ${w}`);
+      }
     } else {
       failed++;
       log(`  FALHA em ${result.email}: ${result.error}`);
     }
   }
   writeStore(store, DEFAULT_STORE_PATH);
-  log(`push concluído: ${applied} sunset(s) aplicado(s), ${failed} falha(s).`);
-  if (failed > 0) process.exitCode = 1;
+  log(`push concluído: ${applied} sunset(s) aplicado(s), ${failed} falha(s), ${warned} com pendência.`);
+  if (failed > 0 || warned > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {

@@ -9,7 +9,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -351,74 +351,157 @@ describe("appendSunsetLog + applySunsetOne (push mockado)", () => {
     assert.equal(JSON.parse(lines[1]).email, "c@d.com");
   });
 
-  it("applySunsetOne chama unsubscribe + ingere no store + grava log", async () => {
+  it("applySunsetOne ingere na Brevo + chama unsubscribe + ingere no store + grava log", async () => {
     let unsubscribeCalled = false;
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL) => {
-      const u = String(url);
-      if (u.includes("/subscriptions/by_email/")) {
-        unsubscribeCalled = true;
-        return jsonRes(200, { data: { status: "inactive" } });
-      }
-      // Brevo POST /contacts → 201 Created
-      if (u.includes("api.brevo.com/v3/contacts") && u.endsWith("/contacts")) {
-        return new Response(JSON.stringify({}), { status: 201, headers: { "content-type": "application/json" } });
-      }
-      // Brevo GET /contacts/{email} → 200 com listIds incluindo 7
-      if (u.includes("api.brevo.com/v3/contacts/")) {
-        return jsonRes(200, { listIds: [7], email: "dead@a.com" });
-      }
-      return jsonRes(200, {});
+    const fetchImpl = (async (url: string | URL) => {
+      assert.match(String(url), /subscriptions\/by_email/);
+      unsubscribeCalled = true;
+      return jsonRes(200, { data: { status: "inactive" } });
     }) as typeof fetch;
+    const ingestCalls: Array<{ apiKey: string; listId: number; email: string }> = [];
 
-    try {
-      const logPath = join(dir, "sunset-log.jsonl");
-      const emptyStore: BrevoDiariaStore = { contacts: [] };
-      const { result, nextStore } = await applySunsetOne(
-        sub({ email: "dead@a.com", totalReceived: 30, totalUniqueOpened: 1, totalUniqueClicked: 0 }),
-        "2026-08-16",
-        "pub_1",
-        "key",
-        emptyStore,
-        globalThis.fetch,
-        logPath,
-        "brevo_key",
-        7,
-        "2026-08-20T00:00:00.000Z",
-      );
-
-      assert.equal(unsubscribeCalled, true);
-      assert.equal(result.ok, true);
-      assert.equal(nextStore.contacts.length, 1);
-      assert.equal(nextStore.contacts[0].email, "dead@a.com");
-      assert.equal(nextStore.contacts[0].status, "in_brevo");
-
-      assert.ok(existsSync(logPath));
-      const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
-      assert.equal(entry.email, "dead@a.com");
-      assert.equal(entry.origem, "sunset");
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-  });
-
-  it("applySunsetOne devolve ok:false e não muda o store em falha de rede", async () => {
-    const fetchImpl = (async () => jsonRes(500, { message: "boom" })) as typeof fetch;
     const logPath = join(dir, "sunset-log.jsonl");
     const emptyStore: BrevoDiariaStore = { contacts: [] };
-    const { result, nextStore } = await applySunsetOne(
-      sub({ email: "dead@a.com" }),
-      "2026-08-16",
-      "pub_1",
-      "key",
-      emptyStore,
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com", totalReceived: 30, totalUniqueOpened: 1, totalUniqueClicked: 0 }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
       fetchImpl,
       logPath,
-      "brevo_key",
-      7,
-    );
+      now: "2026-08-20T00:00:00.000Z",
+      ingest: async (apiKey, listId, email) => {
+        ingestCalls.push({ apiKey, listId, email });
+      },
+    });
+
+    // #5843: a asserção que faltava — o store ser mutado NÃO prova que o
+    // contato entrou na lista Brevo (`upsertIngested` é puro).
+    assert.deepEqual(ingestCalls, [{ apiKey: "brevo-key", listId: 7, email: "dead@a.com" }]);
+    assert.equal(unsubscribeCalled, true);
+    assert.equal(result.ok, true);
+    assert.equal(nextStore.contacts.length, 1);
+    assert.equal(nextStore.contacts[0].email, "dead@a.com");
+    assert.equal(nextStore.contacts[0].status, "in_brevo");
+
+    assert.ok(existsSync(logPath));
+    const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+    assert.equal(entry.email, "dead@a.com");
+    assert.equal(entry.origem, "sunset");
+  });
+
+  it("#5843: falha na ingestão Brevo NÃO descadastra na Beehiiv nem toca o store", async () => {
+    let unsubscribeCalled = false;
+    const fetchImpl = (async () => {
+      unsubscribeCalled = true;
+      return jsonRes(200, { data: { status: "inactive" } });
+    }) as typeof fetch;
+
+    const logPath = join(dir, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {
+        throw new Error("brevo 500");
+      },
+    });
+
+    // Ordem deliberada (#5843): ingestão primeiro. Se ela falha, a pessoa
+    // continua recebendo a diária — nunca fica sem nenhum dos dois canais.
     assert.equal(result.ok, false);
-    assert.ok(result.error);
+    assert.match(String(result.error), /brevo 500/);
+    assert.equal(unsubscribeCalled, false, "não pode descadastrar se a ingestão Brevo falhou");
+    assert.equal(nextStore.contacts.length, 0);
+    assert.equal(existsSync(logPath), false, "log não deve ser gravado em falha");
+  });
+
+  it("#5843: ingestão OK + unsubscribe Beehiiv falho NÃO descarta a mutação real — store registra e o aviso aparece", async () => {
+    // Cenário que o fix original deixava passar: a ingestão na Brevo acontece
+    // de verdade (confirmada por releitura), a Beehiiv falha, e o catch antigo
+    // devolvia `nextStore: store` — o contato ficava na lista Brevo, fora do
+    // store, invisível pro dedup e pro evaluate. Órfão permanente, porque o
+    // unsubscribe ter falhado não o traz de volta como candidato... e mesmo
+    // quando traz, a divergência já existiu.
+    const fetchImpl = (async () => jsonRes(500, { message: "beehiiv fora do ar" })) as typeof fetch;
+    const logPath = join(dir, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {},
+    });
+
+    assert.equal(result.ok, true, "a mutação que define sucesso (ingestão Brevo) aconteceu");
+    assert.equal(nextStore.contacts.length, 1, "store PRECISA registrar — o contato está na lista Brevo");
+    assert.equal(nextStore.contacts[0].status, "in_brevo");
+    assert.ok(result.ok && result.warnings, "pendência precisa ser visível");
+    assert.match(String(result.ok && result.warnings?.join(" ")), /unsubscribe Beehiiv falhou/);
+  });
+
+  it("#5843: falha só no log de auditoria não reverte ingestão nem unsubscribe já feitos", async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
+    // Diretório inexistente com um ARQUIVO no lugar do pai força o appendFileSync a lançar.
+    const bloqueado = join(dir, "arquivo-nao-diretorio");
+    writeFileSync(bloqueado, "x");
+    const logPath = join(bloqueado, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {},
+    });
+
+    assert.equal(result.ok, true, "log é auditoria — sua falha não desfaz mutação real");
+    assert.equal(nextStore.contacts.length, 1);
+    assert.match(String(result.ok && result.warnings?.join(" ")), /log de auditoria falhou/);
+  });
+
+  it("applySunsetOne devolve ok:false e não muda o store quando a INGESTÃO falha", async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
+    const logPath = join(dir, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {
+        throw new Error("boom");
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.ok(!result.ok && result.error);
     assert.equal(nextStore.contacts.length, 0);
     assert.equal(existsSync(logPath), false, "log não deve ser gravado em falha");
   });
