@@ -118,7 +118,18 @@ export async function scheduleDailyBrevo(
     };
   }
 
-  if (verified.scheduledAt !== scheduledAtIso) {
+  // #5851: compara INSTANTES, não strings — a Brevo devolve `scheduledAt` no
+  // offset LOCAL da conta (ex: `-03:00`), não em `Z`. Um agendamento correto
+  // (mesmo instante, formato diferente do que foi enviado no PUT) falhava
+  // esta checagem por comparação textual, mesmo com o agendamento certo já
+  // confirmado (`status: "queued"`) — ocorrência real na edição 260821:
+  // enviado `2026-08-21T09:00:00.000Z`, recebido `2026-08-21T06:00:00.000-03:00`,
+  // o MESMO instante. `Date.parse` retorna `NaN` pra string inválida —
+  // `NaN !== NaN` é sempre `true`, então um `scheduledAt` ausente/corrompido
+  // ainda reprova aqui (nunca um falso "confirmado" por acidente de NaN).
+  const expectedMs = Date.parse(scheduledAtIso);
+  const receivedMs = verified.scheduledAt != null ? Date.parse(verified.scheduledAt) : NaN;
+  if (receivedMs !== expectedMs || Number.isNaN(receivedMs)) {
     return {
       ok: false,
       code: 4,

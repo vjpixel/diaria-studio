@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import {
   classifyResult,
+  classifyResultWithSubresult,
   buildVerifyUrl,
   mvOutputBase,
   readStoreCandidates,
@@ -310,11 +311,11 @@ describe("splitRows", () => {
     { email: "naoverificado@b.com", NOME: "F" }, // ausente do checkpoint
   ];
   const results = {
-    "ok@b.com": { result: "ok", resultcode: 1, quality: "good" },
-    "catch@b.com": { result: "catch_all", resultcode: 2, quality: "risky" },
-    "bad@b.com": { result: "invalid", resultcode: 6, quality: "bad" },
-    "disp@b.com": { result: "disposable", resultcode: 4, quality: "bad" },
-    "huh@b.com": { result: "unknown", resultcode: 5, quality: "" },
+    "ok@b.com": { result: "ok", resultcode: 1, quality: "good", subresult: "" },
+    "catch@b.com": { result: "catch_all", resultcode: 2, quality: "risky", subresult: "" },
+    "bad@b.com": { result: "invalid", resultcode: 6, quality: "bad", subresult: "no_mailbox" },
+    "disp@b.com": { result: "disposable", resultcode: 4, quality: "bad", subresult: "" },
+    "huh@b.com": { result: "unknown", resultcode: 5, quality: "", subresult: "" },
   };
 
   it("separa nos 3 buckets corretamente", () => {
@@ -325,7 +326,7 @@ describe("splitRows", () => {
     assert.deepEqual(out.unknown.map((r) => r.NOME), ["E", "F"]);
   });
 
-  it("anexa MV_RESULT / MV_QUALITY / MV_CODE preservando colunas originais", () => {
+  it("anexa MV_RESULT / MV_QUALITY / MV_CODE / MV_SUBRESULT preservando colunas originais", () => {
     const out = splitRows(rows, "email", results);
     assert.deepEqual(out.verified[0], {
       email: "ok@b.com",
@@ -333,6 +334,7 @@ describe("splitRows", () => {
       MV_RESULT: "ok",
       MV_QUALITY: "good",
       MV_CODE: "1",
+      MV_SUBRESULT: "",
     });
   });
 
@@ -342,6 +344,7 @@ describe("splitRows", () => {
     assert.equal(f.MV_RESULT, "");
     assert.equal(f.MV_QUALITY, "");
     assert.equal(f.MV_CODE, "");
+    assert.equal(f.MV_SUBRESULT, "");
   });
 
   it("nenhuma linha é perdida", () => {
@@ -351,6 +354,47 @@ describe("splitRows", () => {
       0,
     );
     assert.equal(total, rows.length);
+  });
+
+  it("#5850: preserva MV_SUBRESULT — no_mailbox (permanente) distinto de mailbox_full (transitório), ambos rejected", () => {
+    const subresultRows = [
+      { email: "nomailbox@b.com", NOME: "A" },
+      { email: "mailboxfull@b.com", NOME: "B" },
+    ];
+    const subresultResults = {
+      "nomailbox@b.com": { result: "invalid", resultcode: 6, quality: "bad", subresult: "no_mailbox" },
+      "mailboxfull@b.com": { result: "invalid", resultcode: 6, quality: "bad", subresult: "mailbox_full" },
+    };
+    const out = splitRows(subresultRows, "email", subresultResults);
+    // Comportamento de bucket NÃO muda (#5850 é só sobre não perder o dado) —
+    // os dois continuam "rejected" hoje.
+    assert.deepEqual(out.rejected.map((r) => r.NOME), ["A", "B"]);
+    const nomailbox = out.rejected.find((r) => r.NOME === "A")!;
+    const mailboxfull = out.rejected.find((r) => r.NOME === "B")!;
+    assert.equal(nomailbox.MV_SUBRESULT, "no_mailbox");
+    assert.equal(mailboxfull.MV_SUBRESULT, "mailbox_full");
+    assert.notEqual(nomailbox.MV_SUBRESULT, mailboxfull.MV_SUBRESULT);
+  });
+});
+
+describe("classifyResultWithSubresult (#5850 — preserva subresult sem afetar bucket)", () => {
+  it("invalid+no_mailbox vs invalid+mailbox_full: mesmo bucket 'rejected', subresult distinto", () => {
+    const noMailbox = classifyResultWithSubresult("invalid", "no_mailbox");
+    const mailboxFull = classifyResultWithSubresult("invalid", "mailbox_full");
+    assert.equal(noMailbox.bucket, "rejected");
+    assert.equal(mailboxFull.bucket, "rejected");
+    assert.equal(noMailbox.subresult, "no_mailbox");
+    assert.equal(mailboxFull.subresult, "mailbox_full");
+    assert.notEqual(noMailbox.subresult, mailboxFull.subresult);
+  });
+
+  it("subresult ausente/nulo → string vazia, nunca lança", () => {
+    assert.equal(classifyResultWithSubresult("ok", undefined).subresult, "");
+    assert.equal(classifyResultWithSubresult("ok", null).subresult, "");
+  });
+
+  it("subresult é trimado", () => {
+    assert.equal(classifyResultWithSubresult("invalid", "  no_mailbox  ").subresult, "no_mailbox");
   });
 });
 

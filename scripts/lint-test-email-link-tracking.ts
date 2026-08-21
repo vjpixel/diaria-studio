@@ -245,6 +245,10 @@ export function categorizeUrl(url: string, stage: LinkTrackingStage = "draft"): 
 
 // #3480: hostnames onde Amazon retorna 404 (não 401/403) pra HEAD de bot —
 // bot-block "silencioso", a página existe normalmente pra humanos.
+// #5840: `link.amazon` (encurtador SiteStripe, usado nos boxes de livro em
+// data/snippets/) e `amzlinks.in` (hop intermediário do redirect do
+// SiteStripe) sofrem o MESMO bot-block — verificado ao vivo (`curl -L
+// --compressed` com UA de navegador segue os 2 hops até a página real, 200).
 const AMAZON_DOMAINS = new Set([
   "amazon.com",
   "www.amazon.com",
@@ -252,6 +256,10 @@ const AMAZON_DOMAINS = new Set([
   "www.amazon.com.br",
   "amzn.to",
   "www.amzn.to",
+  "link.amazon",
+  "www.link.amazon",
+  "amzlinks.in",
+  "www.amzlinks.in",
 ]);
 
 // #3482: hosts de Google Fonts — 404 em test send degrada pra fallback

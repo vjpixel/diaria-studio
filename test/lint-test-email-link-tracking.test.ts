@@ -265,6 +265,13 @@ describe("classifyKnownArtifact (#3480/#3481/#3482 — post-mortem 260716)", () 
     assert.equal(r3?.reason, "amazon_bot_block");
   });
 
+  it("#5840: link.amazon (SiteStripe) e amzlinks.in (hop intermediário) → amazon_bot_block", () => {
+    const r1 = classifyKnownArtifact("https://link.amazon/B09zuNGrF");
+    assert.equal(r1?.reason, "amazon_bot_block");
+    const r2 = classifyKnownArtifact("https://amzlinks.in/B09zuNGrF");
+    assert.equal(r2?.reason, "amazon_bot_block");
+  });
+
   it("#3482: fonts.gstatic.com / fonts.googleapis.com → font_degradation", () => {
     const r1 = classifyKnownArtifact("https://fonts.gstatic.com/s/inter/v13/abc.woff2");
     assert.equal(r1?.reason, "font_degradation");
