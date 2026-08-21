@@ -237,6 +237,7 @@ export function formatPlanReport(params: {
   skipped: SkippedEntry[];
   currentActiveCount: number;
   cap: number;
+  allowMvUnknown: boolean;
 }): string {
   const lines: string[] = [];
   lines.push(`[import-curated-batch-brevo] arquivo: ${params.inputPath}`);
@@ -250,6 +251,16 @@ export function formatPlanReport(params: {
   for (const [reason, n] of Object.entries(summary)) {
     lines.push(`[import-curated-batch-brevo]   ${n} pulado(s): ${reason}`);
   }
+  // A flag afrouxa um guard de segurança e só se manifesta no --push (o
+  // dry-run não chama a MV). Sem ecoá-la aqui, o operador não tem como
+  // confirmar que passou a flag certa antes de disparar pra valer.
+  lines.push(
+    `[import-curated-batch-brevo] MV: ${
+      params.allowMvUnknown
+        ? "bucket `unknown` ADMITIDO (--allow-mv-unknown); `rejected` segue barrado"
+        : "só bucket `verified` entra (default)"
+    }`,
+  );
   const comCliques = params.selected.filter((e) => e.clicked > 0).length;
   if (params.selected.length > 0) {
     lines.push(
@@ -303,6 +314,7 @@ async function main(): Promise<void> {
       total: parsed.entries.length + parsed.skipped.length,
       selected: selection.selected,
       skipped: allSkipped,
+      allowMvUnknown,
       currentActiveCount,
       cap,
     }) + "\n",

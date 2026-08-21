@@ -178,24 +178,21 @@ export function selectCuratedCandidates(params: {
   return { selected, skipped };
 }
 
-/**
- * Pura — decide o destino de um contato a partir do bucket devolvido pela
- * MillionVerifier. `verified` (ok/catch_all) entra; `rejected`
- * (invalid/disposable) e `unknown` ficam de fora.
- *
- * `unknown` NÃO entra de propósito (mais conservador que o fluxo de cohort do
- * `verify-emails-mv.ts`, que só separa em arquivos): este lote são
- * não-assinantes que já saíram uma vez, então o custo de um bounce é maior que
- * o de deixar um endereço duvidoso de fora. Regra #1297.
- */
+/** Destino de um contato após a verificação MV. */
 export type MvDecision = { ingest: true } | { ingest: false; reason: SkipReason };
 
 /**
- * `allowUnknown` (default `false`) admite o bucket `unknown`.
+ * Pura — decide o destino a partir do bucket devolvido pela MillionVerifier.
+ * `verified` (ok/catch_all) sempre entra; `rejected` (invalid/disposable)
+ * nunca entra; `unknown` depende de `allowUnknown`.
  *
- * `unknown` NÃO é um veredito negativo — é ausência de veredito (greylisting,
- * timeout, domínio catch-all). Barrá-lo é o default certo para um lote sem
- * histórico: na dúvida, não arrisca bounce.
+ * ## Por que `unknown` é configurável e `rejected` não
+ *
+ * `unknown` NÃO é veredito negativo — é ausência de veredito (greylisting,
+ * timeout, domínio catch-all). Barrá-lo é o default certo (`allowUnknown =
+ * false`) para um lote SEM histórico de entrega: na dúvida, não arrisca bounce.
+ * É mais conservador que o fluxo de cohort do `verify-emails-mv.ts`, que só
+ * separa em arquivos e deixa um humano decidir depois. Regra #1297.
  *
  * Mas para um lote curado de EX-ASSINANTES a dúvida não é simétrica: cada
  * contato carrega dezenas de entregas registradas pela Beehiiv sem ter saltado
@@ -205,8 +202,9 @@ export type MvDecision = { ingest: true } | { ingest: false; reason: SkipReason 
  * e `rocketmail` (provedores legados, greylisting agressivo), com 61, 61 e 64
  * entregas cada. Duas sondagens MV independentes devolveram `unknown` nas duas.
  *
- * Nunca afrouxa `rejected`: ali a MV tem veredito negativo do servidor de
- * destino (`no_mailbox`, `mailbox_full`), que é evidência ATIVA contra, não
+ * `rejected` nunca é afrouxado, nem com a flag ligada: ali a MV tem veredito
+ * negativo do servidor de DESTINO (`no_mailbox` — caixa não existe;
+ * `mailbox_full` — caixa cheia, conta abandonada). Evidência ATIVA contra, não
  * ausência dela.
  */
 export function decideFromMvBucket(
