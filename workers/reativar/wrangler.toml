@@ -12,6 +12,18 @@ workers_dev = true
 # (scripts/lib/beehiiv-config.ts) — publicationId é o mesmo de
 # platform.config.json → beehiiv.publicationId.
 #
+# BEEHIIV_ORIGEM_ORIGINAL_FIELD — OPCIONAL, GATE (#5231/#5842). Sem ele, o
+# CREATE de reativação NUNCA grava o custom field `origem_original` — o
+# comportamento de hoje (sem preservação in-band), mesmo que o GET
+# by_email traga a origem. Setar SÓ DEPOIS de criar o custom field
+# `origem_original` na Beehiiv (dashboard/MCP), com o mesmo nome como valor
+# (`ORIGEM_ORIGINAL_FIELD_NAME`, `scripts/lib/shared/beehiiv-origem-original.ts`):
+#   cd workers/reativar && npx wrangler secret put BEEHIIV_ORIGEM_ORIGINAL_FIELD
+# A mesma variável precisa estar setada no `.env` do Node pro
+# `evaluate-brevo-diaria.ts` (via score) — ver `.env.example`. As duas
+# pontas precisam estar ligadas pro #5842 (apuração preferindo
+# `origem_original`) ter efeito prático: sem o gate, não há campo pra ler.
+#
 # BREVO_DIARIA_API_KEY — OPCIONAL (#4538 item B). Sem ela, o guard de
 # descadastro nativo pendente é pulado (fail-open — ver src/index.ts),
 # comportamento idêntico ao pré-#4538. Mesmo valor do env var apontado por
