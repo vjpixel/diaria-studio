@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-3
-description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orchestrator diar.ia.br. O miolo determinístico de §3b roda via `scripts/stage-3-run.ts` (#5415); a prosa detalhada é referência/fallback. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
@@ -31,6 +31,24 @@ Exit code handling:
 
 **MCP disconnect logging:** ver `orchestrator.md` § "MCP disconnect — logging + halt banner" (#759/#737). Nesta etapa: `--stage 3`, banner `--stage "3 — Imagens"`, reason inclui também falha na API de imagem (Gemini/ComfyUI).
 
+### Runner determinístico (`scripts/stage-3-run.ts`, #5415) — CAMINHO PRINCIPAL DO MIOLO DE §3b
+
+Cobre só o miolo determinístico de §3b: lint pre-flight → `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque → card 4:5 → leaderboard top1 → box de campeões → pre-gate invariants → descoberta dos pares do crop-reviewer. **Não cobre** §3a (polling do É IA? em background), §3a-bis (`Skill("humanizador")` + `mcp__clarice__correct_text`), o dispatch `Agent("image-crop-reviewer", ...)` de §3b, nem o gate humano final + sentinel — nenhum desses é alcançável de um `spawnSync` (script Node puro, sem MCP/Skill/Agent/espera de resposta). Rodar §3a e §3a-bis normalmente primeiro (abaixo); com `01-eia.md` disponível (ou skip decidido), invocar:
+```bash
+npx tsx scripts/stage-3-run.ts --edition {AAMMDD} [--only d1,d2] [--force]
+```
+Interpretar o JSON de saída:
+- `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no lugar de rodar os comandos individuais de §3b abaixo.
+- `code: 1` → erro duro/BLOQUEANTE (ex: geração de imagem ou composição do card com exit ≠ 0) — parar e reportar `notes[]` ao editor, mesma severidade do #4090.
+- `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script — ComfyUI indisponível, ou #4583 raffle stale) — parar mesmo com `auto_approve`.
+- Destaque com `lintOk: false` → geração pausada só naquele destaque (`lintViolations` no resultado) — mostrar ao editor, mesmo fluxo do lint pre-flight abaixo.
+- `cropReviewPairs` não-vazio → `pendingAgentDispatch[0]` já traz a chamada pronta: dispatchar `Agent("image-crop-reviewer", { edition, pairs: cropReviewPairs, out_path })`, depois persistir com `run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json <output-do-agent>` (mesmo fluxo do §3b abaixo).
+- `delegatedSteps[]` — confirma os passos que o script nunca tenta (3a, 3a-bis, dispatch do crop-reviewer, gate+sentinel).
+
+**Fallback**: se o script não existir, ou falhar de um jeito não coberto pelos `code`s acima (erro de spawn, exceção fora do `try/catch`), seguir a prosa de §3b turno a turno (abaixo), exatamente como antes do #5415. A prosa abaixo permanece — é o fallback e a documentação do que o runner faz e por quê.
+
+@see scripts/stage-3-run.ts (docstring no topo tem o mapeamento seção-a-seção do que está coberto vs. delegado)
+
 ### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371, #1111)
 
 O `scripts/eia-compose.ts` foi disparado em background bash durante a Etapa 1 (#1111). O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
@@ -58,81 +76,49 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
 3. Clarice inline sobre o `-humanized.txt` (`mcp__clarice__correct_text`, sempre <9k chars, sem chunking; fallback REST `scripts/clarice-correct.ts --retry`, #738/#1329) → salvar em `-corrected.txt`. **Retry 3x + abort Stage 3** se MCP e fallback REST falharem ambos (mesmo padrão do passo 2 acima — nunca prosseguir pro passo 4 sem `-corrected.txt`). **Filtrar antes de aplicar** (achado ao vivo desta issue): Clarice tende a formalizar contrações casuais ("pra"→"para", "de novo"→"novamente") — destoa da voz do produto. Aplicar só correção de verdade (concordância, tu/você, anglicismo). **Na dúvida (#5321): default — descartar a correção duvidosa** (o texto original, casual, já passou pelo humanizador — o risco de manter uma marca de IA remanescente é menor que o de formalizar a voz do produto) **e registrar no log** (`log-event.ts --level info --message "clarice_correction_discarded"` com a correção descartada nos `--details`) — o editor revisa o descarte no gate da Etapa 4 se quiser reverter, em vez de travar o Stage 3 esperando resposta.
 4. `npx tsx scripts/apply-eia-description.ts --edition-dir {EDITION_DIR}/ --corrected {EDITION_DIR}/_internal/01-eia-description-corrected.txt` — regenera creditLine + sincroniza `wikimedia.description` (mesma fonte, nunca divergem). Exit `3` = qualquer erro, inclusive `01-eia-compose-context.json` ausente (desde #4281 nunca mais tratado como skip benigno — histórico: `docs/orchestrator-stage-narrative-history.md#stage-3-eia-description-postmortem`) → **halt banner, nunca skip**.
 
-### 3b. Imagens de destaque
+### 3b. Imagens de destaque (referência/fallback — coberto por `scripts/stage-3-run.ts`, ver bloco "Runner determinístico" acima)
 
-- Logar início:
+- `destaque_count` vem de `_internal/01-approved-capped.json` (`highlights.length`; default 3). `_internal/02-d3-prompt.md` só entra **se `destaque_count === 3`**.
+- Se `platform.config.json > image_generator === "comfyui"`, checar `curl -sf http://127.0.0.1:8188/system_stats`; falhou → pausar e instruir o editor a subir o ComfyUI.
+- **Lint pre-flight (#810).** Por destaque presente, `npx tsx scripts/lint-image-prompt.ts {EDITION_DIR}/_internal/02-d{N}-prompt.md` antes de gastar API call — detecta "Noite Estrelada"/"Starry Night" (mesmo negado), espiral/redemoinho perto de céu/estrelas/amarelo (#4201), pixels/DPI. Exit `1` = pausar só esse destaque (violações no stderr; editor edita e responde "retry" — nunca chamar `image-generate.ts` antes do lint passar). Exit `2` = I/O error, fatal pra esse destaque.
+- **Gerar via script (sem Agent).** Por destaque, sequencial, DEPOIS do lint:
   ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level info --message 'etapa 3 imagens started'
+  npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N}
   ```
-- Prompts de imagem derivam dos destaques escritos na Etapa 2. Ler `destaque_count` de `_internal/01-approved-capped.json` (campo `highlights.length`; default 3 se ausente). Considerar `_internal/02-d3-prompt.md` **somente se `destaque_count === 3`**.
-- Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível:
+  **#2133/#2141:** D2/D3 também geram `04-d{N}-2x1.jpg` + `04-d{N}-1x1.jpg`, igual D1 (default de ratio é 2x1). Exit ≠ 0 → logar erro, não seguir pro próximo destaque. **#1325: nunca `--force` sem pedido explícito do editor** — skip-if-exists já cobre reentrada; `eia-compose` tem partial-state guard (HALT em vez de regen silenciosa).
+- **Card 4:5 do feed (#4114).** Por destaque, gerar a arte 4:5 **nativa** (não recorte do 2:1 — o card é 0,8:1, precisa da altura que o 2:1 descarta) e compor o card com o título:
   ```bash
-  Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")
-  ```
-  Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
-- **Lint pre-flight do prompt (#810).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**), rodar lint determinístico antes de gastar API call. Detecta violações da regra editorial (`context/editorial-rules.md`): "Noite Estrelada" / "Starry Night" (mesmo em instrução negativa), motivo visual de espiral/redemoinho perto de céu/estrelas/amarelo mesmo sem nomear a obra (#4201), resolução em pixels, DPI:
-  ```bash
-  npx tsx scripts/lint-image-prompt.ts {EDITION_DIR}/_internal/02-d{N}-prompt.md
-  ```
-  Se exit `1` (violações encontradas), pausar geração desse destaque e mostrar ao editor as violações (stderr lista trechos + categoria + regra). Editor pode editar `_internal/02-d{N}-prompt.md` localmente e responder "retry". Não chamar `image-generate.ts` antes do lint passar — defesa em profundidade vs `NEGATIVE_PROMPT` parcial do `image-generate`. **Exit `2` (I/O error — arquivo ausente):** tratar como erro fatal para aquele destaque e reportar ao editor (não confundir com exit `1` = violação de conteúdo).
-- **Gerar imagens via script (sem Agent).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**) sequencialmente (Gemini API por default), DEPOIS do lint passar:
-  ```bash
-  npx tsx scripts/image-generate.ts \
-    --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md \
-    --out-dir {EDITION_DIR}/ \
-    --destaque d{N}
-  ```
-  **#2133/#2141:** D2 e D3 agora também geram `04-d{N}-2x1.jpg` (hero inline no email) + `04-d{N}-1x1.jpg` (social crop), igual ao D1. O default de ratio para d1/d2/d3 é 2x1.
-  Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-
-  **#1325: nunca regerar imagens existentes sem `--force` explícito.** Tanto `eia-compose.ts` quanto `image-generate.ts` já tem skip-if-exists (`exit 0` com `skipped: outputs exist`). `eia-compose` ganhou partial-state guard (#1325): se A existe e B falhou, **HALT** com exit 2 — não regenera silenciosamente. Editor responde `--force` se quiser regen do zero (vai picar nova POTD). Orchestrator NÃO deve passar `--force` automaticamente em retry — só se o editor pedir explicitamente.
-- **Card 4:5 do feed (#4114).** Depois das imagens acima, para cada destaque presente, gerar a arte 4:5 **nativa** e compor o card com o título embutido:
-  ```bash
-  # 1. arte 4:5 nativa → 04-d{N}-4x5-nativo.jpg
-  npx tsx scripts/image-generate.ts \
-    --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md \
-    --out-dir {EDITION_DIR}/ \
-    --destaque d{N} \
-    --ratio 4x5
-
-  # 2. compõe o card final (imagem + título) → 04-d{N}-4x5.jpg, todos os destaques
-  #    (#5852: fonte COMPARTILHADA entre os cards — computeCarouselTitleFontSize usa o menor overlayFittingFontSize do conjunto, mais restritivo governa todos, senão cada card saía com fonte diferente)
+  npx tsx scripts/image-generate.ts --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md --out-dir {EDITION_DIR}/ --destaque d{N} --ratio 4x5
+  # compõe TODOS os destaques prontos de uma vez — #5852: fonte COMPARTILHADA entre os cards
+  # (computeCarouselTitleFontSize usa o menor overlayFittingFontSize do conjunto)
   npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/
   ```
-  A arte 4:5 é gerada de novo (não recortada do 2:1) porque o card é retrato (0,8:1) e precisa da altura que o 2:1 descarta (histórico/rationale: `docs/orchestrator-stage-narrative-history.md#stage-3-card-4x5-rationale`). O `generateCard` tem fallback (nativo → master 6:5 → 2:1) só pra não quebrar em edição antiga.
-
-  **Este passo não é opcional pra feature existir.** `publish-facebook.ts` e `publish-instagram.ts` escolhem a imagem via `selectSocialCardImageFile` (`04-d{N}-4x5.jpg` se existir, senão `1x1`) — sem os dois comandos acima o arquivo nunca existe, o fallback dispara **em silêncio** e os posts saem com a 1:1 de sempre, sem título (histórico: `docs/orchestrator-stage-narrative-history.md#stage-3-card-4x5-rationale`).
-
-  **Falha aqui é BLOQUEANTE (#4090).** Se qualquer um dos dois comandos acima sair com código ≠ 0 para qualquer destaque, **PARAR o Stage 3** — não continuar pros demais destaques nem seguir pro pre-gate invariants abaixo. Mostrar ao editor o stderr completo: a causa mais comum é `assertBrandSerifAvailable` (`scripts/lib/shared/assert-brand-font.ts`) abortando por fonte de marca (Georgia) ausente nesta máquina — a mensagem já nomeia o script, a fonte e a saída (instalar Georgia, ou setar `DIARIA_ALLOW_FONT_FALLBACK=1` como escape hatch deliberado). "Nenhuma edição sai sem card 4:5" — `check-invariants.ts --stage 3` (regra `card-4x5-exists`) reforça isso no pre-gate como defesa em profundidade, caso esta instrução seja pulada numa retomada de sessão. Skip-if-exists vale igual ao dos outros geradores — não passar `--force` automaticamente (#1325).
-- **Revisor de crop de imagem (#3951, generalizado pra 4:5 no #4223).** Depois de gerar as imagens acima (inclusive o card 4:5 do passo anterior), verificar se o corte/composição de cada formato social preservou o sentido da imagem original:
+  **Não é opcional pra feature existir** — `publish-facebook.ts`/`publish-instagram.ts` escolhem `04-d{N}-4x5.jpg` via `selectSocialCardImageFile`, com fallback SILENCIOSO pra 1x1 sem título se o arquivo faltar. **Falha aqui é BLOQUEANTE (#4090)** — parar o Stage 3 inteiro, mostrar stderr completo (causa comum: `assertBrandSerifAvailable` sem fonte Georgia — instalar ou `DIARIA_ALLOW_FONT_FALLBACK=1`). `check-invariants.ts --stage 3` (regra `card-4x5-exists`) reforça no pre-gate. Skip-if-exists vale igual; sem `--force` automático.
+- **Revisor de crop (#3951, generalizado #4223).** Depois de gerar as imagens (inclusive o card):
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/
   ```
-  Exit 1 (nenhum par encontrado) → logar warn e pular o revisor, sem bloquear o Stage 3. Exit 0 → stdout lista os pares — um item por `(destaque, ratio)`, com `ratio: "1x1"` (hero 2:1 + crop 1:1; ou só o 1:1 nativo quando não houve crop) e `ratio: "4x5"` (fonte nativa/master/2:1 usada pelo card + o card final `04-d{N}-4x5.jpg`) combinados no MESMO array — um destaque com os dois formatos gera 2 entries. Dispatchar UMA única chamada `Agent("image-crop-reviewer", { edition: "{AAMMDD}", pairs, out_path: "{EDITION_DIR}/_internal/04-crop-review.json" })` com o array `pairs` COMPLETO retornado pela descoberta (ambos os ratios juntos, não só 1:1). Depois do subagente gravar o veredito, persistir + formatar:
+  Exit 1 (sem pares) → warn, pula, não bloqueia. Exit 0 → stdout lista pares `(destaque, ratio)` — `1x1` (hero 2:1 + crop, ou 1x1 nativo) e `4x5` (fonte do card + `04-d{N}-4x5.jpg`) combinados. Dispatchar UMA chamada `Agent("image-crop-reviewer", { edition: "{AAMMDD}", pairs, out_path: "{EDITION_DIR}/_internal/04-crop-review.json" })` com o array `pairs` COMPLETO; depois persistir:
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/04-crop-review.json
   ```
-  Sempre exit 0 (warning-only). O resultado reaparece no gate consolidado da Etapa 4 via `check-invariants.ts --stage 4` (regra `image-crop-warn`) — nunca gate-blocking, nem aqui nem lá.
-- **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json`. **#1753:** o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou de fechar (período ANTERIOR ao da edição); em qualquer outra edição o script grava `top1: []` e o renderer omite. O gate é interno ao script (cruza com `data/past-editions-raw.json`) — o orchestrator só invoca normalmente. Renderer lê automaticamente:
+  Sempre exit 0 (warning-only). Reaparece no gate da Etapa 4 via `check-invariants.ts --stage 4` (`image-crop-warn`) — nunca gate-blocking.
+- **Leaderboard top1 (#1160/#1753 — só 1ª edição do mês, período ANTERIOR).**
   ```bash
-  npx tsx scripts/fetch-leaderboard-top1.ts \
-    --edition {AAMMDD} \
-    --out {EDITION_DIR}/_internal/04-leaderboard-top1.json
+  npx tsx scripts/fetch-leaderboard-top1.ts --edition {AAMMDD} --out {EDITION_DIR}/_internal/04-leaderboard-top1.json
   ```
-  Falha do fetch (Worker offline, timeout) escreve `top1: []` — renderer detecta e omite bloco. **Não-bloqueante** — newsletter funciona sem leaderboard.
-- **Injetar box campeões/sorteio de início de mês (#2725).** Logo após o fetch acima (mesmo gate "1ª edição do mês", reusado internamente — não duplica a detecção), preencher e injetar o box `🎉 Os campeões do É IA?... + Sorteio` em `02-reviewed.md` a partir do `podium` recém-escrito + do bloco `raffle` de `platform.config.json`:
+  Falha (Worker offline/timeout) grava `top1: []`; renderer omite. Não-bloqueante.
+- **Box campeões/sorteio (#2725).** Logo após o fetch acima (mesmo gate "1ª edição do mês"):
   ```bash
-  npx tsx scripts/inject-champions-callout.ts \
-    --edition {AAMMDD} \
-    --edition-dir {EDITION_DIR}/
+  npx tsx scripts/inject-champions-callout.ts --edition {AAMMDD} --edition-dir {EDITION_DIR}/
   ```
-  **Graceful/no-op** (mesmo padrão do fetch): não é a 1ª edição do mês, pódio vazio/incompleto, ou bloco `raffle` ausente → loga o motivo e sai 0 sem alterar `02-reviewed.md`. **Precedência:** se `02-reviewed.md` já tem um callout na região de intro (ex: patrocínio 📣 colado manualmente), a injeção é PULADA — o callout existente vence, evitando corromper o parse greedy de `extractIntroCallout` (#2727) com dois blocos empilhados. Se isso ocorrer, reportar ao editor no resumo do gate: "Box de campeões do mês não injetado — já havia um callout ({tipo}) no topo desta edição." Só roda quando `02-reviewed.md` já existe (Stage 2 completo) — nunca antes. **NÃO-graceful, exit 1 (#4583):** `raffle.sorteio_do_mes.mes` PRESENTE mas divergente do mês da edição corrente (dia do sorteio herdado do mês anterior, editor esqueceu de atualizar) é FATAL — o script aborta em vez de publicar a data velha em silêncio. Se o comando acima sair != 0 com essa mensagem, tratar como parada inesperada (CLAUDE.md "MCP indisponível = fail-fast" — mesma classe): parar o Stage 3, halt banner pedindo ao editor o dia do sorteio deste mês, atualizar `platform.config.json` → `raffle.sorteio_do_mes` para `{ "mes": "{YYYY-MM da edição}", "dia": N }`, então re-rodar o comando.
-- **Pre-gate invariants (#1007 Fase 1).** Validar que as imagens obrigatórias existem (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 **condicional a `destaque_count === 3`**, #2352) e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
+  **Graceful/no-op**: não é 1ª edição do mês, pódio incompleto, `raffle` ausente, ou `02-reviewed.md` já tem callout de intro (ex: patrocínio manual — o existente vence, evita corromper `extractIntroCallout` #2727; reportar ao editor se isso ocorrer) → sai 0 sem alterar nada. **NÃO-graceful, exit 1 (#4583):** `raffle.sorteio_do_mes.mes` presente mas divergente do mês da edição (dia herdado do mês anterior) é FATAL — tratar como parada inesperada (CLAUDE.md "MCP indisponível = fail-fast"): halt banner pedindo ao editor o dia do sorteio deste mês, atualizar `platform.config.json` → `raffle.sorteio_do_mes` `{ "mes": "{YYYY-MM}", "dia": N }`, re-rodar.
+- **Pre-gate invariants (#1007 Fase 1).** Imagens obrigatórias (eia A/B + d1/d2 2x1/1x1; d3 condicional a `destaque_count === 3`, #2352) + prompts sem violação editorial:
   ```bash
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDITION_DIR}/
   ```
-  Exit 1 = bloquear gate até fix (regenerar imagem ausente / corrigir prompt). Violations explicam qual destaque/arquivo precisa atenção. O script já é 2-destaque-aware (#2352) — não requer flag adicional.
-- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`, `04-d2-1x1.jpg`; incluir `04-d3-2x1.jpg`, `04-d3-1x1.jpg` **somente se `destaque_count === 3`**). **#2133/#2141:** todos os destaques têm hero 2:1 no email. Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}`).
+  Exit 1 = bloquear gate até fix; violations apontam destaque/arquivo.
+- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + imagens geradas (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`, `04-d2-1x1.jpg`; incluir `04-d3-2x1.jpg`/`04-d3-1x1.jpg` **somente se `destaque_count === 3`**). Todos os destaques têm hero 2:1 (#2133/#2141). Opções: aprovar / regenerar individual (`d{N}`).
 - **Escrever sentinel de conclusão do Stage 3 (após aprovação do gate):**
   ```bash
   # destaque_count=3:
@@ -144,5 +130,5 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
     --edition {AAMMDD} --step 3 \
     --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg"
   ```
-  Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 3` (#3441) — captura tokens/custo REAIS só do lado Claude (transcript local da sessão); **não captura** o custo de Gemini/ComfyUI da geração de imagem (APIs externas, fora do transcript do harness) — esse gap fica documentado, não fabricado como zero. Ler o JSON de stdout: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel acima — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
+  Falha do sentinel → logar warn (`log-event.ts --stage 3 --level warn --message 'sentinel_write_failed'`). Não bloquear.
+- **Atualizar `stage-status.md` (#1217).** `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X`, depois `capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 3` (#3441 — só custo do lado Claude; Gemini/ComfyUI ficam fora do transcript, gap documentado, não fabricado como zero). `"source":"unavailable"` no stdout → logar warn `stage_usage_capture_unavailable` (#5475). Não bloquear.
