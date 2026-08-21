@@ -31,10 +31,14 @@
  *
  *   npx tsx scripts/import-curated-batch-brevo.ts --input data/analysis/descadastrados-manuais-2607.json
  *   npx tsx scripts/import-curated-batch-brevo.ts --input <arquivo> --push
- *   npx tsx scripts/import-curated-batch-brevo.ts --input <arquivo> --push --limit 17
+ *   npx tsx scripts/import-curated-batch-brevo.ts --input <arquivo> --push --limit 12 --prioritize-clicked
  *
- * `--limit N` corta o lote nos N primeiros elegíveis — para envio graduado
- * (ex: começar só pelos que têm clique na vida) sem editar o arquivo.
+ * `--limit N` corta o lote nos N primeiros elegíveis, na ordem do arquivo (a
+ * curadoria do editor). Para envio graduado começando por quem tem clique na
+ * vida — leitor real com pixel de abertura bloqueado — combinar com
+ * `--prioritize-clicked`, que ordena por cliques (desc) ANTES do corte. Sem
+ * essa flag o corte é posicional e não tem relação com engajamento: no lote de
+ * referência, o 1º contato com clique está no índice 6.
  *
  * @see scripts/lib/curated-batch-import.ts (núcleo puro)
  * @see scripts/sync-pending-to-brevo.ts (ingestContactToBrevo, cap da fila)
@@ -63,6 +67,7 @@ import {
   summarizeSkips,
   type CuratedEntry,
   type SkippedEntry,
+  type SkipReason,
 } from "./lib/curated-batch-import.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -97,6 +102,111 @@ async function verifyOnMv(
   const body = (await res.json()) as { result?: string };
   const result = body?.result ?? "";
   return { result, bucket: classifyResult(result) };
+}
+
+export type CuratedImportOutcome =
+  | { kind: "imported"; mvResult: string; warning?: string }
+  | { kind: "skipped"; reason: SkipReason; detail: string };
+
+/**
+ * I/O — importa 1 contato do lote curado: verifica na MV, ingere na lista
+ * Brevo, registra no store (persistindo já) e grava a auditoria.
+ *
+ * Extraída do `main()` para ter seam de injeção (`verify`, `ingest`,
+ * `appendLog`, `persistStore`) — sem isso a ordem das mutações, que é
+ * exatamente o que o #5843 quebrou no script irmão, não teria como ser
+ * travada por teste. Mesmo padrão de `applySunsetOne`.
+ *
+ * A ordem é deliberada e espelha o sunset:
+ *  1. MV falha       → nada aconteceu, skip tipado.
+ *  2. Ingestão falha → nada aconteceu, skip tipado.
+ *  3. Ingestão OK    → store atualizado e PERSISTIDO antes de qualquer outra
+ *                      coisa (é o que governa dedup e cap; um kill aqui não
+ *                      pode perder a ingestão real que já ocorreu).
+ *  4. Auditoria falha → aviso, nunca reversão: o registro some, o efeito não.
+ */
+export async function importOneCuratedContact(params: {
+  entry: CuratedEntry;
+  store: BrevoDiariaStore;
+  sourceFile: string;
+  mvApiKey: string;
+  brevoApiKey: string;
+  brevoListId: number;
+  logPath: string;
+  persistStore: (store: BrevoDiariaStore) => void;
+  now?: () => string;
+  verify?: (apiKey: string, email: string) => Promise<{ result: string; bucket: "verified" | "rejected" | "unknown" }>;
+  ingest?: (apiKey: string, listId: number, email: string) => Promise<void>;
+  appendLog?: (entry: CuratedImportLogEntry, path: string) => void;
+}): Promise<{ outcome: CuratedImportOutcome; nextStore: BrevoDiariaStore }> {
+  const {
+    entry,
+    store,
+    sourceFile,
+    mvApiKey,
+    brevoApiKey,
+    brevoListId,
+    logPath,
+    persistStore,
+    now = () => new Date().toISOString(),
+    verify = (apiKey, email) => verifyOnMv(apiKey, email, fetch),
+    ingest = ingestContactToBrevo,
+    appendLog = appendCuratedImportLog,
+  } = params;
+
+  let mv: { result: string; bucket: "verified" | "rejected" | "unknown" };
+  try {
+    mv = await verify(mvApiKey, entry.email);
+  } catch (e) {
+    return {
+      outcome: { kind: "skipped", reason: "mv_falhou", detail: (e as Error).message },
+      nextStore: store,
+    };
+  }
+
+  const decision = decideFromMvBucket(mv.bucket);
+  if (!decision.ingest) {
+    return { outcome: { kind: "skipped", reason: decision.reason, detail: mv.result }, nextStore: store };
+  }
+
+  try {
+    await ingest(brevoApiKey, brevoListId, normalizeEmail(entry.email));
+  } catch (e) {
+    return {
+      outcome: { kind: "skipped", reason: "ingestao_falhou", detail: (e as Error).message },
+      nextStore: store,
+    };
+  }
+
+  const nextStore = upsertIngested(
+    store,
+    { email: entry.email, beehiiv_subscription_id: `curated:${normalizeEmail(entry.email)}` },
+    now(),
+  );
+  persistStore(nextStore);
+
+  try {
+    appendLog(
+      {
+        email: normalizeEmail(entry.email),
+        imported_at: now(),
+        source_file: sourceFile,
+        received: entry.received,
+        opened: entry.opened,
+        clicked: entry.clicked,
+        mv_result: mv.result,
+        origem: "curated",
+      },
+      logPath,
+    );
+  } catch (e) {
+    return {
+      outcome: { kind: "imported", mvResult: mv.result, warning: `o log de auditoria falhou: ${(e as Error).message}` },
+      nextStore,
+    };
+  }
+
+  return { outcome: { kind: "imported", mvResult: mv.result }, nextStore };
 }
 
 function readQueueCap(log: (msg: string) => void): number {
@@ -173,6 +283,7 @@ async function main(): Promise<void> {
     entries: parsed.entries,
     storeEmails: store.contacts.map((c) => c.email),
     availableSlots: effectiveSlots,
+    prioritizeClicked: hasFlag(argv, "prioritize-clicked"),
   });
   const allSkipped = [...parsed.skipped, ...selection.skipped];
 
@@ -207,56 +318,47 @@ async function main(): Promise<void> {
 
   let imported = 0;
   let failed = 0;
-  const mvSkipped: SkippedEntry[] = [];
+  let warned = 0;
+  const runtimeSkipped: SkippedEntry[] = [];
   const now = () => new Date().toISOString();
 
   for (const entry of selection.selected) {
-    let mv: { result: string; bucket: "verified" | "rejected" | "unknown" };
-    try {
-      mv = await verifyOnMv(mvApiKey, entry.email, fetch);
-    } catch (e) {
-      failed++;
-      log(`  FALHA na verificação MV de ${entry.email}: ${(e as Error).message} — não ingerido.`);
-      continue;
-    }
+    const { outcome, nextStore } = await importOneCuratedContact({
+      entry,
+      store,
+      sourceFile: inputPath,
+      mvApiKey,
+      brevoApiKey: brevoTarget.apiKey,
+      brevoListId: brevoTarget.listId,
+      logPath: DEFAULT_CURATED_LOG_PATH,
+      persistStore: (s) => writeStore(s, DEFAULT_STORE_PATH),
+    });
+    store = nextStore;
 
-    const decision = decideFromMvBucket(mv.bucket);
-    if (!decision.ingest) {
-      mvSkipped.push({ email: entry.email, reason: decision.reason!, detail: mv.result });
-      log(`  ${entry.email} — pulado (MV: ${mv.result}).`);
-      continue;
-    }
-
-    try {
-      await ingestContactToBrevo(brevoTarget.apiKey, brevoTarget.listId, normalizeEmail(entry.email));
-      store = upsertIngested(
-        store,
-        { email: entry.email, beehiiv_subscription_id: `curated:${normalizeEmail(entry.email)}` },
-        now(),
-      );
-      appendCuratedImportLog({
-        email: normalizeEmail(entry.email),
-        imported_at: now(),
-        source_file: inputPath,
-        received: entry.received,
-        opened: entry.opened,
-        clicked: entry.clicked,
-        mv_result: mv.result,
-        origem: "curated",
-      });
+    if (outcome.kind === "imported") {
       imported++;
-      log(`  ${entry.email} — ingerido na lista Brevo ${brevoTarget.listId} (MV: ${mv.result}).`);
-    } catch (e) {
-      failed++;
-      log(`  FALHA na ingestão de ${entry.email}: ${(e as Error).message}`);
+      if (outcome.warning) {
+        warned++;
+        log(`  ${entry.email} — ingerido na lista Brevo ${brevoTarget.listId}, mas ${outcome.warning}`);
+      } else {
+        log(`  ${entry.email} — ingerido na lista Brevo ${brevoTarget.listId} (MV: ${outcome.mvResult}).`);
+      }
+    } else {
+      runtimeSkipped.push({ email: entry.email, reason: outcome.reason, detail: outcome.detail });
+      if (outcome.reason === "mv_falhou" || outcome.reason === "ingestao_falhou") {
+        failed++;
+        log(`  FALHA em ${entry.email} (${outcome.reason}): ${outcome.detail}`);
+      } else {
+        log(`  ${entry.email} — pulado (MV: ${outcome.detail}).`);
+      }
     }
   }
 
   writeStore(store, DEFAULT_STORE_PATH);
-  const mvSummary = summarizeSkips(mvSkipped);
+  const skipSummary = summarizeSkips(runtimeSkipped);
   log(
-    `push concluído: ${imported} importado(s), ${failed} falha(s), ` +
-      `${mvSkipped.length} pulado(s) por MV (${JSON.stringify(mvSummary)}).`,
+    `push concluído: ${imported} importado(s), ${failed} falha(s), ${warned} com auditoria pendente, ` +
+      `${runtimeSkipped.length} não ingerido(s) (${JSON.stringify(skipSummary)}).`,
   );
   log(`fila agora: ${computeCurrentActiveCount(store.contacts)}/${cap}.`);
   if (failed > 0) process.exitCode = 1;

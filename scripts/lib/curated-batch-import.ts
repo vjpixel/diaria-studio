@@ -8,8 +8,11 @@
  * ## Contexto (#5841)
  *
  * O editor descadastrou manualmente 62 contatos em 11 e 13/07/2026 e quer dar
- * a eles uma chance no canal de reativação. Depois da checagem de consentimento
- * (13 descadastros orgânicos identificados, 6 deles na lista) sobraram 65, em
+ * a eles uma chance no canal de reativação. Cruzando os snapshots de 17/06 e
+ * 16/08, a janela contém 71 contatos (os 62 manuais + ~9 de churn orgânico do
+ * período, indistinguíveis sem data por assinante). Desses 71, a checagem de
+ * consentimento identificou 13 descadastros orgânicos, 6 dos quais estavam na
+ * lista — daí os 65 finais de
  * `data/analysis/descadastrados-manuais-2607.json`.
  *
  * Não existia caminho no código pra esse lote: `refresh-pending-pool` (#5183)
@@ -40,13 +43,25 @@ export interface CuratedEntry {
   clicked: number;
 }
 
+/**
+ * Motivos pelos quais um contato do lote NÃO foi importado.
+ *
+ * Os quatro primeiros são decisões (pré-flight ou pós-MV); os dois últimos são
+ * FALHAS de execução. Estas últimas viviam só num contador `failed` sem tipo e
+ * em linhas soltas de log — invisíveis pro `summarizeSkips`, justamente nos
+ * modos de falha que mais precisam de triagem depois (rate limit, 5xx
+ * transitório da Brevo). Ficam aqui pra que o relatório tenha uma fonte única.
+ */
 export type SkipReason =
   | "ja_no_store"
   | "sem_slot_na_fila"
   | "mv_rejected"
   | "mv_unknown"
   | "email_invalido"
-  | "duplicado_no_arquivo";
+  | "metrica_invalida"
+  | "duplicado_no_arquivo"
+  | "mv_falhou"
+  | "ingestao_falhou";
 
 export interface SkippedEntry {
   email: string;
@@ -90,13 +105,19 @@ export function parseCuratedBatch(raw: unknown): { entries: CuratedEntry[]; skip
       skipped.push({ email, reason: "duplicado_no_arquivo" });
       continue;
     }
+    // Métricas entram no log de auditoria, que é o ponto deste fluxo — um
+    // `Number("abc")` viraria NaN (tipo `number` válido pro TS) e o
+    // `JSON.stringify` do jsonl o gravaria como `null`, indistinguível de um
+    // zero legítimo. O campo `email` logo acima já é validado; estas não eram.
+    const received = Number(item?.received ?? 0);
+    const opened = Number(item?.opened ?? 0);
+    const clicked = Number(item?.clicked ?? 0);
+    if (![received, opened, clicked].every(Number.isFinite)) {
+      skipped.push({ email, reason: "metrica_invalida", detail: "received/opened/clicked não numérico" });
+      continue;
+    }
     seen.add(email);
-    entries.push({
-      email,
-      received: Number(item?.received ?? 0),
-      opened: Number(item?.opened ?? 0),
-      clicked: Number(item?.clicked ?? 0),
-    });
+    entries.push({ email, received, opened, clicked });
   }
   return { entries, skipped };
 }
@@ -120,6 +141,18 @@ export function selectCuratedCandidates(params: {
   entries: CuratedEntry[];
   storeEmails: Iterable<string>;
   availableSlots: number;
+  /**
+   * Ordena os elegíveis por cliques (desc) antes do corte. Quem já clicou
+   * alguma vez é leitor real com pixel de abertura bloqueado (mesma lógica do
+   * guard de `leitor-v1`), então num envio graduado é por eles que se começa.
+   *
+   * Existe porque o corte é POSICIONAL: sem ordenar, `--limit N` pega os N
+   * primeiros na ordem do arquivo, que não tem relação com engajamento — o
+   * lote de referência tem o 1º contato com clique só no índice 6.
+   *
+   * Default `false`: preserva a ordem do arquivo, que é a curadoria do editor.
+   */
+  prioritizeClicked?: boolean;
 }): { selected: CuratedEntry[]; skipped: SkippedEntry[] } {
   const known = new Set<string>();
   for (const e of params.storeEmails) known.add(norm(e));
@@ -134,9 +167,12 @@ export function selectCuratedCandidates(params: {
     eligible.push(entry);
   }
 
+  // Estável: entradas com o mesmo número de cliques mantêm a ordem do arquivo.
+  const ordered = params.prioritizeClicked ? [...eligible].sort((a, b) => b.clicked - a.clicked) : eligible;
+
   const slots = Math.max(0, params.availableSlots);
-  const selected = eligible.slice(0, slots);
-  for (const over of eligible.slice(slots)) {
+  const selected = ordered.slice(0, slots);
+  for (const over of ordered.slice(slots)) {
     skipped.push({ email: over.email, reason: "sem_slot_na_fila" });
   }
   return { selected, skipped };
@@ -152,10 +188,9 @@ export function selectCuratedCandidates(params: {
  * não-assinantes que já saíram uma vez, então o custo de um bounce é maior que
  * o de deixar um endereço duvidoso de fora. Regra #1297.
  */
-export function decideFromMvBucket(bucket: "verified" | "rejected" | "unknown"): {
-  ingest: boolean;
-  reason?: SkipReason;
-} {
+export type MvDecision = { ingest: true } | { ingest: false; reason: SkipReason };
+
+export function decideFromMvBucket(bucket: "verified" | "rejected" | "unknown"): MvDecision {
   if (bucket === "verified") return { ingest: true };
   return { ingest: false, reason: bucket === "rejected" ? "mv_rejected" : "mv_unknown" };
 }

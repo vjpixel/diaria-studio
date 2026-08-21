@@ -9,7 +9,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -426,8 +426,14 @@ describe("appendSunsetLog + applySunsetOne (push mockado)", () => {
     assert.equal(existsSync(logPath), false, "log não deve ser gravado em falha");
   });
 
-  it("applySunsetOne devolve ok:false e não muda o store em falha de rede", async () => {
-    const fetchImpl = (async () => jsonRes(500, { message: "boom" })) as typeof fetch;
+  it("#5843: ingestão OK + unsubscribe Beehiiv falho NÃO descarta a mutação real — store registra e o aviso aparece", async () => {
+    // Cenário que o fix original deixava passar: a ingestão na Brevo acontece
+    // de verdade (confirmada por releitura), a Beehiiv falha, e o catch antigo
+    // devolvia `nextStore: store` — o contato ficava na lista Brevo, fora do
+    // store, invisível pro dedup e pro evaluate. Órfão permanente, porque o
+    // unsubscribe ter falhado não o traz de volta como candidato... e mesmo
+    // quando traz, a divergência já existiu.
+    const fetchImpl = (async () => jsonRes(500, { message: "beehiiv fora do ar" })) as typeof fetch;
     const logPath = join(dir, "sunset-log.jsonl");
     const emptyStore: BrevoDiariaStore = { contacts: [] };
     const { result, nextStore } = await applySunsetOne({
@@ -442,8 +448,60 @@ describe("appendSunsetLog + applySunsetOne (push mockado)", () => {
       logPath,
       ingest: async () => {},
     });
+
+    assert.equal(result.ok, true, "a mutação que define sucesso (ingestão Brevo) aconteceu");
+    assert.equal(nextStore.contacts.length, 1, "store PRECISA registrar — o contato está na lista Brevo");
+    assert.equal(nextStore.contacts[0].status, "in_brevo");
+    assert.ok(result.ok && result.warnings, "pendência precisa ser visível");
+    assert.match(String(result.ok && result.warnings?.join(" ")), /unsubscribe Beehiiv falhou/);
+  });
+
+  it("#5843: falha só no log de auditoria não reverte ingestão nem unsubscribe já feitos", async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
+    // Diretório inexistente com um ARQUIVO no lugar do pai força o appendFileSync a lançar.
+    const bloqueado = join(dir, "arquivo-nao-diretorio");
+    writeFileSync(bloqueado, "x");
+    const logPath = join(bloqueado, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {},
+    });
+
+    assert.equal(result.ok, true, "log é auditoria — sua falha não desfaz mutação real");
+    assert.equal(nextStore.contacts.length, 1);
+    assert.match(String(result.ok && result.warnings?.join(" ")), /log de auditoria falhou/);
+  });
+
+  it("applySunsetOne devolve ok:false e não muda o store quando a INGESTÃO falha", async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
+    const logPath = join(dir, "sunset-log.jsonl");
+    const emptyStore: BrevoDiariaStore = { contacts: [] };
+    const { result, nextStore } = await applySunsetOne({
+      input: sub({ email: "dead@a.com" }),
+      snapshotDate: "2026-08-16",
+      publicationId: "pub_1",
+      beehiivApiKey: "key",
+      brevoApiKey: "brevo-key",
+      brevoListId: 7,
+      store: emptyStore,
+      fetchImpl,
+      logPath,
+      ingest: async () => {
+        throw new Error("boom");
+      },
+    });
     assert.equal(result.ok, false);
-    assert.ok(result.error);
+    assert.ok(!result.ok && result.error);
     assert.equal(nextStore.contacts.length, 0);
     assert.equal(existsSync(logPath), false, "log não deve ser gravado em falha");
   });
