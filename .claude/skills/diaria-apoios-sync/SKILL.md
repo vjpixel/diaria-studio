@@ -152,7 +152,7 @@ sozinho" no #4436 era outra coisa: **salvar o formulário do segmento** dispara
 reprocessamento na hora (o #4436 tinha observado isso ao mudar a CONDIÇÃO; o
 #5897 mediu que salvar sem diff nenhum já basta) — o que não generaliza pra
 mudança de VALOR do campo, que é o que o `--push` faz. É essa assimetria que
-torna o passo 1 abaixo obrigatório.
+torna o sub-passo 4.1 abaixo obrigatório.
 
 1. Para cada um dos 6 segmentos, via Chrome: `get_segment(segment_id).editor_url`
    → navegar até lá (o `editor_url` já abre a aba **Configure**) → **sem
@@ -167,14 +167,10 @@ torna o passo 1 abaixo obrigatório.
    botão sem rótulo naquela região é o chevron do "Quick export", que abre
    export/unsubscribe/delete/tags). A UI da Beehiiv mudou desde a medição do
    #4485. O caminho Configure → "Update segment" foi verificado nos 6
-   segmentos na mesma rodada e **pegou de 1ª nos 6** — diferente do botão
-   antigo, que precisava de 2ª rodada em ~2 de 6.
-
-   Isso generaliza a observação do #4436 ("mudar a CONDIÇÃO dispara
-   reprocessamento na hora"): **salvar o formulário basta, mesmo sem diff de
-   condição nenhum**. O que NÃO mudou é o achado central do #4485 — mudar só o
-   VALOR do custom field (o que o `--push` faz) continua não disparando nada
-   sozinho, nem "no próximo ciclo diário".
+   segmentos na mesma rodada e pegou de 1ª nos 6. **Isso é uma amostra única,
+   não uma medida de confiabilidade** — o botão antigo precisava de 2ª rodada
+   em ~2 de 6 numa amostra igualmente única (#4485). Continue tratando o
+   clique como não-confiável e o gate do 4.2 como o critério.
 
    **Se este clique também parar de funcionar um dia**, o sintoma é
    `gate.ok === false` no Passo 4.2 — não um erro visível na tela. É o gate,
@@ -192,7 +188,8 @@ torna o passo 1 abaixo obrigatório.
    `gate.ok === false`, o refresh NÃO pegou em
    algum segmento (`tiersMatchTodos: false` → confira Todos e as 4 faixas;
    `totalMatchesActiveBase: false` → confira Nenhum). Repetir o "Update
-   segment" (passo 1) nos segmentos suspeitos e reler até `gate.ok === true`
+   segment" (sub-passo 4.1 acima — NÃO o Passo 1 desta skill, que é o drift
+   check) nos segmentos suspeitos e reler até `gate.ok === true`
    — nunca declarar sucesso com o gate falhando.
 
 ## Passo 5 — relatório final
