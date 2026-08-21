@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-0-preflight
-description: Stage 0 do orchestrator diar.ia.br — setup, parâmetros, checks pré-edição, refreshes (dedup, CTR, audience) e auto-reporter prep. Lido pelo orchestrator principal. @see orchestrator-stage-1-research.md (Stage 1).
+description: Stage 0 do orchestrator diar.ia.br — setup, parâmetros, checks pré-edição, refreshes (dedup, CTR, audience) e auto-reporter prep. A maior parte roda via `scripts/stage-0-run.ts` (#5415); a prosa detalhada é referência/fallback. Lido pelo orchestrator principal. @see orchestrator-stage-1-research.md (Stage 1).
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
@@ -11,7 +11,87 @@ description: Stage 0 do orchestrator diar.ia.br — setup, parâmetros, checks p
 
 **MCP disconnect logging:** ver `orchestrator.md` § "MCP disconnect — logging + halt banner" (#759/#737). Nesta etapa: `--stage 0`, banner `--stage "0 — Preflight"`.
 
-### 0a. Parâmetros de entrada
+### Runner determinístico (`scripts/stage-0-run.ts`, #5415) — CAMINHO PRINCIPAL
+
+**Rodar `0b` (resume-aware) primeiro, como sempre** — decide se a edição já passou
+do Stage 0 e deve pular direto para outro stage. `0b` opera sobre `{EDITION_DIR}`,
+que resolve com a mesma chamada barata e idempotente que o runner usa internamente
+em `0a` (`npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD}`) — rodá-la
+uma vez aqui, antes de decidir se o Stage 0 sequer começa, não duplica trabalho: a
+fase `preflight` do runner (passo 1 abaixo) chama o mesmo comando de novo e é
+seguro repetir (leitura pura, sem escrita). Só quando o resume aponta "começar
+do Stage 0" é que o runner abaixo entra em cena.
+
+A partir daí, os passos **0a, 0b-bis, 0c (só os 3 checks HTTPS/token — locks,
+Cloudflare, Clarice REST; os 3 pings MCP continuam manuais, ver passo 2 abaixo),
+0d, 0d.bis, 0e-0h, 0i, 0j (a detecção; a decisão humana s/n/d continua sendo do
+editor), 0k, 0l e 0z** são executados por `npx tsx scripts/stage-0-run.ts` num
+único fluxo de 2 chamadas, em vez de serem interpretados turno a turno em Bash
+sequencial. **A prosa detalhada dessas subseções permanece abaixo intacta** —
+é o que o script faz e por quê, além de ser o **fallback** se o script não
+existir ou falhar de forma inesperada (ver passo 4).
+
+Design de 2 fases (o script é um processo Node puro — não alcança MCP):
+
+1. **Fase `preflight`** (reconnaissance, zero escrita em disco):
+   ```bash
+   npx tsx scripts/stage-0-run.ts --phase preflight --edition {AAMMDD} \
+     [--window-days {window_days}] [--auto-approve] [--pre-gate]
+   ```
+   Devolve JSON com `editionDir`, `editionIso`, `anchorIso`, `cutoffIso`,
+   `windowDays`, `clariceRest`, `cloudflareTokenOk` e `needsMcpProbes`
+   (descrição dos 3 pings que só o orchestrator consegue fazer).
+
+2. **Fazer os 3 pings MCP** — mesmos de sempre, ver §0c abaixo pro racional
+   de cada um: `mcp__claude-in-chrome__tabs_context_mcp`,
+   `mcp__claude_ai_Gmail__list_labels`, `mcp__claude_ai_Beehiiv__get_current_user`.
+   Sucesso/erro de cada um vira `true`/`false`.
+
+3. **Fase `continue`** (execução real — persiste tudo, roda 0d → 0z):
+   ```bash
+   npx tsx scripts/stage-0-run.ts --phase continue --edition {AAMMDD} \
+     --mcp-chrome {true|false} --mcp-gmail {true|false} --mcp-beehiiv {true|false} \
+     [--window-days {window_days}] [--auto-approve] [--pre-gate]
+   ```
+
+**Interpretar o JSON de saída (campo `code` + resto):**
+- `code: 0` → Stage 0 concluído. Usar `editionDir`/`editionIso`/`anchorIso`/
+  `cutoffIso`/`windowDays` do JSON como `{EDITION_DIR}`/`edition_iso`/
+  `anchor_iso`/`cutoff_iso`/`window_days` no resto do pipeline (Stage 1+).
+- `code: 1` → erro duro (sub-script obrigatório falhou) — parar e reportar
+  ao editor com `notes[]` (mesma disciplina do #738/#3938: nunca prosseguir
+  silenciosamente sobre uma falha não tratada).
+- `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo
+  próprio script) — parar mesmo com `auto_approve`, mesma regra do 0d.bis
+  original (nunca bypassa).
+- `pendingAgentDispatch[]` (hoje só `0h.2`) → para cada entry, disparar
+  `Agent(subagent_type: entry.agent, prompt: <manifest em entry.manifestPath,
+  1 item por linha "post_id=<id> title=<title>">)` — mesmo fluxo de §0h.2
+  abaixo, incluindo a validação determinística pós-dispatch (`verify-clicks-
+  enrichment.ts`).
+- `pendingHumanDecision[]` (hoje `0g` freshness stale e `0j` drafts
+  pendentes) → apresentar `detail`/`prompt`/`options` ao editor exatamente
+  como as subseções correspondentes abaixo descrevem, e agir conforme a
+  resposta (inclusive o dispatch do agent `auto-reporter` no caso `s` do 0j).
+- `delegatedSteps[]` — lista informativa dos passos que o script nunca
+  tenta (0n, 0-replies) — rodar essas seções normalmente, como sempre (ver
+  abaixo, inalteradas).
+
+4. **Fallback**: se `scripts/stage-0-run.ts` não existir, ou falhar de um
+   jeito não coberto pelos `code`s acima (erro de spawn, exceção fora do
+   `try/catch` do script), seguir a prosa detalhada de 0a-0z abaixo turno a
+   turno, exatamente como antes do #5415.
+
+Seções `0m` (auto-reporter — só roda depois do Stage 4, é só uma nota de
+preparação aqui) e `0n`/`0-replies` (100% MCP/interativo) **nunca** passam
+pelo runner — seguem executadas em prosa, como sempre.
+
+@see scripts/stage-0-run.ts (docstring no topo do arquivo tem o mapeamento
+completo seção-a-seção do que está coberto vs. delegado)
+
+---
+
+### 0a. Parâmetros de entrada (→ coberto por `stage-0-run.ts`, ver bloco acima; texto abaixo é referência/fallback)
 
 - `edition_date` recebido no formato `AAMMDD` (ex: `260423`).
 - **Resolver `{EDITION_DIR}` (#2463/#3025/#3530) — ANTES de criar qualquer diretório.** Diretório REAL da edição no disco: encontra a edição existente (flat legado OU nested novo, o que já estiver lá — resume-safe) ou, se ainda não existe, retorna o path NESTED (`data/editions/{AAMM}/{AAMMDD}/`, o layout que toda edição nova passa a usar a partir daqui). **Nunca** montar `data/editions/` + `{edition_date}` à mão daqui em diante — usar `{EDITION_DIR}` em todo path deste arquivo e dos Stages 1-3:
@@ -64,7 +144,7 @@ Antes de iniciar qualquer etapa, listar arquivos em `{EDITION_DIR}/`. **Pipeline
 
 Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101). Em seguida, **renomear** (não deletar) `{EDITION_DIR}` para `{EDITION_DIR}-backup-{timestamp}/` (sibling, mesmo parent — funciona igual em flat ou nested) antes de começar.
 
-### 0b-bis. Auto-capture newsletters (background) (#1514, #1518)
+### 0b-bis. Auto-capture newsletters (background) (#1514, #1518) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Captura newsletters de IA do inbox pessoal do editor antes do inbox drain.
 Substitui o forward manual que o editor fazia diariamente.
@@ -106,7 +186,7 @@ Substitui o forward manual que o editor fazia diariamente.
 
 Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth expirado, sem acesso à rede): skip do passo (logar `info "0b-bis skipped: fetch-newsletter-threads falhou"`). Esse é o **único** skip legítimo (#1756). **Não usar `mcp__claude_ai_Gmail__get_thread` como fallback** — o volume de HTML no contexto é o problema que este corte resolve. **Não é mais silencioso pro resto da pipeline (#2878):** o próprio script grava `_internal/.capture-newsletter-failed.json` (`{ failed: true, error, at }`) antes de sair 1 — `inject-inbox-urls.ts` (Stage 1 §1h) lê esse sentinel e propaga `capture_failed`/`capture_error` pro marker `.marker-inject-inbox-urls.json`. Sem isso, `captured_newsletter_count: 0` era indistinguível de "editor genuinamente não enviou newsletter nenhuma" — a coverage line (Stage 2) e o gate do Stage 4 checam esse sinal e trocam "X submissões" por um aviso `⚠️ contagem de submissões indisponível` em vez de afirmar "0 submissões" (histórico: `docs/stage-0-incident-history.md` §0b-bis).
 
-### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
+### 0c. Inicialização de log + stage-status (#1217 — removed cost.md) (→ os 3 checks HTTPS/token cobertos por `stage-0-run.ts`; os 3 pings MCP continuam manuais, ver passo 2 do bloco acima; texto abaixo é referência/fallback)
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Pre-flight unificado de travas externas (#2358) — rodar ANTES dos checks individuais.** Agrega todos os checks de autenticação externos num único resumo de prontidão antes de gastar tokens em pesquisa. Travas que vencem silenciosamente (OAuth expirado, token CF inválido, API key ausente) são detectadas aqui, não no meio do stage que as usa:
@@ -180,7 +260,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   ```
   Cost/tokens/models opcionais — campos vazios viram `-` no MD.
 
-### 0d. Refresh automático de dedup (#895)
+### 0d. Refresh automático de dedup (#895) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Rodar `scripts/refresh-dedup.ts` via Bash. O script:
 - Usa a Beehiiv REST API direto (token em `BEEHIIV_API_KEY`); sem dependência de MCP ou subagente (#895; histórico: `docs/stage-0-incident-history.md` §0d).
@@ -199,7 +279,7 @@ npx tsx scripts/refresh-dedup.ts
 
 **Publicação manual (sem Stage 5 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 5 do pipeline, `data/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
-### 0d.bis Maintain `valid_editions` window do Worker (#1086, #1233)
+### 0d.bis Maintain `valid_editions` window do Worker (#1086, #1233) (→ coberto por `stage-0-run.ts`, incluindo o HALT obrigatório; referência/fallback)
 
 O Worker `poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra subscribers continuarem podendo votar em edições arquivadas (clicar em emails de até 7 dias atrás), manter no set as **últimas 7 dias de edições publicadas** + edição corrente:
 
@@ -232,7 +312,7 @@ Em `auto_approve = true` (ex: `/diaria-edicao --no-gates`), mesmo halt — auto-
 
 > **#1186:** `inject-poll-sig` (§0d.ter) foi removido — o diário usa modo merge-tag (URL de voto sem `&sig=`). Não há mais patch de `poll_sig` por subscriber no Stage 0.
 
-### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6)
+### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6) (→ coberto por `stage-0-run.ts` — o script já roda os 4 em paralelo via `Promise.all`; referência/fallback)
 
 Os passos **0e** (merge-local-pending), **0f** (sync-eia-used), **0g** (check-dedup-freshness) e **0h** (build-link-ctr) são todos independentes entre si — alguns dependem do output do `refresh-dedup` (passo 0d) e outros de nada — mas **nenhum depende dos outros 3**. Dispará-los como uma batelada paralela: **uma única mensagem com 4 Bash calls** (não 4 mensagens sequenciais).
 
@@ -242,7 +322,7 @@ Top-level Claude pode disparar múltiplas chamadas Bash em paralelo na mesma men
 
 ---
 
-### 0e. Merge de edições locais pending-publish (#325)
+### 0e. Merge de edições locais pending-publish (#325) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Para evitar que URLs de edições aprovadas localmente mas ainda não publicadas no Beehiiv vazem pra edição atual:
 ```bash
@@ -267,7 +347,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
   --message "merge-local-pending falhou ou não existe — URLs de edições pendentes podem não ter sido bloqueadas no dedup"
 ```
 
-### 0f. Sync É IA? usado (#369)
+### 0f. Sync É IA? usado (#369) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Roda em paralelo com 0e/0g/0h (per nota da seção 0e–0h acima). Independente dos outros — só lê `data/editions/*/_internal/01-eia-meta.json`:
 ```bash
@@ -275,7 +355,7 @@ npx tsx scripts/sync-eia-used.ts --editions-dir data/editions/
 ```
 Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added > 0`, logar `info`. Falha → logar `warn`, nunca bloqueia pipeline.
 
-### 0g. Pre-flight de freshness do dedup (#230)
+### 0g. Pre-flight de freshness do dedup (#230) (→ detecção coberta por `stage-0-run.ts`, que devolve isto em `pendingHumanDecision`; a decisão [c/a] continua sendo do editor; referência/fallback)
 
 Roda em paralelo com 0e/0f/0h (per nota da seção 0e–0h acima):
 ```bash
@@ -290,7 +370,7 @@ Se o script falhar:
 
 Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`).
 
-### 0h. Link CTR refresh (3 sub-passos: sync, enrich-via-MCP, build)
+### 0h. Link CTR refresh (3 sub-passos: sync, enrich-via-MCP, build) (→ 0h.1/0h.3 cobertos por `stage-0-run.ts`; 0h.2 (dispatch do subagent) vira `pendingAgentDispatch` no JSON — ver bloco acima; referência/fallback)
 
 Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequência de 3 sub-passos.
 
@@ -342,7 +422,7 @@ Lê o cache enriquecido e regenera `data/link-ctr-table.csv`.
 
 **Logging**: 0h.1 e 0h.3 silenciosos (warn-only). 0h.2 loga `info` quando processa posts, `warn` se MCP timeout/error em algum post (continua nos próximos) OU se `verify-clicks-enrichment.ts` (#4732) encontrar divergência entre o summary do agent e o disco. Falha de qualquer sub-passo não aborta pipeline.
 
-### 0i. Audience profile refresh
+### 0i. Audience profile refresh (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Sequencial — **depende de 0h** (consome `data/link-ctr-table.csv`). Aguardar 0h completar antes de disparar:
 ```bash
@@ -356,7 +436,7 @@ npx tsx scripts/snapshot-audience-profile.ts --edition-dir {EDITION_DIR}
 ```
 Copia `context/audience-profile.md` (que acabou de ser regerado) para `{EDITION_DIR}/_internal/audience-profile-snapshot.md`. O profile é regerado toda edição e pode derivar rápido (medido: 9 de 17 posições em 5 dias) — sem esse snapshot não dá pra saber retroativamente qual tabela de CTR/audiência o `scorer`/`scorer-chunk` desta edição efetivamente leu. Fail-soft (mesmo padrão do `update-audience.ts` acima) — sai 0 e loga warning se o profile fonte não existir; nunca aborta o Stage 0.
 
-### 0j. Pending issue drafts (#90)
+### 0j. Pending issue drafts (#90) (→ detecção coberta por `stage-0-run.ts`, que devolve isto em `pendingHumanDecision`; a decisão s/n/d continua sendo do editor; referência/fallback)
 
 Check drafts do `auto-reporter` órfãos de edições anteriores:
 ```bash
@@ -377,7 +457,7 @@ Processar agora? [s/n/d]
 - Se `n`: logar `info "deferred {count} pending drafts"`.
 - Se `d`: gravar `_internal/issues-reported.json` com `dismissed: true` + array vazio cobrindo todos signals para cada edição pendente.
 
-### 0k. Verify FB + LinkedIn/Instagram/Threads + Twitter da edição anterior (#78, #5766, #5801)
+### 0k. Verify FB + LinkedIn/Instagram/Threads + Twitter da edição anterior (#78, #5766, #5801) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766) Twitter via API GraphQL do Buffer (`api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`. Não bloqueia — credenciais/Worker/token ausentes logam `warn` e seguem.
 ```bash
@@ -388,7 +468,7 @@ if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
 [ -n "$PREV" ] && [ -n "$BUFFER_ACCESS_TOKEN" ] && (npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal)")
 ```
 
-### 0l. Verificação pré-edição de posts da edição anterior (#366)
+### 0l. Verificação pré-edição de posts da edição anterior (#366) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
 Sempre roda, após Verify FB. Busca `_internal/06-social-published.json` da edição mais recente. **#3530:** reusa `find-last-edition-with-fb.ts` (já disk-aware desde #3483/#3484 — `enumerateEditionDirs()` internamente, cobre flat legado e nested) em vez de `readdirSync('data/editions')` cru, que só varre 1 nível e perderia edições no layout nested (`data/editions/{AAMM}/{AAMMDD}/`), tratando a mais recente como inexistente. Mesmo critério de "tem o arquivo" do 0k (o script já filtra por isso, incluindo fallback pra raiz em edições anteriores ao #158 via `existsInEditionDir`) — mesmo comportamento de antes (só `_internal/`), sem reimplementar a lógica de enumeração inline:
 ```bash
@@ -499,7 +579,7 @@ Se Gmail MCP indisponível: pular silenciosamente (logar `info "0-replies skippe
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").
 
-### 0z. Pre-flight invariants (#1007 Fase 1)
+### 0z. Pre-flight invariants (#1007 Fase 1) (→ coberto por `stage-0-run.ts`, junto com o fechamento do stage e a captura de custo; referência/fallback)
 
 Última verificação antes de gastar tokens na pesquisa. Valida env vars críticas (BEEHIIV_API_KEY, Drive credentials, past-editions-raw shape):
 
