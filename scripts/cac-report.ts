@@ -51,6 +51,7 @@ import {
   buildNormalizedOrigemIndex,
   computeMonthBudgetUsage,
   MONTHLY_BUDGET_FLOOR_BRL,
+  CHANNEL_GROUP_KEYS,
   type CacReport,
   type CacRow,
   type OrigemEntryFields,
@@ -120,6 +121,14 @@ export interface CacReportCliArgs {
   desde: string | null;
   /** `--ate AAAA-MM-DD` cru, como passado (INCLUSIVO — o dia inteiro entra) — `null` = sem borda superior. */
   ate: string | null;
+  /** `--strict` (#5860): quando `true`, gasto não atribuído (`report.unattributedSpend`
+   *  não-vazio) vira exit code 1 em vez do default 0 — acionável no momento
+   *  em que acontece (cron/task agendada falha visivelmente), não só um
+   *  aviso em stderr de uma execução antiga que ninguém vai reler. Default
+   *  `false` pra não quebrar callers/tasks existentes que já toleram gasto
+   *  não atribuído como aviso — opt-in deliberado (a issue permite as duas
+   *  formas: exit code sempre diferente de 0, OU uma flag que force isso). */
+  strict: boolean;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -132,6 +141,7 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     register: !hasFlag(argv, "no-register"),
     desde: getStringArg(argv, "desde") ?? null,
     ate: getStringArg(argv, "ate") ?? null,
+    strict: hasFlag(argv, "strict"),
   };
 }
 
@@ -218,12 +228,13 @@ export function formatCacReportMarkdown(
     );
   }
   lines.push("");
-  lines.push(
-    "| Canal | Sub-canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",
-  );
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
 
-  for (const row of report.rows) {
+  const rowTableHeader = [
+    "| Canal | Sub-canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+  ];
+
+  const rowToTableLine = (row: CacRow): string => {
     const subcanal = row.spend.subcanal ?? "—";
     if (row.kind === "measured") {
       const versusBase =
@@ -231,14 +242,62 @@ export function formatCacReportMarkdown(
           ? `${row.aberturaAgregada >= report.base.aberturaAgregada ? "▲" : "▼"} ${fmtPct(Math.abs(row.aberturaAgregada - report.base.aberturaAgregada) as number)}`
           : "—";
       const degradedFlag = row.degradado === true ? " ⚠ degradou" : "";
-      lines.push(
-        `| ${row.canal} | ${subcanal} | ${fmtBrl(row.custoPorLeitor)} | ${row.leitores} | ${row.ativos} | ${row.cadastros} | ${fmtPct(row.aberturaAgregada)}${degradedFlag} | ${versusBase} | ${row.amostraConsiderada} | ${amostraQualifier(row) || "—"} | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
-      );
-    } else {
-      lines.push(
-        `| ${row.canal} | ${subcanal} | ${fmtBrl(row.range.custoPorLeitorMin)}–${fmtBrl(row.range.custoPorLeitorMax)} | ${row.range.leitoresMin}–${row.range.leitoresMax} | ${row.range.ativosMin}–${row.range.ativosMax} | — | — | — | — | estimado (não medido) | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`,
-      );
+      return `| ${row.canal} | ${subcanal} | ${fmtBrl(row.custoPorLeitor)} | ${row.leitores} | ${row.ativos} | ${row.cadastros} | ${fmtPct(row.aberturaAgregada)}${degradedFlag} | ${versusBase} | ${row.amostraConsiderada} | ${amostraQualifier(row) || "—"} | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`;
     }
+    return `| ${row.canal} | ${subcanal} | ${fmtBrl(row.range.custoPorLeitorMin)}–${fmtBrl(row.range.custoPorLeitorMax)} | ${row.range.leitoresMin}–${row.range.leitoresMax} | ${row.range.ativosMin}–${row.range.ativosMax} | — | — | — | — | estimado (não medido) | ${fmtBrl(row.spend.valor)} | ${row.spend.mes} | ${row.spend.fonte} |`;
+  };
+
+  // Ranking principal (#5859) — só canais com custo por leitor válido E
+  // gasto real (> 0). "Sem dado suficiente" e "Gasto zero" são blocos
+  // PRÓPRIOS logo abaixo, nunca misturados/indistinguíveis dentro deste
+  // ranking ordenado.
+  lines.push(...rowTableHeader);
+  if (report.rankedRows.length > 0) {
+    for (const row of report.rankedRows) lines.push(rowToTableLine(row));
+  } else {
+    lines.push("| _nenhum canal ranqueável (todos sem dado ou com gasto zero — ver blocos abaixo)_ | | | | | | | | | | | | |");
+  }
+
+  if (report.noDataRows.length > 0) {
+    lines.push("");
+    lines.push("### Sem dado suficiente");
+    lines.push("");
+    lines.push("Canal medido, mas sem nenhum leitor no snapshot ainda — não é \"caríssimo\", é \"sem dado\" (#5859).");
+    lines.push("");
+    lines.push(...rowTableHeader);
+    for (const row of report.noDataRows) lines.push(rowToTableLine(row));
+  }
+
+  if (report.zeroSpendRows.length > 0) {
+    lines.push("");
+    lines.push("### Gasto zero");
+    lines.push("");
+    lines.push(
+      "Canal com leitores no snapshot mas gasto registrado R$ 0,00 (ex: linha placeholder antes da campanha rodar) — " +
+        "custo zero não é eficiência infinita, então nunca entra no ranking acima (#5859).",
+    );
+    lines.push("");
+    lines.push(...rowTableHeader);
+    for (const row of report.zeroSpendRows) lines.push(rowToTableLine(row));
+  }
+
+  if (report.unattributedSpend.length > 0) {
+    lines.push("");
+    lines.push("## Gasto não atribuído");
+    lines.push("");
+    lines.push(
+      "Linha(s) de `spend.csv` cujo canal não bateu com nenhum nome reconhecido — o gasto NUNCA vira uma linha " +
+        "`measured`/n=0 fantasma (indistinguível de \"canal medido, zero leitores\"); fica aqui até o nome ser corrigido " +
+        "no CSV ou uma spec nova entrar em `CHANNEL_KEY_SPECS` (#5860).",
+    );
+    lines.push("");
+    lines.push("| Canal (como veio em spend.csv) | Gasto | Mês | Fonte |");
+    lines.push("|---|---|---|---|");
+    for (const entry of report.unattributedSpend) {
+      lines.push(`| ${entry.label} | ${fmtBrl(entry.spend.valor)} | ${entry.spend.mes} | ${entry.spend.fonte} |`);
+    }
+    lines.push("");
+    lines.push(`Nomes canônicos disponíveis: ${Object.keys(CHANNEL_GROUP_KEYS).join(", ")}, ou exatamente "Beehiiv Boosts".`);
   }
 
   // Funil por braço (§5 / §8.8 do protocolo 2608). Tabela separada de propósito:
@@ -381,6 +440,19 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
     } else {
       console.error(`[cac-report] registrado: ${reportId("cac", id)} → /relatorios/${reportId("cac", id)}`);
     }
+  }
+
+  // #5860 item 2: com --strict, gasto não atribuído é acionável NA HORA
+  // (exit code diferente de 0) em vez de só um aviso em stderr que ninguém
+  // relê depois. Checado por ÚLTIMO — nunca impede o relatório de ser
+  // gerado/registrado, só sinaliza a falha pro caller (cron/task agendada)
+  // depois que todo o resto já rodou.
+  if (args.strict && report.unattributedSpend.length > 0) {
+    console.error(
+      `[cac-report] --strict: ${report.unattributedSpend.length} linha(s) de gasto não atribuído em spend.csv ` +
+        `(${report.unmappedChannels.join(", ")}) — corrija o nome do canal ou cadastre uma spec nova.`,
+    );
+    process.exitCode = 1;
   }
 }
 

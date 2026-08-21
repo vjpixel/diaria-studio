@@ -80,7 +80,10 @@ function renderSummary(data) {
   const tiles = [];
 
   // 1) Qual canal traz leitor mais barato, e com que n?
-  const measured = report ? report.rows.filter((r) => r.kind === "measured" && r.custoPorLeitor != null) : [];
+  // #5859: usa rankedRows (custo válido E gasto > 0) — nunca `rows` cru, que
+  // misturava "sem dado" (custoPorLeitor null) e "gasto zero" (0,00 falso
+  // "mais barato") com canal genuinamente medido e eficiente.
+  const measured = report ? report.rankedRows.filter((r) => r.kind === "measured") : [];
   if (measured.length > 0) {
     const cheapest = measured.reduce((a, b) => (a.custoPorLeitor <= b.custoPorLeitor ? a : b));
     tiles.push(
