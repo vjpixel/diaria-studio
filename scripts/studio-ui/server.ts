@@ -453,7 +453,7 @@ const PUBLIC_DIR = resolve(__dirname, "public");
 
 const AAMMDD_RE = /^[0-9]{6}$/;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body, null, 2);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -782,7 +782,7 @@ function handleReportContent(rootDir: string, id: string, res: ServerResponse): 
  * um corpo absurdo (ou um cliente malicioso/travado) segure memória do
  * processo indefinidamente. Rejeita (`reject`) assim que o teto é excedido —
  * não espera o `end` do stream. */
-function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string> {
+export function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
