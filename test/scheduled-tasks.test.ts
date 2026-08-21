@@ -766,3 +766,63 @@ describe("#5754 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, N�
     assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
   });
 });
+
+describe("#5807 — Diaria-Sunset-Weekly registrada, semanal, DESLIGADA DE PROPÓSITO (não 'ainda não armada')", () => {
+  it("está presente no registro, com o step apontando pro sunset-dead-subscribers.ts --push, domingo 09:20", () => {
+    const t = getScheduledTaskByName("Diaria-Sunset-Weekly");
+    assert.ok(t, "Diaria-Sunset-Weekly ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/sunset-dead-subscribers.ts"],
+    );
+    assert.deepEqual(t!.steps[0].args, ["--push"]);
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 20 });
+  });
+
+  it("enabled: false — a #5849 (relacionada) ainda não resolveu o trade-off de receivedMin=20 contra medição de campanha", () => {
+    const t = getScheduledTaskByName("Diaria-Sunset-Weekly")!;
+    assert.equal(t.enabled, false, "task deve nascer DESLIGADA até a #5849 ser resolvida — ver docs/scheduled-tasks-registry.md");
+  });
+
+  it("guard.requiredFile aponta pro mesmo store de Diaria-Brevo-Diaria-Evaluate (sinal de junction data/ montada)", () => {
+    const t = getScheduledTaskByName("Diaria-Sunset-Weekly")!;
+    assert.equal(t.guard?.requiredFile, "brevo-diaria/contacts.json");
+  });
+
+  it("domingo 09:20 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
+    const t = getScheduledTaskByName("Diaria-Sunset-Weekly")!;
+    assert.equal(t.schedule.kind, "weekly");
+    const mine = t.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+
+    for (const other of SCHEDULED_TASKS) {
+      if (other.name === t.name) continue;
+      if (other.schedule.kind === "weekly" && other.schedule.dayOfWeek === mine.dayOfWeek) {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com ${other.name} (${mine.dayOfWeek} ${mine.hour}:${mine.minute})`,
+        );
+      }
+      if (other.schedule.kind === "interval" && other.schedule.hours > 1) {
+        assert.ok(
+          mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
+          `09:20 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
+        );
+      }
+      // dailies também rodam domingo — checar colisão com as tasks daily do
+      // cluster matinal 09:00-09:50 já registrado.
+      if (other.schedule.kind === "daily") {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com a daily ${other.name} (09:20, também roda domingo)`,
+        );
+      }
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Sunset-Weekly")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+});

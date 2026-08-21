@@ -67,15 +67,42 @@
  * (`receivedMin >= 20` edições recebidas) — não há necessidade de
  * verificação MV antes de reingerir no canal Brevo.
  *
+ * ## Rodada semanal contínua (#5807, reescopo do comentário do editor 20/08 20:56)
+ *
+ * `--push` sozinho AGORA É a rodada semanal completa — não existe um modo
+ * "weekly-round" separado, pra não duplicar superfície: (a) garante snapshot
+ * fresco (`ensureFreshSnapshot`, dispara `backup-beehiiv.ts` se o mais
+ * recente passar de `SNAPSHOT_MAX_AGE_DAYS` — só quando `--snapshot` não foi
+ * passado explicitamente, pin manual nunca aciona refresh automático); (b)
+ * avalia TODOS os ativos maduros contra `isDeadSubscriber` (já existia); (c)
+ * exclui quem já passou pelo store `brevo_diaria` (`excludeAlreadyInStore` —
+ * evita reprocessar quem já foi ingerido/promovido/suprimido por este script
+ * ou por `sync-pending-to-brevo.ts`, mesmo padrão de dedup de
+ * `computeContactsToIngest`) além do guard de consentimento já existente
+ * (seleção só considera `status=active`, então descadastro orgânico nunca
+ * entra); (d) aplica os guards de blast radius + folga de fila (já
+ * existiam); (e) grava 1 linha em `data/brevo-diaria/sunset-rounds.jsonl`
+ * por rodada (`appendSunsetRoundLog`) com avaliados/elegíveis/movidos/pulados
+ * + motivo — auditoria append-only, mesmo padrão de `sunset-log.jsonl` mas
+ * no nível da RODADA, não do contato individual.
+ *
+ * A task agendada (`Diaria-Sunset-Weekly`, `scripts/lib/scheduled-tasks.ts`)
+ * nasce `enabled: false` — a #5849 (relacionada, NÃO resolvida) achou que
+ * `receivedMin=20` não separa "morto de verdade" de "recém-chegado dentro da
+ * janela de medição do teste 2608" (#5734/#4556); ligar a execução automática
+ * antes dessa decisão contaminaria medição de campanha em curso. O mecanismo
+ * está pronto; o interruptor está desligado até o editor resolver a #5849.
+ *
  * ## Uso
  *
  *   npx tsx scripts/sunset-dead-subscribers.ts                          # dry-run (default)
  *   npx tsx scripts/sunset-dead-subscribers.ts --snapshot 2026-08-16    # snapshot específico
- *   npx tsx scripts/sunset-dead-subscribers.ts --push                   # aplica (unsubscribe Beehiiv + funil Brevo)
+ *   npx tsx scripts/sunset-dead-subscribers.ts --push                   # rodada completa (fresh snapshot + unsubscribe Beehiiv + funil Brevo + log de rodada)
  *   npx tsx scripts/sunset-dead-subscribers.ts --push --force-blast-radius
  */
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -100,6 +127,9 @@ import { loadBrevoDiariaTarget } from "./lib/brevo-diaria-target.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SUNSET_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-log.jsonl");
+/** Log append-only por RODADA (não por contato — ver {@link SunsetLogEntry}
+ *  pra isso) — item (e) do reescopo #5807. */
+export const DEFAULT_SUNSET_ROUND_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-rounds.jsonl");
 
 // ---------------------------------------------------------------------------
 // Limiares (spec #5807)
@@ -255,6 +285,41 @@ export function evaluateBlastRadiusGuard(
   const ratio = matureActiveCount > 0 ? selectedCount / matureActiveCount : 0;
   const blocked = !force && ratio > threshold;
   return { blocked, selectedCount, matureActiveCount, ratio };
+}
+
+/** Resultado de {@link excludeAlreadyInStore}. */
+export interface ExcludeAlreadyInStoreResult {
+  toConsider: SunsetInput[];
+  excludedEmails: string[];
+}
+
+/**
+ * Pura — exclui da seleção quem já está no store `brevo_diaria`
+ * (`data/brevo-diaria/contacts.json`), **qualquer status** (`in_brevo`,
+ * `promoted_beehiiv`, `suppressed`, `unsubscribed`, `bounced`) — se o
+ * contato já passou por este funil (por este script ou por
+ * `sync-pending-to-brevo.ts`), reprocessar seria uma reingestão duplicada na
+ * Brevo e um 2º `unsubscribe` inofensivo mas desperdiçado na Beehiiv. Mesmo
+ * padrão de dedup de `computeContactsToIngest` (`sync-pending-to-brevo.ts`):
+ * `known = new Set(store.contacts.map(email))`.
+ *
+ * Item (c) do reescopo #5807 — parte "e quem já passou pelo store
+ * `brevo_diaria`" (a outra metade, unsubscribe orgânico, já é coberta pelo
+ * filtro `status === "active"` de {@link selectDeadSubscribers}: quem se
+ * descadastrou nunca chega a `status=active` no snapshot).
+ */
+export function excludeAlreadyInStore(
+  selected: readonly SunsetInput[],
+  store: BrevoDiariaStore,
+): ExcludeAlreadyInStoreResult {
+  const known = new Set(store.contacts.map((c) => normalizeEmail(c.email)));
+  const toConsider: SunsetInput[] = [];
+  const excludedEmails: string[] = [];
+  for (const s of selected) {
+    if (known.has(normalizeEmail(s.email))) excludedEmails.push(s.email);
+    else toConsider.push(s);
+  }
+  return { toConsider, excludedEmails };
 }
 
 /** Fallback se `daily_send_cap` não estiver em `platform.config.json` — mesmo
@@ -518,6 +583,120 @@ export function formatDryRunReport(selection: SunsetSelectionResult): string {
 }
 
 // ---------------------------------------------------------------------------
+// Rodada semanal — snapshot fresco (#5807, item a do reescopo)
+// ---------------------------------------------------------------------------
+
+/** Mesmo limiar de `beehiiv-backup-staleness-alarm.ts::MAX_AGE_DAYS` — o
+ *  snapshot semanal (`Diaria-Beehiiv-Backup`, domingo 03:00) já alarma
+ *  separadamente se passar disso; este script usa o MESMO número pra não
+ *  inventar um 2º critério de "velho demais" pro mesmo dado. */
+export const SNAPSHOT_MAX_AGE_DAYS = 7;
+
+/** Idade em dias de um snapshot `YYYY-MM-DD` em relação a `now` — parse como
+ *  meia-noite UTC (mesma disciplina de `snapshotDateToEpochSeconds`,
+ *  `scripts/lib/acquisition-health.ts`: comparação de DATA, não de
+ *  timestamp-com-hora). */
+export function computeSnapshotAgeDays(snapshotDate: string, now: Date): number {
+  const snapshotMs = Date.parse(`${snapshotDate}T00:00:00Z`);
+  if (!Number.isFinite(snapshotMs)) return Infinity;
+  const diffMs = now.getTime() - snapshotMs;
+  return diffMs / (24 * 60 * 60 * 1000);
+}
+
+export type RunBackupFn = () => Promise<void> | void;
+
+/** I/O real (default de {@link ensureFreshSnapshot} em produção) — dispara
+ *  `scripts/backup-beehiiv.ts` como subprocesso síncrono. Injetável por
+ *  `runBackup` em todo caminho de teste — NUNCA invocado por este módulo
+ *  fora de `--push` (guard de publicação: só a rodada real dispara backup
+ *  ao vivo, dry-run nunca toca a API Beehiiv). */
+export function defaultRunBackup(): void {
+  execFileSync("npx", ["tsx", resolve(ROOT, "scripts/backup-beehiiv.ts")], {
+    stdio: "inherit",
+    cwd: ROOT,
+  });
+}
+
+export interface EnsureFreshSnapshotResult {
+  triggered: boolean;
+  reason: string;
+  snapshotDateBefore: string | null;
+  snapshotDateAfter: string | null;
+}
+
+/**
+ * Item (a) do reescopo #5807: garante que exista um snapshot utilizável com
+ * idade ≤ `maxAgeDays` antes da rodada avaliar candidatos — dispara
+ * `runBackup()` (I/O real) se o mais recente estiver ausente ou velho demais.
+ * Não lê `subscribers.jsonl` em si — só a DATA do snapshot mais recente
+ * (`latestSnapshotDate`), então não precisa parsear o arquivo inteiro pra
+ * decidir se precisa de refresh.
+ */
+export async function ensureFreshSnapshot(params: {
+  root: string;
+  runBackup: RunBackupFn;
+  maxAgeDays?: number;
+  now?: Date;
+}): Promise<EnsureFreshSnapshotResult> {
+  const { root, runBackup, maxAgeDays = SNAPSHOT_MAX_AGE_DAYS, now = new Date() } = params;
+  const before = latestSnapshotDate(root);
+  const ageDays = before ? computeSnapshotAgeDays(before, now) : Infinity;
+
+  if (before && ageDays <= maxAgeDays) {
+    return {
+      triggered: false,
+      reason: `snapshot ${before} tem ${ageDays.toFixed(1)}d — dentro do limite (<= ${maxAgeDays}d), sem refresh.`,
+      snapshotDateBefore: before,
+      snapshotDateAfter: before,
+    };
+  }
+
+  await runBackup();
+  const after = latestSnapshotDate(root);
+  return {
+    triggered: true,
+    reason: before
+      ? `snapshot ${before} tinha ${ageDays.toFixed(1)}d (> ${maxAgeDays}d) — backup disparado.`
+      : `nenhum snapshot encontrado em ${root} — backup disparado.`,
+    snapshotDateBefore: before,
+    snapshotDateAfter: after,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Rodada semanal — log append-only da RODADA (#5807, item e do reescopo)
+// ---------------------------------------------------------------------------
+
+/** 1 linha por RODADA (dry-run ou push) — distinto de {@link SunsetLogEntry},
+ *  que é 1 linha por CONTATO efetivamente movido. */
+export interface SunsetRoundLogEntry {
+  round_at: string;
+  push: boolean;
+  snapshot_date: string;
+  snapshot_refresh: EnsureFreshSnapshotResult | null;
+  mature_active_count: number;
+  eligible_count: number;
+  already_in_store_count: number;
+  considered_count: number;
+  blast_radius: { blocked: boolean; ratio: number; threshold: number };
+  queue: { current_active: number; cap: number; available_slots: number } | null;
+  applied_count: number;
+  failed_count: number;
+  warned_count: number;
+  skipped: { email: string; reason: string }[];
+}
+
+/** I/O — grava 1 linha jsonl append-only em `path` (cria o diretório pai se
+ *  necessário). Mesmo padrão de {@link appendSunsetLog}, nível de RODADA. */
+export function appendSunsetRoundLog(
+  entry: SunsetRoundLogEntry,
+  path: string = DEFAULT_SUNSET_ROUND_LOG_PATH,
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, JSON.stringify(entry) + "\n", "utf8");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -528,6 +707,15 @@ async function main(): Promise<void> {
   const force = hasFlag(argv, "force-blast-radius");
   const backupRoot = getStringArg(argv, "root") ?? DEFAULT_BACKUP_ROOT;
   const snapshotArg = getStringArg(argv, "snapshot");
+
+  // #5807 item (a): rodada com --push garante snapshot fresco ANTES de ler
+  // qualquer coisa — pin explícito via --snapshot nunca aciona refresh
+  // automático (o operador pediu uma data específica de propósito).
+  let snapshotRefresh: EnsureFreshSnapshotResult | null = null;
+  if (push && !snapshotArg) {
+    snapshotRefresh = await ensureFreshSnapshot({ root: backupRoot, runBackup: defaultRunBackup });
+    log(snapshotRefresh.reason);
+  }
 
   const date = snapshotArg ?? latestSnapshotDate(backupRoot);
   if (!date) {
@@ -550,7 +738,33 @@ async function main(): Promise<void> {
 
   if (!push) return;
 
-  const guard = evaluateBlastRadiusGuard(selection.selected.length, selection.mature_active_count, force);
+  // #5807 item (c): exclui quem já passou pelo store brevo_diaria (qualquer
+  // status) ANTES de qualquer guard — evita reprocessar um contato já
+  // movido/avaliado por este script ou por sync-pending-to-brevo.ts.
+  let store = readStore(DEFAULT_STORE_PATH);
+  const { toConsider, excludedEmails } = excludeAlreadyInStore(selection.selected, store);
+  if (excludedEmails.length > 0) {
+    log(
+      `${excludedEmails.length} candidato(s) já presente(s) no store brevo_diaria — excluído(s) desta rodada ` +
+        "(já movidos/avaliados anteriormente).",
+    );
+  }
+
+  const round = {
+    round_at: new Date().toISOString(),
+    push: true,
+    snapshot_date: date,
+    snapshot_refresh: snapshotRefresh,
+    mature_active_count: selection.mature_active_count,
+    eligible_count: selection.selected.length,
+    already_in_store_count: excludedEmails.length,
+    considered_count: toConsider.length,
+  };
+  const alreadyInStoreSkipped = excludedEmails.map((email) => ({ email, reason: "already_in_store" }));
+
+  // #5807 item (d): guard de blast radius avalia os CONSIDERADOS desta
+  // rodada (pós-exclusão do store) — quem já foi processado não é risco novo.
+  const guard = evaluateBlastRadiusGuard(toConsider.length, selection.mature_active_count, force);
   if (guard.blocked) {
     log(
       `RECUSANDO o --push inteiro (guard de blast radius): ${guard.selectedCount} sunset(s) de ` +
@@ -558,6 +772,18 @@ async function main(): Promise<void> {
         `${(BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%) — nenhuma mutação foi aplicada. Investigue antes de usar ` +
         "--force-blast-radius (decisão consciente do editor, sempre logada).",
     );
+    appendSunsetRoundLog({
+      ...round,
+      blast_radius: { blocked: true, ratio: guard.ratio, threshold: BLAST_RADIUS_THRESHOLD },
+      queue: null,
+      applied_count: 0,
+      failed_count: 0,
+      warned_count: 0,
+      skipped: [
+        ...alreadyInStoreSkipped,
+        ...toConsider.map((s) => ({ email: s.email, reason: "blast_radius_blocked" })),
+      ],
+    });
     process.exitCode = 2;
     return;
   }
@@ -570,11 +796,21 @@ async function main(): Promise<void> {
   const brevoTarget = loadBrevoDiariaTarget();
   if (!brevoTarget.ok) {
     log(`ERRO: ${brevoTarget.reason} — nenhuma mutação aplicada.`);
+    appendSunsetRoundLog({
+      ...round,
+      blast_radius: { blocked: false, ratio: guard.ratio, threshold: BLAST_RADIUS_THRESHOLD },
+      queue: null,
+      applied_count: 0,
+      failed_count: 0,
+      warned_count: 0,
+      skipped: [
+        ...alreadyInStoreSkipped,
+        ...toConsider.map((s) => ({ email: s.email, reason: `brevo_target_unavailable: ${brevoTarget.reason}` })),
+      ],
+    });
     process.exitCode = 1;
     return;
   }
-
-  let store = readStore(DEFAULT_STORE_PATH);
 
   // Cap da fila compartilhada com sync-pending-to-brevo.ts (item 4 da spec —
   // "respeitando o fluxo existente... cap da fila"). Lido de
@@ -591,18 +827,21 @@ async function main(): Promise<void> {
   }
   const currentActiveCount = computeCurrentActiveCount(store.contacts);
   const availableSlots = computeAvailableSlots(currentActiveCount, cap);
-  const toApply = applyQueueCapGate(selection.selected, availableSlots);
+  const toApply = applyQueueCapGate(toConsider, availableSlots);
+  const toApplySet = new Set(toApply);
+  const queueCapSkipped = toConsider.filter((s) => !toApplySet.has(s));
   log(`fila compartilhada (sync-pending-to-brevo.ts): ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s).`);
-  if (toApply.length < selection.selected.length) {
+  if (queueCapSkipped.length > 0) {
     log(
-      `${selection.selected.length - toApply.length} candidato(s) NÃO aplicado(s) nesta rodada por falta de slot na ` +
-        `fila (permanecem elegíveis pra próxima rodada — dedup pelo store).`,
+      `${queueCapSkipped.length} candidato(s) NÃO aplicado(s) nesta rodada por falta de slot na fila ` +
+        "(permanecem elegíveis pra próxima rodada — dedup pelo store).",
     );
   }
 
   let applied = 0;
   let failed = 0;
   let warned = 0;
+  const pushFailedSkipped: { email: string; reason: string }[] = [];
   for (const s of toApply) {
     const { result, nextStore } = await applySunsetOne({
       input: s,
@@ -633,10 +872,24 @@ async function main(): Promise<void> {
     } else {
       failed++;
       log(`  FALHA em ${result.email}: ${result.error}`);
+      pushFailedSkipped.push({ email: result.email, reason: `push_failed: ${result.error}` });
     }
   }
   writeStore(store, DEFAULT_STORE_PATH);
   log(`push concluído: ${applied} sunset(s) aplicado(s), ${failed} falha(s), ${warned} com pendência.`);
+  appendSunsetRoundLog({
+    ...round,
+    blast_radius: { blocked: false, ratio: guard.ratio, threshold: BLAST_RADIUS_THRESHOLD },
+    queue: { current_active: currentActiveCount, cap, available_slots: availableSlots },
+    applied_count: applied,
+    failed_count: failed,
+    warned_count: warned,
+    skipped: [
+      ...alreadyInStoreSkipped,
+      ...queueCapSkipped.map((s) => ({ email: s.email, reason: "queue_cap" })),
+      ...pushFailedSkipped,
+    ],
+  });
   if (failed > 0 || warned > 0) process.exitCode = 1;
 }
 

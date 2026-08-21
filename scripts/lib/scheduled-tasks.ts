@@ -336,6 +336,47 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4534, #4552, #5639, #5838",
   },
   {
+    name: "Diaria-Sunset-Weekly",
+    description: "rodada semanal do sunset de assinantes mortos (fresh snapshot + push pro funil brevo_diaria)",
+    // `--push` sozinho já É a rodada completa (#5807 reescopo, ver docstring
+    // de `sunset-dead-subscribers.ts`): garante snapshot fresco, avalia
+    // todos os ativos maduros, exclui quem já passou pelo store, aplica os
+    // guards de blast radius (20%) + folga de fila compartilhada com
+    // `sync-pending-to-brevo.ts`, e grava 1 linha em
+    // `data/brevo-diaria/sunset-rounds.jsonl` por rodada.
+    steps: [{ key: "sunset", script: "scripts/sunset-dead-subscribers.ts", args: ["--push"] }],
+    logPath: "brevo-diaria/.sunset-weekly.log",
+    // Domingo 09:20 BRT — depois de Diaria-Beehiiv-Backup (03:00, snapshot
+    // semanal que este ensureFreshSnapshot() normalmente já encontra fresco)
+    // e Diaria-Beehiiv-Backup-Staleness-Alarm (04:00), antes de
+    // Diaria-Geo-Citation-Staleness-Alarm (10:30) e Diaria-On-Hold-Vencimento-Alarm
+    // (11:00) — sem colisão com nenhuma outra weekly já registrada (checado
+    // via `--list` antes de escolher: 03:00, 03:30, 04:00, 04:10, 07:00,
+    // 08:05, 10:30, 11:00, 22:00 já ocupados) nem com as dailies das 09:00/09:15
+    // (Diaria-Clarice-Novos, Diaria-Clarice-Opens-Catchup-Alarm, Diaria-Cursos-Kv-Sync).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 9, minute: 20 },
+    // Mesmo guard de "junction data/ ainda não montada" de
+    // Diaria-Brevo-Diaria-Evaluate (mesmo store) — sem contacts.json não faz
+    // sentido tentar avaliar/mover ninguém.
+    guard: {
+      requiredFile: "brevo-diaria/contacts.json",
+      abortMessage:
+        "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
+        "montada ainda; abortando por seguranca, NAO rodando --push.",
+    },
+    // DESLIGADA DE PROPOSITO (#5807, 21/08/2026) — a #5849 (relacionada,
+    // AINDA NAO resolvida) achou que receivedMin=20 nao separa "morto de
+    // verdade" de "recem-chegado dentro da janela de medicao do teste pago
+    // 2608" (23 dos 88 candidatos de uma rodada real tinham so ~4 semanas de
+    // vida, dentro da janela de campanhas em medicao — #5734/#4556).
+    // Descadastrar esses silenciosamente contaminaria a apuracao do teste em
+    // curso. O MECANISMO esta pronto (script + registro); o INTERRUPTOR fica
+    // desligado ate o editor decidir o trade-off da #5849 — reativar e trocar
+    // este campo pra `true` (uma linha) depois dessa decisao, nunca antes.
+    enabled: false,
+    issue: "#5807, refs #5849 (bloqueio)",
+  },
+  {
     name: "Diaria-Geo-Citation-Monitor",
     description: "monitor semanal de citacao por assistente de IA",
     // Dois painéis, dois passos independentes (#4900 item a). O passo `hubs`
