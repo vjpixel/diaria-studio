@@ -1,28 +1,52 @@
 /**
  * test/convite-amigo-whatsapp-5794.test.ts (#5794)
  *
- * Bloco fixo "Convide um amigo a assinar" — `scripts/lib/newsletter-render-html.ts`
+ * Bloco fixo "Convide pelo WhatsApp" — `scripts/lib/newsletter-render-html.ts`
  * (`buildConviteAmigoBlock`, `buildConviteAmigoUrl`, `buildConviteAmigoShareLink`,
  * `renderConviteAmigo`). Pedido de leitor (WhatsApp, 20/08/2026): o bloco
  * `renderWhatsappShare` existente (#4486/#4570) compartilha a NOTÍCIA (D1); este
  * bloco NOVO compartilha a ASSINATURA em si — convite pra outras pessoas
  * assinarem a newsletter.
  *
+ * **Revisado 260821 — virou snippet de verdade.** A 1ª implementação (PR
+ * #5802) tinha copy/posição/estilo hardcoded direto no TS, achado quebrado
+ * ao vivo no gate do Stage 4 (posição errada — depois de "Para encerrar" em
+ * vez de antes; copy errada — sem frase, botão com texto diferente do
+ * combinado). Na correção (PR #5817) o editor pediu mais: "no mesmo padrão
+ * dos outros snippets, mas sem título" — o bloco passou a ler
+ * `data/snippets/convite-amigo-whatsapp.md` via `readSnippetFile` e
+ * renderizar com `renderBoxDivulgacao` (mesmo dispatcher dos boxes de slot
+ * 1/2/3), SEM o kicker "Divulgação" (não chama `renderDivulgacaoSeparator`)
+ * e com `plainFirstParagraph=true` (frase em corpo normal, não título serif
+ * 26px — mesmo tratamento do box de agradecimento a apoiadores). `buildConviteAmigoBlock`/
+ * `buildConviteAmigoUrl`/`buildConviteAmigoShareLink` continuam existindo —
+ * usados só pra GERAR o conteúdo estático do snippet (a URL/UTM não varia
+ * por edição), não mais chamados no caminho de render.
+ *
  * Cobertura do critério de pronto da issue:
  *   - URL aponta pra HOME (https://diar.ia.br/), NÃO pra edição.
  *   - UTM tem os 3 params certos (utm_source=whatsapp, utm_medium=referral,
  *     utm_campaign=convite-leitor) — fixo, não varia por edição.
  *   - Link `wa.me/?text=` bem formado, com o texto pré-preenchido correto.
- *   - Bloco renderiza no HTML final, no FIM da newsletter (depois de "Para
- *     encerrar"), sempre presente (não depende de destaques/edição).
- *   - Rotulado de forma DISTINTA do botão "Compartilhar no WhatsApp"
- *     existente (renderWhatsappShare) — evita a confusão relatada pelo leitor.
+ *   - Bloco renderiza no HTML final, após o último destaque e ANTES de "Para
+ *     encerrar" (posição decidida na issue), sempre presente quando o
+ *     snippet existe — fail-soft (string vazia) se o snippet estiver
+ *     ausente, nunca lança.
+ *   - Box bege (painel `SURFACE`, sem borda, SEM kicker "Divulgação") com a
+ *     frase "Conhece alguém que ia gostar de receber esta newsletter?" em
+ *     corpo normal (não título) seguida do botão "Convide pelo WhatsApp →"
+ *     — rotulado de forma DISTINTA do botão "Compartilhar no WhatsApp"
+ *     existente (renderWhatsappShare) — evita a confusão relatada pelo
+ *     leitor.
  *   - A entry nova em scripts/lib/shared/utm-registry.ts é coerente com os
  *     valores emitidos (mesmo padrão do #4041 — emissor deriva do registry).
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildConviteAmigoBlock,
   buildConviteAmigoUrl,
@@ -30,6 +54,8 @@ import {
   renderConviteAmigo,
   renderWhatsappShare,
   renderHTML,
+  resetRenderWarnings,
+  getRenderWarnings,
 } from "../scripts/lib/newsletter-render-html.ts";
 import { CONVITE_AMIGO_UTM, findUtmEmitter } from "../scripts/lib/shared/utm-registry.ts";
 import { BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
@@ -47,6 +73,21 @@ function makeD1(overrides: Partial<RenderDestaque> = {}): RenderDestaque {
     ...overrides,
   };
 }
+
+// #5794 (revisão 260821): `renderConviteAmigo` lê `data/snippets/` via
+// `readSnippetFile` — nunca a `data/` real do editor (gitignored, ausente
+// em CI/clone fresco). Fixture isolada, mesmo padrão de
+// `test/encerramento-social-apoio-3219.test.ts`.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "convite-amigo-snippet-fixture-"));
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+const SNIPPET_PATH = join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "convite-amigo-whatsapp.md");
+const CONVITE_AMIGO_FIXTURE =
+  `Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](${buildConviteAmigoShareLink()})\n`;
+writeFileSync(SNIPPET_PATH, CONVITE_AMIGO_FIXTURE, "utf8");
+
+after(() => {
+  rmSync(SNIPPETS_FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 describe("#5794 — buildConviteAmigoUrl", () => {
   it("aponta pra HOME (https://diar.ia.br/), não pra uma edição", () => {
@@ -96,14 +137,14 @@ describe("#5794 — buildConviteAmigoShareLink", () => {
 });
 
 describe("#5794 — renderConviteAmigo (HTML)", () => {
-  it("renderiza o botão 'Convide um amigo a assinar', rotulado DISTINTO de 'Compartilhar no WhatsApp'", () => {
-    const html = renderConviteAmigo();
-    assert.match(html, /Convide um amigo a assinar/);
+  it("renderiza o botão 'Convide pelo WhatsApp', rotulado DISTINTO de 'Compartilhar no WhatsApp'", () => {
+    const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
+    assert.match(html, /Convide pelo WhatsApp/);
     assert.ok(!html.includes("Compartilhar no WhatsApp"), "não deve reusar o rótulo do bloco existente (evita a confusão da issue)");
   });
 
   it("aponta pro link wa.me com o convite de assinatura, não pra edição", () => {
-    const html = renderConviteAmigo();
+    const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
     const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
     assert.ok(btnMatch, "botão wa.me não encontrado");
     const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
@@ -111,7 +152,7 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
   });
 
   it("botão pill contornado — mesmo padrão visual dos demais CTAs (background papel, border-radius:999px)", () => {
-    const html = renderConviteAmigo();
+    const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
     const btnMatch = html.match(/<a href="https:\/\/wa\.me\/\?text=[^"]*"\s+style="([^"]*)"/);
     assert.ok(btnMatch, "botão não encontrado");
     const style = btnMatch![1];
@@ -119,14 +160,37 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
     assert.match(style, /border-radius:999px/);
   });
 
+  it("box bege (painel SURFACE) envolvendo a frase de convite + botão — opção B decidida na issue", () => {
+    const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
+    assert.match(html, /Conhece alguém que ia gostar de receber esta newsletter\?/);
+    assert.match(html, /background:#EBE5D0;border-radius:12px/i);
+  });
+
   it("não depende de destaques — renderiza sempre, ao contrário de renderWhatsappShare (que retorna vazio sem D1)", () => {
     assert.equal(renderWhatsappShare([], "260801"), "", "sanity: renderWhatsappShare precisa de D1");
-    const html = renderConviteAmigo();
+    const html = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT);
     assert.notEqual(html, "", "renderConviteAmigo nunca deve ficar vazio");
+  });
+
+  it("snippet ausente: retorna vazio (fail-soft) MAS emite convite_amigo_snippet_missing (achado do review #5817)", () => {
+    resetRenderWarnings();
+    const emptyRoot = mkdtempSync(join(tmpdir(), "convite-amigo-empty-fixture-"));
+    mkdirSync(join(emptyRoot, "data", "snippets"), { recursive: true });
+    try {
+      const html = renderConviteAmigo(emptyRoot, "260821");
+      assert.equal(html, "", "sem snippet, o bloco deve ficar vazio — nunca lançar");
+      const warnings = getRenderWarnings();
+      assert.ok(
+        warnings.some((w) => w.event === "convite_amigo_snippet_missing" && w.edition === "260821"),
+        "evento convite_amigo_snippet_missing ausente — bloco 'sempre presente' sumiria em silêncio",
+      );
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
   });
 });
 
-describe("#5794 — posição no corpo da newsletter: FIM, perto das caixas de divulgação", () => {
+describe("#5794 — posição no corpo da newsletter: após o último destaque, ANTES de 'Para encerrar'", () => {
   const content: NewsletterContent = {
     title: "Edição teste",
     subtitle: "Teste",
@@ -138,25 +202,25 @@ describe("#5794 — posição no corpo da newsletter: FIM, perto das caixas de d
     encerrar: "Apoie a curadoria em [apoia.se/diaria](https://apoia.se/diaria).",
   };
 
-  it("bloco 'Convide um amigo' aparece no HTML final, DEPOIS de 'Para encerrar'", () => {
-    const html = renderHTML(content);
+  it("bloco 'Convide pelo WhatsApp' aparece no HTML final, ANTES de 'Para encerrar'", () => {
+    const html = renderHTML(content, { rootDir: SNIPPETS_FIXTURE_ROOT });
     const idxEncerrar = html.indexOf("Para encerrar");
-    const idxConvite = html.indexOf("Convide um amigo a assinar");
+    const idxConvite = html.indexOf("Convide pelo WhatsApp");
     assert.ok(idxEncerrar !== -1, "'Para encerrar' ausente do render completo");
     assert.ok(idxConvite !== -1, "bloco 'Convide um amigo' ausente do render completo");
-    assert.ok(idxEncerrar < idxConvite, "bloco 'Convide um amigo' deve vir DEPOIS de 'Para encerrar'");
+    assert.ok(idxConvite < idxEncerrar, "bloco 'Convide um amigo' deve vir ANTES de 'Para encerrar' (decisão da issue #5794)");
   });
 
   it("os dois botões WhatsApp (compartilhar notícia + convidar amigo) coexistem, sem colidir", () => {
-    const html = renderHTML(content);
+    const html = renderHTML(content, { rootDir: SNIPPETS_FIXTURE_ROOT });
     assert.match(html, /Compartilhar no WhatsApp/);
-    assert.match(html, /Convide um amigo a assinar/);
+    assert.match(html, /Convide pelo WhatsApp/);
   });
 
   it("edição sem destaques (defensivo, nunca deveria acontecer): bloco 'Convide um amigo' ainda aparece — não depende de D1", () => {
     const contentSemDestaques: NewsletterContent = { ...content, destaques: [] };
-    const html = renderHTML(contentSemDestaques);
-    assert.match(html, /Convide um amigo a assinar/);
+    const html = renderHTML(contentSemDestaques, { rootDir: SNIPPETS_FIXTURE_ROOT });
+    assert.match(html, /Convide pelo WhatsApp/);
   });
 });
 

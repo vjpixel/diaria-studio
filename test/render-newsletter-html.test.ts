@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,6 +41,26 @@ import {
   getRenderWarnings, // #4673
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
+
+// #5817: `renderConviteAmigo` (chamado incondicionalmente por `renderHTML`)
+// lê `data/snippets/convite-amigo-whatsapp.md` via `readSnippetFile` — nunca
+// a `data/` real do editor (gitignored, ausente em CI/clone fresco/worktree
+// isolado). Fixture só pros testes que contam exatamente console.error/
+// getRenderWarnings() disparados — sem ela, `convite_amigo_snippet_missing`
+// entra como um 2º evento inesperado. Mesmo padrão de
+// test/convite-amigo-whatsapp-5794.test.ts.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "render-newsletter-html-snippet-fixture-"));
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+writeFileSync(
+  join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "convite-amigo-whatsapp.md"),
+  "Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](https://diar.ia.br/)\n",
+  "utf8",
+);
+const CONVITE_AMIGO_OPTS = { rootDir: SNIPPETS_FIXTURE_ROOT };
+
+after(() => {
+  rmSync(SNIPPETS_FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -3635,10 +3655,10 @@ describe("renderHTML — caixas de divulgação ocupam sua lacuna de origem, sem
     let htmlDropped: string;
     let htmlFits: string;
     try {
-      htmlDropped = renderHTML(fixt2); // 2 destaques + slot2 configurado (dado inconsistente) → slot2 sem lacuna
+      htmlDropped = renderHTML(fixt2, CONVITE_AMIGO_OPTS); // 2 destaques + slot2 configurado (dado inconsistente) → slot2 sem lacuna
       const errorsAfterDrop = [...errors];
       errors.length = 0;
-      htmlFits = renderHTML({ ...fixt2, boxDivulgacao2: null }); // só slot1+slot3 — cabem os dois
+      htmlFits = renderHTML({ ...fixt2, boxDivulgacao2: null }, CONVITE_AMIGO_OPTS); // só slot1+slot3 — cabem os dois
       const errorsAfterFit = [...errors];
 
       assert.ok(htmlDropped.length > 0 && htmlFits.length > 0); // uso defensivo — silencia "unused"
@@ -3655,7 +3675,7 @@ describe("renderHTML — caixas de divulgação ocupam sua lacuna de origem, sem
     const fixt2 = fixt3({
       destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2")],
     });
-    renderHTML(fixt2); // 2 destaques + slot2 configurado (dado inconsistente) → slot2 sem lacuna
+    renderHTML(fixt2, CONVITE_AMIGO_OPTS); // 2 destaques + slot2 configurado (dado inconsistente) → slot2 sem lacuna
     const afterDrop = getRenderWarnings();
     assert.equal(afterDrop.length, 1, `esperado 1 evento coletado, obtido: ${JSON.stringify(afterDrop)}`);
     assert.equal(afterDrop[0].event, "divulgacao_box_dropped_no_gap");
@@ -3665,7 +3685,7 @@ describe("renderHTML — caixas de divulgação ocupam sua lacuna de origem, sem
     // #4673 — edição normal (nada perdido) não deve deixar ruído: o coletor
     // reseta no início de CADA chamada de renderHTML(), então a chamada
     // seguinte (sem caixa sobrando) não carrega o evento da chamada anterior.
-    renderHTML(fixt3()); // 3 destaques + 3 caixas — todas cabem, nada é dropped (#5152)
+    renderHTML(fixt3(), CONVITE_AMIGO_OPTS); // 3 destaques + 3 caixas — todas cabem, nada é dropped (#5152)
     assert.deepEqual(getRenderWarnings(), [], "edição sem conteúdo perdido não deve produzir nenhum evento coletado");
   });
 });

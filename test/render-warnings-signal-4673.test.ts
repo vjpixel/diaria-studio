@@ -36,7 +36,7 @@
  * describe blocks), não reproduzível neste arquivo (que testa o pipeline
  * real via CLI + parser).
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +45,26 @@ import { spawnSync } from "node:child_process";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 const SCRIPT = join(PROJECT_ROOT, "scripts", "render-newsletter-html.ts");
+
+// #5817: o CLI real (via subprocess) chama `renderConviteAmigo`
+// incondicionalmente, que lê `data/snippets/convite-amigo-whatsapp.md` a
+// partir da raiz real do repo — ausente em CI/clone fresco/worktree isolado
+// (gitignored). Sem fixture, toda invocação abaixo dispararia
+// `convite_amigo_snippet_missing` e quebraria as asserções `warnings: []`
+// deste arquivo (que testam um sinal NÃO relacionado a este bloco). O CLI
+// aceita `--root-dir` só pra isto — override de teste do mesmo
+// `RenderOpts.rootDir` usado pelos testes de lib.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "render-warnings-signal-snippet-fixture-"));
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+writeFileSync(
+  join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "convite-amigo-whatsapp.md"),
+  "Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](https://diar.ia.br/)\n",
+  "utf8",
+);
+
+after(() => {
+  rmSync(SNIPPETS_FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 function d(n: number, cat: string, url: string): string {
   return `**DESTAQUE ${n} | ${cat}**
@@ -108,10 +128,14 @@ function makeEditionDir(reviewed: string): string {
 }
 
 function run(dirAndArgs: string[]) {
-  return spawnSync(process.execPath, ["--import", "tsx", SCRIPT, ...dirAndArgs], {
-    encoding: "utf8",
-    cwd: PROJECT_ROOT,
-  });
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", SCRIPT, ...dirAndArgs, "--root-dir", SNIPPETS_FIXTURE_ROOT],
+    {
+      encoding: "utf8",
+      cwd: PROJECT_ROOT,
+    },
+  );
 }
 
 function readWarnings(dir: string): { generated_at?: string; warnings: Array<{ event: string; edition: string; slot?: number }> } {
