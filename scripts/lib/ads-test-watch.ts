@@ -43,7 +43,7 @@
  */
 
 import Papa from "papaparse";
-import { daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
+import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
 
 // ---------------------------------------------------------------------------
@@ -96,9 +96,24 @@ export function planAdsTestWatchActions(
     };
   }
   const withinWindow = runState.d0 <= nowDateStr && nowDateStr <= runState.fim_janela;
+  // `checkClicksCoverage` audita a linha de ONTEM (ver scripts/ads-test-watch.ts),
+  // não a de hoje — por isso o gate dela é sobre `nowDateStr - 1`, não sobre
+  // `nowDateStr` (que é o que `withinWindow` mede). Usar `withinWindow` direto
+  // aqui tem 2 bugs simétricos (#5845 self-review, findings 1/2):
+  //   1. no D0 exato, "ontem" é D0-1 — antes da campanha existir, nenhuma
+  //      linha pode existir ainda, e o alarme de cobertura falso-dispara
+  //      garantido todo D0.
+  //   2. o ÚLTIMO dia da janela (fim_janela) nunca seria auditado, porque
+  //      checá-lo exige rodar em fim_janela+1, que já é `nowDateStr >
+  //      fim_janela` (fora de `withinWindow`).
+  // Gate correto, independente do de `checkDeathConditions`: "ontem" cai
+  // dentro de [d0, fim_janela] — cobre exatamente cada dia da janela, uma
+  // vez, no dia seguinte.
+  const yesterday = addDays(nowDateStr, -1);
+  const coverageDateInRange = runState.d0 <= yesterday && yesterday <= runState.fim_janela;
   return {
     alarmMissingD0Overdue: false,
-    checkClicksCoverage: withinWindow,
+    checkClicksCoverage: coverageDateInRange,
     checkDeathConditions: withinWindow,
     triggerReligarBrevo: nowDateStr >= runState.religar_brevo && watchState.religarBrevoTriggeredAt == null,
     runApuracao: nowDateStr >= runState.apuracao_snapshot && watchState.apuracaoCompletedAt == null,

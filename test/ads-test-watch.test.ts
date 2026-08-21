@@ -20,6 +20,7 @@ import {
   type AdsTestWatchState,
 } from "../scripts/lib/ads-test-watch.ts";
 import { buildAdsTestRunState, ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
+import { addDays } from "../scripts/lib/ads-test-schedule.ts";
 
 const RUN_STATE = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
 // d0=2026-08-26 fim_janela=2026-09-09 religar_brevo=2026-09-16 apuracao_snapshot >= 2026-10-07 (1º domingo)
@@ -57,19 +58,47 @@ describe("#5845 — ads-test-watch: planAdsTestWatchActions", () => {
     assert.equal(plan.checkDeathConditions, false);
   });
 
-  it("com run-state, no D0 exato → dentro da janela", () => {
+  it("com run-state, no D0 exato → checkDeathConditions dentro da janela (checkClicksCoverage: ver regressão do finding 1 abaixo)", () => {
     const plan = planAdsTestWatchActions(RUN_STATE.d0, RUN_STATE, null, emptyAdsTestWatchState());
+    assert.equal(plan.checkDeathConditions, true);
+  });
+
+  it("com run-state, no meio da janela (d0+1, 'ontem' = d0) → dentro, cobertura checável normalmente", () => {
+    // Data intermediária que não colide com nenhum dos edge cases de fronteira
+    // (D0 exato / fim_janela+1) cobertos pelas regressões do #5845 abaixo.
+    const midWindow = addDays(RUN_STATE.d0, 1);
+    const plan = planAdsTestWatchActions(midWindow, RUN_STATE, null, emptyAdsTestWatchState());
     assert.equal(plan.checkClicksCoverage, true);
     assert.equal(plan.checkDeathConditions, true);
   });
 
-  it("com run-state, no último dia da janela (fim_janela) → ainda dentro", () => {
+  it("com run-state, no último dia da janela (fim_janela) → checkDeathConditions ainda dentro", () => {
     const plan = planAdsTestWatchActions(RUN_STATE.fim_janela, RUN_STATE, null, emptyAdsTestWatchState());
-    assert.equal(plan.checkClicksCoverage, true);
+    assert.equal(plan.checkDeathConditions, true);
   });
 
-  it("com run-state, 1 dia depois da janela → fora (não checa cobertura/morte)", () => {
-    const plan = planAdsTestWatchActions("2026-09-10", RUN_STATE, null, emptyAdsTestWatchState());
+  it("REGRESSÃO (self-review #5845, finding 1): no D0 exato NÃO checa cobertura — 'ontem' seria antes da campanha existir", () => {
+    // checkClicksCoverage audita a linha de ONTEM (ver scripts/ads-test-watch.ts).
+    // No D0 exato, ontem = d0-1, uma data anterior ao início da campanha —
+    // nenhuma linha pode existir ainda, então checar geraria falso-alarme
+    // garantido todo D0. checkDeathConditions continua true (não sofre desse bug).
+    const plan = planAdsTestWatchActions(RUN_STATE.d0, RUN_STATE, null, emptyAdsTestWatchState());
+    assert.equal(plan.checkClicksCoverage, false);
+    assert.equal(plan.checkDeathConditions, true);
+  });
+
+  it("REGRESSÃO (self-review #5845, finding 2): fim_janela+1 AINDA checa cobertura do último dia da janela", () => {
+    // O último dia da janela (fim_janela) só é auditável no dia SEGUINTE
+    // (fim_janela+1, quando "ontem" = fim_janela) — que já está fora de
+    // withinWindow. checkClicksCoverage precisa ser independente desse gate.
+    const dayAfterWindow = "2026-09-10"; // fim_janela (2026-09-09) + 1
+    const plan = planAdsTestWatchActions(dayAfterWindow, RUN_STATE, null, emptyAdsTestWatchState());
+    assert.equal(plan.checkClicksCoverage, true, "cobertura do último dia da janela precisa ser auditada em fim_janela+1");
+    assert.equal(plan.checkDeathConditions, false, "condição de morte não precisa rodar fora da janela");
+  });
+
+  it("REGRESSÃO: 2 dias depois da janela → nem cobertura nem morte (fora de qualquer data auditável)", () => {
+    const plan = planAdsTestWatchActions("2026-09-11", RUN_STATE, null, emptyAdsTestWatchState());
     assert.equal(plan.checkClicksCoverage, false);
     assert.equal(plan.checkDeathConditions, false);
   });
