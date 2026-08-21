@@ -17,6 +17,7 @@ import {
   BLAST_RADIUS_THRESHOLD,
   SNAPSHOT_MAX_AGE_DAYS,
   computeOpenRatePct,
+  daysSinceSubscribed,
   isDeadSubscriber,
   sunsetInputFromBeehiivSubscriber,
   selectDeadSubscribers,
@@ -40,6 +41,13 @@ function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+// Data de referência fixa pros testes (não usa relógio real — mesma
+// disciplina do resto do repo). `OLD_SUBSCRIBED_AT` é bem mais que
+// `subscribedMinDays` (60) antes dela, então os testes que não são sobre
+// idade de cadastro continuam exercitando só o que testavam antes do #5849.
+const REFERENCE_DATE = "2026-08-16";
+const OLD_SUBSCRIBED_AT = Math.floor(Date.parse("2025-01-01T00:00:00Z") / 1000);
+
 function sub(overrides: Partial<SunsetInput> = {}): SunsetInput {
   return {
     email: "a@b.com",
@@ -47,6 +55,7 @@ function sub(overrides: Partial<SunsetInput> = {}): SunsetInput {
     totalReceived: 30,
     totalUniqueOpened: 1,
     totalUniqueClicked: 0,
+    subscribedAt: OLD_SUBSCRIBED_AT,
     ...overrides,
   };
 }
@@ -77,49 +86,126 @@ describe("computeOpenRatePct", () => {
 // ---------------------------------------------------------------------------
 
 describe("isDeadSubscriber", () => {
-  it("seleciona: active, >=20 recebidas, abertura <=10%, zero cliques", () => {
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 20, totalUniqueOpened: 2, totalUniqueClicked: 0 })), true);
+  it("seleciona: active, >=20 recebidas, cadastro maduro, abertura <=10%, zero cliques", () => {
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 20, totalUniqueOpened: 2, totalUniqueClicked: 0 }), REFERENCE_DATE),
+      true,
+    );
   });
 
   it("GUARD CRÍTICO: abertura baixa MAS com clique NUNCA é sunset (leitor real com pixel bloqueado)", () => {
     assert.equal(
-      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 1, totalUniqueClicked: 1 })),
+      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 1, totalUniqueClicked: 1 }), REFERENCE_DATE),
       false,
       "1 clique já basta pra excluir, mesmo com abertura de 3%",
     );
     assert.equal(
-      isDeadSubscriber(sub({ totalReceived: 100, totalUniqueOpened: 0, totalUniqueClicked: 5 })),
+      isDeadSubscriber(sub({ totalReceived: 100, totalUniqueOpened: 0, totalUniqueClicked: 5 }), REFERENCE_DATE),
       false,
       "zero abertura mas cliques reais — nunca sunset",
     );
   });
 
   it("status diferente de active nunca é sunset", () => {
-    assert.equal(isDeadSubscriber(sub({ status: "inactive", totalUniqueOpened: 0 })), false);
-    assert.equal(isDeadSubscriber(sub({ status: "pending", totalUniqueOpened: 0 })), false);
+    assert.equal(isDeadSubscriber(sub({ status: "inactive", totalUniqueOpened: 0 }), REFERENCE_DATE), false);
+    assert.equal(isDeadSubscriber(sub({ status: "pending", totalUniqueOpened: 0 }), REFERENCE_DATE), false);
   });
 
   it("recebidas abaixo do piso (20) nunca é sunset, mesmo com abertura/clique zerados", () => {
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 19, totalUniqueOpened: 0, totalUniqueClicked: 0 })), false);
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 5, totalUniqueOpened: 0, totalUniqueClicked: 0 })), false);
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 19, totalUniqueOpened: 0, totalUniqueClicked: 0 }), REFERENCE_DATE),
+      false,
+    );
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 5, totalUniqueOpened: 0, totalUniqueClicked: 0 }), REFERENCE_DATE),
+      false,
+    );
   });
 
   it("abertura acima de 10% nunca é sunset, mesmo com zero cliques", () => {
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 4, totalUniqueClicked: 0 })), false); // 13.3%
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 4, totalUniqueClicked: 0 }), REFERENCE_DATE),
+      false,
+    ); // 13.3%
   });
 
   it("abertura exatamente no limiar (10%) É sunset — <=, não <", () => {
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 3, totalUniqueClicked: 0 })), true); // 10.0%
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 3, totalUniqueClicked: 0 }), REFERENCE_DATE),
+      true,
+    ); // 10.0%
   });
 
   it("respeita thresholds customizados (parâmetro, não hardcoded)", () => {
-    const custom = { receivedMin: 10, openRateMaxPct: 5 };
-    assert.equal(isDeadSubscriber(sub({ totalReceived: 10, totalUniqueOpened: 0, totalUniqueClicked: 0 }), custom), true);
+    const custom = { receivedMin: 10, openRateMaxPct: 5, subscribedMinDays: 30 };
     assert.equal(
-      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 2, totalUniqueClicked: 0 }), custom),
+      isDeadSubscriber(sub({ totalReceived: 10, totalUniqueOpened: 0, totalUniqueClicked: 0 }), REFERENCE_DATE, custom),
+      true,
+    );
+    assert.equal(
+      isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 2, totalUniqueClicked: 0 }), REFERENCE_DATE, custom),
       false,
       "6.6% > 5% no threshold customizado",
     );
+  });
+
+  // #5849: piso combinado (recebidas E idade de cadastro) — decisão do
+  // editor pra separar assinante morto de verdade de recém-chegado dentro
+  // da janela de formação de hábito / medição de campanha (#5734/#4556).
+  describe("piso de idade de cadastro (#5849)", () => {
+    it("recém-chegado (< subscribedMinDays) nunca é sunset, mesmo com received/abertura/clique batendo", () => {
+      const subscribedAt30DaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 30 * 86400;
+      assert.equal(
+        isDeadSubscriber(
+          sub({ totalReceived: 30, totalUniqueOpened: 0, totalUniqueClicked: 0, subscribedAt: subscribedAt30DaysAgo }),
+          REFERENCE_DATE,
+        ),
+        false,
+        "30 dias de cadastro < subscribedMinDays (60) — nunca sunset, mesmo morto por todo o resto",
+      );
+    });
+
+    it("cadastro exatamente no limiar (subscribedMinDays) É sunset — >=, não >", () => {
+      const subscribedAtExactly60DaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 60 * 86400;
+      assert.equal(
+        isDeadSubscriber(
+          sub({
+            totalReceived: 30,
+            totalUniqueOpened: 0,
+            totalUniqueClicked: 0,
+            subscribedAt: subscribedAtExactly60DaysAgo,
+          }),
+          REFERENCE_DATE,
+        ),
+        true,
+      );
+    });
+
+    it("cadastro maduro (>= subscribedMinDays) segue elegível se o resto bater", () => {
+      assert.equal(
+        isDeadSubscriber(sub({ totalReceived: 30, totalUniqueOpened: 0, totalUniqueClicked: 0 }), REFERENCE_DATE),
+        true,
+        "sub() default já usa OLD_SUBSCRIBED_AT, bem além do piso",
+      );
+    });
+  });
+});
+
+describe("daysSinceSubscribed", () => {
+  it("calcula dias corridos entre subscribedAt (epoch segundos) e referenceDate", () => {
+    const thirtyDaysAgo = Math.floor(Date.parse(`${REFERENCE_DATE}T00:00:00Z`) / 1000) - 30 * 86400;
+    assert.equal(daysSinceSubscribed(thirtyDaysAgo, REFERENCE_DATE), 30);
+  });
+
+  it("subscribedAt inválido (0, negativo, NaN) retorna 0 — fail-soft, nunca NaN/Infinity", () => {
+    assert.equal(daysSinceSubscribed(0, REFERENCE_DATE), 0);
+    assert.equal(daysSinceSubscribed(-1, REFERENCE_DATE), 0);
+    assert.equal(daysSinceSubscribed(NaN, REFERENCE_DATE), 0);
+  });
+
+  it("referenceDate inválido retorna 0 — fail-soft (mesma disciplina do lado subscribedAt)", () => {
+    assert.equal(daysSinceSubscribed(OLD_SUBSCRIBED_AT, "not-a-date"), 0);
+    assert.equal(daysSinceSubscribed(OLD_SUBSCRIBED_AT, ""), 0);
   });
 });
 
@@ -140,6 +226,7 @@ describe("sunsetInputFromBeehiivSubscriber", () => {
       status: "active",
       totalReceived: 0,
       totalUniqueOpened: 0,
+      subscribedAt: 0,
       totalUniqueClicked: 0,
     });
   });
@@ -153,7 +240,7 @@ describe("selectDeadSubscribers", () => {
   function backupSub(overrides: Partial<BeehiivBackupSubscriber> & { email: string }): BeehiivBackupSubscriber {
     return {
       status: "active",
-      created: 0,
+      created: OLD_SUBSCRIBED_AT, // bem além de subscribedMinDays (60) pra qualquer snapshot usado nos testes abaixo
       utm_source: "",
       utm_medium: "",
       utm_campaign: "",
@@ -190,6 +277,37 @@ describe("selectDeadSubscribers", () => {
     const result = selectDeadSubscribers(subscribers, SUNSET_THRESHOLDS, "2026-08-16");
     assert.equal(result.selected.length, 0);
     assert.equal(result.open_rate_projected, result.open_rate_before);
+  });
+
+  // #5849, achado ao vivo em 20/08/2026: piso de recebidas sozinho misturava
+  // assinantes mortos de verdade com recém-chegados dentro da janela de
+  // formação de hábito / medição de campanha (#5734/#4556) — regressão que
+  // este teste trava (#633).
+  it("#5849: recém-chegado maduro por recebidas MAS ainda na janela de idade não é selecionado", () => {
+    const snapshotDate = "2026-08-21";
+    const subscribedAt30DaysAgo = Math.floor(Date.parse(`${snapshotDate}T00:00:00Z`) / 1000) - 30 * 86400;
+    const subscribers: BeehiivBackupSubscriber[] = [
+      // mesmo perfil de received/abertura/clique do "morto de verdade" da
+      // 1ª descrição acima, mas cadastrado há só 30 dias.
+      backupSub({
+        email: "newcomer@a.com",
+        created: subscribedAt30DaysAgo,
+        stats: { total_received: 22, total_unique_opened: 1, total_unique_clicked: 0 },
+      }),
+      // morto de verdade, cadastro antigo (default do helper) — continua selecionado.
+      backupSub({ email: "dead@a.com", stats: { total_received: 30, total_unique_opened: 1, total_unique_clicked: 0 } }),
+    ];
+    const result = selectDeadSubscribers(subscribers, SUNSET_THRESHOLDS, snapshotDate);
+    assert.deepEqual(result.selected.map((s) => s.email), ["dead@a.com"]);
+    // O piso de idade filtra só a SELEÇÃO (quem vira sunset), não o
+    // denominador de maturidade — de propósito (mesma leitura do docstring
+    // de `mature_active_count`: "denominador do guard de blast radius", que
+    // quer o universo ANTES do filtro de "morto", não depois). O newcomer
+    // continua contando como maduro por volume; travar isso aqui evita que
+    // um refactor futuro funda o piso de idade no filtro `mature` em
+    // silêncio, mudando o denominador do blast radius sem nenhum teste
+    // acusar.
+    assert.equal(result.mature_active_count, 2, "newcomer + dead — ambos maduros por recebidas");
   });
 });
 
@@ -283,6 +401,25 @@ describe("formatDryRunReport", () => {
     assert.match(report, /dry-run/);
     assert.match(report, /nenhuma escrita/);
     assert.match(report, /dead@a\.com/);
+  });
+
+  // #5849: o piso de idade precisa aparecer no relatório que o editor lê
+  // antes de decidir rodar --push — texto não verificado antes travava só
+  // por coincidência (nenhum teste cobria as strings novas).
+  it("#5849: menciona o piso de idade e a idade de cadastro de cada candidato", () => {
+    const snapshotDate = "2026-08-16";
+    const subscribedAt90DaysAgo = Math.floor(Date.parse(`${snapshotDate}T00:00:00Z`) / 1000) - 90 * 86400;
+    const report = formatDryRunReport({
+      snapshot_date: snapshotDate,
+      thresholds: SUNSET_THRESHOLDS,
+      total_subscribers: 10,
+      mature_active_count: 5,
+      selected: [sub({ email: "dead@a.com", subscribedAt: subscribedAt90DaysAgo })],
+      open_rate_before: 0.3,
+      open_rate_projected: 0.35,
+    });
+    assert.match(report, /cadastro >= 60 dias/);
+    assert.match(report, /cadastro há 90d/);
   });
 });
 
