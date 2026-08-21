@@ -14,6 +14,7 @@ import {
   PROMOTIONAL_UTM_SOURCES,
   isPromotionalUtmSource,
   buildOrigemMap,
+  extractOrigemOriginalField,
   loadSnapshots,
   parseBuildOrigemMapArgs,
   DEFAULT_BACKUP_ROOT,
@@ -21,6 +22,7 @@ import {
   type SnapshotInput,
 } from "../scripts/build-origem-map.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
+import { ORIGEM_ORIGINAL_FIELD_NAME } from "../scripts/lib/shared/beehiiv-origem-original.ts";
 
 function rec(overrides: Partial<BeehiivBackupSubscriber> = {}): BeehiivBackupSubscriber {
   return {
@@ -33,6 +35,13 @@ function rec(overrides: Partial<BeehiivBackupSubscriber> = {}): BeehiivBackupSub
     referring_site: "",
     ...overrides,
   };
+}
+
+/** Constrói o valor de custom field como `formatOrigemOriginalValue`
+ *  serializaria (`lib/shared/beehiiv-origem-original.ts`) — JSON compacto
+ *  com o subconjunto de campos de origem presentes no GET original. */
+function origemOriginalCustomField(origin: Record<string, unknown>) {
+  return [{ name: ORIGEM_ORIGINAL_FIELD_NAME, value: JSON.stringify(origin) }];
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +194,126 @@ describe("buildOrigemMap", () => {
     assert.equal(result.origem["e@x.com"], undefined);
     assert.ok(result.unrecoveredEmails.includes("e@x.com"));
     assert.ok(!PROMOTIONAL_UTM_SOURCES.includes("custom-promo"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractOrigemOriginalField + precedência sobre arqueologia (#5842)
+// ---------------------------------------------------------------------------
+
+describe("extractOrigemOriginalField", () => {
+  it("extrai origem bem formada do custom_fields", () => {
+    const record = rec({
+      custom_fields: origemOriginalCustomField({ utm_source: "google-ads", utm_campaign: "teste-2608", created: 555 }),
+    });
+    assert.deepEqual(extractOrigemOriginalField(record), {
+      utm_source: "google-ads",
+      utm_medium: "",
+      utm_campaign: "teste-2608",
+      referring_site: "",
+      created: 555,
+    });
+  });
+
+  it("custom_fields ausente → null", () => {
+    assert.equal(extractOrigemOriginalField(rec()), null);
+  });
+
+  it("campo origem_original ausente entre outros custom_fields → null", () => {
+    const record = rec({ custom_fields: [{ name: "apoio_nivel", value: "Mantenedor" }] });
+    assert.equal(extractOrigemOriginalField(record), null);
+  });
+
+  it("value não é JSON válido → null (fail-soft)", () => {
+    const record = rec({ custom_fields: [{ name: ORIGEM_ORIGINAL_FIELD_NAME, value: "{not json" }] });
+    assert.equal(extractOrigemOriginalField(record), null);
+  });
+
+  it("JSON válido mas sem utm_source → null (campo mínimo exigido)", () => {
+    const record = rec({ custom_fields: origemOriginalCustomField({ utm_campaign: "sem-source" }) });
+    assert.equal(extractOrigemOriginalField(record), null);
+  });
+
+  it("created ausente/inválido no payload cai pro created do próprio record", () => {
+    const record = rec({ created: 999, custom_fields: origemOriginalCustomField({ utm_source: "instagram" }) });
+    assert.equal(extractOrigemOriginalField(record)?.created, 999);
+  });
+});
+
+describe("buildOrigemMap — precedência do custom field origem_original (#5842)", () => {
+  it("REGRESSÃO: origem_original preenchido + utm_source promocional na aparição mais recente → resolve pra origem ORIGINAL, não a promocional", () => {
+    const snapshots: SnapshotInput[] = [
+      {
+        date: "2026-08-20",
+        records: [
+          rec({
+            email: "clicou@x.com",
+            utm_source: "brevo-diaria", // via de CLIQUE sobrescreveu — sem o fix, seria isso que a apuração creditaria
+            utm_campaign: "reativar-clique",
+            custom_fields: origemOriginalCustomField({
+              utm_source: "meta-ads",
+              utm_medium: "paid_social",
+              utm_campaign: "ads-meta-2608",
+              created: 1755600000,
+            }),
+          }),
+        ],
+      },
+    ];
+    const result = buildOrigemMap(snapshots);
+    assert.deepEqual(result.origem["clicou@x.com"], {
+      utm_source: "meta-ads",
+      utm_medium: "paid_social",
+      utm_campaign: "ads-meta-2608",
+      referring_site: "",
+      created: 1755600000,
+      snapshot_date: "2026-08-20",
+      original: true,
+      origem_original_field: true,
+    });
+    assert.equal(result.coverage.origem_original_field_count, 1);
+    assert.equal(result.coverage.original_count, 1);
+    assert.equal(result.coverage.recovered_count, 0);
+    assert.equal(result.coverage.unrecovered_count, 0);
+  });
+
+  it("origem_original ausente (passivo pré-#5231) → cai pra arqueologia normalmente", () => {
+    const snapshots: SnapshotInput[] = [
+      { date: "2026-06-05", records: [rec({ email: "antigo@x.com", utm_source: "facebook" })] },
+      { date: "2026-08-14", records: [rec({ email: "antigo@x.com", utm_source: "brevo-diaria" })] },
+    ];
+    const result = buildOrigemMap(snapshots);
+    assert.equal(result.origem["antigo@x.com"].recuperado, true);
+    assert.equal(result.origem["antigo@x.com"].origem_original_field, undefined);
+    assert.equal(result.coverage.origem_original_field_count, 0);
+  });
+
+  it("origem_original malformado → cai pra arqueologia, nunca lança", () => {
+    const snapshots: SnapshotInput[] = [
+      { date: "2026-06-05", records: [rec({ email: "malformado@x.com", utm_source: "google" })] },
+      {
+        date: "2026-08-14",
+        records: [
+          rec({
+            email: "malformado@x.com",
+            utm_source: "brevo-diaria",
+            custom_fields: [{ name: ORIGEM_ORIGINAL_FIELD_NAME, value: "{quebrado" }],
+          }),
+        ],
+      },
+    ];
+    const result = buildOrigemMap(snapshots);
+    assert.equal(result.origem["malformado@x.com"].recuperado, true);
+    assert.equal(result.origem["malformado@x.com"].utm_source, "google");
+  });
+
+  it("aparição mais recente já não-promocional MAS sem custom field → continua original:true sem origem_original_field", () => {
+    const snapshots: SnapshotInput[] = [
+      { date: "2026-08-14", records: [rec({ email: "nunca-sobrescrito@x.com", utm_source: "instagram" })] },
+    ];
+    const result = buildOrigemMap(snapshots);
+    assert.equal(result.origem["nunca-sobrescrito@x.com"].original, true);
+    assert.equal(result.origem["nunca-sobrescrito@x.com"].origem_original_field, undefined);
   });
 });
 

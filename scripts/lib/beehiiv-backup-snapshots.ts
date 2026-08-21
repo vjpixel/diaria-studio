@@ -24,12 +24,24 @@ import { join } from "node:path";
 /** Nome de diretório de snapshot: `YYYY-MM-DD` (ver `backupDir` em backup-beehiiv.ts). */
 const SNAPSHOT_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Item de `custom_fields` cru da API Beehiiv (`expand[]=custom_fields`,
+ *  `backup-beehiiv.ts` linha ~425) — mesmo shape usado por
+ *  `BeehiivCustomFieldRaw` em `sync-apoio-nivel-beehiiv.ts`. */
+export interface BeehiivBackupCustomField {
+  name?: unknown;
+  value?: unknown;
+}
+
 /** Subconjunto dos campos de `subscribers.jsonl` usado pelos consumidores
- *  desta issue. O objeto real tem mais campos (custom_fields, tags,
- *  referrals, stripe_customer_id) — deliberadamente não tipados aqui porque
- *  nenhum consumidor atual precisa deles; `stats.click_rate` está TIPADO
- *  (existe no dado real, ver `docs/definicao-leitor.md`) mas nenhuma função
- *  deste módulo ou de `leitor.ts` o lê — só `total_received`/`total_unique_clicked`. */
+ *  desta issue. O objeto real tem mais campos (tags, referrals,
+ *  stripe_customer_id) — deliberadamente não tipados aqui porque nenhum
+ *  consumidor atual precisa deles; `stats.click_rate` está TIPADO (existe no
+ *  dado real, ver `docs/definicao-leitor.md`) mas nenhuma função deste
+ *  módulo ou de `leitor.ts` o lê — só `total_received`/`total_unique_clicked`.
+ *  `custom_fields` TIPADO desde #5842 — `build-origem-map.ts` lê o campo
+ *  `origem_original` (#5231) de dentro dele; o array já sobrevivia ao
+ *  parse sem tipagem (JSON.parse preserva toda chave presente na linha),
+ *  aqui só formaliza o shape pro TS. */
 export interface BeehiivBackupSubscriber {
   email: string;
   status: string;
@@ -38,6 +50,7 @@ export interface BeehiivBackupSubscriber {
   utm_medium: string;
   utm_campaign: string;
   referring_site: string;
+  custom_fields?: BeehiivBackupCustomField[];
   stats?: {
     total_received?: number;
     total_unique_clicked?: number;
