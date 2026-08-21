@@ -190,6 +190,65 @@ describe("#5794 — renderConviteAmigo (HTML)", () => {
   });
 });
 
+// #5882: "sem título" agora é lido do campo declarado `titulo:` do header
+// (via `readSnippetFileRaw`/`readBoxTituloFlag`) em vez de sempre hardcoded
+// `true` — a fixture principal do arquivo (`SNIPPET_PATH`, sem header) segue
+// cobrindo o caso "campo ausente -> default sem título" nos testes acima;
+// este describe cobre os outros ramos do campo (override explícito e a
+// mesma copy ALTERADA da issue, reproduzindo o cenário exato #5882 no
+// caminho FIXO).
+describe("#5882 — renderConviteAmigo lê o campo declarado titulo: (não mais hardcoded)", () => {
+  function fixtureWithHeader(header: string | null, body: string) {
+    const root = mkdtempSync(join(tmpdir(), "convite-amigo-titulo-fixture-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    const content = header ? `<!--\n${header}\n-->\n\n${body}` : body;
+    writeFileSync(join(root, "data", "snippets", "convite-amigo-whatsapp.md"), content, "utf8");
+    return root;
+  }
+
+  it("sem header (campo ausente): default sem título — preserva o comportamento histórico deste bloco fixo", () => {
+    const root = fixtureWithHeader(null, CONVITE_AMIGO_FIXTURE);
+    try {
+      const html = renderConviteAmigo(root);
+      assert.doesNotMatch(html, /font-size:26px/, "campo ausente deve manter o default 'sem título' já decidido pro bloco fixo");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("titulo: false explícito: sem título (mesmo resultado do campo ausente)", () => {
+    const root = fixtureWithHeader("titulo: false", CONVITE_AMIGO_FIXTURE);
+    try {
+      const html = renderConviteAmigo(root);
+      assert.doesNotMatch(html, /font-size:26px/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("titulo: true explícito (override): título serif volta a aparecer", () => {
+    const root = fixtureWithHeader("titulo: true", CONVITE_AMIGO_FIXTURE);
+    try {
+      const html = renderConviteAmigo(root);
+      assert.match(html, /font-size:26px/, "titulo:true declarado deve reverter pro título serif");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("copy ALTERADA (frase diferente da original, cenário exato da issue #5882): ainda sem título, campo ausente basta — não depende mais da frase exata", () => {
+    const copyAlterada = "Conhece alguém que ia curtir esta newsletter?\n\n[Convide pelo WhatsApp →](https://wa.me/?text=y)\n";
+    const root = fixtureWithHeader(null, copyAlterada);
+    try {
+      const html = renderConviteAmigo(root);
+      assert.doesNotMatch(html, /font-size:26px/, "trocar a copy não pode derrubar a supressão do título — não é mais detectada por regex de frase");
+      assert.match(html, /Conhece alguém que ia curtir esta newsletter\?/, "copy alterada preservada no HTML");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#5794 — posição no corpo da newsletter: após o último destaque, ANTES de 'Para encerrar'", () => {
   const content: NewsletterContent = {
     title: "Edição teste",

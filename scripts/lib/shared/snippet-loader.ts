@@ -57,3 +57,20 @@ export function readSnippetFile(filename: string, rootDir?: string): string | nu
   const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
   return raw || null;
 }
+
+/**
+ * Conteúdo CRU de `data/snippets/{filename}` (header de comentário `<!--
+ * ... -->` PRESERVADO, ao contrário de `readSnippetFile` acima, que o
+ * remove) — `null` se o arquivo não existir. #5882: callers que precisam ler
+ * um campo declarado do header (`parseBoxHeaderField`/`readBoxTituloFlag`,
+ * `shared/snippet-header.ts`) do MESMO snippet cujo corpo já carregam via
+ * `readSnippetFile` (ex: `renderConviteAmigo`, o único caminho "fixo" —
+ * fora de `boxes_divulgacao` — que precisa inspecionar o próprio header).
+ * Mesmo `rootDir` de override de teste que `readSnippetFile` aceita.
+ */
+export function readSnippetFileRaw(filename: string, rootDir?: string): string | null {
+  const root = rootDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const p = join(root, "data", "snippets", filename);
+  if (!existsSync(p)) return null;
+  return readFileSync(p, "utf8");
+}

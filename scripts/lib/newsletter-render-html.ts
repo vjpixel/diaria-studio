@@ -30,7 +30,8 @@ import {
 } from "./newsletter-parse.ts";
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
-import { readSnippetFile } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded
+import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
+import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
 import type { AprofundeItem, HubLink } from "../extract-destaques.ts"; // #3920 / #4907
@@ -412,24 +413,6 @@ export function renderDivulgacaoSeparator(label = "Divulgação"): string {
  */
 export function isAgradecimentoBox(text: string | null | undefined): boolean {
   return !!text && /^\s*Agrade[çc]o\b/iu.test(text);
-}
-
-/**
- * 260821: detecta o box "Convide um amigo" (#5794/#5817) quando colado
- * manualmente num slot de divulgação (D1/D2, D2/D3 ou pós-D3) — pedido do
- * editor na revisão ao vivo da edição 260821, que trocou a posição fixa
- * (sempre antes de "Para encerrar") por um slot específico. Mesmo
- * mecanismo de `isAgradecimentoBox`: o 1º parágrafo é uma frase de convite
- * em prosa corrida, não um título de divulgação — sem esta detecção, o
- * dispatcher de formato (`renderBoxDivulgacao`) trataria a frase como
- * título serif 26px por padrão (mesmo bug que a issue original pediu pra
- * corrigir quando o bloco era fixo, agora reaparecendo pelo caminho de
- * slot manual). Detecta pela frase exata usada em
- * `data/snippets/convite-amigo-whatsapp.md` — se o texto do convite mudar
- * lá, atualizar aqui também.
- */
-export function isConviteAmigoBox(text: string | null | undefined): boolean {
-  return !!text && /^\s*Conhece algu[ée]m que ia gostar de receber esta newsletter\?/iu.test(text);
 }
 
 /**
@@ -1021,7 +1004,12 @@ export function renderBoxDivulgacao(
   if (imageUrl && forceImage) {
     // Imagem explícita HORIZONTAL = header visual do box (traz o título dentro
     // da própria imagem): nenhum parágrafo do corpo deve virar título serif.
-    return renderMidCallout(box, imageUrl, bold, portrait, !portrait, altOverride);
+    // #5882: `plainFirstParagraph` declarado (box "sem título" por propriedade
+    // própria, ex: convite-amigo) tem que valer TAMBÉM com imagem retrato
+    // forçada (`portrait=true`, que por si só não suprimiria o título) — sem
+    // o `||`, um box "sem título" que ganhasse imagem de slot voltava a
+    // mostrar título serif.
+    return renderMidCallout(box, imageUrl, bold, portrait, plainFirstParagraph || !portrait, altOverride);
   }
   if (shouldForceCtaPill(box)) {
     // `plainFirstParagraph`: mesmo tratamento do box de agradecimento a
@@ -1040,7 +1028,10 @@ export function renderBoxDivulgacao(
   // livros-divulgacao.md (o caso mais comum de imagem em box, via
   // livros_promo) nunca teria efeito no HTML final, mesmo com o campo
   // presente e o guard #4086 (checkBoxDivulgacaoAltMissing) reportando "ok".
-  return renderMidCallout(box, imageUrl, bold, portrait, false, altOverride);
+  // #5882: `plainFirstParagraph` também tinha que sobreviver aqui — antes
+  // hardcoded `false`, este ramo (sem imagem forçada, sem CTA-pill
+  // estrutural) descartava a propriedade "sem título" do box em silêncio.
+  return renderMidCallout(box, imageUrl, bold, portrait, plainFirstParagraph, altOverride);
 }
 
 /**
@@ -1050,7 +1041,11 @@ export function renderBoxDivulgacao(
  * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
 export function renderMidCallout(text: string, imageUrl: string | null, bold = true, portrait = false, plainBody = false, altOverride: string | null = null): string {
-  if (!imageUrl) return renderIntroCallout(text, "serif", false, bold);
+  // #5882: `plainBody` tinha que sobreviver também neste early-return
+  // (sem imagem) — antes descartado, um box "sem título" (`plainBody=true`
+  // repassado pelo dispatcher) que caísse aqui (ex: perdeu a estrutura
+  // CTA-only e não tem imagem) voltava a mostrar título serif 26px.
+  if (!imageUrl) return renderIntroCallout(text, "serif", false, bold, plainBody);
   // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
   // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
   // #2067: anchor text do 1º link → alt da imagem + label do CTA (genérico).
@@ -1834,6 +1829,15 @@ export function buildConviteAmigoShareLink(): string {
  * `renderWhatsappShare`/`whatsapp_share_no_d1` logo acima, que já loga
  * quando não consegue renderizar; sem o warning, o bloco podia sumir de
  * TODA edição sem nenhum sinal até um leitor notar).
+ *
+ * #5882: "sem título" lê o campo declarado `titulo:` do header (via
+ * `readSnippetFileRaw` + `readBoxTituloFlag` — o header já vem removido do
+ * `box` acima, lido separadamente aqui) em vez de hardcoded — mesmo
+ * mecanismo do caminho de slot (`renderHTML`, `readBoxDivulgacaoNoTituloForSlot`).
+ * Default `true` quando o campo está ausente (preserva o comportamento
+ * histórico deste bloco especificamente — a decisão "sem título" já estava
+ * registrada em prosa no header antes deste campo existir, #5817) — só um
+ * `titulo: true` EXPLÍCITO reverte pra título serif.
  */
 export function renderConviteAmigo(rootDir?: string, edition?: string): string {
   const box = readSnippetFile("convite-amigo-whatsapp.md", rootDir);
@@ -1841,11 +1845,11 @@ export function renderConviteAmigo(rootDir?: string, edition?: string): string {
     if (edition) emitRenderWarning({ event: "convite_amigo_snippet_missing", edition });
     return "";
   }
-  // plainFirstParagraph=true: a frase de convite é prosa corrida, não título
-  // serif 26px — mesmo tratamento do box de agradecimento a apoiadores
-  // (isAgradecimentoBox), que também tem 1º parágrafo + CTA pill sem título.
+  const raw = readSnippetFileRaw("convite-amigo-whatsapp.md", rootDir);
+  const tituloFlag = raw ? readBoxTituloFlag(raw) : null;
+  const plainFirstParagraph = tituloFlag !== true;
   return `<!-- Convide um amigo -->
-  ${renderBoxDivulgacao(box, null, false, false, false, null, true)}`;
+  ${renderBoxDivulgacao(box, null, false, false, false, null, plainFirstParagraph)}`;
 }
 
 /**
@@ -1981,6 +1985,10 @@ export interface DivulgacaoBoxDef {
   imageExplicit: boolean;
   imagePortrait: boolean;
   imageAlt: string | null;
+  /** #5882: `titulo: false` declarado no header do snippet atribuído a este
+   * slot — repassado como `plainFirstParagraph` pra `renderBoxDivulgacao`.
+   * Substitui `isConviteAmigoBox` (regex de copy, aposentada). */
+  noTitulo: boolean;
 }
 
 /**
@@ -2218,6 +2226,8 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
         content.boxDivulgacaoImageExplicit?.[0] ?? false,
         content.boxDivulgacaoImagePortrait?.[0] ?? false,
         content.boxDivulgacaoImageAlt?.[0] ?? null,
+        // #5882: titulo:false declarado no header do snippet deste slot.
+        content.boxDivulgacaoNoTitulo?.[0] ?? false,
       ),
     );
   }
@@ -2248,6 +2258,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageExplicit: content.boxDivulgacaoImageExplicit?.[1] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[1] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[1] ?? null,
+      noTitulo: content.boxDivulgacaoNoTitulo?.[1] ?? false, // #5882
     });
   }
   if (content.boxDivulgacao2 && selectedDivulgacaoSlots.has(2)) {
@@ -2260,6 +2271,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageExplicit: content.boxDivulgacaoImageExplicit?.[2] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[2] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[2] ?? null,
+      noTitulo: content.boxDivulgacaoNoTitulo?.[2] ?? false, // #5882
     });
   }
   if (content.boxDivulgacao3 && selectedDivulgacaoSlots.has(3)) {
@@ -2272,6 +2284,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageExplicit: content.boxDivulgacaoImageExplicit?.[3] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[3] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[3] ?? null,
+      noTitulo: content.boxDivulgacaoNoTitulo?.[3] ?? false, // #5882
     });
   }
   const divulgacaoGaps = assignDivulgacaoGaps(content.destaques.length, divulgacaoBoxes); // #5152
@@ -2331,10 +2344,12 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           assignedBox.imageExplicit,
           assignedBox.imagePortrait,
           assignedBox.imageAlt,
-          // #5794/#5817 (260821): "Convide um amigo" colado manualmente num
-          // slot tem 1º parágrafo em prosa corrida (frase de convite), não
-          // título de divulgação — mesmo tratamento de isAgradecimentoBox.
-          isConviteAmigoBox(assignedBox.content),
+          // #5882: `titulo: false` declarado no header do snippet deste slot
+          // (ex: "Convide um amigo" colado manualmente — #5794/#5817) — 1º
+          // parágrafo em prosa corrida, não título de divulgação. Substitui
+          // a detecção por regex de copy (`isConviteAmigoBox`, aposentada):
+          // trocar a copy do box não derruba mais a detecção.
+          assignedBox.noTitulo,
         ),
       );
     }

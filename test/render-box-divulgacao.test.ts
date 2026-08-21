@@ -252,3 +252,69 @@ Corpo antes do CTA.
     assert.match(html, /<li[^>]*>Item 2<\/li>/);
   });
 });
+
+describe("renderBoxDivulgacao — plainFirstParagraph propaga em TODOS os ramos (#5882)", () => {
+  // Mesma FORMA estrutural do box "Convide um amigo" (frase + parágrafo
+  // CTA-only), mas com copy DIFERENTE da frase original — reproduz o cenário
+  // da issue #5882: trocar 1 palavra da copy não pode derrubar a supressão
+  // do título, porque a supressão não depende mais de regex casando o texto
+  // exato (isConviteAmigoBox, aposentada) — é uma propriedade declarada
+  // repassada pelo CALLER via `plainFirstParagraph`.
+  const boxCopyAlterada = `Conhece alguém que ia curtir esta newsletter?
+
+[Convide pelo WhatsApp →](https://wa.me/?text=x)`;
+
+  it("ramo shouldForceCtaPill (2+ links/CTA-only): plainFirstParagraph=true suprime o título mesmo com copy alterada", () => {
+    const html = renderBoxDivulgacao(boxCopyAlterada, null, false, false, false, null, true);
+    assert.doesNotMatch(html, /font-size:26px/, "plainFirstParagraph=true deve suprimir o título, independente da copy");
+  });
+
+  it("sanity: MESMA copy alterada, SEM plainFirstParagraph (default false) — 1º parágrafo vira título serif (mostra a regressão que a detecção por regex sofria)", () => {
+    const html = renderBoxDivulgacao(boxCopyAlterada);
+    assert.match(html, /font-size:26px/, "sem o flag declarado, o dispatcher trata o 1º parágrafo como título — comportamento pré-existente preservado");
+  });
+
+  // Box "sem título" que PERDE a estrutura CTA-only (link não é CTA-only —
+  // tem texto além do link no mesmo parágrafo —, sem imagem) — cai no ramo
+  // DEFAULT de renderBoxDivulgacao (chamada ~1033), que por sua vez cai no
+  // early-return sem imagem de renderMidCallout (chamada ~1043). Os DOIS
+  // pontos hardcoded `false` antes desta issue. Estrutura link-led no 2º
+  // parágrafo (mesmo sinal de `firstLineIsSectionTitle` do describe acima)
+  // pra garantir que, SEM `plainFirstParagraph`, o título REALMENTE aparece
+  // (a exceção #3460 "nota pessoal" só se aplica a box sem NENHUM parágrafo
+  // liderado por link — não serviria pra provar a propagação).
+  const boxSemCtaOnly = `Conhece alguém que ia curtir esta newsletter?
+
+[**Confira o motivo**](https://example.com/x), publicado essa semana.
+
+Vale a leitura completa.`;
+
+  it("ramo default (sem CTA-pill, sem imagem): plainFirstParagraph propaga até renderIntroCallout via renderMidCallout", () => {
+    const withFlag = renderBoxDivulgacao(boxSemCtaOnly, null, false, false, false, null, true);
+    assert.doesNotMatch(withFlag, /font-size:26px/, "plainFirstParagraph deve suprimir título mesmo no ramo default sem imagem");
+  });
+
+  it("sanity: ramo default SEM plainFirstParagraph — título serif aplicado (comportamento pré-existente)", () => {
+    const withoutFlag = renderBoxDivulgacao(boxSemCtaOnly);
+    assert.match(withoutFlag, /font-size:26px/, "sem o flag, o 1º parágrafo vira título no ramo default");
+  });
+
+  // Ramo forceImage (imagem explícita atribuída ao slot) com imagem RETRATO
+  // (portrait=true) — por si só `!portrait` é false, então SEM o flag
+  // declarado o título normalmente aparece; `plainFirstParagraph` precisa
+  // vencer mesmo assim (box "sem título" que ganha imagem de slot).
+  it("ramo forceImage + portrait: plainFirstParagraph=true suprime o título mesmo com imagem retrato forçada", () => {
+    const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/capa.jpg", true, true, true, null, true);
+    assert.doesNotMatch(html, /font-size:26px/, "box declarado sem título não pode reganhar título ao ganhar imagem de slot");
+  });
+
+  it("sanity: ramo forceImage + portrait SEM plainFirstParagraph — título serif aplicado (comportamento pré-existente)", () => {
+    const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/capa.jpg", true, true, true);
+    assert.match(html, /font-size:26px/, "sem o flag, imagem retrato forçada mostra título — comportamento pré-existente preservado");
+  });
+
+  it("ramo forceImage horizontal (portrait=false): plainFirstParagraph já era suprimido por `!portrait` — continua suprimido", () => {
+    const html = renderBoxDivulgacao(boxSemCtaOnly, "https://cdn.example.com/header.jpg", true, true, false, null, false);
+    assert.doesNotMatch(html, /font-size:26px/, "imagem horizontal forçada já suprimia título independente de plainFirstParagraph — regressão de comportamento histórico");
+  });
+});
