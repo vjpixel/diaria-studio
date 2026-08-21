@@ -87,11 +87,14 @@
  * no nível da RODADA, não do contato individual.
  *
  * A task agendada (`Diaria-Sunset-Weekly`, `scripts/lib/scheduled-tasks.ts`)
- * nasce `enabled: false` — a #5849 (relacionada, NÃO resolvida) achou que
- * `receivedMin=20` não separa "morto de verdade" de "recém-chegado dentro da
- * janela de medição do teste 2608" (#5734/#4556); ligar a execução automática
- * antes dessa decisão contaminaria medição de campanha em curso. O mecanismo
- * está pronto; o interruptor está desligado até o editor resolver a #5849.
+ * nasce `enabled: false`. A #5849 achou que `receivedMin=20` sozinho não
+ * separava "morto de verdade" de "recém-chegado dentro da janela de medição
+ * do teste 2608" (#5734/#4556) — **resolvida** (sessão `/diaria-develop`
+ * 260821): critério agora combina `receivedMin` E `subscribedMinDays` (ver
+ * `SunsetThresholds`). Ligar a task (`enabled: true`) continua sendo decisão
+ * separada e não foi tomada nesta mesma sessão — o mecanismo está pronto,
+ * mas o interruptor segue desligado até o editor decidir armar a execução
+ * automática.
  *
  * ## Uso
  *
@@ -141,11 +144,22 @@ export interface SunsetThresholds {
   receivedMin: number;
   /** Abertura pessoal (open rate) máxima em fração 0-1 (0.10 = 10%). */
   openRateMaxPct: number;
+  /** Idade mínima de cadastro em dias — piso combinado do #5849. Achado ao
+   *  vivo em 20/08/2026: `receivedMin=20` sozinho mistura assinantes mortos
+   *  de verdade (grupo original, mediana 101 recebidas / ~8 meses de
+   *  cadastro) com gente que acabou de cruzar o piso de volume (23 casos,
+   *  mediana 22 recebidas / ~1 mês de cadastro, coorte da campanha de
+   *  lançamento em medição — #5734/#4556). 4 semanas ainda cabe onboarding
+   *  ruim ou hábito não formado; 60 dias dá a folga que o piso de volume
+   *  sozinho não garante. Decisão do editor (sessão `/diaria-develop`
+   *  260821): combinar os dois pisos em vez de só subir `receivedMin`. */
+  subscribedMinDays: number;
 }
 
 export const SUNSET_THRESHOLDS: SunsetThresholds = {
   receivedMin: 20,
   openRateMaxPct: 10,
+  subscribedMinDays: 60,
 };
 
 /** Limiar do guard de blast radius (20% — spec da issue #5807, "~20% dos
@@ -162,6 +176,10 @@ export interface SunsetInput {
   totalReceived: number;
   totalUniqueOpened: number;
   totalUniqueClicked: number;
+  /** Epoch em SEGUNDOS do cadastro (`created` do snapshot Beehiiv, mesma
+   *  unidade documentada em `acquisition-health.ts`) — piso de idade do
+   *  #5849. */
+  subscribedAt: number;
 }
 
 /** Open rate real (aberturas únicas ÷ recebidas), em pontos percentuais
@@ -173,24 +191,46 @@ export function computeOpenRatePct(totalUniqueOpened: number, totalReceived: num
   return (totalUniqueOpened / totalReceived) * 100;
 }
 
+/** Dias corridos entre `subscribedAt` (epoch SEGUNDOS) e `referenceDate`
+ *  (`YYYY-MM-DD`, meia-noite UTC — mesma disciplina de `computeSnapshotAgeDays`
+ *  abaixo). Entrada inválida retorna 0 (fail-soft — nunca NaN/Infinity, nunca
+ *  exclui por engano um assinante com dado ausente). */
+export function daysSinceSubscribed(subscribedAt: number, referenceDate: string): number {
+  if (!Number.isFinite(subscribedAt) || subscribedAt <= 0) return 0;
+  const refMs = Date.parse(`${referenceDate}T00:00:00Z`);
+  if (!Number.isFinite(refMs)) return 0;
+  return Math.floor((refMs / 1000 - subscribedAt) / 86400);
+}
+
 /**
  * Predicado puro: `status=active` AND `totalReceived >= receivedMin` AND
- * `openRatePct <= openRateMaxPct` AND `totalUniqueClicked === 0`.
+ * `daysSinceSubscribed >= subscribedMinDays` AND `openRatePct <=
+ * openRateMaxPct` AND `totalUniqueClicked === 0`.
  *
- * O guard crítico da issue vive na ÚLTIMA condição: `totalUniqueClicked ===
- * 0`, não `<= algum limiar` — QUALQUER clique na vida inteira, mesmo um só,
- * exclui o assinante do sunset (é o mesmo assinante que os "101 com pixel
- * bloqueado" da análise original representam — abertura baixa sozinha nunca
- * decide, exatamente como `isLeitorV1` nunca decide só por CTR sem o piso de
- * recebidas, e o inverso do motivo de `leitor-v1` nunca usar `click_rate`:
- * aqui é abertura que pode mentir por MPP, clique nunca mente).
+ * Dois guards críticos, nenhum dispensável (#5849 endureceu o de idade em
+ * cima do que já existia):
+ *
+ * - `totalUniqueClicked === 0`, não `<= algum limiar` — QUALQUER clique na
+ *   vida inteira, mesmo um só, exclui o assinante do sunset (é o mesmo
+ *   assinante que os "101 com pixel bloqueado" da análise original
+ *   representam — abertura baixa sozinha nunca decide, exatamente como
+ *   `isLeitorV1` nunca decide só por CTR sem o piso de recebidas, e o
+ *   inverso do motivo de `leitor-v1` nunca usar `click_rate`: aqui é
+ *   abertura que pode mentir por MPP, clique nunca mente).
+ * - `daysSinceSubscribed >= subscribedMinDays` — sem isso, `receivedMin`
+ *   sozinho é um proxy indireto de tempo que quebra se a cadência de envio
+ *   mudar, e mistura recém-chegado (ainda dentro da janela de formar
+ *   hábito) com morto de verdade. Ver achado completo no docstring de
+ *   `SunsetThresholds.subscribedMinDays`.
  */
 export function isDeadSubscriber(
   input: SunsetInput,
+  referenceDate: string,
   thresholds: SunsetThresholds = SUNSET_THRESHOLDS,
 ): boolean {
   if (input.status !== "active") return false;
   if (input.totalReceived < thresholds.receivedMin) return false;
+  if (daysSinceSubscribed(input.subscribedAt, referenceDate) < thresholds.subscribedMinDays) return false;
   if (input.totalUniqueClicked !== 0) return false;
   return computeOpenRatePct(input.totalUniqueOpened, input.totalReceived) <= thresholds.openRateMaxPct;
 }
@@ -203,6 +243,7 @@ export function sunsetInputFromBeehiivSubscriber(sub: BeehiivBackupSubscriber): 
     status: sub.status,
     totalReceived: sub.stats?.total_received ?? 0,
     totalUniqueOpened: sub.stats?.total_unique_opened ?? 0,
+    subscribedAt: sub.created,
     totalUniqueClicked: sub.stats?.total_unique_clicked ?? 0,
   };
 }
@@ -238,7 +279,7 @@ export function selectDeadSubscribers(
     .map(sunsetInputFromBeehiivSubscriber)
     .filter((s) => s.status === "active" && s.totalReceived >= thresholds.receivedMin);
 
-  const selected = mature.filter((s) => isDeadSubscriber(s, thresholds));
+  const selected = mature.filter((s) => isDeadSubscriber(s, snapshotDate, thresholds));
   const selectedEmails = new Set(selected.map((s) => s.email));
   const remaining = mature.filter((s) => !selectedEmails.has(s.email));
 
@@ -566,7 +607,7 @@ export function formatDryRunReport(selection: SunsetSelectionResult): string {
   );
   lines.push(
     `[sunset-dead-subscribers] ${selection.selected.length} candidato(s) a sunset ` +
-      `(abertura <= ${selection.thresholds.openRateMaxPct}% E zero cliques na vida inteira).`,
+      `(cadastro >= ${selection.thresholds.subscribedMinDays} dias E abertura <= ${selection.thresholds.openRateMaxPct}% E zero cliques na vida inteira).`,
   );
   lines.push(
     `[sunset-dead-subscribers] open rate: ${(selection.open_rate_before * 100).toFixed(1)}% (atual) → ` +
@@ -574,7 +615,7 @@ export function formatDryRunReport(selection: SunsetSelectionResult): string {
   );
   for (const s of selection.selected) {
     lines.push(
-      `  - ${s.email} (recebidas=${s.totalReceived}, abertura=${computeOpenRatePct(s.totalUniqueOpened, s.totalReceived).toFixed(1)}%, cliques=${s.totalUniqueClicked})`,
+      `  - ${s.email} (recebidas=${s.totalReceived}, cadastro há ${daysSinceSubscribed(s.subscribedAt, selection.snapshot_date)}d, abertura=${computeOpenRatePct(s.totalUniqueOpened, s.totalReceived).toFixed(1)}%, cliques=${s.totalUniqueClicked})`,
     );
   }
   lines.push("");
