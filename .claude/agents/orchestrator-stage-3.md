@@ -39,7 +39,7 @@ npx tsx scripts/stage-3-run.ts --edition {AAMMDD} [--only d1,d2] [--force]
 ```
 Interpretar o JSON de saída:
 - `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no lugar de rodar os comandos individuais de §3b abaixo.
-- `code: 1` → erro duro/BLOQUEANTE (ex: `image-generate.ts`/`gen-social-card-4x5.ts` com exit ≠ 0) — parar e reportar `notes[]` ao editor, mesma severidade do #4090.
+- `code: 1` → erro duro/BLOQUEANTE (ex: geração de imagem ou composição do card com exit ≠ 0) — parar e reportar `notes[]` ao editor, mesma severidade do #4090.
 - `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script — ComfyUI indisponível, ou #4583 raffle stale) — parar mesmo com `auto_approve`.
 - Destaque com `lintOk: false` → geração pausada só naquele destaque (`lintViolations` no resultado) — mostrar ao editor, mesmo fluxo do lint pre-flight abaixo.
 - `cropReviewPairs` não-vazio → `pendingAgentDispatch[0]` já traz a chamada pronta: dispatchar `Agent("image-crop-reviewer", { edition, pairs: cropReviewPairs, out_path })`, depois persistir com `run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json <output-do-agent>` (mesmo fluxo do §3b abaixo).
