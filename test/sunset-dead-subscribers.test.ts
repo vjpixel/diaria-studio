@@ -299,6 +299,15 @@ describe("selectDeadSubscribers", () => {
     ];
     const result = selectDeadSubscribers(subscribers, SUNSET_THRESHOLDS, snapshotDate);
     assert.deepEqual(result.selected.map((s) => s.email), ["dead@a.com"]);
+    // O piso de idade filtra só a SELEÇÃO (quem vira sunset), não o
+    // denominador de maturidade — de propósito (mesma leitura do docstring
+    // de `mature_active_count`: "denominador do guard de blast radius", que
+    // quer o universo ANTES do filtro de "morto", não depois). O newcomer
+    // continua contando como maduro por volume; travar isso aqui evita que
+    // um refactor futuro funda o piso de idade no filtro `mature` em
+    // silêncio, mudando o denominador do blast radius sem nenhum teste
+    // acusar.
+    assert.equal(result.mature_active_count, 2, "newcomer + dead — ambos maduros por recebidas");
   });
 });
 
@@ -392,6 +401,25 @@ describe("formatDryRunReport", () => {
     assert.match(report, /dry-run/);
     assert.match(report, /nenhuma escrita/);
     assert.match(report, /dead@a\.com/);
+  });
+
+  // #5849: o piso de idade precisa aparecer no relatório que o editor lê
+  // antes de decidir rodar --push — texto não verificado antes travava só
+  // por coincidência (nenhum teste cobria as strings novas).
+  it("#5849: menciona o piso de idade e a idade de cadastro de cada candidato", () => {
+    const snapshotDate = "2026-08-16";
+    const subscribedAt90DaysAgo = Math.floor(Date.parse(`${snapshotDate}T00:00:00Z`) / 1000) - 90 * 86400;
+    const report = formatDryRunReport({
+      snapshot_date: snapshotDate,
+      thresholds: SUNSET_THRESHOLDS,
+      total_subscribers: 10,
+      mature_active_count: 5,
+      selected: [sub({ email: "dead@a.com", subscribedAt: subscribedAt90DaysAgo })],
+      open_rate_before: 0.3,
+      open_rate_projected: 0.35,
+    });
+    assert.match(report, /cadastro >= 60 dias/);
+    assert.match(report, /cadastro há 90d/);
   });
 });
 
