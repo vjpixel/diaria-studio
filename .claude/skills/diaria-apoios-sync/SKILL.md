@@ -137,7 +137,7 @@ npx tsx scripts/sync-apoio-nivel-beehiiv.ts --push [--allow-partial] [--force-bl
 
 Nunca rodar `--push` sem o editor ter visto o diff do Passo 2 primeiro.
 
-## Passo 4 — pós-push: refresh manual + gate de reconferência (#4485 item 1)
+## Passo 4 — pós-push: refresh manual + gate de reconferência (#4485 item 1, corrigido em #5897)
 
 **Verificado ao vivo em 260802 (#4485): o recálculo pós-`--push` NÃO é
 automático.** `recalculate_segment`/`save_segment` seguem bloqueados pelo
@@ -152,11 +152,22 @@ sozinho" no #4436 era outra coisa: mudar a CONDIÇÃO do segmento (não o valor
 do campo) dispara reprocessamento na hora — não generaliza pra mudança de
 valor.
 
+**Correção 260821 (#5897): o botão "Refresh segment" na aba Overview não
+existe mais na UI da Beehiiv.** O substituto verificado ao vivo nos 6
+segmentos: **Aba Configure → botão "Update segment"**, sem alterar nenhuma
+condição. Salvar o formulário dispara reprocessamento na hora. Isso é
+consistente com o que o #4436 já tinha observado ("mudar a CONDIÇÃO dispara
+reprocessamento na hora") — só generaliza: **salvar o formulário basta, mesmo
+sem diff de condição nenhum**. Pegou de 1ª nos 6, sem precisar de 2ª rodada
+(diferente do medido no #4485 pro botão antigo). **Registrar que o botão pode
+mudar de novo** — o sintoma canônico é `gate.ok === false` depois de clicar
+(não um erro visível na tela).
+
 1. Para cada um dos 6 segmentos, via Chrome: `get_segment(segment_id).editor_url`
-   → navegar até lá → aba **Overview** (não Configure) → clicar **"Refresh
-   segment"**. Nem sempre pega na 1ª tentativa (medido: 4 de 6 pegaram no
-   1º refresh, 2 precisaram de uma 2ª rodada) — é o Passo 4.2 abaixo que
-   detecta isso, não assumir sucesso pelo clique.
+   → navegar até lá → aba **Configure** → clicar **"Update segment"**
+   (sem alterar nenhuma condição). Salvar o formulário dispara reprocessamento.
+   **Pegou de 1ª nos 6 segmentos** — diferente do botão antigo que às vezes
+   precisava de 2ª rodada.
 2. `mcp__claude_ai_Beehiiv__get_segment` nos 6 de novo → ler `num_members`
    atual de cada um. Obter `activeBase` (total de assinantes ativos da
    publicação) via `mcp__claude_ai_Beehiiv__get_publication_stats` com o
@@ -168,7 +179,7 @@ valor.
    esse `activeBase` — **gate de verdade**, não estimativa: se
    `gate.ok === false`, o refresh NÃO pegou em
    algum segmento (`tiersMatchTodos: false` → confira Todos e as 4 faixas;
-   `totalMatchesActiveBase: false` → confira Nenhum). Repetir o "Refresh
+   `totalMatchesActiveBase: false` → confira Nenhum). Repetir o "Update
    segment" nos segmentos suspeitos e reler até `gate.ok === true` — nunca
    declarar sucesso com o gate falhando.
 
