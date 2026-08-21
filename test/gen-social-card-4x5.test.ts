@@ -23,6 +23,7 @@ import {
   buildCardSvg,
   buildOverlaySvg,
   overlayFittingFontSize,
+  computeCarouselTitleFontSize,
   editionDateLabel,
   RATIOS,
 } from "../scripts/gen-social-card-4x5.ts";
@@ -200,6 +201,34 @@ describe("overlayFittingFontSize (#5330 fleet review — extraída de buildOverl
     assert.ok(overlayFittingFontSize("IA", available) <= 88);
     const longo = "Palavra ".repeat(60).trim();
     assert.ok(overlayFittingFontSize(longo, available) >= 44);
+  });
+});
+
+describe("computeCarouselTitleFontSize (#5852 — fonte compartilhada entre cards)", () => {
+  it("devolve o MENOR overlayFittingFontSize do conjunto", () => {
+    const titles = ["IA", "Google lança Gemini 3.6 e 3.5 Flash com contexto expandido e preço menor"];
+    const available = 1080 - 72 * 2;
+    const expected = Math.min(...titles.map((t) => overlayFittingFontSize(t, available)));
+    assert.equal(computeCarouselTitleFontSize(titles), expected);
+  });
+
+  it("o tamanho comum é do título mais restritivo (menor), nunca do maior", () => {
+    const curto = "IA";
+    const longo = "Palavra ".repeat(40).trim();
+    const available = 1080 - 72 * 2;
+    const sizeCurto = overlayFittingFontSize(curto, available);
+    const sizeLongo = overlayFittingFontSize(longo, available);
+    assert.ok(sizeLongo < sizeCurto, `esperava longo menor: curto=${sizeCurto} longo=${sizeLongo}`);
+    assert.equal(computeCarouselTitleFontSize([curto, longo]), sizeLongo);
+  });
+
+  it("lança se titles estiver vazio (contrato — sempre chamado com ≥1 título)", () => {
+    assert.throws(() => computeCarouselTitleFontSize([]), /computeCarouselTitleFontSize: titles vazio/);
+  });
+
+  it("mesmo conjunto de títulos devolve o mesmo valor (determinístico)", () => {
+    const titles = ["Google,", "OpenAI", "Brasil"];
+    assert.equal(computeCarouselTitleFontSize(titles), computeCarouselTitleFontSize(titles));
   });
 });
 
