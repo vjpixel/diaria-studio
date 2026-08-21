@@ -32,6 +32,9 @@
  *               --ignore-hour-test.
  *   --ignore-hour-test  escape hatch pra `--no-cells` com o teste de horário
  *               ativo, quando "onda única mesmo assim" é intencional (#5827).
+ *               Usar isto contra um teste `ativo` REGISTRA o dia como
+ *               inválido pra apuração automaticamente (#5887) — não precisa
+ *               rodar `clarice-hour-test.ts --mark-invalid` à parte.
  *   --force     sobrescreve um manifest já existente (ver guarda abaixo).
  *   --dry-run   só imprime o plano.
  */
@@ -42,7 +45,7 @@ import Papa from "papaparse";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg, REPO_ROOT } from "./lib/clarice-paths.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
+import { markInvalidHourTestDay, readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import {
   buildGroupCells,
   buildHourCells,
@@ -191,6 +194,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     writeFileAtomic(resolve(dir, entry.file), Papa.unparse({ fields, data: cellRows }));
   }
   writeFileAtomic(manifestPath, JSON.stringify(manifest, null, 2));
+
+  // #5887 — `--ignore-hour-test` é o único jeito de este script escrever uma
+  // onda ÚNICA com o teste de horário `ativo` (o guard acima aborta em
+  // qualquer outro caso). Quando o escape hatch de fato foi exercitado
+  // contra um teste ativo, a apuração final precisa saber que ESTE dia não
+  // carrega dado do teste — registra automaticamente, sem depender de
+  // ninguém lembrar de rodar `--mark-invalid` à parte.
+  if (strategy.kind === "single" && hourTestState.status === "ativo") {
+    markInvalidHourTestDay(REPO_ROOT, {
+      date,
+      reason: `--no-cells + --ignore-hour-test com teste de horário ativo (braços ${hourTestState.hoursBrt.join(",")} BRT) — onda '${groupKey}' saiu como campanha única.`,
+    });
+    console.log(`⚠️  ${date} registrado como dia INVÁLIDO pra apuração do teste de horário (#5887).`);
+  }
 
   const noun = manifest.length === 1 ? "lista" : "células";
   console.log(`✅ ${manifest.length} ${noun} + manifest em ${manifestPath}`);
