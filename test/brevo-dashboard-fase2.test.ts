@@ -3979,53 +3979,10 @@ describe("#5490/#5610: renderOpenRateByDaySection", () => {
   });
 });
 
-describe("#5640 A2/A4: renderOpenRateByDaySection — cohortResult (small multiples + confounders)", () => {
-  test("cohortResult omitido (chamador antigo/2 args) não quebra e não renderiza a faixa 'Por coorte'", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c = makeCampaign(150, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
-    const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.doesNotMatch(html, /Por coorte/, "sem cohortResult, faixa A2 não aparece");
-  });
-
-  test("com cohortResult.panels, renderiza 'Por coorte' + 1 mini-gráfico por balde", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const ativos = { ...makeCampaign(151, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 60 }), listName: "assinantes-ativos" };
-    const { rows } = aggregateByDay([ativos], now);
-    const cohortResult = aggregateByDayByCohort([ativos], now);
-    const html = renderOpenRateByDaySection(rows, DAY_OPENRATE_WINDOW_DAYS, cohortResult);
-    assert.match(html, /Por coorte/);
-    assert.match(html, /Assinantes ativos/);
-    assert.match(html, /class="cohort-multiples-grid"/);
-  });
-
-  test("unclassifiedCount > 0 gera nota textual explicando quantas campanhas ficaram de fora", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const semCoorte = { ...makeCampaign(152, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 }), listName: "Clarice Retenção engajados — Engajados (retenção)" };
-    const { rows } = aggregateByDay([semCoorte], now);
-    const cohortResult = aggregateByDayByCohort([semCoorte], now);
-    const html = renderOpenRateByDaySection(rows, DAY_OPENRATE_WINDOW_DAYS, cohortResult);
-    assert.match(html, /1 campanha do período sem coorte identificável/);
-  });
-
-  test("sempre renderiza a faixa 'Confounders' (sparkline de bounce/spam/CTOR), independente de cohortResult", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c = makeCampaign(153, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40, hardBounces: 2, complaints: 1 });
-    const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.match(html, /Confounders/);
-    assert.match(html, /class="confounders-sparkline-chart"/);
-  });
-
-  test("nota de confounders nunca usa 'causou'/'por causa de' (guarda-corpo de honestidade A5)", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c = makeCampaign(154, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
-    const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.doesNotMatch(html, /causou/i);
-    assert.doesNotMatch(html, /por causa de/i);
-  });
-});
+// #5876 (21/08/2026): o describe "#5640 A2/A4: renderOpenRateByDaySection —
+// cohortResult (small multiples + confounders)" foi removido junto com a
+// faixa "Por coorte"/"Confounders" — `renderOpenRateByDaySection` não tem
+// mais parâmetro `cohortResult` (ver docstring da função, sections-core.ts).
 
 describe("#5640 A1 / #5786: computeCohortBaseOpenRates", () => {
   test("agrega open rate BASE por coorte numa janela mais longa que os 30 dias do gráfico principal", () => {
@@ -4150,7 +4107,7 @@ describe("#5640 A1: computeExpectedOpenRateByDay", () => {
 });
 
 describe("#5640 A1: renderOpenRateByDaySection — nota de leitura da série esperada", () => {
-  test("sem baseRates (chamador antigo/3 args), nenhuma nota 'Esperado' aparece", () => {
+  test("sem baseRates (chamador antigo/2 args), nenhuma nota 'Esperado' aparece", () => {
     const now = new Date("2026-06-26T12:00:00Z");
     const c = makeCampaign(220, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
@@ -4163,7 +4120,8 @@ describe("#5640 A1: renderOpenRateByDaySection — nota de leitura da série esp
     const c = makeCampaign(221, "Clarice News 2605 d01-A", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 40 });
     const { rows } = aggregateByDay([c], now);
     const rowsWithExpected = rows.map((r) => ({ ...r, expectedOpenRate: 35 }));
-    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { panels: [], unclassifiedCount: 0 }, { "assinantes-ativos": 40 });
+    // #5876: `cohortResult` saiu da assinatura — baseRates agora é o 3º arg.
+    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { "assinantes-ativos": 40 });
     assert.match(html, /open rate ESPERADO/);
     assert.match(html, /efeito de mix, sem dano/);
     assert.match(html, new RegExp(String(COHORT_BASE_OPENRATE_WINDOW_DAYS)));
@@ -4175,47 +4133,17 @@ describe("#5640 A1: renderOpenRateByDaySection — nota de leitura da série esp
     const { rows } = aggregateByDay([c], now);
     const rowsWithExpected = rows.map((r) => ({ ...r, expectedOpenRate: 35 }));
     // baseRates só tem assinantes-ativos — as outras 3 coortes ficam faltando.
-    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { panels: [], unclassifiedCount: 0 }, { "assinantes-ativos": 40 });
+    const html = renderOpenRateByDaySection(rowsWithExpected, DAY_OPENRATE_WINDOW_DAYS, { "assinantes-ativos": 40 });
     for (const bucket of ["ex-assinantes", "leads", "novos"] as const) {
       assert.match(html, new RegExp(DAY_OPENRATE_COHORT_LABELS[bucket]));
     }
   });
 });
 
-describe("#5640 A3: renderOpenRateByDaySection — dispersão + correlação por defasagem", () => {
-  test("com >= 2 dias de dado, renderiza a subseção de dispersão com os 4 lags rotulados", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c1 = makeCampaign(230, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
-    const c2 = makeCampaign(231, "d2", "2026-06-11T09:00:00Z", { delivered: 200, uniqueViews: 30 });
-    const { rows } = aggregateByDay([c1, c2], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.match(html, /Dispersão delivered × open rate/);
-    assert.match(html, /class="scatter-delivered-openrate"/);
-    assert.match(html, /k=0/);
-    assert.match(html, /k=1/);
-    assert.match(html, /k=2/);
-    assert.match(html, /k=3/);
-    assert.match(html, /Correlação, não causa/);
-  });
-
-  test("com só 1 dia de dado, a subseção de dispersão NÃO aparece (renderDeliveredOpenRateScatterSvg se omite)", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c = makeCampaign(232, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
-    const { rows } = aggregateByDay([c], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.doesNotMatch(html, /Dispersão delivered × open rate/);
-  });
-
-  test("nota de correlação nunca usa 'causou'/'por causa de' (A5)", () => {
-    const now = new Date("2026-06-26T12:00:00Z");
-    const c1 = makeCampaign(233, "d1", "2026-06-10T09:00:00Z", { delivered: 100, uniqueViews: 50 });
-    const c2 = makeCampaign(234, "d2", "2026-06-11T09:00:00Z", { delivered: 200, uniqueViews: 30 });
-    const { rows } = aggregateByDay([c1, c2], now);
-    const html = renderOpenRateByDaySection(rows);
-    assert.doesNotMatch(html, /causou/i);
-    assert.doesNotMatch(html, /por causa de/i);
-  });
-});
+// #5876 (21/08/2026): o describe "#5640 A3: renderOpenRateByDaySection —
+// dispersão + correlação por defasagem" foi removido junto com a subseção
+// que cobria (retirada por decisão editorial — ver docstring da função,
+// sections-core.ts).
 
 // ─── #2619: renderMvStatusSection — formato de data no badge ─────────────────
 
