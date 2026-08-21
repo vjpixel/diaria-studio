@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { join } from "node:path";
 import {
   acquireEnvioLock,
@@ -149,7 +149,11 @@ describe("breakEnvioLock", () => {
     acquireEnvioLock(root, "2607-08", "run-em-andamento", now);
     const result = breakEnvioLock(root, "2607-08", now, {
       checkPidAlive: () => true,
-      currentHost: "helios",
+      // acquireEnvioLock grava o hostname REAL da máquina (`os.hostname()`) —
+      // hardcodear um literal (ex: "helios") só passaria no host onde o dev
+      // escreveu o teste. Usar o mesmo hostname() garante "mesmo host" de
+      // verdade, em qualquer runner/máquina (achado ao vivo em CI, #5832).
+      currentHost: hostname(),
     });
     assert.equal(result.broken, false);
     assert.match(result.reason, /ainda está rodando/);
@@ -160,7 +164,7 @@ describe("breakEnvioLock", () => {
     acquireEnvioLock(root, "2607-08", "run-abandonado", now);
     const result = breakEnvioLock(root, "2607-08", now, {
       checkPidAlive: () => false,
-      currentHost: "helios",
+      currentHost: hostname(),
     });
     assert.equal(result.broken, true);
     assert.match(result.reason, /destravado em/);
@@ -172,7 +176,7 @@ describe("breakEnvioLock", () => {
     acquireEnvioLock(root, "2607-08", "run-noutra-maquina", now);
     const result = breakEnvioLock(root, "2607-08", now, {
       checkPidAlive: () => false, // mesmo "confirmando morto", host diferente vence — não confiável
-      currentHost: "outro-host",
+      currentHost: `${hostname()}-outro`, // garantidamente diferente do host real, em qualquer runner
     });
     assert.equal(result.broken, false);
     assert.match(result.reason, /MESMO host/);
