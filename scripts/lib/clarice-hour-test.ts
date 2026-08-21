@@ -60,9 +60,31 @@
  *   npx tsx scripts/lib/clarice-hour-test.ts --start --hours 6,10  # inicia
  *   npx tsx scripts/lib/clarice-hour-test.ts --close --winner 10 \
  *     --rationale "..."                                            # encerra
+ *   npx tsx scripts/lib/clarice-hour-test.ts --mark-invalid \
+ *     --date 2026-08-21 --reason "..."                             # #5887
+ *
+ * ===========================================================================
+ * DIAS INVÁLIDOS (#5887)
+ * ===========================================================================
+ * Arquivo IRMÃO, separado de propósito (`data/clarice-hour-test-invalid-days.json`,
+ * ver `invalidHourTestDaysPath`) — não um campo dentro do estado `ativo`/
+ * `encerrado` acima. Duas razões: (1) o schema do estado já viaja pro KV do
+ * dashboard via `toHourTestKvState`, e uma lista de datas cresce sem limite
+ * — não é o tipo de dado que precisa estar no snapshot slim que o painel lê
+ * a cada request; (2) um dia inválido pode precisar ser registrado DEPOIS
+ * que o teste já fechou (auditoria tardia), e amarrar isso ao ciclo de vida
+ * `ativo → encerrado` do estado principal obrigaria a decidir em qual dos
+ * dois o registro pertence quando as duas coisas acontecem em momentos
+ * diferentes.
+ *
+ * Uma DATA (não uma onda/campanha) é a unidade registrada — é o que a
+ * apuração final (humana, ou uma leitura futura do dashboard) precisa pra
+ * excluir o dia inteiro da comparação entre braços, independente de quantas
+ * campanhas/ondas tocaram aquele dia.
  *
  * @see scripts/lib/clarice-abc-state.ts (mesmo padrão, teste de assunto)
  * @see #5140
+ * @see #5887 (dias inválidos)
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -283,6 +305,95 @@ export function describeHourTestState(state: ClariceHourTestStateRead): string {
   return `encerrado — ${w} (em ${state.decidedAt})`;
 }
 
+// ---------------------------------------------------------------------------
+// #5887 — dias inválidos: onda que saiu SEM split apesar do teste `ativo`.
+// Ver docstring "DIAS INVÁLIDOS" no topo do arquivo pro porquê de um arquivo
+// separado do estado principal.
+// ---------------------------------------------------------------------------
+
+export interface InvalidHourTestDay {
+  /** Data BRT (YYYY-MM-DD) — a onda inteira do dia, não uma campanha específica. */
+  date: string;
+  reason: string;
+  recordedAt: string;
+  recordedBy?: string;
+}
+
+export function invalidHourTestDaysPath(rootDir: string): string {
+  return resolve(rootDir, "data", "clarice-hour-test-invalid-days.json");
+}
+
+function isValidInvalidDayEntry(v: unknown): v is InvalidHourTestDay {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(o.date) &&
+    typeof o.reason === "string" &&
+    typeof o.recordedAt === "string"
+  );
+}
+
+/**
+ * Lê a lista de dias marcados como inválidos. Fail-soft — mesmo padrão de
+ * `readClariceHourTestState`: arquivo ausente ou ilegível vira lista vazia
+ * (nunca lança), porque este arquivo é só um REGISTRO auxiliar pra apuração
+ * — perder a leitura dele não pode travar nada que dependa do estado
+ * principal do teste.
+ */
+export function readInvalidHourTestDays(rootDir: string): InvalidHourTestDay[] {
+  const p = invalidHourTestDaysPath(rootDir);
+  if (!existsSync(p)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(p, "utf-8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidInvalidDayEntry);
+  } catch {
+    return [];
+  }
+}
+
+export interface MarkInvalidHourTestDayOptions {
+  date: string;
+  reason: string;
+  recordedBy?: string;
+  now?: () => Date;
+}
+
+/**
+ * Registra (idempotente por `date` — uma 2ª chamada pra mesma data não
+ * duplica) que a onda de `date` saiu sem split pelo teste de horário, pra
+ * que a apuração final exclua esse dia da comparação entre braços.
+ *
+ * Não exige `status: "ativo"` no estado principal — o registro pode
+ * acontecer tarde (auditoria posterior a um teste já `encerrado`), e a data
+ * inválida é sobre O QUE ACONTECEU naquele dia, não sobre o estado atual do
+ * teste. Só valida o FORMATO da data — a decisão de que ela É de fato
+ * inválida é de quem chama (o guard mecânico em `clarice-split-group-cells.ts`
+ * quando `--ignore-hour-test` é usado, ou um registro manual retroativo).
+ */
+export function markInvalidHourTestDay(rootDir: string, opts: MarkInvalidHourTestDayOptions): InvalidHourTestDay[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date)) {
+    throw new Error(`data inválida "${opts.date}" — esperado YYYY-MM-DD.`);
+  }
+  const now = (opts.now ?? (() => new Date()))();
+  const existing = readInvalidHourTestDays(rootDir);
+  if (existing.some((e) => e.date === opts.date)) {
+    return existing; // já registrado — idempotente, não duplica nem sobrescreve o motivo original.
+  }
+  const next: InvalidHourTestDay[] = [
+    ...existing,
+    {
+      date: opts.date,
+      reason: opts.reason,
+      recordedAt: now.toISOString(),
+      ...(opts.recordedBy ? { recordedBy: opts.recordedBy } : {}),
+    },
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  writeFileSync(invalidHourTestDaysPath(rootDir), `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  return next;
+}
+
 /**
  * #5189: empurra o estado recém-mudado pro KV do dashboard, fail-soft — a
  * escrita LOCAL (`write()` acima) é a fonte de verdade e já aconteceu quando
@@ -334,8 +445,20 @@ if (isMainModule(import.meta.url)) {
         });
         console.log(describeHourTestState(st));
         await pushStateToKvFailSoft(rootDir);
+      } else if (hasFlag(argv, "mark-invalid")) {
+        // #5887 — registro retroativo/manual de um dia que saiu sem split.
+        const date = getArg(argv, "date");
+        const reason = getArg(argv, "reason");
+        if (!date) throw new Error("--mark-invalid exige --date YYYY-MM-DD");
+        if (!reason) throw new Error("--mark-invalid exige --reason \"...\"");
+        const days = markInvalidHourTestDay(rootDir, { date, reason, recordedBy: getArg(argv, "by") || undefined });
+        console.log(`✅ dia inválido registrado: ${date} (${days.length} no total).`);
       } else {
         console.log(describeHourTestState(readClariceHourTestState(rootDir)));
+        const invalidDays = readInvalidHourTestDays(rootDir);
+        if (invalidDays.length > 0) {
+          console.log(`⚠️  ${invalidDays.length} dia(s) marcado(s) como INVÁLIDO(S) pra apuração (sem split): ${invalidDays.map((d) => d.date).join(", ")}`);
+        }
       }
     } catch (e) {
       console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);

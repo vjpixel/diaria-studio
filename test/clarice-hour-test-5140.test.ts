@@ -28,8 +28,11 @@ import { groupCellListNameFor, isGroupCellWave } from "../scripts/clarice-import
 import {
   closeClariceHourTest,
   clariceHourTestStatePath,
+  invalidHourTestDaysPath,
+  markInvalidHourTestDay,
   normalizeHours,
   readClariceHourTestState,
+  readInvalidHourTestDays,
   startClariceHourTest,
   toHourTestKvState, // #5189
 } from "../scripts/lib/clarice-hour-test.ts";
@@ -405,5 +408,98 @@ describe("#5827: --no-cells não pode fragmentar um teste de horário ativo em s
     const ativo = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" };
     assert.equal(checkSingleStrategyAgainstHourTest({ kind: "hours", hoursBrt: [6, 10] }, ativo, false), null);
     assert.equal(checkSingleStrategyAgainstHourTest({ kind: "cells" }, ativo, false), null);
+  });
+});
+
+describe("#5887: onda montada com o teste ATIVO nunca termina como célula única", () => {
+  it("REGRESSÃO: reproduz o cenário exato do d24-sex21 — --no-cells + teste ativo ABORTA, não degrada em silêncio", () => {
+    // Este é o teste de regressão exigido pela #5887: uma onda montada com
+    // clarice-hour-test.json em status "ativo" NÃO PODE terminar como
+    // célula única. `checkSingleStrategyAgainstHourTest` é o ÚNICO ponto de
+    // validação compartilhado pelos dois caminhos (manual — Passo 8 da
+    // skill — e automático — clarice-envio-run.ts, que nunca passa
+    // --ignore-hour-test) porque os dois chamam clarice-split-group-cells.ts
+    // pra materializar a onda; testar aqui cobre os dois sem duplicar setup.
+    const hourTestState = {
+      status: "ativo" as const,
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-16T13:18:32.343Z",
+      startedBy: "editor",
+    };
+    const msg = checkSingleStrategyAgainstHourTest({ kind: "single" }, hourTestState, false);
+    assert.notEqual(msg, null, "onda única com teste ativo tem que abortar, nunca seguir em silêncio");
+  });
+});
+
+describe("#5887: dias inválidos (apuração exclui dias sem split)", () => {
+  it("arquivo ausente = lista vazia, sem lançar", () => {
+    withRoot((root) => {
+      assert.deepEqual(readInvalidHourTestDays(root), []);
+    });
+  });
+
+  it("markInvalidHourTestDay grava e é lido de volta", () => {
+    withRoot((root) => {
+      const days = markInvalidHourTestDay(root, {
+        date: "2026-08-21",
+        reason: "onda d24-sex21 saiu como campanha única (#5887)",
+        now: () => new Date("2026-08-22T10:00:00Z"),
+      });
+      assert.equal(days.length, 1);
+      assert.equal(days[0].date, "2026-08-21");
+      assert.equal(days[0].recordedAt, "2026-08-22T10:00:00.000Z");
+
+      const reread = readInvalidHourTestDays(root);
+      assert.deepEqual(reread, days);
+    });
+  });
+
+  it("idempotente por data — 2ª marcação da MESMA data não duplica", () => {
+    withRoot((root) => {
+      markInvalidHourTestDay(root, { date: "2026-08-21", reason: "primeiro motivo" });
+      const after = markInvalidHourTestDay(root, { date: "2026-08-21", reason: "motivo diferente, ignorado" });
+      assert.equal(after.length, 1);
+      assert.equal(after[0].reason, "primeiro motivo", "1ª marcação vence — não sobrescreve em silêncio");
+    });
+  });
+
+  it("datas diferentes acumulam, ordenadas", () => {
+    withRoot((root) => {
+      markInvalidHourTestDay(root, { date: "2026-08-22", reason: "b" });
+      markInvalidHourTestDay(root, { date: "2026-08-21", reason: "a" });
+      const days = readInvalidHourTestDays(root);
+      assert.deepEqual(days.map((d) => d.date), ["2026-08-21", "2026-08-22"]);
+    });
+  });
+
+  it("rejeita data em formato inválido, nada é escrito", () => {
+    withRoot((root) => {
+      assert.throws(() => markInvalidHourTestDay(root, { date: "21/08/2026", reason: "x" }), /data inválida/);
+      assert.deepEqual(readInvalidHourTestDays(root), []);
+    });
+  });
+
+  it("JSON corrompido no arquivo de dias inválidos degrada pra lista vazia (fail-soft)", () => {
+    withRoot((root) => {
+      writeFileSync(invalidHourTestDaysPath(root), "{ nao é json", "utf-8");
+      assert.deepEqual(readInvalidHourTestDays(root), []);
+    });
+  });
+
+  it("entrada inválida no array é filtrada, entradas válidas sobrevivem", () => {
+    withRoot((root) => {
+      writeFileSync(
+        invalidHourTestDaysPath(root),
+        JSON.stringify([
+          { date: "2026-08-21", reason: "ok", recordedAt: "2026-08-22T00:00:00Z" },
+          { date: "nao-e-data", reason: "ok mas data invalida" },
+          "string solta",
+        ]),
+        "utf-8",
+      );
+      const days = readInvalidHourTestDays(root);
+      assert.equal(days.length, 1);
+      assert.equal(days[0].date, "2026-08-21");
+    });
   });
 });
