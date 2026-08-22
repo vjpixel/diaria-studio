@@ -58,7 +58,7 @@ import {
   syncWaitUntilMarkerOnIssue,
   type GhRunFn,
 } from "./wait-until-sync.ts";
-import { spawnGhSync } from "../studio-ui/gh-run.ts";
+import { spawnGhSync } from "./shared/gh-run.ts";
 
 /** `brake` é um literal de 1 valor de propósito — ver restrição 1 na
  * docstring do módulo. O tipo por si só já impede `setClariceEnvioOverride`

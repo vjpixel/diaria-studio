@@ -16,7 +16,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { GhSpawnResult } from "../scripts/studio-ui/gh-run.ts";
+import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 import {
   alarmFindingMarker,
   alarmIssueStateKey,

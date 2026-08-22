@@ -30,7 +30,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { spawnGhSync } from "./studio-ui/gh-run.ts";
+import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   evaluateOnHoldIssues,
   shouldSendOnHoldVencimentoAlarm,

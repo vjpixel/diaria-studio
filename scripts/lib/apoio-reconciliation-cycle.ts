@@ -71,7 +71,7 @@ import {
   loadContacts,
   saveContacts,
   type ApoioContact,
-} from "../studio-ui/studio-apoios.ts";
+} from "./apoio-contacts-store.ts";
 import { withFileLock } from "./file-lock.ts";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";

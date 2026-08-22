@@ -45,7 +45,7 @@
  * doc-comment de `defaultGhRun` abaixo).
  */
 
-import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "./gh-run.ts";
+import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
 import { classifyExecTrack, EXEC_TRACK_UI, type ExecTrack } from "../lib/issue-exec-track.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────

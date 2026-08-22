@@ -1,5 +1,5 @@
 /**
- * scripts/studio-ui/gh-run.ts (#3783)
+ * scripts/lib/shared/gh-run.ts (#3783 — movido de scripts/studio-ui/ por #5899)
  *
  * Wrapper único sobre `spawnSync("gh", ...)` usado por `studio-issues.ts`.
  * Extraído originalmente do módulo que disparava a onda paralela do Studio

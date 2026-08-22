@@ -36,7 +36,7 @@ import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
 import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-state.ts";
 import { isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
-import { spawnGhSync, type GhSpawnResult } from "./studio-ui/gh-run.ts";
+import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
 import { main as cacReportMain } from "./cac-report.ts";
 import { reportId } from "./studio-ui/studio-reports.ts";
