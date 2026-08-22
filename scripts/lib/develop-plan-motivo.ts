@@ -103,6 +103,10 @@ export interface DevelopPlanIssueLike {
   number?: number;
   status?: unknown;
   motivo?: unknown;
+  /** Track calculado pelo `classifyExecTrack` e gravado no plan.json pelo
+   * passo 6a da Fase 0 (#5907: hoje é prosa pura — o gap (a) da issue).
+   * Consumido por `findHeliosBuraco` (#5907 b). */
+  exec_track_painel?: unknown;
   /** Obrigatório (string não-vazia) quando `motivo ===
    * "ja-resolvida-antes-da-sessao"` — ver docstring do módulo. */
   ja_resolvida_evidencia?: unknown;
@@ -151,6 +155,35 @@ export function findInvalidPuladaMotivos(
     }
   }
   return out;
+}
+
+/**
+ * #5907 (b) — `deixado-para-o-helios` aplicado a issue que o helios NUNCA
+ * pega manda a issue pra um buraco: o develop não faz, o overnight não faz.
+ * Issue com track painel `develop` ou `bloqueada` não pode terminar como
+ * `pulada` com esse motivo — o roteamento label-driven (`classifyExecTrack`)
+ * é quem decide pra onde ela vai, e esses tracks exigem máquina/editor que
+ * esta sessão não representa. Terminações legítimas para essas tracks:
+ * `mergeada`, `entregue-fora-de-codigo`, `nao-tentada`, ou `pulada` com
+ * outro motivo do vocabulário.
+ *
+ * Pure: devolve os números das issues cujo status é exatamente
+ * `deixado-para-o-helios` com `exec_track_painel` conhecido e incompatível.
+ * Issues sem `exec_track_painel` gravado NÃO são reportadas aqui — a falta
+ * do campo é o gap (a) da mesma #5907 (gate próprio no passo 6a), não deste.
+ */
+export function findHeliosBuraco(
+  issues: DevelopPlanIssueLike[],
+): number[] {
+  const out: number[] = [];
+  for (const issue of issues) {
+    if (issue?.status !== "deixado-para-o-helios") continue;
+    const track = typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : null;
+    if (track === "develop" || track === "bloqueada") {
+      out.push(typeof issue.number === "number" ? issue.number : Number.NaN);
+    }
+  }
+  return out.sort((a, b) => a - b);
 }
 
 export type DevelopPlanMotivoCheckResult =
