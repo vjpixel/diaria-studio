@@ -1,0 +1,10 @@
+{
+  "_comentario": "#5734 — template do input de PAINEL para `aquisicao-reconcile.ts factor`. Preencher reported_conversions de cada plataforma com o número que ELA reporta na janela da 1a semana de campanha (Meta Events Manager, Google Ads conversao 17790097065, Microsoft UET 187268188, LinkedIn 29163954). cohort_key = a chave real da coorte no baseline (utm_source normalizado — as chaves reais de CHANNEL_GROUP_KEYS para Meta/Microsoft devem ser observadas e commitadas na 1a semana, ver comentario de 20/08 na issue #5734). reported_conversions deve ser numero.",
+  "window": { "from": "2026-08-24", "to": "2026-08-28" },
+  "channels": {
+    "meta": { "reported_conversions": 0, "cohort_key": "meta" },
+    "google": { "reported_conversions": 0, "cohort_key": "google" },
+    "microsoft": { "reported_conversions": 0, "cohort_key": "microsoft" },
+    "linkedin": { "reported_conversions": 0, "cohort_key": "linkedin" }
+  }
+}
