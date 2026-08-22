@@ -66,16 +66,24 @@ import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts"
 /**
  * Vocabulário fechado de `motivo` para issues `status: "pulada"` no
  * plan.json do /diaria-develop, exatamente como documentado em
- * `.claude/skills/diaria-develop/SKILL.md` § "'Nenhuma issue aberta' =
+ * `.claude/skills/diaria-develop/SKILL.md` § "Nenhuma issue aberta =
  * estado terminal". Um 4º valor legado (`rescan-limit`) existiu antes do
  * #5272 e foi removido junto do cap de re-varredura — nunca gravado por uma
  * sessão atual, não entra aqui.
+ *
+ * `deixado-para-o-helios` (#5909, refina #5751): issue que exige a máquina
+ * Windows/Neo do editor (labels `windows`, `external-blocker` +
+ * `credencial-escopo`) — o Helios (servidor Linux) não executa nem dirige o
+ * browser do Neo. Terminal no track Helios por construção: a sessão registra
+ * a issue como `pulada` com este motivo e o roteamento label-driven
+ * (`classifyExecTrack`) é quem garante que ela reapareça no track certo.
  */
 export const DEVELOP_PULADA_MOTIVOS = [
   "nao-destravavel-na-sessao",
   "decisao-adiada",
   "claimed-por-outra-sessao",
   "ja-resolvida-antes-da-sessao",
+  "deixado-para-o-helios",
 ] as const;
 
 /** Campo obrigatório (string não-vazia) quando `motivo ===
