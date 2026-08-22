@@ -436,7 +436,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       ...(opts.dryRun ? ["--dry-run"] : []),
       ...(opts.force ? ["--force"] : []),
     ];
-    const segment = step<{ selected?: number; hold?: string }>(
+    const segment = step<{ selected?: number; hold?: string; deferred_by_cap?: number }>(
       deps,
       report,
       "clarice-build-segment --group novos",
@@ -454,6 +454,17 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     }
     const selected = segment.json?.selected ?? 0;
     report.note(`grupo 'novos': ${selected} contato(s) selecionado(s).`);
+    // #5922 item 6 — auto-fatiamento do D13: o build-segment fatiou pro topo
+    // do teto em vez de abortar. A nota tem que ser honesta sobre o limite do
+    // "próxima rodada": o default de --since do delta é MAX(created)-2d, então
+    // excedente com `created` mais antigo que isso NÃO volta sozinho na janela.
+    if (segment.json?.deferred_by_cap) {
+      report.note(
+        `✂️  D13 auto-fatiamento (#5922): ${segment.json.deferred_by_cap} contato(s) ficaram pra próxima rodada ` +
+          `(teto de 500 por rodada). Atenção: quem tiver 'created' mais antigo que a janela do próximo delta ` +
+          `(MAX(created)-2d) sai da fila 'novos' sem envio — backlog grande pede intervenção manual.`,
+      );
+    }
 
     if (selected === 0) {
       report.note("ℹ️  0 contato(s) — rodada vazia, não é erro. Nada a importar/disparar.");
@@ -515,6 +526,10 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
         `Novos ${ddmm(todayPartsBrt(now))} (${key})`,
         "--folder-id",
         String(folderId),
+        // #5922 item 7 ("roda sempre"): retry no mesmo dia depois de falha
+        // estrutural tardia (o abort real de 260821) REUSA a lista existente
+        // em vez de abortar no pré-flight de duplicata.
+        "--reuse-existing",
         "--execute",
       ],
     );

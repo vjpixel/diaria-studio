@@ -129,11 +129,12 @@
  *                com predicado errado.
  *   --since YYYY-MM-DD   OBRIGATÓRIO só pro grupo `novos` (#4347) — janela de
  *                "cadastrou desde". Ignorado pelos outros 3 grupos.
- *   --force      OPCIONAL. (a) Grupo `novos` (#4347, D13): destrava a
- *                escrita quando o grupo selecionou mais que
- *                `NOVOS_ROUND_SIZE_CAP` (500) contatos. Sem a flag, a rodada
- *                aborta ANTES de escrever (substitui o gate humano que a
- *                skill `/diaria-clarice-novos` não tem — D6). (b) Grupos
+ *   --force      OPCIONAL. (a) Grupo `novos` (#4347, D13): desde #5922 item
+ *                6, SEM a flag o excesso sobre `NOVOS_ROUND_SIZE_CAP` (500)
+ *                é AUTO-FATIADO (topo da ordem canônica sobe; excedente fica
+ *                pra próxima rodada com `deferred_by_cap` no summary) — a
+ *                rodada NÃO aborta. Com a flag, envia TUDO (o editor olhou e
+ *                decidiu disparar o volume inteiro de uma vez). (b) Grupos
  *                `ramp-warm`/`novos` (#5169): destrava a escrita quando a
  *                seleção viola a monotonicidade de recência real (um contato
  *                mais antigo entrou enquanto um mais novo, ainda elegível,
@@ -423,11 +424,14 @@ export function buildPrioritySnapshotCsv(selected: SegmentRow[]): string {
 export const NOVOS_ROUND_SIZE_CAP = 500;
 
 /**
- * Pura/testável: `selectedCount > cap` sem `--force` → aborta (`ok:false`).
- * `--force` destrava (D13) — o editor já olhou e decidiu prosseguir mesmo
- * assim. O caller decide QUANDO chamar (só pro grupo `novos` — ver `if
- * (group === "novos")` em `main()`); esta função não sabe qual grupo está
- * ativo, só recebe o `selectedCount` já resolvido.
+/**
+ * Pura/testável: veredito do teto D13. Desde #5922 item 6 o chamador principal
+ * (`main()`, grupo `novos`) NÃO aborta mais quando `ok:false` sem `--force` —
+ * auto-fatiou (topo do cap, resto pra próxima rodada). A função continua
+ * existindo porque o contrato é útil pros demais callers/testes e pro caso
+ * `--force` (que envia tudo); `ok:false` hoje significa "havia excesso e o
+ * operador pediu --force... impossível" — force retorna ok:true. Mantida como
+ * fonte da MENSAGEM canônica de excesso de teto.
  */
 export function checkRoundSizeCap(
   selectedCount: number,
@@ -440,7 +444,7 @@ export function checkRoundSizeCap(
     message:
       `❌ grupo 'novos' selecionou ${selectedCount} contato(s) — acima do teto de ${cap} (D13, #4347). ` +
       `Isso substitui o gate humano que a skill não tem (D6): provável --since errado, rebuild que zerou ` +
-      `sends_count, ou backlog inesperado. Confira antes de prosseguir. Use --force pra destravar depois de olhar.`,
+      `sends_count, ou backlog inesperado. Confira antes de prosseguir.`,
   };
 }
 
@@ -1032,7 +1036,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // modo --group (mesmas colunas de CSV, mesmo shape de manifest). `rows`
   // (não `inputRows`) porque o nome precisa vir do universo COMPLETO, mesmo
   // padrão de `buildSegmentArtifact`.
-  function computeArtifact(inputRows: SegmentRow[]): {
+  function computeArtifact(
+    inputRows: SegmentRow[],
+    // #5922 item 6: override do teto do grupo — usado pelo auto-fatiamento do
+    // D13 (grupo `novos` acima de NOVOS_ROUND_SIZE_CAP sem --force): refaz a
+    // seleção com o teto do cap pra pegar o TOPO da ordem canônica em vez de
+    // abortar. Undefined = usa o `budget` da invocação (comportamento original).
+    budgetOverride?: number,
+  ): {
     csv: string;
     manifestEntry: SegmentManifestEntry;
     selected: SegmentRow[];
@@ -1044,8 +1055,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // não que passou vazio.
     recencyViolations?: RecencyMonotonicityViolation[];
   } {
+    const effBudget = budgetOverride ?? budget;
     if (tiersPathArg) {
-      const wf = buildWaterfallSelection(inputRows, tierSpecs, budget);
+      const wf = buildWaterfallSelection(inputRows, tierSpecs, effBudget);
       const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
       const csvRows = wf.selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
       const file = `${tiersKey}.csv`;
@@ -1057,10 +1069,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         tierStats: wf.tierStats,
       };
     }
-    return buildSegmentArtifact(inputRows, group as NamedGroupKey, budget, minScore, ctx);
+    return buildSegmentArtifact(inputRows, group as NamedGroupKey, effBudget, minScore, ctx);
   }
 
-  const { csv, manifestEntry, selected, tierStats, recencyViolations } = computeArtifact(holdResult.kept);
+  // #5922: `let` (não const) — o auto-fatiamento do D13 (grupo `novos` acima
+  // do teto, sem --force) substitui estas três pelo artefato fatiado.
+  let { csv, manifestEntry, selected, tierStats, recencyViolations } = computeArtifact(holdResult.kept);
 
   // #5169: guard de monotonicidade de recência — só grupos `ramp-warm`/
   // `novos` (RECENCY_ORDERED_GROUPS, clarice-segment.ts) produzem
@@ -1135,14 +1149,43 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // #4347 D13: teto de tamanho da rodada — só o grupo 'novos' (substituto do
   // gate humano que a skill /diaria-clarice-novos não tem, D6). Checado ANTES
-  // de qualquer escrita (CSV/manifest) e ABORTA identicamente com ou sem
-  // --dry-run — dry-run já reflete o plano real, então não faz sentido deixar
-  // passar aqui e travar só na execução de verdade.
+  // de qualquer escrita (CSV/manifest) e aplica-se identicamente com ou sem
+  // --dry-run — dry-run já reflete o plano real.
+  //
+  // #5922 item 6 (pedido do editor: "clarice-novos deve rodar sempre"):
+  // acima do teto SEM --force não aborta mais — AUTO-FATIA: envia o TOPO da
+  // ordem canônica (recência real, #5169) até NOVOS_ROUND_SIZE_CAP e deixa o
+  // resto pra próxima rodada, com `deferred_by_cap` no summary e nota no
+  // relatório do orquestrador. Preserva a intenção original do teto (nunca
+  // disparar volume inesperado de uma vez) sem a rodada inteira morrer.
+  // Ressalva honesta registrada no relatório: o resto fatiado pode sair da
+  // janela `novos` (o default de --since do delta é MAX(created)-2d), então
+  // backlog > ~2 dias de cadastros não é coberto por "próxima rodada" sozinho.
+  // `--force` continua destravando pro OUTRO lado: envia TUDO, inclusive
+  // acima do cap, quando o editor olhou e decidiu.
+  let deferredByCap = 0;
   if (group === "novos") {
-    const cap = checkRoundSizeCap(manifestEntry.count, NOVOS_ROUND_SIZE_CAP, forceCap);
-    if (!cap.ok) {
-      console.error(cap.message);
-      process.exit(1);
+    const overCap = manifestEntry.count - NOVOS_ROUND_SIZE_CAP;
+    if (overCap > 0 && !forceCap) {
+      const capped = computeArtifact(holdResult.kept, NOVOS_ROUND_SIZE_CAP);
+      deferredByCap = overCap;
+      console.error(
+        `✂️  #5922 (D13 auto-fatiamento): grupo 'novos' selecionou ${manifestEntry.count} — acima do teto de ` +
+          `${NOVOS_ROUND_SIZE_CAP}. Enviando o TOPO ${NOVOS_ROUND_SIZE_CAP} (ordem canônica de recência) e deixando ` +
+          `${deferredByCap} pra próxima rodada; sem --force, a rodada NÃO aborta mais por isso.`,
+      );
+      csv = capped.csv;
+      manifestEntry = capped.manifestEntry;
+      selected = capped.selected;
+    } else {
+      const cap = checkRoundSizeCap(manifestEntry.count, NOVOS_ROUND_SIZE_CAP, forceCap);
+      // Só resta falha aqui com --force ATIVO e count > cap impossível (force
+      // retorna ok:true) — o ramo !ok é defensivo (mantém o contrato da
+      // função pura visível); em operação normal nunca dispara.
+      if (!cap.ok) {
+        console.error(cap.message);
+        process.exit(1);
+      }
     }
   }
 
@@ -1170,6 +1213,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // #4622: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
     cohort: cohort ?? undefined,
     universe_total: rows.length,
+    // #5922 item 6 — auditoria do auto-fatiamento do D13: quantos ficaram de
+    // fora desta rodada por exceder NOVOS_ROUND_SIZE_CAP (0/ausente = rodada
+    // inteira ou dentro do teto). O CSV/manifest refletem SEMPRE o que vai
+    // de fato subir pra Brevo (topo do teto), nunca a seleção cheia.
+    deferred_by_cap: deferredByCap || undefined,
     already_sent_or_queued: alreadyTracked || undefined,
     // #4719/#4765: cutoff SEMPRE presente (nunca ausente desde #4765 — o
     // filtro nunca fica desligado) + a FONTE (explícito vs default automático)

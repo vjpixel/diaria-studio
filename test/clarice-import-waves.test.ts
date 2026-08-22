@@ -13,6 +13,7 @@ import {
   normalizeImportCsv,
   parseArgs,
   findExistingConflicts,
+  splitReuse,
   buildPlan,
   loadWaveDefs,
   groupListsRegistryPath,
@@ -568,6 +569,11 @@ describe("parseArgs", () => {
     assert.equal(parseArgs(["--execute"]).execute, true);
   });
 
+  it("#5922 item 7: --reuse-existing liga o modo de reuso; ausente = off", () => {
+    assert.equal(parseArgs(["--reuse-existing"]).reuseExisting, true);
+    assert.equal(parseArgs(["--execute"]).reuseExisting, false);
+  });
+
   it("--label e --folder-id", () => {
     const a = parseArgs(["--label", "Jun/2026", "--folder-id", "4"]);
     assert.equal(a.label, "Jun/2026");
@@ -1065,5 +1071,48 @@ describe("findExistingConflicts (idempotência)", () => {
   it("nenhum conflito → array vazio (label novo é seguro)", () => {
     const c = findExistingConflicts(["Clarice Jul/2026 W1 — T1 abriu"], existing);
     assert.deepEqual(c, []);
+  });
+});
+
+describe("splitReuse (#5922 item 7 — reuso idempotente da lista do dia)", () => {
+  // Planos mínimos: splitReuse só lê `listName`; os outros campos são
+  // preenchidos com o shape mínimo tipado.
+  function plan(listName: string): Parameters<typeof splitReuse>[0][number] {
+    return {
+      wave: { key: "novos", file: "novos.csv", desc: "novos", count: 3 } as never,
+      listName,
+      count: 3,
+      csv: "email\na@x.com",
+      columns: ["email"],
+      sentCount: 4,
+      hasCell: false,
+    };
+  }
+
+  it("#5922 REGRESSÃO (abort real de 260821): lista do dia já existente vai pra `reused` com o id existente", () => {
+    const plans = [plan("Novos 22/08 (novos-260822)"), plan("Outra lista")];
+    const d = splitReuse(plans, [{ name: "Novos 22/08 (novos-260822)", id: 77 }]);
+    assert.equal(d.toImport.length, 1);
+    assert.equal(d.toImport[0]!.listName, "Outra lista");
+    assert.equal(d.reused.length, 1);
+    assert.equal(d.reused[0]!.existingId, 77);
+    assert.equal(d.reused[0]!.plan.listName, "Novos 22/08 (novos-260822)");
+  });
+
+  it("sem conflitos → tudo em `toImport` (comportamento original intacto)", () => {
+    const plans = [plan("A"), plan("B")];
+    const d = splitReuse(plans, []);
+    assert.equal(d.toImport.length, 2);
+    assert.equal(d.reused.length, 0);
+  });
+
+  it("todos conflitantes → tudo em `reused` (retry puro de falha tardia)", () => {
+    const plans = [plan("A"), plan("B")];
+    const d = splitReuse(plans, [
+      { name: "A", id: 1 },
+      { name: "B", id: 2 },
+    ]);
+    assert.equal(d.toImport.length, 0);
+    assert.equal(d.reused.length, 2);
   });
 });

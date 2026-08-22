@@ -813,6 +813,14 @@ interface Args {
    * de dia com célula própria) mantêm o comportamento ORIGINAL inalterado.
    */
   campaignKey?: string;
+  /**
+   * #5922 item 7 ("clarice-novos deve rodar sempre") — quando a lista do dia
+   * já existe no Brevo, REUSA em vez de abortar: pula create+import das waves
+   * conflitantes e registra o listId existente no `{group}-lists.json` pra os
+   * passos de campanha downstream resolverem normalmente. Default OFF — os
+   * demais fluxos (rampa/ramp-warm manual) continuam recusando duplicata.
+   */
+  reuseExisting: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -830,6 +838,7 @@ export function parseArgs(argv: string[]): Args {
     cycle,
     group: values["group"] ?? null,
     campaignKey: values["key"] || undefined,
+    reuseExisting: argv.includes("--reuse-existing"), // #5922 item 7
   };
 }
 
@@ -917,6 +926,32 @@ export function buildPlan(
   return plans;
 }
 
+/**
+ * #5922 item 7 — separa o plano entre waves a IMPORTAR e waves a REUSAR
+ * (lista já existente com `--reuse-existing`). Puro/testável: o loop de
+ * execução em `main()` só consome a decisão daqui.
+ */
+export interface ReuseDecision {
+  /** Waves sem conflito — caminho normal (`importOneWave`). */
+  toImport: Plan[];
+  /** Waves conflitantes — lista existente é reusada, import pulado. */
+  reused: Array<{ plan: Plan; existingId: number }>;
+}
+
+export function splitReuse(
+  plans: readonly Plan[],
+  conflicts: readonly { name: string; id: number }[],
+): ReuseDecision {
+  const idByName = new Map(conflicts.map((c) => [c.name, c.id]));
+  const out: ReuseDecision = { toImport: [], reused: [] };
+  for (const p of plans) {
+    const existingId = idByName.get(p.listName);
+    if (existingId === undefined) out.toImport.push(p);
+    else out.reused.push({ plan: p, existingId });
+  }
+  return out;
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (!args.cycle) {
@@ -950,19 +985,34 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  // Pré-flight de idempotência: recusa se alguma lista planejada já existe.
+  // Pré-flight de idempotência: recusa se alguma lista planejada já existe —
+  // a menos que `--reuse-existing` (#5922 item 7) esteja ativo, caso em que a
+  // lista existente é REUSADA (pula create+import; registro do grupo aponta
+  // pra ela, então os passos de campanha downstream prosseguem). É o que
+  // torna o "clarice-novos roda sempre" verdadeiro na prática: um retry no
+  // mesmo dia (key determinística `novos-{AAMMDD}`) depois de uma falha
+  // ESTRUTURAL tardia (ex: campanha/agendamento) reusa em vez de abortar.
   const conflicts = findExistingConflicts(
     plans.map((p) => p.listName),
     await fetchExistingLists(apiKey),
   );
-  if (conflicts.length) {
+  if (conflicts.length && !args.reuseExisting) {
     console.error(`\n❌ ${conflicts.length} lista(s) com esses nomes JÁ existem no Brevo:`);
     for (const c of conflicts) console.error(`   #${c.id} "${c.name}"`);
     console.error(
       `Re-importar criaria duplicatas (Brevo permite nomes iguais). Delete-as no Brevo, ` +
-        `ou use --label diferente.`,
+        `ou use --label diferente. No fluxo 'novos', o orquestrador passa --reuse-existing ` +
+        `(roda sempre, #5922); passe a flag se quer o mesmo aqui.`,
     );
     process.exit(1);
+  }
+  if (conflicts.length && args.reuseExisting) {
+    console.error(`\n♻️  #5922: ${conflicts.length} lista(s) já existente(s) serão REUSADAS (sem re-import):`);
+    for (const c of conflicts) console.error(`   #${c.id} "${c.name}"`);
+    console.error(
+      `   Premissa: o import anterior completou. Se ele tinha morrido NO MEIO do import,` +
+        ` a contagem da lista pode estar menor que o CSV — confira no resumo da campanha.`,
+    );
   }
 
   // #4577: cria + importa + AGUARDA o processo assíncrono terminar +
@@ -974,10 +1024,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // sempre o transporte real da Brevo.
   const client = makeRealImportRunClient(apiKey);
   const results: ImportOneResult[] = [];
+  const reuse = splitReuse(plans, conflicts);
   try {
-    for (const p of plans) {
+    for (const p of reuse.toImport) {
       const r = await importOneWave(client, p, { folderId: args.folderId });
       results.push(r);
+    }
+    // #5922 item 7: lista já existente com --reuse-existing → REUSA (nada de
+    // re-import; contatos já estão lá da tentativa anterior). Entra em
+    // `results` com o listId existente pra que o registro do grupo e o
+    // stdout sigam o mesmo caminho de um import normal.
+    for (const { plan, existingId } of reuse.reused) {
+      console.error(`   ♻️  (${plan.wave.key}) reusando lista #${existingId} "${plan.listName}" — import pulado.`);
+      results.push({
+        wave: plan.wave.key,
+        listId: existingId,
+        listName: plan.listName,
+        count: plan.count,
+        sentCount: plan.sentCount,
+        importedAt: new Date().toISOString(),
+      });
     }
   } catch (e) {
     // Falha parcial: reporta as listas JÁ criadas pro editor limpar antes de re-rodar
