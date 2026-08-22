@@ -517,6 +517,38 @@ describe("runStage1 --phase pre-research", () => {
     assert.ok(manifest.discoveryQueriesDeterministic.includes("tópico do editor"));
   });
 
+  // #5891 (validação ao vivo 260821): mesmo contrato do dedup —
+  // check-source-blocklist.ts com `--out` escreve o JSON só no arquivo e
+  // deixa stdout vazio. Ler do ARQUIVO; stdout vazio não pode zerar sourcesKept.
+  it("check-source-blocklist com --out (stdout vazio) -> sourcesKept lido do arquivo", async () => {
+    const writes: Record<string, string> = {};
+    const deps = baseDeps({
+      exec: makeFakeExec(
+        happyHandlers({
+          "fetch-websearch-batch.ts": () => fail(3, "BRAVE_API_KEY ausente"),
+          "check-source-blocklist.ts": () => ok(""), // contrato real: stdout vazio
+        }),
+      ).exec,
+      existsSync: (p) => p.includes("sources-kept-skipped.json"),
+      readFile: (p) => {
+        if (p.endsWith("sources-kept-skipped.json")) return JSON.stringify({ kept: [{ name: "A" }], skipped: [{ name: "B" }] });
+        if (p.endsWith("inbox-topics.json")) return "[]";
+        throw new Error(`readFile não mockado: ${p}`);
+      },
+      writeFile: (p, c) => {
+        writes[p] = c;
+      },
+    });
+    const result = await runStage1(["--phase", "pre-research", "--edition", "260423"], deps);
+    assert.equal(result.code, 0);
+    assert.equal(result.researchPathA, false);
+    assert.equal(result.pendingAgentDispatch.length, 1);
+    const manifestKey = Object.keys(writes).find((k) => k.includes("stage-1-path-b-manifest.json"));
+    assert.ok(manifestKey);
+    const manifest = JSON.parse(writes[manifestKey as string]) as { sourcesKept: unknown[] };
+    assert.deepEqual(manifest.sourcesKept, [{ name: "A" }]);
+  });
+
   it("WEBSEARCH_BACKEND=agents força Path B mesmo com key presente (sem chamar fetch-websearch-batch)", async () => {
     const { exec, calls } = makeFakeExec(
       happyHandlers({
@@ -738,6 +770,34 @@ describe("runStage1 --phase post-research-pre-score", () => {
       return runStage1(["--phase", "post-research-pre-score", "--edition", "260423"], deps).then((result) => {
         assert.equal(result.code, 0);
         assert.ok(result.notes.some((n) => n.includes("submissão(ões) do editor removida")));
+      });
+    });
+  });
+
+  // #5891 (validação ao vivo 260821): contrato REAL do dedup.ts com `--out` —
+  // escreve o JSON no arquivo e deixa o stdout VAZIO (a nota vai pra stderr).
+  // O mock antigo devolvia JSON no stdout e escondia o bug: `tmp-kept.json`
+  // saía `[]` e o pool inteiro (categorize → score → render) zerava sem erro.
+  it("dedup com --out (stdout vazio, JSON só no arquivo) -> tmp-kept.json populado do arquivo", async () => {
+    return withTmpRoot("stage-1-run-p2-dedupfile-", (root, editionDir) => {
+      seedFixtures(root, editionDir);
+      const { exec } = makeFakeExec(
+        happyHandlers(3, {
+          "dedup.ts": (args) => {
+            const outIdx = args.indexOf("--out");
+            assert.ok(outIdx >= 0, "dedup.ts deve ser invocado com --out");
+            writeJson(root, args[outIdx + 1], { kept: [{ url: "https://a.com" }, { url: "https://c.com" }], editorSubmittedLost: [] });
+            return ok(""); // contrato real: stdout vazio
+          },
+        }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-research-pre-score", "--edition", "260423"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const keptRaw = readFileSync(resolve(root, `${editionDir}/_internal/tmp-kept.json`), "utf8");
+        const kept = JSON.parse(keptRaw) as Array<{ url: string }>;
+        assert.equal(kept.length, 2, "tmp-kept.json deve conter os itens lidos do ARQUIVO de saída do dedup, não do stdout vazio");
+        assert.equal(kept[0].url, "https://a.com");
       });
     });
   });

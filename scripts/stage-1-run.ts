@@ -237,6 +237,27 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
   }
 }
 
+/**
+ * Lê o JSON que um sub-script escreveu no arquivo `--out` dele (#5891,
+ * validação ao vivo 260821). Vários scripts do Stage 1 (`dedup.ts`,
+ * `check-source-blocklist.ts`) NÃO imprimem JSON no stdout quando recebem
+ * `--out` — escrevem só o arquivo e deixam stdout vazio (a nota vai pra
+ * stderr). Nesses casos `parseStepJson(result.stdout)` devolve `undefined` e
+ * o consumidor seguia silenciosamente com lista vazia: bug ao vivo real —
+ * dedup kept=242 → `tmp-kept.json` gravado `[]` → categorize/pool inteiros
+ * zerados, sem nenhum erro. Contrato dos testes unitários mockava stdout
+ * JSON e por isso não pegou. Regra: quando o passo recebe `--out`, ler o
+ * ARQUIVO primeiro; stdout fica só como fallback para scripts antigos.
+ */
+function readOutFileJson<T>(deps: Stage1RunDeps, absolutePath: string): T | undefined {
+  try {
+    if (!deps.existsSync(absolutePath)) return undefined;
+    return JSON.parse(deps.readFile(absolutePath)) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Abort tipado.
 // ---------------------------------------------------------------------------
@@ -814,7 +835,12 @@ async function runPreResearch(deps: Stage1RunDeps, opts: Stage1RunOptions, repor
       "--out",
       internalPath(editionDir, "sources-kept-skipped.json"),
     ]);
-    const blocklistJson = blocklistResult.json as { kept?: unknown[]; skipped?: unknown[] } | undefined;
+    // #5891: mesmo contrato do dedup — check-source-blocklist.ts com `--out`
+    // escreve só o arquivo. Ler o arquivo; stdout é fallback.
+    const blocklistJson = readOutFileJson<{ kept?: unknown[]; skipped?: unknown[] }>(
+      deps,
+      resolve(deps.rootDir, internalPath(editionDir, "sources-kept-skipped.json")),
+    ) ?? (blocklistResult.json as { kept?: unknown[]; skipped?: unknown[] } | undefined);
 
     let inboxTopics: string[] = [];
     try {
@@ -992,7 +1018,12 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
     "--out",
     internalPath(editionDir, "tmp-dedup-output.json"),
   ]);
-  const dedupJson = dedupResult.json as { kept?: unknown[]; editorSubmittedLost?: unknown[] } | undefined;
+  // #5891 (validação ao vivo 260821): dedup.ts com `--out` escreve o JSON só
+  // no arquivo — stdout fica vazio. Ler o arquivo; stdout é fallback.
+  const dedupJson = readOutFileJson<{ kept?: unknown[]; editorSubmittedLost?: unknown[] }>(
+    deps,
+    resolve(deps.rootDir, internalPath(editionDir, "tmp-dedup-output.json")),
+  ) ?? (dedupResult.json as { kept?: unknown[]; editorSubmittedLost?: unknown[] } | undefined);
   deps.writeFile(resolve(deps.rootDir, internalPath(editionDir, "tmp-kept.json")), JSON.stringify(dedupJson?.kept ?? [], null, 2) + "\n");
   if ((dedupJson?.editorSubmittedLost?.length ?? 0) > 0) {
     report.note(`⚠️  1l: ${dedupJson!.editorSubmittedLost!.length} submissão(ões) do editor removida(s) pelo dedup — ver editorSubmittedLost no gate.`);
