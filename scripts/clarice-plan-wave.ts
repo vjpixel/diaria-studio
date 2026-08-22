@@ -371,7 +371,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // pré-#5405 (sem override de texto).
   const lastRunStatus = readNovosRunStatus(opts.novosStateBaseDir ?? CLARICE_BASE);
   const novosLastAbort =
-    lastRunStatus && (lastRunStatus.status === "semaphore-red" || lastRunStatus.status === "other-error")
+    lastRunStatus && lastRunStatus.status === "other-error"
       ? { status: lastRunStatus.status, checkedAt: lastRunStatus.checkedAt, detail: lastRunStatus.detail }
       : null;
 

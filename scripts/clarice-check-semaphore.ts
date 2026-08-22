@@ -74,9 +74,11 @@ export function decideSemaphoreGuard(
     // stderr por este script; `clarice-novos-run.ts` (`step()`) captura as
     // ÚLTIMAS 6 LINHAS de stderr (não só essa) como "detalhe do abort",
     // prefixadas com `❌ {label} falhou (exit N):` — e é essa mensagem
-    // inteira (`abort.message`), truncada a 300 chars, que chega ao e-mail
-    // de alarme de aborts consecutivos (#5405 item 1,
-    // `clarice-novos-abort-alarm.ts`) — antes desta mudança, o editor via só
+    // inteira (`abort.message`), truncada a 300 chars, que ia ao e-mail
+    // do alarme de aborts consecutivos (#5405 item 1) — alarme REMOVIDO no
+    // #5922 (só rastreava `semaphore-red`, que o #5660 deixou de produzir);
+    // o detalhe por métrica segue valendo pro relatório de abort e pro
+    // dashboard. Histórico: antes dessa melhoria, o editor via só
     // "circuit breaker(s) ... rompido(s)" sem saber QUAL, mesmo o dashboard
     // já sabendo a resposta (tabela de saúde por métrica).
     const detail = result.plan.breachedMetrics?.length
