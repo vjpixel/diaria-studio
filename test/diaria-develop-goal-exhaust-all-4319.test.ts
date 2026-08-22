@@ -112,10 +112,11 @@ describe("diaria-develop re-varredura sem cap (#4319)", () => {
     );
   });
 
-  it("dois momentos de re-varredura documentados: re-checagem entre ondas + re-varredura de convergência, ambos sem cap", () => {
+  it("três momentos de re-varredura documentados: re-checagem entre ondas + re-checagem por unidade (#5907d) + re-varredura de convergência, todos sem cap", () => {
     assert.match(develop, /\*\*Re-checagem entre ondas\*\*/);
+    assert.match(develop, /\*\*Re-checagem ao fim de CADA unidade \(#5907 item d\)\*\*/);
     assert.match(develop, /\*\*Re-varredura de convergência\*\*/);
-    assert.match(develop, /ambos \*\*sem cap\*\*/);
+    assert.match(develop, /todos \*\*sem cap\*\*/);
   });
 
   it("re-checagem entre ondas pode reclassificar issue nova pra um tier anterior (current_tier volta)", () => {
