@@ -52,34 +52,14 @@
  *
  * ## Achado ao vivo 22/08/2026: esta conta Ads exige Google OAuth, não Azure AD
  *
- * `refreshMicrosoftAdsAccessToken` (Azure AD v2, `/common/oauth2/v2.0/token`)
- * FUNCIONA — devolve um `access_token` válido. Mas toda chamada à API com
- * esse token (testado com `CustomerManagementService.GetUser` via REST,
- * `POST clientcenter.api.bingads.microsoft.com/.../User/Query`) falha com
- * `Code 126 IdentityTypeMismatch`, `Detail: "GoogleAccountIsRequired"`:
- *
- *     {"Errors":[{"Code":126,"Message":"You must use a different identity
- *     type to sign in to Bing Ads with the same email.",
- *     "Detail":"GoogleAccountIsRequired","ErrorCode":"IdentityTypeMismatch"}]}
- *
- * A conta Microsoft Advertising (`CustomerId` 255014657, vjpixel@gmail.com)
- * foi criada/vinculada via **"Sign in with Google"** — a Microsoft
- * Advertising API suporta autenticação por Google OAuth 2.0 como provedor
- * ALTERNATIVO ao Azure AD (não substituto), mas exige um `access_token`
- * emitido pelo GOOGLE (não pela Microsoft) + o header SOAP
- * `<IdentityProvider>Google</IdentityProvider>` — arquitetura de auth
- * DIFERENTE, com um client OAuth do Google Cloud Console dedicado
- * (`client_id`/`client_secret` do Google, não os `MICROSOFT_ADS_CLIENT_*` já
- * no Doppler) e um novo fluxo de consentimento via
- * `accounts.google.com/o/oauth2/v2/auth` (scope `profile email`) —
- * https://learn.microsoft.com/en-us/advertising/guides/authentication-oauth-consent#request-user-consent-with-google-oauth.
- * Isso é AÇÃO NOVA do editor (registrar/reusar um client OAuth no Google
- * Cloud Console + consentir) — o refresh via Google (endpoint/params
- * inteiramente diferentes do Azure AD) e o header `IdentityProvider` NÃO
- * estão implementados aqui de propósito: sem a credencial real pra validar,
- * escrever esse caminho agora só criaria confiança falsa (mesma disciplina
- * que já regeu o resto deste módulo antes do #5928). Ver #5928 pro estado
- * completo desta investigação e os próximos passos.
+ * A renovação de token Azure AD funciona, mas a conta Microsoft Advertising
+ * em uso foi criada via "Sign in with Google" e rejeita qualquer chamada
+ * autenticada assim (`IdentityTypeMismatch`/`GoogleAccountIsRequired`) —
+ * exige uma credencial Google OAuth inteiramente nova, NÃO implementada aqui
+ * de propósito (sem credencial real pra validar, só criaria confiança
+ * falsa). Narrativa completa (payload de erro, o que falta, ação do editor):
+ * `docs/microsoft-ads-api-setup.md` § "Achado ao vivo 22/08/2026" e #5928 —
+ * não duplicado aqui pra não virar 2 fontes de verdade divergentes.
  *
  * ## Por que fail-soft é o comportamento CORRETO aqui (mesma disciplina do
  * #5237/#5502)
@@ -258,8 +238,9 @@ export interface MicrosoftAdsAuthConfig {
    * continua no tipo (e `MICROSOFT_ADS_CLIENT_SECRET` no Doppler) só de
    * referência/histórico — se o app registration algum dia migrar pra
    * confidential client, é aqui que a chamada volta a incluir o secret.
+   * `?` de propósito — nada neste módulo lê o valor hoje.
    */
-  clientSecret: string;
+  clientSecret?: string;
   refreshToken: string;
   developerToken: string;
   customerId: string;
@@ -335,14 +316,20 @@ export async function refreshMicrosoftAdsAccessToken(
 const REPORTING_SERVICE_URL = "https://reporting.api.bingads.microsoft.com/Api/Advertiser/Reporting/v13/ReportingService.svc";
 const REPORTING_NAMESPACE = "https://bingads.microsoft.com/Reporting/v13";
 const ARRAYS_NAMESPACE = "http://schemas.microsoft.com/2003/10/Serialization/Arrays";
-/** UTC — mesma escolha de fuso "sem ambiguidade" que `toGaqlDate` faz pro
- *  Google Ads (comentário lá tem a mesma ressalva de borda de dia, que não
- *  importa pra agregação MENSAL). Confirmado o enum exato contra
- *  https://learn.microsoft.com/en-us/advertising/reporting-service/reporttimezone. */
+/** Melhor aproximação de UTC disponível no enum — não existe um valor "UTC"
+ *  puro (confirmado contra
+ *  https://learn.microsoft.com/en-us/advertising/reporting-service/reporttimezone),
+ *  então usa o mesmo nome que a `TimeZoneInfo` "GMT Standard Time" do Windows
+ *  (Dublin/Edinburgh/Lisbon/London) usa pro fuso equivalente. **Não
+ *  confirmado ao vivo se este valor observa horário de verão britânico
+ *  (BST, UTC+1 ~final de março a final de outubro)** — se observar, a mesma
+ *  ressalva de borda-de-dia de `toGaqlDate` (google-ads-ingest.ts) se
+ *  aplica: não importa pra agregação MENSAL, o merge é idempotente por mês. */
 const DEFAULT_REPORT_TIME_ZONE = "GreenwichMeanTimeDublinEdinburghLisbonLondon";
-/** 15s × 20 tentativas = 5min de teto — dentro da faixa "2 a 15 min" que a
- *  documentação oficial recomenda pra polling
- *  (https://learn.microsoft.com/en-us/advertising/guides/request-download-report),
+/** 15s entre tentativas, até 20 tentativas — a 1ª tentativa não espera
+ *  (só as 19 seguintes), então o teto real é ~4min45s, não 5min redondos.
+ *  Dentro da faixa "2 a 15 min" que a documentação oficial recomenda pra
+ *  polling (https://learn.microsoft.com/en-us/advertising/guides/request-download-report),
  *  bem abaixo do teto de 60min que a doc sugere antes de desistir e tentar
  *  depois. Um relatório de 90 dias/1 conta é pequeno — não deveria demorar
  *  perto disso; se demorar, o timeout é sinal real, não falso-positivo. */
@@ -434,23 +421,33 @@ function buildPollGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessTok
   });
 }
 
-/** Extrai a mensagem de um SOAP Fault (1.2) pra log — best-effort: se o
- *  corpo não for um Fault reconhecível, devolve `null` e quem chama cai no
- *  fallback de exibir o texto bruto (mesma disciplina de nunca lançar). */
+/** Extrai a mensagem de um SOAP Fault pra log — best-effort: tenta a forma
+ *  1.2 (`Reason.Text`) primeiro, cai pro `faultstring` (1.1 — o formato REAL
+ *  deste transporte, ver `postSoap`), e tenta os 2 formatos de payload de
+ *  erro específicos da Microsoft Advertising (`AdApiFaultDetail` /
+ *  `ApiFaultDetail`) dentro do elemento **`detail` (minúsculo)** — é
+ *  `<detail>`, não `<Detail>`, porque esse é o nome definido pelo próprio
+ *  SOAP 1.1 (não uma convenção Microsoft) — confirmado contra um Fault real
+ *  capturado ao vivo em 22/08/2026 (#5928, o mesmo `IdentityTypeMismatch` da
+ *  seção "Achado ao vivo" no topo do arquivo). Se o corpo não for um Fault
+ *  reconhecível, devolve `null` e quem chama cai no fallback de exibir o
+ *  texto bruto (mesma disciplina de nunca lançar) — só um `console.debug`
+ *  marca a ocorrência, pra não deixar o catch mudo. */
 function extractSoapFaultMessage(xml: string): string | null {
   try {
-    // biome-ignore lint: payload de erro upstream, forma não é tipada aqui de propósito
+    // Payload de erro upstream — forma não é tipada aqui de propósito, ver docstring.
     const parsed: any = xmlParser.parse(xml);
     const fault = parsed?.Envelope?.Body?.Fault;
     if (!fault) return null;
     const reason = fault.Reason?.Text ?? fault.faultstring;
     const errorContainer =
-      fault.Detail?.AdApiFaultDetail?.Errors?.AdApiError ?? fault.Detail?.ApiFaultDetail?.OperationErrors?.OperationError;
+      fault.detail?.AdApiFaultDetail?.Errors?.AdApiError ?? fault.detail?.ApiFaultDetail?.OperationErrors?.OperationError;
     const errorList = errorContainer === undefined ? [] : Array.isArray(errorContainer) ? errorContainer : [errorContainer];
     const errorMsgs = errorList.map((e) => e?.Message).filter(Boolean).join("; ");
     const combined = [reason, errorMsgs].filter(Boolean).join(" — ");
     return combined || null;
-  } catch {
+  } catch (e) {
+    console.debug(`[microsoft-ads-ingest] extractSoapFaultMessage: corpo não é XML/Fault reconhecível — ${e instanceof Error ? e.message : e}`);
     return null;
   }
 }
@@ -479,7 +476,17 @@ async function postSoap(
   } catch (e) {
     return { error: `falha de rede na chamada SOAP: ${e instanceof Error ? e.message : e}` };
   }
-  const text = await res.text();
+  // `res.text()` pode rejeitar independente do `fetch()` acima ter sucedido
+  // (conexão cai no meio da leitura do corpo) — sem este try/catch essa
+  // rejeição escaparia sem tratamento, quebrando o "nunca lança" que todo o
+  // resto do módulo garante (mesmo padrão de `downloadAndParseReport` pro
+  // `res.arrayBuffer()`).
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    return { error: `falha lendo corpo da resposta SOAP: ${e instanceof Error ? e.message : e}` };
+  }
   return { text, status: res.status };
 }
 
@@ -496,7 +503,7 @@ async function submitGenerateReport(
   if (res.status !== 200) {
     return { error: `SubmitGenerateReport respondeu HTTP ${res.status}: ${extractSoapFaultMessage(res.text) ?? res.text.slice(0, 400)}` };
   }
-  // biome-ignore lint: resposta SOAP, forma não é tipada aqui de propósito
+  // Resposta SOAP — forma não é tipada aqui de propósito, ver docstring da função.
   let parsed: any;
   try {
     parsed = xmlParser.parse(res.text);
@@ -523,7 +530,7 @@ async function pollGenerateReport(
   if (res.status !== 200) {
     return { error: `PollGenerateReport respondeu HTTP ${res.status}: ${extractSoapFaultMessage(res.text) ?? res.text.slice(0, 400)}` };
   }
-  // biome-ignore lint: resposta SOAP, forma não é tipada aqui de propósito
+  // Resposta SOAP — forma não é tipada aqui de propósito, ver docstring da função.
   let parsed: any;
   try {
     parsed = xmlParser.parse(res.text);
@@ -570,6 +577,13 @@ function unzipFirstEntry(buf: Buffer): Buffer {
     throw new Error("ZIP usa data descriptor (streaming, sem tamanho no header) — não suportado");
   }
   const dataStart = 30 + fileNameLength + extraFieldLength;
+  // `Buffer.subarray` clampa em silêncio em vez de lançar quando o range
+  // excede o buffer — sem este check, um download truncado (conexão caiu no
+  // meio) produziria dado TRUNCADO em vez do erro explícito que a docstring
+  // desta função promete ("nunca com dado truncado silencioso").
+  if (dataStart + compressedSize > buf.length) {
+    throw new Error("ZIP entry declara mais bytes do que o buffer contém — download truncado?");
+  }
   const compressedData = buf.subarray(dataStart, dataStart + compressedSize);
   if (compressionMethod === 0) return Buffer.from(compressedData);
   if (compressionMethod === 8) return inflateRawSync(compressedData);
@@ -653,6 +667,10 @@ export async function fetchMicrosoftAdsSpendRows(
   dateRange: MicrosoftAdsDateRange,
   opts: FetchMicrosoftAdsSpendRowsOptions = {},
 ): Promise<{ rows: MicrosoftAdsReportRow[] } | { error: string }> {
+  if (dateRange.start.getTime() > dateRange.end.getTime()) {
+    return { error: `MicrosoftAdsDateRange invertido: start (${dateRange.start.toISOString()}) > end (${dateRange.end.toISOString()})` };
+  }
+
   const serviceUrl = opts.reportingServiceUrl ?? REPORTING_SERVICE_URL;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const maxPollAttempts = opts.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS;
@@ -688,21 +706,24 @@ export async function fetchMicrosoftAdsSpendRows(
 // Orquestração injetável (fetch + fail-soft) — sem I/O de disco
 // ---------------------------------------------------------------------------
 
-export interface RunMicrosoftAdsIngestOptions {
+/**
+ * `extends FetchMicrosoftAdsSpendRowsOptions` (não redeclara os 4 campos de
+ * transporte) — o pass-through pra `fetchMicrosoftAdsSpendRows` dentro de
+ * `runMicrosoftAdsIngest` fica estruturalmente garantido: um campo novo em
+ * `FetchMicrosoftAdsSpendRowsOptions` chega aqui automaticamente, sem
+ * precisar lembrar de duplicar a declaração E o repasse manual.
+ */
+export interface RunMicrosoftAdsIngestOptions extends FetchMicrosoftAdsSpendRowsOptions {
   auth: MicrosoftAdsAuthConfig;
   existingRows: SpendRow[];
   canal?: string;
   moeda?: string;
   fonteLabel?: string;
-  reportingServiceUrl?: string;
   /** Relógio injetável — o range de datas padrão (90 dias) é derivado
    *  daqui, mesmo padrão de `RunGoogleAdsIngestOptions.now`
    *  (google-ads-ingest.ts). Default `new Date()`; testes passam uma data
    *  fixa. */
   now?: Date;
-  pollIntervalMs?: number;
-  maxPollAttempts?: number;
-  sleepImpl?: (ms: number) => Promise<void>;
 }
 
 /** Janela padrão da ingestão, em dias (inclusive do dia corrente) — mesmo
@@ -749,12 +770,9 @@ export async function runMicrosoftAdsIngest(
     const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, opts.auth);
     if ("error" in tokenResult) return { kind: "error", reason: tokenResult.error };
 
-    const spendResult = await fetchMicrosoftAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, range, {
-      reportingServiceUrl: opts.reportingServiceUrl,
-      pollIntervalMs: opts.pollIntervalMs,
-      maxPollAttempts: opts.maxPollAttempts,
-      sleepImpl: opts.sleepImpl,
-    });
+    // `opts` já É um `FetchMicrosoftAdsSpendRowsOptions` (extends) — repasse
+    // direto, sem reconstruir o objeto campo a campo.
+    const spendResult = await fetchMicrosoftAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, range, opts);
     if ("error" in spendResult) return { kind: "error", reason: spendResult.error };
 
     const aggregated = aggregateMicrosoftAdsSpendByMonthWithDiscards(spendResult.rows, { canal, moeda, fonteLabel });
@@ -763,7 +781,24 @@ export async function runMicrosoftAdsIngest(
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
-  if (result.kind === "fallback") return result;
+  if (result.kind === "fallback") {
+    // Perda TOTAL (todas as linhas recebidas foram descartadas na
+    // agregação) colapsa no MESMO fallback genérico de "sem gasto no
+    // período" que `runSpendIngest` usa pra uma resposta vazia de verdade —
+    // sem este enriquecimento, um schema drift completo (API renomeou
+    // TimePeriod/Spend, todo mundo vira descarte) fica indistinguível de um
+    // dia sem gasto, exatamente o mascaramento que #5605/#5598 existem pra
+    // evitar. `discardedCount` só é > 0 aqui quando ALGUMA linha chegou —
+    // "sem linha nenhuma" (token/API falhou antes da agregação rodar, ou a
+    // API devolveu 0 linhas de verdade) mantém a `reason` original.
+    if (discardedCount > 0) {
+      return {
+        kind: "fallback",
+        reason: `${result.reason} — ${discardedCount} linha(s) do CampaignPerformanceReport recebida(s) mas descartada(s) por malformação (#5605); possível schema drift na API, não necessariamente ausência real de gasto no período.`,
+      };
+    }
+    return result;
+  }
 
   if (discardedCount > 0) {
     console.warn(
