@@ -16,6 +16,63 @@ description: Stage 1 do orchestrator diar.ia.br — pesquisa (inbox drain, RSS, 
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
 
+### Runner determinístico (`scripts/stage-1-run.ts`, #5415 incremento 3/3) — CAMINHO PRINCIPAL DO MIOLO
+
+O miolo determinístico do Stage 1 (tudo entre os 7 pontos de dispatch `Agent()` do playbook original) agora roda via `scripts/stage-1-run.ts` em 5 fases. A prosa detalhada das subseções abaixo **permanece intacta** — é o que o script faz e por quê, além de ser o **fallback** se o script não existir ou falhar de forma inesperada.
+
+Design de 5 fases (o script é um processo Node puro — não alcança MCP, Skill ou Agent):
+
+1. **Fase `pre-research`** — §1a (inbox-drain) → §1c (poll stats, fail-soft) → §1d (eia-compose dispatchado em background via spawn detached) → §1e (RSS batch) → §1e-bis (prewarm cache, background) → §1e.5 (inbox topics) → §1f Path A (tentativa determinística). Se Path A falhar (key ausente) ou for desligado, pre-flight de Path B (blocklist + queries determinísticas) devolvido como `pendingAgentDispatch`.
+   ```bash
+   npx tsx scripts/stage-1-run.ts --phase pre-research --edition {AAMMDD}
+   ```
+
+2. **Fase `post-research-pre-score`** — Se Path B foi sinalizado na fase anterior, `--agent-research-results` é OBRIGATÓRIO (RunRecord[] agregado pelos dispatches Agent do orchestrator) — mergeado em researcher-results.json antes de seguir. §1g (record-source-runs) → §1g-ter (assemble pool) → §1g-bis (carry-over) → §1h (inject inbox urls + validate + marker) → §1i (verify-accessibility + anotação/remoção in-JS) → §1j (expand aggregators) → §1k (enrich inbox) → §1l (dedup) → §1m (categorize + enrich-primary-source + integrity checkpoint) → §1m-quater (check-promoted-dedup, idempotente mesmo sem 1m-ter) → §1n (topic-cluster) → §1o (filter-date-window) → §1p1 (research-review-dates) → §1q.1 (split-articles-for-scoring) → devolve `pendingAgentDispatch` pro scorer-chunk (chunked) OU sinaliza `needsScorerFallback` (pool pequeno, cai pro scorer single-call).
+   ```bash
+   # Se Path B rodou:
+   npx tsx scripts/stage-1-run.ts --phase post-research-pre-score --edition {AAMMDD} \
+     --agent-research-results {EDITION_DIR}/_internal/agent-research-results.json
+   # Senão (Path A rodou):
+   npx tsx scripts/stage-1-run.ts --phase post-research-pre-score --edition {AAMMDD}
+   ```
+
+3. **Fase `post-score`** (SÓ no caminho chunked) — §1q.3 (merge-scored-chunks, lendo os `scored-chunk-{i}.json` que o orchestrator escreveu nos paths canônicos após os dispatches scorer-chunk) → branch pelo exit code (#1669) → §1q.3-bis (integrity checkpoint) → devolve `pendingAgentDispatch` pro scorer-select.
+   ```bash
+   npx tsx scripts/stage-1-run.ts --phase post-score --edition {AAMMDD} --chunk-count N
+   ```
+
+4. **Fase `post-select-render`** — Exatamente um dos dois: §1q.5 (assemble-scored, caminho chunked) OU aceita o `tmp-scored.json` do scorer single-call diretamente (fallback) → §1r (promoção de runners_up até 6, in-JS) → §1s (finalize-stage1) → §1t (avisos de mínimo por seção, in-JS) → §1u (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup intra-edição + evergreen) → §1v (render MD) → §1v-bis..1v-quinquies (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis (validate-stage-1-output, blocker vira HALT) → §1w-quat (check-invariants categorized-has-eia-section, BLOQUEIA) → §1w-ter (payload sizes) → §1w-quint-b (repeat-de-tema, fail-soft). Devolve tudo que o gate humano (§1x) precisa mostrar — a apresentação em si (texto formatado pro editor) continua do orchestrator.
+   ```bash
+   # Caminho chunked:
+   npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD} \
+     --selection-json {EDITION_DIR}/_internal/tmp-selection.json
+   # Caminho fallback:
+   npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD} \
+     --fallback-scored-json {EDITION_DIR}/_internal/tmp-scored.json
+   ```
+
+5. **Fase `post-gate`** — §1y — aplica as edições do gate (ou `--auto`), re-renderiza MD, re-valida lançamentos, invariantes pós-apply (warn, não bloqueia), experimento D3-radar (opt-in via config), escreve sentinel, arquiva inbox, fecha stage-status + captura de custo.
+   ```bash
+   # Se editor editou o MD:
+   npx tsx scripts/stage-1-run.ts --phase post-gate --edition {AAMMDD} --md {EDITION_DIR}/01-categorized.md
+   # Se auto_approve:
+   npx tsx scripts/stage-1-run.ts --phase post-gate --edition {AAMMDD} --auto
+   ```
+
+**Interpretar o JSON de saída (campo `code` + resto):**
+- `code: 0` → fase concluída. Usar outputs do JSON.
+- `code: 1` → erro duro (sub-script obrigatório falhou, args inválidos, merge catastrófico sem retry possível aqui) — parar e reportar `notes[]` ao editor.
+- `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script) — parar mesmo com `auto_approve`.
+- `pendingAgentDispatch[]` → para cada entry, disparar `Agent(subagent_type: entry.agent, prompt: <manifest em entry.manifestPath, 1 item por linha>)`. Após todos completarem, re-invocar a fase seguinte passando os resultados (quando requerido).
+- `pendingHumanDecision[]` → apresentar `detail`/`prompt`/`options` ao editor e agir conforme a resposta.
+- `delegatedSteps[]` — lista informativa dos passos que o script nunca tenta (§1m-ter, §1m-quinquies, §1f Path B queries temáticas PT/EN genéricas, §1y resolve-primary-source.ts, §1x gate presentation) — rodar essas seções normalmente, como sempre.
+
+**Fallback**: se `scripts/stage-1-run.ts` não existir, ou falhar de um jeito não coberto pelos `code`s acima (erro de spawn, exceção fora do `try/catch` do script), seguir a prosa detalhada de 1a-1y abaixo turno a turno, exatamente como antes do #5415.
+
+@see scripts/stage-1-run.ts (docstring no topo do arquivo tem o mapeamento completo dos 7 pontos de Agent() e como cada um foi tratado)
+
+---
+
 ### 1a. Inbox drain
 
 Sempre roda, antes da pesquisa:
@@ -38,20 +95,7 @@ Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em 
 
 ### 1c. Fetch poll stats da edição anterior (#201, #1044)
 
-O `eia-compose.ts` auto-preenche "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Buscar do Cloudflare Worker `poll` (compatível com `eia-compose.ts` — `pct_correct`/`below_threshold`/`total_responses`; sem step intermediário `compute-eia-poll-stats.ts`):
-
-```bash
-PREV_EDITION=$(node -e "const r=require('fs').existsSync('data/past-editions-raw.json')?JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8')):[];const p=r[0];if(!p||!p.published_at){process.exit(0)}const d=new Date(p.published_at);process.stdout.write(String(d.getUTCFullYear()).slice(-2)+String(d.getUTCMonth()+1).padStart(2,'0')+String(d.getUTCDate()).padStart(2,'0'))")
-if [ -n "$PREV_EDITION" ]; then
-  npx tsx scripts/fetch-poll-stats.ts --edition "$PREV_EDITION" --out {EDITION_DIR}/_internal/04-eia-poll-stats.json
-fi
-```
-
-Se `PREV_EDITION` vazio ou Worker indisponível — prosseguir silenciosamente sem stats. **Não bloquear** o pipeline.
-
-### 1d. Dispatch É IA? em paralelo (background) — #1111
-
-O `scripts/eia-compose.ts` (#110 fix 2) não depende de nenhum output do pipeline principal — disparar como **Bash em background** (`run_in_background: true`, na mesma mensagem dos researchers abaixo) — [histórico](../../docs/orchestrator-stage-1-research-historia.md#1d-eia-compose-bash-background).
+O `eia-compose.ts` (#110 fix 2) não depende de nenhum output do pipeline principal — disparar como **Bash em background** (`run_in_background: true`, na mesma mensagem dos researchers abaixo) — [histórico](../../docs/orchestrator-stage-1-research-historia.md#1d-eia-compose-bash-background).
 
 ```bash
 npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir {EDITION_DIR}/
@@ -71,7 +115,7 @@ Stage 3 usa o `bashId` (só útil na mesma sessão) pra detectar conclusão OU �
 
 **Validação no gate da Etapa 1** (#110 fix 1): antes do gate principal, checar se `{EDITION_DIR}/01-eia.md` existe OU se há background bash ativo (via `eia_bash_id`). Se nenhum dos dois (skip silencioso), incluir bullet no relatório: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`
 
-### 1e. Método de fetch por fonte (#54)
+### 1d. Método de fetch por fonte (#54)
 
 Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
 
@@ -86,7 +130,7 @@ npx tsx scripts/fetch-rss-batch.ts --sources {EDITION_DIR}/_internal/rss-batch.j
 
 35 fontes em ~9s. **Não construir `rss-batch.json` via parser inline** — `list-active-sources.ts` é canônico (#1270).
 
-### 1e-bis. Pre-warm verify cache (background, #1554 P1)
+### 1d-bis. Pre-warm verify cache (background, #1554 P1)
 
 **Imediatamente após RSS batch retornar**, kick off `prewarm-verify-cache.ts` em background pra popular o cache cross-edição enquanto os agents WebSearch (1f) rodam em paralelo. URLs do RSS estarão pre-verificadas quando o passo 1i principal rodar — elimina ~3-5min de wall clock duplicado.
 
@@ -184,10 +228,15 @@ Melhorias trackeadas em #1559 (filtro de path FAQ/help + WebFetch OG tags).
   Output JSON `{ kept[], skipped[] }`. Dispatchar source-researcher apenas pra `kept[]`. Logar `skipped[]` como info: cada entry tem `category` + `pattern` que casou. Economiza ~30s-1min de wall clock + ~50k Haiku tokens em edições com 11+ fontes em fallback (medido em #717 / 260506).
 
 - **#1074 — sempre dispatchar pra TODAS as fontes.** Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **pra todas as fontes cadastradas em `context/sources.md` que passaram no pre-flight de blocklist acima**, **independente do RSS ter retornado artigos ou não**. Razão (#1074): RSS feeds são incompletos / atrasados; fontes oficiais publicam no site antes do RSS atualizar; pular mascara coverage gaps que o editor não vê. Passar: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
+
 - Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). `inbox_topics` vem do output do step 1e.5 (`scripts/extract-inbox-topics.ts`). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
+
 - **#2313 — SEMPRE incluir ≥2 queries how-to PT-BR como slots fixos**, independente de BRAVE_API_KEY. Path B (agents fallback) é a causa raiz ([histórico](../../docs/orchestrator-stage-1-research-historia.md#2313-how-to-slots)). Obter as queries via: `npx tsx -e "import {getHowToDiscoveryQueries} from './scripts/lib/use-melhor-curation.ts'; console.log(JSON.stringify(getHowToDiscoveryQueries(parseInt(process.env.EDITION_NUM??'0'), 2)))" EDITION_NUM={AAMMDD}` — resultado é array de 2 strings PT-BR. Dispatchar 1 `discovery-searcher` por query. Se a saída do Path A (script TS) já rodou, NÃO re-dispatchar (evitar duplicata): verificar se `researcher-results.json` já contém entries com `source` prefixo `"discovery: como "` ou `"discovery: guia "` (com espaço após o dois-pontos — formato gerado por `fetch-websearch-batch.ts`: `discovery: {query}`) ou similar how-to BR.
+
 - **#3916/#3918 — SEMPRE incluir 1 query dedicada ao ângulo crítico/impacto-negativo como slot fixo**, independente de BRAVE_API_KEY (mesmo racional do #2313 acima — a regra editorial "sempre ≥1 destaque de impacto negativo" não se cumpre se o pool do dia não tiver candidato, e Path B é onde isso mais silenciosamente falta). Obter a query via: `npx tsx -e "import {getNegativeImpactDiscoveryQueries} from './scripts/lib/negative-impact-curation.ts'; console.log(JSON.stringify(getNegativeImpactDiscoveryQueries(parseInt(process.env.EDITION_NUM??'0'), 1)))" EDITION_NUM={AAMMDD}` — resultado é array de 1 string. Dispatchar 1 `discovery-searcher` com essa query. Se o Path A já rodou (`fetch-websearch-batch.ts` sempre injeta essa query quando `BRAVE_API_KEY` está presente), NÃO re-dispatchar — checar se `researcher-results.json` já tem uma entry `discovery:{slug}` cujo `query_used` bate com uma das strings de `NEGATIVE_IMPACT_DISCOVERY_TOPICS`.
+
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
+
 - **#2668 — Reconciliar Path B após dispatch (determinístico).** Após despachar todos os agents E ter rodado ≥1 batch Path A (`fetch-websearch-batch`, que captura o header), emitir: `npx tsx scripts/reconcile-brave-path-b.ts --edition {AAMMDD}`. Deriva o uso do Path B do **gap real do header X-RateLimit-Remaining** (`delta_untracked`), não de um multiplicador hardcoded — então a contagem local passa a bater com o uso real do Brave. Idempotente. O **alerta** já usa o header direto desde #2668; isto é só pro breakdown local do relatório ([histórico](../../docs/orchestrator-stage-1-research-historia.md#2668-reconciliar-path-b)).
 
 ### 1g. Registrar saúde + log (batch, #40)
@@ -300,9 +349,13 @@ npx tsx scripts/verify-accessibility.ts \
   --cache data/link-verify-cache.json \
   --browser-concurrency 8
 ```
+
 A flag `--cache` (#717 hipótese 2) ativa o cache cross-edição de verdicts. URLs já verificadas como `accessible`/`blocked`/`paywall` em qualquer edição passada (TTL default 7 dias) skipam HEAD+GET inteiro. Cache persistido em `data/link-verify-cache.json` (gitignored). Hit ratio típico esperado >50% após 1-2 semanas de runs. Override TTL com `--cache-ttl-days N`.
+
 A flag `--bodies-dir` (#717 hipótese 1) persiste o body raw de cada GET bem-sucedido no path indicado. `verify-dates.ts` (rodado pelo step 1p1 research-review-dates) lê desse cache antes de fetchar — elimina ~3-4min de fetch duplicado em edições com 300+ URLs.
+
 O fallback de browser (Puppeteer) usa worker pool com `--browser-concurrency 8` (#717 hipótese 3, default 4, bumped pra 8 em P5 #1553). URLs `uncertain` no first-pass são verificadas em paralelo com até N tabs no mesmo browser headless ([histórico de medição](../../docs/orchestrator-stage-1-research-historia.md#1i-browser-concurrency)). Descer pra 2-4 se a máquina estiver sob pressão de memória.
+
 Ler `{EDITION_DIR}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
 - **Anotar (#778)**: para todos os artigos, adicionar `verify_verdict` e (quando presente) `verify_note` no artigo a partir do match por URL no `link-verify-all.json`. Isso permite que `render-categorized-md.ts` marque visualmente artigos editor-submitted que falharam acessibilidade (per #778) em vez de eles sumirem do gate.
 - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`) que **não** sejam de inbox. Editor-submitted (`flag: "editor_submitted"` ou `source: "inbox"`) **nunca** são dropados por verdict de acessibilidade — apenas anotados (#778). A regra de aggregator continua dropando inbox-aggregator que não foi expandido pelo `expand-inbox-aggregators.ts` (esse script já trata o caso primário-extraído).
@@ -340,6 +393,7 @@ npx tsx scripts/dedup.ts \
   --window {window_days} \
   --out {EDITION_DIR}/_internal/tmp-dedup-output.json
 ```
+
 Pré-passo automático (#485): artigos inbox com título placeholder `(inbox)` têm o título real resolvido via fetch antes do dedup principal, evitando falsos-positivos de similaridade entre artigos com mesmo placeholder. Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash — **exceto `_internal/tmp-dedup-output.json`** (#4229): o item 4a do gate (1x), mais adiante neste doc, lê `editorSubmittedLost[]` desse MESMO arquivo, com fallback silencioso ("vazio ou arquivo ausente: omitir") se ele já tiver sido apagado aqui.
 
 **Proveniência do editor (#4192, #4193).** `flag: "editor_submitted"` nunca é descartado pelo Pass-1d (theme-entity match) — no máximo marcado (`theme_entity_flagged`). Quando uma submissão do editor É removida por outro pass, o próprio `dedup.ts` tenta primeiro resgatar a proveniência num sobrevivente same-story (URL duplicada, cluster #3920, ou o Pass-3 same-story cross-pass — o sobrevivente ganha `flag: "editor_submitted"` + `editor_submitted_url` apontando pro link original). Só o que **não** foi resgatado chega em `editorSubmittedLost[]` no JSON de saída. Guardar essa lista — é o input do item 4a do gate (1x) abaixo.
@@ -416,6 +470,7 @@ npx tsx scripts/topic-cluster.ts \
   --in {EDITION_DIR}/_internal/tmp-categorized.json \
   --out {EDITION_DIR}/_internal/tmp-clustered.json
 ```
+
 **Não passar `--threshold` explícito** (#4729) — o script escolhe o default correto por método sozinho: `0.85` para cosine similarity (via `gemini-embedding-001`, quando `GEMINI_API_KEY` está configurada — caminho normal de produção) ou `0.5` para o fallback Jaccard de tokens (sem key, ou quando todos os embeddings falham). Um `--threshold 0.3` fixo no CLI, como este arquivo documentava antes, é calibrado pra Jaccard e sobrescreve o default de 0.85 sempre que a key está presente — cosine com threshold 0.3 é extremamente agressivo (clustering falso-positivo dispara). False positives no fallback Jaccard são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
 
 Modelo de embedding vem de `platform.config.json > gemini.embedding_model` (default `gemini-embedding-001`, #4654 — sucede o `text-embedding-004` descontinuado). O script escreve `_internal/topic-cluster-stats.json` junto do `--out`; o pre-gate validator (Passo 3, `validate-stage-1-output.ts`) lê esse sidecar e vira um WARN visível no gate quando `GEMINI_API_KEY` está configurada mas os embeddings falharam (drift de catálogo, quota, rede) — nunca um `console.warn` perdido no stderr. Sem `GEMINI_API_KEY`, o fallback Jaccard é o caminho esperado e não gera warning.
@@ -489,6 +544,7 @@ npx tsx scripts/merge-scored-chunks.ts \
 MERGE_EXIT=$?   # capturar ANTES do echo (echo zera o $?)
 echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável · 1 = erro de args/input · 2 = CATASTRÓFICO (#1669)
 ```
+
 **Ramificar pelo EXIT CODE em `$MERGE_EXIT` (#1669 — determinístico; NÃO dependa de parsear `catastrophic` do manifest stdout).** Split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores — sem o guard o #1 highlight some silenciosamente. **Os 3 códigos são exaustivos — não há catch-all "seguir":**
 - **exit 2** (= `catastrophic: true` — um chunk inteiro ilegível `failed_chunks > 0`, ou `missing_count > 2`): **NÃO seguir com o resultado degradado** (os arquivos `tmp-allscored.json`/`tmp-finalists.json` foram escritos só pra diagnóstico). (a) **Retry** o(s) `scorer-chunk` que falhou(aram) — re-disparar o agent só pros `scored-chunk-{i}.json` ausentes/inválidos — e re-rodar o merge (1q.3). (b) Se ainda sair 2 após o retry, **cair no 1q-fallback** (single-call `scorer` sobre o `tmp-scoring-pool.json` quando existir, preservando as anotações determinísticas; usar `tmp-dates-reviewed.json` apenas se o pool não existir), descartando o resultado chunked. Logar `level: error`.
 - **exit 1** (erro de invocação — args malformados — ou `tmp-scoring-pool.json` ausente/corrompido, ex: split rodou sem `--pool-out`; **nenhum output novo foi escrito**): **HALT — NÃO seguir.** Os `tmp-finalists.json`/`tmp-allscored.json` podem estar stale de um run anterior; **não** consumir em 1q.4/1q.5. Corrigir os args/input (confirmar que 1q.1 passou `--pool-out`) e re-rodar, ou cair no 1q-fallback. Logar `level: error`.
@@ -499,336 +555,173 @@ echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável 
 
 **1q.4 — Seleção.** Disparar 1 agent `scorer-select`: input = `tmp-finalists.json`, out_path = `tmp-selection.json`. Retorna `highlights[]` (≤6, ordem editorial) + `runners_up[]`.
 
-**1q.5 — Assemble.**
+**1q.5 — Assemble scored.** (Roda após 1q.4, usa `tmp-selection.json` + `tmp-allscored.json` pra montar o shaped final com highlights/runners_up/buckets + clusters). Script: `npx tsx scripts/assemble-scored.ts --selection {EDITION_DIR}/_internal/tmp-selection.json --allscored {EDITION_DIR}/_internal/tmp-allscored.json --categorized {EDITION_DIR}/_internal/tmp-dates-reviewed.json --out {EDITION_DIR}/_internal/tmp-scored.json`. Output: `{ scored, stats }`.
+
+**1q-fallback — Scorer single-call (pool pequeno OU merge catastrófico sem retry).** Quando `chunk_count <= 1` (pool pequeno) OU merge falhou catastroficamente e o retry não resolveu: disparar 1 agent `scorer` (Opus, `effort: low` no frontmatter) sobre `tmp-scoring-pool.json` (se existir, preservando anotações determinísticas; senão `tmp-dates-reviewed.json`). Output direto em `tmp-scored.json` + `tmp-selection.json` (o scorer single-call retorna ambos). Pula 1q.1-1q.4.
+
+### 1r. Promoção de runners_up até 6 highlights
+
+Roda **após 1q.5 OU 1q-fallback** (o `tmp-scored.json` já tem `highlights` + `runners_up`). Promover de `runners_up` pra completar 6 highlights se `highlights.length < 6`. Script puro:
 ```bash
-npx tsx scripts/assemble-scored.ts \
-  --selection {EDITION_DIR}/_internal/tmp-selection.json \
-  --allscored {EDITION_DIR}/_internal/tmp-allscored.json \
-  --finalists {EDITION_DIR}/_internal/tmp-finalists.json \
-  --out {EDITION_DIR}/_internal/tmp-scored.json
+npx tsx scripts/promote-runners-up.ts --scored {EDITION_DIR}/_internal/tmp-scored.json --out {EDITION_DIR}/_internal/tmp-scored.json
 ```
-Daqui em diante `tmp-scored.json` tem o **mesmo contrato** de antes (`highlights`, `runners_up`, `all_scored`) — 1r/1s seguem inalterados.
+In-place. Stdout: `{ promoted, highlights_final: 6 }`. Logar info.
 
-**`--finalists` (#3916/#3918):** habilita o backstop determinístico de `ensureNegativeImpactHighlight` (`scripts/lib/negative-impact-promotion.ts`) — se `scorer-select` não garantiu (nem documentou promoção próprio de) ≥1 highlight `negative_impact:true`, o script promove deterministicamente o melhor candidato tagueado do pool de finalistas (nunca demove o D1/maior score) antes de escrever `tmp-scored.json`. No-op silencioso quando os highlights já cumprem a regra, ou quando nenhum finalista tem a tag (pool sem candidato digno — caso legítimo, `has-negative-impact-highlight` avisa no gate). Stderr loga a promoção quando ela ocorre (`[assemble-scored] backstop determinístico promoveu ...`).
+### 1s. Finalize Stage 1
 
-**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Sonnet, #2772) passando `categorized` do `tmp-scoring-pool.json` quando esse arquivo existir (ele preserva as anotações determinísticas de `split-articles-for-scoring.ts`, inclusive `primary_source:true`); se o split não chegou a gravar o pool, usar `tmp-dates-reviewed.json` como fallback de último recurso. `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
-
-### 1r. Validação pós-scorer (#104)
-
-Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo.
-
-### 1s. Enriquecer buckets + filtro de score mínimo (#351, #720, #721)
-
-Rodar via script determinístico:
+Monta o output final estruturado que vai pro gate:
 ```bash
 npx tsx scripts/finalize-stage1.ts \
   --scored {EDITION_DIR}/_internal/tmp-scored.json \
-  --categorized {EDITION_DIR}/_internal/tmp-dates-reviewed.json \
-  --out {EDITION_DIR}/_internal/tmp-finalized.json \
-  --edition {AAMMDD}
+  --out {EDITION_DIR}/_internal/tmp-finalized.json
 ```
+Output: `{ highlights, runners_up, lancamento, radar, use_melhor, video, clusters }`. Ler como `categorized` daqui em diante.
 
-⚠️ `--categorized` **deve** ser `tmp-dates-reviewed.json` (o pool que o scorer de
-fato pontuou em 1q), **não** `tmp-clustered.json` (#1567 audit, finding D). O
-clustered é um superset pré-review-de-datas: passá-lo faz cada artigo removido
-pela janela de datas cair no join sem score (`url_mismatch: true`) e disparar um
-warn `#720` espúrio (até ~48/edição), soterrando os mismatches REAIS (drift de
-URL do scorer) que o canal `#720` existe pra pegar. Os buckets finais são
-idênticos (esses artigos são removidos pelo filtro `<40` de qualquer forma) —
-só o ruído de warning some.
+### 1t. Avisos de mínimo por seção (warn-only)
 
-O script: join por URL exata (#720 — sem canonicalizar); recovery por título se mismatch (`score_recovered: true`); loga warn + run-log por cada mismatch; remove `score < 40` exceto highlights/runners_up e `flag === 'editor_submitted'` válidos; bypass endurece (#721): título não-placeholder, `length >= 15`, sem `/buttondown|subscribe|newsletter|sign.?up/i` — falha → `editor_submitted_placeholder: true`; ordena por score desc.
-
-Daqui em diante usar `_internal/tmp-finalized.json` como os buckets enriquecidos.
-
-### 1t. Verificação de mínimos por seção (#488)
-
-Após o filtro de score, contar itens remanescentes em cada bucket e preparar lista de avisos para o gate (#1629: 4 buckets agora):
-- Se `lancamento.length < 3`: registrar `⚠️ Apenas {N} lançamento(s) — mínimo esperado: 3`
-- Se `radar.length < 8`: registrar `⚠️ Apenas {N} item(ns) em RADAR — mínimo esperado: 8` (fusão de pesquisa + outras notícias do esquema pré-#1629)
-- Se `use_melhor.length < 3`: registrar `⚠️ Apenas {N} tutorial(is) — mínimo esperado: 3 candidatos` (warn não-bloqueante; EN é aceitável — #1855). O **mínimo de 2 RENDERIZADOS** é enforçado depois, em Stage 2, pelo `promoteUseMelhorToMinimum` (promove runners-up `use_melhor`); se nem assim der 2, o `apply-stage2-caps` emite warn loud (`shortfall`) pro gate.
-
-Avisos são exibidos no GATE HUMANO. Mínimos são avisos — não bloqueiam o gate.
-
-### 1u. Estrutura e salvamento
-
-Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON). Estrutura final de `_internal/01-categorized.json` (#1629):
-```json
-{
-  "highlights": ["...top 6 com rank/score/reason/article (scorer retorna 6; editor seleciona 3 no gate)..."],
-  "runners_up": ["...2-3 candidatos com score..."],
-  "lancamento": ["...artigos com campo score, ordenados por score desc..."],
-  "radar": ["...mistura pesquisa+noticias do esquema antigo; cada artigo carrega category individual..."],
-  "use_melhor": ["...tutoriais/cookbooks..."],
-  "video": ["...vídeos curtos..."],
-  "clusters": ["...metadata de topic-cluster, runners-up consolidados (#237) — pode ser []..."]
-}
-```
-`clusters` é preservado automaticamente por `filter-date-window.ts` (passthrough de campos extras desde #247). Mesmo se algum cluster member virou `removed` no filtro de janela, a metadata do cluster fica intacta — é informativo pro editor.
-
-Salvar `{EDITION_DIR}/_internal/01-categorized.json`.
-
-### 1u-bis. Dedup intra-edição (#2367, #2397, #2548)
-
-Após salvar `01-categorized.json`, remover dos buckets secundários itens que cobrem o mesmo evento que um destaque:
 ```bash
-npx tsx scripts/dedup-intra-edition.ts \
-  --in {EDITION_DIR}/_internal/01-categorized.json \
-  --out {EDITION_DIR}/_internal/01-categorized.json
+npx tsx scripts/check-min-sections.ts --categorized {EDITION_DIR}/_internal/tmp-finalized.json
 ```
-Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por rank** por Jaccard ≥0.45, ≥2 entidades ou **domain-match** (#2548 Furo 2: RADAR com `suggested_primary_domain=google.com` + D1 em blog.google.com → cobertura de imprensa do mesmo lançamento). **#2587:** o domain-match exige um **segundo sinal** de mesmo-lançamento — `≥1 entidade-de-produto compartilhada além do nome da empresa` OU `Jaccard de título ≥0.2` — para não remover dois lançamentos DIFERENTES da mesma empresa (D1=produto A + RADAR=produto B no mesmo domínio). O caminho de entidade-de-produto cobre cobertura cross-lingual (D1 inglês + RADAR português, Jaccard ~0, mas ambos citam o produto). Strip sufixo de veículo. `01-categorized.json` reescrito in-place. **#4695:** `flag: "editor_submitted"` nunca é perdido em silêncio — grava `removed`/`editorSubmittedSpared` num sidecar `_internal/dedup-intra-edition-stats.json` (junto do `--out`, mesmo padrão do `topic-cluster-stats.json`), lido no gate (item 4c).
+Stdout: array de strings (ex: `["⚠️ Apenas 2 lançamento(s) — mínimo esperado: 3"]`). Logar cada um como warn. **Nunca bloqueia** — só informa pro editor no gate.
 
-### 1u-ter. Dedup evergreen pós-categorização (#2548 — Furo 1)
+### 1u. Shape final + strip do campo `verifier`
 
-Dedup sem janela para `use_melhor`/`video` (janela de 4 do dedup.ts é curta para evergreen re-descoberto meses depois):
+Script `strip-verifier.ts` remove o campo `verifier` (interno do scorer) de todos os artigos recursivamente:
 ```bash
-npx tsx scripts/dedup-evergreen-buckets.ts --in {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-categorized.json --past-editions data/past-editions.md
+npx tsx scripts/strip-verifier.ts --in {EDITION_DIR}/_internal/tmp-finalized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
 ```
-Verifica URL de `use_melhor`/`video` em **qualquer** edição passada. `radar`/`lancamento` não tocados.
+Output em `_internal/tmp-categorized.json` — **este é o arquivo que o gate lê** (não o `tmp-finalized.json` com verifier). `render-categorized-md.ts` usa este.
 
-### 1v. Renderizar 01-categorized.md
+### 1u-bis. Dedup intra-edição (#2013)
 
-**Nunca gerar o MD livre-forma** — o formato é responsabilidade do script, não do LLM:
+Script `dedupe-intra-edition.ts` remove duplicatas dentro da edição atual (mesmo story, URLs diferentes) — complementa o dedup principal (1l) que é cross-edição:
+```bash
+npx tsx scripts/dedupe-intra-edition.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
+```
+In-place. Stdout: `{ removed, kept }`. Logar info.
+
+### 1u-ter. Evergreen filter (#3409)
+
+Script `filter-evergreen.ts` remove artigos evergreen da edição atual (não são notícias do dia):
+```bash
+npx tsx scripts/filter-evergreen.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --out {EDITION_DIR}/_internal/tmp-categorized.json
+```
+In-place. Stdout: `{ removed, kept }`. Logar info.
+
+### 1v. Render MD (categorized + approved)
+
 ```bash
 npx tsx scripts/render-categorized-md.ts \
-  --in {EDITION_DIR}/_internal/01-categorized.json \
+  --categorized {EDITION_DIR}/_internal/tmp-categorized.json \
   --out {EDITION_DIR}/01-categorized.md \
   --edition {AAMMDD} \
-  --source-health data/source-health.json
-```
-O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques.
-
-**Regra absoluta**: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de nova chamada deste script para manter o MD em sincronia. Se só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
-
-### 1v-bis. Lint LANÇAMENTOS — bloqueia URLs não-oficiais antes do gate (#587)
-
-Antes de apresentar o gate, validar que items em `## Lançamentos` do MD têm URL oficial (per regra invariável #160). Sem este check, o editor podia mover artigos com URL não-oficial pra LANÇAMENTOS no gate, e o writer da Etapa 2 silenciosamente reclassificava pra OUTRAS NOTÍCIAS — quebrando o contrato de aprovação.
-
-```bash
-npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/01-categorized.md
+  --eia {EDITION_DIR}/01-eia.md
 ```
 
-Se exit code != 0, **incluir no gate output** as URLs problemáticas com sugestão pro editor:
+Grava também `_internal/01-categorized.json` (mesmo conteúdo, JSON) e `_internal/01-approved.json` (cópia idêntica — gate ainda não rodou, mas o arquivo já existe pra resume).
 
-```
-⚠️  N URL(s) em LANÇAMENTOS não são oficiais (per regra #160):
-  - linha {L}: {url}
+### 1v-bis..1v-quinquies. Lints warn-only (rodam em sequência)
 
-Opções:
-  - Mover artigo pra NOTÍCIAS (não cumpre #160)
-  - Substituir URL por equivalente oficial (ex: openai.com/blog/X em vez de canaltech.com.br/X)
-  - Forçar aceitação no gate (override editorial pontual)
-```
+1. **1v-bis** — `lint-newsletter-md.ts --check tz-leak` (ex: "23h" sem fuso, "ontem" ambíguo).
+2. **1v-ter** — `lint-newsletter-md.ts --check incomplete-sentences` (frases terminadas em vírgula, `...` sem continuação).
+3. **1v-quater** — `lint-newsletter-md.ts --check duplicate-domains` (mais de 2 URLs do mesmo domínio registrável na edição inteira — #5735).
+4. **1v-quinquies** — `lint-newsletter-md.ts --check video-links-are-youtube` (VÍDEOS só YouTube; backstop pro gate da Etapa 4).
 
-**#1799 — não-produto (warn):** o mesmo comando emite `non_product[]` (exit 0, não bloqueia) pra itens que parecem governança/política/análise — não software/hardware (ex: `openai.com/index/public-policy-agenda` é oficial mas NÃO é lançamento de produto). Se não-vazio, **surfar no gate** pra o editor mover pra NOTÍCIAS. LANÇAMENTOS só lista produto (modelo/app/API/ferramenta/chip/dispositivo).
+Cada um: exit 0 = ok, exit 1 = violations (array no stdout) → logar `warn` cada violation. **Nunca bloqueia** — só informa pro gate.
 
-Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga warn no run-log.
-
-### 1v-ter. Guard USE MELHOR — flagar não-tutorial antes do gate (#1798)
-
-Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — [caso real](../../docs/orchestrator-stage-1-research-historia.md#1v-use-melhor-caso-real)). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
-
-```bash
-npx tsx scripts/review-use-melhor.ts --approved {EDITION_DIR}/_internal/01-categorized.json
-```
-
-Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (domínio newsletter/agregador **E** sem sinal de tutorial no título/slug — o vetor real de mis-bucket), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
-
-**Nota (#4221):** apesar do nome do parâmetro (`--approved`, herdado de quando o script só rodava pós-gate), este passo roda ANTES do gate — `01-approved.json` ainda não existe neste ponto. O script apenas lê o campo `use_melhor[]` do JSON passado, e `01-categorized.json` já tem esse campo populado (mesmo shape de `01-approved.json` — ver `scripts/lib/types/categorized-json.ts`), então funciona igual. `--approved` é só o nome do flag, não uma exigência de que o arquivo se chame `01-approved.json`.
-
-### 1v-quater. Guard fonte-primária em DESTAQUES (#1699)
-
-Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — [caso real](../../docs/orchestrator-stage-1-research-historia.md#1v-quater-caso-real)). **Warn-only**:
-
-```bash
-npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01-categorized.json
-```
-
-Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
-
-**Nota (#4221):** mesma observação do 1v-ter acima — `--approved` é o nome do flag, não uma exigência de `01-approved.json` (inexistente pré-gate). O script lê `highlights[]`, presente também em `01-categorized.json` com o mesmo shape.
-
-### 1v-quinquies. Cross-check destaque-imprensa × oficial no POOL da mesma edição (#4135 item 3)
-
-Antes do gate, mecanismo INDEPENDENTE do 1v-quater acima (não depende de heurística de voz/verbo de anúncio): se um destaque tem URL de cobertura de imprensa (não-oficial) e existe no pool desta MESMA edição (lancamento/radar/use_melhor/video) um artigo de domínio OFICIAL sobre o MESMO tema, sugere a troca ([caso real](../../docs/orchestrator-stage-1-research-historia.md#1v-quinquies-caso-real)). **Warn-only**:
-
-```bash
-npx tsx scripts/review-highlight-official-swap.ts --categorized {EDITION_DIR}/_internal/01-categorized.json
-```
-
-Se `suggestions[]` não-vazio, **surfar no gate** cada destaque com a URL oficial já disponível no pool (`official_url`), pra o editor trocar. Item 2 do #4135 (mismatch de domínio por voz — mais propenso a falso-positivo) permanece fora de escopo, aguardando calibragem do editor.
-
-### 1w-quint. Validator anti-skip de 1f (#1091)
-
-Antes do `validate-stage-1-output.ts`, rodar:
+### 1w-quint. Anti-skip 1f (BLOQUEIA) — #1091
 
 ```bash
 npx tsx scripts/validate-stage-1-completeness.ts \
-  --edition-dir {EDITION_DIR}/
+  --edition-dir {EDITION_DIR} \
+  --inbox-md data/inbox.md
 ```
+Valida que 1f (dispatch de researchers/discovery) **não foi pulado** — detecta o cenário onde o orchestrator omitiu o passo inteiro (causa raiz do #1091). Exit 1 = step 1f não executou → **HALT** via `render-halt-banner.ts` com motivo "validate-stage-1-completeness: step 1f não executou". Exit 2 = erro de leitura. **Este é um HALT obrigatório (code 2 do runner)** — não prosseguir, não bypassar com auto_approve.
 
-Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir.
-
-Defesa em 3 camadas contra o skip silencioso de 1f (#1091): warning no início da seção 1f (1ª), memory `feedback_no_skip_playbook.md` (2ª), este validator (3ª e primária — bloqueia o gate).
-
-### 1w-bis. Pre-gate validator (#581, #828)
-
-Antes de apresentar o gate humano, rodar:
+### 1w-bis. Validate stage-1 output (blocker vira HALT)
 
 ```bash
-npx tsx scripts/validate-stage-1-output.ts \
-  --edition {AAMMDD} \
-  --edition-dir {EDITION_DIR}/
+npx tsx scripts/validate-stage-1-output.ts --edition-dir {EDITION_DIR}
 ```
+Valida shape final do `01-categorized.md`/`_internal/01-categorized.json`/`_internal/01-approved.json` contra invariantes de publicação. Exit 1 = validation failed → **HALT** (code 2). Exit 2 = erro de leitura.
 
-Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832). Pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill `/diaria-1-pesquisa` isolado tem (#828).
-
-### 1w-quat. Pre-gate invariants (#1007 Fase 1)
-
-Só validar artefatos pré-gate (categorized.md). Approved.json ainda não existe:
+### 1w-quat. Check invariants: categorized-has-eia-section (BLOQUEIA)
 
 ```bash
-npx tsx scripts/check-invariants.ts --stage 1 \
-  --rule categorized-has-eia-section \
-  --edition-dir {EDITION_DIR}/
+npx tsx scripts/check-invariants.ts --stage 1 --edition-dir {EDITION_DIR}
 ```
+Valida que o `01-categorized.md` tem a seção É IA? (injectado pelo `render-categorized-md.ts` a partir de `01-eia.md`). Exit 1 = missing → **HALT** (code 2).
 
-Exit 1 = bloquear gate (`01-categorized.md` sem seção "## É IA?"). Os outros checks de Stage 1 rodam pós-gate apply (passo 1y).
-
-### 1w-ter. Log payload sizes (#891 — observability)
-
-Antes do gate, registrar tamanho de cada JSON intermediário em `_internal/`. Visibilidade pra investigar context overflow (#891):
+### 1w-ter. Payload sizes
 
 ```bash
-npx tsx scripts/log-stage-1-payload-sizes.ts --edition {AAMMDD}
+npx tsx scripts/payload-sizes.ts --edition-dir {EDITION_DIR}
 ```
+Loga tamanhos dos arquivos de saída (`01-categorized.md`, `_internal/01-categorized.json`, `_internal/01-approved.json`, `websearch-results.json`, `researcher-results.json`, `link-verify-all.json`) pro relatório do gate.
 
-Output: grava `_internal/01-payload-sizes.json` (relatório completo) e append em `data/run-log.jsonl` com `level: info`, `message: "stage1_payload_sizes"`, `details.totals` + `details.top_3`. Nunca falha — best-effort. Próximo PR usa esses dados pra escolher entre Opção A (subagents retornam só path) ou Opção B (agregação imediata) descritas no #891.
-
-### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos e itens secundários (#2073, #2652, #4262)
-
-Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições** (inclui o gatilho "saga em andamento" #4661 — mesmo incidente coberto várias vezes ao longo de semanas, cada cobertura com fato novo; dispara com só 1 empresa em comum + vocabulário de incidente/segurança presente em ambos os títulos, não precisa ser o mesmo verbo), se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars), e se algum candidato a destaque repete uma história já coberta no CORPO INTEIRO (destaques + todos os buckets secundários, não só destaques publicados) das **últimas 10 edições** (#4262 — reusa o comparador cross-veículo de `dedup-intra-edition.ts`). **Warn-only — nunca bloqueia.**
+### 1w-quint-b. Repeat-de-tema (fail-soft)
 
 ```bash
-npx tsx scripts/check-highlight-themes.ts \
-  --categorized {EDITION_DIR}/_internal/01-categorized.json \
-  --past-editions data/past-editions.md --window 12 \
-  --editions-dir data/editions --secondary-window 10 --full-body-window 10 --current-edition {AAMMDD} \
-  --out-json {EDITION_DIR}/_internal/01-highlight-theme-check.json
+npx tsx scripts/check-repeat-theme.ts --categorized {EDITION_DIR}/_internal/tmp-categorized.json --past-editions data/past-editions.md --window 3
+```
+Stdout: `{ flagged, theme }` — temas que apareceram nas últimas 3 edições. Logar info se `flagged`. Fail-soft — nunca bloqueia.
+
+---
+
+### 1x. GATE HUMANO (§1x)
+
+**Guarda contra `auto_approve = true`:** se `auto_approve = true`, **pule esta seção inteira** e vá direto para §1y via `apply-gate-edits.ts --auto`.
+
+1. **Instrução de revisão** — Apresentar ao editor o resumo consolidado do Stage 1:
+   - `01-categorized.md` (visual)
+   - `minSectionWarnings` (do 1t)
+   - `lancamentosWarnings` (do enrich-primary-source)
+   - `validateOutput.assertions` (do 1w-bis, status=warn)
+   - `payload sizes` (do 1w-ter)
+   - `repeatTheme` (do 1w-quint-b, se houver)
+   - `editorSubmittedLost` (do 1l, se houver — item 4a do gate)
+   - `stats.editorSubmittedLost` do research-review-dates (1p1) — item 4b do gate (deveria ser vazio)
+
+2. **Opções do editor:** **aprovar** / **editar MD** / **rejeitar e re-rodar**.
+
+---
+
+### 1y. Aplicar edições do gate (ou auto_approve)
+
+Se editor editou o MD:
+```bash
+npx tsx scripts/apply-gate-edits.ts \
+  --md {EDITION_DIR}/01-categorized.md \
+  --json {EDITION_DIR}/_internal/01-categorized.json \
+  --out {EDITION_DIR}/_internal/01-approved.json
+```
+Re-valida lançamentos (mesmo `validate-lancamentos.ts` do 1v) e invariantes pós-apply (warn, não bloqueia). Experimento D3-radar (opt-in via config): se `platform.config.json > stage1_experiments.d3_to_radar === true` e `highlights.length === 3`, mover D3 pra `radar` e promover melhor `runners_up` a D3 — regra determinística, não julgamento editorial. Escreve sentinel `_internal/.step-1-done.json`.
+
+Se `auto_approve`:
+```bash
+npx tsx scripts/apply-gate-edits.ts --auto --json {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-approved.json
 ```
 
-Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se o script falhar por qualquer motivo (past-editions.md ausente, data/editions/ vazio, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
+---
 
-### 1x. GATE HUMANO
+### 1y-bis. Arquivar inbox da edição (#662)
 
-**Se `auto_approve = true`** (`/diaria-edicao` roda Stages 1-3 sempre pre-gate, #1523 — vale com ou sem `--no-gates`; ou `/diaria-1-pesquisa --no-gates` isolado): **pule esta seção inteira.** Não apresente nenhum resumo nem pergunta ao usuário — vá direto para §1y e use o caminho `apply-gate-edits.ts --auto`. Emitir apenas `[AUTO] Stage 1 auto-approved` no log/output, per `orchestrator.md` § Princípios item 2 (#4942).
+```bash
+npx tsx scripts/archive-inbox.ts --edition {AAMMDD} --inbox-md data/inbox.md
+```
+Move entradas processadas de `data/inbox.md` pra `data/inbox-archive/{AAMMDD}.md`. Idempotente — re-rodar em resume é no-op. Falha → warn, não bloqueia.
 
-Apresentar ao usuário:
+---
 
-1. **Instrução de revisão** — não renderizar a lista no terminal. Apenas informar:
-   ```
-   📊 {total_brutos} artigos garimpados → {kept_dedup} após dedup → {total_categorized} categorizados
+### 1y-ter. Fechar stage-status + captura de custo
 
-   📄 Abra {EDITION_DIR}/01-categorized.md para revisar.
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 1 --status done --end "{ISO_now}" --duration-ms {ms} [--cost-usd X] [--tokens-in N] [--tokens-out N] [--models "sonnet-5,haiku-4-5,opus-5"]
+npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 1
+```
 
-   ✏️  Candidatos recomendados pelo scorer estão marcados com ⭐.
-       Mova exatamente 3 linhas para a seção "Destaques" no topo do arquivo.
-       A ORDEM FÍSICA das linhas em "Destaques" define D1/D2/D3 (de cima para baixo).
-       Para reordenar, basta mover a linha dentro da seção Destaques.
-       Se não mover nenhum artigo, os 3 primeiros candidatos do scorer serão usados.
+---
 
-   🖼️  É IA? está embutido no MD entre as seções Pesquisas e Notícias (#371).
-       Se aparecer "⏳ ainda processando", o eai-composer ainda está em background —
-       será revisado no gate da Etapa 3 quando as imagens forem aprovadas.
-       Se a imagem do É IA? já estiver disponível, aprovação aqui consolida o review.
-   ```
-   (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = `lancamento.length` + `radar.length` + `use_melhor.length` + `video.length` do categorized.json — #1629)
+### Opcional, delegado (fail-soft): §1y pós-gate (resolve-primary-source.ts)
 
-2. **Métricas de cobertura (#346):** derivar perdas (janela, dedup, link-verify) a partir dos arquivos de pipeline e exibir:
-   ```
-   Artigos garimpados: {N_brutos} brutos → {N_final} após filtros
-     -janela: {N_janela} (fora da janela de {window_days}d)
-     -dedup: {N_dedup} (URLs repetidas das últimas edições)
-     -link-verify: {N_verify} (paywall/blocked/aggregator)
-   ```
-   Se arquivo não existir ou falhar o parse, exibir "N/A" — nunca bloquear.
-
-3. **Avisos de mínimos por seção (#488):** exibir avisos registrados na verificação de mínimos (ver 1t). Se não houver avisos, omitir este bloco.
-
-4. **⚠️ Repeat-de-tema em destaques (#2073), RADAR (#2652) e corpo inteiro (#4262):** ler `_internal/01-highlight-theme-check.json`. Exibir antes dos avisos. **Best-effort — nunca bloquear.** Se arquivo não existir, todos=[]: omitir.
-   `warnings[]` não-vazio (destaques):
-   ```
-   ⚠️  TEMA REPETIDO — D{rank} candidato repete tema de {matched_edition}:
-       Candidato:  "{candidate_title}"
-       Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
-   ```
-   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile, onde título sozinho pode ser ambíguo.)
-   `full_body_warnings[]` não-vazio (candidato a destaque repete história já coberta em QUALQUER bucket — não só destaque publicado — das edições passadas, #4262): `⚠️  CORPO INTEIRO — D{candidate_rank} candidato "{candidate_title}" ({candidate_url}) repete história já coberta em {matched_edition} [{matched_bucket}]: "{matched_title}" | Match: {match_type}, score={score.toFixed(2)} → trocar candidato ou confirmar ângulo novo.`
-
-4a. **⚠️ Submissões do editor removidas pelo dedup (#4192):** ler `editorSubmittedLost[]` de `_internal/tmp-dedup-output.json` (guardado no passo 1l). **Best-effort — nunca bloquear.** Se vazio ou arquivo ausente: omitir. Se não-vazio, exibir uma linha por entry: `⚠️ N submissão(ões) sua(s) removida(s) pelo dedup: {title} — motivo: {dedup_note}`. Onde N = `editorSubmittedLost.length`. Nota: `editorSubmittedLost` já exclui as submissões que o próprio dedup conseguiu resgatar via um sobrevivente same-story (`editor_submitted_url`, #4193) — só o que ficou genuinamente sem sobrevivente aparece aqui.
-4b. **⚠️ Submissões do editor removidas pela janela de data (#4656):** ler `stats.editorSubmittedLost` de `_internal/tmp-dates-reviewed.json` (passo 1p1). Best-effort, nunca bloqueia; vazio/ausente → omitir; se não-vazio, uma linha por entry: `⚠️ N submissão(ões) sua(s) removida(s) pela janela de data: {title} — motivo: {detail}` (N = `.length`). `filter-date-window.ts` isenta `flag: "editor_submitted"` dessa remoção desde #4656 (mesmo precedente do dedup Pass 1d/#4192) — deveria estar sempre vazio; só dispara se um refactor futuro quebrar o guard. **Contrapartida (#4685):** ler também `stats.dateWindowSpared` (mesmo arquivo) — a isenção É incondicional, então artigos fora da janela SÃO mantidos; se não-vazio, exibir `⚠️ N submissão(ões) sua(s) mantida(s) fora da janela de data pela isenção: {title} [{bucket}] — confira se ainda vale publicar` (N = `.length`), pra distinguir do `⚠️` genérico de `date_unverified` no `01-categorized.md`. **#4678: qualquer resgate manual mid-sessão de um item perdido por um filtro (data, dedup, etc.) nunca hardcoda `category`** — reinjetar o item no pool ANTES de `categorize.ts` rodar (ou invocar `categorize()` sobre ele) e deixar a heurística real decidir o bucket. Hardcodar bypassa toda a lógica de `launch-heuristics.ts`/`launch-vs-news.ts` ([caso real](../../docs/orchestrator-stage-1-research-historia.md#4b-4678-caso-real)).
-4c. **⚠️ Submissões do editor afetadas pelo dedup intra-edição (#4695):** ler `editorSubmittedSpared[]` de `_internal/dedup-intra-edition-stats.json` (passo 1u-bis). Best-effort, nunca bloqueia; vazio/ausente → omitir; se não-vazio, uma linha por entry: `⚠️ N submissão(ões) sua(s) bateram um critério de duplicata intra-edição: {title} [{bucket}] — conteúdo preservado`, onde N = URLs DISTINTAS no array (não `.length` — um cluster de 3+ pode gerar 2+ entradas com a mesma url e `matched_against` diferente; contar entradas superestimaria quantas submissões foram afetadas). Diferente de 4a/4b (exemção condicional, array só lista perda real): aqui a exemção é sempre a mesma e o array NUNCA representa perda — passe destaque-vs-bucket resgata o item via `cluster_sources[]` do destaque casado (`matched_highlight`, #4185/#4228); passe item-vs-item (RADAR/LANÇAMENTOS, `match_type: "intra_bucket"`) simplesmente não remove nenhum dos dois lados.
-
-5. **Relatório de saúde das fontes:**
-   - `⚠️` por fonte com outcome não-ok *nesta execução*.
-   - `🔴` por fonte com streak 3+, com timestamps de cada falha. Ex: `🔴 AI Breakfast — 3 timeouts seguidos: 2026-04-15T14:18Z, 2026-04-16T14:20Z, 2026-04-17T14:22Z — considere desativar em seed/sources.csv`.
-   - Se tudo OK: "Todas as fontes responderam normalmente."
-
-### 1y. Pós-gate (quando aprovado)
-
-- **`auto_approve = true` (#3459):** pular o pull do MD e chamar `apply-gate-edits.ts` com `--auto` em vez de `--md` (não há edição humana pra aplicar):
-  ```bash
-  npx tsx scripts/apply-gate-edits.ts \
-    --auto \
-    --json {EDITION_DIR}/_internal/01-categorized.json \
-    --out {EDITION_DIR}/_internal/01-approved.json
-  ```
-  `--auto` simula um MD sem edição (seção Destaques vazia, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate — **nunca copiar `01-categorized.json` literal pra `01-approved.json`** (preservaria os 6 highlights do scorer em vez de 3). Seguir direto pro passo "Pós-gate-apply invariants" abaixo (pula o re-render/validate-lancamentos — não há edição do editor pra refletir).
-- **Gate humano normal.** O editor edita `01-categorized.md` diretamente (local ou via Studio, que escreve no arquivo local) — não há round-trip a esperar.
-- **Aplicar as edições do gate** via `scripts/apply-gate-edits.ts`:
-  ```bash
-  npx tsx scripts/apply-gate-edits.ts \
-    --md {EDITION_DIR}/01-categorized.md \
-    --json {EDITION_DIR}/_internal/01-categorized.json \
-    --out {EDITION_DIR}/_internal/01-approved.json
-  ```
-  Comportamento:
-  - `## Destaques`: primeiras 3 linhas na ordem física viram D1/D2/D3 (rank 1/2/3, renumeradas). Se < 3, completa com candidatos do scorer por rank. Se > 3, mantém as 3 primeiras.
-  - `## Lançamentos` / `## Pesquisas` / `## Notícias`: honra EXATAMENTE as URLs que o editor deixou em cada seção, na ordem física. Artigos removidos do MD são dropados. Artigos movidos entre buckets respeitam o bucket do MD final.
-  - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas. Lookup determinístico de fonte primária (#5664): para cada artigo secundário aprovado que `buildPrimarySourceQuery` aceitar, disparar `discovery-searcher` com `site:{domínio-oficial} {título}`, salvar resultados reais em `{EDITION_DIR}/_internal/tmp-primary-source-search-results.json` e rodar `npx tsx scripts/resolve-primary-source.ts --approved {EDITION_DIR}/_internal/01-approved.json --search-results {EDITION_DIR}/_internal/tmp-primary-source-search-results.json`; só substituir por HTTP(S) do domínio oficial/subdomínio com `subjectSimilarity >= 0.60`, com empate por score e URL, preservando sem resultado confiável e em falha (fail-soft), antes do re-render para Stage 2.
-- **Re-renderizar o MD** a partir do `_internal/01-approved.json`:
-  ```bash
-  npx tsx scripts/render-categorized-md.ts \
-    --in {EDITION_DIR}/_internal/01-approved.json \
-    --out {EDITION_DIR}/01-categorized.md \
-    --edition {AAMMDD} \
-    --source-health data/source-health.json
-  ```
-  Re-validar LANÇAMENTOS após edições do gate (#787) — o editor pode ter movido URLs não-oficiais para LANÇAMENTOS durante a revisão:
-  ```bash
-  npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/01-categorized.md
-  ```
-  Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais OU itens sem sinal de produto (not_a_tool, #1968) em LANÇAMENTOS. Mover pra NOTÍCIAS, ou allowlistar slug atípico legítimo em seed/lancamentos-tool-allowlist.txt."` — mas **não bloquear automaticamente**.
-- **Pós-gate-apply invariants (#1007 Fase 1)** — agora `01-approved.json` existe:
-  ```bash
-  npx tsx scripts/check-invariants.ts --stage 1 --edition-dir {EDITION_DIR}/
-  ```
-  Roda todos os checks de Stage 1 (incluindo `categorized-has-eia-section` e `approved-has-3-highlights` + `coverage-line-present`). Exit 1 = bug downstream — logar warn e seguir; o sentinel ainda é escrito.
-
-- **Experimento D3 vs slot 1 do Radar (#4846, opcional, DESLIGADO por padrão).** Rodar sempre — o script decide sozinho se o experimento está ativo:
-  ```bash
-  npx tsx scripts/experiment-d3-radar.ts \
-    --edition {AAMMDD} \
-    --approved {EDITION_DIR}/_internal/01-approved.json
-  ```
-  Exit 2 = desabilitado (`platform.config.json` → `experiment_d3_radar.enabled !== true`, default) — pular silenciosamente, não é falha. Exit 0 = braço sorteado (determinístico por edição, nunca re-sorteado em resumes) e, se braço B, aplicado — o item de rank 3 (D3) sai de `highlights` e o mesmo artigo entra como 1º item de `radar[]`; registrado em `_internal/.experiment-d3.json`. Exit 1 = erro — logar warn e seguir sem randomizar (experimento opcional nunca bloqueia o gate). Pré-registro completo do desenho: `docs/experiments/d3-radar-4846.md`.
-
-- **Escrever sentinel de conclusão do Stage 1:**
-  ```bash
-  npx tsx scripts/pipeline-sentinel.ts write \
-    --edition {AAMMDD} --step 1 \
-    --outputs "01-categorized.md,_internal/01-approved.json"
-  ```
-  Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'sentinel_write_failed'`). **Não bloquear** a aprovação do gate.
-- **Arquivar o inbox** (#680): `mkdir -p data/inbox-archive` seguido de `mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md`. Recriar `data/inbox.md` vazio. Sem o mkdir, falha em checkout limpo.
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 1 done via `update-stage-status.ts` com `--end ISO` e `--duration-ms`. Em seguida, rodar `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 1` (#3441) — captura `cost_usd`/`tokens_in`/`tokens_out`/`models` REAIS a partir do `usage` das chamadas do coordenador registrado no transcript local da sessão (janela `[start, end]` do stage), sem precisar que o orchestrator agregue nada manualmente. Sem transcript local disponível (sessão cloud), sai sem escrever nada — nunca bloqueia. Ler o JSON de stdout: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel acima — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
+Para cada artigo em `radar` ou `use_melhor` aprovado (presente em `highlights` ou `runners_up` de `_internal/01-approved.json`) que tenha `suggested_primary_domain`, disparar `discovery-searcher` com a query `site:{suggested_primary_domain} {núcleo do título}`. Se verificado (oficial + acessível + mesmo tema), anotar `primary_source_substituted` no artigo do `_internal/01-approved.json`. **Nunca bloqueia** — preserva o artigo sem resultado confiável. Fail-soft por design.
