@@ -10,7 +10,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -286,11 +286,25 @@ describe("findHeliosBuraco — #5907(b), buraco do helios", () => {
     assert.deepEqual(findHeliosBuraco(issues), [5125, 5891]);
   });
 
-  it("fixture real: plan.json da 260821c não dispara falso positivo (tracks não gravados = gap (a), não (b))", () => {
-    const plan = JSON.parse(readFileSync(join(ROOT, "data", "develop", "260821c", "plan.json"), "utf8")) as {
-      issues: unknown;
-    };
-    const issues = (Array.isArray(plan.issues) ? plan.issues : Object.values(plan.issues ?? {})) as DevelopPlanIssueLike[];
+  it("fixture da 260821c (shape real, inline — data/ não é versionado): sem track gravado não reporta", () => {
+    // Estrutura copiada do plan.json real da 260821c: 15 issues, 10 com
+    // status "deixado-para-o-helios", nenhuma com exec_track_painel gravado.
+    // data/ não vai pro git, então a fixture é inline; se um dia um plan
+    // real com track preenchido precisar de fixture, usar tmpdir+writeFileSync.
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5892, status: "deixado-para-o-helios" },
+      { number: 5894, status: "deixado-para-o-helios" },
+      { number: 5895, status: "deixado-para-o-helios" },
+      { number: 5899, status: "deixado-para-o-helios" },
+      { number: 5901, status: "deixado-para-o-helios" },
+      { number: 5903, status: "deixado-para-o-helios" },
+      { number: 5904, status: "deixado-para-o-helios" },
+      { number: 5116, status: "deixado-para-o-helios" },
+      { number: 5125, status: "deixado-para-o-helios" },
+      { number: 5891, status: "deixado-para-o-helios" },
+      { number: 5897, status: "mergeada" },
+      { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
+    ];
     assert.deepEqual(findHeliosBuraco(issues), []);
   });
 });
