@@ -1107,6 +1107,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5704",
   },
   {
+    // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
+    // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
+    // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
+    // não segue submit→poll→download) — devolve o resultado em 1 round-trip.
+    // Output: data/microsoft-ads/editorial-reasons-{YYYY-MM-DD}.json.
+    //
+    // Horário 10:00 BRT — 10min depois do Google Ads Spend Ingest (09:50),
+    // dentro do cluster matinal, sem colisão. Fail-soft por design: sem as
+    // 6 env vars MICROSOFT_ADS_* → exit 0, nada escrito (mesmo padrão do
+    // #5704). DECLARADA — arme via setup-systemd-timers.ts e posterior do
+    // editor (helios).
+    name: "Diaria-Microsoft-Ads-Editorial-Reasons",
+    description: "captura motivos editoriais de assets rejeitados (Campaign Management API v13 SOAP)",
+    steps: [{ key: "check", script: "scripts/microsoft-ads-editorial-reasons.ts" }],
+    logPath: "microsoft-ads/.editorial-reasons.log",
+    schedule: { kind: "daily", hour: 10, minute: 0 },
+    issue: "#5878",
+  },
+  {
     name: "Diaria-Hub-Pages-Build",
     description: "build semanal de todos os hubs tematicos (--all --check-facts)",
     // `--check-facts` (#5060/#5102) roda o gate de fact-check antes de
