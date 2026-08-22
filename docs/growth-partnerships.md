@@ -5,10 +5,28 @@ modelo Clarice (canal com melhor conversão medida em ago/2026, ver
 `CLAUDE.md` §Princípios operacionais). **Este doc não lista candidatos nem
 texto de abordagem** — nomes de empresa reais e rascunho de contato com
 terceiro são conteúdo sensível (repo público, crawlers de IA liberados nas
-nossas superfícies) e vivem em local privado, não git-tracked: comentário na
-issue #4555 (mesma convenção do dossiê de prova do #4555, comentário
-07/ago/2026) ou `data/parceria-clarice/` quando a sessão tiver acesso à
-junction local. Este doc é o processo; a issue é o dado.
+nossas superfícies).
+
+**Onde cada coisa pode morar — a distinção importa e a versão anterior deste
+parágrafo errava nela.** Este repositório é PÚBLICO, e uma issue dele também
+é: comentário em issue **não** é local privado. O único local privado do
+projeto é `data/` (junction pro OneDrive, `.gitignore` blanket, nada
+versionado) — para este tema, `data/parceria-clarice/`, quando a sessão tiver
+acesso à junction local.
+
+- **Rascunho de abordagem, dossiê com dados de contato, termos em
+  negociação** → só `data/parceria-clarice/`. Nunca em issue.
+- **Estado, decisão e justificativa** ("aguardando resposta da X", "perfil
+  decidido", "moeda em aberto") → issue #4555, como sempre foi. É informação
+  que o editor já publica ali por escolha própria.
+
+Este doc é o processo; a issue é o estado; `data/` é o material sensível.
+
+**Escopo:** só o modelo de lista de e-mail (parceiro dispara pra base dele).
+**Artigo assinado em veículo com link na bio do autor é outro canal** — outra
+moeda de troca (o artigo), outro retorno (autoridade de domínio) e não
+bloqueado pela decisão de moeda em aberto abaixo. Vive na **#5917**, com a
+instrumentação de UTM em `docs/utm-superficies-externas.md`.
 
 ## Critério de seleção de parceiro
 
@@ -30,17 +48,33 @@ junction local. Este doc é o processo; a issue é o dado.
    (bloqueado — ver #4560). Só *retribuir* pelo mesmo mecanismo é que
    depende de upgrade. Parceiro fora da Beehiiv ainda é candidato válido —
    a troca vira menção por menção em vez de recomendação bidirecional.
-5. **Teto de aquisição de USD 0,50/assinante ATIVO segue valendo** mesmo
-   quando a "moeda" não é dinheiro — se a parceria envolver qualquer custo
-   direto (patrocínio, brinde), o mesmo teto se aplica.
+5. **Custo direto ranqueia, não reprova.** O teto de USD 0,50/assinante
+   ATIVO que este item citava foi **revogado em 260814** (#5235/#5236) — não
+   existe mais teto de aquisição por assinante. Se a parceria envolver custo
+   direto (patrocínio, brinde), ele entra na comparação com os outros canais
+   pelo piso de orçamento conhecido (`MONTHLY_BUDGET_FLOOR_BRL` em
+   `scripts/lib/cac.ts`), medido em LEITOR (`docs/definicao-leitor.md`), não
+   em assinante ativo. Não citar o teto antigo como se valesse.
 
-## O que a diar.ia.br oferece em troca (moeda de troca, decisão do editor 260808)
+## O que a diar.ia.br oferece em troca (moeda de troca) — EM ABERTO
 
-**Box dedicado, formato do box do WhatsApp já em produção** — bloco próprio
-entre destaques (hoje entre D1 e D2), com título + URL + botão preenchido.
-Visível sem competir com a curadoria; não é menção solta no Radar nem
-edição/seção co-assinada. Explicitar esse limite **antes** de abrir a
-conversa, não depois.
+**Estado atual: indefinido de propósito.** Duas decisões posteriores
+substituíram a de 260808, e é a mais recente que vale:
+
+- **260815** — slot editorial fica em aberto, a negociar caso a caso na
+  conversa; não pré-comprometer formato.
+- **260821** — não definir a moeda de troca agora; a #4555 segue **bloqueada
+  de propósito**, não por falta de triagem. Registrado como decisão durável
+  (padrão #5373) justamente para que nenhuma sessão autônoma re-pergunte.
+
+Consequência para quem lê este runbook: **sem a moeda definida não dá pra
+rascunhar o pitch** — o corpo da #4555 exige que ela esteja decidida ANTES de
+abrir a conversa. Shortlist de candidatos sem oferta definida é lista sem uso.
+
+*Referência histórica, NÃO o estado atual:* a decisão de 260808 era "box
+dedicado, formato do box do WhatsApp já em produção" — bloco próprio entre
+destaques, com título + URL + botão. Continua sendo o formato mais provável
+quando o editor voltar ao tema, mas hoje não é compromisso assumido.
 
 **Escopo explícito do #4555 (260808):** prospecção só por **e-mail direto**
 com o parceiro — não inclui pedir inclusão na rede de recomendações da
