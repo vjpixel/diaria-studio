@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import {
   DEVELOP_PULADA_MOTIVOS,
   findInvalidPuladaMotivos,
+  findHeliosBuraco,
   checkDevelopPlanMotivosFromIssues,
   checkDevelopPlanMotivos,
   type DevelopPlanIssueLike,
@@ -233,5 +234,77 @@ describe("CLI (scripts/validate-develop-plan-motivo.ts)", () => {
     const r = run([]);
     assert.equal(r.status, 2);
     assert.match(r.stderr, /uso: --plan/);
+  });
+});
+
+// ─── #5907 (b): findHeliosBuraco — deixado-para-o-helios em track develop/bloqueada ──
+
+describe("findHeliosBuraco — #5907(b), buraco do helios", () => {
+  it("status deixado-para-o-helios com exec_track_painel develop é reportado", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5125, status: "deixado-para-o-helios", exec_track_painel: "develop" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), [5125]);
+  });
+
+  it("exec_track_painel bloqueada também é reportado", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5878, status: "deixado-para-o-helios", exec_track_painel: "bloqueada" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), [5878]);
+  });
+
+  it("track overnight é legítimo (helios pega sozinho) — não reporta", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5904, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+      { number: 5901, status: "deixado-para-o-helios", exec_track_painel: "overnight" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), []);
+  });
+
+  it("sem exec_track_painel gravado não reporta aqui (gap (a) da mesma issue, gate próprio)", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5125, status: "deixado-para-o-helios" },
+      { number: 5891, status: "deixado-para-o-helios" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), []);
+  });
+
+  it("outros status (pulada/mergeada) nunca são reportados", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 1, status: "pulada", motivo: "deixado-para-o-helios", exec_track_painel: "develop" },
+      { number: 2, status: "mergeada", exec_track_painel: "develop" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), []);
+  });
+
+  it("saída ordenada por número", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5891, status: "deixado-para-o-helios", exec_track_painel: "develop" },
+      { number: 5125, status: "deixado-para-o-helios", exec_track_painel: "bloqueada" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), [5125, 5891]);
+  });
+
+  it("fixture da 260821c (shape real, inline — data/ não é versionado): sem track gravado não reporta", () => {
+    // Estrutura copiada do plan.json real da 260821c: 15 issues, 10 com
+    // status "deixado-para-o-helios", nenhuma com exec_track_painel gravado.
+    // data/ não vai pro git, então a fixture é inline; se um dia um plan
+    // real com track preenchido precisar de fixture, usar tmpdir+writeFileSync.
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 5892, status: "deixado-para-o-helios" },
+      { number: 5894, status: "deixado-para-o-helios" },
+      { number: 5895, status: "deixado-para-o-helios" },
+      { number: 5899, status: "deixado-para-o-helios" },
+      { number: 5901, status: "deixado-para-o-helios" },
+      { number: 5903, status: "deixado-para-o-helios" },
+      { number: 5904, status: "deixado-para-o-helios" },
+      { number: 5116, status: "deixado-para-o-helios" },
+      { number: 5125, status: "deixado-para-o-helios" },
+      { number: 5891, status: "deixado-para-o-helios" },
+      { number: 5897, status: "mergeada" },
+      { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), []);
   });
 });

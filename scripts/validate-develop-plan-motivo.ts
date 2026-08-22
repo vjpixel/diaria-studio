@@ -23,9 +23,15 @@
  * @see .claude/skills/diaria-develop/SKILL.md
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { checkDevelopPlanMotivos, DEVELOP_PULADA_MOTIVOS } from "./lib/develop-plan-motivo.ts";
+import {
+  checkDevelopPlanMotivos,
+  findHeliosBuraco,
+  DEVELOP_PULADA_MOTIVOS,
+  type DevelopPlanIssueLike,
+} from "./lib/develop-plan-motivo.ts";
+import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
@@ -41,22 +47,36 @@ if (isMainModule(import.meta.url)) {
   }
 
   const result = checkDevelopPlanMotivos(planPath);
-  if (result.status === "ok") {
+  // #5907 (b) — buraco do helios: status deixado-para-o-helios em issue de
+  // track develop/bloqueada. Reportado junto, mesma passada de gate.
+  const plan = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<DevelopPlanIssueLike>;
+  const heliosBuraco = findHeliosBuraco(normalizeIssues(plan));
+  if (result.status === "ok" && heliosBuraco.length === 0) {
     console.log("ok — todo motivo de issue pulada está no vocabulário fechado");
     process.exit(0);
   }
 
-  console.error(
-    `[validate-develop-plan-motivo] motivo fora do vocabulário fechado (${DEVELOP_PULADA_MOTIVOS.join(", ")}), ou sem evidência obrigatória:`,
-  );
-  for (const entry of result.entries) {
-    const label = Number.isFinite(entry.number) ? `#${entry.number}` : "#?";
-    if (entry.reason === "missing-evidencia") {
-      console.error(
-        `  ${label} — motivo "${entry.motivo}" sem campo ja_resolvida_evidencia (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,
-      );
-    } else {
-      console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);
+  if (heliosBuraco.length > 0) {
+    console.error(
+      `[validate-develop-plan-motivo] #5907(b): status "deixado-para-o-helios" em issue de track develop/bloqueada — o helios NUNCA pega essas; a issue fica num buraco (develop não faz, overnight não faz). Reclassifique (mergeada / entregue-fora-de-codigo / nao-tentada / pulada com motivo válido) ou corrija o exec_track_painel:`,
+    );
+    for (const n of heliosBuraco) {
+      console.error(`  #${Number.isFinite(n) ? n : "?"}`);
+    }
+  }
+  if (result.status !== "ok") {
+    console.error(
+      `[validate-develop-plan-motivo] motivo fora do vocabulário fechado (${DEVELOP_PULADA_MOTIVOS.join(", ")}), ou sem evidência obrigatória:`,
+    );
+    for (const entry of result.entries) {
+      const label = Number.isFinite(entry.number) ? `#${entry.number}` : "#?";
+      if (entry.reason === "missing-evidencia") {
+        console.error(
+          `  ${label} — motivo "${entry.motivo}" sem campo ja_resolvida_evidencia (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,
+        );
+      } else {
+        console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);
+      }
     }
   }
   process.exit(1);
