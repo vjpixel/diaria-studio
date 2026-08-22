@@ -31,6 +31,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import {
   SURFACED_LIVE_AT_FIELD,
   SURFACED_LIVE_FIELD,
@@ -39,10 +40,6 @@ import {
 } from "./lib/surfaced-live-gate.ts";
 
 const DEVELOP_ROOT = "data/develop";
-
-interface PlanFile {
-  issues?: SurfacedLiveIssueEntry[] | null;
-}
 
 /** Resolve o caminho do plan.json a partir dos args (mesma precedência do docstring). */
 function resolvePlanPath(values: Record<string, unknown>): string | null {
@@ -91,10 +88,15 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
-  let entries: SurfacedLiveIssueEntry[] | null | undefined;
+  let entries: SurfacedLiveIssueEntry[];
   try {
-    const parsed = JSON.parse(readFileSync(planPath, "utf8")) as PlanFile;
-    entries = parsed.issues ?? [];
+    const parsed = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<SurfacedLiveIssueEntry>;
+    // plan.json.issues aceita array (overnight) OU dict chaveado por número
+    // (develop, #4817/#4860) — normalizeIssues resolve os dois shapes. Ler
+    // parsed.issues direto aqui quebrava com TypeError em todo plan.json de
+    // /diaria-develop com issues dict-shaped (confirmado em 260808/260808b/
+    // 260809/260809b/260809c/260811/260817b — não é caso hipotético).
+    entries = normalizeIssues<SurfacedLiveIssueEntry>(parsed);
   } catch (e) {
     console.error(`[check-surfaced-live] plan.json ilegível (${planPath}): ${(e as Error).message}`);
     process.exit(2);

@@ -79,6 +79,7 @@ describe("checkSurfacedLive", () => {
     assert.equal(r.falseCount, 1);
     assert.equal(r.failures.length, 0);
     assert.equal(r.warnings.length, 1);
+    assert.equal(r.warnings[0]!.kind, "not-surfaced");
     assert.match(r.warnings[0]!.detail, /HANDOFF/);
   });
 
@@ -116,6 +117,8 @@ describe("checkSurfacedLive", () => {
     assert.equal(r.falseCount, 1);
     assert.deepEqual(r.failures.map((f) => f.issue), [5878]);
     assert.equal(r.warnings.length, 2); // false explícito + true sem timestamp
+    const kinds = r.warnings.map((w) => w.kind).sort();
+    assert.deepEqual(kinds, ["missing-timestamp", "not-surfaced"]);
   });
 
   it("lista vazia/null/undefined => zero de tudo (sessões sem bloqueios passam)", () => {

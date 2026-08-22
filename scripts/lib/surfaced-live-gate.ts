@@ -35,14 +35,16 @@
  *   - `failures[]` (bloqueiam, `exit 1`)  — campo `surfaced_live` AUSENTE
  *     ou com tipo errado (string `"true"`, `null`, número): o registro
  *     explícito nunca foi feito, que é o bug.
- *   - `warnings[]` (não bloqueiam, saem no stderr) — `false` explícito:
- *     decisão honesta registrada; o custo dela é aparecer no HANDOFF, não
- *     travar a sessão. Bloquear `false` em geral quebraria o Fallback de
- *     ausência legítimo (editor sai no meio, SKILL.md §Fallback) — over-broad
- *     demais sem classificação mecânica de "tipo 2", que a própria #5919
- *     reconhece não existir. Premissa registrada no PR: falhar só na
- *     AUSÊNCIA é a direção segura; `--strict` no entrypoint promove warning
- *     pra falha quando uma rodada quiser apertar.
+ *   - `warnings[]` (não bloqueiam, saem no stderr) — dois gatilhos: `false`
+ *     explícito (`kind: "not-surfaced"` — decisão honesta registrada; o
+ *     custo dela é aparecer no HANDOFF, não travar a sessão) e `true` sem
+ *     `surfaced_live_at` (`kind: "missing-timestamp"` — timestamp
+ *     recomendado, não obrigatório). Bloquear `false` em geral quebraria o
+ *     Fallback de ausência legítimo (editor sai no meio, SKILL.md
+ *     §Fallback) — over-broad demais sem classificação mecânica de "tipo 2",
+ *     que a própria #5919 reconhece não existir. Premissa registrada no PR:
+ *     falhar só na AUSÊNCIA é a direção segura; `--strict` no entrypoint
+ *     promove `false` pra falha quando uma rodada quiser apertar.
  *
  * Puro, sem rede — recebe as entradas de `issues[]` já lidas do plan.json
  * pelo chamador (entrypoint: `scripts/check-surfaced-live.ts`). Mesmo padrão
@@ -72,6 +74,8 @@ export type SurfacedLiveFindingKind =
   | "missing-field"
   /** `surfaced_live` presente mas não-boolean (string, null, número...). */
   | "wrong-type"
+  /** `false` explícito — não surfaceado ao vivo, honesto, vai pro HANDOFF. */
+  | "not-surfaced"
   /** `true` sem `surfaced_live_at` — recomendado, não obrigatório. */
   | "missing-timestamp";
 
@@ -166,7 +170,7 @@ export function checkSurfacedLive(
       result.falseCount += 1;
       result.warnings.push({
         issue,
-        kind: "missing-timestamp",
+        kind: "not-surfaced",
         what_unblocks: what,
         status,
         detail: `${SURFACED_LIVE_FIELD}=false — bloqueio NÃO surfaceado ao vivo; obrigatório na Seção de HANDOFF do relatório`,
