@@ -47,7 +47,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`claude-pilot-design.md`](./claude-pilot-design.md) | Design do piloto de newsletter focada em Claude/Anthropic (#60) |
 | [`lean-canvas-vigil-ia.md`](./lean-canvas-vigil-ia.md) | Lean Canvas do guarda-chuva Vigil.ia.br (#856) — living document |
 | [`token-reduction-analysis.md`](./token-reduction-analysis.md) | Análise de redução de tokens da pipeline de edição (#2452) |
-| [`growth-partnerships.md`](./growth-partnerships.md) | Critério e processo de prospecção de parcerias de audiência no modelo Clarice (#4555) — candidatos/texto de abordagem ficam na issue, não aqui (conteúdo sensível de repo público) |
+| [`growth-partnerships.md`](./growth-partnerships.md) | Critério e processo de prospecção de parcerias de audiência no modelo Clarice (#4555) — rascunho de abordagem e dados de contato só em `data/parceria-clarice/`; issue guarda estado/decisão. Artigo assinado com link na bio é outro canal (#5917) |
 
 ## Histórico (spikes e análises encerradas — `docs/archive/`, `docs/agents-archive/`)
 
