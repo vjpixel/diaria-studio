@@ -40,3 +40,12 @@ binding = "ASSETS"
 # específicos) — `true` cobre TODO path, porque o único trabalho do script é
 # instrumentação, sem nenhuma decisão de roteamento condicional.
 run_worker_first = true
+
+# #5920: Workers Logs ligado (observability.enabled = true) + head_sampling_rate = 1
+# em todos os Workers com `main` público. sem isto, console.log/console.error do
+# worker só existem enquanto alguém tem `wrangler tail` aberto — e o fail-soft do
+# src/index.ts (ai-referrer-log) responde 200, então some também do gráfico de
+# erro nativo do Cloudflare. Ref: #4305, #5920.
+[observability]
+enabled = true
+head_sampling_rate = 1

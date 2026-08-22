@@ -187,6 +187,14 @@ npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
 
 Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars. **Guardrail crítico (#2794, exit 1 — bloqueia):** o script também simula o render final e falha se algum label de seção não for reconhecido ou se a sonda de imagens produzir menos de 3 `<img>` para os 3 destaques — sinal de que o draft sairia sem imagem em produção (causa raiz do ciclo 2606-07: writer-monthly emitiu labels sem negrito). Se isso disparar, NÃO prosseguir — corrigir o draft (reforçar `**negrito**` nos labels) e re-rodar o lint antes de seguir pra Etapa 2c.
 
+### 2b-2. Lint de densidade de referência (#5926)
+
+```bash
+npx tsx scripts/lint-density.ts --file data/monthly/$CYCLE/draft.md
+```
+
+Mede densidade de referência (frases longas, nomes próprios no corpo, siglas, stats soltos). Advisory por padrão (exit 0, warning no output). Ver `context/artigo-especial.md` pro guia de como reduzir cada métrica. A linha final fixa `"o mecanismo aparece num EXEMPLO concreto, ou só é explicado?"` é impressa sempre — não é métrica automática, é pergunta obrigatória do editor antes de publicar.
+
 ### 2c. Humanizador
 
 Invocar skill humanizador in-place no `draft.md`:
@@ -452,7 +460,15 @@ Rodar com `run_in_background: true`. Ler `preview_url` novo de `preview-server-u
 npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
 ```
 
-Exit 1 = **guardrail crítico (#2794) disparou** (labels de seção não reconhecidos ou sonda de imagem < 3 `<img>`) — NÃO prosseguir pro gate; voltar pra Etapa 2 e corrigir o draft (reforçar `**negrito**` nos labels), re-rodar 2b→2c→2d→4a→4b→4c. Exit 0 = ok (warnings de char-limit, se houver, são advisory — incluir no resumo do gate).
+Exit 1 = **guardrail crítico (#2794) disparou** (labels de seção não reconhecidos ou sonda de imagem < 3 `<img>`) — NÃO prosseguir pro gate; voltar pra Etapa 2 e corrigar o draft (reforçar `**negrito**` nos labels), re-rodar 2b→2c→2d→4a→4b→4c. Exit 0 = ok (warnings de char-limit, se houver, são advisory — incluir no resumo do gate).
+
+### 4c-2. Lint de densidade de referência (#5926)
+
+```bash
+npx tsx scripts/lint-density.ts --file data/monthly/$CYCLE/draft.md
+```
+
+Mesmo chamado da 2b-2. Resultado sumarizado no resumo do gate (4e): N frases > 30 palavras, N nomes próprios no corpo, N siglas, N stats — cada um com seu teto escalado. Advisory por padrão; `--strict` bloqueia (exit 1). Ver `context/artigo-especial.md` pro guia de redução.
 
 ### 4d. Fact-check dos claims
 

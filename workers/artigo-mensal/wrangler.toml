@@ -44,3 +44,8 @@ id = "6ff9d54d034547feb959ede65fd5e990"
 [[kv_namespaces]]
 binding = "ALLOWLIST"
 id = "9b06bf0af3b042cdb9670d9a0726f2f0"
+
+# #5920: Workers Logs ligado para observabilidade de erro (fail-closed do gate).
+[observability]
+enabled = true
+head_sampling_rate = 1

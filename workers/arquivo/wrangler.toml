@@ -34,3 +34,8 @@ custom_domain = true
 [[kv_namespaces]]
 binding = "CURSOS_SUBSCRIBERS"
 id = "a3415c3bf4b840d6975dbac290b99153"
+
+# #5920: Workers Logs ligado para atribuição de referrer real.
+[observability]
+enabled = true
+head_sampling_rate = 1
