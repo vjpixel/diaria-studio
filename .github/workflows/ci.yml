@@ -4,6 +4,18 @@ on:
   push:
     branches: [master]
   pull_request:
+    # #5901 — diffs que não tocam código executável não pagam a suite (~7min):
+    # o PR docs-only médio cai de ~7min pra segundos. pr-checks.yml (gates
+    # rápidos ~30s, incl. regression gate) continua rodando em TODO PR — os
+    # guards que importam em docs-only permanecem. Se um required check
+    # nomeado for adicionado ao ruleset do master um dia, revisitar (padrão
+    # GitHub: workflow espelho no-op com o mesmo nome de job).
+    paths-ignore:
+      - "CLAUDE.md"
+      - "**/*.md"
+      - "docs/**"
+      - "**/.claude/skills/**"
+      - "**/*.mdx"
 
 concurrency:
   group: ci-${{ github.ref }}
