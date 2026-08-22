@@ -43,14 +43,30 @@
  *
  * ## Resultado desta sessão (registrar aqui pra a próxima não repetir)
  *
- * **AINDA NÃO RODOU AO VIVO.** `CLOUDFLARE_API_TOKEN` ausente do ambiente
- * deste worktree isolado (sem `.env`, sem Doppler sync — mesma disciplina
- * de "sonda não pôde rodar" já registrada em várias outras units deste
- * repo, ex: `worker-drift-check.ts` sem `CLOUDFLARE_ACCOUNT_ID`). A
- * próxima sessão com o token disponível deve rodar
- * `npx tsx scripts/probe-cf-zone-analytics.ts` e ATUALIZAR este parágrafo
- * com o resultado real (available / unavailable_schema / forbidden_scope) —
- * não deixar este aviso obsoleto depois da 1ª execução real.
+ * **RODOU AO VIVO em 22/08/2026 (#5920): `status: "available"`** — HTTP 200
+ * com dado, zona `diar.ia.br` (`0c1a216dee80404257ce225a18fae896`). O
+ * dataset de ZONA NÃO corre a sorte do `workersInvocationsAdaptiveGroups`
+ * do #4382: ele existe pra esta conta.
+ *
+ * **A ressalva que a sonda sozinha não mostra, e que decide se vale
+ * construir o `pull-cf-analytics.ts`:** "dataset disponível" ≠ "toda
+ * dimensão disponível". A autorização é POR CAMPO, e as duas dimensões de
+ * REFERRER — que eram a razão principal de querer este dataset — são
+ * negadas neste plano, com erro `authz` (não erro de schema):
+ *
+ *   clientRefererHost    → "zone ... does not have access to the field"
+ *   clientRequestReferer → idem
+ *
+ * Mesma negativa em `clientAsn`, `clientASNDescription`,
+ * `clientRequestQuery` e `botManagementDecision`. Liberadas e úteis:
+ * `clientIP`, `datetime` (segundo a segundo), `clientRequestPath`,
+ * `userAgent`, `clientCountryName`, `clientDeviceType`, `edgeResponseStatus`,
+ * `verifiedBotCategory`, `requestSource`.
+ *
+ * Consequência prática, medida no mesmo dia: dá pra reconstruir a SESSÃO de
+ * um visitante pela zona inteira (mesmo `clientIP` saltando de host em host,
+ * ordenado por `datetime`), mas a ORIGEM externa dele só sai dos Workers
+ * Logs — ver #5920, que liga observability nos Workers que ainda não têm.
  *
  * Uso:
  *   npx tsx scripts/probe-cf-zone-analytics.ts [--zone diar.ia.br]
