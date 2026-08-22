@@ -18,7 +18,8 @@
 <meta name="twitter:title" content="Engenharia de ilusão: jailbreak de IA não arromba, encena">
 <meta name="twitter:description" content="O atacante assume um papel, e o modelo responde com fidelidade à cena que a conversa montou. A resposta proibida deixa de parecer transgressão.">
 <style>
-  /* Tokens reais do design system diar.ia.br — espelho de scripts/lib/shared/design-tokens.ts (#1936). */
+  /* Tokens do design system diar.ia.br — espelho de scripts/lib/shared/design-tokens.ts (#1936).
+     Os --dot-* mais abaixo são semânticos desta página e não existem no design system. */
   :root {
     --bg: #FBFAF6;
     --bg-raised: #EBE5D0;
@@ -493,32 +494,6 @@
   }
   .sect { scroll-margin-top: 1.5rem; }
 
-  /* NOVO: box "O que fazer" (padrão painel bege, análogo ao .choice do design system) */
-  .todo-box {
-    background: var(--bg);
-    border: 1px solid var(--rule);
-    border-radius: 8px;
-    padding: 1.1rem 1.3rem 1.15rem;
-    margin: 1.3rem 0 1.3rem;
-    max-width: 60ch;
-  }
-  .todo-box .tag {
-    display: block;
-    font-family: var(--sans);
-    font-size: 0.68rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--accent);
-    font-weight: 700;
-    margin-bottom: 0.6rem;
-  }
-  .todo-box ul {
-    margin: 0;
-    padding-left: 1.15rem;
-  }
-  .todo-box li { margin-bottom: 0.5rem; }
-  .todo-box li:last-child { margin-bottom: 0; }
-  .todo-box li::marker { color: var(--accent); }
 
   /* NOVO: contraste "as duas explicações" (padrão contorno) */
   .explain-grid {
@@ -556,8 +531,9 @@
 
   /* NOVO: os três mitos — par crença/correção.
      Device próprio: painel afundado (--bg-raised) para a crença errada,
-     correção sobre o papel. Não reusa a barra teal do .pull-quote nem o
-     contorno liso do .explain-card, para os três não se confundirem. */
+     correção sobre o papel. Da barra teal do .pull-quote não reusa nada; o
+     contorno (1px + radius) é o mesmo do .explain-card, e quem separa os
+     dois é o painel interno afundado. */
   .myth-list {
     display: flex;
     flex-direction: column;
@@ -605,7 +581,8 @@
   .myth-body p + p { margin-top: 0.65rem; }
 
   /* NOVO: infográficos inline no fluxo do texto (mobile/tablet).
-     No desktop (>=900px) somem — lá quem mostra é o aside sticky. */
+     No desktop (>=900px) somem: lá quem mostra é o aside, que desde
+     #5924 rola junto com o texto em vez de ficar fixo. */
   .ig-inline { margin: 1.6rem 0 1.8rem; }
   .ig-inline .infographic-card { margin: 0; max-width: none; background: var(--bg); }
   @media (min-width: 900px) {
