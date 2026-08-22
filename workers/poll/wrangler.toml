@@ -118,3 +118,9 @@ EMBED_ALLOWED_ORIGINS = ""
 # trava contra divergência futura — ver test/poll-ds-tokens.test.ts.
 [build]
 command = "npx tsx ../../scripts/generate-worker-tokens.ts --out-dir workers/poll/src"
+
+# #5920: Workers Logs ligado — eia.diar.ia.br recebe 1.2k+ req/dia e precisa
+# de referrer/erro observáveis sem depender de `wrangler tail` aberto.
+[observability]
+enabled = true
+head_sampling_rate = 1
