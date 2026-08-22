@@ -47,7 +47,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
+import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
 import { WAIT_UNTIL_RE } from "./issue-exec-track.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;

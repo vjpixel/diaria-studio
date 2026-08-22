@@ -11,11 +11,18 @@
  *   3. `scripts/lib/mensal/**` NÃO importa de `scripts/lib/diaria/**`.
  *      (2/3: fluxo cruzado só passando por shared/ — o forcing function que
  *      motivaria um repo separado, mas o erro custa `git mv`, não pacote.)
+ *   4. `scripts/lib/**` (QUALQUER arquivo, incluindo a raiz não-classificada)
+ *      NÃO importa de `scripts/studio-ui/**` (#5899). Direção única —
+ *      `studio-ui/` importar de `lib/` é o fluxo normal; o INVERSO é sinal
+ *      de que lógica de negócio vazou pro código de servidor HTTP, quando
+ *      deveria estar em `lib/`, reusável por CLI e Studio.
  *
- * Arquivos na RAIZ de `scripts/lib/` estão fora das regras: são o legado
+ * Arquivos na RAIZ de `scripts/lib/` estão fora das regras 1-3: são o legado
  * não-classificado (implicitamente diária ou genérico-ainda-não-movido) e
  * migram sob demanda — quando um deles for importado por shared/, é sinal de
  * que deve ser movido pra shared/ (a falha da regra 1 força essa decisão).
+ * A regra 4 é a exceção declarada: ela vale pra raiz também, porque "lib não
+ * importa de studio-ui" independe de classificação de domínio.
  *
  * Scan estático de specifiers de import — sem executar os módulos.
  */
@@ -94,5 +101,44 @@ describe("fronteira scripts/lib shared/diaria/mensal (#2747)", () => {
     // falhar aqui avisa que o scan ficou vazio (silêncio ≠ fronteira ok).
     assert.ok(tsFilesUnder(join(LIB, "shared")).length >= 2, "shared/ tem os módulos base");
     assert.ok(tsFilesUnder(join(LIB, "mensal")).length >= 3, "mensal/ tem os monthly-*");
+  });
+});
+
+describe("fronteira scripts/lib → scripts/studio-ui (#5899)", () => {
+  const STUDIO_UI = join(ROOT, "scripts", "studio-ui");
+
+  /** Violações da regra 4: QUALQUER .ts sob scripts/lib/ (domínios + raiz)
+   * importando de scripts/studio-ui/. Reusa os mesmos helpers das regras
+   * 1-3; o alvo é detectado por path resolvido, não por domainOf (studio-ui
+   * não é um domínio de lib/). */
+  function studioUiViolations(): string[] {
+    const found: string[] = [];
+    const allLibFiles = [
+      ...tsFilesUnder(LIB), // inclui a raiz de lib/ — readdirSync recursive
+    ];
+    for (const file of allLibFiles) {
+      for (const spec of importSpecifiers(file)) {
+        if (!spec.startsWith(".")) continue; // node:/npm — fora da regra
+        const target = resolve(dirname(file), spec);
+        if (target.startsWith(STUDIO_UI + sep)) {
+          found.push(`${file.slice(ROOT.length + 1)} -> ${spec} (lib não importa de studio-ui/)`);
+        }
+      }
+    }
+    return found;
+  }
+
+  it("nenhum arquivo de scripts/lib/** importa de scripts/studio-ui/**", () => {
+    const v = studioUiViolations();
+    assert.deepEqual(
+      v,
+      [],
+      `lógica de negócio vazou pro servidor HTTP (mova pra lib/, reusável por CLI e Studio):\n  ${v.join("\n  ")}`,
+    );
+  });
+
+  it("sanity: o scan enxerga os dois lados da fronteira", () => {
+    assert.ok(tsFilesUnder(STUDIO_UI).length >= 5, "studio-ui/ tem os módulos do servidor");
+    assert.ok(tsFilesUnder(LIB).length >= 10, "lib/ tem arquivos pra varrer");
   });
 });

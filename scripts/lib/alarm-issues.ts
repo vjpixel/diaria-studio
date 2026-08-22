@@ -24,7 +24,7 @@
  * `planAlarmReconciliation` é PURA — decide o que fazer (ensure/comment/
  * close) só olhando pending findings + estado local, sem tocar rede.
  * `applyAlarmReconciliation` faz o I/O (chama `gh` via `GhRunFn` injetável,
- * mesmo padrão de `scripts/studio-ui/gh-run.ts`) e devolve o próximo estado
+ * mesmo padrão de `scripts/lib/shared/gh-run.ts`) e devolve o próximo estado
  * + o outcome por achado (pro e-mail citar a issue).
  *
  * ─── Dedup em 2 camadas (#5112 item 2) ──────────────────────────────────────
@@ -105,7 +105,7 @@
  * usa a label companheira `ALARM_EVENT_LABEL` pra rotear esses achados pro
  * `overnight` (revisão humana) em vez de `fora-de-rodada`.
  */
-import { spawnGhSync, type GhSpawnResult } from "../studio-ui/gh-run.ts";
+import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
 
 /** Label que este módulo aplica a toda issue de alarme (#5338: precisa
  * existir no repo — nunca existiu antes desta unidade, então `gh issue
@@ -277,12 +277,12 @@ export function alarmIssueStateKey(check: string, fingerprint: string): string {
   return `${check}:${fingerprint}`;
 }
 
-// ─── `gh` CLI (I/O, injetável — reusa scripts/studio-ui/gh-run.ts) ─────────
+// ─── `gh` CLI (I/O, injetável — reusa scripts/lib/shared/gh-run.ts) ─────
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
 /** Produção: `gh` de verdade, com o mesmo teto de tempo de
- * `scripts/studio-ui/gh-run.ts` (nunca trava o event loop indefinidamente
+ * `scripts/lib/shared/gh-run.ts` (nunca trava o event loop indefinidamente
  * se `gh auth` expirou ou a API do GitHub degradou). */
 export function defaultAlarmGhRun(args: string[], cwd: string): GhSpawnResult {
   return spawnGhSync(args, cwd);
