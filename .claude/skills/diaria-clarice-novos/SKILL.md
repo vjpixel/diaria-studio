@@ -17,7 +17,7 @@ npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] [--force] 
 
 | Guard | Onde | Condição de abort |
 |---|---|---|
-| Teto de tamanho (D13) | `clarice-build-segment.ts --group novos` | grupo selecionado > 500 contatos → aborta. `--force` (repassado por `clarice-novos-run.ts`) destrava. |
+| Teto de tamanho (D13) | `clarice-build-segment.ts --group novos` | grupo selecionado > 500 contatos → **auto-fatiamento (#5922)**: sobe o TOPO 500 da ordem canônica e o excedente fica pra próxima rodada (`deferred_by_cap` no summary + nota no relatório). `--force` (repassado por `clarice-novos-run.ts`) envia TUDO. |
 
 | Queued/sent | `clarice-build-segment.ts` (todos os grupos) | falha ao consultar campanhas comprometidas na Brevo → aborta fora de `--dry-run`. |
 | HTML | `clarice-novos-resolve-cycle.ts` | nenhum ciclo com preview pronto → aborta. |

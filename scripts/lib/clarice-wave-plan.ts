@@ -1087,9 +1087,12 @@ function describeAgeHours(ageHours: number): string {
 // ---------------------------------------------------------------------------
 
 /** `novos-run-status.json` mais recente, só as partes que este módulo usa
- *  (evita importar `NovosRunStatusValue` inteiro pra este arquivo de tipos). */
+ *  (evita importar `NovosRunStatusValue` inteiro pra este arquivo de tipos).
+ *  #5922: só resta `other-error` — o guard D4 que produzia `semaphore-red`
+ *  foi retirado do caminho `novos` no #5660, e o valor foi removido do enum
+ *  em `clarice-novos-run-status.ts`. */
 export interface NovosLastAbortInfo {
-  status: "semaphore-red" | "other-error";
+  status: "other-error";
   /** ISO — quando esta tentativa terminou (`checkedAt` de `last-novos-run-status.json`). */
   checkedAt: string;
   detail?: string;
@@ -1388,14 +1391,13 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   const pendingSuffix = describePendingSuffix(input.novosPending);
 
   if (isAbortMoreRecentThanLastRun(input.novosLastAbort, input.novosFreshness)) {
-    const reason =
-      input.novosLastAbort.status === "semaphore-red"
-        ? "semáforo VERMELHO (D4, circuit breaker de entregabilidade)"
-        : "outro motivo (não semáforo)";
+    // #5922: `semaphore-red` não existe mais (guard D4 saiu do caminho
+    // `novos` no #5660) — todo abort registrável é estrutural. O texto antigo
+    // mandava "destravar o semáforo", instrução que não tem mais alvo.
     blockers.push(
-      `/diaria-clarice-novos rodou mas ABORTOU — última tentativa não confirmou nenhum envio (motivo: ${reason}).` +
+      `/diaria-clarice-novos rodou mas ABORTOU — última tentativa não confirmou nenhum envio (motivo: erro estrutural).` +
         pendingSuffix +
-        " Destrave o semáforo (ou resolva o motivo do abort) antes de montar esta onda — cadastro novo continua " +
+        " Resolva o motivo do abort antes de montar esta onda — cadastro novo continua " +
         "esperando o /diaria-clarice-novos, não a rampa (#5410); ver o relatório mais recente em " +
         "data/clarice-subscribers/novos-reports/*-abort.md (#5405).",
     );
@@ -1553,8 +1555,10 @@ export function renderWaveProposal(p: WaveProposal): string {
 
   L.push("── /diaria-clarice-novos ──");
   if (isAbortMoreRecentThanLastRun(p.novosLastAbort, p.novosFreshness)) {
-    const reason = p.novosLastAbort.status === "semaphore-red" ? "semáforo VERMELHO (D4)" : "outro motivo";
-    L.push(`  ⛔ ABORTOU (${reason}) em ${p.novosLastAbort.checkedAt} — nenhum envio confirmado desde então (#5405).`);
+    // #5922: só existe um motivo de abort registrável (`other-error`) desde
+    // que o guard D4 saiu do caminho `novos` (#5660) — o texto fixo substitui
+    // o ternário que distinguia `semaphore-red`.
+    L.push(`  ⛔ ABORTOU (erro estrutural) em ${p.novosLastAbort.checkedAt} — nenhum envio confirmado desde então (#5405).`);
   } else if (p.novosFreshness.status === "never-run") {
     L.push("  Nunca rodou neste histórico — nenhum registro de execução encontrado.");
   } else {

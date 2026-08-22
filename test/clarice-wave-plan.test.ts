@@ -1441,7 +1441,7 @@ describe("buildWaveProposal — #5405 item 2: aviso diz 'abortou' quando a ÚLTI
     const p = buildWaveProposal(
       proposalInput({
         novosFreshness: { status: "warning", lastRunAt: "2026-08-15T11:00:00.000Z", ageHours: 20 },
-        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+        novosLastAbort: { status: "other-error", checkedAt: "2026-08-16T11:00:00.000Z" },
       }),
     );
     const all = [...p.blockers, ...p.warnings].join(" ");
@@ -1453,7 +1453,7 @@ describe("buildWaveProposal — #5405 item 2: aviso diz 'abortou' quando a ÚLTI
     const p = buildWaveProposal(
       proposalInput({
         novosFreshness: { status: "warning", lastRunAt: "2026-08-16T11:00:00.000Z", ageHours: 13 },
-        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-15T11:00:00.000Z" },
+        novosLastAbort: { status: "other-error", checkedAt: "2026-08-15T11:00:00.000Z" },
       }),
     );
     const all = [...p.blockers, ...p.warnings].join(" ");
@@ -1465,7 +1465,7 @@ describe("buildWaveProposal — #5405 item 2: aviso diz 'abortou' quando a ÚLTI
     const p = buildWaveProposal(
       proposalInput({
         novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null },
-        novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+        novosLastAbort: { status: "other-error", checkedAt: "2026-08-16T11:00:00.000Z" },
       }),
     );
     const all = p.blockers.join(" ");
@@ -1487,7 +1487,7 @@ describe("buildWaveProposal — #5405 item 2: aviso diz 'abortou' quando a ÚLTI
         novosLastAbort: { status: "other-error", checkedAt: "2026-08-16T11:00:00.000Z" },
       }),
     );
-    assert.match(p.blockers.join(" "), /outro motivo/);
+    assert.match(p.blockers.join(" "), /erro estrutural/);
   });
 });
 
@@ -1536,12 +1536,12 @@ describe("renderWaveProposal — data do novos SEMPRE visível (#4664)", () => {
       buildWaveProposal(
         proposalInput({
           novosFreshness: { status: "warning", lastRunAt: "2026-08-15T11:00:00.000Z", ageHours: 20 },
-          novosLastAbort: { status: "semaphore-red", checkedAt: "2026-08-16T11:00:00.000Z" },
+          novosLastAbort: { status: "other-error", checkedAt: "2026-08-16T11:00:00.000Z" },
           novosPending: { count: 28, earliestCreatedIso: "2026-08-15" },
         }),
       ),
     );
-    assert.match(out, /ABORTOU \(semáforo VERMELHO \(D4\)\)/);
+    assert.match(out, /ABORTOU \(erro estrutural\)/);
     assert.match(out, /Fila represada: 28 cadastro\(s\) desde 2026-08-15\./);
   });
 });

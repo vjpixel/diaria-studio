@@ -927,7 +927,7 @@ test("main: --group novos requer --since (aborta sem ele)", async () => {
   assert.equal(exitCode, 1);
 });
 
-test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lista/manifest; 500 passa; --force com 501 passa", async () => {
+test("REGRESSÃO (#4347 D13, atualizado #5922): 501 contatos no grupo 'novos' AUTO-FATIA (topo 500 + deferred_by_cap); 500 passa; --force com 501 envia tudo", async () => {
   const dirOver = mkdtempSync(resolve(tmpdir(), "bseg-novos-cap-over-"));
   const dbOver = resolve(dirOver, "store.db");
   const db1 = openClariceDb(dbOver);
@@ -936,21 +936,28 @@ test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lis
   db1.close();
   const segDirOver = clariceSegmentsDir("2606-07", dirOver);
 
-  const { exitCode, errors } = await withBrevoFetch(
+  // #5922 item 6: sem --force NÃO aborta mais — fatia pro topo do cap e
+  // escreve normalmente, com deferred_by_cap no summary.
+  const logsOver = await withBrevoFetch(
     () => jsonResponse({ campaigns: [] }), // nenhuma campanha comprometida — isola o teste no teto D13
     () =>
-      withMockedExit(() =>
+      captureLogs(() =>
         main([
           "--cycle", "2606-07", "--db", dbOver, "--group", "novos", "--since", "2026-07-01", "--data-root", dirOver,
-        ]), // SEM --dry-run: prova que nada é escrito
+        ]), // SEM --dry-run: prova que o artefato fatiado é escrito de verdade
       ),
   );
-  assert.equal(exitCode, 1, "501 contatos sem --force deve abortar");
-  assert.ok(errors.some((e) => /D13|teto/i.test(e)), `esperava erro do teto D13, recebeu: ${JSON.stringify(errors)}`);
-  assert.equal(existsSync(resolve(segDirOver, "novos.csv")), false, "nada deve ser escrito quando o teto abortar");
-  assert.equal(existsSync(resolve(segDirOver, "novos-manifest.json")), false);
+  const outOver = JSON.parse(logsOver.find((l) => l.startsWith("{")) ?? "{}") as Record<string, unknown>;
+  assert.equal(outOver.selected, NOVOS_ROUND_SIZE_CAP, `seleção fatiada pro topo do teto (logs: ${JSON.stringify(logsOver).slice(0, 600)})`);
+  assert.equal(outOver.deferred_by_cap, 1, "excedente registrado pra auditoria");
+  const csvOver = readFileSync(resolve(segDirOver, "novos.csv"), "utf-8");
+  assert.equal(csvOver.trim().split(/\r?\n/).length - 1, NOVOS_ROUND_SIZE_CAP, "CSV tem exatamente o topo do cap");
+  const manifestOver = JSON.parse(readFileSync(resolve(segDirOver, "novos-manifest.json"), "utf-8")) as Array<{ count?: number }>;
+  assert.equal(Array.isArray(manifestOver) ? manifestOver[0]?.count : undefined, NOVOS_ROUND_SIZE_CAP, "manifest reflete a seleção fatiada");
+  // (O aviso ✂️ do fatiamento vai a console.error — fora do captureLogs, que
+  // é stdout-only; o registro durável da auditoria é o deferred_by_cap acima.)
 
-  // --force destrava (501 passa)
+  // --force destrava pro outro lado: 501 inteiros passam
   const dirForce = mkdtempSync(resolve(tmpdir(), "bseg-novos-cap-force-"));
   const dbForce = resolve(dirForce, "store.db");
   const db2 = openClariceDb(dbForce);
