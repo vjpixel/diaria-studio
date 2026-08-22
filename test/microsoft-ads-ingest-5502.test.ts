@@ -1,13 +1,17 @@
 /**
- * test/microsoft-ads-ingest-5502.test.ts (#5502)
+ * test/microsoft-ads-ingest-5502.test.ts (#5502, transporte SOAP real #5928)
  *
  * Cobre `scripts/lib/microsoft-ads-ingest.ts`: normalização
  * CampaignPerformanceReport→SpendRow (incluindo os dois formatos de data
- * aceitos), e o caminho fail-soft (rede/auth nunca lança) — nunca chama a
- * API real. Espelha `test/google-ads-ingest-5237.test.ts` ponto a ponto.
+ * aceitos), o transporte SOAP real (submit→poll→download→unzip→parse,
+ * #5928), e o caminho fail-soft (rede/auth/qualquer etapa nunca lança) —
+ * nunca chama a API real. Espelha `test/google-ads-ingest-5237.test.ts`
+ * ponto a ponto onde o formato permite (a Reporting API é SOAP assíncrona,
+ * não uma chamada síncrona como a GAQL do Google).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { deflateRawSync } from "node:zlib";
 
 import {
   aggregateMicrosoftAdsSpendByMonth,
@@ -29,6 +33,81 @@ const AUTH: MicrosoftAdsAuthConfig = {
   customerId: "12345678",
   accountId: "87654321",
 };
+
+const DATE_RANGE = { start: new Date("2026-05-24T00:00:00Z"), end: new Date("2026-08-22T00:00:00Z") };
+/** Testes nunca esperam de verdade entre tentativas de poll. */
+const NO_SLEEP = { sleepImpl: async () => {} };
+const SERVICE_URL = "https://reporting.api.bingads.microsoft.com/Api/Advertiser/Reporting/v13/ReportingService.svc";
+const DOWNLOAD_URL = "https://reporting-download.bingads.microsoft.com/fake/report.zip";
+
+/** Monta um ZIP mínimo de 1 entry (Local File Header + dados DEFLATE), o
+ *  mesmo formato que `Compress-Archive` produz e que `unzipFirstEntry`
+ *  (scripts/lib/microsoft-ads-ingest.ts) sabe ler — validado ao vivo contra
+ *  um ZIP real do PowerShell durante a implementação (#5928). */
+function buildTestZip(csvContent: string): Buffer {
+  const data = Buffer.from(csvContent, "utf8");
+  const compressed = deflateRawSync(data);
+  const nameBuf = Buffer.from("CampaignPerformanceReport.csv", "utf8");
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(8, 8); // compression method = deflate
+  header.writeUInt32LE(0, 14); // crc32 — não validado pelo reader
+  header.writeUInt32LE(compressed.length, 18);
+  header.writeUInt32LE(data.length, 22);
+  header.writeUInt16LE(nameBuf.length, 26);
+  header.writeUInt16LE(0, 28);
+  return Buffer.concat([header, nameBuf, compressed]);
+}
+
+function soapFault(message: string): string {
+  return `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultstring>${message}</faultstring></s:Fault></s:Body></s:Envelope>`;
+}
+
+function submitResponseXml(reportRequestId: string): string {
+  return `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><SubmitGenerateReportResponse xmlns="https://bingads.microsoft.com/Reporting/v13"><ReportRequestId>${reportRequestId}</ReportRequestId></SubmitGenerateReportResponse></s:Body></s:Envelope>`;
+}
+
+function pollResponseXml(status: string, downloadUrl?: string): string {
+  const downloadEl = downloadUrl ? `<ReportDownloadUrl>${downloadUrl}</ReportDownloadUrl>` : "";
+  return `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><PollGenerateReportResponse xmlns="https://bingads.microsoft.com/Reporting/v13"><ReportRequestStatus><ReportRequestId>req-1</ReportRequestId><Status>${status}</Status>${downloadEl}</ReportRequestStatus></PollGenerateReportResponse></s:Body></s:Envelope>`;
+}
+
+/** Router de fetch mockado pro fluxo SOAP completo — distingue submit vs
+ *  poll pelo texto `<Action>` dentro do corpo (os 2 vão pra mesma URL,
+ *  `SERVICE_URL`), e o download por URL separada (`DOWNLOAD_URL`). */
+function mockReportingFlow(opts: {
+  reportRequestId?: string;
+  pollStatuses?: string[]; // ex: ["Pending", "Success"] — 1 por chamada de poll, na ordem
+  csv?: string;
+  submitError?: { status: number; body: string };
+}): FetchLike {
+  const reportRequestId = opts.reportRequestId ?? "req-1";
+  const pollStatuses = opts.pollStatuses ?? ["Success"];
+  let pollCall = 0;
+  return async (url, init) => {
+    if (url.includes("login.microsoftonline.com")) {
+      return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+    }
+    if (url === DOWNLOAD_URL) {
+      return new Response(buildTestZip(opts.csv ?? '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n'), { status: 200 });
+    }
+    if (url === SERVICE_URL) {
+      const body = String(init?.body ?? "");
+      if (body.includes(">SubmitGenerateReport<")) {
+        if (opts.submitError) return new Response(opts.submitError.body, { status: opts.submitError.status });
+        return new Response(submitResponseXml(reportRequestId), { status: 200 });
+      }
+      if (body.includes(">PollGenerateReport<")) {
+        const status = pollStatuses[Math.min(pollCall, pollStatuses.length - 1)];
+        pollCall++;
+        return new Response(pollResponseXml(status, status === "Success" ? DOWNLOAD_URL : undefined), { status: 200 });
+      }
+    }
+    throw new Error(`URL/corpo inesperado no mock: ${url} — ${String(init?.body).slice(0, 200)}`);
+  };
+}
 
 describe("#5502 — aggregateMicrosoftAdsSpendByMonth", () => {
   it("agrega Spend por mês, formato de data MM/DD/YYYY (default da Reporting API)", () => {
@@ -116,47 +195,83 @@ describe("#5502 — refreshMicrosoftAdsAccessToken (fail-soft)", () => {
   });
 });
 
-describe("#5502 — fetchMicrosoftAdsSpendRows (fail-soft)", () => {
-  it("sucesso devolve as rows do payload", async () => {
-    const rows: MicrosoftAdsReportRow[] = [{ TimePeriod: "08/01/2026", Spend: "10.00" }];
-    const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ rows }), { status: 200 });
-    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", "https://reporting.example/submit");
-    assert.deepEqual(out, { rows });
+describe("#5928 — fetchMicrosoftAdsSpendRows (transporte SOAP real: submit→poll→download→unzip→parse)", () => {
+  it("caminho feliz: submit + poll (Success de cara) + download do ZIP devolve as rows parseadas", async () => {
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n"2026-08-11","12.34"\r\n' });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.deepEqual(out, {
+      rows: [
+        { TimePeriod: "2026-08-10", Spend: "50.00" },
+        { TimePeriod: "2026-08-11", Spend: "12.34" },
+      ],
+    });
   });
 
-  it("credencial rejeitada/HTTP de erro vira { error }, não lança", async () => {
-    const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ error: "InvalidCredentials" }), { status: 401 });
-    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", "https://reporting.example/submit");
+  it("poll Pending 2× antes de Success — resolve sem exceder maxPollAttempts", async () => {
+    const fetchImpl = mockReportingFlow({ pollStatuses: ["Pending", "Pending", "Success"], csv: '"TimePeriod","Spend"\r\n"2026-08-10","1.00"\r\n' });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, { ...NO_SLEEP, maxPollAttempts: 5 });
+    assert.deepEqual(out, { rows: [{ TimePeriod: "2026-08-10", Spend: "1.00" }] });
+  });
+
+  it("poll nunca sai de Pending → { error } após maxPollAttempts, nunca lança", async () => {
+    const fetchImpl = mockReportingFlow({ pollStatuses: ["Pending"] });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, { ...NO_SLEEP, maxPollAttempts: 3 });
     assert.ok("error" in out);
+    assert.match(out.error, /não completou/);
   });
 
-  it("falha de rede nunca lança", async () => {
+  it("poll devolve status de erro (nem Pending nem Success) → { error }", async () => {
+    const fetchImpl = mockReportingFlow({ pollStatuses: ["Error"] });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("error" in out);
+    assert.match(out.error, /status inesperado/);
+  });
+
+  it("SubmitGenerateReport respondeu HTTP de erro (SOAP Fault) → { error } com a faultstring, não lança", async () => {
+    const fetchImpl = mockReportingFlow({ submitError: { status: 500, body: soapFault("DeveloperTokenInvalid") } });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("error" in out);
+    assert.match(out.error, /DeveloperTokenInvalid/);
+  });
+
+  it("falha de rede em qualquer etapa nunca lança", async () => {
     const fetchImpl: FetchLike = async () => {
       throw new TypeError("fetch failed");
     };
-    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", "https://reporting.example/submit");
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
     assert.ok("error" in out);
+  });
+
+  it("download com corpo que não é um ZIP válido → { error }, não lança", async () => {
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+      if (url === DOWNLOAD_URL) return new Response("não sou um zip", { status: 200 });
+      const body = String(init?.body ?? "");
+      if (body.includes(">SubmitGenerateReport<")) return new Response(submitResponseXml("req-1"), { status: 200 });
+      return new Response(pollResponseXml("Success", DOWNLOAD_URL), { status: 200 });
+    };
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("error" in out);
+    assert.match(out.error, /descompactar/);
+  });
+
+  it("CSV baixado sem as colunas TimePeriod/Spend → { error } (nunca 'zero gasto' silencioso)", async () => {
+    const fetchImpl = mockReportingFlow({ csv: '"CampaignId","Clicks"\r\n"123","5"\r\n' });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("error" in out);
+    assert.match(out.error, /colunas esperadas/);
   });
 });
 
-describe("#5502 — runMicrosoftAdsIngest (orquestração end-to-end, fail-soft)", () => {
+describe("#5502/#5928 — runMicrosoftAdsIngest (orquestração end-to-end, fail-soft)", () => {
   const existingRows: SpendRow[] = [
     { canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 956.21, fonte: "painel manual" },
     { canal: "LinkedIn", mes: "2026-08", moeda: "BRL", valor: 0, fonte: "placeholder" },
   ];
 
   it("caminho feliz: token + Reporting API OK produz merge atualizado", async () => {
-    let call = 0;
-    const fetchImpl: FetchLike = async (url) => {
-      call++;
-      if (url.includes("login.microsoftonline.com")) {
-        return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ rows: [{ TimePeriod: "08/10/2026", Spend: "50.00" }] }), { status: 200 });
-    };
-
-    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows });
-    assert.equal(call, 2);
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n' });
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows, ...NO_SLEEP });
     assert.equal(result.kind, "updated");
     if (result.kind === "updated") {
       assert.equal(result.fetchedRows, 1);
@@ -170,11 +285,8 @@ describe("#5502 — runMicrosoftAdsIngest (orquestração end-to-end, fail-soft)
   });
 
   it("canal default é EXATAMENTE o nome reservado em RESERVED_CHANNEL_NAMES (#5493) — nunca 'Microsoft Ads'/'Bing Ads'", async () => {
-    const fetchImpl: FetchLike = async (url) => {
-      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
-      return new Response(JSON.stringify({ rows: [{ TimePeriod: "08/10/2026", Spend: "1.00" }] }), { status: 200 });
-    };
-    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [] });
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","1.00"\r\n' });
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], ...NO_SLEEP });
     assert.equal(result.kind, "updated");
     if (result.kind === "updated") {
       assert.equal(result.rows[0]?.canal, "Microsoft Advertising");
@@ -185,26 +297,20 @@ describe("#5502 — runMicrosoftAdsIngest (orquestração end-to-end, fail-soft)
     const fetchImpl: FetchLike = async () => {
       throw new Error("connect ETIMEDOUT");
     };
-    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows });
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows, ...NO_SLEEP });
     assert.equal(result.kind, "fallback");
     if (result.kind === "fallback") assert.match(result.reason, /ETIMEDOUT/);
   });
 
   it("token OK mas Reporting API falha (ex: credencial não emitida) → fallback", async () => {
-    const fetchImpl: FetchLike = async (url) => {
-      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
-      return new Response(JSON.stringify({ error: "InvalidCredentials" }), { status: 401 });
-    };
-    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows });
+    const fetchImpl = mockReportingFlow({ submitError: { status: 401, body: soapFault("InvalidCredentials") } });
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows, ...NO_SLEEP });
     assert.equal(result.kind, "fallback");
   });
 
   it("Reporting API responde sem nenhuma linha de custo → fallback (nada pra atualizar)", async () => {
-    const fetchImpl: FetchLike = async (url) => {
-      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
-      return new Response(JSON.stringify({ rows: [] }), { status: 200 });
-    };
-    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows });
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n' }); // só header, 0 linhas de dado
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows, ...NO_SLEEP });
     assert.equal(result.kind, "fallback");
   });
 });
@@ -256,19 +362,11 @@ describe("#5605 — aggregateMicrosoftAdsSpendByMonthWithDiscards (espelha #5598
 });
 
 describe("#5605 — runMicrosoftAdsIngest propaga discardedCount + console.warn em perda parcial", () => {
-  const tokenThen = (rowsBody: string): FetchLike => async (url) =>
-    url.includes("login.microsoftonline.com")
-      ? new Response(JSON.stringify({ access_token: "tok" }), { status: 200 })
-      : new Response(rowsBody, { status: 200 });
-
   it("resultado 'updated' expõe discardedCount batendo com o nº exato de linhas descartadas", async () => {
-    const mixed = JSON.stringify({
-      rows: [
-        { TimePeriod: "08/10/2026", Spend: "50.00" }, // válida
-        { Spend: "10.00" }, // descartada: sem TimePeriod
-      ],
-    });
-    const result = await runMicrosoftAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+    // 2ª linha vem com Spend não-numérico ("N/A") — descartada na agregação (Number.isFinite), não no parse do CSV
+    // ("" seria Number("") === 0, um falso-positivo de "válida"; N/A garante NaN de verdade).
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n"2026-08-11","N/A"\r\n' });
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], ...NO_SLEEP });
     assert.equal(result.kind, "updated");
     if (result.kind === "updated") {
       assert.equal(result.discardedCount, 1);
@@ -277,16 +375,14 @@ describe("#5605 — runMicrosoftAdsIngest propaga discardedCount + console.warn 
   });
 
   it("discardedCount > 0 emite console.warn no caminho de SUCESSO, sem virar exit não-zero", async () => {
-    const mixed = JSON.stringify({
-      rows: [{ TimePeriod: "08/10/2026", Spend: "50.00" }, { Spend: "10.00" }],
-    });
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n"2026-08-11","N/A"\r\n' });
     const warnings: string[] = [];
     const originalWarn = console.warn;
     console.warn = (msg: string) => {
       warnings.push(msg);
     };
     try {
-      const result = await runMicrosoftAdsIngest(tokenThen(mixed), { auth: AUTH, existingRows: [] });
+      const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], ...NO_SLEEP });
       assert.equal(result.kind, "updated");
     } finally {
       console.warn = originalWarn;
@@ -295,14 +391,14 @@ describe("#5605 — runMicrosoftAdsIngest propaga discardedCount + console.warn 
   });
 
   it("discardedCount === 0 (nenhuma linha malformada) NÃO emite warning", async () => {
-    const clean = JSON.stringify({ rows: [{ TimePeriod: "08/10/2026", Spend: "50.00" }] });
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","50.00"\r\n' });
     const warnings: string[] = [];
     const originalWarn = console.warn;
     console.warn = (msg: string) => {
       warnings.push(msg);
     };
     try {
-      const result = await runMicrosoftAdsIngest(tokenThen(clean), { auth: AUTH, existingRows: [] });
+      const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], ...NO_SLEEP });
       assert.equal(result.kind, "updated");
       if (result.kind === "updated") assert.equal(result.discardedCount, 0);
     } finally {
@@ -312,8 +408,8 @@ describe("#5605 — runMicrosoftAdsIngest propaga discardedCount + console.warn 
   });
 
   it("perda TOTAL continua caindo em 'fallback' (nada pra mesclar), não em 'updated' com discardedCount", async () => {
-    const drifted = JSON.stringify({ rows: [{ TimePeriod: "08/10/2026" }] }); // sem Spend
-    const result = await runMicrosoftAdsIngest(tokenThen(drifted), { auth: AUTH, existingRows: [] });
+    const fetchImpl = mockReportingFlow({ csv: '"TimePeriod","Spend"\r\n"2026-08-10","N/A"\r\n' }); // Spend não-numérico
+    const result = await runMicrosoftAdsIngest(fetchImpl, { auth: AUTH, existingRows: [], ...NO_SLEEP });
     assert.equal(result.kind, "fallback");
   });
 });
