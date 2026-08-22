@@ -12,7 +12,10 @@ parágrafo errava nela.** Este repositório é PÚBLICO, e uma issue dele també
 é: comentário em issue **não** é local privado. O único local privado do
 projeto é `data/` (junction pro OneDrive, `.gitignore` blanket, nada
 versionado) — para este tema, `data/parceria-clarice/`, quando a sessão tiver
-acesso à junction local.
+acesso à junction local. Hoje esse diretório guarda o dossiê de prova da
+parceria de REFERÊNCIA (a Clarice, arquivos de 07/ago); os candidatos das
+rodadas de prospecção seguintes ficaram em comentário de issue, que é o
+que a nota no fim deste documento registra.
 
 - **Rascunho de abordagem, dossiê com dados de contato, termos em
   negociação** → só `data/parceria-clarice/`. Nunca em issue.
@@ -88,7 +91,10 @@ enquanto os dois lados não destravarem).
   de ex-assinantes) — uma parceria nova pode ser só aquisição, o que muda o
   que se oferece em troca.
 - **UTM próprio por parceiro desde o 1º envio** (`utm_source={parceiro}`,
-  `medium=email`), registrado em `utm-registry.ts` — sem isso o cadastro
+  `medium=email`), registrado em `scripts/lib/shared/utm-registry.ts` (a
+  fonte da verdade; `workers/poll/src/utm-registry.ts` é o espelho do
+  Worker, sincronia travada por `test/utm-registry-mirror.test.ts`) — sem
+  isso o cadastro
   cai em `direct` e a parceria fica sem prova de conversão.
 - **Pedir link recíproco em página institucional na mesma conversa** —
   resolve o #4547 (autoridade de domínio) de quebra, sem custo adicional de
