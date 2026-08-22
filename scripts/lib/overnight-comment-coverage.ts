@@ -119,6 +119,14 @@ export function deriveCandidateIssues(
   for (const issue of issues) {
     if (typeof issue.number !== "number" || !Number.isFinite(issue.number)) continue;
     if (issue.status === "pulada") {
+      // #5909 — `deixado-para-o-helios` é isento de propósito: a skill
+      // documenta que este motivo NÃO leva comentário na issue ("seria
+      // ruído sem valor quando dezenas ficam nesse status na mesma sessão")
+      // e o roteamento label-driven (`classifyExecTrack`) já garante que a
+      // issue reapareça no track develop/Neo. Exigir comentário aqui produzia
+      // falso positivo sistemático em toda sessão develop sob `exhaust_all`.
+      const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
+      if (motivo === "deixado-para-o-helios") continue;
       out.push({ number: issue.number, reason: "pulada-sem-comentario" });
       continue;
     }

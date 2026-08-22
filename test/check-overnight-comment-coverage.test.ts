@@ -79,6 +79,30 @@ describe("deriveCandidateIssues", () => {
     assert.deepEqual(candidates, [{ number: 5797, reason: "pulada-sem-comentario" }]);
   });
 
+  // #5909 — `deixado-para-o-helios` é isento de comentário por desenho:
+  // a skill documenta que este motivo não leva comentário (ruído em massa)
+  // e o roteamento label-driven já recoloca a issue no track develop/Neo.
+  it("issue pulada com motivo deixado-para-o-helios NUNCA é candidata (#5909)", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 5878, status: "pulada", motivo: "deixado-para-o-helios" },
+      { number: 5869, status: "pulada", motivo: "deixado-para-o-helios" },
+    ];
+    assert.deepEqual(deriveCandidateIssues(issues, new Map()), []);
+  });
+
+  it("isenção de deixado-para-o-helios não vaza pra outros motivos nem pra pulada sem motivo", () => {
+    const issues: PlanIssueLike[] = [
+      { number: 1, status: "pulada", motivo: "bloqueio-externo" },
+      { number: 2, status: "pulada", motivo: "decisao-adiada" },
+      { number: 3, status: "pulada" },
+    ];
+    const candidates = deriveCandidateIssues(issues, new Map());
+    assert.deepEqual(
+      candidates.map((c) => c.number),
+      [1, 2, 3],
+    );
+  });
+
   it("issue mergeada com PR usando REFS-NÃO-CLOSES é candidata", () => {
     const issues: PlanIssueLike[] = [{ number: 5791, status: "mergeada", pr: 5820 }];
     const prBodies = new Map([[5820, "REFS #5791, NÃO CLOSES (causa raiz não confirmada)"]]);
