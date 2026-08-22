@@ -530,22 +530,27 @@ onde outras issues avançaram enquanto o editor logava) e retomar a
 bloqueada quando o editor responder, sem re-perguntar o que já foi
 surfaceado.
 
-**Guard mecânico de fim de rodada — NÃO implementado, follow-up (#5727 item
-5).** A issue propõe um campo `surfaced_at` por issue em `plan.json` (junto
-de `what_unblocks`/`unblock_status`) + um gate mecânico na Fase 2 que falha
-se alguma issue terminar com bloqueio tipo-editor sem `surfaced_at`
-preenchido — mesmo molde do `check-state-changed-pending.ts`
-(#5476/#5706). Avaliado e **adiado nesta unidade**: diferente do gate de
-re-triagem (que já existia como script e só precisava de mais um modo),
-isto exigiria um campo novo no schema informal de `plan.json`, um
-script/gate novo, testes, e wiring numa fase já densa (Fase 2) — não é uma
-extensão barata de infraestrutura existente, é uma peça nova. A prosa acima
-(surfacear imediato, forma do pedido, agrupamento, continuar trabalhando) já
-é o enforcement disponível por ora; o guard mecânico fica para uma issue
-própria se a prosa sozinha não bastar na prática (mesmo critério que
-motivou o guard mecânico da regra 11 em
-`context/overnight-dispatch-rules.md` — só depois de uma 2ª violação
-registrada).
+**Guard mecânico de fim de rodada — IMPLEMENTADO (#5919, fecha o follow-up
+do #5727 item 5).** Toda entrada de `issues[]` com bloqueio tipo-editor
+(`what_unblocks` preenchido) registra explicitamente o campo
+`surfaced_live: boolean` (+ `surfaced_live_at` ISO quando `true`):
+`true` = surfaceado ao vivo pro editor (mensagem de 4 partes ou
+`AskUserQuestion`); `false` = NÃO surfaceado — registro honesto que vira
+item obrigatório da Seção de HANDOFF. O gate roda na Fase 2, entre os
+demais gates e a composição do relatório:
+`npx tsx scripts/check-surfaced-live.ts --plan data/develop/{AAMMDD}/plan.json`
+(`--edition AAMMDD` também resolve o caminho; sem argumento pega o run mais
+recente; `--strict` promove `false` explícito pra falha). `exit 1`
+(campo ausente ou com tipo errado) → surfacear ao vivo AGORA o que ainda dá
+e preencher o campo em cada entrada listada antes de escrever o relatório.
+Lógica pura em `scripts/lib/surfaced-live-gate.ts`, testes em
+`test/surfaced-live-gate.test.ts`. O que motivou sair do papel (#5919,
+condição registrada aqui desde #5727): 2ª violação da regra com custo real —
+em `260821c` o #5878 ficou como cat. B `pendente` só no `plan.json` (o
+`surfaced_at` antigo era timestamp de classificação, não prova de surfacing)
+e a janela de evidência da conta Microsoft Ads fechou sem captura pela 3ª vez
+(#5702, #5878). Diferença deliberada pros gates irmãos: este não depende de
+rede/`gh`, então plan.json ilegível é erro duro (`exit 2`), não fail-soft.
 
 ## Goal de esgotamento (#4297, expandido em #4319)
 
@@ -841,6 +846,8 @@ Roda só se houve ≥1 merge e o diff `{base_sha}..HEAD` > ~50 linhas. Forma exe
 **Gate de cobertura do `exec_track_painel` (#5907 item a), logo em seguida:** rodar `npx tsx scripts/check-develop-exec-track-coverage.ts --plan data/develop/{AAMMDD}/plan.json`. `exit 1` → dois modos de falha: (1) entrada(s) de `issues[]` sem `exec_track_painel` — o passo 6a da Fase 0 não rodou pra ela (o modo real da 260821c: o `classifyExecTrack` estourou timeout, foi pro background e a sessão seguiu sem ele; nada pegava a ausência); (2) valor gravado fora do enum de 5 tracks (`overnight|develop|agendada|bloqueada|fora-de-rodada`) — typo vira classificação que nenhum consumidor (`findHeliosBuraco` #5914, painel de Triagem #5462) reconhece. Pra cada número listado: rodar `classifyExecTrack` e gravar o campo — backfill mecânico, sem julgamento (o módulo é puro), regravar o `plan.json`, rodar de novo até `exit 0`. Complementa o gate do gap (b) (#5914): aquele recusa `deixado-para-o-helios` em track develop/bloqueada QUANDO o campo existe; este garante que o campo exista pra TODA entrada — sem os dois, o buraco do helios fica invisível exatamente nas sessões que mais precisam dele.
 
 **Gate de drift de label de decisão (#5892), logo em seguida:** rodar `npx tsx scripts/check-decision-label-drift-gate.ts --plan data/develop/{AAMMDD}/plan.json`. Mesmo script do overnight — usa a lógica de `scripts/lib/decision-label-drift.ts` (#5589) pra detectar drift entre prosa dos comentários recentes das issues `in_round: true` desta sessão e as labels estruturais atuais (ex: comentário diz "aguardando pré-requisito" mas `not-this-week` ausente; "trade-off-real" em prosa mas label `trade-off-real` ausente; "bloqueio externo" mas `external-blocker` ausente). `exit 0` (nenhum drift) → seguir pro relatório. `exit 1` (drift detectado) → listar achados com issue, padrão, labels esperadas e trecho do comentário; **aplicar as labels estruturais faltantes** (`gh issue edit N --add-label ...`) nas issues reportadas antes de continuar — o gate é auditoria (heurística por regex, não NLP), então a decisão final de aplicar é humana, mas o relatório NÃO compila enquanto houver achados não resolvidos. Sem `gh`/rede, o comando degrada sozinho pra warning + `exit 0` (fail-soft #738); `--skip-gh-checks` faz o mesmo proativamente.
+
+**Gate de surfacing ao vivo de bloqueios tipo-editor (#5919), logo em seguida:** rodar `npx tsx scripts/check-surfaced-live.ts --plan data/develop/{AAMMDD}/plan.json`. Confere que TODA entrada de `issues[]` com `what_unblocks` preenchido tem o campo `surfaced_live: boolean` explícito (`true` = surfaceado ao vivo no formato do #5727; `false` = não surfaceado, vira item obrigatório do HANDOFF). `exit 1` (campo ausente/tipo errado — exatamente o modo de falha da #5919, em que o #5878 atravessou `260821c` sem surfacing nenhum e a janela de evidência fechou) → surfacear ao vivo AGORA cada bloqueio listado que ainda tenha editor alcançável, preencher `surfaced_live` (+ `surfaced_live_at`) em TODAS as entradas listadas, regravar o `plan.json`, rodar de novo até `exit 0`. Os `false` explícitos passam (fallback de ausência é legítimo) mas saem em warning — cada um DEVE aparecer na Seção de HANDOFF. Sem rede nenhuma envolvida: plan.json ausente/ilegível é erro duro (`exit 2`), sinal de sessão malformada, não fail-soft.
 
 **Abrir sempre com o status do Goal (#4297/#4319)**, antes de qualquer outra linha: `Goal (escopo: {descrição do escopo efetivo}, política: {exhaust_all|blocked_only}): atingido` ou `não atingido`. Escopo efetivo = `--issues`/`--only`/`--bugs`/`--priority` da invocação, resumidos (ex: `--bugs --priority P0,P1`; `nenhum filtro` se a sessão rodou sem flags de escopo). Com `goal.policy: "table_only"`, a linha vira `Goal: não avaliado (goal_policy=table_only)` — não é "não atingido", é fora de escopo por opção do editor no briefing. Com `--no-implement` ativo, a linha vira `Goal: não avaliado (--no-implement ativo)` pelo mesmo motivo (ver "Incompatibilidade estrutural com `--no-implement`").
 
