@@ -110,4 +110,17 @@ negociar fica sempre com o editor.
 
 Critério de seleção + candidatos justificados + texto de abordagem rascunho
 (autorizado pelo editor em 12/ago/2026 — "assistente monta, editor
-dispara"): comentário na issue #4555. Nenhum contato foi enviado.
+dispara"): comentário de 13/ago/2026 na issue #4555. Nenhum contato foi
+enviado.
+
+> **Nota de 22/ago/2026 — esse material está PÚBLICO.** Aquele comentário
+> justifica a própria localização dizendo que fica na issue "por ser
+> conteúdo sensível de repo público", o que inverte a lógica: a issue é tão
+> pública quanto o `docs/`. O que está exposto: três empresas nomeadas como
+> candidatas, juízos competitivos sobre outras quatro nomeadas
+> (concorrência direta, inatividade) e o rascunho de e-mail de abordagem.
+> Nada disso é segredo do projeto, mas fala de terceiros e é crawlável.
+> **Decisão sobre o que fazer com o histórico é do editor** — sessão
+> nenhuma deve editar ou apagar comentário dele por conta própria. Daqui
+> pra frente, material novo desse tipo vai para `data/parceria-clarice/`,
+> conforme a regra no topo deste documento.
