@@ -1,0 +1,56 @@
+name: Deploy diaria-dashboard Studio (scripts/ui + worker)
+# #5948: deploy do Studio deve observar nao so workers/diaria-dashboard/**,
+# mas tambem scripts/lib/* e scripts/studio-ui/**, para que correcao de classificacao,
+# tipos e rotas do Studio reflitam no Worker publicado imediatamente.
+# Antes: o deploy so disparava quando o push tocava workers/diaria-dashboard/**,
+# criando drift entre master e o Worker publicado (bug #4723, #5948, #5530).
+# Resolve: adiciona os paths da raiz que alimentam o Studio (scripts/lib/ para
+# classificadores + scripts/studio-ui/ para rotas/tipos) ao gatilho do workflow.
+# Inclui gate de build (tsc -p tsconfig.json) antes do deploy para capturar
+# erro de tipo antes de publicar no Worker cloud do editor.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/diaria-dashboard/**'
+      - 'scripts/lib/**'         # #5948 — classificador overnight/develop
+      - 'scripts/studio-ui/**'     # rotas, tipos, handlers do Studio
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-diaria-dashboard
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # Gate: build do Studio precisa passar antes do deploy.
+      # #5948 — sem gate de build o Worker cloud publica sem verificar se
+      # o tipo corrigido compila (ex: state?: string adicionada a interface).
+      - name: Type-check Studio source
+        run: npx tsc --noEmit --project tsconfig.json
+
+      - run: npm ci
+
+      - name: Install diaria-dashboard worker deps
+        working-directory: workers/diaria-dashboard
+        run: npm ci
+
+      # Deploy so dispara se o gate de build passou.
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/diaria-dashboard
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy

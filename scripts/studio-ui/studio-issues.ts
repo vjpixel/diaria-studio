@@ -252,7 +252,7 @@ export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
       createdAt: i.createdAt ?? null,
       updatedAt: i.updatedAt ?? null,
       files,
-      execTrack: classifyExecTrack({ labels, body: i.body }),
+      execTrack: classifyExecTrack({ labels, body: i.body, state: i.state }),
     };
   });
 }

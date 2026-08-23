@@ -211,6 +211,8 @@ export interface ExecTrackInput {
   labels: string[];
   /** Corpo cru da issue — usado só pro marcador `aguardando-ate:`. */
   body?: string | null;
+  /** Estado da issue no GitHub (`open` | `closed`) — usado pelo #5948 para excluir issues fechadas do overnight. */
+  state?: string;
   /** Injetável pra teste; default `new Date()`. */
   now?: Date;
 }
@@ -284,7 +286,9 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * que o overnight pega — inclusive a ambígua que ele ainda vai triar.
  */
 export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
-  const { labels, body, now = new Date() } = input;
+  const { labels, body, now = new Date(), state } = input;
+  // #5948 - issue fechada sem label de evento nao eh overnight
+  if (state === "CLOSED") return "fora-de-rodada";
   const has = (l: string) => labels.includes(l);
 
   if (labels.some((l) => OUT_OF_ROUND_LABELS.has(l))) return "fora-de-rodada";
