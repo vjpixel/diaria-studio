@@ -19,6 +19,7 @@ import {
   formatUnitDiagnosticFieldsTable,
   buildUnitInvestigationCommand,
   UNIT_DIAGNOSTIC_PROPERTIES,
+  ALARM_DEDUP_EXPIRY_MS,
   type UnitDiagnosticFields,
 } from "../scripts/lib/systemd-failed-units-alarm.ts";
 import { toAlarmFinding, readUnitDiagnosticFields } from "../scripts/systemd-failed-units-alarm.ts";
@@ -115,6 +116,48 @@ describe("shouldSendSystemdFailedUnitsAlarm — idempotência por CONJUNTO", () 
     const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
     const state = markSystemdFailedUnitsAlarmed(["diaria-a.service", "diaria-b.service"]);
     assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state), true);
+  });
+});
+
+describe("shouldSendSystemdFailedUnitsAlarm — expiração do dedup por CONJUNTO (#5978)", () => {
+  it("mesmo conjunto, DENTRO da janela de expiração -> não reenvia (comportamento pré-#5978 preservado)", () => {
+    const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
+    const t0 = new Date("2026-08-23T12:00:00Z");
+    const state = markSystemdFailedUnitsAlarmed(["diaria-a.service"], t0);
+    const now = new Date(t0.getTime() + ALARM_DEDUP_EXPIRY_MS - 1);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), false);
+  });
+
+  it("mesmo conjunto, ALÉM da janela de expiração -> reenvia mesmo sem mudança nenhuma (#5978: 'parado há 2 dias' nunca fica invisível)", () => {
+    const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
+    const t0 = new Date("2026-08-23T12:00:00Z");
+    const state = markSystemdFailedUnitsAlarmed(["diaria-a.service"], t0);
+    const now = new Date(t0.getTime() + ALARM_DEDUP_EXPIRY_MS);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), true);
+  });
+
+  it("exatamente na borda (elapsed === ALARM_DEDUP_EXPIRY_MS) -> reenvia (>=, não >)", () => {
+    const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
+    const t0 = new Date("2026-08-23T12:00:00Z");
+    const state = markSystemdFailedUnitsAlarmed(["diaria-a.service"], t0);
+    const now = new Date(t0.getTime() + ALARM_DEDUP_EXPIRY_MS);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), true);
+  });
+
+  it("state pré-#5978 (lastAlarmedAt ausente/null) com o mesmo conjunto -> trata como expirado, reenvia (nunca bloqueia por falta do campo novo)", () => {
+    const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
+    const legacyState = { lastAlarmedUnits: ["diaria-a.service"], lastAlarmedAt: null };
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, legacyState, new Date("2026-08-23T12:00:00Z")), true);
+  });
+
+  it("markSystemdFailedUnitsAlarmed grava lastAlarmedAt = now.toISOString()", () => {
+    const now = new Date("2026-08-23T15:30:00Z");
+    const state = markSystemdFailedUnitsAlarmed(["diaria-a.service"], now);
+    assert.equal(state.lastAlarmedAt, "2026-08-23T15:30:00.000Z");
+  });
+
+  it("emptySystemdFailedUnitsAlarmState inclui lastAlarmedAt: null", () => {
+    assert.deepEqual(emptySystemdFailedUnitsAlarmState(), { lastAlarmedUnits: null, lastAlarmedAt: null });
   });
 });
 
