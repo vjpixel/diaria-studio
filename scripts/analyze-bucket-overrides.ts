@@ -19,6 +19,12 @@
  * aprovado, e o join por URL não o encontra (silenciosamente ignorado, é o
  * comportamento correto, não um bug).
  *
+ * `data/editions/` tem dois formatos coexistindo: pastas de mês `YYMM` (4
+ * dígitos) contendo subpastas de edição `AAMMDD` (a maioria do corpus real) e
+ * pastas de edição `AAMMDD` soltas direto na raiz (formato legado). Ambos são
+ * varridos; qualquer outra entrada (ex: `replay-*`, artefato de replay/debug
+ * do scorer/stage1/writer) é ignorada — nunca é tratada como edição.
+ *
  * Uso:
  *   npx tsx scripts/analyze-bucket-overrides.ts [--editions-dir data/editions] [--examples 5] [--json]
  *
@@ -126,6 +132,46 @@ export interface EditionMoves {
   moves: BucketMove[];
 }
 
+const MONTH_DIR_RE = /^\d{4}$/;
+const EDITION_DIR_RE = /^\d{6}$/;
+
+/**
+ * Descobre o path de cada edição sob `editionsDir`, suportando os dois
+ * formatos coexistentes no corpus real:
+ *  - pastas de mês `YYMM` (4 dígitos) contendo subpastas de edição `AAMMDD`
+ *    (6 dígitos) — onde está a maioria do corpus;
+ *  - pastas de edição `AAMMDD` soltas direto na raiz — formato legado.
+ * Qualquer outra entrada (`replay-*`, `_arquivo`, etc.) é ignorada — não é
+ * uma edição real. Uma mesma edição encontrada nos dois formatos (raiz E
+ * dentro de um mês) não é contada 2x — a 1ª ocorrência encontrada vence.
+ */
+function discoverEditionPaths(editionsDir: string): Map<string, string> {
+  const paths = new Map<string, string>();
+
+  for (const entry of readdirSync(editionsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+
+    if (EDITION_DIR_RE.test(entry.name)) {
+      if (!paths.has(entry.name)) paths.set(entry.name, join(editionsDir, entry.name));
+      continue;
+    }
+
+    if (MONTH_DIR_RE.test(entry.name)) {
+      const monthDir = join(editionsDir, entry.name);
+      for (const sub of readdirSync(monthDir, { withFileTypes: true })) {
+        if (sub.isDirectory() && EDITION_DIR_RE.test(sub.name)) {
+          if (!paths.has(sub.name)) paths.set(sub.name, join(monthDir, sub.name));
+        }
+      }
+      continue;
+    }
+
+    // Não bate em nenhum dos dois padrões (ex: `replay-*`, `_arquivo`) — nunca é edição.
+  }
+
+  return paths;
+}
+
 /**
  * Varre `editionsDir` (default: data/editions) e diffa cada edição que tem
  * AMBOS `_internal/01-categorized.json` e `_internal/01-approved.json`.
@@ -135,16 +181,15 @@ export interface EditionMoves {
 export function analyzeEditionsUnderRoot(editionsDir: string): EditionMoves[] {
   if (!existsSync(editionsDir)) return [];
 
-  const entries = readdirSync(editionsDir, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && /^\d{6}$/.test(e.name))
-    .map((e) => e.name)
-    .sort();
+  const editionPaths = discoverEditionPaths(editionsDir);
+  const editions = [...editionPaths.keys()].sort();
 
   const results: EditionMoves[] = [];
 
-  for (const edition of entries) {
-    const catPath = join(editionsDir, edition, "_internal", "01-categorized.json");
-    const apprPath = join(editionsDir, edition, "_internal", "01-approved.json");
+  for (const edition of editions) {
+    const editionDir = editionPaths.get(edition)!;
+    const catPath = join(editionDir, "_internal", "01-categorized.json");
+    const apprPath = join(editionDir, "_internal", "01-approved.json");
     if (!existsSync(catPath) || !existsSync(apprPath)) continue;
 
     let categorized: CategorizedBucketsInput;

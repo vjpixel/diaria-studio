@@ -169,4 +169,74 @@ describe("analyzeEditionsUnderRoot", () => {
     const missing = join(tmpdir(), "does-not-exist-bucket-overrides-" + Date.now());
     assert.deepEqual(analyzeEditionsUnderRoot(missing), []);
   });
+
+  function writeEditionFiles(editionDir: string): void {
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(
+      join(editionDir, "_internal", "01-categorized.json"),
+      JSON.stringify({ lancamento: [], radar: [{ url: "https://a.com/x", title: "X" }], use_melhor: [], video: [] }),
+    );
+    writeFileSync(
+      join(editionDir, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+        use_melhor: [{ url: "https://a.com/x", title: "X" }],
+        video: [],
+      }),
+    );
+  }
+
+  it("varre pastas de mês YYMM com subpastas de edição AAMMDD aninhadas", () => {
+    const root = makeEditionsRoot();
+    writeEditionFiles(join(root, "2608", "260810"));
+    writeEditionFiles(join(root, "2608", "260811"));
+    writeEditionFiles(join(root, "2609", "260901"));
+
+    const result = analyzeEditionsUnderRoot(root);
+    assert.deepEqual(
+      result.map((r) => r.edition).sort(),
+      ["260810", "260811", "260901"],
+    );
+    for (const r of result) assert.equal(r.moves.length, 1);
+  });
+
+  it("varre formato legado (AAMMDD solta na raiz) e formato YYMM aninhado juntos, sem dupla-contagem", () => {
+    const root = makeEditionsRoot();
+    writeEditionFiles(join(root, "260708")); // legado, solto na raiz
+    writeEditionFiles(join(root, "2608", "260810")); // aninhado sob mês
+
+    const result = analyzeEditionsUnderRoot(root);
+    assert.deepEqual(
+      result.map((r) => r.edition).sort(),
+      ["260708", "260810"],
+    );
+  });
+
+  it("ignora pastas replay-* mesmo que contenham os arquivos esperados", () => {
+    const root = makeEditionsRoot();
+    writeEditionFiles(join(root, "260810")); // edição real
+    writeEditionFiles(join(root, "replay-scorer-a")); // artefato de replay/debug — não é edição
+    writeEditionFiles(join(root, "replay-stage1-b"));
+
+    const result = analyzeEditionsUnderRoot(root);
+    assert.deepEqual(
+      result.map((r) => r.edition),
+      ["260810"],
+    );
+  });
+
+  it("ignora pastas dentro de um diretório YYMM que não batem no padrão AAMMDD", () => {
+    const root = makeEditionsRoot();
+    writeEditionFiles(join(root, "2608", "260810"));
+    mkdirSync(join(root, "2608", "_scratch"), { recursive: true });
+
+    const result = analyzeEditionsUnderRoot(root);
+    assert.deepEqual(
+      result.map((r) => r.edition),
+      ["260810"],
+    );
+  });
 });
