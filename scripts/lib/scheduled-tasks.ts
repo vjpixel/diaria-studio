@@ -1190,6 +1190,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (`helios`) é ação POSTERIOR do editor.
     issue: "#5845",
   },
+  {
+    name: "Diaria-Onboarding-Welcome-Run",
+    description:
+      "sequencia diaria de boas-vindas via Brevo transacional (e-mail 1 imediato, e-mail 2 D+3, " +
+      "e-mail 3 CAMPANHA D+10 condicional a zero aberturas) para assinantes novos da Beehiiv",
+    steps: [{ key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] }],
+    logPath: "onboarding/.welcome-run.log",
+    // 09:05 BRT — logo depois de Diaria-Clarice-Novos (09:00, mesmo cluster
+    // matinal de detecção/onboarding de gente nova), antes do resto do
+    // cluster 09:15-09:50 já ocupado (ver grep de `kind: "daily"` neste
+    // arquivo). Corpo dos 3 e-mails exportado da automação Beehiiv
+    // 'Onboarding — Boas-vindas' pra data/snippets/onboarding-{1,2,3}.md
+    // (guard duro ONBOARDING-CORPO-PENDENTE removido, #5908) e cursor de
+    // bootstrap já marcado (`--send` rodado uma vez em 2026-08-23,
+    // detected_new: 0 — base existente fica de fora por desenho).
+    schedule: { kind: "daily", hour: 9, minute: 5 },
+    // DECLARADA, NÃO ARMADA nesta unidade (sessão develop rodando no
+    // Windows do editor, não na checkout compartilhada `helios`) — armar
+    // via `scripts/setup-systemd-timers.ts` em `helios` é ação POSTERIOR
+    // do editor, mesma disciplina do #5845/#5754/#5704 acima.
+    issue: "#5908",
+  },
 ];
 
 /**
