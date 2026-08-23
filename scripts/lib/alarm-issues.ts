@@ -449,6 +449,34 @@ function createAlarmIssueWithLabelRetry(
 }
 
 /**
+ * #5989 — consulta o estado REAL de uma issue via `gh issue view --json
+ * state`, usada pelo caminho de CACHE-HIT de `ensureAlarmIssue` (ver
+ * docstring lá) pra achados de família `"estado"`: `cachedEntry.closedAt`
+ * só é setado por `closeAlarmIssue` (auto-close DESTE módulo) — uma issue
+ * fechada por fora dele (ex: PR merge com `Closes #N`) nunca passa por lá,
+ * então o cache nunca aprende que ela fechou e `closedAt` fica `null` pra
+ * sempre, mesmo com a issue já `CLOSED` no GitHub. Devolve `"OPEN"` |
+ * `"CLOSED"` | `null` — `null` sempre que `gh` falhar (offline, rate limit,
+ * JSON malformado, campo ausente): fail-soft, "não sei", NUNCA "assumo
+ * fechado" sem confirmação positiva.
+ */
+export function fetchAlarmIssueState(
+  issueNumber: number,
+  cwd: string,
+  run: GhRunFn = defaultAlarmGhRun,
+): "OPEN" | "CLOSED" | null {
+  const res = run(["issue", "view", String(issueNumber), "--json", "state"], cwd);
+  if (res.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.stdout) as { state?: string };
+    if (parsed.state === "OPEN" || parsed.state === "CLOSED") return parsed.state;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reabre (#5978) uma issue de achado localizada `CLOSED` — via `gh issue
  * reopen --comment`, nunca silenciosamente tratada como "reused". Fail-soft
  * na mesma linha do resto do módulo: se `gh issue reopen` falhar, devolve
@@ -481,7 +509,9 @@ function reopenAlarmIssue(
 
 /**
  * Garante que existe uma issue pro achado `finding` — reusa via `cachedEntry`
- * (fast path, sem tocar rede) OU via busca por marcador (`findExistingAlarmIssue`,
+ * (fast path pra família `"evento"`, sem tocar rede; família `"estado"`
+ * confirma o estado real via `fetchAlarmIssueState` antes de reusar, ver
+ * #5989 abaixo) OU via busca por marcador (`findExistingAlarmIssue`,
  * fallback quando o cache não tem a entry) OU cria uma nova (com retry
  * fail-soft de label ausente — ver `createAlarmIssueWithLabelRetry`).
  * **NUNCA** fabrica `issueNumber`/`url` — se toda tentativa de `gh issue
@@ -498,6 +528,24 @@ function reopenAlarmIssue(
  * Qualquer uma das duas dispara `reopenAlarmIssue` em vez do caminho de
  * reuse — a issue é reaberta + comentada, preservando o histórico do achado
  * (razão de existir do marcador), nunca uma issue nova duplicada.
+ *
+ * **#5989 — cache-hit com `closedAt: null` NÃO é garantia de "aberta".**
+ * O #5978/#5982 cobriu as duas fontes acima, mas `cachedEntry.closedAt` só é
+ * setado por `closeAlarmIssue` (auto-close DESTE módulo) — uma issue fechada
+ * por fora dele (PR merge com `Closes #N`, fechamento manual sem o achado
+ * ter reproduzido de novo antes) nunca passa por lá, então o cache nunca
+ * aprende que ela fechou e `closedAt` fica `null` pra sempre mesmo com a
+ * issue já `CLOSED` no GitHub — reproduzindo o bug original do #5978 pelo
+ * caminho de cache-hit. Pra achados de família `"estado"` (única família que
+ * se auto-fecha — `"evento"` nunca fecha sozinha, sempre um humano, ver
+ * `AlarmFamily`), o caminho de cache-hit agora SEMPRE confirma o estado real
+ * via `fetchAlarmIssueState` antes de decidir `"reused"` vs `"reopened"` —
+ * `cachedEntry.closedAt` deixa de ser, sozinho, a fonte de verdade (continua
+ * existindo no tipo/estado local, só não decide mais sozinho). Custo aceito:
+ * 1 chamada `gh` extra por achado pendente com cache-hit de família
+ * `"estado"` — preço de fechar o silêncio real que já causou 2 dias de
+ * rampa Clarice parada (#5989). Família `"evento"` segue sem checagem
+ * nenhuma no cache-hit (comportamento intocado, nunca reabre sozinha).
  */
 export function ensureAlarmIssue(
   finding: AlarmFinding,
@@ -508,6 +556,14 @@ export function ensureAlarmIssue(
   if (cachedEntry) {
     if (cachedEntry.closedAt) {
       return reopenAlarmIssue(cachedEntry.issueNumber, cachedEntry.url, finding, cwd, run);
+    }
+    if (finding.family === "estado") {
+      const realState = fetchAlarmIssueState(cachedEntry.issueNumber, cwd, run);
+      if (realState === "CLOSED") {
+        return reopenAlarmIssue(cachedEntry.issueNumber, cachedEntry.url, finding, cwd, run);
+      }
+      // realState === "OPEN", ou null (gh falhou/indisponível) -> fail-soft,
+      // nunca reabre às cegas sem confirmação POSITIVA de CLOSED.
     }
     return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reused" };
   }
