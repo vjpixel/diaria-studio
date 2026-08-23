@@ -270,9 +270,12 @@ export async function fetchAssetGroupEditorialReasons(
 
   const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, {
     clientId: auth.clientId,
-    clientSecret: auth.clientSecret,
     refreshToken: auth.refreshToken,
     tokenEndpoint: auth.tokenEndpoint,
+    googleClientId: auth.googleClientId,
+    googleClientSecret: auth.googleClientSecret,
+    googleRefreshToken: auth.googleRefreshToken,
+    googleTokenEndpoint: auth.googleTokenEndpoint,
   });
   if ("error" in tokenResult) {
     return { ok: false, error: `renovação do access token falhou: ${tokenResult.error}` };
