@@ -202,16 +202,32 @@ export function buildUnitInvestigationCommand(unitName: string, fields: UnitDiag
 // Idempotência do e-mail — 1 alarme por CONJUNTO de units falhas (reenvia se
 // o conjunto mudar: unit nova falhou, ou uma unit saiu do conjunto e outra
 // permanece — mesmo padrão de OnedriveSyncAlarmState, adaptado pra um
-// conjunto em vez de um único verdict).
+// conjunto em vez de um único verdict), COM EXPIRAÇÃO (#5978): o dedup por
+// conjunto sozinho nunca expirava — enquanto o mesmo conjunto de units
+// permanecesse failed (dias, no incidente que motivou o #5978), nenhum
+// e-mail novo saía. `lastAlarmedAt` estampa quando o alarme mais recente foi
+// enviado; `shouldSendSystemdFailedUnitsAlarm` reenvia o digest se o mesmo
+// conjunto persistir além de `SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS`,
+// mesmo sem nenhuma mudança no conjunto.
 // ---------------------------------------------------------------------------
+
+/** Limiar de expiração do dedup por conjunto (#5978, sugestão da issue) —
+ * mesmo conjunto de units failed reenvia o digest a cada N horas em vez de
+ * nunca mais, enquanto a condição persistir. */
+export const SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS = 6;
 
 export interface SystemdFailedUnitsAlarmState {
   /** `null` = nunca alarmado ainda. Lista SEMPRE ordenada (ver `evaluateSystemdFailedUnits`). */
   lastAlarmedUnits: string[] | null;
+  /** #5978 — ISO timestamp do último e-mail efetivamente enviado. `null` =
+   * nunca alarmado ainda (mesma semântica de `lastAlarmedUnits === null`) OU
+   * entry pré-#5978 sem este campo — `shouldSendSystemdFailedUnitsAlarm`
+   * trata ausência como "expirado" (reenvia), nunca como "recém-alarmado". */
+  lastAlarmedAt: string | null;
 }
 
 export function emptySystemdFailedUnitsAlarmState(): SystemdFailedUnitsAlarmState {
-  return { lastAlarmedUnits: null };
+  return { lastAlarmedUnits: null, lastAlarmedAt: null };
 }
 
 function sameUnitSet(a: string[], b: string[]): boolean {
@@ -219,17 +235,38 @@ function sameUnitSet(a: string[], b: string[]): boolean {
   return a.every((v, i) => v === b[i]);
 }
 
+/**
+ * `now` injetável pra teste (default `new Date()`). Regras, em ordem:
+ *   1. verdict "ok" (nenhuma unit failed) -> nunca alarma.
+ *   2. nunca alarmado antes (`lastAlarmedUnits === null`) -> alarma.
+ *   3. conjunto MUDOU desde o último alarme -> alarma (comportamento
+ *      pré-#5978, inalterado).
+ *   4. mesmo conjunto, MAS `lastAlarmedAt` ausente ou além do limiar de
+ *      `SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS` -> alarma (#5978 — é isto
+ *      que resolve "parado há 2 dias, alarme nunca reenvia").
+ *   5. mesmo conjunto, dentro do limiar -> não alarma (dedup normal contra
+ *      spam de execução em execução).
+ */
 export function shouldSendSystemdFailedUnitsAlarm(
   evaluation: SystemdFailedUnitsEvaluation,
   state: SystemdFailedUnitsAlarmState,
+  now: Date = new Date(),
 ): boolean {
   if (!isAlarmingVerdict(evaluation.verdict)) return false;
   if (state.lastAlarmedUnits === null) return true;
-  return !sameUnitSet(state.lastAlarmedUnits, evaluation.failedUnits);
+  if (!sameUnitSet(state.lastAlarmedUnits, evaluation.failedUnits)) return true;
+  if (!state.lastAlarmedAt) return true;
+  const lastAlarmedMs = Date.parse(state.lastAlarmedAt);
+  if (Number.isNaN(lastAlarmedMs)) return true; // estado corrompido -> trata como expirado, nunca como "recente"
+  const elapsedHours = (now.getTime() - lastAlarmedMs) / (1000 * 60 * 60);
+  return elapsedHours >= SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS;
 }
 
-export function markSystemdFailedUnitsAlarmed(failedUnits: string[]): SystemdFailedUnitsAlarmState {
-  return { lastAlarmedUnits: [...failedUnits].sort() };
+export function markSystemdFailedUnitsAlarmed(
+  failedUnits: string[],
+  now: Date = new Date(),
+): SystemdFailedUnitsAlarmState {
+  return { lastAlarmedUnits: [...failedUnits].sort(), lastAlarmedAt: now.toISOString() };
 }
 
 // ---------------------------------------------------------------------------

@@ -472,7 +472,9 @@ export function advanceHomeMetaAlarmState(fingerprint: string | null, now: Date)
 export interface HomeMetaFindingIssueRef {
   issueNumber: number | null;
   url: string | null;
-  action: "created" | "reused" | "failed";
+  /** #5978 — `"reopened"` adicionada ao lado de `"reused"` (mesmo
+   * significado do `AlarmIssueResult.action` espelhado, ver docstring lá). */
+  action: "created" | "reused" | "reopened" | "failed";
   error?: string;
 }
 
@@ -520,6 +522,11 @@ export function buildHomeMetaDriftAlarmEmail(
     if (ref) {
       if (ref.action === "created") line += ` → #${ref.issueNumber} (criada) — ${ref.url}`;
       else if (ref.action === "reused") line += ` → #${ref.issueNumber} (existente) — ${ref.url}`;
+      // #5978 — issue estava CLOSED e foi reaberta automaticamente (achado
+      // reproduziu depois do auto-close); precisa de um ramo próprio, senão
+      // caía no `else` de falha e o e-mail mentia "issue não criada" pra uma
+      // issue que existe e acabou de ser reaberta.
+      else if (ref.action === "reopened") line += ` → #${ref.issueNumber} (reaberta) — ${ref.url}`;
       else line += ` → issue não criada: ${ref.error ?? "erro desconhecido"}`;
     }
     lines.push(line);

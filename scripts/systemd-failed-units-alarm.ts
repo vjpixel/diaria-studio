@@ -180,7 +180,10 @@ function loadState(): SystemdFailedUnitsAlarmState {
     const lastAlarmedUnits = Array.isArray(raw.lastAlarmedUnits)
       ? raw.lastAlarmedUnits.filter((u): u is string => typeof u === "string")
       : null;
-    return { lastAlarmedUnits };
+    // #5978 — `lastAlarmedAt` ausente (arquivo pré-#5978) vira `null`, que
+    // `shouldSendSystemdFailedUnitsAlarm` já trata como "expirado" (reenvia).
+    const lastAlarmedAt = typeof raw.lastAlarmedAt === "string" ? raw.lastAlarmedAt : null;
+    return { lastAlarmedUnits, lastAlarmedAt };
   } catch {
     return emptySystemdFailedUnitsAlarmState();
   }

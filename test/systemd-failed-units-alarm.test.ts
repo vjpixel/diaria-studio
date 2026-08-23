@@ -19,6 +19,7 @@ import {
   formatUnitDiagnosticFieldsTable,
   buildUnitInvestigationCommand,
   UNIT_DIAGNOSTIC_PROPERTIES,
+  SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS,
   type UnitDiagnosticFields,
 } from "../scripts/lib/systemd-failed-units-alarm.ts";
 import { toAlarmFinding, readUnitDiagnosticFields } from "../scripts/systemd-failed-units-alarm.ts";
@@ -115,6 +116,39 @@ describe("shouldSendSystemdFailedUnitsAlarm — idempotência por CONJUNTO", () 
     const ev = evaluateSystemdFailedUnits(["diaria-a.service"]);
     const state = markSystemdFailedUnitsAlarmed(["diaria-a.service", "diaria-b.service"]);
     assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state), true);
+  });
+});
+
+describe("shouldSendSystemdFailedUnitsAlarm — expiração do dedup (#5978)", () => {
+  const ev = evaluateSystemdFailedUnits(["diaria-clarice-envio.service", "diaria-clarice-novos.service"]);
+  const alarmedAt = new Date("2026-08-21T22:00:00Z");
+
+  it(`mesmo conjunto, DENTRO das ${SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS}h -> não reenvia`, () => {
+    const state = markSystemdFailedUnitsAlarmed(ev.failedUnits, alarmedAt);
+    const now = new Date(alarmedAt.getTime() + (SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS - 1) * 60 * 60 * 1000);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), false);
+  });
+
+  it(`mesmo conjunto, EXATAMENTE no limiar de ${SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS}h -> reenvia`, () => {
+    const state = markSystemdFailedUnitsAlarmed(ev.failedUnits, alarmedAt);
+    const now = new Date(alarmedAt.getTime() + SYSTEMD_FAILED_UNITS_ALARM_DEDUP_HOURS * 60 * 60 * 1000);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), true);
+  });
+
+  it("mesmo conjunto, MUITO além do limiar (2 dias, cenário real da issue #5978) -> reenvia", () => {
+    const state = markSystemdFailedUnitsAlarmed(ev.failedUnits, alarmedAt);
+    const now = new Date(alarmedAt.getTime() + 48 * 60 * 60 * 1000);
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, now), true);
+  });
+
+  it("`lastAlarmedAt` ausente (state.json pré-#5978) com mesmo conjunto -> trata como expirado, reenvia", () => {
+    const state = { lastAlarmedUnits: ev.failedUnits, lastAlarmedAt: null };
+    assert.equal(shouldSendSystemdFailedUnitsAlarm(ev, state, new Date(alarmedAt.getTime() + 60 * 1000)), true);
+  });
+
+  it("`markSystemdFailedUnitsAlarmed` estampa `lastAlarmedAt` com o `now` injetado", () => {
+    const state = markSystemdFailedUnitsAlarmed(["diaria-a.service"], alarmedAt);
+    assert.equal(state.lastAlarmedAt, alarmedAt.toISOString());
   });
 });
 
