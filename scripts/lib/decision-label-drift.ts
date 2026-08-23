@@ -53,11 +53,13 @@
  *
  * ## Duas fontes de prosa (#5955)
  *
- * Além dos comentários, `detectLabelDrift` varre opcionalmente os campos
- * `motivo`/`scope_note` do `plan.json` da rodada (`planTexts`), com o MESMO
- * catálogo. O plano é a evidência mais confiável das duas: `motivo` é
- * preenchido por regra da skill em toda issue `pulada`, enquanto comentar é
- * opcional e o texto é livre.
+ * Além dos comentários, `detectLabelDrift` varre opcionalmente prosa do
+ * `plan.json` da rodada (`planTexts`), com o MESMO catálogo. O plano é a
+ * evidência mais confiável das duas: `motivo` é exigido pela skill em toda
+ * issue `pulada` — e presente em dezenas de planos reais —, enquanto comentar
+ * é opcional. O `scope_note` que o CLI também repassa é campo ad-hoc (medido:
+ * 1 ocorrência em 81 planos, sem menção em SKILL nenhuma), então a cobertura
+ * desta fonte se apoia em `motivo`; `scope_note` é bônus quando aparece.
  *
  * Foi o que faltou no caso que motivou o grupo `execution-guard`: na rodada
  * 260823 a #5140 foi pega e devolvida duas vezes por causa do guard de
@@ -101,6 +103,73 @@ export interface DriftPattern {
  * manual (nenhum import cruzado: este módulo é deliberadamente mais
  * permissivo/heurístico que aquele, que é a fonte de verdade sobre labels).
  */
+/**
+ * Capacidade que a sessão não tem — o QUE ficou impedido (#5955).
+ *
+ * `fora do escopo do overnight` entra aqui como capacidade porque a frase já
+ * carrega o impedimento embutido; e é restrita a `overnight` de propósito:
+ * "fora do escopo da rodada/sessão" é usado pra deferimento comum de tempo e
+ * prioridade ("ficou fora do escopo da rodada anterior por falta de tempo"),
+ * que é `deferred-vague`, não guard de execução (achado de review, #5958).
+ */
+const EXECUTION_CAPABILITY =
+  "(?:guard de (?:publica[çc][ãa]o|execu[çc][ãa]o)|execu[çc][ãa]o ao vivo|envio (?:real|ao vivo)|campanha ao vivo|sess[ãa]o supervisionada|sess[ãa]o com execu[çc][ãa]o autorizada|editor presente)";
+
+/**
+ * Marca de impedimento — o fato de estar barrado (#5955). Sem um destes na
+ * mesma frase, uma menção de capacidade é só prosa factual ou
+ * meta-discussão.
+ */
+const EXECUTION_IMPEDIMENT =
+  "(?:vedad[oa]|proibid[oa]|pro[íi]be|barrad[oa]|barra|impede|impedid[oa]|bloqueia|bloquead[oa]|bloqueada|exige|requer|precisa|n[ãa]o (?:consigo|posso|pode|d[áa]))";
+
+/**
+ * Nega o match quando uma palavra de negação aparece até 2 tokens antes do
+ * impedimento (#5958). Cobre as formas medidas em review: "não impede",
+ * "nada exige envio real", "não é vedado", "nenhuma issue barrada".
+ *
+ * Mitigação parcial e assumida — este módulo não faz análise sintática (ver
+ * "O que este módulo NÃO é", no topo). Uma negação mais distante que 2 tokens
+ * ainda escapa; a escolha é deliberada, porque alargar a janela começa a
+ * engolir negação de OUTRA oração e vira falso negativo.
+ */
+const NEGATION_LOOKBEHIND = "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|sem)\\s(?:\\S+\\s){0,2})";
+
+/**
+ * Frases que JÁ carregam capacidade e impedimento juntas, e por isso não
+ * exigem segundo fator (#5958). "fora do escopo do overnight" nomeia a
+ * sessão que não consegue — só pode significar bounce; e era o texto do
+ * bounce de 23/08 na #5140. "fora do escopo autônomo" é a forma que a sessão
+ * `/diaria-continuo` usou em 14/08 pra mesma issue.
+ *
+ * Restrito a essas duas formas de propósito: "fora do escopo da
+ * rodada/sessão" é deferimento comum de tempo e prioridade ("ficou fora do
+ * escopo da rodada anterior por falta de tempo"), que é `deferred-vague` —
+ * incluí-lo aqui foi um falso positivo pego em review.
+ */
+const EXECUTION_SELF_SUFFICIENT =
+  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo)";
+
+/** Distância máxima entre os dois fatores — aproxima "mesma frase" sem
+ * atravessar ponto final nem quebra de linha. */
+const TWO_FACTOR_WINDOW = "[^.\\n]{0,60}";
+
+/**
+ * Duas regexes (uma por ordem dos fatores) exigindo AMBOS numa mesma frase.
+ * `textPatterns` é OR, então as duas juntas significam "os dois fatores
+ * aparecem, em qualquer ordem".
+ */
+function buildTwoFactorPatterns(capability: string, impediment: string): RegExp[] {
+  const imped = `${NEGATION_LOOKBEHIND}${impediment}`;
+  return [
+    new RegExp(`${imped}${TWO_FACTOR_WINDOW}${capability}`, "i"),
+    new RegExp(`${capability}${TWO_FACTOR_WINDOW}${imped}`, "i"),
+    // Auto-suficientes: negação ainda se aplica ("isso não está fora do
+    // escopo do overnight" não é bounce).
+    new RegExp(`${NEGATION_LOOKBEHIND}${EXECUTION_SELF_SUFFICIENT}`, "i"),
+  ];
+}
+
 export const DRIFT_PATTERNS: readonly DriftPattern[] = [
   {
     id: "deferred-vague",
@@ -146,23 +215,22 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
   {
     id: "execution-guard",
     description:
-      "Comentário indica que a EXECUÇÃO foi barrada por guard da própria sessão (publicação/envio ao vivo, fora do escopo do overnight) sem label estrutural que tire a issue do track `overnight`.",
-    textPatterns: [
-      /guard de publica[çc][ãa]o/i,
-      /guard de execu[çc][ãa]o/i,
-      /fora do escopo (do|da) (overnight|rodada|sess[ãa]o)/i,
-      /fora do escopo aut[ôo]nomo/i,
-      /execu[çc][ãa]o ao vivo/i,
-      // Ancorado no verbo de impedimento de propósito: "envio real" solto é
-      // frase comum e factual neste repo ("o envio real saiu às 06:00"), e
-      // este grupo alimenta um gate que BLOQUEIA a compilação do relatório —
-      // falso positivo aqui custa uma rodada travada, não um alerta ignorado
-      // (a tolerância a FP descrita no topo do módulo vale pro CLI de
-      // auditoria, não pro gate).
-      /(exige|requer|vedad[oa]|proib[ei]\w*|impede) [^.\n]{0,40}\benvio (real|ao vivo)/i,
-      /sess[ãa]o (supervisionada|com execu[çc][ãa]o autorizada)/i,
-      /precisa (do|de um|de uma) editor/i,
-    ],
+      "Comentário indica que a EXECUÇÃO foi barrada por guard/capacidade da própria sessão (publicação, envio ao vivo) sem label estrutural que tire a issue do track `overnight`.",
+    // Dois fatores obrigatórios na MESMA frase, em qualquer ordem: um termo de
+    // CAPACIDADE (o que a sessão não consegue fazer) e um termo de
+    // IMPEDIMENTO (o fato de estar barrada). Nenhum dos dois sozinho basta —
+    // decisão de review (#5958), depois de medir que os padrões de fator
+    // único geravam falso positivo em prosa factual e, pior, em
+    // meta-discussão sobre os próprios guards, que é assunto recorrente de
+    // issue neste repo ("o guard de publicação está funcionando normalmente"
+    // casava; "revisamos o guard de execução do stage 5" casava).
+    //
+    // Este grupo alimenta um gate que BLOQUEIA a compilação do relatório da
+    // rodada, então aqui a tolerância a falso positivo do topo do módulo NÃO
+    // vale — ela é escrita pro CLI de auditoria, onde FP custa uma linha
+    // ignorada. Preferir falso negativo é a escolha certa neste grupo: o CLI
+    // permissivo continua reportando o que o gate deixar passar.
+    textPatterns: buildTwoFactorPatterns(EXECUTION_CAPABILITY, EXECUTION_IMPEDIMENT),
     expectedLabels: ["develop-track", "bloqueio-execucao"],
   },
   {

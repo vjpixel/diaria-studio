@@ -423,3 +423,45 @@ describe("detectLabelDrift — filtro de precisão por track (#5955)", () => {
     assert.equal(cincoMilNovecentosEDezessete.length, 0);
   });
 });
+
+describe("execution-guard — dois fatores obrigatórios (#5958, achados de review)", () => {
+  const hit = (t: string) =>
+    detectLabelDrift({ issueNumber: 1, labels: ["P2"], commentBodies: [t] }).some(
+      (f) => f.patternId === "execution-guard",
+    );
+
+  // Menção de capacidade SEM impedimento — inclui meta-discussão sobre os
+  // próprios guards, que é assunto recorrente de issue neste repo.
+  const NAO_CASA = [
+    "a execução ao vivo do teste A/B ocorreu sem incidentes às 06:00",
+    "o guard de publicação está funcionando normalmente, nenhuma issue barrada nesta rodada",
+    "revisamos o guard de execução do stage 5 e ele segue correto",
+    "o guard de execução deste PR (#5955) ficou mais preciso depois da revisão",
+    // Deferimento comum de tempo — é deferred-vague, não guard de execução.
+    "essa mudança ficou fora do escopo da rodada anterior por falta de tempo",
+    // Negação: a frase afirma que NADA está barrado.
+    "isso não impede o envio real de continuar amanhã",
+    "nada exige envio real aqui, pode seguir normalmente",
+    "não é vedado o envio real neste caso",
+    "isso não está fora do escopo do overnight, pode seguir",
+    // Colisão com "editor" no sentido de ferramenta.
+    "a imagem precisa de um editor gráfico melhor para ajuste fino",
+    "esse markdown precisa de um editor de texto que suporte utf-8",
+  ];
+  for (const prosa of NAO_CASA) {
+    it(`não casa: "${prosa.slice(0, 50)}…"`, () => assert.equal(hit(prosa), false));
+  }
+
+  const CASA = [
+    "ATIVAR o teste é execução ao vivo de campanha Clarice/Brevo, vedada pelo guard de publicação do overnight.",
+    "Pulada: exige rodar envio real de campanha Clarice.",
+    "isto exige, antes de qualquer coisa, um envio real",
+    "Precisa do editor ou de sessão com execução autorizada.",
+    // Auto-suficientes: nomeiam a sessão que não consegue.
+    "Segue fora do escopo do overnight.",
+    "Isso está fora do escopo autônomo desta sessão.",
+  ];
+  for (const prosa of CASA) {
+    it(`casa: "${prosa.slice(0, 50)}…"`, () => assert.equal(hit(prosa), true));
+  }
+});
