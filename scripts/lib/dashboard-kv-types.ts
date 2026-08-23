@@ -501,5 +501,5 @@ export interface ContactsSummary {
  */
 export type ClariceHourTestKvState =
   | { status: "inativo" }
-  | { status: "ativo"; hoursBrt: number[]; startedAt: string }
-  | { status: "encerrado"; hoursBrt: number[]; startedAt: string; decidedAt: string };
+  | { status: "ativo"; hoursBrt: number[]; startedAt: string; invalidDays?: string[] }
+  | { status: "encerrado"; hoursBrt: number[]; startedAt: string; decidedAt: string; invalidDays?: string[] };

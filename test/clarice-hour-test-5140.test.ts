@@ -313,6 +313,33 @@ describe("toHourTestKvState (#5189)", () => {
       decidedAt: "2026-08-15T00:00:00.000Z",
     });
   });
+
+  it("ativo com invalidDays propaga no KV (#5947)", () => {
+    const kv = toHourTestKvState({
+      status: "ativo",
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      startedBy: "test",
+    }, ["2026-08-21", "2026-08-22"]);
+    assert.deepEqual(kv, {
+      status: "ativo",
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      invalidDays: ["2026-08-21", "2026-08-22"],
+    });
+  });
+
+  it("encerrado com invalidDays vazio (undefined) omite o campo (#5947)", () => {
+    const kv = toHourTestKvState({
+      status: "encerrado",
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      decidedAt: "2026-08-15T00:00:00.000Z",
+      winnerBrt: 10,
+      decidedBy: "test",
+    });
+    assert.equal((kv as any).invalidDays, undefined);
+  });
 });
 
 test("#5140: normalizeHours recusa 1 braço e mais que o teto", () => {

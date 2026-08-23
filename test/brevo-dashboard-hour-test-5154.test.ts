@@ -302,3 +302,32 @@ describe("renderHourTestSection", () => {
     assert.ok(html.includes("Aguardando dados de clique"));
   });
 });
+
+describe("#5947: dias inválidos — exclusão por data BRT (#5947)", () => {
+  test("campaign de dia marcado como inválido é excluída; resultado reflete só dias restantes", () => {
+    const campaigns = [
+      withCampaignStats(makeCampaign(1, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-21T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+    ];
+    const hourTestState = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00.000Z", invalidDays: ["2026-08-21"] };
+    const result = aggregateHourTest(campaigns, hourTestState);
+    assert.deepEqual(result.excludedDays, ["2026-08-21"]);
+    const h06 = result.cells.find((c) => c.hourBrt === 6);
+    assert.equal(h06 ? h06.campaignCount : 0, 0, "H06 de 21/08 (inválido) excluído");
+    const h10 = result.cells.find((c) => c.hourBrt === 10);
+    assert.equal(h10 ? h10.campaignCount : 0, 1, "H10 de 06/08 (válido) mantido");
+  });
+
+  test("renderHourTestSection inclui nota de exclusão quando excludedDays existe", () => {
+    const campaigns = [
+      withCampaignStats(makeCampaign(1, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-21T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z", { uniqueClicks: 50 }), { uniqueClicks: 50 }),
+      withCampaignStats(makeCampaign(3, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-22T13:00:00Z", { uniqueClicks: 110 }), { uniqueClicks: 110 }),
+      withCampaignStats(makeCampaign(4, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+    ];
+    const hourTestState = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00.000Z", invalidDays: ["2026-08-21", "2026-08-22"] };
+    const html = renderHourTestSection(aggregateHourTest(campaigns, hourTestState));
+    assert.ok(html.includes("Nota de exclusão"));
+    assert.ok(html.includes("2026-08-21"));
+  });
+});

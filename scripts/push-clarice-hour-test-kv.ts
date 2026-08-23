@@ -40,7 +40,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { readClariceHourTestState, toHourTestKvState } from "./lib/clarice-hour-test.ts";
+import { readClariceHourTestState, toHourTestKvState, readInvalidHourTestDays } from "./lib/clarice-hour-test.ts";
 import { HOUR_TEST_KV_KEY } from "../workers/brevo-dashboard/src/types.ts";
 
 loadProjectEnv();
@@ -56,9 +56,12 @@ export { HOUR_TEST_KV_KEY };
  */
 export async function pushClariceHourTestState(rootDir: string, dryRun: boolean): Promise<void> {
   const state = readClariceHourTestState(rootDir);
-  const payload = toHourTestKvState(state);
+  const invalidDaysRaw = readInvalidHourTestDays(rootDir);
+  const invalidDays = invalidDaysRaw.length > 0 ? invalidDaysRaw.map((d) => d.date) : undefined;
+  const payload = toHourTestKvState(state, invalidDays);
   const armsLabel = payload.status !== "inativo" ? ` (braços ${payload.hoursBrt.join(",")})` : "";
-  console.log(`[push-clarice-hour-test-kv] estado: ${payload.status}${armsLabel}.`);
+  const invalidDaysLabel = (payload as any).invalidDays ? `, dias inválidos: ${(payload as { invalidDays: string[] }).invalidDays.join(",")}` : "";
+  console.log(`[push-clarice-hour-test-kv] estado: ${payload.status}${armsLabel}${invalidDaysLabel}.`);
   const json = JSON.stringify(payload);
   if (dryRun) {
     console.log(`[push-clarice-hour-test-kv] --dry-run:`, json);
