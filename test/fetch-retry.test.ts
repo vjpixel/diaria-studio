@@ -147,4 +147,51 @@ describe("fetchWithRetry (#5973)", () => {
     assert.equal(calls, 2);
     assert.equal(res.ok, true);
   });
+
+  it("attempts < 1 lança erro de configuração explícito, nunca o 'inalcançável' genérico (achado do fleet review)", async () => {
+    await assert.rejects(() => fetchWithRetry(() => Promise.resolve(okResponse()), { attempts: 0 }), /attempts precisa ser >= 1/);
+    await assert.rejects(() => fetchWithRetry(() => Promise.resolve(okResponse()), { attempts: -1 }), /attempts precisa ser >= 1/);
+  });
+
+  it("resposta retriável descartada drena/cancela o corpo antes de retentar (achado do fleet review: vazamento de conexão)", async () => {
+    let canceled = 0;
+    function retriableResponseWithTrackedBody(): Response {
+      const res = statusResponse(503);
+      const origCancel = res.body!.cancel.bind(res.body);
+      res.body!.cancel = ((reason?: unknown) => {
+        canceled++;
+        return origCancel(reason);
+      }) as typeof res.body.cancel;
+      return res;
+    }
+    let calls = 0;
+    const res = await fetchWithRetry(
+      () => {
+        calls++;
+        return Promise.resolve(calls === 1 ? retriableResponseWithTrackedBody() : okResponse());
+      },
+      { attempts: 3, sleep: fakeSleep([]) },
+    );
+    assert.equal(calls, 2);
+    assert.equal(res.ok, true);
+    assert.equal(canceled, 1, "a resposta 503 descartada na 1ª tentativa deve ter o corpo cancelado");
+  });
+
+  it("erro final relançado carrega contexto (tentativas + timeoutMs), não só a mensagem original (achado do fleet review)", async () => {
+    await assert.rejects(
+      () =>
+        fetchWithRetry(() => Promise.reject(new Error("fetch failed")), {
+          attempts: 2,
+          timeoutMs: 5000,
+          sleep: fakeSleep([]),
+        }),
+      (err: Error) => {
+        assert.match(err.message, /falhou após 2 tentativa\(s\)/);
+        assert.match(err.message, /timeoutMs=5000/);
+        assert.match(err.message, /fetch failed/);
+        assert.equal((err as Error & { cause?: unknown }).cause instanceof Error, true);
+        return true;
+      },
+    );
+  });
 });

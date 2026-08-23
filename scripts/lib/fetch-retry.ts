@@ -4,10 +4,11 @@
  * Retry genérico com backoff pra requisições `fetch` transitórias. Extraído
  * de `scripts/seo-index-check.ts` — o fetch single-shot do sitemap, sem
  * retry nem timeout explícito, foi a causa raiz confirmada do #5943: um
- * blip de rede de UMA requisição derrubou a `diaria-seo-weekly.service`
- * inteira e abriu um alarme P1 (a unit ficou `failed` até alguém rodar
- * `reset-failed`) por uma falha que uma rodada manual 2h35 depois não
- * reproduziu. Reusado por `scripts/seo-pull.ts` (`pullGsc`) — mesmo padrão
+ * blip de rede de UMA requisição no passo `index-arquivo` derrubou a
+ * `diaria-seo-weekly.service` inteira e abriu um alarme P1 (a unit ficou
+ * `failed` até alguém rodar `reset-failed`) por uma falha que uma rodada
+ * manual ~2h40 depois não reproduziu. Reusado por `scripts/seo-pull.ts`
+ * (`pullGsc`) — mesmo padrão
  * de single-shot fetch, mesma unit semanal, mesmo modo de falha.
  *
  * Erro de rede (exception, ex: `fetch failed`/timeout) e 5xx são
@@ -62,6 +63,7 @@ export async function fetchWithRetry(
   opts: FetchRetryOptions = {},
 ): Promise<Response> {
   const attempts = opts.attempts ?? DEFAULT_ATTEMPTS;
+  if (attempts < 1) throw new Error(`fetchWithRetry: attempts precisa ser >= 1, recebeu ${attempts}`);
   const backoffMs = opts.backoffMs ?? DEFAULT_BACKOFF_MS;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const sleep = opts.sleep ?? defaultSleep;
@@ -73,13 +75,25 @@ export async function fetchWithRetry(
     try {
       const res = await doFetch(controller.signal);
       if (res.ok || !isRetriableStatus(res.status) || attempt === attempts) return res;
+      // Resposta retriável descartada antes de tentar de novo — drenar/cancelar
+      // o corpo pra não segurar a conexão subjacente aberta (achado do fleet
+      // review pré-merge, silent-failure-hunter: undici mantém o socket vivo
+      // até o corpo ser consumido ou cancelado; mesmo padrão já usado em
+      // brevo-client.ts pra descarte de resposta retriável).
+      await res.body?.cancel().catch(() => {});
     } catch (e) {
-      if (attempt === attempts) throw e;
+      if (attempt === attempts) {
+        throw new Error(
+          `fetchWithRetry: falhou após ${attempts} tentativa(s) (timeoutMs=${timeoutMs}): ${(e as Error).message}`,
+          { cause: e },
+        );
+      }
     } finally {
       clearTimeout(timer);
     }
     await sleep(backoffMs[Math.min(attempt - 1, backoffMs.length - 1)]);
   }
-  // Inalcançável — o loop acima sempre retorna ou lança na última tentativa.
+  // Inalcançável dado attempts >= 1 (validado acima) — o loop sempre retorna
+  // ou lança na última tentativa.
   throw new Error("fetchWithRetry: loop encerrado sem resultado (bug)");
 }
