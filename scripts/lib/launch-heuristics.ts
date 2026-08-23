@@ -1223,6 +1223,12 @@ const TUTORIAL_PATTERNS: RegExp[] = [
   // site:). Path-scoped (não host-wide) pra não pegar páginas de produto.
   /^developers\.openai\.com\/cookbook/, // OpenAI Cookbook migrou de cookbook.openai.com
   /^(www\.)?langchain\.com\/blog/, // LangChain Blog migrou de blog.langchain.dev
+  // #5995 (modo de falha 2): techtudo.com.br/guia/ é a vertical dedicada de
+  // how-to do veículo — path, não domínio inteiro (techtudo também publica
+  // notícia comum fora de /guia/). Casos reais: "Como treinar oratória com
+  // ChatGPT: 15 prompts para falar melhor", "Como transformar uma planilha
+  // bagunçada em gráficos com ChatGPT".
+  /^(www\.)?techtudo\.com\.br\/guia\//,
 ];
 
 /**
@@ -1314,8 +1320,55 @@ const DISCOVERY_LISTICLE_RE = new RegExp(
   "i",
 );
 
-const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use|choose|pick|select|decide)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b|\bo\s+que\s+[ée]\s+.{0,60}?\be\s+\d+\s+(maneiras|formas|jeitos)\s+de\s+(usar|utilizar)\b|\bentenda\s+as\s+diferen[çc]as\s+entre\b|\bquando\s+usar\s+cada\s+um\b|\b(choosing|picking|selecting|deciding)\s+(a|an|the|between|which|what)\b|\b(escolhendo|decidindo)\s+(a|o|um|uma|entre|qual)\b/i;
+// #5995 (modo de falha 2, isTutorialByKeyword calibrado pro inglês/imperativo-BR
+// já existente, mas cego pro how-to em PT-BR na forma de listicle/pergunta):
+// lista de verbos acionáveis compartilhada entre "aprenda a <verbo>" (já
+// existente) e o novo "como <verbo>" — mesma lista + `treinar`/`transformar`,
+// que apareceram nos casos reais medidos (#5995: "Como treinar oratória com
+// ChatGPT", "Como transformar uma planilha bagunçada em gráficos com
+// ChatGPT"). Superset conservador: exige um dos verbos abaixo IMEDIATAMENTE
+// após "como"/"aprenda a" — não casa em "Como a IA está mudando X" (informativo,
+// não instrutivo) porque "a" não está na lista.
+const TUTORIAL_ACTION_VERBS_PT =
+  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar";
+
+const TUTORIAL_KEYWORDS_RE = new RegExp(
+  "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
+    "|\\btutorial:?\\s" +
+    "|\\bhow[- ]to\\s+(build|create|deploy|train|fine[- ]?tune|implement|use|choose|pick|select|decide)\\b" +
+    "|\\bbuild (your )?(first|own)\\s" +
+    "|\\bguide\\s+(to|for)\\b" +
+    "|\\btechniques?\\s+for\\b" +
+    "|\\bpatterns?\\s+for\\b" +
+    "|\\b(run|deploy|install)\\s+\\S[^.\\n]{0,60}\\b(in one|with one|in a single|with a single)\\s+(command|step|line)\\b" +
+    "|\\b(?:veja|saiba|descubra)\\s+como\\b(?=\\s*(?:$|\\n|[.!?]))" +
+    "|\\bveja\\s+o\\s+prompt\\b" +
+    `|\\baprenda\\s+a\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b` +
+    // #5995: "Como <verbo acionável>" — imperativo direto no início da
+    // manchete PT-BR ("Como treinar oratória com ChatGPT: 15 prompts para
+    // falar melhor", "Como transformar uma planilha bagunçada em gráficos
+    // com ChatGPT"). Ancorado no verbo (não em posição do título) pra também
+    // cobrir "...; veja como usar" — mas o gate real contra falso-positivo é
+    // a lista fechada de verbos: "Como a IA vai mudar X" não casa (mudar/vai
+    // não estão na lista).
+    `|\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b` +
+    "|\\bo\\s+que\\s+[ée]\\s+.{0,60}?\\be\\s+\\d+\\s+(maneiras|formas|jeitos)\\s+de\\s+(usar|utilizar)\\b" +
+    // #5995: "N prompts para <algo>" — listicle de prompts acionáveis
+    // ("11 prompts para foto profissional no ChatGPT e outras IAs").
+    "|\\b\\d+\\s+prompts?\\s+para\\b" +
+    // #5995: "N formas/maneiras/jeitos de <verbo>" sem o prefixo "o que é X e"
+    // exigido pelo padrão acima — cobre listicle solto ("6 formas de assinar
+    // o Claude mais barato e pagar menos pelo Pro").
+    "|\\b\\d+\\s+(formas|maneiras|jeitos)\\s+de\\b" +
+    // #5995: "N aplicações práticas de/do/da <produto>" — listicle de casos de
+    // uso acionáveis ("9 aplicações práticas do ChatGPT Work").
+    "|\\b\\d+\\s+aplica[çc][õoe]es\\s+pr[áa]ticas?\\s+(de|do|da)\\b" +
+    "|\\bentenda\\s+as\\s+diferen[çc]as\\s+entre\\b" +
+    "|\\bquando\\s+usar\\s+cada\\s+um\\b" +
+    "|\\b(choosing|picking|selecting|deciding)\\s+(a|an|the|between|which|what)\\b" +
+    "|\\b(escolhendo|decidindo)\\s+(a|o|um|uma|entre|qual)\\b",
+  "i",
+);
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;

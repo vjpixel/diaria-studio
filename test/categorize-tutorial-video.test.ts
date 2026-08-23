@@ -1041,6 +1041,86 @@ describe("categorize() — listicle de descoberta vira USE MELHOR (#3987)", () =
   });
 });
 
+describe("categorize() — how-to PT-BR não detectado, modo de falha 2 (#5995)", () => {
+  // 5 dos 6 casos reais medidos na #5995 (radar → use_melhor, 21 casos no
+  // corpus histórico) — fixtures vindas do dado real, não inventadas. O 6º
+  // caso real ("Fine-tuning x prompt engineering: qual estratégia resolve seu
+  // problema", exame.com) fica de fora deste round por decisão de escopo —
+  // não bate em nenhum dos 5 sinais implementados aqui (Como <verbo>, N
+  // prompts para, N formas de, N aplicações práticas de, techtudo /guia/) e
+  // fica para uma rodada futura de calibração.
+
+  it("CASO REAL 260807: 'Como treinar oratória com ChatGPT: 15 prompts...' (techtudo /guia/) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.techtudo.com.br/guia/2026/08/como-treinar-oratoria-com-chatgpt-15-prompts-para-falar-melhor.ghtml",
+        title: "Como treinar oratória com ChatGPT: 15 prompts para falar melhor",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("CASO REAL 260817: '9 aplicações práticas do ChatGPT Work' (canaltech) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://canaltech.com.br/inteligencia-artificial/9-aplicacoes-praticas-do-chatgpt-work/",
+        title: "9 aplicações práticas do ChatGPT Work",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("CASO REAL 260818: '6 formas de assinar o Claude mais barato...' (canaltech) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://canaltech.com.br/inteligencia-artificial/6-formas-de-assinar-o-claude-mais-barato-e-pagar-menos-pelo-pro/",
+        title: "6 formas de assinar o Claude mais barato e pagar menos pelo Pro",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("CASO REAL 260818: 'Como transformar uma planilha bagunçada em gráficos...' (techtudo /guia/) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.techtudo.com.br/guia/2026/08/como-transformar-uma-planilha-bagunçada-em-graficos-com-chatgpt.ghtml",
+        title: "Como transformar uma planilha bagunçada em gráficos com ChatGPT",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("CASO REAL 260820: '11 prompts para foto profissional no ChatGPT...' (remessaonline) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.remessaonline.com.br/blog/11-prompts-para-foto-profissional-no-chatgpt-e-outras-ias/",
+        title: "11 prompts para foto profissional no ChatGPT e outras IAs",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("techtudo.com.br fora de /guia/ continua roteando pelas regras normais (path-scoped, não domínio inteiro)", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.techtudo.com.br/noticias/2026/08/openai-anuncia-parceria.ghtml",
+        title: "OpenAI anuncia parceria bilionária com fabricante de chips",
+      }),
+      "noticias",
+    );
+  });
+
+  it("contra-exemplo (falso-positivo): 'Como a IA está mudando a educação' NÃO vira tutorial — 'a' não é verbo acionável", () => {
+    assert.equal(
+      categorize({
+        url: "https://canaltech.com.br/inteligencia-artificial/como-a-ia-esta-mudando-a-educacao-no-brasil/",
+        title: "Como a inteligência artificial está mudando a educação no Brasil",
+      }),
+      "noticias",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Edge cases: precedencia, dominios ambiguos e casos limite (#534)
 // // #534-edge-cases-appended
