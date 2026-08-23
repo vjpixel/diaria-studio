@@ -8,12 +8,26 @@
  * (`scripts/lib/scheduled-tasks.ts`) em vez de um alarme artesanal por task.
  *
  * Lógica pura em `scripts/lib/systemd-failed-units-alarm.ts` — este arquivo
- * é só I/O: `systemctl --user list-units` (SÓ LEITURA — ver guard abaixo),
- * envio de e-mail, dedup/criação de issue via `scripts/lib/alarm-issues.ts`.
+ * é só I/O: `systemctl --user list-units` + `systemctl --user show` por unit
+ * falha (SÓ LEITURA — ver guard abaixo), envio de e-mail, dedup/criação de
+ * issue via `scripts/lib/alarm-issues.ts`.
+ *
+ * **Campos diagnósticos no corpo da issue (#5963).** Pra cada unit falha,
+ * `readUnitDiagnosticFields` roda `systemctl --user show <unit>
+ * --property={allowlist fechada}` e captura só `Result`, `ExecMainStatus`,
+ * `NRestarts`, `ActiveEnterTimestamp`, `InactiveEnterTimestamp`,
+ * `InvocationID` — todos enum/inteiro/timestamp/UUID, nunca texto livre.
+ * Este repo é PÚBLICO: colar `journalctl` bruto no corpo vazaria resposta
+ * de API/e-mail de assinante/token. Validação de forma por propriedade
+ * (`isValidUnitDiagnosticValue`) é a 2ª barreira — valor que não bate o
+ * formato esperado é descartado, nunca repassado cego. Com `InvocationID`
+ * disponível, a instrução de investigação vira
+ * `journalctl --user _SYSTEMD_INVOCATION_ID=<id>` (journal da execução
+ * específica, recuperável mesmo depois de outras rodadas).
  *
  * **GUARD (invariável):** este script NUNCA chama `systemctl` com
- * `start`/`stop`/`restart`/`enable`/`disable` — só `list-units` (leitura).
- * Religar um serviço falho é ação manual do editor.
+ * `start`/`stop`/`restart`/`enable`/`disable` — só `list-units`/`show`
+ * (leitura). Religar um serviço falho é ação manual do editor.
  *
  * **Guard de máquina sem systemd `--user`** (sessão cloud, clone fresco, ou
  * qualquer máquina sem `systemctl`): a chamada falha com ENOENT — tratado
@@ -49,8 +63,13 @@ import {
   emptySystemdFailedUnitsAlarmState,
   buildSystemdFailedUnitsAlarmEmail,
   isAlarmingVerdict,
+  parseUnitDiagnosticShowOutput,
+  formatUnitDiagnosticFieldsTable,
+  buildUnitInvestigationCommand,
+  UNIT_DIAGNOSTIC_PROPERTIES,
   type SystemdFailedUnitsAlarmState,
   type SystemdFailedUnitsEvaluation,
+  type UnitDiagnosticFields,
 } from "./lib/systemd-failed-units-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -97,18 +116,50 @@ export function readFailedUnitNames(execFn: typeof execFileSync = execFileSync):
   }
 }
 
-export function toAlarmFinding(unitName: string): AlarmFinding {
+/** `null` = não foi possível consultar (systemctl ausente/erro qualquer) —
+ * caller trata como "sem campos diagnósticos", nunca como alarme extra ou
+ * falha do sweep (fail-soft honesto, mesmo padrão de `readFailedUnitNames`
+ * acima). SÓ LEITURA — `systemctl show` nunca muta o serviço. */
+export function readUnitDiagnosticFields(
+  unitName: string,
+  execFn: typeof execFileSync = execFileSync,
+): UnitDiagnosticFields | null {
+  try {
+    const out = execFn(
+      "systemctl",
+      ["--user", "show", unitName, `--property=${UNIT_DIAGNOSTIC_PROPERTIES.join(",")}`],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    ) as unknown as string;
+    return parseUnitDiagnosticShowOutput(String(out ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+export function toAlarmFinding(unitName: string, diagnosticFields: UnitDiagnosticFields | null = null): AlarmFinding {
+  const fields = diagnosticFields ?? {};
+  const table = formatUnitDiagnosticFieldsTable(fields);
+  const investigationCmd = buildUnitInvestigationCommand(unitName, fields);
   return {
     check: "systemd-failed-units",
     fingerprint: unitName,
     title: `[diar.ia.br] systemd unit falhou: ${unitName}`,
     body: [
       "Achado automático do alarme `Diaria-Systemd-Failed-Units-Alarm`",
-      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up).",
+      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up, campos diagnósticos #5963).",
       "",
       `A unit systemd --user \`${unitName}\` está em estado \`failed\`.`,
+      ...(table
+        ? [
+            "",
+            "Campos capturados no momento do achado" +
+              " (`systemctl --user show`, allowlist fechada — nunca texto livre):",
+            "",
+            table,
+          ]
+        : []),
       "",
-      `Investigar: \`journalctl --user -u ${unitName} -n 50\` e ` +
+      `Investigar: \`${investigationCmd}\` e ` +
         `\`systemctl --user status ${unitName}\`. Religar/reiniciar é ação manual do editor ` +
         "(este alarme nunca muta o serviço).",
       "",
@@ -178,7 +229,7 @@ async function main(): Promise<void> {
 
   const state = loadState();
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
-    ? evaluation.failedUnits.map(toAlarmFinding)
+    ? evaluation.failedUnits.map((unit) => toAlarmFinding(unit, readUnitDiagnosticFields(unit)))
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
