@@ -1194,7 +1194,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Onboarding-Welcome-Run",
     description:
       "sequencia diaria de boas-vindas via Brevo transacional (e-mail 1 imediato, e-mail 2 D+3, " +
-      "e-mail 3 CAMPANHA D+10 condicional a zero aberturas) para assinantes novos da Beehiiv",
+      "e-mail 3 CAMPANHA D+10 condicional a zero aberturas e cliques) para assinantes novos da Beehiiv",
     steps: [{ key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] }],
     logPath: "onboarding/.welcome-run.log",
     // 09:05 BRT — logo depois de Diaria-Clarice-Novos (09:00, mesmo cluster
@@ -1206,6 +1206,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // bootstrap já marcado (`--send` rodado uma vez em 2026-08-23,
     // detected_new: 0 — base existente fica de fora por desenho).
     schedule: { kind: "daily", hour: 9, minute: 5 },
+    // Achado do review de fleet do PR #5956: sem este guard, uma junction
+    // `data/` que caiu momentaneamente em `helios` faria `readStore` devolver
+    // `emptyStore()` silenciosamente (indistinguível de "1ª execução") — e a
+    // semântica de bootstrap (`last_detection_cursor: null` → marca cursor em
+    // `now`, zero envios) resetaria o tracking de quem já está no meio da
+    // sequência (ex: recebeu e-mail 1, aguardando e-mail 2 em D+3) sem
+    // nenhum aviso no log. Mesmo perfil de risco (envio externo real + store
+    // sequencial por contato) das tasks-irmãs que já usam este guard
+    // (Diaria-Clarice-Novos/-Tarde, Diaria-Clarice-Envio,
+    // Diaria-Brevo-Diaria-Evaluate, Diaria-Ads-Test-Watch).
+    guard: {
+      requiredFile: "onboarding/store.json",
+      abortMessage:
+        "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao " +
+        "montada ainda; abortando por seguranca, sem resetar o cursor de bootstrap.",
+    },
     // DECLARADA, NÃO ARMADA nesta unidade (sessão develop rodando no
     // Windows do editor, não na checkout compartilhada `helios`) — armar
     // via `scripts/setup-systemd-timers.ts` em `helios` é ação POSTERIOR
