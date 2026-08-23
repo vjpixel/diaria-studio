@@ -95,7 +95,7 @@ const CTA_ABERTURA_LABEL = "Assinar a edição diária";
  * leitura (decisão do editor 260803): o que converte aqui é a cadência diária,
  * não a duração de cada item.
  */
-const CTA_USEMELHOR_LEAD = "Tutoriais e dicas como este saem em toda edição diária.";
+const CTA_USEMELHOR_LEAD = "Links para tutoriais e dicas saem em toda edição diária.";
 
 /**
  * Âncora do CTA do meio. 1ª pessoa e sem "grátis"/imperativo empilhados, pelo
