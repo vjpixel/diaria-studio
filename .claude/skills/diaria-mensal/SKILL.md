@@ -502,6 +502,13 @@ Lint (scripts/lint-monthly-draft.ts):
   D2: {chars} / 1.200 {✓|⚠}
   D3: {chars} / 1.200 {✓|⚠}
 
+Lint de densidade (scripts/lint-density.ts #5926):
+  Palavras: {N} ({mult}× base)
+  Frases > 30 palavras: {N} / {teto} {✓|⚠} (maior: {N} pal.)
+  Nomes próprios no corpo: {N} / {teto} {✓|⚠} ({exemplos})
+  Siglas em caixa alta: {N} / {teto} {✓|⚠} ({exemplos})
+  Stats soltas: {N} / {teto} {✓|⚠} ({exemplos})
+
 Fact-check (_internal/04-fact-check.json):
   {total} claims verificados — {sustained} sustentados, {attention_items} pedem atenção
   {listar DIVERGENT + superlativos não-sustentados, se houver}
