@@ -21,22 +21,55 @@
  * variações de formato de data mais prováveis (`MM/DD/YYYY` e `YYYY-MM-DD`)
  * pra não quebrar se o parsing do CSV upstream mudar a serialização.
  *
- * `fetchMicrosoftAdsSpendRows` abaixo modela o fluxo como uma ÚNICA chamada
- * fail-soft (submissão + poll + parse já resolvidos em `rows`) — o detalhe
- * de poll/backoff real fica no CLI/infra que implementar a chamada de fato
- * (não testável sem credencial; ver `docs/microsoft-ads-api-setup.md`), o
- * mesmo espírito de `fetchGoogleAdsSpendRows` (esconder a mecânica HTTP
- * atrás de uma função fail-soft, testável com um `fetchImpl` mockado).
+ * `fetchMicrosoftAdsSpendRows` abaixo resolve o fluxo assíncrono de verdade
+ * — submissão SOAP → poll até `Success`/erro → download do ZIP →
+ * descompactação → parse do CSV — igual ao `fetchGoogleAdsSpendRows`
+ * (esconder a mecânica HTTP atrás de uma função fail-soft, testável com um
+ * `fetchImpl` mockado). **Implementado em 22/08/2026 (#5928)**, depois que a
+ * credencial real saiu do zero (#5502/#5878) — antes disso o módulo
+ * deliberadamente parava na fronteira "fetch fail-soft → normalização pura"
+ * porque testar o poll contra fixture sem credencial só criaria confiança
+ * falsa (ver `docs/microsoft-ads-api-setup.md`).
+ *
+ * ## Transporte: SOAP 1.1, não REST (diferença chave vs `google-ads-ingest.ts`)
+ *
+ * A Reporting API do Microsoft Advertising é SOAP (`ReportingService.svc`
+ * v13, um único endpoint pras 2 operações `SubmitGenerateReport` e
+ * `PollGenerateReport` — a operação vai no `<Action>` do SOAP Header, não na
+ * URL). O envelope é montado com `fast-xml-parser` (`XMLBuilder`, já
+ * dependência do repo via `fetch-sitemap.ts`) em vez de template string, pra
+ * não escorregar em escaping/atributos. O relatório baixado
+ * (`ReportDownloadUrl`) vem **compactado em ZIP** — sem lib de ZIP no repo,
+ * `unzipFirstEntry` abaixo lê o Local File Header do 1º (e único) entry na
+ * mão e descompacta via `node:zlib` (suporta STORED e DEFLATE, os 2 métodos
+ * que um ZIP gerado por servidor usa) — ver docstring da função pro que ela
+ * deliberadamente não cobre (ZIP64, streaming, múltiplos entries).
+ *
+ * **4 detalhes de transporte só descobertos ao vivo em 22/08/2026 (#5928),
+ * cada um documentado por completo no ponto de uso (não repetido aqui —
+ * índice, não 2ª fonte de verdade):** `Content-Type`/`SOAPAction` (SOAP 1.1,
+ * não 1.2, ver `postSoap`); ordem `CustomDateRangeEnd` antes de
+ * `CustomDateRangeStart` (ver `buildSubmitGenerateReportEnvelope`);
+ * `Success` + `ReportDownloadUrl` nil é vazio legítimo, não erro (ver
+ * `fetchMicrosoftAdsSpendRows`); e a conta em uso exige **Google OAuth**
+ * como identity provider, não Azure AD (ver `MicrosoftAdsAuthConfig.googleRefreshToken`
+ * e `refreshMicrosoftAdsAccessToken` — os 2 provedores, escolhidos
+ * automaticamente, estão implementados e validados ao vivo desde #5928).
  *
  * ## Por que fail-soft é o comportamento CORRETO aqui (mesma disciplina do
  * #5237/#5502)
  *
- * Sem credencial (`MICROSOFT_ADS_*` ausente do ambiente) é o estado ESPERADO
- * hoje — nenhuma campanha Microsoft roda ainda (#5493). O adaptador precisa
- * degradar pro CSV manual sem quebrar `cac-report.ts` nem lançar stack cru —
- * nunca `process.exit` de dentro deste módulo.
+ * Qualquer falha em qualquer uma das 4 etapas (submit/poll/download/parse)
+ * vira `{ error }`, nunca lança — rede cai, quota estoura, o token pode ser
+ * revogado, um poll pode nunca chegar em `Success` dentro do teto de
+ * tentativas. O adaptador precisa degradar pro CSV manual sem quebrar
+ * `cac-report.ts` nem lançar stack cru — nunca `process.exit` de dentro
+ * deste módulo.
  */
 
+import { XMLBuilder, XMLParser } from "fast-xml-parser";
+import { inflateRawSync } from "node:zlib";
+import Papa from "papaparse";
 import type { SpendRow } from "./aquisicao-spend.ts";
 import { runSpendIngest, type SpendIngestFetchResult } from "./spend-ingest.ts";
 
@@ -189,15 +222,53 @@ export function aggregateMicrosoftAdsSpendByMonth(
 // ---------------------------------------------------------------------------
 
 export interface MicrosoftAdsAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
+  /** Opcional desde #5928 — só o caminho Google (`googleRefreshToken`)
+   *  precisa estar completo pra conta em uso hoje; `clientId`/`refreshToken`
+   *  seguem obrigatórios apenas pro caminho Azure AD (`refreshAzureAdAccessToken`
+   *  devolve `{ error }` explícito se algum estiver ausente e o caminho
+   *  Google não estiver setado). */
+  clientId?: string;
+  /**
+   * **NÃO é enviado na renovação do token (#5928, validado ao vivo em
+   * 22/08/2026).** O app registration `diaria-studio-microsoft-ads` foi
+   * registrado como *public client* (fluxo desktop/nativo, mesmo caminho da
+   * App Center do Microsoft Advertising) — a Azure AD REJEITA qualquer
+   * `client_secret` no corpo do refresh grant para esse tipo de app:
+   * `AADSTS90023: Public clients can't send a client secret`. O campo
+   * continua no tipo (e `MICROSOFT_ADS_CLIENT_SECRET` no Doppler) só de
+   * referência/histórico — se o app registration algum dia migrar pra
+   * confidential client, é aqui que a chamada volta a incluir o secret.
+   * `?` de propósito — nada neste módulo lê o valor hoje.
+   */
+  clientSecret?: string;
+  /** Ver `clientId` acima — opcional pelo mesmo motivo. */
+  refreshToken?: string;
   developerToken: string;
   customerId: string;
   accountId: string;
   /** Endpoint OAuth2 (Azure AD v2) — sobreponível pra teste; default é o
    *  endpoint "common" documentado em `docs/microsoft-ads-api-setup.md`. */
   tokenEndpoint?: string;
+  /**
+   * **Google OAuth como IdentityProvider (#5928, validado ao vivo em
+   * 22/08/2026).** A conta Microsoft Advertising em uso foi criada via
+   * "Sign in with Google" e REJEITA token Azure AD (`IdentityTypeMismatch`)
+   * — só um `access_token` emitido pelo GOOGLE (endpoint próprio,
+   * `oauth2.googleapis.com/token`) funciona pra ela, junto do header SOAP
+   * `<IdentityProvider>Google</IdentityProvider>` (ver `docs/microsoft-ads-api-setup.md`).
+   * Quando `googleRefreshToken` está presente, `refreshMicrosoftAdsAccessToken`
+   * usa este caminho em vez do Azure AD acima — os campos `clientId`/
+   * `refreshToken`/`tokenEndpoint` (Azure) ficam ignorados nesse caso, mas
+   * continuam no tipo pra contas que NÃO tenham esse vínculo Google (o
+   * caminho Azure AD funciona normalmente pra qualquer conta que não tenha
+   * sido criada via "Sign in with Google").
+   */
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRefreshToken?: string;
+  /** Endpoint OAuth2 do Google — sobreponível pra teste; default
+   *  `https://oauth2.googleapis.com/token`. */
+  googleTokenEndpoint?: string;
 }
 
 export type MicrosoftAdsIngestResult =
@@ -212,16 +283,50 @@ const DEFAULT_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/
 /** Escopo padrão da Microsoft Advertising API (client credentials/refresh
  *  token flow) — https://learn.microsoft.com/advertising/guides/authentication-oauth. */
 const DEFAULT_SCOPE = "https://ads.microsoft.com/msads.manage offline_access";
+const DEFAULT_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+
+/** Quem emitiu o `accessToken` — `"Google"` exige o header SOAP
+ *  `<IdentityProvider>Google</IdentityProvider>` em toda chamada seguinte
+ *  (montado por `buildSoapEnvelope`, que decide pelo mesmo critério —
+ *  `auth.googleRefreshToken` presente — em vez de reler este campo, já que
+ *  os 2 lados sempre concordam por definição); `"AzureAd"` é o caminho
+ *  default que não precisa desse header. */
+export type MicrosoftAdsIdentityProvider = "AzureAd" | "Google";
+
+async function parseOAuthTokenResponse(
+  res: Response,
+  label: string,
+): Promise<{ accessToken: string } | { error: string }> {
+  const text = await res.text();
+  let payload: { access_token?: string; error_description?: string };
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { error: `${label} respondeu não-JSON (HTTP ${res.status})` };
+  }
+  if (!res.ok || !payload.access_token) {
+    return { error: `${label} falhou: ${payload.error_description ?? res.status}` };
+  }
+  return { accessToken: payload.access_token };
+}
 
 /**
  * Renova o access token via refresh token (Azure AD v2). Nunca lança — falha
  * de rede, credencial ausente/expirada, ou resposta não-JSON viram `null` +
  * `reason`, mesma disciplina fail-soft de `refreshGoogleAdsAccessToken`.
+ *
+ * **Sem `client_secret` no corpo, de propósito** — ver o comentário em
+ * `MicrosoftAdsAuthConfig.clientSecret` (#5928): este app registration é
+ * *public client*, e a Azure AD rejeita a requisição inteira
+ * (`AADSTS90023`) se o secret vier junto, mesmo que o valor seja válido.
  */
-export async function refreshMicrosoftAdsAccessToken(
+async function refreshAzureAdAccessToken(
   fetchImpl: FetchLike,
-  auth: Pick<MicrosoftAdsAuthConfig, "clientId" | "clientSecret" | "refreshToken" | "tokenEndpoint">,
+  auth: Pick<MicrosoftAdsAuthConfig, "clientId" | "refreshToken" | "tokenEndpoint">,
 ): Promise<{ accessToken: string } | { error: string }> {
+  if (!auth.clientId || !auth.refreshToken) {
+    return { error: "renovação do access token (Azure AD) falhou: clientId/refreshToken ausentes" };
+  }
   let res: Response;
   try {
     res = await fetchImpl(auth.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT, {
@@ -229,101 +334,558 @@ export async function refreshMicrosoftAdsAccessToken(
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         client_id: auth.clientId,
-        client_secret: auth.clientSecret,
         refresh_token: auth.refreshToken,
         grant_type: "refresh_token",
         scope: DEFAULT_SCOPE,
       }).toString(),
     });
   } catch (e) {
-    return { error: `falha de rede na renovação do access token: ${e instanceof Error ? e.message : e}` };
+    return { error: `falha de rede na renovação do access token (Azure AD): ${e instanceof Error ? e.message : e}` };
   }
-
-  const text = await res.text();
-  let payload: { access_token?: string; error_description?: string };
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return { error: `renovação do access token respondeu não-JSON (HTTP ${res.status})` };
-  }
-  if (!res.ok || !payload.access_token) {
-    return { error: `renovação do access token falhou: ${payload.error_description ?? res.status}` };
-  }
-  return { accessToken: payload.access_token };
+  return parseOAuthTokenResponse(res, "renovação do access token (Azure AD)");
 }
 
 /**
- * Busca as linhas já resolvidas do `CampaignPerformanceReport` via
- * `fetchImpl` injetado. Nunca lança — mesma disciplina fail-soft de
- * `fetchGoogleAdsSpendRows`. O CLI real (fora de escopo desta função, ver
- * docstring do módulo) é responsável por resolver o fluxo assíncrono de 2
- * passos (submeter relatório → poll até "Success" → baixar/parsear CSV) e
- * entregar aqui as linhas já parseadas — `fetchImpl` aqui representa
- * qualquer chamada HTTP que essa resolução precisar fazer (o teste injeta um
- * mock que devolve o payload final direto, sem simular o poll).
+ * Renova o access token via refresh token do GOOGLE — endpoint e parâmetros
+ * inteiramente diferentes do Azure AD (#5928, validado ao vivo em
+ * 22/08/2026). Necessário pra qualquer conta Microsoft Advertising que foi
+ * criada via "Sign in with Google" (ver docstring de
+ * `MicrosoftAdsAuthConfig.googleRefreshToken`) — Azure AD emite um token
+ * válido, mas a API rejeita ele pra essa conta especificamente
+ * (`IdentityTypeMismatch`). Mesma disciplina fail-soft de
+ * `refreshAzureAdAccessToken` — nunca lança.
+ */
+async function refreshGoogleIdentityAccessToken(
+  fetchImpl: FetchLike,
+  auth: Pick<MicrosoftAdsAuthConfig, "googleClientId" | "googleClientSecret" | "googleRefreshToken" | "googleTokenEndpoint">,
+): Promise<{ accessToken: string } | { error: string }> {
+  // Mesmo guard de `refreshAzureAdAccessToken` — sem isso, um
+  // `googleRefreshToken` presente mas `googleClientId`/`googleClientSecret`
+  // ausentes (config parcial, possível a partir de `authConfigFromEnv` se
+  // `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` não estiverem no ambiente de
+  // quem chama) mandaria `client_id`/`client_secret` como string vazia pro
+  // Google em vez de falhar cedo com uma mensagem diagnosticável.
+  if (!auth.googleClientId || !auth.googleClientSecret || !auth.googleRefreshToken) {
+    return { error: "renovação do access token (Google) falhou: googleClientId/googleClientSecret/googleRefreshToken ausentes" };
+  }
+  let res: Response;
+  try {
+    res = await fetchImpl(auth.googleTokenEndpoint ?? DEFAULT_GOOGLE_TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: auth.googleClientId,
+        client_secret: auth.googleClientSecret,
+        refresh_token: auth.googleRefreshToken,
+        grant_type: "refresh_token",
+      }).toString(),
+    });
+  } catch (e) {
+    return { error: `falha de rede na renovação do access token (Google): ${e instanceof Error ? e.message : e}` };
+  }
+  return parseOAuthTokenResponse(res, "renovação do access token (Google)");
+}
+
+/**
+ * Dispatcher entre os 2 identity providers — Google quando
+ * `auth.googleRefreshToken` está presente (a conta em uso hoje exige isso,
+ * #5928), Azure AD caso contrário (o caminho original, válido pra qualquer
+ * outra conta Microsoft Advertising que não tenha o vínculo Google). Devolve
+ * `identityProvider` junto do token pra quem chama saber se precisa incluir
+ * o header SOAP `<IdentityProvider>` nas chamadas seguintes.
+ */
+export async function refreshMicrosoftAdsAccessToken(
+  fetchImpl: FetchLike,
+  auth: Pick<
+    MicrosoftAdsAuthConfig,
+    "clientId" | "refreshToken" | "tokenEndpoint" | "googleClientId" | "googleClientSecret" | "googleRefreshToken" | "googleTokenEndpoint"
+  >,
+): Promise<{ accessToken: string; identityProvider: MicrosoftAdsIdentityProvider } | { error: string }> {
+  if (auth.googleRefreshToken) {
+    const result = await refreshGoogleIdentityAccessToken(fetchImpl, auth);
+    if ("error" in result) return result;
+    return { accessToken: result.accessToken, identityProvider: "Google" };
+  }
+  const result = await refreshAzureAdAccessToken(fetchImpl, auth);
+  if ("error" in result) return result;
+  return { accessToken: result.accessToken, identityProvider: "AzureAd" };
+}
+
+// ---------------------------------------------------------------------------
+// Transporte SOAP real (#5928) — submit → poll → download → unzip → parse
+// ---------------------------------------------------------------------------
+
+/** Único endpoint SOAP pras 2 operações — a operação vai no `<Action>` do
+ *  SOAP Header, não na URL (WCF basicHttpBinding-style, mesmo padrão dos
+ *  demais serviços Bing/Microsoft Advertising v13). */
+const REPORTING_SERVICE_URL = "https://reporting.api.bingads.microsoft.com/Api/Advertiser/Reporting/v13/ReportingService.svc";
+const REPORTING_NAMESPACE = "https://bingads.microsoft.com/Reporting/v13";
+const ARRAYS_NAMESPACE = "http://schemas.microsoft.com/2003/10/Serialization/Arrays";
+/** Melhor aproximação de UTC disponível no enum — não existe um valor "UTC"
+ *  puro (confirmado contra
+ *  https://learn.microsoft.com/en-us/advertising/reporting-service/reporttimezone),
+ *  então usa o mesmo nome que a `TimeZoneInfo` "GMT Standard Time" do Windows
+ *  (Dublin/Edinburgh/Lisbon/London) usa pro fuso equivalente. **Não
+ *  confirmado ao vivo se este valor observa horário de verão britânico
+ *  (BST, UTC+1 ~final de março a final de outubro)** — se observar, a mesma
+ *  ressalva de borda-de-dia de `toGaqlDate` (google-ads-ingest.ts) se
+ *  aplica: não importa pra agregação MENSAL, o merge é idempotente por mês. */
+const DEFAULT_REPORT_TIME_ZONE = "GreenwichMeanTimeDublinEdinburghLisbonLondon";
+/** 15s entre tentativas, até 20 tentativas — a 1ª tentativa não espera
+ *  (só as 19 seguintes), então o teto real é ~4min45s, não 5min redondos.
+ *  Dentro da faixa "2 a 15 min" que a documentação oficial recomenda pra
+ *  polling (https://learn.microsoft.com/en-us/advertising/guides/request-download-report),
+ *  bem abaixo do teto de 60min que a doc sugere antes de desistir e tentar
+ *  depois. Um relatório de 90 dias/1 conta é pequeno — não deveria demorar
+ *  perto disso; se demorar, o timeout é sinal real, não falso-positivo. */
+const DEFAULT_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_MAX_POLL_ATTEMPTS = 20;
+
+const xmlBuilder = new XMLBuilder({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+const xmlParser = new XMLParser({ ignoreAttributes: true, removeNSPrefix: true });
+
+async function defaultSleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Data-calendário (UTC) no formato `{Day, Month, Year}` que o elemento
+ *  `Date` do SOAP request espera — não confundir com `TimePeriod` (string),
+ *  que é o formato de SAÍDA do relatório. @pure */
+function toSoapDateParts(d: Date): { Day: number; Month: number; Year: number } {
+  return { Day: d.getUTCDate(), Month: d.getUTCMonth() + 1, Year: d.getUTCFullYear() };
+}
+
+/**
+ * `<IdentityProvider>Google</IdentityProvider>` entra no SOAP Header só
+ * quando `auth.googleRefreshToken` está presente — mesmo critério que
+ * `refreshMicrosoftAdsAccessToken` usa pra escolher qual token renovar
+ * (#5928). Contas Azure AD normais não devem levar este header (não
+ * testado se a API o ignora ou rejeita quando presente sem necessidade —
+ * mais seguro OMITIR do que arriscar).
+ */
+function buildSoapEnvelope(
+  action: "SubmitGenerateReport" | "PollGenerateReport",
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  bodyObj: Record<string, unknown>,
+): string {
+  const identityProviderHeader = auth.googleRefreshToken ? { IdentityProvider: "Google" } : {};
+  return xmlBuilder.build({
+    "s:Envelope": {
+      "@_xmlns:i": "http://www.w3.org/2001/XMLSchema-instance",
+      "@_xmlns:s": "http://schemas.xmlsoap.org/soap/envelope/",
+      "s:Header": {
+        "@_xmlns": REPORTING_NAMESPACE,
+        Action: { "@_mustUnderstand": "1", "#text": action },
+        AuthenticationToken: accessToken,
+        CustomerAccountId: auth.accountId,
+        CustomerId: auth.customerId,
+        DeveloperToken: auth.developerToken,
+        ...identityProviderHeader,
+      },
+      "s:Body": bodyObj,
+    },
+  });
+}
+
+/** `CampaignPerformanceReportRequest` com só `TimePeriod`+`Spend` (sem
+ *  `CampaignId`/`CampaignName`) — excluir as colunas de atributo faz o
+ *  relatório agregar automaticamente entre campanhas (documentado em
+ *  "Columns that Group the Data"), então cada linha já é o total da CONTA
+ *  no dia, sem precisar somar campanha por campanha aqui. */
+function buildSubmitGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessToken: string, range: MicrosoftAdsDateRange): string {
+  return buildSoapEnvelope("SubmitGenerateReport", auth, accessToken, {
+    SubmitGenerateReportRequest: {
+      "@_xmlns": REPORTING_NAMESPACE,
+      ReportRequest: {
+        "@_xmlns:i": "http://www.w3.org/2001/XMLSchema-instance",
+        "@_i:type": "CampaignPerformanceReportRequest",
+        ExcludeColumnHeaders: false,
+        ExcludeReportFooter: true,
+        ExcludeReportHeader: true,
+        Format: "Csv",
+        FormatVersion: "2.0",
+        ReportName: "diaria-studio spend ingest",
+        ReturnOnlyCompleteData: false,
+        Aggregation: "Daily",
+        Columns: {
+          CampaignPerformanceReportColumn: ["TimePeriod", "Spend"],
+        },
+        Scope: {
+          AccountIds: {
+            "@_xmlns:a1": ARRAYS_NAMESPACE,
+            "a1:long": auth.accountId,
+          },
+        },
+        // `CustomDateRangeEnd` ANTES de `CustomDateRangeStart` — parece
+        // invertido, mas é a ordem que o XSD do `ReportTime` declara
+        // (confirmado contra
+        // https://learn.microsoft.com/en-us/advertising/reporting-service/reporttime,
+        // que lista `CustomDateRangeEnd` primeiro no `xs:sequence`). WCF é
+        // estrito com ordem de elemento — inverter os 2 (bug real que
+        // chegou a ser mergeado, #5928) faz TODA submissão falhar com
+        // `InvalidCustomDateRangeEnd`, mesmo com datas válidas — confirmado
+        // ao vivo: a mesma request com a ordem errada falha, com a ordem
+        // certa devolve 200 + `ReportRequestId`.
+        Time: {
+          CustomDateRangeEnd: toSoapDateParts(range.end),
+          CustomDateRangeStart: toSoapDateParts(range.start),
+          ReportTimeZone: DEFAULT_REPORT_TIME_ZONE,
+        },
+      },
+    },
+  });
+}
+
+function buildPollGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessToken: string, reportRequestId: string): string {
+  return buildSoapEnvelope("PollGenerateReport", auth, accessToken, {
+    PollGenerateReportRequest: {
+      "@_xmlns": REPORTING_NAMESPACE,
+      ReportRequestId: reportRequestId,
+    },
+  });
+}
+
+/** Extrai a mensagem de um SOAP Fault pra log — best-effort: tenta a forma
+ *  1.2 (`Reason.Text`) primeiro, cai pro `faultstring` (1.1 — o formato REAL
+ *  deste transporte, ver `postSoap`), e tenta os 2 formatos de payload de
+ *  erro específicos da Microsoft Advertising (`AdApiFaultDetail` /
+ *  `ApiFaultDetail`) dentro do elemento **`detail` (minúsculo)** — é
+ *  `<detail>`, não `<Detail>`, porque esse é o nome definido pelo próprio
+ *  SOAP 1.1 (não uma convenção Microsoft) — confirmado contra um Fault real
+ *  capturado ao vivo em 22/08/2026 (#5928, o mesmo `IdentityTypeMismatch`
+ *  que motivou o caminho Google em `refreshMicrosoftAdsAccessToken`). Se o
+ *  corpo não for um Fault reconhecível, devolve `null` e quem chama cai no
+ *  fallback de exibir o texto bruto (mesma disciplina de nunca lançar) — só
+ *  um `console.debug`
+ *  marca a ocorrência, pra não deixar o catch mudo. */
+function extractSoapFaultMessage(xml: string): string | null {
+  try {
+    // Payload de erro upstream — forma não é tipada aqui de propósito, ver docstring.
+    const parsed: any = xmlParser.parse(xml);
+    const fault = parsed?.Envelope?.Body?.Fault;
+    if (!fault) return null;
+    const reason = fault.Reason?.Text ?? fault.faultstring;
+    const errorContainer =
+      fault.detail?.AdApiFaultDetail?.Errors?.AdApiError ?? fault.detail?.ApiFaultDetail?.OperationErrors?.OperationError;
+    const errorList = errorContainer === undefined ? [] : Array.isArray(errorContainer) ? errorContainer : [errorContainer];
+    const errorMsgs = errorList.map((e) => e?.Message).filter(Boolean).join("; ");
+    const combined = [reason, errorMsgs].filter(Boolean).join(" — ");
+    return combined || null;
+  } catch (e) {
+    console.debug(`[microsoft-ads-ingest] extractSoapFaultMessage: corpo não é XML/Fault reconhecível — ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
+/**
+ * POST do envelope SOAP — **SOAP 1.1, não 1.2** (`text/xml` + header HTTP
+ * `SOAPAction`), apesar do `<Action>` também ir dentro do SOAP Header (o
+ * template da documentação mistura os dois). Validado ao vivo em 22/08/2026
+ * (#5928): `Content-Type: application/soap+xml` devolve HTTP 415 puro
+ * (Unsupported Media Type) — só `text/xml; charset=utf-8` +
+ * `SOAPAction: {action}` passa da validação de transporte.
+ */
+async function postSoap(
+  fetchImpl: FetchLike,
+  url: string,
+  action: "SubmitGenerateReport" | "PollGenerateReport",
+  envelope: string,
+): Promise<{ text: string; status: number } | { error: string }> {
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: action },
+      body: envelope,
+    });
+  } catch (e) {
+    return { error: `falha de rede na chamada SOAP: ${e instanceof Error ? e.message : e}` };
+  }
+  // `res.text()` pode rejeitar independente do `fetch()` acima ter sucedido
+  // (conexão cai no meio da leitura do corpo) — sem este try/catch essa
+  // rejeição escaparia sem tratamento, quebrando o "nunca lança" que todo o
+  // resto do módulo garante (mesmo padrão de `downloadAndParseReport` pro
+  // `res.arrayBuffer()`).
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    return { error: `falha lendo corpo da resposta SOAP: ${e instanceof Error ? e.message : e}` };
+  }
+  return { text, status: res.status };
+}
+
+async function submitGenerateReport(
+  fetchImpl: FetchLike,
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  serviceUrl: string,
+  range: MicrosoftAdsDateRange,
+): Promise<{ reportRequestId: string } | { error: string }> {
+  const envelope = buildSubmitGenerateReportEnvelope(auth, accessToken, range);
+  const res = await postSoap(fetchImpl, serviceUrl, "SubmitGenerateReport", envelope);
+  if ("error" in res) return res;
+  if (res.status !== 200) {
+    return { error: `SubmitGenerateReport respondeu HTTP ${res.status}: ${extractSoapFaultMessage(res.text) ?? res.text.slice(0, 400)}` };
+  }
+  // Resposta SOAP — forma não é tipada aqui de propósito, ver docstring da função.
+  let parsed: any;
+  try {
+    parsed = xmlParser.parse(res.text);
+  } catch {
+    return { error: `SubmitGenerateReport respondeu corpo não-XML (HTTP ${res.status})` };
+  }
+  const reportRequestId = parsed?.Envelope?.Body?.SubmitGenerateReportResponse?.ReportRequestId;
+  if (!reportRequestId) {
+    return { error: extractSoapFaultMessage(res.text) ?? `SubmitGenerateReport não devolveu ReportRequestId (HTTP ${res.status})` };
+  }
+  return { reportRequestId: String(reportRequestId) };
+}
+
+async function pollGenerateReport(
+  fetchImpl: FetchLike,
+  auth: MicrosoftAdsAuthConfig,
+  accessToken: string,
+  serviceUrl: string,
+  reportRequestId: string,
+): Promise<{ status: string; downloadUrl?: string } | { error: string }> {
+  const envelope = buildPollGenerateReportEnvelope(auth, accessToken, reportRequestId);
+  const res = await postSoap(fetchImpl, serviceUrl, "PollGenerateReport", envelope);
+  if ("error" in res) return res;
+  if (res.status !== 200) {
+    return { error: `PollGenerateReport respondeu HTTP ${res.status}: ${extractSoapFaultMessage(res.text) ?? res.text.slice(0, 400)}` };
+  }
+  // Resposta SOAP — forma não é tipada aqui de propósito, ver docstring da função.
+  let parsed: any;
+  try {
+    parsed = xmlParser.parse(res.text);
+  } catch {
+    return { error: `PollGenerateReport respondeu corpo não-XML (HTTP ${res.status})` };
+  }
+  const status = parsed?.Envelope?.Body?.PollGenerateReportResponse?.ReportRequestStatus;
+  if (!status?.Status) {
+    return { error: extractSoapFaultMessage(res.text) ?? `PollGenerateReport respondeu sem Status (HTTP ${res.status})` };
+  }
+  return { status: String(status.Status), downloadUrl: status.ReportDownloadUrl ? String(status.ReportDownloadUrl) : undefined };
+}
+
+const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+
+/**
+ * Extrai o 1º (e único, no caso dos relatórios da Reporting API — 1
+ * relatório = 1 CSV = 1 entry) arquivo de um ZIP, sem depender de nenhuma
+ * lib externa — o repo não tinha (nem precisava até agora de) um parser de
+ * ZIP completo. Lê só o Local File Header do entry no offset 0 e
+ * descompacta via `node:zlib` (STORED ou DEFLATE, os únicos 2 métodos que
+ * um ZIP gerado por servidor usa na prática — validado contra um ZIP real
+ * gerado por `Compress-Archive` durante a implementação, #5928).
+ *
+ * **Deliberadamente não cobre:** ZIP64 (arquivo >4GB — um relatório de
+ * custo diário nunca chega perto), múltiplos entries (não é o que a
+ * Reporting API devolve), nem streaming (bit 3 do general purpose flag,
+ * tamanho no data descriptor PÓS-dados em vez de no header). Se algum
+ * desses casos aparecer, falha com erro explícito — nunca com dado
+ * truncado silencioso.
+ *
+ * @pure
+ */
+function unzipFirstEntry(buf: Buffer): Buffer {
+  if (buf.length < 30 || buf.readUInt32LE(0) !== ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+    throw new Error("payload não começa com um Local File Header ZIP válido");
+  }
+  const generalPurposeFlag = buf.readUInt16LE(6);
+  const compressionMethod = buf.readUInt16LE(8);
+  const compressedSize = buf.readUInt32LE(18);
+  const fileNameLength = buf.readUInt16LE(26);
+  const extraFieldLength = buf.readUInt16LE(28);
+  if ((generalPurposeFlag & 0x0008) !== 0 && compressedSize === 0) {
+    throw new Error("ZIP usa data descriptor (streaming, sem tamanho no header) — não suportado");
+  }
+  const dataStart = 30 + fileNameLength + extraFieldLength;
+  // `Buffer.subarray` clampa em silêncio em vez de lançar quando o range
+  // excede o buffer — sem este check, um download truncado (conexão caiu no
+  // meio) produziria dado TRUNCADO em vez do erro explícito que a docstring
+  // desta função promete ("nunca com dado truncado silencioso").
+  if (dataStart + compressedSize > buf.length) {
+    throw new Error("ZIP entry declara mais bytes do que o buffer contém — download truncado?");
+  }
+  const compressedData = buf.subarray(dataStart, dataStart + compressedSize);
+  if (compressionMethod === 0) return Buffer.from(compressedData);
+  if (compressionMethod === 8) return inflateRawSync(compressedData);
+  throw new Error(`método de compressão ZIP não suportado: ${compressionMethod}`);
+}
+
+/**
+ * CSV → `MicrosoftAdsReportRow[]`. Como `ExcludeReportHeader`/
+ * `ExcludeReportFooter` vão `true` na submissão, o CSV baixado é só a linha
+ * de cabeçalho (`ExcludeColumnHeaders: false`) + linhas de dado, sem
+ * metadado — `papaparse` (já dependência do repo, `aquisicao-spend.ts`)
+ * cuida do quoting. Cabeçalho ausente/sem as 2 colunas pedidas é tratado
+ * como ERRO (não `rows: []`) — a request FIXOU `Columns` explicitamente,
+ * então a ausência é sinal de transporte quebrado, não "sem gasto no
+ * período" (mesmo raciocínio do #5598/#5605: nunca mascarar perda de dado
+ * como zero silencioso).
+ */
+function parseReportCsv(csvText: string): MicrosoftAdsReportRow[] {
+  const parsed = Papa.parse<string[]>(csvText.trim(), { skipEmptyLines: true });
+  const [header, ...dataRows] = parsed.data;
+  if (!header) return [];
+  const timePeriodIdx = header.indexOf("TimePeriod");
+  const spendIdx = header.indexOf("Spend");
+  if (timePeriodIdx === -1 || spendIdx === -1) {
+    throw new Error(`CSV do relatório sem as colunas esperadas (header: ${JSON.stringify(header)})`);
+  }
+  return dataRows.map((row) => ({ TimePeriod: row[timePeriodIdx], Spend: row[spendIdx] }));
+}
+
+async function downloadAndParseReport(fetchImpl: FetchLike, downloadUrl: string): Promise<{ rows: MicrosoftAdsReportRow[] } | { error: string }> {
+  let res: Response;
+  try {
+    res = await fetchImpl(downloadUrl);
+  } catch (e) {
+    return { error: `falha de rede no download do relatório: ${e instanceof Error ? e.message : e}` };
+  }
+  if (!res.ok) return { error: `download do relatório respondeu HTTP ${res.status}` };
+
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(await res.arrayBuffer());
+  } catch (e) {
+    return { error: `falha lendo corpo do download: ${e instanceof Error ? e.message : e}` };
+  }
+
+  try {
+    const csvText = unzipFirstEntry(buf).toString("utf8");
+    return { rows: parseReportCsv(csvText) };
+  } catch (e) {
+    return { error: `falha ao descompactar/parsear o relatório baixado: ${e instanceof Error ? e.message : e}` };
+  }
+}
+
+export interface MicrosoftAdsDateRange {
+  /** Data-calendário de início, inclusive (só Y/M/D são usados, em UTC). */
+  start: Date;
+  /** Data-calendário de fim, inclusive. */
+  end: Date;
+}
+
+export interface FetchMicrosoftAdsSpendRowsOptions {
+  /** Default `REPORTING_SERVICE_URL` — sobreponível pra teste. */
+  reportingServiceUrl?: string;
+  pollIntervalMs?: number;
+  maxPollAttempts?: number;
+  /** Injetável — testes passam um no-op pra não esperar de verdade. */
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Resolve o fluxo assíncrono completo da Reporting API — `SubmitGenerateReport`
+ * → `PollGenerateReport` (repetido até `Success`/erro/teto de tentativas) →
+ * download do ZIP → parse do CSV — devolvendo as linhas já parseadas. Nunca
+ * lança: qualquer etapa que falhar devolve `{ error }`, mesma disciplina
+ * fail-soft de `fetchGoogleAdsSpendRows`.
  */
 export async function fetchMicrosoftAdsSpendRows(
   fetchImpl: FetchLike,
   auth: MicrosoftAdsAuthConfig,
   accessToken: string,
-  reportRequestUrl: string,
+  dateRange: MicrosoftAdsDateRange,
+  opts: FetchMicrosoftAdsSpendRowsOptions = {},
 ): Promise<{ rows: MicrosoftAdsReportRow[] } | { error: string }> {
-  let res: Response;
-  try {
-    res = await fetchImpl(reportRequestUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        DeveloperToken: auth.developerToken,
-        CustomerId: auth.customerId,
-        CustomerAccountId: auth.accountId,
-        "Content-Type": "application/json",
-      },
-    });
-  } catch (e) {
-    return { error: `falha de rede na chamada da Reporting API: ${e instanceof Error ? e.message : e}` };
+  if (dateRange.start.getTime() > dateRange.end.getTime()) {
+    return { error: `MicrosoftAdsDateRange invertido: start (${dateRange.start.toISOString()}) > end (${dateRange.end.toISOString()})` };
   }
 
-  const text = await res.text();
-  if (!res.ok) {
-    return { error: `Reporting API respondeu HTTP ${res.status}: ${text.slice(0, 300)}` };
+  const serviceUrl = opts.reportingServiceUrl ?? REPORTING_SERVICE_URL;
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const maxPollAttempts = opts.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS;
+  const sleepImpl = opts.sleepImpl ?? defaultSleep;
+
+  const submitResult = await submitGenerateReport(fetchImpl, auth, accessToken, serviceUrl, dateRange);
+  if ("error" in submitResult) return submitResult;
+
+  let downloadUrl: string | undefined;
+  for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+    if (attempt > 0) await sleepImpl(pollIntervalMs);
+    const pollResult = await pollGenerateReport(fetchImpl, auth, accessToken, serviceUrl, submitResult.reportRequestId);
+    if ("error" in pollResult) return pollResult;
+    if (pollResult.status === "Success") {
+      // `Success` + `ReportDownloadUrl` nil é COMPORTAMENTO REAL confirmado
+      // ao vivo (#5928, 22/08/2026, conta sem nenhum gasto histórico) — a
+      // API não gera arquivo pra baixar quando o relatório teria zero
+      // linhas. Tratar como `{ rows: [] }` (vazio legítimo), NUNCA como
+      // erro — mesma disciplina de "zero não é falha de ingestão" que já
+      // rege `google-ads-ingest.ts` (`GoogleAdsFailureClass.empty`).
+      if (!pollResult.downloadUrl) return { rows: [] };
+      downloadUrl = pollResult.downloadUrl;
+      break;
+    }
+    if (pollResult.status !== "Pending") {
+      return { error: `PollGenerateReport respondeu status inesperado: ${pollResult.status}` };
+    }
+  }
+  if (!downloadUrl) {
+    return {
+      error: `PollGenerateReport não completou após ${maxPollAttempts} tentativa(s) (ReportRequestId ${submitResult.reportRequestId})`,
+    };
   }
 
-  let payload: { rows?: MicrosoftAdsReportRow[] };
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return { error: `Reporting API respondeu corpo não-JSON (HTTP ${res.status})` };
-  }
-  return { rows: payload.rows ?? [] };
+  return downloadAndParseReport(fetchImpl, downloadUrl);
 }
 
-export interface RunMicrosoftAdsIngestOptions {
+// ---------------------------------------------------------------------------
+// Orquestração injetável (fetch + fail-soft) — sem I/O de disco
+// ---------------------------------------------------------------------------
+
+/**
+ * `extends FetchMicrosoftAdsSpendRowsOptions` (não redeclara os 4 campos de
+ * transporte) — o pass-through pra `fetchMicrosoftAdsSpendRows` dentro de
+ * `runMicrosoftAdsIngest` fica estruturalmente garantido: um campo novo em
+ * `FetchMicrosoftAdsSpendRowsOptions` chega aqui automaticamente, sem
+ * precisar lembrar de duplicar a declaração E o repasse manual.
+ */
+export interface RunMicrosoftAdsIngestOptions extends FetchMicrosoftAdsSpendRowsOptions {
   auth: MicrosoftAdsAuthConfig;
   existingRows: SpendRow[];
   canal?: string;
   moeda?: string;
   fonteLabel?: string;
-  reportRequestUrl?: string;
+  /** Relógio injetável — o range de datas padrão (90 dias) é derivado
+   *  daqui, mesmo padrão de `RunGoogleAdsIngestOptions.now`
+   *  (google-ads-ingest.ts). Default `new Date()`; testes passam uma data
+   *  fixa. */
+  now?: Date;
 }
 
-const DEFAULT_REPORT_REQUEST_URL = "https://reporting.api.bingads.microsoft.com/Reporting/v13/GenerateReport/Submit";
+/** Janela padrão da ingestão, em dias (inclusive do dia corrente) — mesmo
+ *  valor de `DEFAULT_LOOKBACK_DAYS` do Google Ads (#5237), pela mesma razão:
+ *  a agregação é MENSAL, então uma janela generosa cobre qualquer atraso de
+ *  rodada sem custo (o merge é idempotente por (`canal`, `mes`)). */
+export const DEFAULT_LOOKBACK_DAYS = 90;
+
+/** @pure */
+function defaultDateRange(now: Date, lookbackDays = DEFAULT_LOOKBACK_DAYS): MicrosoftAdsDateRange {
+  const end = new Date(now.getTime());
+  const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
+  return { start, end };
+}
 
 /**
- * Orquestra token → Reporting API → agregação → merge, sempre fail-soft —
- * mesmo contrato de `runGoogleAdsIngest`, implementado como adaptador de
- * `runSpendIngest` (#5502 Parte B). `canal` default é o nome CANÔNICO
- * reservado em `scripts/lib/cac.ts` (`RESERVED_CHANNEL_NAMES`) — usar
- * exatamente essa string, nunca "Microsoft Ads"/"Bing Ads", senão a linha
- * cai no caminho "canal desconhecido" de `buildCacReport` mesmo com o gasto
- * corretamente importado.
+ * Orquestra token → Reporting API (submit→poll→download→parse) → agregação
+ * → merge, sempre fail-soft — mesmo contrato de `runGoogleAdsIngest`,
+ * implementado como adaptador de `runSpendIngest` (#5502 Parte B). `canal`
+ * default é o nome CANÔNICO reservado em `scripts/lib/cac.ts`
+ * (`RESERVED_CHANNEL_NAMES`) — usar exatamente essa string, nunca
+ * "Microsoft Ads"/"Bing Ads", senão a linha cai no caminho "canal
+ * desconhecido" de `buildCacReport` mesmo com o gasto corretamente
+ * importado.
  *
  * **Perda PARCIAL de linhas é logada mesmo no caminho de sucesso (#5605,
  * espelha o #5598 do Google Ads).** `discardedCount` vai no retorno (pra
  * quem quiser inspecionar programaticamente) e sai como `console.warn`
  * sempre que `> 0` — sem virar exit não-zero: o dado parcial ainda é útil,
- * só precisa ser visível. P3 porque nenhuma campanha Microsoft Ads roda
- * ainda hoje (#5493) — risco adormecido até então.
+ * só precisa ser visível.
  */
 export async function runMicrosoftAdsIngest(
   fetchImpl: FetchLike,
@@ -332,7 +894,7 @@ export async function runMicrosoftAdsIngest(
   const canal = opts.canal ?? "Microsoft Advertising";
   const moeda = opts.moeda ?? "BRL";
   const fonteLabel = opts.fonteLabel ?? "Microsoft Advertising Reporting API";
-  const reportRequestUrl = opts.reportRequestUrl ?? DEFAULT_REPORT_REQUEST_URL;
+  const range = defaultDateRange(opts.now ?? new Date());
 
   let discardedCount = 0;
 
@@ -340,7 +902,9 @@ export async function runMicrosoftAdsIngest(
     const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, opts.auth);
     if ("error" in tokenResult) return { kind: "error", reason: tokenResult.error };
 
-    const spendResult = await fetchMicrosoftAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, reportRequestUrl);
+    // `opts` já É um `FetchMicrosoftAdsSpendRowsOptions` (extends) — repasse
+    // direto, sem reconstruir o objeto campo a campo.
+    const spendResult = await fetchMicrosoftAdsSpendRows(fetchImpl, opts.auth, tokenResult.accessToken, range, opts);
     if ("error" in spendResult) return { kind: "error", reason: spendResult.error };
 
     const aggregated = aggregateMicrosoftAdsSpendByMonthWithDiscards(spendResult.rows, { canal, moeda, fonteLabel });
@@ -349,7 +913,24 @@ export async function runMicrosoftAdsIngest(
   };
 
   const result = await runSpendIngest({ fetcher, existingRows: opts.existingRows });
-  if (result.kind === "fallback") return result;
+  if (result.kind === "fallback") {
+    // Perda TOTAL (todas as linhas recebidas foram descartadas na
+    // agregação) colapsa no MESMO fallback genérico de "sem gasto no
+    // período" que `runSpendIngest` usa pra uma resposta vazia de verdade —
+    // sem este enriquecimento, um schema drift completo (API renomeou
+    // TimePeriod/Spend, todo mundo vira descarte) fica indistinguível de um
+    // dia sem gasto, exatamente o mascaramento que #5605/#5598 existem pra
+    // evitar. `discardedCount` só é > 0 aqui quando ALGUMA linha chegou —
+    // "sem linha nenhuma" (token/API falhou antes da agregação rodar, ou a
+    // API devolveu 0 linhas de verdade) mantém a `reason` original.
+    if (discardedCount > 0) {
+      return {
+        kind: "fallback",
+        reason: `${result.reason} — ${discardedCount} linha(s) do CampaignPerformanceReport recebida(s) mas descartada(s) por malformação (#5605); possível schema drift na API, não necessariamente ausência real de gasto no período.`,
+      };
+    }
+    return result;
+  }
 
   if (discardedCount > 0) {
     console.warn(
