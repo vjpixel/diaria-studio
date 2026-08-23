@@ -31,9 +31,12 @@
  *
  *   1. MAPA LOCAL (`AlarmIssuesState`, `data/{check}/alarm-issues.json` —
  *      path decidido pelo script chamador): fingerprint -> {issueNumber,
- *      url, missingStreak, closedAt}. Cache RÁPIDO — na maioria das
- *      execuções, um achado já rastreado nunca precisa de round-trip pro
- *      GitHub, só reusa a entry.
+ *      url, missingStreak, closedAt}. Cache RÁPIDO pra família `"evento"` e
+ *      pra `"estado"` já com `closedAt` setado — reusa a entry sem round-trip
+ *      pro GitHub. `"estado"` com `closedAt: null` paga 1 round-trip extra
+ *      (`gh issue view`) no cache-hit desde o #5989, pra confirmar que a
+ *      issue não foi fechada por fora deste módulo — ver `fetchAlarmIssueState`
+ *      e a docstring de `ensureAlarmIssue`.
  *   2. MARCADOR no corpo da issue (`<!-- alarm-finding: {check}:{fingerprint} -->`,
  *      `alarmFindingMarker`), buscado via `gh issue list --search` — usado
  *      SÓ quando o cache local não tem a entry (cache perdido/apagado,
@@ -257,7 +260,12 @@ export interface AlarmIssueStateEntry {
    * pendente — reseta pra 0 sempre que o achado reaparece. */
   missingStreak: number;
   /** `null` enquanto a issue segue tratada como aberta pelo tracking local;
-   * ISO timestamp de quando `closeAlarmIssue` teve sucesso. */
+   * ISO timestamp de quando `closeAlarmIssue` teve sucesso. **`null` não é
+   * garantia de estado real "aberta"** — uma issue fechada por fora deste
+   * módulo (auto-close alheio, fechamento manual) mantém `closedAt: null`
+   * aqui pra sempre; desde o #5989, `ensureAlarmIssue` confirma via
+   * `fetchAlarmIssueState` antes de confiar nesse `null` pra achados de
+   * família `"estado"` (ver docstring de `fetchAlarmIssueState`). */
   closedAt: string | null;
   /** #5553 — família do achado no momento do último `ensure` (ver
    * `AlarmFamily`). `undefined` em entries persistidas ANTES do #5553 —
@@ -536,13 +544,17 @@ function reopenAlarmIssue(
  * ter reproduzido de novo antes) nunca passa por lá, então o cache nunca
  * aprende que ela fechou e `closedAt` fica `null` pra sempre mesmo com a
  * issue já `CLOSED` no GitHub — reproduzindo o bug original do #5978 pelo
- * caminho de cache-hit. Pra achados de família `"estado"` (única família que
- * se auto-fecha — `"evento"` nunca fecha sozinha, sempre um humano, ver
- * `AlarmFamily`), o caminho de cache-hit agora SEMPRE confirma o estado real
- * via `fetchAlarmIssueState` antes de decidir `"reused"` vs `"reopened"` —
- * `cachedEntry.closedAt` deixa de ser, sozinho, a fonte de verdade (continua
- * existindo no tipo/estado local, só não decide mais sozinho). Custo aceito:
- * 1 chamada `gh` extra por achado pendente com cache-hit de família
+ * caminho de cache-hit. O fix é escopado ao sub-caso `closedAt: null`: pra
+ * achados de família `"estado"` (única família que se auto-fecha —
+ * `"evento"` nunca fecha sozinha, sempre um humano, ver `AlarmFamily`) COM
+ * `cachedEntry.closedAt` falsy, o cache-hit agora confirma o estado real via
+ * `fetchAlarmIssueState` antes de decidir `"reused"` vs `"reopened"`. O
+ * sub-caso `closedAt` truthy (setado pelo #5978/#5982) continua reabrindo
+ * direto, sem essa confirmação — `cachedEntry.closedAt` deixa de ser,
+ * sozinho, a fonte de verdade só no `null`; onde já está setado, segue
+ * sendo (assimetria aceita: um `closedAt` truthy só existe se este módulo o
+ * escreveu, então já é confiável por construção). Custo aceito: 1 chamada
+ * `gh` extra por achado pendente com cache-hit `closedAt: null` de família
  * `"estado"` — preço de fechar o silêncio real que já causou 2 dias de
  * rampa Clarice parada (#5989). Família `"evento"` segue sem checagem
  * nenhuma no cache-hit (comportamento intocado, nunca reabre sozinha).

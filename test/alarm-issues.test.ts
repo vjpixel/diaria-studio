@@ -23,6 +23,7 @@ import {
   emptyAlarmIssuesState,
   findExistingAlarmIssue,
   ensureAlarmIssue,
+  fetchAlarmIssueState,
   commentAlarmIssueResolved,
   closeAlarmIssue,
   planAlarmReconciliation,
@@ -325,6 +326,38 @@ describe("ensureAlarmIssue — reabre issue fechada em vez de reusar silenciosam
 });
 
 // ─── #5989: cache-hit com closedAt:null NÃO é garantia de "aberta" ────────
+
+describe("fetchAlarmIssueState (#5989 — unidade isolada)", () => {
+  it("'gh issue view' com JSON malformado -> null, fail-soft", () => {
+    const run: GhRunFn = () => ok("isto não é JSON{");
+    assert.equal(fetchAlarmIssueState(42, CWD, run), null);
+  });
+
+  it("'gh issue view' com state fora do enum esperado -> null, fail-soft", () => {
+    const run: GhRunFn = () => ok(JSON.stringify({ state: "MERGED" }));
+    assert.equal(fetchAlarmIssueState(42, CWD, run), null);
+  });
+
+  it("'gh issue view' com campo state ausente -> null, fail-soft", () => {
+    const run: GhRunFn = () => ok(JSON.stringify({}));
+    assert.equal(fetchAlarmIssueState(42, CWD, run), null);
+  });
+
+  it("'gh issue view' com status != 0 -> null, sem tentar parsear stdout", () => {
+    const run: GhRunFn = () => fail("gh: not authenticated");
+    assert.equal(fetchAlarmIssueState(42, CWD, run), null);
+  });
+
+  it("'gh issue view' com state OPEN -> 'OPEN'", () => {
+    const run: GhRunFn = () => ok(JSON.stringify({ state: "OPEN" }));
+    assert.equal(fetchAlarmIssueState(42, CWD, run), "OPEN");
+  });
+
+  it("'gh issue view' com state CLOSED -> 'CLOSED'", () => {
+    const run: GhRunFn = () => ok(JSON.stringify({ state: "CLOSED" }));
+    assert.equal(fetchAlarmIssueState(42, CWD, run), "CLOSED");
+  });
+});
 
 describe("ensureAlarmIssue — cache-hit confirma estado real pra família 'estado' (#5989)", () => {
   it("cachedEntry.closedAt: null MAS estado real (mockado) CLOSED -> AINDA REABRE, action 'reopened' (cenário exato do bug)", () => {
