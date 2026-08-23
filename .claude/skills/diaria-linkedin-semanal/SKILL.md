@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor com comentário do editor + "Edições da semana" (link + destaques das 5 edições). Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor (comentário do editor opcional, #5970) + "Edições da semana" (link + destaques das 5 edições). Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
@@ -9,7 +9,7 @@ disable-model-invocation: true
 Monta o artefato colável da newsletter semanal do LinkedIn (issue #4456):
 3 matérias da semana que acabou (segunda a sexta), selecionadas por **taxa
 de clique verificado** — não pela posição na edição de origem — mais o
-bloco **Use Melhor** (com comentário do editor, obrigatório) e a seção
+bloco **Use Melhor** (comentário do editor opcional, #5970) e a seção
 **Edições da semana** — as 5 edições, cada uma com link + seus até-3
 destaques.
 
