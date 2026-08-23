@@ -617,6 +617,20 @@ describe("buildHomeMetaDriftAlarmEmail (#4557)", () => {
       assert.match(body, /issues\/5099/);
     });
 
+    it("achado reaberto (#5978/#5984 — issue estava CLOSED, reproduziu de novo) -> linha cita '#NNNN (reaberta)' + a URL, NUNCA cai no branch de falha 'issue não criada'", () => {
+      const findings = evaluateHomeMetaDrift(LEGACY_HOST_LINKS_HTML);
+      const extract = extractHomeMeta(LEGACY_HOST_LINKS_HTML);
+      const finding = findings.find((f) => f.check === "legacy-host-link")!;
+      const key = `${finding.check}:${finding.message}`;
+      const issueRefs = new Map([
+        [key, { issueNumber: 5942, url: "https://github.com/vjpixel/diaria-studio/issues/5942", action: "reopened" as const }],
+      ]);
+      const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/", issueRefs);
+      assert.match(body, /→ #5942 \(reaberta\)/);
+      assert.match(body, /issues\/5942/);
+      assert.doesNotMatch(body, /não criada/);
+    });
+
     it("falha na criação -> linha cita 'issue não criada: {motivo}', sem número de issue", () => {
       const findings = evaluateHomeMetaDrift(ENGLISH_LABELS_HTML);
       const extract = extractHomeMeta(ENGLISH_LABELS_HTML);

@@ -450,9 +450,12 @@ function createAlarmIssueWithLabelRetry(
 
 /**
  * Garante que existe uma issue pro achado `finding` — reusa via `cachedEntry`
- * (fast path, sem tocar rede) OU via busca por marcador (`findExistingAlarmIssue`,
- * fallback quando o cache não tem a entry) OU cria uma nova (com retry
- * fail-soft de label ausente — ver `createAlarmIssueWithLabelRetry`).
+ * (fast path, ainda assim confirma estado real no GitHub pra família
+ * "estado" — ver nota #5978 abaixo, NÃO é mais "sem tocar rede" nesse caso)
+ * OU via busca por marcador (`findExistingAlarmIssue`, fallback quando o
+ * cache não tem a entry) OU cria uma nova (com retry fail-soft de label
+ * ausente — ver `createAlarmIssueWithLabelRetry`). Pode devolver
+ * `action: "reopened"` (ver docstring do tipo `AlarmIssueResult`).
  * **NUNCA** fabrica `issueNumber`/`url` — se toda tentativa de `gh issue
  * create` falhar, devolve `action: "failed"` com `error` populado.
  */
@@ -462,21 +465,36 @@ export function ensureAlarmIssue(
   cwd: string,
   run: GhRunFn = defaultAlarmGhRun,
 ): AlarmIssueResult {
-  // #5978 — família "estado" reproduzindo com a issue rastreada localmente
-  // como FECHADA (`closedAt` setado, normalmente pelo auto-close deste
-  // próprio módulo): reabrir em vez de silenciosamente "reusar" uma issue
-  // que ninguém está olhando. Nunca dispara pra `family: "evento"` — essas
-  // entries nunca ganham `closedAt` por este módulo (só um humano fecha, e
-  // a decisão de reabrir também é dele, ver docstring de `AlarmFamily`).
-  // Fast path: nenhuma chamada de rede além do `reopen` em si.
+  // #5978 — família "estado" reproduzindo com a issue já FECHADA no GitHub:
+  // reabrir em vez de silenciosamente "reusar" uma issue que ninguém está
+  // olhando. Nunca dispara pra `family: "evento"` (só um humano fecha, e a
+  // decisão de reabrir também é dele, ver docstring de `AlarmFamily`).
+  //
+  // **Achado crítico do fleet review pré-merge (2ª rodada, mesmo #5978):**
+  // a 1ª versão deste fix confiava só em `cachedEntry.closedAt` — mas esse
+  // campo só é setado pelo AUTO-close deste próprio módulo (streak de
+  // ausência). As 3 issues reais que motivaram a #5978 (#5942/#5826/#5653)
+  // foram fechadas via PR merge ("Closes #N"), não pelo auto-close — então
+  // `closedAt` local ficou `null` pra todas, e o fast path original nunca
+  // as reabriria: reproduziria o bug original bit a bit na próxima
+  // recorrência. Por isso, pra família "estado", SEMPRE confirma o estado
+  // REAL via `gh issue view --json state` antes de decidir — `closedAt`
+  // local não é mais usado pra decidir reopen, só seria informativo (mas
+  // nem isso: a fonte de verdade agora é sempre o GitHub).
   if (cachedEntry) {
-    if (cachedEntry.closedAt && finding.family === "estado") {
-      if (reopenAlarmIssue(cachedEntry.issueNumber, cwd, run)) {
-        return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reopened" };
+    if (finding.family === "estado") {
+      const realState = fetchAlarmIssueState(cachedEntry.issueNumber, cwd, run);
+      if (realState === "CLOSED") {
+        if (reopenAlarmIssue(cachedEntry.issueNumber, cwd, run)) {
+          return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reopened" };
+        }
+        // Reopen falhou (gh indisponível, rate limit) — fail-soft: a issue
+        // ainda existe, só não conseguimos reabrir agora. Mesmo
+        // comportamento do estado pré-#5978 (nunca pior), próxima
+        // execução tenta de novo.
       }
-      // Reopen falhou (gh indisponível, rate limit) — fail-soft: a issue
-      // ainda existe, só não conseguimos reabrir agora. Mesmo comportamento
-      // do estado pré-#5978 (nunca pior), próxima execução tenta de novo.
+      // realState === "OPEN", ou null (gh indisponível — "não sei", nunca
+      // assume fechado sem confirmação) -> reused normal, abaixo.
     }
     return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reused" };
   }
@@ -485,10 +503,9 @@ export function ensureAlarmIssue(
   if (existing) {
     // #5978 — mesma lógica do cache fast path acima, mas pro fallback via
     // marcador (cache local ausente/perdido — ex: 1ª execução após clone
-    // fresco, ou `state.json` apagado): o achado é fonte de verdade sobre
-    // se JÁ FOI rastreado como fechado localmente antes; aqui não temos
-    // esse histórico, então a decisão usa direto o `state` retornado pelo
-    // GitHub (`--json ...,state`, ver `findExistingAlarmIssue`).
+    // fresco, ou `state.json` apagado): `findExistingAlarmIssue` já retorna
+    // o `state` real do GitHub (`--json ...,state`), então a decisão usa
+    // esse valor direto, sem chamada extra.
     if (existing.state === "CLOSED" && finding.family === "estado") {
       if (reopenAlarmIssue(existing.issueNumber, cwd, run)) {
         return { issueNumber: existing.issueNumber, url: existing.url, action: "reopened" };
@@ -534,6 +551,28 @@ export function closeAlarmIssue(
   const comment = `Fechada automaticamente: achado não reproduz há ${closeAfterRuns} execuções consecutivas.`;
   const res = run(["issue", "close", String(issueNumber), "--comment", comment], cwd);
   return res.status === 0;
+}
+
+/**
+ * #5978 (achado crítico do fleet review, 2ª rodada) — consulta o estado
+ * REAL (`OPEN`/`CLOSED`) de uma issue via `gh issue view --json state`.
+ * Existe porque `cachedEntry.closedAt` só reflete fechamento feito pelo
+ * AUTO-close deste módulo (`closeAlarmIssue`) — uma issue fechada por PR
+ * merge ou manualmente nunca seta esse campo, então confiar só nele deixa
+ * exatamente o caso que motivou a #5978 sem cobertura. `null` se a chamada
+ * falhar (gh indisponível, rate limit) — caller trata como "não sei",
+ * nunca assume um lado (equivalente a "ainda aberta" na prática, já que o
+ * caller só age em cima de `"CLOSED"` explícito).
+ */
+function fetchAlarmIssueState(issueNumber: number, cwd: string, run: GhRunFn): "OPEN" | "CLOSED" | null {
+  const res = run(["issue", "view", String(issueNumber), "--json", "state"], cwd);
+  if (res.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.stdout) as { state?: string };
+    return parsed.state === "OPEN" || parsed.state === "CLOSED" ? parsed.state : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -117,11 +117,26 @@ describe("ensureAlarmIssue (#5112)", () => {
     assert.deepEqual(result, { issueNumber: 5101, url: "https://github.com/x/y/issues/5101", action: "created" });
   });
 
-  it("com cache local -> reusa SEM chamar gh (fast path)", () => {
-    const run: GhRunFn = () => {
-      throw new Error("não deveria chamar gh quando há cache");
+  it("com cache local, família 'estado' -> confirma estado real (OPEN) via 'gh issue view' e reusa (#5978: closedAt local não é mais confiável sozinho)", () => {
+    let viewCalled = false;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalled = true;
+        assert.equal(args[2], "42");
+        return ok(JSON.stringify({ state: "OPEN" }));
+      }
+      throw new Error(`unexpected args: ${args.join(" ")}`);
     };
     const result = ensureAlarmIssue(FINDING_A, { issueNumber: 42, url: "https://x/42" }, CWD, run);
+    assert.equal(viewCalled, true);
+    assert.deepEqual(result, { issueNumber: 42, url: "https://x/42", action: "reused" });
+  });
+
+  it("com cache local, família 'evento' -> reusa SEM checar estado (evento nunca reabre, ver ensureAlarmIssue)", () => {
+    const run: GhRunFn = () => {
+      throw new Error("família 'evento' não deveria chamar gh nenhum quando há cache");
+    };
+    const result = ensureAlarmIssue({ ...FINDING_A, family: "evento" }, { issueNumber: 42, url: "https://x/42" }, CWD, run);
     assert.deepEqual(result, { issueNumber: 42, url: "https://x/42", action: "reused" });
   });
 
@@ -145,6 +160,7 @@ describe("ensureAlarmIssue (#5112)", () => {
         createCount++;
         return ok("https://github.com/x/y/issues/5101\n");
       }
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
       throw new Error("unexpected");
     };
     const first = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
@@ -304,13 +320,17 @@ describe("ensureAlarmIssue — reabre issue CLOSED pra família 'estado' (#5978)
     assert.deepEqual(result, { issueNumber: 5942, url: "https://github.com/x/y/issues/5942", action: "reopened" });
   });
 
-  it("achado reproduz via CACHE LOCAL com `closedAt` setado (fast path, sem busca por marcador) -> reabre, action 'reopened'", () => {
+  it("achado reproduz via CACHE LOCAL com `closedAt` setado E estado real CLOSED -> reabre, action 'reopened'", () => {
     let listCalled = false;
     let reopenCalled = false;
     const run: GhRunFn = (args) => {
       if (args[0] === "issue" && args[1] === "list") {
         listCalled = true;
         return ok("[]");
+      }
+      if (args[0] === "issue" && args[1] === "view") {
+        assert.equal(args[2], "5942");
+        return ok(JSON.stringify({ state: "CLOSED" }));
       }
       if (args[0] === "issue" && args[1] === "reopen") {
         reopenCalled = true;
@@ -330,9 +350,33 @@ describe("ensureAlarmIssue — reabre issue CLOSED pra família 'estado' (#5978)
     assert.deepEqual(result, { issueNumber: 5942, url: "https://github.com/x/y/issues/5942", action: "reopened" });
   });
 
-  it("cache local com `closedAt: null` (issue nunca foi fechada) -> comportamento normal, action 'reused', NUNCA chama 'gh issue reopen'", () => {
+  it("ACHADO CRÍTICO DO FLEET REVIEW (#5978, 2ª rodada) — cache local com `closedAt: null` MAS estado real CLOSED (issue fechada via PR merge, não pelo auto-close deste módulo) -> AINDA REABRE, action 'reopened'. Este é o caso real das 3 issues que motivaram a #5978 (#5942/#5826/#5653, todas fechadas via 'Closes #N' de PR) — a 1ª versão deste fix confiava só em `closedAt` local e nunca as reabriria.", () => {
+    let reopenCalled = false;
     const run: GhRunFn = (args) => {
-      if (args[0] === "issue" && args[1] === "reopen") throw new Error("não deveria reabrir uma issue que nunca foi fechada");
+      if (args[0] === "issue" && args[1] === "view") {
+        assert.equal(args[2], "1");
+        return ok(JSON.stringify({ state: "CLOSED" }));
+      }
+      if (args[0] === "issue" && args[1] === "reopen") {
+        reopenCalled = true;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(
+      { ...FINDING_A, family: "estado" },
+      { issueNumber: 1, url: "https://x/1", closedAt: null },
+      CWD,
+      run,
+    );
+    assert.equal(reopenCalled, true);
+    assert.deepEqual(result, { issueNumber: 1, url: "https://x/1", action: "reopened" });
+  });
+
+  it("cache local, estado real OPEN (issue nunca foi fechada, ou já foi reaberta por outro caminho) -> comportamento normal, action 'reused', NUNCA chama 'gh issue reopen'", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      if (args[0] === "issue" && args[1] === "reopen") throw new Error("não deveria reabrir uma issue que já está OPEN");
       throw new Error(`unexpected: ${args.join(" ")}`);
     };
     const result = ensureAlarmIssue(
@@ -344,8 +388,24 @@ describe("ensureAlarmIssue — reabre issue CLOSED pra família 'estado' (#5978)
     assert.deepEqual(result, { issueNumber: 1, url: "https://x/1", action: "reused" });
   });
 
+  it("'gh issue view' falha (gh indisponível/rate limit) -> trata como 'não sei', NUNCA reabre às cegas, cai pra action 'reused'", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return fail("HTTP 503");
+      if (args[0] === "issue" && args[1] === "reopen") throw new Error("não deveria reabrir sem confirmar o estado real");
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(
+      { ...FINDING_A, family: "estado" },
+      { issueNumber: 1, url: "https://x/1", closedAt: "2026-08-10T00:00:00Z" },
+      CWD,
+      run,
+    );
+    assert.deepEqual(result, { issueNumber: 1, url: "https://x/1", action: "reused" });
+  });
+
   it("reopen falha (rate limit) -> fail-soft, cai pra action 'reused' (issue continua existindo, só não foi possível reabrir agora)", () => {
     const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "CLOSED" }));
       if (args[0] === "issue" && args[1] === "reopen") return fail("HTTP 403: rate limited");
       throw new Error(`unexpected: ${args.join(" ")}`);
     };
@@ -400,6 +460,7 @@ describe("applyAlarmReconciliation — reabre fim-a-fim (#5978, cenário real da
     };
     let reopenCalled = false;
     const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "CLOSED" }));
       if (args[0] === "issue" && args[1] === "reopen") {
         reopenCalled = true;
         return ok("");
@@ -747,6 +808,7 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
         createCount++;
         return ok("https://github.com/x/y/issues/9001\n");
       }
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
       throw new Error(`unexpected: ${args.join(" ")}`);
     };
     const first = applyAlarmReconciliation([FINDING_A], emptyAlarmIssuesState(), {
@@ -862,6 +924,7 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
     // entry carrega `closedAt` setado e a família é "estado".
     let reopenCalled = false;
     const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "CLOSED" }));
       if (args[0] === "issue" && args[1] === "reopen") {
         reopenCalled = true;
         return ok("");
