@@ -947,6 +947,39 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Achado ao vivo 260824 (edição 260824): finalize-stage1.ts real só escreve
+  // os 4 buckets em tmp-finalized.json — nunca `highlights`/`runners_up`
+  // (bypassam join de score e domain cap por design, docstring do próprio
+  // script). O mock `seedScored` acima pré-semeava tmp-finalized.json JÁ com
+  // highlights, mascarando o gap: em produção o merge nunca acontecia e toda
+  // edição saía com 0 destaques. Este teste reproduz o shape REAL (sem
+  // highlights/runners_up em tmp-finalized.json) e garante que
+  // 01-categorized.json final carrega os highlights de tmp-scored.json.
+  it("tmp-finalized.json sem highlights/runners_up (shape real do finalize-stage1.ts) -> categorized.json carrega de tmp-scored.json (#5952-bug)", async () => {
+    return withTmpRoot("stage-1-run-p4-nohl-", (root, editionDir) => {
+      writeJson(root, `${editionDir}/_internal/tmp-scored.json`, {
+        highlights: Array.from({ length: 6 }, (_, i) => ({ url: `https://h${i}.com`, score: 100 - i })),
+        runners_up: [{ url: "https://r1.com", score: 50 }],
+      });
+      // Shape real de finalize-stage1.ts: só os 4 buckets, sem highlights/runners_up.
+      writeJson(root, `${editionDir}/_internal/tmp-finalized.json`, {
+        lancamento: [1, 2, 3],
+        radar: Array(8).fill(0),
+        use_melhor: [1, 2, 3],
+        video: [],
+      });
+      writeJson(root, "selection.json", {});
+      const { exec } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const categorized = JSON.parse(readFileSync(resolve(root, result.categorizedPath as string), "utf8"));
+        assert.equal(categorized.highlights.length, 6);
+        assert.equal(categorized.runners_up.length, 1);
+      });
+    });
+  });
+
   it("caminho fallback (--fallback-scored-json): pula assemble-scored, code 0", async () => {
     return withTmpRoot("stage-1-run-p4-fb-", (root, editionDir) => {
       writeJson(root, "fallback-scored.json", { highlights: Array.from({ length: 6 }, (_, i) => ({ url: `https://h${i}.com`, score: 100 - i })), runners_up: [] });

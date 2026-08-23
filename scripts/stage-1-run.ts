@@ -1281,6 +1281,15 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   } catch (e) {
     throw new Stage1Abort(`❌ tmp-finalized.json ilegível: ${(e as Error).message}`);
   }
+  // #5952-bug (achado ao vivo 260824): finalize-stage1.ts só escreve os 4 buckets
+  // (lancamento/radar/use_melhor/video) em tmp-finalized.json — por design, seu
+  // próprio docstring diz que highlights/runners_up bypassam o join de score e o
+  // domain cap, então o script nunca precisou tocá-los. Sem este merge, `finalized`
+  // nunca carrega highlights/runners_up e toda edição sai com 0 destaques. `scored`
+  // (lido acima, já com a promoção §1r aplicada) é a fonte de verdade — só cai pro
+  // fallback `?? []` se `finalized` já vier populado (mocks/testes existentes).
+  finalized.highlights = finalized.highlights ?? scored.highlights ?? [];
+  finalized.runners_up = finalized.runners_up ?? scored.runners_up ?? [];
   const minSectionWarnings = computeMinSectionWarnings(finalized);
 
   // --- §1u shape final + strip verifier ---
