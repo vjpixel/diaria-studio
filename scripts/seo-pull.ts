@@ -29,6 +29,23 @@
  * tipos não suportam a dimensão `query` na Search Analytics API, só
  * `page`/`date`/`country`/`device`. Vazio é REGISTRADO (`total_rows: 0,
  * rows: []`), nunca omitido — é resposta, não ausência de resposta.
+ *
+ * **#5973 — retry+timeout no fetch da Search Analytics API.** Mesmo padrão
+ * de single-shot fetch que causou o #5943 no passo "index-arquivo" da mesma unit
+ * semanal (`Diaria-SEO-Weekly`): um blip de rede em `pullGsc` também
+ * derrubava o passo "pull" inteiro sem retry. `pullGsc` agora usa
+ * `fetchWithRetry` (`scripts/lib/fetch-retry.ts`) — erro de rede/5xx
+ * tenta de novo, 4xx (ex: 403 de permissão) falha já na 1ª tentativa.
+ *
+ * **Lacuna conhecida (achado do fleet review pré-merge do #5976):** o
+ * timeout por tentativa cobre só a chamada HTTP à Search Analytics API em
+ * si — `gFetch` (`scripts/google-auth.ts`) faz `getAccessToken()`/
+ * `forceRefreshAccessToken()` ANTES do fetch coberto pelo `AbortSignal`,
+ * e essas chamadas de token não recebem o signal. Um hang no endpoint de
+ * OAuth do Google (mesma classe de falha do #5943, só num passo anterior)
+ * não é limitado pelo `timeoutMs` configurado aqui. Fast-follow rastreado
+ * — threadear o signal por `getAccessToken`/`refreshAccessToken` ou
+ * documentar/aceitar o gap explicitamente.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -37,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { GSC_DEFAULT_SITE } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
+import { fetchWithRetry } from "./lib/fetch-retry.ts";
 
 /** Dimensões suportadas pelas chamadas deste script (#5119). `query` só é
  * válida em `type: "web"` — Discover/News não têm dado de query. */
@@ -161,11 +179,14 @@ async function pullGsc(
   type: string,
 ): Promise<GscRow[]> {
   const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/searchAnalytics/query`;
-  const res = await gFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ startDate, endDate, dimensions, rowLimit: 5000, type }),
-  });
+  const res = await fetchWithRetry((signal) =>
+    gFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startDate, endDate, dimensions, rowLimit: 5000, type }),
+      signal,
+    }),
+  );
   if (!res.ok) {
     const body = await res.text();
     if (res.status === 403) {
