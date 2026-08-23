@@ -7,8 +7,9 @@
  *   - sem link por destaque (nenhum <a href> dentro do bloco da manchete).
  *   - UTMs corretas (source=linkedin, medium=newsletter, campaign=ln-{cycle},
  *     content=lista|cta-usemelhor|cta-fim — item-01/02/03 NÃO existem mais).
- *   - bloco USE MELHOR só renderiza com comentário do editor; ausente = bloco
- *     inteiro omitido.
+ *   - bloco USE MELHOR renderiza sempre que há candidato (com ou sem
+ *     comentário do editor, #5970 — comentário virou opcional de verdade,
+ *     não condição de existência do bloco).
  */
 
 import { describe, it } from "node:test";
@@ -110,28 +111,41 @@ describe("renderLinkedinWeeklyHtml — linha 'da edição de DD/MM' sob cada man
   });
 });
 
-describe("renderLinkedinWeeklyHtml — bloco USE MELHOR exige comentário do editor", () => {
-  it("SEM comentário do editor (string vazia) — bloco inteiro omitido, mesmo com useMelhor presente", () => {
+describe("renderLinkedinWeeklyHtml — bloco USE MELHOR renderiza com OU sem comentário do editor (#5970)", () => {
+  it("SEM comentário do editor (string vazia) — bloco renderiza mesmo assim, só sem o parágrafo de comentário", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: { title: "Tutorial X", url: "https://exemplo.com/tutorial", description: "Descrição.", editorComment: "" },
     };
     const result = renderLinkedinWeeklyHtml(input);
-    assert.equal(result.useMelhorRendered, false);
-    assert.ok(!/Use melhor/.test(result.html));
-    assert.ok(result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
+    assert.equal(result.useMelhorRendered, true);
+    assert.match(result.html, /Use melhor/);
+    assert.match(result.html, /Tutorial X/);
+    assert.match(result.html, /Descrição\./);
+    // banner de default aplicado (#5321) — nunca silencioso.
+    assert.ok(result.warnings.some((w) => /comentário do editor ausente/i.test(w) && /#5970/.test(w)), result.warnings.join(" | "));
   });
 
-  it("comentário só com espaços em branco também omite o bloco", () => {
+  it("comentário só com espaços em branco também renderiza o bloco sem o parágrafo de comentário", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: { title: "Tutorial X", url: "https://exemplo.com/tutorial", description: "Descrição.", editorComment: "   \n  " },
     };
     const result = renderLinkedinWeeklyHtml(input);
-    assert.equal(result.useMelhorRendered, false);
+    assert.equal(result.useMelhorRendered, true);
+    assert.match(result.html, /Use melhor/);
+    assert.ok(result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
   });
 
-  it("COM comentário do editor — bloco renderiza com título/descrição/comentário + CTA de assinatura", () => {
+  it("useMelhor ausente (nenhum candidato elegível) — bloco não renderiza, sem warning de comentário", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, useMelhor: undefined };
+    const result = renderLinkedinWeeklyHtml(input);
+    assert.equal(result.useMelhorRendered, false);
+    assert.ok(!/Use melhor/.test(result.html));
+    assert.ok(!result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
+  });
+
+  it("COM comentário do editor — bloco renderiza com título/descrição/comentário + CTA de assinatura, sem warning de ausência", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       useMelhor: {
@@ -147,6 +161,7 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR exige comentário do edi
     assert.match(result.html, /Effort level no Claude Code/);
     assert.match(result.html, /Testei essa semana e cortei uns 30% do tempo de setup\./);
     assert.match(result.html, /Quero receber a edição diária/);
+    assert.ok(!result.warnings.some((w) => /comentário do editor ausente/i.test(w)));
   });
 
   it("o CTA do Use Melhor é uma CHAMADA (frase + âncora), não um link solto (decisão do editor 260803)", () => {
