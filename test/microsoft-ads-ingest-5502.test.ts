@@ -124,7 +124,9 @@ function mockReportingFlow(opts: {
   rawZip?: Buffer;
   submitError?: { status: number; body: string };
   pollError?: { status: number; body: string };
-  /** Faz `Success` sair sem `ReportDownloadUrl` — cenário defensivo. */
+  /** Faz `Success` sair sem `ReportDownloadUrl` — o comportamento REAL da
+   *  API pra relatório sem nenhuma linha (confirmado ao vivo #5928), não um
+   *  cenário defensivo hipotético. */
   pollSuccessWithoutDownloadUrl?: boolean;
   /** Captura `(url, init)` de toda chamada — usado pro teste de headers/envelope. */
   onRequest?: (url: string, init: RequestInit | undefined) => void;
@@ -215,11 +217,11 @@ describe("#5502 — aggregateMicrosoftAdsSpendByMonth", () => {
   });
 });
 
-describe("#5502 — refreshMicrosoftAdsAccessToken (fail-soft)", () => {
-  it("sucesso devolve o access_token", async () => {
+describe("#5502 — refreshMicrosoftAdsAccessToken (fail-soft, caminho Azure AD)", () => {
+  it("sucesso devolve o access_token, identityProvider 'AzureAd'", async () => {
     const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ access_token: "tok-123" }), { status: 200 });
     const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH);
-    assert.deepEqual(out, { accessToken: "tok-123" });
+    assert.deepEqual(out, { accessToken: "tok-123", identityProvider: "AzureAd" });
   });
 
   it("falha de rede nunca lança — devolve { error }", async () => {
@@ -242,6 +244,84 @@ describe("#5502 — refreshMicrosoftAdsAccessToken (fail-soft)", () => {
     const fetchImpl: FetchLike = async () => new Response("<html>502</html>", { status: 502 });
     const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH);
     assert.ok("error" in out);
+  });
+
+  it("clientId/refreshToken ausentes (e sem googleRefreshToken) → { error } explícito, não tenta a chamada de rede", async () => {
+    let called = false;
+    const fetchImpl: FetchLike = async () => {
+      called = true;
+      throw new Error("não deveria ser chamado");
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, { clientId: undefined, refreshToken: undefined });
+    assert.ok("error" in out);
+    assert.match(out.error, /clientId\/refreshToken ausentes/);
+    assert.equal(called, false);
+  });
+});
+
+describe("#5928 — refreshMicrosoftAdsAccessToken (caminho Google — conta em uso hoje exige isto)", () => {
+  const AUTH_GOOGLE: MicrosoftAdsAuthConfig = {
+    developerToken: "dev-token",
+    customerId: "12345678",
+    accountId: "87654321",
+    googleClientId: "google-client-id",
+    googleClientSecret: "google-client-secret",
+    googleRefreshToken: "google-refresh-token",
+  };
+
+  it("googleRefreshToken presente → usa o endpoint do GOOGLE (não Azure AD), identityProvider 'Google'", async () => {
+    let calledUrl = "";
+    const fetchImpl: FetchLike = async (url) => {
+      calledUrl = url;
+      return new Response(JSON.stringify({ access_token: "google-tok" }), { status: 200 });
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH_GOOGLE);
+    assert.deepEqual(out, { accessToken: "google-tok", identityProvider: "Google" });
+    assert.match(calledUrl, /oauth2\.googleapis\.com\/token/);
+  });
+
+  it("prioriza Google mesmo quando os 2 caminhos (Azure E Google) estão presentes — mesmo critério do dispatcher da CLI", async () => {
+    const both: MicrosoftAdsAuthConfig = { ...AUTH, ...AUTH_GOOGLE };
+    let calledUrl = "";
+    const fetchImpl: FetchLike = async (url) => {
+      calledUrl = url;
+      return new Response(JSON.stringify({ access_token: "google-tok" }), { status: 200 });
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, both);
+    if ("identityProvider" in out) assert.equal(out.identityProvider, "Google");
+    assert.match(calledUrl, /oauth2\.googleapis\.com\/token/);
+  });
+
+  it("falha de rede no endpoint do Google nunca lança — devolve { error }", async () => {
+    const fetchImpl: FetchLike = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH_GOOGLE);
+    assert.ok("error" in out);
+    assert.match(out.error, /ECONNREFUSED/);
+  });
+
+  it("resposta HTTP de erro do Google (ex: refresh token revogado) devolve { error }, não lança", async () => {
+    const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ error_description: "invalid_grant" }), { status: 400 });
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH_GOOGLE);
+    assert.ok("error" in out);
+    assert.match(out.error, /invalid_grant/);
+  });
+
+  it("googleRefreshToken presente MAS googleClientId/googleClientSecret ausentes (config parcial, possível a partir do ambiente) → { error } explícito, nunca manda client_id/secret vazio pro Google", async () => {
+    let called = false;
+    const fetchImpl: FetchLike = async () => {
+      called = true;
+      throw new Error("não deveria ser chamado");
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, {
+      googleClientId: undefined,
+      googleClientSecret: undefined,
+      googleRefreshToken: "google-refresh-token",
+    });
+    assert.ok("error" in out);
+    assert.match(out.error, /googleClientId\/googleClientSecret\/googleRefreshToken ausentes/);
+    assert.equal(called, false);
   });
 });
 
@@ -498,6 +578,60 @@ describe("#5928 — regressão do transporte SOAP 1.1 (Content-Type/SOAPAction) 
   });
 });
 
+describe("#5928 — regressão da ordem Time.CustomDateRangeEnd/Start (bug real que chegou a ser mergeado)", () => {
+  it("CustomDateRangeEnd aparece ANTES de CustomDateRangeStart no XML — o XSD do ReportTime exige essa ordem; invertida, a API real rejeita com InvalidCustomDateRangeEnd mesmo com datas válidas (confirmado ao vivo #5928)", async () => {
+    let submitBody = "";
+    const fetchImpl = mockReportingFlow({
+      onRequest: (url, init) => {
+        const body = String(init?.body ?? "");
+        if (url === SERVICE_URL && body.includes(">SubmitGenerateReport<")) submitBody = body;
+      },
+    });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("rows" in out, `esperava sucesso, veio: ${JSON.stringify(out)}`);
+    const endIdx = submitBody.indexOf("CustomDateRangeEnd");
+    const startIdx = submitBody.indexOf("CustomDateRangeStart");
+    assert.ok(endIdx !== -1 && startIdx !== -1, "esperava os 2 elementos no corpo da request");
+    assert.ok(endIdx < startIdx, `esperava CustomDateRangeEnd (offset ${endIdx}) antes de CustomDateRangeStart (offset ${startIdx})`);
+  });
+});
+
+describe("#5928 — <IdentityProvider>Google</IdentityProvider> no SOAP Header, só quando o auth usa o caminho Google", () => {
+  const AUTH_GOOGLE: MicrosoftAdsAuthConfig = {
+    developerToken: "dev-token",
+    customerId: "12345678",
+    accountId: "87654321",
+    googleClientId: "google-client-id",
+    googleClientSecret: "google-client-secret",
+    googleRefreshToken: "google-refresh-token",
+  };
+
+  it("auth com googleRefreshToken → submit E poll levam o header IdentityProvider=Google", async () => {
+    const bodies: string[] = [];
+    const fetchImpl = mockReportingFlow({
+      onRequest: (url, init) => {
+        if (url === SERVICE_URL) bodies.push(String(init?.body ?? ""));
+      },
+    });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH_GOOGLE, "google-tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("rows" in out, `esperava sucesso, veio: ${JSON.stringify(out)}`);
+    assert.equal(bodies.length, 2); // submit + poll
+    for (const body of bodies) assert.match(body, /<IdentityProvider>Google<\/IdentityProvider>/);
+  });
+
+  it("auth SEM googleRefreshToken (Azure AD) → SOAP Header NUNCA leva IdentityProvider (não confirmado se a API tolera o header desnecessário — mais seguro omitir)", async () => {
+    const bodies: string[] = [];
+    const fetchImpl = mockReportingFlow({
+      onRequest: (url, init) => {
+        if (url === SERVICE_URL) bodies.push(String(init?.body ?? ""));
+      },
+    });
+    const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
+    assert.ok("rows" in out, `esperava sucesso, veio: ${JSON.stringify(out)}`);
+    for (const body of bodies) assert.doesNotMatch(body, /IdentityProvider/);
+  });
+});
+
 describe("#5928 — unzipFirstEntry, casos de borda (via fetchMicrosoftAdsSpendRows, sem exportar a função interna)", () => {
   it("STORED (compressionMethod 0) — o outro método oficialmente suportado, não coberto por buildTestZip — funciona", async () => {
     const csv = '"TimePeriod","Spend"\r\n"2026-08-10","7.50"\r\n';
@@ -561,11 +695,10 @@ describe("#5928 — poll: branches defensivos não cobertos pelo caminho feliz",
     assert.match(out.error, /InternalError/);
   });
 
-  it("poll Success SEM ReportDownloadUrl (cenário defensivo) → { error } explícito", async () => {
+  it("poll Success SEM ReportDownloadUrl → { rows: [] }, vazio LEGÍTIMO (não erro) — comportamento real confirmado ao vivo #5928: a API não gera arquivo pra relatório sem nenhuma linha", async () => {
     const fetchImpl = mockReportingFlow({ pollSuccessWithoutDownloadUrl: true });
     const out = await fetchMicrosoftAdsSpendRows(fetchImpl, AUTH, "tok", DATE_RANGE, NO_SLEEP);
-    assert.ok("error" in out);
-    assert.match(out.error, /sem ReportDownloadUrl/);
+    assert.deepEqual(out, { rows: [] });
   });
 });
 
