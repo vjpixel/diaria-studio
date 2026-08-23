@@ -210,13 +210,54 @@ mesmo comportamento de `scripts/google-ads-ingest-spend.ts`. Zero gasto no
 período consultado também é fail-soft (não erro): é o estado real da conta
 até 22/08/2026.
 
+<<<<<<< HEAD
+## Campaign Management API — motivos editoriais (#5878)
+
+A Reporting API (seção acima) serve para **gasto**. A **Campaign Management
+API v13** é servida por um endpoint SOAP distinto e capta **motivo textual de
+rejeição de assets** — o que a UI mostra por ~14h antes que o estado
+`Disapproved` desapareça do painel (problema documentado em #5702 e #5878):
+
+- **Endpoint SOAP**: `https://api.bingads.microsoft.com/Api/Advertiser/CampaignManagement/v13/ApiCampaignManagementService.svc`
+- **SOAPAction HTTP header**: `GetAssetGroupsEditorialReasons`
+- **SOAP 1.1** (`text/xml; charset=utf-8` — não `application/soap+xml`, que
+  devolve HTTP 415).
+- **Requisição**: `<GetAssetGroupsEditorialReasonsRequest>` com `AccountId` +
+  `AssetGroupId`. A chamada é **síncrona** (não segue o
+  submit→poll→download assíncrono da Reporting API).
+- **Resposta**: `<EditorialReasonCollection>` contendo `<EditorialReasons>`
+  (pode ser array ou elemento único). Cada razão traz `ReasonCode`, `Location`,
+  `PublisherCountries`, `Term`, `AppealStatus`.
+
+Implementação:
+- `scripts/lib/microsoft-ads-editorial-reasons.ts` — núcleo SOAP (envelope,
+  parsing, fail-soft). Reusa `MicrosoftAdsAuthConfig` +
+  `refreshMicrosoftAdsAccessToken` de `microsoft-ads-ingest.ts` (mesmo escopo
+  OAuth `msads.manage`).
+- `scripts/microsoft-ads-editorial-reasons.ts` — CLI fino, fail-soft (exit 0
+  sem credencial). Output: `data/microsoft-ads/editorial-reasons-{YYYY-MM-DD}.json`.
+- Task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`, diária 10:00 BRT
+  (10min depois do `Diaria-Google-Ads-Spend-Ingest`, sem colisão).
+
+Testes: `test/microsoft-ads-editorial-reasons.test.ts` — 18 testes cobrindo
+envelope, parsing (1/2/0 razões, XML malformado), extração de SOAP Fault, e
+fail-soft end-to-end via `fetch` mockado (nunca toca a API real).
+=======
 ## Estado (22/08/2026, #5928)
+>>>>>>> master
 
 - [x] Núcleo de normalização puro implementado e testado contra fixture
       (`test/microsoft-ads-ingest-5502.test.ts`)
 - [x] Adaptador fail-soft (`runMicrosoftAdsIngest`) sobre o motor genérico
       `scripts/lib/spend-ingest.ts`
 - [x] CLI fino (`scripts/microsoft-ads-ingest-spend.ts`)
+<<<<<<< HEAD
+- [ ] App registration no Azure — ação do editor
+- [ ] Developer token pedido — ação do editor
+- [x] `MICROSOFT_ADS_*` no Doppler (credenciais configuradas 21/08/2026, #5928)
+- [ ] Primeira chamada real validada (fluxo de poll da Reporting API não
+      testável sem credencial — ver seção acima)
+=======
 - [x] App registration no Azure — feito, app `diaria-studio-microsoft-ads`
 - [x] Developer token pedido — feito (`MICROSOFT_ADS_DEVELOPER_TOKEN`)
 - [x] `MICROSOFT_ADS_*` no Doppler (Azure AD + Google)
@@ -234,5 +275,11 @@ até 22/08/2026.
       pago começar a gastar
 - [ ] Task agendada (própria ou compartilhada com o Google Ads, #5493) —
       decisão adiada até a conta ter gasto real pra validar contra
+>>>>>>> master
 - [ ] Campanha Microsoft Advertising real rodando (pré-requisito pra #5493
       mapear chaves de atribuição, item independente deste doc)
+- [x] **#5878 — Campaign Management API: `GetAssetGroupsEditorialReasons`**
+      implementado (envelope SOAP 1.1, parsing XML, fail-soft), testado contra
+      fixture (18 testes, `test/microsoft-ads-editorial-reasons.test.ts`),
+      CLI pronto, task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`
+      (10:00 BRT). Reusa credencial `MICROSOFT_ADS_*` já no Doppler.
