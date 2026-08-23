@@ -47,6 +47,23 @@
  * script checa `useWorkerForScheduled` ANTES do 1º dispatch e aborta os 2 se
  * faltar — mesma disciplina de fail-fast de `publish-linkedin.ts` (#923).
  *
+ * **Esse guard vive só em `main()` (o entrypoint CLI), não em
+ * `runArtigoEspecialLinkedinDispatch`** (achado do comment-analyzer, review
+ * #5979/PR #6000). A função exportada/testável é mais permissiva de
+ * propósito — chamada com `only: ["pagina"]` ela despacha só a página sem
+ * exigir Worker (via fallback Make), o que é o comportamento CORRETO nesse
+ * caso (não há "metade" de um único canal). O guard "aborte os 2" só faz
+ * sentido no ponto de entrada que decide QUAIS canais rodar por padrão
+ * (ambos) — não pertence à função reusável, que já não teria como saber se
+ * o caller pediu 1 ou 2 canais de propósito.
+ *
+ * **`fallback_used` (Make fire-now em vez do Worker agendado) gera warning
+ * explícito no terminal**, não só no `linkedin-published.json` — ver
+ * `runArtigoEspecialLinkedinDispatch` (achado do silent-failure-hunter,
+ * mesmo review): sem isso, "postado no horário certo via Worker" e "postado
+ * JÁ, ignorando o `--at`, porque o Worker falhou" colapsavam no mesmo
+ * `status: "done"` do guard agregado, silenciosamente.
+ *
  * Uso:
  *   npx tsx scripts/publish-artigo-especial-linkedin.ts \
  *     --dir data/artigo-especial/2026-engenharia-de-ilusao \
@@ -62,14 +79,14 @@
  * posts.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
 import { dispatchEntry, type DispatchContext, type DispatchInput } from "./publish-linkedin.ts";
 import { readSocialPublished } from "./lib/social-published-store.ts";
-import type { PostEntry } from "./lib/social-published-store.ts";
+import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { verifyWorkerDispatch } from "./verify-social-worker-dispatch.ts";
 import {
   artigoEspecialStatePath,
@@ -115,13 +132,28 @@ export function parseCliArgs(argv: string[]): ArgsParsed | { error: string } {
   const dir = values["dir"];
   if (!dir) return { error: "--dir obrigatório (ex: data/artigo-especial/2026-slug)" };
   const onlyArg = values["only"];
-  const only: LinkedinTarget[] = onlyArg
-    ? onlyArg
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s): s is LinkedinTarget => s === "pagina" || s === "perfil")
-    : ["pagina", "perfil"];
-  if (only.length === 0) return { error: "--only deve conter pagina e/ou perfil" };
+  let only: LinkedinTarget[];
+  if (onlyArg) {
+    const tokens = onlyArg
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    // Erro EXPLÍCITO em token não reconhecido, nunca filtro silencioso —
+    // um typo aqui (ex: "perfiil") produzia metade do anúncio dispatchada
+    // sem nenhum sinal do outro alvo nunca ter sido tentado, exatamente a
+    // classe de falha que o guard de Worker (main(), abaixo) já existe pra
+    // evitar (achado do silent-failure-hunter, review #5979/PR #6000).
+    const invalid = tokens.filter((t) => t !== "pagina" && t !== "perfil");
+    if (invalid.length > 0) {
+      return {
+        error: `--only contém valor(es) não reconhecido(s): ${invalid.join(", ")} (esperado: pagina e/ou perfil).`,
+      };
+    }
+    only = tokens as LinkedinTarget[];
+    if (only.length === 0) return { error: "--only deve conter pagina e/ou perfil" };
+  } else {
+    only = ["pagina", "perfil"];
+  }
   return {
     dir,
     imageUrl: values["image-url"],
@@ -142,11 +174,22 @@ export function parseAnoSlugFromDir(dirName: string): { ano: string; slug: strin
 }
 
 /** Resolve a `og:image` do artigo já deployado — fonte única, evita exigir
- *  `--image-url` na maioria das invocações (issue #5979: "imageUrl = og:image"). */
+ *  `--image-url` na maioria das invocações (issue #5979: "imageUrl = og:image").
+ *  `null` quando o HTML não existe (ex: `--dir`/deploy incorretos) — nesse
+ *  caso o post sai SEM imagem, então avisa explicitamente em vez de falhar
+ *  silenciosamente (achado do silent-failure-hunter, review #5979/PR #6000:
+ *  sem este aviso, um `--dir` errado produzia um post agendado sem capa e
+ *  exit 0, sem nenhum log apontando a causa). */
 export function resolveImageUrl(rootDir: string, ano: string, slug: string, override?: string): string | null {
   if (override) return override;
   const htmlPath = resolve(rootDir, "workers/artigos/public", ano, slug, "index.html");
-  if (!existsSync(htmlPath)) return null;
+  if (!existsSync(htmlPath)) {
+    console.warn(
+      `[publish-artigo-especial-linkedin] AVISO: ${htmlPath} não encontrado — post(s) sairão SEM imagem (og:image). ` +
+        "Confirme --dir/o deploy do artigo antes de prosseguir, ou passe --image-url explicitamente.",
+    );
+    return null;
+  }
   return readArtigoMeta(htmlPath).image;
 }
 
@@ -171,8 +214,11 @@ export interface RunDispatchOptions {
   dryRun: boolean;
   ctx: DispatchContext;
   statePath: string;
-  /** Injetável pra teste — default `readArtigoEspecialState`/`writeArtigoEspecialState`. */
-  verifyWorker?: (published: ReturnType<typeof readSocialPublished>) => Promise<{ changes: number }>;
+  /** Injetável pra teste — default `verifyWorkerDispatch` real (Worker HTTP).
+   *  Contrato igual ao de `verify-social-worker-dispatch.ts::verifyWorkerDispatch`:
+   *  devolve `updated` (o `SocialPublished` reconciliado) — o caller É quem
+   *  decide persistir, não o helper (mesmo contrato do call site canônico). */
+  verifyWorker?: (published: SocialPublished) => Promise<{ updated: SocialPublished; changes: number }>;
 }
 
 export interface RunDispatchResult {
@@ -224,6 +270,20 @@ export async function runArtigoEspecialLinkedinDispatch(
     const entry = await dispatchEntry(input, ctx);
     results.push({ target, entry, skipped: false });
 
+    // `published.json` (o guard agregado) só grava status "done"/"failed" —
+    // não distingue "agendado no horário via Worker" de "postado JÁ, agora,
+    // via fallback Make porque o Worker falhou" (`entry.fallback_used`).
+    // `linkedin-published.json` preserva o detalhe completo (`route`,
+    // `fallback_used`, `fallback_reason`); este warning garante que a
+    // diferença também apareça no terminal, não só enterrada nesse arquivo
+    // — achado do silent-failure-hunter, review #5979/PR #6000 (#573 do
+    // CLAUDE.md: nunca só o gloss, validar o estado real antes de relayar).
+    if (entry.fallback_used) {
+      console.warn(
+        `[${target}] AVISO: Worker falhou, post saiu via fallback Make AGORA (${scheduledAt} ignorado) — motivo: ${entry.fallback_reason ?? "não registrado"}.`,
+      );
+    }
+
     const attemptedAt = new Date().toISOString();
     const channelState =
       deriveChannelStatusFromPostEntry(entry) === "done"
@@ -241,9 +301,40 @@ export async function runArtigoEspecialLinkedinDispatch(
   if (results.some((r) => r.entry?.status === "scheduled")) {
     try {
       const published = readSocialPublished(ctx.publishedPath);
-      const verify = options.verifyWorker ?? ((p) => verifyWorkerDispatch(p, ctx.workerUrl, ctx.workerToken));
-      const { changes } = await verify(published);
+      const verify = options.verifyWorker ?? ((p: SocialPublished) => verifyWorkerDispatch(p, ctx.workerUrl, ctx.workerToken));
+      const { updated, changes } = await verify(published);
       console.log(`[verify] reconciliação Worker: ${changes} entrada(s) confirmada(s) na fila.`);
+      if (changes > 0) {
+        // Persistir o resultado reconciliado (#5979 review, PR #6000, achado
+        // do code-reviewer): o call site canônico
+        // (verify-social-worker-dispatch.ts::main()) sempre reescreve
+        // `linkedin-published.json` quando `changes > 0` — este script só
+        // logava e descartava `updated`. Sem a escrita, uma entry que o
+        // Worker rejeitou (DLQ) depois de `dispatchEntry` reportar
+        // "scheduled" ficava presa como sucesso pra sempre.
+        writeFileSync(ctx.publishedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
+
+        // Propagar reconciliações que viraram "failed" pro guard agregado
+        // (published.json) e pro RunDispatchResult retornado — sem isso o
+        // canal continuava "done" (gravado a partir do status ORIGINAL de
+        // `dispatchEntry`, linha ~253 acima) mesmo depois da reconciliação
+        // descobrir a falha real, e um resume (`decideChannelAction`) nunca
+        // retentaria.
+        for (const post of updated.posts) {
+          if (post.platform !== "linkedin" || post.status !== "failed") continue;
+          const target = post.destaque as LinkedinTarget;
+          const channel = TARGET_TO_CHANNEL[target];
+          if (!channel) continue;
+          const resultEntry = results.find((r) => r.target === target);
+          if (resultEntry?.entry && resultEntry.entry.status !== "failed") {
+            resultEntry.entry = post;
+            const reason =
+              typeof post.failure_reason === "string" ? post.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";
+            state = withChannelState(state, channel, buildFailedChannelState(new Date().toISOString(), reason));
+          }
+        }
+        writeArtigoEspecialState(statePath, state);
+      }
     } catch (e) {
       console.warn(`[verify] falhou (non-fatal, resultado do dispatch já foi gravado): ${(e as Error).message}`);
     }

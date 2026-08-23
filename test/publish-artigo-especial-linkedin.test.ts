@@ -1,8 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { DispatchContext } from "../scripts/publish-linkedin.ts";
 import {
   deriveChannelStatusFromPostEntry,
@@ -19,6 +20,7 @@ import {
   withChannelState,
   type ArtigoEspecialState,
 } from "../scripts/lib/artigo-especial-state.ts";
+import { readSocialPublished } from "../scripts/lib/social-published-store.ts";
 import type { PostEntry } from "../scripts/lib/social-published-store.ts";
 
 describe("deriveChannelStatusFromPostEntry (#5979)", () => {
@@ -56,14 +58,22 @@ describe("parseCliArgs (#5979)", () => {
     assert.ok(!("error" in r));
     if (!("error" in r)) assert.deepEqual(r.only, ["pagina", "perfil"]);
   });
-  it("--only filtra e ignora valores invalidos", () => {
+  it("--only com token invalido misturado a um valido -> erro EXPLICITO (nao filtra em silencio, #5979 review PR #6000)", () => {
+    // Corrige comportamento anterior: um typo tipo "perfiil" nao pode
+    // silenciosamente virar so ["pagina"] — o operador precisa saber que
+    // metade do --only foi ignorada (achado do silent-failure-hunter).
     const r = parseCliArgs(["--dir", "d", "--only", "pagina,bogus"]);
-    assert.ok(!("error" in r));
-    if (!("error" in r)) assert.deepEqual(r.only, ["pagina"]);
+    assert.ok("error" in r);
+    if ("error" in r) assert.match(r.error, /bogus/);
   });
   it("--only todo invalido -> erro", () => {
     const r = parseCliArgs(["--dir", "d", "--only", "bogus"]);
     assert.ok("error" in r);
+  });
+  it("--only valido (2 tokens) passa direto", () => {
+    const r = parseCliArgs(["--dir", "d", "--only", "pagina,perfil"]);
+    assert.ok(!("error" in r));
+    if (!("error" in r)) assert.deepEqual(r.only, ["pagina", "perfil"]);
   });
   it("--force e --dry-run viram flags", () => {
     const r = parseCliArgs(["--dir", "d", "--force", "--dry-run"]);
@@ -294,9 +304,9 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
         dryRun: false,
         ctx: mkCtx(),
         statePath,
-        verifyWorker: async () => {
+        verifyWorker: async (published) => {
           verifyCalled = true;
-          return { changes: 0 };
+          return { updated: published, changes: 0 };
         },
       });
       assert.equal(results[0].entry?.status, "scheduled");
@@ -305,4 +315,149 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
       globalThis.fetch = savedFetch;
     }
   });
+
+  it("verifyWorker com changes>0: persiste linkedin-published.json reconciliado E propaga failed pro published.json + resultado (#5979 review, PR #6000)", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ queued: true, key: "k1", scheduled_at: "2026-09-02T17:30:00-03:00", destaque: "pagina" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    try {
+      const ctx = mkCtx();
+      const { results, failedCount } = await runArtigoEspecialLinkedinDispatch({
+        artigoDir,
+        ano: "2026",
+        slug: "x",
+        imageUrl: null,
+        scheduledAt: "2099-01-01T17:30:00-03:00", // futuro -> route=worker_queue -> status "scheduled"
+        only: ["pagina"],
+        force: false,
+        dryRun: false,
+        ctx,
+        statePath,
+        verifyWorker: async (published) => {
+          // Simula o Worker rejeitando o item (DLQ) apos dispatchEntry ja ter
+          // reportado "scheduled".
+          const updated = {
+            posts: published.posts.map((p) =>
+              p.destaque === "pagina" ? { ...p, status: "failed" as const, failure_reason: "worker_dlq: teste" } : p,
+            ),
+          };
+          return { updated, changes: 1 };
+        },
+      });
+
+      // 1. linkedin-published.json foi REESCRITO com o resultado reconciliado.
+      const persisted = readSocialPublished(ctx.publishedPath);
+      assert.equal(persisted.posts[0].status, "failed");
+      assert.equal(persisted.posts[0].failure_reason, "worker_dlq: teste");
+
+      // 2. O RunDispatchResult reflete a falha pos-reconciliacao, nao o
+      //    "scheduled" original de dispatchEntry.
+      assert.equal(results[0].entry?.status, "failed");
+      assert.equal(failedCount, 1);
+
+      // 3. published.json (guard agregado) tambem foi corrigido pra "failed"
+      //    — sem isso um resume nao teria como saber que precisa retentar.
+      const state = readArtigoEspecialState(statePath, "2026", "x");
+      assert.equal(state.channels.linkedin_pagina?.status, "failed");
+      assert.match(state.channels.linkedin_pagina?.reason ?? "", /worker_dlq: teste/);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("verifyWorker com changes=0: nao reescreve linkedin-published.json nem published.json", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ queued: true, key: "k1", scheduled_at: "2026-09-02T17:30:00-03:00", destaque: "pagina" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    try {
+      const ctx = mkCtx();
+      const { results } = await runArtigoEspecialLinkedinDispatch({
+        artigoDir,
+        ano: "2026",
+        slug: "x",
+        imageUrl: null,
+        scheduledAt: "2099-01-01T17:30:00-03:00",
+        only: ["pagina"],
+        force: false,
+        dryRun: false,
+        ctx,
+        statePath,
+        verifyWorker: async (published) => ({ updated: published, changes: 0 }),
+      });
+      assert.equal(results[0].entry?.status, "scheduled");
+      const state = readArtigoEspecialState(statePath, "2026", "x");
+      assert.equal(state.channels.linkedin_pagina?.status, "done");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
 });
+
+// #5979 self-review (pr-test-analyzer, PR #6000): a garantia mais importante
+// deste script — "abortar os 2 dispatches, nunca so 1, quando o Worker nao
+// suporta webhook_target=pixel" — vive inteiramente em main() (linhas 288-299),
+// NAO em runArtigoEspecialLinkedinDispatch (que so implementa fail-soft POR
+// canal). Os testes acima nunca exercitam main(), entao um refactor que
+// movesse/removesse esse guard de main() passaria em silencio. Este bloco
+// spawna o CLI de verdade (mesmo padrao de update-artigo-especial-box.test.ts)
+// pra fechar essa lacuna.
+describe("publish-artigo-especial-linkedin.ts CLI — fail-fast sem Worker (main(), #5979)", () => {
+  let dir: string;
+  let artigoDir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "artigo-especial-linkedin-cli-"));
+    artigoDir = join(dir, "2026-x");
+    mkdirSync(artigoDir, { recursive: true });
+    writeFileSync(join(artigoDir, "linkedin-pagina.md"), "Texto da pagina.");
+    writeFileSync(join(artigoDir, "linkedin-perfil.md"), "Texto do perfil.");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runCli(extraEnv: Record<string, string>): ReturnType<typeof spawnSync> {
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "publish-artigo-especial-linkedin.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--dir", artigoDir, "--at", "2099-01-01T17:30:00-03:00"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          // Explicito ("" != undefined) para vencer tanto o config real
+          // (workerUrl usa `??`, so cai no config se o env for undefined —
+          // "" ja resolve pra "") quanto qualquer valor herdado do .env real
+          // desta maquina (dotenv override:false preserva o que ja esta
+          // definido no env do processo filho).
+          DIARIA_LINKEDIN_CRON_URL: "",
+          DIARIA_LINKEDIN_CRON_TOKEN: "",
+        },
+      },
+    );
+  }
+
+  it("sem Worker configurado: exit 2, stderr menciona abortar os 2 dispatches, nenhum arquivo gravado", () => {
+    const result = runCli({});
+    assert.equal(result.status, 2, result.stderr as string);
+    assert.match(result.stderr as string, /Abortando os 2 dispatches/);
+    // Nem published.json nem linkedin-published.json devem existir — o guard
+    // aborta ANTES de runArtigoEspecialLinkedinDispatch rodar.
+    assert.ok(!existsSyncSafe(join(artigoDir, "linkedin-published.json")));
+  });
+});
+
+function existsSyncSafe(path: string): boolean {
+  try {
+    readFileSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

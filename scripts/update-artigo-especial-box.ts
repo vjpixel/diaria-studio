@@ -36,20 +36,45 @@
  * configurado ali volta a ser candidato normal do auto-select por cliques,
  * #4626, em vez de ficar travado).
  *
+ * ## Guard de idempotência (canal "box", #5979 review PR #6000)
+ *
+ * Quando `--ano`/`--slug` são passados, este script participa do mesmo guard
+ * cross-canal que `publish-artigo-especial-linkedin.ts` já implementa
+ * (`scripts/lib/artigo-especial-state.ts`, canal `"box"`): lê
+ * `data/artigo-especial/{ano}-{slug}/published.json` ANTES de reescrever
+ * qualquer arquivo, pula (exit 0, sem tocar em nada) se o canal já está
+ * `done` sem `--force`, e grava `done`/`failed` no MESMO arquivo depois de
+ * concluir. **Achado corrigido**: a versão original desta unidade (#5979)
+ * documentava esse canal como coberto (`artigo-especial-state.ts` inclui
+ * `"box"` em `ARTIGO_ESPECIAL_CHANNELS`) mas nunca chamava o state module
+ * — o guard só existia no papel. `--ano`/`--slug` são OPCIONAIS: omiti-los
+ * (ex: reuso ad-hoc de `--unpin` fora do fluxo da skill) desliga o guard
+ * inteiro, sem quebrar o uso standalone que já existia.
+ *
  * Uso:
  *   npx tsx scripts/update-artigo-especial-box.ts \
  *     --titulo "Engenharia de ilusão: jailbreak de IA não arromba, encena" \
  *     --gancho "O atacante assume um papel, e o modelo responde fiel à cena" \
  *     --mes "Agosto" \
+ *     --ano 2026 --slug engenharia-de-ilusao \
  *     [--snippets-file data/snippets/artigo-especial-apoiadores.md] \
- *     [--config platform.config.json] \
- *     [--slot 3] [--no-pin] [--unpin] [--dry-run]
+ *     [--config platform.config.json] [--data-dir data] \
+ *     [--slot 3] [--no-pin] [--unpin] [--force] [--dry-run]
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import {
+  artigoEspecialStatePath,
+  readArtigoEspecialState,
+  writeArtigoEspecialState,
+  decideChannelAction,
+  buildDoneChannelState,
+  buildFailedChannelState,
+  withChannelState,
+} from "./lib/artigo-especial-state.ts";
 
 // ── Template / render puro ───────────────────────────────────────────────
 
@@ -179,6 +204,92 @@ export function applyBoxPin(config: BoxesDivulgacaoConfig, input: PinBoxInput): 
   };
 }
 
+// ── Orquestração (testável, sem CLI/process.exit) ──────────────────────
+
+export interface RunUpdateBoxOptions extends ArtigoEspecialBoxInput {
+  snippetsFile: string;
+  configPath: string;
+  slot: number;
+  pin: boolean;
+  dryRun: boolean;
+  force: boolean;
+  /** ano/slug do artigo — quando AMBOS presentes, ativa o guard de
+   *  idempotência do canal "box" (ver docstring do módulo). Ausentes = sem
+   *  guard, sem escrita de state (uso ad-hoc, ex: `--unpin` standalone). */
+  ano?: string;
+  slug?: string;
+  /** Raiz de `data/` — testável (default `resolve(ROOT, "data")` no CLI). */
+  dataDir: string;
+}
+
+export type RunUpdateBoxResult =
+  | { action: "skipped"; reason: string }
+  | { action: "dry-run" }
+  | { action: "updated"; snippetsFile: string; configPath: string };
+
+/**
+ * Corpo testável do Passo 5 (extraído de `main()` — mesmo padrão de
+ * `runArtigoEspecialLinkedinDispatch` em `publish-artigo-especial-linkedin.ts`).
+ * Não lê `process.argv`/chama `process.exit` — tudo explícito em `options`.
+ */
+export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpdateBoxResult {
+  const { titulo, gancho, mesLabel, snippetsFile, configPath, slot, pin, dryRun, force, ano, slug, dataDir } = options;
+
+  const hasArtigoContext = Boolean(ano && slug);
+  const statePath = hasArtigoContext ? artigoEspecialStatePath(dataDir, ano!, slug!) : null;
+  const state = statePath ? readArtigoEspecialState(statePath, ano!, slug!) : null;
+
+  if (state && statePath) {
+    const decision = decideChannelAction(state, "box", force);
+    if (decision.action === "skip") {
+      console.log(`[box] pulado — ${decision.reason}`);
+      return { action: "skipped", reason: decision.reason };
+    }
+  }
+
+  const existingContent = existsSync(snippetsFile) ? readFileSync(snippetsFile, "utf8") : null;
+  let nextContent: string;
+  try {
+    nextContent = renderArtigoEspecialBox(existingContent, { titulo, gancho, mesLabel });
+  } catch (e) {
+    if (state && statePath) {
+      writeArtigoEspecialState(
+        statePath,
+        withChannelState(state, "box", buildFailedChannelState(new Date().toISOString(), (e as Error).message)),
+      );
+    }
+    throw e;
+  }
+
+  const config = JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig;
+  const nextConfig = applyBoxPin(config, { slot, filename: "artigo-especial-apoiadores.md", pin });
+
+  if (dryRun) {
+    console.log(`[dry-run] escreveria ${snippetsFile}:\n---\n${nextContent}\n---`);
+    console.log(
+      `[dry-run] escreveria ${configPath} com boxes_divulgacao.slot${slot}=${pin ? "artigo-especial-apoiadores.md" : "(inalterado)"}, pinned_slots=${JSON.stringify(nextConfig.boxes_divulgacao_auto?.pinned_slots)}`,
+    );
+    // Dry-run nunca escreve state — mesma disciplina de dryRun no script do
+    // LinkedIn (nenhum efeito colateral persistido).
+    return { action: "dry-run" };
+  }
+
+  mkdirSync(dirname(snippetsFile), { recursive: true });
+  writeFileAtomic(snippetsFile, nextContent);
+  console.log(`OK — box atualizado em ${snippetsFile}`);
+
+  writeFileAtomic(configPath, JSON.stringify(nextConfig, null, 2) + "\n");
+  console.log(
+    `OK — ${configPath} atualizado (slot${slot}=${pin ? "artigo-especial-apoiadores.md" : "inalterado"}, pinned_slots=${JSON.stringify(nextConfig.boxes_divulgacao_auto?.pinned_slots)}).`,
+  );
+
+  if (state && statePath) {
+    writeArtigoEspecialState(statePath, withChannelState(state, "box", buildDoneChannelState(new Date().toISOString(), null)));
+  }
+
+  return { action: "updated", snippetsFile, configPath };
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -191,7 +302,8 @@ async function main(): Promise<void> {
   if (!titulo || !gancho || !mesLabel) {
     console.error(
       "Uso: npx tsx scripts/update-artigo-especial-box.ts --titulo \"...\" --gancho \"...\" --mes \"Agosto\" " +
-        "[--snippets-file path] [--config path] [--slot 3] [--no-pin] [--unpin] [--dry-run]",
+        "[--ano AAAA --slug slug] [--snippets-file path] [--config path] [--data-dir path] " +
+        "[--slot 3] [--no-pin] [--unpin] [--force] [--dry-run]",
     );
     process.exit(2);
   }
@@ -200,31 +312,27 @@ async function main(): Promise<void> {
     ? resolve(ROOT, values["snippets-file"])
     : resolve(ROOT, "data/snippets/artigo-especial-apoiadores.md");
   const configPath = values["config"] ? resolve(ROOT, values["config"]) : resolve(ROOT, "platform.config.json");
+  const dataDir = values["data-dir"] ? resolve(ROOT, values["data-dir"]) : resolve(ROOT, "data");
   const slot = values["slot"] ? parseInt(values["slot"], 10) : 3;
   const dryRun = flags.has("dry-run");
+  const force = flags.has("force");
   const unpin = flags.has("unpin");
   const pin = unpin ? false : !flags.has("no-pin");
 
-  const existingContent = existsSync(snippetsFile) ? readFileSync(snippetsFile, "utf8") : null;
-  const nextContent = renderArtigoEspecialBox(existingContent, { titulo, gancho, mesLabel });
-
-  const config = JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig;
-  const nextConfig = applyBoxPin(config, { slot, filename: "artigo-especial-apoiadores.md", pin });
-
-  if (dryRun) {
-    console.log(`[dry-run] escreveria ${snippetsFile}:\n---\n${nextContent}\n---`);
-    console.log(`[dry-run] escreveria ${configPath} com boxes_divulgacao.slot${slot}=${pin ? "artigo-especial-apoiadores.md" : "(inalterado)"}, pinned_slots=${JSON.stringify(nextConfig.boxes_divulgacao_auto?.pinned_slots)}`);
-    return;
-  }
-
-  mkdirSync(dirname(snippetsFile), { recursive: true });
-  writeFileAtomic(snippetsFile, nextContent);
-  console.log(`OK — box atualizado em ${snippetsFile}`);
-
-  writeFileAtomic(configPath, JSON.stringify(nextConfig, null, 2) + "\n");
-  console.log(
-    `OK — ${configPath} atualizado (slot${slot}=${pin ? "artigo-especial-apoiadores.md" : "inalterado"}, pinned_slots=${JSON.stringify(nextConfig.boxes_divulgacao_auto?.pinned_slots)}).`,
-  );
+  runUpdateArtigoEspecialBox({
+    titulo,
+    gancho,
+    mesLabel,
+    snippetsFile,
+    configPath,
+    dataDir,
+    slot,
+    pin,
+    dryRun,
+    force,
+    ano: values["ano"],
+    slug: values["slug"],
+  });
 }
 
 if (isMainModule(import.meta.url)) {

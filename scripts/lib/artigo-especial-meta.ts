@@ -19,15 +19,28 @@
  *     `datePublished`/`dateModified`.
  *   - `<h1>` seguido, no `.manuscript`, por um `<p class="lede">` (parágrafo
  *     de abertura sempre presente) e, opcionalmente, um `<p>` sem classe
- *     ENTRE o lede e o primeiro `<h3 class="sect">` — essa é a "nota de
- *     apresentação" (ex: de onde veio o tema, disclaimer de escopo do
- *     artigo) e é IGNORADA por `leadParagraphs` (ela não serve de teaser —
- *     é sobre o artigo, não o conteúdo do artigo). Confirmado contra os 2
- *     artigos publicados até 260823: `engenharia-de-ilusao` TEM a nota
- *     (2 `<p>` antes do 1º `h3.sect`), `o-agente` NÃO tem (o `h3.sect` vem
- *     logo após o lede) — o extrator lida com os dois casos pela mesma regra
- *     estrutural (posição relativa ao lede e ao 1º `h3.sect`), sem depender
- *     do texto específico da nota.
+ *     ENTRE o lede e o primeiro `<h3 class="sect">`. `leadParagraphs` SEMPRE
+ *     pula esse parágrafo intermediário (no máximo 1), qualquer que seja o
+ *     conteúdo dele — é um recorte estrutural (posição), não semântico
+ *     (não lê o texto pra decidir se é "nota de apresentação" ou conteúdo
+ *     real). **Correção 23/08/2026 (achado do review do #5979, PR #6000):**
+ *     a versão anterior deste comentário afirmava que só
+ *     `engenharia-de-ilusao` tinha esse parágrafo intermediário
+ *     ("nota de apresentação", ex: de onde veio o tema) e que `o-agente`
+ *     não tinha — **falso**, confirmado relendo o HTML publicado: os 2
+ *     artigos têm a mesma estrutura (`lede` → 1 `<p>` sem classe → 1º
+ *     `h3.sect`), só que o parágrafo intermediário de `o-agente` é uma
+ *     frase de referência a cobertura anterior (`"A diar.ia.br já havia
+ *     coberto esse mesmo modelo..."`), não uma nota sobre a origem do tema —
+ *     ambos são descartados igual, pela mesma regra estrutural, sem
+ *     distinção de conteúdo. **Trade-off aceito, não bug**: como não há
+ *     sinal estrutural confiável pra separar "framing sobre o artigo" de
+ *     "1ª frase de conteúdo real", o extrator sempre descarta o parágrafo
+ *     nessa posição — o preço é perder ocasionalmente uma frase de
+ *     conteúdo legítima (caso `o-agente`) em troca de nunca vazar
+ *     comentário editorial fora de contexto (caso `engenharia-de-ilusao`,
+ *     que motivou a regra, issue #5979 original). Se isso incomodar na
+ *     prática, a correção exigiria julgamento semântico (LLM), não regex.
  *
  * ## Regex, não parser HTML
  *
@@ -111,8 +124,14 @@ export function parseArtigoMetaHtml(html: string, maxParagraphs = 3): ArtigoEspe
       const node = parsed["@graph"]?.[0] ?? parsed;
       datePublished = node.datePublished ?? null;
       dateModified = node.dateModified ?? null;
-    } catch {
-      // JSON-LD malformado — segue sem datas, resto do extrator não depende disso.
+    } catch (e) {
+      // JSON-LD malformado — segue sem datas (resto do extrator não depende
+      // disso), mas isso é sempre um bug de autoria (o JSON-LD é conteúdo
+      // nosso, não de terceiro) — avisar em vez de engolir em silêncio
+      // (#5979 review, achado do silent-failure-hunter).
+      process.stderr.write(
+        `[artigo-especial-meta] AVISO: JSON-LD malformado — datePublished/dateModified saem null (${(e as Error).message}).\n`,
+      );
     }
   }
 
@@ -163,11 +182,40 @@ export function extractLeadParagraphs(html: string, maxParagraphs = 3): string[]
   return leadParagraphs;
 }
 
-/** Lê e parseia o arquivo do artigo publicado. Lança se o arquivo não existir
- *  (caller — Passo 0 da skill — decide a mensagem de erro acionável). */
+export class ArtigoEspecialMetaError extends Error {}
+
+/**
+ * Valida que a extração produziu o mínimo utilizável. `title`/`url` vazios
+ * nunca são "o artigo legitimamente não tem título" — são sinal de que o
+ * template do artigo mudou (tag renomeada/removida) e o extrator não
+ * encontrou nada pra casar. Sem esse guard, `""` se propagava em silêncio
+ * até virar um erro confuso 2-3 passos depois (URL vazia no `HEAD`/`GET` de
+ * liveness do Passo 0, ou título vazio no prompt do subagente de texto do
+ * Passo 1) — achado do silent-failure-hunter no review do #5979 (PR #6000).
+ * `description`/`image`/datas seguem opcionais de propósito (podem estar
+ * genuinamente ausentes sem indicar falha de extração).
+ */
+export function assertArtigoEspecialMeta(meta: ArtigoEspecialMeta, path: string): void {
+  const missing: string[] = [];
+  if (!meta.title) missing.push("<title>/og:title");
+  if (!meta.url) missing.push("og:url");
+  if (missing.length > 0) {
+    throw new ArtigoEspecialMetaError(
+      `${path}: extração de metadados falhou (${missing.join(", ")} ausente) — ` +
+        "o template do artigo pode ter mudado (ver workers/artigos/README.md pro shape esperado).",
+    );
+  }
+}
+
+/** Lê, parseia e valida (`assertArtigoEspecialMeta`) o arquivo do artigo
+ *  publicado. Lança se o arquivo não existir, ou se a extração não produziu
+ *  title/url (caller — Passo 0 da skill — decide a mensagem de erro
+ *  acionável a partir da exceção). */
 export function readArtigoMeta(path: string, maxParagraphs = 3): ArtigoEspecialMeta {
   const html = readFileSync(path, "utf8");
-  return parseArtigoMetaHtml(html, maxParagraphs);
+  const meta = parseArtigoMetaHtml(html, maxParagraphs);
+  assertArtigoEspecialMeta(meta, path);
+  return meta;
 }
 
 // ── CLI (debug/inspeção manual) ─────────────────────────────────────────

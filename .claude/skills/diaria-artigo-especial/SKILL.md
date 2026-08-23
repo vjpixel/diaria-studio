@@ -224,14 +224,25 @@ npx tsx scripts/update-artigo-especial-box.ts \
   --titulo "{title do artigo}" \
   --gancho "{1 frase de gancho, derivada da description ou 1º leadParagraph}" \
   --mes "{Mês por extenso, ex: Setembro}" \
-  [--no-pin]
+  --ano {ano} --slug {slug} \
+  [--no-pin] [--force]
 ```
+
+**`--ano`/`--slug` não são cosméticos — são o que ativa o guard de
+idempotência do canal `box`** (`decideChannelAction` em
+`scripts/lib/artigo-especial-state.ts`, mesmo state file
+`published.json` dos Passos 3-4): sem eles o script roda sempre, sem checar
+nem gravar o canal (é o modo usado só pelo `--unpin` standalone, ver
+abaixo). Rodando com `--ano`/`--slug` (o caso normal desta skill), a 2ª
+chamada pro mesmo artigo sem `--force` é pulada (log, exit 0) em vez de
+reabrir a branch/PR à toa.
 
 Reescreve **só o corpo** de `data/snippets/artigo-especial-apoiadores.md`
 (preserva header de comentário + parágrafo do tier + CTA — edição cirúrgica,
 #495; `ArtigoEspecialBoxFormatError` se o formato divergiu — ajustar
-manualmente 1x antes de rodar de novo, nunca adivinhar) e — por padrão —
-pina o slot 3 em `platform.config.json`
+manualmente 1x antes de rodar de novo, nunca adivinhar — e propaga: o canal
+`box` grava `failed` em `published.json`, retentável sem `--force` na
+próxima chamada) e — por padrão — pina o slot 3 em `platform.config.json`
 (`boxes_divulgacao.slot3="artigo-especial-apoiadores.md"` +
 `boxes_divulgacao_auto.pinned_slots` ganha `3`, idempotente).
 

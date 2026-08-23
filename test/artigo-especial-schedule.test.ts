@@ -16,11 +16,31 @@ const CONFIG = {
 };
 
 describe("toAammdd (#5979)", () => {
-  it("formata data local em AAMMDD", () => {
-    assert.equal(toAammdd(new Date(2026, 7, 23)), "260823"); // 23/ago/2026
+  it("formata um instante em AAMMDD no fuso BRT (default)", () => {
+    // 23/ago/2026 meio-dia BRT — instante explícito com offset, não
+    // componentes locais do Date (evita o bug corrigido abaixo).
+    assert.equal(toAammdd(new Date("2026-08-23T12:00:00-03:00")), "260823");
   });
   it("preenche zero a esquerda em mes/dia de 1 digito", () => {
-    assert.equal(toAammdd(new Date(2026, 0, 5)), "260105");
+    assert.equal(toAammdd(new Date("2026-01-05T12:00:00-03:00")), "260105");
+  });
+
+  it("#5979 review, PR #6000 — usa o fuso configurado (Intl), NUNCA os componentes locais do processo", () => {
+    // 23:30 UTC de 23/ago/2026 == 20:30 BRT do MESMO dia (UTC-3) — ainda
+    // "23" em BRT, apesar de já ser tarde em UTC. Antes da correção,
+    // `toAammdd` lia `date.getMonth()/getDate()` no fuso LOCAL do processo
+    // (não necessariamente BRT) — um processo rodando em UTC leria esse
+    // mesmo instante como "23" também neste caso específico (por
+    // coincidência, ainda dia 23 em ambos), então o teste abaixo usa um
+    // horário que SÓ diverge se o fuso for realmente respeitado.
+    const instant = new Date("2026-08-23T23:30:00-03:00"); // 23:30 BRT, 24/ago 02:30 UTC
+    assert.equal(toAammdd(instant, "America/Sao_Paulo"), "260823"); // ainda dia 23 em BRT
+    assert.equal(toAammdd(instant, "UTC"), "260824"); // já dia 24 em UTC
+  });
+
+  it("default do timeZone e America/Sao_Paulo quando omitido", () => {
+    const instant = new Date("2026-08-23T23:30:00-03:00");
+    assert.equal(toAammdd(instant), toAammdd(instant, "America/Sao_Paulo"));
   });
 });
 

@@ -82,6 +82,16 @@ export function readArtigoEspecialState(
             url: typeof r.url === "string" ? r.url : null,
             reason: typeof r.reason === "string" ? r.reason : null,
           };
+        } else {
+          // Status inválido/inesperado pra este canal — descartado (mesmo
+          // fail-soft dos outros ramos), mas com aviso: sem log aqui, um
+          // state file 95% saudável com 1 canal corrompido falhava mais
+          // silenciosamente que um arquivo 100% corrompido (que já loga no
+          // catch abaixo) — achado do silent-failure-hunter, review #5979/PR
+          // #6000.
+          process.stderr.write(
+            `[artigo-especial-state] AVISO: ${path} — canal "${ch}" tem status inválido (${JSON.stringify(r.status)}) — descartado, tratado como "nunca tentado".\n`,
+          );
         }
       }
     }

@@ -10,8 +10,10 @@ import {
   applyBoxPin,
   ArtigoEspecialBoxFormatError,
   ARTIGO_ESPECIAL_BOX_HEADER,
+  runUpdateArtigoEspecialBox,
   type BoxesDivulgacaoConfig,
 } from "../scripts/update-artigo-especial-box.ts";
+import { artigoEspecialStatePath, readArtigoEspecialState } from "../scripts/lib/artigo-especial-state.ts";
 
 const INPUT = {
   titulo: "Engenharia de ilusão: jailbreak de IA não arromba, encena",
@@ -232,5 +234,129 @@ describe("update-artigo-especial-box.ts CLI (--dry-run, integração leve)", () 
     const configAfter = JSON.parse(readFileSync(configPath, "utf8"));
     assert.equal(configAfter.boxes_divulgacao.slot3, "artigo-especial-apoiadores.md");
     assert.deepEqual(configAfter.boxes_divulgacao_auto.pinned_slots, [3]);
+  });
+});
+
+// #5979 review, PR #6000 (silent-failure-hunter finding #7): o canal "box"
+// estava listado em ARTIGO_ESPECIAL_CHANNELS e documentado como coberto,
+// mas nada no script chamava o state module — o guard só existia no papel.
+describe("runUpdateArtigoEspecialBox — guard de idempotencia do canal 'box' (#5979 review, PR #6000)", () => {
+  let dir: string;
+  let dataDir: string;
+  let snippetsFile: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "artigo-especial-box-state-"));
+    dataDir = join(dir, "data");
+    snippetsFile = join(dir, "artigo-especial-apoiadores.md");
+    configPath = join(dir, "platform.config.json");
+    writeFileSync(configPath, JSON.stringify({ boxes_divulgacao_auto: { pinned_slots: [] } }), "utf8");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("com --ano/--slug: 1a execucao grava canal 'box' como done em published.json", () => {
+    const result = runUpdateArtigoEspecialBox({
+      ...INPUT,
+      snippetsFile,
+      configPath,
+      dataDir,
+      slot: 3,
+      pin: true,
+      dryRun: false,
+      force: false,
+      ano: "2026",
+      slug: "x",
+    });
+    assert.equal(result.action, "updated");
+    const statePath = artigoEspecialStatePath(dataDir, "2026", "x");
+    const state = readArtigoEspecialState(statePath, "2026", "x");
+    assert.equal(state.channels.box?.status, "done");
+  });
+
+  it("2a execucao sem --force: pula (skipped), nao reescreve snippet/config", () => {
+    runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false, ano: "2026", slug: "x" });
+    const snippetAfterFirst = readFileSync(snippetsFile, "utf8");
+    const configAfterFirst = readFileSync(configPath, "utf8");
+
+    const result = runUpdateArtigoEspecialBox({
+      ...INPUT,
+      titulo: "Outro titulo — nao deveria aparecer",
+      snippetsFile,
+      configPath,
+      dataDir,
+      slot: 3,
+      pin: true,
+      dryRun: false,
+      force: false,
+      ano: "2026",
+      slug: "x",
+    });
+    assert.equal(result.action, "skipped");
+    assert.equal(readFileSync(snippetsFile, "utf8"), snippetAfterFirst);
+    assert.equal(readFileSync(configPath, "utf8"), configAfterFirst);
+  });
+
+  it("--force reexecuta um canal 'box' ja done", () => {
+    runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false, ano: "2026", slug: "x" });
+    const result = runUpdateArtigoEspecialBox({
+      ...INPUT,
+      titulo: "Titulo atualizado",
+      snippetsFile,
+      configPath,
+      dataDir,
+      slot: 3,
+      pin: true,
+      dryRun: false,
+      force: true,
+      ano: "2026",
+      slug: "x",
+    });
+    assert.equal(result.action, "updated");
+    assert.ok(readFileSync(snippetsFile, "utf8").includes("Titulo atualizado"));
+  });
+
+  it("sem --ano/--slug: guard inteiro desligado, sempre executa, sem tocar published.json (compat com --unpin standalone)", () => {
+    const r1 = runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false });
+    const r2 = runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false });
+    assert.equal(r1.action, "updated");
+    assert.equal(r2.action, "updated"); // nunca "skipped" sem ano/slug
+    assert.ok(!existsSync(join(dataDir, "artigo-especial")));
+  });
+
+  it("--dry-run com --ano/--slug: NAO grava published.json mesmo quando o canal ainda nao foi tentado", () => {
+    const result = runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: true, force: false, ano: "2026", slug: "x" });
+    assert.equal(result.action, "dry-run");
+    assert.ok(!existsSync(join(dataDir, "artigo-especial")));
+  });
+
+  it("formato divergido: applyArtigoEspecialBoxUpdate lanca -> canal grava 'failed', erro propaga (nao engole)", () => {
+    // Bootstrap valido primeiro, depois corrompe o arquivo pra forcar o
+    // ArtigoEspecialBoxFormatError no 2o reuso (com --force, canal ja done).
+    runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false, ano: "2026", slug: "y" });
+    writeFileSync(snippetsFile, "conteudo totalmente fora da convencao, sem titulo nem frase-padrao", "utf8");
+
+    assert.throws(
+      () =>
+        runUpdateArtigoEspecialBox({
+          ...INPUT,
+          snippetsFile,
+          configPath,
+          dataDir,
+          slot: 3,
+          pin: true,
+          dryRun: false,
+          force: true,
+          ano: "2026",
+          slug: "y",
+        }),
+      ArtigoEspecialBoxFormatError,
+    );
+
+    const statePath = artigoEspecialStatePath(dataDir, "2026", "y");
+    const state = readArtigoEspecialState(statePath, "2026", "y");
+    assert.equal(state.channels.box?.status, "failed");
   });
 });

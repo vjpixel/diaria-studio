@@ -1,8 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readArtigoMeta, parseArtigoMetaHtml, extractLeadParagraphs } from "../scripts/lib/artigo-especial-meta.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+  readArtigoMeta,
+  parseArtigoMetaHtml,
+  extractLeadParagraphs,
+  assertArtigoEspecialMeta,
+  ArtigoEspecialMetaError,
+} from "../scripts/lib/artigo-especial-meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ENGENHARIA_PATH = resolve(
@@ -48,15 +56,25 @@ describe("readArtigoMeta / parseArtigoMetaHtml (#5979)", () => {
     assert.match(meta.leadParagraphs[1], /usou o Claude para conduzir quase toda uma invasão/);
   });
 
-  it("artigo SEM nota de apresentacao (o-agente: h3.sect logo apos o lede) ainda produz leadParagraphs corretos", () => {
+  it("o-agente TAMBEM tem 1 paragrafo intermediario entre lede e 1o h3.sect (#5979 review, PR #6000 — corrige claim anterior de que 'nao tinha')", () => {
+    // Achado do review: o-agente tem a MESMA estrutura de engenharia-de-ilusao
+    // (lede -> 1 <p> sem classe -> 1o h3.sect) — o paragrafo intermediario eh
+    // uma frase de referencia a cobertura anterior ("A diar.ia.br ja havia
+    // coberto..."), nao uma nota de apresentacao, mas eh descartado pela MESMA
+    // regra estrutural (posicional, nao semantica) — ver docstring do modulo.
     const meta = readArtigoMeta(O_AGENTE_PATH);
-    assert.ok(meta.leadParagraphs.length >= 1);
+    assert.equal(meta.leadParagraphs.length, 3);
     assert.match(meta.leadParagraphs[0], /Se você não sabe até onde o agente de IA/);
-    // Sem nota pra pular — os proximos paragrafos vem direto do conteudo real
-    // pos primeiro h3.sect.
+    // O paragrafo intermediario ("A diar.ia.br ja havia coberto esse mesmo
+    // modelo...") nunca aparece — descartado pela regra estrutural.
     for (const p of meta.leadParagraphs) {
-      assert.ok(p.length > 0);
+      assert.ok(!p.includes("já havia coberto"), `paragrafo intermediario vazou: "${p}"`);
     }
+    // leadParagraphs[1]/[2] sao o conteudo REAL pos-1o-h3.sect, travado
+    // explicitamente (sem isso a regressao do achado acima passaria batida
+    // de novo — pr-test-analyzer, PR #6000).
+    assert.match(meta.leadParagraphs[1], /Não é um evento isolado/);
+    assert.match(meta.leadParagraphs[1], /Apollo Research documentou/);
   });
 
   it("maxParagraphs customizado limita o array", () => {
@@ -114,5 +132,62 @@ describe("parseArtigoMetaHtml — JSON-LD malformado nao quebra o resto", () => 
     assert.equal(meta.description, "D");
     assert.equal(meta.datePublished, null);
     assert.equal(meta.dateModified, null);
+  });
+});
+
+describe("assertArtigoEspecialMeta (#5979 review, PR #6000)", () => {
+  const VALID = { title: "T", description: "D", url: "https://x/", image: null, datePublished: null, dateModified: null, h1: "T", leadParagraphs: [] };
+
+  it("nao lanca quando title e url estao presentes", () => {
+    assert.doesNotThrow(() => assertArtigoEspecialMeta(VALID, "/path/index.html"));
+  });
+
+  it("lanca ArtigoEspecialMetaError quando title esta vazio", () => {
+    assert.throws(
+      () => assertArtigoEspecialMeta({ ...VALID, title: "" }, "/path/index.html"),
+      (e: unknown) => e instanceof ArtigoEspecialMetaError && (e as Error).message.includes("og:title"),
+    );
+  });
+
+  it("lanca quando url esta vazia, mensagem cita o path", () => {
+    assert.throws(
+      () => assertArtigoEspecialMeta({ ...VALID, url: "" }, "/artigos/2026/x/index.html"),
+      (e: unknown) => e instanceof ArtigoEspecialMetaError && (e as Error).message.includes("/artigos/2026/x/index.html"),
+    );
+  });
+
+  it("lanca com os 2 campos citados quando title E url estao vazios", () => {
+    assert.throws(
+      () => assertArtigoEspecialMeta({ ...VALID, title: "", url: "" }, "/path"),
+      (e: unknown) => {
+        if (!(e instanceof ArtigoEspecialMetaError)) return false;
+        const msg = e.message;
+        return msg.includes("og:title") && msg.includes("og:url");
+      },
+    );
+  });
+
+  it("description/image/datas vazias/null NAO disparam o guard (opcionais)", () => {
+    assert.doesNotThrow(() =>
+      assertArtigoEspecialMeta({ ...VALID, description: "", image: null, datePublished: null, dateModified: null }, "/path"),
+    );
+  });
+
+  it("readArtigoMeta lanca ArtigoEspecialMetaError quando o HTML nao tem title nem og:title", () => {
+    // Fixture sintetica sem <title>/og:title — extração falha, readArtigoMeta
+    // deve abortar em vez de propagar title:"" silenciosamente (achado do
+    // silent-failure-hunter, review PR #6000).
+    const dir = mkdtempSync(join(tmpdir(), "artigo-meta-noTitle-"));
+    try {
+      const htmlPath = join(dir, "index.html");
+      writeFileSync(
+        htmlPath,
+        '<meta property="og:url" content="https://x/"><div class="manuscript"><p class="lede">L.</p></div>',
+        "utf8",
+      );
+      assert.throws(() => readArtigoMeta(htmlPath), ArtigoEspecialMetaError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

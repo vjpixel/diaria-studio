@@ -16,9 +16,24 @@
  * pronto. Escolher `destaque: "d3"` aqui é só uma forma de apontar pro slot
  * de horário certo em `fallback_schedule` — não implica nenhuma relação com
  * um "3º destaque" de edição.
+ *
+ * **`toAammdd` deriva "hoje" no fuso configurado via `Intl` (`datePartsInTz`,
+ * reusado de `scripts/lib/next-edition-date.ts`), nunca via `Date.getFullYear/
+ * getMonth/getDate` locais.** Achado do review do #5979 (PR #6000, code-
+ * reviewer + comment-analyzer, independentemente): a versão anterior lia os
+ * componentes de data no fuso LOCAL do processo — correto só quando o
+ * processo já roda em BRT (verdade hoje, já que a skill é `windows`-only,
+ * máquina do editor), mas silenciosamente incorreto num processo rodando em
+ * outro fuso (ex: CI `ubuntu-latest`, default UTC) durante a janela
+ * 21:00-23:59 BRT, quando "hoje" em UTC já é "amanhã" em BRT — mesma classe
+ * de bug que `scripts/compute-social-schedule.ts` já documenta e evita
+ * (`timezoneOffsetIso`, incidente 260428 citado lá). Corrigido reusando o
+ * mesmo padrão `Intl.DateTimeFormat` já provado em `next-edition-date.ts`,
+ * em vez de reintroduzir a mesma classe de bug numa 2ª implementação.
  */
 
 import { computeScheduledAt } from "../compute-social-schedule.ts";
+import { datePartsInTz, toAammdd as datePartsToAammdd } from "./next-edition-date.ts";
 
 interface ScheduleConfig {
   publishing?: {
@@ -29,12 +44,15 @@ interface ScheduleConfig {
   };
 }
 
-/** Pura: formata um `Date` como `AAMMDD` (2 dígitos de ano). */
-export function toAammdd(date: Date): string {
-  const yy = String(date.getFullYear() % 100).padStart(2, "0");
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  return `${yy}${mm}${dd}`;
+/** Fallback quando `config.publishing.social.timezone` está ausente —
+ *  mesmo default de `next-edition-date.ts::BRT_TIMEZONE`. */
+const DEFAULT_TIMEZONE = "America/Sao_Paulo";
+
+/** Pura: formata um `Date` como `AAMMDD` (2 dígitos de ano), no fuso
+ *  informado (default BRT) — via `Intl`, nunca componentes locais do
+ *  processo (ver docstring do módulo). */
+export function toAammdd(date: Date, timeZone: string = DEFAULT_TIMEZONE): string {
+  return datePartsToAammdd(datePartsInTz(date, timeZone));
 }
 
 /**
@@ -58,7 +76,10 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  * Resolve o `scheduled_at` final:
  *   - `at` explícito (já validado por `validateExplicitAt`) → usa como está.
  *   - omitido → D+1 17:30 BRT a partir de `now` (default `Date.now()`),
- *     via `computeScheduledAt` (reuso, ver docstring do módulo).
+ *     via `computeScheduledAt` (reuso, ver docstring do módulo). "Hoje" é
+ *     derivado no fuso de `config.publishing.social.timezone` (fallback BRT
+ *     se ausente) — mesmo fuso que `computeScheduledAt` usa pro resto do
+ *     cálculo, nunca o fuso local do processo.
  */
 export function resolveArtigoEspecialScheduledAt(
   config: ScheduleConfig,
@@ -67,7 +88,8 @@ export function resolveArtigoEspecialScheduledAt(
   if (input.at) return validateExplicitAt(input.at, input.now ?? Date.now());
 
   const now = input.now ?? Date.now();
-  const today = toAammdd(new Date(now));
+  const timeZone = config.publishing?.social?.timezone ?? DEFAULT_TIMEZONE;
+  const today = toAammdd(new Date(now), timeZone);
   return computeScheduledAt({
     config,
     editionDate: today,
