@@ -203,15 +203,34 @@ export function buildUnitInvestigationCommand(unitName: string, fields: UnitDiag
 // o conjunto mudar: unit nova falhou, ou uma unit saiu do conjunto e outra
 // permanece — mesmo padrão de OnedriveSyncAlarmState, adaptado pra um
 // conjunto em vez de um único verdict).
+//
+// #5978 — dedup por conjunto sozinho NUNCA expirava: enquanto o mesmo
+// conjunto de units seguisse `failed`, o e-mail nunca era reenviado, por
+// dias (achado ao vivo: rampa Clarice parada ~2 dias com o alarme
+// "funcionando" e em silêncio). `ALARM_DEDUP_EXPIRY_MS` adiciona um teto de
+// tempo — mesmo com o conjunto IDÊNTICO, decorrida a janela o alarme
+// reenvia, pra "parado há N dias" nunca ficar invisível.
 // ---------------------------------------------------------------------------
+
+/** Janela de expiração do dedup por conjunto (#5978) — sugestão da issue
+ * (6h). Decorrido esse tempo desde o último e-mail enviado pro MESMO
+ * conjunto, `shouldSendSystemdFailedUnitsAlarm` reenvia mesmo sem o
+ * conjunto ter mudado. */
+export const ALARM_DEDUP_EXPIRY_MS = 6 * 60 * 60 * 1000;
 
 export interface SystemdFailedUnitsAlarmState {
   /** `null` = nunca alarmado ainda. Lista SEMPRE ordenada (ver `evaluateSystemdFailedUnits`). */
   lastAlarmedUnits: string[] | null;
+  /** ISO timestamp do último e-mail enviado — `null` = nunca alarmado ainda,
+   * OU entry persistida antes do #5978 (sem o campo). Em ambos os casos
+   * `shouldSendSystemdFailedUnitsAlarm` trata como "expirado" (reenvia),
+   * nunca como "recém-alarmado" — mais seguro sub-supressão do que
+   * super-supressão pra um alarme de última linha. */
+  lastAlarmedAt: string | null;
 }
 
 export function emptySystemdFailedUnitsAlarmState(): SystemdFailedUnitsAlarmState {
-  return { lastAlarmedUnits: null };
+  return { lastAlarmedUnits: null, lastAlarmedAt: null };
 }
 
 function sameUnitSet(a: string[], b: string[]): boolean {
@@ -219,17 +238,32 @@ function sameUnitSet(a: string[], b: string[]): boolean {
   return a.every((v, i) => v === b[i]);
 }
 
+/** Pure — `true` se o dedup por conjunto expirou (#5978): `lastAlarmedAt`
+ * ausente (nunca gravado, ou state pré-#5978) OU decorrido
+ * `ALARM_DEDUP_EXPIRY_MS` desde então. */
+function isDedupExpired(lastAlarmedAt: string | null, now: Date): boolean {
+  if (lastAlarmedAt === null) return true;
+  const elapsedMs = now.getTime() - new Date(lastAlarmedAt).getTime();
+  return elapsedMs >= ALARM_DEDUP_EXPIRY_MS;
+}
+
 export function shouldSendSystemdFailedUnitsAlarm(
   evaluation: SystemdFailedUnitsEvaluation,
   state: SystemdFailedUnitsAlarmState,
+  now: Date = new Date(),
 ): boolean {
   if (!isAlarmingVerdict(evaluation.verdict)) return false;
   if (state.lastAlarmedUnits === null) return true;
-  return !sameUnitSet(state.lastAlarmedUnits, evaluation.failedUnits);
+  if (!sameUnitSet(state.lastAlarmedUnits, evaluation.failedUnits)) return true;
+  // Conjunto idêntico — só reenvia se a janela de dedup já expirou (#5978).
+  return isDedupExpired(state.lastAlarmedAt, now);
 }
 
-export function markSystemdFailedUnitsAlarmed(failedUnits: string[]): SystemdFailedUnitsAlarmState {
-  return { lastAlarmedUnits: [...failedUnits].sort() };
+export function markSystemdFailedUnitsAlarmed(
+  failedUnits: string[],
+  now: Date = new Date(),
+): SystemdFailedUnitsAlarmState {
+  return { lastAlarmedUnits: [...failedUnits].sort(), lastAlarmedAt: now.toISOString() };
 }
 
 // ---------------------------------------------------------------------------

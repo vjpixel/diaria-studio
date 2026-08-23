@@ -75,7 +75,7 @@ describe("findExistingAlarmIssue (#5112 item 2 — fallback de dedup por marcado
     const run: GhRunFn = () =>
       ok(JSON.stringify([{ number: 5101, url: "https://github.com/x/y/issues/5101", body: `algo\n\n${marker}\n` }]));
     const found = findExistingAlarmIssue(FINDING_A.check, FINDING_A.fingerprint, CWD, run);
-    assert.deepEqual(found, { issueNumber: 5101, url: "https://github.com/x/y/issues/5101" });
+    assert.deepEqual(found, { issueNumber: 5101, url: "https://github.com/x/y/issues/5101", state: "OPEN" });
   });
 
   it("nenhum match -> null", () => {
@@ -237,6 +237,122 @@ describe("ensureAlarmIssue (#5112)", () => {
     };
     ensureAlarmIssue(FINDING_A, undefined, CWD, run);
     assert.ok(bodyArg!.includes(alarmFindingMarker(FINDING_A.check, FINDING_A.fingerprint)));
+  });
+});
+
+// ─── #5978: issue localizada CLOSED nunca é "reused" silenciosamente ──────
+
+describe("ensureAlarmIssue — reabre issue fechada em vez de reusar silenciosamente (#5978)", () => {
+  it("cachedEntry com closedAt setado -> chama 'gh issue reopen' + comment, action 'reopened'", () => {
+    let reopenArgs: string[] | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "reopen") {
+        reopenArgs = args;
+        return ok("");
+      }
+      throw new Error(`não deveria chamar ${args.join(" ")} — deveria ir direto pro reopen`);
+    };
+    const result = ensureAlarmIssue(
+      FINDING_A,
+      { issueNumber: 5942, url: "https://github.com/x/y/issues/5942", closedAt: "2026-08-20T00:00:00Z" },
+      CWD,
+      run,
+    );
+    assert.deepEqual(result, { issueNumber: 5942, url: "https://github.com/x/y/issues/5942", action: "reopened" });
+    assert.ok(reopenArgs, "deveria ter chamado 'gh issue reopen'");
+    assert.equal(reopenArgs![2], "5942");
+    assert.ok(reopenArgs!.includes("--comment"), "reopen deveria comentar o motivo (preserva histórico do achado)");
+  });
+
+  it("sem cache, mas findExistingAlarmIssue acha issue CLOSED via marcador -> reabre também", () => {
+    const marker = alarmFindingMarker(FINDING_A.check, FINDING_A.fingerprint);
+    let reopenCalled = false;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") {
+        return ok(
+          JSON.stringify([
+            { number: 5826, url: "https://github.com/x/y/issues/5826", body: marker, state: "CLOSED" },
+          ]),
+        );
+      }
+      if (args[0] === "issue" && args[1] === "reopen") {
+        reopenCalled = true;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.equal(reopenCalled, true);
+    assert.deepEqual(result, { issueNumber: 5826, url: "https://github.com/x/y/issues/5826", action: "reopened" });
+  });
+
+  it("findExistingAlarmIssue acha issue OPEN via marcador -> comportamento antigo preservado (reused, sem reopen)", () => {
+    const marker = alarmFindingMarker(FINDING_A.check, FINDING_A.fingerprint);
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") {
+        return ok(JSON.stringify([{ number: 999, url: "https://github.com/x/y/issues/999", body: marker, state: "OPEN" }]));
+      }
+      throw new Error("não deveria chamar reopen pra issue já aberta");
+    };
+    const result = ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.deepEqual(result, { issueNumber: 999, url: "https://github.com/x/y/issues/999", action: "reused" });
+  });
+
+  it("cachedEntry sem closedAt (undefined ou null) -> fast path 'reused' de sempre, sem tocar gh", () => {
+    const run: GhRunFn = () => {
+      throw new Error("não deveria chamar gh quando cache diz 'aberta'");
+    };
+    const result = ensureAlarmIssue(FINDING_A, { issueNumber: 42, url: "https://x/42", closedAt: null }, CWD, run);
+    assert.deepEqual(result, { issueNumber: 42, url: "https://x/42", action: "reused" });
+  });
+
+  it("'gh issue reopen' falha -> action 'failed', nunca fabrica sucesso (fail-soft #5112 item 6)", () => {
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "reopen") return fail("HTTP 403: rate limited");
+      throw new Error("unexpected");
+    };
+    const result = ensureAlarmIssue(
+      FINDING_A,
+      { issueNumber: 5942, url: "https://x/5942", closedAt: "2026-08-20T00:00:00Z" },
+      CWD,
+      run,
+    );
+    assert.equal(result.action, "failed");
+    assert.equal(result.issueNumber, null);
+    assert.equal(result.url, null);
+    assert.match(result.error ?? "", /rate limited/);
+  });
+});
+
+describe("applyAlarmReconciliation — cenário real da issue #5978 (issue fechada reproduz de novo)", () => {
+  it("achado que reproduz com issue local marcada closedAt -> vira REOPENED, state volta a closedAt: null", () => {
+    const state: AlarmIssuesState = {
+      [alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint)]: {
+        issueNumber: 5942,
+        url: "https://github.com/x/y/issues/5942",
+        missingStreak: 2,
+        closedAt: "2026-08-21T08:00:00Z",
+        family: "estado",
+      },
+    };
+    let reopenArgs: string[] | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "reopen") {
+        reopenArgs = args;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const { nextState, findingOutcomes } = applyAlarmReconciliation([FINDING_A], state, {
+      cwd: CWD,
+      closeAfterRuns: 2,
+      run,
+    });
+    assert.equal(findingOutcomes[0].action, "reopened");
+    assert.ok(reopenArgs, "deveria ter chamado 'gh issue reopen' de verdade");
+    const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+    assert.equal(nextState[key].closedAt, null, "tracking local volta a tratar a issue como aberta");
+    assert.equal(nextState[key].issueNumber, 5942, "mesma issue reaberta, nunca uma nova");
   });
 });
 
@@ -674,18 +790,28 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
     assert.equal(state[key].closedAt, now.toISOString());
   });
 
-  it("achado reaparece depois de fechado -> volta a ser tratado como pendente (closedAt reseta pra null)", () => {
+  it("achado reaparece depois de fechado -> REABRE a issue no GitHub (#5978, não só reusa localmente), closedAt reseta pra null", () => {
     const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
     const state: AlarmIssuesState = {
       [key]: { issueNumber: 1, url: "https://x/1", missingStreak: 2, closedAt: "2026-08-01T00:00:00Z" },
     };
-    // cache tem a entry -> ensureAlarmIssue reusa via fast path, sem tocar gh
-    const run: GhRunFn = () => {
-      throw new Error("não deveria chamar gh — deveria reusar via cache");
+    // #5978: cache sabe que a issue está fechada (closedAt setado) -> ensureAlarmIssue
+    // chama 'gh issue reopen' de verdade, nunca trata como reuse silencioso.
+    let reopenArgs: string[] | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "reopen") {
+        reopenArgs = args;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
     };
-    const { nextState } = applyAlarmReconciliation([FINDING_A], state, { cwd: CWD, closeAfterRuns: 2, run });
+    const { nextState, findingOutcomes } = applyAlarmReconciliation([FINDING_A], state, { cwd: CWD, closeAfterRuns: 2, run });
+    assert.equal(findingOutcomes[0].action, "reopened");
+    assert.ok(reopenArgs, "deveria ter chamado 'gh issue reopen'");
+    assert.equal(reopenArgs![2], "1");
     assert.equal(nextState[key].closedAt, null);
     assert.equal(nextState[key].missingStreak, 0);
+    assert.equal(nextState[key].issueNumber, 1, "mesma issue reaberta, nunca uma nova");
   });
 
   describe("#5553 — família estampada em `ensure` + entry de evento nunca auto-fecha (regressão #5525)", () => {

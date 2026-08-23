@@ -180,7 +180,11 @@ function loadState(): SystemdFailedUnitsAlarmState {
     const lastAlarmedUnits = Array.isArray(raw.lastAlarmedUnits)
       ? raw.lastAlarmedUnits.filter((u): u is string => typeof u === "string")
       : null;
-    return { lastAlarmedUnits };
+    // #5978 — `lastAlarmedAt` ausente (state persistido antes desta unidade)
+    // vira `null`; `shouldSendSystemdFailedUnitsAlarm` trata isso como
+    // "dedup expirado" (reenvia), não como bloqueio silencioso.
+    const lastAlarmedAt = typeof raw.lastAlarmedAt === "string" ? raw.lastAlarmedAt : null;
+    return { lastAlarmedUnits, lastAlarmedAt };
   } catch {
     return emptySystemdFailedUnitsAlarmState();
   }

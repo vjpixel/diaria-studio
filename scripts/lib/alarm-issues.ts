@@ -206,7 +206,10 @@ export interface AlarmFinding {
 export interface AlarmIssueResult {
   issueNumber: number | null;
   url: string | null;
-  action: "created" | "reused" | "failed";
+  /** `"reopened"` (#5978): a issue localizada (via cache OU marcador) estava
+   * `CLOSED` no GitHub — reaberta + comentada em vez de tratada como reuse
+   * silencioso (ver docstring de `ensureAlarmIssue`). */
+  action: "created" | "reused" | "reopened" | "failed";
   error?: string;
 }
 
@@ -304,21 +307,36 @@ export function findExistingAlarmIssue(
   fingerprint: string,
   cwd: string,
   run: GhRunFn = defaultAlarmGhRun,
-): { issueNumber: number; url: string } | null {
+): { issueNumber: number; url: string; state: "OPEN" | "CLOSED" } | null {
   const marker = alarmFindingMarker(check, fingerprint);
   const res = run(
-    ["issue", "list", "--search", `${check} ${fingerprint}`, "--state", "all", "--json", "number,url,body", "--limit", "30"],
+    [
+      "issue",
+      "list",
+      "--search",
+      `${check} ${fingerprint}`,
+      "--state",
+      "all",
+      "--json",
+      "number,url,body,state",
+      "--limit",
+      "30",
+    ],
     cwd,
   );
   if (res.status !== 0) return null;
-  let issues: { number: number; url: string; body: string }[];
+  let issues: { number: number; url: string; body: string; state?: string }[];
   try {
-    issues = JSON.parse(res.stdout) as { number: number; url: string; body: string }[];
+    issues = JSON.parse(res.stdout) as { number: number; url: string; body: string; state?: string }[];
   } catch {
     return null;
   }
   const match = issues.find((i) => (i.body ?? "").includes(marker));
-  return match ? { issueNumber: match.number, url: match.url } : null;
+  if (!match) return null;
+  // `state` ausente (mock antigo/gh degradado) trata como OPEN — nunca
+  // fabrica um "CLOSED" que dispararia reopen sem necessidade.
+  const state: "OPEN" | "CLOSED" = match.state === "CLOSED" ? "CLOSED" : "OPEN";
+  return { issueNumber: match.number, url: match.url, state };
 }
 
 /** Erro de `gh issue create`/`gh label create` quando uma label passada em
@@ -431,25 +449,74 @@ function createAlarmIssueWithLabelRetry(
 }
 
 /**
+ * Reabre (#5978) uma issue de achado localizada `CLOSED` — via `gh issue
+ * reopen --comment`, nunca silenciosamente tratada como "reused". Fail-soft
+ * na mesma linha do resto do módulo: se `gh issue reopen` falhar, devolve
+ * `action: "failed"` (NUNCA fabrica `issueNumber`/`url` de sucesso) pra que
+ * `applyAlarmReconciliation` não avance o estado local como se a issue
+ * estivesse reaberta quando na verdade continua fechada no GitHub — a
+ * próxima execução tenta de novo.
+ */
+function reopenAlarmIssue(
+  issueNumber: number,
+  url: string,
+  finding: AlarmFinding,
+  cwd: string,
+  run: GhRunFn,
+): AlarmIssueResult {
+  const comment =
+    `Achado voltou a reproduzir (fingerprint \`${finding.fingerprint}\`) — ` +
+    "reabrindo automaticamente em vez de tratar como registrado (#5978).";
+  const res = run(["issue", "reopen", String(issueNumber), "--comment", comment], cwd);
+  if (res.status !== 0) {
+    return {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: `gh issue reopen falhou pra #${issueNumber}: ${res.stderr.trim() || `status ${res.status}`}`,
+    };
+  }
+  return { issueNumber, url, action: "reopened" };
+}
+
+/**
  * Garante que existe uma issue pro achado `finding` — reusa via `cachedEntry`
  * (fast path, sem tocar rede) OU via busca por marcador (`findExistingAlarmIssue`,
  * fallback quando o cache não tem a entry) OU cria uma nova (com retry
  * fail-soft de label ausente — ver `createAlarmIssueWithLabelRetry`).
  * **NUNCA** fabrica `issueNumber`/`url` — se toda tentativa de `gh issue
  * create` falhar, devolve `action: "failed"` com `error` populado.
+ *
+ * **#5978 — issue localizada `CLOSED` nunca é "reused" silenciosamente.**
+ * Achado #5978: `ensureAlarmIssue` tratava uma issue fechada (por auto-close
+ * do próprio mecanismo, OU fechada manualmente e o achado voltou a
+ * reproduzir) exatamente como uma aberta — o achado ficava "registrado" num
+ * lugar que ninguém olha. Duas fontes de "está fechada" são checadas: (1)
+ * `cachedEntry.closedAt` (o tracking local já sabe, porque foi este módulo
+ * quem fechou via `closeAlarmIssue`), (2) `findExistingAlarmIssue(...).state`
+ * (fallback por marcador — cobre fechamento manual/fora do tracking local).
+ * Qualquer uma das duas dispara `reopenAlarmIssue` em vez do caminho de
+ * reuse — a issue é reaberta + comentada, preservando o histórico do achado
+ * (razão de existir do marcador), nunca uma issue nova duplicada.
  */
 export function ensureAlarmIssue(
   finding: AlarmFinding,
-  cachedEntry: { issueNumber: number; url: string } | undefined,
+  cachedEntry: { issueNumber: number; url: string; closedAt?: string | null } | undefined,
   cwd: string,
   run: GhRunFn = defaultAlarmGhRun,
 ): AlarmIssueResult {
   if (cachedEntry) {
+    if (cachedEntry.closedAt) {
+      return reopenAlarmIssue(cachedEntry.issueNumber, cachedEntry.url, finding, cwd, run);
+    }
     return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reused" };
   }
 
   const existing = findExistingAlarmIssue(finding.check, finding.fingerprint, cwd, run);
   if (existing) {
+    if (existing.state === "CLOSED") {
+      return reopenAlarmIssue(existing.issueNumber, existing.url, finding, cwd, run);
+    }
     return { issueNumber: existing.issueNumber, url: existing.url, action: "reused" };
   }
 
@@ -621,7 +688,9 @@ export function applyAlarmReconciliation(
       const cachedEntry = state[key];
       const result = ensureAlarmIssue(
         action.finding,
-        cachedEntry ? { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url } : undefined,
+        cachedEntry
+          ? { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, closedAt: cachedEntry.closedAt }
+          : undefined,
         opts.cwd,
         run,
       );
@@ -637,10 +706,11 @@ export function applyAlarmReconciliation(
         missingStreak: 0,
         // Reativa o tracking (closedAt: null) mesmo se a entry anterior
         // estava fechada — o achado reapareceu, então voltou a ser
-        // pendente do ponto de vista do tracking local. Isso NÃO reabre a
-        // issue no GitHub automaticamente (fora de escopo, #5112) — se
-        // `action === "reused"` apontando pra uma issue já fechada lá, o
-        // e-mail cita a issue mesmo assim; reabrir é decisão do editor.
+        // pendente do ponto de vista do tracking local. #5978: a issue no
+        // GitHub também é reaberta nesse caso (`ensureAlarmIssue` dispara
+        // `reopenAlarmIssue` quando `cachedEntry.closedAt` está setado) —
+        // aqui só refletimos o resultado; `result.action` já veio
+        // "reopened" (ou "failed", que nunca chega aqui, ver acima).
         closedAt: null,
         // #5553 — sempre estampa a família ATUAL do finding, mesmo em
         // reused/cache-hit: se o script chamador algum dia reclassificar o
