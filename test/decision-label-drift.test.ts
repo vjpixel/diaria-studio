@@ -444,9 +444,16 @@ describe("execution-guard — dois fatores obrigatórios (#5958, achados de revi
     "nada exige envio real aqui, pode seguir normalmente",
     "não é vedado o envio real neste caso",
     "isso não está fora do escopo do overnight, pode seguir",
-    // Colisão com "editor" no sentido de ferramenta.
+    // Colisão com "editor" no sentido de ferramenta — artigo INDEFINIDO.
     "a imagem precisa de um editor gráfico melhor para ajuste fino",
     "esse markdown precisa de um editor de texto que suporte utf-8",
+    // Meta-discussão sobre OUTROS guards + verbo fraco: é o falso positivo
+    // que sobreviveu ao 1º dois-fatores e motivou a capacidade em 2 níveis
+    // (achado de re-review). "guard"/"sessão supervisionada" são vocabulário
+    // corrente do repo pra CI, review de PR e gates de stage.
+    "o guard de execução deste PR precisa de mais testes antes de mergear",
+    "o guard de publicação do stage 5 exige revisão antes de qualquer mudança de threshold",
+    "essa issue precisa de sessão supervisionada de review antes do merge",
   ];
   for (const prosa of NAO_CASA) {
     it(`não casa: "${prosa.slice(0, 50)}…"`, () => assert.equal(hit(prosa), false));
@@ -457,11 +464,34 @@ describe("execution-guard — dois fatores obrigatórios (#5958, achados de revi
     "Pulada: exige rodar envio real de campanha Clarice.",
     "isto exige, antes de qualquer coisa, um envio real",
     "Precisa do editor ou de sessão com execução autorizada.",
-    // Auto-suficientes: nomeiam a sessão que não consegue.
+    // Auto-suficientes: nomeiam a sessão (ou a pessoa) que não consegue.
     "Segue fora do escopo do overnight.",
     "Isso está fora do escopo autônomo desta sessão.",
+    // A forma mais curta e mais provável de um bounce — o critério de dois
+    // fatores a perdia (achado de re-review). Artigo DEFINIDO separa a pessoa
+    // da ferramenta.
+    "Precisa do editor.",
+    "Precisa do editor decidir isso.",
+    // "sem dúvida" é ênfase, não negação do que vem depois: incluir `sem` na
+    // lista de negação suprimia este bounce legítimo (achado de re-review).
+    "sem dúvida, não consigo fazer envio ao vivo hoje",
   ];
   for (const prosa of CASA) {
     it(`casa: "${prosa.slice(0, 50)}…"`, () => assert.equal(hit(prosa), true));
   }
+});
+
+describe("execution-guard — quantificadores continuam limitados (#5958)", () => {
+  it("prosa longa não degrada: janela e lookbehind são limitados", () => {
+    // A segurança contra backtracking patológico vem dos limites `{0,60}` e
+    // `{0,2}`. Um teste de tempo trava a propriedade que importa: se alguém
+    // trocar por `*`/`+` num refactor futuro, isto estoura muito antes de
+    // alguém notar em produção (o gate roda sobre texto arbitrário de
+    // comentário do GitHub).
+    const prosaLonga = `${"exige ".repeat(20_000)}envio`;
+    const inicio = process.hrtime.bigint();
+    detectLabelDrift({ issueNumber: 1, labels: ["P2"], commentBodies: [prosaLonga] });
+    const ms = Number(process.hrtime.bigint() - inicio) / 1e6;
+    assert.ok(ms < 2_000, `varredura levou ${ms.toFixed(0)}ms — quantificador virou ilimitado?`);
+  });
 });

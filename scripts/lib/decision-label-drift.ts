@@ -104,71 +104,112 @@ export interface DriftPattern {
  * permissivo/heurístico que aquele, que é a fonte de verdade sobre labels).
  */
 /**
- * Capacidade que a sessão não tem — o QUE ficou impedido (#5955).
- *
- * `fora do escopo do overnight` entra aqui como capacidade porque a frase já
- * carrega o impedimento embutido; e é restrita a `overnight` de propósito:
- * "fora do escopo da rodada/sessão" é usado pra deferimento comum de tempo e
- * prioridade ("ficou fora do escopo da rodada anterior por falta de tempo"),
- * que é `deferred-vague`, não guard de execução (achado de review, #5958).
+ * Capacidade FORTE (#5959 do review da PR #5958): a frase já é, por si só,
+ * sobre execução ao vivo. Combina com qualquer impedimento, inclusive os
+ * fracos (`exige`, `requer`, `precisa`) — "exige rodar envio real de campanha
+ * Clarice" é o texto literal do bounce de 23/08 na #5140.
  */
-const EXECUTION_CAPABILITY =
-  "(?:guard de (?:publica[çc][ãa]o|execu[çc][ãa]o)|execu[çc][ãa]o ao vivo|envio (?:real|ao vivo)|campanha ao vivo|sess[ãa]o supervisionada|sess[ãa]o com execu[çc][ãa]o autorizada|editor presente)";
+const EXECUTION_CAPABILITY_STRONG =
+  "(?:envio (?:real|ao vivo)|execu[çc][ãa]o ao vivo|campanha ao vivo|disparo (?:real|ao vivo))";
 
 /**
- * Marca de impedimento — o fato de estar barrado (#5955). Sem um destes na
- * mesma frase, uma menção de capacidade é só prosa factual ou
- * meta-discussão.
+ * Capacidade FRACA: substantivo genérico que só vira sinal com um
+ * impedimento FORTE ao lado.
+ *
+ * A distinção existe porque "guard", "sessão supervisionada" e afins são
+ * vocabulário corrente deste repo para coisas que nada têm a ver com bounce
+ * de execução (guard de CI, guard de review de PR, gate de stage). Com
+ * impedimento fraco, frases perfeitamente comuns viravam achado e travavam a
+ * compilação do relatório:
+ *
+ *   "o guard de execução deste PR precisa de mais testes antes de mergear"
+ *   "o guard de publicação do stage 5 exige revisão antes de mudar threshold"
+ *
+ * Exigir impedimento forte ("vedado pelo guard de publicação") separa os dois
+ * casos sem perder o bounce real.
  */
-const EXECUTION_IMPEDIMENT =
-  "(?:vedad[oa]|proibid[oa]|pro[íi]be|barrad[oa]|barra|impede|impedid[oa]|bloqueia|bloquead[oa]|bloqueada|exige|requer|precisa|n[ãa]o (?:consigo|posso|pode|d[áa]))";
+const EXECUTION_CAPABILITY_WEAK =
+  "(?:guard de (?:publica[çc][ãa]o|execu[çc][ãa]o)|sess[ãa]o supervisionada|sess[ãa]o com execu[çc][ãa]o autorizada|editor presente)";
+
+/** Impedimento FORTE: afirma que algo está barrado, não que falta fazer. */
+const EXECUTION_IMPEDIMENT_STRONG =
+  "(?:vedad[oa]|proibid[oa]|pro[íi]be|barrad[oa]|barra|impede|impedid[oa]|bloqueia|bloquead[oa]|n[ãa]o (?:consigo|posso|pode|d[áa]))";
+
+/** Impedimento FRACO: exprime necessidade. Sozinho não distingue "estou
+ * barrado" de "falta fazer", daí só valer com capacidade forte. */
+const EXECUTION_IMPEDIMENT_WEAK = "(?:exige|requer|precisa|depende de)";
+
+/**
+ * Frases que já carregam capacidade e impedimento juntas, dispensando o
+ * segundo fator.
+ *
+ * - `fora do escopo do overnight` / `fora do escopo autônomo` nomeiam a
+ *   sessão que não consegue — só podem significar bounce. Restrito a essas
+ *   duas formas: "fora do escopo da rodada/sessão" é deferimento comum de
+ *   tempo, que é `deferred-vague`.
+ * - `precisa do editor` com artigo DEFINIDO: neste repo "o editor" é a
+ *   pessoa, e a frase é a forma mais curta e mais provável de um bounce
+ *   ("Precisa do editor."), que o critério de dois fatores perdia. O artigo
+ *   indefinido fica de fora de propósito — "precisa de um editor gráfico/de
+ *   texto" é ferramenta, não pessoa.
+ */
+const EXECUTION_SELF_SUFFICIENT =
+  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo|precisa d[oe] editor\\b)";
 
 /**
  * Nega o match quando uma palavra de negação aparece até 2 tokens antes do
- * impedimento (#5958). Cobre as formas medidas em review: "não impede",
- * "nada exige envio real", "não é vedado", "nenhuma issue barrada".
+ * impedimento. Cobre "não impede", "nada exige envio real", "não é vedado",
+ * "nenhuma issue barrada".
+ *
+ * `sem` NÃO entra: "sem dúvida" é idioma de ênfase, não negação do que vem
+ * depois, e suprimia um bounce legítimo ("sem dúvida, não consigo fazer envio
+ * ao vivo hoje") — achado de review. Nenhum caso conhecido precisava de `sem`
+ * pra ser suprimido.
  *
  * Mitigação parcial e assumida — este módulo não faz análise sintática (ver
- * "O que este módulo NÃO é", no topo). Uma negação mais distante que 2 tokens
- * ainda escapa; a escolha é deliberada, porque alargar a janela começa a
- * engolir negação de OUTRA oração e vira falso negativo.
+ * "O que este módulo NÃO é", no topo). Negação mais distante que 2 tokens
+ * ainda escapa; alargar a janela começa a engolir negação de OUTRA oração e
+ * vira falso negativo.
  */
-const NEGATION_LOOKBEHIND = "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|sem)\\s(?:\\S+\\s){0,2})";
-
-/**
- * Frases que JÁ carregam capacidade e impedimento juntas, e por isso não
- * exigem segundo fator (#5958). "fora do escopo do overnight" nomeia a
- * sessão que não consegue — só pode significar bounce; e era o texto do
- * bounce de 23/08 na #5140. "fora do escopo autônomo" é a forma que a sessão
- * `/diaria-continuo` usou em 14/08 pra mesma issue.
- *
- * Restrito a essas duas formas de propósito: "fora do escopo da
- * rodada/sessão" é deferimento comum de tempo e prioridade ("ficou fora do
- * escopo da rodada anterior por falta de tempo"), que é `deferred-vague` —
- * incluí-lo aqui foi um falso positivo pego em review.
- */
-const EXECUTION_SELF_SUFFICIENT =
-  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo)";
+const NEGATION_LOOKBEHIND = "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada)\\s(?:\\S+\\s){0,2})";
 
 /** Distância máxima entre os dois fatores — aproxima "mesma frase" sem
  * atravessar ponto final nem quebra de linha. */
 const TWO_FACTOR_WINDOW = "[^.\\n]{0,60}";
 
-/**
- * Duas regexes (uma por ordem dos fatores) exigindo AMBOS numa mesma frase.
- * `textPatterns` é OR, então as duas juntas significam "os dois fatores
- * aparecem, em qualquer ordem".
- */
-function buildTwoFactorPatterns(capability: string, impediment: string): RegExp[] {
-  const imped = `${NEGATION_LOOKBEHIND}${impediment}`;
-  return [
-    new RegExp(`${imped}${TWO_FACTOR_WINDOW}${capability}`, "i"),
-    new RegExp(`${capability}${TWO_FACTOR_WINDOW}${imped}`, "i"),
-    // Auto-suficientes: negação ainda se aplica ("isso não está fora do
-    // escopo do overnight" não é bounce).
-    new RegExp(`${NEGATION_LOOKBEHIND}${EXECUTION_SELF_SUFFICIENT}`, "i"),
-  ];
+/** Um par capacidade×impedimento que basta pra caracterizar bounce. */
+interface FactorPair {
+  capability: string;
+  impediment: string;
 }
+
+/**
+ * Monta as regexes do grupo: cada par vira duas (uma por ordem dos fatores,
+ * já que `textPatterns` é OR), mais uma por frase auto-suficiente.
+ *
+ * `selfSufficient` é PARÂMETRO, não constante capturada: o helper tem cara de
+ * genérico, e um segundo grupo que o reusasse herdaria em silêncio as frases
+ * específicas do overnight (achado de review).
+ */
+function buildFactorPatterns(pairs: readonly FactorPair[], selfSufficient?: string): RegExp[] {
+  const patterns: RegExp[] = [];
+  for (const { capability, impediment } of pairs) {
+    const imped = `${NEGATION_LOOKBEHIND}${impediment}`;
+    patterns.push(new RegExp(`${imped}${TWO_FACTOR_WINDOW}${capability}`, "i"));
+    patterns.push(new RegExp(`${capability}${TWO_FACTOR_WINDOW}${imped}`, "i"));
+  }
+  if (selfSufficient) patterns.push(new RegExp(`${NEGATION_LOOKBEHIND}${selfSufficient}`, "i"));
+  return patterns;
+}
+
+/** Capacidade forte aceita qualquer impedimento; a fraca exige o forte. */
+const EXECUTION_GUARD_PAIRS: readonly FactorPair[] = [
+  {
+    capability: EXECUTION_CAPABILITY_STRONG,
+    impediment: `(?:${EXECUTION_IMPEDIMENT_STRONG}|${EXECUTION_IMPEDIMENT_WEAK})`,
+  },
+  { capability: EXECUTION_CAPABILITY_WEAK, impediment: EXECUTION_IMPEDIMENT_STRONG },
+];
 
 export const DRIFT_PATTERNS: readonly DriftPattern[] = [
   {
@@ -230,7 +271,7 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     // vale — ela é escrita pro CLI de auditoria, onde FP custa uma linha
     // ignorada. Preferir falso negativo é a escolha certa neste grupo: o CLI
     // permissivo continua reportando o que o gate deixar passar.
-    textPatterns: buildTwoFactorPatterns(EXECUTION_CAPABILITY, EXECUTION_IMPEDIMENT),
+    textPatterns: buildFactorPatterns(EXECUTION_GUARD_PAIRS, EXECUTION_SELF_SUFFICIENT),
     expectedLabels: ["develop-track", "bloqueio-execucao"],
   },
   {

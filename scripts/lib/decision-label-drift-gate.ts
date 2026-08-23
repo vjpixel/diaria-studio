@@ -31,7 +31,10 @@ export interface GatePlanIssue {
   /**
    * Nota de escopo opcional. Medido em 81 planos (overnight + develop,
    * ago/2026): aparece **uma** vez, e nenhum SKILL a documenta — é campo
-   * ad-hoc que uma sessão gravou por conta própria. Lido quando presente
+   * ad-hoc que uma sessão gravou por conta própria. (A medição roda sobre
+   * `data/overnight/`+`data/develop/`, que vivem FORA do git — junction
+   * OneDrive, ver CLAUDE.md —, então não é auditável a partir de um clone;
+   * foi feita na checkout do editor em 23/08/2026.) Lido quando presente
    * porque foi justamente o texto que descrevia o bloqueio com mais precisão
    * no caso de origem (#5140, rodada 260823), mas a cobertura desta fonte
    * depende de `motivo`, não dela.
