@@ -76,6 +76,7 @@ import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { parseSitemap } from "./lib/fetch-sitemap.ts";
+import { fetchWithRetry } from "./lib/fetch-retry.ts";
 import { GSC_DEFAULT_SITE, DEFAULT_SITEMAP_URL } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
@@ -507,7 +508,13 @@ async function main(nowMs: number): Promise<number> {
 
   let urls: string[];
   try {
-    const res = await fetch(sitemapUrl, { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } });
+    // #5973: retry+timeout — um blip de rede de UMA requisição não pode
+    // mais derrubar a unit semanal inteira (causa raiz do #5943). Erro de
+    // rede/5xx tenta de novo; 4xx (sitemap removido/renomeado) é achado
+    // real e falha já na 1ª tentativa via fetchWithRetry.
+    const res = await fetchWithRetry((signal) =>
+      fetch(sitemapUrl, { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" }, signal }),
+    );
     if (!res.ok) throw new Error(`sitemap ${res.status}`);
     urls = parseSitemap(await res.text()).map((e) => e.loc);
   } catch (e) {
