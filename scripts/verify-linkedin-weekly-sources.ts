@@ -47,6 +47,18 @@
  * reposição — o campo `sourceAccessibility` reflete a fonte NOVA, não a
  * original.
  *
+ * **#5974 — checkpoint síncrono pós-troca.** Além do texto solto em
+ * `selection.warnings` (histórico, continua sendo escrito), toda troca
+ * aplicada nesta rodada também é gravada em `selection.headlineSwaps5538`
+ * (array estruturado, só presente quando `swaps.length > 0` — mesmo padrão
+ * de `warnings`). `scripts/render-linkedin-swap-checkpoint.ts` lê esse
+ * campo pra decidir se mostra o banner de checkpoint ANTES do Passo 5
+ * (Clarice/humanizador) — ver `scripts/lib/weekly-linkedin-swap-checkpoint.ts`
+ * e o Passo 4 de `.claude/skills/diaria-linkedin-semanal/SKILL.md`. A troca
+ * em si continua automática (decisão do #5538, sem reabrir o gate do Passo
+ * 3) — isto só torna a troca VISÍVEL ao editor antes do artefato final
+ * existir, em vez de só no rodapé da entrega.
+ *
  * Uso:
  *   npx tsx scripts/verify-linkedin-weekly-sources.ts --cycle 26w32
  */
@@ -57,6 +69,7 @@ import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { isValidWeeklyCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
 import { normalizeUrl } from "./lib/weekly-linkedin-clicks.ts";
 import { verify } from "./verify-accessibility.ts";
+import type { HeadlineSwapRecord5538 } from "./lib/weekly-linkedin-swap-checkpoint.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -148,6 +161,7 @@ export async function main(
   const results: LinkedinWeeklySourceAccessibility[] = [];
   const finalHeadlines: SelectionHeadline[] = [];
   const swapNotes: string[] = [];
+  const swaps: HeadlineSwapRecord5538[] = [];
 
   for (const original of headlines) {
     let current = original;
@@ -172,6 +186,14 @@ export async function main(
           `Manchete "${original.title}" (${original.editionDate}) trocada por "${candidate.title}" (${candidate.editionDate}, ${candidate.kind}) — ` +
             `fonte original [${r.verdict}] inacessível (#5538).`,
         );
+        swaps.push({
+          originalTitle: original.title,
+          originalEditionDate: original.editionDate,
+          originalVerdict: r.verdict,
+          replacementTitle: candidate.title,
+          replacementEditionDate: candidate.editionDate,
+          replacementKind: candidate.kind,
+        });
         usedUrls.delete(normalizeUrl(String(current.url)));
         usedUrls.add(normalizeUrl(String(candidate.url)));
         current = candidate;
@@ -198,6 +220,14 @@ export async function main(
     selection.warnings = [...(selection.warnings ?? []), ...swapNotes];
     console.log("\nTrocas de candidato (#5538):");
     for (const note of swapNotes) console.log(`  - ${note}`);
+  }
+  if (swaps.length > 0) {
+    // #5974: campo estruturado, separado do texto solto acima (`warnings`
+    // também cobre o caso "pool esgotado, sem troca de fato" — este campo
+    // só existe quando uma troca REALMENTE aconteceu). É o que
+    // `render-linkedin-swap-checkpoint.ts` consome pra decidir se mostra o
+    // checkpoint síncrono antes do Passo 5 (Clarice/humanizador).
+    selection.headlineSwaps5538 = [...(selection.headlineSwaps5538 ?? []), ...swaps];
   }
   writeFileSync(selectionPath, JSON.stringify(selection, null, 2), "utf8");
 
