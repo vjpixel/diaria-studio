@@ -79,10 +79,13 @@ function runScript(
   opts: { beehiivApiKeyOverride?: string; cwdOverride?: string } = {},
 ) {
   const env = { ...process.env };
+  // Ambas as vars usam o mesmo override — não há caso de teste hoje que
+  // precise de valores distintos pra BEEHIIV_API_KEY e BEEHIIV_PUBLICATION_ID
+  // (achado de review consolidado do coordenador, 260823: os 2 `if`
+  // idênticos anteriores confundiam "1 override" com "2 overrides
+  // independentes" quando na prática sempre foi o mesmo valor).
   if (opts.beehiivApiKeyOverride !== undefined) {
     env.BEEHIIV_API_KEY = opts.beehiivApiKeyOverride;
-  }
-  if (opts.beehiivApiKeyOverride !== undefined) {
     env.BEEHIIV_PUBLICATION_ID = opts.beehiivApiKeyOverride;
   }
   return spawnSync(
