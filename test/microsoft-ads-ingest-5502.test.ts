@@ -124,7 +124,9 @@ function mockReportingFlow(opts: {
   rawZip?: Buffer;
   submitError?: { status: number; body: string };
   pollError?: { status: number; body: string };
-  /** Faz `Success` sair sem `ReportDownloadUrl` — cenário defensivo. */
+  /** Faz `Success` sair sem `ReportDownloadUrl` — o comportamento REAL da
+   *  API pra relatório sem nenhuma linha (confirmado ao vivo #5928), não um
+   *  cenário defensivo hipotético. */
   pollSuccessWithoutDownloadUrl?: boolean;
   /** Captura `(url, init)` de toda chamada — usado pro teste de headers/envelope. */
   onRequest?: (url: string, init: RequestInit | undefined) => void;
@@ -216,10 +218,10 @@ describe("#5502 — aggregateMicrosoftAdsSpendByMonth", () => {
 });
 
 describe("#5502 — refreshMicrosoftAdsAccessToken (fail-soft, caminho Azure AD)", () => {
-  it("sucesso devolve o access_token, identityProvider undefined (Azure AD)", async () => {
+  it("sucesso devolve o access_token, identityProvider 'AzureAd'", async () => {
     const fetchImpl: FetchLike = async () => new Response(JSON.stringify({ access_token: "tok-123" }), { status: 200 });
     const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH);
-    assert.deepEqual(out, { accessToken: "tok-123", identityProvider: undefined });
+    assert.deepEqual(out, { accessToken: "tok-123", identityProvider: "AzureAd" });
   });
 
   it("falha de rede nunca lança — devolve { error }", async () => {
@@ -304,6 +306,22 @@ describe("#5928 — refreshMicrosoftAdsAccessToken (caminho Google — conta em 
     const out = await refreshMicrosoftAdsAccessToken(fetchImpl, AUTH_GOOGLE);
     assert.ok("error" in out);
     assert.match(out.error, /invalid_grant/);
+  });
+
+  it("googleRefreshToken presente MAS googleClientId/googleClientSecret ausentes (config parcial, possível a partir do ambiente) → { error } explícito, nunca manda client_id/secret vazio pro Google", async () => {
+    let called = false;
+    const fetchImpl: FetchLike = async () => {
+      called = true;
+      throw new Error("não deveria ser chamado");
+    };
+    const out = await refreshMicrosoftAdsAccessToken(fetchImpl, {
+      googleClientId: undefined,
+      googleClientSecret: undefined,
+      googleRefreshToken: "google-refresh-token",
+    });
+    assert.ok("error" in out);
+    assert.match(out.error, /googleClientId\/googleClientSecret\/googleRefreshToken ausentes/);
+    assert.equal(called, false);
   });
 });
 

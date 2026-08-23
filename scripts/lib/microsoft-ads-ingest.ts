@@ -38,28 +38,23 @@
  * `PollGenerateReport` — a operação vai no `<Action>` do SOAP Header, não na
  * URL). O envelope é montado com `fast-xml-parser` (`XMLBuilder`, já
  * dependência do repo via `fetch-sitemap.ts`) em vez de template string, pra
- * não escorregar em escaping/atributos. **`Content-Type: text/xml` +
- * header HTTP `SOAPAction`, não `application/soap+xml` (SOAP 1.2)** —
- * validado ao vivo em 22/08/2026 (#5928): a doc oficial mostra o `<Action>`
- * dentro do SOAP Header (padrão 1.2) mas o transporte real exige 1.1; usar
- * `application/soap+xml` devolve HTTP 415 puro antes de qualquer
- * processamento (ver `postSoap`). O relatório baixado (`ReportDownloadUrl`)
- * vem **compactado em ZIP** — sem lib de ZIP no repo, `unzipFirstEntry`
- * abaixo lê o Local File Header do 1º (e único) entry na mão e descompacta
- * via `node:zlib` (suporta STORED e DEFLATE, os 2 métodos que um ZIP gerado
- * por servidor usa) — ver docstring da função pro que ela deliberadamente
- * não cobre (ZIP64, streaming, múltiplos entries).
+ * não escorregar em escaping/atributos. O relatório baixado
+ * (`ReportDownloadUrl`) vem **compactado em ZIP** — sem lib de ZIP no repo,
+ * `unzipFirstEntry` abaixo lê o Local File Header do 1º (e único) entry na
+ * mão e descompacta via `node:zlib` (suporta STORED e DEFLATE, os 2 métodos
+ * que um ZIP gerado por servidor usa) — ver docstring da função pro que ela
+ * deliberadamente não cobre (ZIP64, streaming, múltiplos entries).
  *
- * ## Achado ao vivo 22/08/2026: esta conta Ads exige Google OAuth, não Azure AD
- *
- * A renovação de token Azure AD funciona, mas a conta Microsoft Advertising
- * em uso foi criada via "Sign in with Google" e rejeita qualquer chamada
- * autenticada assim (`IdentityTypeMismatch`/`GoogleAccountIsRequired`) —
- * exige uma credencial Google OAuth inteiramente nova, NÃO implementada aqui
- * de propósito (sem credencial real pra validar, só criaria confiança
- * falsa). Narrativa completa (payload de erro, o que falta, ação do editor):
- * `docs/microsoft-ads-api-setup.md` § "Achado ao vivo 22/08/2026" e #5928 —
- * não duplicado aqui pra não virar 2 fontes de verdade divergentes.
+ * **4 detalhes de transporte só descobertos ao vivo em 22/08/2026 (#5928),
+ * cada um documentado por completo no ponto de uso (não repetido aqui —
+ * índice, não 2ª fonte de verdade):** `Content-Type`/`SOAPAction` (SOAP 1.1,
+ * não 1.2, ver `postSoap`); ordem `CustomDateRangeEnd` antes de
+ * `CustomDateRangeStart` (ver `buildSubmitGenerateReportEnvelope`);
+ * `Success` + `ReportDownloadUrl` nil é vazio legítimo, não erro (ver
+ * `fetchMicrosoftAdsSpendRows`); e a conta em uso exige **Google OAuth**
+ * como identity provider, não Azure AD (ver `MicrosoftAdsAuthConfig.googleRefreshToken`
+ * e `refreshMicrosoftAdsAccessToken` — os 2 provedores, escolhidos
+ * automaticamente, estão implementados e validados ao vivo desde #5928).
  *
  * ## Por que fail-soft é o comportamento CORRETO aqui (mesma disciplina do
  * #5237/#5502)
@@ -292,9 +287,11 @@ const DEFAULT_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 
 /** Quem emitiu o `accessToken` — `"Google"` exige o header SOAP
  *  `<IdentityProvider>Google</IdentityProvider>` em toda chamada seguinte
- *  (`postSoap`/`buildSoapEnvelope`); `undefined` é Azure AD, o caminho
+ *  (montado por `buildSoapEnvelope`, que decide pelo mesmo critério —
+ *  `auth.googleRefreshToken` presente — em vez de reler este campo, já que
+ *  os 2 lados sempre concordam por definição); `"AzureAd"` é o caminho
  *  default que não precisa desse header. */
-export type MicrosoftAdsIdentityProvider = "Google" | undefined;
+export type MicrosoftAdsIdentityProvider = "AzureAd" | "Google";
 
 async function parseOAuthTokenResponse(
   res: Response,
@@ -362,15 +359,24 @@ async function refreshGoogleIdentityAccessToken(
   fetchImpl: FetchLike,
   auth: Pick<MicrosoftAdsAuthConfig, "googleClientId" | "googleClientSecret" | "googleRefreshToken" | "googleTokenEndpoint">,
 ): Promise<{ accessToken: string } | { error: string }> {
+  // Mesmo guard de `refreshAzureAdAccessToken` — sem isso, um
+  // `googleRefreshToken` presente mas `googleClientId`/`googleClientSecret`
+  // ausentes (config parcial, possível a partir de `authConfigFromEnv` se
+  // `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` não estiverem no ambiente de
+  // quem chama) mandaria `client_id`/`client_secret` como string vazia pro
+  // Google em vez de falhar cedo com uma mensagem diagnosticável.
+  if (!auth.googleClientId || !auth.googleClientSecret || !auth.googleRefreshToken) {
+    return { error: "renovação do access token (Google) falhou: googleClientId/googleClientSecret/googleRefreshToken ausentes" };
+  }
   let res: Response;
   try {
     res = await fetchImpl(auth.googleTokenEndpoint ?? DEFAULT_GOOGLE_TOKEN_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: auth.googleClientId ?? "",
-        client_secret: auth.googleClientSecret ?? "",
-        refresh_token: auth.googleRefreshToken ?? "",
+        client_id: auth.googleClientId,
+        client_secret: auth.googleClientSecret,
+        refresh_token: auth.googleRefreshToken,
         grant_type: "refresh_token",
       }).toString(),
     });
@@ -402,7 +408,7 @@ export async function refreshMicrosoftAdsAccessToken(
   }
   const result = await refreshAzureAdAccessToken(fetchImpl, auth);
   if ("error" in result) return result;
-  return { accessToken: result.accessToken, identityProvider: undefined };
+  return { accessToken: result.accessToken, identityProvider: "AzureAd" };
 }
 
 // ---------------------------------------------------------------------------
@@ -547,10 +553,11 @@ function buildPollGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessTok
  *  `ApiFaultDetail`) dentro do elemento **`detail` (minúsculo)** — é
  *  `<detail>`, não `<Detail>`, porque esse é o nome definido pelo próprio
  *  SOAP 1.1 (não uma convenção Microsoft) — confirmado contra um Fault real
- *  capturado ao vivo em 22/08/2026 (#5928, o mesmo `IdentityTypeMismatch` da
- *  seção "Achado ao vivo" no topo do arquivo). Se o corpo não for um Fault
- *  reconhecível, devolve `null` e quem chama cai no fallback de exibir o
- *  texto bruto (mesma disciplina de nunca lançar) — só um `console.debug`
+ *  capturado ao vivo em 22/08/2026 (#5928, o mesmo `IdentityTypeMismatch`
+ *  que motivou o caminho Google em `refreshMicrosoftAdsAccessToken`). Se o
+ *  corpo não for um Fault reconhecível, devolve `null` e quem chama cai no
+ *  fallback de exibir o texto bruto (mesma disciplina de nunca lançar) — só
+ *  um `console.debug`
  *  marca a ocorrência, pra não deixar o catch mudo. */
 function extractSoapFaultMessage(xml: string): string | null {
   try {

@@ -74,18 +74,25 @@ const GOOGLE_IDENTITY_ENV_VARS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "M
  * FUNCIONA pra conta em uso hoje — `refreshMicrosoftAdsAccessToken` também
  * prioriza Google quando `googleRefreshToken` está setado, mesmo critério);
  * Azure AD é o fallback pra qualquer outra conta. Falta de AMBOS os
- * caminhos (não só de um) é reportada como "missing".
+ * caminhos (não só de um) é reportada como "missing" — com os 2 conjuntos
+ * concatenados (não só o do Google), pra quem está configurando Azure AD
+ * (ex: outra conta) também ver o que falta do LADO DELE, não só do Google.
+ * Exportada pra teste direto (`test/microsoft-ads-ingest-spend.test.ts`) —
+ * a lógica de prioridade/fallback é nova nesta PR (#5928), diferente do
+ * check flat "tudo obrigatório" que `google-ads-ingest-spend.ts` tem.
  */
-function authConfigFromEnv(): { auth: MicrosoftAdsAuthConfig } | { missing: string[] } {
+export function authConfigFromEnv(): { auth: MicrosoftAdsAuthConfig } | { missing: string[] } {
   const missingAlways = ALWAYS_REQUIRED_ENV_VARS.filter((name) => !process.env[name]);
   const missingGoogle = GOOGLE_IDENTITY_ENV_VARS.filter((name) => !process.env[name]);
   const missingAzure = AZURE_AD_ENV_VARS.filter((name) => !process.env[name]);
 
   if (missingAlways.length > 0) return { missing: missingAlways };
   if (missingGoogle.length > 0 && missingAzure.length > 0) {
-    // Nenhum dos 2 caminhos está completo — reporta o Google (o caminho que
-    // de fato funciona pra conta em uso) como o que falta preencher.
-    return { missing: missingGoogle };
+    // Nenhum dos 2 caminhos está completo — reporta os 2 conjuntos de
+    // variáveis ausentes, não só o do Google, senão quem está tentando
+    // configurar Azure AD (a única opção pra uma conta SEM vínculo Google)
+    // não vê o que falta do lado dele.
+    return { missing: [...missingGoogle, ...missingAzure] };
   }
 
   return {
@@ -116,6 +123,15 @@ export async function main(): Promise<number> {
     return 0;
   }
 
+  // Qual identity provider foi RESOLVIDO (não necessariamente o que
+  // funcionou — a chamada real ainda pode falhar) — logado em toda saída
+  // (sucesso ou fallback) pra nunca deixar implícito qual credencial rodou.
+  // Google tem prioridade (mesmo critério de `refreshMicrosoftAdsAccessToken`
+  // e de `authConfigFromEnv` acima) — #5928, achado do review: sem isso, um
+  // operador não tinha como saber se o gasto importado veio da conta certa
+  // caso os 2 caminhos estivessem configurados ao mesmo tempo.
+  const identityProvider = configResult.auth.googleRefreshToken ? "Google" : "AzureAd";
+
   const existingRows: SpendRow[] = existsSync(spendPath) ? readSpendCsv(spendPath).rows : [];
 
   const result = await runMicrosoftAdsIngest(fetch, {
@@ -124,13 +140,13 @@ export async function main(): Promise<number> {
   });
 
   if (result.kind === "fallback") {
-    fallback(result.reason);
+    fallback(`[identidade: ${identityProvider}] ${result.reason}`);
     return 0;
   }
 
   writeFileSync(spendPath, formatSpendCsv(result.rows), "utf8");
   console.log(
-    `[microsoft-ads-ingest-spend] ✔ ${spendPath} atualizado (${result.fetchedRows} linha(s) de relatório agregadas).`,
+    `[microsoft-ads-ingest-spend] ✔ ${spendPath} atualizado via identidade ${identityProvider} (${result.fetchedRows} linha(s) de relatório agregadas).`,
   );
   return 0;
 }
