@@ -328,6 +328,75 @@ describe("clarice-envio-guard (#5026)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  // #5942/#5944 — REGRESSÃO: campanha já ENVIADA na Brevo (envio real
+  // ocorreu antes do guard rodar, registro local desatualizado) NÃO é uma
+  // falha — é estado seguro. O guard deve tratar como sucesso (code 0),
+  // atualizar o registro local para "sent" e NÃO reportar como incompleto.
+  it("REGRESSÃO (#5942/#5944): campanha já ENVIADA na Brevo => code 0, registro atualizado, NÃO é cancelamento incompleto", async () => {
+    const root = freshRoot();
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", status: "scheduled" }]),
+      "utf8",
+    );
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } }),
+      "scripts/clarice-envio-risk.ts": jsonResult({ brake: { level: "stop", reasons: ["x"], maxUtil: 1.1 } }),
+    });
+    let statusCalls = 0;
+    const r = await runEnvioGuard(
+      baseDeps(root, {
+        exec,
+        setCampaignStatus: async () => {
+          statusCalls++;
+          // Simula a Brevo rejeitando o PUT porque a campanha já foi enviada
+          throw new Error(`Brevo API PUT /emailCampaigns/999/status falhou (400): {"code":"invalid_parameter","message":"suspended is an invalid status for sent campaign"}`);
+        },
+      }),
+    );
+    assert.equal(statusCalls, 1, "deve tentar suspender a campanha antes de perceber que já está enviada");
+    assert.equal(r.code, 0, "campanha já enviada NÃO é cancelamento incompleto — é estado seguro (code 0), não 2");
+    assert.match(r.reportMarkdown, /já foi ENVIADA/);
+    assert.match(r.reportMarkdown, /estado seguro/);
+    // Verifica que o registro local reflete o estado real da Brevo (sent)
+    const updated = JSON.parse(readFileSync(resolve(dir, "group-campaigns.json"), "utf8"));
+    assert.equal(updated[0].status, "sent", "registro local reflete " +
+      "o estado real da Brevo (campaign já enviada antes do guard rodar)");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  // #5942/#5944 — REGRESSÃO: campanha já SUSPENSA na Brevo (cancelamento
+  // realizado numa rodada anterior) NÃO é uma falha — é estado seguro.
+  it("REGRESSÃO (#5942/#5944): campanha já SUSPENSA na Brevo => code 0, registro atualizado", async () => {
+    const root = freshRoot();
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", status: "scheduled" }]),
+      "utf8",
+    );
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } }),
+      "scripts/clarice-envio-risk.ts": jsonResult({ brake: { level: "stop", reasons: ["x"], maxUtil: 1.1 } }),
+    });
+    const r = await runEnvioGuard(
+      baseDeps(root, {
+        exec,
+        setCampaignStatus: async () => {
+          throw new Error(`Brevo API PUT /emailCampaigns/999/status falhou (400): {"code":"invalid_parameter","message":"suspended is an invalid status for suspended campaign"}`);
+        },
+      }),
+    );
+    assert.equal(r.code, 0, "campanha já suspensa NÃO é cancelamento incompleto — é estado seguro (code 0), não 2");
+    assert.match(r.reportMarkdown, /já estava SUSPENSA/);
+    assert.match(r.reportMarkdown, /estado seguro/);
+    const updated = JSON.parse(readFileSync(resolve(dir, "group-campaigns.json"), "utf8"));
+    assert.equal(updated[0].status, "draft", "registro local reflete que a campanha " +
+      "já estava suspensa (não precisa voltar a ser suspensa)");
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("2 ondas pendentes, 1 confirma e 1 falha => code 2 (parcial NÃO é sucesso)", async () => {
     const root = freshRoot();
     const dir = segmentsDir(root);
