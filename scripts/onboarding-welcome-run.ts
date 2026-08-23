@@ -60,7 +60,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Config
 // ---------------------------------------------------------------------------
 
-interface OnboardingConfig {
+export interface OnboardingConfig {
   enabled?: boolean;
   /** Nome da var de ambiente com a key da conta Brevo (default BREVO_DIARIA_API_KEY — mesma conta, custo zero). */
   api_key_env?: string;
@@ -76,8 +76,8 @@ interface OnboardingConfig {
   d10_list_name?: string;
 }
 
-function loadOnboardingConfig(): OnboardingConfig {
-  const raw = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+export function loadOnboardingConfig(configPathAbs?: string): OnboardingConfig {
+  const raw = JSON.parse(readFileSync(configPathAbs ?? resolve(ROOT, "platform.config.json"), "utf8")) as {
     onboarding?: OnboardingConfig;
   };
   return (
@@ -250,6 +250,8 @@ interface CliArgs {
   send: boolean;
   storePath?: string;
   snippetsDir?: string;
+  /** Override de teste — path absoluto pro platform.config.json (default: raiz do repo). */
+  configPath?: string;
   skip: Set<"email1" | "email2" | "email3">;
 }
 
@@ -270,6 +272,7 @@ function parseArgs(argv: string[]): CliArgs {
     if (a === "--send") args.send = true;
     else if (a === "--store") args.storePath = argv[++i];
     else if (a === "--snippets-dir") args.snippetsDir = argv[++i];
+    else if (a === "--config") args.configPath = argv[++i];
     else if (a === "--skip-email1") args.skip.add("email1");
     else if (a === "--skip-email2") args.skip.add("email2");
     else if (a === "--skip-email3") args.skip.add("email3");
@@ -293,7 +296,18 @@ function loadSnippets(dirAbs: string): { 1: ReturnType<typeof parseOnboardingSni
 async function main(): Promise<void> {
   loadProjectEnv();
   const args = parseArgs(process.argv.slice(2));
-  const cfg = loadOnboardingConfig();
+  const cfg = loadOnboardingConfig(args.configPath);
+
+  // --- Kill switch (#5957) — ANTES de qualquer chamada externa, mesmo padrão
+  // do guard `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`. ---
+  if (cfg.enabled === false) {
+    process.stdout.write(
+      "[onboarding] ⏸️  automação PAUSADA (platform.config.json → onboarding.enabled: false) — " +
+        "nenhuma chamada Beehiiv/Brevo feita.\n",
+    );
+    return;
+  }
+
   const nowSec = Math.floor(Date.now() / 1000);
 
   const beeCfg = resolveBeehiivConfig();
