@@ -365,6 +365,77 @@ describe("classifyExecTrack — resolvida por prosa/alarme (#5532)", () => {
   });
 });
 
+describe("classifyExecTrack — EPIC guarda-chuva e ambígua-sem-direção (#5968)", () => {
+  it("label epic-guarda-chuva sozinha → fora-de-rodada", () => {
+    assert.equal(track(["epic-guarda-chuva"]), "fora-de-rodada");
+  });
+
+  it("label sem-direcao-acionavel sozinha → fora-de-rodada", () => {
+    assert.equal(track(["sem-direcao-acionavel"]), "fora-de-rodada");
+  });
+
+  it("issue sem nenhuma das duas labels novas continua overnight (sem regressão)", () => {
+    assert.equal(track(["bug", "P2"]), "overnight");
+    assert.equal(track([]), "overnight");
+  });
+
+  it("epic-guarda-chuva + enhancement/P1 (caso real #5116) → fora-de-rodada", () => {
+    assert.equal(track(["enhancement", "P1", "growth", "epic-guarda-chuva"]), "fora-de-rodada");
+  });
+
+  it("sem-direcao-acionavel + bug/P2 (caso real #5959) → fora-de-rodada", () => {
+    assert.equal(track(["bug", "P2", "sem-direcao-acionavel"]), "fora-de-rodada");
+  });
+
+  it("bloqueio real vence epic-guarda-chuva", () => {
+    assert.equal(track(["epic-guarda-chuva", "external-blocker"]), "bloqueada");
+  });
+
+  it("bloqueio real vence sem-direcao-acionavel", () => {
+    assert.equal(track(["sem-direcao-acionavel", "kit-migration"]), "bloqueada");
+  });
+
+  it("windows vence epic-guarda-chuva (vira develop, não fora-de-rodada)", () => {
+    assert.equal(track(["epic-guarda-chuva", "windows"]), "develop");
+  });
+
+  it("trade-off-real vence sem-direcao-acionavel (vira develop)", () => {
+    assert.equal(track(["sem-direcao-acionavel", "trade-off-real"]), "develop");
+  });
+
+  it("on-hold (fora-de-rodada de 1ª checagem) vence as duas — mesma resposta, motivo diferente", () => {
+    assert.equal(track(["on-hold", "epic-guarda-chuva"]), "fora-de-rodada");
+    assert.equal(track(["on-hold", "sem-direcao-acionavel"]), "fora-de-rodada");
+  });
+
+  it("marcador de data futura vence as duas (vira agendada, não fora-de-rodada)", () => {
+    assert.equal(
+      track(["epic-guarda-chuva"], "<!-- aguardando-ate: 2026-09-01 -->"),
+      "agendada",
+    );
+    assert.equal(
+      track(["sem-direcao-acionavel"], "<!-- aguardando-ate: 2026-09-01 -->"),
+      "agendada",
+    );
+  });
+
+  it("issue fechada com qualquer uma das duas → fora-de-rodada (state vence tudo)", () => {
+    assert.equal(
+      classifyExecTrack({ labels: ["epic-guarda-chuva"], body: "", now: NOW, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+    assert.equal(
+      classifyExecTrack({
+        labels: ["sem-direcao-acionavel"],
+        body: "",
+        now: NOW,
+        state: "CLOSED",
+      }),
+      "fora-de-rodada",
+    );
+  });
+});
+
 describe("classifyExecTrack — alarme de evento passado (#5553)", () => {
   it("label alarm-evento sozinha → overnight (não existe em nenhum outro conjunto)", () => {
     assert.equal(track(["alarm-evento"]), "overnight");

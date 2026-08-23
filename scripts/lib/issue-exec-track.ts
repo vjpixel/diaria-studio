@@ -17,7 +17,7 @@
  *
  * A tentação óbvia é classificar "issue ambígua" como `develop` — cat. C é
  * escopo exclusivo do develop (#2640). Mas o overnight tem **duas**
- * ambiguidades, não uma, e a linha entre elas é julgamento puro
+ * ambiguidades DE TRIAGEM (não uma), e a linha entre elas é julgamento puro
  * (overnight/SKILL.md:69):
  *
  *   - trivial-mas-não-documentada ("formato A ou B de log", "opção técnica
@@ -25,6 +25,13 @@
  *     da Fase 0, antes de sair. É trabalho de overnight.
  *   - trade-off-real de produto/editorial ("design system vs documentar") →
  *     bounce imediato + comentário direcionando ao develop cat. C.
+ *
+ * Existe um 3º desfecho, mas ele não é uma ambiguidade de TRIAGEM — é o que
+ * sobra depois que a rodada já investigou e concluiu "sem próximo passo de
+ * código prescrito" (#5968, label `sem-direcao-acionavel`, ver
+ * `RESOLVED_BY_PROSE_LABELS` abaixo). As duas acima acontecem ANTES de
+ * qualquer tentativa de resolver a issue; esta acontece DEPOIS — não é a
+ * mesma família, só o mesmo sintoma superficial ("issue sem rota clara").
  *
  * Linha divisória literal da SKILL: "se a resposta depende de preferência
  * sobre experiência do usuário final → trade-off-real; se é escolha técnica
@@ -107,7 +114,28 @@ const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
  * #4555 sairia como `fora-de-rodada` — errado, ainda há trabalho de verdade
  * pendente, só que não é código. Outra label que já classifica a issue
  * (bloqueio, `windows`, `trade-off-real`) sempre vence sobre esta. */
-const RESOLVED_BY_PROSE_LABELS = new Set(["decisao-registrada", "alarm"]);
+const RESOLVED_BY_PROSE_LABELS = new Set([
+  "decisao-registrada",
+  "alarm",
+  // #5968 — mesma família semântica: nenhuma das duas tem código pendente
+  // pra ESTA issue, mesmo sem ser "o editor tirou de circulação"
+  // (`OUT_OF_ROUND_LABELS`) nem "decisão registrada"/"alarme" propriamente.
+  // `epic-guarda-chuva` = issue `[ÉPICA]` deliberadamente nunca despachada
+  // direto — fecha só quando a issue-filha mergear (equivalente ao status
+  // `elegivel_especial` do overnight, ver `.claude/skills/diaria-overnight/SKILL.md`
+  // § Fase 0 passo 7). `sem-direcao-acionavel` = uma rodada overnight já
+  // concluiu explicitamente "sem ação de código clara a tomar" — não é
+  // `precisa-resposta` (não há pergunta útil pro briefing) nem
+  // `trade-off-real` (não é decisão de produto/editorial); sem esta label a
+  // issue reclassificaria `overnight` pra sempre e cada rodada futura
+  // reconfirmaria o mesmo diagnóstico sem avançar (achado ao vivo #5968,
+  // #5959: 2 rodadas em 23/08/2026 já reconfirmaram "sem ação" sem
+  // progresso). Como as demais desta família, outra label que já classifica
+  // a issue (bloqueio, `windows`, `trade-off-real`) sempre vence — ex: uma
+  // EPIC também bloqueada por `external-blocker` continua `bloqueada`.
+  "epic-guarda-chuva",
+  "sem-direcao-acionavel",
+]);
 
 /**
  * #5553 — issue de alarme sobre um EVENTO PASSADO (achado ancorado a um ID
@@ -309,8 +337,14 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         companheira, que sozinha cairia em fora-de-rodada.
  *   7. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
  *                         (`decisao-registrada`) ou alarme de ESTADO que se
- *                         auto-resolve (`alarm`, sem `alarm-evento`), e
- *                         nenhuma das labels acima já decidiu por ela — ver
+ *                         auto-resolve (`alarm`, sem `alarm-evento`), ou
+ *                         (#5968) EPIC guarda-chuva (`epic-guarda-chuva` —
+ *                         delegada às issues-filhas, nunca implementada
+ *                         direto) ou ambígua-sem-direção
+ *                         (`sem-direcao-acionavel` — overnight já concluiu
+ *                         "sem ação de código clara", 3º desfecho distinto
+ *                         de `precisa-resposta`/`trade-off-real`), e nenhuma
+ *                         das labels acima já decidiu por ela — ver
  *                         docstring de `RESOLVED_BY_PROSE_LABELS` pro porquê
  *                         desta checagem vir depois de `bloqueada`/`develop`,
  *                         não junto da 1ª.
@@ -395,7 +429,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   bloqueada:
     "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
   "fora-de-rodada":
-    "Fora de rodada — três motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); ou é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui).",
+    "Fora de rodada — cinco motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui); (#5968) é EPIC guarda-chuva (`epic-guarda-chuva` — issue `[ÉPICA]` nunca implementada direto, delegada às issues-filhas, fecha quando elas mergearem); ou (#5968) é ambígua-sem-direção (`sem-direcao-acionavel` — o overnight já concluiu explicitamente 'sem ação de código clara a tomar', diferente de `precisa-resposta`/`trade-off-real`).",
 };
 
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
