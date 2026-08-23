@@ -156,6 +156,12 @@ describe("main() — boundary real do CLI", () => {
         written.warnings.some((w: string) => w.includes("trocada por") && w.includes("#5538")),
         "esperava warning de troca registrado em selection.warnings",
       );
+      // #5974: campo estruturado, separado do texto solto — é o que o
+      // checkpoint síncrono (`render-linkedin-swap-checkpoint.ts`) consome.
+      assert.equal(written.headlineSwaps5538.length, 1);
+      assert.equal(written.headlineSwaps5538[0].originalTitle, "Manchete de RADAR (fonte caiu)");
+      assert.equal(written.headlineSwaps5538[0].originalVerdict, "paywall");
+      assert.equal(written.headlineSwaps5538[0].replacementTitle, "Próximo candidato do ranking");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -201,6 +207,9 @@ describe("main() — boundary real do CLI", () => {
         written.warnings.some((w: string) => w.includes("nenhum candidato de reposição elegível")),
         "esperava warning de pool esgotado",
       );
+      // #5974: nenhuma troca de fato aplicada (pool esgotado) — sem campo
+      // headlineSwaps5538, checkpoint não deve disparar.
+      assert.equal(written.headlineSwaps5538, undefined);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -248,6 +257,7 @@ describe("main() — boundary real do CLI", () => {
       assert.equal(written.headlines[0].title, "Destaque com fonte caída");
       assert.equal(written.headlines[0].sourceAccessibility.accessible, false);
       assert.equal(written.warnings, undefined); // nenhuma troca — sem campo `warnings` novo no output
+      assert.equal(written.headlineSwaps5538, undefined); // #5974: idem pro campo estruturado
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

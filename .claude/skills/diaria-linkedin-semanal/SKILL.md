@@ -277,10 +277,29 @@ do editor registrada no #5538: o Passo 3 já decidiu QUAIS matérias
 competem; uma fonte que morreu depois disso é o mesmo tipo de evento que
 "esse candidato não tinha clique suficiente", não um novo trade-off
 editorial. `ln-selection.json` grava a troca em `warnings` (mensagem
-"trocada por... (#5538)") e o script imprime no console — sempre relate
-ao editor no resumo do gate/entrega quais manchetes trocaram e por quê.
+"trocada por... (#5538)") e em `headlineSwaps5538` (campo estruturado) e o
+script imprime no console — sempre relate ao editor no resumo do
+gate/entrega quais manchetes trocaram e por quê.
 **`kind === "destaque"` inacessível NUNCA troca** (comportamento
 inalterado — o corpo levantado já é substancial, publicável como stub).
+
+**Checkpoint síncrono pós-troca (#5974) — rode logo em seguida, ANTES do
+Passo 5:**
+
+```bash
+npx tsx scripts/render-linkedin-swap-checkpoint.ts --cycle {cycle}
+```
+
+Se `ln-selection.json` tiver `headlineSwaps5538` com 1+ registro, este
+comando imprime um banner listando cada troca (título/fonte original →
+título de reposição) — **mostre esse banner na conversa antes de seguir
+pro Passo 5**. Não é uma pergunta bloqueante (`AskUserQuestion`) — a troca
+já aconteceu e a skill segue automaticamente, mesmo padrão do banner "Data
+não informada — assumindo..." (CLAUDE.md, regra "Perguntar é exceção"): o
+editor vê a troca ANTES do artefato existir (Passo 5 Clarice/humanizador,
+Passo 7 render/publicação), não só no rodapé da entrega do Passo 8. Sem
+trocas, o comando imprime uma linha curta ("Nenhuma troca...") e a skill
+segue direto — nunca pausa de fato, `exit 0` sempre.
 
 Para cada manchete (já com eventuais trocas do #5538 aplicadas):
 
@@ -515,7 +534,7 @@ daqui.
 
 ```
 data/weekly/{cycle}/
-  _internal/ln-selection.json   seleção completa + auditoria (Passo 2) — pendingGroup (Passo 3a), sourceAccessibility + trocas de candidato #5538 + textOrigin/body/why atualizados (Passo 4), texto autoral humanizado (Passo 5)
+  _internal/ln-selection.json   seleção completa + auditoria (Passo 2) — pendingGroup (Passo 3a), sourceAccessibility + trocas de candidato #5538 (warnings + headlineSwaps5538 estruturado, #5974) + textOrigin/body/why atualizados (Passo 4), texto autoral humanizado (Passo 5)
   _internal/ln-fact-check.json  claims verificados do texto autoral (Passo 6, se houver manchete autoral)
   ln-{cycle}.html                artefato colável (Passo 7)
   ln-{cycle}.json                 metadados do render (Passo 7)
