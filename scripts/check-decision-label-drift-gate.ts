@@ -27,11 +27,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { detectLabelDrift, type DriftFinding, stripHtmlComments } from "./lib/decision-label-drift.ts";
+import { detectLabelDrift, type DriftFinding } from "./lib/decision-label-drift.ts";
+import { buildGateEvaluations, type GatePlanIssue } from "./lib/decision-label-drift-gate.ts";
 
 interface GhIssueListItem {
   number: number;
   labels?: Array<{ name?: string } | string>;
+  /** Necessário pro marcador `aguardando-ate:` que `classifyExecTrack` lê
+   * (#5955) — sem ele, issue `agendada` seria avaliada como `overnight`. */
+  body?: string;
 }
 
 interface FetchOpenIssuesResult {
@@ -45,7 +49,7 @@ const DRIFT_ISSUE_LIMIT = 200;
 function fetchOpenIssues(cwd: string): FetchOpenIssuesResult {
   const result = spawnSync(
     "gh",
-    ["issue", "list", "--state", "open", "--json", "number,labels", "--limit", String(DRIFT_ISSUE_LIMIT)],
+    ["issue", "list", "--state", "open", "--json", "number,labels,body", "--limit", String(DRIFT_ISSUE_LIMIT)],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
   if (result.error) {
@@ -132,11 +136,9 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  // Usar apenas as issues do plano (in_round = true) para o gate, não todas as issues abertas
-  // Isso evita reportar drift em issues que não estão no escopo da rodada
-  const issues = normalizeIssues<{ number: number; in_round?: boolean }>(planRaw as IssuesBearing<{ number: number; in_round?: boolean }>);
-  const inRoundIssues = issues.filter((i) => i.in_round === true);
-  const issueNumbers = new Set(inRoundIssues.map((i) => i.number));
+  // Escopo, corte por track e decisão de buscar comentários vivem em
+  // `lib/decision-label-drift-gate.ts` (#5955) — puros e testados sem `gh`.
+  const planIssues = normalizeIssues<GatePlanIssue>(planRaw as IssuesBearing<GatePlanIssue>);
 
   const cwd = process.cwd();
 
@@ -152,24 +154,33 @@ if (isMainModule(import.meta.url)) {
   const allFindings: DriftFinding[] = [];
   let ghUnavailable = false;
 
-  for (const issue of fetched.issues) {
-    // Só checar issues que estão no plano da rodada (in_round = true)
-    if (!issueNumbers.has(issue.number)) continue;
+  const evaluations = buildGateEvaluations(
+    planIssues,
+    fetched.issues.map((i) => ({ number: i.number, labels: normalizeLabels(i), body: i.body })),
+  );
 
-    const labels = normalizeLabels(issue);
-    const commentsResult = fetchIssueComments(issue.number, cwd);
-    if (commentsResult.error) {
-      console.error(
-        `[check-decision-label-drift-gate] falha ao buscar comentários de #${issue.number} (fail-soft, #738): ${commentsResult.error}`,
-      );
-      if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
-      continue;
+  for (const evaluation of evaluations) {
+    let commentBodies: string[] = [];
+    if (evaluation.needsComments) {
+      const commentsResult = fetchIssueComments(evaluation.issueNumber, cwd);
+      if (commentsResult.error) {
+        console.error(
+          `[check-decision-label-drift-gate] falha ao buscar comentários de #${evaluation.issueNumber} (fail-soft, #738): ${commentsResult.error}`,
+        );
+        if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
+        // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
+        // abortar a issue inteira por causa de uma falha de fetch.
+      } else {
+        commentBodies = commentsResult.comments ?? [];
+      }
     }
 
     const findings = detectLabelDrift({
-      issueNumber: issue.number,
-      labels,
-      commentBodies: commentsResult.comments ?? [],
+      issueNumber: evaluation.issueNumber,
+      labels: evaluation.labels,
+      commentBodies,
+      planTexts: evaluation.planTexts,
+      currentTrack: evaluation.currentTrack,
     });
     allFindings.push(...findings);
   }
@@ -189,11 +200,12 @@ if (isMainModule(import.meta.url)) {
   // Reportar achados
   console.error(`check-decision-label-drift-gate: ${allFindings.length} drift(s) de label detectado(s) — comentário sugere deferimento/decisão, label estrutural não bate.`);
   console.error("");
-  console.error("issue\tpadrão\tlabels esperadas (any-of)\tlabels atuais\ttrecho do comentário");
+  console.error("issue\tpadrão\tfonte\tlabels esperadas (any-of)\tlabels atuais\ttrecho");
   for (const f of allFindings) {
     const expected = f.expectedLabels.join("|");
     const actual = f.actualLabels.length > 0 ? f.actualLabels.join(",") : "(nenhuma)";
-    console.error(`#${f.issueNumber}\t${f.patternId}\t${expected}\t${actual}\t${f.commentExcerpt}`);
+    const fonte = f.source === "plan" ? "plan.json" : "comentário";
+    console.error(`#${f.issueNumber}\t${f.patternId}\t${fonte}\t${expected}\t${actual}\t${f.commentExcerpt}`);
   }
   console.error("");
   console.error("Isto é um achado de auditoria (heurística por regex, não NLP). Confirme antes de aplicar/remover label.");

@@ -51,6 +51,23 @@
  * real — a satisfação é constante por `(issue, patternId)`, avaliada contra
  * o mesmo snapshot em toda iteração).
  *
+ * ## Duas fontes de prosa (#5955)
+ *
+ * Além dos comentários, `detectLabelDrift` varre opcionalmente prosa do
+ * `plan.json` da rodada (`planTexts`), com o MESMO catálogo. O plano é a
+ * evidência mais confiável das duas: `motivo` é exigido pela skill em toda
+ * issue `pulada` — e presente em dezenas de planos reais —, enquanto comentar
+ * é opcional. O `scope_note` que o CLI também repassa é campo ad-hoc (medido:
+ * 1 ocorrência em 81 planos, sem menção em SKILL nenhuma), então a cobertura
+ * desta fonte se apoia em `motivo`; `scope_note` é bônus quando aparece.
+ *
+ * Foi o que faltou no caso que motivou o grupo `execution-guard`: na rodada
+ * 260823 a #5140 foi pega e devolvida duas vezes por causa do guard de
+ * publicação, o `plan.json` registrava isso com precisão em `motivo`/
+ * `scope_note` — e o veredito morria ali, num arquivo privado da rodada, sem
+ * nunca virar label. `classifyExecTrack` seguia devolvendo `overnight`, então
+ * a rodada seguinte pegaria de novo.
+ *
  * Puro: sem I/O, sem rede, sem `gh` — recebe labels + bodies de comentário já
  * buscados. O CLI (`scripts/check-decision-label-drift.ts`) é o wrapper fino
  * que busca via `gh` e imprime.
@@ -59,6 +76,8 @@
  * @see scripts/lib/issue-exec-track.ts (o classificador que fica desatualizado sem este guard)
  * @see scripts/check-decision-label-drift.ts (CLI)
  */
+
+import type { ExecTrack } from "./issue-exec-track.ts";
 
 /** Um grupo de padrões de deferimento/decisão em prosa, e as labels
  * estruturais que QUALQUER UMA (relação any-of) satisfaz — presente
@@ -84,13 +103,146 @@ export interface DriftPattern {
  * manual (nenhum import cruzado: este módulo é deliberadamente mais
  * permissivo/heurístico que aquele, que é a fonte de verdade sobre labels).
  */
+/**
+ * Capacidade FORTE (#5959 do review da PR #5958): a frase já é, por si só,
+ * sobre execução ao vivo. Combina com qualquer impedimento, inclusive os
+ * fracos (`exige`, `requer`, `precisa`) — "exige rodar envio real de campanha
+ * Clarice" é o texto literal do bounce de 23/08 na #5140.
+ */
+const EXECUTION_CAPABILITY_STRONG =
+  "(?:envio (?:real|ao vivo)|execu[çc][ãa]o ao vivo|campanha ao vivo)";
+
+/**
+ * Capacidade FRACA: substantivo genérico que só vira sinal com um
+ * impedimento FORTE ao lado.
+ *
+ * A distinção existe porque "guard", "sessão supervisionada" e afins são
+ * vocabulário corrente deste repo para coisas que nada têm a ver com bounce
+ * de execução (guard de CI, guard de review de PR, gate de stage). Com
+ * impedimento fraco, frases perfeitamente comuns viravam achado e travavam a
+ * compilação do relatório:
+ *
+ *   "o guard de execução deste PR precisa de mais testes antes de mergear"
+ *   "o guard de publicação do stage 5 exige revisão antes de mudar threshold"
+ *
+ * Exigir impedimento forte ("vedado pelo guard de publicação") separa os dois
+ * casos sem perder o bounce real.
+ */
+const EXECUTION_CAPABILITY_WEAK =
+  "(?:guard de (?:publica[çc][ãa]o|execu[çc][ãa]o)|sess[ãa]o supervisionada|sess[ãa]o com execu[çc][ãa]o autorizada|editor presente)";
+
+/** Impedimento FORTE: afirma que algo está barrado, não que falta fazer. */
+const EXECUTION_IMPEDIMENT_STRONG =
+  "(?:vedad[oa]|proibid[oa]|pro[íi]be|barrad[oa]|barra|impede|impedid[oa]|bloqueia|bloquead[oa]|n[ãa]o (?:consigo|posso|pode|d[áa]))";
+
+/**
+ * Impedimento FRACO: exprime necessidade. Sozinho não distingue "estou
+ * barrado" de "falta fazer", daí só valer com capacidade forte.
+ *
+ * Mantido no mínimo observado em bounce real. `depende de` chegou a entrar
+ * aqui, e `disparo (real|ao vivo)` na capacidade forte, sem nenhum caso real
+ * pedindo — só alargavam a superfície ("a campanha ao vivo depende de
+ * aprovação do budget" virava achado). Saíram: neste grupo a política é
+ * preferir falso negativo, então termo sem caso que o justifique não entra.
+ */
+const EXECUTION_IMPEDIMENT_WEAK = "(?:exige|requer|precisa)";
+
+/**
+ * Frases que já carregam capacidade e impedimento juntas, dispensando o
+ * segundo fator.
+ *
+ * - `fora do escopo do overnight` / `fora do escopo autônomo` nomeiam a
+ *   sessão que não consegue — só podem significar bounce. Restrito a essas
+ *   duas formas: "fora do escopo da rodada/sessão" é deferimento comum de
+ *   tempo, que é `deferred-vague`.
+ * - `precisa do editor`: neste repo "o editor" é a pessoa, e a frase é a
+ *   forma mais curta e mais provável de um bounce ("Precisa do editor."), que
+ *   o critério de dois fatores perdia.
+ *
+ *   Duas exclusões, ambas pra separar a PESSOA da FERRAMENTA (achados de
+ *   re-review): só artigo DEFINIDO (`do`, nunca `de`) — "precisa de um editor
+ *   gráfico" e "precisa de editor gráfico" são software; e lookahead negativo
+ *   pra `de` logo depois — "precisa do editor de vídeo/imagem/som" também é
+ *   software, apesar do artigo definido. Sobra o uso que importa: "precisa do
+ *   editor", "precisa do editor decidir isso", "precisa do editor para X".
+ */
+const EXECUTION_SELF_SUFFICIENT =
+  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo|precisa do editor\\b(?!\\s+de\\s))";
+
+/**
+ * Nega o match quando uma palavra de negação aparece até 2 tokens antes do
+ * impedimento. Cobre "não impede", "nada exige envio real", "não é vedado",
+ * "nenhuma issue barrada".
+ *
+ * `sem` entra, com UMA exceção cirúrgica: `sem dúvida`. O idioma é ênfase,
+ * não negação do que vem depois, e suprimia um bounce legítimo ("sem dúvida,
+ * não consigo fazer envio ao vivo hoje"). Tirar `sem` inteiro da lista — a
+ * primeira tentativa — consertava esse caso e reabria o oposto: "sem barrar o
+ * envio real, a rodada segue amanhã" afirma que NADA está barrado e voltava a
+ * casar (achado de re-review). O lookahead resolve os dois.
+ *
+ * Mitigação parcial e assumida — este módulo não faz análise sintática (ver
+ * "O que este módulo NÃO é", no topo). Negação mais distante que 2 tokens
+ * ainda escapa; alargar a janela começa a engolir negação de OUTRA oração e
+ * vira falso negativo.
+ */
+const NEGATION_LOOKBEHIND =
+  "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|sem(?!\\s+d[úu]vida))\\s(?:\\S+\\s){0,2})";
+
+/** Distância máxima entre os dois fatores — aproxima "mesma frase" sem
+ * atravessar ponto final nem quebra de linha. */
+const TWO_FACTOR_WINDOW = "[^.\\n]{0,60}";
+
+/** Um par capacidade×impedimento que basta pra caracterizar bounce. */
+interface FactorPair {
+  capability: string;
+  impediment: string;
+}
+
+/**
+ * Monta as regexes do grupo: cada par vira duas (uma por ordem dos fatores,
+ * já que `textPatterns` é OR), mais uma por frase auto-suficiente.
+ *
+ * `selfSufficient` é PARÂMETRO, não constante capturada: o helper tem cara de
+ * genérico, e um segundo grupo que o reusasse herdaria em silêncio as frases
+ * específicas do overnight (achado de review).
+ */
+function buildFactorPatterns(pairs: readonly FactorPair[], selfSufficient?: string): RegExp[] {
+  const patterns: RegExp[] = [];
+  for (const { capability, impediment } of pairs) {
+    const imped = `${NEGATION_LOOKBEHIND}${impediment}`;
+    patterns.push(new RegExp(`${imped}${TWO_FACTOR_WINDOW}${capability}`, "i"));
+    patterns.push(new RegExp(`${capability}${TWO_FACTOR_WINDOW}${imped}`, "i"));
+  }
+  if (selfSufficient) patterns.push(new RegExp(`${NEGATION_LOOKBEHIND}${selfSufficient}`, "i"));
+  return patterns;
+}
+
+/** Capacidade forte aceita qualquer impedimento; a fraca exige o forte. */
+const EXECUTION_GUARD_PAIRS: readonly FactorPair[] = [
+  {
+    capability: EXECUTION_CAPABILITY_STRONG,
+    impediment: `(?:${EXECUTION_IMPEDIMENT_STRONG}|${EXECUTION_IMPEDIMENT_WEAK})`,
+  },
+  { capability: EXECUTION_CAPABILITY_WEAK, impediment: EXECUTION_IMPEDIMENT_STRONG },
+];
+
 export const DRIFT_PATTERNS: readonly DriftPattern[] = [
   {
     id: "deferred-vague",
     description:
       "Comentário sugere adiar/aguardar (aguardando, não despachar, pré-requisito não atendido) sem label de deferimento (not-this-week/next-month) aplicada.",
     textPatterns: [
-      /aguardando/i,
+      // Lookahead negativo pro nome do marcador `aguardando-ate:` (#5955): um
+      // comentário que só CITA o mecanismo ("o marcador `aguardando-ate:
+      // 2026-08-23` venceu hoje") não está deferindo nada, mas casava aqui e
+      // gerava achado apontando pra `not-this-week`/`next-month` — que roteiam
+      // pra Bloqueada. Foi o único match produzido pelos comentários da rodada
+      // 260823 na #5140, mascarando o drift real (guard de execução, grupo
+      // `execution-guard` abaixo) com um achado de destino errado. Prosa
+      // legítima ("aguardando pré-requisito", "aguardando até segunda") segue
+      // casando: o lookahead barra só o hífen do nome do marcador.
+      /aguardando(?!-ate)/i,
       /n[ãa]o despachar/i,
       /pr[ée]-requisito(s)? (ainda )?n[ãa]o atendido/i,
       /ainda n[ãa]o (é|eh) a hora/i,
@@ -116,6 +268,27 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
       /credencial (pendente|faltando|necess[áa]ria)/i,
     ],
     expectedLabels: ["external-blocker", "kit-migration", "beehiiv", "bloqueio-execucao"],
+  },
+  {
+    id: "execution-guard",
+    description:
+      "Comentário indica que a EXECUÇÃO foi barrada por guard/capacidade da própria sessão (publicação, envio ao vivo) sem label estrutural que tire a issue do track `overnight`.",
+    // Dois fatores obrigatórios na MESMA frase, em qualquer ordem: um termo de
+    // CAPACIDADE (o que a sessão não consegue fazer) e um termo de
+    // IMPEDIMENTO (o fato de estar barrada). Nenhum dos dois sozinho basta —
+    // decisão de review (#5958), depois de medir que os padrões de fator
+    // único geravam falso positivo em prosa factual e, pior, em
+    // meta-discussão sobre os próprios guards, que é assunto recorrente de
+    // issue neste repo ("o guard de publicação está funcionando normalmente"
+    // casava; "revisamos o guard de execução do stage 5" casava).
+    //
+    // Este grupo alimenta um gate que BLOQUEIA a compilação do relatório da
+    // rodada, então aqui a tolerância a falso positivo do topo do módulo NÃO
+    // vale — ela é escrita pro CLI de auditoria, onde FP custa uma linha
+    // ignorada. Preferir falso negativo é a escolha certa neste grupo: o CLI
+    // permissivo continua reportando o que o gate deixar passar.
+    textPatterns: buildFactorPatterns(EXECUTION_GUARD_PAIRS, EXECUTION_SELF_SUFFICIENT),
+    expectedLabels: ["develop-track", "bloqueio-execucao"],
   },
   {
     id: "on-hold",
@@ -156,10 +329,21 @@ export interface DriftFinding {
   description: string;
   expectedLabels: string[];
   actualLabels: string[];
-  /** Trecho do comentário (prosa, marcadores já removidos) em torno do match,
-   * pra dar contexto no output sem despejar o comentário inteiro. */
+  /** Trecho da prosa (marcadores já removidos) em torno do match, pra dar
+   * contexto no output sem despejar o texto inteiro. */
   commentExcerpt: string;
+  /**
+   * De onde veio a prosa que casou (#5955): `"comment"` = comentário da issue
+   * no GitHub; `"plan"` = campo `motivo`/`scope_note` do `plan.json` da
+   * rodada. O segundo é o sinal mais confiável — é o veredito que o próprio
+   * coordenador gravou de forma estruturada, e existe mesmo quando a sessão
+   * não chegou a comentar na issue.
+   */
+  source: DriftSource;
 }
+
+/** Origem da prosa que casou um padrão. Ver `DriftFinding.source`. */
+export type DriftSource = "comment" | "plan";
 
 const EXCERPT_RADIUS = 60;
 
@@ -179,6 +363,50 @@ export interface DetectLabelDriftInput {
    * último) — é o formato que `fetchCommentBodies` (`issue-decisions.ts`)
    * devolve. */
   commentBodies: readonly string[];
+  /**
+   * Textos do `plan.json` da rodada pra esta issue (#5955) — na prática
+   * `motivo` e `scope_note`, os campos onde o coordenador grava POR QUE
+   * pulou a issue. Varridos com o MESMO catálogo de padrões dos comentários.
+   *
+   * Existe porque a prosa do comentário é opcional e variável, enquanto
+   * `motivo` é preenchido por regra da skill em toda issue `pulada`: no caso
+   * que originou este campo (#5140, rodada 260823), o `plan.json` dizia
+   * "Parte 1 segue bloqueada (execução ao vivo)" e o `scope_note` citava o
+   * guard de publicação, mas nada disso virou label — o veredito morreu num
+   * arquivo privado da rodada. Omitir é válido (chamador que não tem plano).
+   */
+  planTexts?: readonly string[];
+  /**
+   * Track ATUAL da issue segundo `classifyExecTrack` (#5955). Quando
+   * informado e diferente de `overnight`, nenhum achado é reportado.
+   *
+   * É o filtro de PRECISÃO, e existe porque os dois consumidores têm
+   * tolerâncias opostas a falso positivo: o CLI de auditoria
+   * (`check-decision-label-drift.ts`) omite o campo e segue permissivo — FP
+   * ali custa uma linha ignorada; o GATE
+   * (`check-decision-label-drift-gate.ts`) informa, porque FP ali BLOQUEIA a
+   * compilação do relatório da rodada.
+   *
+   * O critério é o propósito declarado deste módulo, no topo: o dano é a
+   * issue "continuar aparecendo como `overnight` (elegível) na Triagem"
+   * depois de já ter sido deferida/bloqueada em prosa. Se a issue já
+   * classifica em qualquer outro track, a label que falta não muda o
+   * roteamento — não há livelock a evitar, e cobrar a label específica só
+   * trava a rodada. Medido ao vivo no plano da rodada 260823: #4549
+   * (`on-hold` + `external-blocker` → `fora-de-rodada`) e #5917 (marcador
+   * `aguardando-ate` → `agendada`) geravam achado `deferred-vague` pedindo
+   * `not-this-week`, sendo que as duas já estavam fora da fila do overnight.
+   *
+   * Custo aceito: mis-roteamento ENTRE tracks não-overnight (ex: issue
+   * `bloqueada` que deveria ser `develop`) deixa de bloquear o gate. É o
+   * problema menor — a issue não está sendo pega e devolvida a cada rodada —
+   * e o CLI de auditoria continua reportando.
+   *
+   * Import é só de TIPO — este módulo continua sem acoplamento de runtime com
+   * `issue-exec-track.ts`, que segue sendo a fonte de verdade sobre labels
+   * (ver "O que este módulo NÃO é", no topo).
+   */
+  currentTrack?: ExecTrack;
 }
 
 /**
@@ -188,13 +416,25 @@ export interface DetectLabelDriftInput {
  * é ignorado, mesma postura tolerante de `parseDecisionMarkers`.
  */
 export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
-  const { issueNumber, labels, commentBodies } = input;
+  const { issueNumber, labels, commentBodies, planTexts = [], currentTrack } = input;
+  // Issue já roteada pra fora da fila do overnight — a label que falta não
+  // mudaria nada. Ver `currentTrack` em `DetectLabelDriftInput`.
+  if (currentTrack !== undefined && currentTrack !== "overnight") return [];
   const labelSet = new Set(labels);
   // Uma entrada por (patternId) — sobrescrita a cada match mais recente,
   // já que `commentBodies` chega em ordem cronológica ascendente.
   const byPattern = new Map<string, DriftFinding>();
 
-  for (const raw of commentBodies) {
+  // Comentários primeiro, textos do plano depois: o `set` por patternId faz o
+  // ÚLTIMO match vencer, e entre as duas fontes o plano é a melhor evidência
+  // (veredito estruturado do coordenador, não prosa livre). Dentro dos
+  // comentários a ordem cronológica ascendente preserva "mais recente vence".
+  const sources: Array<{ text: unknown; source: DriftSource }> = [
+    ...commentBodies.map((text) => ({ text, source: "comment" as const })),
+    ...planTexts.map((text) => ({ text, source: "plan" as const })),
+  ];
+
+  for (const { text: raw, source } of sources) {
     if (typeof raw !== "string") continue;
     const prose = stripHtmlComments(raw);
     for (const pattern of DRIFT_PATTERNS) {
@@ -225,6 +465,7 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
         expectedLabels: pattern.expectedLabels,
         actualLabels: labels,
         commentExcerpt: buildExcerpt(prose, match),
+        source,
       });
     }
   }
