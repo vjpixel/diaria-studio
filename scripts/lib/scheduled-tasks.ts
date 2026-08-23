@@ -159,6 +159,14 @@ export interface ScheduledTaskDefinition {
   enabled?: boolean;
 }
 
+/** Cota diária da URL Inspection API do Google, POR PROPRIEDADE GSC
+ * (`sc-domain:diar.ia.br`) — compartilhada pelos passos "index" e
+ * "index-arquivo" de `Diaria-SEO-Weekly` (achado do fleet review pré-merge
+ * do #5975/#5983: nomear a cota evita que os dois `--limit` divirjam da
+ * soma real sem ninguém notar; ver teste em test/scheduled-tasks.test.ts
+ * que soma os dois valores contra esta constante). */
+export const GSC_URL_INSPECTION_DAILY_QUOTA = 2000;
+
 export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Apoios-Diff-Alarm",
@@ -809,23 +817,58 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       // URLs MAIS ANTIGAS (sitemap newest-first, ver applyLimit em
       // seo-index-check.ts) sem marca nenhuma no relatório — o KPI de
       // cobertura inflaria sozinho por composição, não por melhora real.
-      { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "2000"] },
+      {
+        key: "index",
+        script: "scripts/seo-index-check.ts",
+        args: ["--only-posts", "--limit", String(GSC_URL_INSPECTION_DAILY_QUOTA)],
+      },
       // #4909: /temas/{slug} (host arquivo.diar.ia.br) nunca entrou nesta
       // checagem — a propriedade GSC verificada é sc-domain:diar.ia.br
-      // (cobre o subdomínio, sem --site próprio necessário), e o sitemap
-      // deste host tem hoje 7 URLs (a raiz + 6 hubs — corrigido no #5118/#5120,
-      // dizia "~5 URLs, a raiz + 4 hubs" desatualizado; ver também #5120 item 3
-      // sobre a leitura "1/5 hubs, com 4 nunca rastreados" da medição de
-      // 12/ago, feita ANTES do 6º hub mercado-trabalho entrar), então SEM
+      // (cobre o subdomínio, sem --site próprio necessário), então SEM
       // --only-posts (o filtro é /\/p\//, que zeraria tudo aqui — ver
-      // filterPosts em seo-index-check.ts) e com --limit pequeno.
+      // filterPosts em seo-index-check.ts).
+      // --limit 2000 (subiu de 10 no #5975; "7 URLs, a raiz + 6 hubs" do
+      // comentário anterior — #5118/#5120 — já estava desatualizado quando
+      // escrito: o #5722 (19/08/2026, poucos dias antes desta rodada)
+      // trocou o gerador do sitemap deste Worker
+      // (`workers/arquivo/src/index.ts`, `buildArquivoSitemapXml`) de "só
+      // hub + raiz" pra "hub + raiz + 1 <url> por edição publicada" (mesma
+      // fonte que a raiz HTML já consome via `resolveEditions`), pra que o
+      // PRÓPRIO sitemap cubra o acervo — o sitemap do host principal, do
+      // qual a cobertura de edições dependia antes, é o que nenhum
+      // crawler segue (#5692).
+      // Medição ao vivo em 23/08/2026 (#5975): ~252 URLs reais. --limit 10
+      // mantinha as 10 edições MAIS ANTIGAS e descartava as 242 mais
+      // recentes — incluindo raiz + /temas/ + os 6 hubs inteiros, que
+      // vinham antes das edições no sitemap (`applyLimit` corta do INÍCIO
+      // do array, #5118: sitemap é newest-first, o corte preserva a
+      // CAUDA/mais antiga) — ou seja, nenhum hub/raiz era checado desde
+      // que o #5722 mudou a composição. Não é silencioso (aviso +
+      // `truncated` no relatório desde #5118), só um limite pequeno demais
+      // pro tamanho atual. --limit 2000 é o MESMO valor do passo "index"
+      // acima (mesmo racional): a cota da URL Inspection API é 2.000/dia
+      // POR PROPRIEDADE (sc-domain:diar.ia.br, compartilhada entre os dois
+      // passos — GSC_QUOTA_PER_DAY abaixo), e o consumo real de hoje é
+      // ~239 (passo "index") + ~252 (este passo) = ~491/dia — bem abaixo
+      // da cota mesmo somando os dois `--limit` nominais (verificado por
+      // teste, ver test/scheduled-tasks.test.ts). Escolhido acima de um
+      // valor mais próximo de 252 de propósito: este sitemap cresce ~1
+      // URL/dia (1 edição diária/dia útil) — um teto justo reproduziria o
+      // mesmo bug em poucos meses.
       // --out-suffix evita que esta rodada colida no mesmo
       // index-status-{data}.json/.md do passo "index" acima (achado do
       // #4909 — o .md era path fixo, não sobrescrevível por --out).
       {
         key: "index-arquivo",
         script: "scripts/seo-index-check.ts",
-        args: ["--sitemap", "https://arquivo.diar.ia.br/sitemap.xml", "--limit", "10", "--out-suffix", "arquivo"],
+        args: [
+          "--sitemap",
+          "https://arquivo.diar.ia.br/sitemap.xml",
+          "--limit",
+          String(GSC_URL_INSPECTION_DAILY_QUOTA),
+          "--out-suffix",
+          "arquivo",
+        ],
       },
       { key: "pull", script: "scripts/seo-pull.ts", args: ["--days", "28"] },
     ],

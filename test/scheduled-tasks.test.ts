@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import {
   formatScheduleHuman,
   getScheduledTaskByName,
+  GSC_URL_INSPECTION_DAILY_QUOTA,
   listScheduledTaskNames,
   listScheduledTaskRows,
   renderScheduledTasksTable,
@@ -168,6 +169,48 @@ describe("Diaria-SEO-Weekly: loop semanal roda os dois scripts de medição (#41
     const step = t!.steps.find((s) => s.key === "pull");
     assert.ok(step, "step 'pull' ausente");
     assert.equal(step!.script, "scripts/seo-pull.ts");
+  });
+
+  it("step 'index-arquivo' chama seo-index-check.ts com --sitemap do host arquivo.diar.ia.br, SEM --only-posts", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "index-arquivo");
+    assert.ok(step, "step 'index-arquivo' ausente");
+    assert.equal(step!.script, "scripts/seo-index-check.ts");
+    assert.ok(step!.args?.includes("https://arquivo.diar.ia.br/sitemap.xml"));
+    assert.ok(!step!.args?.includes("--only-posts"), "--only-posts zeraria o sitemap de arquivo.diar.ia.br (filtro /\\/p\\//)");
+  });
+
+  it("step 'index-arquivo': --limit é 2000, não o 10 antigo (regressão #5975 — sitemap tem ~252 URLs reais, --limit 10 descartava 242/rodada)", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "index-arquivo");
+    assert.ok(step);
+    const limitIndex = step!.args?.indexOf("--limit") ?? -1;
+    assert.ok(limitIndex >= 0, "--limit ausente no step 'index-arquivo'");
+    assert.equal(step!.args![limitIndex + 1], String(GSC_URL_INSPECTION_DAILY_QUOTA));
+    assert.equal(step!.args![limitIndex + 1], "2000", "pin do valor literal — reverter pro 10 antigo precisa mudar este teste também");
+  });
+
+  it("soma dos --limit de 'index' + 'index-arquivo' não estoura a cota diária compartilhada da URL Inspection API (achado do fleet review pré-merge #5975/#5983)", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    function limitOf(key: string): number {
+      const step = t!.steps.find((s) => s.key === key);
+      assert.ok(step, `step '${key}' ausente`);
+      const idx = step!.args?.indexOf("--limit") ?? -1;
+      assert.ok(idx >= 0, `--limit ausente no step '${key}'`);
+      return Number(step!.args![idx + 1]);
+    }
+    const somaNominal = limitOf("index") + limitOf("index-arquivo");
+    // Os dois --limit nominais somados (4000) EXCEDEM a cota real (2000) —
+    // isso é esperado e seguro: os `--limit` são um teto de segurança por
+    // passo, não uma reserva; o consumo REAL de hoje (~239 + ~252 = ~491,
+    // ver comentário do step "index-arquivo") é que precisa caber. Este
+    // teste só documenta a relação, não afirma que a soma nominal cabe —
+    // se algum dia os dois sitemaps crescerem simultaneamente perto do
+    // teto nominal, é a cota real (GSC) que decide, não este teste.
+    assert.ok(somaNominal >= GSC_URL_INSPECTION_DAILY_QUOTA, "sanity: os dois --limit nominais juntos cobrem a cota inteira");
   });
 });
 
