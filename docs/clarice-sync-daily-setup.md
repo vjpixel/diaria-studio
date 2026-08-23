@@ -33,7 +33,8 @@ vivo em 260806: ~32% de subcontagem agregada antes de um full resync manual).
 
 Todo `--incremental` (inclusive o da task diária) também varre os
 destinatários das campanhas enviadas numa janela recente
-(`--opens-window-days`, default 30) via
+(`--opens-window-days`, default 7 — encolhido de 30 no #5946 pra caber no
+teto de 100 req/hora da Brevo) via
 `POST /emailCampaigns/{id}/exportRecipients` (reusa a infra de
 `clarice-engagement-cohorts-v2.ts`, #4451, já validada ao vivo) e re-busca
 individualmente cada opener encontrado — independe do `modifiedAt` do
