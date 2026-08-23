@@ -1,6 +1,6 @@
 ---
 name: diaria-clarice-envio
-description: Caminho MANUAL/ad-hoc do envio Clarice News — desde #5026 os scripts existem pra rodar automaticamente todo dia às 19:00 BRT via a task `Diaria-Clarice-Envio` (arme da task, #5027 — até lá, este é o único caminho); esta skill invoca o MESMO orquestrador (`scripts/clarice-envio-run.ts`), nunca reimplementa. Uso — `/diaria-clarice-envio` (sem args — ciclo e data são resolvidos deterministicamente, nunca digitados).
+description: Caminho MANUAL/ad-hoc do envio Clarice News — desde #5026 os scripts existem pra rodar automaticamente todo dia às 19:00 BRT via a task `Diaria-Clarice-Envio` (arme da task, #5027 — até lá, este é o único caminho); esta skill invoca o MESMO orquestrador (`scripts/clarice-envio-run.ts`), nunca reimplementa. Uso — `/diaria-clarice-envio` (sem args — ciclo e data são resolvidos deterministicamente, nunca digitados). Desde #5985, o caminho manual roda `--plan-only` primeiro e apresenta a proposta de volume ao editor antes de escrever.
 ---
 
 # /diaria-clarice-envio
@@ -27,13 +27,47 @@ Antes do #5026, os 8 passos abaixo eram prosa que o LLM executava manualmente
 próximo comando) — incompatível com uma task agendada sem editor presente
 (regra #573). `clarice-envio-run.ts` é esse *glue* em código, testado
 (`test/clarice-envio-run.test.ts`). **Esta skill nunca reimplementa o
-fluxo — apenas invoca:**
+fluxo — apenas invoca**, mas o caminho MANUAL invoca em **duas etapas**
+(#5985) em vez de uma — a task agendada continua rodando SEM nenhuma flag,
+sem essa parada:
 
 ```bash
-npx tsx scripts/clarice-envio-run.ts
+# 1. Proposta — para ANTES do MV sob demanda (crédito real), nunca escreve nada.
+npx tsx scripts/clarice-envio-run.ts --plan-only
 ```
 
-Sem argumentos — ver "O que mudou" abaixo pra entender por quê.
+Isso imprime um JSON (`volume`, `baseVolume`, `step`, `note`, `brake`,
+`overrideApplied`, `queueAvailable`, `brevoCredits`, `mvOnDemand`, `cycle`,
+`sendDate`, `abcAction`, `subjects`) — a proposta de volume da política, ANTES
+de qualquer chamada que gaste crédito. **Apresentar isso ao editor via
+`AskUserQuestion`**: confirmar o número proposto (`volume`), informar outro
+número, ou abortar. Falha do `AskUserQuestion` cai na regra do #3938 (halt
+banner, nunca prosseguir sem resposta).
+
+```bash
+# 2a. Editor confirmou o número proposto, OU não respondeu (skill roda sem editor
+#     nesta invocação isolada) — segue com o mesmo volume que a política propôs:
+npx tsx scripts/clarice-envio-run.ts --volume {plan.volume}
+
+# 2b. Editor pediu outro número — segue com N, sem afrouxar nenhum guard:
+npx tsx scripts/clarice-envio-run.ts --volume {N}
+```
+
+`--volume N` roda o MESMO fluxo completo de sempre (MV sob demanda incluso,
+se a fila não cobrir), só substituindo o volume que a política escolheria
+sozinha por `N`. Os guards de fila/crédito/freio continuam valendo: se `N`
+pedir mais do que algum teto permite, a rodada **aborta** (exit 1) explicando
+qual teto foi violado — nunca corta em silêncio pra caber num número que o
+editor não confirmou. `N` abaixo do proposto segue normal. O relatório grava
+a origem da decisão (`default_policy` sem `--volume`, `editor_confirmed`
+quando `N` bate com o que a política propôs, `editor_override` quando
+diverge) junto do volume que a política teria escolhido sozinha.
+
+**O gate é da SKILL, não do script.** `clarice-envio-run.ts` nunca chama
+`AskUserQuestion` — ele só para (`--plan-only`) ou aceita um número já
+decidido (`--volume N`). Quem decide ligar as duas etapas com uma pergunta ao
+editor no meio é esta skill; a task agendada nunca vê essas flags e continua
+rodando de ponta a ponta sem parar, exatamente como antes do #5985.
 
 **Blast radius alto.** Uma invocação errada manda dezenas de milhares de
 e-mails e queima a reputação do domínio `clarice.ai`, que é do PARCEIRO. Por
@@ -63,7 +97,7 @@ resolve tudo isso sozinho:
 | `--subject`/assunto digitado | Herdado da onda anterior do mesmo ciclo (`resolveInheritedSubjects`) — nunca digitado. |
 | `--send-test` + agente `review-test-email` | Removido do caminho (decisão do editor 260811) — o HTML é o mesmo da edição inteira do ciclo, já revisado na Etapa 4 do `/diaria-mensal`; era o último LLM no caminho de um envio irreversível. |
 | `close-poll.ts` rodado aqui | Fora do caminho — o guard `checkEiaGuard` (dentro de `clarice-schedule-group.ts --schedule`) só CONFERE que o marker existe; populá-lo é responsabilidade do `/diaria-mensal`, 1× por ciclo. |
-| Passo 7 — gate humano `sim/ajustar/abortar` | Substituído pelos guards determinísticos abaixo — nenhum é aviso, todos abortam (exit ≠ 0) fora dos caminhos de parada limpa (exit 0). |
+| Passo 7 — gate humano `sim/ajustar/abortar` | Substituído pelos guards determinísticos abaixo — nenhum é aviso, todos abortam (exit ≠ 0) fora dos caminhos de parada limpa (exit 0). **#5985 reintroduz um gate, mas só de VOLUME e só no caminho MANUAL** — `--plan-only` + `AskUserQuestion` + `--volume N`, ver "Uso" acima; a task agendada nunca vê essas flags. |
 | Sem trava de concorrência | `scripts/lib/clarice-envio-lock.ts` — task e skill manual não podem montar a mesma onda ao mesmo tempo. |
 | Nenhum guard pra "onda esperada não disparou" | `detectMissedWaveToday` (#4975) — se a onda de hoje deveria ter saído e não saiu, a rodada reporta e não escala volume até resolver. |
 

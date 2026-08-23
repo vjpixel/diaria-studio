@@ -8,7 +8,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,7 @@ import {
 import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.ts";
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
 import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
-import { acquireEnvioLock } from "../scripts/lib/clarice-envio-lock.ts";
+import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio-lock.ts";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -1305,6 +1305,165 @@ describe("clarice-envio-run (#5026)", () => {
           "nenhum teste comportamental (os outros testes desta suíte setam a key direto em process.env, " +
           "não via .env).",
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #5985 — gate de volume no caminho MANUAL (--plan-only / --volume N)
+  // -----------------------------------------------------------------------
+
+  describe("runEnvio — #5985 gate de volume no caminho manual", () => {
+    it("sem flags (opts omitido) => idêntico a opts={} e ao comportamento pré-#5985 (regressão da task agendada)", async () => {
+      // Este é o teste que mais importa (spec da issue, item a): a task
+      // `Diaria-Clarice-Envio` nunca passa flags — precisa continuar montando
+      // e agendando a onda exatamente como antes.
+      const rootOmitted = freshRoot();
+      const rootEmpty = freshRoot();
+      const runOmitted = makeFakeExec(goldenHandlers());
+      const runEmpty = makeFakeExec(goldenHandlers());
+
+      const rOmitted = await runEnvio(baseDeps(rootOmitted, { exec: runOmitted.exec }));
+      const rEmpty = await runEnvio(baseDeps(rootEmpty, { exec: runEmpty.exec }), {});
+
+      for (const [r, calls, label] of [
+        [rOmitted, runOmitted.calls, "omitido"],
+        [rEmpty, runEmpty.calls, "opts={}"],
+      ] as const) {
+        assert.equal(r.code, 0, `${label}: ${r.reportMarkdown}`);
+        assert.equal(r.plan, undefined, `${label}: plan só deve existir com --plan-only`);
+        assert.match(r.reportMarkdown, /volume final: 3456/, label);
+        assert.match(r.reportMarkdown, /origem do volume: default_policy/, label);
+
+        // Sequência completa até o fim — nenhum passo pulado, nenhuma nova
+        // chamada introduzida pela flag ausente.
+        const create = calls.find((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--create"));
+        assert.ok(create, `${label}: deveria ter chamado --create`);
+        assert.equal(create!.args[create!.args.indexOf("--subject") + 1], "Assunto travado", label);
+        const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+        assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456"], label);
+      }
+      rmSync(rootOmitted, { recursive: true, force: true });
+      rmSync(rootEmpty, { recursive: true, force: true });
+    });
+
+    it("--plan-only: para ANTES do MV sob demanda/build-segment/schedule-group, não grava relatório, libera o lock, exit 0", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }), { planOnly: true });
+
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(r.plan, "plan-only deveria devolver a proposta em `plan`");
+      assert.equal(r.plan!.volume, 3456, "mesmo volume calculado pela política (probe.volume) do caminho normal");
+      assert.equal(r.plan!.baseVolume, 3005);
+      assert.equal(r.plan!.cycle, CYCLE);
+      assert.equal(r.plan!.sendDate, SEND_DATE);
+      assert.equal(r.plan!.abcAction, "travar");
+      assert.deepEqual(r.plan!.subjects, { ok: true, mode: "single", subject: "Assunto travado" });
+      assert.equal(r.plan!.brake.level, "ok");
+      assert.equal(r.plan!.queueAvailable, 5000);
+      assert.equal(r.plan!.brevoCredits, 100000);
+
+      // Nunca gasta crédito real nem escreve nada — nenhum destes sub-scripts
+      // pode ter sido chamado.
+      const forbidden = [
+        "scripts/clarice-mv-ondemand.ts",
+        "scripts/clarice-build-segment.ts",
+        "scripts/clarice-split-group-cells.ts",
+        "scripts/clarice-import-waves.ts",
+        "scripts/clarice-schedule-group.ts",
+      ];
+      for (const script of forbidden) {
+        assert.ok(!calls.some((c) => c.script === script), `--plan-only não deveria ter chamado ${script}`);
+      }
+
+      // Nenhum relatório registrado (reportId/reportMarkdown vazios — plan-only não escreve arquivo).
+      assert.equal(r.reportId, "");
+      assert.equal(r.reportMarkdown, "");
+      // A dir "envio-reports" pode existir (o sidecar `writeLastBrakeSnapshot`
+      // do Passo 3 grava lá INCONDICIONALMENTE, mesmo em plan-only — é
+      // bookkeeping local pro guard das 05:00, não uma escrita de publicação)
+      // — o que NÃO pode existir é nenhum relatório MARKDOWN (`.md`).
+      const reportsDir = resolve(root, "data", "clarice-subscribers", "envio-reports");
+      if (existsSync(reportsDir)) {
+        for (const f of readdirSync(reportsDir)) {
+          assert.ok(!f.endsWith(".md"), `--plan-only não deveria criar relatório markdown; achado: ${f} em ${reportsDir}`);
+        }
+      }
+
+      // Lock foi adquirido (o Passo 1 precisa dele pra chamar clarice-plan-wave)
+      // e liberado ANTES de retornar — nada preso "enquanto o editor pensa".
+      assert.ok(!existsSync(lockPathForCycle(root, CYCLE)), "--plan-only nunca deve deixar o lock preso");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("--volume N acima do teto de CRÉDITO => aborta (code 1) citando o teto violado", async () => {
+      const root = freshRoot();
+      // Crédito bem abaixo do N pedido (500), enquanto fila/freio permitiriam
+      // tranquilamente — isola o teto de crédito como o único violado.
+      const { exec, calls } = makeFakeExec(goldenHandlers({ proposal: { brevoCredits: 500 } }));
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 5000 });
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /--volume 5000 acima do teto \(credit\)/);
+      assert.ok(
+        !calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"),
+        "teto violado deveria abortar ANTES de escrever qualquer campanha",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("--volume N acima do teto de FREIO (stop) => aborta (code 1) citando o teto", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers({ risk: { brake: { level: "stop", reasons: ["hard bounce acima do limiar"], maxUtil: 0.9 } } }),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 1000 });
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /--volume 1000 acima do teto \(stop\)/);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"));
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("--volume N abaixo do proposto => segue normal, agenda N e registra source \"editor_override\" (+ o que a política teria escolhido)", async () => {
+      const root = freshRoot();
+      // Política proposeria 3456 (baseVolume 3005 × 1.15); editor pede menos.
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 2000 });
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /volume final: 2000/);
+      assert.match(r.reportMarkdown, /origem do volume: editor_override \(política teria escolhido 3456 sozinha\)/);
+
+      const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+      assert.ok(segment, "deveria ter seguido até montar a onda");
+      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "2000"]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("--volume N igual ao proposto pela política => source \"editor_confirmed\"", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 3456 });
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /origem do volume: editor_confirmed \(política teria escolhido 3456 sozinha\)/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("--volume N acima do teto de FILA (mesmo após MV sob demanda) => aborta (code 1) citando fila", async () => {
+      const root = freshRoot();
+      // Fila pequena e SEM backlog MV disponível — o guard de fila insuficiente
+      // dispara direto (sem passar pelo ramo de MV sob demanda).
+      const proposal = goldenProposal({ availableFirstSend: 100, mvOnDemandPlan: { deficit: 0, targetVerifyCount: 0, byCohort: [], totalPlanned: 0, backlogInsufficient: false, estimatedCostUsd: 0 } });
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-build-db.ts": textResult(""),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 5000 });
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /teto violado: fila/);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-mv-ondemand.ts"), "sem backlog MV, não deveria nem tentar");
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"));
+      rmSync(root, { recursive: true, force: true });
     });
   });
 });
