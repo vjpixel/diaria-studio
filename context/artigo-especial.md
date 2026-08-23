@@ -1,76 +1,90 @@
-# Artigo Especial — Densidade de Referência
+# Artigo Especial — Playbook
 
-> **Contexto (#5926):** O artigo mensal da diar.ia.br é um texto explicativo
-> (narrativa de mecanismo), não uma notícia. Ele precisa ser leve o suficiente
-> para ler em 5 minutos, sem sacrificar a profundidade técnica. A **densidade
-> de referência** mede quanto o texto se apega a nomes próprios, siglas e
-> estatísticas no corpo — em vez de confiar na prosa explicativa.
+> Superfície de referência para o artigo especial mensal da diar.ia.br
+> (`especial.diar.ia.br/{ano}/{slug}`), gerado pela Etapa 2 do
+> `/diaria-mensal` via `writer-monthly`.
 
-## Métricas medidos por `scripts/lint-density.ts`
+## 1. Objetivo
 
-| Métrica | Artigo (antes do #5926) | Benchmark (Superinteressante) |
-|---|---|---|
-| Frases > 30 palavras | 14 (a maior com 69) | raras; uma ideia por frase |
-| Nomes de autor / instituição / conferência no corpo | ~14 | zero — vão para Fontes |
-| Siglas em caixa alta | (não medido antes) | — |
-| Percentuais / "N pontos percentuais" soltos | 8 | 2–3, ancoradas |
+O artigo especial é o texto **longo** do projeto — ~2.200 palavras, leitor
+nível 2 (de 1 a 5 sobre IA). Diferente do digest diário (rápido, scannable),
+o especial exige **densidade baixa de referência**: o leitor aprende por
+exemplo, não por princípio.
 
-**Tetos** (escalados por `palavras/2000`): frases longas ≤ 2, nomes próprios no
-corpo = 0 (não abre frase), siglas ≤ 1, stats ≤ 3. Acima do teto = warning
-advisory (exit 0); com `--strict` = exit 1.
+## 2. Pré-gate: checklist (5926)
 
-## Como reduzir a densidade
+Rodar **`scripts/lint-density.ts --file draft.md`** antes de gravar. O
+output inclui a linha fixa obrigatória:
 
-### 1. Frases longas → uma ideia por frase
-- **Quebrar** nas logical units: cada `mas`, `porque`, `entretanto`, `assim`,
-  `por exemplo` vira nova frase.
-- **Exemplo:** `"O mecanismo, que foi desenvolvido por Vaswani em 2017, usa
-  atenção..."` → `"O mecanismo usa atenção. Ele foi desenvolvido por Vaswani
-  em 2017."`
+> 💭 o mecanismo aparece num EXEMPLO concreto, ou só é explicado?
 
-### 2. Nomes próprios no corpo → passar para Fontes
-- Toda menção a autor, instituição, conferência no **corpo** vira referência
-  na seção **Fontes** (link de rodapé numérico ou `[^1]`).
-- **Exceção (allowlist):** produtos/brand que o leitor já conhece não contam:
-  ChatGPT, Claude, Gemini, Anthropic, OpenAI, Google, Microsoft. Não listar
-  autores menores ou instituições de nicho no texto.
-- **Exemplo:** `"Smith et al. (2024) mostraram..."` → `"Um estudo mostrou
-  que..."` + `[^1]: Smith et al. (2024), ICML.`
+Se a resposta for "só é explicado", **não publicar** — acrescente um exemplo.
 
-### 3. Siglas em caixa alta → lowercase ou allowlist
-- GPT-4, GPT-3, EUA, ONU, IA são excluídos do limite. Outras siglas (ANN,
-  CNN, RL, LM) devem vir numa footnote e o nome por extenso no texto:
-  `"reinforcement learning (RL)"`.
-- Evitar mais de 1 sigla não-allowlist no texto.
+### Métricas do lint (tetos base para 2000 palavras, escalados linearmente)
 
-### 4. Estatísticas soltas → ancorar sempre
-- Todo percentual / número precisa de fonte inline: `"95% [ref]"` ou
-  `"95% — segundo estudo X [ref]"`.
-- "N pontos percentuais" sem fonte = violação.
-- Máximo 2–3 estatísticas por destaque (escalado pro mês inteiro: 3 × número
-  de destaques ≈ 9 no máximo).
+| Métrica | Teto base | Benchmark (Superinteressante) | Como reduzir |
+|---|---|---|---|
+| Frases > 30 palavras | 3 | raras; uma ideia por frase | Quebrar em frases de 1 ideia; usar conectivos curtos |
+| Nomes próprios no corpo | 2 | zero — vão para Fontes | Passar para footnote numérica; author/institution/conference → Fontes |
+| Siglas em caixa alta | 1 | — | Expandir na primeira ocorrência: "GPT-4 (Generative Pre-trained Transformer)" |
+| Estatísticas soltas | 3 | 2–3, ancoradas | Sempre "X% (fonte)" ou "X em cada Y (fonte: Z)" |
 
-### 5. Exemplo concreto do mecanismo
-- **Nunca só explicar o mecanismo** — sempre mostrar ele acontecendo.
-- **Estrutura obrigatória:**
-  ```
-  O mecanismo funciona assim: <explicação curta>.
-  Exemplo: <cenário concreto, 2-3 frases>.
-  ```
-- O `lint-density.ts` sempre pergunta no final: **"o mecanismo aparece num
-  EXEMPLO concreto, ou só é explicado?"** — responder antes de publicar.
+> **Allowlist** — produtos/brand conhecidos não contam como nome próprio:
+> ChatGPT, Claude, Gemini, Anthropic, OpenAI, Google, Microsoft, Apple, Meta,
+> Amazon, NVIDIA, Hugging Face, etc.
+> GPT-N, EUA, ONU, IA são excluídos de siglas.
 
-## Como funciona o lint
+### Checklist pré-gate
 
-```bash
-# Advisory (exit 0 mesmo se exceder — warning no output)
-npx tsx scripts/lint-density.ts --file data/monthly/$CYCLE/draft.md
+- [ ] `lint-density.ts` rodado, todos dentro do teto (ou justificativa registrada)
+- [ ] Zero author/conference no corpo — todos em Fontes (footnote numérica)
+- [ ] ≤1 técnica/benchmark nomeado no corpo
+- [ ] Números ancorados: cada stat com fonte inline ou "segundo estudo X"
+- [ ] 1 cena/evento noticioso antes da explicação do mecanismo
+- [ ] **1 exemplo inofensivo de ~5 linhas mostrando o mecanismo em ação**
+- [ ] 1 analogia do cotidiano que carregue a peça (não uma metáfora astraca)
+- [ ] Humanizador + Clarice aplicados ao texto INTEIRO (não só trecho novo)
+- [ ] URL publicada em `workers/artigos/public/{ano}/{slug}/` com `sitemap lastmod == dateModified` (guard: `test/artigos-cross-refs-5924.test.ts`)
 
-# Strict (exit 1 se algum teto for excedido — bloqueia publicação)
-npx tsx scripts/lint-density.ts --file data/monthly/$CYCLE/draft.md --strict
+## 3. Estrutura recomendada
+
+```
+[APRESENTAÇÃO — pré-amble Clarice × diar.ia.br]
+
+[INTRO — 1 parágrafo: o problema em 1 frase]
+
+---
+
+[EXEMPLO CONCRETO — 1 cena de ~5 linhas mostrando o mecanismo]
+
+---
+
+[EXPLICAÇÃO — o mecanismo, com analogia do cotidiano]
+
+---
+
+[APERFEIÇOAMENTO — como o estado da arte evoluiu]
+
+---
+
+[PERSPETIVA — impacto prático para o leitor brasileiro]
+
+---
+
+[ENCERRAMENTO]
 ```
 
-## Fixture de teste
+## 4. Regras de densidade no `writer-monthly.md`
 
-- `test/fixtures/density-dense-sample.md` — texto denso (excede tetos)
-- `test/fixtures/density-clean-sample.md` — texto limpo (dentro dos tetos)
+O agente `writer-monthly` já incorpora as regras de densidade (linha ~60):
+- Sem author/conference no corpo — vão para Fontes
+- ≤1 técnica nomeada por destaque
+- Números ancorados com fonte inline
+- Cada destaque: 1 cena antes da explicação, 1 exemplo concreto, 1 analogia
+
+## 5. Frequência de rodada
+
+- `lint-density.ts` roda na Etapa 2b-2 e resumido na Etapa 4c-2 do
+  `/diaria-mensal`.
+- Advisory por padrão (exit 0). `--strict` (exit 1) apenas em CI de release
+  ou quando o editor marca explícita o gate.
