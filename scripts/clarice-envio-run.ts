@@ -79,7 +79,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMainModule } from "./lib/cli-args.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
 import {
@@ -221,6 +221,50 @@ export interface EnvioRunDeps {
   sleep: (ms: number) => Promise<void>;
 }
 
+/**
+ * #5985 — gate de volume no caminho MANUAL. Ambas as flags são opcionais e
+ * só mexem em algo quando presentes — sem elas o comportamento é
+ * BYTE-IDÊNTICO ao da task agendada `Diaria-Clarice-Envio` (nenhuma flag é
+ * injetada automaticamente nesse caminho, ver docstring de topo).
+ */
+export interface EnvioRunOptions {
+  /** `--plan-only` — para logo após calcular `probe.volume` (Passo 4),
+   * ANTES do MV sob demanda (que gasta crédito real). Imprime a proposta,
+   * libera o lock, não escreve nada, não agenda. */
+  planOnly?: boolean;
+  /** `--volume N` — substitui o volume que a política teria escolhido
+   * sozinha (`probe.volume`) pelo número confirmado/ajustado pelo editor.
+   * Os guards de fila/crédito/freio continuam rodando sobre N — nunca são
+   * afrouxados; se N pedir mais do que algum teto permite, a rodada ABORTA
+   * explicando qual teto foi violado, em vez de cortar em silêncio pra
+   * caber (diferente da assimetria de crédito do Passo 5/#5042, que só
+   * vale quando NINGUÉM confirmou um número explicitamente). */
+  volume?: number;
+}
+
+/** #5985 — proposta calculada por `--plan-only`, devolvida em `EnvioRunResult.plan`
+ * e impressa como JSON pelo entrypoint CLI. Reúne todo o contexto que torna
+ * o volume proposto auditável ANTES de qualquer chamada que gaste crédito
+ * (ver docstring de `EnvioRunOptions.planOnly`). */
+export interface EnvioPlanProposal {
+  cycle: string;
+  sendDate: string;
+  /** Volume que a política proposeria, SEM considerar fila/crédito (mesmo
+   * `probe.volume` do Passo 4 — a proposta "de política pura"). */
+  volume: number;
+  baseVolume: number;
+  step: number;
+  note: string;
+  brake: { level: RiskSnapshot["brake"]["level"]; reasons: string[] };
+  overrideApplied: boolean;
+  /** Fila de 1º envio ANTES de qualquer MV sob demanda (plan-only nunca roda MV). */
+  queueAvailable: number;
+  brevoCredits: number | null;
+  mvOnDemand: { deficit: number; estimatedCostUsd: number; backlogAvailable: boolean };
+  abcAction: "continuar" | "travar";
+  subjects: InheritedSubjects;
+}
+
 export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
   return {
     rootDir,
@@ -250,6 +294,10 @@ export interface EnvioRunResult {
   code: 0 | 1 | 2 | 4;
   reportId: string;
   reportMarkdown: string;
+  /** #5985 — presente só quando a rodada foi `--plan-only`. Sem escrita,
+   * sem relatório registrado (`reportId`/`reportMarkdown` ficam vazios
+   * nesse caso) — é o próprio JSON que o caminho manual apresenta. */
+  plan?: EnvioPlanProposal;
 }
 
 class ReportBuilder {
@@ -606,7 +654,8 @@ export function detectExistingWaveForSendDate(
 // Orquestração principal.
 // ---------------------------------------------------------------------------
 
-export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
+export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): Promise<EnvioRunResult> {
+  const requestedVolume = opts.volume;
   const now = deps.now();
   const aammdd = todayAammdd(now);
   const report = new ReportBuilder(`diar.ia.br Clarice envio ${aammdd}`);
@@ -913,14 +962,57 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     });
     report.note(`volume desejado antes de considerar fila/crédito: ${probe.volume} (${probe.note})`);
 
+    // --- #5985: `--plan-only` PARA aqui — antes do MV sob demanda (que gasta
+    // crédito real). Libera o lock, não escreve nada, não agenda. O JSON
+    // devolvido em `plan` é a proposta que o caminho manual apresenta ao
+    // editor via AskUserQuestion (ver SKILL.md); a task agendada nunca passa
+    // `--plan-only`, então este ramo é inalcançável fora do caminho manual. ---
+    if (opts.planOnly) {
+      report.note("--plan-only: proposta calculada, nenhuma escrita feita, lock liberado antes de retornar.");
+      lockPath && releaseEnvioLock(lockPath);
+      lockPath = null;
+      const plan: EnvioPlanProposal = {
+        cycle,
+        sendDate,
+        volume: probe.volume,
+        baseVolume: proposal.volumes.baseVolume,
+        step: effectiveStep,
+        note: probe.note,
+        brake: { level: risk.brake.level, reasons: [...risk.brake.reasons] },
+        overrideApplied: risk.overrideApplied,
+        queueAvailable: proposal.availableFirstSend,
+        brevoCredits: proposal.brevoCredits,
+        mvOnDemand: {
+          deficit: proposal.mvOnDemandPlan.deficit,
+          estimatedCostUsd: proposal.mvOnDemandPlan.estimatedCostUsd,
+          backlogAvailable: proposal.mvOnDemandPlan.byCohort.length > 0,
+        },
+        abcAction,
+        subjects: inherited,
+      };
+      return { code: 0, reportId: "", reportMarkdown: "", plan };
+    }
+
+    // --- #5985: `--volume N` substitui o volume que a POLÍTICA teria
+    // escolhido sozinha (`probe.volume`) pelo confirmado/ajustado pelo
+    // editor. Usado a partir daqui em vez de `probe.volume` em todo o
+    // restante do fluxo (checagem de fila, MV sob demanda, decisão final) —
+    // os guards continuam os MESMOS, só o "desejado" de entrada muda.
+    const desiredVolume = requestedVolume ?? probe.volume;
+    if (requestedVolume !== undefined) {
+      report.note(
+        `--volume ${requestedVolume}: substituindo o volume que a política teria escolhido (${probe.volume}) — guards de fila/crédito/freio seguem valendo, sem afrouxar.`,
+      );
+    }
+
     let queueAvailable = proposal.availableFirstSend;
-    if (queueAvailable < probe.volume && proposal.mvOnDemandPlan.byCohort.length > 0) {
+    if (queueAvailable < desiredVolume && proposal.mvOnDemandPlan.byCohort.length > 0) {
       if (!hasMv) {
         report.note(
-          `⚠️  fila (${queueAvailable}) menor que o desejado (${probe.volume}) e há backlog MV disponível, mas MILLION_VERIFIER_API_KEY está ausente — não é possível verificar nesta rodada.`,
+          `⚠️  fila (${queueAvailable}) menor que o desejado (${desiredVolume}) e há backlog MV disponível, mas MILLION_VERIFIER_API_KEY está ausente — não é possível verificar nesta rodada.`,
         );
       } else {
-        report.note(`fila (${queueAvailable}) menor que o desejado (${probe.volume}) — rodando MV sob demanda (déficit: ${proposal.mvOnDemandPlan.deficit}, custo estimado US$${proposal.mvOnDemandPlan.estimatedCostUsd.toFixed(2)}).`);
+        report.note(`fila (${queueAvailable}) menor que o desejado (${desiredVolume}) — rodando MV sob demanda (déficit: ${proposal.mvOnDemandPlan.deficit}, custo estimado US$${proposal.mvOnDemandPlan.estimatedCostUsd.toFixed(2)}).`);
         step(deps, report, "clarice-mv-ondemand", "scripts/clarice-mv-ondemand.ts", ["--cycle", cycle, "--dates", sendDate]);
         step(deps, report, "clarice-build-db (pós-MV)", "scripts/clarice-build-db.ts", []);
         // #5058 — mesma retry com backoff da 1ª chamada (Passo 1) acima.
@@ -971,9 +1063,18 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       }
     }
 
-    if (queueAvailable < probe.volume) {
+    if (queueAvailable < desiredVolume) {
+      const filaMsg = `fila de 1º envio insuficiente mesmo após MV sob demanda (disponível: ${queueAvailable}, desejado: ${desiredVolume})`;
+      // #5985 — `--volume N` explícito: fila insuficiente é um teto
+      // violado, não um "nada a fazer" — o editor confirmou um número e
+      // precisa saber POR QUE não dá pra entregá-lo, nunca um corte
+      // silencioso. Sem a flag, mantém o comportamento ORIGINAL (código 0,
+      // "PARAR esta rodada") — a task agendada nunca passa `--volume`.
+      if (requestedVolume !== undefined) {
+        throw new EnvioAbort(`❌ --volume ${requestedVolume}: ${filaMsg} — teto violado: fila. Nunca trocar de público sozinha, nunca enviar menos do que o editor confirmou sem abortar antes.`);
+      }
       report.note(
-        `fila de 1º envio insuficiente mesmo após MV sob demanda (disponível: ${queueAvailable}, desejado: ${probe.volume}) — ` +
+        `${filaMsg} — ` +
           "decisão do editor (260811): PARAR esta rodada (nunca trocar de público sozinha, nunca enviar volume menor que o proposto sem avisar antes).",
       );
       lockPath && releaseEnvioLock(lockPath);
@@ -986,15 +1087,38 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     // --- Passo 5: volume final. Corte por crédito (`cappedBy: "credit"`)
     // SEGUE a rodada e agenda o volume reduzido — não é um esquecimento,
     // ver o racional da assimetria fila×crédito no comentário do Passo 4
-    // acima (#5042). ---
+    // acima (#5042). #5985: essa assimetria só vale quando NINGUÉM confirmou
+    // um número explicitamente — com `--volume N`, qualquer corte (fila,
+    // crédito OU freio) precisa ser dito ANTES de escrever, nunca em silêncio
+    // pós-fato (ver o abort logo abaixo). ---
     const decision: NextVolumeDecision = proposeNextVolume({
-      baseVolume: proposal.volumes.baseVolume,
-      step: effectiveStep,
+      baseVolume: requestedVolume !== undefined ? requestedVolume : proposal.volumes.baseVolume,
+      step: requestedVolume !== undefined ? 0 : effectiveStep,
       brake: risk.brake.level,
       queueAvailable,
       creditAvailable: proposal.brevoCredits,
     });
     report.note(`volume final: ${decision.volume} (cappedBy: ${decision.cappedBy ?? "n/a"}) — ${decision.note}`);
+
+    // #5985 — `--volume N` acima do que fila/crédito/freio permitem: aborta
+    // explicando qual teto foi violado, nunca corta em silêncio pra caber.
+    // `decision.volume < requestedVolume` só acontece quando um teto REAL
+    // reduziu o número (queue/credit/stop) — se o freio está em `hold`,
+    // `decision.volume === requestedVolume` (cappedBy:"hold" é só rótulo do
+    // ramo, não um corte de verdade) e nada aborta aqui.
+    if (requestedVolume !== undefined && decision.volume < requestedVolume) {
+      throw new EnvioAbort(
+        `❌ --volume ${requestedVolume} acima do teto (${decision.cappedBy ?? "desconhecido"}): ${decision.note} — nunca corta em silêncio pra caber num número que o editor não confirmou.`,
+      );
+    }
+
+    const volumeSource: "default_policy" | "editor_confirmed" | "editor_override" =
+      requestedVolume === undefined
+        ? "default_policy"
+        : requestedVolume === probe.volume
+          ? "editor_confirmed"
+          : "editor_override";
+    report.note(`origem do volume: ${volumeSource} (política teria escolhido ${probe.volume} sozinha).`);
 
     if (decision.volume <= 0) {
       report.note("volume final é 0 — nada a agendar nesta rodada.");
@@ -1200,16 +1324,41 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
 // ---------------------------------------------------------------------------
 
 if (isMainModule(import.meta.url)) {
-  const deps = productionDeps(ROOT);
-  runEnvio(deps)
-    .then((r) => {
-      // process.exitCode (não process.exit()) — deixa o event loop drenar o
-      // fetch fire-and-forget do e-mail de notificação (mesmo guard #4653
-      // de clarice-novos-run.ts).
-      process.exitCode = r.code;
-    })
-    .catch((e) => {
-      console.error(String((e as Error)?.stack || e));
+  // #5985 — `--plan-only`/`--volume N` são o caminho MANUAL (ver
+  // .claude/skills/diaria-clarice-envio/SKILL.md). A task agendada
+  // `Diaria-Clarice-Envio` continua rodando SEM nenhuma flag — nenhum
+  // override de produção é injetado automaticamente aqui.
+  const parsed = parseArgs(process.argv.slice(2));
+  const planOnly = parsed.flags.has("plan-only");
+  const volumeArg = parsed.values["volume"];
+  let volume: number | undefined;
+  if (volumeArg !== undefined) {
+    const n = Number(volumeArg);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      console.error(`❌ --volume precisa ser um inteiro positivo (recebido: "${volumeArg}").`);
       process.exitCode = 1;
-    });
+    } else {
+      volume = n;
+    }
+  }
+  if (process.exitCode !== 1) {
+    const deps = productionDeps(ROOT);
+    runEnvio(deps, { planOnly, volume })
+      .then((r) => {
+        // `--plan-only` imprime a proposta em stdout (JSON) — é o que o
+        // caminho manual lê pra apresentar via AskUserQuestion. Fora desse
+        // caso, nada novo é impresso — mesmo comportamento de sempre.
+        if (planOnly && r.plan) {
+          console.log(JSON.stringify(r.plan, null, 2));
+        }
+        // process.exitCode (não process.exit()) — deixa o event loop drenar o
+        // fetch fire-and-forget do e-mail de notificação (mesmo guard #4653
+        // de clarice-novos-run.ts).
+        process.exitCode = r.code;
+      })
+      .catch((e) => {
+        console.error(String((e as Error)?.stack || e));
+        process.exitCode = 1;
+      });
+  }
 }
