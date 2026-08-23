@@ -188,9 +188,11 @@ defensivo de `extractText`) e grava campos NOVOS e OPCIONAIS em cada
 de buscas server-side, quando o provedor expõe) e `estimatedCostUsd`.
 
 - **Anthropic**: os 4 campos são populados **quando a chamada termina antes
-  do timeout** (`GeoProviderDef.timeoutMs`, 120s pra este provider —
-  bem maior que o default de 25s dos outros dois, ver docstring pro achado
-  de latência) — `estimatedCostUsd` reusa
+  do timeout** (`GeoProviderDef.timeoutMs`, 270s pra este provider desde o
+  #5950 — era 120s, curto demais: medição ao vivo de 23/08/2026 achou
+  latências de sucesso até 173,8s e falhas exatas nos limites de
+  120,0s/240,0s — bem maior que o default de 25s dos outros dois, ver
+  docstring pro achado de latência) — `estimatedCostUsd` reusa
   `scripts/lib/pricing.ts::estimateCallCostUsd` (tabela de pricing do
   próprio Claude Code, não deste monitor). Chamadas que dão timeout viram
   registro de erro (`errorKind: "network"`), sem usage — mas o custo real
