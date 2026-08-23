@@ -268,6 +268,31 @@ function writeCampaignEntries(rootDir: string, cycle: string, entries: CampaignE
 }
 
 /**
+ * #5942/#5944 — classifica o erro da Brevo API ao tentar suspender uma
+ * campanha que já está em estado terminal. A Brevo rejeita o PUT de status
+ * com 400 quando a campanha já foi enviada ou já está suspensa:
+ *
+ *   "suspended is an invalid status for sent campaign"
+ *   "suspended is an invalid status for suspended campaign"
+ *
+ * Nesses dois casos, a campanha já está em estado seguro (não vai disparar
+ * mais) — não é uma falha, é confirmação de que o cancelamento já ocorreu
+ * (registro local desatualizado, ou o envio real ocorreu antes do guard
+ * rodar às 05:00). Retorna o estado terminal conhecido, ou null se o erro
+ * for de outra natureza (não é "already terminal").
+ *
+ * O erro da Brevo vem como (via `brevoPut` em `lib/brevo-client.ts`):
+ *   `Brevo API PUT /emailCampaigns/{id}/status falhou (400): {"code":"invalid_parameter","message":"suspended is an invalid status for sent campaign"}`
+ * Match por substring é deliberado: as mensagens da API são estáveis e
+ * não mudam de versão para versão.
+ */
+function classifyAlreadyTerminalBrevoError(msg: string): "sent" | "suspended" | null {
+  if (msg.includes("suspended is an invalid status for sent campaign")) return "sent";
+  if (msg.includes("suspended is an invalid status for suspended campaign")) return "suspended";
+  return null;
+}
+
+/**
  * Deriva ondas pendentes de hoje DIRETO do registro local
  * (`group-campaigns.json`) — usado pelo caminho de FALLBACK (#5220), que
  * roda justamente quando `clarice-plan-wave.ts` (a fonte normal de
@@ -313,8 +338,25 @@ async function cancelPendingWaves(
       anySucceeded = true;
       report.note(`✅ "${p.key}" (campaignId ${entry.campaignId}) suspensa.`);
     } catch (e) {
-      report.note(`❌ "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender — ${(e as Error).message}. Cancelar manualmente pelo painel Brevo.`);
-      allConfirmed = false;
+      const alreadyTerminal = classifyAlreadyTerminalBrevoError((e as Error).message);
+      if (alreadyTerminal === "sent") {
+        // #5942/#5944 — a campanha já foi ENVIADA na Brevo (envio real
+        // ocorreu antes do guard rodar, ou registro local ficou desatualizado).
+        // Nada a suspender — o envio já aconteceu, estado seguro. Atualiza o
+        // registro local para refletir a realidade.
+        entry.status = "sent";
+        anySucceeded = true;
+        report.note(`ℹ️  "${p.key}" (campaignId ${entry.campaignId}): já foi ENVIADA (status "sent" na Brevo) — nada a suspender, estado seguro.`);
+      } else if (alreadyTerminal === "suspended") {
+        // #5942/#5944 — a campanha já estava SUSPENSA em rodada anterior.
+        // Nada a suspender — já está no estado seguro.
+        entry.status = "draft";
+        anySucceeded = true;
+        report.note(`ℹ️  "${p.key}" (campaignId ${entry.campaignId}): já estava SUSPENSA na Brevo — nada a suspender, estado seguro.`);
+      } else {
+        report.note(`❌ "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender — ${(e as Error).message}. Cancelar manualmente pelo painel Brevo.`);
+        allConfirmed = false;
+      }
     }
   }
   if (anySucceeded) writeCampaignEntries(deps.rootDir, cycle, entries);
