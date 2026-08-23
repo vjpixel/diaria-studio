@@ -1285,11 +1285,19 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   // (lancamento/radar/use_melhor/video) em tmp-finalized.json — por design, seu
   // próprio docstring diz que highlights/runners_up bypassam o join de score e o
   // domain cap, então o script nunca precisou tocá-los. Sem este merge, `finalized`
-  // nunca carrega highlights/runners_up e toda edição sai com 0 destaques. `scored`
-  // (lido acima, já com a promoção §1r aplicada) é a fonte de verdade — só cai pro
-  // fallback `?? []` se `finalized` já vier populado (mocks/testes existentes).
-  finalized.highlights = finalized.highlights ?? scored.highlights ?? [];
-  finalized.runners_up = finalized.runners_up ?? scored.runners_up ?? [];
+  // nunca carrega highlights/runners_up e toda edição sai com 0 destaques.
+  //
+  // A fonte de verdade é `promotion` (retorno de `promoteRunnersUpToSix` acima),
+  // NUNCA a variável `scored` — achado do review da PR #5961: `scored` é lida do
+  // disco ANTES da promoção §1r e nunca reatribuída depois; só a cópia em disco
+  // (linha `deps.writeFile(... scoredPath ...)` acima) reflete a promoção. Ler
+  // `scored.highlights` aqui reintroduzia o mesmo bug de "poucos/zero destaques"
+  // sempre que o scorer produz <6 highlights (dispara §1r) — `promotion.highlights`
+  // já é o pós-promoção correto nos dois casos (promovido ou não: quando
+  // `promoted === 0`, `promoteRunnersUpToSix` devolve `highlights`/`runners_up`
+  // originais inalterados).
+  finalized.highlights = finalized.highlights ?? promotion.highlights ?? [];
+  finalized.runners_up = finalized.runners_up ?? promotion.runnersUp ?? [];
   const minSectionWarnings = computeMinSectionWarnings(finalized);
 
   // --- §1u shape final + strip verifier ---

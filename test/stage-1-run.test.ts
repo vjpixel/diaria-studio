@@ -1017,6 +1017,52 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Achado do review da PR #5961 (finding 1, alta confiança, repro empírico
+  // do reviewer): o fix acima ("#5952-bug") lia `scored.highlights` no
+  // fallback — mas `scored` é lida do disco ANTES da promoção §1r (linha
+  // anterior a esta) e NUNCA reatribuída depois; só a cópia em disco reflete
+  // a promoção. Combinado com o shape real de tmp-finalized.json (sem
+  // highlights/runners_up — mesmo gap do teste "#5952-bug" acima), isso
+  // reintroduzia exatamente o bug original sempre que o scorer produz <6
+  // highlights: o `01-categorized.json` final saía com a contagem
+  // PRÉ-promoção (4, não 6) e `runners_up` sem o trim pós-promoção. Nenhum
+  // teste existente cobria essa combinação — "#5952-bug" acima nunca aciona
+  // promoção (semeia 6 highlights de cara) e "§1r" acima usa `seedScored()`,
+  // que semeia tmp-finalized.json JÁ com highlights (mascarando o gap, como
+  // o próprio "#5952-bug" documenta). Este teste combina as duas condições.
+  it("shape real + promoção §1r simultâneas -> categorized.json usa a contagem PÓS-promoção (#5961-finding-1)", async () => {
+    return withTmpRoot("stage-1-run-p4-promo-real-", (root, editionDir) => {
+      writeJson(root, `${editionDir}/_internal/tmp-scored.json`, {
+        highlights: Array.from({ length: 4 }, (_, i) => ({ url: `https://h${i}.com`, score: 100 - i })),
+        runners_up: [
+          { url: "https://r1.com", score: 50 },
+          { url: "https://r2.com", score: 40 },
+          { url: "https://r3.com", score: 30 },
+        ],
+      });
+      // Shape real de finalize-stage1.ts: só os 4 buckets, sem highlights/runners_up.
+      writeJson(root, `${editionDir}/_internal/tmp-finalized.json`, {
+        lancamento: [1, 2, 3],
+        radar: Array(8).fill(0),
+        use_melhor: [1, 2, 3],
+        video: [],
+      });
+      writeJson(root, "selection.json", {});
+      const { exec } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(result.notes.some((n) => n.includes("promovi")));
+        const categorized = JSON.parse(readFileSync(resolve(root, result.categorizedPath as string), "utf8"));
+        // 4 highlights originais + 2 runners-up promovidos (r1, r2 — os 2 de
+        // maior score) pra completar 6; r3 (menor score) segue como runner-up.
+        assert.equal(categorized.highlights.length, 6);
+        assert.equal(categorized.runners_up.length, 1);
+        assert.equal(categorized.runners_up[0].url, "https://r3.com");
+      });
+    });
+  });
+
   it("validate-stage-1-completeness exit 1 -> HALT (code 2)", async () => {
     return withTmpRoot("stage-1-run-p4-completeness-", (root, editionDir) => {
       seedScored(root, editionDir);
