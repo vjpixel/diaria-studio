@@ -333,14 +333,36 @@ export interface GeoProviderDef {
  */
 const ANTHROPIC_HAIKU_THINKING_BUDGET_TOKENS = 1024;
 
+/**
+ * Detecta modelos Haiku (qualquer variante) pelo model ID — o único sinal
+ * disponível aqui; `buildRequest` não tem acesso a um enum de família de
+ * modelo. Usado tanto pro campo `thinking` (#5951) quanto pra variante do
+ * tool `web_search` (self-review do #5954, finding P1): a skill `claude-api`
+ * (Server Tools Quick Reference) diz que a variante `_20260209` (dynamic
+ * filtering) exige Opus 5/4.8/4.7/4.6, Sonnet 5, ou Sonnet 4.6 — Haiku 4.5
+ * NÃO está na lista, só a variante básica `_20250305` (modelos "older").
+ */
+function isAnthropicHaikuModel(model: string): boolean {
+  return model.includes("haiku");
+}
+
 function anthropicRequest(question: string, apiKey: string, model: string) {
   // Haiku 4.5 (#5951) não aceita thinking:"adaptive" — só a família
-  // Opus/Sonnet 4.6+ tem esse modo. Detecta pelo nome do model ID (o único
-  // sinal disponível aqui; buildRequest não tem acesso a um enum de família
-  // de modelo) e monta o campo `thinking` compatível com cada um.
-  const thinking = model.includes("haiku")
+  // Opus/Sonnet 4.6+ tem esse modo.
+  const isHaiku = isAnthropicHaikuModel(model);
+  const thinking = isHaiku
     ? { type: "enabled" as const, budget_tokens: ANTHROPIC_HAIKU_THINKING_BUDGET_TOKENS }
     : { type: "adaptive" as const };
+  // Variante do tool web_search: `_20260209` (dynamic filtering) não é
+  // suportada por Haiku — usa a básica `_20250305` pra esse modelo (sem
+  // `max_uses`, que é específico da variante dynamic-filtering; a básica só
+  // aceita `type`/`name`, ver Server Tools Quick Reference da skill
+  // claude-api). Pra família Opus/Sonnet 4.6+, mantém `_20260209` +
+  // `max_uses: 2` (ver comentário no literal `tools` abaixo pro racional de
+  // custo).
+  const webSearchTool = isHaiku
+    ? { type: "web_search_20250305" as const, name: "web_search" as const }
+    : { type: "web_search_20260209" as const, name: "web_search" as const, max_uses: 2 };
   return {
     url: "https://api.anthropic.com/v1/messages",
     init: {
@@ -385,7 +407,7 @@ function anthropicRequest(question: string, apiKey: string, model: string) {
         // (menos conteúdo de busca acumulado), sem comprometer o propósito da
         // medição (checar citação, não pesquisa profunda). Mantido como
         // redução de custo, não como fix de latência.
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2 }],
+        tools: [webSearchTool],
       }),
     } satisfies RequestInit,
   };

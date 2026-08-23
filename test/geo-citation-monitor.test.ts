@@ -156,6 +156,24 @@ describe("GEO_PROVIDERS — extractText por provider (fixtures)", () => {
     assert.equal(body.tools[0].max_uses, 2);
   });
 
+  it("anthropic: buildRequest com model Sonnet/Opus (não-Haiku) usa a variante web_search_20260209 (dynamic filtering)", () => {
+    const { init } = anthropic.buildRequest("pergunta", "fake-key", "claude-opus-5");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.tools[0].type, "web_search_20260209");
+    assert.equal(body.tools[0].max_uses, 2);
+  });
+
+  it("anthropic: buildRequest com model Haiku usa a variante básica web_search_20250305 — a _20260209 (dynamic filtering) não suporta Haiku 4.5 (self-review #5954, finding P1)", () => {
+    const { init } = anthropic.buildRequest("pergunta", "fake-key", "claude-haiku-4-5-20251001");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.tools.length, 1);
+    assert.equal(body.tools[0].type, "web_search_20250305");
+    assert.equal(body.tools[0].name, "web_search");
+    // variante básica não aceita max_uses (parâmetro específico da dynamic
+    // filtering) — nunca deve vazar aqui.
+    assert.equal("max_uses" in body.tools[0], false);
+  });
+
   it("openai: usa output_text quando presente", () => {
     assert.equal(openai.extractText({ output_text: "Resposta com diar.ia.br" }), "Resposta com diar.ia.br");
   });
