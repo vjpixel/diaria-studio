@@ -110,7 +110,7 @@ export interface DriftPattern {
  * Clarice" é o texto literal do bounce de 23/08 na #5140.
  */
 const EXECUTION_CAPABILITY_STRONG =
-  "(?:envio (?:real|ao vivo)|execu[çc][ãa]o ao vivo|campanha ao vivo|disparo (?:real|ao vivo))";
+  "(?:envio (?:real|ao vivo)|execu[çc][ãa]o ao vivo|campanha ao vivo)";
 
 /**
  * Capacidade FRACA: substantivo genérico que só vira sinal com um
@@ -135,9 +135,17 @@ const EXECUTION_CAPABILITY_WEAK =
 const EXECUTION_IMPEDIMENT_STRONG =
   "(?:vedad[oa]|proibid[oa]|pro[íi]be|barrad[oa]|barra|impede|impedid[oa]|bloqueia|bloquead[oa]|n[ãa]o (?:consigo|posso|pode|d[áa]))";
 
-/** Impedimento FRACO: exprime necessidade. Sozinho não distingue "estou
- * barrado" de "falta fazer", daí só valer com capacidade forte. */
-const EXECUTION_IMPEDIMENT_WEAK = "(?:exige|requer|precisa|depende de)";
+/**
+ * Impedimento FRACO: exprime necessidade. Sozinho não distingue "estou
+ * barrado" de "falta fazer", daí só valer com capacidade forte.
+ *
+ * Mantido no mínimo observado em bounce real. `depende de` chegou a entrar
+ * aqui, e `disparo (real|ao vivo)` na capacidade forte, sem nenhum caso real
+ * pedindo — só alargavam a superfície ("a campanha ao vivo depende de
+ * aprovação do budget" virava achado). Saíram: neste grupo a política é
+ * preferir falso negativo, então termo sem caso que o justifique não entra.
+ */
+const EXECUTION_IMPEDIMENT_WEAK = "(?:exige|requer|precisa)";
 
 /**
  * Frases que já carregam capacidade e impedimento juntas, dispensando o
@@ -147,31 +155,39 @@ const EXECUTION_IMPEDIMENT_WEAK = "(?:exige|requer|precisa|depende de)";
  *   sessão que não consegue — só podem significar bounce. Restrito a essas
  *   duas formas: "fora do escopo da rodada/sessão" é deferimento comum de
  *   tempo, que é `deferred-vague`.
- * - `precisa do editor` com artigo DEFINIDO: neste repo "o editor" é a
- *   pessoa, e a frase é a forma mais curta e mais provável de um bounce
- *   ("Precisa do editor."), que o critério de dois fatores perdia. O artigo
- *   indefinido fica de fora de propósito — "precisa de um editor gráfico/de
- *   texto" é ferramenta, não pessoa.
+ * - `precisa do editor`: neste repo "o editor" é a pessoa, e a frase é a
+ *   forma mais curta e mais provável de um bounce ("Precisa do editor."), que
+ *   o critério de dois fatores perdia.
+ *
+ *   Duas exclusões, ambas pra separar a PESSOA da FERRAMENTA (achados de
+ *   re-review): só artigo DEFINIDO (`do`, nunca `de`) — "precisa de um editor
+ *   gráfico" e "precisa de editor gráfico" são software; e lookahead negativo
+ *   pra `de` logo depois — "precisa do editor de vídeo/imagem/som" também é
+ *   software, apesar do artigo definido. Sobra o uso que importa: "precisa do
+ *   editor", "precisa do editor decidir isso", "precisa do editor para X".
  */
 const EXECUTION_SELF_SUFFICIENT =
-  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo|precisa d[oe] editor\\b)";
+  "(?:fora do escopo do overnight|fora do escopo aut[ôo]nomo|precisa do editor\\b(?!\\s+de\\s))";
 
 /**
  * Nega o match quando uma palavra de negação aparece até 2 tokens antes do
  * impedimento. Cobre "não impede", "nada exige envio real", "não é vedado",
  * "nenhuma issue barrada".
  *
- * `sem` NÃO entra: "sem dúvida" é idioma de ênfase, não negação do que vem
- * depois, e suprimia um bounce legítimo ("sem dúvida, não consigo fazer envio
- * ao vivo hoje") — achado de review. Nenhum caso conhecido precisava de `sem`
- * pra ser suprimido.
+ * `sem` entra, com UMA exceção cirúrgica: `sem dúvida`. O idioma é ênfase,
+ * não negação do que vem depois, e suprimia um bounce legítimo ("sem dúvida,
+ * não consigo fazer envio ao vivo hoje"). Tirar `sem` inteiro da lista — a
+ * primeira tentativa — consertava esse caso e reabria o oposto: "sem barrar o
+ * envio real, a rodada segue amanhã" afirma que NADA está barrado e voltava a
+ * casar (achado de re-review). O lookahead resolve os dois.
  *
  * Mitigação parcial e assumida — este módulo não faz análise sintática (ver
  * "O que este módulo NÃO é", no topo). Negação mais distante que 2 tokens
  * ainda escapa; alargar a janela começa a engolir negação de OUTRA oração e
  * vira falso negativo.
  */
-const NEGATION_LOOKBEHIND = "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada)\\s(?:\\S+\\s){0,2})";
+const NEGATION_LOOKBEHIND =
+  "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|sem(?!\\s+d[úu]vida))\\s(?:\\S+\\s){0,2})";
 
 /** Distância máxima entre os dois fatores — aproxima "mesma frase" sem
  * atravessar ponto final nem quebra de linha. */

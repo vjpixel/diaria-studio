@@ -454,6 +454,23 @@ describe("execution-guard — dois fatores obrigatórios (#5958, achados de revi
     "o guard de execução deste PR precisa de mais testes antes de mergear",
     "o guard de publicação do stage 5 exige revisão antes de qualquer mudança de threshold",
     "essa issue precisa de sessão supervisionada de review antes do merge",
+    // "editor" no sentido de SOFTWARE, agora com artigo definido — o
+    // lookahead de `de` é o que separa a ferramenta da pessoa (re-review 3).
+    "o texto precisa do editor de vídeo para cortar isso",
+    "essa imagem precisa do editor de imagem para cortar",
+    "o roteiro precisa do editor de som",
+    "essa tarefa precisa de editor gráfico atualizado",
+    // Negação por `sem`: a frase afirma que NADA está barrado. Tirar `sem`
+    // inteiro da lista de negação reabria este caso (re-review 3).
+    "sem barrar o envio real, a rodada segue amanhã",
+    // Planejamento comum, não bounce: `depende de` e `disparo real` tinham
+    // entrado no catálogo sem nenhum caso real pedindo, e alargavam a
+    // superfície exatamente assim (re-review 3).
+    "a campanha ao vivo depende de aprovação do budget do trimestre",
+    "o disparo real de notificações precisa de rate limit maior",
+    // Negação alcançando a frase auto-suficiente.
+    "nenhuma sessão precisa do editor amanhã",
+    "não, não precisa do editor para isso",
   ];
   for (const prosa of NAO_CASA) {
     it(`não casa: "${prosa.slice(0, 50)}…"`, () => assert.equal(hit(prosa), false));
