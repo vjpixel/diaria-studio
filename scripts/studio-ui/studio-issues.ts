@@ -252,7 +252,11 @@ export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
       createdAt: i.createdAt ?? null,
       updatedAt: i.updatedAt ?? null,
       files,
-      execTrack: classifyExecTrack({ labels, body: i.body }),
+      // #5948 — `state` precisa ser propagado mesmo quando o fetch já filtra
+      // por `--state open`: `parseIssues` é uma função pura, testável com
+      // qualquer input, e `classifyExecTrack` só protege contra issue
+      // fechada quando `state` chega até ela.
+      execTrack: classifyExecTrack({ labels, body: i.body, state: i.state }),
     };
   });
 }
