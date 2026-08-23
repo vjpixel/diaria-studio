@@ -812,20 +812,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "2000"] },
       // #4909: /temas/{slug} (host arquivo.diar.ia.br) nunca entrou nesta
       // checagem — a propriedade GSC verificada é sc-domain:diar.ia.br
-      // (cobre o subdomínio, sem --site próprio necessário), e o sitemap
-      // deste host tem hoje 7 URLs (a raiz + 6 hubs — corrigido no #5118/#5120,
-      // dizia "~5 URLs, a raiz + 4 hubs" desatualizado; ver também #5120 item 3
-      // sobre a leitura "1/5 hubs, com 4 nunca rastreados" da medição de
-      // 12/ago, feita ANTES do 6º hub mercado-trabalho entrar), então SEM
+      // (cobre o subdomínio, sem --site próprio necessário), então SEM
       // --only-posts (o filtro é /\/p\//, que zeraria tudo aqui — ver
-      // filterPosts em seo-index-check.ts) e com --limit pequeno.
+      // filterPosts em seo-index-check.ts).
+      // --limit 2000 (subiu de 10 no #5975; "7 URLs, a raiz + 6 hubs" do
+      // comentário anterior — #5118/#5120 — já estava desatualizado quando
+      // escrito: o #5722 (mesmo dia, antes desta task rodar de novo) trocou
+      // o gerador do sitemap deste Worker (`workers/arquivo/src/index.ts`,
+      // `buildArquivoSitemapXml`) de "só hub + raiz" pra "hub + raiz + 1
+      // <url> por edição publicada" (mesma fonte que a raiz HTML já
+      // consome via `resolveEditions`), pra que o PRÓPRIO sitemap cubra o
+      // acervo — o sitemap do host principal, do qual a cobertura de
+      // edições dependia antes, é o que nenhum crawler segue (#5692).
+      // Medição ao vivo em 23/08/2026 (#5975): ~252 URLs reais, e
+      // --limit 10 descartava 242 delas por rodada (mesmo bug de
+      // composição do #5118 item 1a — corte silencioso das mais antigas,
+      // ver applyLimit). --limit 2000 é o MESMO valor do passo "index"
+      // acima (mesmo racional): a cota da URL Inspection API é 2.000/dia
+      // POR PROPRIEDADE (sc-domain:diar.ia.br, compartilhada entre os dois
+      // passos), e o consumo real de hoje é ~239 (passo "index") + ~252
+      // (este passo) = ~491/dia — bem abaixo da cota mesmo somando os dois
+      // `--limit` nominais. Escolhido acima de um valor mais próximo de
+      // 252 de propósito: este sitemap cresce ~1 URL/dia (1 edição
+      // diária/dia útil) — um teto justo reproduziria o mesmo bug em
+      // poucos meses, e 2000 alinha a mesma margem de anos que o #5118 já
+      // decidiu ser aceitável pro passo "index".
       // --out-suffix evita que esta rodada colida no mesmo
       // index-status-{data}.json/.md do passo "index" acima (achado do
       // #4909 — o .md era path fixo, não sobrescrevível por --out).
       {
         key: "index-arquivo",
         script: "scripts/seo-index-check.ts",
-        args: ["--sitemap", "https://arquivo.diar.ia.br/sitemap.xml", "--limit", "10", "--out-suffix", "arquivo"],
+        args: ["--sitemap", "https://arquivo.diar.ia.br/sitemap.xml", "--limit", "2000", "--out-suffix", "arquivo"],
       },
       { key: "pull", script: "scripts/seo-pull.ts", args: ["--days", "28"] },
     ],

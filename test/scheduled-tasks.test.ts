@@ -169,6 +169,26 @@ describe("Diaria-SEO-Weekly: loop semanal roda os dois scripts de medição (#41
     assert.ok(step, "step 'pull' ausente");
     assert.equal(step!.script, "scripts/seo-pull.ts");
   });
+
+  it("step 'index-arquivo' chama seo-index-check.ts com --sitemap do host arquivo.diar.ia.br, SEM --only-posts", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "index-arquivo");
+    assert.ok(step, "step 'index-arquivo' ausente");
+    assert.equal(step!.script, "scripts/seo-index-check.ts");
+    assert.ok(step!.args?.includes("https://arquivo.diar.ia.br/sitemap.xml"));
+    assert.ok(!step!.args?.includes("--only-posts"), "--only-posts zeraria o sitemap de arquivo.diar.ia.br (filtro /\\/p\\//)");
+  });
+
+  it("step 'index-arquivo': --limit é 2000, não o 10 antigo (regressão #5975 — sitemap tem ~252 URLs reais, --limit 10 descartava 242/rodada)", () => {
+    const t = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(t);
+    const step = t!.steps.find((s) => s.key === "index-arquivo");
+    assert.ok(step);
+    const limitIndex = step!.args?.indexOf("--limit") ?? -1;
+    assert.ok(limitIndex >= 0, "--limit ausente no step 'index-arquivo'");
+    assert.equal(step!.args![limitIndex + 1], "2000");
+  });
 });
 
 describe("getScheduledTaskByName / listScheduledTaskNames", () => {
