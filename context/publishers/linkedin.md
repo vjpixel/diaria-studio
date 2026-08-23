@@ -348,13 +348,60 @@ marca do paste. Conclusão errada foi tirada daí em 260803. Espere o
 editor estabilizar (ou recarregue a página) antes de afirmar qualquer
 coisa sobre o que sobreviveu.
 
+**d) Âncora colada via `ClipboardEvent` cujo texto COMEÇA com "diar.ia.br"
+é DIVIDIDA em duas, mesmo estendida além do domínio (achado 260824, 1ª
+execução real do paste assistido via Claude in Chrome).** O item (c) acima
+documentava "diar.ia.br, newsletter de IA" como caso seguro (testado
+260803), mas aquele teste foi feito digitando o texto ao vivo no editor
+(auto-linkificação por digitação), não colando um `<a href="...">diar.ia.br,
+newsletter de IA</a>` pré-montado via `ClipboardEvent`. São caminhos
+diferentes: no paste, o auto-linkificador do LinkedIn reconhece a
+substring "diar.ia.br" DENTRO do texto da âncora colada e a separa num
+`<a>` próprio sem UTM (`href="http://diar.ia.br/"`), deixando só o resto
+(", newsletter de IA") na âncora original com a UTM. Resultado: 2 nós
+`<a>` adjacentes onde devia haver 1, com o pedaço clicável mais
+provável (a marca em si) sem tracking.
+
+**Correção aplicada manualmente na 1ª publicação real (26w34, 260824):**
+selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
+(clicar antes de "Desde", `Home`, `Right` × N até o início da menção,
+`shift+Right` × M até o fim — **nunca clicar diretamente sobre o link
+colado**, um clique ali fez a página rolar/pular pra outro trecho, ver
+'Perigo' abaixo), abrir **Add link** (ícone 🔗 da toolbar) com a seleção
+ativa — o popup "Edit link" trata as 2 âncoras coladas como 1 campo de
+texto editável — e sobrescrever o campo **Link** com a URL completa
+(UTM inclusa) antes de **Apply**. Resultado vira 1 âncora só, correta.
+
+**Perigo colateral encontrado na mesma sessão:** um `left_click` isolado
+em cima do texto do link (antes de `shift+click` pra estender a seleção)
+fez o layout pular — a 2ª coordenada do clique subsequente acabou
+selecionando texto de OUTRO parágrafo, bem mais abaixo no artigo (perto
+de "Por que isso importa" de uma manchete diferente). Nenhum conteúdo foi
+efetivamente apagado nesse caso específico, mas o mesmo movimento **apagou
+silenciosamente** o parágrafo `<p><a>Quero receber a edição diária →</a></p>`
+inteiro do bloco Use Melhor em algum ponto da sequência de cliques
+(causa exata não isolada — suspeita: o popup "Edit link" ficou com uma
+seleção obsoleta de uma iteração anterior e a operação de Apply substituiu
+o range errado). **Mitigação:** depois de qualquer correção de link via
+clique+seleção, sempre rodar uma auditoria completa de `document.querySelectorAll('a')`
+comparando a contagem e os textos contra o esperado (10 âncoras nesta
+edição: 1 menção + 3 CTAs de assinatura + 1 item de Use Melhor + 5 links
+de "Edições da semana") E conferir `editor.textContent.length` bate com o
+tamanho logo após o paste original — foi assim que a perda do CTA do Use
+Melhor foi pega e corrigida (reinserção manual via paste de 1 `<p><a>`
+isolado, cursor posicionado com `Home`/`End`/`Enter`, nunca clique direto
+sobre texto de link).
+
 Publicação continua **manual por padrão** (colar via UI, revisar
 visualmente, clicar Publish) — a automação acima é referência pra quem for
 implementar o paste assistido via Claude in Chrome no futuro; não é
 executada por `/diaria-linkedin-semanal` nesta versão (a skill entrega o
 artefato e as instruções, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`
 Passo 6). Em 260803 o paste assistido foi executado à mão numa sessão com o
-editor presente, e os achados acima vieram dessa rodada.
+editor presente, e os achados (a)-(c) vieram dessa rodada; o achado (d)
+veio da 1ª execução real do fluxo completo por um agente via Claude in
+Chrome, 260824 (ciclo `26w34`) — a mesma sessão que confirmou o agendamento
+funciona de ponta a ponta (ver §4 abaixo).
 
 ### 4. O LinkedIn AGENDA artigo de newsletter (a regra antiga dizia que não)
 
