@@ -323,7 +323,7 @@ import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
 // KV do worker diaria-dashboard. Ver studio-snapshot-watcher.ts.
 import { watchAndPushStudioSnapshot, type StudioSnapshotWatchHandle } from "./studio-snapshot-watcher.ts";
 import { formatSseEvent, formatSseComment } from "./sse.ts";
-import { serveStaticFile, mimeFor, SECURITY_HEADERS } from "./static-serve.ts";
+import { serveStaticFile, mimeFor } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 // #3561: visualização da fila classificada + timeline ao vivo de uma rodada
@@ -387,25 +387,6 @@ import {
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
 import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
-// #3924: seção "Caixas" — listar e editar os snippets de caixa de
-// divulgação (`data/snippets/*.md`) — arquivo próprio desta fatia, import
-// isolado (nenhuma outra rota depende dele). Ver studio-boxes.ts.
-import {
-  listBoxes,
-  readBox,
-  saveBox,
-  createBox,
-  archiveBox,
-  unarchiveBox,
-  listArchivedBoxes,
-  buildBoxContentWithNome,
-  buildBoxContent, // #3979/#3981 — modo {nome, categoria, notas, conteudo}
-  replaceBoxContentTitle, // #4079 — campo dedicado "Título de conteúdo"
-  readBoxSlotsState,
-  saveBoxSlots,
-  readParaEncerrarState, // #4274
-  saveParaEncerrar, // #4274
-} from "./studio-boxes.ts";
 // #3564/#5341: notificação push por e-mail (gate 4/6 pendente +
 // AskUserQuestion pendente no chat) com dedup — arquivo próprio desta
 // fatia, import isolado (nenhuma outra rota depende dele). Ver
@@ -438,6 +419,22 @@ import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 // abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
 import { buildAdsData } from "./studio-ads.ts";
 import { watchStudioSource, type StudioSourceChange, type StudioSourceWatchHandle } from "./studio-source-watch.ts";
+// #5894: sendJson + readRequestBody extraídos pra http-utils.ts; handlers de
+// Caixas extraídos pra routes/boxes.ts — server.ts encolheu de 2389 → ~1700 linhas.
+import { sendJson, readRequestBody } from "./http-utils.ts";
+import {
+  handleApiBoxesList,
+  handleApiBoxGet,
+  handleApiBoxSave,
+  handleApiBoxCreate,
+  handleApiBoxArchive,
+  handleApiBoxUnarchive,
+  handleApiArchivedBoxesList,
+  handleApiBoxSlotsGet,
+  handleApiBoxSlotsSave,
+  handleApiParaEncerrarGet,
+  handleApiParaEncerrarSave,
+} from "./routes/boxes.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -452,20 +449,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "public");
 
 const AAMMDD_RE = /^[0-9]{6}$/;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body, null, 2);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(payload),
-    // #3891 (item 10): nosniff em toda resposta JSON — defesa em profundidade
-    // barata (mesma constante de static-serve.ts, mas só o header de
-    // MIME-sniffing: CSP não faz sentido pra uma resposta que nunca é
-    // renderizada como página).
-    "X-Content-Type-Options": SECURITY_HEADERS["X-Content-Type-Options"],
-  });
-  res.end(payload);
-}
 
 export interface StudioServerOptions {
   /** Porta fixa; omitida ou `0` = porta efêmera OS-assigned (útil em testes). */
@@ -782,25 +765,11 @@ function handleReportContent(rootDir: string, id: string, res: ServerResponse): 
  * um corpo absurdo (ou um cliente malicioso/travado) segure memória do
  * processo indefinidamente. Rejeita (`reject`) assim que o teto é excedido —
  * não espera o `end` do stream. */
-function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    let size = 0;
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > maxBytes) {
-        reject(new Error(`corpo da request excede o limite de ${maxBytes} bytes`));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolvePromise(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
+// readRequestBody + sendJson movidos pra ./http-utils.ts (#5894) — ambos usados
+// por server.ts e pelos handlers em ./routes/*.ts.
 
 /**
+
  * `POST /api/chat` — chat drawer (#3556). Lê o corpo, valida via
  * `parseChatRequestBody` (400 se inválido), abre a resposta como SSE e
  * conduz UM turno via `runChatTurn`, streamando cada evento traduzido pro
@@ -1348,301 +1317,7 @@ async function handleApiApoiosUpdate(
   sendApoiosMutationResult(res, result);
 }
 
-// ── #3924: seção "Caixas" — snippets de caixa de divulgação ─────────────
-
-// Snippets são pequenos (recomendação de leitura, apoio, etc.) — mesmo teto
-// generoso de `REVIEW_MAX_BODY_BYTES` seria exagero aqui; 500KB já é folga
-// grande sobre o que um snippet de verdade pesa, protege contra corpo absurdo.
-const BOXES_MAX_BODY_BYTES = 500_000;
-
-/** `GET /api/boxes` — lista dinâmica de `data/snippets/*.md` (#3924).
- * Sempre 200: `listBoxes` é fail-soft (diretório ausente -> `[]`, nunca
- * lança). */
-function handleApiBoxesList(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, { boxes: listBoxes(rootDir) });
-}
-
-/** `GET /api/boxes/:slug` — conteúdo + mtime de UMA caixa (#3924). Qualquer
- * falha de `readBox` (slug inválido — traversal, `README.md`, extensão
- * errada — OU caixa inexistente em disco) responde 404, nunca 400: do ponto
- * de vista do client não há diferença acionável entre "esse slug nunca foi
- * válido" e "essa caixa não existe mais". */
-function handleApiBoxGet(rootDir: string, slug: string, res: ServerResponse): void {
-  const state = readBox(rootDir, slug);
-  sendJson(res, state.ok ? 200 : 404, state);
-}
-
-/** `PUT /api/boxes/:slug` — salva o conteúdo de UMA caixa (#3924). Mesmo
- * contrato de `expectedModifiedAt`/`force` de `handleReviewSave`
- * (studio-review.ts, #3729) — não duplicado aqui além da validação de shape
- * do corpo. Status: 200 sucesso, 409 conflito de mtime, 404 slug
- * inválido/caixa inexistente, 400 corpo malformado. */
-async function handleApiBoxSave(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  slug: string,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const parsed = body as {
-    content?: unknown;
-    body?: unknown;
-    conteudo?: unknown;
-    nome?: unknown;
-    categoria?: unknown;
-    notas?: unknown;
-    titulo?: unknown;
-    expectedModifiedAt?: unknown;
-    force?: unknown;
-  } | null;
-  // 3 modos aceitos, checados nessa ordem (mais novo primeiro):
-  //   1. #3979/#3981 — `{nome, categoria, notas, conteudo}`: os 2 painéis do
-  //      editor (Conteúdo | Notas) + os 2 campos dedicados (Nome interno |
-  //      Categoria). O server RECONSTRÓI o header inteiro a partir desses 4
-  //      valores (`buildBoxContent` — reconstrução completa, não upsert
-  //      cirúrgico, porque a UI de 2 painéis edita o header inteiro).
-  //      `titulo` (#4079, opcional, só neste modo): campo dedicado "Título de
-  //      conteúdo" — quando presente (string, mesmo vazia), reescreve a 1ª
-  //      linha de `conteudo` ANTES de montar o header (`replaceBoxContentTitle`
-  //      — autoritativo sobre o que quer que já esteja na 1ª linha do
-  //      `conteudo` enviado, mesmo padrão de nome/categoria sempre vencerem
-  //      sobre o header pré-existente).
-  //   2. #3933 (legado) — `{nome, body}`: upsert cirúrgico só do `nome:`
-  //      dentro de um header pré-existente (`buildBoxContentWithNome`).
-  //   3. Legado original (#3924) — `{content}`: conteúdo bruto como veio.
-  let content: string;
-  if (typeof parsed?.conteudo === "string") {
-    const nome = typeof parsed.nome === "string" ? parsed.nome : "";
-    const categoria = typeof parsed.categoria === "string" ? parsed.categoria : "";
-    const notas = typeof parsed.notas === "string" ? parsed.notas : "";
-    const conteudo =
-      typeof parsed.titulo === "string" ? replaceBoxContentTitle(parsed.conteudo, parsed.titulo) : parsed.conteudo;
-    content = buildBoxContent({ nome, categoria, notas }, conteudo);
-  } else if (typeof parsed?.body === "string") {
-    const nome = typeof parsed.nome === "string" ? parsed.nome : "";
-    content = buildBoxContentWithNome(nome, parsed.body);
-  } else if (typeof parsed?.content === "string") {
-    content = parsed.content;
-  } else {
-    sendJson(res, 400, {
-      error:
-        "corpo precisa de 'conteudo' (string, com 'nome'/'categoria'/'notas' opcionais), 'body' (string, com 'nome' opcional, legado) ou 'content' (string, legado)",
-    });
-    return;
-  }
-  let expectedModifiedAt: string | null | undefined;
-  if (parsed && "expectedModifiedAt" in parsed) {
-    const raw = parsed.expectedModifiedAt ?? null;
-    if (raw !== null && typeof raw !== "string") {
-      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
-      return;
-    }
-    expectedModifiedAt = raw;
-  }
-  const force = parsed?.force === true;
-  const result = saveBox(rootDir, slug, content, { expectedModifiedAt, force });
-  const status = result.ok ? 200 : result.conflict ? 409 : result.notFound ? 404 : 400;
-  sendJson(res, status, result);
-}
-
-/** `POST /api/boxes` — cria uma caixa NOVA (#3928). Body `{slug, content}` +
- * `nome`/`categoria` opcionais (#3933/#3981 — se presentes, o server monta um
- * header `<!--\nnome: X\ncategoria: Y\n-->` no conteúdo). 201 criada, 409 já
- * existe (viva ou arquivada), 400 slug/corpo inválido. `createBox` é
- * fail-soft; só o parse de corpo é tratado aqui. */
-async function handleApiBoxCreate(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const parsed = body as { slug?: unknown; content?: unknown; nome?: unknown; categoria?: unknown } | null;
-  const slug = parsed?.slug;
-  const content = parsed?.content;
-  if (typeof slug !== "string" || !slug) {
-    sendJson(res, 400, { error: "campo 'slug' (string) é obrigatório no corpo" });
-    return;
-  }
-  if (typeof content !== "string") {
-    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
-    return;
-  }
-  const nome = typeof parsed?.nome === "string" ? parsed.nome : "";
-  const categoria = typeof parsed?.categoria === "string" ? parsed.categoria : "";
-  const finalContent =
-    nome.trim() || categoria.trim() ? buildBoxContent({ nome, categoria, notas: "" }, content) : content;
-  const result = createBox(rootDir, slug, finalContent);
-  const status = result.ok ? 201 : result.exists ? 409 : 400;
-  sendJson(res, status, result);
-}
-
-/** `POST /api/boxes/:slug/archive` — arquiva (move pra `_arquivo/`) uma caixa
- * (#3928). 200 arquivada, 404 slug inválido/inexistente, 409 bloqueada por
- * slot ativo (auto-injetada em toda newsletter — arquivar quebraria o
- * pipeline). Conteúdo NUNCA é deletado. */
-function handleApiBoxArchive(rootDir: string, slug: string, res: ServerResponse): void {
-  const result = archiveBox(rootDir, slug);
-  const status = result.ok ? 200 : result.notFound ? 404 : result.blockedBySlot ? 409 : 400;
-  sendJson(res, status, result);
-}
-
-/** `POST /api/boxes/:slug/unarchive` — restaura uma caixa arquivada (#3928).
- * 200 restaurada, 404 slug inválido/sem arquivada, 409 já existe caixa viva
- * de mesmo slug (não sobrescreve). */
-function handleApiBoxUnarchive(rootDir: string, slug: string, res: ServerResponse): void {
-  const result = unarchiveBox(rootDir, slug);
-  const status = result.ok ? 200 : result.notFound ? 404 : result.conflict ? 409 : 400;
-  sendJson(res, status, result);
-}
-
-/** `GET /api/boxes/archived` — lista as caixas arquivadas (#3928). Sempre 200:
- * `listArchivedBoxes` é fail-soft (pasta ausente -> `[]`). */
-function handleApiArchivedBoxesList(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, { boxes: listArchivedBoxes(rootDir) });
-}
-
-/** #4275: resolve `?variant=patronos` da query string pra `"patronos"`;
- * qualquer outro valor (ausente, `"default"`, typo) cai em `"default"` —
- * nunca lança, nunca rejeita um valor desconhecido (fail-soft, mesma
- * disciplina do resto desta fatia). */
-function resolveBoxSlotVariantFromQuery(req: IncomingMessage): "default" | "patronos" {
-  const v = new URL(req.url ?? "/", "http://localhost").searchParams.get("variant");
-  return v === "patronos" ? "patronos" : "default";
-}
-
-/** `GET /api/boxes/slots` — atribuição atual dos 3 slots de divulgação +
- * mtime de `platform.config.json` (#3937). `?variant=patronos` (#4275) lê
- * `boxes_divulgacao_patronos` em vez de `boxes_divulgacao` — mesmo shape de
- * resposta. Sempre 200: `readBoxSlotsState` é fail-soft (config
- * ausente/corrompido -> slots vazios). */
-function handleApiBoxSlotsGet(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
-  sendJson(res, 200, readBoxSlotsState(rootDir, resolveBoxSlotVariantFromQuery(req)));
-}
-
-/** `PUT /api/boxes/slots` — salva a atribuição dos 3 slots de divulgação
- * (#3937). Mesmo contrato de `expectedModifiedAt`/`force` de
- * `handleApiBoxSave` — não duplicado aqui além da validação de shape do
- * corpo. Campo `variant: "patronos"` (#4275) grava em
- * `boxes_divulgacao_patronos` em vez de `boxes_divulgacao` — omitido ou
- * qualquer outro valor cai no comportamento padrão de sempre. Status: 200
- * sucesso, 409 conflito de mtime, 400 corpo malformado OU atribuição
- * inválida (guard 1: caixa inexistente/arquivada; guard 2: duplicata entre
- * slots). */
-async function handleApiBoxSlotsSave(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const parsed = body as {
-    slot0?: unknown;
-    slot1?: unknown;
-    slot2?: unknown;
-    slot3?: unknown;
-    expectedModifiedAt?: unknown;
-    force?: unknown;
-    variant?: unknown; // #4275
-  } | null;
-  const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
-  const slot0 = slotField(parsed?.slot0);
-  const slot1 = slotField(parsed?.slot1);
-  const slot2 = slotField(parsed?.slot2);
-  const slot3 = slotField(parsed?.slot3);
-  if (slot0 === null || slot1 === null || slot2 === null || slot3 === null) {
-    sendJson(res, 400, { error: "campos 'slot0'/'slot1'/'slot2'/'slot3' precisam ser string (slug da caixa) ou vazio" });
-    return;
-  }
-  let expectedModifiedAt: string | null | undefined;
-  if (parsed && "expectedModifiedAt" in parsed) {
-    const raw = parsed.expectedModifiedAt ?? null;
-    if (raw !== null && typeof raw !== "string") {
-      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
-      return;
-    }
-    expectedModifiedAt = raw;
-  }
-  const force = parsed?.force === true;
-  // #4275: `variant: "patronos"` grava em `boxes_divulgacao_patronos` em vez
-  // de `boxes_divulgacao` — qualquer outro valor (ausente, "default", typo)
-  // cai em "default", mesmo fail-soft do GET (resolveBoxSlotVariantFromQuery).
-  const variant = parsed?.variant === "patronos" ? "patronos" : "default";
-  const result = saveBoxSlots(rootDir, { slot0, slot1, slot2, slot3 }, { expectedModifiedAt, force, variant });
-  // `invalid` (guards 1/2) e qualquer outra falha genérica (config ausente,
-  // erro de escrita) caem no mesmo 400 — só `conflict` (guard 4, #3729) tem
-  // status próprio (409).
-  const status = result.ok ? 200 : result.conflict ? 409 : 400;
-  sendJson(res, status, result);
-}
-
-/** `GET /api/boxes/para-encerrar` — conteúdo cru dos slots A/B do PARA
- * ENCERRAR + mtime de `platform.config.json` (#4274). Sempre 200:
- * `readParaEncerrarState` é fail-soft (config ausente/corrompido -> slots
- * vazios). */
-function handleApiParaEncerrarGet(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, readParaEncerrarState(rootDir));
-}
-
-/** `PUT /api/boxes/para-encerrar` — salva o conteúdo dos slots A/B do PARA
- * ENCERRAR (#4274). Mesmo contrato de `expectedModifiedAt`/`force` de
- * `handleApiBoxSlotsSave`. Status: 200 sucesso, 409 conflito de mtime, 400
- * corpo malformado ou falha genérica de escrita. */
-async function handleApiParaEncerrarSave(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const parsed = body as {
-    slotA?: unknown;
-    slotB?: unknown;
-    expectedModifiedAt?: unknown;
-    force?: unknown;
-  } | null;
-  const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
-  const slotA = slotField(parsed?.slotA);
-  const slotB = slotField(parsed?.slotB);
-  if (slotA === null || slotB === null) {
-    sendJson(res, 400, { error: "campos 'slotA'/'slotB' precisam ser string ou vazio" });
-    return;
-  }
-  let expectedModifiedAt: string | null | undefined;
-  if (parsed && "expectedModifiedAt" in parsed) {
-    const raw = parsed.expectedModifiedAt ?? null;
-    if (raw !== null && typeof raw !== "string") {
-      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
-      return;
-    }
-    expectedModifiedAt = raw;
-  }
-  const force = parsed?.force === true;
-  const result = saveParaEncerrar(rootDir, { slotA, slotB }, { expectedModifiedAt, force });
-  const status = result.ok ? 200 : result.conflict ? 409 : 400;
-  sendJson(res, status, result);
-}
+// #3924: seção "Caixas" — handlers movidos pra ./routes/boxes.ts (#5894).
 
 // ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
 
