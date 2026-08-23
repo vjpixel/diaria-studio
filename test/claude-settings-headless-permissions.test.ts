@@ -76,4 +76,25 @@ describe("claude-settings-headless-permissions", () => {
         "pro invocador `node` direto",
     );
   });
+
+  // Achado do review da PR #5952 (item 3): as variantes bare continuam
+  // necessárias — `Bash(npx tsx scripts/*.ts *)` exige pelo menos um
+  // caractere depois do espaço, então uma invocação SEM argumento nenhum
+  // (`npx tsx scripts/foo.ts`, sem flags) só bate com a forma bare. Sem
+  // este par de asserts, uma edição futura que "limpasse" a bare por
+  // parecer redundante reintroduziria uma versão menor do mesmo bug —
+  // e os dois asserts acima continuariam passando.
+  it("mantém as variantes bare (sem argumentos) ao lado das com `*`", () => {
+    const allow = loadAllowList();
+    assert.ok(
+      allow.includes("Bash(npx tsx scripts/*.ts)"),
+      "faltando a forma bare 'Bash(npx tsx scripts/*.ts)' — necessária pra " +
+        "scripts invocados sem nenhum argumento",
+    );
+    assert.ok(
+      allow.includes("Bash(node scripts/*.ts)"),
+      "faltando a forma bare 'Bash(node scripts/*.ts)' — necessária pra " +
+        "scripts invocados sem nenhum argumento",
+    );
+  });
 });
