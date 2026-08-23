@@ -11,6 +11,7 @@ import {
   buildPlanLines,
   reapplyHtml,
   setCampaignStatus,
+  restoreScheduledCampaign,
   sumListSubscribers,
   detectPostRescheduleDivergence,
   detectZeroAudienceAnomaly,
@@ -282,6 +283,41 @@ describe("setCampaignStatus", () => {
       await setCampaignStatus("fake-key", 81, "suspended");
       assert.match(capturedPath, /\/emailCampaigns\/81\/status$/);
       assert.deepEqual(capturedBody, { status: "suspended" });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+/**
+ * Regressão #5939: restoreScheduledCampaign deve SEMPRE enviar scheduledAt
+ * antes do PUT de status queued. setCampaignStatus sozinha não inclui
+ * scheduledAt — a Brevo interpreta ausência como "enviar agora".
+ */
+describe("restoreScheduledCampaign (#5939)", () => {
+  it("PUT /emailCampaigns/{id} com scheduledAt ANTES de PUT /status com queued", async () => {
+    const origFetch = globalThis.fetch;
+    const calls: { path: string; body: any }[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        path: String(url),
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await restoreScheduledCampaign(
+        "fake-key",
+        81,
+        "2026-08-24T09:00:00.000Z",
+      );
+      assert.equal(calls.length, 2);
+      // 1º PUT: fixa scheduledAt no endpoint principal da campanha
+      assert.match(calls[0].path, /\/emailCampaigns\/81$/);
+      assert.deepEqual(calls[0].body, { scheduledAt: "2026-08-24T09:00:00.000Z" });
+      // 2º PUT: requeue com status, NUNCA sem scheduledAt (já fixado no passo 1)
+      assert.match(calls[1].path, /\/emailCampaigns\/81\/status$/);
+      assert.deepEqual(calls[1].body, { status: "queued" });
     } finally {
       globalThis.fetch = origFetch;
     }
