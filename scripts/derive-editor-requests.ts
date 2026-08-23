@@ -329,7 +329,7 @@ const BUCKET_LABELS: Record<string, string> = {
   lancamento: "LANÇAMENTOS",
   radar: "RADAR",
   use_melhor: "USE MELHOR",
-  video: "VÍDEO",
+  video: "VÍDEOS",
 };
 
 function bucketLabel(bucket: string): string {
