@@ -125,7 +125,7 @@ function makeFakeClient(
 }
 
 test("runOpensCatchup: só considera campanhas DENTRO da janela; agrega openers; re-busca e upserta cada um", async () => {
-  const recent = fakeCampaign(1, 2); // 2 dias atrás — dentro da janela default (30d)
+  const recent = fakeCampaign(1, 2); // 2 dias atrás — dentro da janela default (7d)
   const old = fakeCampaign(2, 400); // muito antiga — fora da janela
   const campaigns = [recent, old];
   const client = makeFakeClient(campaigns, {
@@ -213,6 +213,44 @@ test("runOpensCatchup: contato que some entre o export e a re-busca (404 → bod
 
 test("DEFAULT_OPENS_CATCHUP_WINDOW_DAYS: valor positivo razoável (não 0, não negativo)", () => {
   assert.ok(DEFAULT_OPENS_CATCHUP_WINDOW_DAYS > 0);
+});
+
+// #5946: janela encolhida de 30 para 7 dias — sozinha, a janela de 30 dias
+// gerava ~121 campanhas na consulta diária, estourando o teto de 100
+// req/hora da Brevo (docs/brevo-rate-limits.md) e causando falhas parciais
+// em streak. Pin do valor exato (não só "> 0") pra este teste falhar se
+// alguém reverter pro 30 que causou o incidente original — CLAUDE.md #633
+// ("PR de bugfix exige teste de regressão").
+test("DEFAULT_OPENS_CATCHUP_WINDOW_DAYS: valor exato é 7 (regressão #5946 — não reverter pra 30)", () => {
+  assert.equal(DEFAULT_OPENS_CATCHUP_WINDOW_DAYS, 7);
+});
+
+test("runOpensCatchup: campanha na banda 7-30 dias (dentro da janela antiga, fora da nova) é EXCLUÍDA", async () => {
+  const withinOldWindow = fakeCampaign(1, 15); // 15 dias — estava dentro da janela de 30, fora da de 7
+  const campaigns = [withinOldWindow];
+  const client = makeFakeClient(campaigns, {
+    1: [{ email: "a@x.com", opened: true }],
+  });
+
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({
+      email: identifier,
+      statistics: { opened: [{ eventTime: "2026-08-05T00:00:00.000Z" }] },
+    }),
+    upsert: () => {},
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+  };
+
+  const result = await runOpensCatchup(deps);
+
+  assert.equal(result.campaignsConsidered, 1);
+  assert.equal(
+    result.campaignsInWindow,
+    0,
+    "campanha de 15 dias atrás cabia na janela antiga (30d) mas fica fora da nova (7d, #5946)",
+  );
+  assert.equal(result.openersFound, 0);
 });
 
 // ─── REGRESSÃO (#5401): export de campanha roda em CONCORRÊNCIA limitada ──

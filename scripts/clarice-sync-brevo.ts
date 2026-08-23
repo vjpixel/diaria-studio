@@ -31,8 +31,9 @@
  * ~32% de subcontagem agregada antes de um full resync manual). Em vez de
  * depender do `modifiedAt` do contato, o modo incremental TAMBÉM varre os
  * destinatários das campanhas enviadas numa janela recente
- * (`--opens-window-days`, default 30 dias — mesma ordem de grandeza do
- * `DEFAULT_REFETCH_WINDOW_DAYS` de `clarice-engagement-cohorts-v2.ts`, #4451,
+ * (`--opens-window-days`, default 7 dias — encolhida de 30 no #5946 pra
+ * caber no teto de 100 req/hora da Brevo (ver docstring de
+ * `DEFAULT_OPENS_CATCHUP_WINDOW_DAYS` abaixo para o histórico completo),
  * reusando a MESMA infra de export por campanha, já validada ao vivo em
  * 260802) via `POST /emailCampaigns/{id}/exportRecipients`, que reporta
  * `Total Opens` por destinatário independente de `modifiedAt`. Os e-mails com
@@ -175,10 +176,14 @@ export function anchorForIncremental(
 // `modifiedAt` do contato) e re-buscamos cada opener individualmente — mesmo
 // caminho preciso de sempre (`GET /contacts/{email}`, MAX-merge no upsert).
 
-/** Janela default (dias) — mesma ordem de grandeza do DEFAULT_REFETCH_WINDOW_DAYS
- * de clarice-engagement-cohorts-v2.ts (#4451); "chute inicial" documentado lá,
- * não recalibrado empiricamente ainda. Override via --opens-window-days. */
-export const DEFAULT_OPENS_CATCHUP_WINDOW_DAYS = 30;
+/** Janela default (dias). Era 30 (mesma ordem de grandeza do
+ * DEFAULT_REFETCH_WINDOW_DAYS de clarice-engagement-cohorts-v2.ts, #4451,
+ * "chute inicial" nunca recalibrado empiricamente) — encolhida para 7 no
+ * #5946 (decisão do editor, 260823): com 30 dias o volume de campanhas na
+ * janela cresceu para ~121, sozinho estourando o teto de 100 req/hora da
+ * Brevo (docs/brevo-rate-limits.md) e causando falhas parciais em streak no
+ * job diário. Override via --opens-window-days. */
+export const DEFAULT_OPENS_CATCHUP_WINDOW_DAYS = 7;
 
 /**
  * #4717 follow-up (achado 5): subdiretório PRÓPRIO do catch-up, irmão de
