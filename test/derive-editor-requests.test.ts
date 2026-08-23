@@ -275,4 +275,149 @@ describe("derive-editor-requests.ts (#5731)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  // --- Movimentação entre buckets do pool (follow-up do #5731) ---
+  //
+  // Pedido que o editor identificou (23/08/2026) como o mais frequente dele:
+  // mover item entre Use Melhor / Lançamentos / Radar. Antes destes testes,
+  // `classifyApprovedDiff` só olhava `highlights` — o movimento não derivava
+  // NADA, e logado à mão virava `other`, que nunca conta na recorrência.
+
+  /** 01-approved.json com highlights fixos + buckets do pool parametrizáveis. */
+  function approvedWithPool(pool: {
+    lancamento?: Array<{ url: string; title: string }>;
+    radar?: Array<{ url: string; title: string }>;
+    use_melhor?: Array<{ url: string; title: string }>;
+    video?: Array<{ url: string; title: string }>;
+    highlights?: Array<{ url: string; title: string }>;
+  }): string {
+    return JSON.stringify({
+      highlights: (pool.highlights ?? [{ url: "https://example.com/d1", title: "D1" }]).map((a) => ({
+        article: a,
+        url: a.url,
+      })),
+      lancamento: pool.lancamento ?? [],
+      radar: pool.radar ?? [],
+      use_melhor: pool.use_melhor ?? [],
+      video: pool.video ?? [],
+    });
+  }
+
+  /** Roda snapshot → mutação → derive-stage4 e devolve as entradas geradas. */
+  function deriveFromApproved(before: string, after: string): Array<Record<string, unknown>> {
+    const dir = mkdtempSync(join(tmpdir(), "derive-pool-"));
+    try {
+      const editionDir = join(dir, "260811");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const approvedPath = join(internalDir, "01-approved.json");
+
+      writeFileSync(approvedPath, before, "utf8");
+      assert.equal(runCli(["snapshot-stage2", "--edition", "260811", "--editions-dir", dir]).status, 0);
+      writeFileSync(approvedPath, after, "utf8");
+
+      const r = runCli(["derive-stage4", "--edition", "260811", "--editions-dir", dir]);
+      assert.equal(r.status, 0, r.stderr);
+      return readEntries(editionDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const ITEM_A = { url: "https://example.com/a", title: "Item A" };
+  const ITEM_B = { url: "https://example.com/b", title: "Item B" };
+
+  it("item movido de LANÇAMENTOS para RADAR vira bucket-move com target de destino", () => {
+    const entries = deriveFromApproved(
+      approvedWithPool({ lancamento: [ITEM_A] }),
+      approvedWithPool({ radar: [ITEM_A] }),
+    );
+
+    const moves = entries.filter((e) => e.request_type === "bucket-move");
+    assert.equal(moves.length, 1, JSON.stringify(entries));
+    assert.equal(moves[0].target, "radar");
+    assert.equal(moves[0].source, "derived");
+    assert.deepEqual(moves[0].context, {
+      url: ITEM_A.url,
+      from_bucket: "lancamento",
+      to_bucket: "radar",
+    });
+    // Não pode sobrar pool-cut/pool-add pro mesmo item — seria contar 2×.
+    assert.equal(entries.filter((e) => e.request_type === "pool-cut").length, 0);
+    assert.equal(entries.filter((e) => e.request_type === "pool-add").length, 0);
+  });
+
+  it("item movido de RADAR para USE MELHOR vira bucket-move (direção oposta)", () => {
+    const entries = deriveFromApproved(
+      approvedWithPool({ radar: [ITEM_A] }),
+      approvedWithPool({ use_melhor: [ITEM_A] }),
+    );
+
+    const moves = entries.filter((e) => e.request_type === "bucket-move");
+    assert.equal(moves.length, 1, JSON.stringify(entries));
+    assert.equal(moves[0].target, "use-melhor");
+    assert.match(String(moves[0].description), /RADAR → USE MELHOR/);
+  });
+
+  it("item que sai do pool sem virar destaque vira pool-cut com o bucket de origem", () => {
+    const entries = deriveFromApproved(
+      approvedWithPool({ radar: [ITEM_A, ITEM_B] }),
+      approvedWithPool({ radar: [ITEM_B] }),
+    );
+
+    const cuts = entries.filter((e) => e.request_type === "pool-cut");
+    assert.equal(cuts.length, 1, JSON.stringify(entries));
+    assert.equal(cuts[0].target, "radar");
+    assert.equal((cuts[0].context as Record<string, unknown>).from_bucket, "radar");
+  });
+
+  it("item novo no pool vira pool-add", () => {
+    const entries = deriveFromApproved(
+      approvedWithPool({ radar: [ITEM_A] }),
+      approvedWithPool({ radar: [ITEM_A], use_melhor: [ITEM_B] }),
+    );
+
+    const adds = entries.filter((e) => e.request_type === "pool-add");
+    assert.equal(adds.length, 1, JSON.stringify(entries));
+    assert.equal(adds[0].target, "use-melhor");
+  });
+
+  it("promoção pool→destaque NÃO vira pool-cut (já é reportada por destaque-swap)", () => {
+    const before = approvedWithPool({
+      highlights: [{ url: "https://example.com/d1-antigo", title: "D1 antigo" }],
+      radar: [ITEM_A],
+    });
+    // Editor promove ITEM_A a D1; o D1 antigo sai da edição inteira.
+    const after = approvedWithPool({ highlights: [ITEM_A], radar: [] });
+
+    const entries = deriveFromApproved(before, after);
+    assert.equal(
+      entries.filter((e) => e.request_type === "pool-cut").length,
+      0,
+      "promoção não pode ser contada como corte de pool: " + JSON.stringify(entries),
+    );
+    assert.ok(
+      entries.some((e) => String(e.request_type).startsWith("destaque-")),
+      "promoção deveria continuar sendo reportada pelo caminho destaque-*",
+    );
+  });
+
+  it("demoção destaque→pool NÃO vira pool-add (já é reportada por destaque-*)", () => {
+    const before = approvedWithPool({ highlights: [ITEM_A], radar: [] });
+    const after = approvedWithPool({
+      highlights: [{ url: "https://example.com/d1-novo", title: "D1 novo" }],
+      radar: [ITEM_A],
+    });
+
+    const entries = deriveFromApproved(before, after);
+    assert.equal(
+      entries.filter((e) => e.request_type === "pool-add").length,
+      0,
+      "demoção não pode ser contada como item novo no pool: " + JSON.stringify(entries),
+    );
+  });
+
+  it("pool inalterado não gera entrada nenhuma", () => {
+    const same = approvedWithPool({ lancamento: [ITEM_A], radar: [ITEM_B] });
+    assert.deepEqual(deriveFromApproved(same, same), []);
+  });
 });

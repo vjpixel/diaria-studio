@@ -341,6 +341,12 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   "image-redo": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
   "image-crop": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
   "section-order": "context/templates/newsletter.md",
+  // Pedido mais frequente do editor (medido 23/08/2026): mover item entre
+  // Lançamentos/Radar/Use Melhor. O dono é o categorizador, não o scorer —
+  // é uma decisão de EM QUE SEÇÃO o item entra, não de quanto ele vale.
+  "bucket-move": "scripts/categorize.ts (+ overrides) / regras de seção em context/editorial-rules.md",
+  "pool-cut": "rubrico do scorer (item entrou no pool sem merecer) / scripts/categorize.ts",
+  "pool-add": "rubrico do scorer (item ficou de fora e o editor resgatou) / .claude/agents/scorer-select.md",
   "eia-choice": "fluxo de seleção do Stage 3 (É IA?) / .claude/agents/orchestrator-stage-3.md",
   "social-rewrite": ".claude/agents/social-writer.md / .claude/agents/social-curto.md",
   "factual-correction": ".claude/agents/fact-checker.md",
