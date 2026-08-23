@@ -46,6 +46,14 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import { runMicrosoftAdsIngest, type MicrosoftAdsAuthConfig } from "./lib/microsoft-ads-ingest.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+
+// #1219 — carrega .env antes de ler process.env. Passou a ser exigido aqui
+// desde #5928: o caminho Google reusa `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+// (test/env-loading-invariant.test.ts trava isso pra qualquer script que
+// leia esses 2 nomes). `override: false` — nunca pisa em env já setado
+// (ex: por `doppler run --`).
+loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.csv");
