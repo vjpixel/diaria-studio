@@ -48,9 +48,13 @@ import {
   markSystemdFailedUnitsAlarmed,
   emptySystemdFailedUnitsAlarmState,
   buildSystemdFailedUnitsAlarmEmail,
+  buildFailedUnitIssueBody,
+  parseSystemctlShowOutput,
+  UNIT_DIAGNOSTIC_PROPERTIES,
   isAlarmingVerdict,
   type SystemdFailedUnitsAlarmState,
   type SystemdFailedUnitsEvaluation,
+  type UnitFailureDiagnostics,
 } from "./lib/systemd-failed-units-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -97,25 +101,46 @@ export function readFailedUnitNames(execFn: typeof execFileSync = execFileSync):
   }
 }
 
-export function toAlarmFinding(unitName: string): AlarmFinding {
+/** Lê os campos estruturados da unit falha via `systemctl --user show` (#5943).
+ *
+ * SÓ LEITURA — `show` não muta serviço, mesmo guard invariável de `list-units`
+ * no topo deste arquivo.
+ *
+ * Fail-soft em três camadas, porque isto roda dentro de um alarme e um
+ * diagnóstico ausente nunca pode piorar o achado: (a) máquina sem `systemctl`
+ * (sessão cloud, clone fresco) → ENOENT → `{}`; (b) `show` falhando mas ainda
+ * escrevendo em stdout → parseia o que veio (mesmo padrão de `list-units`
+ * acima); (c) valor fora da forma esperada → descartado pelo parser. Em todos
+ * os casos o corpo da issue degrada pro texto pré-#5943, nunca quebra o sweep. */
+export function collectUnitDiagnostics(
+  unitName: string,
+  execFn: typeof execFileSync = execFileSync,
+): UnitFailureDiagnostics {
+  const args = ["--user", "show", unitName, "--no-pager", ...UNIT_DIAGNOSTIC_PROPERTIES.map((p) => `--property=${p}`)];
+  try {
+    // `stdio` idêntico a `readFailedUnitNames` acima: stderr PIPED, não
+    // herdado — numa máquina sem bus de usuário o systemctl escreve "Failed to
+    // connect to bus" e isso não pode poluir o log do alarme (agora são N
+    // chamadas, uma por unit falha, não mais só a do `list-units`).
+    const out = execFn("systemctl", args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+    }) as unknown as string;
+    return parseSystemctlShowOutput(String(out ?? ""));
+  } catch (e: unknown) {
+    const err = e as { stdout?: string };
+    if (typeof err.stdout === "string") return parseSystemctlShowOutput(err.stdout);
+    return {};
+  }
+}
+
+export function toAlarmFinding(unitName: string, diagnostics: UnitFailureDiagnostics = {}): AlarmFinding {
   return {
     check: "systemd-failed-units",
     fingerprint: unitName,
     title: `[diar.ia.br] systemd unit falhou: ${unitName}`,
-    body: [
-      "Achado automático do alarme `Diaria-Systemd-Failed-Units-Alarm`",
-      "(`scripts/systemd-failed-units-alarm.ts`, #5563 follow-up).",
-      "",
-      `A unit systemd --user \`${unitName}\` está em estado \`failed\`.`,
-      "",
-      `Investigar: \`journalctl --user -u ${unitName} -n 50\` e ` +
-        `\`systemctl --user status ${unitName}\`. Religar/reiniciar é ação manual do editor ` +
-        "(este alarme nunca muta o serviço).",
-      "",
-      "Esta issue é criada automaticamente pelo alarme e será",
-      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
-      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
-    ].join("\n"),
+    body: buildFailedUnitIssueBody(unitName, diagnostics, CLOSE_ALARM_ISSUE_AFTER_RUNS),
     labels: ["bug"],
     priority: "P1",
     family: "estado",
@@ -178,7 +203,7 @@ async function main(): Promise<void> {
 
   const state = loadState();
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
-    ? evaluation.failedUnits.map(toAlarmFinding)
+    ? evaluation.failedUnits.map((u) => toAlarmFinding(u, collectUnitDiagnostics(u)))
     : [];
   const alarmState = loadAlarmIssuesState();
   const issueRefs: AlarmIssueResult[] = [];
