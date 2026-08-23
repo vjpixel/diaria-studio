@@ -63,10 +63,17 @@ inteira antes — não só o body.
   a edição de origem, ver Passo 4) — a regra agora é **"texto levantado
   nunca passa por humanizador/Clarice/fact-check, texto autoral sempre
   passa"** (Passos 4-6).
-- **Use Melhor é obrigatório, mas só COM comentário do editor.** Sem
-  comentário honesto, o bloco inteiro sai da edição — nunca gerado
-  automaticamente (`renderLinkedinWeeklyHtml` em
-  `scripts/lib/weekly-linkedin-render.ts` faz isso mecanicamente).
+- **Use Melhor é obrigatório sempre que há candidato elegível — comentário
+  do editor é OPCIONAL (#5970, reverte a regra anterior "sem comentário,
+  o bloco inteiro sai da edição").** A skill **nunca inventa** esse
+  comentário — é voz pessoal do editor, critério 2 do rubrico "Perguntar é
+  exceção" (`CLAUDE.md`) — mas também não trava mais o ciclo esperando por
+  ele. Sem comentário, o bloco renderiza igual (título + link + descrição +
+  CTA, curadoria normal), só sem o parágrafo de comentário — mecânico em
+  `renderLinkedinWeeklyHtml` (`scripts/lib/weekly-linkedin-render.ts`), que
+  grava um warning explícito (banner de default aplicado, regra do #5321)
+  sempre que isso acontece. `--use-melhor-comment` continua existindo pra
+  quem quiser passar um comentário (Passo 7).
 - **Imagem de capa é obrigatória (#5536).** `render-linkedin-weekly.ts`
   (Passo 7) copia mecanicamente `04-d1-2x1.jpg` da edição de origem da
   manchete #1 pra `data/weekly/{cycle}/`, fail-soft se a imagem não
@@ -226,15 +233,19 @@ Edições da semana: {N} edições (link + destaques cada)
 Aprovar seleção? sim / trocar {N} por outro candidato / abortar
 ```
 
-Se aprovado, pedir ao editor (nunca gerar sozinho):
-1. **Comentário do Use Melhor** (1-3 frases, honesto — se o editor não
-   tiver nada de verdade pra dizer, o bloco sai da edição, não force).
-2. **Abertura** (1 parágrafo curto identidade+promessa+cadência).
-3. **Fecho** (1 parágrafo curto antes do CTA final).
+Se aprovado, pedir ao editor (nunca gerar sozinho) os 2 textos que seguem
+obrigatórios:
+1. **Abertura** (1 parágrafo curto identidade+promessa+cadência).
+2. **Fecho** (1 parágrafo curto antes do CTA final).
 
-Mesmo padrão do corpo original da issue ("a skill NUNCA gera esse
-comentário, ela pergunta e espera resposta") — vale pros 3 textos novos,
-não só o comentário do Use Melhor.
+**Comentário do Use Melhor deixou de ser pergunta bloqueante (#5970).** A
+skill nunca inventa esse texto (é voz pessoal do editor), mas também não
+espera por ele: se o editor oferecer um comentário espontaneamente nesta
+conversa, use-o no Passo 7 (`--use-melhor-comment`); do contrário siga sem
+perguntar — o bloco Use Melhor sai com curadoria normal (link + descrição),
+sem o parágrafo de comentário, e `renderLinkedinWeeklyHtml` grava um
+warning sinalizando o default aplicado (avise o editor disso no resumo do
+Passo 8 — ele pode sempre colar um comentário depois, direto no artigo).
 
 ## Passo 4 — Checar acessibilidade da fonte + escrever resumo próprio de cada manchete (#5108, troca automática #5538)
 
@@ -368,9 +379,10 @@ sem `<html>`/`<body>`, é o payload que vai no `text/html` do
 `ClipboardEvent`, ver `context/publishers/linkedin.md` §Newsletter
 LinkedIn) e `data/weekly/{cycle}/ln-{cycle}.json` (metadados + warnings).
 
-Se `--use-melhor-comment` foi omitido (ou vazio), o bloco Use Melhor sai
-inteiro do HTML — mecânico, não pergunte de novo, já foi perguntado no
-Passo 3.
+Se `--use-melhor-comment` foi omitido (ou vazio), o bloco Use Melhor
+renderiza normalmente — só o parágrafo de comentário some (#5970, mecânico
+em `renderLinkedinWeeklyHtml`); nunca pergunte pelo comentário aqui, isso
+não é mais perguntado em lugar nenhum do fluxo (Passo 3 acima).
 
 **Imagem de capa (#5536).** O mesmo comando copia
 `data/weekly/{cycle}/04-d1-2x1.jpg` — a imagem 2:1 gerada no Stage 3 da
@@ -391,8 +403,11 @@ como artefato aberto no browser, não `.md`/arquivo solto) pro editor
 revisar e copiar. Se `coverImagePath` (Passo 7) veio populado, inclua a
 imagem de capa junto (ex: anexada na mensagem/artifact) pro editor subir
 no campo de cover image do editor de artigo — se veio `null`, avise que a
-edição saiu sem capa e por quê (warning do Passo 7). Inclua no artifact
-(ou na mensagem) as instruções de publicação de
+edição saiu sem capa e por quê (warning do Passo 7). **Relate também
+qualquer warning de "USE MELHOR: comentário do editor ausente" (#5970) —
+o default aplicado precisa aparecer visível no resumo da entrega, regra do
+#5321, mesmo tratamento dos outros warnings deste passo.** Inclua no
+artifact (ou na mensagem) as instruções de publicação de
 `context/publishers/linkedin.md` §Newsletter LinkedIn — resumo:
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
@@ -470,7 +485,10 @@ daqui.
 - **Menos de 3 edições (feriado):** reduz o nº de manchetes
   automaticamente — nunca puxa da semana anterior.
 - **Nenhum candidato Use Melhor elegível na semana:** `useMelhor` sai
-  `null` no JSON — o Passo 3 não pergunta comentário (não há bloco).
+  `null` no JSON — sem candidato, não há bloco pra renderizar (diferente do
+  caso "há candidato, mas sem comentário", que renderiza normalmente desde
+  o #5970 — ver acima). O Passo 3 nunca pergunta pelo comentário em nenhum
+  dos dois casos.
 - **Empate dentro do ruído de 1 clique maior que as vagas restantes
   (#5109):** `pendingGroup` sai não-nulo — o editor escolhe manualmente no
   Passo 3a (`editorialTiebreakScore` é só dica exibida, não decide mais

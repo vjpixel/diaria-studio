@@ -11,8 +11,11 @@
  *   - Título do destaque entra LITERAL — só a numeração ("1.", "2.", "3.")
  *     é adicionada. Nunca reescrito, nunca linkado (ver "Cai o link por
  *     destaque").
- *   - Bloco USE MELHOR é OBRIGATÓRIO só quando há comentário do editor —
- *     ausente/vazio → bloco inteiro omitido (nunca gerado por esta função).
+ *   - Bloco USE MELHOR renderiza sempre que há candidato elegível (`useMelhor`
+ *     presente) — comentário do editor é OPCIONAL desde o #5970 (reverte a
+ *     regra anterior "sem comentário, sai a edição"): presente vira um
+ *     parágrafo extra, ausente/vazio só omite ESSE parágrafo, nunca o bloco
+ *     inteiro (link + descrição continuam saindo como curadoria normal).
  *   - Texto de link NUNCA termina em domínio nu (auto-linkagem do LinkedIn
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
  *     rótulo de ação.
@@ -128,7 +131,14 @@ export interface WeeklyLinkedinUseMelhorInput {
   title: string;
   url: string;
   description: string;
-  /** Comentário do editor — OBRIGATÓRIO pra o bloco renderizar. Vazio/whitespace = bloco omitido. */
+  /**
+   * Comentário do editor — OPCIONAL (#5970, reverte a regra anterior de
+   * "obrigatório pra o bloco renderizar"). Vazio/whitespace omite só o
+   * parágrafo do comentário — o bloco (título + link + descrição + CTA)
+   * renderiza igual. A skill NUNCA inventa esse texto (é voz pessoal do
+   * editor, critério 2 do rubrico #5321) — só deixou de travar o ciclo
+   * esperando por ele.
+   */
   editorComment: string;
 }
 
@@ -285,7 +295,12 @@ export function headlineOriginLabel(aammdd: string): string {
 export interface WeeklyLinkedinRenderResult {
   html: string;
   warnings: string[];
-  /** `false` quando `useMelhor` foi passado mas o bloco foi OMITIDO por falta de comentário do editor. */
+  /**
+   * `false` só quando `useMelhor` não foi passado (nenhum candidato elegível
+   * na semana). Desde o #5970, comentário ausente NÃO derruba mais o bloco —
+   * `useMelhorRendered` reflete apenas a existência do candidato, não a do
+   * comentário (ver `warnings` pra saber se o comentário estava presente).
+   */
   useMelhorRendered: boolean;
 }
 
@@ -355,19 +370,27 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   input.headlines.slice(0, useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, i + 1));
 
   let useMelhorRendered = false;
-  const hasComment = !!input.useMelhor?.editorComment?.trim();
-  if (input.useMelhor && !hasComment) {
-    warnings.push('USE MELHOR: comentário do editor ausente — bloco inteiro omitido (regra do #4456, nunca gerado automaticamente).');
-  }
-  if (input.useMelhor && hasComment) {
+  if (input.useMelhor) {
     const um = input.useMelhor;
+    const hasComment = !!um.editorComment?.trim();
+    // #5970: comentário ausente deixou de derrubar o bloco inteiro — vira só
+    // um warning (banner de default aplicado, regra do #5321) e o bloco sai
+    // com curadoria normal (título + link + descrição + CTA), sem o
+    // parágrafo de comentário autoral que a skill nunca inventa.
+    if (!hasComment) {
+      warnings.push(
+        "USE MELHOR: comentário do editor ausente — bloco publicado só com curadoria " +
+          "(link + descrição), sem o parágrafo de comentário autoral (default aplicado, #5970). " +
+          "Passe --use-melhor-comment se quiser incluir um.",
+      );
+    }
     if (endsInBareDomainLabel(um.title)) {
       warnings.push(`USE MELHOR: título "${um.title}" termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`);
     }
     parts.push(`<h3>🛠️ Use melhor</h3>`);
     parts.push(`<p><a href="${escapeHtml(um.url)}">${escapeHtml(um.title)}</a></p>`);
     if (um.description.trim()) parts.push(`<p>${escapeHtml(um.description.trim())}</p>`);
-    parts.push(`<p><em>${escapeHtml(um.editorComment.trim())}</em></p>`);
+    if (hasComment) parts.push(`<p><em>${escapeHtml(um.editorComment.trim())}</em></p>`);
     const ctaUseMelhorUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-usemelhor");
     parts.push(`<p>${escapeHtml(CTA_USEMELHOR_LEAD)}</p>`);
     parts.push(`<p><a href="${escapeHtml(ctaUseMelhorUrl)}">${escapeHtml(CTA_USEMELHOR_LABEL)}</a></p>`);
