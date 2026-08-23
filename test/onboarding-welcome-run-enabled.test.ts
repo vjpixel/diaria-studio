@@ -69,14 +69,20 @@ const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * `override: false` recarrega ausentes a partir do `.env` real do repo —
  * era exatamente esse o bug do #5966.
  *
- * `envFileCwd`, quando passado, roda o subprocesso com esse diretório como
- * cwd — usado só pelo caso de regressão explícita, que aponta pra um
- * `.env` FIXTURE local (nunca o `.env` real do repo).
+ * `envRoot`, quando passado, vira `--env-root <path>` — flag de teste nova
+ * (#5966, achado de review consolidado do coordenador: a 1ª versão deste
+ * fix tentava simular um `.env` fixture via `cwdOverride`, mas
+ * `loadProjectEnv()` resolve a raiz do `.env` a partir de `import.meta.url`
+ * do próprio `env-loader.ts`, nunca de `process.cwd()` — o fixture nunca
+ * era lido de verdade, o caso de regressão passava por motivo errado).
+ * `onboarding-welcome-run.ts` agora repassa `--env-root` pra
+ * `loadProjectEnv(rootOverride)`, então o flag redireciona de verdade qual
+ * `.env` é carregado.
  */
 function runScript(
   configPath: string,
   storePath: string,
-  opts: { beehiivApiKeyOverride?: string; cwdOverride?: string } = {},
+  opts: { beehiivApiKeyOverride?: string; envRoot?: string } = {},
 ) {
   const env = { ...process.env };
   // Ambas as vars usam o mesmo override — não há caso de teste hoje que
@@ -88,23 +94,21 @@ function runScript(
     env.BEEHIIV_API_KEY = opts.beehiivApiKeyOverride;
     env.BEEHIIV_PUBLICATION_ID = opts.beehiivApiKeyOverride;
   }
-  return spawnSync(
-    "npx",
-    [
-      "tsx",
-      resolve(__ROOT, "scripts/onboarding-welcome-run.ts"),
-      "--config",
-      configPath,
-      "--store",
-      storePath,
-    ],
-    {
-      cwd: opts.cwdOverride ?? __ROOT,
-      encoding: "utf8",
-      env,
-      shell: process.platform === "win32",
-    },
-  );
+  const cliArgs = [
+    "tsx",
+    resolve(__ROOT, "scripts/onboarding-welcome-run.ts"),
+    "--config",
+    configPath,
+    "--store",
+    storePath,
+  ];
+  if (opts.envRoot !== undefined) cliArgs.push("--env-root", opts.envRoot);
+  return spawnSync("npx", cliArgs, {
+    cwd: __ROOT,
+    encoding: "utf8",
+    env,
+    shell: process.platform === "win32",
+  });
 }
 
 /** Path do store real de produção — nunca deve ser tocado por este arquivo. */
@@ -181,16 +185,20 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
     }
   });
 
-  it("#5966 regressão — mesmo com .env FIXTURE populado (credencial fake) no cwd, string vazia bloqueia o reload e o guard/isolamento seguram", () => {
+  it("#5966 regressão — mesmo com .env FIXTURE populado (credencial fake) na raiz resolvida por --env-root, string vazia bloqueia o reload e o guard/isolamento seguram", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-onboarding-5966-regression-"));
     try {
       const configPath = join(dir, "platform.config.json");
       const storePath = join(dir, "store.json");
       writeFileSync(configPath, JSON.stringify({ onboarding: { enabled: true } }));
 
-      // .env FIXTURE local — nunca o .env real do repo. Simula a condição
-      // exata do bug (loadProjectEnv encontra um .env populado no cwd) sem
-      // qualquer risco de usar credencial real.
+      // .env FIXTURE local — nunca o .env real do repo. `--env-root dir`
+      // faz loadProjectEnv() resolver `.env` DENTRO deste tmpdir (mesmo
+      // mecanismo de rootOverride que env-loader.ts já expõe) — diferente
+      // da 1ª versão deste teste, que tentava um `cwdOverride` inerte
+      // (loadProjectEnv nunca olhou pro cwd do subprocesso, só pra
+      // import.meta.url do próprio módulo). Agora o fixture É lido de
+      // verdade, simulando fielmente a condição do bug.
       writeFileSync(
         join(dir, ".env"),
         "BEEHIIV_API_KEY=fixture_fake_key_do_not_use\nBEEHIIV_PUBLICATION_ID=fixture_fake_pub\n",
@@ -198,7 +206,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
 
       const result = runScript(configPath, storePath, {
         beehiivApiKeyOverride: "",
-        cwdOverride: dir,
+        envRoot: dir,
       });
 
       // Se o bug do #5966 tivesse voltado (delete em vez de string vazia,

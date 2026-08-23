@@ -252,6 +252,8 @@ interface CliArgs {
   snippetsDir?: string;
   /** Override de teste — path absoluto pro platform.config.json (default: raiz do repo). */
   configPath?: string;
+  /** Override de teste — path absoluto pra raiz de onde `.env` é carregado (default: raiz real do repo, ver env-loader.ts). #5966. */
+  envRoot?: string;
   skip: Set<"email1" | "email2" | "email3">;
 }
 
@@ -273,6 +275,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--store") args.storePath = argv[++i];
     else if (a === "--snippets-dir") args.snippetsDir = argv[++i];
     else if (a === "--config") args.configPath = argv[++i];
+    else if (a === "--env-root") args.envRoot = argv[++i];
     else if (a === "--skip-email1") args.skip.add("email1");
     else if (a === "--skip-email2") args.skip.add("email2");
     else if (a === "--skip-email3") args.skip.add("email3");
@@ -294,8 +297,10 @@ function loadSnippets(dirAbs: string): { 1: ReturnType<typeof parseOnboardingSni
 }
 
 async function main(): Promise<void> {
-  loadProjectEnv();
   const args = parseArgs(process.argv.slice(2));
+  // #5966: `--env-root` precisa ser resolvido ANTES do loadProjectEnv() pra
+  // valer — parseArgs() não lê env, então essa reordenação é segura.
+  loadProjectEnv(args.envRoot);
   const cfg = loadOnboardingConfig(args.configPath);
 
   // --- Kill switch (#5957) — ANTES de qualquer chamada externa, mesmo padrão
