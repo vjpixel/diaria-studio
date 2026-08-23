@@ -227,7 +227,12 @@ export function aggregateMicrosoftAdsSpendByMonth(
 // ---------------------------------------------------------------------------
 
 export interface MicrosoftAdsAuthConfig {
-  clientId: string;
+  /** Opcional desde #5928 — só o caminho Google (`googleRefreshToken`)
+   *  precisa estar completo pra conta em uso hoje; `clientId`/`refreshToken`
+   *  seguem obrigatórios apenas pro caminho Azure AD (`refreshAzureAdAccessToken`
+   *  devolve `{ error }` explícito se algum estiver ausente e o caminho
+   *  Google não estiver setado). */
+  clientId?: string;
   /**
    * **NÃO é enviado na renovação do token (#5928, validado ao vivo em
    * 22/08/2026).** O app registration `diaria-studio-microsoft-ads` foi
@@ -241,13 +246,34 @@ export interface MicrosoftAdsAuthConfig {
    * `?` de propósito — nada neste módulo lê o valor hoje.
    */
   clientSecret?: string;
-  refreshToken: string;
+  /** Ver `clientId` acima — opcional pelo mesmo motivo. */
+  refreshToken?: string;
   developerToken: string;
   customerId: string;
   accountId: string;
   /** Endpoint OAuth2 (Azure AD v2) — sobreponível pra teste; default é o
    *  endpoint "common" documentado em `docs/microsoft-ads-api-setup.md`. */
   tokenEndpoint?: string;
+  /**
+   * **Google OAuth como IdentityProvider (#5928, validado ao vivo em
+   * 22/08/2026).** A conta Microsoft Advertising em uso foi criada via
+   * "Sign in with Google" e REJEITA token Azure AD (`IdentityTypeMismatch`)
+   * — só um `access_token` emitido pelo GOOGLE (endpoint próprio,
+   * `oauth2.googleapis.com/token`) funciona pra ela, junto do header SOAP
+   * `<IdentityProvider>Google</IdentityProvider>` (ver `docs/microsoft-ads-api-setup.md`).
+   * Quando `googleRefreshToken` está presente, `refreshMicrosoftAdsAccessToken`
+   * usa este caminho em vez do Azure AD acima — os campos `clientId`/
+   * `refreshToken`/`tokenEndpoint` (Azure) ficam ignorados nesse caso, mas
+   * continuam no tipo pra contas que NÃO tenham esse vínculo Google (o
+   * caminho Azure AD funciona normalmente pra qualquer conta que não tenha
+   * sido criada via "Sign in with Google").
+   */
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRefreshToken?: string;
+  /** Endpoint OAuth2 do Google — sobreponível pra teste; default
+   *  `https://oauth2.googleapis.com/token`. */
+  googleTokenEndpoint?: string;
 }
 
 export type MicrosoftAdsIngestResult =
@@ -262,6 +288,30 @@ const DEFAULT_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/
 /** Escopo padrão da Microsoft Advertising API (client credentials/refresh
  *  token flow) — https://learn.microsoft.com/advertising/guides/authentication-oauth. */
 const DEFAULT_SCOPE = "https://ads.microsoft.com/msads.manage offline_access";
+const DEFAULT_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+
+/** Quem emitiu o `accessToken` — `"Google"` exige o header SOAP
+ *  `<IdentityProvider>Google</IdentityProvider>` em toda chamada seguinte
+ *  (`postSoap`/`buildSoapEnvelope`); `undefined` é Azure AD, o caminho
+ *  default que não precisa desse header. */
+export type MicrosoftAdsIdentityProvider = "Google" | undefined;
+
+async function parseOAuthTokenResponse(
+  res: Response,
+  label: string,
+): Promise<{ accessToken: string } | { error: string }> {
+  const text = await res.text();
+  let payload: { access_token?: string; error_description?: string };
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { error: `${label} respondeu não-JSON (HTTP ${res.status})` };
+  }
+  if (!res.ok || !payload.access_token) {
+    return { error: `${label} falhou: ${payload.error_description ?? res.status}` };
+  }
+  return { accessToken: payload.access_token };
+}
 
 /**
  * Renova o access token via refresh token (Azure AD v2). Nunca lança — falha
@@ -273,10 +323,13 @@ const DEFAULT_SCOPE = "https://ads.microsoft.com/msads.manage offline_access";
  * *public client*, e a Azure AD rejeita a requisição inteira
  * (`AADSTS90023`) se o secret vier junto, mesmo que o valor seja válido.
  */
-export async function refreshMicrosoftAdsAccessToken(
+async function refreshAzureAdAccessToken(
   fetchImpl: FetchLike,
   auth: Pick<MicrosoftAdsAuthConfig, "clientId" | "refreshToken" | "tokenEndpoint">,
 ): Promise<{ accessToken: string } | { error: string }> {
+  if (!auth.clientId || !auth.refreshToken) {
+    return { error: "renovação do access token (Azure AD) falhou: clientId/refreshToken ausentes" };
+  }
   let res: Response;
   try {
     res = await fetchImpl(auth.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT, {
@@ -290,20 +343,66 @@ export async function refreshMicrosoftAdsAccessToken(
       }).toString(),
     });
   } catch (e) {
-    return { error: `falha de rede na renovação do access token: ${e instanceof Error ? e.message : e}` };
+    return { error: `falha de rede na renovação do access token (Azure AD): ${e instanceof Error ? e.message : e}` };
   }
+  return parseOAuthTokenResponse(res, "renovação do access token (Azure AD)");
+}
 
-  const text = await res.text();
-  let payload: { access_token?: string; error_description?: string };
+/**
+ * Renova o access token via refresh token do GOOGLE — endpoint e parâmetros
+ * inteiramente diferentes do Azure AD (#5928, validado ao vivo em
+ * 22/08/2026). Necessário pra qualquer conta Microsoft Advertising que foi
+ * criada via "Sign in with Google" (ver docstring de
+ * `MicrosoftAdsAuthConfig.googleRefreshToken`) — Azure AD emite um token
+ * válido, mas a API rejeita ele pra essa conta especificamente
+ * (`IdentityTypeMismatch`). Mesma disciplina fail-soft de
+ * `refreshAzureAdAccessToken` — nunca lança.
+ */
+async function refreshGoogleIdentityAccessToken(
+  fetchImpl: FetchLike,
+  auth: Pick<MicrosoftAdsAuthConfig, "googleClientId" | "googleClientSecret" | "googleRefreshToken" | "googleTokenEndpoint">,
+): Promise<{ accessToken: string } | { error: string }> {
+  let res: Response;
   try {
-    payload = JSON.parse(text);
-  } catch {
-    return { error: `renovação do access token respondeu não-JSON (HTTP ${res.status})` };
+    res = await fetchImpl(auth.googleTokenEndpoint ?? DEFAULT_GOOGLE_TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: auth.googleClientId ?? "",
+        client_secret: auth.googleClientSecret ?? "",
+        refresh_token: auth.googleRefreshToken ?? "",
+        grant_type: "refresh_token",
+      }).toString(),
+    });
+  } catch (e) {
+    return { error: `falha de rede na renovação do access token (Google): ${e instanceof Error ? e.message : e}` };
   }
-  if (!res.ok || !payload.access_token) {
-    return { error: `renovação do access token falhou: ${payload.error_description ?? res.status}` };
+  return parseOAuthTokenResponse(res, "renovação do access token (Google)");
+}
+
+/**
+ * Dispatcher entre os 2 identity providers — Google quando
+ * `auth.googleRefreshToken` está presente (a conta em uso hoje exige isso,
+ * #5928), Azure AD caso contrário (o caminho original, válido pra qualquer
+ * outra conta Microsoft Advertising que não tenha o vínculo Google). Devolve
+ * `identityProvider` junto do token pra quem chama saber se precisa incluir
+ * o header SOAP `<IdentityProvider>` nas chamadas seguintes.
+ */
+export async function refreshMicrosoftAdsAccessToken(
+  fetchImpl: FetchLike,
+  auth: Pick<
+    MicrosoftAdsAuthConfig,
+    "clientId" | "refreshToken" | "tokenEndpoint" | "googleClientId" | "googleClientSecret" | "googleRefreshToken" | "googleTokenEndpoint"
+  >,
+): Promise<{ accessToken: string; identityProvider: MicrosoftAdsIdentityProvider } | { error: string }> {
+  if (auth.googleRefreshToken) {
+    const result = await refreshGoogleIdentityAccessToken(fetchImpl, auth);
+    if ("error" in result) return result;
+    return { accessToken: result.accessToken, identityProvider: "Google" };
   }
-  return { accessToken: payload.access_token };
+  const result = await refreshAzureAdAccessToken(fetchImpl, auth);
+  if ("error" in result) return result;
+  return { accessToken: result.accessToken, identityProvider: undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,12 +449,21 @@ function toSoapDateParts(d: Date): { Day: number; Month: number; Year: number } 
   return { Day: d.getUTCDate(), Month: d.getUTCMonth() + 1, Year: d.getUTCFullYear() };
 }
 
+/**
+ * `<IdentityProvider>Google</IdentityProvider>` entra no SOAP Header só
+ * quando `auth.googleRefreshToken` está presente — mesmo critério que
+ * `refreshMicrosoftAdsAccessToken` usa pra escolher qual token renovar
+ * (#5928). Contas Azure AD normais não devem levar este header (não
+ * testado se a API o ignora ou rejeita quando presente sem necessidade —
+ * mais seguro OMITIR do que arriscar).
+ */
 function buildSoapEnvelope(
   action: "SubmitGenerateReport" | "PollGenerateReport",
   auth: MicrosoftAdsAuthConfig,
   accessToken: string,
   bodyObj: Record<string, unknown>,
 ): string {
+  const identityProviderHeader = auth.googleRefreshToken ? { IdentityProvider: "Google" } : {};
   return xmlBuilder.build({
     "s:Envelope": {
       "@_xmlns:i": "http://www.w3.org/2001/XMLSchema-instance",
@@ -367,6 +475,7 @@ function buildSoapEnvelope(
         CustomerAccountId: auth.accountId,
         CustomerId: auth.customerId,
         DeveloperToken: auth.developerToken,
+        ...identityProviderHeader,
       },
       "s:Body": bodyObj,
     },
@@ -402,9 +511,19 @@ function buildSubmitGenerateReportEnvelope(auth: MicrosoftAdsAuthConfig, accessT
             "a1:long": auth.accountId,
           },
         },
+        // `CustomDateRangeEnd` ANTES de `CustomDateRangeStart` — parece
+        // invertido, mas é a ordem que o XSD do `ReportTime` declara
+        // (confirmado contra
+        // https://learn.microsoft.com/en-us/advertising/reporting-service/reporttime,
+        // que lista `CustomDateRangeEnd` primeiro no `xs:sequence`). WCF é
+        // estrito com ordem de elemento — inverter os 2 (bug real que
+        // chegou a ser mergeado, #5928) faz TODA submissão falhar com
+        // `InvalidCustomDateRangeEnd`, mesmo com datas válidas — confirmado
+        // ao vivo: a mesma request com a ordem errada falha, com a ordem
+        // certa devolve 200 + `ReportRequestId`.
         Time: {
-          CustomDateRangeStart: toSoapDateParts(range.start),
           CustomDateRangeEnd: toSoapDateParts(range.end),
+          CustomDateRangeStart: toSoapDateParts(range.start),
           ReportTimeZone: DEFAULT_REPORT_TIME_ZONE,
         },
       },
@@ -685,7 +804,13 @@ export async function fetchMicrosoftAdsSpendRows(
     const pollResult = await pollGenerateReport(fetchImpl, auth, accessToken, serviceUrl, submitResult.reportRequestId);
     if ("error" in pollResult) return pollResult;
     if (pollResult.status === "Success") {
-      if (!pollResult.downloadUrl) return { error: "PollGenerateReport respondeu Success sem ReportDownloadUrl" };
+      // `Success` + `ReportDownloadUrl` nil é COMPORTAMENTO REAL confirmado
+      // ao vivo (#5928, 22/08/2026, conta sem nenhum gasto histórico) — a
+      // API não gera arquivo pra baixar quando o relatório teria zero
+      // linhas. Tratar como `{ rows: [] }` (vazio legítimo), NUNCA como
+      // erro — mesma disciplina de "zero não é falha de ingestão" que já
+      // rege `google-ads-ingest.ts` (`GoogleAdsFailureClass.empty`).
+      if (!pollResult.downloadUrl) return { rows: [] };
       downloadUrl = pollResult.downloadUrl;
       break;
     }

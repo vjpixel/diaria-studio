@@ -3,32 +3,85 @@
 Molde de `docs/google-ads-api-setup.md` para o 2º canal de ingestão
 automática de `data/aquisicao/spend.csv` — Microsoft Advertising (Bing Ads).
 
-**Estado em 22/08/2026 (#5928):** a credencial Azure AD saiu (App Access
-Key aprovada, #5502/#5878) e o transporte real da Reporting API está
-implementado e testado (submit→poll→download→unzip→parse, SOAP 1.1) — mas a
-primeira chamada real esbarrou num bloqueio novo, descoberto ao vivo: **a
-conta Microsoft Advertising existente foi criada via "Sign in with Google"**
-e exige autenticação por Google OAuth, não pela credencial Azure AD que já
-está no Doppler. Ver seção "Achado ao vivo 22/08/2026" abaixo — é o item
-que falta pra `data/aquisicao/spend.csv` ganhar a 1ª linha `Microsoft
-Advertising` de verdade.
+**Estado em 22/08/2026 (#5928): ponta a ponta funcionando.** A conta em uso
+(`CustomerId` 255014657, `vjpixel@gmail.com`) foi criada via "Sign in with
+Google" e rejeita autenticação Azure AD — o caminho que FUNCIONA pra ela é
+Google OAuth como `IdentityProvider` (seção dedicada abaixo). Validado ao
+vivo rodando `npx tsx scripts/microsoft-ads-ingest-spend.ts` contra a API
+real: `submit → poll → (download quando há dado)` completa sem erro. A
+conta não tem nenhum gasto histórico até esta data (confirmado consultando
+desde 2023), então o resultado real hoje é fail-soft "sem gasto no
+período" — `spend.csv` só ganha a linha `Microsoft Advertising` quando o
+teste pago (#5524) realmente gastar.
 
 ## O que já existe (código)
 
 - `scripts/lib/microsoft-ads-ingest.ts` — núcleo puro (normalização
   `CampaignPerformanceReport → SpendRow`, testado contra fixture em
-  `test/microsoft-ads-ingest-5502.test.ts`) + orquestração fail-soft
+  `test/microsoft-ads-ingest-5502.test.ts`) + transporte SOAP real
+  (submit→poll→download→unzip→parse) + orquestração fail-soft
   (`runMicrosoftAdsIngest`), adaptador de `scripts/lib/spend-ingest.ts`
   (motor genérico compartilhado com o adaptador Google, #5502 Parte B).
 - `scripts/microsoft-ads-ingest-spend.ts` — CLI fino, espelha
-  `scripts/google-ads-ingest-spend.ts` linha a linha: sem as env vars
+  `scripts/google-ads-ingest-spend.ts` na estrutura: sem as env vars
   abaixo (ou com qualquer chamada falhando), sai com **exit 0** e
   `data/aquisicao/spend.csv` intocado — nunca quebra `cac-report.ts`.
 
-## Fluxo de autenticação (Azure AD v2 / OAuth2)
+## Dois caminhos de identidade — Google (o que funciona hoje) e Azure AD (default histórico)
 
-O Microsoft Advertising usa o mesmo padrão OAuth2 "refresh token" do Google
-Ads REST (não SOAP legado) — token endpoint da Azure AD:
+A Microsoft Advertising API aceita 2 provedores de identidade OAuth,
+alternativos entre si (não é upgrade/downgrade, são 2 formas igualmente
+válidas — qual usar depende de como a conta específica foi criada):
+https://learn.microsoft.com/en-us/advertising/guides/authentication-oauth#authentication-with-google-oauth.
+`refreshMicrosoftAdsAccessToken` escolhe automaticamente: usa Google quando
+`MicrosoftAdsAuthConfig.googleRefreshToken` está presente, cai pro Azure AD
+caso contrário — mesmo critério que `scripts/microsoft-ads-ingest-spend.ts`
+usa pra resolver a config a partir do ambiente.
+
+### Google OAuth (#5928) — o caminho que a conta em uso EXIGE
+
+Descoberto ao vivo em 22/08/2026: a conta foi criada via **"Sign in with
+Google"**, e a API rejeita qualquer chamada autenticada por token Azure AD
+pra ela especificamente —
+
+```json
+{"Errors":[{"Code":126,"Message":"You must use a different identity type to
+sign in to Bing Ads with the same email.","Detail":"GoogleAccountIsRequired",
+"ErrorCode":"IdentityTypeMismatch"}]}
+```
+
+**Setup, mais simples do que parece — não precisou de nenhum recurso novo
+no Google Cloud Console:**
+
+1. **Reusa o client OAuth "Desktop app" já existente do repo**
+   (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, o mesmo que
+   `scripts/oauth-setup.ts` usa pra Drive/Gmail/GSC/Postmaster/GA4) — o
+   scope que a Microsoft pede (`profile email`) é não-sensível, não exige
+   nenhuma API habilitada nem consent screen dedicado. Nenhuma ação no
+   Google Cloud Console foi necessária.
+2. Fluxo de autorização padrão do Google
+   (`https://accounts.google.com/o/oauth2/v2/auth`, `scope=profile+email`,
+   `access_type=offline`, `prompt=consent`) — consentimento feito ao vivo
+   como `vjpixel@gmail.com` (a MESMA identidade da conta Ads).
+3. Troca do `code` pelo `access_token`/`refresh_token` no token endpoint do
+   **Google** (`oauth2.googleapis.com/token`, não Azure AD) —
+   `refresh_token` foi pro Doppler (`MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN`).
+4. Toda chamada SOAP à Microsoft Advertising leva o header extra
+   `<IdentityProvider>Google</IdentityProvider>` no SOAP Header, com
+   `AuthenticationToken` sendo o access token do GOOGLE — implementado em
+   `buildSoapEnvelope` (`scripts/lib/microsoft-ads-ingest.ts`), condicional
+   a `auth.googleRefreshToken` estar presente.
+
+Validado ao vivo, nesta ordem: `CustomerManagementService.GetUser` (REST,
+diagnóstico) devolveu 200 com os dados da conta; depois
+`SubmitGenerateReport`/`PollGenerateReport` (SOAP, o fluxo real) completaram
+sem erro de identidade.
+
+### Azure AD v2 / OAuth2 — default histórico (#5502), vale pra outra conta
+
+Continua implementado e testado — é o caminho certo pra qualquer conta
+Microsoft Advertising que NÃO tenha sido criada via "Sign in with Google".
+Token endpoint:
 
 ```
 https://login.microsoftonline.com/common/oauth2/v2.0/token
@@ -43,19 +96,20 @@ com `scope=https://ads.microsoft.com/msads.manage offline_access`. Passos
 2. Consentimento do usuário (fluxo de autorização com o `client_id` acima) →
    troca o `code` por `access_token` + `refresh_token` — `refresh_token` vai
    pro Doppler (`MICROSOFT_ADS_REFRESH_TOKEN`). **`MICROSOFT_ADS_CLIENT_SECRET`
-   existe no Doppler mas NÃO é enviado na renovação do token (#5928, validado
-   ao vivo)** — o app registration é *public client* (fluxo desktop/nativo) e
-   a Azure AD rejeita a requisição inteira (`AADSTS90023: Public clients
-   can't send a client secret`) se o secret vier junto, mesmo sendo válido.
+   existe no Doppler mas NÃO é enviado na renovação do token** — o app
+   registration é *public client* (fluxo desktop/nativo) e a Azure AD
+   rejeita a requisição inteira (`AADSTS90023: Public clients can't send a
+   client secret`) se o secret vier junto, mesmo sendo válido.
 3. **Developer token** — pedido pelo [Microsoft Advertising App Center]
-   (developers.ads.microsoft.com/AppCenter), análogo ao developer token do
-   Google Ads mas sem o degrau "conta de teste vs Basic Access": o token
-   emitido já enxerga a conta real desde o início (confirmar contra a doc
-   oficial no momento do pedido — políticas de acesso mudam).
+   (developers.ads.microsoft.com/AppCenter). Este é o MESMO developer token
+   usado no caminho Google acima — o token não depende do identity
+   provider, só de `DeveloperToken` no header, sempre presente.
 4. `MICROSOFT_ADS_CUSTOMER_ID` (a conta gerenciadora) e
    `MICROSOFT_ADS_ACCOUNT_ID` (a conta de anúncios específica) — visíveis no
    painel do Microsoft Advertising, mesmo par conceitual de
-   `GOOGLE_ADS_LOGIN_CUSTOMER_ID`/`GOOGLE_ADS_CUSTOMER_ID`.
+   `GOOGLE_ADS_LOGIN_CUSTOMER_ID`/`GOOGLE_ADS_CUSTOMER_ID`. Também
+   compartilhados entre os 2 caminhos de identidade — são propriedades da
+   CONTA, não do provedor de autenticação.
 
 ## Reporting API — fluxo assíncrono de 3 passos (diferença chave vs GAQL), implementado #5928
 
@@ -68,7 +122,7 @@ REST) e um fluxo de polling —
    API agregar automaticamente entre campanhas) — devolve um
    `ReportRequestId`.
 2. `PollGenerateReport` repetido até o status virar `Success` (ou erro) —
-   quando pronto, devolve um `ReportDownloadUrl`.
+   quando pronto E há dado, devolve um `ReportDownloadUrl`.
 3. Baixar o **ZIP** da URL, descompactar (`unzipFirstEntry`, Local File
    Header lido na mão via `node:zlib` — sem lib de ZIP no repo) e parsear o
    CSV (`papaparse`, já dependência do repo).
@@ -77,15 +131,31 @@ REST) e um fluxo de polling —
 `fetchMicrosoftAdsSpendRows` (`fetchImpl` injetável, sempre fail-soft —
 `{ rows }` ou `{ error }`), testado com um router de mock que simula
 submit→poll (incluindo `Pending` repetido)→download de um ZIP real
-(`test/microsoft-ads-ingest-5502.test.ts`). **2 detalhes de transporte só
+(`test/microsoft-ads-ingest-5502.test.ts`). **4 detalhes de transporte só
 descobertos ao vivo (22/08/2026), não documentados com clareza pela doc
-oficial** (que mostra um template SOAP 1.2-ish mas o transporte real exige
-1.1):
+oficial:**
 
 - `Content-Type: text/xml; charset=utf-8` + header HTTP `SOAPAction: {op}`
-  — `application/soap+xml` (SOAP 1.2) devolve HTTP 415 puro.
+  — `application/soap+xml` (SOAP 1.2) devolve HTTP 415 puro. A doc oficial
+  mostra um template que parece SOAP 1.2 (`<Action>` dentro do SOAP
+  Header), mas o transporte real exige SOAP 1.1.
 - Endpoint único `https://reporting.api.bingads.microsoft.com/Api/Advertiser/Reporting/v13/ReportingService.svc`
   pras 2 operações — a operação vai no `<Action>` do SOAP Header, não na URL.
+- **`Time.CustomDateRangeEnd` deve vir ANTES de `Time.CustomDateRangeStart`
+  no XML** — é a ordem que o XSD do `ReportTime` declara
+  (https://learn.microsoft.com/en-us/advertising/reporting-service/reporttime).
+  WCF é estrito com ordem de elemento: invertida (o que uma 1ª versão deste
+  código chegou a mergear), TODA submissão falha com
+  `InvalidCustomDateRangeEnd` — mesmo com datas válidas e coerentes entre
+  si. `test/microsoft-ads-ingest-5502.test.ts` trava essa ordem como
+  regressão.
+- **`Status: Success` com `ReportDownloadUrl` nil é uma resposta VÁLIDA,
+  não um erro** — significa "relatório processado, zero linhas" (a API não
+  gera arquivo pra baixar quando não há nada pra reportar). Confirmado
+  consultando desde 2023 na conta em uso (sem nenhum gasto histórico):
+  sempre `Success` + URL nil. `fetchMicrosoftAdsSpendRows` trata isso como
+  `{ rows: [] }` — vazio legítimo, mesma disciplina de "zero não é falha de
+  ingestão" que já rege `google-ads-ingest.ts`.
 
 ## Formato aceito por `aggregateMicrosoftAdsSpendByMonth`
 
@@ -98,11 +168,20 @@ oficial** (que mostra um template SOAP 1.2-ish mas o transporte real exige
 
 Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
 
-- `MICROSOFT_ADS_CLIENT_ID` / `MICROSOFT_ADS_CLIENT_SECRET` — App registration
-- `MICROSOFT_ADS_REFRESH_TOKEN` — do fluxo de consentimento
-- `MICROSOFT_ADS_DEVELOPER_TOKEN` — Microsoft Advertising App Center
-- `MICROSOFT_ADS_CUSTOMER_ID` / `MICROSOFT_ADS_ACCOUNT_ID` — painel do
-  Microsoft Advertising
+- `MICROSOFT_ADS_DEVELOPER_TOKEN` / `MICROSOFT_ADS_CUSTOMER_ID` /
+  `MICROSOFT_ADS_ACCOUNT_ID` — sempre exigidas, independem do identity
+  provider.
+- **Caminho Google (#5928, o que funciona pra conta em uso):**
+  `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (já existiam — reusa o client
+  Drive/Gmail) + `MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN` (novo, específico
+  deste uso).
+- **Caminho Azure AD (default histórico, vale pra outra conta):**
+  `MICROSOFT_ADS_CLIENT_ID` / `MICROSOFT_ADS_CLIENT_SECRET` (não enviado,
+  ver seção acima) / `MICROSOFT_ADS_REFRESH_TOKEN`.
+
+`scripts/microsoft-ads-ingest-spend.ts` prioriza Google quando as 3
+variáveis desse caminho estão presentes — mesmo critério de
+`refreshMicrosoftAdsAccessToken`.
 
 ## Canal em `spend.csv`
 
@@ -118,52 +197,6 @@ e colar a saída literal no PR que adicionar a spec. Importar o GASTO (este
 doc) e mapear os ASSINANTES atribuídos a esse gasto (issue separada, #5493)
 são dois passos independentes — o 1º não destrava o 2º sozinho.
 
-## Achado ao vivo 22/08/2026: esta conta Ads exige Google OAuth, não Azure AD (#5928)
-
-Com o transporte SOAP implementado e as 6 credenciais Azure AD já no
-Doppler, a 1ª chamada real (`CustomerManagementService.GetUser` via REST,
-usada só como diagnóstico) devolveu:
-
-```json
-{"Errors":[{"Code":126,"Message":"You must use a different identity type to
-sign in to Bing Ads with the same email.","Detail":"GoogleAccountIsRequired",
-"ErrorCode":"IdentityTypeMismatch"}]}
-```
-
-A renovação do token Azure AD (`/common/oauth2/v2.0/token`) FUNCIONA —
-devolve um `access_token` válido — mas a conta Microsoft Advertising
-(`CustomerId` 255014657, `vjpixel@gmail.com`) foi criada/vinculada via
-**"Sign in with Google"**, e a API rejeita qualquer chamada autenticada por
-um token Azure AD para essa conta especificamente.
-
-A Microsoft Advertising API suporta **Google OAuth 2.0 como provedor
-alternativo** (não substituto) de identidade —
-https://learn.microsoft.com/en-us/advertising/guides/authentication-oauth#authentication-with-google-oauth
-— mas isso exige uma credencial e um fluxo **inteiramente diferentes** dos
-já implementados aqui:
-
-1. Um client OAuth do **Google Cloud Console** (`client_id`/`client_secret`
-   do Google — não reaproveita `MICROSOFT_ADS_CLIENT_*`), scope `profile
-   email`.
-2. Consentimento via `accounts.google.com/o/oauth2/v2/auth` (fluxo padrão
-   Google, `access_type=offline`+`prompt=consent` pro refresh token) —
-   https://learn.microsoft.com/en-us/advertising/guides/authentication-oauth-consent#request-user-consent-with-google-oauth.
-3. Trocar o `code` pelo `access_token`/`refresh_token` no token endpoint do
-   **Google** (`oauth2.googleapis.com/token`), não da Azure AD.
-4. Toda chamada SOAP à Microsoft Advertising passa a levar o header extra
-   `<IdentityProvider>Google</IdentityProvider>`, com o `AuthenticationToken`
-   sendo o access token do GOOGLE.
-
-**Isso é ação nova do editor** (registrar ou reaproveitar um client OAuth no
-Google Cloud Console + consentir) — `scripts/lib/microsoft-ads-ingest.ts`
-**não** implementa o refresh via Google nem o header `IdentityProvider` de
-propósito: sem a credencial real pra validar, escrever esse caminho agora só
-criaria confiança falsa (mesma disciplina que já regeu o resto deste
-módulo). Alternativa não investigada: pode existir uma opção no painel do
-Microsoft Advertising pra trocar o tipo de identidade da conta de volta pra
-Microsoft/work — se existir, pode ser mais simples que credenciar Google do
-zero; não confirmado.
-
 ## Uso
 
 ```bash
@@ -171,9 +204,11 @@ npx tsx scripts/microsoft-ads-ingest-spend.ts
 npx tsx scripts/microsoft-ads-ingest-spend.ts --spend data/aquisicao/spend.csv
 ```
 
-Sem as 6 env vars (ou com qualquer chamada falhando): aviso + exit 0, CSV
-manual intocado — o mesmo comportamento de
-`scripts/google-ads-ingest-spend.ts`.
+Sem as env vars do caminho ativo (Google OU Azure AD, ver "Segredos"), ou
+com qualquer chamada falhando: aviso + exit 0, CSV manual intocado — o
+mesmo comportamento de `scripts/google-ads-ingest-spend.ts`. Zero gasto no
+período consultado também é fail-soft (não erro): é o estado real da conta
+até 22/08/2026.
 
 ## Estado (22/08/2026, #5928)
 
@@ -182,20 +217,22 @@ manual intocado — o mesmo comportamento de
 - [x] Adaptador fail-soft (`runMicrosoftAdsIngest`) sobre o motor genérico
       `scripts/lib/spend-ingest.ts`
 - [x] CLI fino (`scripts/microsoft-ads-ingest-spend.ts`)
-- [x] App registration no Azure — feito (#5928, sessão `/diaria-develop`
-      260822b), app `diaria-studio-microsoft-ads`
-- [x] Developer token pedido — feito (`MICROSOFT_ADS_DEVELOPER_TOKEN`,
-      aprovado 22/08/2026)
-- [x] `MICROSOFT_ADS_*` no Doppler (as 6 variáveis)
-- [x] Transporte real da Reporting API implementado (submit→poll→
-      download→unzip→parse, SOAP 1.1) — testado com mocks completos, não só
-      fixture de normalização
-- [ ] Primeira chamada real validada — **bloqueada, não por falta de
-      implementação**: a conta Ads existente exige Google OAuth (ver seção
-      "Achado ao vivo 22/08/2026" acima), arquitetura de auth diferente da
-      já implementada. Ação do editor: credenciar Google OAuth ou trocar o
-      tipo de identidade da conta.
+- [x] App registration no Azure — feito, app `diaria-studio-microsoft-ads`
+- [x] Developer token pedido — feito (`MICROSOFT_ADS_DEVELOPER_TOKEN`)
+- [x] `MICROSOFT_ADS_*` no Doppler (Azure AD + Google)
+- [x] Transporte real da Reporting API implementado e testado (submit→poll→
+      download→unzip→parse, SOAP 1.1)
+- [x] **Identidade Google implementada e validada ao vivo** — a conta em
+      uso exige isto; `refreshMicrosoftAdsAccessToken` escolhe
+      automaticamente entre Google e Azure AD
+- [x] **Primeira chamada real validada** — `SubmitGenerateReport`→
+      `PollGenerateReport` completam sem erro contra a API real
+      (`npx tsx scripts/microsoft-ads-ingest-spend.ts`, 22/08/2026)
+- [ ] `spend.csv` com uma linha `Microsoft Advertising` de verdade —
+      bloqueado só pela conta não ter gasto histórico ainda (#5524); a
+      ingestão automática já está pronta pra capturar assim que o teste
+      pago começar a gastar
 - [ ] Task agendada (própria ou compartilhada com o Google Ads, #5493) —
-      decisão adiada até a 1ª chamada real funcionar
+      decisão adiada até a conta ter gasto real pra validar contra
 - [ ] Campanha Microsoft Advertising real rodando (pré-requisito pra #5493
       mapear chaves de atribuição, item independente deste doc)
