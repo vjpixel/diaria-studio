@@ -280,10 +280,47 @@ export async function reapplyHtml(apiKey: string, campaignId: number, html: stri
 }
 
 /** PUT /emailCampaigns/{id}/status — usado pra suspender (pré-requisito da
- *  Brevo pra editar htmlContent de uma campanha `queued`) e, no path de
- *  emergência puramente manual, pra tentar recolocar em `queued` de novo. */
+ *  Brevo pra editar htmlContent de uma campanha `queued`).
+ *
+ * ⚠️  **#5939 — risco de envio imediato sem scheduledAt.** A Brevo trata a
+ * ausência de `scheduledAt` no PUT de status como "enviar imediatamente":
+ * chamar este PUT com `{status: "queued"}` (ou `"scheduled"`) sem ter fixado
+ * `scheduledAt` previamente via `PUT /emailCampaigns/{id}` dispara o envio
+ * ~8h antes do horário planejado, sem caminho de rollback (achado real em
+ * 22/08/2026 — ~9010 contatos receberam 8h antes).
+ *
+ * Para REAGENDAR uma campanha suspensa, use [[restoreScheduledCampaign]]
+ * em vez desta função — ela exige `scheduledAtIso` no tipo e faz o PUT
+ * `scheduledAt` antes do PUT de status, tornando o erro irrepresentável no
+ * compilador. Este wrapper só deve ser chamado com `"suspended"`. */
 export async function setCampaignStatus(apiKey: string, campaignId: number, status: string): Promise<unknown> {
   return brevoPut(apiKey, `/emailCampaigns/${campaignId}/status`, { status });
+}
+
+/**
+ * Reagendar uma campanha SUSPENSA para `queued` com horário explícito
+ * (#5939). Exige `scheduledAtIso` no tipo — chamar sem ele é erro de
+ * compilação, não runtime.
+ *
+ * Sequência (2 PUTs):
+ *   1. `PUT /emailCampaigns/{id}` com `{scheduledAt}` — fixa o horário.
+ *   2. `PUT /emailCampaigns/{id}/status` com `{status: "queued"}` — requeues.
+ *
+ * A ordem garante que `scheduledAt` esteja gravado antes do status mudar
+ * para `queued`, fechando a janela onde a Brevo poderia interpretar a
+ * ausência de `scheduledAt` como "enviar agora".
+ *
+ * **Nunca** usar `setCampaignStatus(id, "queued")` diretamente — use esta
+ * função. O automated flow (`applyReapply`) já faz isso corretamente (ver
+ * linha ~500: brevoPut com `scheduledAt` antes de qualquer requeue); esta
+ * função formaliza o caminho ad-hoc manual que causou o incidente #5939. */
+export async function restoreScheduledCampaign(
+  apiKey: string,
+  campaignId: number,
+  scheduledAtIso: string,
+): Promise<unknown> {
+  await brevoPut(apiKey, `/emailCampaigns/${campaignId}`, { scheduledAt: scheduledAtIso });
+  return brevoPut(apiKey, `/emailCampaigns/${campaignId}/status`, { status: "queued" });
 }
 
 /** Soma `totalSubscribers` das listas informadas — usado pra comparar
