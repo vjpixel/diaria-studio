@@ -331,10 +331,10 @@ nunca seja o último nó.
 regra que `endsInBareDomainLabel` já guardava, mas com uma consequência
 que não estava documentada: dá pra pré-linkar a menção em prosa a
 `diar.ia.br` **e manter a UTM**, desde que a âncora se estenda além do
-domínio. Testado nas duas formas:
+domínio. Testado nas duas formas em 260803:
 
     texto "diar.ia.br"                    -> href reescrito pra http://diar.ia.br, UTM perdida
-    texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta
+    texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta (conclusão de 260803 — NÃO reproduzida em 260823, ver item (d) abaixo)
 
 `linkifyWordmark` (mesmo módulo) faz isso automaticamente na primeira
 menção da abertura, estendendo por até 3 palavras e validando com o
@@ -348,13 +348,68 @@ marca do paste. Conclusão errada foi tirada daí em 260803. Espere o
 editor estabilizar (ou recarregue a página) antes de afirmar qualquer
 coisa sobre o que sobreviveu.
 
+**d) Âncora colada via `ClipboardEvent` cujo texto COMEÇA com "diar.ia.br"
+é DIVIDIDA em duas, mesmo estendida além do domínio (achado 260823, 1ª
+execução real do paste assistido via Claude in Chrome).** O item (c) acima
+documentava, em 260803, "diar.ia.br, newsletter de IA" como caso seguro
+(href preservado, UTM intacta) — **essa conclusão não se reproduziu em
+260823**, apesar do teste desta rodada ter usado o mesmo tipo de paste via
+`ClipboardEvent` que o "Cuidado ao inspecionar" acima já associa ao teste
+original (esperei o editor estabilizar e confirmei via `javascript_tool`,
+não só inspeção visual). **A causa exata da divergência entre as duas
+sessões não foi isolada** — pode ser mudança de comportamento do editor do
+LinkedIn desde 260803, uma diferença sutil na construção do HTML colado
+não registrada na época, ou o teste original ter sido mal-verificado.
+Tratar (d) como o comportamento **atual e confirmado**, e (c) como
+histórico não confiável para este caso específico até alguém reproduzir
+um dos dois de forma controlada. O que se observa agora: o
+auto-linkificador do LinkedIn reconhece a substring "diar.ia.br" DENTRO do
+texto da âncora colada e a separa num `<a>` próprio sem UTM
+(`href="http://diar.ia.br/"`), deixando só o resto (", newsletter de IA")
+na âncora original com a UTM. Resultado: 2 nós `<a>` adjacentes onde devia
+haver 1, com o pedaço clicável mais provável (a marca em si) sem tracking.
+
+**Correção aplicada manualmente na 1ª publicação real (26w34, 260823):**
+selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
+(clicar antes de "Desde", `Home`, `Right` × N até o início da menção,
+`shift+Right` × M até o fim — **nunca clicar diretamente sobre o link
+colado**, um clique ali fez a página rolar/pular pra outro trecho, ver
+'Perigo' abaixo), abrir **Add link** (ícone 🔗 da toolbar) com a seleção
+ativa — o popup "Edit link" trata as 2 âncoras coladas como 1 campo de
+texto editável — e sobrescrever o campo **Link** com a URL completa
+(UTM inclusa) antes de **Apply**. Resultado vira 1 âncora só, correta.
+
+**Perigo colateral encontrado na mesma sessão:** um `left_click` isolado
+em cima do texto do link (antes de `shift+click` pra estender a seleção)
+fez o layout pular — a 2ª coordenada do clique subsequente acabou
+selecionando texto de OUTRO parágrafo, bem mais abaixo no artigo (perto
+de "Por que isso importa" de uma manchete diferente). Nenhum conteúdo foi
+efetivamente apagado nesse caso específico, mas o mesmo padrão de clique
+sobre link colado, repetido em outro ponto da sequência, **apagou
+silenciosamente** o parágrafo `<p><a>Quero receber a edição diária →</a></p>`
+inteiro do bloco Use Melhor (causa exata não isolada — suspeita: o popup
+"Edit link" ficou com uma seleção obsoleta de uma iteração anterior e a
+operação de Apply substituiu o range errado). **Mitigação:** depois de qualquer correção de link via
+clique+seleção, sempre rodar uma auditoria completa de `document.querySelectorAll('a')`
+comparando a contagem e os textos contra o esperado (10 âncoras nesta
+edição: 1 menção + 3 CTAs de assinatura + 1 item de Use Melhor + 5 links
+de "Edições da semana") E conferir `editor.textContent.length` bate com o
+tamanho logo após o paste original — foi assim que a perda do CTA do Use
+Melhor foi pega e corrigida (reinserção manual via paste de 1 `<p><a>`
+isolado, cursor posicionado com `Home`/`End`/`Enter`, nunca clique direto
+sobre texto de link).
+
 Publicação continua **manual por padrão** (colar via UI, revisar
 visualmente, clicar Publish) — a automação acima é referência pra quem for
 implementar o paste assistido via Claude in Chrome no futuro; não é
 executada por `/diaria-linkedin-semanal` nesta versão (a skill entrega o
 artefato e as instruções, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`
 Passo 6). Em 260803 o paste assistido foi executado à mão numa sessão com o
-editor presente, e os achados acima vieram dessa rodada.
+editor presente, e os achados (a)-(c) vieram dessa rodada; o achado (d)
+veio da 1ª execução real do fluxo completo por um agente via Claude in
+Chrome, 260823 (ciclo `26w34`, artigo agendado pra publicar 260824) — a
+mesma sessão que confirmou o agendamento funciona de ponta a ponta (ver §4
+abaixo).
 
 ### 4. O LinkedIn AGENDA artigo de newsletter (a regra antiga dizia que não)
 
