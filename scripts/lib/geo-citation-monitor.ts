@@ -50,9 +50,10 @@
  * 60s (timeout), 25s, e depois 180s (timeout, mesmo com `max_uses`
  * reduzido) em tentativas separadas fora do código shipado (um script de
  * teste avulso, timeout maior que o valor que foi pro código de produção —
- * o próprio `timeoutMs: 120_000` da Anthropic aborta antes dos 180s, então
- * essa tentativa específica não é reproduzível pelo caminho real).
- * `GeoProviderDef.timeoutMs` (120s) e `max_uses: 2` (redução de custo, não
+ * o `timeoutMs` da Anthropic (270s desde #5950, era 120s) aborta antes dos
+ * 180s dessa tentativa específica só na configuração antiga; não
+ * reproduzível pelo caminho real de qualquer forma).
+ * `GeoProviderDef.timeoutMs` (270s desde #5950) e `max_uses: 2` (redução de custo, não
  * de latência — ver as duas docstrings) são a resposta pragmática: falhas
  * ocasionais da Anthropic
  * são esperadas e tratadas fail-soft, não um bug a perseguir. Ver
@@ -273,10 +274,20 @@ export interface GeoProviderDef {
    * exatamente por causa desse padrão em chamadas com tool server-side, e
    * mesmo esse valor é só uma margem, não uma garantia.
    *
-   * 120s é a escolha pragmática: succeeds na maioria das chamadas
-   * observadas (25-90s), falha rápido o bastante pra não travar a rodada
-   * inteira numa única chamada pendurada (roda em background semanal, sem
-   * usuário esperando), e o teto de US$10/mês configurado na ORG do
+   * **Atualizado no #5950 (23/08/2026): 120s era curto demais, e não só
+   * "falha rápida" — media 0 citações numa rodada que tinha pelo menos 1
+   * citação real (recuperada só ao reprocessar com timeout maior).**
+   * Latências de sucesso medidas ao vivo: 19,9s a 173,8s; falhas
+   * concentradas nos limites EXATOS de 120,0s/240,0s (sinal de timeout hard
+   * do cliente, não de instabilidade do provider). O valor atual é 270s —
+   * ver comentário no literal de `GEO_PROVIDERS` abaixo pro racional
+   * completo da escolha entre 240-300s.
+   *
+   * 120s era a escolha pragmática original (#4904): succeeds na maioria das
+   * chamadas observadas NAQUELA medição (25-90s), falha rápido o bastante
+   * pra não travar a rodada inteira numa única chamada pendurada (roda em
+   * background semanal, sem usuário esperando), e o teto de US$10/mês
+   * configurado na ORG do
    * Console (console.anthropic.com → Billing → Spend limits — mecanismo
    * separado, não o `--max-monthly-usd` deste script, que hoje não é
    * passado pela task agendada — ver `SCHEDULED_TASKS` em
@@ -307,7 +318,29 @@ export interface GeoProviderDef {
 // e o Quick Reference "Server Tools" do SKILL.md).
 // ---------------------------------------------------------------------------
 
+/**
+ * Budget de thinking pra Haiku 4.5 (#5951) — modelo "antigo" no sentido da
+ * API de thinking: não suporta `thinking: {type: "adaptive"}` (só Opus/Sonnet
+ * 4.6+) nem `output_config.effort` (a skill `claude-api` desta sessão lista
+ * Haiku 4.5 na linha "Older" da tabela de Thinking & Effort — `effort` erra
+ * nele, igual em Sonnet 4.5). O único jeito de pedir "reasoning baixo" é
+ * `thinking: {type: "enabled", budget_tokens: N}` com N pequeno — usamos o
+ * MÍNIMO aceito pela API (1024) como "effort baixo". NUNCA omitir/desligar
+ * thinking por completo (mesmo raciocínio do #5305 pro Sonnet 5, sem
+ * verificação equivalente ao vivo pro Haiku — mas a hipótese de que thinking
+ * ligado favorece tool use é a mais conservadora, e a chamada depende do
+ * `web_search` abaixo pra funcionar).
+ */
+const ANTHROPIC_HAIKU_THINKING_BUDGET_TOKENS = 1024;
+
 function anthropicRequest(question: string, apiKey: string, model: string) {
+  // Haiku 4.5 (#5951) não aceita thinking:"adaptive" — só a família
+  // Opus/Sonnet 4.6+ tem esse modo. Detecta pelo nome do model ID (o único
+  // sinal disponível aqui; buildRequest não tem acesso a um enum de família
+  // de modelo) e monta o campo `thinking` compatível com cada um.
+  const thinking = model.includes("haiku")
+    ? { type: "enabled" as const, budget_tokens: ANTHROPIC_HAIKU_THINKING_BUDGET_TOKENS }
+    : { type: "adaptive" as const };
   return {
     url: "https://api.anthropic.com/v1/messages",
     init: {
@@ -327,16 +360,22 @@ function anthropicRequest(question: string, apiKey: string, model: string) {
         // texto — `anthropicExtractText` devolvia "" e o monitor registrava
         // "não citado" (falso negativo indistinguível do caso legítimo). Ver
         // `anthropicCheckProviderError` abaixo, que agora intercepta esse
-        // caso antes de virar uma citação ausente.
+        // caso antes de virar uma citação ausente. No Haiku 4.5 (#5951), o
+        // budget de thinking (1024) já cabe dentro desse teto com ~3072
+        // tokens sobrando pro texto — não recalibrado porque a issue não
+        // reportou truncamento nesse modelo; revisar se `max_tokens`
+        // aparecer no log de erro depois da troca.
         max_tokens: 4096,
-        // Declarado EXPLICITAMENTE (#5305) — no Sonnet 5, omitir `thinking`
-        // já liga adaptativo por padrão (mudança de default silenciosa vs.
-        // Sonnet 4.6, onde omitir desligava), mas declarar aqui imuniza a
-        // chamada contra a PRÓXIMA mudança de default do modelo. NUNCA
-        // `{type: "disabled"}`: desligar thinking reduz a propensão do
-        // Sonnet 5 a acionar tool use, e esta chamada depende do
-        // `web_search` abaixo pra funcionar.
-        thinking: { type: "adaptive" },
+        // Sonnet 5 (e Opus/Sonnet 4.6+ em geral): adaptativo, EXPLICITAMENTE
+        // declarado (#5305) — omitir `thinking` já liga adaptativo por
+        // padrão nesses modelos, mas declarar aqui imuniza a chamada contra
+        // a PRÓXIMA mudança de default. Haiku 4.5 (#5951): budget baixo fixo
+        // (ver `ANTHROPIC_HAIKU_THINKING_BUDGET_TOKENS` acima) — é o
+        // equivalente de "effort baixo" disponível pra esse modelo. Em
+        // NENHUM dos dois casos thinking fica `{type: "disabled"}`: desligar
+        // thinking reduz a propensão do modelo a acionar tool use, e esta
+        // chamada depende do `web_search` abaixo pra funcionar.
+        thinking,
         messages: [{ role: "user", content: question }],
         // max_uses: 2, não 5 — ver docstring de GeoProviderDef.timeoutMs pro
         // histórico completo. Uma rodada real com max_uses:5 (11/ago/2026)
@@ -637,15 +676,31 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     id: "anthropic",
     label: "Claude (Anthropic)",
     envKey: "ANTHROPIC_API_KEY",
-    defaultModel: "claude-sonnet-5",
+    // Haiku 4.5, não Sonnet 5 (#5951, decisão do editor 23/08/2026) — pinned
+    // (`claude-haiku-4-5-20251001`), mesma convenção do agent
+    // `research-reviewer` (ver CLAUDE.md, seção "Model mix"). Corta o custo
+    // por chamada de ~US$0,15 pra ~US$0,06 — ver docstring da issue #5951
+    // pra decomposição do preço e o trade-off aceito (Haiku não é o modelo
+    // que o leitor real encontra no Claude do dia a dia).
+    defaultModel: "claude-haiku-4-5-20251001",
     buildRequest: anthropicRequest,
     extractText: anthropicExtractText,
     extractUsage: anthropicExtractUsage,
     // #5305 — stop_reason estourando max_tokens/refusal indistinguível de
     // "não citado" (ver #5310 pro equivalente OpenAI/Google abaixo).
     checkProviderError: anthropicCheckProviderError,
-    // 120s, não os 25s default — ver docstring de GeoProviderDef.timeoutMs.
-    timeoutMs: 120_000,
+    // 270s, não 120s (#5950) — medição ao vivo em 23/08/2026 mostrou latências
+    // de sucesso de 19,9s a 173,8s e falhas exatas nos 120,0s/240,0s (sinal de
+    // timeout hard do CLIENTE, não instabilidade do provider — 0 citações
+    // registradas numa rodada que tinha pelo menos 1 citação real, recuperada
+    // só ao reprocessar com timeout maior). 270s fica acima dos 240s que ainda
+    // viu timeout na medição, sem ir ao extremo de 300s — balanceando contra o
+    // custo de uma chamada presa mais tempo numa rodada com várias perguntas
+    // seriais. Ver docstring de GeoProviderDef.timeoutMs pro histórico
+    // completo (inclusive o efeito parcialmente sobreposto da troca pra Haiku
+    // no #5951 — Haiku tende a ser mais rápido, mas isso não foi medido, então
+    // o timeout segue calibrado pela medição conservadora feita com Sonnet).
+    timeoutMs: 270_000,
   },
   {
     id: "openai",

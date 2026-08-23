@@ -342,6 +342,20 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.deepEqual(body.thinking, { type: "adaptive" });
   });
 
+  it("buildRequest com model Haiku 4.5 usa thinking:{type:'enabled', budget_tokens:1024} — Haiku não aceita 'adaptive' (#5951)", () => {
+    const { init } = anthropic.buildRequest("pergunta", "fake-key", "claude-haiku-4-5-20251001");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.max_tokens, 4096);
+    assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 1024 });
+    // Nunca desligado por completo (mesmo raciocínio do #5305 — thinking
+    // desligado reduz propensão a tool use, e a chamada depende de web_search).
+    assert.notEqual(body.thinking.type, "disabled");
+  });
+
+  it("defaultModel do provider anthropic é Haiku 4.5 pinned (#5951, decisão do editor 23/08/2026)", () => {
+    assert.equal(anthropic.defaultModel, "claude-haiku-4-5-20251001");
+  });
+
   it("stop_reason:'max_tokens' com content:[{type:'thinking'}] devolve erro de provider, NUNCA ausência de citação (#5305)", async () => {
     // Reproduz o cenário exato do issue: a resposta estourou max_tokens
     // (thinking + texto somados no Sonnet 5) e não sobrou bloco de texto —
@@ -582,9 +596,10 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     assert.equal(GEO_PROVIDER_TIMEOUT_MS, 25_000);
   });
 
-  it("#4904 achado ao vivo 11/ago/2026: Anthropic tem timeoutMs próprio (120s), maior que o default — 25s estourou em 8/8 chamadas reais, US$0,36 gastos sem 1 registro útil", () => {
+  it("#4904/#5950: Anthropic tem timeoutMs próprio (270s desde #5950, era 120s), maior que o default — 25s estourou em 8/8 chamadas reais, US$0,36 gastos sem 1 registro útil; 120s ainda descartava respostas válidas (medição 23/08/2026)", () => {
     const anthropicDef = GEO_PROVIDERS.find((p) => p.id === "anthropic")!;
-    assert.equal(anthropicDef.timeoutMs, 120_000);
+    assert.equal(anthropicDef.timeoutMs, 270_000);
+    assert.ok(anthropicDef.timeoutMs >= 240_000, "deve ficar acima dos 240s que a medição do #5950 ainda viu estourar");
     assert.ok(anthropicDef.timeoutMs > GEO_PROVIDER_TIMEOUT_MS);
     // OpenAI/Google copiam o default global EXPLICITAMENTE (timeoutMs é
     // campo obrigatório, achado do type-design review desta PR — nenhum
@@ -662,7 +677,7 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
       ["p"],
       fakeFetch,
     );
-    assert.equal(seenModels[0], "claude-sonnet-5"); // default do provider
+    assert.equal(seenModels[0], "claude-haiku-4-5-20251001"); // default do provider (#5951)
     assert.equal(seenModels[1], "claude-opus-5"); // override via env
   });
 
