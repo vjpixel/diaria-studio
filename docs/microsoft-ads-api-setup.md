@@ -210,7 +210,8 @@ mesmo comportamento de `scripts/google-ads-ingest-spend.ts`. Zero gasto no
 período consultado também é fail-soft (não erro): é o estado real da conta
 até 22/08/2026.
 
-<<<<<<< HEAD
+## Estado (22/08/2026, #5928)
+
 ## Campaign Management API — motivos editoriais (#5878)
 
 A Reporting API (seção acima) serve para **gasto**. A **Campaign Management
@@ -242,22 +243,12 @@ Implementação:
 Testes: `test/microsoft-ads-editorial-reasons.test.ts` — 18 testes cobrindo
 envelope, parsing (1/2/0 razões, XML malformado), extração de SOAP Fault, e
 fail-soft end-to-end via `fetch` mockado (nunca toca a API real).
-=======
-## Estado (22/08/2026, #5928)
->>>>>>> master
 
 - [x] Núcleo de normalização puro implementado e testado contra fixture
       (`test/microsoft-ads-ingest-5502.test.ts`)
 - [x] Adaptador fail-soft (`runMicrosoftAdsIngest`) sobre o motor genérico
       `scripts/lib/spend-ingest.ts`
 - [x] CLI fino (`scripts/microsoft-ads-ingest-spend.ts`)
-<<<<<<< HEAD
-- [ ] App registration no Azure — ação do editor
-- [ ] Developer token pedido — ação do editor
-- [x] `MICROSOFT_ADS_*` no Doppler (credenciais configuradas 21/08/2026, #5928)
-- [ ] Primeira chamada real validada (fluxo de poll da Reporting API não
-      testável sem credencial — ver seção acima)
-=======
 - [x] App registration no Azure — feito, app `diaria-studio-microsoft-ads`
 - [x] Developer token pedido — feito (`MICROSOFT_ADS_DEVELOPER_TOKEN`)
 - [x] `MICROSOFT_ADS_*` no Doppler (Azure AD + Google)
@@ -275,7 +266,6 @@ fail-soft end-to-end via `fetch` mockado (nunca toca a API real).
       pago começar a gastar
 - [ ] Task agendada (própria ou compartilhada com o Google Ads, #5493) —
       decisão adiada até a conta ter gasto real pra validar contra
->>>>>>> master
 - [ ] Campanha Microsoft Advertising real rodando (pré-requisito pra #5493
       mapear chaves de atribuição, item independente deste doc)
 - [x] **#5878 — Campaign Management API: `GetAssetGroupsEditorialReasons`**
