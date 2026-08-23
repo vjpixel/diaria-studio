@@ -160,6 +160,22 @@ function getUtm(href: string): Utm {
 }
 
 /**
+ * Compara dois hrefs JÁ VALIDADOS como URL parseável (chamar só depois de
+ * `getUtm(...).valid === true` nos dois lados) — usado pra âncoras da fonte
+ * SEM UTM (achado do review desta PR, #5988: o link do bloco Use Melhor,
+ * `um.url` em `weekly-linkedin-render.ts`, nunca carrega UTM — é a única URL
+ * de conteúdo editorial externo real do artefato, e por isso a mais exposta
+ * ao mesmo auto-linkificador do LinkedIn que causou o bug do PR #5987; sem
+ * comparação alguma pro caso sem-UTM, um href corrompido nessa âncora
+ * específica passava batido por TODAS as checagens 2-3). `new URL().toString()`
+ * normaliza (scheme lowercase, encoding canônico) então diferenças puramente
+ * de forma não disparam falso positivo.
+ */
+function hrefsEquivalent(a: string, b: string): boolean {
+  return new URL(a).toString() === new URL(b).toString();
+}
+
+/**
  * Pure: detecta o padrão de texto que dispara o bug de split de âncora
  * (achado 260823, PR #5987) — texto de âncora que COMEÇA com o wordmark
  * "diar.ia.br" (com ou sem continuação, ex: "diar.ia.br, newsletter de IA").
@@ -189,16 +205,20 @@ export function looksLikeBareDomainAnchorText(text: string): boolean {
  *      está errado (ver docstring do guard) — falha alto em vez de validar
  *      um conjunto vazio como "tudo ok".
  *   1. Contagem de âncoras — fonte vs colado.
- *   2. Pra cada âncora da FONTE que carrega `utm_campaign`/`utm_content`:
- *      existe uma âncora colada com o MESMO TEXTO (normalizado)? Se não —
- *      perdida/dividida (chave é o TEXTO, não a URL base: várias âncoras
- *      deste artefato — os 3 CTAs de assinatura, a menção da abertura —
- *      compartilham a mesma base `https://diar.ia.br`, então casar por URL
- *      base seria ambíguo; o texto de cada uma é único). Href (fonte ou
- *      colado) que não parseia como URL vira issue própria, distinta de
- *      "sem UTM" — ver `Utm.valid`.
- *   3. Se encontrada por texto: `utm_campaign`/`utm_content` da âncora colada
- *      batem com os da fonte?
+ *   2. Pra CADA âncora da fonte (com ou sem UTM — #5988 review: o link do
+ *      Use Melhor, `um.url`, nunca carrega UTM e por isso ficava INTEIRAMENTE
+ *      fora das checagens 2-3 antes desta correção): existe uma âncora colada
+ *      com o MESMO TEXTO (normalizado)? Se não — perdida/dividida (chave é o
+ *      TEXTO, não a URL base: várias âncoras deste artefato — os 3 CTAs de
+ *      assinatura, a menção da abertura — compartilham a mesma base
+ *      `https://diar.ia.br`, então casar por URL base seria ambíguo; o texto
+ *      de cada uma é único). Href (fonte ou colado) que não parseia como URL
+ *      vira issue própria, distinta de "sem UTM" — ver `Utm.valid`.
+ *   3. Se encontrada por texto: âncora da fonte carrega `utm_campaign`/
+ *      `utm_content`? Se sim, comparar com os da âncora colada. Se NÃO (ex:
+ *      link Use Melhor) — não há UTM pra comparar, então compara o `href`
+ *      bruto (normalizado, `hrefsEquivalent`) como único sinal disponível de
+ *      que o link não foi trocado/corrompido no paste.
  *   4. `pastedTextLength` vs tamanho do texto da fonte, com tolerância (ver
  *      `TEXT_LENGTH_TOLERANCE_RATIO`) — sinal secundário e grosso. Um
  *      `pastedTextLength` não-finito (`NaN`/negativo) vira issue própria em
@@ -231,7 +251,8 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
     );
   }
 
-  // 2-3. Por âncora da fonte com UTM: achar por TEXTO no colado, comparar UTM.
+  // 2-3. Por âncora da FONTE (com ou sem UTM): achar por TEXTO no colado,
+  // comparar UTM (se a fonte carrega) ou href bruto (se não carrega — #5988).
   const usedPastedIdx = new Set<number>();
   for (const sa of sourceAnchors) {
     const saUtm = getUtm(sa.href);
@@ -239,7 +260,6 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
       issues.push(`Âncora "${sa.text}": href da FONTE não é uma URL válida ("${sa.href}") — não foi possível auditar esta âncora.`);
       continue;
     }
-    if (!saUtm.campaign && !saUtm.content) continue; // nada a auditar — link da fonte não carrega UTM
 
     const saTextNorm = normalizeText(sa.text);
     let matchIdx = -1;
@@ -265,14 +285,29 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
     usedPastedIdx.add(matchIdx);
     const pastedUtm = getUtm(pasted[matchIdx].href);
     if (!pastedUtm.valid) {
-      issues.push(`Âncora "${sa.text}": href COLADO não é uma URL válida ("${pasted[matchIdx].href}") — não foi possível confirmar a UTM.`);
+      issues.push(`Âncora "${sa.text}": href COLADO não é uma URL válida ("${pasted[matchIdx].href}") — não foi possível confirmar o link.`);
       continue;
     }
-    if (saUtm.campaign && saUtm.campaign !== pastedUtm.campaign) {
-      issues.push(`Âncora "${sa.text}": utm_campaign divergente — esperado "${saUtm.campaign}", colado "${pastedUtm.campaign ?? "(ausente)"}".`);
-    }
-    if (saUtm.content && saUtm.content !== pastedUtm.content) {
-      issues.push(`Âncora "${sa.text}": utm_content divergente — esperado "${saUtm.content}", colado "${pastedUtm.content ?? "(ausente)"}".`);
+
+    if (saUtm.campaign || saUtm.content) {
+      if (saUtm.campaign && saUtm.campaign !== pastedUtm.campaign) {
+        issues.push(`Âncora "${sa.text}": utm_campaign divergente — esperado "${saUtm.campaign}", colado "${pastedUtm.campaign ?? "(ausente)"}".`);
+      }
+      if (saUtm.content && saUtm.content !== pastedUtm.content) {
+        issues.push(`Âncora "${sa.text}": utm_content divergente — esperado "${saUtm.content}", colado "${pastedUtm.content ?? "(ausente)"}".`);
+      }
+    } else {
+      // #5988 review: âncora da fonte SEM UTM (ex: link Use Melhor, `um.url`
+      // em weekly-linkedin-render.ts) — nada de UTM pra comparar, então o
+      // href bruto é o único sinal disponível de que o link não foi
+      // trocado/corrompido no paste (sem isso, esta âncora ficava totalmente
+      // fora da auditoria — achado do review desta PR).
+      if (!hrefsEquivalent(sa.href, pasted[matchIdx].href)) {
+        issues.push(
+          `Âncora "${sa.text}": href colado diverge do esperado — esperado "${sa.href}", colado ` +
+            `"${pasted[matchIdx].href}" (esta âncora não carrega UTM, o href bruto é o único sinal disponível).`,
+        );
+      }
     }
   }
 

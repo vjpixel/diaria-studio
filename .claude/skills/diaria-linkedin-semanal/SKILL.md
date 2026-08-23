@@ -493,10 +493,16 @@ import direto).
   LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
   teclado (nunca clicar direto sobre o link colado — risco de deslocar a
   seleção e apagar outro parágrafo em silêncio, mesmo achado) e
-  sobrescrever via popup **Edit link** da toolbar. Repetir a auditoria até
-  `ok === true`. Se a causa não for esse padrão conhecido, envolver o
-  editor (critério 2/4 do rubrico "Perguntar é exceção" — a resposta muda
-  materialmente se o artigo pode ser agendado como está).
+  sobrescrever via popup **Edit link** da toolbar. Repetir a auditoria —
+  **máximo 2 tentativas de correção manual.** Se `ok === true` antes disso,
+  prosseguir. Se a 2ª tentativa ainda falhar (mesma causa conhecida ou
+  outra), PARAR e envolver o editor de qualquer forma — mesmo quando a
+  causa é o padrão conhecido, a correção manual em si pode estar deslocando
+  seleção e corrompendo outro trecho a cada tentativa (mesmo risco citado
+  acima), então insistir sem teto arrisca degradar o artigo em vez de
+  corrigi-lo. Se a causa não for esse padrão conhecido, envolver o editor
+  já na 1ª falha (critério 2/4 do rubrico "Perguntar é exceção" — a resposta
+  muda materialmente se o artigo pode ser agendado como está).
 
 ### 8f. Título + texto do post de feed
 

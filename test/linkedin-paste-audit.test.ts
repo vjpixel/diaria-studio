@@ -49,6 +49,32 @@ const REAL_RENDER_INPUT: WeeklyLinkedinRenderInput = {
   closing: "Fecho de teste.",
 };
 
+// Fixture "real, artefato completo" (#5988 fleet review, pr-test-analyzer):
+// REAL_RENDER_INPUT só exercita 3 dos 5 formatos de âncora que o renderer
+// produz (os 3 CTAs de assinatura + a menção) — `useMelhor: undefined` e
+// `weeklyEditions: []` deixam o link Use Melhor (SEM UTM — a âncora que
+// motivou o achado P1 acima) e as âncoras de "Edições da semana" (dentro de
+// `<li>`, formato estrutural diferente de todo resto) só cobertos por
+// fixture sintética em outros describes, nunca pelo renderer de verdade.
+// `useMelhor`/`weeklyEditions` são o caso COMUM (populados toda semana com
+// candidato elegível), não edge case — por isso este fixture separado.
+const REAL_RENDER_INPUT_FULL: WeeklyLinkedinRenderInput = {
+  cycle: "26w34",
+  headlines: [{ title: "Título real", body: "Corpo do destaque real.", why: "" }],
+  useMelhor: {
+    title: "Um Use Melhor de teste",
+    url: "https://exemplo-externo.com/use-melhor-de-teste",
+    description: "Descrição do Use Melhor de teste.",
+    editorComment: "Comentário pessoal do editor sobre o Use Melhor.",
+  },
+  weeklyEditions: [
+    { editionDate: "2026-08-18", url: "https://diar.ia.br/p/260818", destaques: ["Título D1", "Título D2"] },
+    { editionDate: "2026-08-19", url: "https://diar.ia.br/p/260819", destaques: ["Título D1 de outro dia"] },
+  ],
+  opening: "Abertura de teste com diar.ia.br, newsletter de IA no meio.",
+  closing: "Fecho de teste.",
+};
+
 describe("extractAnchorsFromHtml", () => {
   it("extrai href + texto de cada âncora, decodificando entidades em AMBOS", () => {
     const html = `<p>Veja <a href="https://exemplo.com/?a=1&amp;b=2">o link &quot;especial&quot;</a> aqui.</p>`;
@@ -129,6 +155,56 @@ describe("auditLinkedinPaste — caso tudo ok", () => {
     });
     assert.deepEqual(result, { ok: true, issues: [] });
   });
+
+  it("ok:true contra o artefato COMPLETO do renderer de verdade (useMelhor + weeklyEditions populados — #5988 fleet review)", () => {
+    // Cobre as 2 âncoras que REAL_RENDER_INPUT (acima) nunca exercita: o
+    // link Use Melhor (sem UTM) e as âncoras de "Edições da semana" (dentro
+    // de <li>, seguidas de texto não-âncora antes de </li>) — ambas comuns,
+    // não edge case, em qualquer ciclo com candidato/edições elegíveis.
+    const sourceHtml = renderLinkedinWeeklyHtml(REAL_RENDER_INPUT_FULL).html;
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml);
+    const result = auditLinkedinPaste({
+      sourceHtml,
+      pastedAnchors,
+      pastedTextLength: stripHtmlToText(sourceHtml).length,
+    });
+    assert.deepEqual(result, { ok: true, issues: [] });
+  });
+});
+
+describe("auditLinkedinPaste — âncora SEM UTM (link Use Melhor) contra o renderer de verdade (#5988 fleet review, achado P1)", () => {
+  it("detecta href corrompido no link Use Melhor mesmo sem UTM pra comparar (a lacuna que o fleet review achou)", () => {
+    const sourceHtml = renderLinkedinWeeklyHtml(REAL_RENDER_INPUT_FULL).html;
+    const sourceAnchors = extractAnchorsFromHtml(sourceHtml);
+    // Simula o LinkedIn reescrevendo o href do link Use Melhor no paste (o
+    // mesmo mecanismo de auto-linkificação que causou o bug do PR #5987) —
+    // texto preservado, só o href muda.
+    const pastedAnchors = sourceAnchors.map((a) =>
+      a.text === "Um Use Melhor de teste" ? { ...a, href: "https://exemplo-externo.com/link-trocado" } : a,
+    );
+    const result = auditLinkedinPaste({
+      sourceHtml,
+      pastedAnchors,
+      pastedTextLength: stripHtmlToText(sourceHtml).length,
+    });
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.issues.some((i) => /href colado diverge do esperado/.test(i) && i.includes("Um Use Melhor de teste")),
+      result.issues.join("\n"),
+    );
+  });
+
+  it("detecta href corrompido numa âncora de 'Edições da semana' (formato <li>, âncora seguida de texto solto)", () => {
+    const sourceHtml = renderLinkedinWeeklyHtml(REAL_RENDER_INPUT_FULL).html;
+    const sourceAnchors = extractAnchorsFromHtml(sourceHtml);
+    const pastedAnchors = sourceAnchors.map((a) => (a.href.includes("/p/260818") ? { ...a, href: "https://diar.ia.br/p/errado" } : a));
+    const result = auditLinkedinPaste({
+      sourceHtml,
+      pastedAnchors,
+      pastedTextLength: stripHtmlToText(sourceHtml).length,
+    });
+    assert.equal(result.ok, false, "esperava flag no href trocado da lista de edições da semana");
+  });
 });
 
 describe("auditLinkedinPaste — regressão: UTM perdida em href real (escapeHtml), não só em fixture sintética", () => {
@@ -205,11 +281,23 @@ describe("auditLinkedinPaste — UTM ausente/divergente numa âncora preservada"
     assert.ok(result.issues.some((i) => /utm_campaign divergente/.test(i) && i.includes("Assinar a edição diária")), result.issues.join("\n"));
   });
 
-  it("não audita âncoras da fonte que já não carregam UTM (nada a perder)", () => {
+  it("âncora da fonte SEM UTM: href colado batendo (mesmo sem UTM pra comparar) -> ok:true", () => {
+    const sourceHtml = `<p>Veja <a href="https://exemplo-externo.com/artigo">a fonte</a> original.</p>`;
+    const pastedAnchors = [{ href: "https://exemplo-externo.com/artigo", text: "a fonte" }];
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, true, result.issues.join("\n"));
+  });
+
+  it("#5988 review: âncora da fonte SEM UTM (ex: link Use Melhor) com href COLADO divergente -> flags, não passa mais batido", () => {
+    // Achado do fleet review desta PR: antes desta correção, âncoras sem UTM
+    // na fonte (o link do bloco Use Melhor, que nunca carrega UTM) ficavam
+    // TOTALMENTE fora das checagens 2-3 — um href corrompido nessa âncora
+    // específica passava como ok:true. Agora compara o href bruto.
     const sourceHtml = `<p>Veja <a href="https://exemplo-externo.com/artigo">a fonte</a> original.</p>`;
     const pastedAnchors = [{ href: "https://exemplo-externo.com/artigo-diferente", text: "a fonte" }];
     const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
-    assert.equal(result.ok, true, result.issues.join("\n"));
+    assert.equal(result.ok, false);
+    assert.ok(result.issues.some((i) => /href colado diverge do esperado/.test(i) && i.includes("a fonte")), result.issues.join("\n"));
   });
 
   it("flags href da FONTE malformado como issue distinta de 'sem UTM'", () => {
