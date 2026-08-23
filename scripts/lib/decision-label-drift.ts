@@ -51,6 +51,21 @@
  * real — a satisfação é constante por `(issue, patternId)`, avaliada contra
  * o mesmo snapshot em toda iteração).
  *
+ * ## Duas fontes de prosa (#5955)
+ *
+ * Além dos comentários, `detectLabelDrift` varre opcionalmente os campos
+ * `motivo`/`scope_note` do `plan.json` da rodada (`planTexts`), com o MESMO
+ * catálogo. O plano é a evidência mais confiável das duas: `motivo` é
+ * preenchido por regra da skill em toda issue `pulada`, enquanto comentar é
+ * opcional e o texto é livre.
+ *
+ * Foi o que faltou no caso que motivou o grupo `execution-guard`: na rodada
+ * 260823 a #5140 foi pega e devolvida duas vezes por causa do guard de
+ * publicação, o `plan.json` registrava isso com precisão em `motivo`/
+ * `scope_note` — e o veredito morria ali, num arquivo privado da rodada, sem
+ * nunca virar label. `classifyExecTrack` seguia devolvendo `overnight`, então
+ * a rodada seguinte pegaria de novo.
+ *
  * Puro: sem I/O, sem rede, sem `gh` — recebe labels + bodies de comentário já
  * buscados. O CLI (`scripts/check-decision-label-drift.ts`) é o wrapper fino
  * que busca via `gh` e imprime.
@@ -59,6 +74,8 @@
  * @see scripts/lib/issue-exec-track.ts (o classificador que fica desatualizado sem este guard)
  * @see scripts/check-decision-label-drift.ts (CLI)
  */
+
+import type { ExecTrack } from "./issue-exec-track.ts";
 
 /** Um grupo de padrões de deferimento/decisão em prosa, e as labels
  * estruturais que QUALQUER UMA (relação any-of) satisfaz — presente
@@ -90,7 +107,16 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     description:
       "Comentário sugere adiar/aguardar (aguardando, não despachar, pré-requisito não atendido) sem label de deferimento (not-this-week/next-month) aplicada.",
     textPatterns: [
-      /aguardando/i,
+      // Lookahead negativo pro nome do marcador `aguardando-ate:` (#5955): um
+      // comentário que só CITA o mecanismo ("o marcador `aguardando-ate:
+      // 2026-08-23` venceu hoje") não está deferindo nada, mas casava aqui e
+      // gerava achado apontando pra `not-this-week`/`next-month` — que roteiam
+      // pra Bloqueada. Foi o único match produzido pelos comentários da rodada
+      // 260823 na #5140, mascarando o drift real (guard de execução, grupo
+      // `execution-guard` abaixo) com um achado de destino errado. Prosa
+      // legítima ("aguardando pré-requisito", "aguardando até segunda") segue
+      // casando: o lookahead barra só o hífen do nome do marcador.
+      /aguardando(?!-ate)/i,
       /n[ãa]o despachar/i,
       /pr[ée]-requisito(s)? (ainda )?n[ãa]o atendido/i,
       /ainda n[ãa]o (é|eh) a hora/i,
@@ -116,6 +142,28 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
       /credencial (pendente|faltando|necess[áa]ria)/i,
     ],
     expectedLabels: ["external-blocker", "kit-migration", "beehiiv", "bloqueio-execucao"],
+  },
+  {
+    id: "execution-guard",
+    description:
+      "Comentário indica que a EXECUÇÃO foi barrada por guard da própria sessão (publicação/envio ao vivo, fora do escopo do overnight) sem label estrutural que tire a issue do track `overnight`.",
+    textPatterns: [
+      /guard de publica[çc][ãa]o/i,
+      /guard de execu[çc][ãa]o/i,
+      /fora do escopo (do|da) (overnight|rodada|sess[ãa]o)/i,
+      /fora do escopo aut[ôo]nomo/i,
+      /execu[çc][ãa]o ao vivo/i,
+      // Ancorado no verbo de impedimento de propósito: "envio real" solto é
+      // frase comum e factual neste repo ("o envio real saiu às 06:00"), e
+      // este grupo alimenta um gate que BLOQUEIA a compilação do relatório —
+      // falso positivo aqui custa uma rodada travada, não um alerta ignorado
+      // (a tolerância a FP descrita no topo do módulo vale pro CLI de
+      // auditoria, não pro gate).
+      /(exige|requer|vedad[oa]|proib[ei]\w*|impede) [^.\n]{0,40}\benvio (real|ao vivo)/i,
+      /sess[ãa]o (supervisionada|com execu[çc][ãa]o autorizada)/i,
+      /precisa (do|de um|de uma) editor/i,
+    ],
+    expectedLabels: ["develop-track", "bloqueio-execucao"],
   },
   {
     id: "on-hold",
@@ -156,10 +204,21 @@ export interface DriftFinding {
   description: string;
   expectedLabels: string[];
   actualLabels: string[];
-  /** Trecho do comentário (prosa, marcadores já removidos) em torno do match,
-   * pra dar contexto no output sem despejar o comentário inteiro. */
+  /** Trecho da prosa (marcadores já removidos) em torno do match, pra dar
+   * contexto no output sem despejar o texto inteiro. */
   commentExcerpt: string;
+  /**
+   * De onde veio a prosa que casou (#5955): `"comment"` = comentário da issue
+   * no GitHub; `"plan"` = campo `motivo`/`scope_note` do `plan.json` da
+   * rodada. O segundo é o sinal mais confiável — é o veredito que o próprio
+   * coordenador gravou de forma estruturada, e existe mesmo quando a sessão
+   * não chegou a comentar na issue.
+   */
+  source: DriftSource;
 }
+
+/** Origem da prosa que casou um padrão. Ver `DriftFinding.source`. */
+export type DriftSource = "comment" | "plan";
 
 const EXCERPT_RADIUS = 60;
 
@@ -179,6 +238,50 @@ export interface DetectLabelDriftInput {
    * último) — é o formato que `fetchCommentBodies` (`issue-decisions.ts`)
    * devolve. */
   commentBodies: readonly string[];
+  /**
+   * Textos do `plan.json` da rodada pra esta issue (#5955) — na prática
+   * `motivo` e `scope_note`, os campos onde o coordenador grava POR QUE
+   * pulou a issue. Varridos com o MESMO catálogo de padrões dos comentários.
+   *
+   * Existe porque a prosa do comentário é opcional e variável, enquanto
+   * `motivo` é preenchido por regra da skill em toda issue `pulada`: no caso
+   * que originou este campo (#5140, rodada 260823), o `plan.json` dizia
+   * "Parte 1 segue bloqueada (execução ao vivo)" e o `scope_note` citava o
+   * guard de publicação, mas nada disso virou label — o veredito morreu num
+   * arquivo privado da rodada. Omitir é válido (chamador que não tem plano).
+   */
+  planTexts?: readonly string[];
+  /**
+   * Track ATUAL da issue segundo `classifyExecTrack` (#5955). Quando
+   * informado e diferente de `overnight`, nenhum achado é reportado.
+   *
+   * É o filtro de PRECISÃO, e existe porque os dois consumidores têm
+   * tolerâncias opostas a falso positivo: o CLI de auditoria
+   * (`check-decision-label-drift.ts`) omite o campo e segue permissivo — FP
+   * ali custa uma linha ignorada; o GATE
+   * (`check-decision-label-drift-gate.ts`) informa, porque FP ali BLOQUEIA a
+   * compilação do relatório da rodada.
+   *
+   * O critério é o propósito declarado deste módulo, no topo: o dano é a
+   * issue "continuar aparecendo como `overnight` (elegível) na Triagem"
+   * depois de já ter sido deferida/bloqueada em prosa. Se a issue já
+   * classifica em qualquer outro track, a label que falta não muda o
+   * roteamento — não há livelock a evitar, e cobrar a label específica só
+   * trava a rodada. Medido ao vivo no plano da rodada 260823: #4549
+   * (`on-hold` + `external-blocker` → `fora-de-rodada`) e #5917 (marcador
+   * `aguardando-ate` → `agendada`) geravam achado `deferred-vague` pedindo
+   * `not-this-week`, sendo que as duas já estavam fora da fila do overnight.
+   *
+   * Custo aceito: mis-roteamento ENTRE tracks não-overnight (ex: issue
+   * `bloqueada` que deveria ser `develop`) deixa de bloquear o gate. É o
+   * problema menor — a issue não está sendo pega e devolvida a cada rodada —
+   * e o CLI de auditoria continua reportando.
+   *
+   * Import é só de TIPO — este módulo continua sem acoplamento de runtime com
+   * `issue-exec-track.ts`, que segue sendo a fonte de verdade sobre labels
+   * (ver "O que este módulo NÃO é", no topo).
+   */
+  currentTrack?: ExecTrack;
 }
 
 /**
@@ -188,13 +291,25 @@ export interface DetectLabelDriftInput {
  * é ignorado, mesma postura tolerante de `parseDecisionMarkers`.
  */
 export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
-  const { issueNumber, labels, commentBodies } = input;
+  const { issueNumber, labels, commentBodies, planTexts = [], currentTrack } = input;
+  // Issue já roteada pra fora da fila do overnight — a label que falta não
+  // mudaria nada. Ver `currentTrack` em `DetectLabelDriftInput`.
+  if (currentTrack !== undefined && currentTrack !== "overnight") return [];
   const labelSet = new Set(labels);
   // Uma entrada por (patternId) — sobrescrita a cada match mais recente,
   // já que `commentBodies` chega em ordem cronológica ascendente.
   const byPattern = new Map<string, DriftFinding>();
 
-  for (const raw of commentBodies) {
+  // Comentários primeiro, textos do plano depois: o `set` por patternId faz o
+  // ÚLTIMO match vencer, e entre as duas fontes o plano é a melhor evidência
+  // (veredito estruturado do coordenador, não prosa livre). Dentro dos
+  // comentários a ordem cronológica ascendente preserva "mais recente vence".
+  const sources: Array<{ text: unknown; source: DriftSource }> = [
+    ...commentBodies.map((text) => ({ text, source: "comment" as const })),
+    ...planTexts.map((text) => ({ text, source: "plan" as const })),
+  ];
+
+  for (const { text: raw, source } of sources) {
     if (typeof raw !== "string") continue;
     const prose = stripHtmlComments(raw);
     for (const pattern of DRIFT_PATTERNS) {
@@ -225,6 +340,7 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
         expectedLabels: pattern.expectedLabels,
         actualLabels: labels,
         commentExcerpt: buildExcerpt(prose, match),
+        source,
       });
     }
   }

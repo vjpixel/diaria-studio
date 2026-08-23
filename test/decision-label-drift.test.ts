@@ -14,6 +14,7 @@ import {
   stripHtmlComments,
   DRIFT_PATTERNS,
 } from "../scripts/lib/decision-label-drift.ts";
+import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
 
 describe("detectLabelDrift — casos reais do #5586", () => {
   it("#5239: comentário 'não despachar agora, pré-requisito ainda não atendido' sem not-this-week/next-month → achado", () => {
@@ -173,5 +174,252 @@ describe("DRIFT_PATTERNS — catálogo", () => {
   it("ids são únicos", () => {
     const ids = DRIFT_PATTERNS.map((p) => p.id);
     assert.equal(new Set(ids).size, ids.length);
+  });
+});
+
+/**
+ * #5955 — o caso que motivou o grupo `execution-guard`.
+ *
+ * Rodada overnight 260823: a #5140 foi pega, tentada e devolvida DUAS vezes,
+ * com o motivo escrito em prosa nos dois comentários ("vedada pelo guard de
+ * publicação", "fora do escopo do overnight"). Nenhuma label foi aplicada, e
+ * `classifyExecTrack` seguiu devolvendo `overnight` — então a rodada seguinte
+ * pegaria de novo. O único achado que o catálogo produzia era acidental:
+ * `/aguardando/i` casando a CITAÇÃO do nome do marcador `aguardando-ate`, e
+ * apontando pra `not-this-week` (que roteia pra Bloqueada, destino errado).
+ */
+describe("detectLabelDrift — guard de execução (#5955)", () => {
+  const COMENTARIO_1 =
+    "Rodada overnight 260823: retomando. Código-base já implementado via PRs anteriores — o marcador `aguardando-ate: 2026-08-23` venceu hoje, mas ATIVAR o teste é execução ao vivo de campanha Clarice/Brevo, vedada pelo guard de publicação do overnight.";
+  const COMENTARIO_2 =
+    "Resta só a Parte 1, que segue fora do escopo do overnight — exige rodar envio real de campanha Clarice, vedado pelo guard de publicação. Precisa do editor ou de sessão com execução autorizada.";
+
+  it("os comentários reais da rodada 260823 na #5140 produzem achado de execution-guard", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: [COMENTARIO_1, COMENTARIO_2],
+    });
+    const guard = findings.find((f) => f.patternId === "execution-guard");
+    assert.ok(guard, "esperava achado execution-guard nos comentários da rodada");
+    assert.deepEqual(guard.expectedLabels, ["develop-track", "bloqueio-execucao"]);
+    assert.equal(guard.source, "comment");
+  });
+
+  it("o 2º comentário SOZINHO (sem a palavra 'aguardando') ainda é detectado", () => {
+    // Antes do #5955 este caso não produzia achado nenhum: o catálogo não
+    // tinha vocabulário de guard de execução, e o único match do outro
+    // comentário vinha da citação do marcador.
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: [COMENTARIO_2],
+    });
+    assert.deepEqual(
+      findings.map((f) => f.patternId),
+      ["execution-guard"],
+    );
+  });
+
+  it("develop-track presente resolve o achado (any-of)", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2", "develop-track"],
+      commentBodies: [COMENTARIO_2],
+    });
+    assert.equal(findings.length, 0);
+  });
+
+  it("bloqueio-execucao presente também resolve — é a outra forma durável válida", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2", "bloqueio-execucao"],
+      commentBodies: [COMENTARIO_2],
+    });
+    assert.equal(findings.length, 0);
+  });
+});
+
+describe("detectLabelDrift — citação do marcador aguardando-ate não é deferimento (#5955)", () => {
+  it("citar `aguardando-ate:` sozinho NÃO produz deferred-vague", () => {
+    // Falso positivo real: o comentário só explica que o marcador venceu.
+    // Gerava achado apontando pra not-this-week/next-month, que roteiam pra
+    // Bloqueada — mascarando o drift verdadeiro com um destino errado.
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: ["O marcador `aguardando-ate: 2026-08-23` venceu hoje; as células estão livres."],
+    });
+    assert.equal(findings.length, 0);
+  });
+
+  it("prosa legítima de espera continua casando deferred-vague", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 42,
+      labels: ["P2"],
+      commentBodies: ["Pulada nesta rodada: aguardando o pré-requisito #5230 fechar."],
+    });
+    assert.deepEqual(
+      findings.map((f) => f.patternId),
+      ["deferred-vague"],
+    );
+  });
+});
+
+/**
+ * #5955 — a fonte mais confiável é o `plan.json`, não a prosa do comentário.
+ *
+ * `motivo` é preenchido por regra da skill em TODA issue `pulada`, enquanto
+ * comentar é opcional e o texto é livre. Na rodada 260823 o plano da #5140
+ * registrava o veredito com precisão — e ele não saía dali.
+ */
+describe("detectLabelDrift — prosa vinda do plan.json (#5955)", () => {
+  const MOTIVO =
+    "ja-implementada: Parte 2 já estava mergeada (PR #5142); Parte 1 segue bloqueada (execução ao vivo)";
+  const SCOPE_NOTE =
+    "Parte 2 apenas. Parte 1 (ativação do teste de horário) permanece bloqueada — exige rodar envio Clarice ao vivo, vedado pelo guard de publicação.";
+
+  it("motivo/scope_note do plano geram achado mesmo sem comentário nenhum", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: [],
+      planTexts: [MOTIVO, SCOPE_NOTE],
+    });
+    const guard = findings.find((f) => f.patternId === "execution-guard");
+    assert.ok(guard, "esperava achado a partir do plan.json");
+    assert.equal(guard.source, "plan");
+    assert.deepEqual(guard.expectedLabels, ["develop-track", "bloqueio-execucao"]);
+  });
+
+  it("quando comentário e plano casam o mesmo padrão, o plano vence a atribuição de fonte", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: ["Segue fora do escopo do overnight."],
+      planTexts: [SCOPE_NOTE],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].source, "plan");
+  });
+
+  it("planTexts ausente preserva o comportamento anterior (campo opcional)", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2"],
+      commentBodies: ["Segue fora do escopo do overnight."],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].source, "comment");
+  });
+
+  it("label já aplicada resolve o achado do plano também", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 5140,
+      labels: ["enhancement", "P2", "develop-track"],
+      commentBodies: [],
+      planTexts: [MOTIVO, SCOPE_NOTE],
+    });
+    assert.equal(findings.length, 0);
+  });
+});
+
+describe("DRIFT_PATTERNS — execution-guard não dispara em prosa factual (#5955)", () => {
+  // O gate BLOQUEIA a compilação do relatório, então falso positivo aqui
+  // trava uma rodada. Estes casos citam vocabulário do grupo sem estar
+  // reportando bloqueio nenhum.
+  const FACTUAIS = [
+    "O envio real saiu às 06:00 BRT com 3.948 contatos, sem incidente.",
+    "Confirmado que o envio ao vivo respeitou o split de células do teste.",
+    "A issue precisa de um teste de regressão antes do merge.",
+  ];
+  for (const prosa of FACTUAIS) {
+    it(`não gera execution-guard: "${prosa.slice(0, 45)}…"`, () => {
+      const findings = detectLabelDrift({
+        issueNumber: 1,
+        labels: ["P2"],
+        commentBodies: [prosa],
+      });
+      assert.equal(
+        findings.filter((f) => f.patternId === "execution-guard").length,
+        0,
+      );
+    });
+  }
+
+  it("mas dispara quando o verbo de impedimento está presente", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 1,
+      labels: ["P2"],
+      commentBodies: ["Pulada: exige rodar envio real de campanha Clarice."],
+    });
+    assert.deepEqual(
+      findings.map((f) => f.patternId),
+      ["execution-guard"],
+    );
+  });
+});
+
+describe("detectLabelDrift — filtro de precisão por track (#5955)", () => {
+  const PROSA = "Pulada: vedado pelo guard de publicação, exige envio real.";
+
+  it("currentTrack overnight: reporta normalmente", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 1,
+      labels: ["P2"],
+      commentBodies: [PROSA],
+      currentTrack: "overnight",
+    });
+    assert.equal(findings.length, 1);
+  });
+
+  for (const track of ["bloqueada", "agendada", "develop", "fora-de-rodada"] as const) {
+    it(`currentTrack ${track}: não reporta — label faltante não muda roteamento`, () => {
+      const findings = detectLabelDrift({
+        issueNumber: 1,
+        labels: ["P2"],
+        commentBodies: [PROSA],
+        currentTrack: track,
+      });
+      assert.equal(findings.length, 0);
+    });
+  }
+
+  it("currentTrack omitido preserva o comportamento permissivo do CLI de auditoria", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 1,
+      labels: ["P2"],
+      commentBodies: [PROSA],
+    });
+    assert.equal(findings.length, 1);
+  });
+
+  it("casos reais 260823: #4549 (on-hold) e #5917 (aguardando-ate) não travam o gate", () => {
+    // Os dois falsos positivos medidos ao vivo no plano da rodada 260823.
+    const quatroMilQuinhentosEQuarentaENove = detectLabelDrift({
+      issueNumber: 4549,
+      labels: ["enhancement", "P3", "external-blocker", "on-hold", "growth"],
+      commentBodies: [],
+      planTexts: ["bloqueio-externo: aguardando amostras físicas (terceiro)"],
+      currentTrack: classifyExecTrack({
+        labels: ["enhancement", "P3", "external-blocker", "on-hold", "growth"],
+        state: "OPEN",
+      }),
+    });
+    assert.equal(quatroMilQuinhentosEQuarentaENove.length, 0);
+
+    const corpo5917 = "Reunião marcada.\n<!-- aguardando-ate: 2099-01-01 -->\n";
+    const cincoMilNovecentosEDezessete = detectLabelDrift({
+      issueNumber: 5917,
+      labels: ["enhancement", "P2", "growth"],
+      commentBodies: [],
+      planTexts: ["bloqueio-externo: aguardando reunião 24/08/2026 com Nexo Jornal"],
+      currentTrack: classifyExecTrack({
+        labels: ["enhancement", "P2", "growth"],
+        body: corpo5917,
+        state: "OPEN",
+      }),
+    });
+    assert.equal(cincoMilNovecentosEDezessete.length, 0);
   });
 });

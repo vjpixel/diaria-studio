@@ -27,11 +27,31 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { detectLabelDrift, type DriftFinding, stripHtmlComments } from "./lib/decision-label-drift.ts";
+import { detectLabelDrift, type DriftFinding } from "./lib/decision-label-drift.ts";
+import { classifyExecTrack } from "./lib/issue-exec-track.ts";
+
+/** Entrada do `plan.json` que este gate consome. `motivo`/`scope_note` são
+ * onde o coordenador grava POR QUE pulou a issue (#5955). */
+interface PlanIssueEntry {
+  number: number;
+  in_round?: boolean;
+  motivo?: string;
+  scope_note?: string;
+}
+
+/** Textos de prosa do plano pra uma issue, sem vazios. */
+function planTextsFor(entry: PlanIssueEntry): string[] {
+  return [entry.motivo, entry.scope_note].filter(
+    (t): t is string => typeof t === "string" && t.trim().length > 0,
+  );
+}
 
 interface GhIssueListItem {
   number: number;
   labels?: Array<{ name?: string } | string>;
+  /** Necessário pro marcador `aguardando-ate:` que `classifyExecTrack` lê
+   * (#5955) — sem ele, issue `agendada` seria avaliada como `overnight`. */
+  body?: string;
 }
 
 interface FetchOpenIssuesResult {
@@ -45,7 +65,7 @@ const DRIFT_ISSUE_LIMIT = 200;
 function fetchOpenIssues(cwd: string): FetchOpenIssuesResult {
   const result = spawnSync(
     "gh",
-    ["issue", "list", "--state", "open", "--json", "number,labels", "--limit", String(DRIFT_ISSUE_LIMIT)],
+    ["issue", "list", "--state", "open", "--json", "number,labels,body", "--limit", String(DRIFT_ISSUE_LIMIT)],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
   if (result.error) {
@@ -132,11 +152,26 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  // Usar apenas as issues do plano (in_round = true) para o gate, não todas as issues abertas
-  // Isso evita reportar drift em issues que não estão no escopo da rodada
-  const issues = normalizeIssues<{ number: number; in_round?: boolean }>(planRaw as IssuesBearing<{ number: number; in_round?: boolean }>);
-  const inRoundIssues = issues.filter((i) => i.in_round === true);
-  const issueNumbers = new Set(inRoundIssues.map((i) => i.number));
+  // Escopo do gate: as issues do PLANO da rodada (nunca todas as abertas) —
+  // não reportar drift em issue que esta rodada nem olhou.
+  //
+  // Dentro desse escopo há duas fontes de prosa, com alcances diferentes de
+  // propósito (#5955):
+  //
+  //   - COMENTÁRIOS: só `in_round: true`. Custam um `gh issue view` por issue,
+  //     e o comportamento original do gate era este.
+  //   - `motivo`/`scope_note` do plano: TODAS as issues do plano, inclusive
+  //     `in_round: false`. É a correção central — a skill grava `in_round:
+  //     false` justamente nas issues excluídas ANTES do despacho
+  //     (`bloqueada-externa`, `fora-do-escopo`, `ambígua/trade-off-real`;
+  //     SKILL.md passo 4), ou seja, as que mais provavelmente carregam um
+  //     veredito que nunca virou label. Filtrar essas fora deixava o gate
+  //     cego exatamente onde ele é mais necessário. Custo zero: os campos já
+  //     estão no plano em disco, nenhuma chamada de rede a mais.
+  const issues = normalizeIssues<PlanIssueEntry>(planRaw as IssuesBearing<PlanIssueEntry>);
+  const planByNumber = new Map<number, PlanIssueEntry>();
+  for (const entry of issues) planByNumber.set(entry.number, entry);
+  const issueNumbers = new Set(issues.map((i) => i.number));
 
   const cwd = process.cwd();
 
@@ -153,23 +188,43 @@ if (isMainModule(import.meta.url)) {
   let ghUnavailable = false;
 
   for (const issue of fetched.issues) {
-    // Só checar issues que estão no plano da rodada (in_round = true)
+    // Só checar issues que estão no plano da rodada
     if (!issueNumbers.has(issue.number)) continue;
 
+    const entry = planByNumber.get(issue.number);
     const labels = normalizeLabels(issue);
-    const commentsResult = fetchIssueComments(issue.number, cwd);
-    if (commentsResult.error) {
-      console.error(
-        `[check-decision-label-drift-gate] falha ao buscar comentários de #${issue.number} (fail-soft, #738): ${commentsResult.error}`,
-      );
-      if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
-      continue;
+    const planTexts = entry ? planTextsFor(entry) : [];
+
+    // Filtro de precisão (#5955): só bloqueia a rodada por issue que AINDA
+    // classifica como `overnight` — é o único caso em que a label faltante
+    // muda o roteamento e a issue volta pra fila toda rodada. Todas as issues
+    // aqui vêm de `gh issue list --state open`, daí o `state` fixo.
+    const currentTrack = classifyExecTrack({ labels, body: issue.body, state: "OPEN" });
+    if (currentTrack !== "overnight") continue;
+
+    let commentBodies: string[] = [];
+    if (entry?.in_round === true) {
+      const commentsResult = fetchIssueComments(issue.number, cwd);
+      if (commentsResult.error) {
+        console.error(
+          `[check-decision-label-drift-gate] falha ao buscar comentários de #${issue.number} (fail-soft, #738): ${commentsResult.error}`,
+        );
+        if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
+        // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
+        // abortar a issue inteira por causa de uma falha de fetch.
+      } else {
+        commentBodies = commentsResult.comments ?? [];
+      }
     }
+
+    if (commentBodies.length === 0 && planTexts.length === 0) continue;
 
     const findings = detectLabelDrift({
       issueNumber: issue.number,
       labels,
-      commentBodies: commentsResult.comments ?? [],
+      commentBodies,
+      planTexts,
+      currentTrack,
     });
     allFindings.push(...findings);
   }
@@ -189,11 +244,12 @@ if (isMainModule(import.meta.url)) {
   // Reportar achados
   console.error(`check-decision-label-drift-gate: ${allFindings.length} drift(s) de label detectado(s) — comentário sugere deferimento/decisão, label estrutural não bate.`);
   console.error("");
-  console.error("issue\tpadrão\tlabels esperadas (any-of)\tlabels atuais\ttrecho do comentário");
+  console.error("issue\tpadrão\tfonte\tlabels esperadas (any-of)\tlabels atuais\ttrecho");
   for (const f of allFindings) {
     const expected = f.expectedLabels.join("|");
     const actual = f.actualLabels.length > 0 ? f.actualLabels.join(",") : "(nenhuma)";
-    console.error(`#${f.issueNumber}\t${f.patternId}\t${expected}\t${actual}\t${f.commentExcerpt}`);
+    const fonte = f.source === "plan" ? "plan.json" : "comentário";
+    console.error(`#${f.issueNumber}\t${f.patternId}\t${fonte}\t${expected}\t${actual}\t${f.commentExcerpt}`);
   }
   console.error("");
   console.error("Isto é um achado de auditoria (heurística por regex, não NLP). Confirme antes de aplicar/remover label.");
