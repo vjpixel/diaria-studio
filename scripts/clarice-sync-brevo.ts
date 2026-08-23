@@ -31,8 +31,9 @@
  * ~32% de subcontagem agregada antes de um full resync manual). Em vez de
  * depender do `modifiedAt` do contato, o modo incremental TAMBÉM varre os
  * destinatários das campanhas enviadas numa janela recente
- * (`--opens-window-days`, default 30 dias — mesma ordem de grandeza do
- * `DEFAULT_REFETCH_WINDOW_DAYS` de `clarice-engagement-cohorts-v2.ts`, #4451,
+ * (`--opens-window-days`, default 7 dias — encolhida de 30 no #5946 pra
+ * caber no teto de 100 req/hora da Brevo (ver docstring de
+ * `DEFAULT_OPENS_CATCHUP_WINDOW_DAYS` abaixo para o histórico completo),
  * reusando a MESMA infra de export por campanha, já validada ao vivo em
  * 260802) via `POST /emailCampaigns/{id}/exportRecipients`, que reporta
  * `Total Opens` por destinatário independente de `modifiedAt`. Os e-mails com
