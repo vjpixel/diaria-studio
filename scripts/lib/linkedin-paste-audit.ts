@@ -1,0 +1,244 @@
+/**
+ * scripts/lib/linkedin-paste-audit.ts (#5988)
+ *
+ * Auditoria pós-paste do artigo semanal do LinkedIn (`/diaria-linkedin-semanal`
+ * Passo 8) — verifica se o corpo colado via `ClipboardEvent` no editor do
+ * LinkedIn (`context/publishers/linkedin.md` §"Newsletter LinkedIn" §"Nota
+ * técnica: colagem programática") preservou as âncoras e o texto do artefato
+ * fonte (`ln-{cycle}.html`).
+ *
+ * PURO de propósito: recebe strings/objetos já extraídos pela sessão que
+ * controla o browser (só o TOP-LEVEL do Claude Code tem `mcp__claude-in-
+ * chrome__*` — subagentes comuns não têm) e devolve um veredito estruturado.
+ * Nenhuma chamada de rede/disco/DOM aqui — quem lê o DOM ao vivo (via
+ * `javascript_tool`) e decide o que fazer com o veredito é o Passo 8 da
+ * skill, não este módulo.
+ *
+ * Contexto do bug que motivou a auditoria (achado ao vivo 260823, PR #5987,
+ * ciclo `26w34` — 1ª execução real do paste assistido): colar uma âncora
+ * cujo TEXTO COMEÇA com o wordmark "diar.ia.br" (a menção pré-linkada da
+ * abertura, ver `linkifyWordmark` em `weekly-linkedin-render.ts`) faz o
+ * auto-linkificador do LinkedIn reconhecer a substring "diar.ia.br" DENTRO
+ * do texto colado e dividir a âncora em duas: uma só com "diar.ia.br"
+ * apontando pra home CRUA (sem UTM), e o resto do texto ficando com a UTM
+ * original. Resultado: nenhuma âncora colada tem mais o texto completo da
+ * âncora fonte, e o pedaço mais clicável (a marca em si) perdeu tracking.
+ * `looksLikeBareDomainAnchorText` + o hint em `auditLinkedinPaste` existem
+ * especificamente pra sinalizar esse padrão quando ele acontece de novo.
+ *
+ * Um perigo colateral relacionado (mesmo PR #5987): corrigir a âncora
+ * dividida via clique direto sobre o link colado pode deslocar a seleção e
+ * apagar OUTRO parágrafo em silêncio (na rodada real, sumiu o `<p><a>Quero
+ * receber a edição diária →</a></p>` inteiro do bloco Use Melhor) — foi a
+ * contagem de âncoras + `textContent.length` que pegou essa perda, dando
+ * origem às checagens 1 e 4 abaixo.
+ */
+
+import { WORDMARK } from "./weekly-linkedin-render.ts";
+
+/** Uma âncora lida de volta do editor do LinkedIn após o paste (extração ao vivo, via `javascript_tool`). */
+export interface LinkedinPasteAuditPastedAnchor {
+  href: string;
+  /** Texto visível da âncora (`textContent`), como leu do DOM. */
+  text: string;
+}
+
+export interface LinkedinPasteAuditInput {
+  /**
+   * Conteúdo de `ln-{cycle}.html` (a fonte de verdade — o mesmo payload que
+   * foi montado pro `ClipboardEvent`, ANTES do parágrafo sentinela `<p>&nbsp;</p>`
+   * que o Passo 8 acrescenta na hora do paste, ver armadilha (b) do playbook).
+   */
+  sourceHtml: string;
+  /** Âncoras lidas de volta do corpo do editor após o paste (`document.querySelectorAll('a')` dentro do contenteditable). */
+  pastedAnchors: LinkedinPasteAuditPastedAnchor[];
+  /** `editor.textContent.length` lido do DOM do editor (ProseMirror) após o paste, depois de esperar estabilizar (ver "Cuidado ao inspecionar" no playbook — ler cedo demais engana). */
+  pastedTextLength: number;
+}
+
+export interface LinkedinPasteAuditResult {
+  ok: boolean;
+  /** Mensagens em pt-BR, uma por achado — vazio quando `ok === true`. */
+  issues: string[];
+}
+
+/**
+ * Tolerância relativa pra divergência de `textContent.length` (checagem 4).
+ * Fonte (`ln-{cycle}.html`) e colado (ProseMirror) nunca batem byte-a-byte —
+ * a marcação fonte usa `parts.join("\n")` entre blocos (cada `\n` vira nó de
+ * texto real), o editor normaliza espaçamento entre blocos de forma própria,
+ * e entidades HTML são re-codificadas. Pra um artigo semanal típico (~3-6 mil
+ * caracteres), essa diferença estrutural fica bem abaixo de 5% do total —
+ * 5% dá margem confortável acima desse ruído sem ficar cego a perda real de
+ * um trecho substancial (uma seção inteira, um bloco Use Melhor).
+ *
+ * Deliberadamente NÃO é o detector primário de perda pontual: o parágrafo de
+ * CTA perdido no incidente real do PR #5987 (~35 caracteres) é uma fração
+ * ínfima do total do artigo — não teria cruzado nem uma tolerância bem mais
+ * apertada. Perda de link/texto pontual é pega pelas checagens 1-3 (contagem
+ * e texto de âncora); esta é um sinal secundário e grosso, útil pra pegar
+ * corrupção maior (seção inteira sumida, paste duplicado).
+ */
+export const TEXT_LENGTH_TOLERANCE_RATIO = 0.05;
+
+/** Regex de tag HTML — usado só pra strip determinístico, não é um parser de HTML de propósito geral. */
+const TAG_RE = /<[^>]+>/g;
+
+/** Decodifica o pequeno conjunto de entidades que `escapeHtml`/marcação deste projeto produzem (ver `weekly-linkedin-render.ts`). */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&amp;/gi, "&"); // por último — não pode decodificar antes das outras (evita dupla-decodificação de "&amp;lt;" etc.)
+}
+
+/** Pure: remove tags HTML e decodifica entidades — aproximação de `textContent` sobre a marcação fonte. */
+export function stripHtmlToText(html: string): string {
+  return decodeEntities(html.replace(TAG_RE, ""));
+}
+
+/** Uma âncora extraída de HTML fonte (`sourceHtml`). */
+export interface ExtractedAnchor {
+  href: string;
+  text: string;
+}
+
+const ANCHOR_RE = /<a\s+[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+/**
+ * Pure: extrai todas as âncoras `<a href="...">texto</a>` de um HTML fonte.
+ * Suficiente pro que `renderLinkedinWeeklyHtml` produz (rótulos sempre texto
+ * plano, sem tag aninhada dentro de `<a>`) — não é um parser de HTML geral.
+ */
+export function extractAnchorsFromHtml(html: string): ExtractedAnchor[] {
+  const out: ExtractedAnchor[] = [];
+  for (const m of html.matchAll(ANCHOR_RE)) {
+    out.push({ href: m[1], text: decodeEntities(m[2].replace(TAG_RE, "")).trim() });
+  }
+  return out;
+}
+
+/** Normaliza espaçamento pra comparar texto de âncora (colapsa espaços internos, apara bordas). */
+function normalizeText(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+interface Utm {
+  campaign: string | null;
+  content: string | null;
+}
+
+/** Extrai `utm_campaign`/`utm_content` de uma URL — `{ campaign: null, content: null }` se a URL não for parseável ou não tiver esses params. */
+function getUtm(href: string): Utm {
+  try {
+    const u = new URL(href);
+    return { campaign: u.searchParams.get("utm_campaign"), content: u.searchParams.get("utm_content") };
+  } catch {
+    return { campaign: null, content: null };
+  }
+}
+
+/**
+ * Pure: detecta o padrão de texto que dispara o bug de split de âncora
+ * (achado 260823, PR #5987) — texto de âncora que COMEÇA com o wordmark
+ * "diar.ia.br" (com ou sem continuação, ex: "diar.ia.br, newsletter de IA").
+ * Não é o mesmo guard de `endsInBareDomainLabel` (`weekly-linkedin-render.ts`),
+ * que cobre o caso construído-em-render de rótulo TERMINANDO no domínio nu —
+ * este cobre o caso descoberto no PASTE, de rótulo COMEÇANDO no domínio.
+ */
+export function looksLikeBareDomainAnchorText(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === WORDMARK || t.startsWith(`${WORDMARK} `) || t.startsWith(`${WORDMARK},`) || t.startsWith(`${WORDMARK}.`);
+}
+
+/**
+ * Audita o resultado do paste do corpo do artigo semanal do LinkedIn contra
+ * o HTML fonte (`ln-{cycle}.html`). Veredito estruturado — `ok: false` é o
+ * sinal pro Passo 8 da skill PARAR antes de agendar (nunca agendar um artigo
+ * com link perdido/sem UTM ou conteúdo faltando).
+ *
+ * Checagens, na ordem:
+ *   1. Contagem de âncoras — fonte vs colado.
+ *   2. Pra cada âncora da FONTE que carrega `utm_campaign`/`utm_content`:
+ *      existe uma âncora colada com o MESMO TEXTO (normalizado)? Se não —
+ *      perdida/dividida (chave é o TEXTO, não a URL base: várias âncoras
+ *      deste artefato — os 3 CTAs de assinatura, a menção da abertura —
+ *      compartilham a mesma base `https://diar.ia.br`, então casar por URL
+ *      base seria ambíguo; o texto de cada uma é único).
+ *   3. Se encontrada por texto: `utm_campaign`/`utm_content` da âncora colada
+ *      batem com os da fonte?
+ *   4. `pastedTextLength` vs tamanho do texto da fonte, com tolerância (ver
+ *      `TEXT_LENGTH_TOLERANCE_RATIO`) — sinal secundário e grosso.
+ */
+export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPasteAuditResult {
+  const issues: string[] = [];
+  const sourceAnchors = extractAnchorsFromHtml(input.sourceHtml);
+  const pasted = input.pastedAnchors;
+
+  // 1. Contagem de âncoras.
+  if (sourceAnchors.length !== pasted.length) {
+    issues.push(
+      `Contagem de âncoras diverge: fonte tem ${sourceAnchors.length}, colado tem ${pasted.length}. ` +
+        `Diferença sugere link perdido, duplicado ou dividido no paste.`,
+    );
+  }
+
+  // 2-3. Por âncora da fonte com UTM: achar por TEXTO no colado, comparar UTM.
+  const usedPastedIdx = new Set<number>();
+  for (const sa of sourceAnchors) {
+    const saUtm = getUtm(sa.href);
+    if (!saUtm.campaign && !saUtm.content) continue; // nada a auditar — link da fonte não carrega UTM
+
+    const saTextNorm = normalizeText(sa.text);
+    let matchIdx = -1;
+    for (let i = 0; i < pasted.length; i++) {
+      if (usedPastedIdx.has(i)) continue;
+      if (normalizeText(pasted[i].text) === saTextNorm) {
+        matchIdx = i;
+        break;
+      }
+    }
+
+    if (matchIdx === -1) {
+      const bugHint = looksLikeBareDomainAnchorText(sa.text)
+        ? ` Texto começa com "${WORDMARK}" — padrão conhecido do bug de split de âncora (PR #5987, ver ` +
+          `context/publishers/linkedin.md §"Newsletter LinkedIn"): corrigir via seleção por teclado + popup ` +
+          `"Edit link" da toolbar, NUNCA clicar direto sobre o link colado (risco de deslocar a seleção e ` +
+          `apagar outro parágrafo em silêncio).`
+        : "";
+      issues.push(`Âncora "${sa.text}" (${sa.href}) não foi encontrada no colado com o texto completo — UTM perdida ou âncora dividida.${bugHint}`);
+      continue;
+    }
+
+    usedPastedIdx.add(matchIdx);
+    const pastedUtm = getUtm(pasted[matchIdx].href);
+    if (saUtm.campaign && saUtm.campaign !== pastedUtm.campaign) {
+      issues.push(`Âncora "${sa.text}": utm_campaign divergente — esperado "${saUtm.campaign}", colado "${pastedUtm.campaign ?? "(ausente)"}".`);
+    }
+    if (saUtm.content && saUtm.content !== pastedUtm.content) {
+      issues.push(`Âncora "${sa.text}": utm_content divergente — esperado "${saUtm.content}", colado "${pastedUtm.content ?? "(ausente)"}".`);
+    }
+  }
+
+  // 4. Tamanho do texto — sinal secundário, tolerância relativa (ver docstring da constante).
+  const sourceTextLength = stripHtmlToText(input.sourceHtml).length;
+  if (sourceTextLength > 0) {
+    const diffRatio = Math.abs(input.pastedTextLength - sourceTextLength) / sourceTextLength;
+    if (diffRatio > TEXT_LENGTH_TOLERANCE_RATIO) {
+      const direction = input.pastedTextLength < sourceTextLength ? "menor" : "maior";
+      issues.push(
+        `Tamanho do texto colado diverge do esperado: fonte tem ${sourceTextLength} caracteres, colado tem ` +
+          `${input.pastedTextLength} (${direction}, ${(diffRatio * 100).toFixed(1)}% de diferença — tolerância ` +
+          `${(TEXT_LENGTH_TOLERANCE_RATIO * 100).toFixed(0)}%). Sinal secundário e grosso — as checagens de âncora ` +
+          `acima são o detector primário de perda pontual de conteúdo.`,
+      );
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
+}

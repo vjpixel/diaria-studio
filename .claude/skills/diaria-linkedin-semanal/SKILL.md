@@ -415,50 +415,116 @@ em `ln-{cycle}.json`, sem travar o resto do render. `coverImagePath` no
 JSON é `null` quando isso acontece; confira antes do Passo 8 se veio
 populado.
 
-## Passo 8 — Entregar o artefato ao editor
+## Passo 8 — Executar o paste assistido via Claude in Chrome + agendar (#5988)
 
-Publique `ln-{cycle}.html` como Artifact (padrão do repo: entregas vão
-como artefato aberto no browser, não `.md`/arquivo solto) pro editor
-revisar e copiar. Se `coverImagePath` (Passo 7) veio populado, inclua a
-imagem de capa junto (ex: anexada na mensagem/artifact) pro editor subir
-no campo de cover image do editor de artigo — se veio `null`, avise que a
-edição saiu sem capa e por quê (warning do Passo 7). **Relate também
-qualquer warning de "USE MELHOR: comentário do editor ausente" (#5970) —
-o default aplicado precisa aparecer visível no resumo da entrega, regra do
-#5321, mesmo tratamento dos outros warnings deste passo.** Inclua no
-artifact (ou na mensagem) as instruções de publicação de
-`context/publishers/linkedin.md` §Newsletter LinkedIn — resumo:
+**Diferente dos passos anteriores desta skill (leitura/escrita de
+arquivo), este passo controla o browser de verdade.** Só o TOP-LEVEL do
+Claude Code tem acesso às ferramentas `mcp__claude-in-chrome__*` —
+subagentes comuns (`Agent(subagent_type=...)`) não têm. Este playbook
+pressupõe que quem está executando o Passo 8 é a sessão top-level (o caso
+normal de `/diaria-linkedin-semanal` invocada diretamente).
+
+O mecanismo técnico completo (`ClipboardEvent`, parágrafo sentinela, as
+armadilhas de paste já documentadas ali — inclusive o achado do bug de
+split de âncora "diar.ia.br", PR #5987 —, o gotcha de "Cuidado ao
+inspecionar" e a mecânica de agendamento) está documentado em
+`context/publishers/linkedin.md` §"Newsletter LinkedIn" — **referenciado
+abaixo, não duplicado**. Antes da 1ª execução, leia aquela seção inteira.
+
+### 8a. Publicar o artefato de referência
+
+Publique `ln-{cycle}.html` como Artifact (padrão do repo) — serve de
+registro auditável do que deveria ter sido colado, útil se a auditoria do
+Passo 8e acusar divergência. Se `coverImagePath` (Passo 7) veio populado,
+inclua a imagem de capa junto. **Relate também qualquer warning de "USE
+MELHOR: comentário do editor ausente" (#5970)** — default aplicado
+precisa aparecer visível no resumo, regra do #5321.
+
+### 8b. Abrir o editor e confirmar o destino
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
-   o feed pessoal) → clicar **Write article** DALI. Caminho preferido por
-   ser o que não depende do default do seletor de destino — mas
-   `/article/new/` **não** desvincula o artigo, ao contrário do que esta
-   linha afirmava até 260803 (ver `context/publishers/linkedin.md` §1, que
-   é a fonte única sobre isso).
+   o feed pessoal) → clicar **Write article** DALI (caminho preferido —
+   não depende do default do seletor de destino, ver
+   `context/publishers/linkedin.md` §1).
 2. Confirmar que o cabeçalho do editor mostra o nome da newsletter, não
    "Individual article". **Esta é a verificação que importa**, e vale
-   reler antes de publicar, não só ao abrir: em 260803 uma aba que
-   recarregou sozinha voltou como "Individual article".
-3. Fazer upload de `04-d1-2x1.jpg` (Passo 7) no campo de cover image do
-   editor, se `coverImagePath` veio populado.
-4. Colar o conteúdo de `ln-{cycle}.html`.
-5. Revisar visualmente (numeração, sem link nos blocos de manchete, Use
-   Melhor com comentário se presente, CTAs no fim, capa presente se
-   aplicável).
-6. Publicar.
+   reler antes de agendar, não só ao abrir (§1 — uma aba que recarregou
+   sozinha já voltou como "Individual article").
 
-**SEMPRE agendar, nunca publicar na hora** (corrigido em 260803, ver
-"Reuso do agendamento" abaixo). No diálogo que abre no **Next**, usar o
-ícone de relógio ao lado do botão Publish. A data certa não basta: a HORA
-importa mais que ela, porque o post de feed que acompanha o artigo nasce
-com o alcance definido pelo engajamento da primeira hora. Publicar de
-madrugada queima o alcance daquele post de forma permanente. Horário
-comercial da manhã, na mesma lógica do envio canônico das 06:00 BRT da
-diária.
+### 8c. Upload de capa
+
+Se `coverImagePath` veio populado (Passo 7), fazer upload de
+`04-d1-2x1.jpg` no campo nativo de cover image do editor (ícone no topo,
+acima do título — `context/publishers/linkedin.md` §3). Se veio `null`,
+seguir sem capa (fail-soft já decidido no Passo 7) e avisar o editor no
+resumo final.
+
+### 8d. Colar o corpo via `ClipboardEvent`
+
+Com o foco no `<div contenteditable>` do corpo, executar via
+`javascript_tool` o snippet documentado em
+`context/publishers/linkedin.md` §"Nota técnica: colagem programática"
+(`DataTransfer` + `ClipboardEvent("paste")`) — usando o HTML de
+`ln-{cycle}.html` **com o parágrafo sentinela `<p>&nbsp;</p>` acrescentado
+no fim** (armadilha (b) — sem ele o último link colado perde a âncora).
+Depois do paste, **esperar o editor estabilizar** (recarregar a leitura ou
+aguardar alguns segundos) antes de inspecionar o resultado — ler cedo
+demais mostra estado transitório e engana (mesma seção, "Cuidado ao
+inspecionar").
+
+### 8e. Auditoria pós-paste (obrigatória antes de escrever o post de feed ou agendar)
+
+Via `javascript_tool`, extrair do DOM do editor:
+
+1. Todas as âncoras do CORPO (`document.querySelectorAll('a')` dentro do
+   `contenteditable` do artigo) — `href` + `textContent` de cada uma.
+2. `editor.textContent.length` do mesmo elemento.
+
+Chamar `auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength })`
+de `scripts/lib/linkedin-paste-audit.ts` (`sourceHtml` = conteúdo de
+`ln-{cycle}.html`, SEM o parágrafo sentinela — módulo puro, sem I/O,
+import direto).
+
+- **`result.ok === true`:** prosseguir pro Passo 8f.
+- **`result.ok === false`:** PARAR — não escrever o texto do post de feed
+  nem agendar. Apresentar `result.issues` ao editor. Se algum issue citar
+  o padrão conhecido de split de âncora "diar.ia.br" (PR #5987, mesmo
+  achado documentado em `context/publishers/linkedin.md` §"Newsletter
+  LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
+  teclado (nunca clicar direto sobre o link colado — risco de deslocar a
+  seleção e apagar outro parágrafo em silêncio, mesmo achado) e
+  sobrescrever via popup **Edit link** da toolbar. Repetir a auditoria até
+  `ok === true`. Se a causa não for esse padrão conhecido, envolver o
+  editor (critério 2/4 do rubrico "Perguntar é exceção" — a resposta muda
+  materialmente se o artigo pode ser agendado como está).
+
+### 8f. Título + texto do post de feed
+
+O diálogo de agendamento (Passo 8g) traz um campo "Tell your network what
+this edition of your newsletter is about…" que vira o **post de feed**
+que acompanha o artigo — peça editorial separada do corpo, sem âncora em
+texto (link é a URL escrita por extenso, ver
+`context/publishers/linkedin.md` §4). Diferente do comentário do Use
+Melhor (voz pessoal obrigatória do editor, #5970), este campo é resumo
+factual — componha 1-2 frases a partir das manchetes já aprovadas no
+Passo 3, tom consistente com os posts normais da página no LinkedIn.
+
+### 8g. Agendar (nunca publicar na hora)
+
+No diálogo que abre no **Next**, usar o ícone de relógio ao lado do botão
+Publish — **nunca** Publish direto. A data certa não basta: a HORA importa
+mais, porque o post de feed nasce com o alcance definido pelo engajamento
+da primeira hora — publicar de madrugada queima esse alcance de forma
+permanente. Horário comercial da manhã, mesma lógica do envio canônico das
+06:00 BRT da diária.
+
+### 8h. Verificar
 
 Depois de agendar, o artigo **sai da lista de rascunhos** e
 `/article/edit/{id}/` passa a redirecionar pra `/article/new/` — isso é
-esperado, não é perda. Conferir em `linkedin.com/article/manage/scheduled/`.
+esperado, não é perda. Confirmar em
+`linkedin.com/article/manage/scheduled/` que o artigo aparece agendado
+antes de considerar o Passo 8 concluído.
 
 ## Reuso do agendamento — decisão: NÃO reusar `/diaria-6-agendamento`
 
