@@ -17,7 +17,7 @@
  *
  * A tentação óbvia é classificar "issue ambígua" como `develop` — cat. C é
  * escopo exclusivo do develop (#2640). Mas o overnight tem **duas**
- * ambiguidades, não uma, e a linha entre elas é julgamento puro
+ * ambiguidades DE TRIAGEM (não uma), e a linha entre elas é julgamento puro
  * (overnight/SKILL.md:69):
  *
  *   - trivial-mas-não-documentada ("formato A ou B de log", "opção técnica
@@ -25,6 +25,13 @@
  *     da Fase 0, antes de sair. É trabalho de overnight.
  *   - trade-off-real de produto/editorial ("design system vs documentar") →
  *     bounce imediato + comentário direcionando ao develop cat. C.
+ *
+ * Existe um 3º desfecho, mas ele não é uma ambiguidade de TRIAGEM — é o que
+ * sobra depois que a rodada já investigou e concluiu "sem próximo passo de
+ * código prescrito" (#5968, label `sem-direcao-acionavel`, ver
+ * `RESOLVED_BY_PROSE_LABELS` abaixo). As duas acima acontecem ANTES de
+ * qualquer tentativa de resolver a issue; esta acontece DEPOIS — não é a
+ * mesma família, só o mesmo sintoma superficial ("issue sem rota clara").
  *
  * Linha divisória literal da SKILL: "se a resposta depende de preferência
  * sobre experiência do usuário final → trade-off-real; se é escolha técnica
