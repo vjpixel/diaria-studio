@@ -1231,11 +1231,18 @@ export function normalizeClariceHourTestState(raw: unknown): ClariceHourTestKvSt
     return null;
   }
   if (typeof s.startedAt !== "string" || !s.startedAt) return null;
+  // #5947: valida `invalidDays` quando presente — array não-vazia de YYYY-MM-DD; falha = null (fail-closed)
+  if (s.invalidDays !== undefined) {
+    if (!Array.isArray(s.invalidDays) || s.invalidDays.length === 0) return null;
+    for (const d of s.invalidDays) {
+      if (typeof d !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+    }
+  }
   if (s.status === "ativo") {
-    return { status: "ativo", hoursBrt: s.hoursBrt as number[], startedAt: s.startedAt };
+    return { status: "ativo", hoursBrt: s.hoursBrt as number[], startedAt: s.startedAt, ...(s.invalidDays !== undefined ? { invalidDays: s.invalidDays as string[] } : {}) };
   }
   if (typeof s.decidedAt !== "string" || !s.decidedAt) return null;
-  return { status: "encerrado", hoursBrt: s.hoursBrt as number[], startedAt: s.startedAt, decidedAt: s.decidedAt };
+  return { status: "encerrado", hoursBrt: s.hoursBrt as number[], startedAt: s.startedAt, decidedAt: s.decidedAt, ...(s.invalidDays !== undefined ? { invalidDays: s.invalidDays as string[] } : {}) };
 }
 
 /**

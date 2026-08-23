@@ -284,7 +284,8 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * que o overnight pega — inclusive a ambígua que ele ainda vai triar.
  */
 export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
-  const { labels, body, now = new Date() } = input;
+  const { labels, body, now = new Date(), state } = (input as { labels: string[]; body?: string | null; now?: Date; state?: string });
+  if (state === "CLOSED") return "fora-de-rodada";
   const has = (l: string) => labels.includes(l);
 
   if (labels.some((l) => OUT_OF_ROUND_LABELS.has(l))) return "fora-de-rodada";

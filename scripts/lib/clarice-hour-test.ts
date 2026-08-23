@@ -281,17 +281,16 @@ export function closeClariceHourTest(rootDir: string, opts: CloseHourTestOptions
  * `scripts/push-clarice-hour-test-kv.ts` (o script que de fato grava o KV) e
  * por testes que querem verificar a projeção sem tocar `data/`.
  */
-export function toHourTestKvState(state: ClariceHourTestState): ClariceHourTestKvState {
+export function toHourTestKvState(state: ClariceHourTestState, invalidDays?: string[]): ClariceHourTestKvState {
   if (state.status === "inativo") return { status: "inativo" };
   if (state.status === "ativo") {
-    return { status: "ativo", hoursBrt: state.hoursBrt, startedAt: state.startedAt };
+    const kv: ClariceHourTestKvState = { status: "ativo", hoursBrt: state.hoursBrt, startedAt: state.startedAt };
+    if (invalidDays && invalidDays.length > 0) (kv as { invalidDays: string[] }).invalidDays = invalidDays;
+    return kv;
   }
-  return {
-    status: "encerrado",
-    hoursBrt: state.hoursBrt,
-    startedAt: state.startedAt,
-    decidedAt: state.decidedAt,
-  };
+  const kv: ClariceHourTestKvState = { status: "encerrado", hoursBrt: state.hoursBrt, startedAt: state.startedAt, decidedAt: state.decidedAt };
+  if (invalidDays && invalidDays.length > 0) (kv as { invalidDays: string[] }).invalidDays = invalidDays;
+  return kv;
 }
 
 export function describeHourTestState(state: ClariceHourTestStateRead): string {

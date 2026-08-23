@@ -2893,6 +2893,8 @@ export interface HourTestResult {
   significantClick: boolean;
   pValue: number | null;
   minDetectableLiftRelative: number | null;
+  /** Dias BRT excluídos da apuração por marcação de invalidDay (#5947). */
+  excludedDays?: string[];
 }
 
 /**
@@ -2976,6 +2978,7 @@ export function aggregateHourTest(
 ): HourTestResult {
   const scoped = hourTestState !== undefined;
   const window = scoped ? resolveHourTestWindow(hourTestState) : null;
+  const excludedDaySet = new Set<string>();
   const acc = new Map<number, { sent: number; delivered: number; opens: number; clicksAttributed: number; clicksTotal: number; unattributed: number; unsub: number; bounces: number; count: number }>();
   for (const c of campaigns) {
     const parsed = parseHourTestCampaign(c.name);
@@ -2987,6 +2990,17 @@ export function aggregateHourTest(
       if (!Number.isFinite(ms)) continue; // data ilegível — nunca inclui por default
       if (ms < window.start) continue;
       if (window.end !== null && ms > window.end) continue;
+      // #5947: exclui campanhas de dias marcados como inválidos (BRT date)
+      if (hourTestState && (hourTestState as any).invalidDays) {
+        const invalidDays: string[] = (hourTestState as { invalidDays?: string[] }).invalidDays || [];
+        if (invalidDays.length > 0 && when) {
+          const brtDate = when.slice(0, 10); // YYYY-MM-DD no formato BRT da string
+          if (invalidDays.includes(brtDate)) {
+            excludedDaySet.add(brtDate);
+            continue;
+          }
+        }
+      }
     }
     const picked = pickStats(c);
     if (!picked) continue;
@@ -3055,7 +3069,8 @@ export function aggregateHourTest(
       }
     }
   }
-  return { cells, leaderClickRateHour, significantClick, pValue, minDetectableLiftRelative };
+  const excludedDaysArray = excludedDaySet.size > 0 ? [...excludedDaySet].sort() : undefined;
+  return { cells, leaderClickRateHour, significantClick, pValue, minDetectableLiftRelative, ...(excludedDaysArray ? { excludedDays: excludedDaysArray } : {}) };
 }
 
 /**
@@ -3101,10 +3116,14 @@ export function renderHourTestSection(result: HourTestResult): string {
     })
     .join("\n");
 
+  const excludedNote = result.excludedDays && result.excludedDays.length > 0
+    ? `<p class="section-note" style="color:#B45309;"><small><strong>Nota de exclusão (#5947):</strong> dias BRT ${result.excludedDays.join(", ")} foram excluídos da apuração (marcados como dias inválidos do teste). A agregação reflete apenas os dias NÃO excluídos.</small></p>`
+    : "";
   return `
 <section class="phase2-section" id="hour-test-ramp-warm">
   <h2 class="section-title">Teste de Horário — ramp-warm (#5140)</h2>
   <p class="section-note"><small>Agregado por BRAÇO, somando todos os dias do teste (n diário não sustenta leitura). Vencedor decidido pelo CLIQUE único (mesmo critério do A/B/C de assunto, #2976) — abertura/descadastro/bounce são secundários.</small></p>
+  ${excludedNote}
   <p class="section-note">${conclusionNote}</p>
   <div class="table-wrap">
   <table>
