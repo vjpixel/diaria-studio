@@ -37,15 +37,13 @@
  * `fetchWithRetry` (`scripts/lib/fetch-retry.ts`) — erro de rede/5xx
  * tenta de novo, 4xx (ex: 403 de permissão) falha já na 1ª tentativa.
  *
- * **Lacuna conhecida (achado do fleet review pré-merge do #5976):** o
- * timeout por tentativa cobre só a chamada HTTP à Search Analytics API em
- * si — `gFetch` (`scripts/google-auth.ts`) faz `getAccessToken()`/
- * `forceRefreshAccessToken()` ANTES do fetch coberto pelo `AbortSignal`,
- * e essas chamadas de token não recebem o signal. Um hang no endpoint de
- * OAuth do Google (mesma classe de falha do #5943, só num passo anterior)
- * não é limitado pelo `timeoutMs` configurado aqui. Fast-follow rastreado
- * — threadear o signal por `getAccessToken`/`refreshAccessToken` ou
- * documentar/aceitar o gap explicitamente.
+ * **#5980 — timeout agora cobre a fase de token OAuth também.** O gap
+ * apontado pelo fleet review pré-merge do #5976 (timeout por tentativa
+ * cobria só a chamada HTTP à Search Analytics API, não o `getAccessToken()`/
+ * `forceRefreshAccessToken()` que `gFetch` faz antes dela) foi fechado
+ * threadeando `options.signal` por `getAccessToken`/`refreshAccessToken`/
+ * `forceRefreshAccessToken` (`scripts/google-auth.ts`) — o `signal` já
+ * passado aqui em `pullGsc` agora limita a chamada inteira, token incluso.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";

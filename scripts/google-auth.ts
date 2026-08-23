@@ -76,6 +76,7 @@ function saveCredentials(creds: GoogleCredentials): void {
 async function refreshAccessToken(
   creds: GoogleCredentials,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<GoogleCredentials> {
   const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
@@ -86,6 +87,7 @@ async function refreshAccessToken(
       refresh_token: creds.refresh_token,
       grant_type: "refresh_token",
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -106,12 +108,16 @@ async function refreshAccessToken(
 /**
  * Retorna um access_token válido, renovando automaticamente se necessário.
  * Chame antes de cada requisição à API.
+ *
+ * #5980: `signal` opcional é repassado ao fetch de refresh do token OAuth —
+ * sem ele, um hang no endpoint do Google não é limitado pelo timeout que o
+ * caller (ex: `fetchWithRetry`) configurou para o fetch de dados em si.
  */
-export async function getAccessToken(): Promise<string> {
+export async function getAccessToken(signal?: AbortSignal): Promise<string> {
   let creds = loadCredentials();
   // Renova se expira nos próximos 90 segundos
   if (Date.now() > creds.expiry_ms - 90_000) {
-    creds = await refreshAccessToken(creds);
+    creds = await refreshAccessToken(creds, fetch, signal);
   }
   return creds.access_token;
 }
@@ -223,8 +229,8 @@ export async function checkTokenHealth(fetchImpl: typeof fetch = fetch): Promise
 // Força refresh bypassando o check de expiry — usado quando o Google
 // rejeita (401) um token que julgávamos válido (clock skew, revogação
 // server-side, edge case da lib).
-async function forceRefreshAccessToken(): Promise<string> {
-  const creds = await refreshAccessToken(loadCredentials());
+async function forceRefreshAccessToken(signal?: AbortSignal): Promise<string> {
+  const creds = await refreshAccessToken(loadCredentials(), fetch, signal);
   return creds.access_token;
 }
 
@@ -246,12 +252,19 @@ async function authedFetch(
  * Helper para requests autenticados às APIs do Google.
  * Inclui o Authorization header automaticamente. Em caso de 401,
  * força um refresh do token e retenta a request exatamente 1x.
+ *
+ * #5980: quando `options.signal` está presente (ex: caller usando
+ * `fetchWithRetry`), ele é repassado às chamadas de obtenção/refresh de
+ * token OAuth (`getAccessToken`/`forceRefreshAccessToken`) — sem isso, um
+ * hang no endpoint de token do Google não era coberto pelo timeout do
+ * caller, só o fetch de dados em si (já recebia `signal` via `...options`).
  */
 export async function gFetch(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const token = await getAccessToken();
+  const signal = options.signal ?? undefined;
+  const token = await getAccessToken(signal);
   const res = await authedFetch(url, options, token);
   if (res.status !== 401) return res;
 
@@ -262,6 +275,6 @@ export async function gFetch(
     // ignore
   }
 
-  const refreshed = await forceRefreshAccessToken();
+  const refreshed = await forceRefreshAccessToken(signal);
   return authedFetch(url, options, refreshed);
 }
