@@ -38,6 +38,81 @@ describe("classifyExecTrack — default", () => {
   });
 });
 
+describe("classifyExecTrack — state CLOSED (#5948, regressão do dashboard overnight-track)", () => {
+  it("issue fechada sem label nenhuma → fora-de-rodada, nunca overnight", () => {
+    assert.equal(
+      classifyExecTrack({ labels: [], body: "", now: NOW, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+  });
+
+  it("issue fechada vence QUALQUER outra label — checado antes de tudo", () => {
+    // #5926: caso real da issue — fechada, mas ainda carregava labels que,
+    // sem o guard de state, a mandariam pra bloqueada/develop/agendada em
+    // vez de sumir da fila de vez.
+    assert.equal(
+      classifyExecTrack({ labels: ["bug", "P1"], body: "", now: NOW, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+    assert.equal(
+      classifyExecTrack({ labels: ["windows"], body: "", now: NOW, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+    assert.equal(
+      classifyExecTrack({
+        labels: [],
+        body: "<!-- aguardando-ate: 2026-09-01 -->",
+        now: NOW,
+        state: "CLOSED",
+      }),
+      "fora-de-rodada",
+    );
+  });
+
+  it("state ausente não classifica CLOSED — comportamento normal preservado", () => {
+    assert.equal(classifyExecTrack({ labels: [], body: "", now: NOW }), "overnight");
+  });
+
+  it("state OPEN não classifica CLOSED — comportamento normal preservado", () => {
+    assert.equal(
+      classifyExecTrack({ labels: [], body: "", now: NOW, state: "OPEN" }),
+      "overnight",
+    );
+  });
+});
+
+describe("classifyExecTrack — develop-track: bloqueio humano sem data (#5948)", () => {
+  it("label develop-track sozinha → develop", () => {
+    assert.equal(track(["develop-track"]), "develop");
+  });
+
+  it("develop-track nunca é overnight, mesmo sem nenhuma outra label", () => {
+    assert.notEqual(track(["develop-track"]), "overnight");
+  });
+
+  it("bloqueio real (BLOCKED_LABELS) vence develop-track", () => {
+    assert.equal(track(["develop-track", "external-blocker"]), "bloqueada");
+  });
+
+  it("marcador de data futura vence develop-track (vira agendada, não develop)", () => {
+    assert.equal(
+      track(["develop-track"], "<!-- aguardando-ate: 2026-09-01 -->"),
+      "agendada",
+    );
+  });
+
+  it("fora-de-rodada vence develop-track", () => {
+    assert.equal(track(["on-hold", "develop-track"]), "fora-de-rodada");
+  });
+
+  it("issue fechada com develop-track → fora-de-rodada (state vence tudo)", () => {
+    assert.equal(
+      classifyExecTrack({ labels: ["develop-track"], body: "", now: NOW, state: "CLOSED" }),
+      "fora-de-rodada",
+    );
+  });
+});
+
 describe("classifyExecTrack — ambiguidade NÃO classifica (regressão #5462)", () => {
   // O AMBIGUITY_RE antigo (studio-issues.ts) casava com os 4 corpos abaixo e
   // mandava todos pra "ambigua". Dois deles são trade-off real (develop), dois

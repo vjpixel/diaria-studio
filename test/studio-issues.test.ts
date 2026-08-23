@@ -226,6 +226,22 @@ describe("parseIssues — files + execTrack (#3562, entrega 2; #5462)", () => {
     assert.deepEqual(issue.files, []);
     assert.equal(issue.execTrack, "overnight");
   });
+
+  it("issue fechada -> execTrack='fora-de-rodada', nunca 'overnight' (#5948 — parseIssues esquecia de propagar `state` pra classifyExecTrack)", () => {
+    const raw: GhIssueRaw[] = [
+      { number: 6, title: "t", url: "u", state: "CLOSED", labels: [{ name: "bug" }], body: "" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.execTrack, "fora-de-rodada");
+  });
+
+  it("label develop-track -> execTrack='develop' (#5948 — bloqueio humano sem data)", () => {
+    const raw: GhIssueRaw[] = [
+      { number: 7, title: "t", url: "u", state: "OPEN", labels: [{ name: "develop-track" }], body: "" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.execTrack, "develop");
+  });
 });
 
 describe("summarizeChecks (#3562, entrega 2)", () => {

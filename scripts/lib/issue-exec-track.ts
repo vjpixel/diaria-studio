@@ -171,6 +171,27 @@ const MACHINE_DEVELOP_LABELS = new Set(["windows"]);
 const TRADE_OFF_LABEL = "trade-off-real";
 
 /**
+ * #5948 — bloqueio HUMANO/dependência sem data específica (o editor precisa
+ * agir, mas não há `aguardando-ate:` porque não há data — ex: exportar algo
+ * manualmente num painel, decidir e rodar um passo, revisar antes de seguir).
+ * Regra do editor (23/08/2026): esse tipo de bloqueio nunca deveria ficar
+ * classificado `overnight` (o cron nunca destrava sozinho) — rotea direto
+ * pra `develop`, junto de `windows`/`trade-off-real`.
+ *
+ * Diferente de `BLOCKED_LABELS` (bloqueio que NENHUMA sessão destrava
+ * sozinha — conta de terceiro, credencial, plataforma plan-gated): aqui o
+ * bloqueio destrava com o editor presente numa sessão `/diaria-develop`, o
+ * que é exatamente a definição de `develop`, não `bloqueada`.
+ *
+ * Diferente do marcador `aguardando-ate:` abaixo: essa label é pra quando
+ * NÃO existe uma data específica — se a issue ganhar uma data depois, o
+ * marcador é o mecanismo certo (rotea pra `agendada`, desarma sozinho); esta
+ * label não desarma sozinha, precisa ser removida quando o bloqueio for
+ * resolvido (mesmo padrão de `trade-off-real`, ver docstring do módulo).
+ */
+const DEVELOP_HUMAN_BLOCK_LABEL = "develop-track";
+
+/**
  * Marcador de espera com data legível, no mesmo espírito de
  * `issue-decisions.ts`: `<!-- aguardando-ate: 2026-09-01 -->`.
  *
@@ -213,6 +234,17 @@ export interface ExecTrackInput {
   body?: string | null;
   /** Injetável pra teste; default `new Date()`. */
   now?: Date;
+  /**
+   * `state` cru de `gh issue list`/`gh issue view` — `"OPEN"` | `"CLOSED"`
+   * (case-insensitive não garantido; comparação é exata contra `"CLOSED"`).
+   * Ausente/omisso é tratado como "não sei" (não classifica CLOSED) — quem
+   * já filtra por `--state open` antes de chamar este módulo pode omitir com
+   * segurança (#5948: antes deste campo entrar na interface, um caller que
+   * QUISESSE passar `state` não tinha como fazê-lo com segurança de tipo —
+   * só um cast bypassava o TS, e é exatamente o motivo de
+   * `scripts/studio-ui/studio-issues.ts` ter esquecido de propagá-lo).
+   */
+  state?: string | null;
 }
 
 /**
@@ -241,6 +273,13 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * Classifica a issue. Primeira regra que casa vence — a ordem codifica
  * precedência, não conveniência:
  *
+ *   0. `fora-de-rodada` — (#5948) `state === "CLOSED"`. Issue fechada nunca
+ *                         é candidata a nenhuma fila — checado ANTES de
+ *                         qualquer label, porque nenhuma label sobrevive ao
+ *                         fechamento. `state` é opcional em `ExecTrackInput`
+ *                         (caller que já filtra por `--state open` pode
+ *                         omitir); ausente/não-`"CLOSED"` não classifica
+ *                         aqui, cai nas regras normais abaixo.
  *   1. `fora-de-rodada` — o editor tirou de circulação; nada mais importa.
  *   2. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
  *                         Exceção (#5694): `external-blocker` acompanhada de
@@ -258,9 +297,13 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         específico que "not-this-week", então a data vence
  *                         sobre o deferimento vago quando as duas coexistem.
  *   5. `develop`        — precisa da máquina Windows, trade-off-real já
- *                         julgado pelo overnight, ou (#5694) `external-blocker`
+ *                         julgado pelo overnight, (#5694) `external-blocker`
  *                         + `credencial-escopo` (credencial já existe, só
- *                         falta escopo — cat. A do develop).
+ *                         falta escopo — cat. A do develop), ou (#5948)
+ *                         `develop-track` (bloqueio humano/dependência SEM
+ *                         data específica — se tivesse data, seria o
+ *                         marcador `aguardando-ate:` do passo 3, não esta
+ *                         label).
  *   6. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
  *                         checado ANTES do passo 7 pra vencer a label `alarm`
  *                         companheira, que sozinha cairia em fora-de-rodada.
@@ -284,7 +327,7 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * que o overnight pega — inclusive a ambígua que ele ainda vai triar.
  */
 export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
-  const { labels, body, now = new Date(), state } = (input as { labels: string[]; body?: string | null; now?: Date; state?: string });
+  const { labels, body, now = new Date(), state } = input;
   if (state === "CLOSED") return "fora-de-rodada";
   const has = (l: string) => labels.includes(l);
 
@@ -310,6 +353,7 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
   if (labels.some((l) => MACHINE_DEVELOP_LABELS.has(l))) return "develop";
   if (has(TRADE_OFF_LABEL)) return "develop";
   if (isCredentialScopeUnblock) return "develop";
+  if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return "develop";
 
   if (has(ALARM_EVENT_LABEL)) return "overnight";
 
@@ -345,7 +389,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   overnight:
     "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0) e o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão).",
   develop:
-    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), ou (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A).",
+    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A), ou (#5948) é bloqueio humano/dependência sem data específica (label `develop-track` — se tivesse data, seria `aguardando-ate:` e viraria Agendada).",
   agendada:
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
