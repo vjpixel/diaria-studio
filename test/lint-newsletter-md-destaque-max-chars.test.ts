@@ -35,7 +35,7 @@ function makeDestaqueMd(num: number, category: string, chars: number): string {
 describe("checkDestaqueMaxChars (#964) — helper puro", () => {
   it("ok=true quando todos destaques estão dentro do máximo", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 950),
       "---",
       makeDestaqueMd(2, "PESQUISA", 950),
       "---",
@@ -48,7 +48,7 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
 
   it("ok=false quando D2 acima de 1000 (caso 260508 D2=1409)", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 950),
       "---",
       makeDestaqueMd(2, "PESQUISA", 1409),
       "---",
@@ -62,7 +62,7 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
     assert.ok(r.errors[0].chars > 1000);
   });
 
-  it("ok=false quando D1 acima de 1200", () => {
+  it("ok=false quando D1 acima de 1000 (janela única #6061)", () => {
     const md = [
       makeDestaqueMd(1, "PRODUTO", 1500),
       "---",
@@ -73,7 +73,7 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
     const r = checkDestaqueMaxChars(md);
     assert.equal(r.ok, false);
     assert.equal(r.errors[0].destaque, 1);
-    assert.equal(r.errors[0].max, 1200);
+    assert.equal(r.errors[0].max, 1000);
   });
 
   it("D2 com exatos 1000 chars: passa (boundary)", () => {
@@ -95,8 +95,8 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
 });
 
 describe("DESTAQUE_MAX_CHARS constants", () => {
-  it("D1=1200, D2=1000, D3=1000 conforme #964", () => {
-    assert.equal(DESTAQUE_MAX_CHARS[1], 1200);
+  it("D1=D2=D3=1000 — janela única (#6061, pedido do editor 24/08/2026)", () => {
+    assert.equal(DESTAQUE_MAX_CHARS[1], 1000);
     assert.equal(DESTAQUE_MAX_CHARS[2], 1000);
     assert.equal(DESTAQUE_MAX_CHARS[3], 1000);
   });
@@ -118,7 +118,7 @@ describe("--check destaque-max-chars CLI (#964)", () => {
     try {
       const mdPath = join(dir, "02-reviewed.md");
       const md = [
-        makeDestaqueMd(1, "PRODUTO", 1100),
+        makeDestaqueMd(1, "PRODUTO", 950),
         "---",
         makeDestaqueMd(2, "PESQUISA", 950),
         "---",
@@ -139,7 +139,7 @@ describe("--check destaque-max-chars CLI (#964)", () => {
     try {
       const mdPath = join(dir, "02-reviewed.md");
       const md = [
-        makeDestaqueMd(1, "PRODUTO", 1100),
+        makeDestaqueMd(1, "PRODUTO", 950),
         "---",
         makeDestaqueMd(2, "PESQUISA", 1500),
         "---",

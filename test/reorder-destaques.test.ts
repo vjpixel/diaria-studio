@@ -1334,12 +1334,12 @@ describe("reorder-destaques CLI (#3980): TÍTULO/SUBTÍTULO pós-reorder", () =>
 });
 
 describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reorder", () => {
-  it("move D1 (limite 1200) pra D2 (limite 1000) com corpo excedente → WARN, sem hard-fail", () => {
+  it("corpo acima da janela única (900–1000, #6061) sobrevive ao reorder → WARN, sem hard-fail", () => {
     const dir = makeEditionDirFixture();
     try {
       const md = buildReviewedMdFixture({
         d1Title: "D1 grande",
-        d1Body: "A".repeat(1100), // cabia em D1 (≤1200) mas excede o novo teto de D2 (1000)
+        d1Body: "A".repeat(1100), // acima do teto da janela única (1000) — o WARN vem do texto, não do movimento
         d2Title: "D2 pequeno",
         d2Body: "A".repeat(600),
         d3Title: "D3 pequeno",
