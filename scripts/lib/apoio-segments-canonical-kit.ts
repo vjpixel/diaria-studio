@@ -36,13 +36,18 @@
  * não recriar o segmento achando que o ID vai bater numa conta nova.
  */
 
+import type { ApoioNivel } from "../sync-apoio-nivel-beehiiv.ts";
+
 /** Custom field `apoio_nivel` — criado pelo import do #6047 (não por este
  *  módulo). Nenhum script deste arquivo cria o campo, só referencia o id/key
  *  pra quem for escrever/ler o valor via `mcp__kit__*` ou REST direto. */
 export const KIT_APOIO_NIVEL_FIELD_ID = 1347084;
 export const KIT_APOIO_NIVEL_FIELD_KEY = "apoio_nivel";
 
-export type ApoioNivel = "amigo" | "apoiador" | "mantenedor" | "patrono";
+/** Reexportado pra quem importar só este módulo não precisar saber que o
+ *  tipo canônico vive em `sync-apoio-nivel-beehiiv.ts` (mesmos 4 valores,
+ *  fonte única — nunca redeclarar essa union aqui). */
+export type { ApoioNivel };
 
 export interface CanonicalApoioSegmentKit {
   /** Nome exato do segmento no Kit — usado pra casar contra `list_segments`. */
