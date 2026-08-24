@@ -427,9 +427,6 @@ export interface ResolveBoxesOpts {
 export interface ResolveBoxesResult {
   effective: ResolvedBoxes;
   selection: SlotSelectionRecord[];
-  /** #6031: `true` quando pelo menos 1 slot selecionou uma box sazonal; `false`
-   * quando todos os slots são permanentes (degradação quando sazonal expira). */
-  hasSeasonalActive: boolean;
 }
 
 function loadPostsCache(postsDir: string): PostCacheLike[] {
@@ -487,8 +484,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         seasonal: snippet?.seasonal ?? null,
       };
     });
-    const hasSeasonalActive = selection.some((s) => s.seasonal === true);
-    return { effective, selection, hasSeasonalActive };
+    return { effective, selection };
   }
 
   const editionsDir = opts.editionsDir ?? EDITIONS_DIR;
@@ -582,8 +578,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     }
   }
 
-  const hasSeasonalActive = selection.some((s) => s.seasonal === true);
-  return { effective, selection, hasSeasonalActive };
+  return { effective, selection };
 }
 
 // ── CLI (debug/inspeção standalone) ─────────────────────────────────────────

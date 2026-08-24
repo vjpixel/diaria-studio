@@ -78,6 +78,15 @@ export function isRuntimeExcluded(content: string): boolean {
  * issue). Regex de copy quebrava silenciosamente com qualquer edição de
  * texto no snippet; o campo declarado sobrevive a qualquer reescrita da
  * copy. Nunca lança. */
+export function readBoxTituloFlag(content: string): boolean | null {
+  const raw = parseBoxHeaderField(content, "titulo");
+  if (raw === null) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "false") return false;
+  if (v === "true") return true;
+  return null;
+}
+
 /** `true` quando o snippet declara `seasonal:` no header (case-insensitive:
  * `True`/`TRUE` contam); `false` quando `seasonal: false`; `null` quando
  * ausente — usado pelo pipeline de curadoria pra distinguir ofertas
@@ -89,15 +98,6 @@ export function readSeasonalFlag(content: string): boolean | null {
   const v = raw.trim().toLowerCase();
   if (v === "true") return true;
   if (v === "false") return false;
-  return null;
-}
-
-export function readBoxTituloFlag(content: string): boolean | null {
-  const raw = parseBoxHeaderField(content, "titulo");
-  if (raw === null) return null;
-  const v = raw.trim().toLowerCase();
-  if (v === "false") return false;
-  if (v === "true") return true;
   return null;
 }
 
