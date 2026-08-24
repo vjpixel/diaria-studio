@@ -119,6 +119,35 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
     }
   });
 
+  it("--esp kit (#464): merge tag Liquid {{ subscriber.email_address }} no HTML gerado, sem token/domínio", () => {
+    const dir = makeEditionDir();
+    try {
+      const outPath = join(dir, "_internal", "out.html");
+      const r = run([dir, "--full", "--esp", "kit", "--out", outPath]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const html = readFileSync(outPath, "utf8");
+      assert.match(html, /\{\{ subscriber\.email_address \}\}/);
+      assert.ok(!html.includes("{{email}}"));
+      assert.ok(!html.includes("{{ contact.POLL_TOKEN }}"));
+      assert.ok(!html.includes("@vote.eia.diaria.local"), "kit não usa token — domínio não pode sobrar");
+    } finally {
+      rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
+    }
+  });
+
+  it("--split + --esp kit: avisa no stderr que --esp foi ignorado (È IA? standalone continua Beehiiv-only)", () => {
+    const dir = makeEditionDir();
+    try {
+      const r = run([dir, "--split", "--esp", "kit"]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.match(r.stderr, /--split \+ --esp kit/);
+      const eiaHtml = readFileSync(join(dir, "_internal", "newsletter-eia.html"), "utf8");
+      assert.match(eiaHtml, /\/vote\/260999\/[AB]\?email=\{\{email\}\}/, "newsletter-eia.html do modo split continua Beehiiv mesmo com --esp kit");
+    } finally {
+      rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
+    }
+  });
+
   it('--esp=brevo (sintaxe com igual): sai 1 em vez de cair silenciosamente no default beehiiv (2º achado do review #4267 — parseCliArgs não suporta "=" em lugar nenhum do repo)', () => {
     const dir = makeEditionDir();
     try {

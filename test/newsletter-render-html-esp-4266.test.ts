@@ -19,6 +19,11 @@
  * anterior sem esse padrão. `URL.searchParams.get` decodifica `%40` de volta
  * pra `@` automaticamente no Worker, então o token resolvido não muda — só
  * o link deixa de parecer um e-mail cru pro parser da Brevo antes do envio.
+ *
+ * #464 (24/08/2026): Kit entrou como 3º ESP — mesmo eixo de identidade do
+ * Beehiiv (e-mail cru, sem token), sintaxe própria do Kit (Liquid):
+ * `{{ subscriber.email_address }}`, confirmada ao vivo expandindo pro
+ * e-mail real do destinatário.
  */
 
 import { describe, it } from "node:test";
@@ -75,6 +80,26 @@ describe("renderEIA(eia, esp) — #4266", () => {
     assert.match(brevoHtml, /\/leaderboard"/);
     // Mesmo tamanho de diferença esperado: só a URL de voto muda.
     assert.notEqual(beehiivHtml, brevoHtml);
+  });
+
+  it('esp: "kit" (#464) — merge tag Liquid {{ subscriber.email_address }}, sem token, & cru (mesmo eixo de identidade do Beehiiv)', () => {
+    const html = renderEIA(baseEia, "kit");
+    assert.match(html, /\/vote\/260999\/A\?email=\{\{ subscriber\.email_address \}\}/);
+    assert.match(html, /\/vote\/260999\/B\?email=\{\{ subscriber\.email_address \}\}/);
+    assert.ok(!html.includes("{{email}}"), "não deve conter merge tag Beehiiv");
+    assert.ok(!html.includes("{{ contact.POLL_TOKEN }}"), "não deve conter merge tag/token Brevo");
+    assert.ok(
+      !html.includes("@vote.eia.diaria.local"),
+      "kit não usa token — domínio do pseudo-e-mail não pode aparecer",
+    );
+  });
+
+  it('esp: "kit" — resto do painel (crédito, imagens, leaderboard) inalterado', () => {
+    const kitHtml = renderEIA(baseEia, "kit");
+    assert.match(kitHtml, /Foto: Author/);
+    assert.match(kitHtml, /\{\{IMG:01-eia-A\.jpg\}\}/);
+    assert.match(kitHtml, /\{\{IMG:01-eia-B\.jpg\}\}/);
+    assert.match(kitHtml, /\/leaderboard"/);
   });
 });
 
@@ -141,6 +166,14 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
     const useMelhorIdx = html.indexOf("USE MELHOR");
     const eiaIdx = html.indexOf("{{ contact.POLL_TOKEN }}");
     assert.ok(useMelhorIdx > -1 && eiaIdx > useMelhorIdx, "É IA? deve vir depois de USE MELHOR");
+  });
+
+  it('opts.esp: "kit" (#464): merge tag Liquid no HTML completo, resto do corpo intacto', () => {
+    const html = renderHTML(fixtureComEia, { esp: "kit" });
+    assert.match(html, /\{\{ subscriber\.email_address \}\}/);
+    assert.ok(!html.includes("{{email}}"), "não deve sobrar merge tag Beehiiv");
+    assert.ok(!html.includes("{{ contact.POLL_TOKEN }}"), "não deve sobrar merge tag/token Brevo");
+    assert.match(html, /Modelos se replicam/);
   });
 
   it("renderEiaStandalone permanece sempre Beehiiv — sem parâmetro esp (paste híbrido é Beehiiv-only)", () => {
