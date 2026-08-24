@@ -334,34 +334,41 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
       </div>`;
 }
 
-/** #6005 Parte B / #6064: tira horizontal com os 5 slides do carrossel diário
- * do Instagram, miniaturizados — o editor confere a arte real dos 4 slides
- * sem foto (texto rasterizado no Stage 3) antes de aprovar o gate. */
-function renderCarouselStrip(group: DestaqueGroup, color: string): string {
+/** #6005 Parte B / #6064: galeria de rolagem horizontal com os 5 slides do
+ * carrossel diário do Instagram, ocupando o MESMO espaço que a imagem única
+ * ocuparia (feedback do editor, 260824 — a tira de miniaturas ficava pequena
+ * demais pra conferir o texto rasterizado). O slide 1 é a MESMA capa
+ * (`d{N}_4x5`) publicada sozinha nos canais sem carrossel (LinkedIn/Facebook)
+ * — não é um asset duplicado, é o mesmo arquivo reaproveitado, então mostrar
+ * os 5 juntos aqui não introduz inconsistência com o que sai nos outros
+ * canais. Rolagem com scroll-snap (1 slide quase cheio por vez, como o feed
+ * nativo do Instagram) substitui o slot de imagem única — não some do post,
+ * só troca de forma quando o carrossel existe. */
+function renderCarouselGallery(group: DestaqueGroup): string {
   if (!group.carouselImages?.length) return "";
   return `
-    <div class="carousel-strip">
-      <div class="carousel-strip-label" style="color:${color}">🎠 Carrossel Instagram (${group.carouselImages.length} slides)</div>
-      <div class="carousel-strip-thumbs">${group.carouselImages
-        .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — slide ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
+    <div class="post-image carousel-gallery">
+      <div class="carousel-gallery-scroll">${group.carouselImages
+        .map(img => `<figure class="carousel-slide"><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — slide ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
         .join("")}</div>
     </div>`;
 }
 
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
-  const imgHtml = group.extraImages?.length
-    ? `<div class="post-image eia-pair">${group.extraImages
-        .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
-        .join("")}</div>`
-    : group.imageUrl
-      ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
-      : "";
+  const imgHtml = group.carouselImages?.length
+    ? renderCarouselGallery(group)
+    : group.extraImages?.length
+      ? `<div class="post-image eia-pair">${group.extraImages
+          .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
+          .join("")}</div>`
+      : group.imageUrl
+        ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
+        : "";
   return `
   <div class="post">
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
     ${imgHtml}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
-    ${renderCarouselStrip(group, color)}
   </div>`;
 }
 
@@ -456,12 +463,17 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
   .eia-pair { display:flex; gap:10px; }
   .eia-pair figure { flex:1; margin:0; }
   .eia-pair figcaption { font-size:12px; color:#666; text-align:center; padding:4px 0 8px; }
-  .carousel-strip { padding: 12px 16px; border-top: 1px solid #eee; }
-  .carousel-strip-label { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-  .carousel-strip-thumbs { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .carousel-strip-thumbs figure { flex: 0 0 auto; width: 96px; margin: 0; }
-  .carousel-strip-thumbs img { width: 96px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; display: block; }
-  .carousel-strip-thumbs figcaption { font-size: 11px; color: #666; text-align: center; padding-top: 4px; }
+  .carousel-gallery-scroll {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px;
+  }
+  .carousel-slide { flex: 0 0 82%; scroll-snap-align: center; margin: 0; }
+  .carousel-slide img { width: 100%; height: auto; display: block; border-radius: 10px; }
+  .carousel-slide figcaption { font-size: 12px; color: #666; text-align: center; padding-top: 6px; }
   .channel-block {
     border-top: 1px solid #f0f0f0;
   }
