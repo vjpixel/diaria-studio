@@ -528,3 +528,51 @@ describe("renderNeverEnrichedNote (#5153, pure)", () => {
     assert.match(note, /5 edição/);
   });
 });
+
+describe("#6031 seasonal box pipeline (regression test)", () => {
+  it("parseSnippetContent lê seasonal: true do header", () => {
+    const content = `<!--\nnome: Encha seu Kindle\nseasonal: true\n-->\n[Link](https://amzn.to/test)`;
+    const info = parseSnippetContent("test.md", content);
+    assert.equal(info.seasonal, true);
+  });
+
+  it("parseSnippetContent lê seasonal: false como permanente", () => {
+    const content = `<!--\nnome: Livros\nseasonal: false\n-->\nTexto.`;
+    const info = parseSnippetContent("livros.md", content);
+    assert.equal(info.seasonal, false);
+  });
+
+  it("parseSnippetContent retorna null quando seasonal ausente", () => {
+    const info = parseSnippetContent("sem.md", "Texto puro.");
+    assert.equal(info.seasonal, null);
+  });
+
+  it("buildBoxClickReport sinaliza hasSeasonalBoxActive=true quando há sazonal", () => {
+    const snippets = [
+      { file: "sazonal.md", nome: "Sazonal", urls: ["https://x.com/s"], seasonal: true },
+    ];
+    const opts: any = {
+      aammddList: ["260801"],
+      readReviewedMd: () => `**DESTAQUE 1**\n---\n**📚 Sazonal**\n[Link](https://x.com/s)`,
+      snippets,
+      findPost: () => ({ id: "p1", publish_date: 0, stats: { clicks: [{ url: "https://x.com/s", email: { verified_clicks: 5, unique_verified_clicks: 5 } }] } }),
+    };
+    const report = buildBoxClickReport(opts);
+    assert.equal(report.hasSeasonalBoxActive, true);
+  });
+
+  it("buildBoxClickReport sinaliza hasSeasonalBoxActive=false quando só permanente", () => {
+    const snippets = [
+      { file: "livros.md", nome: "Livros", urls: ["https://livros.diar.ia.br"], seasonal: false },
+    ];
+    const opts: any = {
+      aammddList: ["260801"],
+      readReviewedMd: () => `**DESTAQUE 1**\n---\n**📚 Livros**\n[Link](https://livros.diar.ia.br)`,
+      snippets,
+      findPost: () => ({ id: "p1", publish_date: 0, stats: { clicks: [{ url: "https://livros.diar.ia.br", email: { verified_clicks: 2, unique_verified_clicks: 2 } }] } }),
+    };
+    const report = buildBoxClickReport(opts);
+    assert.equal(report.hasSeasonalBoxActive, false);
+    assert.equal(report.rows[0].seasonal, false);
+  });
+});

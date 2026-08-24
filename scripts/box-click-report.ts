@@ -62,7 +62,7 @@ import {
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
 } from "./lib/newsletter-parse.ts";
-import { parseBoxHeaderField, stripHeaderBlock } from "./lib/shared/snippet-header.ts";
+import { parseBoxHeaderField, stripHeaderBlock, readSeasonalFlag } from "./lib/shared/snippet-header.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
 
@@ -113,13 +113,17 @@ export interface SnippetInfo {
   /** URLs (já em base-url) encontradas no CORPO do snippet (header
    * de comentário excluído — `stripHeaderBlock`). */
   urls: string[];
+  /** `seasonal:` do header — `true` para ofertas pontuais/sazonais
+   * (alta pull) vs `false`/null para boxes permanentes (#6031). */
+  seasonal: boolean | null;
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
   const nome = parseBoxHeaderField(content, "nome") ?? file.replace(/\.md$/, "");
   const body = stripHeaderBlock(content);
   const urls = [...new Set(extractUrls(body).map(toBaseUrl))];
-  return { file, nome, urls };
+  const seasonal = readSeasonalFlag(content);
+  return { file, nome, urls, seasonal };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
@@ -299,6 +303,7 @@ export interface RankingRow {
   total_verified_clicks: number;
   total_unique_verified_clicks: number;
   avg_unique_verified_clicks: number;
+  seasonal: boolean | null; // #6031: `seasonal:` do snippet; true=oferta sazonal (alto pull), false/permanente
 }
 
 export interface UnmatchedBox {
@@ -335,6 +340,12 @@ export interface BoxClickReport {
    * `renderNeverEnrichedNote`) e o fato de `main()` renderizar as duas
    * seções separadas, nunca concatenadas. */
   neverEnrichedBoxes: UnmatchedBox[];
+  /** #6031: `true` quando pelo menos 1 box sazonal (seasonal=true) aparece no
+   * ranking das últimas edições; `false` quando TODAS as boxes no ranking são
+   * permanentes (seasonal=false/null) — sinal de degradação pra caixas
+   * permanentes quando a sazonal expira, usado pelo relatório do Stage 4
+   * (§4c.7) e pelo CLI `box-click-report`. */
+  hasSeasonalBoxActive: boolean;
 }
 
 export interface BuildReportOpts {
@@ -357,7 +368,7 @@ export interface BuildReportOpts {
 export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
   const acc = new Map<
     string,
-    { nome: string; editions: Set<string>; verified: number; uniqueVerified: number }
+    { nome: string; editions: Set<string>; verified: number; uniqueVerified: number; seasonal: boolean | null }
   >();
   const unmatchedBoxes: UnmatchedBox[] = [];
   const neverEnrichedBoxes: UnmatchedBox[] = []; // #5153
@@ -391,6 +402,7 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
         editions: new Set<string>(),
         verified: 0,
         uniqueVerified: 0,
+        seasonal: usage.snippet.seasonal,
       };
 
       if (post) {
@@ -441,10 +453,13 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
     total_verified_clicks: e.verified,
     total_unique_verified_clicks: e.uniqueVerified,
     avg_unique_verified_clicks: e.editions.size > 0 ? e.uniqueVerified / e.editions.size : 0,
+    seasonal: e.seasonal,
   }));
   rows.sort((a, b) => b.total_unique_verified_clicks - a.total_unique_verified_clicks);
 
-  return { rows, unmatchedBoxes, neverEnrichedBoxes };
+  const hasSeasonalBoxActive = rows.some((r) => r.seasonal === true);
+
+  return { rows, unmatchedBoxes, neverEnrichedBoxes, hasSeasonalBoxActive };
 }
 
 /**
@@ -464,12 +479,12 @@ export function renderMarkdownTable(rows: RankingRow[]): string {
     return "(nenhum box de divulgação com link mensurável encontrado nas edições varridas)";
   }
   const header =
-    "| Box (snippet) | Edições | Cliques únicos verificados (total) | Média/edição | Cliques verificados (total) |\n" +
-    "|---|---|---|---|---|";
+    "| Box (snippet) | Edições | Cliques únicos verificados (total) | Média/edição | Cliques verificados (total) | Tipo |\n" +
+    "|---|---|---|---|---|---|";
   const body = rows
     .map(
       (r) =>
-        `| ${r.nome} (\`${r.snippet}\`) | ${r.editions_appeared} | ${r.total_unique_verified_clicks} | ${r.avg_unique_verified_clicks.toFixed(1)} | ${r.total_verified_clicks} |`,
+        `| ${r.nome} (\`${r.snippet}\`) | ${r.editions_appeared} | ${r.total_unique_verified_clicks} | ${r.avg_unique_verified_clicks.toFixed(1)} | ${r.total_verified_clicks} | ${r.seasonal === true ? "SAZONAL" : r.seasonal === false ? "PERMANENTE" : "—"} |`,
     )
     .join("\n");
   return `${header}\n${body}`;
@@ -524,7 +539,7 @@ function main(): void {
     }
   };
 
-  const { rows, unmatchedBoxes, neverEnrichedBoxes } = buildBoxClickReport({
+  const { rows, unmatchedBoxes, neverEnrichedBoxes, hasSeasonalBoxActive } = buildBoxClickReport({
     aammddList,
     readReviewedMd,
     snippets,
@@ -537,6 +552,10 @@ function main(): void {
   // #5153: nomeia a janela de 7 dias explicitamente, ANTES da lista de
   // unmatched genérica — quem lê precisa saber que parte do "sem dado" é só
   // temporário (resolve sozinho), não confundir com box que nunca vai medir.
+  if (!hasSeasonalBoxActive) {
+    console.log(`\n⚠️ SEM CAIXA SAZONAL ATIVA — todas as boxes no ranking são permanentes (livros, cursos, apoio). Quando a oferta sazonal expira (ex: "Encha seu Kindle" 13/08), a seleção automática degrada pra esses links permanentes, que puxam 2–4 cliques únicos em vez de 6–13 do hit sazonal. Ver #6031.`);
+  }
+
   if (neverEnrichedBoxes.length > 0) {
     const neverEnrichedEditions = new Set(neverEnrichedBoxes.map((b) => b.aammdd));
     const measuredEditions = new Set(rows.flatMap((r) => r.editions));

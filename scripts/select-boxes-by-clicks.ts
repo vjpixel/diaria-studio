@@ -411,6 +411,8 @@ export interface SlotSelectionRecord {
   score: number | null;
   trend: TrendResult | null;
   editionsAppeared: number | null;
+  /** #6031: indica se o snippet selecionado é sazonal (oferta de alta pull). */
+  seasonal: boolean | null;
 }
 
 export interface ResolveBoxesOpts {
@@ -425,6 +427,9 @@ export interface ResolveBoxesOpts {
 export interface ResolveBoxesResult {
   effective: ResolvedBoxes;
   selection: SlotSelectionRecord[];
+  /** #6031: `true` quando pelo menos 1 slot selecionou uma box sazonal; `false`
+   * quando todos os slots são permanentes (degradação quando sazonal expira). */
+  hasSeasonalActive: boolean;
 }
 
 function loadPostsCache(postsDir: string): PostCacheLike[] {
@@ -465,22 +470,29 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     slot3: opts.boxesCfg.slot3 ?? null,
   };
 
+  const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
+
   if (!autoCfg.enabled) {
-    const selection: SlotSelectionRecord[] = ([1, 2, 3] as const).map((slot) => ({
-      slot,
-      mode: "disabled",
-      file: effective[SLOT_KEY[slot]],
-      nome: null,
-      score: null,
-      trend: null,
-      editionsAppeared: null,
-    }));
-    return { effective, selection };
+    const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
+    const selection: SlotSelectionRecord[] = ([1, 2, 3] as const).map((slot) => {
+      const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
+      return {
+        slot,
+        mode: "disabled" as const,
+        file: effective[SLOT_KEY[slot]],
+        nome: null,
+        score: null,
+        trend: null,
+        editionsAppeared: null,
+        seasonal: snippet?.seasonal ?? null,
+      };
+    });
+    const hasSeasonalActive = selection.some((s) => s.seasonal === true);
+    return { effective, selection, hasSeasonalActive };
   }
 
   const editionsDir = opts.editionsDir ?? EDITIONS_DIR;
   const postsDir = opts.postsDir ?? POSTS_DIR;
-  const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
   const posts = loadPostsCache(postsDir);
   const dirsByAammdd = enumerateEditionDirs(editionsDir);
   const aammddList = listEditions(editionsDir).slice(0, autoCfg.lastN);
@@ -523,9 +535,12 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   });
   const pickBySlot = new Map(picks.map((p) => [p.slot, p]));
 
+  const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
+
   const selection: SlotSelectionRecord[] = [];
   for (const slot of [1, 2, 3] as const) {
     if (autoCfg.pinnedSlots.has(slot)) {
+      const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
         slot,
         mode: "pinned",
@@ -534,12 +549,14 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         score: null,
         trend: null,
         editionsAppeared: null,
+        seasonal: snippet?.seasonal ?? null,
       });
       continue;
     }
     const pick = pickBySlot.get(slot);
     if (pick && pick.file) {
       effective[SLOT_KEY[slot]] = pick.file;
+      const snippet = snippetByFile.get(pick.file);
       selection.push({
         slot,
         mode: "auto",
@@ -548,8 +565,10 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         score: pick.score,
         trend: pick.trend,
         editionsAppeared: pick.editionsAppeared,
+        seasonal: snippet?.seasonal ?? null,
       });
     } else {
+      const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
         slot,
         mode: "fallback-no-candidates",
@@ -558,11 +577,13 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
         score: null,
         trend: null,
         editionsAppeared: null,
+        seasonal: snippet?.seasonal ?? null,
       });
     }
   }
 
-  return { effective, selection };
+  const hasSeasonalActive = selection.some((s) => s.seasonal === true);
+  return { effective, selection, hasSeasonalActive };
 }
 
 // ── CLI (debug/inspeção standalone) ─────────────────────────────────────────
