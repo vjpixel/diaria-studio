@@ -512,10 +512,15 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
     try {
       const parsed = JSON.parse(carouselResult.stdout) as { refreshed?: unknown };
       if (Array.isArray(parsed.refreshed)) carouselRefreshed = parsed.refreshed.map(String);
-    } catch {
+    } catch (e) {
       // stdout não-JSON não é motivo pra derrubar o stage — o exit code já
-      // atestou o sucesso; só perdemos o detalhe do que foi regerado.
-      report.note("⚠️  gen-carousel-cards.ts: stdout não parseou como JSON — sem detalhe de regeneração.");
+      // atestou o sucesso; só perdemos o detalhe do que foi regerado. Mas o
+      // caso é raro o bastante pra que o warning sem causa nenhuma não ajude
+      // ninguém a depurar quando acontecer (#6068).
+      report.note(
+        `⚠️  gen-carousel-cards.ts: stdout não parseou como JSON (${(e as Error).message}) — ` +
+          `sem detalhe de regeneração. stdout: ${carouselResult.stdout.slice(0, 200)}`,
+      );
     }
     report.note(
       carouselRefreshed.length > 0

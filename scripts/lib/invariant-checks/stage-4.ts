@@ -1378,12 +1378,14 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
     // #6068: sem `# Social` não há texto pra comparar — mas sair calado com
     // slides no disco esconderia exatamente o caso "03-social.md perdeu a
     // estrutura e a arte pode estar velha". Avisa uma vez, não por destaque.
-    return slots.some(slidesOnDiskDe)
+    const comSlides = slots.filter(slidesOnDiskDe);
+    return comSlides.length > 0
       ? [
           {
             rule: "carousel-cards-stale",
             message:
-              `03-social.md não tem a seção '# Social' — os slides do carrossel existem no disco mas ` +
+              `03-social.md não tem a seção '# Social' — os slides do carrossel de ` +
+              `${comSlides.join(", ")} existem no disco mas ` +
               `não há texto pra cruzar com o carimbo. Conferir a estrutura do arquivo antes de publicar; ` +
               `se ele foi editado à mão, re-rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}".`,
             source_issue: "#6068",
@@ -1472,22 +1474,25 @@ function checkCarouselUploadIncomplete(editionDir: string): InvariantViolation[]
     if (!slidesOnDisk) continue;
 
     const { cover, slides } = carouselImageKeys(d);
-    const faltando = [cover, ...CAROUSEL_SLIDE_SLOTS.map((slot) => slides[slot])].filter((key) => {
-      const url = images?.[key]?.url;
-      return !url || typeof url !== "string" || url.trim().length === 0;
-    });
+    const faltando = [cover, ...CAROUSEL_SLIDE_SLOTS.map((slot) => slides[slot])].filter(
+      (key) => !hasUsableUrl(images?.[key]),
+    );
     if (faltando.length === 0) continue;
 
     // A CAPA não é gerada por `gen-carousel-cards.ts` e não entra em
     // `slidesOnDisk` — se ela nem existe localmente, mandar re-rodar o upload
     // não conserta nada (achado do review do #6068: a mensagem afirmava "os 5
     // slides existem no disco" checando só 4, e apontava pro script errado).
-    const coverPath = resolve(editionDir, carouselCoverFilename(d));
-    const coverOnDisk = existsSync(coverPath);
-    const fix = coverOnDisk
-      ? `re-rodar "npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes de publicar`
-      : `${carouselCoverFilename(d)} (a capa, slide 1) não existe no disco — gerar com ` +
-        `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" ANTES de re-rodar o upload`;
+    // A capa só entra na remediação quando é ELA que está faltando: mandar
+    // gerar card 4:5 porque o arquivo local sumiu, enquanto o que falta é a
+    // URL de um slide de parágrafo, aponta pro script errado (#6068).
+    const capaFaltando = faltando.includes(cover);
+    const coverOnDisk = existsSync(resolve(editionDir, carouselCoverFilename(d)));
+    const fix =
+      capaFaltando && !coverOnDisk
+        ? `${carouselCoverFilename(d)} (a capa, slide 1) não existe no disco — gerar com ` +
+          `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" ANTES de re-rodar o upload`
+        : `re-rodar "npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes de publicar`;
 
     violations.push({
       rule: "carousel-upload-incomplete",
@@ -1501,6 +1506,17 @@ function checkCarouselUploadIncomplete(editionDir: string): InvariantViolation[]
     });
   }
   return violations;
+}
+
+/**
+ * (#6068) Critério único de "esta entry tem URL utilizável".
+ * `carousel-upload-incomplete` e `carousel-upload-stale` cruzam exatamente as
+ * MESMAS 5 chaves — com dois filtros diferentes, uma entry `{url: "   "}`
+ * escapava dos dois (não é falsy pro segundo, é vazia pro primeiro).
+ */
+function hasUsableUrl(entry: PublicImageEntry | undefined): boolean {
+  const url = entry?.url;
+  return typeof url === "string" && url.trim().length > 0;
 }
 
 /**
@@ -1550,16 +1566,38 @@ function checkCarouselUploadStale(editionDir: string): InvariantViolation[] {
 
     const desatualizados: string[] = [];
     const semMd5: string[] = [];
+    const semArquivoLocal: string[] = [];
+    const ilegiveis: string[] = [];
     for (const { key, file } of paresChave) {
       const entry = images?.[key];
-      if (!entry?.url) continue; // ausência é assunto do `carousel-upload-incomplete`
+      if (!hasUsableUrl(entry)) continue; // ausência é assunto do `carousel-upload-incomplete`
       const localPath = resolve(editionDir, file);
-      if (!existsSync(localPath)) continue; // capa ausente: idem
-      if (!entry.md5) {
+      if (!existsSync(localPath)) {
+        // Só alcançável pra CAPA (os 4 slides passaram por `slidesOnDisk`).
+        // URL publicada + arquivo local sumido não é coberto por NENHUM outro
+        // check (`carousel-upload-incomplete` só olha URL ausente,
+        // `card-4x5-upload-missing` desiste quando o arquivo não existe), então
+        // sem isto a sumiço da única fonte de verdade local fica invisível.
+        semArquivoLocal.push(key);
+        continue;
+      }
+      if (!entry!.md5) {
         semMd5.push(key);
         continue;
       }
-      if (entry.md5 !== md5OfFile(localPath)) desatualizados.push(key);
+      // `check-invariants.ts` não tem try/catch POR REGRA: uma exceção aqui
+      // derrubaria as ~30 outras regras do Stage 4 junto. Arquivo pode sumir
+      // ou ficar preso entre o existsSync e a leitura (OneDrive, Studio
+      // limpando temporário) — degradar pra "não deu pra verificar" é sempre
+      // melhor que matar o gate inteiro.
+      let localMd5: string;
+      try {
+        localMd5 = md5OfFile(localPath);
+      } catch {
+        ilegiveis.push(key);
+        continue;
+      }
+      if (entry!.md5 !== localMd5) desatualizados.push(key);
     }
 
     if (desatualizados.length > 0) {
@@ -1572,6 +1610,33 @@ function checkCarouselUploadStale(editionDir: string): InvariantViolation[] {
           `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" (re-sobe só o que mudou).`,
         source_issue: "#6068",
         severity: "error",
+        file: imagesPath,
+      });
+    }
+    if (semArquivoLocal.length > 0) {
+      violations.push({
+        rule: "carousel-upload-stale",
+        message:
+          `${semArquivoLocal.join(", ")} tem URL publicada em 06-public-images.json mas o arquivo ` +
+          `local correspondente de ${d} não existe mais — sem ele não dá pra verificar se o KV tem a ` +
+          `arte atual (nenhum outro check cobre esta combinação). Conferir se o arquivo foi apagado ` +
+          `por engano; se foi, regerar com "npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" ` +
+          `e re-subir antes de publicar.`,
+        source_issue: "#6068",
+        severity: "warning",
+        file: imagesPath,
+      });
+    }
+    if (ilegiveis.length > 0) {
+      violations.push({
+        rule: "carousel-upload-stale",
+        message:
+          `não foi possível LER o arquivo local de ${ilegiveis.join(", ")} (${d}) pra comparar o md5 ` +
+          `— arquivo travado/removido entre a checagem e a leitura (sync do OneDrive, processo ` +
+          `concorrente). Re-rodar "npx tsx scripts/check-invariants.ts --stage 4 --edition-dir ${editionDir}" ` +
+          `depois que o sync assentar; persistindo, conferir o arquivo à mão.`,
+        source_issue: "#6068",
+        severity: "warning",
         file: imagesPath,
       });
     }

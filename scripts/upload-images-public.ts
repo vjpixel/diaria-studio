@@ -32,7 +32,6 @@ loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFL
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352

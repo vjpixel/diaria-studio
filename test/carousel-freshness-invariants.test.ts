@@ -586,3 +586,83 @@ describe("genCarouselCards — caminho de REGENERAÇÃO (#6068, seam de render)"
     }
   });
 });
+
+describe("#6068 — bordas endereçadas no 2º round de review", () => {
+  it("URL publicada + arquivo local sumido vira WARNING (não era coberto por check nenhum)", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImagesComMd5(dir, PARES_D1);
+      rmSync(join(dir, "04-d1-4x5.jpg")); // capa apagada DEPOIS do upload
+
+      const violations = checkCarouselUploadStale(dir);
+      assert.equal(violations.length, 1, JSON.stringify(violations));
+      assert.equal(violations[0].severity, "warning");
+      assert.match(violations[0].message, /d1_4x5/);
+      assert.match(violations[0].message, /não existe mais/);
+
+      // e o incomplete continua limpo — a URL está lá, é outro assunto
+      assert.deepEqual(checkCarouselUploadIncomplete(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("URL só com espaços conta como ausente nos DOIS checks (critério unificado)", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      const images = Object.fromEntries(
+        PARES_D1.map((e) => [
+          e.key,
+          e.key === "d1_carousel_p1"
+            ? { url: "   " }
+            : { url: "https://kv.example/" + e.key + ".jpg", md5: md5OfFile(join(dir, e.file)) },
+        ]),
+      );
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images }));
+
+      const incomplete = checkCarouselUploadIncomplete(dir);
+      assert.equal(incomplete.length, 1);
+      assert.match(incomplete[0].message, /d1_carousel_p1/);
+      assert.deepEqual(checkCarouselUploadStale(dir), [], "entry sem URL utilizável não é assunto do stale");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("capa presente no disco: remediação NÃO manda gerar card 4:5 quando falta é slide", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImages(dir, KEYS_D1_COMPLETO.filter((k) => k !== "d1_carousel_p3"));
+
+      const violations = checkCarouselUploadIncomplete(dir);
+      assert.equal(violations.length, 1);
+      assert.match(violations[0].message, /upload-images-public/);
+      assert.ok(
+        !/gen-social-card-4x5/.test(violations[0].message),
+        "a capa existe e nem está faltando — não é ela que precisa ser gerada",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aviso de '# Social' ausente nomeia os destaques com slides órfãos", () => {
+    const dir = makeEdition();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "sem cabecalho\n", "utf8");
+      writeSlides(dir, "d1");
+      writeSlides(dir, "d3");
+      const violations = checkCarouselCardsStale(dir);
+      assert.equal(violations.length, 1);
+      assert.match(violations[0].message, /d1, d3/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

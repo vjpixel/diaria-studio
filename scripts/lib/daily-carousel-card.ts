@@ -210,11 +210,20 @@ export function readCarouselSourceHashes(editionDir: string): CarouselSourceHash
 }
 
 /**
- * Grava o carimbo mesclando com o que já existe — um destaque pulado nesta
- * rodada (texto inalterado) mantém a entrada anterior em vez de sumir.
+ * Grava o carimbo. Por padrão MESCLA com o que já existe — um destaque pulado
+ * nesta rodada (texto inalterado) mantém a entrada anterior em vez de sumir.
+ *
+ * `replace: true` grava exatamente o mapa passado. Necessário para quem
+ * precisa REMOVER entradas (`reindexCarouselSourceHashes` no reorder): com o
+ * merge, um `delete` feito no objeto em memória era desfeito na escrita, que
+ * ressuscitava a entrada antiga vinda do disco. #6068.
  */
-export function writeCarouselSourceHashes(editionDir: string, hashes: CarouselSourceHashes): void {
-  const merged = { ...readCarouselSourceHashes(editionDir), ...hashes };
+export function writeCarouselSourceHashes(
+  editionDir: string,
+  hashes: CarouselSourceHashes,
+  opts: { replace?: boolean } = {},
+): void {
+  const merged = opts.replace ? { ...hashes } : { ...readCarouselSourceHashes(editionDir), ...hashes };
   writeFileSync(
     carouselSourceHashPath(editionDir),
     JSON.stringify({ hashes: merged, generated_at: new Date().toISOString() }, null, 2) + "\n",

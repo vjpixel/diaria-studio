@@ -1723,6 +1723,12 @@ describe("reindexCarouselSourceHashes (#6068, unidade)", () => {
       assert.equal(out!.hashes.d1, undefined, "origem (d2) não tinha hash — d1 não pode herdar o antigo");
       assert.equal(out!.hashes.d2, "hashD1");
       assert.equal(out!.hashes.d3, "hashD3");
+
+      // O que importa é o DISCO: a escrita mesclava com o arquivo antigo e
+      // ressuscitava a entrada recém-deletada (#6068).
+      const emDisco = readCarouselStamp(dir);
+      assert.equal(emDisco.d1, undefined, "o delete precisa chegar ao arquivo, não só ao objeto em memória");
+      assert.equal(emDisco.d2, "hashD1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1756,6 +1762,27 @@ describe("refreshSocialSourceHash — gate do 03-social.md (#6062/#6068)", () =>
         "carimboVelho",
         "recarimbar aqui diria 'fresco' pra um social que continua na ordem antiga — o falso NEGATIVO que o gate evita",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reindexCarouselSourceHashes — entradas órfãs (#6068)", () => {
+  it("edição de 2 destaques purga o d3 sobrevivente de uma demoção 3→2", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-orfa-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3-orfao" });
+
+      const out = reindexCarouselSourceHashes(dir, [2, 1], false);
+      assert.ok(out);
+      assert.equal(out!.hashes.d3, undefined, "d3 não existe mais nesta edição");
+
+      const emDisco = readCarouselStamp(dir);
+      assert.equal(emDisco.d3, undefined, "a purga precisa chegar ao arquivo");
+      assert.equal(emDisco.d1, "hashD2");
+      assert.equal(emDisco.d2, "hashD1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

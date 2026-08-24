@@ -848,6 +848,23 @@ export function reindexCarouselSourceHashes(
   if (Object.keys(stored).length === 0) return null;
 
   const reindexed: CarouselSourceHashes = { ...stored };
+
+  // Chaves ALÉM das posições desta edição (ex: `d3` sobrevivente de uma
+  // demoção 3→2) nunca são visitadas pelo laço abaixo e ficariam pra sempre
+  // no arquivo com um hash obsoleto. Nenhum consumidor as lê hoje (todos
+  // escopam por `readDestaqueCount`), mas dado morto que ninguém sinaliza é
+  // como o leitor humano se engana ao abrir o JSON. #6068.
+  for (const key of Object.keys(reindexed) as DailyDestaqueId[]) {
+    const pos = Number(key.slice(1));
+    if (Number.isFinite(pos) && pos > newOrder.length) {
+      console.warn(
+        `reorder-destaques: removendo entrada órfã '${key}' de .carousel-source-hash.json — ` +
+          `esta edição tem ${newOrder.length} destaques.`,
+      );
+      delete reindexed[key];
+    }
+  }
+
   for (let i = 0; i < newOrder.length; i++) {
     const novo = `d${i + 1}` as DailyDestaqueId;
     const antigo = `d${newOrder[i]}` as DailyDestaqueId;
@@ -856,7 +873,10 @@ export function reindexCarouselSourceHashes(
     else reindexed[novo] = hash;
   }
 
-  if (!dryRun) writeCarouselSourceHashes(editionDir, reindexed);
+  // `replace` (não merge): o reindex REMOVE entradas (posição de origem sem
+  // hash, chave órfã fora do range) — com merge, a escrita ressuscitaria do
+  // disco exatamente o que acabou de ser deletado.
+  if (!dryRun) writeCarouselSourceHashes(editionDir, reindexed, { replace: true });
   return { path: carouselSourceHashPath(editionDir), hashes: reindexed };
 }
 
