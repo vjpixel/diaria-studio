@@ -180,6 +180,7 @@ describe("runStage3 — caminho feliz", () => {
       assert.equal(d.nativeArt4x5Generated, true);
     }
     assert.equal(result.cardsGenerated, true);
+    assert.equal(result.carouselCardsGenerated, true);
     assert.equal(result.leaderboardFetched, true);
     assert.equal(result.championsInjected, "noop");
     assert.equal(result.invariantsPassed, true);
@@ -356,12 +357,29 @@ describe("runStage3 — falhas bloqueantes (#4090)", () => {
     assert.ok(result.notes.some((n) => n.includes("gen-social-card-4x5.ts falhou") && n.includes("BLOQUEANTE")));
   });
 
-  it("nenhum destaque pronto -> pula gen-social-card-4x5.ts sem abortar", async () => {
+  it("nenhum destaque pronto -> pula gen-social-card-4x5.ts sem abortar (gen-carousel-cards.ts roda mesmo assim — só depende do Stage 2)", async () => {
     const { exec, calls } = makeFakeExec(happyHandlers({ "lint-image-prompt.ts": () => fail(1, "violação") }));
     const result = await runStage3(["--edition", "260423"], baseDeps({ exec }));
     assert.equal(result.code, 0);
     assert.equal(result.cardsGenerated, false);
+    assert.equal(result.carouselCardsGenerated, true);
     assert.equal(calls.some((c) => c.script.endsWith("gen-social-card-4x5.ts")), false);
+    assert.equal(calls.some((c) => c.script.endsWith("gen-carousel-cards.ts")), true);
+  });
+
+  it("gen-carousel-cards.ts falhando aborta o Stage 3 inteiro (#6005)", async () => {
+    const { exec } = makeFakeExec(happyHandlers({ "gen-carousel-cards.ts": () => fail(1, "assertBrandSerifAvailable: Georgia ausente") }));
+    const result = await runStage3(["--edition", "260423"], baseDeps({ exec }));
+    assert.equal(result.code, 1);
+    assert.ok(result.notes.some((n) => n.includes("gen-carousel-cards.ts falhou") && n.includes("BLOQUEANTE")));
+  });
+
+  it("gen-carousel-cards.ts roda DEPOIS de gen-social-card-4x5.ts", async () => {
+    const { exec, calls } = makeFakeExec(happyHandlers());
+    await runStage3(["--edition", "260423"], baseDeps({ exec }));
+    const cardIdx = calls.findIndex((c) => c.script.endsWith("gen-social-card-4x5.ts"));
+    const carouselIdx = calls.findIndex((c) => c.script.endsWith("gen-carousel-cards.ts"));
+    assert.ok(cardIdx >= 0 && carouselIdx >= 0 && carouselIdx > cardIdx);
   });
 });
 

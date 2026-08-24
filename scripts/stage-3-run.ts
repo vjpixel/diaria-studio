@@ -42,6 +42,9 @@
  *     BLOQUEANTE — para o Stage 3 inteiro, igual ao playbook (#4090).
  *   gen-social-card-4x5.ts (compõe os cards de todos os destaques prontos) —
  *     BLOQUEANTE (#4090) se falhar.
+ *   gen-carousel-cards.ts (#6005 Parte B — 3 slides de parágrafo + CTA do
+ *     carrossel diário por destaque, a partir de 03-social.md) — BLOQUEANTE
+ *     se o render falhar (mesma classe do card 4:5 acima).
  *   fetch-leaderboard-top1.ts — fail-soft (#1753, não-bloqueante).
  *   inject-champions-callout.ts — no-op/injected tratados como sucesso;
  *     exit 1 (raffle stale, #4583) vira HALT, nunca publica data errada.
@@ -329,6 +332,8 @@ export interface Stage3RunResult {
   destaqueCount?: 2 | 3;
   destaques: DestaqueOutcome[];
   cardsGenerated: boolean;
+  /** #6005 Parte B — slides sem foto (3 parágrafos + CTA) do carrossel diário. */
+  carouselCardsGenerated: boolean;
   leaderboardFetched: boolean;
   championsInjected?: ChampionsInjectedState;
   invariantsPassed?: boolean;
@@ -420,6 +425,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
         destaqueCount,
         destaques: [],
         cardsGenerated: false,
+        carouselCardsGenerated: false,
         leaderboardFetched: false,
         pendingAgentDispatch,
         haltRequired: { stage: "3 — Imagens", reason, action },
@@ -481,6 +487,23 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       report.note("↷ nenhum destaque com imagens prontas — pulando gen-social-card-4x5.ts.");
     }
 
+    // --- carrossel diário (#6005 Parte B): slides sem foto (3 parágrafos +
+    // CTA) por destaque, a partir de 03-social.md — independe das imagens
+    // de destaque terem sido geradas nesta rodada (só depende do Stage 2).
+    // BLOQUEANTE só quando o render falha (fonte/sharp) — falta de texto de
+    // UM destaque específico é best-effort dentro do próprio script
+    // (skipped no resultado, cai pro fallback single-image no publish).
+    const carouselResult = deps.exec("scripts/gen-carousel-cards.ts", ["--edition-dir", `${editionDir}/`]);
+    let carouselCardsGenerated = false;
+    if (carouselResult.code !== 0) {
+      throw new Stage3Abort(
+        `❌ gen-carousel-cards.ts falhou (exit ${carouselResult.code}) — BLOQUEANTE (#6005). Causa comum: assertBrandSerifAvailable ` +
+          `(fonte Georgia ausente) — instalar a fonte ou setar DIARIA_ALLOW_FONT_FALLBACK=1. Stderr: ${tailStderr(carouselResult.stderr, 8)}`,
+      );
+    }
+    carouselCardsGenerated = true;
+    report.note("✅ cards de carrossel (parágrafo + CTA) gerados.");
+
     // --- leaderboard top1 (fail-soft, #1753) ---
     const leaderboardOut = `${editionDir}/_internal/04-leaderboard-top1.json`;
     const leaderboardStep = softStep(deps, report, "fetch-leaderboard-top1", "scripts/fetch-leaderboard-top1.ts", ["--edition", opts.edition, "--out", leaderboardOut]);
@@ -503,6 +526,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
         destaqueCount,
         destaques,
         cardsGenerated,
+        carouselCardsGenerated,
         leaderboardFetched,
         pendingAgentDispatch,
         haltRequired: { stage: "3 — Imagens", reason, action },
@@ -566,6 +590,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       destaqueCount,
       destaques,
       cardsGenerated,
+      carouselCardsGenerated,
       leaderboardFetched,
       championsInjected,
       invariantsPassed,
@@ -582,6 +607,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       code: abort.code,
       destaques: [],
       cardsGenerated: false,
+      carouselCardsGenerated: false,
       leaderboardFetched: false,
       pendingAgentDispatch,
       delegatedSteps: DELEGATED_STEPS,

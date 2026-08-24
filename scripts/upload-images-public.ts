@@ -192,6 +192,19 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     ...(destaqueCount === 3
       ? [{ key: "d3_4x5", filename: "04-d3-4x5.jpg", optional: true }]
       : []),
+    // #6005 Parte B: 4 slides sem foto do carrossel diário (3 parágrafos +
+    // CTA) por destaque, gerados por `gen-carousel-cards.ts` no Stage 3.
+    // optional: `resolveCarouselImageUrls` (daily-carousel-card.ts) já cai
+    // pro post single-image se QUALQUER um destes faltar — não bloquear o
+    // upload do resto por um carrossel parcial/ausente (edição legada, ou
+    // geração pulada nesta rodada).
+    ...["d1", "d2", ...(destaqueCount === 3 ? ["d3"] : [])].flatMap((d) =>
+      ["p1", "p2", "p3", "cta"].map((slot) => ({
+        key: `${d}_carousel_${slot}`,
+        filename: `04-${d}-carousel-${slot}-4x5.jpg`,
+        optional: true,
+      })),
+    ),
   ];
 
   const eaiSpecs = (() => {

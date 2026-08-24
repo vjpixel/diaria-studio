@@ -5,6 +5,15 @@
  * Análogo a publish-facebook.ts — mesma estrutura, fluxo de 2 passos do IG.
  * #2343: suporta edições com 2 ou 3 destaques.
  *
+ * CARROSSEL (#6005 Parte B, 260824): quando os 5 slides do destaque estão em
+ * `06-public-images.json` (capa `{d}_4x5` + 4 slides `{d}_carousel_{p1,p2,p3,cta}`
+ * gerados por `gen-carousel-cards.ts` no Stage 3), publica um carrossel de 5
+ * imagens (`resolveCarouselImageUrls`, `scripts/lib/daily-carousel-card.ts`)
+ * em vez do post single-image de sempre. QUALQUER slide ausente faz o
+ * destaque cair pro single-image — tudo-ou-nada, nunca um carrossel
+ * incompleto. Vale tanto no caminho `--schedule` (Worker `image_urls`, já
+ * suportado desde #4153) quanto no imediato (`createPostContainer` local).
+ *
  * Fluxo de 2 passos da Instagram Graph API:
  *   (1) POST /{ig-user-id}/media          → cria media container (image_url + caption)
  *   (2) POST /{ig-user-id}/media_publish   → publica o container
@@ -54,6 +63,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
@@ -242,6 +252,94 @@ async function publishMediaContainer(
     throw new Error(`Instagram /media_publish response sem id: ${JSON.stringify(data)}`);
   }
   return data.id;
+}
+
+/**
+ * Cria um container FILHO de carrossel (#6005 Parte B — mesmo fluxo de 3
+ * passos de `dispatch.ts` no Worker, ver docstring de `publishInstagramPost`
+ * abaixo). `is_carousel_item=true`, SEM caption — a Graph API só aceita
+ * caption no container PAI.
+ */
+async function createCarouselChildContainer(
+  igUserId: string,
+  accessToken: string,
+  imageUrl: string,
+  apiVersion: string,
+): Promise<string> {
+  const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${igUserId}/media`;
+  const formData = new FormData();
+  formData.append("image_url", imageUrl);
+  formData.append("is_carousel_item", "true");
+  formData.append("access_token", accessToken);
+
+  const res = await fetch(url, { method: "POST", body: formData });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Instagram /media (carousel child) HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { id?: string; error?: unknown };
+  if (data.error) {
+    throw new Error(`Instagram /media (carousel child) API error: ${JSON.stringify(data.error)}`);
+  }
+  if (!data.id) {
+    throw new Error(`Instagram /media (carousel child) response sem id: ${JSON.stringify(data)}`);
+  }
+  return data.id;
+}
+
+/** Cria o container PAI do carrossel — `media_type=CAROUSEL` + `children` (ordem preservada) + caption. */
+async function createCarouselParentContainer(
+  igUserId: string,
+  accessToken: string,
+  childIds: string[],
+  caption: string,
+  apiVersion: string,
+): Promise<string> {
+  const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${igUserId}/media`;
+  const formData = new FormData();
+  formData.append("media_type", "CAROUSEL");
+  formData.append("children", childIds.join(","));
+  formData.append("caption", caption);
+  formData.append("access_token", accessToken);
+
+  const res = await fetch(url, { method: "POST", body: formData });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Instagram /media (carousel parent) HTTP ${res.status}: ${body.slice(0, 300)} (children=${childIds.join(",")})`);
+  }
+  const data = (await res.json()) as { id?: string; error?: unknown };
+  if (data.error) {
+    throw new Error(`Instagram /media (carousel parent) API error: ${JSON.stringify(data.error)} (children=${childIds.join(",")})`);
+  }
+  if (!data.id) {
+    throw new Error(`Instagram /media (carousel parent) response sem id: ${JSON.stringify(data)} (children=${childIds.join(",")})`);
+  }
+  return data.id;
+}
+
+/**
+ * Cria o container a publicar — despacha pro caminho single-image
+ * (`createMediaContainer`, inalterado) ou carrossel (#6005 Parte B: N
+ * containers filhos + 1 container pai) conforme a contagem de
+ * `imageUrls`. Falha parcial no carrossel (1 filho falha no meio da lista)
+ * aborta o post inteiro — publicar um carrossel incompleto é pior que não
+ * publicar (mesma decisão de escopo do #4153 no Worker).
+ */
+async function createPostContainer(
+  igUserId: string,
+  accessToken: string,
+  imageUrls: string[],
+  caption: string,
+  apiVersion: string,
+): Promise<string> {
+  if (imageUrls.length === 1) {
+    return createMediaContainer(igUserId, accessToken, imageUrls[0], caption, apiVersion);
+  }
+  const childIds: string[] = [];
+  for (const imageUrl of imageUrls) {
+    childIds.push(await createCarouselChildContainer(igUserId, accessToken, imageUrl, apiVersion));
+  }
+  return createCarouselParentContainer(igUserId, accessToken, childIds, caption, apiVersion);
 }
 
 /**
@@ -535,6 +633,12 @@ async function main() {
       continue;
     }
 
+    // #6005 Parte B: carrossel (capa + 3 parágrafos + CTA) quando os 4
+    // slides sem foto foram gerados e subiram pro KV; senão, fallback pro
+    // post single-image de sempre (`[imageUrl]`) — nunca bloqueia o canal
+    // por causa do carrossel.
+    const imageUrls = resolveCarouselImageUrls(images, d) ?? [imageUrl];
+
     // #3817 — modo --schedule: enfileira no Worker em vez de publicar agora.
     // scheduled_at vem da MESMA fonte usada por Facebook/LinkedIn
     // (fallback_schedule: d1 10:00, d2 12:30, d3 17:30 — compute-social-schedule.ts).
@@ -566,6 +670,10 @@ async function main() {
         const response = await postToWorkerQueue(workerUrl, workerToken, {
           text: caption,
           image_url: imageUrl,
+          // #6005 Parte B — omitido (undefined) quando não há carrossel,
+          // preservando o payload de sempre; presente (array 2-10) faz o
+          // Worker despachar pro caminho `fireInstagramCarousel` (#4153).
+          ...(imageUrls.length > 1 && { image_urls: imageUrls }),
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "instagram",
@@ -605,11 +713,12 @@ async function main() {
       try {
         console.log(`Publishing instagram/${d} (attempt ${attempt})...`);
 
-        // Passo 1: criar media container
-        const containerId = await createMediaContainer(
+        // Passo 1: criar media container (#6005 Parte B — single-image ou
+        // carrossel, conforme imageUrls.length; ver createPostContainer).
+        const containerId = await createPostContainer(
           igUserId,
           accessToken,
-          imageUrl,
+          imageUrls,
           caption,
           apiVersion,
         );
