@@ -417,38 +417,21 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
   });
 });
 
-// ─── requireKind / kind "continuo" (#5293 item 2) ──────────────────────────
+// ─── requireKind (#5293 item 2; kind "continuo" removido em #6056) ──────────
 
-describe("requireKind aceita o kind \"continuo\" (#5293)", () => {
-  it("aceita \"overnight\", \"develop\" e \"continuo\"", () => {
+describe("requireKind (#5293/#6056)", () => {
+  it('aceita "overnight" e "develop"', () => {
     assert.equal(requireKind("overnight"), "overnight");
     assert.equal(requireKind("develop"), "develop");
-    assert.equal(requireKind("continuo"), "continuo");
   });
 
-  it("rejeita valor inválido/ausente com mensagem citando os 3 kinds válidos", () => {
-    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight", "develop" ou "continuo"/);
-    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight", "develop" ou "continuo"/);
+  it('regressão #6056: rejeita "continuo" — o kind saiu junto com a skill /diaria-continuo', () => {
+    assert.throws(() => requireKind("continuo"), /--kind deve ser "overnight" ou "develop"/);
   });
-});
 
-describe("registro de sessão end-to-end com kind \"continuo\" (#5293)", () => {
-  it("registerSession/heartbeat/claimIssue/endSession funcionam para kind \"continuo\" como para overnight/develop", () => {
-    const root = freshRoot();
-    registerSession(root, "continuo", "sess-continuo-1", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
-
-    const path = sessionFilePath(root, "continuo", "host-a", "sess-continuo-1");
-    assert.ok(existsSync(path));
-    const content = JSON.parse(readFileSync(path, "utf8"));
-    assert.equal(content.kind, "continuo");
-
-    assert.equal(claimIssue(root, "continuo", "sess-continuo-1", 5293, "host-a", "2026-08-14T10:00:00.000Z"), true);
-    const claimed = isIssueClaimedByOther(root, 5293, "sess-outra", Date.parse("2026-08-14T10:05:00.000Z"));
-    assert.ok(claimed !== null);
-    assert.equal(claimed.sessionId, "sess-continuo-1");
-
-    endSession(root, "continuo", "sess-continuo-1", "host-a");
-    assert.equal(existsSync(path), false);
+  it("rejeita valor inválido/ausente com mensagem citando os kinds válidos", () => {
+    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight" ou "develop"/);
+    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight" ou "develop"/);
   });
 });
 

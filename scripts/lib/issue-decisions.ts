@@ -42,6 +42,12 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
 
+/**
+ * `"continuo"` segue aceito de propósito, mesmo com a skill `/diaria-continuo`
+ * aposentada (#6056): marcadores de decisão/bloqueio com `sessao: "continuo"`
+ * já foram gravados como comentários DURÁVEIS em issues reais — removê-lo do
+ * parse tornaria essas decisões ilegíveis e faria a pergunta reabrir.
+ */
 export type SessionKind = "continuo" | "overnight" | "develop";
 
 /** Payload estruturado de uma decisão do editor registrada num comentário. */

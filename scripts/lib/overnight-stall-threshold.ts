@@ -61,11 +61,6 @@
  * limiar pra detecção ser pontual — com 10 min e 20 min contra 45, ambas
  * seguem folgadas após esta mudança.
  *
- * O kind `continuo` NÃO usa esta constante — `WATCHED_KINDS` do watchdog não
- * o inclui desde o #5390 (wake ocioso de 4h; ver rationale lá e em
- * `.claude/skills/diaria-continuo/SKILL.md`). Se um dia voltar a ser
- * vigiado, ganha o próprio limiar, nunca este.
- *
  * @see scripts/overnight-watchdog.ts (#2688 — camada (ii), watchdog externo)
  * @see scripts/lib/overnight-fallback-wake.ts (#2896 — camada (iii), fallback wake)
  * @see .claude/skills/diaria-overnight/SKILL.md § "Stall passivo — três camadas"

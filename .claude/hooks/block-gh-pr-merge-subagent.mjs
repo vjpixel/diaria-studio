@@ -1,6 +1,6 @@
 // PreToolUse hook — bloqueia `gh pr merge` quando a chamada vem de um
-// SUBAGENTE implementador de `/diaria-overnight`/`/diaria-develop`/
-// `/diaria-continuo`, nunca do coordenador top-level dessas rodadas (#5716).
+// SUBAGENTE implementador de `/diaria-overnight`/`/diaria-develop`,
+// nunca do coordenador top-level dessas rodadas (#5716).
 //
 // Incidente de origem (2ª ocorrência — a 1ª foi #4740, incidente 260806b):
 // sessão `/diaria-develop 260819d`, PR #5713. O subagente implementador leu
@@ -13,19 +13,19 @@
 // existia só como prosa — nenhum hook impedia a chamada. Este hook fecha essa
 // lacuna mecanicamente.
 //
-// Mecanismo: `scripts/lib/session-registry.ts` (write-side usado pelas 3
-// skills via `register --kind overnight|develop|continuo`) grava um arquivo
+// Mecanismo: `scripts/lib/session-registry.ts` (write-side usado pelas
+// skills via `register --kind overnight|develop`) grava um arquivo
 // por sessão COORDENADORA ativa em `data/sessions/{kind}-{tag}-{sessionId}.json`.
 // Subagentes implementadores despachados via `Agent` NUNCA chamam esse
-// `register` (não são as skills `/diaria-overnight`/`/diaria-develop`/
-// `/diaria-continuo` — são subagentes ad-hoc lendo um prompt de dispatch) e
+// `register` (não são as skills `/diaria-overnight`/`/diaria-develop` —
+// são subagentes ad-hoc lendo um prompt de dispatch) e
 // rodam com `session_id` PRÓPRIO, diferente do coordenador que os despachou
 // (mesmo fato que `block-askuserquestion-overnight-autonomous.mjs` e
 // `pr-create-review.mjs` já assumem ao comparar `payload.session_id` contra
 // o `session_id` gravado por quem escreveu o marker/registro).
 //
 // Esse fato dá o discriminador: se existe pelo menos uma rodada
-// overnight/develop/continuo ATIVA registrada (`data/sessions/*.json`) e o
+// overnight/develop ATIVA registrada (`data/sessions/*.json`) e o
 // `session_id` da chamada ATUAL não é o de NENHUMA dessas sessões
 // registradas, a chamada não pode ser do coordenador dessa(s) rodada(s) — só
 // pode ser um subagente despachado por ela (ou, no pior caso, outra sessão
@@ -92,7 +92,9 @@ const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 // subagente ativo pra proteger.
 const SOFT_STALE_MS = 90 * 60 * 1000;
 
-const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+// "continuo" saiu do set com a aposentadoria da skill (#6056) — registro
+// remanescente desse kind em data/sessions/ deixa de contar como coordenador.
+const COORDINATOR_KINDS = new Set(["overnight", "develop"]);
 
 /**
  * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
@@ -117,7 +119,7 @@ export function sessionsDir(repoRoot) {
 
 /**
  * Lê `data/sessions/*.json` e retorna os `sessionId` de sessões COORDENADORAS
- * (`kind` em overnight/develop/continuo) que são:
+ * (`kind` em overnight/develop) que são:
  *   (a) de MESMA MÁQUINA que o hook roda (`record.machineTag` bate com o
  *       hostname atual — #5787 Defeito 2: `data/sessions/` é compartilhado
  *       entre máquinas via OneDrive, e um coordenador em outra máquina não
@@ -279,14 +281,14 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
 /** Mensagem mostrada ao subagente quando a chamada é negada (#5716). */
 export const BLOCK_REASON =
   "gh pr merge bloqueado pelo guard mecânico do overnight/develop (#5716): há uma rodada " +
-  "/diaria-overnight, /diaria-develop ou /diaria-continuo ativa nesta máquina (data/sessions/*.json) " +
+  "/diaria-overnight ou /diaria-develop ativa nesta máquina (data/sessions/*.json) " +
   "e esta chamada não pertence à sessão coordenadora registrada. Regra 11 de " +
   "context/overnight-dispatch-rules.md: nenhum subagente implementador espera CI, roda fleet review, " +
   "ou mergeia o próprio PR — isso é trabalho exclusivo do coordenador top-level, depois do fleet review " +
   "pré-merge e do Gate 2. Se você é o subagente implementador: pare aqui, faça o self-review (regra 7), " +
   "e retorne o número do PR + \"self-review: N findings\" ao coordenador — nunca chame gh pr merge você " +
   "mesmo. Se você é de fato o coordenador vendo este bloqueio por engano (ex: sessão registrada expirou " +
-  "por staleness), rode `npx tsx scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}` " +
+  "por staleness), rode `npx tsx scripts/lib/session-registry.ts register --kind {overnight|develop}` " +
   "pra renovar o registro e tente de novo.";
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o

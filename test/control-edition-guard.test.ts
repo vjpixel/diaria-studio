@@ -6,7 +6,7 @@
  * segundo a #5547: existe pra nunca deixar passar despercebido o erro
  * medido no #5413 (29% de inflação por sessão concorrente na 260814).
  * Regressão específica: uma medição com `sessions_excluded > 0` OU com
- * outra sessão overnight/develop/continuo ativa no `session-registry.ts`
+ * outra sessão overnight/develop ativa no `session-registry.ts`
  * TEM que sair marcada `contaminated: true` — nunca silenciosamente limpa.
  */
 import { describe, it, after } from "node:test";
@@ -96,14 +96,14 @@ describe("checkTranscriptContamination", () => {
 });
 
 describe("checkSessionRegistryNoise", () => {
-  it("clean quando não há sessão overnight/develop/continuo ativa", () => {
+  it("clean quando não há sessão overnight/develop ativa", () => {
     const repoRoot = tmpRepo();
     const check = checkSessionRegistryNoise(repoRoot);
     assert.equal(check.clean, true);
     assert.deepEqual(check.other_active_sessions, []);
   });
 
-  it("NÃO clean quando há outra sessão develop/overnight/continuo registrada e ativa", () => {
+  it("NÃO clean quando há outra sessão develop/overnight registrada e ativa", () => {
     const repoRoot = tmpRepo();
     registerSession(repoRoot, "develop", "session-outra-abc", { tag: "maquina-x" });
     const check = checkSessionRegistryNoise(repoRoot);
@@ -148,7 +148,7 @@ describe("assessConcurrentNoise — veredito combinado (#5547 item 3)", () => {
 
   it("contaminated=true quando SÓ o sinal de registry acusa ruído", () => {
     const repoRoot = tmpRepo();
-    registerSession(repoRoot, "continuo", "session-concorrente", { tag: "maquina-y" });
+    registerSession(repoRoot, "overnight", "session-concorrente", { tag: "maquina-y" });
     const doc = docWithRow();
     const verdict = assessConcurrentNoise(doc, repoRoot);
     assert.equal(verdict.contaminated, true);

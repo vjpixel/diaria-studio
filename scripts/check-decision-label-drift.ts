@@ -9,7 +9,7 @@
  * `scripts/check-state-changed-pending.ts` / `scripts/lib/issue-decisions.ts`.
  *
  * Sempre sai com `exit 0` — é ferramenta de achado, não gate. Rodar
- * manualmente durante briefing de rodada (overnight/develop/continuo) ou
+ * manualmente durante briefing de rodada (overnight/develop) ou
  * ad-hoc pra auditar drift acumulado. Integração automática numa skill (ex:
  * rodar sozinho na Fase 0) NÃO está implementada nesta unidade — ver
  * sugestão no PR body.

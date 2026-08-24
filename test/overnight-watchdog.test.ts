@@ -30,12 +30,10 @@ import {
   diagnoseWatchdogActivity,
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
-  hasHealthyIdleSession,
   runAllWatchedKinds,
   WATCHED_KINDS,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
-import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
 import type { PlanFileReaders } from "../scripts/overnight-statusline.ts";
 
 // ---------------------------------------------------------------------------
@@ -354,7 +352,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.ok(
@@ -375,7 +372,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.ok(!result.lines.some((l) => /STALL detectado/.test(l)));
@@ -390,7 +386,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "plan.json mtime",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "dry_run");
     assert.ok(result.lines.some((l) => /sem stall/.test(l) && !/STALL detectado/.test(l)));
@@ -405,7 +400,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "plan.json mtime",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "dry_run");
     assert.ok(result.lines.some((l) => /STALL detectado/.test(l)));
@@ -426,7 +420,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "run-log",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "stall");
     // #2781: main() usa diagnosis.elapsedMin no bloco STALL (emitRunLogEvent,
@@ -444,7 +437,6 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "run-log",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "no_stall");
     assert.equal(result.elapsedMin, 5);
@@ -458,93 +450,19 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
-      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.equal(typeof result.elapsedMin, "number");
   });
 
-  it("#5293 item 3: isHealthyIdle=true + atividade > threshold → healthy_idle, não stall", () => {
-    const lastActivityMs = nowMs - 90 * 60_000;
-    const result = diagnoseWatchdogActivity({
-      aammdd: "260701",
-      dryRun: false,
-      lastActivityMs,
-      lastSource: "run-log",
-      nowMs,
-      thresholdMin: 60,
-      isHealthyIdle: true,
-    });
-    assert.equal(result.action, "healthy_idle");
-    assert.ok(result.lines.some((l) => /aguardando-resposta\/pausada/.test(l)));
-    assert.equal(result.elapsedMin, 90);
-  });
-
-  it("#5293 item 3: isHealthyIdle=true mas SEM stall (atividade recente) → continua no_stall, não healthy_idle", () => {
-    const lastActivityMs = nowMs - 5 * 60_000;
-    const result = diagnoseWatchdogActivity({
-      aammdd: "260701",
-      dryRun: false,
-      lastActivityMs,
-      lastSource: "run-log",
-      nowMs,
-      thresholdMin: 60,
-      isHealthyIdle: true,
-    });
-    assert.equal(result.action, "no_stall");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// #5293 item 3: findActiveRun/getLastRunLogActivity generalizados por kind
-// (continuo nunca escreve report.md — "ativa" é só "plan.json existe" no
-// diretório mais recente).
+// findActiveRun/getLastRunLogActivity por kind (#5293 item 3; o kind
+// `continuo` foi removido com a skill em #6056 — sobra só "overnight")
 // ---------------------------------------------------------------------------
 
-describe("findActiveRun com kind=continuo (#5293 item 3)", () => {
-  it("continuo: plan.json presente, SEM report.md → ativa (igual overnight)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
-    try {
-      const runDir = join(dir, "data", "continuo", "260814");
-      mkdirSync(runDir, { recursive: true });
-      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
-      const active = findActiveRun(dir, "continuo");
-      assert.ok(active);
-      assert.equal(active?.aammdd, "260814");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("continuo: plan.json presente E report.md também presente → AINDA ativa (continuo nunca 'termina', ao contrário de overnight)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
-    try {
-      const runDir = join(dir, "data", "continuo", "260814");
-      mkdirSync(runDir, { recursive: true });
-      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
-      writeFileSync(join(runDir, "report.md"), "# nunca deveria existir para continuo, mas se existir não desativa");
-      const active = findActiveRun(dir, "continuo");
-      assert.ok(active, "continuo trata a rodada como ativa independente de report.md — diferente de overnight");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("continuo: escolhe o AAMMDD mais recente entre múltiplos dias rotacionados", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
-    try {
-      for (const aammdd of ["260812", "260813", "260814"]) {
-        const runDir = join(dir, "data", "continuo", aammdd);
-        mkdirSync(runDir, { recursive: true });
-        writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
-      }
-      const active = findActiveRun(dir, "continuo");
-      assert.equal(active?.aammdd, "260814");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
+describe("findActiveRun — kind default 'overnight'", () => {
   it("kind default continua 'overnight' (compatibilidade — chamada sem 2º argumento)", () => {
     const dir = mkdtempSync(join(tmpdir(), "overnight-watchdog-default-"));
     try {
@@ -557,11 +475,24 @@ describe("findActiveRun com kind=continuo (#5293 item 3)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("regressão #6056: plan.json + report.md presentes → NÃO ativa (o ramo kind === 'continuo', que ignorava report.md, saiu junto com a skill)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "overnight-watchdog-report-"));
+    try {
+      const runDir = join(dir, "data", "overnight", "260814");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
+      writeFileSync(join(runDir, "report.md"), "# rodada encerrada");
+      assert.equal(findActiveRun(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
-describe("getLastRunLogActivity com agent=continuo (#5293 item 3)", () => {
-  it("filtra por agent 'continuo', ignora eventos 'overnight' da mesma edição", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-runlog-"));
+describe("getLastRunLogActivity filtra por agent", () => {
+  it("ignora eventos de outros agents da mesma edição (ex: um 'continuo' legado no run-log)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "overnight-runlog-"));
     try {
       mkdirSync(join(dir, "data"), { recursive: true });
       const lines = [
@@ -569,67 +500,8 @@ describe("getLastRunLogActivity com agent=continuo (#5293 item 3)", () => {
         JSON.stringify({ agent: "continuo", edition: "260814", timestamp: "2026-08-14T12:00:00Z" }),
       ];
       writeFileSync(join(dir, "data", "run-log.jsonl"), lines.join("\n") + "\n");
-      const ts = getLastRunLogActivity(dir, "260814", "continuo");
-      assert.equal(ts, new Date("2026-08-14T12:00:00Z").getTime());
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("hasHealthyIdleSession (#5293 item 3)", () => {
-  it("true quando há sessão continuo ativa com phase='aguardando-resposta'", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
-    try {
-      registerSession(dir, "continuo", "sess-idle", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
-      heartbeat(dir, "continuo", "sess-idle", { phase: "aguardando-resposta" }, "host-a", "2026-08-14T10:05:00.000Z");
-      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
-      assert.equal(hasHealthyIdleSession(dir, "continuo", now), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("true quando phase='pausado-edicao' (guard de colisão editorial)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
-    try {
-      registerSession(dir, "continuo", "sess-pausa", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
-      heartbeat(dir, "continuo", "sess-pausa", { phase: "pausado-edicao" }, "host-a", "2026-08-14T10:05:00.000Z");
-      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
-      assert.equal(hasHealthyIdleSession(dir, "continuo", now), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("false quando a sessão existe mas a phase não é uma fase saudável conhecida", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
-    try {
-      registerSession(dir, "continuo", "sess-work", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
-      heartbeat(dir, "continuo", "sess-work", { phase: "trabalhando" }, "host-a", "2026-08-14T10:05:00.000Z");
-      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
-      assert.equal(hasHealthyIdleSession(dir, "continuo", now), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("false quando não há nenhuma sessão registrada (data/sessions/ ausente)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
-    try {
-      assert.equal(hasHealthyIdleSession(dir, "continuo", Date.now()), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("filtra por kind — sessão overnight em phase saudável não conta pra kind continuo", () => {
-    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
-    try {
-      registerSession(dir, "overnight", "sess-other-kind", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
-      heartbeat(dir, "overnight", "sess-other-kind", { phase: "aguardando-resposta" }, "host-a", "2026-08-14T10:05:00.000Z");
-      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
-      assert.equal(hasHealthyIdleSession(dir, "continuo", now), false);
+      const ts = getLastRunLogActivity(dir, "260814", "overnight");
+      assert.equal(ts, new Date("2026-08-14T10:00:00Z").getTime());
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -637,37 +509,36 @@ describe("hasHealthyIdleSession (#5293 item 3)", () => {
 });
 
 describe("runAllWatchedKinds (#5293 fleet review achado 3)", () => {
-  it("um kind lançar NÃO impede o outro de ser tentado — ambos são chamados", async () => {
-    const attempted: string[] = [];
+  it("uma iteração lançar NÃO impede a seguinte de ser tentada — ambas são chamadas", async () => {
+    let calls = 0;
     const anyFailed = await runAllWatchedKinds(
-      ["overnight", "continuo"],
-      async (kind) => {
-        attempted.push(kind);
-        if (kind === "overnight") throw new Error("boom no overnight");
+      ["overnight", "overnight"],
+      async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("boom na primeira iteração");
       },
       () => {}, // silencia o onError default (stderr) neste teste
     );
-    assert.deepEqual(attempted, ["overnight", "continuo"], "os DOIS kinds devem ter sido tentados, na ordem");
+    assert.equal(calls, 2, "as DUAS iterações devem ter sido tentadas");
     assert.equal(anyFailed, true);
   });
 
   it("nenhum kind falha → anyFailed=false", async () => {
-    const anyFailed = await runAllWatchedKinds(["overnight", "continuo"], async () => {});
+    const anyFailed = await runAllWatchedKinds(["overnight"], async () => {});
     assert.equal(anyFailed, false);
   });
 
-  it("onError é chamado com o kind E o erro, um erro por kind que falhou", async () => {
+  it("onError é chamado com o kind E o erro, um erro por iteração que falhou", async () => {
     const errors: Array<{ kind: string; error: unknown }> = [];
     await runAllWatchedKinds(
-      ["overnight", "continuo"],
+      ["overnight"],
       async (kind) => {
         throw new Error(`falha em ${kind}`);
       },
       (kind, error) => errors.push({ kind, error }),
     );
-    assert.equal(errors.length, 2);
+    assert.equal(errors.length, 1);
     assert.equal(errors[0].kind, "overnight");
-    assert.equal(errors[1].kind, "continuo");
   });
 
   it("onError default escreve em stderr (nunca silencioso)", async () => {
@@ -678,71 +549,20 @@ describe("runAllWatchedKinds (#5293 fleet review achado 3)", () => {
       return true;
     };
     try {
-      await runAllWatchedKinds(["continuo"], async () => {
+      await runAllWatchedKinds(["overnight"], async () => {
         throw new Error("falha simulada");
       });
     } finally {
       process.stderr.write = originalWrite;
     }
-    assert.match(stderrOutput, /kind=continuo/);
+    assert.match(stderrOutput, /kind=overnight/);
     assert.match(stderrOutput, /falha simulada/);
   });
 });
 
-describe("WATCHED_KINDS (#5390) — continuo removido da vigilância de produção", () => {
-  it("contém só 'overnight' — 'continuo' não é mais vigiado", () => {
+describe("WATCHED_KINDS (#5390/#6056)", () => {
+  it("contém só 'overnight' — 'continuo' saiu da vigilância em #5390 e do tipo em #6056", () => {
     assert.deepEqual(WATCHED_KINDS, ["overnight"]);
-  });
-
-  it("regressão: sessão continuo parada MUITO além do limiar de stall NÃO produz stall_event nem push — porque main() nunca a diagnostica (WATCHED_KINDS não inclui 'continuo')", async () => {
-    // Antes do #5390 (WATCHED_KINDS = ["overnight", "continuo"]), esta mesma
-    // simulação de main() diagnosticaria e agiria sobre 'continuo'. Prova
-    // negativa: um runOne espião nunca é invocado com kind='continuo' quando
-    // orquestrado com WATCHED_KINDS — logo nenhum stall_event é anexado ao
-    // plan.json nem nenhum push é disparado para essa sessão, mesmo que ela
-    // esteja parada há muito mais que o limiar de 60 min (simulado abaixo por
-    // um plan.json com stall_events vazio e nenhuma atividade recente).
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-5390-"));
-    try {
-      // Sessão continuo genuinamente parada: plan.json com mtime "antigo" (o
-      // teste não precisa manipular o relógio — o ponto é que runOne nunca é
-      // chamado para 'continuo' independente do estado real do plan.json).
-      const continuoDir = join(dir, "data", "continuo", "260814");
-      mkdirSync(continuoDir, { recursive: true });
-      writeFileSync(join(continuoDir, "plan.json"), JSON.stringify({ stall_events: [] }));
-
-      const attempted: string[] = [];
-      const anyFailed = await runAllWatchedKinds(WATCHED_KINDS, async (kind) => {
-        attempted.push(kind);
-      });
-
-      assert.deepEqual(
-        attempted,
-        ["overnight"],
-        "'continuo' nunca deveria ser tentado — WATCHED_KINDS não o inclui desde #5390",
-      );
-      assert.equal(anyFailed, false);
-
-      // O plan.json da sessão continuo permanece intocado — nenhum stall_event
-      // foi (nem poderia ter sido) anexado, porque runWatchdogForKind nunca
-      // rodou para esse kind.
-      const planAfter = JSON.parse(readFileSync(join(continuoDir, "plan.json"), "utf8"));
-      assert.deepEqual(planAfter.stall_events, []);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("ANTES do #5390 este teste teria falhado: WATCHED_KINDS incluindo 'continuo' faria runOne ser chamado para ele", async () => {
-    // Reconstrói o comportamento pré-#5390 explicitamente (não lê o array de
-    // produção) para provar que o teste acima é sensível à mudança real —
-    // não passaria incondicionalmente independente do conteúdo de WATCHED_KINDS.
-    const legacyWatchedKinds: readonly ("overnight" | "continuo")[] = ["overnight", "continuo"];
-    const attempted: string[] = [];
-    await runAllWatchedKinds(legacyWatchedKinds, async (kind) => {
-      attempted.push(kind);
-    });
-    assert.deepEqual(attempted, ["overnight", "continuo"]);
   });
 });
 
