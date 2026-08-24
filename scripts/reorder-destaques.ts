@@ -1039,12 +1039,14 @@ function main(): void {
   const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
 
-  // #3982: validação PÓS-reorder do limite de chars por slot (D1=1200,
+  // #3982: validação PÓS-reorder do limite de chars por slot (janela única
+  // 900–1000 desde #6061; antes era D1=1200,
   // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
-  // `lint-newsletter-md.ts --check destaque-max-chars`). WARN-only: um
-  // destaque escrito pra D1 (limite maior) pode facilmente estourar o limite
-  // menor de D2/D3 ao ser movido — mas trim é call editorial do humano, então
-  // reorder NUNCA bloqueia por isso, só avisa.
+  // `lint-newsletter-md.ts --check destaque-max-chars`). WARN-only: trim é
+  // call editorial do humano, então reorder NUNCA bloqueia por isso, só avisa.
+  // Com a janela única do #6061 o MOVIMENTO em si não estoura mais nada (os
+  // três slots têm o mesmo teto) — o que sobra desta checagem é pegar
+  // destaque que já estava acima da janela antes do reorder.
   const maxCharsWarnings: string[] = [];
   if (reorderedReviewedMd !== null) {
     const maxCharsResult = checkDestaqueMaxChars(reorderedReviewedMd);

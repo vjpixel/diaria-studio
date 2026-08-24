@@ -7,28 +7,31 @@
  * isso importa" + parágrafo de impacto).
  *
  * Mínimos/máximos editoriais (complementam o writer.md):
- *   D1 ≥ 1000, ≤ 1200
+ *   D1 ≥ 900,  ≤ 1000
  *   D2 ≥ 900,  ≤ 1000
  *   D3 ≥ 900,  ≤ 1000
  *
- * D1 maior que D2/D3 reflete hierarquia editorial (manchete > segundas
- * histórias) — D2/D3 mais curtos preservam ritmo; newsletter densa cai CTR.
- * Em 260507 D1=999/D2=708/D3=679 (abaixo do piso — variação D1↔D3 = +47% no
- * peso editorial); em 260508 D2=1409 (acima do teto) passou despercebido até o
- * gate. Ambos os checks são BLOQUEANTES de propósito: com max bloqueante o
- * writer teria sido re-disparado automaticamente em vez de só reportar.
+ * Janela ÚNICA para os três destaques (#6061, pedido do editor 24/08/2026):
+ * o tamanho de D1 deve ser igual ao de D2 e D3 — a hierarquia editorial
+ * (manchete > segundas) não precisa de mais chars pra se expressar, e a
+ * janela assimétrica antiga (D1 1000–1200) gerava D1 inflado artificialmente.
+ * Histórico da motivação original dos pisos: em 260507 D1=999/D2=708/D3=679
+ * (abaixo do piso — variação D1↔D3 = +47% no peso editorial); em 260508
+ * D2=1409 (acima do teto) passou despercebido até o gate. Ambos os checks
+ * são BLOQUEANTES de propósito: com max bloqueante o writer teria sido
+ * re-disparado automaticamente em vez de só reportar.
  */
 
 import { parseHighlights } from "../measure-highlights.ts"; // #914
 
 export const DESTAQUE_MIN_CHARS = {
-  1: 1000,
+  1: 900,
   2: 900,
   3: 900,
 } as const;
 
 export const DESTAQUE_MAX_CHARS = {
-  1: 1200,
+  1: 1000,
   2: 1000,
   3: 1000,
 } as const;

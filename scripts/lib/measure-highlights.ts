@@ -114,7 +114,7 @@ function stripHubLink(body: string): string {
 /**
  * #1709: remove TODAS as opções de título iniciais do bloco do destaque,
  * deixando só o CORPO. Decisão editorial (2026-06-02): medir o corpo separado
- * do título — o corpo tem os limites originais (D1 1000-1200, D2/D3 900-1000,
+ * do título — o corpo tem os limites originais (janela única 900-1000 pra todos desde #6061, antes D1 1000-1200,
  * #914/#964) e o título é validado à parte por `--check title-length` (≤52, #701).
  *
  * Antes, `parseHighlights` media body + as 3 opções de título, divergindo do
