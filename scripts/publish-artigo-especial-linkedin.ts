@@ -119,12 +119,13 @@ const TARGET_TO_CHANNEL: Record<LinkedinTarget, ArtigoEspecialChannel> = {
  * no call site de `dispatchEntry`. `weekly-{target}` casa com o regex e é
  * puro carimbo de auditoria do lado do Worker.
  *
- * O nosso `linkedin-published.json` NÃO pode herdar esse valor: a
- * reconciliação lê `post.destaque` de volta e mapeia por `TARGET_TO_CHANNEL`
- * (`weekly-pagina` não é chave válida lá, o canal viraria `undefined` e a
- * correção de status silenciosamente não aconteceria). Por isso o retorno do
- * `dispatchEntry` é normalizado de volta pra "pagina"/"perfil" antes de ser
- * gravado — ver `normalizeEntryDestaque`.
+ * **Este valor VAZA pro nosso store**, e é assim de propósito:
+ * `dispatchEntry` (`publish-linkedin.ts`, reusado sem modificação) grava
+ * `destaque` verbatim na `PostEntry`, então `linkedin-published.json` guarda
+ * `"weekly-pagina"`, não `"pagina"`. Normalizar o retorno de `dispatchEntry`
+ * não resolveria: ele persiste por dentro, ANTES de devolver o objeto.
+ * Quem absorve a diferença é a LEITURA — `channelForStoredDestaque` aceita
+ * as duas grafias. Não assuma `"pagina"/"perfil"` cru ao ler este store.
  */
 export function dispatchDestaqueFor(target: LinkedinTarget): string {
   return `weekly-${target}`;
@@ -136,7 +137,7 @@ export function dispatchDestaqueFor(target: LinkedinTarget): string {
  * e não dá pra importar dele: o objetivo é falhar ANTES do dispatch em vez de
  * descobrir via HTTP 400 no meio da sequência.
  */
-const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
+export const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
 
 /**
  * Guard de pré-voo: valida o `destaque` de TODOS os targets desta run contra o
@@ -343,8 +344,13 @@ export async function runArtigoEspecialLinkedinDispatch(
       // publica a edição diária. `destaque` no Worker é só carimbo de
       // auditoria (não há ramificação por prefixo `weekly`, conferido em
       // index.ts), então o efeito colateral é cosmético no log dele.
-      // Nosso store local (`linkedin-published.json`) continua gravando
-      // "pagina"/"perfil" — ver `dispatchDestaqueFor`.
+      // Este valor também acaba gravado em `linkedin-published.json` (o
+      // `dispatchEntry` persiste `destaque` verbatim), então o store guarda
+      // "weekly-pagina"/"weekly-perfil". Quem absorve isso é a LEITURA, via
+      // `channelForStoredDestaque` — ver o docblock dele.
+      //
+      // NUNCA troque esta linha por `destaque: target` sem antes conferir o
+      // contrato do Worker: era exatamente isso aqui que causava o 400.
       destaque: dispatchDestaqueFor(target),
       subtype: "main",
       text,
