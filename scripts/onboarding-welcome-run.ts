@@ -153,9 +153,20 @@ interface RawSubscription extends Record<string, unknown> {
  * Fix: `order_by=created&direction=desc` (confirmado funcional ao vivo)
  * devolve o MAIS RECENTE primeiro — pagina nessa ordem e para assim que
  * encontrar (ou passar de) `gteSec`, filtrando client-side. Como a ordem é
- * decrescente, o primeiro item com `created <= gteSec` garante que TODO
- * item seguinte também é `<= gteSec` — não há risco de faltar alguém mais
+ * decrescente, o primeiro item com `created < gteSec` garante que TODO
+ * item seguinte também é `< gteSec` — não há risco de faltar alguém mais
  * novo que ainda esteja numa página futura.
+ *
+ * Corte é `<` (estrito), não `<=` — mantém a semântica INCLUSIVA do
+ * `created_at__gte` original (>= cursor conta como novo). Isso importa
+ * porque `main()` avança o cursor pro maior `created` visto no run: um
+ * `<=` excluiria PERMANENTEMENTE qualquer assinante futuro que caia
+ * exatamente nesse mesmo segundo (import em lote, corrida de paginação) —
+ * dropado aqui dentro de `fetchSubscriptionsSince`, antes até de chegar no
+ * dedup por id de `classifyNewSubscribers`. Com `<`, um item empatado no
+ * cursor é reincluído e o dedup por `subscription_id` cuida de não
+ * duplicar entrada pra quem já é conhecido — reprocessar um id já visto é
+ * inofensivo, perder um novo de vez não é (achado do review de #6054).
  */
 async function fetchSubscriptionsSince(
   publicationId: string,
@@ -176,8 +187,9 @@ async function fetchSubscriptionsSince(
     const chunk = res.body.data ?? [];
     if (chunk.length === 0) break;
     for (const s of chunk) {
-      if (s.created != null && s.created <= gteSec) {
-        // Página ordenada desc: a partir daqui tudo é <= gteSec. Para.
+      if (s.created != null && s.created < gteSec) {
+        // Página ordenada desc: a partir daqui tudo é < gteSec. Para.
+        // (estrito — ver docstring: empate no cursor conta como novo)
         more = false;
         break;
       }

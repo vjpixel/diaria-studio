@@ -13,25 +13,33 @@
  *
  * Fix: pedir `order_by=created&direction=desc` (confirmado funcional) e
  * filtrar CLIENT-SIDE, parando assim que a página (ordenada desc) alcança
- * um item `created <= cursor`.
+ * um item `created < cursor` (corte ESTRITO — ver docstring de
+ * `fetchSubscriptionsSince`: empate exato no cursor conta como novo, pra
+ * manter a semântica inclusiva do `created_at__gte` original).
  *
  * Este teste sobe um mock HTTP local da API Beehiiv (mesmo padrão de
  * test/verify-scheduled-post.test.ts — override `BEEHIIV_API_URL`, nunca
- * toca a API real) e roda o script REAL em dry-run (sem `--send`, nenhuma
- * chamada Brevo é feita) contra um store fixture com cursor conhecido.
- * Cobre os dois pontos da regressão:
+ * toca a API real). Cobre:
  *
  *   1. A requisição feita à Beehiiv usa `order_by=created&direction=desc`
  *      (nunca mais `created_at__gte`, que provou ser um no-op perigoso).
- *   2. Assinantes com `created <= cursor` NUNCA entram em `detected_new`,
+ *   2. Assinantes com `created < cursor` NUNCA entram em `detected_new`,
  *      mesmo vindo na mesma resposta que assinantes genuinamente novos —
  *      é exatamente o cenário que causou o incidente (resposta contendo
  *      uma mistura de antigos e novos, sem filtro de servidor confiável).
+ *   3. Um assinante com `created === cursor` (empate exato) É contado como
+ *      novo — achado do review de #6054: um corte `<=` dropava esse caso
+ *      permanentemente, pois o cursor avança pro maior `created` visto e
+ *      um empate no próximo run cairia fora do filtro sem passar sequer
+ *      pelo dedup por id de `classifyNewSubscribers`.
+ *   4. Com `--send` (segundo teste), o cursor persistido em disco avança
+ *      pro maior `created` DETECTADO (não o antigo, que nunca entra em
+ *      `all`) — prova que `main()` não regride pra uma direção errada.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -103,21 +111,29 @@ function startMockBeehiiv(subscriptions: { id: string; email: string; status: st
 }
 
 describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
-  it("filtra client-side por created <= cursor e nunca envia created_at__gte à API", async () => {
-    // Cursor relativo a AGORA (não um epoch fixo arbitrário): os "novos"
-    // ficam a minutos de distância — bem dentro da janela de 3 dias do
-    // e-mail 2, então NÃO disparam o passo de refresh individual (que só
-    // olha candidatos due), o que deixaria a asserção de query mais simples
-    // e fiel ao caminho real (detecção pura, sem ruído de outra chamada).
+  // Cursor relativo a AGORA (não um epoch fixo arbitrário): os "novos"
+  // ficam a minutos/segundos de distância — bem dentro da janela de 3 dias
+  // do e-mail 2, então NÃO disparam o passo de refresh individual (que só
+  // olha candidatos due), o que deixaria as asserções mais simples e fiéis
+  // ao caminho real (detecção pura, sem ruído de outra chamada).
+  function buildFixture() {
     const nowSec = Math.floor(Date.now() / 1000);
     const CURSOR = nowSec - 3600; // 1h atrás
-    // 2 "novos" (created > cursor) + 1 "antigo" (created <= cursor, mesma
-    // resposta) — replica o cenário real do incidente: página mista.
+    // 2 "novos" (created > cursor) + 1 "empatado" (created === cursor,
+    // achado #6054 — deve contar como novo) + 1 "antigo" (created < cursor)
+    // — todos na MESMA resposta, replicando o cenário real do incidente:
+    // página mista, sem filtro de servidor confiável.
     const subscriptions = [
       { id: "sub_novo_2", email: "novo2@example.com", status: "active", created: nowSec - 200 },
       { id: "sub_novo_1", email: "novo1@example.com", status: "active", created: nowSec - 100 },
+      { id: "sub_empate_cursor", email: "empate@example.com", status: "active", created: CURSOR },
       { id: "sub_antigo", email: "antigo@example.com", status: "active", created: CURSOR - 999_999 },
     ];
+    return { nowSec, CURSOR, subscriptions };
+  }
+
+  it("filtra client-side por created < cursor (estrito) e nunca envia created_at__gte à API", async () => {
+    const { CURSOR, subscriptions } = buildFixture();
     const { server, url, lastListQuery } = await startMockBeehiiv(subscriptions);
     const dir = mkdtempSync(resolve(tmpdir(), "diaria-onboarding-6043-"));
     try {
@@ -147,8 +163,8 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
       assert.equal(summary.mode, "dry-run");
       assert.equal(
         summary.detected_new,
-        2,
-        `esperado detectar só os 2 assinantes com created > cursor — obteve ${summary.detected_new}. stdout: ${r.stdout}`,
+        3,
+        `esperado detectar os 2 "novos" + o empatado no cursor (created === cursor conta como novo) — obteve ${summary.detected_new}. stdout: ${r.stdout}`,
       );
 
       const query = lastListQuery();
@@ -159,6 +175,57 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
       );
       assert.match(query, /order_by=created/, `esperado order_by=created na query — obteve: ${query}`);
       assert.match(query, /direction=desc/, `esperado direction=desc na query — obteve: ${query}`);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--send: cursor persistido em disco avança pro maior created DETECTADO, entry antiga nunca entra no store", async () => {
+    const { nowSec, CURSOR, subscriptions } = buildFixture();
+    const { server, url } = await startMockBeehiiv(subscriptions);
+    const dir = mkdtempSync(resolve(tmpdir(), "diaria-onboarding-6043-send-"));
+    try {
+      const configPath = resolve(dir, "platform.config.json");
+      const storePath = resolve(dir, "store.json");
+      const snippetsDir = resolve(dir, "snippets"); // sem arquivos — email1/2/3 ficam skip (corpo_pendente), só o cursor/entries importam aqui
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          onboarding: { enabled: true, snippets_dir: snippetsDir, store_path: storePath, sender_email: "oi@example.com" },
+        }),
+      );
+      writeFileSync(
+        storePath,
+        JSON.stringify({ version: 1, last_detection_cursor: CURSOR, d10_brevo_list_id: null, entries: {} }),
+      );
+
+      const r = await spawnScriptAsync(["--config", configPath, "--store", storePath, "--send"], {
+        ...process.env,
+        BEEHIIV_API_KEY: "test-key-6043",
+        BEEHIIV_PUBLICATION_ID: PUB_ID,
+        BEEHIIV_API_URL: url,
+        BREVO_DIARIA_API_KEY: "test-brevo-key-6043",
+      });
+
+      assert.equal(r.status, 0, `esperado exit 0 — stderr: ${r.stderr}`);
+
+      const written = JSON.parse(readFileSync(storePath, "utf8")) as {
+        last_detection_cursor: number;
+        entries: Record<string, { email: string }>;
+      };
+      assert.equal(
+        written.last_detection_cursor,
+        nowSec - 100,
+        `cursor deveria avançar pro maior created DETECTADO (o "novo" mais recente) — obteve ${written.last_detection_cursor}`,
+      );
+      const ids = Object.keys(written.entries);
+      assert.deepEqual(
+        ids.sort(),
+        ["sub_empate_cursor", "sub_novo_1", "sub_novo_2"].sort(),
+        `store deveria conter só os 3 detectados como novos — obteve ${JSON.stringify(ids)}`,
+      );
+      assert.ok(!("sub_antigo" in written.entries), "sub_antigo (created < cursor) nunca deveria entrar no store");
     } finally {
       server.close();
       rmSync(dir, { recursive: true, force: true });
