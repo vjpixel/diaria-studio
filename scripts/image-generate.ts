@@ -164,6 +164,55 @@ export function resolveWideImageIntegrity(
   return { kind: "regenerate" };
 }
 
+/**
+ * Paths dos formatos DERIVADOS (4:5 nativo composto à parte, e o master 6:5)
+ * que ficam potencialmente STALE sempre que o par wide 2x1/1x1 é de fato
+ * REEGERADO (#6010 — achado ao vivo edição 260824).
+ *
+ * Causa raiz do #6010: `gen-social-card-4x5.ts`'s `generateCard()` prioriza
+ * `04-{d}-4x5-nativo.jpg` sobre `04-{d}-2x1.jpg` na cadeia de fallback (ver
+ * docstring de `generateCard`). Quando um destaque é TROCADO no meio do
+ * Stage 4 (artigo A → artigo B, mesma posição D{N}), a cascata de título
+ * regenera corretamente o par 2x1/1x1 — mas nunca tocava o nativo/master
+ * antigos, que sobreviviam no disco apontando pra arte do artigo ANTIGO.
+ * Como o nativo tem prioridade 1 na cadeia, o card social 4:5 continuava
+ * mostrando a arte errada indefinidamente, mesmo após múltiplas
+ * regenerações "corretas" dos formatos base.
+ *
+ * Fix (opção 2 da issue — mais simples e à prova de esquecimento, não
+ * depende de mais um invariant WARNING que pode ser ignorado): sempre que o
+ * 2x1 é efetivamente regenerado (action.kind === "regenerate" — nunca em
+ * "skip"/"derive-1x1-from-2x1", onde o 2x1 existente NÃO muda), apagar
+ * nativo/master existentes. `gen-social-card-4x5.ts` cai pro fallback 2:1
+ * (correto, ainda que subótimo) até alguém rodar
+ * `image-generate.ts --ratio 4x5 --force` de novo pra recompor a arte
+ * nativa a partir do conteúdo atual.
+ */
+export function staleDerivedImagePaths(outDir: string, destaque: string): string[] {
+  const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
+  return [
+    `${normalizedOutDir}04-${destaque}-4x5-nativo.jpg`,
+    `${normalizedOutDir}04-${destaque}-master.jpg`,
+  ];
+}
+
+/**
+ * Decide QUAIS paths derivados purgar dado o resultado de
+ * `resolveWideImageIntegrity` — pura, sem tocar disco (mesmo padrão de
+ * `resolveWideImageIntegrity`/`resolveRatio`, testável sem I/O). Só
+ * "regenerate" invalida os derivados: em "skip" e "derive-1x1-from-2x1" o
+ * conteúdo do 2x1 permanece o mesmo de antes (não regenerado), então
+ * nativo/master baseados nele continuam válidos.
+ */
+export function computeStaleDerivedImages(
+  action: WideImageIntegrityAction,
+  outDir: string,
+  destaque: string,
+): string[] {
+  if (action.kind !== "regenerate") return [];
+  return staleDerivedImagePaths(outDir, destaque);
+}
+
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
   const scene = editorialText
@@ -323,6 +372,20 @@ function main() {
     // action.kind === "regenerate": widePath2x1 está confirmadamente ausente
     // neste ponto (ou --force pedido explicitamente) — segue pro fluxo normal
     // abaixo, sem risco de sobrescrever um 2x1 promovido em silêncio.
+
+    // #6010: o 2x1 vai ser (re)gerado a partir do prompt ATUAL — qualquer
+    // 4x5-nativo/master pré-existente foi derivado de um 2x1 anterior
+    // (possivelmente de um artigo TROCADO) e fica STALE. Apagar agora, antes
+    // da geração, pra `gen-social-card-4x5.ts` nunca escolher a arte errada
+    // pela cadeia de prioridade (nativo > master > 2x1).
+    for (const staleP of computeStaleDerivedImages(action, normalizedOutDir, destaque)) {
+      if (existsSync(staleP)) {
+        console.error(
+          `image-generate: apagando ${staleP} — formato derivado STALE (base 2x1 sendo regenerada, #6010).`,
+        );
+        unlinkSync(staleP);
+      }
+    }
   } else {
     const outExists = existsSync(outJpgPath);
     console.error(
