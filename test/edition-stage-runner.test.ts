@@ -24,6 +24,8 @@ import {
   summarizeFailure,
   formatStagesSummary,
   FAILURE_TAIL_LINES,
+  NO_BACKGROUND_DIRECTIVE,
+  BACKGROUND_WAIT_MAX_ATTEMPTS,
 } from "../scripts/lib/edition-stage-runner.ts";
 import { planThrough, main as cliMain, DEFAULT_THROUGH } from "../scripts/run-edition-stages.ts";
 import { readFileSync, existsSync } from "node:fs";
@@ -187,7 +189,7 @@ describe("edition-stage-runner — laço", () => {
     runEditionStages(makeOpts({ execFn }));
 
     assert.equal(prompts.length, STAGE_PLAN.length);
-    for (const p of prompts) assert.ok(p.endsWith(HEADLESS_FLAGS), `prompt sem ${HEADLESS_FLAGS}: ${p}`);
+    for (const p of prompts) assert.ok(p.includes(HEADLESS_FLAGS), `prompt sem ${HEADLESS_FLAGS}: ${p}`);
   });
 
   it("--through 3 spawna só 1-3 — o corte do caminho interativo", () => {
@@ -198,14 +200,71 @@ describe("edition-stage-runner — laço", () => {
     runEditionStages(makeOpts({ execFn, plan: planThrough(3) }));
 
     assert.deepEqual(prompts, [
-      `/diaria-1-pesquisa ${AAMMDD} --no-gates`,
-      `/diaria-2-escrita ${AAMMDD} --no-gates`,
-      `/diaria-3-imagens ${AAMMDD} --no-gates`,
+      `/diaria-1-pesquisa ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-2-escrita ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
     ]);
     // O Stage 4 fica de fora porque é onde está o gate humano de revisão —
     // ele roda NA sessão do editor, já com o contexto limpo que os 3 spawns
     // acima preservaram.
     assert.ok(!prompts.some((p) => p.includes("diaria-4-revisao")));
+  });
+
+
+  it("#6045: todo prompt carrega a diretiva anti-background (sessão single-turn)", () => {
+    W = sentinelWorld(0);
+    const prompts: string[] = [];
+    const execFn = spawnInto(W, prompts);
+
+    runEditionStages(makeOpts({ execFn }));
+
+    assert.ok(prompts.length > 0);
+    for (const p of prompts) {
+      assert.match(p, /single-turn/);
+      assert.match(p, /run_in_background/);
+    }
+  });
+
+  it("#6045: saída com sintoma background-wait e sentinela ausente -> 1 retry antes de falhar", () => {
+    W = sentinelWorld(0); // stage 1 só completa no retry
+    const prompts: string[] = [];
+    const bgStdout =
+      "I'll wait for the background task notification (stage-1-run.ts pre-research) before continuing.";
+    const execFn = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      const m = args[args.length - 1].match(/diaria-(\d)-/);
+      if (m && prompts.filter((p) => p.includes("diaria-1-")).length > 1) W.complete(Number(m[1])); // só o retry completa
+      return bgStdout;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    assert.equal(result.exitCode, 0, "retry completou o stage — não é falha");
+    assert.equal(result.failedStage, null);
+    assert.equal(
+      prompts.filter((p) => p.includes("diaria-1-")).length,
+      2,
+      "exatamente 1 tentativa original + 1 retry do stage 1",
+    );
+    assert.ok(result.outcomes.find((o) => o.stage === 1 && o.status === "ok"));
+  });
+
+  it("#6045: sintoma background-wait persistente -> falha só após esgotar as tentativas", () => {
+    W = sentinelWorld(0, [1]);
+    const prompts: string[] = [];
+    const bgStdout = "Running in background, waiting for it to finish.";
+    const execFn = ((_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return bgStdout;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+
+    const result = runEditionStages(makeOpts({ execFn }));
+
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.failedStage, 1);
+    assert.equal(prompts.length, BACKGROUND_WAIT_MAX_ATTEMPTS, "1 original + retries do teto, nada além");
+    assert.equal(result.outcomes.length, 1, "stages seguintes não rodam sobre output ausente");
+    assert.match(result.outcomes[0].failureTail ?? "", /background|não completou/i);
   });
 
   it("falha interrompe o laço: stages seguintes não spawnam", () => {
@@ -299,8 +358,8 @@ describe("edition-stage-runner — laço", () => {
     );
 
     assert.deepEqual(prompts, [
-      `/diaria-3-imagens ${AAMMDD} --no-gates`,
-      `/diaria-4-revisao ${AAMMDD} --no-gates`,
+      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-4-revisao ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
     ]);
     assert.deepEqual(
       result.outcomes.filter((o) => o.status === "skipped").map((o) => o.stage),

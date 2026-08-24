@@ -88,6 +88,39 @@ export const MAX_TURNS = "120";
 /** Linhas de stdout/stderr preservadas quando um stage falha. */
 export const FAILURE_TAIL_LINES = 20;
 
+/**
+ * Diretiva anti-background anexada a TODO prompt headless (#6045).
+ *
+ * `claude --print` é single-turn: depois da resposta do turno, o processo
+ * encerra. Se o playbook do stage leva a sessão a disparar algo via
+ * `run_in_background=true` e "esperar a notificação", essa notificação nunca
+ * chega — não existe turno seguinte — e o wrapper reporta FALHOU mesmo quando
+ * o trabalho real terminou (observado ao vivo na edição 260825, Stages 1 e 2).
+ * A instrução abaixo é preventiva; `looksLikeBackgroundWaitExit` + o retry
+ * único são a defesa em profundidade para quando ela não bastar.
+ */
+export const NO_BACKGROUND_DIRECTIVE =
+  "IMPORTANTE (sessão single-turn): esta sessão NÃO receberá turnos seguintes. " +
+  "Nunca use tarefas em segundo plano (run_in_background/background tasks) nem espere " +
+  "notificação de task — execute TODA ferramenta em primeiro plano (foreground), " +
+  "bloqueando até terminar, antes de escrever sua resposta final.";
+
+/**
+ * Detecta a assinatura do #6045 no stdout de uma sub-sessão que saiu sem
+ * completar: ela despachou uma task em background e encerrou "esperando" a
+ * notificação que jamais chegaria. Case-insensitive de propósito.
+ */
+export function looksLikeBackgroundWaitExit(stdout: string): boolean {
+  const s = stdout.toLowerCase();
+  return (
+    (s.includes("background") && (s.includes("waiting") || s.includes("wait for"))) ||
+    s.includes("waiting for the background task")
+  );
+}
+
+/** Tentativas por stage quando o sintoma do #6045 é detectado (1 original + 1 retry). */
+export const BACKGROUND_WAIT_MAX_ATTEMPTS = 2;
+
 /** Resultado de um stage individual — nunca inclui o stdout de sucesso. */
 export interface StageOutcome {
   stage: number;
@@ -220,11 +253,27 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       continue;
     }
 
-    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}`;
-    onProgress(`Stage ${stage}: claude -p '${prompt}'`);
-    const startedAt = nowMs();
+    // #6045: a diretiva anti-background vai NO PROMPT — é o único canal
+    // garantido de alcançar a sub-sessão (o playbook do stage pode levar
+    // o modelo a disparar task em background; a instrução explícita de
+    // single-turn previne o sintoma na origem).
+    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS} ${NO_BACKGROUND_DIRECTIVE}`;
+    onProgress(`Stage ${stage}: claude -p '${prompt.slice(0, 80)}…'`);
 
-    try {
+    let stageOutcome: StageOutcome | null = null;
+    // Defesa em profundidade (#6045): se MESMO com a diretiva a sub-sessão
+    // sair com a assinatura "despachei background e estou esperando", repete
+    // o stage UMA vez antes de declarar falha. A resumabilidade por sentinela
+    // torna o retry barato: trabalho já gravado em disco não é refeito pelo
+    // orquestrador da skill.
+    for (let attempt = 1; attempt <= BACKGROUND_WAIT_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        onProgress(
+          `Stage ${stage}: retry (tentativa ${attempt}/${BACKGROUND_WAIT_MAX_ATTEMPTS}) — saída anterior com sintoma background-wait (#6045)`,
+        );
+      }
+      const startedAt = nowMs();
+      try {
       // Capturado sempre (#5791), mesmo que o caminho feliz descarte a
       // variável logo abaixo sem nunca a incluir em `outcomes`. O ponto do
       // #5791 é exatamente este: no branch de sucesso-mas-sentinela-ausente
@@ -276,39 +325,53 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           after.reason === "outputs_missing"
             ? `outputs declarados ausentes: ${after.missingOutputs.join(", ")}`
             : "sentinela não foi escrita";
-        // #5791: instrumentação de observabilidade, não fix da causa raiz —
-        // a causa (`execFileSync` com stdio pipe/env saneado vs shell do
-        // editor herdando fds/env completo; comportamento específico do
-        // Windows) ainda não foi confirmada. Sem as últimas linhas do que o
-        // processo filho de fato escreveu, este branch não tinha NENHUM sinal
-        // pra diagnosticar a próxima ocorrência — só o fato "não completou".
-        const tail = summarizeFailure(typeof stdout === "string" ? stdout : "");
+        // #5791/#6045: instrumentação de observabilidade + detecção do
+        // sintoma background-wait. Com o sintoma presente e retry restante,
+        // NÃO declara falha ainda — repete o stage.
+        const stdoutText = typeof stdout === "string" ? stdout : "";
+        if (looksLikeBackgroundWaitExit(stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+          continue;
+        }
+        const tail = summarizeFailure(stdoutText);
         exitCode = 1;
         failedStage = stage;
-        outcomes.push({
+        stageOutcome = {
           stage,
           skill,
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
           failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail} | últimas linhas de stdout: ${tail}`,
-        });
+        };
         break;
       }
 
       outcomes.push({ stage, skill, status: "ok", exitCode: 0, durationMs: nowMs() - startedAt });
+      stageOutcome = null;
+      break;
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string; message?: string };
+      const combined = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
+      // #6045: mesmo tratamento no caminho de exceção — retry único quando a
+      // assinatura background-wait está presente.
+      if (looksLikeBackgroundWaitExit(combined) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+        continue;
+      }
       exitCode = err.status ?? 1;
       failedStage = stage;
-      outcomes.push({
+      stageOutcome = {
         stage,
         skill,
         status: "failed",
         exitCode,
         durationMs: nowMs() - startedAt,
-        failureTail: summarizeFailure([err.stdout, err.stderr, err.message].filter(Boolean).join("\n")),
-      });
+        failureTail: summarizeFailure(combined),
+      };
+      break;
+    }
+    }
+    if (stageOutcome !== null) {
+      outcomes.push(stageOutcome);
       break;
     }
   }
