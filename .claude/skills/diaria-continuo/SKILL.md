@@ -7,6 +7,20 @@ effort: medium
 
 # /diaria-continuo
 
+> **ANTES DE DELETAR ESTA SKILL OU A INFRA DELA, LEIA (#6056/#6059/#6060,
+> 24/08/2026).** A infraestrutura que este arquivo documenta (kind `continuo`
+> no `session-registry`, `continuo-plan-rotation.ts`,
+> `continuo-cost-summary.ts`, `check-continuo-token-instrumentation.ts`, o hook
+> `notify-continuo-askuserquestion.mjs`, `COORDINATOR_KINDS`) é consumida por
+> uma skill que **não vive neste repo**: a `hermes-diaria-continuo`, local do
+> `helios`, disparada por um cron do Claude Code a cada 60min DENTRO deste
+> checkout. O #6059 deletou tudo isso junto com a skill e quebrou o loop de
+> produção dela — revertido no #6060. Guard mecânico:
+> `test/continuo-infra-consumidor-externo.test.ts`. Remover ESTE arquivo
+> (o pedido original do #6056) segue possível, mas só depois de confirmar no
+> `helios` que a `hermes-diaria-continuo` duplica o conteúdo em vez de
+> CITÁ-LO — o padrão deste repo é citar, não duplicar.
+
 > **Estado (#5293, atualizado 14/08/2026): itens 1-6 implementados.** A
 > primeira unidade desta issue entregou só o esqueleto (itens 1-2 — este
 > SKILL.md + o kind `"continuo"` em `session-registry.ts`). Esta unidade
