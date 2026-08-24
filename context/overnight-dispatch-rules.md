@@ -182,7 +182,7 @@ violação, com dano mensurável desta vez (fix mergeado sem o teste de
 regressão que o fleet review tinha apontado como bloqueante, commit do teste
 órfão numa branch já deletada). `.claude/hooks/block-gh-pr-merge-subagent.mjs`
 (`PreToolUse` sobre `Bash`) nega `gh pr merge` quando a chamada não pertence à
-sessão coordenadora registrada de uma rodada overnight/develop/continuo ativa
+sessão coordenadora registrada de uma rodada overnight/develop ativa
 (`data/sessions/*.json`, escrito por `scripts/lib/session-registry.ts
 register`) — mesmo padrão de identidade de sessão de
 `block-askuserquestion-overnight-autonomous.mjs`/`inject-session-id.mjs`.
@@ -217,7 +217,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"})
 diagnóstico em background). Esses comandos casam por **nome de imagem/padrão
 de linha de comando**, não por PID/árvore do chamador — matam TODO processo
 com esse nome na máquina, incluindo os de **outras sessões concorrentes**
-(overnight, develop, continuo, sessão interativa do editor — múltiplas
+(overnight, develop, sessão interativa do editor — múltiplas
 sessões coexistem na mesma máquina por design, #5156), o Studio server,
 scheduled tasks, ou o próprio harness do Claude Code.
 
@@ -253,8 +253,8 @@ mudança em `invariant-checks/`.
 Se já houver PR/trabalho aberto cobrindo o mesmo escopo, ou a issue já
 estiver fechada, **parar e reportar ao coordenador** em vez de implementar —
 não seguir adiante assumindo que o próprio trabalho ainda é necessário.
-Aplica-se a **todo dispatch desta linha de skills** (overnight, develop,
-continuo), não só ao `/diaria-continuo`, onde foi identificado como gap.
+Aplica-se a **todo dispatch desta linha de skills** (overnight, develop) —
+foi identificado como gap na antiga `/diaria-continuo` (aposentada, #6056).
 
 Incidente de referência: o 1º dispatch da rodada `/diaria-continuo` de
 260814 (issue #5304) colidiu com um PR já aberto por uma sessão interativa
@@ -262,19 +262,19 @@ paralela do editor no mesmo checkout (#5308), gerando um PR duplicado
 (#5312) que teve que ser fechado. A checagem só foi adicionada aos prompts
 de dispatch **depois** desse incidente, ad-hoc — isto formaliza o preflight
 como checklist canônico, não uma correção manual repetida a cada rodada.
-Esperado sobretudo em `/diaria-continuo` (roda em paralelo a sessões
-interativas comuns do mesmo editor por design), mas vale igualmente em
-overnight/develop contra qualquer sessão concorrente.
+Vale em overnight/develop contra qualquer sessão concorrente (o incidente
+de origem foi na antiga `/diaria-continuo`, que rodava em paralelo a sessões
+interativas do mesmo editor por design).
 
 ## 15. Critérios de agrupamento em lotes (#2024, #3453 Rec 3, teto #2754)
 
 **Escopo diferente dos itens 1-13 acima**: estes não são regras que o
 subagente implementador segue — são o critério que o **coordenador**
-(overnight/develop/continuo) usa para decidir se agrupa issues numa única
+(overnight/develop) usa para decidir se agrupa issues numa única
 unidade de trabalho *antes* de dispatchar. Colocado aqui, e não só na Fase 0
-do `.claude/skills/diaria-overnight/SKILL.md` (107KB), porque `continuo`
-(que não tem Fase 0/briefing único) e `develop` precisam do mesmo critério
-sem pagar o custo de abrir o SKILL.md inteiro do overnight (#5344 Parte B3).
+do `.claude/skills/diaria-overnight/SKILL.md` (107KB), porque `develop`
+precisa do mesmo critério sem pagar o custo de abrir o SKILL.md inteiro do
+overnight (#5344 Parte B3).
 A versão do overnight (Fase 0, passo 6) segue sendo a autoritativa para o
 formato do briefing/exemplo de plano — esta seção é o critério em si,
 citável por qualquer coordenador desta linha de skills.
@@ -314,22 +314,19 @@ do coordenador confere que o diff cobre de fato **todas** elas.
 
 **Onde a aprovação do agrupamento é registrada varia por skill** — overnight
 tem Fase 0/briefing único (`batch_approval: "editor_approved" |
-"editor_adjusted" | "default_proposed"`); `continuo` não tem briefing e usa
-sempre `"default_proposed"` como default permanente, decisão mecânica do
-coordenador a cada dispatch (nunca vira `AskUserQuestion` novo — ver
-`.claude/skills/diaria-continuo/SKILL.md`, "Loop invariável" passo 1).
+"editor_adjusted" | "default_proposed"`).
 
 ## 16. Viés de autoria e confiança em PR alheio (#5484)
 
 **Escopo diferente dos itens 1-14**: este item, como o 15, é critério do
-**coordenador** (overnight/develop/continuo) — quem decide se dispatcha ou
+**coordenador** (overnight/develop) — quem decide se dispatcha ou
 adia uma issue — não do subagente implementador. Dois padrões concretos
 observados ao vivo na rodada 260816e, ambos corrigidos só depois de o
 editor perguntar 4× "por que essas issues elegíveis ficaram sem dispatch?":
 
 **(a) Issue de autoria da própria sessão nunca recebe tratamento mais
-permissivo que issue de terceiro.** Ter escrito a issue (overnight, develop
-ou continuo — inclusive com sugestão de implementação já no corpo) não é
+permissivo que issue de terceiro.** Ter escrito a issue (overnight ou
+develop — inclusive com sugestão de implementação já no corpo) não é
 motivo pra adiar — se algo, é o oposto: mais contexto prévio é menos
 justificativa pra adiar, não mais. "Exige decisão de design", "melhor numa
 rodada com mais contexto dedicado" ou equivalente só valem como razão pra
@@ -397,7 +394,7 @@ reduz a chance de recorrência.
 ## 18. `session-registry.ts claim-issue`/`is-claimed` — nunca em comando encadeado (#5751)
 
 **Escopo diferente dos itens 1-14**: como os itens 15-17, este é critério do
-**coordenador** (overnight/develop/continuo) — é ele quem chama
+**coordenador** (overnight/develop) — é ele quem chama
 `session-registry.ts`, não o subagente implementador. `.claude/hooks/
 inject-session-id.mjs` só injeta `--session-id` em comando **NÃO-encadeado**
 (`isChainedCommand` rejeita qualquer `&&`/`;`/`|`/newline, de propósito — ver

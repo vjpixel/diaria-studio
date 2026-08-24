@@ -176,28 +176,6 @@ export interface Plan {
    * volta pro `machine_id`, comportamento idêntico ao pré-#5156.
    */
   session_id?: string;
-  /**
-   * `/diaria-continuo` only (#5344 Parte B5, 15/08/2026) — contador de
-   * varreduras ociosas consecutivas (fila desbloqueada seca E sem resposta
-   * pendente) no passo 6 do "Loop invariável". Alimenta o backoff
-   * progressivo do `ScheduleWakeup`: 0→1200s, 1→1800s, 2→2700s, ≥3→3600s
-   * (teto). Resetado a 0 quando o passo 1 encontra issue nova ou o passo 5
-   * processa resposta do editor. Ausente/`undefined` → tratar como `0` (fail-
-   * open, mesmo padrão dos demais campos opcionais deste arquivo). Não usado
-   * pelo overnight/develop (loop deles não tem cadência de sono ociosa
-   * análoga).
-   */
-  idle_scan_streak?: number;
-  /**
-   * `/diaria-continuo` only (#5344 Parte B6, 15/08/2026) — timestamp ISO
-   * 8601 da última varredura bem-sucedida de `gh issue list --state open`
-   * (passo 2 do "Loop invariável"). Usado como `--search "updated:>={este
-   * valor}"` na próxima varredura, pra reclassificar só o delta em vez do
-   * backlog inteiro — issues fora do delta reusam a classificação já
-   * cacheada em `plan.json.issues`. Ausente/vazio → próxima varredura é
-   * full-scan (comportamento pré-B6, seguro por padrão).
-   */
-  last_scan_at?: string;
   [key: string]: unknown;
 }
 

@@ -312,8 +312,9 @@ describe("collectUsageInWindow — filtro por sessão (#5413)", () => {
 
   /**
    * Reproduz a contaminação medida na edição 260814: a sessão da edição
-   * (`edicao`) e uma sessão concorrente (`concorrente`, um /diaria-continuo
-   * rodando ao lado) gravam turnos na MESMA janela de tempo do stage. Antes
+   * (`edicao`) e uma sessão concorrente (`concorrente` — na medição real, a
+   * antiga /diaria-continuo rodando ao lado) gravam turnos na MESMA janela
+   * de tempo do stage. Antes
    * do #5413 os dois entravam na conta — 29% do total atribuído à edição
    * vinha de sessões que não eram a edição.
    */

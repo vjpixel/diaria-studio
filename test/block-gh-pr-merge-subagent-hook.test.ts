@@ -16,7 +16,7 @@ import {
 // PR — 2ª ocorrência do incidente #4740 (a Regra 11 de
 // context/overnight-dispatch-rules.md era só prosa, sem enforcement). Este
 // hook nega `gh pr merge` quando a chamada não pertence à sessão
-// coordenadora registrada de uma rodada overnight/develop/continuo ativa.
+// coordenadora registrada de uma rodada overnight/develop ativa.
 
 describe("isGhPrMergeCommand (#5716)", () => {
   it("detecta 'gh pr merge' standalone", () => {
@@ -182,7 +182,7 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
     assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess1"]));
   });
 
-  it("sessão kind=develop e kind=continuo também contam", () => {
+  it("sessão kind=develop também conta; kind=continuo (aposentado, #6056) NÃO conta mais", () => {
     const root = freshRoot();
     writeSession(root, "develop-helios-sess2.json", {
       kind: "develop",
@@ -190,13 +190,15 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: machineTag(),
     });
+    // Registro remanescente da antiga /diaria-continuo (ex: sync atrasado do
+    // OneDrive) — deixa de contar como coordenador desde #6056.
     writeSession(root, "continuo-helios-sess3.json", {
       kind: "continuo",
       sessionId: "sess3",
       startedAt: new Date(NOW - ONE_HOUR_MS).toISOString(),
       machineTag: machineTag(),
     });
-    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess2", "sess3"]));
+    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set(["sess2"]));
   });
 
   it("kind desconhecido/irrelevante é ignorado", () => {

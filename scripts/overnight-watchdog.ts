@@ -78,21 +78,13 @@
  * GUARD DE PUBLICAÇÃO: este script é só observabilidade/alerta.
  * NUNCA toca Beehiiv/LinkedIn/Facebook/Brevo, PRs, nem merge.
  *
- * #5293 item 3 introduziu suporte a DOIS kinds na mesma invocação —
- * `data/overnight/{AAMMDD}/` e `data/continuo/{AAMMDD}/`. **#5390
- * (15/08/2026) voltou `WATCHED_KINDS` a vigiar só `"overnight"`** — o wake
- * ocioso de `/diaria-continuo` passou de 20-30min pra 4h, e não existe
- * limiar de stall abaixo de 4h que não dispare em toda janela ociosa
- * saudável dessa skill (ver `WATCHED_KINDS` mais abaixo pro rationale
- * completo). O maquinário multi-kind (`WatchableKind`, o ramo
- * `kind === "continuo"` de `findActiveRun` — que por desenho nunca escreve
- * `report.md`, "ativa" ali é só "existe plan.json" no diretório mais
- * recente —, `hasHealthyIdleSession`/`HEALTHY_IDLE_PHASES`) continua no
- * arquivo, só não é mais exercitado em produção: uma sessão contínua
- * parada de propósito (aguardando resposta do editor, ou pausada pelo
- * guard de colisão com a edição diária) sinalizava isso via
- * `hasHealthyIdleSession` pra este watchdog nunca disparar alerta nela —
- * mecanismo preservado, caso o kind volte a ser vigiado no futuro.
+ * #5293 item 3 introduziu suporte a DOIS kinds na mesma invocação
+ * (`overnight` + `continuo`); #5390 (15/08/2026) voltou `WATCHED_KINDS` a
+ * vigiar só `"overnight"`; #6056 (24/08/2026) aposentou a skill
+ * `/diaria-continuo` e removeu daqui o maquinário que só existia por causa
+ * dela (`hasHealthyIdleSession`/`HEALTHY_IDLE_PHASES`, o ramo
+ * `kind === "continuo"` de `findActiveRun`). A orquestração multi-kind
+ * (`WatchableKind`/`runAllWatchedKinds`) fica — é genérica e testada.
  *
  * Deve ser agendado externamente (systemd timer, Task Scheduler, cron) para
  * rodar a cada 10 min (cadência atual em produção). Ver docs/overnight-watchdog-setup.md.
@@ -110,7 +102,6 @@ import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import { PUSH_IO_TIMEOUT_MS, sendPushNotification } from "./lib/push-notify.ts";
 import {
@@ -291,26 +282,18 @@ export function readPlanForStallHandling(
 // I/O helpers
 // ---------------------------------------------------------------------------
 
-/** Kinds de rodada que este watchdog sabe vigiar (#5293 item 3 — antes só "overnight"). */
-export type WatchableKind = "overnight" | "continuo";
+/**
+ * Kinds de rodada que este watchdog sabe vigiar. Já foi
+ * `"overnight" | "continuo"` (#5293 item 3); o kind `continuo` saiu com a
+ * aposentadoria da skill (#6056) — o alias fica pra manter as assinaturas
+ * multi-kind (`runAllWatchedKinds`) estáveis.
+ */
+export type WatchableKind = "overnight";
 
 /**
- * Varre `data/{kind}/` e retorna a rodada ativa mais recente.
- *
- * Semântica de "ativa" difere por kind:
- *   - `overnight`: diretório com `plan.json` mas SEM `report.md` — `report.md`
- *     é o marcador de fim de rodada (a rodada encerra e escreve o relatório).
- *   - `continuo` (#5293): a skill **nunca** escreve `report.md` — por desenho,
- *     ela não termina (ver `.claude/skills/diaria-continuo/SKILL.md`, "Loop
- *     invariável"). "Ativa" aqui é simplesmente "existe `plan.json`" no
- *     diretório `{AAMMDD}` mais recente — a rotação diária de
- *     `scripts/lib/continuo-plan-rotation.ts` (item 5) garante que o mais
- *     recente lexicograficamente é sempre o dia corrente da sessão viva (ou
- *     o último dia antes de a sessão ter sido morta externamente — mesmo
- *     "risco" que `overnight` já aceita pra uma rodada crashada sem
- *     `report.md`: o watchdog trata como ativa até expirar por outro motivo,
- *     ex: fila de issues genuinamente parada, que É o cenário que o stall
- *     detection existe pra pegar).
+ * Varre `data/{kind}/` e retorna a rodada ativa mais recente — diretório com
+ * `plan.json` mas SEM `report.md` (`report.md` é o marcador de fim de rodada:
+ * a rodada encerra e escreve o relatório).
  */
 export function findActiveRun(
   rootDir: string,
@@ -358,7 +341,7 @@ export function findActiveRun(
     const planPath = join(dir, "plan.json");
     const reportPath = join(dir, "report.md");
 
-    const isActive = kind === "continuo" ? existsSync(planPath) : existsSync(planPath) && !existsSync(reportPath);
+    const isActive = existsSync(planPath) && !existsSync(reportPath);
     if (!isActive) continue;
 
     // #5520: rodada que casa o critério estrutural mas está sem atividade real
@@ -449,8 +432,8 @@ export function resolveRunActivity(
  * fechando o mesmo loop descrito em `SELF_WRITE_TOLERANCE_MS` pela via do
  * run-log em vez do `plan.json`.
  *
- * O discriminador é `details.source` (`"overnight-watchdog"` /
- * `"continuo-watchdog"`), gravado por `emitRunLogEvent` — e não o
+ * O discriminador é `details.source` (`"{kind}-watchdog"`, hoje só
+ * `"overnight-watchdog"`), gravado por `emitRunLogEvent` — e não o
  * `message: "stall_detected"` sozinho, porque o COORDENADOR também emite
  * `stall_detected` (ex: subagente travado, #2768) e esse é sinal legítimo de
  * que a rodada está viva.
@@ -467,7 +450,7 @@ export function isOwnWatchdogEvent(
 
 /**
  * Extrai o timestamp mais recente do run-log para a edição/agente dado
- * (`agent`, default `"overnight"` — #5293 item 3 generaliza pra `"continuo"`).
+ * (`agent`, default `"overnight"`).
  *
  * #5520: eventos emitidos pelo próprio watchdog são ignorados — ver
  * `isOwnWatchdogEvent`.
@@ -515,40 +498,6 @@ export function getLastRunLogActivity(
     }
   }
   return lastTs;
-}
-
-/**
- * Fases de `session-registry.ts` (`heartbeat --phase X`) que o watchdog trata
- * como "parada de propósito" — não stall (#5293 item 3).
- *
- *   - `"aguardando-resposta"`: `/diaria-continuo` parada no passo 4/6 do loop
- *     ("Loop invariável", `.claude/skills/diaria-continuo/SKILL.md`) —
- *     `AskUserQuestion` bloqueante pendente, ou dormindo entre re-varreduras
- *     sem resposta ainda.
- *   - `"pausado-edicao"`: `/diaria-continuo` pausada pelo guard de colisão
- *     com `Diaria-Edicao-Diaria` (ver "Item 4" no SKILL.md) — diferente do
- *     overnight, que ENCERRA a rodada nesse guard (`preempted_by:
- *     "edicao_editorial"`), a sessão contínua só PAUSA e retoma depois.
- *
- * `/diaria-overnight` nunca grava nenhuma destas fases (Regra 1: zero
- * `AskUserQuestion` pós-briefing, e o guard de colisão editorial dele
- * ENCERRA a rodada em vez de pausar) — a checagem abaixo roda pros dois
- * kinds por uniformidade, mas só tem efeito prático em `continuo`.
- */
-export const HEALTHY_IDLE_PHASES = ["aguardando-resposta", "pausado-edicao"] as const;
-
-/**
- * `true` se existe, em `session-registry.ts`, uma sessão ATIVA (não-stale —
- * mesma janela de 24h de `listActiveSessions`) do `kind` dado com `phase`
- * num dos `HEALTHY_IDLE_PHASES`. Fail-soft: `session-registry.ts` ausente ou
- * corrompido nunca lança aqui — `listActiveSessions` já é fail-soft por
- * contrato (array vazio em qualquer falha de leitura), então esta função só
- * precisa filtrar, nunca precisa de try/catch próprio.
- */
-export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowMs: number): boolean {
-  return listActiveSessions(rootDir, nowMs).some(
-    (s) => s.kind === kind && s.phase !== undefined && (HEALTHY_IDLE_PHASES as readonly string[]).includes(s.phase),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -742,7 +691,7 @@ export function parseArgs(
 // Main
 // ---------------------------------------------------------------------------
 
-export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "healthy_idle" | "stall";
+export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "stall";
 
 export interface WatchdogDiagnosis {
   action: WatchdogDiagnosisAction;
@@ -779,21 +728,8 @@ export function diagnoseWatchdogActivity(params: {
   lastSource: string;
   nowMs: number;
   thresholdMin: number;
-  /**
-   * #5293 item 3: `true` quando `hasHealthyIdleSession` encontrou uma sessão
-   * registrada (`session-registry.ts`) do mesmo kind com `phase` num dos
-   * `HEALTHY_IDLE_PHASES` (ex: `/diaria-continuo` parada no passo 4/6 do loop
-   * — esperando resposta do editor, ou pausada pelo guard de colisão
-   * editorial). Distingue "parada de propósito, saudável" de "travada" — sem
-   * isso, uma sessão contínua saudável dispara o MESMO alerta de stall que
-   * este mecanismo existe pra evitar (mesmo princípio do incidente 260706/07,
-   * #3037/#3038, registrado em `.claude/skills/diaria-continuo/SKILL.md`
-   * §"Risco aceito" — não confundir com #2768, que é o guard de subagente
-   * travado do coordenador overnight, um mecanismo diferente).
-   */
-  isHealthyIdle: boolean;
 }): WatchdogDiagnosis {
-  const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin, isHealthyIdle } = params;
+  const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin } = params;
   const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
 
   if (lastActivityMs === 0) {
@@ -815,9 +751,7 @@ export function diagnoseWatchdogActivity(params: {
         `[watchdog] DRY-RUN — rodada ativa: ${aammdd}`,
         `[watchdog] Última atividade: ${new Date(lastActivityMs).toISOString()} (fonte: ${lastSource})`,
         `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
-        `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"}${
-          isStall && isHealthyIdle ? " — mas sessão registrada como aguardando-resposta/pausada, seria tratado como healthy_idle fora de dry-run" : ""
-        } (dry-run, sem writes/alertas)`,
+        `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"} (dry-run, sem writes/alertas)`,
       ],
       elapsedMin,
     };
@@ -831,29 +765,13 @@ export function diagnoseWatchdogActivity(params: {
     };
   }
 
-  if (isHealthyIdle) {
-    return {
-      action: "healthy_idle",
-      lines: [
-        `[watchdog] Rodada ${aammdd} sem atividade há ${elapsedMin} min, mas sessão registrada como ` +
-          `aguardando-resposta/pausada (session-registry.ts) — não é stall. Skipping.`,
-      ],
-      elapsedMin,
-    };
-  }
-
   return { action: "stall", lines: [], elapsedMin };
 }
 
 /**
- * Roda o diagnóstico/ação de stall para UM kind (`overnight` ou `continuo`,
- * #5293 item 3). Extraído de `main()` pra permitir rodar múltiplos kinds na
- * mesma invocação do watchdog sem duplicar a lógica — `data/overnight/` e
- * `data/continuo/` podem ter rodadas ativas SIMULTANEAMENTE (máquinas/sessões
- * diferentes), e cada uma precisaria do próprio diagnóstico independente.
- * Continua aceitando `"continuo"` (parâmetro tipado, não hardcoded pra
- * `"overnight"`), mas desde #5390 `WATCHED_KINDS` (abaixo) não inclui mais
- * esse kind em produção — ver o rationale lá.
+ * Roda o diagnóstico/ação de stall para UM kind (#5293 item 3). Extraído de
+ * `main()` pra permitir rodar múltiplos kinds na mesma invocação do watchdog
+ * sem duplicar a lógica — hoje `WATCHED_KINDS` só contém `"overnight"`.
  */
 async function runWatchdogForKind(
   ROOT: string,
@@ -881,8 +799,6 @@ async function runWatchdogForKind(
     aammdd,
     planPath,
   );
-  const isHealthyIdle = hasHealthyIdleSession(ROOT, kind, nowMs);
-
   const diagnosis = diagnoseWatchdogActivity({
     aammdd,
     dryRun,
@@ -890,7 +806,6 @@ async function runWatchdogForKind(
     lastSource,
     nowMs,
     thresholdMin,
-    isHealthyIdle,
   });
 
   for (const line of diagnosis.lines) console.log(line);
@@ -963,22 +878,10 @@ async function runWatchdogForKind(
 }
 
 /**
- * Kinds vigiados por esta invocação do watchdog. `continuo` foi removido
- * daqui em #5390 (15/08/2026): com o wake ocioso de `/diaria-continuo`
- * alongado pra 4h (`.claude/skills/diaria-continuo/SKILL.md`, seção
- * "Cadência do wake em modo ocioso"), o limiar de stall
- * (`OVERNIGHT_STALL_THRESHOLD_MIN` — 60 min à época desta decisão, 45 desde
- * o #5568) passava a disparar em TODA sessão contínua ociosa
- * — o alarme virava ruído garantido, não sinal, porque não existe limiar
- * <4h que distinga "ociosa de propósito" de "travada de verdade" sem
- * disparar em toda janela ociosa saudável. O maquinário que o kind
- * `"continuo"` precisa (`WatchableKind`, o ramo `kind === "continuo"` de
- * `findActiveRun`, `HEALTHY_IDLE_PHASES`, `hasHealthyIdleSession`)
- * **continua no arquivo, intacto** — custo de manter é ~zero, e reverter
- * esta decisão vira só devolver `"continuo"` a este array. Efeito colateral
- * aceito (documentado na issue de origem): uma sessão `continuo`
- * genuinamente travada não gera mais halt banner/push automático deste
- * watchdog — só o editor notando por fora.
+ * Kinds vigiados por esta invocação do watchdog. `continuo` saiu da
+ * vigilância em #5390 (wake ocioso de 4h tornava qualquer limiar de stall
+ * ruído garantido) e o maquinário dedicado a ele saiu do arquivo em #6056,
+ * junto com a aposentadoria da skill `/diaria-continuo`.
  */
 export const WATCHED_KINDS: readonly WatchableKind[] = ["overnight"];
 

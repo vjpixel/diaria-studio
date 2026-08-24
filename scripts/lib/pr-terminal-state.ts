@@ -71,9 +71,8 @@ export const PR_ACCOUNTED_STATUSES: ReadonlySet<string> = new Set([
   "fechada-sem-merge",
 ]);
 
-/** Prefixos de branch usados pelas 3 skills desta linha (overnight/develop/
- * continuo — `continuo` reusa `overnight/`, ver `context/overnight-dispatch-rules.md`
- * item 2) mais o `fix/` legado citado explicitamente na issue #5831. */
+/** Prefixos de branch usados pelas skills desta linha (overnight/develop)
+ * mais o `fix/` legado citado explicitamente na issue #5831. */
 export const SESSION_BRANCH_PREFIXES: readonly string[] = ["develop/", "overnight/", "fix/"];
 
 type PrTerminalDivergenceKind = "registered-not-terminal" | "unregistered-branch-candidate";
