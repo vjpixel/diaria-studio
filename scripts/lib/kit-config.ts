@@ -2,8 +2,12 @@
  * kit-config.ts (#463 — migração Beehiiv → Kit, #461)
  *
  * Espelho de `beehiiv-config.ts`: centraliza resolução de credencial +
- * base URL da API do Kit, mesmo contrato de duas funções (`resolveKitConfig`
- * pura/injetável, `loadKitConfig` casca fina que sai do processo).
+ * base URL da API do Kit via `resolveKitConfig` (pura/injetável). O par
+ * Beehiiv também tem `loadBeehiivConfig` — casca fina de CLI que sai do
+ * processo — mas nenhum dos 6 consumidores que este módulo vai alimentar
+ * (#463) foi migrado ainda nesta PR, então essa casca ficaria sem chamador
+ * real (knip a flagou como dead code). Adicionar `loadKitConfig` de volta
+ * quando o 1º script CLI (ex: publish de #464) precisar dela.
  *
  * Diferença deliberada do par Beehiiv: o Kit não tem um "publicationId"
  * separado da API key — uma key já resolve pra UMA conta (confirmado ao vivo
@@ -49,21 +53,4 @@ export function resolveKitConfig(
     };
   }
   return { ok: true, config: { apiKey } };
-}
-
-/**
- * Carrega `KIT_API_KEY` do ambiente. Chama `process.exit(2)` em caso de
- * configuração inválida — casca fina de CLI sobre `resolveKitConfig`, mesmo
- * padrão de `loadBeehiivConfig`.
- *
- * @param callerTag  Prefixo exibido nas mensagens de erro (ex: "[kit-sync]").
- *                   Default: "[kit-config]".
- */
-export function loadKitConfig(callerTag = "[kit-config]"): KitConfig {
-  const result = resolveKitConfig();
-  if (!result.ok) {
-    process.stderr.write(`${callerTag} ${result.reason}\n`);
-    process.exit(2);
-  }
-  return result.config;
 }
