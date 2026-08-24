@@ -110,6 +110,35 @@ describe("#4054 — espelho de subscriber-verify.ts não pode driftar", () => {
       await sharedSubscriber.verifySubscriberViaBeehiivByEmail("k", "p", "x@example.com", { fetchImpl: failFetch }),
     );
   });
+
+  it("verifySubscriberViaKitByEmail (#6048) — mesmo resultado pros 4 estados (active/inactive/unknown/rede) pros dois lados", async () => {
+    const mkFetch = (status: number, body: unknown) =>
+      (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
+
+    for (const [status, body] of [
+      [200, { subscribers: [{ state: "active" }] }],
+      [200, { subscribers: [{ state: "cancelled" }] }],
+      // #6048: "não encontrado" no Kit é 200 com array vazio, NUNCA 404
+      // (diferente da Beehiiv) — ver docstring de verifySubscriberViaKitByEmail.
+      [200, { subscribers: [] }],
+    ] as const) {
+      const sharedRes = await sharedSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", {
+        fetchImpl: mkFetch(status, body),
+      });
+      const mirrorRes = await mirrorSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", {
+        fetchImpl: mkFetch(status, body),
+      });
+      assert.equal(mirrorRes, sharedRes);
+    }
+
+    const failFetchKit = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    assert.equal(
+      await mirrorSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl: failFetchKit }),
+      await sharedSubscriber.verifySubscriberViaKitByEmail("k", "x@example.com", { fetchImpl: failFetchKit }),
+    );
+  });
 });
 
 describe("#4054 — espelho de rate-limit.ts não pode driftar", () => {

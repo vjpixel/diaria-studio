@@ -108,6 +108,35 @@ export interface Env {
    * (a API de criação não tem campo nativo de nome). Ausente → nome não é
    * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
   BEEHIIV_NAME_FIELD?: string;
+  /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
+   * cadastro inline — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`.
+   * Nenhum dispatch automático fora deste worker lê esta var — é local ao
+   * `handleJogarSubscribe` (mesmo estado do #464 pro publisher da
+   * newsletter: existe o código, o switchover é manual). */
+  SUBSCRIBE_BACKEND?: string;
+  /** #6048 — API key do Kit (`X-Kit-Api-Key`), só relevante quando
+   * `SUBSCRIBE_BACKEND === "kit"`. Ausente → `subscribeToKit` retorna
+   * `not_configured` (mesmo contrato de `subscribeToBeehiiv`). */
+  KIT_API_KEY?: string;
+  /** #6048 — override da base da API do Kit, só pra teste (mock server
+   * local). Default `https://api.kit.com/v4`. */
+  KIT_API_URL?: string;
+  /**
+   * #6048 — nomes dos custom fields do Kit (criados manualmente no
+   * dashboard, mesmo padrão de `BEEHIIV_NAME_FIELD`) onde gravar
+   * atribuição UTM na criação do subscriber. **NENHUM foi criado ainda na
+   * conta de produção** — a API v4 do Kit não tem UTM/referring-site
+   * nativo na criação de subscriber (achado ao vivo #6048), só via
+   * `fields` customizado. Ausentes → o cadastro segue normalmente, só sem
+   * essa atribuição gravada (mesmo degrade gracioso de `BEEHIIV_NAME_FIELD`
+   * ausente) — decisão de criar os campos (e o custo de manutenção deles)
+   * fica pro editor, no momento do switchover de verdade.
+   */
+  KIT_NAME_FIELD?: string;
+  KIT_UTM_SOURCE_FIELD?: string;
+  KIT_UTM_MEDIUM_FIELD?: string;
+  KIT_UTM_CAMPAIGN_FIELD?: string;
+  KIT_REFERRING_SITE_FIELD?: string;
   /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
    * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado
    * pelo e-mail de confirmação de merge cross-device do jogo `web`.
