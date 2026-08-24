@@ -94,6 +94,9 @@ const SOFT_STALE_MS = 90 * 60 * 1000;
 
 // "continuo" saiu do set com a aposentadoria da skill (#6056) — registro
 // remanescente desse kind em data/sessions/ deixa de contar como coordenador.
+// MANTER EM SINCRONIA À MÃO com `SessionKind` em scripts/lib/session-registry.ts
+// (este hook é JS puro e não pode importar o tipo — mesma razão do bloco
+// "Self-contained" acima; foi exatamente esse par que o #6056 sincronizou).
 const COORDINATOR_KINDS = new Set(["overnight", "develop"]);
 
 /**

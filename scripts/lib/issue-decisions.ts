@@ -48,7 +48,14 @@ import { isMainModule } from "./cli-args.ts";
  * já foram gravados como comentários DURÁVEIS em issues reais — removê-lo do
  * parse tornaria essas decisões ilegíveis e faria a pergunta reabrir.
  */
-export type SessionKind = "continuo" | "overnight" | "develop";
+export type SessionKind = WritableSessionKind | "continuo";
+
+/**
+ * Kinds que ainda podem MINTAR marcadores novos (`formatDecisionMarker`/
+ * `formatExecutionBlockMarker`). O union largo `SessionKind` acima é só o
+ * lado de LEITURA — nenhuma sessão nova grava `sessao: "continuo"` (#6056).
+ */
+export type WritableSessionKind = "overnight" | "develop";
 
 /** Payload estruturado de uma decisão do editor registrada num comentário. */
 export interface IssueDecision {
@@ -69,7 +76,7 @@ const MARKER_SUFFIX = " -->";
  * decisão. Determinístico — mesmo input sempre produz o mesmo marcador
  * (JSON.stringify com chaves na ordem de inserção do objeto literal abaixo,
  * estável entre chamadas). */
-export function formatDecisionMarker(opts: IssueDecision): string {
+export function formatDecisionMarker(opts: IssueDecision & { sessao: WritableSessionKind }): string {
   const payload = {
     decided_at: opts.decided_at,
     pergunta: opts.pergunta,
@@ -167,7 +174,7 @@ const EXECUTION_BLOCK_MARKER_SUFFIX = " -->";
 /** Gera o bloco HTML-comment estruturado que prefixa um comentário de
  * bloqueio de execução. Determinístico — mesmo input sempre produz o mesmo
  * marcador. */
-export function formatExecutionBlockMarker(opts: ExecutionBlock): string {
+export function formatExecutionBlockMarker(opts: ExecutionBlock & { sessao: WritableSessionKind }): string {
   const payload = {
     recorded_at: opts.recorded_at,
     motivo: opts.motivo,

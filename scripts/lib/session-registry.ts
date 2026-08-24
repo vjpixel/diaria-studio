@@ -81,8 +81,11 @@ import { parseArgs, isMainModule } from "./cli-args.ts";
  * O kind `"continuo"` existiu entre #5293 e #6056 (skill `/diaria-continuo`,
  * aposentada em 24/08/2026). Registro remanescente com esse kind em
  * `data/sessions/` não quebra nada — `listActiveSessions` não valida o campo
- * ao ler, e os consumidores filtram por kinds conhecidos — mas nenhum comando
- * novo o aceita (`requireKind`).
+ * ao ler; dos consumidores, só `.claude/hooks/block-gh-pr-merge-subagent.mjs`
+ * (`COORDINATOR_KINDS`) filtra por kind (e exclui `continuo` desde #6056) —
+ * `cleanup-merged-worktrees.ts`/`control-edition-guard.ts` são kind-agnósticos
+ * de propósito (qualquer sessão ativa é sinal). Nenhum comando novo aceita o
+ * kind (`requireKind`).
  */
 export type SessionKind = "overnight" | "develop";
 
