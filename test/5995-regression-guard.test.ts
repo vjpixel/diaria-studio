@@ -15,9 +15,9 @@
  *     npx tsx scripts/analyze-bucket-overrides.ts --editions-dir data/editions
  *
  * Última medição (24/08/2026, 93 edições): **73 movimentos** — acima do alvo.
- * Esperado: o detector dos itens 1-2 (#5995) e do item 3 (#6028) mergeou ~20h
- * antes dessa medição, então quase nenhuma edição do corpus foi produzida com
- * ele. O critério só pode ser reavaliado depois de N edições novas. Enquanto
+ * Esperado: o detector dos itens 1-2 (#5995) mergeou ~21h antes dessa medição
+ * e o do item 3 (#6028) ~11h30 antes, então quase nenhuma edição do corpus foi
+ * produzida com ele. O critério só pode ser reavaliado depois de N edições novas. Enquanto
  * isso, o #5995 continua ABERTO — este arquivo entrega o item 4 (guard
  * qualitativo por fixture), não o item 5.
  */
@@ -29,7 +29,9 @@ import {
 } from "../scripts/lib/launch-heuristics.ts";
 
 describe("#5995 anti-regress guard — fixtures do corpus real", () => {
-  // Modo 1 — 34 casos reais de lancamento→radar (domínio oficial + não-produto)
+  // Modo 1 — amostra dos casos reais de lancamento→radar (domínio oficial +
+  // não-produto). A contagem total deriva com o corpus: 34 quando a issue foi
+  // escrita, 35 na medição de 24/08 — por isso não é asserção, é referência.
   it("cada fixture real do modo 1 bate em noticias, NÃO em lancamento", () => {
     const fixtures = [
       { title: "Expanding Daybreak as the Cyber Defense Window Narrows", url: "https://openai.com/index/expanding-daybreak-as-the-cyber-defense-window-narrows/" },
@@ -61,7 +63,7 @@ describe("#5995 anti-regress guard — fixtures do corpus real", () => {
     }
   });
 
-  // Modo 2 — 21 casos de radar→use_melhor (pt-BR how-to / listicle tutorial)
+  // Modo 2 — amostra dos casos de radar→use_melhor (21 na issue, 22 em 24/08) (pt-BR how-to / listicle tutorial)
   it("modo 2: fixtures pt-BR de tutorial são detectados e viram USE MELHOR", () => {
     const fixtures = [
       { title: "Como treinar oratória com ChatGPT: 15 prompts para falar melhor", url: "https://techtudo.com.br/guia/como-treinar-oratoria" },
