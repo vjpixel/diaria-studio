@@ -26,7 +26,7 @@ Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.
 
 ## Diferença em relação ao Facebook
 
-- **Nunca mencionar e-mail, assinatura por e-mail ou "receba por e-mail"** — proibido por `no-email-cta-instagram` (#2486). O CTA é sempre "link na bio" (tráfego) + "segue @diar.ia" (retenção no canal).
+- **Nunca mencionar e-mail, assinatura por e-mail ou "receba por e-mail"** — proibido por `no-email-cta-instagram` (#2486). O CTA é sempre "link na bio" (tráfego) + "segue @diar.ia.br" (retenção no canal).
 - Corpo mais curto e mais coloquial — Instagram é feed rápido, não newsletter.
 - Sem URL crua no corpo (Instagram não renderiza links clicáveis fora da bio).
 
