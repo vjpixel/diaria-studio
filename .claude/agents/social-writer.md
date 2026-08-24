@@ -39,7 +39,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    ### 3a. Texto genérico (`## d{N}`)
 
-   - Hook direto na primeira linha (dado concreto ou fato surpreendente). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
+   - Hook direto na primeira linha — **padrão clickbait elegante (#6008)**: dado concreto ou fato surpreendente com framing de tensão factual, pergunta provocativa ou impacto direto no leitor; nunca curiosity gap nem faixa vulgar ("chocante", exclamação, CAPS LOCK, reticências de suspense). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 2–3 parágrafos curtos em linguagem coloquial — tom Instagram: mais curto e direto que o LinkedIn/Facebook tradicionais, ritmo de feed.
    - **#1762: não encerrar com pergunta.** Feche o texto editorial com uma afirmação — nada de "Comente: você usa X?" no fim. Perguntas retóricas no meio do corpo são OK.
    - **SEM linha de CTA de canal** (ver invariante "CHANNEL-NEUTRAL" acima) — nenhuma URL, nenhuma menção a e-mail/bio/seguir/assinatura. A linha de canal é injetada no publish, nunca aqui.

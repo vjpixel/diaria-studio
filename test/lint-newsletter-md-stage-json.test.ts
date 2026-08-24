@@ -180,7 +180,7 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("16 checks presentes (15 do MD + agradecimento-hardcoded)", () => {
+  it("17 checks presentes (16 do MD + agradecimento-hardcoded)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -196,6 +196,7 @@ describe("runStage4LintReport (#5416)", () => {
       "section-links-resolve",
       "snippet-staleness",
       "stacked-intro-callouts",
+      "title-clickbait-vulgar",
       "title-mentions-ia",
       "title-publisher-suffix",
       "title-trailing-period",
@@ -422,8 +423,8 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.ok(trailingPeriod, "title-trailing-period deveria continuar presente");
     assert.deepEqual(trailingPeriod.result, checkTitleTrailingPeriod(buildMd()));
 
-    // Todos os 16 checks continuam presentes — nenhum foi engolido.
-    assert.equal(out.checks.length, 16);
+    // Todos os 17 checks continuam presentes — nenhum foi engolido (#6008 adicionou title-clickbait-vulgar).
+    assert.equal(out.checks.length, 17);
 
     rmSync(dir, { recursive: true, force: true });
   });
