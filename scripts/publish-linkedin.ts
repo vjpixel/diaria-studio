@@ -258,6 +258,16 @@ export function sanitizeFallbackReason(raw: string): string {
     : firstLine.slice(0, 100);
 }
 
+// #6015: detecta erros 4xx do Worker (validação do payload — nunca deve cair
+// no fallback que publica imediatamente, ignorando scheduled_at).
+export function isClientError(workerMsg: string): boolean {
+  const match = workerMsg.match(/HTTP (\d{3})/);
+  if (!match) return false;
+  const code = parseInt(match[1], 10);
+  if (isNaN(code)) return false;
+  return code >= 400 && code < 500;
+}
+
 // #3385 — shape mínimo de 06-public-images.json lido por este script.
 export interface ImageCacheEntry {
   url?: string;
@@ -449,6 +459,11 @@ export interface DispatchInput {
   webhookTarget: WebhookTarget;
   action: QueueAction;
   parentDestaque?: string;
+  /** #6015: quando false, NUNCA faz fallback Make→imediato mesmo em 5xx/timeout —
+   * falha hard com entry `failed` + motivo claro. Pra chamadores em que
+   * publicar-agora é pior que não-publicar (ex: artigo especial agendado).
+   * Default true preserva o comportamento legado (fallback worker→make). */
+  allowImmediateFallback?: boolean;
 }
 
 export interface DispatchContext {
@@ -544,10 +559,22 @@ export async function dispatchEntry(
         // SÓ tem URL no Worker (Diar.ia webhookUrl não é Pixel) — fallback
         // não-aplicável pra webhook_target=pixel; falha entry com reason claro.
         const wmsg = workerError instanceof Error ? workerError.message : String(workerError);
+        // #6015: 4xx do Worker (validação do payload) NÃO deve cair no fallback
+        // que publica imediatamente — isso trocaria "não publicou" por
+        // "publicou na hora errada, publicamente" (bug real #6015, 23/08).
+        // Só faz fallback (post imediato via Make) para 5xx / timeout / rede.
+        // Quando `allowImmediateFallback` é explicitamente false (ex: artigo
+        // especial agendado), propaga como falha dura (entry failed).
         if (input.webhookTarget === "pixel") {
           throw new Error(
             `${wmsg} (fallback worker→make não disponível pra webhook_target=pixel — Make scenario Pixel não tem URL local)`,
           );
+        }
+        const is4xx = isClientError(wmsg);
+        const shouldPropagateAsFailure = is4xx || input.allowImmediateFallback === false;
+        if (shouldPropagateAsFailure) {
+          const reasonSuffix = is4xx ? " (Worker 4xx — validação do payload; fallback imediato não é aceitável)" : " (fallback desativado: allowImmediateFallback=false)";
+          throw new Error(`${wmsg}${reasonSuffix}`);
         }
         console.warn(
           `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
