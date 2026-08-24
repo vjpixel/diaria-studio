@@ -2,7 +2,7 @@
 
 > **Status: REATIVADA em 24/08/2026.** Decisão do editor: a migração da **diária** pro Kit está de volta, e as issues do eixo diária (#461, #463, #464, #466, #467) foram reabertas. O eixo **Clarice** (#471, #472, #473, #540) permanece fechado — ela migrou para **Brevo**, não Kit (ver `docs/clarice-unified-db.md`). #465 (Poll Trivia → Tally) também fica fechada: o "É IA?" hoje é infraestrutura própria (`workers/poll` + KV) e não usa poll da Beehiiv.
 >
-> **Este doc é referência histórica, não o plano vigente.** O plano vivo é a issue guarda-chuva **#461**. Duas partes daqui estão comprovadamente defasadas: (a) o inventário da Parte 2 fala em "~10 scripts" — a medição de 24/08/2026 achou 297 arquivos em `scripts/`, 23 em `workers/` e 34 agents/skills mencionando Beehiiv, então **a estimativa de 30-40h não vale mais**; (b) preços e planos são de abril-maio/2026 e precisam ser reverificados. O que **continua válido**: o caminho de 5 fases, o critério de abort e a tabela de riscos.
+> **Este doc é referência histórica, não o plano vigente.** O plano vivo é a issue guarda-chuva **#461**. Duas partes daqui estão comprovadamente defasadas: (a) o inventário da Parte 2 fala em "~10 scripts" — a medição de 24/08/2026 achou 297 arquivos em `scripts/`, 23 em `workers/` e 34 agents/skills mencionando Beehiiv (contagem de arquivos `*.ts` via `grep -rli beehiiv --include='*.ts'`, excluindo worktrees; contando `*.md`/`*.json` junto os números sobem), então **a estimativa de 30-40h não vale mais**; (b) preços e planos são de abril-maio/2026 e precisam ser reverificados. O que **continua válido**: o caminho de 5 fases, o critério de abort e a tabela de riscos.
 >
 > Este doc consolida os 2 documentos originais (`beehiiv-vs-kit-comparison.md` — pesquisa pública de mercado — e `beehiiv-to-kit-migration-spike.md` — spike técnico de inventário/esforço), preservando análise e racional.
 
@@ -108,6 +108,8 @@ Total: ~10 scripts/agents que tocam Beehiiv direta ou indiretamente.
 
 ### 3. Esforço estimado por componente (30-40h total)
 
+> Tabela histórica. Além de a estimativa não valer mais (ver banner no topo), as linhas #471 e #473 são do eixo **Clarice**, permanentemente fechado — não são trabalho pendente.
+
 | Componente | Esforço | Bloqueio |
 |---|---|---|
 | #463 mcp-kit + refresh-dedup migration | 4-6h | Kit API key |
@@ -136,6 +138,8 @@ Fase 0 — Preparação (conta Kit, import subscribers CSV, custom domain, templ
 
 ### Refs
 
-- #84, #461 (issues de scoping — fechadas)
-- #463, #464, #466, #467, #471, #472, #473 (sub-issues técnicas — abertas, `on-hold`)
+- #84 (scoping original — fechada) · **#461 (guarda-chuva, ABERTA — é o plano vivo)**
+- #463, #464, #466, #467 (eixo diária — ABERTAS, reativadas em 24/08/2026, sem `on-hold`)
+- #6046, #6047, #6048, #6049, #6050, #6051 (superfícies que nasceram depois deste spike — envio, Fase 0, funis de cadastro, apoio, `leitor-v1`, Studio)
+- #465, #471, #472, #473, #540 (FECHADAS, `wontfix` — eixo Clarice foi pro Brevo; o "É IA?" virou infra própria)
 - `docs/clarice-unified-db.md` (rota real adotada pra Clarice: Brevo, não Kit)
