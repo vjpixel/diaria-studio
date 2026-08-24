@@ -38,6 +38,12 @@
  *     na janela 05:00) — ALARME.
  */
 
+// Notas de evento (alarm-evento, #5553):
+//   - #6041 (P2, 260824): `envio-{aammdd}-guard-prereq-fallback-cancelamento-incompleto-nao-ok`
+//     → causa raiz #6029 (cota Brevo ?fresh=1, corrigido em #6044 / 8805ab15).
+//     Registra como evento histórico (family: "evento"); não se auto-resolve.
+//     Regressão: test/clarice-envio-guard-alarm.test.ts.
+
 export type EnvioGuardAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure";
 
 export interface EnvioGuardAlarmReportFile {

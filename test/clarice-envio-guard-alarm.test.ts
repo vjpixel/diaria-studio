@@ -103,6 +103,27 @@ describe("evaluateGuardAlarm", () => {
     assert.deepEqual(r, { verdict: "alarm-failure", reportId: `envio-${AAMMDD}-guard-prereq-fallback-deixou-passar` });
   });
 
+  // #6041 — P2 alarm-evento (evento histórico, não se auto-resolve): o
+  // desfecho `cancelamento-incompleto-nao-ok` indica que o guard caiu no
+  // fallback (#5220: pré-requisito falhou após retry, freio anterior não-OK,
+  // cancelamento incompleto). Causa raiz: #6029 (curto-circuito de cota no
+  // ?fresh=1 do painel Clarice) — corrigido em #6044 (8805ab15); o evento
+  // #6041 permanece no tracking `alarm-issues` como registro histórico.
+  it("relatório -prereq-fallback-cancelamento-incompleto-nao-ok => alarm-failure (regressão #6041 / #6029 corrigido em #6044)", () => {
+    const r = evaluateGuardAlarm(
+      [report(`envio-${AAMMDD}-guard-prereq-fallback-cancelamento-incompleto-nao-ok`, 100)],
+      AAMMDD,
+    );
+    assert.deepEqual(r, { verdict: "alarm-failure", reportId: `envio-${AAMMDD}-guard-prereq-fallback-cancelamento-incompleto-nao-ok` });
+  });
+
+  it("#6041 verifica que 'cancelamento-incompleto-nao-ok' NÃO é OK (fail-toward-alarming)", () => {
+    assert.equal(
+      classifyGuardReportId(`envio-${AAMMDD}-guard-prereq-fallback-cancelamento-incompleto-nao-ok`, AAMMDD),
+      "alarm",
+    );
+  });
+
   it("2 candidatos (retry manual no mesmo dia): abort seguido de sucesso => ok, o ÚLTIMO desfecho vence", () => {
     const r = evaluateGuardAlarm(
       [report(`envio-${AAMMDD}-guard-abort`, 100), report(`envio-${AAMMDD}-guard-ok`, 200)],
