@@ -1,6 +1,6 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br + perfil pessoal, D+1 17:30 BRT) e atualização + pin do box "Artigo Especial" (slot 3) da diária. Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box] [--dry-run] [--unpin]`.
+description: Fecha as 3 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014) e atualização + pin do box "Artigo Especial" (slot 3) da diária. Requer a máquina do editor (Claude in Chrome logado) — não roda no `helios`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial
@@ -30,8 +30,8 @@ inteira não fecha de ponta a ponta.
 |---|---|
 | Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`artigo.diar.ia.br`, `workers/artigo-mensal` — canal separado). |
 | Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
-| **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` fora do apoia.se** (editor, 23/08/2026). O artigo é fechado para apoiadores — publicar o link no feed entrega a quem não apoia. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
-| Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **e** perfil pessoal (`webhook_target: "pixel"`), textos distintos, **D+1 17:30 BRT** (mesmo horário `d3_time` dos posts de edição). |
+| **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` nos posts de LinkedIn** (editor, 23/08/2026; justificativa corrigida em #6014/#6013: o artigo é PÚBLICO e indexado de propósito — está no `sitemap.xml` com `robots.txt` liberando crawlers de IA. O que o tier R$10+ compra é antecedência, entrega por e-mail e arquivo, não exclusividade de leitura). O CTA fecha no apoia.se porque é lá que a conversão acontece, não porque o artigo seja inacessível. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
+| Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **D+1 09:00 BRT** e perfil pessoal (`webhook_target: "pixel"`) **D+2 09:30 BRT**, textos distintos (#6014 item 1 — o default único antigo D+1 17:30 colidia com o `d3` da edição diária no mesmo minuto). Agenda do dia: `09:00 especial-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. |
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 3 (`boxes_divulgacao.slot3` + `boxes_divulgacao_auto.pinned_slots: [3]` em `platform.config.json`). |
 | Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `artigo.diar.ia.br`, `workers/artigo-mensal`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
@@ -40,12 +40,13 @@ inteira não fecha de ponta a ponta.
 - `--slug` **obrigatório** — nunca inferido (mesma regra de todas as
   `/diaria-*`: data/identificador sempre explícito).
 - `--ano AAAA` — default: ano corrente.
-- `--at ISO` — horário do agendamento LinkedIn. Default: **D+1 17:30 BRT a
-  partir de hoje**, via `scripts/lib/artigo-especial-schedule.ts::resolveArtigoEspecialScheduledAt`
-  (reusa `computeScheduledAt`, não reimplementa — ver docstring do módulo
-  pra como "D+1 17:30" mapeia pro vocabulário `editionDate`/`destaque` dessa
-  função). Imprimir o horário assumido em destaque quando `--at` for
-  omitido (banner, regra #5321 do `CLAUDE.md`).
+- `--at ISO` — horário do agendamento LinkedIn quando quiser os DOIS
+  canais no mesmo instante. Default (#6014 item 1): cada canal tem o seu —
+  **página D+1 09:00 BRT, perfil D+2 09:30 BRT**, via
+  `scripts/lib/artigo-especial-schedule.ts::resolveArtigoEspecialScheduledAts`
+  (reusa `computeScheduledAt`, não reimplementa — ver docstring do módulo).
+  Imprimir os horários assumidos em destaque quando `--at` for omitido
+  (banner, regra #5321 do `CLAUDE.md`).
 - `--skip apoiase,linkedin,box` — pula canal(is) especificados (mesmo padrão
   `--skip` do Stage 5 diário).
 - `--dry-run` — gera os 3 textos, mostra tudo, não publica/agenda/grava
@@ -85,17 +86,26 @@ inteira não fecha de ponta a ponta.
    pré-requisito manual — `404`/erro de rede aqui é a mesma mensagem do
    item 2 (aponta pro `wrangler deploy`).
 
-4. **Guard de idempotência.** State file
+4. **Mural do apoia.se ANTES de criar post (#6014 item 3).** O guard de
+   idempotência abaixo só enxerga o que ESTA skill fez — um post publicado
+   à mão pelo editor é invisível pra ela. Antes do Passo 3 (apoia.se),
+   abrir a aba `Posts no Mural` da campanha e procurar o post do mês.
+   Já existe? **Editar aquele** (preserva URL e timestamp) em vez de criar
+   outro — mesma classe do "publicação manual exige refresh-dedup" da
+   Beehiiv registrada no `CLAUDE.md`.
+
+5. **Guard de idempotência.** State file
    `data/artigo-especial/{ano}-{slug}/published.json`
    (`scripts/lib/artigo-especial-state.ts` — `readArtigoEspecialState`,
    `decideChannelAction` por canal: `apoiase`, `linkedin_pagina`,
    `linkedin_perfil`, `box`). Canal já `done` sem `--force` é pulado nos
    Passos 3-5 (log, não erro). `--force` reexecuta.
 
-5. **Resolver o `--at`.** Se `--at` foi passado, validar com
-   `validateExplicitAt` (ISO parseável, futuro). Se omitido, resolver via
-   `resolveArtigoEspecialScheduledAt(config)` (default D+1 17:30 BRT) e
-   imprimir o banner de default aplicado.
+6. **Resolver o `--at`.** Se `--at` foi passado, validar com
+   `validateExplicitAt` (ISO parseável, futuro) — vale pros dois canais.
+   Se omitido, resolver via `resolveArtigoEspecialScheduledAts(config)`
+   (default #6014: página D+1 09:00 BRT, perfil D+2 09:30 BRT) e imprimir
+   o banner dos defaults aplicados.
 
 ## Passo 1 — gerar os 3 textos (agente, 1 dispatch)
 
@@ -210,18 +220,39 @@ npx tsx scripts/mark-artigo-especial-channel.ts --ano {ano} --slug {slug} \
   --channel apoiase --status done --url "{URL do post publicado}"
 ```
 
-## Passo 4 — LinkedIn (script determinístico)
+## Passo 4 — LinkedIn
 
-Canal `linkedin_pagina` + `linkedin_perfil` — pulado(s) individualmente se
-`--skip linkedin` (pula os 2) ou já `done` sem `--force` (guard por canal,
-independente entre página e perfil).
+**PÁGINA via script; PERFIL à mão (#6014 item 2).** O Worker REJEITA
+`webhook_target=pixel` + `action=post` (`workers/linkedin-cron/src/index.ts`,
+"supports only action='comment'") — o cenário Make do editor só faz comment,
+então o post standalone no perfil pessoal NUNCA foi executável por script.
+Não tente despachar o perfil pelo script: vai falhar sempre.
+
+1. **Página (script determinístico):**
 
 ```bash
 npx tsx scripts/publish-artigo-especial-linkedin.ts \
   --dir data/artigo-especial/{ano}-{slug} \
-  --at {--at resolvido no Passo 0} \
-  [--only pagina|perfil] [--force]
+  --only pagina \
+  [--at {ISO}] [--force]
 ```
+
+   `--at` omitido = default do canal página (D+1 09:00 BRT, resolvido dentro
+   do próprio script via `resolveArtigoEspecialScheduledAts` — banner no log).
+
+2. **Perfil (manual, composer do LinkedIn):** agendar o texto de
+   `data/artigo-especial/{ano}-{slug}/linkedin-perfil.md` para **D+2 09:30
+   BRT** no composer nativo (funcionou bem na 1ª execução, 23/08). Depois,
+   marcar o canal como feito:
+   `npx tsx scripts/mark-artigo-especial-channel.ts --ano {ano} --slug {slug}
+   --channel linkedin_perfil` (ou equivalente do state file).
+
+   Alternativa futura a decidir (#6014): virar **comment** no post da página
+   (o Worker suporta hoje) em vez de post standalone — decisão de produto,
+   não implementar por conta própria.
+
+Canal `linkedin_pagina`/`linkedin_perfil` é pulado individualmente se
+`--skip linkedin` ou já `done` sem `--force` (guard por canal).
 
 Reusa `dispatchEntry` (`scripts/publish-linkedin.ts`, sem modificação) — 2
 chamadas, `webhookTarget: "diaria"`/`"pixel"`, `action: "post"`, `subtype:
@@ -304,7 +335,7 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 
 ## Atualizações pós-1ª execução ao vivo (23/08/2026, #6014)
 
-- **Horário real confirmada:** `D+1 17:30 BRT` — o padrão `resolveArtigoEspecialScheduledAt` já está documentado; a execução ao vivo confirmou que o agendamento funciona (status `done` para `apoiase` 02:06, `linkedin_pagina` 02:46, `box` 02:17 — todos no mesmo dia, 23/08).
+- **Horário real confirmado:** a 1ª execução usou `D+1 17:30 BRT` (default antigo, hoje SUBSTITUÍDO pelo par D+1 09:00 × D+2 09:30 do #6014 — justamente por ter colidido com o d3); o agendamento em si foi confirmado ao vivo (status `done` para `apoiase` 02:06, `linkedin_pagina` 02:46, `box` 02:17 — todos no mesmo dia, 23/08).
 - **Visibilidade apoia.se:** confirmada como `restrito a apoiadores R$10+` (não público). Nenhuma alteração no texto do `apoiase.md`; o post não contém CTA de conversão, apenas acesso direto ao artigo para quem já apoia.
 - **Perfil pessoal (`linkedin_perfil`):** falhou na 1ª execução (`failed`, `reason: "reconciliação pós-dispatch: Worker reportou falha (DLQ)."`). A falha ocorreu APÓS o dispatch — não é um erro do script `publish-artigo-especial-linkedin.ts` (o `dispatchEntry` executou sem 4xx), mas sim um erro do Worker no momento de conciliar a entrega. Isso confirma a necessidade do fix #6015: se o Worker retornar 4xx durante o dispatch, o fallback não deve ser permitido; se a falha for posterior (DLQ), o estado `failed` no `linkedin-published.json` já é a resposta correta.
 - **Box (`slot3`):** `done` — `platform.config.json` atualizado, PR criada automaticamente (`pr-create-review.mjs`). Nenhuma mudança adicional necessária.

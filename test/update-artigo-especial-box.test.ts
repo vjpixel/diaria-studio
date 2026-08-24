@@ -22,6 +22,21 @@ const INPUT = {
 };
 
 describe("buildDefaultArtigoEspecialBox (#5979)", () => {
+  it("#6014 item 4: ctaUrl troca o link do CTA no bootstrap", () => {
+    const box = buildDefaultArtigoEspecialBox({
+      ...INPUT,
+      ctaUrl: "https://apoia.se/diaria/contents/view/Artigo-especial-de-agosto-0QCFIXKq3",
+    });
+    assert.ok(
+      box.includes("[Quero apoiar](https://apoia.se/diaria/contents/view/Artigo-especial-de-agosto-0QCFIXKq3)"),
+    );
+    assert.ok(!box.includes("[Quero apoiar](https://apoia.se/diaria)"));
+  });
+
+  it("#6014 item 4: sem ctaUrl, CTA segue generico (comportamento anterior)", () => {
+    const box = buildDefaultArtigoEspecialBox(INPUT);
+    assert.ok(box.includes("[Quero apoiar](https://apoia.se/diaria)"));
+  });
   it("inclui header, titulo, frase-padrao e paragrafo do tier", () => {
     const box = buildDefaultArtigoEspecialBox(INPUT);
     assert.ok(box.startsWith(ARTIGO_ESPECIAL_BOX_HEADER));
@@ -48,6 +63,18 @@ describe("buildDefaultArtigoEspecialBox (#5979)", () => {
 });
 
 describe("applyArtigoEspecialBoxUpdate (#5979) — edicao cirurgica", () => {
+  it("#6014 item 4: ctaUrl substitui so a URL do CTA, resto intocado", () => {
+    const original = buildDefaultArtigoEspecialBox(INPUT);
+    const updated = applyArtigoEspecialBoxUpdate(original, {
+      ...INPUT,
+      ctaUrl: "https://apoia.se/diaria/contents/view/post-setembro",
+    });
+    assert.ok(updated.includes("[Quero apoiar](https://apoia.se/diaria/contents/view/post-setembro)"));
+    assert.ok(!updated.includes("[Quero apoiar](https://apoia.se/diaria)"));
+    // Titulo e frase-padrao continuam os do input (nao da chamada anterior).
+    assert.ok(updated.includes("**Artigo Especial de Agosto**"));
+  });
+
   const original = buildDefaultArtigoEspecialBox(INPUT);
 
   it("troca titulo e frase-padrao, preserva paragrafo do tier + CTA", () => {
