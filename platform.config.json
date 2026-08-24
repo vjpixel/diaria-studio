@@ -24,7 +24,7 @@
   "brevo_diaria": {
     "api_key_env": "BREVO_DIARIA_API_KEY",
     "list_id": 7,
-    "sender_email": "oi@diar.ia.br",
+    "sender_email": "oi@reativa.diar.ia.br",
     "sender_name": "diar.ia.br",
     "test_email": "vjpixel@gmail.com",
     "daily_send_cap": 295,
