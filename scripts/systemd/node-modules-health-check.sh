@@ -63,7 +63,14 @@ fi
 # --- Debounce ----------------------------------------------------------------
 now=$(date +%s)
 last=0
-[ -f "$STATE_FILE" ] && last=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+if [ -f "$STATE_FILE" ]; then
+    # Tolerante a state vazio/corrompido (gravação parcial): só aceita dígitos.
+    candidate=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+    case "$candidate" in
+        ''|*[!0-9]*) last=0 ;;
+        *) last=$candidate ;;
+    esac
+fi
 delta=$((now - last))
 if [ "$last" != "0" ] && [ "$delta" -lt "$ALERT_COOLDOWN_SECS" ]; then
     # Em cooldown e ainda doente: mantém fallback em disco como evidência.
