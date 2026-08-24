@@ -94,6 +94,11 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
   npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/
   ```
   **Não é opcional pra feature existir** — `publish-facebook.ts`/`publish-instagram.ts` escolhem `04-d{N}-4x5.jpg` via `selectSocialCardImageFile`, com fallback SILENCIOSO pra 1x1 sem título se o arquivo faltar. **Falha aqui é BLOQUEANTE (#4090)** — parar o Stage 3 inteiro, mostrar stderr completo (causa comum: `assertBrandSerifAvailable` sem fonte Georgia — instalar ou `DIARIA_ALLOW_FONT_FALLBACK=1`). `check-invariants.ts --stage 3` (regra `card-4x5-exists`) reforça no pre-gate. Skip-if-exists vale igual; sem `--force` automático.
+- **Carrossel do Instagram (#6005 Parte B).** Logo depois do card 4:5, gerar os 4 slides sem foto (3 parágrafos + CTA — a capa é o `04-d{N}-4x5.jpg` acima, não regenerado aqui):
+  ```bash
+  npx tsx scripts/gen-carousel-cards.ts --edition-dir {EDITION_DIR}/
+  ```
+  Lê `03-social.md` (`# Social` → `## d{N}`), divide o corpo em 3 parágrafos-card (`splitIntoParagraphCards`, `scripts/lib/daily-carousel-card.ts`). **Falha do render é BLOQUEANTE**, mesma classe do card 4:5 acima; falta de texto de UM destaque específico é best-effort (só aquele destaque cai pro fallback single-image no publish, ver `resolveCarouselImageUrls`). Skip-if-exists (sem `--force` automático).
 - **Revisor de crop (#3951, generalizado #4223).** Depois de gerar as imagens (inclusive o card):
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/

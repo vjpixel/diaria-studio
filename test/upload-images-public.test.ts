@@ -482,10 +482,17 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       assert.ok(!keys.includes("eia_real"));
       // #4114: os 3 cards 4:5 entram no social como specs OPCIONAIS — a edição
       // que não os gerou sobe só as 1:1 e os publishers caem no fallback.
-      assert.deepEqual(keys, ["d1", "d2", "d3", "d1_4x5", "d2_4x5", "d3_4x5"]);
+      // #6005 Parte B: 4 slides sem foto do carrossel (p1/p2/p3/cta) por
+      // destaque, também opcionais (mesma razão dos cards 4:5).
+      assert.deepEqual(keys, [
+        "d1", "d2", "d3", "d1_4x5", "d2_4x5", "d3_4x5",
+        "d1_carousel_p1", "d1_carousel_p2", "d1_carousel_p3", "d1_carousel_cta",
+        "d2_carousel_p1", "d2_carousel_p2", "d2_carousel_p3", "d2_carousel_cta",
+        "d3_carousel_p1", "d3_carousel_p2", "d3_carousel_p3", "d3_carousel_cta",
+      ]);
       assert.ok(
-        specs.filter((s) => s.key.endsWith("_4x5")).every((s) => s.optional),
-        "os specs 4x5 precisam ser opcionais — obrigatórios quebrariam toda edição anterior ao card existir",
+        specs.filter((s) => s.key.endsWith("_4x5") || s.key.includes("_carousel_")).every((s) => s.optional),
+        "os specs 4x5/carrossel precisam ser opcionais — obrigatórios quebrariam toda edição anterior a estes existirem",
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

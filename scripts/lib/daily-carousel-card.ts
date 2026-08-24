@@ -1,0 +1,179 @@
+/**
+ * daily-carousel-card.ts (#6005 Parte B)
+ *
+ * Transforma D1/D2/D3 do feed diário do Instagram de post estático (1 card
+ * 4:5) em carrossel de 5 slides, benchmark "1 slide = 1 batida" (#6005,
+ * padrões 1/7/9/11/12 de `context/instagram-benchmarks-5815.md`). Decisão do
+ * editor (sessão 260824, issue #6005): **5 slides fixos**, texto = o MESMO
+ * `## d{N}` já escrito pelo `social-writer` (nunca um texto novo), 1 parágrafo
+ * por card.
+ *
+ * Composição fixa dos 5 slides:
+ *   1. Capa — `04-{destaque}-4x5.jpg`, já gerado por `gen-social-card-4x5.ts`
+ *      (foto + título overlay). Este módulo NÃO regenera esse arquivo — só
+ *      referencia a URL já publicada pra ele (ver `resolveCarouselImageUrls`).
+ *   2-4. 3 cards de parágrafo — texto puro (sem foto), 1 parágrafo do corpo
+ *      de `## d{destaque}` por card (`splitIntoParagraphCards`).
+ *   5. CTA — texto puro, mesmo copy de `INSTAGRAM_CTA_LINE`
+ *      (`social-cta-lines.ts`) pra não divergir do texto que a legenda já usa.
+ *
+ * Os 4 slides SEM foto (2-5) reusam o layout `buildFlatCardSvg`/`renderFlatCard`
+ * de `weekly-flat-card.ts` (paleta clara canônica, auto-size do título/corpo)
+ * — já é genérico o bastante (kicker/title/footer), não específico do
+ * carrossel semanal apesar do nome do arquivo. Evita reimplementar SVG novo,
+ * seguindo a própria recomendação do #6005 ("conferir antes de reimplementar
+ * do zero").
+ *
+ * Diferente do carrossel semanal (upload direto pro KV, `resolveOrGenerate*`
+ * com cache próprio): os cards diários são gerados como arquivo LOCAL na
+ * pasta da edição (`04-{destaque}-carousel-{slot}-4x5.jpg`) por
+ * `scripts/gen-carousel-cards.ts` no Stage 3, e sobem pro KV depois pelo
+ * mesmo `upload-images-public.ts` (Stage 5c-pre) que já cuida dos demais
+ * assets da edição — consistência com o resto do pipeline diário, que nunca
+ * faz upload direto de dentro do Stage 3.
+ */
+
+import { renderFlatCard, type FlatCardText } from "./weekly-flat-card.ts";
+import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
+
+export const CAROUSEL_SLIDE_SLOTS = ["p1", "p2", "p3", "cta"] as const;
+export type CarouselSlideSlot = (typeof CAROUSEL_SLIDE_SLOTS)[number];
+
+/**
+ * Pure: divide o corpo de um texto (sem hashtags — já passado por
+ * `splitBodyAndTags`) em exatamente `target` parágrafos-card.
+ *
+ * Caso comum (texto do `social-writer` desde #6005 Parte B: exatamente 3
+ * parágrafos separados por linha em branco) → passthrough direto, 1:1.
+ *
+ * Resiliente a desvio (edições antigas, texto editado manualmente no Studio):
+ *   - MAIS parágrafos que `target`: mantém os primeiros `target - 1`, junta o
+ *     resto num último parágrafo (nunca descarta conteúdo).
+ *   - MENOS parágrafos que `target`: quebra o(s) parágrafo(s) mais longo(s)
+ *     em sentenças, alternando o mais longo a cada iteração, até atingir
+ *     `target` — quando não há mais sentenças pra dividir (texto de 1 frase
+ *     só), para e retorna o que der, sempre menos que `target`, nunca vazio.
+ */
+export function splitIntoParagraphCards(body: string, target = 3): string[] {
+  let paras = body
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  if (paras.length === 0) return [];
+  if (paras.length === target) return paras;
+
+  if (paras.length > target) {
+    const head = paras.slice(0, target - 1);
+    const tail = paras.slice(target - 1).join(" ");
+    return [...head, tail];
+  }
+
+  // paras.length < target — divide o parágrafo mais longo em sentenças até
+  // atingir target (ou esgotar sentenças divisíveis).
+  while (paras.length < target) {
+    let longestIdx = 0;
+    for (let i = 1; i < paras.length; i++) {
+      if (paras[i].length > paras[longestIdx].length) longestIdx = i;
+    }
+    const sentences = paras[longestIdx].match(/[^.!?]+[.!?]+(?:\s+|$)/g);
+    if (!sentences || sentences.length < 2) break; // não dá pra dividir mais
+    const mid = Math.ceil(sentences.length / 2);
+    const first = sentences.slice(0, mid).join("").trim();
+    const second = sentences.slice(mid).join("").trim();
+    paras.splice(longestIdx, 1, first, second);
+  }
+  return paras;
+}
+
+/**
+ * Pure: monta o `FlatCardText` de cada um dos 4 slides sem foto (3
+ * parágrafos + CTA), a partir do texto genérico JÁ EXTRAÍDO de `## d{N}`
+ * (com ou sem bloco de hashtags — `splitBodyAndTags` remove antes de
+ * dividir). `paragraphCount` no kicker ("02 / 03") dá orientação de posição
+ * no carrossel — o mesmo padrão "1 batida por slide" dos benchmarks.
+ */
+export function buildCarouselSlideTexts(genericText: string): Record<CarouselSlideSlot, FlatCardText> {
+  const { body } = splitBodyAndTags(genericText);
+  const paragraphs = splitIntoParagraphCards(body, 3);
+  // Preenche até 3 com string vazia só na borda degenerada (texto vazio) —
+  // `renderFlatCard`/`buildFlatCardSvg` lidam com título vazio sem lançar,
+  // e este caso não deveria acontecer em produção (guard fica no chamador).
+  while (paragraphs.length < 3) paragraphs.push("");
+
+  const total = paragraphs.length;
+  const entries = paragraphs.map((title, i): [CarouselSlideSlot, FlatCardText] => [
+    (`p${i + 1}` as CarouselSlideSlot),
+    { kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`, title, footer: "diar.ia.br" },
+  ]);
+
+  return {
+    ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
+    cta: { kicker: "Newsletter grátis", title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
+  };
+}
+
+/** Nome do arquivo local (raiz da edição) de um slide sem foto do carrossel. */
+export function carouselSlideFilename(destaque: string, slot: CarouselSlideSlot): string {
+  return `04-${destaque}-carousel-${slot}-4x5.jpg`;
+}
+
+/**
+ * Renderiza os 4 slides sem foto de um destaque (3 parágrafos + CTA) em
+ * `outPaths[slot]` — wrapper fino sobre `renderFlatCard`, 1 call por slot.
+ * `outPaths` já resolvido pelo chamador (`gen-carousel-cards.ts`) via
+ * `carouselSlideFilename` + `editionDir`.
+ */
+export async function renderCarouselSlides(
+  genericText: string,
+  outPaths: Record<CarouselSlideSlot, string>,
+): Promise<Record<CarouselSlideSlot, string>> {
+  const texts = buildCarouselSlideTexts(genericText);
+  const result = {} as Record<CarouselSlideSlot, string>;
+  for (const slot of CAROUSEL_SLIDE_SLOTS) {
+    result[slot] = await renderFlatCard(texts[slot], outPaths[slot]);
+  }
+  return result;
+}
+
+/**
+ * Chaves esperadas em `06-public-images.json` (`images`) pra um destaque com
+ * carrossel completo: capa (`{destaque}_4x5`, já existente antes deste
+ * módulo) + os 4 slides sem foto.
+ */
+export function carouselImageKeys(destaque: string): { cover: string; slides: Record<CarouselSlideSlot, string> } {
+  return {
+    cover: `${destaque}_4x5`,
+    slides: Object.fromEntries(CAROUSEL_SLIDE_SLOTS.map((slot) => [slot, `${destaque}_carousel_${slot}`])) as Record<
+      CarouselSlideSlot,
+      string
+    >,
+  };
+}
+
+/**
+ * Resolve a lista ORDENADA de URLs pública do carrossel de um destaque
+ * (capa → p1 → p2 → p3 → cta) a partir do mapa `images` de
+ * `06-public-images.json`. `null` se QUALQUER slide estiver ausente — a
+ * carga é tudo-ou-nada: publicar um carrossel incompleto (menos batidas que
+ * o prometido, ou faltando o CTA) é pior que cair pro post single-image de
+ * sempre. O caller (`publish-instagram.ts`) trata `null` como "sem
+ * carrossel disponível — fallback pro card 4:5 único", nunca como erro.
+ */
+export function resolveCarouselImageUrls(
+  images: Record<string, { url?: string }> | undefined,
+  destaque: string,
+): string[] | null {
+  if (!images) return null;
+  const { cover, slides } = carouselImageKeys(destaque);
+  const coverUrl = images[cover]?.url;
+  if (!coverUrl) return null;
+  const urls: string[] = [coverUrl];
+  for (const slot of CAROUSEL_SLIDE_SLOTS) {
+    const url = images[slides[slot]]?.url;
+    if (!url) return null;
+    urls.push(url);
+  }
+  return urls;
+}
