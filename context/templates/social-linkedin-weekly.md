@@ -50,7 +50,7 @@ Por que isso importa: [se houver]
 
 [Comentário do editor — 1-3 frases honestas]
 
-Tutoriais e dicas como este saem em toda edição diária.
+Links para tutoriais e dicas saem em toda edição diária.
 [CTA de assinatura #2 — "Quero receber a edição diária →"]
 
 ---

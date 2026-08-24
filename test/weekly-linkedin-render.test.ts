@@ -177,7 +177,7 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR renderiza com OU sem com
     const html = renderLinkedinWeeklyHtml(input).html;
     // A frase de contexto precede a âncora clicável — sem ela o leitor não sabe
     // o que ganha assinando, que é o ponto do bloco ser o 1º convite da edição.
-    const lead = html.indexOf("Tutoriais e dicas como este saem em toda edição diária");
+    const lead = html.indexOf("Links para tutoriais e dicas saem em toda edição diária");
     const anchor = html.indexOf("Quero receber a edição diária");
     assert.ok(lead >= 0, "chamada de contexto deve existir antes da âncora");
     assert.ok(anchor > lead, "âncora clicável deve vir DEPOIS da frase de chamada");
