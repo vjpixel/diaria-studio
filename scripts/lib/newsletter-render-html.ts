@@ -298,18 +298,31 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
  *
  * Ou seja: `esp` hoje carrega DOIS eixos — sintaxe do ESP **e** modelo de
  * identidade do votante (direto vs. resolvido por lookup no KV). Eram o mesmo
- * eixo entre o #4517 e o #4581. Se um 3º ESP entrar, vale separar os dois em
- * vez de esticar o ternário de `buildVoteUrl` — ver #4581.
+ * eixo entre o #4517 e o #4581. Um 3º ESP entrou no #464 (Kit) — virou
+ * `switch` em vez de esticar o ternário, exatamente como esta nota já
+ * previa.
+ *
+ * **Kit (#464, achado ao vivo 24/08/2026):** mesmo eixo de identidade do
+ * Beehiiv — direto, sem token/lookup no KV (`{{email}}` cru), porque o
+ * mesmo racional do #4581 vale aqui: o É IA? não distribui prêmio, então
+ * votar no lugar de outra pessoa não causa dano. Sintaxe de merge tag é a
+ * própria do Kit, Liquid: `{{ subscriber.email_address }}` — confirmado ao
+ * vivo expandindo pro e-mail real do destinatário (não deixa a chave
+ * literal, não introduz um `@` adjacente à chave como o achado do #4692 na
+ * Brevo). Ver `scripts/lib/kit-broadcasts.ts` pro resto do mecanismo de
+ * publicação via Kit.
  *
  * Cuidado ao editar `buildVoteUrl`: o sufixo `@vote.eia.diaria.local` só pode
  * acompanhar um TOKEN. Colado atrás de `{{email}}` (que já vira um e-mail
  * completo) produz 2 arrobas e derruba todo voto — é o bug do #4512, coberto
- * hoje por `test/vote-token-e2e-4512.test.ts`.
+ * hoje por `test/vote-token-e2e-4512.test.ts`. Kit usa `{{ subscriber.email_address }}`
+ * cru pela mesma razão do Beehiiv (sem token), então a mesma armadilha vale
+ * se algum dia ganhar um sufixo.
  * Exportado — `render-newsletter-html.ts` importa este tipo em vez de repetir
- * o union literal na validação do CLI, então um 3º ESP futuro só precisa
+ * o union literal na validação do CLI, então um 4º ESP futuro só precisa
  * mudar aqui.
  */
-export type Esp = "beehiiv" | "brevo";
+export type Esp = "beehiiv" | "brevo" | "kit";
 
 /**
  * #5176 (260813): padding vertical do `<p>` de corpo do DESTAQUE
@@ -335,13 +348,23 @@ export type Esp = "beehiiv" | "brevo";
  * foram medidos pela calibragem da issue e mantêm o comportamento atual
  * (pPad 0, margens hardcoded existentes) — threading `esp` por todos eles
  * seria escopo maior que o que a issue mediu, sem medição que o justifique.
+ *
+ * **Kit (#464): NÃO CALIBRADO, escolha provisória.** Ao contrário de
+ * Beehiiv/Brevo (medidos ao vivo contra um envio real, #5176), não existe
+ * ainda comparação visual de um e-mail Kit entregue. Assumindo o perfil
+ * Brevo (pPad 0, margem ×0,75) por não haver evidência de que o template
+ * "Text only" do Kit injete `padding` em `<p>` como o Beehiiv faz — mas é
+ * uma suposição, não uma medição. Recalibrar (mesmo método do #5176: e-mail
+ * de teste real, inspecionar o `<style>` computado) antes do 1º envio de
+ * produção via Kit.
  */
-const P_PAD_BY_ESP: Record<Esp, number> = { beehiiv: 4, brevo: 0 };
+const P_PAD_BY_ESP: Record<Esp, number> = { beehiiv: 4, brevo: 0, kit: 0 };
 /** Margem "cheia" de referência entre parágrafos (pré-#2456). O valor
  *  efetivo é `P_MARGIN_BASE * fator` — beehiiv fica em 8px (fator 0,5,
- *  inalterado desde #2456), brevo em 12px (fator 0,75). */
+ *  inalterado desde #2456), brevo em 12px (fator 0,75). kit (#464): mesmo
+ *  fator do brevo, NÃO CALIBRADO — ver docstring acima. */
 const P_MARGIN_BASE = 16;
-const P_MARGIN_FACTOR_BY_ESP: Record<Esp, number> = { beehiiv: 0.5, brevo: 0.75 };
+const P_MARGIN_FACTOR_BY_ESP: Record<Esp, number> = { beehiiv: 0.5, brevo: 0.75, kit: 0.75 };
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
@@ -1349,10 +1372,18 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // string entirely; the Worker normalizes this path form back to /vote's
   // existing handler. The identity remains a query parameter because merge
   // tags need to be expanded by the ESP.
-  const buildVoteUrl = (choice: "A" | "B") =>
-    esp === "brevo"
-      ? `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}`
-      : `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{email}}`;
+  // #464: Kit usa sintaxe Liquid própria (`{{ subscriber.email_address }}`),
+  // mas o MESMO eixo de identidade do Beehiiv (direto, sem token) — ver
+  // docstring de `Esp` acima.
+  const buildVoteUrl = (choice: "A" | "B") => {
+    const mergeTag =
+      esp === "brevo"
+        ? `{{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}`
+        : esp === "kit"
+          ? "{{ subscriber.email_address }}"
+          : "{{email}}";
+    return `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email=${mergeTag}`;
+  };
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width={EIA_IMG_WIDTH} em pixels (container − sidePad×2 padding

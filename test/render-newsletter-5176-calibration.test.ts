@@ -95,6 +95,13 @@ describe("#5176 — pPad/margem do corpo do destaque condicionais ao esp", () =>
     assert.match(html, /margin:12px 0 0;font-family:/, "2º parágrafo brevo: margem 12px (fator 0,75), sem padding");
   });
 
+  it("esp kit (#464, achado do review #6080): mesma calibragem do Brevo (NÃO CALIBRADO ainda contra envio real, ver docstring de P_PAD_BY_ESP)", () => {
+    const html = renderBodyParasInner("Parágrafo 1.\n\nParágrafo 2.", "kit");
+    assert.match(html, /^<p style="margin:18px 0 0;font-family:/, "1º parágrafo kit: sem padding, mesmo perfil do brevo");
+    assert.doesNotMatch(html, /padding:/, "kit usa o mesmo perfil sem padding do brevo");
+    assert.match(html, /margin:12px 0 0;font-family:/, "2º parágrafo kit: margem 12px (fator 0,75, mesmo do brevo)");
+  });
+
   it("renderHTML propaga opts.esp até o corpo dos destaques (Brevo)", () => {
     const content: NewsletterContent = {
       title: "T",
