@@ -109,10 +109,21 @@ export interface ArtigoEspecialBoxInput {
   titulo: string;
   gancho: string;
   mesLabel: string;
+  /**
+   * #6014 item 4 — URL do post do mês no apoia.se. Quando presente, a linha
+   * de CTA `[Quero apoiar](...)` do parágrafo do tier passa a apontar pra
+   * ela (em vez do `https://apoia.se/diaria` genérico). Decisão do editor:
+   * o CTA converte melhor apontando pro post do artigo especial. Ausente =
+   * CTA intocado (comportamento anterior).
+   */
+  ctaUrl?: string;
 }
 
 /** Seed usado quando o arquivo ainda não existe (bootstrap). */
 export function buildDefaultArtigoEspecialBox(input: ArtigoEspecialBoxInput): string {
+  const tier = input.ctaUrl
+    ? TIER_PARAGRAPH.replace(CTA_LINK_RE, buildCtaLink(input.ctaUrl))
+    : TIER_PARAGRAPH;
   return [
     ARTIGO_ESPECIAL_BOX_HEADER,
     "",
@@ -120,12 +131,18 @@ export function buildDefaultArtigoEspecialBox(input: ArtigoEspecialBoxInput): st
     "",
     buildQuoteParagraph(input.titulo, input.gancho),
     "",
-    TIER_PARAGRAPH,
+    tier,
     "",
   ].join("\n");
 }
 
 export class ArtigoEspecialBoxFormatError extends Error {}
+
+/** #6014 item 4: CTA `[Quero apoiar](...)` — regex de match e builder. */
+const CTA_LINK_RE = /\[Quero apoiar\]\([^)]+\)/;
+function buildCtaLink(ctaUrl: string): string {
+  return `[Quero apoiar](${ctaUrl})`;
+}
 
 /**
  * Pura: aplica a atualização cirúrgica a um conteúdo EXISTENTE. Lança
@@ -144,9 +161,14 @@ export function applyArtigoEspecialBoxUpdate(content: string, input: ArtigoEspec
       'Parágrafo "O Artigo Especial desse/deste mês é: ..." não encontrado — formato do arquivo divergiu da convenção. Ajuste manualmente uma vez (ver context/snippets/README.md) antes de rodar de novo.',
     );
   }
-  return content
+  let next = content
     .replace(TITLE_LINE_RE, buildTitleLine(input.mesLabel))
     .replace(QUOTE_PARAGRAPH_RE, buildQuoteParagraph(input.titulo, input.gancho));
+  // #6014 item 4: CTA apontando pro post do mês no apoia.se (quando passado).
+  if (input.ctaUrl) {
+    next = next.replace(CTA_LINK_RE, buildCtaLink(input.ctaUrl));
+  }
+  return next;
 }
 
 /** Orquestra bootstrap-ou-update — usada pelo `main()` e por testes de integração leve. */
@@ -261,7 +283,7 @@ export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpd
   const existingContent = existsSync(snippetsFile) ? readFileSync(snippetsFile, "utf8") : null;
   let nextContent: string;
   try {
-    nextContent = renderArtigoEspecialBox(existingContent, { titulo, gancho, mesLabel });
+    nextContent = renderArtigoEspecialBox(existingContent, { titulo, gancho, mesLabel, ctaUrl: options.ctaUrl });
   } catch (e) {
     if (state && statePath) {
       writeArtigoEspecialState(
@@ -313,7 +335,7 @@ async function main(): Promise<void> {
   if (!titulo || !gancho || !mesLabel) {
     console.error(
       "Uso: npx tsx scripts/update-artigo-especial-box.ts --titulo \"...\" --gancho \"...\" --mes \"Agosto\" " +
-        "[--ano AAAA --slug slug] [--snippets-file path] [--config path] [--data-dir path] " +
+        "[--ano AAAA --slug slug] [--cta-url https://apoia.se/...] [--snippets-file path] [--config path] [--data-dir path] " +
         "[--slot 3] [--no-pin] [--unpin] [--force] [--dry-run]",
     );
     process.exit(2);
@@ -349,6 +371,7 @@ async function main(): Promise<void> {
     force,
     ano: values["ano"],
     slug: values["slug"],
+    ctaUrl: values["cta-url"],
   });
 }
 

@@ -98,6 +98,7 @@ import {
   withChannelState,
   type ArtigoEspecialChannel,
 } from "./lib/artigo-especial-state.ts";
+import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "./lib/artigo-especial-schedule.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { readArtigoMeta } from "./lib/artigo-especial-meta.ts";
 
@@ -278,6 +279,11 @@ export interface RunDispatchOptions {
   slug: string;
   imageUrl: string | null;
   scheduledAt: string;
+  /**
+   * #6014 item 1 — horário do canal PERFIL quando difere do da página.
+   * Ausente = usa `scheduledAt` (compat com chamadas antigas e testes).
+   */
+  scheduledAtPerfil?: string;
   only: LinkedinTarget[];
   force: boolean;
   dryRun: boolean;
@@ -304,7 +310,7 @@ export interface RunDispatchResult {
 export async function runArtigoEspecialLinkedinDispatch(
   options: RunDispatchOptions,
 ): Promise<RunDispatchResult> {
-  const { artigoDir, ano, slug, imageUrl, scheduledAt, only, force, dryRun, ctx, statePath } = options;
+  const { artigoDir, ano, slug, imageUrl, scheduledAt, scheduledAtPerfil, only, force, dryRun, ctx, statePath } = options;
   let state = readArtigoEspecialState(statePath, ano, slug);
 
   const targetToWebhook: Record<LinkedinTarget, "diaria" | "pixel"> = { pagina: "diaria", perfil: "pixel" };
@@ -355,7 +361,10 @@ export async function runArtigoEspecialLinkedinDispatch(
       subtype: "main",
       text,
       imageUrl,
-      scheduledAt,
+      // #6014 item 1: página e perfil têm horários default distintos
+      // (D+1 09:00 × D+2 09:30 BRT). Compat: sem `scheduledAtPerfil`,
+      // os dois usam `scheduledAt` (ex: --at explícito único).
+      scheduledAt: target === "perfil" ? (scheduledAtPerfil ?? scheduledAt) : scheduledAt,
       webhookTarget: targetToWebhook[target],
       action: "post",
     };
@@ -379,7 +388,7 @@ export async function runArtigoEspecialLinkedinDispatch(
     // CLAUDE.md: nunca só o gloss, validar o estado real antes de relayar).
     if (entry.fallback_used) {
       console.warn(
-        `[${target}] AVISO: Worker falhou, post saiu via fallback Make AGORA (${scheduledAt} ignorado) — motivo: ${entry.fallback_reason ?? "não registrado"}.`,
+        `[${target}] AVISO: Worker falhou, post saiu via fallback Make AGORA (${target === "perfil" ? (scheduledAtPerfil ?? scheduledAt) : scheduledAt} ignorado) — motivo: ${entry.fallback_reason ?? "não registrado"}.`,
       );
     }
 
@@ -503,15 +512,24 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  if (!at) {
-    console.error(
-      "Erro: --at obrigatório aqui (resolva o default D+1 17:30 BRT via " +
-        "scripts/lib/artigo-especial-schedule.ts::resolveArtigoEspecialScheduledAt antes de chamar este script).",
-    );
-    process.exit(2);
-    return;
+  // #6014 item 1: `--at` explícito continua valendo pros DOIS canais (compat);
+  // omitido, cada canal recebe seu default próprio — página D+1 09:00 BRT,
+  // perfil D+2 09:30 BRT (resolveArtigoEspecialScheduledAts). Antes o default
+  // único era D+1 17:30 — colidia com o d3 da edição diária no mesmo minuto.
+  let scheduledAt: string;
+  let scheduledAtPerfil: string | undefined;
+  if (at) {
+    validateExplicitAt(at);
+    scheduledAt = at;
+  } else {
+    const fullConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as Parameters<
+      typeof resolveArtigoEspecialScheduledAts
+    >[0];
+    const ats = resolveArtigoEspecialScheduledAts(fullConfig);
+    scheduledAt = ats.pagina;
+    scheduledAtPerfil = ats.perfil;
+    console.log(`Agenda default (#6014): pagina=${ats.pagina} perfil=${ats.perfil}`);
   }
-  const scheduledAt = at;
 
   const linkedinPublishedPath = resolve(artigoDir, "linkedin-published.json");
   const statePath = artigoEspecialStatePath(resolve(ROOT, "data"), ano, slug);

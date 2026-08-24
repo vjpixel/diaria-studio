@@ -80,22 +80,71 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  *     derivado no fuso de `config.publishing.social.timezone` (fallback BRT
  *     se ausente) — mesmo fuso que `computeScheduledAt` usa pro resto do
  *     cálculo, nunca o fuso local do processo.
+ *
+ * **#6014 item 1:** o default único D+1 17:30 foi SUBSTITUÍDO — nasceu
+ * colidindo com o `d3` da edição diária (mesmo minuto, mesma página; visto
+ * na fila do Worker em 23/08). Decisão do editor ao vivo:
+ *   - **Página: D+1 09:00 BRT** (abre o dia, 1h antes do `d1` das 10:00);
+ *   - **Perfil: D+2 09:30 BRT** (dia seguinte ao da página).
+ * Agenda resultante: `09:00 weekly-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`.
+ * `resolveArtigoEspecialScheduledAt` (singular) continua existindo por
+ * compat e agora devolve o horário da PÁGINA; o par completo vem de
+ * `resolveArtigoEspecialScheduledAts`.
  */
-export function resolveArtigoEspecialScheduledAt(
+export function resolveArtigoEspecialScheduledAts(
   config: ScheduleConfig,
   input: { at?: string; now?: number } = {},
-): string {
-  if (input.at) return validateExplicitAt(input.at, input.now ?? Date.now());
+): { pagina: string; perfil: string } {
+  if (input.at) {
+    const at = validateExplicitAt(input.at, input.now ?? Date.now());
+    return { pagina: at, perfil: at };
+  }
 
   const now = input.now ?? Date.now();
   const timeZone = config.publishing?.social?.timezone ?? DEFAULT_TIMEZONE;
   const today = toAammdd(new Date(now), timeZone);
-  return computeScheduledAt({
-    config,
-    editionDate: today,
-    destaque: "d3",
-    platform: "linkedin",
-    dayOffsetOverride: 1,
-    now,
+
+  // Deriva configs sintéticos com o horário do slot — computeScheduledAt lê
+  // o horário de `fallback_schedule.{destaque}_time`; sobrescrever o valor
+  // num config derivado evita tocar no platform.config.json compartilhado.
+  const withTime = (time: string): ScheduleConfig => ({
+    ...config,
+    publishing: {
+      ...config.publishing,
+      social: {
+        ...config.publishing?.social,
+        fallback_schedule: {
+          ...config.publishing?.social?.fallback_schedule,
+          d3_time: time,
+        },
+      },
+    },
   });
+
+  return {
+    pagina: computeScheduledAt({
+      config: withTime("09:00"),
+      editionDate: today,
+      destaque: "d3",
+      platform: "linkedin",
+      dayOffsetOverride: 1,
+      now,
+    }),
+    perfil: computeScheduledAt({
+      config: withTime("09:30"),
+      editionDate: today,
+      destaque: "d3",
+      platform: "linkedin",
+      dayOffsetOverride: 2,
+      now,
+    }),
+  };
+}
+
+/** Compat (#5979/#6014): devolve só o horário da PÁGINA (D+1 09:00 BRT). */
+export function resolveArtigoEspecialScheduledAt(
+  config: ScheduleConfig,
+  input: { at?: string; now?: number } = {},
+): string {
+  return resolveArtigoEspecialScheduledAts(config, input).pagina;
 }

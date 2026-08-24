@@ -136,6 +136,49 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
     };
   }
 
+  it("#6014 item 1: scheduledAtPerfil — perfil usa horario proprio, pagina usa scheduledAt (regressao)", async () => {
+    const savedFetch = globalThis.fetch;
+    const bodies: Array<{ destaque?: string; scheduled_at?: string }> = [];
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      // so captura os POSTs de dispatch (verify /list+/dlq vem depois, sem destaque)
+      if (body.destaque) bodies.push(body);
+      // futuro -> route=worker_queue; o mock responde no formato da fila
+      return new Response(
+        JSON.stringify({ queued: true, key: `k-${bodies.length}`, scheduled_at: body.scheduled_at, destaque: body.destaque }),
+        {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    try {
+      const { results, failedCount } = await runArtigoEspecialLinkedinDispatch({
+        artigoDir,
+        ano: "2026",
+        slug: "x",
+        imageUrl: null,
+        scheduledAt: "2099-01-01T09:00:00-03:00",
+        scheduledAtPerfil: "2099-01-02T09:30:00-03:00",
+        only: ["pagina", "perfil"],
+        force: false,
+        dryRun: false,
+        ctx: mkCtx(),
+        statePath,
+      });
+      assert.equal(failedCount, 0);
+      assert.equal(results.length, 2);
+      assert.deepEqual(
+        bodies.map((b) => [b.destaque, b.scheduled_at]),
+        [
+          ["weekly-pagina", "2099-01-01T09:00:00-03:00"],
+          ["weekly-perfil", "2099-01-02T09:30:00-03:00"],
+        ],
+      );
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
   it("--dry-run: nao chama dispatchEntry (rede), nao grava state, retorna 2 entries null", async () => {
     const savedFetch = globalThis.fetch;
     globalThis.fetch = async () => {
