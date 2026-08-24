@@ -228,6 +228,25 @@ export function resolveEditionDir(
  * sinal útil. Mesmo padrão de restrição já usado no fallback legado do
  * `assert` (ver `editionIsAammdd` mais abaixo).
  *
+ * **Anti-deadlock (2 filtros, achado no self-review deste PR):** o `write`
+ * roda ANTES do sentinel do próprio stage existir — é literalmente o que
+ * está prestes a criá-lo. Rodar o registry completo sem cuidado produziria
+ * um deadlock onde o stage nunca conseguiria se auto-declarar concluído:
+ *   1. `getRulesForStage(step, { phase: "pre-dispatch" })` exclui regras
+ *      `postDispatchOnly` (ex: Stage 5 `stage-usage-captured`, que só pode
+ *      passar DEPOIS que este mesmo `write` já rodou e `capture-stage-usage.ts`
+ *      já populou `stage-status.json` — checar isso ANTES seria
+ *      falso-positivo garantido, mesmo comportamento que motivou o `--phase
+ *      pre-dispatch` original do #4516).
+ *   2. Filtro explícito de qualquer regra `step-${step}-sentinel-exists` —
+ *      cobre o caso do Stage 6 (`checkStep6Sentinel`, que verifica
+ *      `.step-6-done.json`), que **não** está marcada `postDispatchOnly`
+ *      (só o filtro 1 não bastaria) mas é old-testamente self-referencial:
+ *      checar a existência do sentinel que este `write` está prestes a criar
+ *      sempre falharia. Regras `step-N-sentinel-exists` para um stage
+ *      ANTERIOR (ex: Stage 6 checando `.step-5-done.json`) continuam rodando
+ *      normalmente — essas são legítimas (aquele sentinel já deveria existir).
+ *
  * Pure o suficiente para teste direto: recebe `editionDir` já resolvido e
  * devolve o resultado sem tocar em stdout/stderr/process.exit — quem chama
  * decide como reportar.
@@ -239,7 +258,10 @@ export function checkStageInvariantsForWrite(
   if (!Number.isInteger(step) || step < 0 || step > 6) {
     return { passed: true, errors: [] };
   }
-  const rules = getRulesForStage(step as 0 | 1 | 2 | 3 | 4 | 5 | 6);
+  const selfSentinelRuleId = `step-${step}-sentinel-exists`;
+  const rules = getRulesForStage(step as 0 | 1 | 2 | 3 | 4 | 5 | 6, {
+    phase: "pre-dispatch",
+  }).filter((rule) => rule.id !== selfSentinelRuleId);
   const errors: InvariantViolation[] = [];
   for (const rule of rules) {
     for (const v of rule.run(editionDir)) {

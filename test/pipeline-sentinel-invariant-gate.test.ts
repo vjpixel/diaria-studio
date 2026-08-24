@@ -65,6 +65,51 @@ describe("checkStageInvariantsForWrite (#6009) — unit", () => {
     }
   });
 
+  it("#6009 anti-deadlock: Stage 6 nunca inclui step-6-sentinel-exists (checaria o próprio sentinel que este write está prestes a criar)", () => {
+    // checkStep6Sentinel não é postDispatchOnly — sem o filtro explícito por
+    // id, o write --step 6 bloquearia SEMPRE (o sentinel nunca existe antes
+    // de ser escrito). Dir vazio: outras regras do Stage 6 vão falhar (isso é
+    // esperado), mas a causa NUNCA pode ser o próprio sentinel do stage 6.
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-invariant-gate-s6-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const result = checkStageInvariantsForWrite(dir, 6);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "step-6-sentinel-exists"),
+        "step-6-sentinel-exists nunca deveria aparecer nas violações do write do próprio stage 6",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#6009 anti-deadlock: Stage 5 exclui regras postDispatchOnly (step-5-sentinel-exists, stage-usage-captured, ...)", () => {
+    // Mesma lógica do Stage 6 acima, mas via o filtro de fase (--phase
+    // pre-dispatch) — essas regras só marcam severity=error porque o
+    // próprio write (+ capture-stage-usage.ts, que roda DEPOIS dele) ainda
+    // não aconteceu. Incluir postDispatchOnly aqui bloquearia Stage 5 pra
+    // sempre, do mesmo jeito que o Stage 6 sem o filtro por id.
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-invariant-gate-s5-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const result = checkStageInvariantsForWrite(dir, 5);
+      const postDispatchRuleIds = [
+        "step-5-sentinel-exists",
+        "stage-usage-captured",
+        "social-published-complete",
+        "consent-binding",
+      ];
+      for (const ruleId of postDispatchRuleIds) {
+        assert.ok(
+          !result.errors.some((v) => v.rule === ruleId),
+          `${ruleId} (postDispatchOnly) não deveria aparecer nas violações do write do stage 5`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("step fora do range 0-6 → sempre passa (no-op, mesmo comportamento pré-fix)", () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-invariant-gate-range-"));
     try {
