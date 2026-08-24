@@ -1419,6 +1419,44 @@ export function isOfficialLancamentoUrl(url: string): boolean {
  *   3. type_hint pesquisa (quando dominio nao e jornalistico).
  *   4. Default -> noticias.
  */
+/**
+ * #5995 item 3 (modo de falha 1): título de post NÃO-produto em domínio
+ * oficial → true (caller rebaixa para `noticias`). Cinco classes medidas no
+ * corpus (34 casos lancamento→radar):
+ *   1. Marco/celebração      — "Celebrating one billion Gemma downloads"
+ *   2. Relatório/estado-arte — "State of Open Models: Summer 2026 Observations"
+ *   3. Opinião/thought-lead. — "...Is Becoming an Investable Asset Class"
+ *   4. Roundup de porta-vozes— "Omni experts share what excites them most"
+ *   5. Oferta promocional    — "Start the semester with one year of Gemini, on us"
+ *
+ * Guard anti-falso-positivo: título com verbo de anúncio explícito
+ * (introducing/announcing/launching/unveils/...) NUNCA é demovido por aqui —
+ * "Introducing Gemma 4: celebrating 100M users" continua lançamento.
+ */
+const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
+  /\bcelebrat(?:e|es|ing|ion)\b/i,
+  /\bmilestone\b/i,
+  /\binside the [\w-]+verse\b/i,
+  /\bstate of\b/i,
+  /\bobservations\b/i,
+  /\bis becoming an?\b/i,
+  /\bexpanding\b[^\n]{0,50}\bas the\b/i,
+  /\bexperts share\b/i,
+  /\bwhat excites\b/i,
+  /\bon us\b/i,
+  /\boffering\b/i,
+];
+
+const LAUNCH_VERB_TITLE_RE =
+  /\b(introducing|announcing|launch(?:ing|es)?|unveil(?:ing|s)?|now available|general[ -]availability)\b/i;
+
+export function isNonProductOfficialPost(article: Article): boolean {
+  const title = article.title ?? "";
+  if (!title) return false;
+  if (LAUNCH_VERB_TITLE_RE.test(title)) return false;
+  return NON_PRODUCT_OFFICIAL_PATTERNS.some((p) => p.test(title));
+}
+
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
 
@@ -1566,6 +1604,18 @@ export function categorize(article: Article): Category {
     //       link oficial (#160) e a versão .1/.5 implica predecessor. Caso Holo3.1.
     if (hasPreExistenceSignal(article)) return "noticias";
     if (isIncrementalReleaseOnThirdPartyBlog(article)) return "noticias";
+
+    // #5995 item 3 (modo de falha 1 — lancamento→radar, 34 casos): domínio
+    // oficial é condição NECESSÁRIA, não suficiente (#160 pelo lado que falta).
+    // Título de marco/celebração, relatório/estado-da-arte, opinião/thought-
+    // leadership, roundup de porta-vozes ou oferta promocional → noticias.
+    // Amostras reais que motivaram: "Celebrating one billion Gemma downloads",
+    // "State of Open Models", "NVIDIA AI Factory Compute Is Becoming an
+    // Investable Asset Class", "Omni experts share what excites them most",
+    // "Start the semester with one year of Gemini, on us". Roda ANTES do
+    // short-circuit type_hint (mesma posição de hasPreExistenceSignal): o sinal
+    // lexical do título é mais confiável que o hint do Haiku pra essas classes.
+    if (isNonProductOfficialPost(article)) return "noticias";
 
     // #1173/#1453: type_hint=lancamento do source-researcher (Haiku que LEU
     // a página) curto-circuita TODAS as heurísticas defensivas abaixo.
