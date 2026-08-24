@@ -304,6 +304,14 @@ export interface PostmasterDomainConfig {
 export const POSTMASTER_DOMAINS: PostmasterDomainConfig[] = [
   { domain: "clarice.ai", kvKey: POSTMASTER_SPAM_KV_KEY, collectCampaignSpam: true },
   { domain: "diar.ia.br", kvKey: additionalPostmasterSpamKvKey("diar.ia.br"), collectCampaignSpam: false },
+  // #6046: reativa.diar.ia.br substitui diar.ia.br como domínio de envio do
+  // brevo_diaria a partir de 260824. Listado aqui pra não repetir o blind
+  // spot que o #4973 fechou pro apex. Registrado e VERIFICADO no Postmaster
+  // via `postmaster-register-domain.ts --verify --domain reativa.diar.ia.br`
+  // (260824) — mas ainda sem histórico de envio, então `syncDomain` só vai
+  // logar "nenhuma leitura na janela" (fail-soft, comportamento normal de
+  // domínio recém-verificado) até a primeira campanha real sair daqui.
+  { domain: "reativa.diar.ia.br", kvKey: additionalPostmasterSpamKvKey("reativa.diar.ia.br"), collectCampaignSpam: false },
 ];
 
 /** `Date` → `CalendarDate` (UTC) — formato de fronteira de range da v2 (`domainStats:query`). */
