@@ -138,7 +138,36 @@ interface RawSubscription extends Record<string, unknown> {
   stats?: OpenStats | null;
 }
 
-/** Drena TODAS as páginas de subscriptions criadas desde `gteSec` (guard anti-truncamento #2457). */
+/**
+ * Drena as páginas de subscriptions criadas depois de `gteSec`.
+ *
+ * #6043 (260824): `created_at__gte` (e variantes testadas ao vivo —
+ * `created__gte`, `created_after`, `min_created`, `since`, `created_at_gte`)
+ * NÃO é honrado pela API pública v2 da Beehiiv — o parâmetro é
+ * silenciosamente ignorado e o endpoint devolve a página 1 na ordem padrão
+ * (created ASC, ou seja o assinante MAIS ANTIGO primeiro). A run de
+ * 24/08/2026 12:05 UTC confiou nesse filtro inexistente e tratou boa parte
+ * da base histórica como "novos assinantes" — 585 e-mails de boas-vindas
+ * indevidos, ver #6043.
+ *
+ * Fix: `order_by=created&direction=desc` (confirmado funcional ao vivo)
+ * devolve o MAIS RECENTE primeiro — pagina nessa ordem e para assim que
+ * encontrar (ou passar de) `gteSec`, filtrando client-side. Como a ordem é
+ * decrescente, o primeiro item com `created < gteSec` garante que TODO
+ * item seguinte também é `< gteSec` — não há risco de faltar alguém mais
+ * novo que ainda esteja numa página futura.
+ *
+ * Corte é `<` (estrito), não `<=` — mantém a semântica INCLUSIVA do
+ * `created_at__gte` original (>= cursor conta como novo). Isso importa
+ * porque `main()` avança o cursor pro maior `created` visto no run: um
+ * `<=` excluiria PERMANENTEMENTE qualquer assinante futuro que caia
+ * exatamente nesse mesmo segundo (import em lote, corrida de paginação) —
+ * dropado aqui dentro de `fetchSubscriptionsSince`, antes até de chegar no
+ * dedup por id de `classifyNewSubscribers`. Com `<`, um item empatado no
+ * cursor é reincluído e o dedup por `subscription_id` cuida de não
+ * duplicar entrada pra quem já é conhecido — reprocessar um id já visto é
+ * inofensivo, perder um novo de vez não é (achado do review de #6054).
+ */
 async function fetchSubscriptionsSince(
   publicationId: string,
   apiKey: string,
@@ -147,31 +176,31 @@ async function fetchSubscriptionsSince(
   const all: DetectedSubscription[] = [];
   let page = 1;
   let more = true;
-  let totalResults: number | null = null;
   while (more) {
     const path =
       `/publications/${publicationId}/subscriptions` +
-      `?expand[]=stats&limit=100&page=${page}&created_at__gte=${gteSec}`;
+      `?expand[]=stats&limit=100&page=${page}&order_by=created&direction=desc`;
     const res = await beehiivFetch<BeehiivPage<RawSubscription>>(path, apiKey);
     if (!res.ok || !res.body) {
       throw new Error(`[onboarding] Beehiiv API ${res.status} em subscriptions página ${page}`);
     }
     const chunk = res.body.data ?? [];
+    if (chunk.length === 0) break;
     for (const s of chunk) {
+      if (s.created != null && s.created < gteSec) {
+        // Página ordenada desc: a partir daqui tudo é < gteSec. Para.
+        // (estrito — ver docstring: empate no cursor conta como novo)
+        more = false;
+        break;
+      }
       if (!s.id || !s.email) continue;
       all.push({ id: s.id, email: s.email, status: s.status ?? "unknown", created: s.created ?? null });
     }
-    if (res.body.total_results != null) totalResults = res.body.total_results;
-    if (chunk.length === 0) more = false;
-    else if (totalResults != null) more = all.length < totalResults;
-    else {
+    if (more) {
       const apiLimit = typeof res.body.limit === "number" && res.body.limit > 0 ? res.body.limit : 100;
       more = chunk.length >= apiLimit;
     }
     page++;
-  }
-  if (totalResults != null && all.length < totalResults) {
-    throw new Error(`[onboarding] truncado: ${all.length}/${totalResults} subscriptions — abortando.`);
   }
   return all;
 }
