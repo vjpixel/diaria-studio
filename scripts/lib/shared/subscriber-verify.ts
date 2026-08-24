@@ -151,6 +151,14 @@ export interface KitByEmailDeps {
  * `inactive`/`cancelled`). Qualquer não-2xx ou exceção de rede/parse vira
  * `"verification_failed"` — mesma semântica do #4321 (distinto de "não é
  * assinante").
+ *
+ * **Achado do review (PR #6082): ainda NÃO tem nenhum caller em produção.**
+ * `workers/poll/src/web-gate.ts` (`checkWebSubscriber`) segue chamando só
+ * `verifySubscriberViaBeehiivByEmail` — diferente de `subscribeToKit`
+ * (`workers/poll/src/subscribe.ts`), que já tem um branch real
+ * (`env.SUBSCRIBE_BACKEND === "kit"`), esta função existe mas não está
+ * wireada em lugar nenhum ainda. Fica pra quando `web-gate.ts` ganhar o
+ * mesmo seletor de backend — trabalho futuro do #6048, não coberto aqui.
  */
 export async function verifySubscriberViaKitByEmail(
   apiKey: string,
