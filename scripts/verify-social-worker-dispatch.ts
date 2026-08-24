@@ -245,23 +245,95 @@ export function reconcileWorkerEntry(
   };
 }
 
+/**
+ * Opções de retry do `verifyWorkerDispatch` (#6016 item 3).
+ *
+ * O KV do Worker tem lag de propagação: logo após um dispatch bem-sucedido,
+ * `GET /list` pode ainda NÃO trazer a entry (~20s depois trazia, visto 2× na
+ * mesma sessão em 23/08). Sem retry, a reconciliação interpreta a ausência
+ * como "fired" (published) ou reporta "0 confirmadas" — e um operador que
+ * leia o 0 como "não entrou" cria POST DUPLICADO ao re-disparar.
+ */
+export interface VerifyWorkerDispatchRetryOptions {
+  /** Total de tentativas de fetch /list+/dlq. Default 3. */
+  maxAttempts?: number;
+  /** Backoff entre tentativas (ms). Default 5000. */
+  backoffMs?: number;
+  /** Injetável pra teste. Default `setTimeout` promisificado. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_RETRY: Required<Omit<VerifyWorkerDispatchRetryOptions, "sleep">> = {
+  maxAttempts: 3,
+  backoffMs: 5_000,
+};
+
+async function defaultSleep(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+/** Pura: keys de entries `scheduled` com `worker_queue_key` ausentes dos dois
+ *  key-sets — candidatas à ambiguidade "ainda não propagou × nunca entrou". */
+function pendingQueueKeys(posts: PostEntry[], queueKeys: Set<string>, dlqKeys: Set<string>): string[] {
+  const out: string[] = [];
+  for (const entry of posts) {
+    if (!WORKER_RECONCILABLE_PLATFORMS.has(entry.platform)) continue;
+    if (entry.status !== "scheduled") continue;
+    const key = entry.worker_queue_key as string | undefined;
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (!queueKeys.has(key) && !dlqKeys.has(key)) out.push(key);
+  }
+  return out;
+}
+
 export async function verifyWorkerDispatch(
   published: SocialPublished,
   workerUrl: string,
   token: string,
   fetchJson: FetchJsonFn = defaultFetchJson,
   now: Date = new Date(),
+  retry: VerifyWorkerDispatchRetryOptions = {},
 ): Promise<{ updated: SocialPublished; changes: number }> {
-  const [listResp, dlqResp] = await Promise.all([
-    fetchWorkerList(workerUrl, token, fetchJson),
-    fetchWorkerDlq(workerUrl, token, fetchJson),
-  ]);
-  const queueKeys = new Set(listResp.items.map((i) => i.key));
-  const dlqKeys = new Set(dlqResp.items.map((i) => i.key));
+  const { maxAttempts, backoffMs } = { ...DEFAULT_RETRY, ...retry };
+  const sleep = retry.sleep ?? defaultSleep;
+
+  // #6016 item 3: enquanto houver entry `scheduled` cuja key não apareceu nem
+  // na fila nem no DLQ, re-tentar com backoff antes de reconciliar — lag de
+  // propagação do KV é a causa mais provável logo após o dispatch.
+  let listResp: WorkerListResponse | undefined;
+  let dlqResp: WorkerDlqResponse | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    [listResp, dlqResp] = await Promise.all([
+      fetchWorkerList(workerUrl, token, fetchJson),
+      fetchWorkerDlq(workerUrl, token, fetchJson),
+    ]);
+    const queueKeys = new Set(listResp.items.map((i) => i.key));
+    const dlqKeys = new Set(dlqResp.items.map((i) => i.key));
+    const pending = pendingQueueKeys(published.posts, queueKeys, dlqKeys);
+    if (pending.length === 0) break;
+    if (attempt < maxAttempts) {
+      console.warn(
+        `[verify-social-worker] tentativa ${attempt}/${maxAttempts}: ${pending.length} entry(s) ` +
+          `ausente(s) da fila E do DLQ (${pending.join(", ")}) — aguardando ${backoffMs}ms ` +
+          `(possível lag de propagação do KV) antes de re-tentar.`,
+      );
+      await sleep(backoffMs);
+    }
+  }
+  const queueKeys2 = new Set(listResp!.items.map((i) => i.key));
+  const dlqKeys2 = new Set(dlqResp!.items.map((i) => i.key));
+  const stillPending = pendingQueueKeys(published.posts, queueKeys2, dlqKeys2);
+  if (stillPending.length > 0) {
+    console.warn(
+      `[verify-social-worker] AVISO (#6016): ${stillPending.length} entry(s) continuam ausente(s) da fila ` +
+        `E do DLQ apos ${maxAttempts} tentativa(s): ${stillPending.join(", ")}. Isto NAO é "confirmado ausente" — ` +
+        `pode ser lag de propagação do KV. NÃO re-dispare com base nesta leitura única.`,
+    );
+  }
 
   let changes = 0;
   const updatedPosts: PostEntry[] = published.posts.map((entry) => {
-    const { updated, changed } = reconcileWorkerEntry(entry, queueKeys, dlqKeys, now);
+    const { updated, changed } = reconcileWorkerEntry(entry, queueKeys2, dlqKeys2, now);
     if (changed) changes++;
     return updated;
   });
