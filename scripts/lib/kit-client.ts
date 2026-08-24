@@ -24,13 +24,13 @@
  * dezenas de chamadas sequenciais sem espaçamento antes de 429 — confirmado
  * durante o import de 585 assinantes no #6047 (bateu em ~240 chamadas sem
  * espera). `kitFetch` usa `fetchWithRetry` com `isRetriableStatus` incluindo
- * 429 (além do default `>=500`), então uma sequência de chamadas deste
- * módulo se auto-recupera de rate limit via backoff — mas um CALLER que
- * dispara muitas chamadas em paralelo (ex: 1 por post, sem fila) ainda pode
- * saturar o limite mais rápido do que o backoff consegue absorver. Scripts
- * que iterarem sobre N broadcasts devem serializar com espaçamento
- * (mesmo padrão do import do #6047: ~350ms entre chamadas), não confiar só
- * no retry deste módulo.
+ * 429 (além do default `>=500`), o que absorve um blip ISOLADO de 429 via o
+ * backoff fixo do `fetchWithRetry` (~1s/3s/9s, 3 tentativas) — **não é um
+ * mecanismo geral de recuperação de rate limit**: nada aqui lê `Retry-After`
+ * nem garante que a janela de cooldown real do Kit caiba nesse backoff. Um
+ * CALLER que itera sobre N broadcasts (1 chamada por post, sem fila) precisa
+ * se auto-espaçar (mesmo padrão do import do #6047: ~350ms entre chamadas)
+ * — não confiar só no retry deste módulo pra volume alto.
  *
  * ## O que este módulo NÃO faz
  *
@@ -42,7 +42,7 @@
  */
 
 import { kitApiBase, resolveKitConfig, type KitConfig } from "./kit-config.ts";
-import { fetchWithRetry } from "./fetch-retry.ts";
+import { fetchWithRetry, type FetchRetryOptions } from "./fetch-retry.ts";
 
 export class KitApiError extends Error {
   constructor(
@@ -64,16 +64,31 @@ function isRetriableStatus(status: number): boolean {
 /**
  * GET/POST/PATCH/DELETE genérico contra a API do Kit — auth via header
  * `X-Kit-Api-Key`, retry com backoff (incluindo 429), parse de JSON. Lança
- * `KitApiError` pra qualquer status não-2xx que sobreviva ao retry.
+ * `KitApiError` pra qualquer status não-2xx que sobreviva ao retry, e um
+ * `Error` com contexto (path + trecho do body) se o body de uma resposta 2xx
+ * não for JSON válido — nunca deixa `JSON.parse` vazar um `SyntaxError` cru
+ * sem dizer de qual chamada veio (achado do review do #6074).
  *
  * `config` é injetável (mesmo padrão de `resolveBeehiivConfig`) — pra
  * testes chamarem sem `KIT_API_KEY` real no ambiente. Default: resolve de
  * `process.env` via `resolveKitConfig()`, lançando se ausente (fail-fast —
  * este módulo não tem um modo "degrada silenciosamente sem key").
+ *
+ * `retry` é injetável (repassado direto pra `fetchWithRetry`) — sobretudo
+ * pra testes passarem um `sleep` fake e não pagar o backoff real (~1s+) a
+ * cada teste que exercita um caminho de retry, mesmo padrão já usado em
+ * `test/fetch-retry.test.ts`. `isRetriableStatus` sempre inclui 429 (ver
+ * docstring do módulo) — não é sobrescrevível via `retry`, só os outros
+ * campos de `FetchRetryOptions` (`attempts`/`backoffMs`/`sleep`/`timeoutMs`).
  */
 export async function kitFetch<T = unknown>(
   path: string,
-  opts: { method?: string; body?: unknown; config?: KitConfig } = {},
+  opts: {
+    method?: string;
+    body?: unknown;
+    config?: KitConfig;
+    retry?: Omit<FetchRetryOptions, "isRetriableStatus">;
+  } = {},
 ): Promise<T> {
   const config = opts.config ?? (() => {
     const resolved = resolveKitConfig();
@@ -92,13 +107,20 @@ export async function kitFetch<T = unknown>(
         },
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       }),
-    { isRetriableStatus },
+    { ...opts.retry, isRetriableStatus },
   );
 
   const text = await res.text();
   if (!res.ok) throw new KitApiError(path, res.status, text);
   if (!text) return undefined as T;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch (e) {
+    throw new Error(
+      `[kit-client] resposta 2xx de ${path} não é JSON válido: ${(e as Error).message} (body: ${text.slice(0, 200)})`,
+      { cause: e },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +178,10 @@ export interface KitBroadcastDetail extends KitBroadcastSummary {
 }
 
 export async function getBroadcast(id: number, config?: KitConfig): Promise<KitBroadcastDetail> {
-  const data = await kitFetch<{ broadcast: KitBroadcastDetail }>(`/broadcasts/${id}`, { config });
+  const data = await kitFetch<{ broadcast: KitBroadcastDetail } | undefined>(`/broadcasts/${id}`, { config });
+  if (!data?.broadcast) {
+    throw new Error(`[kit-client] getBroadcast(${id}): resposta 2xx sem o envelope "broadcast" esperado`);
+  }
   return data.broadcast;
 }
 
@@ -184,10 +209,12 @@ export async function getBroadcastClicks(
   if (opts.perPage) params.set("per_page", String(opts.perPage));
   if (opts.after) params.set("after", opts.after);
   const qs = params.toString();
-  const data = await kitFetch<{ broadcast: { id: number; clicks: KitBroadcastClick[] }; pagination: KitPagination }>(
-    `/broadcasts/${id}/clicks${qs ? `?${qs}` : ""}`,
-    { config: opts.config },
-  );
+  const data = await kitFetch<
+    { broadcast: { id: number; clicks: KitBroadcastClick[] }; pagination: KitPagination } | undefined
+  >(`/broadcasts/${id}/clicks${qs ? `?${qs}` : ""}`, { config: opts.config });
+  if (!data?.broadcast) {
+    throw new Error(`[kit-client] getBroadcastClicks(${id}): resposta 2xx sem o envelope "broadcast" esperado`);
+  }
   return { clicks: data.broadcast.clicks, pagination: data.pagination };
 }
 
@@ -217,8 +244,12 @@ export interface KitBroadcastStats {
 }
 
 export async function getBroadcastStats(id: number, config?: KitConfig): Promise<KitBroadcastStats> {
-  const data = await kitFetch<{ broadcast: { id: number; stats: KitBroadcastStats } }>(`/broadcasts/${id}/stats`, {
-    config,
-  });
+  const data = await kitFetch<{ broadcast: { id: number; stats: KitBroadcastStats } } | undefined>(
+    `/broadcasts/${id}/stats`,
+    { config },
+  );
+  if (!data?.broadcast?.stats) {
+    throw new Error(`[kit-client] getBroadcastStats(${id}): resposta 2xx sem o envelope "broadcast.stats" esperado`);
+  }
   return data.broadcast.stats;
 }
