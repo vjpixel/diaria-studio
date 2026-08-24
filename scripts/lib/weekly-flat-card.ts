@@ -49,11 +49,84 @@ const TITLE_SIZE_MIN = 46;
 const TITLE_SIZE_MAX = 148;
 const TITLE_SIZE_STEP = 2;
 
+/**
+ * Largura média de caractere como fração do corpo da fonte. Aproximação
+ * usada pelo wrap (não medimos glifo real — o SVG é rasterizado depois).
+ * Extraída pra constante no #6078: era literal 0.52 dentro de
+ * `fillingFontSize` e precisou ser compartilhada com o caminho de tamanho
+ * fixo, senão os dois divergiam em silêncio.
+ */
+const CHAR_WIDTH_RATIO = 0.52;
+
+/** Geometria vertical do bloco de texto — o mesmo em `fill` e em `fixed`. */
+const KICKER_Y = 168;
+const BAR_Y = KICKER_Y + 30;
+const FOOTER_Y = H - 62;
+const TITLE_TOP = BAR_Y + 90;
+const TITLE_BOTTOM = FOOTER_Y - 90;
+
 export interface FlatCardText {
   kicker: string;
   title: string;
   /** Rodapé — texto livre (ex: "diar.ia.br" na capa, "Link na bio" no CTA). */
   footer: string;
+}
+
+/**
+ * Como o bloco de texto é dimensionado e posicionado (#6078 item 2).
+ *
+ * - `fill` — auto-size (`fillingFontSize`) + bloco centralizado: o texto
+ *   CRESCE até preencher o card. Default, e a decisão original do #5330 pra
+ *   capa/CTA do carrossel SEMANAL: *"preenche o card todo, assim não sente
+ *   falta de não ter imagem"*. Correto quando o card carrega uma frase só.
+ * - `fixed` — tamanho fixo + bloco ancorado no TOPO: todos os cards de um
+ *   mesmo carrossel saem com a MESMA métrica e o texto curto simplesmente
+ *   termina antes, deixando branco embaixo (respiro, não falha).
+ *
+ * O carrossel DIÁRIO usa `fixed` (decisão do editor, 24/08/2026): ali o card
+ * carrega um parágrafo de corpo cujo tamanho varia por edição, e auto-size
+ * fazia 4 slides do mesmo post saírem com 4 métricas diferentes. O semanal
+ * segue em `fill` — não estava em discussão.
+ */
+export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number };
+
+export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
+
+/**
+ * Pure: resolve tamanho de fonte, linhas quebradas e se o bloco TRANSBORDA o
+ * espaço disponível, para um dado layout.
+ *
+ * `overflows` é o sinal que `gen-carousel-cards.ts` e o invariante
+ * `carousel-text-overflow` (Stage 4) consomem pra mandar REESCREVER o
+ * parágrafo, em vez de renderizar cortado (decisão do editor, #6078: *"quando
+ * um parágrafo passar do limite, a gente reescreve ele para o texto ficar
+ * menor"*).
+ *
+ * Em `fixed` ele dispara no tamanho configurado. Em `fill` é raro mas
+ * POSSÍVEL: `fillingFontSize` desce até `TITLE_SIZE_MIN` tentando caber e, se
+ * nem no mínimo couber, devolve o mínimo assim mesmo — medido, um texto de
+ * ~3000 caracteres transborda em 46px. Esse caso é pré-existente e ninguém
+ * age sobre ele hoje (o card do semanal sairia cortado); a medição só passou
+ * a torná-lo visível, e vale reportar se alguém quiser tratá-lo.
+ */
+export function measureFlatCardBody(
+  title: string,
+  layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
+): { size: number; lines: string[]; blockHeight: number; availableHeight: number; overflows: boolean } {
+  const availableWidth = W - PAD * 2;
+  const availableHeight = TITLE_BOTTOM - TITLE_TOP;
+
+  let size: number;
+  let lines: string[];
+  if (layout.mode === "fill") {
+    ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
+  } else {
+    size = layout.size;
+    const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO)));
+    lines = wrapTitle(title, maxCharsPerLine);
+  }
+  const blockHeight = lines.length * Math.round(size * 1.18);
+  return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight };
 }
 
 /**
@@ -66,7 +139,7 @@ export interface FlatCardText {
  */
 function fillingFontSize(title: string, availableWidth: number, availableHeight: number): { size: number; lines: string[] } {
   for (let size = TITLE_SIZE_MAX; size >= TITLE_SIZE_MIN; size -= TITLE_SIZE_STEP) {
-    const maxCharsPerLine = Math.floor(availableWidth / (size * 0.52));
+    const maxCharsPerLine = Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO));
     if (maxCharsPerLine < 1) continue;
     const lines = wrapTitle(title, maxCharsPerLine);
     const lineGap = Math.round(size * 1.18);
@@ -101,20 +174,18 @@ function footerMarkup(footer: string): string {
  * kicker no topo, título GRANDE preenchendo o espaço disponível (auto-size
  * via `fillingFontSize` — nunca um tamanho fixo pequeno), rodapé na base.
  */
-export function buildFlatCardSvg(text: FlatCardText): string {
-  const availableWidth = W - PAD * 2;
-  const kickerY = 168;
-  const barY = kickerY + 30;
-  const footerY = H - 62;
-  const titleTop = barY + 90;
-  const titleBottom = footerY - 90;
-  const availableHeight = titleBottom - titleTop;
+export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT): string {
+  const kickerY = KICKER_Y;
+  const footerY = FOOTER_Y;
+  const availableHeight = TITLE_BOTTOM - TITLE_TOP;
 
-  const { size, lines } = fillingFontSize(text.title, availableWidth, availableHeight);
+  const { size, lines, blockHeight } = measureFlatCardBody(text.title, layout);
   const lineGap = Math.round(size * 1.18);
-  const blockHeight = lines.length * lineGap;
-  // Bloco de título centralizado verticalmente no espaço entre kicker e rodapé.
-  const blockTop = titleTop + (availableHeight - blockHeight) / 2;
+  // `fill` centraliza o bloco no espaço entre kicker e rodapé (o texto foi
+  // dimensionado pra ocupá-lo). `fixed` ancora no TOPO: o branco que sobra
+  // embaixo de um texto curto é o respiro que mantém os cards de um mesmo
+  // carrossel parecendo o mesmo template (#6078).
+  const blockTop = layout.mode === "fill" ? TITLE_TOP + (availableHeight - blockHeight) / 2 : TITLE_TOP;
   const firstBaselineY = blockTop + size * 0.85;
 
   const titleLines = lines
@@ -135,9 +206,13 @@ export function buildFlatCardSvg(text: FlatCardText): string {
 }
 
 /** Renderiza `buildFlatCardSvg` pra um JPEG em disco. */
-export async function renderFlatCard(text: FlatCardText, outPath: string): Promise<string> {
+export async function renderFlatCard(
+  text: FlatCardText,
+  outPath: string,
+  layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
+): Promise<string> {
   await sharp({ create: { width: W, height: H, channels: 3, background: COLORS.paper } })
-    .composite([{ input: Buffer.from(buildFlatCardSvg(text)), top: 0, left: 0 }])
+    .composite([{ input: Buffer.from(buildFlatCardSvg(text, layout)), top: 0, left: 0 }])
     .jpeg({ quality: 88 })
     .toFile(outPath);
   return outPath;

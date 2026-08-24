@@ -19,7 +19,13 @@ import {
   carouselImageKeys,
   resolveCarouselImageUrls,
   CAROUSEL_SLIDE_SLOTS,
+  findOverflowingCarouselSlides,
+  DAILY_CAROUSEL_LAYOUT,
+  DAILY_CAROUSEL_BODY_SIZE,
+  hashCarouselSlideTexts,
 } from "../scripts/lib/daily-carousel-card.ts";
+import { measureFlatCardBody } from "../scripts/lib/weekly-flat-card.ts";
+import { createHash } from "node:crypto";
 import { INSTAGRAM_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 
 describe("splitIntoParagraphCards (pure)", () => {
@@ -132,5 +138,86 @@ describe("resolveCarouselImageUrls (pure) — tudo-ou-nada", () => {
 
   it("destaque sem nenhuma entry (edição sem carrossel) -> null", () => {
     assert.equal(resolveCarouselImageUrls(fullImages, "d2"), null);
+  });
+});
+
+/**
+ * (#6078 item 2) Tamanho FIXO nos slides de texto do carrossel diário e a
+ * política de overflow que ele obriga: parágrafo que não cabe é REESCRITO,
+ * nunca encolhido nem cortado — então alguém precisa FICAR SABENDO.
+ */
+describe("tamanho fixo do carrossel diário (#6078)", () => {
+  const p = (n: number, word = "palavra") => {
+    // texto realista (palavras de tamanho médio) com ~n caracteres
+    let s = "";
+    while (s.length < n) s += (s ? " " : "") + word;
+    return s.slice(0, n).trim();
+  };
+  const textoCom = (paras: string[]) => paras.join("\n\n");
+
+  it("os 4 slides saem com a MESMA métrica, independente do tamanho do texto", () => {
+    const texts = buildCarouselSlideTexts(textoCom([p(60), p(300), p(120)]));
+    const sizes = CAROUSEL_SLIDE_SLOTS.map(
+      (slot) => measureFlatCardBody(texts[slot].title, DAILY_CAROUSEL_LAYOUT).size,
+    );
+    assert.deepEqual(
+      sizes,
+      [DAILY_CAROUSEL_BODY_SIZE, DAILY_CAROUSEL_BODY_SIZE, DAILY_CAROUSEL_BODY_SIZE, DAILY_CAROUSEL_BODY_SIZE],
+      "tamanho fixo: nenhum slide pode ser dimensionado em função do próprio texto",
+    );
+  });
+
+  it("o layout default (semanal) continua auto-size — o fixo é só do diário", () => {
+    const curto = measureFlatCardBody("Título curto");
+    const longo = measureFlatCardBody(p(400));
+    assert.ok(curto.size > longo.size, "fill: texto curto cresce, texto longo encolhe (comportamento do #5330)");
+    assert.equal(curto.overflows, false);
+    assert.equal(longo.overflows, false, "fill encolhe pra caber enquanto houver tamanho disponível");
+  });
+
+  it("fill transborda quando nem o tamanho mínimo cabe (comportamento pré-existente, agora visível)", () => {
+    const gigante = measureFlatCardBody(p(3000));
+    assert.equal(gigante.overflows, true, "documenta o limite real do auto-size — não é 'nunca transborda'");
+  });
+
+  it("parágrafo dentro do limite não acusa overflow", () => {
+    assert.deepEqual(findOverflowingCarouselSlides(textoCom([p(150), p(200), p(120)])), []);
+  });
+
+  it("parágrafo acima do limite é REPORTADO, com slot e tamanho", () => {
+    const overflowing = findOverflowingCarouselSlides(textoCom([p(150), p(700), p(120)]));
+    assert.equal(overflowing.length, 1, "só o parágrafo grande estoura");
+    assert.equal(overflowing[0].slot, "p2");
+    assert.ok(overflowing[0].excessPx > 0, "reporta quanto passou, pra estimar o corte");
+    assert.ok(overflowing[0].chars >= 600, "reporta o tamanho do parágrafo, que é o que o editor manipula");
+  });
+
+  it("o CTA fixo cabe com folga — não é ele que vai acusar overflow", () => {
+    const overflowing = findOverflowingCarouselSlides(textoCom([p(100), p(100), p(100)]));
+    assert.equal(overflowing.find((o) => o.slot === "cta"), undefined);
+  });
+});
+
+/**
+ * (#6078) O carimbo de frescor precisa cobrir o LAYOUT, não só o texto —
+ * senão uma edição já rasterizada com o auto-size antigo é PULADA por
+ * `shouldRenderCarouselSlides` e nunca recebe a tipografia nova.
+ */
+describe("hashCarouselSlideTexts cobre o layout (#6078)", () => {
+  const texto = ["Um parágrafo.", "Outro parágrafo.", "O fecho."].join("\n\n");
+
+  it("mudar o tamanho fixo muda o hash (invalida arte gerada com o layout antigo)", () => {
+    const atual = hashCarouselSlideTexts(texto);
+    // simula o hash que o layout ANTIGO (auto-size) produziria pro mesmo texto
+    const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => {
+      const t = buildCarouselSlideTexts(texto)[slot];
+      return `${t.kicker} || ${t.title}`;
+    }).join(" ~~ ");
+    const semLayout = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+    assert.notEqual(atual, semLayout, "carimbo do layout novo não pode colidir com o do formato antigo");
+  });
+
+  it("mesmo texto + mesmo layout continua estável (idempotência preservada)", () => {
+    assert.equal(hashCarouselSlideTexts(texto), hashCarouselSlideTexts(texto));
   });
 });

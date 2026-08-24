@@ -29,6 +29,12 @@
  * falha do RENDER (fonte de marca ausente, sharp) é bloqueante — mesma
  * severidade de `gen-social-card-4x5.ts` (#4090), porque nesse caso NENHUM
  * card sem foto vai sair certo, não só o de um destaque.
+ *
+ * TEXTO QUE NÃO CABE também é bloqueante (#6078 item 2): desde que o corpo
+ * passou a ter tamanho FIXO (`DAILY_CAROUSEL_BODY_SIZE`), o texto não encolhe
+ * mais sozinho, e a política do editor é reescrever o parágrafo. O erro nomeia
+ * destaque, slide e quanto passou — renderizar transbordado seria degradar a
+ * arte em silêncio, a mesma classe de falha que o #6064 consertou.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -45,6 +51,9 @@ import {
   shouldRenderCarouselSlides,
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
+  findOverflowingCarouselSlides,
+  DAILY_CAROUSEL_BODY_SIZE,
+  DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET,
   type CarouselSourceHashes,
 } from "./lib/daily-carousel-card.ts";
 
@@ -105,6 +114,25 @@ export async function genCarouselCards(
       continue;
     }
     if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
+
+    // #6078 item 2: com tamanho FIXO o texto não encolhe mais pra caber, e a
+    // política do editor é REESCREVER o parágrafo — nunca degradar a arte.
+    // Bloqueia ANTES de rasterizar: renderizar transbordado e seguir seria a
+    // mesma falha silenciosa que o #6064 consertou, só que na direção oposta.
+    const overflowing = findOverflowingCarouselSlides(dText.trim());
+    if (overflowing.length > 0) {
+      const detalhe = overflowing
+        .map((o) => `  · ${o.slot}: ${o.chars} chars → ${o.lines} linhas, ${o.excessPx}px além do card`)
+        .join("\n");
+      throw new Error(
+        `${d}: ${overflowing.length} slide(s) do carrossel não cabem no card em ` +
+          `${DAILY_CAROUSEL_BODY_SIZE}px:\n${detalhe}\n\n` +
+          `Fix: REESCREVER o(s) parágrafo(s) correspondente(s) em '## ${d}' de 03-social.md ` +
+          `pra ~${DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET} caracteres ou menos, e rodar de novo. ` +
+          `O tamanho da fonte é fixo de propósito (#6078): encolher só este slide traria de volta ` +
+          `a variação de métrica entre os cards do mesmo carrossel, e cortar o texto sumiria com conteúdo.`,
+      );
+    }
 
     const rendered = await render(dText.trim(), outPaths);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));

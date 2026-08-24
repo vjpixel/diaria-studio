@@ -36,8 +36,48 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { renderFlatCard, type FlatCardText } from "./weekly-flat-card.ts";
+import {
+  renderFlatCard,
+  measureFlatCardBody,
+  type FlatCardText,
+  type FlatCardLayout,
+} from "./weekly-flat-card.ts";
 import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
+
+/**
+ * Corpo dos slides do carrossel DIÁRIO — tamanho fixo, não auto-size
+ * (#6078 item 2, decisão do editor em 24/08/2026).
+ *
+ * 62px e não 64px por um motivo operacional, não estético: como a saída para
+ * o texto que não cabe é REESCREVER o parágrafo, o tamanho da fonte define a
+ * frequência com que isso cai no colo do editor. Medido sobre 219 parágrafos
+ * reais de d1/d2/d3 em 22 edições (`data/editions/*​/03-social.md`), com o
+ * mesmo wrap que o render usa:
+ *
+ *   | tamanho | teto      | precisariam de reescrita |
+ *   |---------|-----------|--------------------------|
+ *   | 62px    | 12 linhas | 16 de 219 · 7,3%         |
+ *   | 64px    | 11 linhas | 33 de 219 · 15,1%        |
+ *   | 72px    | 10 linhas | 84 de 219 · 38,4%        |
+ *
+ * 60px cabe as mesmas 12 linhas que 62px, então 62 domina (maior pelo mesmo
+ * custo). 62px também tem corte previsível — no histórico, tudo até 321
+ * caracteres coube e tudo a partir de 327 estourou; em 64px há uma zona
+ * cinza de 278–299 onde o resultado depende de quais palavras caem na quebra.
+ */
+export const DAILY_CAROUSEL_BODY_SIZE = 62;
+
+/** Layout dos 4 slides sem foto do carrossel diário. */
+export const DAILY_CAROUSEL_LAYOUT: FlatCardLayout = { mode: "fixed", size: DAILY_CAROUSEL_BODY_SIZE };
+
+/**
+ * Orientação de tamanho passada ao `social-writer` (`.claude/agents/`).
+ * DELIBERADAMENTE abaixo do máximo que coube no histórico (321): o limite
+ * real depende de quais palavras caem na quebra de linha, então o prompt
+ * pede folga e o guard mecânico (`findOverflowingCarouselSlides`) é quem
+ * decide de fato. Um número no prompt não substitui a medição.
+ */
+export const DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET = 300;
 
 export const CAROUSEL_SLIDE_SLOTS = ["p1", "p2", "p3", "cta"] as const;
 export type CarouselSlideSlot = (typeof CAROUSEL_SLIDE_SLOTS)[number];
@@ -156,7 +196,15 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
 export function hashCarouselSlideTexts(genericText: string): string {
   const texts = buildCarouselSlideTexts(genericText);
   const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => `${texts[slot].kicker} || ${texts[slot].title}`).join(" ~~ ");
-  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  // #6078: o carimbo precisa cobrir o LAYOUT também, não só o texto. Sem isto,
+  // uma edição cujos slides foram rasterizados com o auto-size antigo tem
+  // carimbo batendo com o texto atual, `shouldRenderCarouselSlides` PULA o
+  // destaque, e a mudança de tipografia nunca chega na arte — silenciosamente,
+  // que é a falha que o #6064 existiu pra matar. Mudar tamanho/modo aqui
+  // invalida o carimbo de propósito: a arte antiga É velha em relação ao
+  // desenho atual, e regerar é barato.
+  const layoutTag = `layout:${DAILY_CAROUSEL_LAYOUT.mode}:${DAILY_CAROUSEL_LAYOUT.mode === "fixed" ? DAILY_CAROUSEL_LAYOUT.size : "auto"}`;
+  return createHash("sha256").update(`${canonical} ~~ ${layoutTag}`).digest("hex").slice(0, 16);
 }
 
 /**
@@ -249,9 +297,45 @@ export async function renderCarouselSlides(
   const texts = buildCarouselSlideTexts(genericText);
   const result = {} as Record<CarouselSlideSlot, string>;
   for (const slot of CAROUSEL_SLIDE_SLOTS) {
-    result[slot] = await renderFlatCard(texts[slot], outPaths[slot]);
+    result[slot] = await renderFlatCard(texts[slot], outPaths[slot], DAILY_CAROUSEL_LAYOUT);
   }
   return result;
+}
+
+/**
+ * Pure: quais slides de um destaque NÃO cabem no card com o tamanho fixo.
+ *
+ * Existe porque a política de overflow do carrossel diário é REESCREVER o
+ * texto (decisão do editor, #6078) — e uma política de reescrita só funciona
+ * se alguém FICAR SABENDO que estourou. Sem isto, o tamanho fixo degradaria
+ * exatamente como o auto-size degradava antes: em silêncio, na arte
+ * publicada.
+ *
+ * Consumido por `gen-carousel-cards.ts` (bloqueia o render) e pelo invariante
+ * `carousel-text-overflow` do Stage 4 (pega o caso do editor ter editado o
+ * social DEPOIS do Stage 3, quando o gen não roda de novo sozinho).
+ *
+ * `excess` é quanto o bloco passou do espaço, em px — serve pra estimar
+ * quanto texto precisa sair; `chars` é o tamanho do parágrafo, que é o que o
+ * editor de fato manipula.
+ */
+export function findOverflowingCarouselSlides(
+  genericText: string,
+): { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] {
+  const texts = buildCarouselSlideTexts(genericText);
+  const out: { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] = [];
+  for (const slot of CAROUSEL_SLIDE_SLOTS) {
+    const m = measureFlatCardBody(texts[slot].title, DAILY_CAROUSEL_LAYOUT);
+    if (m.overflows) {
+      out.push({
+        slot,
+        chars: texts[slot].title.length,
+        lines: m.lines.length,
+        excessPx: m.blockHeight - m.availableHeight,
+      });
+    }
+  }
+  return out;
 }
 
 /**

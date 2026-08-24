@@ -18,6 +18,9 @@ import {
   carouselImageKeys,
   hashCarouselSlideTexts,
   readCarouselSourceHashes,
+  findOverflowingCarouselSlides, // #6078
+  DAILY_CAROUSEL_BODY_SIZE, // #6078
+  DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
 
@@ -1442,6 +1445,58 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * (#6078 item 2) O corpo dos slides do carrossel diário tem tamanho FIXO
+ * desde a decisão do editor de 24/08/2026 — o texto não encolhe mais pra
+ * caber, e parágrafo que passa do limite é REESCRITO.
+ *
+ * `gen-carousel-cards.ts` já bloqueia isso no Stage 3. Este check existe pro
+ * caminho que o Stage 3 não vê: o editor edita `03-social.md` no painel
+ * Revisão DEPOIS da geração, e o gen não roda de novo sozinho. Nesse caso
+ * `carousel-cards-stale` acusa a divergência e manda regerar — e a regeração
+ * é que vai falhar, no meio do gate. Melhor dizer aqui, com o texto ainda na
+ * mão do editor, exatamente qual parágrafo encurtar.
+ *
+ * Severity "error", mesma classe do `carousel-cards-stale` em divergência:
+ * não é formato degradado, é conteúdo que não pode ser rasterizado como está.
+ */
+function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+
+  const section = extractSection(readFileSync(socialPath, "utf8"), "Social");
+  if (!section) return []; // estrutura quebrada já é coberta por carousel-cards-stale
+
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+  const violations: InvariantViolation[] = [];
+
+  for (const d of slots) {
+    const dText = extractDestaqueBlock(section, d);
+    if (!dText) continue;
+
+    const overflowing = findOverflowingCarouselSlides(dText.trim());
+    if (overflowing.length === 0) continue;
+
+    const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");
+    violations.push({
+      rule: "carousel-text-overflow",
+      message:
+        `'## ${d}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não cabem no card do ` +
+        `carrossel em ${DAILY_CAROUSEL_BODY_SIZE}px: ${detalhe}. O tamanho da fonte é fixo de propósito ` +
+        `(#6078) — o conserto é REESCREVER o parágrafo pra ~${DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET} ` +
+        `caracteres ou menos, aqui no painel Revisão, e depois rodar ` +
+        `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + ` +
+        `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}". ` +
+        `Sem isso a geração dos slides falha e o destaque publica como post single-image.`,
+      source_issue: "#6078",
+      severity: "error",
+      file: socialPath,
+    });
+  }
+  return violations;
+}
+
+/**
  * (#6064 item 2) Contraparte do `card-4x5-upload-missing` pro carrossel: os 4
  * slides existem no disco mas alguma das 5 chaves do carrossel não está em
  * `06-public-images.json`. `resolveCarouselImageUrls` é tudo-ou-nada por
@@ -1972,6 +2027,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCarouselUploadStale,
   },
   {
+    id: "carousel-text-overflow",
+    description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078)",
+    source_issue: "#6078",
+    stage: 4,
+    run: checkCarouselTextOverflow,
+  },
+  {
     id: "box-divulgacao-runtime-excluded",
     description: "slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504)",
     source_issue: "#4504",
@@ -2023,6 +2085,7 @@ export {
   checkCarouselCardsStale,
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
+  checkCarouselTextOverflow,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
 };
