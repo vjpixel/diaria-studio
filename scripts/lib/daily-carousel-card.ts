@@ -33,6 +33,9 @@
  * faz upload direto de dentro do Stage 3.
  */
 
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { renderFlatCard, type FlatCardText } from "./weekly-flat-card.ts";
 import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
 
@@ -112,6 +115,87 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
     ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
     cta: { kicker: "Newsletter grátis", title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
   };
+}
+
+/**
+ * (#6064 item 1) Carimbo de "com QUAL texto estes slides foram rasterizados".
+ *
+ * Os cards são imagem: o texto do `## d{N}` vira pixel no Stage 3 e não
+ * acompanha mais nenhuma edição posterior do `03-social.md` — e o editor edita
+ * exatamente esse arquivo no painel Revisão do Stage 4, DEPOIS do Stage 3.
+ * Sem carimbo, a legenda sai com o texto novo e a arte com o velho, em
+ * silêncio (a idempotência de `gen-carousel-cards.ts` era por EXISTÊNCIA de
+ * arquivo, não por conteúdo).
+ *
+ * Mesma ideia do `.social-source-hash.json` (#1413) uma camada acima: hash
+ * pequeno, determinístico, gravado por quem produz e comparado por quem
+ * publica.
+ *
+ * Hasheia os TEXTOS RENDERIZADOS (kicker + título de cada um dos 4 slides),
+ * não o bloco cru: assim uma edição que não muda o que aparece no card —
+ * mexer só nas hashtags, por exemplo — não força regeneração à toa.
+ */
+export function hashCarouselSlideTexts(genericText: string): string {
+  const texts = buildCarouselSlideTexts(genericText);
+  const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => `${texts[slot].kicker} || ${texts[slot].title}`).join(" ~~ ");
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+}
+
+/**
+ * (#6064 item 1) Decisão pura de re-renderizar os slides de um destaque.
+ *
+ * Regra: `--force` sempre renderiza; slide faltando sempre renderiza; e —
+ * o ponto da issue — arquivo presente só é PULADO quando o carimbo bate com
+ * o texto atual. Carimbo ausente (edição anterior ao #6064) conta como
+ * divergente: regerar é barato, publicar arte defasada não.
+ */
+export function shouldRenderCarouselSlides(opts: {
+  allSlidesExist: boolean;
+  storedHash?: string;
+  currentHash: string;
+  force?: boolean;
+}): boolean {
+  if (opts.force) return true;
+  if (!opts.allSlidesExist) return true;
+  return opts.storedHash !== opts.currentHash;
+}
+
+/** Caminho do carimbo (um por edição, uma entrada por destaque). */
+export function carouselSourceHashPath(editionDir: string): string {
+  return resolve(editionDir, "_internal", ".carousel-source-hash.json");
+}
+
+export interface CarouselSourceHashes {
+  [destaque: string]: string;
+}
+
+/**
+ * Lê o carimbo. Ausente/ilegível → `{}` — quem chama distingue "sem entrada
+ * pra este destaque" (não dá pra verificar) de "entrada diferente"
+ * (stale de verdade); nenhum dos dois é motivo pra lançar aqui.
+ */
+export function readCarouselSourceHashes(editionDir: string): CarouselSourceHashes {
+  const path = carouselSourceHashPath(editionDir);
+  if (!existsSync(path)) return {};
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as { hashes?: CarouselSourceHashes };
+    return data.hashes && typeof data.hashes === "object" ? data.hashes : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Grava o carimbo mesclando com o que já existe — um destaque pulado nesta
+ * rodada (texto inalterado) mantém a entrada anterior em vez de sumir.
+ */
+export function writeCarouselSourceHashes(editionDir: string, hashes: CarouselSourceHashes): void {
+  const merged = { ...readCarouselSourceHashes(editionDir), ...hashes };
+  writeFileSync(
+    carouselSourceHashPath(editionDir),
+    JSON.stringify({ hashes: merged, generated_at: new Date().toISOString() }, null, 2) + "\n",
+    "utf8",
+  );
 }
 
 /** Nome do arquivo local (raiz da edição) de um slide sem foto do carrossel. */

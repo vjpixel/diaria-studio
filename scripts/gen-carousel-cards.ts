@@ -15,8 +15,13 @@
  *   npx tsx scripts/gen-carousel-cards.ts --edition-dir data/editions/260824/ [--force]
  *
  * Saída local (raiz da edição): `04-{destaque}-carousel-{p1,p2,p3,cta}-4x5.jpg`.
- * `--force` regenera mesmo se o arquivo já existir (default: idempotente,
- * pula o que já está no disco — mesmo padrão de `image-generate.ts`).
+ * `--force` regenera mesmo se nada mudou. Sem ele a idempotência é POR
+ * CONTEÚDO (#6064 item 1): pula quando os 4 arquivos existem E o texto do
+ * `## d{N}` ainda rasteriza no mesmo carimbo gravado em
+ * `_internal/.carousel-source-hash.json`; se o editor editou o social depois
+ * (painel Revisão do Stage 4), o destaque é REGERADO em vez de pulado. Antes
+ * disso a idempotência era por existência de arquivo, e a arte publicada
+ * ficava com o texto pré-edição em silêncio.
  *
  * Best-effort por destaque: falha ao extrair o texto de UM destaque não
  * aborta os demais (o carrossel daquele destaque cai pro fallback de post
@@ -36,11 +41,18 @@ import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
   renderCarouselSlides,
+  hashCarouselSlideTexts,
+  shouldRenderCarouselSlides,
+  readCarouselSourceHashes,
+  writeCarouselSourceHashes,
+  type CarouselSourceHashes,
 } from "./lib/daily-carousel-card.ts";
 
 export interface GenCarouselCardsResult {
   generated: string[];
   skipped: { destaque: string; reason: string }[];
+  /** Destaques regerados porque o texto do social mudou desde o carimbo (#6064). */
+  refreshed: string[];
 }
 
 export async function genCarouselCards(editionDir: string, opts: { force?: boolean } = {}): Promise<GenCarouselCardsResult> {
@@ -55,6 +67,9 @@ export async function genCarouselCards(editionDir: string, opts: { force?: boole
 
   const generated: string[] = [];
   const skipped: { destaque: string; reason: string }[] = [];
+  const refreshed: string[] = [];
+  const storedHashes = readCarouselSourceHashes(editionDir);
+  const hashes: CarouselSourceHashes = {};
 
   for (const d of destaques) {
     const dText = section ? extractDestaqueBlock(section, d) : null;
@@ -67,16 +82,25 @@ export async function genCarouselCards(editionDir: string, opts: { force?: boole
       CAROUSEL_SLIDE_SLOTS.map((slot) => [slot, resolve(editionDir, carouselSlideFilename(d, slot))]),
     ) as Record<(typeof CAROUSEL_SLIDE_SLOTS)[number], string>;
 
-    if (!opts.force && CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(outPaths[slot]))) {
+    // #6064 item 1: idempotência por CONTEÚDO, não por existência de arquivo.
+    // Texto igual ao do carimbo → pula; texto editado depois (Studio, Stage 4)
+    // → regera, senão a arte publicada fica com o texto pré-edição.
+    const hash = hashCarouselSlideTexts(dText.trim());
+    hashes[d] = hash;
+    const allSlidesExist = CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(outPaths[slot]));
+    if (!shouldRenderCarouselSlides({ allSlidesExist, storedHash: storedHashes[d], currentHash: hash, force: opts.force })) {
       generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => outPaths[slot]));
-      continue; // idempotente — já gerado numa rodada anterior
+      continue;
     }
+    if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
 
     const rendered = await renderCarouselSlides(dText.trim(), outPaths);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));
   }
 
-  return { generated, skipped };
+  if (Object.keys(hashes).length > 0) writeCarouselSourceHashes(editionDir, hashes);
+
+  return { generated, skipped, refreshed };
 }
 
 async function main(): Promise<void> {

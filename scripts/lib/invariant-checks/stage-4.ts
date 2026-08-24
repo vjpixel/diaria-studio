@@ -10,6 +10,15 @@ import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
+import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
+import {
+  CAROUSEL_SLIDE_SLOTS,
+  carouselSlideFilename,
+  carouselImageKeys,
+  hashCarouselSlideTexts,
+  readCarouselSourceHashes,
+} from "../daily-carousel-card.ts"; // #6064
+
 import { lintIntroCount } from "../newsletter-count.ts";
 import {
   extractEiaMirrorBlock,
@@ -1332,6 +1341,133 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * (#6064 item 1) O carrossel diário do Instagram (#6005 Parte B) rasteriza o
+ * texto do `## d{N}` de `03-social.md` em 4 cards, no Stage 3 — e o editor
+ * edita esse MESMO arquivo depois, no painel Revisão do Stage 4. Sem este
+ * check, a legenda sai com o texto novo e a arte com o texto velho, sem
+ * nenhum sinal: o post é publicado assim.
+ *
+ * Severity "error", diferente do `card-4x5-upload-missing` (warning) logo
+ * acima: aqui não é formato degradado, é CONTEÚDO divergente do que o editor
+ * aprovou — mesma classe do `social-hash-fresh` (#1413), que também bloqueia.
+ * O conserto é mecânico e está na mensagem (regerar + re-subir).
+ *
+ * Sem entrada no carimbo (edição anterior ao #6064, ou carimbo apagado) não
+ * dá pra afirmar divergência — vira warning, nunca erro: bloquear o gate por
+ * "não sei" seria pior que avisar.
+ */
+function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+  const section = extractSection(readFileSync(socialPath, "utf8"), "Social");
+  if (!section) return [];
+
+  const stored = readCarouselSourceHashes(editionDir);
+  const violations: InvariantViolation[] = [];
+
+  for (const d of slots) {
+    const slidesOnDisk = CAROUSEL_SLIDE_SLOTS.every((slot) =>
+      existsSync(resolve(editionDir, carouselSlideFilename(d, slot))),
+    );
+    if (!slidesOnDisk) continue; // destaque sem carrossel — publica single-image, nada a cruzar
+
+    const dText = extractDestaqueBlock(section, d);
+    if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
+
+    const atual = hashCarouselSlideTexts(dText.trim());
+    const carimbo = stored[d];
+
+    if (!carimbo) {
+      violations.push({
+        rule: "carousel-cards-stale",
+        message:
+          `04-${d}-carousel-*.jpg existe mas _internal/.carousel-source-hash.json não tem entrada ` +
+          `pra ${d} — não dá pra verificar se a arte do carrossel reflete o texto ATUAL de ` +
+          `03-social.md. Se o social foi editado depois do Stage 3, o post sai com a arte velha. ` +
+          `Fix: "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" (regera só o que mudou).`,
+        source_issue: "#6064",
+        severity: "warning",
+        file: socialPath,
+      });
+      continue;
+    }
+
+    if (carimbo !== atual) {
+      violations.push({
+        rule: "carousel-cards-stale",
+        message:
+          `03-social.md mudou depois que os slides de ${d} foram gerados (carimbo ${carimbo}, ` +
+          `texto atual ${atual}) — a legenda vai sair com o texto NOVO e os cards do carrossel com ` +
+          `o ANTIGO, porque o texto está rasterizado na imagem. Fix: ` +
+          `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" e depois ` +
+          `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" (o KV precisa da arte nova).`,
+        source_issue: "#6064",
+        severity: "error",
+        file: socialPath,
+      });
+    }
+  }
+  return violations;
+}
+
+/**
+ * (#6064 item 2) Contraparte do `card-4x5-upload-missing` pro carrossel: os 4
+ * slides existem no disco mas alguma das 5 chaves do carrossel não está em
+ * `06-public-images.json`. `resolveCarouselImageUrls` é tudo-ou-nada por
+ * desenho — a falta de UMA URL derruba o post inteiro pro formato
+ * single-image, em silêncio, e pode repetir por edições seguidas sem ninguém
+ * notar (as specs de upload são `optional: true`).
+ *
+ * Warning-only, mesmo padrão do 4:5: o fallback é seguro, publica conteúdo
+ * certo em formato antigo. O que não pode é ser invisível.
+ */
+function checkCarouselUploadIncomplete(editionDir: string): InvariantViolation[] {
+  const imagesPath = resolve(editionDir, "06-public-images.json");
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+
+  let images: PublicImagesJson["images"] = {};
+  if (existsSync(imagesPath)) {
+    try {
+      images = (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesJson).images ?? {};
+    } catch {
+      images = {}; // JSON inválido já é coberto por public-images-parseable
+    }
+  }
+
+  const violations: InvariantViolation[] = [];
+  for (const d of slots) {
+    const slidesOnDisk = CAROUSEL_SLIDE_SLOTS.every((slot) =>
+      existsSync(resolve(editionDir, carouselSlideFilename(d, slot))),
+    );
+    if (!slidesOnDisk) continue;
+
+    const { cover, slides } = carouselImageKeys(d);
+    const faltando = [cover, ...CAROUSEL_SLIDE_SLOTS.map((slot) => slides[slot])].filter((key) => {
+      const url = images?.[key]?.url;
+      return !url || typeof url !== "string" || url.trim().length === 0;
+    });
+    if (faltando.length === 0) continue;
+
+    violations.push({
+      rule: "carousel-upload-incomplete",
+      message:
+        `os 5 slides do carrossel de ${d} existem no disco mas 06-public-images.json não tem ` +
+        `${faltando.join(", ")} — publish-instagram.ts vai cair pro post single-image EM SILÊNCIO ` +
+        `(carga tudo-ou-nada, resolveCarouselImageUrls). Fix: re-rodar ` +
+        `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes de publicar.`,
+      source_issue: "#6064",
+      severity: "warning",
+      file: imagesPath,
+    });
+  }
+  return violations;
+}
+
+/**
  * #4673: `render-newsletter-html.ts` (via `renderHTML`/`getRenderWarnings`,
  * scripts/lib/newsletter-render-html.ts) emite eventos estruturados quando
  * conteúdo editorial/comercial some silenciosamente do render — caixa de
@@ -1626,6 +1762,20 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCard4x5UploadMismatch,
   },
   {
+    id: "carousel-cards-stale",
+    description: "slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064)",
+    source_issue: "#6064",
+    stage: 4,
+    run: checkCarouselCardsStale,
+  },
+  {
+    id: "carousel-upload-incomplete",
+    description: "slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only)",
+    source_issue: "#6064",
+    stage: 4,
+    run: checkCarouselUploadIncomplete,
+  },
+  {
     id: "box-divulgacao-runtime-excluded",
     description: "slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504)",
     source_issue: "#4504",
@@ -1674,6 +1824,8 @@ export {
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,
+  checkCarouselCardsStale,
+  checkCarouselUploadIncomplete,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
 };
