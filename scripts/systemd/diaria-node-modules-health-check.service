@@ -1,0 +1,12 @@
+[Unit]
+Description=diar.ia.br: health-check SHELL PURO do checkout (tsx presente? units diaria-* failed?) (#6030)
+# Motivo de existir: no incidente 260824 o node_modules foi esvaziado e TODOS
+# os alarmes (todos tsx no mesmo checkout) morreram junto. Este check roda
+# fora de node_modules de propósito — só sh/coreutils/gh.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/vjpixel/diaria-studio/scripts/systemd/node-modules-health-check.sh
+# Falha do script (ex: gh indisponível) NÃO pode marcar a unit failed pra
+# sempre; evidência fica em ~/.cache/diaria/node-modules-health.ALERT.
+SuccessExitStatus=1
