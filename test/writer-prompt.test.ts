@@ -34,8 +34,9 @@ describe("writer.md invariants (#1208)", () => {
   const content = readFileSync(WRITER_MD, "utf8");
 
   it("contém instrução explícita de char count por destaque", () => {
-    assert.match(content, /D1.*1000.*1200/);
-    assert.match(content, /D2\/D3.*900.*1000/);
+    // janela única desde #6061: todos os destaques 900-1000
+    assert.match(content, /900-1000/);
+    assert.ok(!/1000-1200/.test(content), "janela assimétrica antiga do D1 não deve mais existir no prompt");
   });
 
   it("contém anti-pattern reference pra D2/D3 anêmicos (#1208)", () => {
