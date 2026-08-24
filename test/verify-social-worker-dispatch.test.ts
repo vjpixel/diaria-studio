@@ -163,6 +163,65 @@ describe("verifyWorkerDispatch — orquestra list+dlq+reconcile sem rede real", 
     assert.equal(byKey.get("queue:t4")?.status, "failed");
   });
 
+  it("#6016 item 3: KV lag — retry com backoff até a key aparecer na fila antes de reconciliar", async () => {
+    let listCalls = 0;
+    const sleeps: number[] = [];
+    const fetchJson: FetchJsonFn = async (url: string) => {
+      if (url.endsWith("/dlq")) return { count: 0, items: [] };
+      if (url.endsWith("/list")) {
+        listCalls++;
+        // tentativas 1 e 2: KV ainda não propagou; tentativa 3: apareceu
+        return listCalls < 3
+          ? { count: 0, items: [] }
+          : { count: 1, items: [{ key: "queue:t1" }] };
+      }
+      throw new Error(`unexpected url ${url}`);
+    };
+    const published: SocialPublished = {
+      posts: [entry({ platform: "linkedin", destaque: "d1", worker_queue_key: "queue:t1" })],
+    };
+    const { updated, changes } = await verifyWorkerDispatch(
+      published,
+      "https://worker.example/",
+      "tok",
+      fetchJson,
+      NOW,
+      { maxAttempts: 3, backoffMs: 7, sleep: async (ms) => void sleeps.push(ms) },
+    );
+    assert.equal(listCalls, 3);
+    assert.deepEqual(sleeps, [7, 7]);
+    // SEM o retry, a ausência transitória viraria "published" (falso negativo
+    // que induz re-dispatch). COM a key encontrada na 3ª tentativa, segue `scheduled`.
+    assert.equal(changes, 0);
+    assert.equal(updated.posts[0].status, "scheduled");
+  });
+
+  it("#6016 item 3: sem retry configurado além do default, esgotadas as tentativas reconcilia pelo último fetch", async () => {
+    let listCalls = 0;
+    const fetchJson: FetchJsonFn = async (url: string) => {
+      if (url.endsWith("/dlq")) return { count: 0, items: [] };
+      if (url.endsWith("/list")) {
+        listCalls++;
+        return { count: 0, items: [] }; // nunca propaga
+      }
+      throw new Error(`unexpected url ${url}`);
+    };
+    const published: SocialPublished = {
+      posts: [entry({ platform: "linkedin", destaque: "d1", worker_queue_key: "queue:x" })],
+    };
+    const { changes } = await verifyWorkerDispatch(
+      published,
+      "https://worker.example/",
+      "tok",
+      fetchJson,
+      NOW,
+      { maxAttempts: 2, backoffMs: 1, sleep: async () => {} },
+    );
+    assert.equal(listCalls, 2);
+    // comportamento final preservado (ausente = fired) — mas só após esgotar retries
+    assert.equal(changes, 1);
+  });
+
   it("edição sem nenhuma entry reconciliável: 0 changes, nenhuma chamada extra falha", async () => {
     const published: SocialPublished = {
       posts: [entry({ platform: "facebook", worker_queue_key: undefined, status: "published" })],
