@@ -921,6 +921,8 @@ Procedimento (retry pra absorver a latência do autosave):
 
 ### 7. Enviar email de teste
 
+**⚠️ Merge tags de sistema só resolvem com contexto de assinante (#6011)**: usar **"Simulate as → Search for a specific subscriber"** (buscando o próprio e-mail do editor, que É assinante) em vez do checkbox genérico de destinatário do "Send test email". O modo genérico NÃO dá contexto de assinante à Beehiiv pra resolver merge tags de sistema (`{{email}}` etc.) — elas saem literais no e-mail de teste, o que dispara falso-blocker no loop `review-test-email` (`link_dead` por `isUnsubstitutedMergeTag`). Achado ao vivo 260824 (edição 260824): 2 rodadas do loop (~200k tokens) gastas num draft que estava CORRETO — o problema era só o modo de envio. "Simulate as" (e o envio real de produção) sempre resolvem normalmente.
+
 **⚠️ Rate limit silencioso #1419**: Beehiiv tem rate limit em "Send test email" (~10 sends/hora). Sends posteriores são absorvidos sem erro visual nem API error — popover de sucesso aparece mas o email NÃO chega ao Gmail. Em 260520, sends 11-14 foram stale; loop verify→fix iterou sobre o 10º (mais antigo). Antes de cada click, consultar o counter:
 
 ```typescript

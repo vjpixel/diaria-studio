@@ -142,13 +142,19 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    cru até então) SÓ no HTML de **draft/pré-render** (worker, antes do envio) —
 >    a Beehiiv ainda não teve a chance de expandir. Vê-la nesse contexto NÃO é
 >    defeito.
->    **#4512 (correção pós-review — antes deste ajuste esta seção instruía
->    "nunca reportar", ponto, sem distinguir os dois estágios):** no e-mail
+>    **#4512 (correção pós-review):** no e-mail
 >    JÁ ENTREGUE (o que você está lendo agora, via Gmail MCP), a Beehiiv
 >    **já deveria ter substituído** `{{poll_token}}`/`{{email}}` por um valor
 >    real — vê-la ainda literal AQUI **é o próprio defeito** (ex: custom field
 >    `poll_token` não populado pro assinante de teste, ver
->    `scripts/inject-poll-token.ts`), não um falso-positivo a ignorar. Na
+>    `scripts/inject-poll-token.ts`), não um falso-positivo a ignorar.
+>    **RESSALVA #6011 (260824)**: essa regra vale só quando o envio de teste foi
+>    feito COM contexto de assinante — "Simulate as → specific subscriber", ou
+>    produção. O modo "Send test email" genérico (checkbox de destinatário) é
+>    conhecido por NÃO resolver merge tags de sistema (`{{email}}` sai literal
+>    mesmo com draft correto) — merge tag literal nesse cenário é artefato do
+>    modo de envio, não defeito do conteúdo; reenviar com "Simulate as" antes de
+>    marcar `issues_unfixable`. Na
 >    prática você não precisa decidir isso manualmente: o check determinístico
 >    do passo 17 (`lint-test-email-link-tracking.ts`, `stage: "delivered"`)
 >    já trata merge tag literal no e-mail entregue como `link_dead` (blocker)
