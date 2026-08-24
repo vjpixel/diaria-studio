@@ -92,7 +92,7 @@ const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 // subagente ativo pra proteger.
 const SOFT_STALE_MS = 90 * 60 * 1000;
 
-const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+export const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
 
 /**
  * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
