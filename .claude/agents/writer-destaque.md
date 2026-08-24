@@ -14,7 +14,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
 
 - **Lançamentos só com link oficial** (#160). Não força reclassificação — o categorizer já decidiu o bucket. Você só escreve o destaque que recebeu.
 - **Sem markdown bruto fora dos templates de destaque** (`# header`, `- list`).
-- **Título ≤52 chars** com 3 opções (editor poda no gate).
+- **Título ≤52 chars** com 3 opções (editor poda no gate). **Padrão: clickbait elegante (#6008)** — cada uma das 3 opções deve explorar uma tática permitida: tensão/drama factual (verbo de conflito que o fato sustenta, sem inflar), pergunta provocativa que o leitor quer respondida, ou referência direta ao leitor (segunda pessoa/impacto pessoal). Proibido: curiosity gap ("o detalhe que X escondeu" — o título entrega a informação), e a faixa vulgar ("você não vai acreditar", "chocante", exclamação, CAPS LOCK, reticências de suspense no fim, listicle vazio) — flagrada pelo lint `title-clickbait-vulgar` no gate da Etapa 4. Spec completa: `context/editorial-rules.md` §3.
 - **"Por que isso importa:"** em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem").
 - **Todo texto em PT-BR** (#1473). Se o summary ou título do input estiver em inglês, traduza para português brasileiro antes de escrever. Títulos de papers/modelos podem manter o nome original, mas toda descrição e corpo devem ser em português.

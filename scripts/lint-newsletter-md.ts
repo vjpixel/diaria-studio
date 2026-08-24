@@ -52,6 +52,7 @@ import {
   MAX_TITLE_LENGTH,
 } from "./lib/lint-checks/title-length.ts";
 import { checkTitleMentionsIA } from "./lib/lint-checks/ia-in-title.ts"; // #4825
+import { checkTitleClickbaitVulgar } from "./lib/lint-checks/title-clickbait-vulgar.ts"; // #6008
 import { checkEiaAnswer } from "./lib/lint-checks/eia-answer-check.ts";
 import { checkIntentionalError, checkIntentionalErrorSafety } from "./lib/lint-checks/intentional-error.ts";
 // #5895: extractCurrentDeclarationFromMd/extractRawCurrentNarrative/
@@ -537,6 +538,13 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
       checkTitleMentionsIA(md),
     );
 
+    // #6008: clickbait elegante — faixa VULGAR flagrada por blocklist.
+    // WARN-ONLY (mesmo molde de title-mentions-ia): decisão de tom é do
+    // editor no gate da Etapa 4.
+    runCheckSafely(push, "title-clickbait-vulgar", "#6008", "warn-only", () =>
+      checkTitleClickbaitVulgar(md),
+    );
+
     // stacked-intro-callouts (#2729): self-review #5416 — o playbook
     // (orchestrator-stage-4.md §4c.2) documenta este check como WARN-ONLY,
     // mas o modo `--check stacked-intro-callouts` (main() abaixo) sempre
@@ -700,6 +708,7 @@ import { runCli as run_secondaryItemCoherence } from "./lib/lint-checks/cli/seco
 import { runCli as run_titlePublisherSuffix } from "./lib/lint-checks/cli/title-publisher-suffix.ts";
 import { runCli as run_titleTrailingPeriod } from "./lib/lint-checks/cli/title-trailing-period.ts";
 import { runCli as run_titleMentionsIa } from "./lib/lint-checks/cli/title-mentions-ia.ts";
+import { runCli as run_titleClickbaitVulgar } from "./lib/lint-checks/cli/title-clickbait-vulgar.ts";
 import { runCli as run_noTrailingEllipsis } from "./lib/lint-checks/cli/no-trailing-ellipsis.ts";
 import { runCli as run_midSentenceEllipsis } from "./lib/lint-checks/cli/mid-sentence-ellipsis.ts";
 import { runCli as run_noUntranslatedSummary } from "./lib/lint-checks/cli/no-untranslated-summary.ts";
@@ -741,6 +750,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "title-publisher-suffix": run_titlePublisherSuffix,
   "title-trailing-period": run_titleTrailingPeriod,
   "title-mentions-ia": run_titleMentionsIa,
+  "title-clickbait-vulgar": run_titleClickbaitVulgar,
   "no-trailing-ellipsis": run_noTrailingEllipsis,
   "mid-sentence-ellipsis": run_midSentenceEllipsis,
   "no-untranslated-summary": run_noUntranslatedSummary,

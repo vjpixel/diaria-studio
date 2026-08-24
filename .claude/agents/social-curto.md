@@ -32,7 +32,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 1. Ler `context/editorial-rules.md`.
 2. Ler `{out_dir}/_internal/01-approved.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
 3. Para **cada destaque**, compor um texto curto independente:
-   - Hook direto na primeira linha (dado concreto ou fato surpreendente) — sem preâmbulo, sem "Hoje na diar.ia.br".
+   - Hook direto na primeira linha — **padrão clickbait elegante (#6008)**: dado concreto ou fato surpreendente com framing de tensão factual, pergunta provocativa ou impacto direto no leitor; nunca curiosity gap nem faixa vulgar. Sem preâmbulo, sem "Hoje na diar.ia.br".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 1 frase de contexto/impacto no máximo — este é o formato mais compacto da pipeline, não há espaço pra 2-3 parágrafos.
    - **#1762: não encerrar com pergunta.** Feche com uma afirmação antes do CTA.
