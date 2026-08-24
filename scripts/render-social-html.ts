@@ -165,6 +165,36 @@ function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = 
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
 }
 
+/**
+ * #6005 Parte B / #6064: resolve os 5 slides do carrossel diário do
+ * Instagram pra `key` (ex: "d1") — capa (`d{N}_4x5`) + 3 parágrafos + CTA
+ * (`d{N}_carousel_{p1,p2,p3,cta}`). Tudo-ou-nada, mesma regra de
+ * `resolveCarouselImageUrls` (daily-carousel-card.ts): se QUALQUER um dos 4
+ * slides sem foto faltar em `imageUrls`, retorna `undefined` (preview cai pro
+ * card único, igual ao que `publish-instagram.ts` faz na publicação real).
+ */
+function buildCarouselImages(
+  key: string,
+  imageUrls: ImageMap,
+): { label: string; url: string }[] | undefined {
+  const dNum = key.replace(/\D/g, "");
+  const cover = imageUrls[`d${dNum}_4x5`];
+  const p1 = imageUrls[`d${dNum}_carousel_p1`];
+  const p2 = imageUrls[`d${dNum}_carousel_p2`];
+  const p3 = imageUrls[`d${dNum}_carousel_p3`];
+  const cta = imageUrls[`d${dNum}_carousel_cta`];
+  if (!cover || !p1 || !p2 || !p3 || !cta) return undefined;
+  const resolve = (spec: ImageMap[string]) => resolveSocialImageUrl(spec, () => {});
+  const slides = [
+    { label: "1/5 · Capa", url: resolve(cover) },
+    { label: "2/5", url: resolve(p1) },
+    { label: "3/5", url: resolve(p2) },
+    { label: "4/5", url: resolve(p3) },
+    { label: "5/5 · CTA", url: resolve(cta) },
+  ];
+  return slides.every((s) => s.url) ? slides : undefined;
+}
+
 /** #1800: quantos posts esperam uma imagem (d1/d2/d3 + post_pixel que reusa d1, #1690). */
 export function expectedImageCount(platforms: Platform[]): number {
   // O preview agrupa por destaque: cada imagem aparece 1× por GRUPO, não por
@@ -224,6 +254,12 @@ export interface DestaqueGroup {
   imageUrl: string;
   /** É IA? publica DUAS imagens (opção A e B), não uma. */
   extraImages?: { label: string; url: string }[];
+  /** #6005 Parte B / #6064: os 5 slides do carrossel diário do Instagram
+   * (capa + 3 parágrafos + CTA), quando os 4 slides sem foto existem no
+   * `06-public-images.json` (tudo-ou-nada, mesma regra de
+   * `resolveCarouselImageUrls`) — só destaques numerados (d1/d2/d3) têm
+   * carrossel, nunca É IA?/post_pixel. */
+  carouselImages?: { label: string; url: string }[];
   blocks: GroupedBlock[];
 }
 
@@ -249,6 +285,7 @@ export function groupByDestaque(
             ? "É IA?"
             : post.destaque;
         const isEia = /^eia$/i.test(key);
+        const isNumberedDestaque = /^d\d+$/.test(key);
         groups.set(key, {
           key,
           label,
@@ -259,6 +296,9 @@ export function groupByDestaque(
                 { label: "Opção A", url: resolveSocialImageUrl(imageUrls.eia_a, () => {}) },
                 { label: "Opção B", url: resolveSocialImageUrl(imageUrls.eia_b, () => {}) },
               ].filter(img => img.url)
+            : undefined,
+          carouselImages: isNumberedDestaque
+            ? buildCarouselImages(key, imageUrls)
             : undefined,
           blocks: [],
         });
@@ -294,6 +334,20 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
       </div>`;
 }
 
+/** #6005 Parte B / #6064: tira horizontal com os 5 slides do carrossel diário
+ * do Instagram, miniaturizados — o editor confere a arte real dos 4 slides
+ * sem foto (texto rasterizado no Stage 3) antes de aprovar o gate. */
+function renderCarouselStrip(group: DestaqueGroup, color: string): string {
+  if (!group.carouselImages?.length) return "";
+  return `
+    <div class="carousel-strip">
+      <div class="carousel-strip-label" style="color:${color}">🎠 Carrossel Instagram (${group.carouselImages.length} slides)</div>
+      <div class="carousel-strip-thumbs">${group.carouselImages
+        .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — slide ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
+        .join("")}</div>
+    </div>`;
+}
+
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
   const imgHtml = group.extraImages?.length
     ? `<div class="post-image eia-pair">${group.extraImages
@@ -307,6 +361,7 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
     ${imgHtml}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
+    ${renderCarouselStrip(group, color)}
   </div>`;
 }
 
@@ -401,6 +456,12 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
   .eia-pair { display:flex; gap:10px; }
   .eia-pair figure { flex:1; margin:0; }
   .eia-pair figcaption { font-size:12px; color:#666; text-align:center; padding:4px 0 8px; }
+  .carousel-strip { padding: 12px 16px; border-top: 1px solid #eee; }
+  .carousel-strip-label { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .carousel-strip-thumbs { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .carousel-strip-thumbs figure { flex: 0 0 auto; width: 96px; margin: 0; }
+  .carousel-strip-thumbs img { width: 96px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; display: block; }
+  .carousel-strip-thumbs figcaption { font-size: 11px; color: #666; text-align: center; padding-top: 4px; }
   .channel-block {
     border-top: 1px solid #f0f0f0;
   }
