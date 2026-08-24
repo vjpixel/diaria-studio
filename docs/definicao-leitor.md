@@ -78,6 +78,22 @@ Se os cortes forem revisados no futuro (`leitor-v2`), o histórico de decisões 
 
 Na prática: quando `leitor-v2` existir, ele ganha suas próprias constantes (`LEITOR_V2_THRESHOLDS` ou equivalente) e sua própria função/predicado em `scripts/lib/leitor.ts` (ou um módulo irmão) — `isLeitorV1`/`LEITOR_V1_THRESHOLDS` permanecem intocados e `leitor-v1` continua computável exatamente como antes, indefinidamente.
 
+## Migração Beehiiv → Kit (#461/#6050, 260824)
+
+`leitor.ts` ganhou `leitorInputFromKitSubscriber` — extração simétrica à da Beehiiv, mesma disciplina de nunca ler `click_rate`. Mapa de campos:
+
+| `LeitorInput` | Beehiiv | Kit |
+|---|---|---|
+| `status` | `status` (`unsubscribe: true` é o único caminho pra inativo) | `state` (enum `active\|cancelled\|bounced\|complained\|inactive` — mais rico, motivo de saída é gravável) |
+| `totalReceived` | `stats.total_received` | `stats.sent` (via `range` customizado, ver abaixo) |
+| `totalUniqueClicked` | `stats.total_unique_clicked` | `stats.clicked` (idem) |
+
+**Achado ao vivo (260824): `range` de `stats` não é limitado a 90 dias.** O default do MCP (`mcp__kit__filter_subscribers`, `include: [{type: "stats"}]`) é uma janela móvel de 90 dias quando `range` é omitido — mas passar `range: {start, end}` explícito aceita qualquer intervalo (testado com `2020-01-01` a `2026-08-24`). Isso destrava o risco técnico original da issue (#6050 temia estar preso a uma janela fixa incompatível com o piso de 20 recebidas do `leitor-v1`, que é acumulado, não móvel).
+
+**Decisão sobre a descontinuidade da série histórica (editor, 260824): aceitar, não fazer bridge.** Os contadores `sent`/`clicked` do Kit começam do zero pra TODO mundo no cutover — inerente a trocar de ESP, o Kit só enxerga envios feitos por ele mesmo (mesmo que o `range` cubra anos, não há dado antes da conta existir). Consequência prática: por ~20 edições (≈3 semanas) pós-cutover, ninguém bate `total_received >= 20`, e a contagem de `leitor-v1` reportada cai artificialmente nesse período — **é vale esperado, não queda real de qualidade**. Rejeitada a alternativa de somar os totais históricos de `data/beehiiv-backup/` (por e-mail) aos contadores novos do Kit: resolveria o vale, mas cria dívida de reconciliação permanente entre duas fontes de dado pra resolver um problema que se resolve sozinho.
+
+**Quando o cutover acontecer** (fora do escopo desta sessão — depende de #463/#464 primeiro), marcar a data aqui como o marco de descontinuidade da série, e o consumidor de `leitor.ts` que rodar contra Kit precisa passar `range.start` = essa data (nunca "desde sempre" — sempre existirá zero antes dela).
+
 ## CLI
 
 ```bash

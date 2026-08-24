@@ -31,8 +31,10 @@ import {
   renameSyncVerified,
   deriveTituloSubtitulo,
   parseArgs,
+  refreshSocialSourceHash,
   type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
+import { hashFromApprovedFile } from "../scripts/lib/social-source-hash.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
@@ -1455,6 +1457,163 @@ describe("reorder-destaques CLI (#5087): imagens renomeadas ANTES do texto — a
         originalApprovedCapped,
         "01-approved-capped.json não deveria ter sido tocado — imagem falhou primeiro",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #6062: .social-source-hash.json pós-reorder ─────────────────────────
+//
+// Bug original: o reorder propagava a nova ordem pro 03-social.md mas deixava
+// o carimbo de `_internal/.social-source-hash.json` (#1413) apontando pros
+// highlights ANTIGOS — `check-invariants.ts --stage 4` acusava
+// `social-hash-fresh` como ERROR com o social JÁ correto (edição 260825).
+// Testes via CLI porque a regressão possível é de FIAÇÃO em main(): a função
+// pura pode existir e ninguém chamá-la.
+
+function writeApprovedFixture(dir: string, urls: string[]): string {
+  const approvedPath = join(dir, "_internal", "01-approved.json");
+  writeFileSync(
+    approvedPath,
+    JSON.stringify(
+      {
+        highlights: urls.map((url, i) => ({
+          url,
+          title_options: [`Título ${i + 1}`, "Alt", "Alt2"],
+        })),
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  return approvedPath;
+}
+
+const SOCIAL_MD_FIXTURE = `# Social
+
+## d1
+
+Post D1...
+
+## d2
+
+Post D2...
+
+## d3
+
+Post D3...
+`;
+
+describe("reorder-destaques CLI (#6062): .social-source-hash.json", () => {
+  it("recarimba o hash com os highlights JÁ reordenados (era ERROR falso em social-hash-fresh)", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const approvedPath = writeApprovedFixture(dir, [
+        "https://a.com/1",
+        "https://b.com/2",
+        "https://c.com/3",
+      ]);
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+      const staleHash = hashFromApprovedFile(approvedPath);
+      writeFileSync(
+        hashPath,
+        JSON.stringify({ hash: staleHash, generated_at: "2026-08-25T00:00:00.000Z" }, null, 2),
+        "utf8",
+      );
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+
+      // O hash gravado tem que bater com o que o invariante de Stage 4
+      // recomputa do approved JÁ reordenado — senão o gate acusa stale.
+      const esperado = hashFromApprovedFile(approvedPath);
+      const gravado = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
+      assert.equal(gravado.hash, esperado);
+      assert.notEqual(
+        gravado.hash,
+        staleHash,
+        "o hash pré-reorder não pode sobreviver — era exatamente o falso positivo do #6062",
+      );
+
+      // E o arquivo precisa aparecer no relatório de modificados.
+      const report = JSON.parse(result.stdout) as { modified: { rewritten: string[] } };
+      assert.ok(
+        report.modified.rewritten.some((f) => f.endsWith(".social-source-hash.json")),
+        `hash deveria constar em modified.rewritten: ${result.stdout}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO recarimba quando não há 03-social.md — não inventa frescor pra social inexistente", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeApprovedFixture(dir, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+      assert.equal(
+        existsSync(hashPath),
+        false,
+        "sem 03-social.md não existe social pra declarar fresco",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não escreve o hash", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeApprovedFixture(dir, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+        "--dry-run",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+      assert.equal(existsSync(hashPath), false, "--dry-run não pode tocar o disco");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("refreshSocialSourceHash (#6062, unidade)", () => {
+  it("approved ausente → null, sem lançar (best-effort, não derruba o reorder)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-hash-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      assert.equal(refreshSocialSourceHash(dir, false), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("approved ilegível → warning + null, nunca exceção", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-hash-bad-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "{ nao json", "utf8");
+      assert.equal(refreshSocialSourceHash(dir, false), null);
+      assert.equal(existsSync(join(dir, "_internal", ".social-source-hash.json")), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

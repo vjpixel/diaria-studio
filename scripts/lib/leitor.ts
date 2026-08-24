@@ -146,6 +146,50 @@ export function leitorInputFromBeehiivSubscriber(sub: BeehiivSubscriberStatsShap
 }
 
 // ---------------------------------------------------------------------------
+// Extração do dado bruto do Kit — #6050, migração Beehiiv → Kit (#461)
+// ---------------------------------------------------------------------------
+
+/** Subconjunto do subscriber bruto do Kit (`mcp__kit__filter_subscribers`,
+ *  `include: [{type: "stats", range: {...}}]`) necessário pra `LeitorInput`.
+ *
+ *  `state` do Kit é mais rico que o `status` da Beehiiv (enum
+ *  `active|cancelled|bounced|complained|inactive` — a Beehiiv só tem
+ *  `unsubscribe: true` como caminho pra inativo, motivo de saída não é
+ *  gravável). Só `"active"` conta, mesmo predicado de `isLeitorV1`.
+ *
+ *  `stats.range` PRECISA ser passado explicitamente pelo chamador cobrindo
+ *  desde a data de cutover da migração até hoje — sem `range`, a API usa
+ *  default de 90 dias (não é um teto: `range` aceita qualquer intervalo,
+ *  confirmado ao vivo em 260824 com `{start: "2020-01-01", end: "2026-08-24"}`).
+ *  Ver `docs/definicao-leitor.md` §Migração Kit pra decisão de descontinuidade
+ *  — os contadores do Kit começam do zero no cutover pra todo mundo
+ *  (inerente a trocar de ESP), NÃO somar com o histórico de
+ *  `data/beehiiv-backup/` (decisão do editor: aceitar o vale de ~20 edições
+ *  pós-cutover em vez de manter bridge de reconciliação entre duas fontes).
+ *
+ *  `sent` do Kit ainda não foi verificado contra bounce em produção (conta
+ *  zerada até o 1º broadcast real) — pode incluir bounces, diferente de
+ *  `total_received` da Beehiiv (que já é líquido). Reverificar quando houver
+ *  dado real; até lá, `sent` é a melhor aproximação disponível. Mesma
+ *  disciplina da Beehiiv: NUNCA ler `click_rate` (tipo abaixo não declara o
+ *  campo de propósito) — CTR sempre calculado à mão via `computeCtrPct`. */
+export interface KitSubscriberStatsShape {
+  state: string;
+  stats?: {
+    sent?: number;
+    clicked?: number;
+  } | null;
+}
+
+export function leitorInputFromKitSubscriber(sub: KitSubscriberStatsShape): LeitorInput {
+  return {
+    status: sub.state,
+    totalReceived: sub.stats?.sent ?? 0,
+    totalUniqueClicked: sub.stats?.clicked ?? 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CLI — resumo sobre um snapshot local
 // ---------------------------------------------------------------------------
 
