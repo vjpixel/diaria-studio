@@ -39,7 +39,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    ### 3a. Texto genérico (`## d{N}`)
 
-   - Hook direto na primeira linha — **padrão clickbait elegante (#6008)**: dado concreto ou fato surpreendente com framing de tensão factual, pergunta provocativa ou impacto direto no leitor; nunca curiosity gap nem faixa vulgar ("chocante", exclamação, CAPS LOCK, reticências de suspense). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
+   - Hook direto na primeira linha — **padrão clickbait elegante (#6008)**, reforçado pelos benchmarks de Instagram (#6005, padrões 4/8/13 de `context/instagram-benchmarks-5815.md`): **gancho dramático com CONTRASTE explícito na 1ª linha** (tensão entre expectativa e realidade, "parece X, mas Y") em vez de resumo neutro do destaque — dado concreto ou fato surpreendente com framing de tensão factual, pergunta provocativa ou impacto direto no leitor; nunca curiosity gap nem faixa vulgar ("chocante", exclamação, CAPS LOCK, reticências de suspense). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 2–3 parágrafos curtos em linguagem coloquial — tom Instagram: mais curto e direto que o LinkedIn/Facebook tradicionais, ritmo de feed.
    - **#1762: não encerrar com pergunta.** Feche o texto editorial com uma afirmação — nada de "Comente: você usa X?" no fim. Perguntas retóricas no meio do corpo são OK.
    - **SEM linha de CTA de canal** (ver invariante "CHANNEL-NEUTRAL" acima) — nenhuma URL, nenhuma menção a e-mail/bio/seguir/assinatura. A linha de canal é injetada no publish, nunca aqui.
@@ -48,6 +48,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Tom coloquial, frases curtas, sem jargão não explicado. Não repetir o mesmo hook entre os 3 destaques.
    - **Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825).** Usar o sujeito concreto (empresa, modelo, produto) em vez da categoria. Exceções legítimas: o texto é sobre a categoria em si, ambiguidade real sem o termo, ou nome próprio/citação/nome de produto (ex: "Perplexity AI") — ver `context/editorial-rules.md` seção 5.
    - Zero emojis no hook; no máximo 1–2 emojis no corpo se adicionarem clareza (tolerância maior que LinkedIn/Facebook, mas não como decoração vazia).
+   - **De-escalação explícita (#6005, padrão 10 dos benchmarks):** quando o texto constrói alarme (especialmente nos destaques de impacto NEGATIVO da IA, obrigação do #3916), desarme o pânico ANTES do fecho — um parágrafo curto que dimensiona o risco com honestidade (o que ainda segura, quem responde por isso, qual é o limite do problema). Compatível com o #1762: a des-escalada é afirmação, nunca pergunta. Alarme sem des-escalada vira catastrofismo; des-escalada sem alarme vira indiferença.
 
    ### 3b. Post pessoal standalone de D1 (`## post_pixel`) — #1690
 

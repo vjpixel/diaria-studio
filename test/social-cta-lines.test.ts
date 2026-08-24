@@ -16,6 +16,8 @@ import {
   CHANNEL_CTA_LINES,
   FACEBOOK_CTA_LINE,
   INSTAGRAM_CTA_LINE,
+  INSTAGRAM_ENGAGEMENT_LINE,
+  CHANNEL_ENGAGEMENT_LINES,
   LINKEDIN_CTA_LINE,
   buildFacebookCtaUrl,
 } from "../scripts/lib/social-cta-lines.ts";
@@ -122,12 +124,22 @@ describe("injectChannelLine (#3991)", () => {
     assert.equal(lines[2], "#IA #Agentes");
   });
 
-  it("Instagram: injeta a linha de 'link na bio' ENTRE corpo e tags", () => {
+  it("Instagram: injeta 'link na bio' + linha de engajamento (#6005) ENTRE corpo e tags", () => {
     const out = injectChannelLine("Fato interessante sobre IA.\n\n#IA #Agentes", "instagram");
     const lines = out.split("\n\n");
     assert.equal(lines[0], "Fato interessante sobre IA.");
     assert.equal(lines[1], INSTAGRAM_CTA_LINE);
-    assert.equal(lines[2], "#IA #Agentes");
+    assert.equal(lines[2], INSTAGRAM_ENGAGEMENT_LINE);
+    assert.equal(lines[3], "#IA #Agentes");
+  });
+
+  it("#6005 Parte A: linha de engajamento é NÃO-interrogativa (#1762) e só existe no Instagram", () => {
+    assert.ok(!INSTAGRAM_ENGAGEMENT_LINE.includes("?"));
+    assert.equal(CHANNEL_ENGAGEMENT_LINES.linkedin, null);
+    assert.equal(CHANNEL_ENGAGEMENT_LINES.facebook, null);
+    // Facebook/LinkedIn: estrutura inalterada (sem linha de engajamento)
+    const fb = injectChannelLine("Fato.\n\n#IA", "facebook");
+    assert.ok(!fb.includes(INSTAGRAM_ENGAGEMENT_LINE));
   });
 
   it("LinkedIn: NÃO injeta nenhuma linha (preserva #595) — só corpo + tags", () => {
