@@ -38,7 +38,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Hook direto na primeira linha (dado concreto ou fato surpreendente). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 2–3 parágrafos curtos em linguagem coloquial — mais curto e mais direto que o Facebook (Instagram é feed rápido).
    - **#1762: o corpo não encerra com pergunta.** Feche o texto editorial com uma afirmação antes do CTA fixo.
-   - CTA final fixo: `"Edição completa no link da bio. Segue @diar.ia pra não perder a próxima."` — sem URL crua (Instagram não renderiza link clicável no corpo) e **sem qualquer menção a e-mail/assinatura por e-mail**.
+   - CTA final fixo: `"Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima."` — sem URL crua (Instagram não renderiza link clicável no corpo) e **sem qualquer menção a e-mail/assinatura por e-mail**.
    - Até 5 hashtags relevantes ao tema. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas); hashtags em português quando possível.
    - 600–900 caracteres no corpo editorial (sem contar hashtags).
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-instagram.tmp.md` com o formato abaixo. O orchestrator fará o merge com LinkedIn/Facebook numa etapa seguinte.

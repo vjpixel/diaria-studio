@@ -142,7 +142,7 @@ describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato n
     const t = extractPostText(SOCIAL_MD, "d1");
     assert.equal(
       t,
-      "Texto genérico d1.\n\nEdição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n\nManda pra alguém que ainda subestima isso.\n\n#IA",
+      "Texto genérico d1.\n\nEdição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.\n\nManda pra alguém que ainda subestima isso.\n\n#IA",
     );
   });
 

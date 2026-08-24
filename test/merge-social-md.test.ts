@@ -331,7 +331,7 @@ describe("merge-social-md CLI (#3991 — formato unificado # Social)", () => {
       try {
         writeFileSync(
           join(dir, "_internal", "03-social.tmp.md"),
-          "## d1\n\nFato concreto. Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n",
+          "## d1\n\nFato concreto. Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.\n",
         );
 
         const r = runScript(dir);
