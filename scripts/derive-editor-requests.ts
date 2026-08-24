@@ -287,6 +287,134 @@ function classifySocialDiff(oldContent: string, newContent: string): Array<{
   return results;
 }
 
+/** Buckets do pool no `01-approved.json` → `target` da taxonomia de pedidos. */
+const POOL_BUCKET_TARGETS: ReadonlyArray<readonly [string, RequestTarget]> = [
+  ["lancamento", "lancamentos"],
+  ["radar", "radar"],
+  ["use_melhor", "use-melhor"],
+  ["video", "video"],
+];
+
+interface PoolItem {
+  bucket: string;
+  target: RequestTarget;
+  title: string;
+}
+
+/** Indexa os itens do pool por URL. Item duplicado entre buckets: 1º bucket vence. */
+function indexPool(json: any): Map<string, PoolItem> {
+  const byUrl = new Map<string, PoolItem>();
+  for (const [key, target] of POOL_BUCKET_TARGETS) {
+    for (const item of json?.[key] ?? []) {
+      const url = item?.url;
+      if (typeof url !== "string" || url === "" || byUrl.has(url)) continue;
+      byUrl.set(url, { bucket: key, target, title: item?.title ?? url });
+    }
+  }
+  return byUrl;
+}
+
+/** URLs que estão em `highlights` — pertencem ao caminho destaque-*, não ao pool. */
+function highlightUrls(json: any): Set<string> {
+  const urls = new Set<string>();
+  for (const h of json?.highlights ?? []) {
+    const url = h?.url ?? h?.article?.url;
+    if (typeof url === "string" && url !== "") urls.add(url);
+  }
+  return urls;
+}
+
+/** Rótulo legível do bucket, pra descrição da entrada. */
+const BUCKET_LABELS: Record<string, string> = {
+  lancamento: "LANÇAMENTOS",
+  radar: "RADAR",
+  use_melhor: "USE MELHOR",
+  video: "VÍDEOS",
+};
+
+function bucketLabel(bucket: string): string {
+  return BUCKET_LABELS[bucket] ?? bucket.toUpperCase();
+}
+
+/**
+ * Diffa os buckets do pool entre dois estados do `01-approved.json`.
+ *
+ * Três casos, todos derivados de uma passada só sobre o índice URL→bucket:
+ * - **`bucket-move`** — URL presente nos dois lados, em buckets diferentes.
+ *   É o pedido que o editor identificou como o mais comum ("mover conteúdo
+ *   entre Use Melhor, Lançamentos e Radar"). `target` = bucket de DESTINO.
+ * - **`pool-cut`** — URL sai do pool e não vira destaque (item cortado).
+ * - **`pool-add`** — URL entra no pool sem ter estado nele antes (tipicamente
+ *   promovido de `runners_up`).
+ *
+ * URLs que cruzam a fronteira pool↔destaques são ignoradas aqui de propósito:
+ * promoção/demoção de destaque já é reportada por `destaque-swap`/
+ * `destaque-cut`/`destaque-promote` acima, e contá-las de novo como
+ * `pool-cut`/`pool-add` inflaria a recorrência com o mesmo evento duas vezes.
+ */
+function classifyPoolDiff(oldJson: any, newJson: any): Array<{
+  request_type: RequestType;
+  target: RequestTarget;
+  description: string;
+  resolution: Resolution;
+  context?: Record<string, unknown>;
+}> {
+  const results: Array<{
+    request_type: RequestType;
+    target: RequestTarget;
+    description: string;
+    resolution: Resolution;
+    context?: Record<string, unknown>;
+  }> = [];
+
+  const oldPool = indexPool(oldJson);
+  const newPool = indexPool(newJson);
+  const oldHighlights = highlightUrls(oldJson);
+  const newHighlights = highlightUrls(newJson);
+
+  for (const [url, oldItem] of oldPool) {
+    const newItem = newPool.get(url);
+
+    if (newItem) {
+      if (newItem.bucket === oldItem.bucket) continue;
+      results.push({
+        request_type: "bucket-move",
+        target: newItem.target,
+        description:
+          `Item movido de ${bucketLabel(oldItem.bucket)} → ${bucketLabel(newItem.bucket)}: ${newItem.title}`,
+        resolution: "accepted",
+        context: { url, from_bucket: oldItem.bucket, to_bucket: newItem.bucket },
+      });
+      continue;
+    }
+
+    // Saiu do pool. Se virou destaque, quem reporta é o caminho destaque-*.
+    if (newHighlights.has(url)) continue;
+    results.push({
+      request_type: "pool-cut",
+      target: oldItem.target,
+      description: `Item removido de ${bucketLabel(oldItem.bucket)}: ${oldItem.title}`,
+      resolution: "accepted",
+      context: { url, from_bucket: oldItem.bucket },
+    });
+  }
+
+  for (const [url, newItem] of newPool) {
+    if (oldPool.has(url)) continue;
+    // Entrou no pool vindo dos destaques: é demoção, reportada por destaque-cut.
+    if (oldHighlights.has(url)) continue;
+    results.push({
+      request_type: "pool-add",
+      target: newItem.target,
+      description: `Item adicionado a ${bucketLabel(newItem.bucket)}: ${newItem.title}`,
+      resolution: "accepted",
+      context: { url, to_bucket: newItem.bucket },
+    });
+  }
+
+  return results;
+}
+
 /**
  * Classifica diferenças no 01-approved.json (seleção de destaques)
  */
@@ -370,6 +498,14 @@ function classifyApprovedDiff(oldContent: string, newContent: string): Array<{
         });
       }
     }
+
+    // #5731 follow-up: movimentação de itens entre os buckets do pool
+    // (Lançamentos / Radar / Use Melhor / Vídeo). Pedido mais frequente do
+    // editor segundo ele mesmo, e até aqui invisível pro loop de aprendizado:
+    // `classifyApprovedDiff` só olhava `highlights`, então mover um item de
+    // LANÇAMENTOS→RADAR não derivava nada e, quando logado à mão, virava
+    // `other` — que por design NUNCA conta na detecção de recorrência.
+    results.push(...classifyPoolDiff(oldJson, newJson));
   } catch {
     // JSON inválido - ignorar
   }

@@ -64,6 +64,9 @@ export type RequestType =
   | "image-redo"
   | "image-crop"
   | "section-order"
+  | "bucket-move"
+  | "pool-cut"
+  | "pool-add"
   | "eia-choice"
   | "social-rewrite"
   | "factual-correction"
@@ -77,6 +80,7 @@ export type RequestTarget =
   | "radar"
   | "use-melhor"
   | "lancamentos"
+  | "video"
   | "social"
   | "newsletter";
 
@@ -122,6 +126,9 @@ export const VALID_REQUEST_TYPES: ReadonlyArray<RequestType> = [
   "image-redo",
   "image-crop",
   "section-order",
+  "bucket-move",
+  "pool-cut",
+  "pool-add",
   "eia-choice",
   "social-rewrite",
   "factual-correction",
@@ -136,6 +143,7 @@ export const VALID_TARGETS: ReadonlyArray<RequestTarget> = [
   "radar",
   "use-melhor",
   "lancamentos",
+  "video",
   "social",
   "newsletter",
 ];
