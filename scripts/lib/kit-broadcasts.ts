@@ -60,6 +60,18 @@ import type { KitBroadcastDetail, KitPagination } from "./kit-client.ts";
  *  `resolveTestSendTagId` lista e cria só se ausente). */
 export const KIT_TEST_SEND_TAG_NAME = "diaria-test-email";
 
+/**
+ * Shape de `subscriber_filter` — achado do review (PR #6080, type-design-analyzer):
+ * campo de MAIOR blast radius do módulo (decide QUEM recebe um envio real e
+ * irreversível), tipado antes como `unknown[]` — zero proteção do compilador
+ * bem no ponto onde `buildTestSendFilter`/`buildAllSubscribersFilter` existem
+ * justamente pra evitar a troca dos dois por engano. Cobre só as 2 variantes
+ * que os builders deste módulo produzem hoje — não uma enumeração completa
+ * do que a API do Kit aceita (não documentado publicamente).
+ */
+export type KitFilterCondition = { type: "tag"; ids: number[] } | { type: "all_subscribers" };
+export type KitSubscriberFilter = { all: KitFilterCondition[] }[];
+
 export interface CreateBroadcastInput {
   subject: string;
   content: string;
@@ -73,7 +85,7 @@ export interface CreateBroadcastInput {
   thumbnail_alt?: string | null;
   email_template_id?: number;
   email_address?: string;
-  subscriber_filter?: unknown[];
+  subscriber_filter?: KitSubscriberFilter;
 }
 
 export async function createBroadcast(
@@ -157,10 +169,14 @@ export async function tagSubscriber(tagId: number, subscriberId: number, config?
 /**
  * Resolve o id da tag de test-send, criando-a se ainda não existir. Sem
  * cache — cada chamador paga 1 `listTags` (barato, endpoint singular já
- * coberto pelo retry padrão de `kitFetch`). Idempotente: 2 chamadas
- * concorrentes na 1ª execução (conta nova) podem criar 2 tags com o mesmo
- * nome — o Kit não impõe unicidade de nome de tag — mas isso nunca aconteceu
- * em prática (a tag é criada 1x por conta, manualmente, não em paralelo).
+ * coberto pelo retry padrão de `kitFetch`).
+ *
+ * **Não é atômico** (achado do review, #6080): 2 chamadas CONCORRENTES na
+ * 1ª execução (conta nova, tag ainda não existe) podem criar 2 tags com o
+ * mesmo nome — o Kit não impõe unicidade de nome de tag, e não há
+ * find-or-create atômico no lado da API. Risco aceito, mitigado só pelo
+ * fato de a tag ser criada 1x por conta, manualmente, não em chamadas
+ * paralelas — nunca aconteceu em prática, mas não é uma garantia estrutural.
  */
 export async function resolveTestSendTagId(config?: KitConfig): Promise<number> {
   let after: string | undefined;
@@ -178,12 +194,12 @@ export async function resolveTestSendTagId(config?: KitConfig): Promise<number> 
 /** `subscriber_filter` escopado só à tag de test-send — ver docstring do
  *  módulo sobre por que isso substitui o test-send nativo que o Kit não
  *  tem. */
-export function buildTestSendFilter(tagId: number): unknown[] {
+export function buildTestSendFilter(tagId: number): KitSubscriberFilter {
   return [{ all: [{ type: "tag", ids: [tagId] }] }];
 }
 
 /** `subscriber_filter` pra audiência completa — equivalente ao "enviar pra
  *  todo mundo" da Beehiiv. */
-export function buildAllSubscribersFilter(): unknown[] {
+export function buildAllSubscribersFilter(): KitSubscriberFilter {
   return [{ all: [{ type: "all_subscribers" }] }];
 }

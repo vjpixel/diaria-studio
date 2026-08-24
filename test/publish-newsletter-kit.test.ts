@@ -297,8 +297,47 @@ describe("main() — integração", () => {
       await main(root);
       assert.equal(process.exitCode, undefined);
       assert.equal(calls.length, 1);
+      // Achado do review (#6080): o PATCH precisa levar o conteúdo FRESCO
+      // derivado da edição atual, não os valores antigos do estado — senão
+      // uma atualização de conteúdo silenciosamente não atualiza nada de
+      // verdade no Kit.
+      const patchBody = calls[0].body as { subject: string; preview_text: string; content: string };
+      assert.equal(patchBody.subject, "Modelos se replicam sozinhos");
+      assert.match(patchBody.content, /Modelos se replicam sozinhos/);
+      assert.notEqual(patchBody.subject, "Assunto antigo");
       const state = readPublishedState(editionDir);
       assert.equal(state?.broadcast_id, 777);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("2ª invocação SEM --send-test após test-send anterior: status permanece test_sent, não regride pra draft (achado do review, #6080)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      writePublishedState(editionDir, {
+        broadcast_id: 777,
+        subject: "Assunto antigo",
+        preview_text: "Preview antigo",
+        status: "test_sent",
+        test_broadcast_ids: [900],
+      });
+      mockFetch((call) => {
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
+          return jsonRes(200, { broadcast: { id: 777, status: "draft" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.status, "test_sent", "atualizar conteúdo não pode apagar o fato de que um teste já foi enviado");
+      assert.deepEqual(state?.test_broadcast_ids, [900], "histórico de test-sends preservado");
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
@@ -350,6 +389,6 @@ describe("main() — integração", () => {
 // `extractContent` exige 2-3 destaques reconhecíveis pra sequer devolver um
 // `NewsletterContent`, então "assunto vazio" nessa camada é um estado
 // inatingível sem antes falhar em `extractContent` por outro motivo (mesma
-// lacuna em `publish-daily-brevo-integration-4532.test.ts`, que também só
-// cobre `checkSubjectNotEmpty` isoladamente). A função pura já está coberta
-// acima (`describe("checkSubjectNotEmpty")`).
+// lacuna em `publish-daily-brevo-4266.test.ts`, que também só cobre
+// `checkSubjectNotEmpty` isoladamente, nunca via `main()` de ponta a ponta).
+// A função pura já está coberta acima (`describe("checkSubjectNotEmpty")`).

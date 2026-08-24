@@ -2,11 +2,17 @@
 /**
  * scripts/publish-newsletter-kit.ts (#464 — reescrever publish-newsletter para Kit API, #461)
  *
- * Publisher da newsletter diária via Kit REST API — substitui, atrás da
- * flag `platform.publishing.newsletter.backend` (`platform.config.json`,
- * default `"beehiiv"`), o playbook Chrome-automation de
- * `context/publishers/beehiiv-playbook.md`. Beehiiv continua funcional em
- * paralelo — trocar o valor da flag é o único gate de switchover.
+ * Publisher da newsletter diária via Kit REST API — pensado pra eventualmente
+ * substituir, atrás da flag `platform.publishing.newsletter.backend`
+ * (`platform.config.json`, default `"beehiiv"`), o playbook Chrome-automation
+ * de `context/publishers/beehiiv-playbook.md`. **Estado real nesta PR
+ * (achado do review, #6080): a flag só é lida por `checkKitBackendEnabled`
+ * AQUI DENTRO, como guard contra invocação acidental deste script fora de
+ * um switchover deliberado — o orchestrator/Stage 5
+ * (`.claude/agents/orchestrator-stage-5.md`) NÃO lê essa flag nem dispatcha
+ * pra este script ainda.** Trocar o valor pra `"kit"` hoje não muda nada no
+ * `/diaria-5-publicacao` — só habilita rodar este script standalone. Wiring
+ * do dispatch automático é trabalho futuro, fora do escopo desta PR.
  *
  * ## Por que isto é possível (achado do #6047/#464)
  *
@@ -92,6 +98,17 @@
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --dry-run
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir>
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --send-test
+ *
+ * **Pré-requisito manual de `--send-test` (achado do review, PR #6080):**
+ * `resolveTestSendTagId` só resolve/cria a TAG `diaria-test-email` — quem
+ * precisa estar MARCADO com ela é o subscriber do editor
+ * (`EDITOR_COPY_EMAIL`, `scripts/lib/editor-copy.ts`), e isso hoje é
+ * manual (feito 1x via `kit-broadcasts.ts::tagSubscriber`/curl direto, não
+ * automatizado por este script). Sem o subscriber tagueado, `--send-test`
+ * cria e dispara o broadcast descartável normalmente, mas ele não alcança
+ * ninguém (`subscriber_filter` vazio na prática). Automatizar essa etapa
+ * (resolver o subscriber por e-mail + tagueá-lo se ainda não estiver) é
+ * trabalho futuro, não coberto nesta PR.
  *
  * Exit codes: 1 uso/erro fatal genérico; 2 config/flag ausente ou backend
  * != "kit"; 7 assunto vazio (`content.title` ausente).
@@ -297,13 +314,29 @@ export async function main(rootDirOverride?: string): Promise<void> {
     log(`draft criado: broadcast_id=${broadcastId}`);
   }
 
+  // #464 (achado do review, PR #6080): grava o estado do draft REAL
+  // imediatamente após criá-lo/atualizá-lo — ANTES do bloco `--send-test`
+  // abaixo, que faz sua PRÓPRIA chamada de rede (`createBroadcast` pro
+  // broadcast descartável). Mesmo padrão de `publish-daily-brevo.ts`
+  // (#5677): se a chamada de test-send falhar depois daqui (rede, 429
+  // esgotado, `resolveTestSendTagId` falha), o `broadcast_id` do draft real
+  // já está persistido — uma invocação seguinte reaproveita (`updateBroadcast`)
+  // em vez de criar um 2º draft de produção. Gravar só no fim (como antes)
+  // perderia esse registro e duplicaria o draft real na próxima tentativa.
+  // #464 (achado do review, PR #6080): `status` herda de `existing?.status`,
+  // não hardcoded "draft" — senão uma invocação de atualização de conteúdo
+  // (sem `--send-test`) DEPOIS de um test-send anterior regride silenciosamente
+  // `"test_sent"` pra `"draft"`, apesar de `test_broadcast_ids` continuar
+  // correto. O fato "já mandei teste pra essa edição" não deve se perder só
+  // porque o editor pediu pra atualizar o conteúdo do draft.
   const state: KitNewsletterPublished = {
     broadcast_id: broadcastId,
     subject,
     preview_text: previewText,
-    status: "draft",
+    status: existing?.status ?? "draft",
     test_broadcast_ids: existing?.test_broadcast_ids ?? [],
   };
+  writePublishedState(editionDir, state);
 
   if (sendTest) {
     // #464: broadcast SEPARADO e descartável — nunca o de produção (ver
@@ -320,9 +353,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
     log(`test-send disparado: broadcast_id=${testBroadcast.id} (descartável, agendado pra ${sendAt})`);
     state.status = "test_sent";
     state.test_broadcast_ids = [...(state.test_broadcast_ids ?? []), testBroadcast.id];
+    writePublishedState(editionDir, state);
   }
-
-  writePublishedState(editionDir, state);
 }
 
 if (isMainModule(import.meta.url)) {
