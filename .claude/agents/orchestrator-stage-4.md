@@ -127,6 +127,7 @@ npx tsx scripts/render-halt-banner.ts \
     ```bash
     node -e "const p='{EDITION_DIR}/_internal/04-newsletter-url.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.newsletter_url_tab_id={tab_id};require('fs').writeFileSync(p,JSON.stringify(j,null,2));"
     ```
+    **Publicar a mesma variante embedded como Artifact, em paralelo ao preview local (#6003).** Aditivo — cobre revisão fora do terminal (outra máquina, celular) e sobrevive ao fim da sessão/processo local, o que o loopback não faz (mesmo HTML com `data:` URI, sem problema de CSP). Chamar a tool `Artifact` direto (sem skill `artifact-design`/`artifact-capabilities` — HTML final estático, publicação as-is): `Artifact(file_path: "{EDITION_DIR}/_internal/newsletter-final-embedded.html", title: "Newsletter {AAMMDD}", description: "Preview da edição diária para revisão", favicon: "📰")`. Persistir a URL retornada como `{newsletter_artifact_url}` em `04-newsletter-url.json` (campo novo, pro resumo do gate §4d): `node -e "const p='{EDITION_DIR}/_internal/04-newsletter-url.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.newsletter_artifact_url='{artifact_url}';require('fs').writeFileSync(p,JSON.stringify(j,null,2));"`. **Falha/indisponibilidade da tool é warning-only, nunca bloqueia o gate** — logar aviso e seguir com `{newsletter_artifact_url}` vazio (§4d omite a linha).
 
 3. Pre-render do social preview HTML + servir localmente (mesmo padrão do step 2b acima):
    ```bash
@@ -145,7 +146,7 @@ npx tsx scripts/render-halt-banner.ts \
      --file {EDITION_DIR}/_internal/social-preview-embedded.html --port 0 \
      --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url &
    ```
-   Mesmo padrão do step 2b acima pro `navigate`/`tabId` — se o Chrome do editor for navegado pra `{social_url}`, persistir `social_preview_url_tab_id` em `05-social-preview.json` (mesmo mecanismo, #3700).
+   Mesmo padrão do step 2b acima pro `navigate`/`tabId` — se o Chrome do editor for navegado pra `{social_url}`, persistir `social_preview_url_tab_id` em `05-social-preview.json` (mesmo mecanismo, #3700). **Publicar a mesma variante embedded como Artifact (#6003), mesmo padrão/motivo do step 2b acima:** `Artifact(file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html", title: "Social {AAMMDD}", description: "Preview dos posts sociais para revisão", favicon: "📱")`. Persistir a URL retornada como `{social_artifact_url}` em `05-social-preview.json` (campo novo): `node -e "const p='{EDITION_DIR}/_internal/05-social-preview.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.social_artifact_url='{artifact_url}';require('fs').writeFileSync(p,JSON.stringify(j,null,2));"`. Mesma tolerância warning-only.
 
 4. close-poll (set gabarito — idempotente):
    ```bash
@@ -372,7 +373,7 @@ npx tsx scripts/serve-preview.ts \
   --file {EDITION_DIR}/_internal/newsletter-final-embedded.html --port 0 \
   --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json --field newsletter_url &
 ```
-Rodar o `serve-preview.ts` final com `run_in_background: true`. Re-ler `newsletter_url` de `04-newsletter-url.json` e atualizar a variável `{newsletter_url}` do gate.
+Rodar o `serve-preview.ts` final com `run_in_background: true`. Re-ler `newsletter_url` de `04-newsletter-url.json` e atualizar a variável `{newsletter_url}` do gate. **Re-publicar o Artifact também (#6003)** — mesmo `file_path` do step 2b (redeploy pra MESMA URL). Atualizar `{newsletter_artifact_url}` em `04-newsletter-url.json`; warning-only.
 
 **⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
 
@@ -395,7 +396,7 @@ npx tsx scripts/serve-preview.ts \
   --file {EDITION_DIR}/_internal/social-preview-embedded.html --port 0 \
   --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url &
 ```
-(#3546 — mesmo padrão stop-old → embed → serve-new de §4b step 3 / §4c.6b acima.)
+(#3546 — mesmo padrão stop-old → embed → serve-new de §4b step 3 / §4c.6b acima.) **Re-publicar o Artifact social também (#6003)** — mesmo `file_path` do step 3, redeploy pra mesma URL; atualizar `{social_artifact_url}` em `05-social-preview.json`, warning-only.
 
 Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
 ```bash
@@ -520,8 +521,8 @@ Apresentar ao editor numa visualização limpa:
 📋 REVISÃO EDITORIAL — Edição {AAMMDD}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📰 Newsletter HTML:   {newsletter_url}
-📱 Social preview:   {social_url}
+📰 Newsletter HTML:   {newsletter_url}   | 🎨 Artifact: {newsletter_artifact_url}
+📱 Social preview:   {social_url}   | 🎨 Artifact: {social_artifact_url}
 📲 WhatsApp (dentro do D1): {whatsapp_url}
    ⚠️ URL prevista — só é garantida se o slug do post na Beehiiv bater com
    isso no Stage 6 (o post ainda não existe agora). Ver #4570.
@@ -590,7 +591,7 @@ Regras de apresentação:
 - `{social_critic_block}` = stdout de `scripts/run-social-critic.ts --input-json` (§4c.6d) — só presente quando `social_critic_pass.enabled === true`; string vazia (linha omitida) quando desabilitado (exit 2) ou indisponível. Nunca bloqueia o gate.
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
-- Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
+- Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo. `{newsletter_artifact_url}`/`{social_artifact_url}` (#6003) = URL da tool `Artifact` (§4b step 2b/3, re-publicada a cada re-render/`ajustar`), lida de `04-newsletter-url.json`/`05-social-preview.json` — aditivo ao preview local, pra revisão fora do terminal, nunca bloqueia; vazio/ausente → omitir a linha.
 - `{whatsapp_url}` (#4570) = saída de `buildWhatsappEditionUrl` (§4c.1b), lida de `stage4-capture-state.json` (#5414, ver acima) — a URL que já está baked-in no bloco WhatsApp dentro do D1 (#5152). Puramente informativa aqui (nunca bloqueia o gate) — o guard que de fato BLOQUEIA quando essa previsão não bate com o slug real do post roda no Stage 6 (`scripts/check-whatsapp-slug-guard.ts`, ver `orchestrator-stage-6.md` §6d), porque o post só existe na Beehiiv a partir do Stage 5.
 - `{meta_description_suggestion}` (#5101 item 2) = saída de `buildMetaDescriptionSuggestion` (§4c.1c), lida de `stage4-capture-state.json` (#5414, ver acima) — sugestão pura, sem LLM, derivada do 1º parágrafo do corpo do D1 (`null` quando não há prosa aproveitável, normalizado pra string vazia na captura de §4c.1c). Puramente informativa (nunca bloqueia o gate); string vazia → mostrar `⚠️ sugestão indisponível`.
 
@@ -615,7 +616,7 @@ NEWS_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDIT
 SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
 [ -n "$SOCIAL_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$SOCIAL_PID"
 ```
-Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso. Mesma regra vale pro fechamento de aba acima (passos 1-3).
+Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso. Mesma regra vale pro fechamento de aba acima (passos 1-3). **Artifacts (#6003) não fazem parte deste teardown** — diferente do preview local, existem justamente pra sobreviver ao fim da sessão/processo.
 
 **"editar":** rodar o teardown acima, depois `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita localmente (ou via Studio) e re-roda quando pronto (um novo preview local é servido do zero na próxima passada por §4b). Adequado para revisões longas ou fora do terminal.
 
@@ -648,7 +649,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar o texto social do D{N} (`social-writer`, #3991 — texto único LinkedIn/Facebook/Instagram, para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
-   - **Em ambos os casos, re-servir o HTML localmente** (§4b step 2b / §4c.6b — stop-old → `embed-images-base64.ts` → `serve-preview.ts`, captura URL nova e atualiza `04-newsletter-url.json`) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
+   - **Em ambos os casos, re-servir o HTML localmente** (§4b step 2b / §4c.6b — stop-old → `embed-images-base64.ts` → `serve-preview.ts`, captura URL nova e atualiza `04-newsletter-url.json` **e o Artifact `{newsletter_artifact_url}`, #6003**) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
 
 4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
@@ -734,7 +735,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
-   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
+   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c, **incluindo o re-publish do Artifact `{social_artifact_url}`, #6003**) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar (mesmos passos de §4c.6d: dispatch do agente `social-critic` + `--input-json`, sobrescrevendo `_internal/social-critic.json`) — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
 
