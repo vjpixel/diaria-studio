@@ -1,0 +1,9 @@
+[Unit]
+Description=diar.ia.br: timer do node-modules health-check (15min, #6030)
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
