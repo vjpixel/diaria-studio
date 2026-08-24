@@ -529,7 +529,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
       --edition {AAMMDD} --step 2 \
       --outputs "02-reviewed.md,03-social.md"
     ```
-    Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
+    **#6009: `write` agora recusa gravar (exit 1) se `check-invariants --stage 2` reportar violação de severity=error** (ex: `humanizer-ran` — humanizador pulado) — gate mecânico, não depende mais só do passo em prosa do §2d acima. Nesse caso **não é falha de infra** — significa que o conteúdo ainda não está pronto: leia as violações listadas no stderr, corrija (ex: re-rode o humanizador na seção indicada) e rode `write` de novo. **Não silenciar com warn** e seguir pra Etapa 3 nesse caso. Só logar warn e continuar quando a falha for genuinamente de infra (permissão, disco cheio — mensagem sem menção a `check-invariants`): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`.
 
   - **Snapshot pós-Stage 2 para derivação de pedidos editoriais (#5731).** Após o gate unificado, criar snapshots dos arquivos finais para permitir derivação determinística posterior de mudanças editoriais:
     ```bash
