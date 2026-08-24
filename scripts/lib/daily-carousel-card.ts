@@ -43,6 +43,24 @@ export const CAROUSEL_SLIDE_SLOTS = ["p1", "p2", "p3", "cta"] as const;
 export type CarouselSlideSlot = (typeof CAROUSEL_SLIDE_SLOTS)[number];
 
 /**
+ * Destaques possíveis numa edição diária (2 ou 3, nunca 4 — regra editorial
+ * do #3369). Union fechado pelo mesmo motivo que `CarouselSlideSlot`: chave
+ * de carimbo digitada errada vira erro de compilação em vez de entrada órfã
+ * que nunca mais é lida (review de tipos do #6068).
+ */
+export const DAILY_DESTAQUE_IDS = ["d1", "d2", "d3"] as const;
+export type DailyDestaqueId = (typeof DAILY_DESTAQUE_IDS)[number];
+
+/**
+ * Capa do carrossel — slide 1, gerado por `gen-social-card-4x5.ts`, NUNCA por
+ * este módulo. Existe aqui pra quem cruza os 5 slides (invariantes de Stage 4)
+ * não remontar o nome à mão.
+ */
+export function carouselCoverFilename(destaque: string): string {
+  return `04-${destaque}-4x5.jpg`;
+}
+
+/**
  * Pure: divide o corpo de um texto (sem hashtags — já passado por
  * `splitBodyAndTags`) em exatamente `target` parágrafos-card.
  *
@@ -165,9 +183,7 @@ export function carouselSourceHashPath(editionDir: string): string {
   return resolve(editionDir, "_internal", ".carousel-source-hash.json");
 }
 
-export interface CarouselSourceHashes {
-  [destaque: string]: string;
-}
+export type CarouselSourceHashes = Partial<Record<DailyDestaqueId, string>>;
 
 /**
  * Lê o carimbo. Ausente/ilegível → `{}` — quem chama distingue "sem entrada
@@ -176,11 +192,19 @@ export interface CarouselSourceHashes {
  */
 export function readCarouselSourceHashes(editionDir: string): CarouselSourceHashes {
   const path = carouselSourceHashPath(editionDir);
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return {}; // nunca gerado — normal, não loga
   try {
     const data = JSON.parse(readFileSync(path, "utf8")) as { hashes?: CarouselSourceHashes };
     return data.hashes && typeof data.hashes === "object" ? data.hashes : {};
-  } catch {
+  } catch (err) {
+    // Arquivo EXISTE mas não leu/parseou: escrita interrompida, conflito de
+    // sync do OneDrive, permissão. O fallback é seguro (regenera tudo), mas
+    // engolir sem log esconderia uma corrupção recorrente — mesmo padrão de
+    // `refreshSocialSourceHash` (reorder-destaques.ts). #6068.
+    console.warn(
+      `daily-carousel-card: warn — ${path} existe mas não parseou ` +
+        `(${(err as Error).message}); tratando como carimbo ausente (regenera os slides).`,
+    );
     return {};
   }
 }

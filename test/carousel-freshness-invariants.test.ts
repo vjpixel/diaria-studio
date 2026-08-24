@@ -32,7 +32,9 @@ import {
 import {
   checkCarouselCardsStale,
   checkCarouselUploadIncomplete,
+  checkCarouselUploadStale,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
 
@@ -78,6 +80,28 @@ function writeImages(dir: string, keys: string[]): void {
   const images = Object.fromEntries(keys.map((k) => [k, { url: "https://kv.example/" + k + ".jpg" }]));
   writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images }));
 }
+
+/** Entries com md5 — o que `upload-images-public.ts` de fato grava (#1418). */
+function writeImagesComMd5(dir: string, entries: Array<{ key: string; file?: string; md5?: string }>): void {
+  const images = Object.fromEntries(
+    entries.map((e) => [
+      e.key,
+      {
+        url: "https://kv.example/" + e.key + ".jpg",
+        ...(e.md5 !== undefined ? { md5: e.md5 } : e.file ? { md5: md5OfFile(join(dir, e.file)) } : {}),
+      },
+    ]),
+  );
+  writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images }));
+}
+
+const PARES_D1 = [
+  { key: "d1_4x5", file: "04-d1-4x5.jpg" },
+  { key: "d1_carousel_p1", file: carouselSlideFilename("d1", "p1") },
+  { key: "d1_carousel_p2", file: carouselSlideFilename("d1", "p2") },
+  { key: "d1_carousel_p3", file: carouselSlideFilename("d1", "p3") },
+  { key: "d1_carousel_cta", file: carouselSlideFilename("d1", "cta") },
+];
 
 describe("registry (#6064)", () => {
   it("carousel-cards-stale e carousel-upload-incomplete estão registradas no stage 4", () => {
@@ -325,6 +349,238 @@ describe("genCarouselCards — skip por conteúdo (#6064 item 1)", () => {
       assert.equal(result.generated.length, 12, "3 destaques x 4 slides continuam reportados");
       // conteúdo placeholder intacto = renderFlatCard nunca rodou
       assert.equal(readFileSync(join(dir, carouselSlideFilename("d1", "p1")), "utf8"), "jpg");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("checkCarouselUploadStale (#6068 — arte já subida ficou pra trás)", () => {
+  it("ERROR quando o md5 local diverge do gravado na entry (regenerou e esqueceu o upload)", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImagesComMd5(dir, PARES_D1);
+
+      // editor roda gen-carousel-cards.ts (bytes novos) e NÃO roda o upload
+      writeFileSync(join(dir, carouselSlideFilename("d1", "p2")), Buffer.from("arte-regerada"));
+
+      const violations = checkCarouselUploadStale(dir);
+      assert.equal(violations.length, 1, JSON.stringify(violations));
+      assert.equal(violations[0].rule, "carousel-upload-stale");
+      assert.equal(violations[0].severity, "error");
+      assert.match(violations[0].message, /d1_carousel_p2/);
+      assert.match(violations[0].message, /upload-images-public/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("limpo quando todos os md5 batem", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImagesComMd5(dir, PARES_D1);
+      assert.deepEqual(checkCarouselUploadStale(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("entry sem md5 (pré-#1418) vira WARNING — não dá pra verificar, não dá pra afirmar", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImagesComMd5(dir, PARES_D1.map((e) => ({ key: e.key })));
+      const violations = checkCarouselUploadStale(dir);
+      assert.equal(violations.length, 1);
+      assert.equal(violations[0].severity, "warning");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("chave AUSENTE é assunto do carousel-upload-incomplete, não deste check", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), Buffer.from("capa"));
+      writeImagesComMd5(dir, PARES_D1.filter((e) => e.key !== "d1_carousel_cta"));
+      assert.deepEqual(checkCarouselUploadStale(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem 06-public-images.json não acusa nada (upload nunca rodou)", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1");
+      assert.deepEqual(checkCarouselUploadStale(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#6068 — bordas dos dois checks de upload", () => {
+  it("capa AUSENTE no disco: a remediação aponta pro gen-social-card-4x5, não pro upload", () => {
+    const dir = makeEdition();
+    try {
+      writeSlides(dir, "d1"); // só os 4 slides sem foto; capa nunca gerada
+      writeImages(dir, KEYS_D1_COMPLETO.filter((k) => k !== "d1_4x5"));
+      const violations = checkCarouselUploadIncomplete(dir);
+      assert.equal(violations.length, 1);
+      assert.match(violations[0].message, /gen-social-card-4x5/);
+      assert.ok(
+        !/os 5 slides/.test(violations[0].message),
+        "a mensagem não pode afirmar que 5 arquivos existem no disco checando só 4",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição de 2 destaques: d3 nunca é cobrado por nenhum dos checks", () => {
+    const dir = makeEdition(2);
+    try {
+      writeSocial(dir, TEXTO_D1);
+      writeSlides(dir, "d1");
+      writeSlides(dir, "d2");
+      writeCarouselSourceHashes(dir, {
+        d1: hashCarouselSlideTexts(TEXTO_D1),
+        d2: hashCarouselSlideTexts("Texto d2."),
+      });
+      assert.deepEqual(checkCarouselCardsStale(dir), [], "d3 não existe nesta edição");
+
+      // sem 06-public-images.json o upload-incomplete acusa d1 e d2 (correto),
+      // mas NUNCA d3 — que é o ponto do teste.
+      const upload = checkCarouselUploadIncomplete(dir);
+      assert.equal(upload.length, 2, JSON.stringify(upload));
+      assert.ok(
+        upload.every((v) => !/d3/.test(v.message)),
+        "nenhuma violação pode citar d3 numa edição de 2 destaques",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("03-social.md sem a seção '# Social' com slides no disco vira WARNING, não silêncio", () => {
+    const dir = makeEdition();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "## d1\n\nsem cabecalho de secao\n", "utf8");
+      writeSlides(dir, "d1");
+      const violations = checkCarouselCardsStale(dir);
+      assert.equal(violations.length, 1, JSON.stringify(violations));
+      assert.equal(violations[0].severity, "warning");
+      assert.match(violations[0].message, /# Social/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem seção '# Social' E sem slides no disco continua calado (nada a proteger)", () => {
+    const dir = makeEdition();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "texto solto\n", "utf8");
+      assert.deepEqual(checkCarouselCardsStale(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("genCarouselCards — caminho de REGENERAÇÃO (#6068, seam de render)", () => {
+  function stubRender() {
+    const chamadas: string[] = [];
+    const render = async (
+      texto: string,
+      outPaths: Record<string, string>,
+    ): Promise<Record<string, string>> => {
+      chamadas.push(texto);
+      for (const path of Object.values(outPaths)) writeFileSync(path, Buffer.from("render:" + texto.slice(0, 12)));
+      return outPaths as Record<never, string>;
+    };
+    return { chamadas, render: render as never };
+  }
+
+  it("texto editado depois do carimbo REGERA aquele destaque e o reporta em refreshed", async () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+      writeSlides(dir, "d1");
+      writeSlides(dir, "d2");
+      writeSlides(dir, "d3");
+      writeCarouselSourceHashes(dir, {
+        d1: hashCarouselSlideTexts(TEXTO_D1),
+        d2: hashCarouselSlideTexts("Texto d2."),
+        d3: hashCarouselSlideTexts("Texto d3."),
+      });
+
+      const textoNovo = TEXTO_D1.replace("o fecho", "OUTRO fecho");
+      writeSocial(dir, textoNovo);
+
+      const { chamadas, render } = stubRender();
+      const result = await genCarouselCards(dir, { render });
+
+      assert.deepEqual(result.refreshed, ["d1"], "só d1 mudou");
+      assert.equal(chamadas.length, 1, "d2/d3 não podem ser re-renderizados à toa");
+      assert.match(chamadas[0], /OUTRO fecho/);
+      // carimbo atualizado → o invariante de Stage 4 fica limpo
+      assert.equal(readCarouselSourceHashes(dir).d1, hashCarouselSlideTexts(textoNovo));
+      assert.deepEqual(checkCarouselCardsStale(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--force re-renderiza mesmo com carimbo batendo, e NÃO conta como refreshed", async () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+      writeSlides(dir, "d1");
+      writeCarouselSourceHashes(dir, {
+        d1: hashCarouselSlideTexts(TEXTO_D1),
+        d2: hashCarouselSlideTexts("Texto d2."),
+        d3: hashCarouselSlideTexts("Texto d3."),
+      });
+
+      const { chamadas, render } = stubRender();
+      const result = await genCarouselCards(dir, { force: true, render });
+
+      assert.equal(chamadas.length, 3, "--force re-renderiza os 3 destaques");
+      assert.deepEqual(result.refreshed, [], "force não é 'texto mudou' — sinais distintos");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falha de render no MEIO do lote preserva o carimbo dos destaques já concluídos", async () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+
+      let n = 0;
+      const render = (async (texto: string, outPaths: Record<string, string>) => {
+        n += 1;
+        if (n === 2) throw new Error("sharp explodiu no d2");
+        for (const path of Object.values(outPaths)) writeFileSync(path, Buffer.from("ok"));
+        return outPaths;
+      }) as never;
+
+      await assert.rejects(() => genCarouselCards(dir, { render }), /sharp explodiu/);
+
+      const hashes = readCarouselSourceHashes(dir);
+      assert.equal(
+        hashes.d1,
+        hashCarouselSlideTexts(TEXTO_D1),
+        "d1 renderizou certo antes do erro — perder o carimbo dele daria ERROR falso de carousel-cards-stale",
+      );
+      assert.equal(hashes.d2, undefined, "d2 falhou: não pode ficar carimbado");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

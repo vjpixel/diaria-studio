@@ -32,6 +32,7 @@ import {
   deriveTituloSubtitulo,
   parseArgs,
   refreshSocialSourceHash,
+  reindexCarouselSourceHashes,
   type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
 import { hashFromApprovedFile } from "../scripts/lib/social-source-hash.ts";
@@ -1614,6 +1615,147 @@ describe("refreshSocialSourceHash (#6062, unidade)", () => {
       writeFileSync(join(dir, "_internal", "01-approved.json"), "{ nao json", "utf8");
       assert.equal(refreshSocialSourceHash(dir, false), null);
       assert.equal(existsSync(join(dir, "_internal", ".social-source-hash.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #6068: carimbo do carrossel acompanha o reorder ─────────────────────
+//
+// `renameDestaqueImages` já renomeia `04-d{N}-carousel-{slot}-4x5.jpg` (o
+// regex de sufixo com hífen do #5085 pega esses nomes sem código dedicado),
+// mas o carimbo `_internal/.carousel-source-hash.json` indexa por destaque —
+// sem reindexar, um swap deixa a entrada `d1` com o hash do texto do ex-D1
+// enquanto o arquivo `d1` já é a arte do ex-D2, e `carousel-cards-stale`
+// acusa ERROR falso nos dois destaques trocados.
+
+function writeCarouselStamp(dir: string, hashes: Record<string, string>): string {
+  const path = join(dir, "_internal", ".carousel-source-hash.json");
+  writeFileSync(path, JSON.stringify({ hashes, generated_at: "2026-08-24T00:00:00.000Z" }, null, 2), "utf8");
+  return path;
+}
+
+function readCarouselStamp(dir: string): Record<string, string> {
+  const raw = readFileSync(join(dir, "_internal", ".carousel-source-hash.json"), "utf8");
+  return (JSON.parse(raw) as { hashes: Record<string, string> }).hashes;
+}
+
+describe("reorder-destaques CLI (#6068): .carousel-source-hash.json", () => {
+  it("swap D1↔D2 reindexa as entradas do carimbo junto com o rename dos slides", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+
+      const hashes = readCarouselStamp(dir);
+      assert.equal(hashes.d1, "hashD2", "a posição 1 agora tem a arte/texto do ex-D2");
+      assert.equal(hashes.d2, "hashD1");
+      assert.equal(hashes.d3, "hashD3", "d3 não se moveu");
+
+      const report = JSON.parse(result.stdout) as { modified: { rewritten: string[] } };
+      assert.ok(
+        report.modified.rewritten.some((f) => f.endsWith(".carousel-source-hash.json")),
+        `carimbo deveria constar em modified.rewritten: ${result.stdout}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não reescreve o carimbo", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+        "--dry-run",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.deepEqual(readCarouselStamp(dir), { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição sem carrossel (carimbo ausente) é no-op — não cria o arquivo", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.equal(existsSync(join(dir, "_internal", ".carousel-source-hash.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reindexCarouselSourceHashes (#6068, unidade)", () => {
+  it("carimbo ausente → null (nada a reindexar)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      assert.equal(reindexCarouselSourceHashes(dir, [2, 1, 3], false), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("entrada faltando na posição de origem não deixa hash velho na posição nova", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-parcial-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeCarouselStamp(dir, { d1: "hashD1", d3: "hashD3" }); // d2 nunca carimbado
+      const out = reindexCarouselSourceHashes(dir, [2, 1, 3], false);
+      assert.ok(out);
+      assert.equal(out!.hashes.d1, undefined, "origem (d2) não tinha hash — d1 não pode herdar o antigo");
+      assert.equal(out!.hashes.d2, "hashD1");
+      assert.equal(out!.hashes.d3, "hashD3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("refreshSocialSourceHash — gate do 03-social.md (#6062/#6068)", () => {
+  it("social SEM seções `## d{N}` não recarimba: o arquivo continua na ordem velha", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://a" }, { url: "https://b" }, { url: "https://c" }] }),
+        "utf8",
+      );
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+      writeFileSync(hashPath, JSON.stringify({ hash: "carimboVelho", generated_at: "2026-08-24T00:00:00.000Z" }), "utf8");
+      // existe, mas sem nenhum `## d{N}` — reorderSocialMd devolve igual
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\ntexto sem secoes de destaque\n", "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+
+      const gravado = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
+      assert.equal(
+        gravado.hash,
+        "carimboVelho",
+        "recarimbar aqui diria 'fresco' pra um social que continua na ordem antiga — o falso NEGATIVO que o gate evita",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -14,10 +14,12 @@ import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; //
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
+  carouselCoverFilename,
   carouselImageKeys,
   hashCarouselSlideTexts,
   readCarouselSourceHashes,
 } from "../daily-carousel-card.ts"; // #6064
+import { md5OfFile } from "../shared/file-md5.ts"; // #6068
 
 import { lintIntroCount } from "../newsletter-count.ts";
 import {
@@ -70,6 +72,8 @@ interface PublicImageEntry {
   url?: string;
   file_id?: string;
   filename?: string;
+  /** #1418: md5 dos bytes locais no momento do upload. Ausente em entries pré-#1418. */
+  md5?: string;
 }
 
 interface PublicImagesJson {
@@ -1347,10 +1351,14 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
  * check, a legenda sai com o texto novo e a arte com o texto velho, sem
  * nenhum sinal: o post é publicado assim.
  *
- * Severity "error", diferente do `card-4x5-upload-missing` (warning) logo
- * acima: aqui não é formato degradado, é CONTEÚDO divergente do que o editor
- * aprovou — mesma classe do `social-hash-fresh` (#1413), que também bloqueia.
- * O conserto é mecânico e está na mensagem (regerar + re-subir).
+ * Severity "error" NO CASO DE DIVERGÊNCIA, diferente do
+ * `card-4x5-upload-missing` (warning) logo acima: aqui não é formato
+ * degradado, é CONTEÚDO divergente do que o editor aprovou — mesma classe do
+ * `social-hash-fresh` (#1413), que também bloqueia. O conserto é mecânico e
+ * está na mensagem (regerar + re-subir). A mesma regra também emite
+ * "warning" no caso sem carimbo (logo abaixo), então NÃO é uma regra que
+ * bloqueia sempre — `check-invariants.ts` agrega por severidade da violação,
+ * não por id de regra.
  *
  * Sem entrada no carimbo (edição anterior ao #6064, ou carimbo apagado) não
  * dá pra afirmar divergência — vira warning, nunca erro: bloquear o gate por
@@ -1362,17 +1370,35 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
 
   const destaqueCount = readDestaqueCount(editionDir);
   const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+  const slidesOnDiskDe = (d: string): boolean =>
+    CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(resolve(editionDir, carouselSlideFilename(d, slot))));
+
   const section = extractSection(readFileSync(socialPath, "utf8"), "Social");
-  if (!section) return [];
+  if (!section) {
+    // #6068: sem `# Social` não há texto pra comparar — mas sair calado com
+    // slides no disco esconderia exatamente o caso "03-social.md perdeu a
+    // estrutura e a arte pode estar velha". Avisa uma vez, não por destaque.
+    return slots.some(slidesOnDiskDe)
+      ? [
+          {
+            rule: "carousel-cards-stale",
+            message:
+              `03-social.md não tem a seção '# Social' — os slides do carrossel existem no disco mas ` +
+              `não há texto pra cruzar com o carimbo. Conferir a estrutura do arquivo antes de publicar; ` +
+              `se ele foi editado à mão, re-rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}".`,
+            source_issue: "#6068",
+            severity: "warning",
+            file: socialPath,
+          },
+        ]
+      : [];
+  }
 
   const stored = readCarouselSourceHashes(editionDir);
   const violations: InvariantViolation[] = [];
 
   for (const d of slots) {
-    const slidesOnDisk = CAROUSEL_SLIDE_SLOTS.every((slot) =>
-      existsSync(resolve(editionDir, carouselSlideFilename(d, slot))),
-    );
-    if (!slidesOnDisk) continue; // destaque sem carrossel — publica single-image, nada a cruzar
+    if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
 
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
@@ -1452,17 +1478,115 @@ function checkCarouselUploadIncomplete(editionDir: string): InvariantViolation[]
     });
     if (faltando.length === 0) continue;
 
+    // A CAPA não é gerada por `gen-carousel-cards.ts` e não entra em
+    // `slidesOnDisk` — se ela nem existe localmente, mandar re-rodar o upload
+    // não conserta nada (achado do review do #6068: a mensagem afirmava "os 5
+    // slides existem no disco" checando só 4, e apontava pro script errado).
+    const coverPath = resolve(editionDir, carouselCoverFilename(d));
+    const coverOnDisk = existsSync(coverPath);
+    const fix = coverOnDisk
+      ? `re-rodar "npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes de publicar`
+      : `${carouselCoverFilename(d)} (a capa, slide 1) não existe no disco — gerar com ` +
+        `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" ANTES de re-rodar o upload`;
+
     violations.push({
       rule: "carousel-upload-incomplete",
       message:
-        `os 5 slides do carrossel de ${d} existem no disco mas 06-public-images.json não tem ` +
-        `${faltando.join(", ")} — publish-instagram.ts vai cair pro post single-image EM SILÊNCIO ` +
-        `(carga tudo-ou-nada, resolveCarouselImageUrls). Fix: re-rodar ` +
-        `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes de publicar.`,
+        `os 4 slides sem foto do carrossel de ${d} existem no disco mas 06-public-images.json ` +
+        `não tem ${faltando.join(", ")} — publish-instagram.ts vai cair pro post single-image ` +
+        `EM SILÊNCIO (carga tudo-ou-nada, resolveCarouselImageUrls). Fix: ${fix}.`,
       source_issue: "#6064",
       severity: "warning",
       file: imagesPath,
     });
+  }
+  return violations;
+}
+
+/**
+ * (#6068, achado do review do #6064) `carousel-cards-stale` cobre a arte LOCAL
+ * e `carousel-upload-incomplete` cobre a PRESENÇA da entry — nenhum dos dois
+ * pega a arte JÁ SUBIDA estar velha.
+ *
+ * Sequência real: editor edita `03-social.md` no Stage 4 → `carousel-cards-stale`
+ * acusa → editor roda SÓ o `gen-carousel-cards.ts` da mensagem e esquece o
+ * `upload-images-public.ts`. Agora o carimbo local bate (stale limpo) e as 5
+ * chaves seguem presentes (incomplete limpo) — mas apontam pras URLs
+ * md5-versionadas do render ANTERIOR. Os dois gates passam verdes e o
+ * Instagram recebe a legenda nova com a arte velha, que é exatamente o defeito
+ * que o #6064 existe pra fechar.
+ *
+ * Cruza o `md5` que `upload-images-public.ts` grava por entry (#1418) contra o
+ * md5 dos bytes locais AGORA — mesma função (`md5OfFile`) que o próprio
+ * uploader usa pra decidir re-upload, então os dois lados nunca divergem de
+ * critério. Entry sem `md5` (pré-#1418) vira warning: não dá pra verificar.
+ */
+function checkCarouselUploadStale(editionDir: string): InvariantViolation[] {
+  const imagesPath = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(imagesPath)) return []; // upload nunca rodou — é o `incomplete` que fala
+
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+
+  let images: PublicImagesJson["images"] = {};
+  try {
+    images = (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesJson).images ?? {};
+  } catch {
+    return []; // JSON inválido já é coberto por public-images-parseable
+  }
+
+  const violations: InvariantViolation[] = [];
+  for (const d of slots) {
+    const slidesOnDisk = CAROUSEL_SLIDE_SLOTS.every((slot) =>
+      existsSync(resolve(editionDir, carouselSlideFilename(d, slot))),
+    );
+    if (!slidesOnDisk) continue;
+
+    const { cover, slides } = carouselImageKeys(d);
+    const paresChave: Array<{ key: string; file: string }> = [
+      { key: cover, file: carouselCoverFilename(d) },
+      ...CAROUSEL_SLIDE_SLOTS.map((slot) => ({ key: slides[slot], file: carouselSlideFilename(d, slot) })),
+    ];
+
+    const desatualizados: string[] = [];
+    const semMd5: string[] = [];
+    for (const { key, file } of paresChave) {
+      const entry = images?.[key];
+      if (!entry?.url) continue; // ausência é assunto do `carousel-upload-incomplete`
+      const localPath = resolve(editionDir, file);
+      if (!existsSync(localPath)) continue; // capa ausente: idem
+      if (!entry.md5) {
+        semMd5.push(key);
+        continue;
+      }
+      if (entry.md5 !== md5OfFile(localPath)) desatualizados.push(key);
+    }
+
+    if (desatualizados.length > 0) {
+      violations.push({
+        rule: "carousel-upload-stale",
+        message:
+          `a arte local de ${d} mudou depois do último upload — ${desatualizados.join(", ")} em ` +
+          `06-public-images.json ainda aponta pra versão ANTERIOR (md5 diferente do arquivo em disco). ` +
+          `O carrossel publicado sairia com a arte velha mesmo com os slides certos no disco. Fix: ` +
+          `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" (re-sobe só o que mudou).`,
+        source_issue: "#6068",
+        severity: "error",
+        file: imagesPath,
+      });
+    }
+    if (semMd5.length > 0) {
+      violations.push({
+        rule: "carousel-upload-stale",
+        message:
+          `${semMd5.join(", ")} não tem campo md5 em 06-public-images.json (entry anterior ao #1418) — ` +
+          `não dá pra verificar se o KV tem a arte ATUAL de ${d}. Se os slides foram regerados nesta ` +
+          `edição, re-rodar "npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}".`,
+        source_issue: "#6068",
+        severity: "warning",
+        file: imagesPath,
+      });
+    }
   }
   return violations;
 }
@@ -1776,6 +1900,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCarouselUploadIncomplete,
   },
   {
+    id: "carousel-upload-stale",
+    description: "arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068)",
+    source_issue: "#6068",
+    stage: 4,
+    run: checkCarouselUploadStale,
+  },
+  {
     id: "box-divulgacao-runtime-excluded",
     description: "slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504)",
     source_issue: "#4504",
@@ -1826,6 +1957,7 @@ export {
   checkCard4x5UploadMismatch,
   checkCarouselCardsStale,
   checkCarouselUploadIncomplete,
+  checkCarouselUploadStale,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
 };

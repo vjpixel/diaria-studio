@@ -55,7 +55,19 @@ export interface GenCarouselCardsResult {
   refreshed: string[];
 }
 
-export async function genCarouselCards(editionDir: string, opts: { force?: boolean } = {}): Promise<GenCarouselCardsResult> {
+/**
+ * Seam de render (#6068, review de cobertura): `renderCarouselSlides` chama
+ * `sharp` + fonte de marca, então o caminho de REGERAÇÃO — o que esta issue
+ * existe pra consertar — não era testável sem depender do ambiente gráfico.
+ * Injetável exatamente como `RenameFileDeps` em `reorder-destaques.ts`.
+ */
+export type RenderCarouselSlidesFn = typeof renderCarouselSlides;
+
+export async function genCarouselCards(
+  editionDir: string,
+  opts: { force?: boolean; render?: RenderCarouselSlidesFn } = {},
+): Promise<GenCarouselCardsResult> {
+  const render = opts.render ?? renderCarouselSlides;
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     throw new Error(`03-social.md ausente em ${editionDir} — rode a Etapa 2 primeiro`);
@@ -63,7 +75,7 @@ export async function genCarouselCards(editionDir: string, opts: { force?: boole
   const socialMd = readFileSync(socialMdPath, "utf8");
   const section = extractSection(socialMd, "Social");
   const destaqueCount = readDestaqueCount(editionDir);
-  const destaques = destaqueCount === 3 ? ["d1", "d2", "d3"] : ["d1", "d2"];
+  const destaques = destaqueCount === 3 ? (["d1", "d2", "d3"] as const) : (["d1", "d2"] as const);
 
   const generated: string[] = [];
   const skipped: { destaque: string; reason: string }[] = [];
@@ -94,10 +106,20 @@ export async function genCarouselCards(editionDir: string, opts: { force?: boole
     }
     if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
 
-    const rendered = await renderCarouselSlides(dText.trim(), outPaths);
+    const rendered = await render(dText.trim(), outPaths);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));
+    // #6068: carimbo gravado LOGO APÓS cada render bem-sucedido, não num
+    // único write no fim. `renderCarouselSlides` escreve os 4 slots em
+    // sequência e falha de render é bloqueante — com o write no fim, um throw
+    // no destaque 2 descartava também o carimbo do destaque 1 que já tinha
+    // renderizado certo, deixando um ERROR falso de `carousel-cards-stale`
+    // até alguém re-rodar. O merge de `writeCarouselSourceHashes` torna a
+    // escrita incremental barata e idempotente.
+    writeCarouselSourceHashes(editionDir, { [d]: hash });
   }
 
+  // Destaques PULADOS (carimbo já batia) também precisam constar — cobre a
+  // edição pré-#6064 cujo carimbo nasce agora, sem re-render.
   if (Object.keys(hashes).length > 0) writeCarouselSourceHashes(editionDir, hashes);
 
   return { generated, skipped, refreshed };
