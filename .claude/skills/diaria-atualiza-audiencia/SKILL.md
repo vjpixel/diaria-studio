@@ -56,3 +56,29 @@ O script:
 - Fail-soft é do script, não da skill: uma resposta malformada individual nunca trava a rodada inteira — é logada e pulada, o resto segue normal.
 - Respostas inativas/bounce continuam filtradas dentro de `update-audience.ts` (`status !== "active"`), não no script novo.
 - Este fluxo é manual/ad-hoc — não está (e não deve entrar, #5192) na registry de tasks agendadas (`scripts/lib/scheduled-tasks.ts`).
+
+## Fonte alternativa: Tally (#466, migração Beehiiv → Kit)
+
+Kit não tem builder de survey nativo — a fonte de coleta migrou pra um form
+Tally (`platform.config.json` → `kit.tallyFormId`), recriando as mesmas 4
+perguntas do survey Beehiiv (mesmos prompts que os regexes de
+`update-audience.ts::countAnswers` já casam). **Mais simples que o fluxo
+Beehiiv acima: `scripts/fetch-tally-audience.ts` é 100% REST, sem NENHUMA
+chamada MCP** — a API do Tally expõe `GET /forms/{id}/submissions`
+diretamente (a survey da Beehiiv só sai por MCP, ver achado da Fase 2
+acima):
+
+```bash
+npx tsx scripts/fetch-tally-audience.ts               # fluxo completo
+npx tsx scripts/fetch-tally-audience.ts --dry-run     # só busca e mostra a contagem
+```
+
+Internamente pagina `GET /forms/{id}/submissions` até esgotar
+(`scripts/lib/shared/tally-audience.ts`), transforma pro MESMO shape de
+`BeehiivSurveyResponse`, e delega a validação/escrita/regeneração pro
+`runAudience` já existente (`scripts/audience-run.ts`) — zero duplicação,
+zero mudança em `update-audience.ts`. Requer `TALLY_API_KEY` (.env).
+
+Esta é a fonte usada quando `platform.config.json` → `publishing.newsletter.backend`
+(ou o eixo equivalente da migração) apontar pro Kit — até lá, o fluxo
+Beehiiv acima continua sendo o principal.
