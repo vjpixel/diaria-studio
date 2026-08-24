@@ -188,7 +188,7 @@
     }
   },
   "onboarding": {
-    "enabled": true,
+    "enabled": false,
     "api_key_env": "BREVO_DIARIA_API_KEY",
     "sender_email": "oi@diar.ia.br",
     "sender_name": "diar.ia.br",
@@ -198,6 +198,6 @@
     "email3_days": 10,
     "email3_grace_days": 10,
     "d10_list_name": "Onboarding D10 sem abertura",
-    "note": "#5908 — onboarding fora da automação Beehiiv (publicar automação exige plano Scale, #5808; upgrade recusado). Mecanismo 1 da decisão do editor 22/08/2026: Brevo transacional + script diário scripts/onboarding-welcome-run.ts (detecção via created_at__gte na API pública v2). Email 1 transacional imediato (só status active), email 2 transacional D+3, email 3 em D+10 CONDICIONAL a zero aberturas+cliques → campanha Brevo SEMPRE rascunho mirando a lista d10_list_name (agendar/enviar é ação humana). Sender oi@diar.ia.br confirmado ATIVO na conta brevo_diaria ao vivo em 22/08/2026 (GET /v3/senders, id 2). GUARD DURO: data/snippets/onboarding-{1,2,3}.md com o marcador ONBOARDING-CORPO-PENDENTE bloqueiam envio até o corpo definitivo ser exportado da automação 'Onboarding — Boas-vindas' (aut_48bcae89-..., draft na Beehiiv). Bootstrap: 1ª execução com --send só marca o cursor — base existente NÃO recebe onboarding retroativo."
+    "note": "#5908 — onboarding fora da automação Beehiiv (publicar automação exige plano Scale, #5808; upgrade recusado). Mecanismo 1 da decisão do editor 22/08/2026: Brevo transacional + script diário scripts/onboarding-welcome-run.ts (detecção via created_at__gte na API pública v2). Email 1 transacional imediato (só status active), email 2 transacional D+3, email 3 em D+10 CONDICIONAL a zero aberturas+cliques → campanha Brevo SEMPRE rascunho mirando a lista d10_list_name (agendar/enviar é ação humana). Sender oi@diar.ia.br confirmado ATIVO na conta brevo_diaria ao vivo em 22/08/2026 (GET /v3/senders, id 2). GUARD DURO: data/snippets/onboarding-{1,2,3}.md com o marcador ONBOARDING-CORPO-PENDENTE bloqueiam envio até o corpo definitivo ser exportado da automação 'Onboarding — Boas-vindas' (aut_48bcae89-..., draft na Beehiiv). Bootstrap: 1ª execução com --send só marca o cursor — base existente NÃO recebe onboarding retroativo. **ENABLED=FALSE DESDE 260824, INCIDENTE #ver-issue: run de 24/08 12:05 UTC detectou 1484 'novos' e mandou email1 real pra 585 assinantes com created_at de até 1 ANO atrás (inclusive vjpixel@gmail.com, assinante desde 2025-09-02) — created_at__gte da Beehiiv API não filtrou como esperado. Kill switch ligado até o bug ser diagnosticado/corrigido e o store.json (1484 entries, muitas com email1_sent_at preenchido indevidamente) ser reconciliado. NÃO reativar sem entender a causa raiz.**"
   }
 }
