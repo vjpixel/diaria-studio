@@ -121,7 +121,10 @@ export async function handleApiBoxCreate(
 /** `POST /api/boxes/:slug/archive` — arquiva uma caixa (#3928). */
 export function handleApiBoxArchive(rootDir: string, slug: string, res: ServerResponse): void {
   const result = archiveBox(rootDir, slug);
-  const status = result.ok ? 200 : result.notFound ? 404 : result.blockedBySlot ? 409 : 400;
+  // #5999: blockedByFixo (caixa FIXA, ex: boxes_fixos.convite_amigo) responde
+  // 409 pelo mesmo motivo de blockedBySlot — bloqueio de estado, não erro de
+  // input do client.
+  const status = result.ok ? 200 : result.notFound ? 404 : (result.blockedBySlot || result.blockedByFixo) ? 409 : 400;
   sendJson(res, status, result);
 }
 

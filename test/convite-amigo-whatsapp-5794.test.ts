@@ -44,7 +44,7 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -56,10 +56,12 @@ import {
   renderHTML,
   resetRenderWarnings,
   getRenderWarnings,
+  resolveConviteAmigoFilename,
 } from "../scripts/lib/newsletter-render-html.ts";
 import { CONVITE_AMIGO_UTM, findUtmEmitter } from "../scripts/lib/shared/utm-registry.ts";
 import { BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
 import type { RenderDestaque, NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
+import { archiveBox, saveBoxSlots, boxFilePath } from "../scripts/studio-ui/studio-boxes.ts";
 
 function makeD1(overrides: Partial<RenderDestaque> = {}): RenderDestaque {
   return {
@@ -249,7 +251,13 @@ describe("#5882 — renderConviteAmigo lê o campo declarado titulo: (não mais 
   });
 });
 
-describe("#5794 — posição no corpo da newsletter: após o último destaque, ANTES de 'Para encerrar'", () => {
+// #5999: posição revisada. A posição original (#5794 — "após o último
+// destaque, ANTES de 'Para encerrar'", linha própria sem kicker) fazia o
+// bloco ler visualmente como parte da seção SORTEIO (mesmo fundo bege, sem
+// dono visual próprio — causa raiz investigada na issue #5999). Decisão do
+// editor (23/08/2026): mover pro TOPO da seção "Para encerrar", onde herda o
+// kicker "Para encerrar" — DEPOIS do kicker, ANTES do parágrafo de apoio.
+describe("#5999 — posição no corpo da newsletter: TOPO de 'Para encerrar' (revisa #5794)", () => {
   const content: NewsletterContent = {
     title: "Edição teste",
     subtitle: "Teste",
@@ -258,16 +266,32 @@ describe("#5794 — posição no corpo da newsletter: após o último destaque, 
     eia: { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition: "260801" },
     sections: [],
     sorteio: "**🎁 SORTEIO**\n\nTexto do sorteio.",
+    erroIntencional: "Na última edição, o erro intencional era X.",
     encerrar: "Apoie a curadoria em [apoia.se/diaria](https://apoia.se/diaria).",
   };
 
-  it("bloco 'Convide pelo WhatsApp' aparece no HTML final, ANTES de 'Para encerrar'", () => {
+  it("bloco 'Convide pelo WhatsApp' aparece DEPOIS do kicker 'Para encerrar' e ANTES do parágrafo de apoio", () => {
     const html = renderHTML(content, { rootDir: SNIPPETS_FIXTURE_ROOT });
-    const idxEncerrar = html.indexOf("Para encerrar");
+    const idxKicker = html.indexOf("Para encerrar");
     const idxConvite = html.indexOf("Convide pelo WhatsApp");
-    assert.ok(idxEncerrar !== -1, "'Para encerrar' ausente do render completo");
+    const idxApoio = html.indexOf("Apoie a curadoria");
+    assert.ok(idxKicker !== -1, "kicker 'Para encerrar' ausente do render completo");
     assert.ok(idxConvite !== -1, "bloco 'Convide um amigo' ausente do render completo");
-    assert.ok(idxConvite < idxEncerrar, "bloco 'Convide um amigo' deve vir ANTES de 'Para encerrar' (decisão da issue #5794)");
+    assert.ok(idxApoio !== -1, "parágrafo de apoio ausente do render completo");
+    assert.ok(idxKicker < idxConvite, "bloco 'Convide um amigo' deve vir DEPOIS do kicker 'Para encerrar' (decisão #5999)");
+    assert.ok(idxConvite < idxApoio, "bloco 'Convide um amigo' deve vir ANTES do parágrafo de apoio (decisão #5999)");
+  });
+
+  it("já NÃO fica mais espremido entre SORTEIO e ERRO INTENCIONAL (sintoma original da #5999)", () => {
+    const html = renderHTML(content, { rootDir: SNIPPETS_FIXTURE_ROOT });
+    const idxSorteio = html.indexOf("SORTEIO");
+    const idxErro = html.indexOf("Na última edição, o erro intencional era X.");
+    const idxConvite = html.indexOf("Convide pelo WhatsApp");
+    assert.ok(idxSorteio !== -1 && idxErro !== -1 && idxConvite !== -1, "seções de fixture ausentes do render");
+    assert.ok(
+      !(idxSorteio < idxConvite && idxConvite < idxErro),
+      "bloco 'Convide um amigo' não deve mais renderizar entre SORTEIO e o reveal do erro intencional",
+    );
   });
 
   it("os dois botões WhatsApp (compartilhar notícia + convidar amigo) coexistem, sem colidir", () => {
@@ -280,6 +304,135 @@ describe("#5794 — posição no corpo da newsletter: após o último destaque, 
     const contentSemDestaques: NewsletterContent = { ...content, destaques: [] };
     const html = renderHTML(contentSemDestaques, { rootDir: SNIPPETS_FIXTURE_ROOT });
     assert.match(html, /Convide pelo WhatsApp/);
+  });
+
+  it("bloco NUA (naked) não carrega o wrapper de linha própria — sem <tr><td> envolvendo a table de fora", () => {
+    const naked = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT, "260801", true);
+    assert.ok(naked.length > 0, "sanity: naked não deve vir vazio com snippet presente");
+    assert.ok(!naked.trimStart().startsWith("<tr>"), "naked não deveria começar com <tr> — é conteúdo INTERNO de outra seção");
+    const standalone = renderConviteAmigo(SNIPPETS_FIXTURE_ROOT, "260801", false);
+    assert.ok(standalone.includes("<tr><td"), "standalone (naked=false, default) deve preservar o wrapper de linha própria — usado no fallback");
+  });
+});
+
+// #5999 (item 2 do Escopo da issue): edição sem bloco "Para encerrar" não tem
+// onde embutir a caixa (ela vive DENTRO da seção agora) — cai no formato
+// STANDALONE antigo (linha própria, posição pré-#5999) + emite
+// `convite_amigo_orphan_no_encerrar`, pra nunca sumir em silêncio.
+describe("#5999 — fallback: edição sem bloco 'Para encerrar'", () => {
+  const contentSemEncerrar: NewsletterContent = {
+    title: "Edição teste",
+    subtitle: "Teste",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [makeD1()],
+    eia: { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition: "260822" },
+    sections: [],
+    sorteio: "**🎁 SORTEIO**\n\nTexto do sorteio.",
+    encerrar: "",
+  };
+
+  it("bloco 'Convide um amigo' ainda renderiza (fallback standalone), mesmo sem 'Para encerrar'", () => {
+    const html = renderHTML(contentSemEncerrar, { rootDir: SNIPPETS_FIXTURE_ROOT });
+    assert.match(html, /Convide pelo WhatsApp/);
+    assert.ok(!html.includes("Para encerrar"), "sanity: esta fixture não declara bloco 'Para encerrar'");
+  });
+
+  it("emite convite_amigo_orphan_no_encerrar (mesma classe de convite_amigo_snippet_missing)", () => {
+    resetRenderWarnings();
+    renderHTML(contentSemEncerrar, { rootDir: SNIPPETS_FIXTURE_ROOT });
+    const warnings = getRenderWarnings();
+    assert.ok(
+      warnings.some((w) => w.event === "convite_amigo_orphan_no_encerrar" && w.edition === "260822"),
+      "evento convite_amigo_orphan_no_encerrar ausente — a mudança de posição estrutural precisa ficar sinalizada, não silenciosa",
+    );
+  });
+});
+
+// #5999 (item 3): filename configurável via platform.config.json ->
+// boxes_fixos.convite_amigo, com fallback fail-soft pro histórico.
+describe("#5999 — resolveConviteAmigoFilename: sai do hardcode (item 3)", () => {
+  it("sem platform.config.json -> cai no filename histórico", () => {
+    const root = mkdtempSync(join(tmpdir(), "convite-amigo-resolve-none-"));
+    try {
+      assert.equal(resolveConviteAmigoFilename(root), "convite-amigo-whatsapp.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("com boxes_fixos.convite_amigo declarado -> usa o valor configurado", () => {
+    const root = mkdtempSync(join(tmpdir(), "convite-amigo-resolve-custom-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_fixos: { convite_amigo: "outro-convite.md" } }),
+    );
+    try {
+      assert.equal(resolveConviteAmigoFilename(root), "outro-convite.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("platform.config.json corrompido -> fail-soft pro filename histórico, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "convite-amigo-resolve-corrupt-"));
+    writeFileSync(join(root, "platform.config.json"), "{ not json");
+    try {
+      assert.equal(resolveConviteAmigoFilename(root), "convite-amigo-whatsapp.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// #5999 (item 4): os 2 guards do painel Studio que ficavam abertos porque a
+// caixa não tinha slot atribuído — archiveBox deixava arquivar (sumindo de
+// TODA edição em silêncio) e saveBoxSlots deixava atribuí-la também a um
+// slot 0-3 (duplicando o bloco na mesma edição).
+describe("#5999 — guards do painel Studio (item 4)", () => {
+  function fixtureRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "convite-amigo-guards-"));
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "data", "snippets", "convite-amigo-whatsapp.md"),
+      "Conhece alguém que ia gostar de receber esta newsletter?\n\n[Convide pelo WhatsApp →](https://wa.me/?text=y)\n",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({
+        boxes_fixos: { convite_amigo: "convite-amigo-whatsapp.md" },
+        boxes_divulgacao: { slot0: "", slot1: "", slot2: "", slot3: "" },
+      }),
+    );
+    return root;
+  }
+
+  it("archiveBox: recusa arquivar a caixa fixa (blockedByFixo), não move o arquivo", () => {
+    const root = fixtureRoot();
+    try {
+      const result = archiveBox(root, "convite-amigo-whatsapp.md");
+      assert.equal(result.ok, false);
+      assert.equal(result.blockedByFixo, true);
+      assert.match(result.error ?? "", /boxes_fixos/);
+      // arquivo continua no lugar de sempre — não foi movido pra _arquivo/.
+      assert.ok(
+        existsSync(boxFilePath(root, "convite-amigo-whatsapp.md")),
+        "não deveria ter movido a caixa fixa",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("saveBoxSlots: recusa atribuir a caixa fixa a um slot (invalid: true), mesmo shape dos demais guards", () => {
+    const root = fixtureRoot();
+    try {
+      const result = saveBoxSlots(root, { slot0: "", slot1: "convite-amigo-whatsapp.md", slot2: "", slot3: "" });
+      assert.equal(result.ok, false);
+      assert.equal(result.invalid, true);
+      assert.match(result.error ?? "", /boxes_fixos/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
