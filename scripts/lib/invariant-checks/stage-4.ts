@@ -1341,7 +1341,10 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
  * nunca deveria disparar, guard defensivo), e — desde #5794/#5817 — o
  * snippet `data/snippets/convite-amigo-whatsapp.md` ausente
  * (`convite_amigo_snippet_missing`, bloco "sempre presente" que sumiria de
- * TODA edição em silêncio sem este sinal).
+ * TODA edição em silêncio sem este sinal). #5999 acrescenta
+ * `convite_amigo_orphan_no_encerrar`: a caixa migrou pro TOPO de "Para
+ * encerrar", então uma edição sem essa seção não tem onde embuti-la — cai no
+ * fallback standalone (posição pré-#5999) em vez de sumir.
  * Antes deste check, ficavam só no `console.error` de qualquer terminal que
  * por acaso estava rodando o render — nunca chegavam no resumo consolidado
  * do gate que o editor de fato revisa antes de publicar. O CLI (§4b step 2
@@ -1416,6 +1419,19 @@ function checkRenderWarnings(editionDir: string): InvariantViolation[] {
           `que o arquivo existe (não foi apagado/renomeado por engano no painel Caixas do Studio) ` +
           `antes de publicar.`,
         source_issue: "#5817",
+        severity: "warning",
+        file: path,
+      });
+    } else if (w.event === "convite_amigo_orphan_no_encerrar") {
+      violations.push({
+        rule: "convite-amigo-orphan-no-encerrar",
+        message:
+          `Bloco "Convide um amigo" renderizou no formato STANDALONE (posição pré-#5999) em vez ` +
+          `de dentro de "Para encerrar" — esta edição não tem bloco "Para encerrar" ` +
+          `(02-reviewed.md sem essa seção), então a caixa não tem onde entrar no topo dela ` +
+          `(#5999). Fix: confirmar se a ausência de "Para encerrar" é intencional; se não for, ` +
+          `adicionar a seção ao 02-reviewed.md.`,
+        source_issue: "#5999",
         severity: "warning",
         file: path,
       });

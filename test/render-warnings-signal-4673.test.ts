@@ -90,6 +90,10 @@ Why do D${n}.
 function buildReviewed(boxes: { box1?: string | null; box2?: string | null; box3?: string | null }): string {
   const { box1 = null, box2 = null, box3 = null } = boxes;
   const sep = (block: string | null) => (block ? `${block}\n\n---\n\n` : "");
+  // #5999: bloco fixo "Convide um amigo" migrou pro TOPO de "Para encerrar" —
+  // sem essa seção no reviewed.md, o render cai no fallback standalone e
+  // emite `convite_amigo_orphan_no_encerrar`, um evento não relacionado ao
+  // que este arquivo verifica (o inventário de lacunas de divulgação).
   return `Para esta edição, selecionamos 12 itens.
 
 ---
@@ -107,6 +111,12 @@ ${sep(box2)}${d(3, "💼 TRABALHO", "https://example.com/d3")}
 ---
 
 ${box3 ?? ""}
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Apoie a curadoria em [apoia.se/diaria](https://apoia.se/diaria).
 `;
 }
 

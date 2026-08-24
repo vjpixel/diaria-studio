@@ -3598,6 +3598,11 @@ describe("renderHTML — caixas de divulgação ocupam sua lacuna de origem, sem
     coverImage: "04-d1-2x1.jpg",
     destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2"), d(3, "https://example.com/d3")],
     eia: { credit: "", imageA: "", imageB: "", edition: "260806" },
+    // #5999: bloco "Convide um amigo" (via CONVITE_AMIGO_OPTS) migrou pro
+    // TOPO da seção "Para encerrar" — sem `encerrar` aqui, o fallback
+    // standalone dispara e emite `convite_amigo_orphan_no_encerrar`, ruído
+    // não relacionado ao que estes testes de caixas de divulgação verificam.
+    encerrar: "Apoie a curadoria.",
     sections: [],
     boxDivulgacao1: "Confira nossa curadoria. [Link](https://example.com/box1).",
     boxDivulgacao2: "Confira nossos livros. [Link](https://example.com/box2).",

@@ -112,7 +112,8 @@ export interface RenderWarningEvent {
     | "divulgacao_box_dropped_cap" // #5232
     | "whatsapp_share_no_d1"
     | "whatsapp_share_d1_mismatch"
-    | "convite_amigo_snippet_missing"; // #5794 (achado do review do PR #5817)
+    | "convite_amigo_snippet_missing" // #5794 (achado do review do PR #5817)
+    | "convite_amigo_orphan_no_encerrar"; // #5999: edição sem bloco "Para encerrar" — caixa cai no fallback standalone (posição antiga), sem herdar o kicker
   edition: string;
   slot?: number;
 }
@@ -1809,26 +1810,86 @@ export function buildConviteAmigoShareLink(): string {
   return buildWhatsappShareLink(buildConviteAmigoBlock(buildConviteAmigoUrl()));
 }
 
+/** Filename histórico do snippet do bloco "Convide um amigo" — usado como
+ * fallback quando `platform.config.json` → `boxes_fixos.convite_amigo` não
+ * declara um valor (#5999 item 3, "sair do hardcode"). */
+const DEFAULT_CONVITE_AMIGO_FILENAME = "convite-amigo-whatsapp.md";
+
+/**
+ * #5999 (item 3): nome do arquivo de `data/snippets/` do bloco fixo "Convide
+ * um amigo", configurável via `platform.config.json` → `boxes_fixos.
+ * convite_amigo` — antes hardcoded direto em `renderConviteAmigo`. Também é a
+ * chave que `archiveBox`/`saveBoxSlots` (`scripts/studio-ui/studio-boxes.ts`)
+ * passam a reconhecer como "caixa em uso" (item 4). Fail-soft total: config
+ * ausente, chave ausente, JSON corrompido, ou valor não-string/vazio → cai no
+ * filename histórico (`DEFAULT_CONVITE_AMIGO_FILENAME`) — nunca lança, nunca
+ * quebra o render por causa de config malformada (mesmo padrão de
+ * `resolveBeehiivConfig`, `scripts/lib/beehiiv-config.ts`).
+ */
+export function resolveConviteAmigoFilename(rootDir?: string): string {
+  const root = rootDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const configPath = resolve(root, "platform.config.json");
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
+      boxes_fixos?: { convite_amigo?: unknown };
+    };
+    const filename = cfg.boxes_fixos?.convite_amigo;
+    if (typeof filename === "string" && filename.trim()) return filename.trim();
+  } catch {
+    // fail-soft — config ausente/corrompida cai no default abaixo.
+  }
+  return DEFAULT_CONVITE_AMIGO_FILENAME;
+}
+
+/**
+ * #5999: remove o wrapper `<tr><td class="pad" ...>...</td></tr>` que
+ * envolve todo box renderizado por `renderIntroCallout`/`renderMidCallout`
+ * (via `renderBoxDivulgacao`), devolvendo só a `<table>` interna (+ o
+ * comentário HTML que a precede). Necessário quando um box precisa entrar
+ * como CONTEÚDO INTERNO de outra seção já aberta (`renderEncerrar`) — um
+ * `<tr>` dentro de um `<td>` já aberto por outra seção é HTML inválido, e é
+ * essa invalidade estrutural que causava a herança visual errada do
+ * "Convide um amigo" (renderizava como `<tr>` IRMÃO da seção anterior, sem
+ * nenhum wrapper de seção próprio).
+ *
+ * Detecção estrutural, não por conteúdo específico — funciona pra qualquer
+ * box, independente de qual sub-formato (`renderIntroCallout` single/multi-
+ * parágrafo, com CTA pill, ou `renderMidCallout` com imagem) o dispatcher
+ * escolheu, porque todos terminam a string exatamente em `</td></tr>`. A
+ * âncora `$` garante que o ÚLTIMO `</td></tr>` da string (sempre o do
+ * wrapper OUTERMOST, por aninhamento HTML válido — o fechamento externo é
+ * fisicamente o último da string) é o que casa, não um fechamento de tabela
+ * aninhada no meio do conteúdo. Fail-soft: se o padrão não casar (formato
+ * inesperado), devolve o HTML original sem alterar — nunca produz markup
+ * pior que o de entrada.
+ */
+function stripBoxRowWrapper(html: string): string {
+  const m = html.match(/^([\s\S]*?)<tr>\s*<td[^>]*>([\s\S]*)<\/td>\s*<\/tr>\s*$/);
+  if (!m) return html;
+  const [, prefix, inner] = m;
+  return `${prefix}${inner}`;
+}
+
 /**
  * Renderiza o bloco fixo "Convide um amigo" (#5794, pedido de leitor;
  * revisado 260821 — virou snippet de verdade em vez de copy hardcoded,
  * pedido do editor: "no mesmo padrão dos outros snippets, mas sem título").
- * Lê `data/snippets/convite-amigo-whatsapp.md` (frase + link `wa.me/?text=`
- * num parágrafo CTA-only) e renderiza via `renderBoxDivulgacao` — mesmo
- * dispatcher de formato usado pelos boxes de slot 1/2/3 (o parágrafo
+ * Lê `data/snippets/{resolveConviteAmigoFilename()}` (frase + link
+ * `wa.me/?text=` num parágrafo CTA-only) e renderiza via `renderBoxDivulgacao`
+ * — mesmo dispatcher de formato usado pelos boxes de slot 1/2/3 (o parágrafo
  * CTA-only aciona automaticamente o formato "carrinho/CTA pill", igual aos
  * demais snippets com botão). **Sem kicker "Divulgação"** — diferente dos
  * slots 1/2/3, que sempre emitem o kicker incondicionalmente, este bloco
  * nunca chama `renderDivulgacaoSeparator` (decisão explícita do editor).
- * Fixo — não depende de destaques nem de edição, sempre renderiza quando o
- * snippet existe. Fail-soft: snippet ausente (clone fresco/sessão cloud sem
- * `data/`, ou o arquivo apagado/renomeado por engano no painel Caixas do
- * Studio) → retorna string vazia, não lança (mesma convenção de
- * `readSnippetFile`) — mas emite `convite_amigo_snippet_missing` (achado do
- * review do PR #5817: este bloco é "sempre presente", mesma categoria de
- * `renderWhatsappShare`/`whatsapp_share_no_d1` logo acima, que já loga
- * quando não consegue renderizar; sem o warning, o bloco podia sumir de
- * TODA edição sem nenhum sinal até um leitor notar).
+ * Fixo — não depende de destaques, sempre renderiza quando o snippet existe.
+ * Fail-soft: snippet ausente (clone fresco/sessão cloud sem `data/`, ou o
+ * arquivo apagado/renomeado por engano no painel Caixas do Studio) → retorna
+ * string vazia, não lança (mesma convenção de `readSnippetFile`) — mas emite
+ * `convite_amigo_snippet_missing` (achado do review do PR #5817: este bloco é
+ * "sempre presente", mesma categoria de `renderWhatsappShare`/
+ * `whatsapp_share_no_d1` logo acima, que já loga quando não consegue
+ * renderizar; sem o warning, o bloco podia sumir de TODA edição sem nenhum
+ * sinal até um leitor notar).
  *
  * #5882: "sem título" lê o campo declarado `titulo:` do header (via
  * `readSnippetFileRaw` + `readBoxTituloFlag` — o header já vem removido do
@@ -1838,25 +1899,44 @@ export function buildConviteAmigoShareLink(): string {
  * histórico deste bloco especificamente — a decisão "sem título" já estava
  * registrada em prosa no header antes deste campo existir, #5817) — só um
  * `titulo: true` EXPLÍCITO reverte pra título serif.
+ *
+ * #5999 (item 1): `naked` (default `false`) controla o wrapper de linha —
+ * `false` devolve o HTML STANDALONE de sempre (`<tr><td>...</td></tr>`,
+ * usado no fallback sem bloco "Para encerrar"); `true` devolve só a `<table>`
+ * interna (via `stripBoxRowWrapper`), pra `renderEncerrar` injetar como
+ * conteúdo do PRÓPRIO `<td>` da seção "Para encerrar" — a posição nova, que
+ * herda o kicker "Para encerrar" em vez de boiar sem dono visual entre
+ * SORTEIO e a seção seguinte.
  */
-export function renderConviteAmigo(rootDir?: string, edition?: string): string {
-  const box = readSnippetFile("convite-amigo-whatsapp.md", rootDir);
+export function renderConviteAmigo(rootDir?: string, edition?: string, naked = false): string {
+  const filename = resolveConviteAmigoFilename(rootDir);
+  const box = readSnippetFile(filename, rootDir);
   if (!box) {
     if (edition) emitRenderWarning({ event: "convite_amigo_snippet_missing", edition });
     return "";
   }
-  const raw = readSnippetFileRaw("convite-amigo-whatsapp.md", rootDir);
+  const raw = readSnippetFileRaw(filename, rootDir);
   const tituloFlag = raw ? readBoxTituloFlag(raw) : null;
   const plainFirstParagraph = tituloFlag !== true;
-  return `<!-- Convide um amigo -->
+  const html = `<!-- Convide um amigo -->
   ${renderBoxDivulgacao(box, null, false, false, false, null, plainFirstParagraph)}`;
+  return naked ? stripBoxRowWrapper(html) : html;
 }
 
 /**
  * Pure (#1076): renderiza o bloco 🙋🏼‍♀️ PARA ENCERRAR. Lista `- item` no MD
  * vira `<ul><li>...`; resto vira parágrafos.
+ *
+ * #5999 (item 1): `conviteAmigoHtml` (opcional) — HTML NAKED (sem wrapper de
+ * linha, ver `renderConviteAmigo(..., naked=true)`/`stripBoxRowWrapper`) do
+ * bloco "Convide um amigo", injetado logo DEPOIS do kicker "Para encerrar" e
+ * ANTES do corpo da seção. Só o call-site (`renderHTML`) decide se este
+ * parâmetro é passado — `renderEncerrar` só sabe posicionar, não decide
+ * quando a caixa deve entrar aqui vs. cair no fallback standalone (edição sem
+ * bloco "Para encerrar" nunca chama esta função, então a caixa nunca teria
+ * onde entrar — ver o guard em `renderHTML`).
  */
-export function renderEncerrar(text: string): string {
+export function renderEncerrar(text: string, conviteAmigoHtml: string | null = null): string {
   const lines = text.split("\n");
   type Block = { type: "p" | "ul"; content: string[] };
   const blocks: Block[] = [];
@@ -1967,9 +2047,20 @@ export function renderEncerrar(text: string): string {
   </tr></table>`
     : "";
 
+  // #5999 (item 1): bloco "Convide um amigo" (naked, sem wrapper de linha
+  // próprio — ver `renderConviteAmigo(..., naked=true)`) entra logo depois do
+  // kicker, ANTES do corpo — envolto num `<table style="margin-top:...">`
+  // vazio pra carregar o respiro visual (mesma convenção usada por `ctaBox`
+  // acima e por todo box de divulgação no arquivo), já que a caixa NUA perdeu
+  // o `padding-top:8px` da linha `<tr><td class="pad">` que a envolvia na
+  // posição antiga (standalone, entre SORTEIO e "Para encerrar").
+  const conviteAmigoBlock = conviteAmigoHtml
+    ? `\n  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>${conviteAmigoHtml}</td></tr></table>`
+    : "";
+
   return `<!-- Para encerrar -->
 <tr><td class="pad" style="padding:${LAYOUT.sectionTop}px ${LAYOUT.sidePad}px 8px;">
-  ${renderKicker("Para encerrar")}
+  ${renderKicker("Para encerrar")}${conviteAmigoBlock}
   ${html}${ctaBox}
 </td></tr>`;
 }
@@ -2132,6 +2223,19 @@ export const DIVULGACAO_BOX_CAP = 3;
  *
  * Pure function — `slots` chega já ordenado por quem chama não é exigido
  * (ordenamos aqui), e o resultado preserva ordem ascendente de slot.
+ *
+ * #5999 (item 4): o teto SÓ se aplica aos slots 0-3 de `boxes_divulgacao` —
+ * caixas FIXAS declaradas em `boxes_fixos` (ex: "Convide um amigo",
+ * `renderConviteAmigo`) NUNCA entram neste cálculo, decisão deliberada do
+ * editor, não uma lacuna. `DIVULGACAO_BOX_CAP` existe pra frear o PESO de
+ * e-mail vindo de divulgação ROTATIVA/comercial (#5232); uma caixa fixa é
+ * bloco de PRODUTO/aquisição — sempre presente por design, do mesmo jeito que
+ * o painel do sorteio ou o kicker "Para encerrar" nunca competiram pelo teto.
+ * Contar a caixa fixa no teto criaria um efeito colateral esquisito: em dias
+ * com os 3 slots de `boxes_divulgacao` configurados, a rotação por
+ * `AAMMDD mod N` passaria a decidir se o "Convide um amigo" aparece ou não —
+ * um bloco que deveria ser 100% previsível virando aleatório por acidente de
+ * implementação, não por intenção editorial.
  */
 export function capDivulgacaoBoxes(
   slots: readonly (0 | 1 | 2 | 3)[],
@@ -2394,14 +2498,28 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // lacuna D1/D2 (ver o loop de destaques acima, i===0). Posição antiga era
   // ANTES de "Para encerrar" (decisão original #4486/#4487).
   // #5794: bloco fixo "Convide um amigo a assinar" — DIFERENTE do WhatsApp
-  // share acima (compartilha a NOTÍCIA D1) — este compartilha a ASSINATURA
-  // em si. Posição decidida na issue: após o último destaque, ANTES de "Para
-  // encerrar" (não colado no D1, pra não competir com o "Compartilhar no
-  // WhatsApp" que vive dentro do D1 desde #5152) — sempre presente, não
-  // depende de destaques/edição.
-  parts.push(renderConviteAmigo(opts.rootDir, content.eia.edition));
-
-  if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
+  // share acima (compartilha a NOTÍCIA D1) — este compartilha a ASSINATURA em
+  // si (não colado no D1, pra não competir com o "Compartilhar no WhatsApp"
+  // que vive dentro do D1 desde #5152).
+  // #5999: a posição "após o último destaque, ANTES de Para encerrar" (linha
+  // própria, sem kicker) fazia a caixa ser lida visualmente como parte da
+  // seção SORTEIO (mesmo fundo bege, sem dono visual próprio). Decisão do
+  // editor (23/08/2026): mover pro TOPO da seção "Para encerrar", onde herda
+  // o kicker "Para encerrar" — `renderEncerrar` injeta a versão NAKED
+  // (`naked=true`, sem wrapper de linha) como conteúdo interno da seção.
+  // Fallback: edição sem bloco "Para encerrar" (`content.encerrar` vazio,
+  // raro) não tem onde embutir a caixa — cai no formato STANDALONE antigo
+  // (linha própria, posição pré-#5999) + emite `convite_amigo_orphan_no_encerrar`
+  // pra nunca sumir em silêncio (mesma classe de `convite_amigo_snippet_missing`).
+  if (content.encerrar) {
+    const conviteAmigoHtml = renderConviteAmigo(opts.rootDir, content.eia.edition, true);
+    parts.push(renderEncerrar(content.encerrar, conviteAmigoHtml || null));
+  } else {
+    parts.push(renderConviteAmigo(opts.rootDir, content.eia.edition, false));
+    if (content.eia.edition) {
+      emitRenderWarning({ event: "convite_amigo_orphan_no_encerrar", edition: content.eia.edition });
+    }
+  }
 
   // #1936/#1945 (DS): container do corpo, máx. LAYOUT.containerWidth
   // (email-safe — Outlook corta acima disso, cf. checkWideTables — #5176

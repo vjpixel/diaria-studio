@@ -106,6 +106,7 @@ import {
   buildContentWithHeader,
   isRuntimeExcluded,
 } from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); isRuntimeExcluded MOVIDA pra cá em #4504 (camada errada — pipeline core também precisa dela e não pode importar de studio-ui/, ver test/lib-boundary.test.ts) — reexportada abaixo por back-compat de import
+import { resolveConviteAmigoFilename } from "../lib/newsletter-render-html.ts"; // #5999 — mesma fonte de verdade do render pro filename da caixa fixa "Convide um amigo" (platform.config.json -> boxes_fixos.convite_amigo)
 
 export { isRuntimeExcluded };
 
@@ -676,7 +677,9 @@ function normalizeSlotValue(v: string | undefined | null): string {
  *      `data/snippets/` (não arquivada, não inexistente) E não pode
  *      declarar `runtime: false` no header (#4500 — documentação/referência,
  *      não uma caixa de verdade, ex: `intro-campeoes-sorteio.md`) — senão o
- *      `stitch-newsletter` quebraria a montagem da edição;
+ *      `stitch-newsletter` quebraria a montagem da edição; TAMBÉM não pode
+ *      ser a caixa FIXA declarada em `boxes_fixos` (#5999 — já renderiza
+ *      sozinha em toda edição, atribuir a um slot duplicaria o bloco);
  *   2. a mesma caixa não pode ocupar 2 slots ao mesmo tempo (injetaria a
  *      mesma divulgação 2× na mesma edição);
  *   3. escrita CIRÚRGICA — só a chave `boxes_divulgacao` é reescrita
@@ -725,6 +728,21 @@ export function saveBoxSlots(
       return {
         ok: false,
         error: `a caixa "${slug}" (${key}) é documentação/referência (runtime: false), não pode ser atribuída a um slot`,
+        modifiedAt: null,
+        invalid: true,
+      };
+    }
+    // #5999 (item 4): a caixa FIXA (`platform.config.json` → `boxes_fixos`,
+    // ex: "Convide um amigo") já renderiza em TODA edição por conta própria
+    // (posição fixa dentro de "Para encerrar", fora do sistema de slots) —
+    // atribuí-la TAMBÉM a um slot 0-3 duplicaria o mesmo bloco na mesma
+    // edição, sem nada pra deduplicar (achado original da #5999: o filename
+    // não declara `runtime: false`, então sem este guard aparecia no dropdown
+    // de slots como qualquer outra caixa comum).
+    if (slug === resolveConviteAmigoFilename(rootDir)) {
+      return {
+        ok: false,
+        error: `a caixa "${slug}" (${key}) é uma caixa FIXA (platform.config.json → boxes_fixos.convite_amigo) — já renderiza em toda edição por conta própria, não pode ser atribuída também a um slot`,
         modifiedAt: null,
         invalid: true,
       };
@@ -1227,6 +1245,12 @@ export interface ArchiveBoxResult {
    * quebraria o pipeline, então é BLOQUEADO. Caller HTTP responde 409. */
   blockedBySlot?: boolean;
   slot?: BoxSlot;
+  /** #5999: `true` quando a caixa é uma caixa FIXA (`platform.config.json` →
+   * `boxes_fixos`, ex: "Convide um amigo") — injetada em TODA edição fora do
+   * sistema de slots, então arquivar quebraria o render do mesmo jeito que um
+   * slot ativo quebraria. Caller HTTP responde 409, mesmo shape de
+   * `blockedBySlot`. */
+  blockedByFixo?: boolean;
 }
 
 /** Arquiva uma caixa: MOVE `data/snippets/{slug}` -> `data/snippets/
@@ -1247,7 +1271,15 @@ export interface ArchiveBoxResult {
  * #4275: o guard cobre AS DUAS variantes — `boxes_divulgacao` (padrão) E
  * `boxes_divulgacao_patronos` — não só a padrão. Uma caixa usada só na
  * variante Patronos é igualmente auto-injetada (na edição Patronos) e
- * arquivá-la quebraria essa montagem do mesmo jeito. */
+ * arquivá-la quebraria essa montagem do mesmo jeito.
+ *
+ * #5999: mesma lógica de defense-in-depth pras caixas FIXAS declaradas em
+ * `platform.config.json` → `boxes_fixos` (hoje só `convite_amigo`, o bloco
+ * "Convide um amigo") — elas não têm slot atribuído (não são candidatas do
+ * dropdown de slot 0-3), então o guard de slot acima nunca as pegaria; sem
+ * este guard dedicado, arquivar a caixa fixa fazia o bloco sumir de TODA
+ * edição com só um `convite_amigo_snippet_missing` no log de render (achado
+ * original da #5999). */
 export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
   if (!isValidBoxSlug(slug)) {
     return { ok: false, error: `slug inválido: ${slug}`, slug, notFound: true };
@@ -1255,6 +1287,14 @@ export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
   const filePath = boxFilePath(rootDir, slug);
   if (!existsSync(filePath)) {
     return { ok: false, error: `caixa não encontrada: ${slug}`, slug, notFound: true };
+  }
+  if (slug === resolveConviteAmigoFilename(rootDir)) {
+    return {
+      ok: false,
+      error: `a caixa "${slug}" é uma caixa FIXA (platform.config.json → boxes_fixos.convite_amigo) e é injetada em toda edição — remova/troque a declaração em boxes_fixos antes de arquivar`,
+      slug,
+      blockedByFixo: true,
+    };
   }
   const slot = readBoxSlotAssignments(rootDir)[slug];
   if (slot !== undefined) {
