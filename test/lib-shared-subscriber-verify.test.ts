@@ -13,6 +13,7 @@ import {
   sha256Hex,
   subscriberKvKey,
   verifySubscriberViaBeehiivByEmail,
+  verifySubscriberViaKitByEmail,
   verifySubscriberViaKv,
 } from "../scripts/lib/shared/subscriber-verify.ts";
 import { checkKvRateLimit, clientIpFromRequest } from "../scripts/lib/shared/rate-limit.ts";
@@ -137,6 +138,70 @@ describe("subscriber-verify (#4052)", () => {
     it("404 continua unknown — resposta legítima, não é falha de verificação", async () => {
       const fetchImpl = (async () => new Response("{}", { status: 404 })) as typeof fetch;
       const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
+      assert.equal(r, "unknown");
+    });
+  });
+
+  describe("verifySubscriberViaKitByEmail — secundário (#6048, migração Beehiiv → Kit), fail-soft", () => {
+    it("ATIVO: subscribers[0].state === active", async () => {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ subscribers: [{ state: "active" }] }), { status: 200 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "active");
+    });
+
+    it("INATIVO: cada um dos 4 estados não-active mapeia pra inactive (cancelled/bounced/complained/inactive)", async () => {
+      for (const state of ["cancelled", "bounced", "complained", "inactive"]) {
+        const fetchImpl = (async () =>
+          new Response(JSON.stringify({ subscribers: [{ state }] }), { status: 200 })) as typeof fetch;
+        const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+        assert.equal(r, "inactive", `state=${state}`);
+      }
+    });
+
+    it("INEXISTENTE: 200 com subscribers:[] — achado ao vivo #6048, Kit NÃO usa 404 pra 'não encontrado' (diferente da Beehiiv)", async () => {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ subscribers: [] }), { status: 200 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "unknown");
+    });
+
+    it("API DOWN (fetch lança): verification_failed, nunca propaga a exceção", async () => {
+      const fetchImpl = (async () => {
+        throw new Error("network down");
+      }) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("401 (key rotacionada/inválida): verification_failed", async () => {
+      const fetchImpl = (async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("429 (rate-limit do Kit): verification_failed", async () => {
+      const fetchImpl = (async () => new Response("too many requests", { status: 429 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("5xx (Kit fora do ar): verification_failed", async () => {
+      const fetchImpl = (async () => new Response("internal error", { status: 503 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("resposta 2xx com JSON malformado: verification_failed, não lança", async () => {
+      const fetchImpl = (async () => new Response("not json{", { status: 200 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("state ausente/desconhecido no subscriber encontrado: unknown", async () => {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ subscribers: [{}] }), { status: 200 })) as typeof fetch;
+      const r = await verifySubscriberViaKitByEmail("key", "x@example.com", { fetchImpl });
       assert.equal(r, "unknown");
     });
   });

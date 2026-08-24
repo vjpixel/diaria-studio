@@ -44,6 +44,26 @@ echo "$BEEHIIV_PUBLICATION_ID" | npx wrangler secret put BEEHIIV_PUBLICATION_ID
 A `BEEHIIV_API_KEY` do worker deve ser uma key da Beehiiv com escopo de
 criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
 
+## Optional secrets (#6048 — cadastro inline via Kit, backend alternativo)
+
+| Nome | Endpoint | Severidade |
+|------|----------|------------|
+| `KIT_API_KEY` | `POST /jogar/subscribe` (só quando `SUBSCRIBE_BACKEND=kit`) | **opcional** — sem ela, `subscribeToKit` retorna `not_configured` (mesmo 503 amigável do caminho Beehiiv) |
+| `KIT_API_URL` (var) | idem | **opcional** — override só pra teste (mock server local); default `https://api.kit.com/v4` |
+| `KIT_NAME_FIELD` (var) | idem | **opcional** — nome do custom field do Kit onde gravar o nome; ausente = nome não é enviado |
+| `KIT_UTM_SOURCE_FIELD`/`KIT_UTM_MEDIUM_FIELD`/`KIT_UTM_CAMPAIGN_FIELD`/`KIT_REFERRING_SITE_FIELD` (vars) | idem | **opcionais** — nomes de custom fields do Kit onde gravar atribuição UTM (a API de criação do Kit não tem UTM/referring-site nativo); **nenhum foi criado na conta de produção ainda** |
+| `SUBSCRIBE_BACKEND` (var) | `POST /jogar/subscribe` | **opcional** — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`. Seletor LOCAL a este worker — nenhum dispatch externo lê essa var |
+
+`subscribeToKit` (`src/subscribe.ts`) é o equivalente Kit de
+`subscribeToBeehiiv` — mesmo contrato, mesmo fallback 503 amigável sem
+`KIT_API_KEY`. Ativar:
+
+```bash
+cd workers/poll
+echo "$KIT_API_KEY" | npx wrangler secret put KIT_API_KEY
+echo "kit" | npx wrangler secret put SUBSCRIBE_BACKEND
+```
+
 ## Optional secrets (#3996 — migração cross-device via link mágico)
 
 | Nome | Endpoint | Severidade |
