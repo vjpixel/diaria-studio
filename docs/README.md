@@ -48,6 +48,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`lean-canvas-vigil-ia.md`](./lean-canvas-vigil-ia.md) | Lean Canvas do guarda-chuva Vigil.ia.br (#856) — living document |
 | [`token-reduction-analysis.md`](./token-reduction-analysis.md) | Análise de redução de tokens da pipeline de edição (#2452) |
 | [`growth-partnerships.md`](./growth-partnerships.md) | Critério e processo de prospecção de parcerias de audiência no modelo Clarice (#4555) — rascunho de abordagem e dados de contato só em `data/parceria-clarice/`; issue guarda estado/decisão. Artigo assinado com link na bio é outro canal (#5917) |
+| [`beehiiv-vs-kit-migration.md`](./beehiiv-vs-kit-migration.md) | Migração Beehiiv→Kit da **diária** — **reativada em 24/08/2026** (plano vivo: issue #461). Referência histórica: comparativo de mercado + spike de inventário; inventário e preços defasados, caminho de fases e critério de abort ainda válidos |
 
 ## Histórico (spikes e análises encerradas — `docs/archive/`, `docs/agents-archive/`)
 
@@ -55,7 +56,6 @@ Preservados por valor histórico (racional de decisões passadas), mas superados
 
 | Doc | Desfecho |
 |---|---|
-| [`archive/beehiiv-vs-kit-migration.md`](./archive/beehiiv-vs-kit-migration.md) | Migração Beehiiv→Kit **pausada indefinidamente** (briefing 2026-06-13); consolida o comparativo de mercado + spike técnico de inventário/esforço |
 | [`archive/spike-275-beehiiv-automation.md`](./archive/spike-275-beehiiv-automation.md) | Mapeamento inicial da DOM do editor Beehiiv (#275) — alimentou a Phase 2 de automação |
 | [`archive/spike-1046-clipboard-paste.md`](./archive/spike-1046-clipboard-paste.md) | Investigação de paste HTML grande no TipTap (#1046/#312) — método encontrado depois substituído pelo fluxo Worker-hosted atual |
 | [`archive/spike-1113-embeddings-filtro2.md`](./archive/spike-1113-embeddings-filtro2.md) | Proposta de embeddings pro Filtro 2 do `research-reviewer` (#1113) — nunca implementada, hold indefinido |
