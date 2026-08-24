@@ -59,7 +59,11 @@ function makeD1(overrides: Partial<RenderDestaque> = {}): RenderDestaque {
   };
 }
 
-/** Dispara `whatsapp_share_no_d1` (destaques vazio → renderWhatsappShare sem D1). */
+/** Dispara `whatsapp_share_no_d1` (destaques vazio → renderWhatsappShare sem D1).
+ * #5999: `encerrar` precisa estar presente — sem bloco "Para encerrar", o
+ * bloco "Convide um amigo" cai no fallback standalone e emite
+ * `convite_amigo_orphan_no_encerrar`, um 2º evento que não é o que estes
+ * testes verificam. */
 const contentWithWarning: NewsletterContent = {
   title: "Edição teste",
   subtitle: "Teste",
@@ -67,6 +71,7 @@ const contentWithWarning: NewsletterContent = {
   destaques: [],
   eia: { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition: EDITION },
   sections: [],
+  encerrar: "Apoie a curadoria.",
 };
 
 /** Edição normal — sem eventos de conteúdo perdido. */

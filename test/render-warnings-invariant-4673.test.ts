@@ -132,6 +132,21 @@ describe("checkRenderWarnings — Stage 4, warning-only (#4673)", () => {
     }
   });
 
+  it("#5999: convite_amigo_orphan_no_encerrar → 1 violação warning, rule/source_issue corretos", () => {
+    const dir = makeFixtureEdition();
+    try {
+      writeWarningsFile(dir, [{ event: "convite_amigo_orphan_no_encerrar", edition: "260806" }]);
+      const violations = checkRenderWarnings(dir);
+      assert.equal(violations.length, 1);
+      assert.equal(violations[0].rule, "convite-amigo-orphan-no-encerrar");
+      assert.equal(violations[0].severity, "warning", "nunca deve bloquear o gate — mesmo padrão warning-only dos demais eventos");
+      assert.equal(violations[0].source_issue, "#5999");
+      assert.match(violations[0].message, /Para encerrar/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("ambos eventos na mesma edição → 2 violações, uma por evento", () => {
     const dir = makeFixtureEdition();
     try {
