@@ -13,6 +13,10 @@
     "publicationId": "pub_b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5",
     "dedupEditionCount": 14
   },
+  "kit": {
+    "tallyFormId": "xX5JJy",
+    "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit"
+  },
   "newsletter_monthly": "brevo",
   "brevo_monthly": {
     "api_key_env": "BREVO_CLARICE_API_KEY",
