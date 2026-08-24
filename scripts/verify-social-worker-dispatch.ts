@@ -294,7 +294,9 @@ export async function verifyWorkerDispatch(
   now: Date = new Date(),
   retry: VerifyWorkerDispatchRetryOptions = {},
 ): Promise<{ updated: SocialPublished; changes: number }> {
-  const { maxAttempts, backoffMs } = { ...DEFAULT_RETRY, ...retry };
+  const rawRetry = { ...DEFAULT_RETRY, ...retry };
+  const maxAttempts = Math.max(1, rawRetry.maxAttempts);
+  const backoffMs = rawRetry.backoffMs;
   const sleep = retry.sleep ?? defaultSleep;
 
   // #6016 item 3: enquanto houver entry `scheduled` cuja key não apareceu nem
