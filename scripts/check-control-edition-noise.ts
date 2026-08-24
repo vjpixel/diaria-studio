@@ -5,7 +5,7 @@
  * (`scripts/lib/control-edition-guard.ts`). Dois modos de uso:
  *
  *   # Preflight — ANTES de começar a rodar uma edição de controle (baseline
- *   # ou tratamento), confirma que não há overnight/develop ativo
+ *   # ou tratamento), confirma que não há overnight/develop/continuo ativo
  *   # na máquina agora:
  *   npx tsx scripts/check-control-edition-noise.ts
  *

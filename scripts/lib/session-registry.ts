@@ -55,7 +55,7 @@
  *
  * Uso CLI (chamado pelas skills — sempre SEM `--session-id`, injetado pelo
  * hook, ver acima):
- *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop [--pid N]
+ *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
  *   npx tsx scripts/lib/session-registry.ts end --kind ... [--tag MAQUINA]
  *     (`--tag` opcional, #5797: default é o machineTag() local; passar o tag de
@@ -77,17 +77,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 
-/**
- * O kind `"continuo"` existiu entre #5293 e #6056 (skill `/diaria-continuo`,
- * aposentada em 24/08/2026). Registro remanescente com esse kind em
- * `data/sessions/` não quebra nada — `listActiveSessions` não valida o campo
- * ao ler; dos consumidores, só `.claude/hooks/block-gh-pr-merge-subagent.mjs`
- * (`COORDINATOR_KINDS`) filtra por kind (e exclui `continuo` desde #6056) —
- * `cleanup-merged-worktrees.ts`/`control-edition-guard.ts` são kind-agnósticos
- * de propósito (qualquer sessão ativa é sinal). Nenhum comando novo aceita o
- * kind (`requireKind`).
- */
-export type SessionKind = "overnight" | "develop";
+export type SessionKind = "overnight" | "develop" | "continuo";
 
 export interface SessionRecord {
   kind: SessionKind;
@@ -131,9 +121,9 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * achou 2 sessões com heartbeat visivelmente morto (~3h e ~10h stale) ainda
  * listadas como "ativas" porque o único critério existente era o TTL de 24h.
  * Causas raiz: `/diaria-develop` só chama `session-registry.ts end` na Fase 2
- * (crash antes disso deixa o registro órfão até o TTL); a `/diaria-continuo`
- * da época (aposentada em #6056) pausava sem encerrar ao colidir com edição
- * em curso, e nada chamava `end` se o processo morresse pausado.
+ * (crash antes disso deixa o registro órfão até o TTL); `/diaria-continuo`
+ * pausa (não encerra) ao colidir com edição em curso e nada chama `end` nesse
+ * estado se o processo morrer pausado.
  *
  * 90 minutos — mesma ordem de grandeza do threshold de stall já usado em
  * outros lugares do repo (#2768/#2896; `OVERNIGHT_STALL_THRESHOLD_MIN`, 60
@@ -574,8 +564,8 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
  * chamador em produção.
  */
 export function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop") {
-    throw new Error(`--kind deve ser "overnight" ou "develop", recebido "${value}"`);
+  if (value !== "overnight" && value !== "develop" && value !== "continuo") {
+    throw new Error(`--kind deve ser "overnight", "develop" ou "continuo", recebido "${value}"`);
   }
   return value;
 }
@@ -677,7 +667,7 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop] [--session-id X] [--tag MAQUINA] ...\n" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n",
         );

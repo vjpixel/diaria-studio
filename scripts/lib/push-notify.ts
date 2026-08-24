@@ -10,8 +10,8 @@
  * O canal novo reusa a MESMA credencial OAuth já usada por 17 alarmes
  * agendados (`docs/*-setup.md`) — ver `google-auth.ts`.
  *
- * Espelha a API do módulo antigo pros call sites (watchdog, halt banner,
- * Studio gate/AskUserQuestion pendente) não
+ * Espelha a API do módulo antigo pros 4 call sites (watchdog, halt banner,
+ * Studio gate/AskUserQuestion pendente, hook `/diaria-continuo`) não
  * reimplementarem boilerplate: mesmo shape de resultado (`ok`/`skipped`/
  * `error`), mesmo dedup puro (`shouldNotify`/`markNotified`/`DedupRecord`),
  * mesmo store em memória (`createInMemoryNotifiedStore`).

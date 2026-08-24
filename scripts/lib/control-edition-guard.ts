@@ -24,8 +24,8 @@
  *
  * 2. **`checkSessionRegistryNoise`** — sinal de COBERTURA (ponto-no-tempo,
  *    via `scripts/lib/session-registry.ts`, o registro já usado por
- *    overnight/develop): lista sessões `overnight`/`develop` ativas
- *    AGORA. Limitação honesta: `data/sessions/*.json` é
+ *    overnight/develop/continuo): lista sessões `overnight`/`develop`/
+ *    `continuo` ativas AGORA. Limitação honesta: `data/sessions/*.json` é
  *    removido em `endSession` — não há histórico de sessões que já
  *    terminaram, então este check só enxerga o que está ativo no momento em
  *    que é chamado. Não prova sozinho que não houve concorrência durante as
@@ -33,7 +33,7 @@
  *    mais forte quando chamado logo no início e logo no fim da coleta (ver
  *    recomendação de uso no CLI, `scripts/check-control-edition-noise.ts`).
  *    Também não enxerga sessões interativas comuns do editor (que não se
- *    registram em `session-registry.ts` — só overnight/develop se
+ *    registram em `session-registry.ts` — só overnight/develop/continuo se
  *    registram) — é exatamente o tipo de sessão que causou os 29% de ruído
  *    na 260814. Por isso o sinal 1 (transcript, que vê TODA sessão Claude
  *    Code local, independente de kind) é o mais confiável dos dois; o sinal
@@ -107,15 +107,15 @@ export interface NoisySession {
 
 export interface SessionRegistryNoiseCheck {
   checked_at: string;
-  /** Sessões overnight/develop ativas AGORA, excluindo (quando
+  /** Sessões overnight/develop/continuo ativas AGORA, excluindo (quando
    * informado) a sessão que está fazendo a própria medição. */
   other_active_sessions: NoisySession[];
   clean: boolean;
 }
 
 /**
- * Consulta `session-registry.ts` (o mesmo registro de overnight/develop)
- * por sessões ativas agora, excluindo a própria (se
+ * Consulta `session-registry.ts` (o mesmo registro de overnight/develop/
+ * continuo) por sessões ativas agora, excluindo a própria (se
  * `opts.excludeSessionId` for passado — evita a sessão `/diaria-develop` que
  * está RODANDO esta medição se auto-marcar como ruído). Ver limitação de
  * cobertura no cabeçalho do módulo — sinal ponto-no-tempo, não retroativo.
@@ -182,7 +182,7 @@ export function assessConcurrentNoise(
   if (registryCheck.other_active_sessions.length > 0) {
     const kinds = registryCheck.other_active_sessions.map((s) => `${s.kind}:${s.sessionId.slice(0, 8)}`).join(", ");
     reasons.push(
-      `session-registry reporta ${registryCheck.other_active_sessions.length} sessão(ões) overnight/develop ` +
+      `session-registry reporta ${registryCheck.other_active_sessions.length} sessão(ões) overnight/develop/continuo ` +
         `ativa(s) no momento da checagem (${kinds}) — sinal ponto-no-tempo, não cobre a janela inteira da edição.`,
     );
   }

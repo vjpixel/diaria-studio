@@ -5,7 +5,7 @@
  * é detecção; correção fica com quem lê o alerta), decidido na sessão
  * `/diaria-develop` 260817b: reduz o padrão observado em #5586 (#5237/#5239/
  * #5125 na rodada overnight 260817c/d), onde um comentário de sessão
- * (overnight/develop) registra em PROSA que uma issue foi
+ * (overnight/develop/continuo) registra em PROSA que uma issue foi
  * deferida/decidida ("aguardando pré-requisito", "trade-off-real", etc.) mas
  * a LABEL estrutural correspondente (`not-this-week`, `trade-off-real`, ...)
  * nunca é aplicada — deixando `classifyExecTrack` (`scripts/lib/issue-exec-track.ts`)
