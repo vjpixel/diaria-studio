@@ -1,5 +1,5 @@
 /**
- * test/continuo-infra-consumidor-externo.test.ts (#6061)
+ * test/continuo-infra-consumidor-externo.test.ts (#6056)
  *
  * Guard de regressão contra a classe de erro do #6056/#6059/#6060: remover a
  * infra do kind `continuo` deste repo tratando-a como código morto.
@@ -34,6 +34,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { requireKind } from "../scripts/lib/session-registry.ts";
+import { COORDINATOR_KINDS } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -76,15 +77,11 @@ describe("infra do kind continuo tem consumidor externo (#6056/#6059/#6060)", ()
   });
 
   it("COORDINATOR_KINDS do guard de merge inclui continuo — senão subagentes do hermes mergeiam sem guarda", () => {
-    const hook = readFileSync(
-      join(ROOT, ".claude", "hooks", "block-gh-pr-merge-subagent.mjs"),
-      "utf8",
-    );
-    const linha = hook.split("\n").find((l) => l.includes("COORDINATOR_KINDS"));
-    assert.ok(linha, "COORDINATOR_KINDS sumiu do hook.");
-    assert.match(
-      linha,
-      /"continuo"/,
+    // Importado, não lido como texto: uma reformatação legítima do hook (quebra
+    // de linha, extração da constante pra um módulo comum) não deve derrubar
+    // este guard — só a remoção real do kind deve.
+    assert.ok(
+      COORDINATOR_KINDS.has("continuo"),
       'COORDINATOR_KINDS perdeu "continuo" — uma sessão do hermes deixa de contar como ' +
         "coordenadora e o guard do #5716 para de proteger os subagentes dela (fail-open, sem log).",
     );
