@@ -28,10 +28,12 @@ inteira não fecha de ponta a ponta.
 
 | Pergunta | Decisão |
 |---|---|
-| Conteúdo do post apoia.se | Teaser + link: título + 2-3 parágrafos de abertura (reaproveitados do artigo) + URL. Não é o texto integral nem o conteúdo do paywall (`artigo.diar.ia.br`, `workers/artigo-mensal` — canal separado). |
+| Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`artigo.diar.ia.br`, `workers/artigo-mensal` — canal separado). |
+| Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
+| **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` fora do apoia.se** (editor, 23/08/2026). O artigo é fechado para apoiadores — publicar o link no feed entrega a quem não apoia. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
 | Conta(s) e horário LinkedIn | Página diar.ia.br (`webhook_target: "diaria"`) **e** perfil pessoal (`webhook_target: "pixel"`), textos distintos, **D+1 17:30 BRT** (mesmo horário `d3_time` dos posts de edição). |
 | Box | Reescrever `data/snippets/artigo-especial-apoiadores.md` + pinar no slot 3 (`boxes_divulgacao.slot3` + `boxes_divulgacao_auto.pinned_slots: [3]` em `platform.config.json`). |
-| Visibilidade apoia.se | Público (teaser e artigo são ambos públicos). |
+| Visibilidade apoia.se | **Restrito a apoiadores R$10+ (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui "público").** Motivo: `data/snippets/artigo-especial-apoiadores.md` vende o Artigo Especial como benefício de R$10+/mês; post público entregaria o benefício a quem não paga no mesmo instante. A restrição é do POST — o artigo em si segue público em `especial.diar.ia.br` (o canal com paywall continua sendo outro: `artigo.diar.ia.br`, `workers/artigo-mensal`). Consequência no texto: o `apoiase.md` fala com quem JÁ apoia, sem CTA de conversão. |
 
 ## Argumentos
 
@@ -106,9 +108,16 @@ Agent(subagent_type="general-purpose", model="sonnet", prompt=<
   Gere 3 textos a partir deste artigo especial (metadados abaixo). Nunca
   invente fatos além do que os metadados sustentam.
 
-  1. apoiase.md — teaser público: título do artigo + os leadParagraphs
-     reaproveitados (não reescreva o conteúdo já publicado, é o mesmo texto
-     do artigo) + call-to-action pro link. 2-3 parágrafos + URL.
+  Os 3 são CHAMADA, não recorte (editor, 23/08/2026 — ver tabela de
+  decisões): despertam curiosidade e param antes do prêmio. Não copie nem
+  parafraseie os leadParagraphs, e não entregue a tese/o mecanismo no
+  próprio post — é isso que a pessoa vai buscar no artigo. Os títulos das
+  seções (`<h3 class="sect">` do HTML) são ótimos ganchos de PROMESSA:
+  citam o que o artigo responde sem revelar a resposta. Nada de clickbait
+  vazio — o gancho é concreto, o interesse vem do fato real ser estranho.
+
+  1. apoiase.md — chamada pública: título do artigo + 2 parágrafos curtos
+     de chamada + URL.
   2. linkedin-pagina.md — voz institucional diar.ia.br (3ª pessoa), CTA
      pra apoia.se/diaria + link do artigo. Formato de post LinkedIn comum
      (ver context/publishers/linkedin.md seções 1-8 pro tom esperado).
@@ -319,7 +328,7 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 
 ```
 data/artigo-especial/{ano}-{slug}/
-  apoiase.md                  teaser publico (Passo 1)
+  apoiase.md                  chamada publica (Passo 1)
   linkedin-pagina.md          post pagina diar.ia.br (Passo 1)
   linkedin-perfil.md          post perfil pessoal (Passo 1)
   published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box (Passo 0 guard, atualizado nos Passos 3-5)

@@ -110,6 +110,74 @@ const TARGET_TO_CHANNEL: Record<LinkedinTarget, ArtigoEspecialChannel> = {
   perfil: "linkedin_perfil",
 };
 
+/**
+ * Pura: o `destaque` que vai NO PAYLOAD DO WORKER (não o do nosso store).
+ *
+ * O Worker LinkedIn valida `destaque` contra `/^(d[123]|weekly(-[a-z]+)?)$/`
+ * (`workers/linkedin-cron/src/index.ts`) e rejeita "pagina"/"perfil" com HTTP
+ * 400 — incidente da 1ª execução ao vivo, 23/08/2026, ver o comentário longo
+ * no call site de `dispatchEntry`. `weekly-{target}` casa com o regex e é
+ * puro carimbo de auditoria do lado do Worker.
+ *
+ * O nosso `linkedin-published.json` NÃO pode herdar esse valor: a
+ * reconciliação lê `post.destaque` de volta e mapeia por `TARGET_TO_CHANNEL`
+ * (`weekly-pagina` não é chave válida lá, o canal viraria `undefined` e a
+ * correção de status silenciosamente não aconteceria). Por isso o retorno do
+ * `dispatchEntry` é normalizado de volta pra "pagina"/"perfil" antes de ser
+ * gravado — ver `normalizeEntryDestaque`.
+ */
+export function dispatchDestaqueFor(target: LinkedinTarget): string {
+  return `weekly-${target}`;
+}
+
+/**
+ * Espelho do regex de validação do Worker (`workers/linkedin-cron/src/index.ts`,
+ * handler `/queue`). Duplicado aqui de propósito: o Worker é outro deployable
+ * e não dá pra importar dele: o objetivo é falhar ANTES do dispatch em vez de
+ * descobrir via HTTP 400 no meio da sequência.
+ */
+const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
+
+/**
+ * Guard de pré-voo: valida o `destaque` de TODOS os targets desta run contra o
+ * contrato do Worker antes de despachar QUALQUER um.
+ *
+ * Existe por causa do incidente de 23/08/2026: o `destaque` inválido só era
+ * descoberto quando o Worker devolvia 400, e aí já era tarde — o dispatch da
+ * página caía no fallback Make (que publica NA HORA, ignorando
+ * `scheduled_at`) enquanto o do perfil falhava seco, publicando exatamente a
+ * "metade do anúncio" que o fail-fast do topo deste script existe pra evitar.
+ * O fail-fast original não cobria este caso porque ele checa se o Worker está
+ * CONFIGURADO/alcançável, e um 400 é uma resposta válida de um Worker no ar.
+ */
+export function assertDispatchDestaquesValid(targets: readonly LinkedinTarget[]): void {
+  const invalid = targets.map((t) => [t, dispatchDestaqueFor(t)] as const).filter(([, d]) => !WORKER_DESTAQUE_RE.test(d));
+  if (invalid.length > 0) {
+    const detail = invalid.map(([t, d]) => `${t} → "${d}"`).join(", ");
+    throw new Error(
+      `destaque incompatível com o Worker LinkedIn (${detail}); esperado casar ${WORKER_DESTAQUE_RE}. ` +
+        `Abortando ANTES de despachar — um dispatch parcial publicaria a página fora do horário via fallback Make ` +
+        `e deixaria o perfil sem post (incidente 23/08/2026).`,
+    );
+  }
+}
+
+/**
+ * Pura: resolve o canal a partir do `destaque` COMO ESTÁ GRAVADO no store.
+ *
+ * Aceita as duas grafias de propósito. `dispatchEntry` persiste a entry por
+ * dentro, com o `destaque` que foi enviado ao Worker (`weekly-pagina`), então
+ * é esse o valor que aparece em `linkedin-published.json` a partir de
+ * 23/08/2026 — mas o arquivo também guarda entries ANTERIORES ao incidente,
+ * gravadas como "pagina"/"perfil" cru. Ler só uma das grafias faria a
+ * reconciliação pular entries silenciosamente (canal `undefined` → `continue`),
+ * que é justamente o modo de falha invisível que este arquivo tenta evitar.
+ */
+export function channelForStoredDestaque(destaque: string): ArtigoEspecialChannel | null {
+  const bare = destaque.startsWith("weekly-") ? destaque.slice("weekly-".length) : destaque;
+  return TARGET_TO_CHANNEL[bare as LinkedinTarget] ?? null;
+}
+
 /** Pura: deriva o `ChannelStatus` agregado (Passo 0) a partir do `PostEntry`
  *  que `dispatchEntry` gravou. `draft`/`scheduled` (qualquer rota que saiu
  *  sem lançar) → `done`; `failed` → `failed`. */
@@ -241,6 +309,8 @@ export async function runArtigoEspecialLinkedinDispatch(
   const targetToWebhook: Record<LinkedinTarget, "diaria" | "pixel"> = { pagina: "diaria", perfil: "pixel" };
   const results: RunDispatchResult["results"] = [];
 
+  assertDispatchDestaquesValid(only);
+
   for (const target of only) {
     const channel = TARGET_TO_CHANNEL[target];
     const decision = decideChannelAction(state, channel, force);
@@ -252,7 +322,30 @@ export async function runArtigoEspecialLinkedinDispatch(
 
     const text = readPostBody(artigoDir, target);
     const input: DispatchInput = {
-      destaque: target, // "pagina" | "perfil" — não é d1/d2/d3, ver DispatchInput.destaque: string.
+      // INCIDENTE 23/08/2026 (1ª execução ao vivo desta skill): aqui passava
+      // `destaque: target` ("pagina"/"perfil") na premissa de que
+      // `DispatchInput.destaque: string` era livre. É livre no TIPO, mas o
+      // Worker VALIDA em runtime — `workers/linkedin-cron/src/index.ts`,
+      // regex `/^(d[123]|weekly(-[a-z]+)?)$/` — e devolveu HTTP 400 pros 2
+      // dispatches. Consequência real: o dispatch da PÁGINA caiu no fallback
+      // Make, que publica NA HORA e ignora `scheduled_at`, então o post saiu
+      // às 23h em vez do horário agendado (foi apagado à mão); o do PERFIL
+      // falhou seco (sem fallback Make pro `webhook_target=pixel`). O
+      // fail-fast do topo deste script não pegou porque ele testa se o
+      // Worker está CONFIGURADO/alcançável — e o Worker respondeu, só que
+      // 400: erro de validação passa por aquele guard.
+      //
+      // Correção mínima e sem deploy: usar um valor que o Worker JÁ aceita.
+      // `weekly-{target}` casa com `weekly(-[a-z]+)?`. Escolhido em vez de
+      // ampliar o regex do Worker porque a versão publicada estava ~1 mês
+      // atrás do master (checado via `wrangler deployments list`) — um
+      // deploy pra corrigir isto subiria drift não relacionado no canal que
+      // publica a edição diária. `destaque` no Worker é só carimbo de
+      // auditoria (não há ramificação por prefixo `weekly`, conferido em
+      // index.ts), então o efeito colateral é cosmético no log dele.
+      // Nosso store local (`linkedin-published.json`) continua gravando
+      // "pagina"/"perfil" — ver `dispatchDestaqueFor`.
+      destaque: dispatchDestaqueFor(target),
       subtype: "main",
       text,
       imageUrl,
@@ -338,9 +431,9 @@ export async function runArtigoEspecialLinkedinDispatch(
         // que uma correspondência em `results` exista.
         for (const post of updated.posts) {
           if (post.platform !== "linkedin" || post.status !== "failed") continue;
-          const target = post.destaque as LinkedinTarget;
-          const channel = TARGET_TO_CHANNEL[target];
+          const channel = channelForStoredDestaque(post.destaque);
           if (!channel) continue;
+          const target = (post.destaque.startsWith("weekly-") ? post.destaque.slice("weekly-".length) : post.destaque) as LinkedinTarget;
           if (state.channels[channel]?.status === "failed") continue; // já refletido, evita write redundante
           const reason =
             typeof post.failure_reason === "string" ? post.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";

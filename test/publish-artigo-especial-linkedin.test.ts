@@ -11,6 +11,9 @@ import {
   parseAnoSlugFromDir,
   resolveImageUrl,
   runArtigoEspecialLinkedinDispatch,
+  dispatchDestaqueFor,
+  assertDispatchDestaquesValid,
+  channelForStoredDestaque,
 } from "../scripts/publish-artigo-especial-linkedin.ts";
 import {
   artigoEspecialStatePath,
@@ -340,8 +343,15 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
           // Simula o Worker rejeitando o item (DLQ) apos dispatchEntry ja ter
           // reportado "scheduled".
           const updated = {
+            // Casa pelo destaque COMO PERSISTIDO (`weekly-pagina` desde o
+            // incidente de 23/08/2026 — `dispatchEntry` grava o valor que foi
+            // ao Worker). Derivado de `dispatchDestaqueFor` de propósito, pra
+            // este mock não voltar a congelar uma string literal que o
+            // contrato do Worker pode mudar de novo.
             posts: published.posts.map((p) =>
-              p.destaque === "pagina" ? { ...p, status: "failed" as const, failure_reason: "worker_dlq: teste" } : p,
+              p.destaque === dispatchDestaqueFor("pagina")
+                ? { ...p, status: "failed" as const, failure_reason: "worker_dlq: teste" }
+                : p,
             ),
           };
           return { updated, changes: 1 };
@@ -527,3 +537,53 @@ function existsSyncSafe(path: string): boolean {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Regressão do incidente de 23/08/2026 (1ª execução ao vivo da skill).
+//
+// O script mandava `destaque: "pagina"|"perfil"` pro Worker LinkedIn na
+// premissa de que `DispatchInput.destaque: string` era livre. É livre no
+// TIPO, mas o Worker valida em RUNTIME contra
+// /^(d[123]|weekly(-[a-z]+)?)$/ e devolveu HTTP 400 pros 2 dispatches.
+// Dano real: o dispatch da PÁGINA caiu no fallback Make, que publica NA HORA
+// ignorando `scheduled_at` (post saiu ~23h em vez do horário agendado, teve
+// de ser apagado à mão), e o do PERFIL falhou seco — exatamente a "metade do
+// anúncio" que o fail-fast do topo do script existe pra evitar.
+// ---------------------------------------------------------------------------
+describe("destaque compatível com o contrato do Worker (incidente 23/08/2026)", () => {
+  /** Cópia literal do regex de `workers/linkedin-cron/src/index.ts` (handler
+   *  /queue). Se o Worker mudar o contrato, este teste é quem denuncia. */
+  const WORKER_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
+
+  it("o destaque enviado ao Worker casa com o regex de validação dele", () => {
+    for (const target of ["pagina", "perfil"] as const) {
+      const enviado = dispatchDestaqueFor(target);
+      assert.ok(
+        WORKER_RE.test(enviado),
+        `destaque "${enviado}" (target ${target}) seria rejeitado com HTTP 400 pelo Worker`,
+      );
+    }
+  });
+
+  it("o valor CRU do target seria rejeitado — é a regressão que causou o incidente", () => {
+    for (const cru of ["pagina", "perfil"]) {
+      assert.equal(WORKER_RE.test(cru), false, `"${cru}" não deve ser considerado válido pelo Worker`);
+    }
+  });
+
+  it("assertDispatchDestaquesValid não lança para os targets suportados", () => {
+    assert.doesNotThrow(() => assertDispatchDestaquesValid(["pagina", "perfil"]));
+  });
+
+  it("channelForStoredDestaque lê as DUAS grafias do store (nova e pré-incidente)", () => {
+    // Grafia nova: dispatchEntry persiste o destaque que foi ao Worker.
+    assert.equal(channelForStoredDestaque("weekly-pagina"), "linkedin_pagina");
+    assert.equal(channelForStoredDestaque("weekly-perfil"), "linkedin_perfil");
+    // Grafia antiga: entries gravadas antes do incidente seguem no arquivo.
+    assert.equal(channelForStoredDestaque("pagina"), "linkedin_pagina");
+    assert.equal(channelForStoredDestaque("perfil"), "linkedin_perfil");
+    // Desconhecido não pode virar canal — a reconciliação precisa pular.
+    assert.equal(channelForStoredDestaque("d1"), null);
+    assert.equal(channelForStoredDestaque("weekly"), null);
+  });
+});
