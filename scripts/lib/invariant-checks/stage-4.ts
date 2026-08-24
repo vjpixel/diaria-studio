@@ -1430,9 +1430,11 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
       violations.push({
         rule: "carousel-cards-stale",
         message:
-          `03-social.md mudou depois que os slides de ${d} foram gerados (carimbo ${carimbo}, ` +
-          `texto atual ${atual}) — a legenda vai sair com o texto NOVO e os cards do carrossel com ` +
-          `o ANTIGO, porque o texto está rasterizado na imagem. Fix: ` +
+          `os slides de ${d} não refletem o estado atual (carimbo ${carimbo}, atual ${atual}) — ` +
+          `ou o 03-social.md mudou depois da geração, ou o FORMATO do card mudou (o carimbo cobre ` +
+          `texto E layout desde o #6078, então uma edição rasterizada antes daquela mudança também ` +
+          `cai aqui). Nos dois casos a arte publicada fica defasada, porque o texto está rasterizado ` +
+          `na imagem. Fix (o mesmo para ambos): ` +
           `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" e depois ` +
           `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" (o KV precisa da arte nova).`,
         source_issue: "#6064",
@@ -1487,7 +1489,8 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
         `caracteres ou menos, aqui no painel Revisão, e depois rodar ` +
         `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + ` +
         `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}". ` +
-        `Sem isso a geração dos slides falha e o destaque publica como post single-image.`,
+        `Enquanto isto não for feito, a geração dos slides FALHA — e se o gate for ignorado ` +
+        `assim mesmo, o destaque publica como post single-image (fallback tudo-ou-nada).`,
       source_issue: "#6078",
       severity: "error",
       file: socialPath,

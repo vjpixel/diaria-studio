@@ -18,7 +18,9 @@
  *      (`social-cta-lines.ts`) pra não divergir do texto que a legenda já usa.
  *
  * Os 4 slides SEM foto (2-5) reusam o layout `buildFlatCardSvg`/`renderFlatCard`
- * de `weekly-flat-card.ts` (paleta clara canônica, auto-size do título/corpo)
+ * de `weekly-flat-card.ts` (paleta clara canônica; título/corpo em TAMANHO
+ * FIXO desde o #6078 — ver `DAILY_CAROUSEL_LAYOUT`. O auto-size continua
+ * sendo o default do módulo e segue valendo pro carrossel SEMANAL)
  * — já é genérico o bastante (kicker/title/footer), não específico do
  * carrossel semanal apesar do nome do arquivo. Evita reimplementar SVG novo,
  * seguindo a própria recomendação do #6005 ("conferir antes de reimplementar

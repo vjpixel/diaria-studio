@@ -92,6 +92,43 @@ export async function genCarouselCards(
   const storedHashes = readCarouselSourceHashes(editionDir);
   const hashes: CarouselSourceHashes = {};
 
+  // #6078 item 2 — PRÉ-PASSADA de overflow, antes de renderizar qualquer
+  // destaque. Com tamanho FIXO o texto não encolhe mais pra caber, e a política
+  // do editor é REESCREVER o parágrafo; renderizar transbordado seria a mesma
+  // falha silenciosa que o #6064 consertou, na direção oposta.
+  //
+  // A checagem é de TODOS os destaques de uma vez, e não dentro do loop de
+  // render (review do #6085): abortar no primeiro transbordante escondia os
+  // demais, e o editor descobria um por vez, em ciclos separados de
+  // corrigir+re-rodar. Aqui ele recebe a lista inteira do que reescrever —
+  // mesmo comportamento do invariante irmão `carousel-text-overflow` no Stage 4.
+  const transbordam: { destaque: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
+  for (const d of destaques) {
+    const dText = section ? extractDestaqueBlock(section, d) : null;
+    if (!dText) continue; // reportado como `skipped` no loop principal abaixo
+    const slides = findOverflowingCarouselSlides(dText.trim());
+    if (slides.length > 0) transbordam.push({ destaque: d, slides });
+  }
+  if (transbordam.length > 0) {
+    const detalhe = transbordam
+      .map(
+        ({ destaque, slides }) =>
+          `  ${destaque}:\n` +
+          slides.map((o) => `    · ${o.slot}: ${o.chars} chars → ${o.lines} linhas, ${o.excessPx}px além do card`).join("\n"),
+      )
+      .join("\n");
+    const total = transbordam.reduce((n, t) => n + t.slides.length, 0);
+    throw new Error(
+      `${total} slide(s) do carrossel não cabem no card em ${DAILY_CAROUSEL_BODY_SIZE}px ` +
+        `(${transbordam.length} destaque(s) afetado(s)):\n${detalhe}\n\n` +
+        `Fix: REESCREVER os parágrafos correspondentes em 03-social.md pra ` +
+        `~${DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET} caracteres ou menos, e rodar de novo. ` +
+        `O tamanho da fonte é fixo de propósito (#6078): encolher só o slide que estourou traria ` +
+        `de volta a variação de métrica entre os cards do mesmo carrossel, e cortar o texto ` +
+        `sumiria com conteúdo. Nenhum slide foi gerado nesta invocação.`,
+    );
+  }
+
   for (const d of destaques) {
     const dText = section ? extractDestaqueBlock(section, d) : null;
     if (!dText) {
@@ -114,25 +151,6 @@ export async function genCarouselCards(
       continue;
     }
     if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
-
-    // #6078 item 2: com tamanho FIXO o texto não encolhe mais pra caber, e a
-    // política do editor é REESCREVER o parágrafo — nunca degradar a arte.
-    // Bloqueia ANTES de rasterizar: renderizar transbordado e seguir seria a
-    // mesma falha silenciosa que o #6064 consertou, só que na direção oposta.
-    const overflowing = findOverflowingCarouselSlides(dText.trim());
-    if (overflowing.length > 0) {
-      const detalhe = overflowing
-        .map((o) => `  · ${o.slot}: ${o.chars} chars → ${o.lines} linhas, ${o.excessPx}px além do card`)
-        .join("\n");
-      throw new Error(
-        `${d}: ${overflowing.length} slide(s) do carrossel não cabem no card em ` +
-          `${DAILY_CAROUSEL_BODY_SIZE}px:\n${detalhe}\n\n` +
-          `Fix: REESCREVER o(s) parágrafo(s) correspondente(s) em '## ${d}' de 03-social.md ` +
-          `pra ~${DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET} caracteres ou menos, e rodar de novo. ` +
-          `O tamanho da fonte é fixo de propósito (#6078): encolher só este slide traria de volta ` +
-          `a variação de métrica entre os cards do mesmo carrossel, e cortar o texto sumiria com conteúdo.`,
-      );
-    }
 
     const rendered = await render(dText.trim(), outPaths);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));

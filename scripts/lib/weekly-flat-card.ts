@@ -146,7 +146,7 @@ function fillingFontSize(title: string, availableWidth: number, availableHeight:
     const blockHeight = lines.length * lineGap;
     if (blockHeight <= availableHeight) return { size, lines };
   }
-  const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * 0.52)));
+  const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * CHAR_WIDTH_RATIO)));
   return { size: TITLE_SIZE_MIN, lines: wrapTitle(title, maxCharsPerLine) };
 }
 

@@ -24,7 +24,7 @@ import {
   DAILY_CAROUSEL_BODY_SIZE,
   hashCarouselSlideTexts,
 } from "../scripts/lib/daily-carousel-card.ts";
-import { measureFlatCardBody } from "../scripts/lib/weekly-flat-card.ts";
+import { measureFlatCardBody, buildFlatCardSvg } from "../scripts/lib/weekly-flat-card.ts";
 import { createHash } from "node:crypto";
 import { INSTAGRAM_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 
@@ -219,5 +219,41 @@ describe("hashCarouselSlideTexts cobre o layout (#6078)", () => {
 
   it("mesmo texto + mesmo layout continua estável (idempotência preservada)", () => {
     assert.equal(hashCarouselSlideTexts(texto), hashCarouselSlideTexts(texto));
+  });
+});
+
+/**
+ * (#6078, review da #6085) A âncora no TOPO é a mudança visual central do
+ * layout `fixed`, e nenhum teste a exercitava no nível do SVG — só o cálculo
+ * numérico. Um refactor que revertesse o ternário de `blockTop` passaria
+ * despercebido.
+ */
+describe("buildFlatCardSvg com layout fixed ancora o texto no TOPO (#6078)", () => {
+  const KICKER_Y = 168, BAR_Y = KICKER_Y + 30, FOOTER_Y = 1350 - 62;
+  const TITLE_TOP = BAR_Y + 90, TITLE_BOTTOM = FOOTER_Y - 90;
+  const firstBodyY = (svg: string): number => {
+    // 1º <text> depois do kicker é a 1ª linha de corpo
+    const ys = [...svg.matchAll(/<text x="72" y="([\d.]+)"/g)].map((m) => Number(m[1]));
+    return ys.filter((y) => y !== KICKER_Y && y !== FOOTER_Y)[0];
+  };
+
+  it("fixed: 1ª linha começa em TITLE_TOP, independente do tamanho do texto", () => {
+    const esperado = TITLE_TOP + DAILY_CAROUSEL_BODY_SIZE * 0.85;
+    for (const titulo of ["Curto.", "Um parágrafo bem mais longo, com várias palavras, que ocupa mais linhas do card."]) {
+      const svg = buildFlatCardSvg({ kicker: "01 / 03", title: titulo, footer: "diar.ia.br" }, DAILY_CAROUSEL_LAYOUT);
+      assert.equal(firstBodyY(svg), esperado, `"${titulo.slice(0, 20)}..." deveria começar no topo`);
+    }
+  });
+
+  it("fill (default): bloco é CENTRALIZADO — texto curto começa BEM abaixo do topo", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "Curto.", footer: "diar.ia.br" });
+    const y = firstBodyY(svg);
+    assert.ok(y > TITLE_TOP + 50, `centralizado deveria começar abaixo de TITLE_TOP; veio ${y}`);
+    assert.ok(y < TITLE_BOTTOM, "e ainda dentro do espaço disponível");
+  });
+
+  it("fixed usa o tamanho configurado no SVG, não um calculado", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "Curto.", footer: "y" }, DAILY_CAROUSEL_LAYOUT);
+    assert.match(svg, new RegExp(`font-size="${DAILY_CAROUSEL_BODY_SIZE}"`));
   });
 });

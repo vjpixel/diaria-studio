@@ -35,6 +35,8 @@ import {
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { createHash } from "node:crypto";
+import { buildCarouselSlideTexts } from "../scripts/lib/daily-carousel-card.ts";
 import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
@@ -719,6 +721,60 @@ describe("carousel-text-overflow (#6078)", () => {
   it("a regra está registrada no Stage 4", () => {
     const ids = getRulesForStage(4).map((r) => r.id);
     assert.ok(ids.includes("carousel-text-overflow"), "sem registro, o gate nunca roda o check");
+  });
+
+  it("carimbo no formato ANTIGO (sem layoutTag) força regeneração em vez de pular", () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+      writeSlides(dir, "d1");
+      // simula o carimbo que a versão pré-#6078 teria gravado: hash SÓ do texto
+      const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => {
+        const t = buildCarouselSlideTexts(TEXTO_D1)[slot];
+        return `${t.kicker} || ${t.title}`;
+      }).join(" ~~ ");
+      const hashAntigo = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+      writeCarouselSourceHashes(dir, { d1: hashAntigo });
+
+      assert.equal(
+        shouldRenderCarouselSlides({
+          allSlidesExist: true,
+          storedHash: hashAntigo,
+          currentHash: hashCarouselSlideTexts(TEXTO_D1),
+          force: false,
+        }),
+        true,
+        "arte rasterizada com o layout antigo NUNCA pode ser pulada por hash batendo",
+      );
+      const v = checkCarouselCardsStale(dir);
+      assert.equal(v.length, 1, "e o Stage 4 acusa, mandando regerar");
+      assert.equal(v[0].severity, "error");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aborta reportando TODOS os destaques transbordantes, não só o primeiro", async () => {
+    const dir = makeEdition();
+    try {
+      // d1 e d3 estouram; d2 está OK — o erro precisa nomear os dois
+      writeFileSync(
+        join(dir, "03-social.md"),
+        ["# Social", "", "## d1", "", paraDe(800), "", "## d2", "", "Texto curto d2.", "", "## d3", "", paraDe(900), ""].join("\n"),
+        "utf8",
+      );
+      await assert.rejects(
+        () => genCarouselCards(dir, { render: async (_t, o) => o }),
+        (err) => {
+          assert.match((err as Error).message, /d1/);
+          assert.match((err as Error).message, /d3/);
+          assert.match((err as Error).message, /2 destaque\(s\) afetado\(s\)/);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("genCarouselCards ABORTA em vez de rasterizar transbordando", async () => {
