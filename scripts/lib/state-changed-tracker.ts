@@ -40,6 +40,7 @@
  * @see scripts/check-overnight-token-instrumentation.ts (padrão de estilo)
  * @see .claude/skills/diaria-overnight/SKILL.md
  * @see .claude/skills/diaria-develop/SKILL.md
+ * @see .claude/skills/diaria-continuo/SKILL.md
  *
  * ## Re-varredura de convergência (#5706, fundida aqui)
  *

@@ -44,7 +44,7 @@
  * falso-positivo por comentário overnight de RODADA ANTERIOR seja um risco
  * aceitável frente à complexidade de filtrar por timestamp/sessão, e o
  * critério mais simples é também o mais robusto a variação de formato entre
- * skills (overnight/develop podem não compartilhar o mesmo
+ * skills (overnight/develop/continuo podem não compartilhar o mesmo
  * `started_at` no ponto em que este script roda).
  *
  * ## Cobertura de LABEL (#5844)

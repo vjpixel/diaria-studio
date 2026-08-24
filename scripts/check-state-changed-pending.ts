@@ -38,6 +38,7 @@
  * @see scripts/check-decision-label-drift.ts (padrão de fetch de `gh issue list` fail-soft, reusado aqui)
  * @see .claude/skills/diaria-overnight/SKILL.md
  * @see .claude/skills/diaria-develop/SKILL.md
+ * @see .claude/skills/diaria-continuo/SKILL.md
  */
 
 import { existsSync, readFileSync } from "node:fs";
