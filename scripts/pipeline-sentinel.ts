@@ -30,12 +30,22 @@
  *
  * Exit codes para `write` / `write-marker`:  0 = ok, 1 = erro
  * Exit codes para `exists`: 0 = presente, 1 = ausente
+ *
+ * `write` (#6009): antes de gravar o sentinel de um stage 1-6 no layout
+ * padrão da diária (sem `--dir`, `--edition` AAMMDD), roda as regras de
+ * `check-invariants --stage N` (via `checkStageInvariantsForWrite`) e recusa
+ * o write (exit 1) se houver violação de `severity: "error"` — gate mecânico,
+ * não depende do orchestrator lembrar de rodar o check antes. Passe
+ * `--bypass-reason "<motivo>"` pra escrever mesmo assim (logado como warn,
+ * sem bloquear) quando a violação for um falso-positivo conhecido.
  */
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir as resolveFindEditionDir } from "./lib/find-current-edition.ts";
+import { getRulesForStage } from "./lib/invariant-checks/index.ts";
+import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -192,6 +202,75 @@ export function resolveEditionDir(
   return resolveFindEditionDir(editionsDirAbs, args.edition ?? "");
 }
 
+/**
+ * #6009: gate mecânico pré-`write` — recusa gravar o sentinel de conclusão
+ * de um stage (1-6, layout AAMMDD da diária) se `check-invariants --stage N`
+ * reportar violação de `severity: "error"`.
+ *
+ * Fecha a lacuna que permitiu o sentinel do Stage 2 ser gravado como "done"
+ * numa execução caótica multi-máquina (edição 260824) com `humanizer-ran`
+ * falhando pra newsletter E social — o texto nunca passou pelo humanizador,
+ * mas o sentinel foi escrito assim mesmo. Até este fix, `check-invariants
+ * --stage 2` só rodava como PROSA no playbook do orchestrator (§2d de
+ * `orchestrator-stage-2.md`) — um passo que uma sessão LLM pode pular sob
+ * colisão/retry/resume sem nenhum ponto de execução determinístico
+ * impedindo o `write` seguinte. Este helper roda as mesmas regras
+ * (`getRulesForStage`, o registry que `check-invariants.ts` consulta) direto
+ * no processo do `write`, então pular o passo do playbook não basta mais
+ * pra produzir um sentinel inválido.
+ *
+ * Escopo deliberadamente restrito ao layout padrão da diária — pipelines com
+ * `--dir` custom (ex: `/diaria-mensal`, `data/monthly/{ciclo}`) e edições com
+ * `editionId` fora do formato AAMMDD de 6 dígitos NÃO são cobertos: o
+ * registry de invariantes assume a estrutura de arquivos da diária
+ * (`02-reviewed.md`, `03-social.md`, ...), que não existe nesses layouts —
+ * rodar as mesmas regras ali produziria falso-positivo garantido em vez de
+ * sinal útil. Mesmo padrão de restrição já usado no fallback legado do
+ * `assert` (ver `editionIsAammdd` mais abaixo).
+ *
+ * **Anti-deadlock (2 filtros, achado no self-review deste PR):** o `write`
+ * roda ANTES do sentinel do próprio stage existir — é literalmente o que
+ * está prestes a criá-lo. Rodar o registry completo sem cuidado produziria
+ * um deadlock onde o stage nunca conseguiria se auto-declarar concluído:
+ *   1. `getRulesForStage(step, { phase: "pre-dispatch" })` exclui regras
+ *      `postDispatchOnly` (ex: Stage 5 `stage-usage-captured`, que só pode
+ *      passar DEPOIS que este mesmo `write` já rodou e `capture-stage-usage.ts`
+ *      já populou `stage-status.json` — checar isso ANTES seria
+ *      falso-positivo garantido, mesmo comportamento que motivou o `--phase
+ *      pre-dispatch` original do #4516).
+ *   2. Filtro explícito de qualquer regra `step-${step}-sentinel-exists` —
+ *      cobre o caso do Stage 6 (`checkStep6Sentinel`, que verifica
+ *      `.step-6-done.json`), que **não** está marcada `postDispatchOnly`
+ *      (só o filtro 1 não bastaria) mas é old-testamente self-referencial:
+ *      checar a existência do sentinel que este `write` está prestes a criar
+ *      sempre falharia. Regras `step-N-sentinel-exists` para um stage
+ *      ANTERIOR (ex: Stage 6 checando `.step-5-done.json`) continuam rodando
+ *      normalmente — essas são legítimas (aquele sentinel já deveria existir).
+ *
+ * Pure o suficiente para teste direto: recebe `editionDir` já resolvido e
+ * devolve o resultado sem tocar em stdout/stderr/process.exit — quem chama
+ * decide como reportar.
+ */
+export function checkStageInvariantsForWrite(
+  editionDir: string,
+  step: number,
+): { passed: boolean; errors: InvariantViolation[] } {
+  if (!Number.isInteger(step) || step < 0 || step > 6) {
+    return { passed: true, errors: [] };
+  }
+  const selfSentinelRuleId = `step-${step}-sentinel-exists`;
+  const rules = getRulesForStage(step as 0 | 1 | 2 | 3 | 4 | 5 | 6, {
+    phase: "pre-dispatch",
+  }).filter((rule) => rule.id !== selfSentinelRuleId);
+  const errors: InvariantViolation[] = [];
+  for (const rule of rules) {
+    for (const v of rule.run(editionDir)) {
+      if (v.severity === "error") errors.push(v);
+    }
+  }
+  return { passed: errors.length === 0, errors };
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const args = parseCliArgs(rest).values;
@@ -228,6 +307,32 @@ function main(): void {
       if (!args.outputs) {
         console.error("[error] --outputs é obrigatório para write");
         process.exit(1);
+      }
+      // #6009: gate mecânico — recusa escrever o sentinel se check-invariants
+      // pro mesmo stage reportar violação de severity=error. Restrito ao
+      // layout padrão da diária (sem --dir custom, editionId AAMMDD de 6
+      // dígitos) — ver docstring de checkStageInvariantsForWrite.
+      const editionIsAammdd = /^\d{6}$/.test(args.edition);
+      if (!args.dir && editionIsAammdd) {
+        const invariantResult = checkStageInvariantsForWrite(editionDir, step);
+        if (!invariantResult.passed) {
+          if (args["bypass-reason"]) {
+            console.warn(
+              `[warn] sentinel step ${step} escrito com --bypass-reason apesar de ${invariantResult.errors.length} violação(ões) de invariantes: "${args["bypass-reason"]}"`,
+            );
+          } else {
+            console.error(
+              `[error] sentinel step ${step} NÃO escrito — check-invariants --stage ${step} reportou ${invariantResult.errors.length} violação(ões) de severity=error:`,
+            );
+            for (const v of invariantResult.errors) {
+              console.error(`  ❌ [${v.rule}/${v.source_issue}] ${v.message}`);
+            }
+            console.error(
+              `Corrija as violações acima e rode 'write' de novo, ou passe --bypass-reason "<motivo>" se for um falso-positivo conhecido (registrado no stderr acima para auditoria).`,
+            );
+            process.exit(1);
+          }
+        }
       }
       const outputs = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
       try {
