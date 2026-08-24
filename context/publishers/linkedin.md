@@ -399,17 +399,25 @@ Melhor foi pega e corrigida (reinserção manual via paste de 1 `<p><a>`
 isolado, cursor posicionado com `Home`/`End`/`Enter`, nunca clique direto
 sobre texto de link).
 
-Publicação continua **manual por padrão** (colar via UI, revisar
-visualmente, clicar Publish) — a automação acima é referência pra quem for
-implementar o paste assistido via Claude in Chrome no futuro; não é
-executada por `/diaria-linkedin-semanal` nesta versão (a skill entrega o
-artefato e as instruções, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`
-Passo 6). Em 260803 o paste assistido foi executado à mão numa sessão com o
-editor presente, e os achados (a)-(c) vieram dessa rodada; o achado (d)
+**Desde o #5988, a automação acima é EXECUTADA pelo Passo 8 de
+`.claude/skills/diaria-linkedin-semanal/SKILL.md`** (só a sessão
+top-level, que tem `mcp__claude-in-chrome__*` — subagentes comuns não
+têm) — deixou de ser só referência pra quem fosse implementar isso no
+futuro. O Passo 8 roda uma auditoria pós-paste obrigatória antes de
+escrever o post de feed ou agendar — `auditLinkedinPaste()` em
+`scripts/lib/linkedin-paste-audit.ts` (módulo puro: recebe as âncoras +
+`textContent.length` já lidos do DOM e devolve `{ ok, issues }`) confere
+contagem de âncoras, UTM preservada por âncora e tamanho do texto colado
+contra `ln-{cycle}.html`; `ok === false` pausa o fluxo pro editor em vez
+de agendar algo corrompido — é a mesma dupla de sinais (contagem de
+âncoras + `textContent.length`) que pegou a perda silenciosa do item (d)
+acima, agora rodando mecanicamente em vez de por inspeção manual. Em
+260803 o paste assistido foi executado à mão numa sessão com o editor
+presente, e os achados (a)-(c) acima vieram dessa rodada; o achado (d)
 veio da 1ª execução real do fluxo completo por um agente via Claude in
 Chrome, 260823 (ciclo `26w34`, artigo agendado pra publicar 260824) — a
 mesma sessão que confirmou o agendamento funciona de ponta a ponta (ver §4
-abaixo).
+abaixo) e que motivou diretamente a auditoria mecânica do #5988.
 
 ### 4. O LinkedIn AGENDA artigo de newsletter (a regra antiga dizia que não)
 
@@ -439,3 +447,10 @@ Publish, e o artigo agendado aparece em
   É peça editorial separada do corpo do artigo. Em post do LinkedIn **não
   existe âncora em texto**: link é a URL escrita por extenso, que a
   plataforma auto-linka.
+  **O que escrever ali (#5988):** 1-2 frases resumindo do que trata a
+  edição desta semana (as manchetes selecionadas no Passo 3), tom
+  consistente com os posts normais da página no LinkedIn (seções 1-8
+  acima) — diferente do comentário do Use Melhor (#5970), que é
+  obrigatoriamente voz pessoal do editor, este campo é resumo factual e
+  pode ser composto pela própria sessão que executa o Passo 8 da skill, a
+  partir das manchetes já aprovadas no gate.
