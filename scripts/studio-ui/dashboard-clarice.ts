@@ -80,7 +80,16 @@ import {
   BrevoRateLimitError,
   buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker (usado só no caminho AO VIVO, ver #4206)
   LASTGOOD_CAMPAIGNS_KEY, // #4206: chave do último payload de campanhas bom conhecido — fonte do render default (KV-only)
+  setCampaignQuotaStateObserver, // #6029: alimenta data/brevo-rate-state.json no processo local do Studio
 } from "../../workers/brevo-dashboard/src/brevo-api.ts";
+// #6029: estado de cota da família /v3/emailCampaigns* — leitura (guard do
+// fresh) e escrita (observer registrado abaixo). node-only, nunca importado
+// pelo Worker (a ponte é o observer em brevo-api.ts).
+import {
+  assertCampaignQuotaHeadroom,
+  BrevoCampaignQuotaLowError,
+  recordCampaignQuotaRemaining,
+} from "../lib/brevo-rate-state.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
 import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
@@ -387,11 +396,58 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #6029: reserva de cota + ponte do observador de rate-limit
+// ---------------------------------------------------------------------------
+
+/** Reserva de cota exigida pro caminho fresh (mesmo valor da #5697). */
+const CAMPAIGNS_FETCH_RESERVE = 30;
+
+/** Pura: segundos até o próximo topo de hora — estimativa conservadora de
+ * retry-after quando recusamos por cota baixa sem header `reset` (a janela
+ * RPH da Brevo é horária, #5215). Exportada pra teste. */
+export function secsUntilTopOfHour(nowMs: number = Date.now()): number {
+  const secOfDay = Math.floor(nowMs / 1000) % 3600;
+  return 3600 - secOfDay;
+}
+
+// Ponte brevoFetch → data/brevo-rate-state.json (item 2 do #6029): no processo
+// local do Studio, TODA resposta da família /emailCampaigns* passa a gravar o
+// `x-sib-ratelimit-remaining` observado — senão o guard do fresh só enxerga o
+// que o brevo-client.ts (scripts de automação) viu. No Worker ninguém registra
+// observer, então este módulo nunca é carregado lá. `remaining === null`
+// (header ausente) não grava — não há estado novo a registrar.
+setCampaignQuotaStateObserver((remaining, limit) => {
+  if (remaining == null) return;
+  recordCampaignQuotaRemaining(remaining, limit ?? undefined);
+});
+
 async function renderClariceDashboardLiveUncached(): Promise<string> {
   const env = buildEnv();
 
   if (!env.BREVO_API_KEY) {
     return notConfiguredHtml();
+  }
+
+  // #6029 (item 1): curto-circuito ANTES de qualquer fetch ao vivo. O caminho
+  // fresh gasta ~100+ GETs da família /v3/emailCampaigns* (100 RPH por CONTA,
+  // #5215) — um único clique com a cota baixa esgotava a hora inteira dos
+  // scripts de automação e pendurava até o 502 do incidente 260824. Sem
+  // headroom ≥ reserva (#5697: 30), cai DIRETO no fallback last-good+banner
+  // (~1s, zero GET de campanha) em vez de descobrir o 429 no meio do sweep.
+  try {
+    assertCampaignQuotaHeadroom(CAMPAIGNS_FETCH_RESERVE);
+  } catch (e) {
+    if (e instanceof BrevoCampaignQuotaLowError) {
+      console.warn(
+        `[dashboard-clarice] #6029: fresh recusado por cota Brevo baixa ` +
+          `(remaining=${e.remaining} < ${e.minRemaining}) — servindo fallback sem gastar quota.`,
+      );
+      const retryAfterSecs = secsUntilTopOfHour();
+      const response = await buildRateLimitFallback(env, retryAfterSecs, null);
+      return response.text();
+    }
+    throw e;
   }
 
   // #4187: declarado FORA do try (não `const` lá dentro) para que o catch de

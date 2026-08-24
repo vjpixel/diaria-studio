@@ -1965,6 +1965,50 @@ export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   return brevoFetchWithApiKey<T>(path, env.BREVO_API_KEY);
 }
 
+// ---------------------------------------------------------------------------
+// #6029: observador OPCIONAL de cota (`x-sib-ratelimit-remaining`) da família
+// /v3/emailCampaigns*. Este módulo roda TAMBÉM dentro do Worker Cloudflare
+// (sem node:fs), então NÃO pode importar `brevo-rate-state.ts` direto — o
+// consumidor local (Studio, processo node) registra um callback via
+// `setCampaignQuotaStateObserver` e o brevoFetch o invoca fail-soft em toda
+// resposta dessa família. No Worker ninguém registra → zero mudança de
+// comportamento (o observer é `null` por default).
+// ---------------------------------------------------------------------------
+
+/** Pura: decide se o path é da família com quota horária apertada (100 RPH). */
+export function isCampaignsFamilyPath(path: string): boolean {
+  return path.startsWith("/v3/emailCampaigns");
+}
+
+type CampaignQuotaStateObserver = (remaining: number | null, limit: number | null) => void;
+
+let campaignQuotaStateObserver: CampaignQuotaStateObserver | null = null;
+
+/** Registra o observador de cota (chamado pelo Studio local, #6029). Retorna
+ * unobserver pra teste. Idempotente na prática: registrar 2× sobrescreve. */
+export function setCampaignQuotaStateObserver(
+  fn: CampaignQuotaStateObserver | null,
+): () => void {
+  campaignQuotaStateObserver = fn;
+  return () => {
+    campaignQuotaStateObserver = null;
+  };
+}
+
+/** Fail-soft: erro no observer (disco cheio etc.) NUNCA derruba a chamada real. */
+function notifyCampaignQuotaState(path: string, headers: { get(name: string): string | null }): void {
+  if (!campaignQuotaStateObserver) return;
+  if (!isCampaignsFamilyPath(path)) return;
+  try {
+    campaignQuotaStateObserver(
+      parseRateLimitRemaining(headers.get("x-sib-ratelimit-remaining")),
+      parseRateLimitRemaining(headers.get("x-sib-ratelimit-limit")),
+    );
+  } catch {
+    // fail-soft (#6029)
+  }
+}
+
 /**
  * #4515: núcleo de `brevoFetch`, parametrizado por API key EXPLÍCITA em vez
  * de `Env` — permite chamar a API Brevo em nome de uma conta diferente da
@@ -2020,6 +2064,9 @@ export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Pro
         }
       }
     }
+    // #6029: 429 TAMBÉM observa o header (é o sinal mais importante de todos
+    // — a cota acabou de esgotar; grava remaining≈0 no estado).
+    notifyCampaignQuotaState(path, res.headers);
     throw new BrevoRateLimitError(retryAfter, floorMs);
   }
   if (!res.ok) {
@@ -2029,6 +2076,9 @@ export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Pro
     // (403/5xx, ver isBrevoOutageStatus) sem parsear a string de mensagem.
     throw new BrevoUpstreamError(res.status, `Brevo API ${path} failed (${res.status}): ${await res.text()}`);
   }
+  // #6029: caminho de SUCESSO alimenta o observador de cota (Studio grava
+  // data/brevo-rate-state.json; Worker não registra observer → no-op).
+  notifyCampaignQuotaState(path, res.headers);
   // #5215 item 4: `x-sib-ratelimit-remaining` já era lido no ramo 429 acima
   // (pro backoff) mas nunca no caminho de SUCESSO — sem isso, o primeiro
   // sinal de que o orçamento horário está acabando é o 429 em si. Log
