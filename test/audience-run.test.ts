@@ -93,8 +93,22 @@ const VALID_RESPONSE_B = {
 
 describe("parseAudienceRunArgs", () => {
   it("lê todas as flags", () => {
-    const o = parseAudienceRunArgs(["--resolve-only", "--surveys-json", "s.json", "--responses", "r.json", "--dry-run"]);
-    assert.deepEqual(o, { resolveOnly: true, surveysJsonPath: "s.json", responsesPath: "r.json", dryRun: true });
+    const o = parseAudienceRunArgs([
+      "--resolve-only",
+      "--surveys-json",
+      "s.json",
+      "--responses",
+      "r.json",
+      "--dry-run",
+      "--skip-beehiiv-resolve",
+    ]);
+    assert.deepEqual(o, {
+      resolveOnly: true,
+      surveysJsonPath: "s.json",
+      responsesPath: "r.json",
+      dryRun: true,
+      skipBeehiivResolve: true,
+    });
   });
 
   it("sem flags -> tudo default", () => {
@@ -103,6 +117,7 @@ describe("parseAudienceRunArgs", () => {
       surveysJsonPath: undefined,
       responsesPath: undefined,
       dryRun: false,
+      skipBeehiivResolve: false,
     });
   });
 });
@@ -369,6 +384,76 @@ describe("runAudience — integração", () => {
       assert.equal(calls[0].args[0], resolve(root, "data/audience-raw.json"));
 
       assert.ok(existsSync(profilePath));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--skip-beehiiv-resolve (#466, achado CRÍTICO do review PR #6084): caminho feliz completo SEM beehiiv.publicationId/profileSurveyId no config", async () => {
+    const root = freshRoot();
+    try {
+      // Config SEM beehiiv.* nenhum — mesma forma do platform.config.json
+      // real (não tem beehiiv.profileSurveyId). Sem --skip-beehiiv-resolve,
+      // resolveProfileSurveyId abortaria aqui (exit 1) ANTES de sequer
+      // olhar --responses — era exatamente o que fetch-tally-audience.ts
+      // sofria em produção antes deste fix.
+      writeConfig(root, {});
+      const responsesPath = writeJsonFixture(root, "data/_tmp/responses.json", [VALID_RESPONSE_A]);
+      const profilePath = resolve(root, "context/audience-profile.md");
+      mkdirSync(resolve(root, "context"), { recursive: true });
+
+      const { exec, calls } = makeFakeExec((script) => {
+        if (script === "scripts/update-audience.ts") {
+          writeFileSync(profilePath, "# Perfil de Audiência — diar.ia.br\n", "utf8");
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`script inesperado: ${script}`);
+      });
+      const deps = baseDeps(root, {
+        exec,
+        fetchPublications: async () => {
+          throw new Error("não deveria chamar — Passo 1 pulado por --skip-beehiiv-resolve");
+        },
+      });
+
+      const result = await runAudience(["--responses", responsesPath, "--skip-beehiiv-resolve"], deps);
+      assert.equal(result.code, 0);
+      assert.equal(calls.length, 1, "chegou até update-audience.ts — não abortou em resolveProfileSurveyId");
+      assert.ok(existsSync(profilePath));
+      // config não ganhou beehiiv.publicationId/profileSurveyId nenhum —
+      // Passo 1/3 nunca rodaram.
+      const cfgAfter = parsePlatformConfig(readFileSync(resolve(root, "platform.config.json"), "utf8"));
+      assert.equal(cfgAfter.beehiiv, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--skip-beehiiv-resolve sem --responses: erro NÃO menciona publication_id/survey_id inexistentes", async () => {
+    const root = freshRoot();
+    try {
+      writeConfig(root, {});
+      const { exec } = makeFakeExec(() => {
+        throw new Error("não deveria chamar exec");
+      });
+      const deps = baseDeps(root, { exec });
+      const result = await runAudience(["--skip-beehiiv-resolve"], deps);
+      assert.equal(result.code, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--skip-beehiiv-resolve + --resolve-only: combinação sem sentido, aborta (exit 1)", async () => {
+    const root = freshRoot();
+    try {
+      writeConfig(root, {});
+      const { exec } = makeFakeExec(() => {
+        throw new Error("não deveria chamar exec");
+      });
+      const deps = baseDeps(root, { exec });
+      const result = await runAudience(["--resolve-only", "--skip-beehiiv-resolve"], deps);
+      assert.equal(result.code, 1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

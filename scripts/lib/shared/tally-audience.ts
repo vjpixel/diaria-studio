@@ -8,10 +8,11 @@
  * ## Por que Tally (achado #466, decisão do editor 24/08/2026)
  *
  * O Kit não tem builder de survey nativo — só Form simples (opt-in) ou
- * embed de terceiro. Alternativas pesquisadas: Google Forms + Apps Script
- * (zero custo, mas sem webhook nativo) e Tally (free tier com webhook
- * nativo, diferente do Typeform que só libera webhook no plano pago).
- * Editor escolheu Tally.
+ * embed de terceiro. Alternativas pesquisadas em 24/08/2026: Google Forms +
+ * Apps Script (zero custo, mas sem webhook nativo naquela data) e Tally
+ * (free tier com webhook nativo naquela data, diferente do Typeform, que só
+ * liberava webhook no plano pago) — free tier de terceiro, reverificar se
+ * o plano mudar. Editor escolheu Tally.
  *
  * ## Sem webhook, pull direto via REST (achado ao vivo #466)
  *
@@ -26,13 +27,17 @@
  *
  * `GET /forms/{formId}/submissions` devolve `{questions: [{id, title,
  * type}], submissions: [{id, isCompleted, responses: [{questionId,
- * answer}]}]}`. **`answer` é SEMPRE um array de string** — inclusive pra
- * perguntas de escolha única (`MULTIPLE_CHOICE`), não só pra `CHECKBOXES`
- * (achado que contradiz a doc pública da Tally, que mostrava `answer`
- * como string solta pra escolha única — não confiar nesse detalhe sem
- * verificar ao vivo, mesma disciplina já aplicada ao Kit no #464/#6047/#6048).
- * O campo `formattedAnswer` que a doc também mostrava **não apareceu** na
- * resposta real.
+ * answer}]}]}`. **`answer` veio como array de string pros 2 tipos de
+ * pergunta testados — `MULTIPLE_CHOICE` (escolha única) e `CHECKBOXES`**
+ * (achado que contradiz a doc pública da Tally, que mostrava `answer` como
+ * string solta pra escolha única). O campo `formattedAnswer` que a doc
+ * também mostrava **não apareceu** na resposta real. **Escopo do achado:**
+ * só os 2 tipos acima foram observados ao vivo — texto livre/rating/upload
+ * e outros tipos do Tally NUNCA foram testados contra este parser; por
+ * segurança, `tallySubmissionToSurveyResponse` trata `r.answer` não-array
+ * como um item único em vez de assumir cegamente o shape (`Array.isArray`
+ * guard, achado do review #6084) — não confiar em "sempre array" sem
+ * verificar ao vivo de novo se o form ganhar um tipo de pergunta novo.
  *
  * `questionId` referencia `questions[].id` pra resolver `title` (via
  * `buildQuestionTitleMap`) — isso vira `question_prompt`, que é o campo
@@ -110,8 +115,17 @@ export function tallySubmissionToSurveyResponse(
   const answers: SurveyResponseLike["answers"] = [];
   for (const r of submission.responses) {
     const question_prompt = questionTitleById.get(r.questionId) ?? r.questionId;
-    for (const answer of r.answer) {
-      if (!answer) continue;
+    // Achado do review (#6084): `r.answer` é TIPADO como `string[]`, mas o
+    // tipo vem de um `as` sobre JSON externo — nada garante isso em
+    // runtime. A própria doc pública do Tally (ver docstring do módulo)
+    // já se mostrou errada uma vez sobre esse campo. `Array.isArray` aqui
+    // evita que uma resposta única vindo como string solta (não observado
+    // ainda, mas exatamente o que a doc pública alegava) iterasse
+    // caractere-a-caractere via `for...of` — silencioso e corrompido, sem
+    // nenhum erro.
+    const values = Array.isArray(r.answer) ? r.answer : [r.answer];
+    for (const answer of values) {
+      if (!answer || typeof answer !== "string") continue;
       answers.push({ question_id: r.questionId, question_prompt, answer });
     }
   }

@@ -79,6 +79,9 @@ Internamente pagina `GET /forms/{id}/submissions` até esgotar
 `runAudience` já existente (`scripts/audience-run.ts`) — zero duplicação,
 zero mudança em `update-audience.ts`. Requer `TALLY_API_KEY` (.env).
 
-Esta é a fonte usada quando `platform.config.json` → `publishing.newsletter.backend`
-(ou o eixo equivalente da migração) apontar pro Kit — até lá, o fluxo
-Beehiiv acima continua sendo o principal.
+**Ainda não existe seleção automática entre Tally e Beehiiv** (achado do
+review, PR #6084) — `publishing.newsletter.backend` só é lido por
+`publish-newsletter-kit.ts` hoje, nada branching aqui. Escolher qual dos
+dois rodar (`fetch-tally-audience.ts` ou o fluxo Beehiiv acima) é decisão
+manual de quem invoca a skill. Wiring de switch automático é trabalho
+futuro do #461, sem issue própria ainda.

@@ -28,8 +28,10 @@ describe("fetchAllTallyResponses", () => {
         submissions: [{ id: "s1", isCompleted: true, responses: [{ id: "r1", questionId: "q1", answer: ["A"] }] }],
       })) as typeof fetch;
     const result = await fetchAllTallyResponses("formId", "key", { fetchImpl });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].answers[0].question_prompt, "Pergunta?");
+    assert.equal(result.responses.length, 1);
+    assert.equal(result.responses[0].answers[0].question_prompt, "Pergunta?");
+    assert.equal(result.totalSeen, 1);
+    assert.equal(result.totalIncomplete, 0);
   });
 
   it("2 páginas (hasMore:true depois false): pagina até esgotar e concatena", async () => {
@@ -46,8 +48,36 @@ describe("fetchAllTallyResponses", () => {
     }) as typeof fetch;
     const result = await fetchAllTallyResponses("formId", "key", { fetchImpl });
     assert.equal(calls.length, 2);
-    assert.equal(result.length, 2);
-    assert.deepEqual(result.map((r) => r.id), ["s1", "s2"]);
+    assert.equal(result.responses.length, 2);
+    assert.deepEqual(result.responses.map((r) => r.id), ["s1", "s2"]);
+  });
+
+  it("submissões incompletas contam em totalSeen/totalIncomplete mas não em responses", async () => {
+    const fetchImpl = (async () =>
+      jsonRes({
+        page: 1,
+        hasMore: false,
+        questions: [{ id: "q1", title: "Pergunta?", type: "MULTIPLE_CHOICE" }],
+        submissions: [
+          { id: "completa", isCompleted: true, responses: [{ id: "r1", questionId: "q1", answer: ["A"] }] },
+          { id: "incompleta", isCompleted: false, responses: [{ id: "r2", questionId: "q1", answer: ["B"] }] },
+        ],
+      })) as typeof fetch;
+    const result = await fetchAllTallyResponses("formId", "key", { fetchImpl });
+    assert.equal(result.responses.length, 1);
+    assert.equal(result.totalSeen, 2);
+    assert.equal(result.totalIncomplete, 1);
+  });
+
+  it("shape inesperado (2xx mas sem questions/submissions arrays) lança erro nomeado, não um TypeError opaco", async () => {
+    const fetchImpl = (async () => jsonRes({ ok: true })) as typeof fetch;
+    await assert.rejects(() => fetchAllTallyResponses("formId", "key", { fetchImpl }), /shape inesperado/);
+  });
+
+  it("excede MAX_PAGES (hasMore sempre true): aborta com erro nomeado em vez de loop infinito", async () => {
+    const fetchImpl = (async () =>
+      jsonRes({ page: 1, hasMore: true, questions: [], submissions: [] })) as typeof fetch;
+    await assert.rejects(() => fetchAllTallyResponses("formId", "key", { fetchImpl }), /excedeu.*páginas/);
   });
 
   it("resposta não-2xx lança erro com o status e o body", async () => {
@@ -99,12 +129,10 @@ describe("main() — guards rápidos (nunca chegam em runAudience)", () => {
       process.env.TALLY_API_KEY = "test-key";
       writeFileSync(resolve(root, "platform.config.json"), JSON.stringify({ kit: { tallyFormId: "x" } }), "utf8");
       process.argv = ["node", "fetch-tally-audience.ts", "--dry-run"];
-      // Sem mock de fetch aqui seria uma chamada de rede real — mas main()
-      // não expõe fetchImpl injetável (só fetchAllTallyResponses expõe).
-      // Mocka o fetch GLOBAL só pra este teste, restaurado no afterEach via
-      // reatribuição do módulo global não é trivial — em vez disso, aceita
-      // que a chamada real falharia (form/key de teste inválidos) e cai no
-      // catch de erro — ainda assim confirma que dry-run nunca tenta escrever.
+      // main() não expõe fetchImpl injetável (só fetchAllTallyResponses
+      // expõe) — mocka o fetch GLOBAL com uma resposta 200 vazia, restaurado
+      // no finally logo abaixo. dry-run não precisa de dados reais pra
+      // confirmar que não escreve nada nem chama runAudience.
       const origFetch = globalThis.fetch;
       globalThis.fetch = (async () =>
         new Response(JSON.stringify({ page: 1, hasMore: false, questions: [], submissions: [] }), { status: 200 })) as typeof fetch;

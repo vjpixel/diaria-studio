@@ -315,6 +315,15 @@ export interface AudienceRunOptions {
   surveysJsonPath?: string;
   responsesPath?: string;
   dryRun: boolean;
+  /** #466 (achado do review, PR #6084): pula Passo 1/3 (publicationId/
+   *  profileSurveyId da Beehiiv) — pra callers cuja fonte de respostas não
+   *  é a survey Beehiiv (ex: `fetch-tally-audience.ts`), pra quem esses 2
+   *  IDs não existem e nunca vão existir. Sem essa flag, `runAudience`
+   *  aborta ANTES de sequer olhar `--responses`, porque
+   *  `resolveProfileSurveyId` exige `beehiiv.profileSurveyId` (ou
+   *  `--surveys-json`) incondicionalmente — confirmado ao vivo que
+   *  `fetch-tally-audience.ts` quebrava 100% das vezes por causa disso. */
+  skipBeehiivResolve: boolean;
 }
 
 export function parseAudienceRunArgs(argv: string[]): AudienceRunOptions {
@@ -323,6 +332,7 @@ export function parseAudienceRunArgs(argv: string[]): AudienceRunOptions {
     surveysJsonPath: getStringArg(argv, "surveys-json", { example: "data/_tmp/surveys.json" }),
     responsesPath: getStringArg(argv, "responses", { example: "data/_tmp/survey-responses.json" }),
     dryRun: hasFlag(argv, "dry-run"),
+    skipBeehiivResolve: hasFlag(argv, "skip-beehiiv-resolve"),
   };
 }
 
@@ -413,64 +423,81 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
     return { code: 2 };
   }
 
-  try {
-    // --- Passo 1: publicationId ---
-    // NUNCA gravar em platform.config.json sob --dry-run (#5298) — mesmo
-    // quando o valor ainda não está configurado e precisa ser resolvido, o
-    // dry-run só reporta o que TERIA sido resolvido/gravado.
-    const pub = await resolvePublicationId(cfg, deps);
-    if (pub.persisted) {
-      cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, publicationId: pub.publicationId } };
-      if (opts.dryRun) {
-        console.error(
-          `[audience-run] --dry-run: beehiiv.publicationId resolveria para ${pub.publicationId} via GET /publications (NÃO gravado em platform.config.json).`,
-        );
-      } else {
-        deps.writeFile(configPath, serializePlatformConfig(cfg));
-        console.error(`[audience-run] beehiiv.publicationId resolvido via GET /publications e persistido: ${pub.publicationId}`);
-      }
-    }
+  // #466 (achado do review, PR #6084): Passo 1/3 resolvem IDs que só fazem
+  // sentido pra fonte Beehiiv — um caller cuja fonte de respostas nunca vai
+  // ter publicationId/profileSurveyId (ex: fetch-tally-audience.ts) precisa
+  // pular os dois inteiramente, senão `resolveProfileSurveyId` aborta ANTES
+  // de sequer olhar `--responses`. `--skip-beehiiv-resolve` implica também
+  // pular `--resolve-only` (não há o que resolver) — só `pub`/`survey`
+  // ficam `undefined`, threadados como tal no resto da função.
+  let pub: { publicationId: string; persisted: boolean } | undefined;
+  let survey: { surveyId: string; persisted: boolean } | undefined;
 
-    // --- Passo 3: profileSurveyId ---
-    let surveysJson: unknown[] | undefined;
-    if (opts.surveysJsonPath) {
-      const surveysPath = resolve(deps.rootDir, opts.surveysJsonPath);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(deps.readFile(surveysPath));
-      } catch (e) {
-        throw new AudienceAbort(`--surveys-json (${opts.surveysJsonPath}) não é JSON válido: ${(e as Error).message}`);
+  try {
+    if (!opts.skipBeehiivResolve) {
+      // --- Passo 1: publicationId ---
+      // NUNCA gravar em platform.config.json sob --dry-run (#5298) — mesmo
+      // quando o valor ainda não está configurado e precisa ser resolvido, o
+      // dry-run só reporta o que TERIA sido resolvido/gravado.
+      pub = await resolvePublicationId(cfg, deps);
+      if (pub.persisted) {
+        cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, publicationId: pub.publicationId } };
+        if (opts.dryRun) {
+          console.error(
+            `[audience-run] --dry-run: beehiiv.publicationId resolveria para ${pub.publicationId} via GET /publications (NÃO gravado em platform.config.json).`,
+          );
+        } else {
+          deps.writeFile(configPath, serializePlatformConfig(cfg));
+          console.error(`[audience-run] beehiiv.publicationId resolvido via GET /publications e persistido: ${pub.publicationId}`);
+        }
       }
-      if (!Array.isArray(parsed)) {
-        throw new AudienceAbort(`--surveys-json (${opts.surveysJsonPath}) deve conter um array JSON — recebido ${typeof parsed}.`);
+
+      // --- Passo 3: profileSurveyId ---
+      let surveysJson: unknown[] | undefined;
+      if (opts.surveysJsonPath) {
+        const surveysPath = resolve(deps.rootDir, opts.surveysJsonPath);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(deps.readFile(surveysPath));
+        } catch (e) {
+          throw new AudienceAbort(`--surveys-json (${opts.surveysJsonPath}) não é JSON válido: ${(e as Error).message}`);
+        }
+        if (!Array.isArray(parsed)) {
+          throw new AudienceAbort(`--surveys-json (${opts.surveysJsonPath}) deve conter um array JSON — recebido ${typeof parsed}.`);
+        }
+        surveysJson = parsed;
       }
-      surveysJson = parsed;
-    }
-    // Mesma disciplina do Passo 1 — resolver em memória (pra reportar/usar no
-    // resto do fluxo) sem persistir nada em disco sob --dry-run.
-    const survey = resolveProfileSurveyId(cfg, surveysJson);
-    if (survey.persisted) {
-      cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, profileSurveyId: survey.surveyId } };
-      if (opts.dryRun) {
-        console.error(
-          `[audience-run] --dry-run: beehiiv.profileSurveyId resolveria para ${survey.surveyId} (única survey candidata; NÃO gravado em platform.config.json).`,
-        );
-      } else {
-        deps.writeFile(configPath, serializePlatformConfig(cfg));
-        console.error(`[audience-run] beehiiv.profileSurveyId resolvido (única survey candidata) e persistido: ${survey.surveyId}`);
+      // Mesma disciplina do Passo 1 — resolver em memória (pra reportar/usar no
+      // resto do fluxo) sem persistir nada em disco sob --dry-run.
+      survey = resolveProfileSurveyId(cfg, surveysJson);
+      if (survey.persisted) {
+        cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, profileSurveyId: survey.surveyId } };
+        if (opts.dryRun) {
+          console.error(
+            `[audience-run] --dry-run: beehiiv.profileSurveyId resolveria para ${survey.surveyId} (única survey candidata; NÃO gravado em platform.config.json).`,
+          );
+        } else {
+          deps.writeFile(configPath, serializePlatformConfig(cfg));
+          console.error(`[audience-run] beehiiv.profileSurveyId resolvido (única survey candidata) e persistido: ${survey.surveyId}`);
+        }
       }
     }
 
     if (opts.resolveOnly) {
-      console.log(JSON.stringify({ publicationId: pub.publicationId, profileSurveyId: survey.surveyId }));
+      if (opts.skipBeehiivResolve) {
+        throw new AudienceAbort("--resolve-only não faz sentido com --skip-beehiiv-resolve — não há publicationId/profileSurveyId pra resolver.");
+      }
+      console.log(JSON.stringify({ publicationId: pub!.publicationId, profileSurveyId: survey!.surveyId }));
       return { code: 0 };
     }
 
     // --- Passo 4-5: respostas brutas (--responses, obrigatório fora de --resolve-only) ---
     if (!opts.responsesPath) {
       throw new AudienceAbort(
-        "--responses <arquivo> é obrigatório fora de --resolve-only — passe o dump de list_survey_responses " +
-          `(publication_id=${pub.publicationId}, survey_id=${survey.surveyId}, paginado e concatenado num array JSON único).`,
+        opts.skipBeehiivResolve
+          ? "--responses <arquivo> é obrigatório fora de --resolve-only."
+          : "--responses <arquivo> é obrigatório fora de --resolve-only — passe o dump de list_survey_responses " +
+              `(publication_id=${pub!.publicationId}, survey_id=${survey!.surveyId}, paginado e concatenado num array JSON único).`,
       );
     }
     const responsesPath = resolve(deps.rootDir, opts.responsesPath);
