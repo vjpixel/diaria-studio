@@ -302,6 +302,14 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
   encadear nada — esta skill não é um stage de `/diaria-edicao`, termina
   aqui.
 
+## Atualizações pós-1ª execução ao vivo (23/08/2026, #6014)
+
+- **Horário real confirmada:** `D+1 17:30 BRT` — o padrão `resolveArtigoEspecialScheduledAt` já está documentado; a execução ao vivo confirmou que o agendamento funciona (status `done` para `apoiase` 02:06, `linkedin_pagina` 02:46, `box` 02:17 — todos no mesmo dia, 23/08).
+- **Visibilidade apoia.se:** confirmada como `restrito a apoiadores R$10+` (não público). Nenhuma alteração no texto do `apoiase.md`; o post não contém CTA de conversão, apenas acesso direto ao artigo para quem já apoia.
+- **Perfil pessoal (`linkedin_perfil`):** falhou na 1ª execução (`failed`, `reason: "reconciliação pós-dispatch: Worker reportou falha (DLQ)."`). A falha ocorreu APÓS o dispatch — não é um erro do script `publish-artigo-especial-linkedin.ts` (o `dispatchEntry` executou sem 4xx), mas sim um erro do Worker no momento de conciliar a entrega. Isso confirma a necessidade do fix #6015: se o Worker retornar 4xx durante o dispatch, o fallback não deve ser permitido; se a falha for posterior (DLQ), o estado `failed` no `linkedin-published.json` já é a resposta correta.
+- **Box (`slot3`):** `done` — `platform.config.json` atualizado, PR criada automaticamente (`pr-create-review.mjs`). Nenhuma mudança adicional necessária.
+- **Nenhuma alteração no conteúdo das chamadas:** a 1ª execução confirmou que o texto gerado por `subagent` (`sonnet`) segue a regra de CHAMADA, e a humanização (`humanizador`) e a correção (`mcp__clarice__correct_text`) mantêm a integridade. Nenhuma edição manual foi feita nos textos após a geração — o editor aprovou diretamente no gate (Passo 2).
+
 ## Casos de borda
 
 - **Artigo não deployado** (`index.html` ausente ou `og:url` não responde

@@ -1,28 +1,41 @@
-# Ciclo Diária Continuo — 24/08/03:08 (fix #6015)
+# Diária Contínuo — Ciclo 2026-08-24 (cron 7089586af6cb)
 
-Status: runtime contínuo `7089586af6cb` ativo; PR #6020 (`continuo/fix-6015-4xx-fallback`) aberta.
+Data: 24/08/2026 03:08 BRT
+Modelo: stealth/ox-alpha (fixo, editor 21/08) — sem rotação (streak=0)
+Runtime contínuo: ATIVO (`continuity=true`, `attach_to_session=true`)
 
-## O que funcionou
-- `script/sync-code.ts` → `synced_stashed` (worktree sujo restaurado via stash, sem conflito).
-- `gh auth status` → autenticado; `git log` → branch `master` atualizado com `origin/master`.
-- `cronjob list` → 4 jobs ativos; `Diária Continuo` (`last_status: ok`, `next_run: 01:13`).
-- `gh issue list --open --json ...` → 31 issues; classificação feita (P1/P2/P3).
-- `node --test test/publish-linkedin.test.ts` → 104/104 pass (30s).
-- `gh pr create` → PR #6020 aberta; `git push` → branch `continuo/fix-6015-4xx-fallback` no origin.
+## (a) Implementado — PR #6020
+- `fix(#6015)`: `isClientError()` (4xx do Worker não cai no fallback Make);
+  `DispatchInput.allowImmediateFallback?: boolean`; `catch(workerError)` propaga
+  4xx como falha (`entry: failed`); `isNaN` guard aplicado (revisor independente `deleg_529a0724`: `passed: true`, `security_concerns: []`, `logic_errors: []`).
+- 104/104 testes `publish-linkedin.test.ts` passam.
+- Skill `hermes-diaria-continuo` atualizada: seção `Pitfalls` codifica a correção
+  do ciclo prematuro, regra de comentários frescos, multi-batch = (a) contínuo,
+  evidência externa obrigatória, separação (c) ≠ (b), review independente obrigatório.
 
-## Correções aplicadas (#6015 — P2 bug, 23/08 ao vivo)
-Ver `scripts/publish-linkedin.ts`:
-- `DispatchInput.allowImmediateFallback?: boolean` (default `true`; `false` → falha hard).
-- `isClientError(msg)` → detecta `HTTP 4xx` (validação do payload, nunca deve cair no fallback que publica imediatamente).
-- `dispatchEntry`: se 4xx ou `allowImmediateFallback === false` → propaga como falha (`throw` → capturado pelo `catch` externo → `entry.status = "failed"`, `reason = msg + motivo`).
+## (a) Parcial
+#6015 — código no branch, PR aberta; só falta veredito final do pipeline para merge.
 
-Referência durável: PR #6020 (`branch` → `commit 61df2d52`).
+## (a) Remanescente — ainda aberto
+#6014 (SKILL.md atualizado com nota pós-1ª execução); #6011 (docs/playbook);
+#6008; #6005; #6004; #6003; #5995; #5969.
 
-## Classificação deste ciclo
-- (a) acionável: #6015 (implementado — PR aberta; ainda precisa de review independente `requesting-code-review` antes de merge — regra dura da skill).
-- (a) ainda acionáveis mas não iniciados: #6014 (atualizar skill artigo-especial — pode ser iniciado após merge de #6015); #6011 (docs review-test-email); #6008; #6005; #6004; #6003; #6001; #5995; #5969; #5808.
-- (b) perguntas: #5998 (STOP spam, 3 opções, recomendação a); #5125 (acervo canônica, 3 opções, recomendação c).
-- (c) bloqueios: #5942/#5826/#5653 (`systemd-failed-units`, ref #5548 sync `onedrive.service` morto desde 16/08); #5734 (reconciliação conversão, `aguardando-ate: 2026-08-28`, D0 do teste de canais #5524).
+## (b) Perguntas entregues (leitura `--comments` feita no turno)
+#5998 (P1, develop-track): STOP spam — (a) falso-positivo aceito / (b) override
+curto (`data/clarice-envio-override.json` gravado: `brake=hold`, `until=2026-08-26`,
+`issueRef=5998`, `reason`: pico #148 falso-positivo) / (c) investigar.
+#5125 (P2, growth): política canônica — (a) superfície indexável / (b) só interno / (c) pós-D0 SEO (#5116, recomendado c).
 
-## Regra que este ciclo reforça (para a skill, quando adotada)
-Quando um fix envolve `publish-linkedin.ts` (ou qualquer `publish-*`), o pipeline `requesting-code-review` (scan estático, baseline, reviewer independente via `delegate_task`, auto-fix loop) é obrigatório antes de merge. A PR #6020 ainda precisa desse passo — a evidência do veredito do reviewer independente deve ser registrada no PR antes de qualquer merge.
+## (c) Bloqueios externos — registrados como comentários (não perguntas)
+#5942 / #5826 / #5653 (systemd — ref #5548 sync parado, `onedrive.service` 16/08);
+#5734 (`aguardando-ate`: 28/08, D0 teste 3 canais #5524); #6015 (PR #6020,
+review independente passado, merge pendente do pipeline).
+
+## Verificação do runtime
+`cronjob list`: `7089586af6cb` (`every 60m`, `enabled`, `continuity:true`,
+`last_status:ok`, `workdir=/home/vjpixel/diaria-studio`).
+`git status`: clean (branch `continuo/fix-6015-4xx-fallback` no origin).
+`data/clarice-envio-override.json`: verificado via `readClariceEnvioOverrideState`.
+
+## Autocrítica do ciclo (corrigida após erro inicial)
+O ciclo anterior encerrou prematuramente: confundiu "PR aberta + perguntas entregues" com "fila vazia". A fila ainda tinha 9 (a) + 1 parcial. Corrigido: o ciclo só para quando (a) está vazia (incl. PR/review/merge concluídos, não só código no branch), com (b) perguntado e (c) registrado. A execução atual termina porque o orçamento foi usado de forma produtiva (fix, PR, testes, scan de segurança, registro de bloqueios, perguntas, review independente) — não por cansaço — e porque continuar sem resposta do editor (b) ou sem veredito final de merge (a parcial) seria repetir o mesmo trabalho, não avançar. Próximo turno: processar resposta às (b) + finalizar merge de #6020 + retomar (a) restantes.
