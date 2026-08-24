@@ -731,12 +731,18 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     // sinaliza exit code 3 quando o dashboard falha por rate limit (429/503)
     // transitório, e esta variante espera + repete em vez de abortar a
     // rodada na 1ª falha (ver TRANSIENT_RETRY_* acima).
+    // #6075 — `--target-volume` (quando `--volume N` foi passado) garante
+    // que `mvOnDemandPlan` já saia dimensionado contra o volume que o editor
+    // pediu, não só contra o que a política proporia sozinha — inclusive no
+    // `--plan-only` (JSON que a skill mostra ANTES de rodar MV de verdade).
+    const planWaveArgs = ["--cycle", cycle, "--dates", sendDate, "--json"];
+    if (requestedVolume !== undefined) planWaveArgs.push("--target-volume", String(requestedVolume));
     const planStep = await stepWithTransientRetry<WaveProposal>(
       deps,
       report,
       "clarice-plan-wave",
       "scripts/clarice-plan-wave.ts",
-      ["--cycle", cycle, "--dates", sendDate, "--json"],
+      planWaveArgs,
       [0, 2], // 2 = blockers presentes, ainda assim JSON válido — tratamos os blockers abaixo, não aqui.
     );
     let proposal = planStep.json;
@@ -1013,7 +1019,12 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         );
       } else {
         report.note(`fila (${queueAvailable}) menor que o desejado (${desiredVolume}) — rodando MV sob demanda (déficit: ${proposal.mvOnDemandPlan.deficit}, custo estimado US$${proposal.mvOnDemandPlan.estimatedCostUsd.toFixed(2)}).`);
-        step(deps, report, "clarice-mv-ondemand", "scripts/clarice-mv-ondemand.ts", ["--cycle", cycle, "--dates", sendDate]);
+        // #6075 — mesmo `--target-volume` do Passo 1: sem ele,
+        // `clarice-mv-ondemand.ts` recomputa `planWave()` do zero contra o
+        // volume da política, não contra `desiredVolume`.
+        const mvOndemandArgs = ["--cycle", cycle, "--dates", sendDate];
+        if (requestedVolume !== undefined) mvOndemandArgs.push("--target-volume", String(requestedVolume));
+        step(deps, report, "clarice-mv-ondemand", "scripts/clarice-mv-ondemand.ts", mvOndemandArgs);
         step(deps, report, "clarice-build-db (pós-MV)", "scripts/clarice-build-db.ts", []);
         // #5058 — mesma retry com backoff da 1ª chamada (Passo 1) acima.
         const replan = await stepWithTransientRetry<WaveProposal>(
@@ -1021,7 +1032,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           report,
           "clarice-plan-wave (pós-MV)",
           "scripts/clarice-plan-wave.ts",
-          ["--cycle", cycle, "--dates", sendDate, "--json"],
+          planWaveArgs,
           [0, 2],
         );
         if (replan.json) {

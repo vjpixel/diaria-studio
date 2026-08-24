@@ -56,6 +56,9 @@
  *
  * Uso:
  *   npx tsx scripts/clarice-mv-ondemand.ts --cycle 2607-08 --dates 2026-08-07
+ *   --target-volume N  (#6075) — repassado por `clarice-envio-run.ts` quando
+ *                   `--volume N` (editor) é maior que o volume da política;
+ *                   nunca passado em invocação manual normal.
  *
  * Stdout: sempre o resumo em JSON (mesmo padrão de verify-emails-mv.ts —
  * sem flag `--json` separada). Stderr: progresso humano-legível.
@@ -184,6 +187,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
 
+  // #6075 — mesmo `--target-volume` de `clarice-plan-wave.ts`: sem repassar
+  // o `--volume N` do editor (via `clarice-envio-run.ts`), este script
+  // recomputava `mvOnDemandPlan` contra o volume da política, não contra o
+  // que foi pedido — o mesmo bug de raiz, num 2º ponto que também chama
+  // `planWave()` do zero.
+  const targetVolumeArg = getArg(argv, "target-volume");
+  let targetVolume: number | undefined;
+  if (targetVolumeArg !== undefined) {
+    targetVolume = Number(targetVolumeArg);
+    if (!Number.isInteger(targetVolume) || targetVolume <= 0) {
+      console.error(`❌ --target-volume precisa ser um inteiro positivo (recebido: "${targetVolumeArg}").`);
+      process.exit(1);
+    }
+  }
+
   // Recomputa a MESMA proposta que `/diaria-clarice-envio` já viu no Passo 1
   // — o `mvOnDemandPlan` embutido nela é a única fonte do recorte a
   // verificar (nunca um cálculo paralelo aqui).
@@ -200,6 +218,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // é crédito MV gasto à toa, não envio errado), mas "a MESMA proposta que
     // o Passo 1 já viu" só é verdade se as duas leem a mesma fonte.
     lockedSubject: getArg(argv, "locked-subject") || lockedSubjectFromState(readClariceAbcState(ROOT)),
+    targetVolume,
   });
   const plan = proposal.mvOnDemandPlan;
   // #4792 (fleet review, achado #4): `plan.deficit` (desde #4787) é o MAIOR
