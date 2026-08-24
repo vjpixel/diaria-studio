@@ -1465,5 +1465,71 @@ describe("clarice-envio-run (#5026)", () => {
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"));
       rmSync(root, { recursive: true, force: true });
     });
+
+    // #6075 — REGRESSÃO: fila cobre o volume que a POLÍTICA propôs (por isso
+    // `mvOnDemandPlan.byCohort` do mock vem vazio, exatamente como
+    // `clarice-plan-wave.ts` calcularia SEM `--target-volume`), mas não cobre
+    // o `--volume N` maior pedido pelo editor. Antes do fix, o guard
+    // `mvOnDemandPlan.byCohort.length > 0` nunca disparava nesse cenário —
+    // `clarice-envio-run.ts` precisa passar `--target-volume` pro
+    // sub-processo pra que ELE recalcule o plano contra o volume pedido, não
+    // contra o da política.
+    it("#6075 — --volume N maior que a política propôs: passa --target-volume pros sub-scripts de MV (fila cobre a política, não o pedido)", async () => {
+      const root = freshRoot();
+      process.env.MILLION_VERIFIER_API_KEY = "test-key";
+      // Política propõe 3456 (baseVolume 3005 × step); fila cobre isso (5000)
+      // mas não cobre os 11000 pedidos pelo editor. Mock: como se
+      // `clarice-plan-wave.ts` já tivesse recebido `--target-volume 11000`
+      // (o comportamento CORRIGIDO) — plano de MV não-vazio.
+      const shortProposal = goldenProposal({
+        availableFirstSend: 5000,
+        mvOnDemandPlan: {
+          deficit: 6000,
+          targetVerifyCount: 6667,
+          byCohort: [{ cohort: "leads-2023h2", count: 6667 }],
+          totalPlanned: 6667,
+          backlogInsufficient: false,
+          estimatedCostUsd: 12.67,
+        },
+      });
+      const replannedProposal = goldenProposal({ availableFirstSend: 11000 });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [jsonResult(shortProposal), jsonResult(replannedProposal)],
+        "scripts/clarice-mv-ondemand.ts": jsonResult({ verified: 6000 }),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 11000 });
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      // O MV sob demanda de fato rodou (o guard disparou) — sem o fix,
+      // `mvOnDemandPlan.byCohort` teria vindo vazio e este passo nunca teria
+      // sido chamado, mesmo com --volume acima do que a fila cobre.
+      const mvCall = calls.find((c) => c.script === "scripts/clarice-mv-ondemand.ts");
+      assert.ok(mvCall, "MV sob demanda deveria ter rodado — --volume 11000 > fila 5000, mesmo com política satisfeita");
+      assert.ok(mvCall!.args.includes("--target-volume"), "clarice-mv-ondemand.ts precisa receber --target-volume");
+      assert.equal(mvCall!.args[mvCall!.args.indexOf("--target-volume") + 1], "11000");
+
+      const planCalls = calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts");
+      assert.equal(planCalls.length, 2, "replaneja depois do MV");
+      for (const c of planCalls) {
+        assert.ok(c.args.includes("--target-volume"), "clarice-plan-wave.ts (1ª chamada E replan) precisa receber --target-volume");
+        assert.equal(c.args[c.args.indexOf("--target-volume") + 1], "11000");
+      }
+      delete process.env.MILLION_VERIFIER_API_KEY;
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#6075 — sem --volume (task agendada): nenhuma chamada recebe --target-volume", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      const planCalls = calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts");
+      assert.ok(planCalls.length > 0);
+      for (const c of planCalls) {
+        assert.ok(!c.args.includes("--target-volume"), "sem --volume, nunca introduzir --target-volume (comportamento pré-#6075)");
+      }
+      rmSync(root, { recursive: true, force: true });
+    });
   });
 });

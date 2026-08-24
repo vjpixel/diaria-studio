@@ -36,6 +36,10 @@
  *   --dashboard-url override do dashboard.
  *   --locked-subject "…"  assunto único já travado em ciclo anterior — força
  *                   a recomendação A/B/C pra "travar" sem recalcular.
+ *   --target-volume N  (#6075) override do volume-alvo do MV sob demanda —
+ *                   usado por `clarice-envio-run.ts` quando `--volume N`
+ *                   (editor) é maior que o volume que a política propôs.
+ *                   Nunca passado em invocação manual normal.
  *
  * Env: `BREVO_CLARICE_API_KEY` (crédito + campanhas comprometidas). Sem ela o
  * script AINDA roda, mas a proposta sai com o bloqueio "crédito não
@@ -202,6 +206,9 @@ export interface PlanWaveOptions {
   /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
    *  clarice-schedule-ramp.ts). Default = `fetch` global (produção). */
   fetchImpl?: typeof fetch;
+  /** #6075 — repassado direto pra `buildWaveProposal` (ver docstring lá).
+   *  `undefined` = comportamento pré-#6075 (déficit de MV contra `volumes.total`). */
+  targetVolume?: number;
 }
 
 export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
@@ -413,6 +420,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     novosFreshness,
     novosLastAbort,
     novosPending,
+    targetVolume: opts.targetVolume,
   });
 }
 
@@ -434,12 +442,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const abcState = readClariceAbcState(REPO_ROOT);
   const lockedSubject = getArg(argv, "locked-subject") || lockedSubjectFromState(abcState);
 
+  // #6075 — `--target-volume N`: repassa o `--volume N` do editor
+  // (`clarice-envio-run.ts`) pro dimensionamento do MV sob demanda. Só
+  // `clarice-envio-run.ts` chama com este flag; invocação manual/gate sem
+  // ele preserva o comportamento pré-#6075.
+  const targetVolumeArg = getArg(argv, "target-volume");
+  let targetVolume: number | undefined;
+  if (targetVolumeArg !== undefined) {
+    targetVolume = Number(targetVolumeArg);
+    if (!Number.isInteger(targetVolume) || targetVolume <= 0) {
+      console.error(`❌ --target-volume precisa ser um inteiro positivo (recebido: "${targetVolumeArg}").`);
+      process.exit(1);
+    }
+  }
+
   const proposal = await planWave({
     cycle,
     dates,
     dbPath: getArg(argv, "db") || DEFAULT_DB_PATH,
     dashboardUrl: getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL,
     lockedSubject,
+    targetVolume,
   });
 
   if (hasFlag(argv, "json")) {

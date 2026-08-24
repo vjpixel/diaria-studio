@@ -1254,6 +1254,23 @@ export interface WaveProposalInput {
   /** Índice do 1º dia da onda (continua a numeração do ciclo). */
   startingWaveNumber: number;
   /**
+   * #6075 — override do volume-alvo pra fins de MV sob demanda, quando
+   * `--volume N` (editor) é MAIOR que o volume que a política propôs
+   * (`volumes.total`). Sem isto, `mvOnDemandPlan` é sempre dimensionado
+   * contra `volumes.total` — quando o editor pede mais do que a política
+   * escolheria e a fila cobre o volume da política mas não o pedido, o
+   * plano de MV sob demanda sai VAZIO e o guard de `clarice-envio-run.ts`
+   * nunca dispara a verificação (achado ao vivo 260824/25, onda d28).
+   * `undefined`, ou `<= volumes.total`, não muda nada — só entra em jogo
+   * quando é estritamente maior. Afeta SÓ o dimensionamento de
+   * `mvOnDemandPlan` (déficit/`targetVerifyCount`/`byCohort`) — os
+   * `blockers`/`consumedByCohort` continuam contra `volumes.total`, porque
+   * é o volume que ESTA proposta (sem `--volume`) de fato executaria;
+   * `clarice-envio-run.ts` já tem seu próprio guard de fila contra
+   * `desiredVolume` (linha ~1066), separado deste.
+   */
+  targetVolume?: number;
+  /**
    * #5140 — horas BRT do teste de HORÁRIO, quando ATIVO
    * (`data/clarice-hour-test.json`). `undefined`/vazio = sem teste, e a
    * proposta sai como sempre.
@@ -1439,7 +1456,17 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   const consumedByCohort = sliceCohortComposition(input.availableFirstSendByCohort, input.volumes.total);
   const cohortInversion = detectCohortInversion(consumedByCohort, input.mvBacklog);
 
-  const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, input.volumes.total);
+  // #6075 — o déficit que dimensiona o MV sob demanda usa `targetVolume`
+  // (o `--volume N` do editor) quando ele é MAIOR que `volumes.total` (o
+  // volume que a política teria proposto sozinha). Sem isto, um `--volume`
+  // acima da política com fila que já cobre `volumes.total` (mas não o
+  // pedido) zera `firstSendDeficit` e `mvOnDemandPlan.byCohort` sai vazio —
+  // o guard de `clarice-envio-run.ts` nunca roda a verificação sob demanda.
+  const mvDeficitTargetVolume =
+    input.targetVolume !== undefined && input.targetVolume > input.volumes.total
+      ? input.targetVolume
+      : input.volumes.total;
+  const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, mvDeficitTargetVolume);
   // #4787: o alvo de verificação cobre o MAIOR entre (a) o déficit de fila
   // tradicional e (b) a cauda fria que uma inversão de safra tornaria
   // substituível — os dois usam a MESMA máquina (`planMvOnDemand`, que já

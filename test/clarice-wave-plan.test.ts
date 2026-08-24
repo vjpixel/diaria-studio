@@ -1112,6 +1112,54 @@ describe("buildWaveProposal — mvOnDemandPlan embutido (#4659)", () => {
     assert.match(text, /NÃO cobre inteiramente/);
     assert.match(text, /50 de 778 contato/);
   });
+
+  describe("targetVolume (#6075)", () => {
+    it("fila cobre volumes.total (política) mas não targetVolume (--volume do editor) => mvOnDemandPlan dispara mesmo assim", () => {
+      // Caso real da issue: política propõe 1000 (default de proposalInput),
+      // fila (2000) cobre isso tranquilamente — SEM targetVolume o plano de
+      // MV sairia vazio. Editor pediu 5000: déficit real = 5000-2000 = 3000.
+      const p = buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000,
+          targetVolume: 5000,
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2023h2", count: 10_000 }]),
+        }),
+      );
+      assert.equal(p.mvOnDemandPlan.deficit, 3000, "déficit precisa ser contra targetVolume (5000), não volumes.total (1000)");
+      assert.ok(p.mvOnDemandPlan.byCohort.length > 0, "plano não pode sair vazio quando targetVolume > fila");
+    });
+
+    it("targetVolume MENOR ou IGUAL a volumes.total => ignorado, comportamento pré-#6075 preservado", () => {
+      const withoutTarget = buildWaveProposal(proposalInput({ availableFirstSend: 2000 }));
+      const withSmallerTarget = buildWaveProposal(proposalInput({ availableFirstSend: 2000, targetVolume: 500 }));
+      const withEqualTarget = buildWaveProposal(proposalInput({ availableFirstSend: 2000, targetVolume: 1000 }));
+      assert.deepEqual(withSmallerTarget.mvOnDemandPlan, withoutTarget.mvOnDemandPlan);
+      assert.deepEqual(withEqualTarget.mvOnDemandPlan, withoutTarget.mvOnDemandPlan);
+    });
+
+    it("targetVolume ausente (undefined) => idêntico ao comportamento anterior ao #6075", () => {
+      const p = buildWaveProposal(proposalInput({ availableFirstSend: 300 }));
+      // déficit = 1000 (volumes.total default) - 300 = 700, igual ao teste
+      // "com déficit e backlog disponível" acima — sem regressão no default.
+      assert.equal(p.mvOnDemandPlan.deficit, 700);
+    });
+
+    it("targetVolume não afeta blockers/consumedByCohort — só o dimensionamento do mvOnDemandPlan", () => {
+      const p = buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000, // cobre volumes.total (1000) — sem blocker de fila
+          targetVolume: 5000,
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2023h2", count: 10_000 }]),
+        }),
+      );
+      assert.doesNotMatch(
+        p.blockers.join(" "),
+        /Fila de 1º envio/,
+        "blocker de fila insuficiente é contra volumes.total (que a fila cobre), não contra targetVolume",
+      );
+      assert.deepEqual(p.consumedByCohort, [], "consumedByCohort é fatiado por volumes.total, nunca por targetVolume");
+    });
+  });
 });
 
 describe("buildWaveProposal — inversão de safra (#4787)", () => {
