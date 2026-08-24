@@ -4,10 +4,22 @@
  * Verifica que as regras do modo 1 (isNonProductOfficialPost) e modo 2
  * (isTutorialByKeyword / TUTORIAL_KEYWORDS_RE / techtudo /guia/) não regrediram
  * com fixtures REAIS do corpus citados na issue. Também fornece a moldura
- * para o critério quantitativo: quando `data/editions/` está presente (OneDrive
- * junction), `analyze-bucket-overrides` reporta o delta e o guard falha se
- * `totalMoves > 35` ou qualquer direção individual aumentar — condição
- * necessária para fechar #5995.
+ * O critério QUANTITATIVO do #5995 (71 → ≤35 movimentos) **não é verificado
+ * aqui, e não pode ser**: ele se mede sobre `data/editions/`, que é gitignored
+ * e não existe no CI. Um teste que finge medi-lo daria falsa sensação de
+ * fechamento — foi o que a versão anterior deste arquivo fazia (o caso
+ * "quantitativo" só checava `typeof === "function"` enquanto a docstring
+ * afirmava falhar acima de 35; uma regressão fabricada de 999999 movimentos
+ * passava verde). A medição é OPERACIONAL, rodada à mão:
+ *
+ *     npx tsx scripts/analyze-bucket-overrides.ts --editions-dir data/editions
+ *
+ * Última medição (24/08/2026, 93 edições): **73 movimentos** — acima do alvo.
+ * Esperado: o detector dos itens 1-2 (#5995) e do item 3 (#6028) mergeou ~20h
+ * antes dessa medição, então quase nenhuma edição do corpus foi produzida com
+ * ele. O critério só pode ser reavaliado depois de N edições novas. Enquanto
+ * isso, o #5995 continua ABERTO — este arquivo entrega o item 4 (guard
+ * qualitativo por fixture), não o item 5.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -78,15 +90,26 @@ describe("#5995 anti-regress guard — fixtures do corpus real", () => {
     assert.equal(categorize({ url: comum.url, title: comum.title, summary: "" } as any), "noticias", `/guia/ não dispara`);
   });
 
-  // Regra 4 (quantitativa): referência ao script de medição. Quando `data/editions/`
-  // está montado (OneDrive junction), `scripts/analyze-bucket-overrides.ts` deve
-  // reportar `totalMoves <= 35` sobre os 89 históricos. Esse guard falha se algum
-  // movimento individual crescer (regressão) — nunca ocorre no código, mas é
-  // documentado como invariante de fechamento.
-  it("guard quantitativo: referência ao critério 71 → ≤35 (verifica framework)", async () => {
-    const mod = await import("../scripts/analyze-bucket-overrides.ts");
-    assert.equal(typeof mod.summarize, "function", "summarize está exportado");
-    assert.equal(typeof mod.diffBucketOverrides, "function", "diffBucketOverrides está exportado");
-    assert.equal(typeof mod.analyzeEditionsUnderRoot, "function", "analyzeEditionsUnderRoot está exportado");
+  // O framework de MEDIÇÃO (o script que o editor roda à mão contra
+  // `data/editions/`) precisa continuar funcionando — mas isto NÃO é o
+  // critério quantitativo do #5995, que não é verificável no CI. Ver a
+  // docstring no topo. Aqui exercitamos o cálculo de verdade sobre uma entrada
+  // sintética: `typeof === "function"` sozinho passaria mesmo com o miolo
+  // trocado por uma constante inventada.
+  it("framework de medição: diffBucketOverrides + summarize computam sobre entrada sintética", async () => {
+    const { diffBucketOverrides, summarize } = await import("../scripts/analyze-bucket-overrides.ts");
+
+    const categorized = { lancamento: [{ url: "https://exemplo.test/a" }], radar: [] };
+    const approved = { lancamento: [], radar: [{ url: "https://exemplo.test/a" }] };
+
+    const moves = diffBucketOverrides(categorized as never, approved as never);
+    assert.equal(moves.length, 1, "1 URL trocou de bucket → 1 movimento");
+    assert.equal(moves[0].direction, "lancamento->radar");
+
+    const resumo = summarize([{ edition: "260824", moves }] as never, 1);
+    assert.equal(resumo.totalMoves, 1, "summarize conta o movimento — não devolve constante");
+    assert.equal(resumo.editionsWithMoves, 1);
+    const direcao = resumo.directions.find((d) => d.direction === "lancamento->radar");
+    assert.ok(direcao && direcao.count === 1, "a direção do movimento aparece no resumo");
   });
 });
