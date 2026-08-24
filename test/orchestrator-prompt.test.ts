@@ -1082,3 +1082,86 @@ describe("#5566: caminho erro-intencional-placeholder do Stage 4 referencia o fi
     );
   });
 });
+
+describe("#6003: gate de revisão publica newsletter/social como Artifact, em paralelo ao preview local", () => {
+  // Caso real que motivou (sessão 260824): o editor pediu "coloque em
+  // artefatos" no meio do gate porque o link 127.0.0.1 não servia pra
+  // revisão remota. Guard: os dois pontos de publicação inicial (§4b step
+  // 2b / step 3) e os dois pontos de re-render (§4c.6b newsletter / social)
+  // precisam chamar a tool Artifact sobre a MESMA variante embedded já
+  // usada pelo preview local, com fallback warning-only, e o gate (§4d)
+  // precisa expor as duas URLs resultantes.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+
+  it("§4b step 2b publica a variante embedded da newsletter como Artifact", () => {
+    assert.ok(
+      /Artifact\(file_path: "\{EDITION_DIR\}\/_internal\/newsletter-final-embedded\.html"/.test(stage4),
+      "step 2b precisa chamar Artifact() sobre newsletter-final-embedded.html (mesmo arquivo do preview local)",
+    );
+    assert.ok(
+      stage4.includes("newsletter_artifact_url"),
+      "a URL do Artifact da newsletter precisa ser persistida como newsletter_artifact_url",
+    );
+  });
+
+  it("§4b step 3 publica a variante embedded do social como Artifact", () => {
+    assert.ok(
+      /Artifact\(file_path: "\{EDITION_DIR\}\/_internal\/social-preview-embedded\.html"/.test(stage4),
+      "step 3 precisa chamar Artifact() sobre social-preview-embedded.html (mesmo arquivo do preview local)",
+    );
+    assert.ok(
+      stage4.includes("social_artifact_url"),
+      "a URL do Artifact do social precisa ser persistida como social_artifact_url",
+    );
+  });
+
+  it("re-render de §4c.6b (fact-check autofix) re-publica o Artifact da newsletter", () => {
+    const reRenderIdx = stage4.indexOf("Re-render obrigatório quando `applied > 0`");
+    assert.ok(reRenderIdx !== -1, "§4c.6b (re-render obrigatório) não encontrado");
+    const nextIdx = stage4.indexOf("Re-render do social quando", reRenderIdx);
+    assert.ok(nextIdx !== -1 && nextIdx > reRenderIdx);
+    const slice = stage4.slice(reRenderIdx, nextIdx);
+    assert.ok(
+      /Re-publicar o Artifact também/.test(slice) && slice.includes("newsletter_artifact_url"),
+      "o bloco de re-render pós-autofix da newsletter precisa re-publicar o Artifact (mesmo file_path, redeploy pra mesma URL)",
+    );
+  });
+
+  it("re-render social (social_modified) re-publica o Artifact do social", () => {
+    const reRenderIdx = stage4.indexOf("Re-render do social quando");
+    assert.ok(reRenderIdx !== -1, "bloco de re-render do social não encontrado");
+    const nextIdx = stage4.indexOf("Confirmar que o sentinel bate", reRenderIdx);
+    assert.ok(nextIdx !== -1 && nextIdx > reRenderIdx);
+    const slice = stage4.slice(reRenderIdx, nextIdx);
+    assert.ok(
+      /Re-publicar o Artifact social também/.test(slice) && slice.includes("social_artifact_url"),
+      "o bloco de re-render do social precisa re-publicar o Artifact (mesmo file_path, redeploy pra mesma URL)",
+    );
+  });
+
+  it("o resumo do gate (§4d) expõe as duas URLs de Artifact", () => {
+    const gateTemplateIdx = stage4.indexOf("REVISÃO EDITORIAL — Edição");
+    assert.ok(gateTemplateIdx !== -1, "template do gate não encontrado");
+    const gateEndIdx = stage4.indexOf("Regras de apresentação:", gateTemplateIdx);
+    assert.ok(gateEndIdx !== -1 && gateEndIdx > gateTemplateIdx);
+    const gateSlice = stage4.slice(gateTemplateIdx, gateEndIdx);
+    assert.ok(
+      gateSlice.includes("{newsletter_artifact_url}") && gateSlice.includes("{social_artifact_url}"),
+      "o template do gate precisa exibir {newsletter_artifact_url} e {social_artifact_url} ao lado dos previews locais",
+    );
+  });
+
+  it("indisponibilidade da tool Artifact é warning-only, nunca bloqueia o gate", () => {
+    assert.ok(
+      /warning-only, nunca bloqueia o gate/.test(stage4) && stage4.includes("newsletter_artifact_url"),
+      "a falha/indisponibilidade da tool Artifact precisa estar documentada como warning-only (nunca gate-blocking)",
+    );
+  });
+
+  it("Artifacts publicados não entram no teardown de fim de gate (sobrevivem à sessão, ao contrário do preview local)", () => {
+    assert.ok(
+      /Artifacts \(#6003\) não fazem parte deste teardown/.test(stage4),
+      "o teardown de §4d/§4e precisa deixar explícito que Artifacts publicados não são derrubados (diferente do preview local via --stop-pid)",
+    );
+  });
+});

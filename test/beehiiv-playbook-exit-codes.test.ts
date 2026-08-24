@@ -189,13 +189,35 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
     );
 
     // #3546: o preview do gate agora é servido LOCALMENTE (loopback, sem
-    // Worker/KV, sem Artifact/CSP) — este bloco de re-render pós-autofix
-    // precisa re-gerar a variante embedded e re-servir, não chamar
-    // upload-html-public.ts (Worker) nem o tool Artifact.
-    assert.doesNotMatch(
+    // Worker/KV, sem CSP) — este bloco de re-render pós-autofix precisa
+    // re-gerar a variante embedded e re-servir, não chamar
+    // upload-html-public.ts (Worker) — decisão original do #3420/#3546.
+    //
+    // #6003 (24/08/2026) — decisão REABERTA pelo editor: a tool `Artifact`
+    // volta a ser chamada aqui, mas só como RE-PUBLICAÇÃO ADITIVA em
+    // paralelo ao preview local (nunca em substituição). O defeito que
+    // motivou o revert original do #3420 ("CSP estrita do Artifact bloqueia
+    // imagem remota, só data: URI") não se aplica: o HTML re-publicado
+    // aqui é sempre a variante `*-embedded.html` do `embed-images-base64.ts`
+    // — já 100% self-contained (todas as imagens em data: URI), sem
+    // NENHUMA imagem remota. O guard que precisa continuar de pé é
+    // "preview local nunca é removido/substituído", não "Artifact nunca é
+    // mencionado" — daí os asserts abaixo checarem presença + natureza
+    // aditiva/warning-only do Artifact, em vez de ausência.
+    assert.match(
       block,
       /\bArtifact\b/,
-      "#3546: republicação pós-autofix não deve chamar o tool Artifact — preview é servido localmente",
+      "#6003: republicação pós-autofix deve re-publicar via Artifact também (aditivo ao preview local)",
+    );
+    assert.match(
+      block,
+      /Re-publicar o Artifact[\s\S]*?#6003/,
+      "#6003: a re-publicação do Artifact deve estar marcada com o número da issue que reabriu a decisão",
+    );
+    assert.match(
+      block,
+      /warning-only/i,
+      "#6003: a re-publicação do Artifact deve ser warning-only — falha não pode bloquear o gate",
     );
     assert.doesNotMatch(
       block,
@@ -254,9 +276,22 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
 // script que o mensal já usa pro preview via Artifact, #3392). Cobre Stage 4
 // (revisão) — Stage 5 (§5f-ter, pós-dispatch) fica FORA de escopo do #3546
 // e continua Worker-hosted (ver describe #3420 acima, ainda válido pra ele).
+//
+// #6003 (24/08/2026) — decisão REABERTA pelo editor: o preview local via
+// serve-preview.ts continua sendo o ÚNICO usado para navegação assistida
+// via Claude in Chrome e o único garantido em modo `cloud` — isso não
+// mudou. O que mudou é que a tool `Artifact` volta a ser chamada aqui,
+// ADITIVAMENTE (nunca em substituição), publicando exatamente a mesma
+// variante `*-embedded.html` que embed-images-base64.ts já gera — ou
+// seja, o defeito que motivou o revert do #3420 (CSP bloqueando imagem
+// REMOTA) não se aplica: essa variante nunca teve imagem remota. Os
+// asserts abaixo passam a EXIGIR a menção ao Artifact (aditiva/
+// warning-only) em vez de proibi-la; o que continua proibido é o preview
+// local ser removido ou o Worker (upload-html-public.ts) voltar a ser
+// invocado neste caminho de revisão.
 
-describe("#3546: preview do Stage 4 é servido localmente (serve-preview.ts), não Worker/Artifact", () => {
-  it("orchestrator-stage-4.md §4b (steps 2b/3): serve o preview via serve-preview.ts + embed-images-base64.ts, não via upload-html-public.ts/Artifact", () => {
+describe("#3546/#6003: preview do Stage 4 é servido localmente (serve-preview.ts) E publicado como Artifact (aditivo)", () => {
+  it("orchestrator-stage-4.md §4b (steps 2b/3): serve o preview via serve-preview.ts + embed-images-base64.ts (nunca via upload-html-public.ts), e publica a mesma variante embedded como Artifact aditivo (#6003)", () => {
     const stage4Src = readFileSync(
       resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
       "utf8",
@@ -271,13 +306,23 @@ describe("#3546: preview do Stage 4 é servido localmente (serve-preview.ts), n�
     assert.ok(blockEnd > blockStart, "início do §4c não encontrado após step 2b");
     const block = stage4Src.slice(blockStart, blockEnd);
 
-    // `Artifact` entre backticks = sintaxe de invocação do tool. Prosa
-    // histórica mencionando "Claude Artifacts"/"Artifact (CSP)" sem
-    // backticks (explicando por que #3420 revertera o Worker) é permitida.
-    assert.doesNotMatch(
+    // #6003: `Artifact` volta a ser chamado aqui — mas só como
+    // republicação ADITIVA (em paralelo, nunca em vez do preview local) e
+    // warning-only (falha/indisponibilidade nunca bloqueia o gate).
+    assert.match(
       block,
-      /`Artifact`/,
-      "#3546: publicação do preview (newsletter + social) não deve chamar o tool Artifact",
+      /\bArtifact\(file_path:/,
+      "#6003: step 2b/3 deve publicar a variante embedded como Artifact, em paralelo ao preview local",
+    );
+    assert.match(
+      block,
+      /em paralelo ao preview local \(#6003\)/,
+      "#6003: a publicação via Artifact deve estar marcada explicitamente como aditiva/paralela ao preview local, nunca substituta",
+    );
+    assert.match(
+      block,
+      /warning-only/i,
+      "#6003: falha/indisponibilidade da tool Artifact deve ser warning-only, nunca bloqueia o gate",
     );
     // upload-html-public.ts pode aparecer em PROSA (explicando o histórico
     // #3420 e reservando o script pro upload real da Etapa 5) — o que não
@@ -305,16 +350,37 @@ describe("#3546: preview do Stage 4 é servido localmente (serve-preview.ts), n�
     );
   });
 
-  it("orchestrator-stage-4.md: nenhuma instrução residual manda republicar preview via Artifact (edição inline, reordenação, humanização scoped)", () => {
+  it("orchestrator-stage-4.md: loop 'ajustar' (edição inline, reordenação, humanização scoped) nunca deixa de re-servir o preview LOCAL — Artifact, quando mencionado no mesmo passo, é sempre aditivo e marcado #6003", () => {
     const stage4Src = readFileSync(
       resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
       "utf8",
     );
-    assert.doesNotMatch(
-      stage4Src,
-      /republicar[^\n]*Artifact/i,
-      "nenhuma instrução de republicação de preview deve referenciar o tool Artifact",
+    // A garantia original (pré-#6003) era "nenhuma instrução de
+    // republicação menciona Artifact". Reaberta pelo editor: o passo de
+    // cascata de título do loop "ajustar" (§4d.1, passo 3) agora TAMBÉM
+    // re-publica o Artifact — o que precisa continuar de pé é o preview
+    // LOCAL nunca sumir desse passo, e a menção ao Artifact ali ser
+    // claramente aditiva (não substitui `serve-preview.ts`) e rastreável
+    // à decisão reaberta (#6003), não uma reintrodução silenciosa do
+    // caminho antigo (#3214/#3420).
+    const cascadeStart = stage4Src.indexOf("**Cascata de título");
+    assert.ok(cascadeStart >= 0, "passo de cascata de título (§4d.1) não encontrado");
+    const cascadeEnd = stage4Src.indexOf("**Reordenação/swap", cascadeStart);
+    assert.ok(cascadeEnd > cascadeStart, "início do passo de reordenação não encontrado após a cascata");
+    const cascadeBlock = stage4Src.slice(cascadeStart, cascadeEnd);
+
+    assert.match(
+      cascadeBlock,
+      /serve-preview\.ts/,
+      "#3546: o passo de cascata de título deve continuar re-servindo o preview LOCAL — nunca substituído por Artifact",
     );
+    if (/\bArtifact\b/.test(cascadeBlock)) {
+      assert.match(
+        cascadeBlock,
+        /Artifact[^\n]*#6003|#6003[^\n]*Artifact/,
+        "#6003: menção ao Artifact neste passo deve estar rastreada à decisão reaberta",
+      );
+    }
   });
 
   it("orchestrator-stage-4.md: teardown dos preview servers locais está presente e cobre newsletter + social (#3546 critério de aceite)", () => {
