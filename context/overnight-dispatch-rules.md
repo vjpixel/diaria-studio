@@ -422,3 +422,23 @@ retornar erro (`session-registry: erro — --session-id ausente...` no
 stderr, ou `exit 1`), tratar como **falha real da reivindicação**, nunca
 como ruído a ignorar — parar e diagnosticar antes de seguir pro dispatch,
 mesma disciplina de qualquer outro `exit 1` inesperado.
+
+## 19. Nunca montar corpo de issue/PR via `printf`/`echo -e` (#6004)
+
+`printf` do Bash trata `%` como format specifier no primeiro argumento — um
+texto com `%a`/`%s`/`%d` (percentuais são comuns neste domínio: taxas de spam,
+CTR, cliques) é corrompido **silenciosamente** (`1,923% ainda` virou
+`1,923 0x0p+0inda` ao vivo no corpo da issue #5140, achado 260824). `echo -e`
+tem classe análoga de risco com escapes.
+
+**Regra:** para montar texto dinâmico que vai virar `--body`/`--body-file` de
+`gh issue edit`/`gh issue comment`/`gh pr create`:
+
+- preferir a ferramenta `Write` (nunca interpreta `%`);
+- ou heredoc com delimitador entre aspas simples (`cat <<'EOF' > body.md`);
+- ou, quando existir, o helper dedicado — `scripts/lib/wait-until-sync.ts`
+  (`upsertWaitUntilMarker` e vizinhos, via `spawnGhSync`) é fonte única pra
+  marcadores machine-readable no corpo de issues; usar em vez de shell.
+
+Verificação barata pós-write: `cat -A body.md` (ou reler o arquivo) antes do
+`gh ... --body-file`.
