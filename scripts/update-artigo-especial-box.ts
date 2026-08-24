@@ -65,7 +65,7 @@
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule, getIntArg } from "./lib/cli-args.ts";
 import {
   artigoEspecialStatePath,
   readArtigoEspecialState,
@@ -235,6 +235,17 @@ export type RunUpdateBoxResult =
 export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpdateBoxResult {
   const { titulo, gancho, mesLabel, snippetsFile, configPath, slot, pin, dryRun, force, ano, slug, dataDir } = options;
 
+  // #5979/PR #6000 fleet review (silent-failure-hunter, média confiança):
+  // --ano/--slug são all-or-nothing — passar só 1 dos 2 (typo, flag sem
+  // valor) desligava o guard de idempotência inteiro em silêncio, sem
+  // warning nenhum. Falha alto em vez de degradar pro caminho "sem canal".
+  if (Boolean(ano) !== Boolean(slug)) {
+    throw new Error(
+      `--ano e --slug devem ser passados JUNTOS ou nenhum dos dois (recebido ano=${JSON.stringify(ano)}, ` +
+        `slug=${JSON.stringify(slug)}) — passar só 1 deles desligaria o guard de idempotência do canal "box" ` +
+        "em silêncio.",
+    );
+  }
   const hasArtigoContext = Boolean(ano && slug);
   const statePath = hasArtigoContext ? artigoEspecialStatePath(dataDir, ano!, slug!) : null;
   const state = statePath ? readArtigoEspecialState(statePath, ano!, slug!) : null;
@@ -313,7 +324,13 @@ async function main(): Promise<void> {
     : resolve(ROOT, "data/snippets/artigo-especial-apoiadores.md");
   const configPath = values["config"] ? resolve(ROOT, values["config"]) : resolve(ROOT, "platform.config.json");
   const dataDir = values["data-dir"] ? resolve(ROOT, values["data-dir"]) : resolve(ROOT, "data");
-  const slot = values["slot"] ? parseInt(values["slot"], 10) : 3;
+  // #5979/PR #6000 fleet review (silent-failure-hunter, alta confiança): usa
+  // getIntArg — `parseInt(values["slot"], 10)` cru aceitava `--slot abc` como
+  // NaN, que corrompia platform.config.json em silêncio (slotNaN,
+  // pinned_slots com NaN) sem erro nenhum. getIntArg já existe pra fechar
+  // exatamente essa classe de bug (docstring cita #4476/#4496, #4542/#4564,
+  // #4568) — aborta com mensagem clara em vez de aceitar lixo.
+  const slot = getIntArg(process.argv.slice(2), "slot", { min: 1 }) ?? 3;
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
   const unpin = flags.has("unpin");

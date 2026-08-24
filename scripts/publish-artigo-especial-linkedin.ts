@@ -320,18 +320,33 @@ export async function runArtigoEspecialLinkedinDispatch(
         // `dispatchEntry`, linha ~253 acima) mesmo depois da reconciliação
         // descobrir a falha real, e um resume (`decideChannelAction`) nunca
         // retentaria.
+        //
+        // #5979 review, PR #6000 (achado convergente: silent-failure-hunter
+        // + code-reviewer, independentemente): `updated.posts` cobre AMBOS
+        // os targets (pagina/perfil) sempre — `linkedin-published.json` é
+        // compartilhado — mas `results` só cobre os targets do `--only`
+        // desta invocação. Gatear em `resultEntry?.entry` (como a versão
+        // anterior fazia) deixava de fora o cenário: run A despacha os 2
+        // (ambos "done" em published.json) e uma run B posterior com `--only
+        // pagina` reconcilia e descobre que `perfil` caiu no DLQ nesse
+        // ínterim — `linkedin-published.json` era corrigido corretamente,
+        // mas `published.json` (o guard que `decideChannelAction` lê pra
+        // decidir se retenta) ficava com `perfil: done` pra sempre. Iterar
+        // TODO post de `updated.posts` contra `TARGET_TO_CHANNEL` — não só
+        // os presentes em `results` — fecha essa lacuna: o guard agregado é
+        // corrigido mesmo pra canais fora do `--only` desta run, sem exigir
+        // que uma correspondência em `results` exista.
         for (const post of updated.posts) {
           if (post.platform !== "linkedin" || post.status !== "failed") continue;
           const target = post.destaque as LinkedinTarget;
           const channel = TARGET_TO_CHANNEL[target];
           if (!channel) continue;
+          if (state.channels[channel]?.status === "failed") continue; // já refletido, evita write redundante
+          const reason =
+            typeof post.failure_reason === "string" ? post.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";
+          state = withChannelState(state, channel, buildFailedChannelState(new Date().toISOString(), reason));
           const resultEntry = results.find((r) => r.target === target);
-          if (resultEntry?.entry && resultEntry.entry.status !== "failed") {
-            resultEntry.entry = post;
-            const reason =
-              typeof post.failure_reason === "string" ? post.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";
-            state = withChannelState(state, channel, buildFailedChannelState(new Date().toISOString(), reason));
-          }
+          if (resultEntry) resultEntry.entry = post; // só atualiza o retorno se o target fazia parte desta invocação
         }
         writeArtigoEspecialState(statePath, state);
       }

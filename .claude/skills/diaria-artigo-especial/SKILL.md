@@ -20,7 +20,7 @@ artigo publicado, nunca gera/edita o HTML dele.
 ## Classificação de execução
 
 `windows` → **Develop**, nunca Overnight (mesma regra de `/diaria-apoios-sync`
-e do próprio #5751 documentado em `CLAUDE.md`). O Passo 2 (apoia.se) exige
+e do próprio #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
 Claude in Chrome com o editor logado — sem navegador utilizável, a skill
 inteira não fecha de ponta a ponta.
 
@@ -178,13 +178,28 @@ Seguir `context/publishers/apoia-se.md`. **Este playbook ainda não está
 mapeado ao vivo** — a 1ª execução real precisa navegar manualmente até achar
 o composer de post do painel de criador e ATUALIZAR o playbook com os
 seletores/fluxo reais antes de considerar a skill "pronta" (ver seção "O que
-falta mapear" do arquivo). Falha aqui → grava `status: "failed"` no canal
-`apoiase` do state file (`buildFailedChannelState`) e **continua** pros
-outros canais (fail-soft por canal, mesma disciplina do Stage 5 diário) —
-nunca aborta a skill inteira por causa de um canal.
+falta mapear" do arquivo).
 
-Sucesso → grava `status: "done"` com a URL do post (`buildDoneChannelState`)
-em `data/artigo-especial/{ano}-{slug}/published.json`.
+**Gravar o resultado é SEMPRE via `scripts/mark-artigo-especial-channel.ts`
+— nunca escrever `published.json` manualmente (achado #5988/type-design-
+analyzer, PR #6000: sem um script determinístico, o guard deste canal
+existia só como instrução em prosa, com zero enforcement — a mesma classe de
+bug já corrigida pro canal `box` nesta mesma PR, mas com blast radius maior
+aqui, porque `apoiase` posta numa conta PÚBLICA e irreversível).**
+
+Falha aqui:
+```bash
+npx tsx scripts/mark-artigo-especial-channel.ts --ano {ano} --slug {slug} \
+  --channel apoiase --status failed --reason "{motivo — ex: DOM do painel mudou, ver X}"
+```
+**continua** pros outros canais (fail-soft por canal, mesma disciplina do
+Stage 5 diário) — nunca aborta a skill inteira por causa de um canal.
+
+Sucesso:
+```bash
+npx tsx scripts/mark-artigo-especial-channel.ts --ano {ano} --slug {slug} \
+  --channel apoiase --status done --url "{URL do post publicado}"
+```
 
 ## Passo 4 — LinkedIn (script determinístico)
 

@@ -368,6 +368,72 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
     }
   });
 
+  it("#6000 fleet review (achado convergente silent-failure-hunter + code-reviewer): reconciliação corrige o guard agregado de um canal FORA do --only desta invocação", async () => {
+    // Simula uma run ANTERIOR que já dispatchou os 2 targets: 'perfil' ficou
+    // 'done' em published.json (guard agregado) e tem uma entry 'scheduled'
+    // em linkedin-published.json. Uma run B, com --only pagina, reconcilia e
+    // o Worker mock descobre que 'perfil' (não presente em 'results' desta
+    // run) na verdade caiu no DLQ nesse ínterim.
+    const ctx = mkCtx();
+    const perfilEntryAntigo: PostEntry = {
+      platform: "linkedin",
+      destaque: "perfil",
+      url: null,
+      status: "scheduled",
+      scheduled_at: "2026-09-02T17:30:00-03:00",
+    };
+    writeFileSync(ctx.publishedPath, JSON.stringify({ posts: [perfilEntryAntigo] }, null, 2), "utf8");
+    let state: ArtigoEspecialState = { ano: "2026", slug: "x", channels: {} };
+    state = withChannelState(state, "linkedin_perfil", buildDoneChannelState(new Date().toISOString(), null));
+    writeArtigoEspecialState(statePath, state);
+
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ queued: true, key: "k1", scheduled_at: "2026-09-02T17:30:00-03:00", destaque: "pagina" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    try {
+      const { results } = await runArtigoEspecialLinkedinDispatch({
+        artigoDir,
+        ano: "2026",
+        slug: "x",
+        imageUrl: null,
+        scheduledAt: "2099-01-01T17:30:00-03:00",
+        only: ["pagina"], // 'perfil' NÃO faz parte desta invocação
+        force: false,
+        dryRun: false,
+        ctx,
+        statePath,
+        verifyWorker: async (published) => {
+          // Descobre que o 'perfil' de uma run anterior caiu no DLQ, além
+          // do 'pagina' desta run já sair "scheduled".
+          const updated = {
+            posts: published.posts.map((p) =>
+              p.destaque === "perfil" ? { ...p, status: "failed" as const, failure_reason: "worker_dlq: perfil de run anterior" } : p,
+            ),
+          };
+          return { updated, changes: 1 };
+        },
+      });
+
+      // 'results' só tem 'pagina' (o único target desta invocação) — não
+      // deve lançar nem tentar indexar um 'perfil' inexistente ali.
+      assert.equal(results.length, 1);
+      assert.equal(results[0].target, "pagina");
+
+      // O guard agregado (published.json) É corrigido pra 'perfil' mesmo
+      // sem 'perfil' estar em 'results' desta run — este é o achado do
+      // fleet review: antes, esse ramo não escrevia nada porque
+      // `results.find(...)` não achava o target.
+      const stateAfter = readArtigoEspecialState(statePath, "2026", "x");
+      assert.equal(stateAfter.channels.linkedin_perfil?.status, "failed");
+      assert.match(stateAfter.channels.linkedin_perfil?.reason ?? "", /worker_dlq: perfil de run anterior/);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
   it("verifyWorker com changes=0: nao reescreve linkedin-published.json nem published.json", async () => {
     const savedFetch = globalThis.fetch;
     globalThis.fetch = async () =>

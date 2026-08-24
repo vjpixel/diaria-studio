@@ -18,10 +18,13 @@
  *   - JSON-LD `Article` (`<script type="application/ld+json">`) —
  *     `datePublished`/`dateModified`.
  *   - `<h1>` seguido, no `.manuscript`, por um `<p class="lede">` (parágrafo
- *     de abertura sempre presente) e, opcionalmente, um `<p>` sem classe
- *     ENTRE o lede e o primeiro `<h3 class="sect">`. `leadParagraphs` SEMPRE
- *     pula esse parágrafo intermediário (no máximo 1), qualquer que seja o
- *     conteúdo dele — é um recorte estrutural (posição), não semântico
+ *     de abertura sempre presente) e, opcionalmente, um ou mais `<p>` sem
+ *     classe ENTRE o lede e o primeiro `<h3 class="sect">`. `leadParagraphs`
+ *     SEMPRE pula TODOS esses parágrafos intermediários (não só o 1º — achado
+ *     #5988/pr-test-analyzer #6000: o corte é por posição, `afterLede.slice(
+ *     firstSectIdx)` descarta o bloco inteiro antes do 1º `h3.sect`, qualquer
+ *     que seja a quantidade), qualquer que seja o conteúdo — é um recorte
+ *     estrutural (posição), não semântico
  *     (não lê o texto pra decidir se é "nota de apresentação" ou conteúdo
  *     real). **Correção 23/08/2026 (achado do review do #5979, PR #6000):**
  *     a versão anterior deste comentário afirmava que só

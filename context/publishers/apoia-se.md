@@ -2,7 +2,7 @@
 
 Roteiro semântico para o TOP-LEVEL (nunca um subagente — só o top-level tem
 `mcp__claude-in-chrome__*`) operar o painel de posts da campanha apoia.se via
-Claude in Chrome, no Passo 2 da skill `/diaria-artigo-especial` (#5979).
+Claude in Chrome, no Passo 3 da skill `/diaria-artigo-especial` (#5979).
 Documento vivo — atualize quando a UI mudar.
 
 ## Por que isto existe (e por que é diferente dos outros playbooks desta pasta)
@@ -17,7 +17,7 @@ Beehiiv/LinkedIn/Facebook — é Claude in Chrome com o editor logado.
 apoia.se AINDA NÃO ESTÁ MAPEADO neste repo.** Nenhuma sessão anterior operou
 esse painel via automação — os seletores/fluxo abaixo são a MELHOR HIPÓTESE
 a partir do que se sabe publicamente da plataforma, não uma sequência
-validada ao vivo. A 1ª execução real do Passo 2 da skill precisa do editor
+validada ao vivo. A 1ª execução real do Passo 3 da skill precisa do editor
 presente (é por isso que a issue marca a skill inteira como `windows` →
 Develop, não Overnight): quem rodar pela primeira vez deve **mapear o fluxo
 real e substituir as seções abaixo** por passos confirmados, com seletores
@@ -32,7 +32,7 @@ seguem para as respectivas plataformas.
 - Pré-condição: o editor logado no Chrome com a conta de CRIADOR da campanha
   (não a de apoiador/leitor) — é essa conta que tem acesso ao painel de
   posts/atualizações.
-- O post do Passo 2 é um **teaser público** (decisão do editor, 23/08/2026,
+- O post do Passo 3 é um **teaser público** (decisão do editor, 23/08/2026,
   issue #5979): título + 2-3 parágrafos de abertura (reaproveitados do
   artigo, `leadParagraphs` de `scripts/lib/artigo-especial-meta.ts`) + link
   pra `especial.diar.ia.br/{ano}/{slug}/`. Não é o texto integral do artigo,
@@ -69,11 +69,12 @@ seguem para as respectivas plataformas.
    skill (que mostra os 3 textos antes de qualquer publicação) é quem cobre
    essa irreversibilidade, não um mecanismo de rascunho aqui.
 5. **Como confirmar sucesso.** Precisa de uma URL estável do post publicado
-   pra registrar em `data/artigo-especial/{ano}-{slug}/published.json`
-   (canal `apoiase`, ver `scripts/lib/artigo-especial-state.ts`) — navegar
-   de volta pra `apoia.se/diaria` (ou a aba de posts) e confirmar que o
-   teaser aparece no topo, capturando a URL do post individual se a
-   plataforma expõe uma (`apoia.se/diaria/posts/{id}` ou similar).
+   pra passar em `--url` pro `scripts/mark-artigo-especial-channel.ts`
+   (canal `apoiase` — ver Passo 3 da skill, NUNCA escrever `published.json`
+   à mão) — navegar de volta pra `apoia.se/diaria` (ou a aba de posts) e
+   confirmar que o teaser aparece no topo, capturando a URL do post
+   individual se a plataforma expõe uma (`apoia.se/diaria/posts/{id}` ou
+   similar).
 
 ## Fluxo esperado (a preencher com os seletores reais)
 

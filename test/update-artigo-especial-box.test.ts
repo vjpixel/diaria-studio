@@ -318,6 +318,17 @@ describe("runUpdateArtigoEspecialBox — guard de idempotencia do canal 'box' (#
     assert.ok(readFileSync(snippetsFile, "utf8").includes("Titulo atualizado"));
   });
 
+  it("#6000 fleet review: só --ano OU só --slug (não os 2) -> lança, não desliga o guard em silêncio", () => {
+    assert.throws(
+      () => runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false, ano: "2026" }),
+      /devem ser passados JUNTOS/,
+    );
+    assert.throws(
+      () => runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false, slug: "x" }),
+      /devem ser passados JUNTOS/,
+    );
+  });
+
   it("sem --ano/--slug: guard inteiro desligado, sempre executa, sem tocar published.json (compat com --unpin standalone)", () => {
     const r1 = runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false });
     const r2 = runUpdateArtigoEspecialBox({ ...INPUT, snippetsFile, configPath, dataDir, slot: 3, pin: true, dryRun: false, force: false });
