@@ -82,6 +82,33 @@ export const INSTAGRAM_CTA_LINE =
  */
 export const LINKEDIN_CTA_LINE: string | null = null;
 
+/**
+ * Linha de engajamento (compartilhamento/marcação) por canal — #6005 Parte A
+ * (padrões 4/8/13 de `context/instagram-benchmarks-5815.md`, opção (b) da
+ * própria issue: injetada DETERMINISTICAMENTE aqui, junto da linha de canal,
+ * nunca no texto genérico — preserva o CHANNEL-NEUTRAL do #3991 e o #1762:
+ * NÃO-interrogativa, é uma afirmação/imperativo curto, nunca pergunta).
+ *
+ * Estático de propósito: a versão "compartilha com quem ainda acha que X"
+ * do benchmark exige nomear o tema (X), que só o texto editorial conhece —
+ * TS determinístico não tem esse contexto. A forma genérica captura o
+ * mecanismo (marcação/compartilhamento dirigido) sem reintroduzir LLM no
+ * publish. Só Instagram por ora: nativo no canal; no LinkedIn soaria
+ * estranho e o Facebook já tem CTA de assinatura próprio.
+ */
+export const INSTAGRAM_ENGAGEMENT_LINE =
+  "Manda pra alguém que ainda subestima isso.";
+
+export const LINKEDIN_ENGAGEMENT_LINE: string | null = null;
+export const FACEBOOK_ENGAGEMENT_LINE: string | null = null;
+
+/** Mapa canal → linha de engajamento (`null` = nenhuma linha injetada). */
+export const CHANNEL_ENGAGEMENT_LINES: Record<SocialChannel, string | null> = {
+  linkedin: LINKEDIN_ENGAGEMENT_LINE,
+  facebook: FACEBOOK_ENGAGEMENT_LINE,
+  instagram: INSTAGRAM_ENGAGEMENT_LINE,
+};
+
 /** Mapa canal → linha de CTA (`null` = nenhuma linha injetada para esse canal). */
 export const CHANNEL_CTA_LINES: Record<SocialChannel, string | null> = {
   linkedin: LINKEDIN_CTA_LINE,
@@ -192,8 +219,12 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
 export function injectChannelLine(genericText: string, channel: SocialChannel): string {
   const { body, tags } = splitBodyAndTags(genericText);
   const ctaLine = CHANNEL_CTA_LINES[channel];
+  // #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
+  // ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
+  const engagementLine = CHANNEL_ENGAGEMENT_LINES[channel];
   const parts = [body];
   if (ctaLine) parts.push(ctaLine);
+  if (engagementLine) parts.push(engagementLine);
   if (tags) parts.push(tags);
   return parts.join("\n\n");
 }
