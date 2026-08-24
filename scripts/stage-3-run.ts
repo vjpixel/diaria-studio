@@ -334,6 +334,8 @@ export interface Stage3RunResult {
   cardsGenerated: boolean;
   /** #6005 Parte B — slides sem foto (3 parágrafos + CTA) do carrossel diário. */
   carouselCardsGenerated: boolean;
+  /** #6068 — destaques cujos slides foram REGERADOS por mudança de texto. */
+  carouselRefreshed?: string[];
   leaderboardFetched: boolean;
   championsInjected?: ChampionsInjectedState;
   invariantsPassed?: boolean;
@@ -502,7 +504,29 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       );
     }
     carouselCardsGenerated = true;
-    report.note("✅ cards de carrossel (parágrafo + CTA) gerados.");
+    // #6068: o script reporta em `refreshed[]` quais destaques ele REGEROU por
+    // o texto ter mudado desde a última rasterização. Sem surfacear isso, um
+    // auto-conserto real ficava indistinguível de "nada a fazer" — o mesmo
+    // silêncio que o #6064 existe pra eliminar, só que do lado do conserto.
+    let carouselRefreshed: string[] = [];
+    try {
+      const parsed = JSON.parse(carouselResult.stdout) as { refreshed?: unknown };
+      if (Array.isArray(parsed.refreshed)) carouselRefreshed = parsed.refreshed.map(String);
+    } catch (e) {
+      // stdout não-JSON não é motivo pra derrubar o stage — o exit code já
+      // atestou o sucesso; só perdemos o detalhe do que foi regerado. Mas o
+      // caso é raro o bastante pra que o warning sem causa nenhuma não ajude
+      // ninguém a depurar quando acontecer (#6068).
+      report.note(
+        `⚠️  gen-carousel-cards.ts: stdout não parseou como JSON (${(e as Error).message}) — ` +
+          `sem detalhe de regeneração. stdout: ${carouselResult.stdout.slice(0, 200)}`,
+      );
+    }
+    report.note(
+      carouselRefreshed.length > 0
+        ? `✅ cards de carrossel (parágrafo + CTA) gerados — REGERADOS: ${carouselRefreshed.join(", ")} (texto editado após a última rasterização).`
+        : "✅ cards de carrossel (parágrafo + CTA) gerados.",
+    );
 
     // --- leaderboard top1 (fail-soft, #1753) ---
     const leaderboardOut = `${editionDir}/_internal/04-leaderboard-top1.json`;
@@ -591,6 +615,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
       destaques,
       cardsGenerated,
       carouselCardsGenerated,
+      ...(carouselRefreshed.length > 0 ? { carouselRefreshed } : {}),
       leaderboardFetched,
       championsInjected,
       invariantsPassed,

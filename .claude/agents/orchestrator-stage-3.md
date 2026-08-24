@@ -98,7 +98,7 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
   ```bash
   npx tsx scripts/gen-carousel-cards.ts --edition-dir {EDITION_DIR}/
   ```
-  Lê `03-social.md` (`# Social` → `## d{N}`), divide o corpo em 3 parágrafos-card (`splitIntoParagraphCards`, `scripts/lib/daily-carousel-card.ts`). **Falha do render é BLOQUEANTE**, mesma classe do card 4:5 acima; falta de texto de UM destaque específico é best-effort (só aquele destaque cai pro fallback single-image no publish, ver `resolveCarouselImageUrls`). Skip-if-exists (sem `--force` automático).
+  Lê `03-social.md` (`# Social` → `## d{N}`), divide o corpo em 3 parágrafos-card (`splitIntoParagraphCards`, `scripts/lib/daily-carousel-card.ts`). **Falha do render é BLOQUEANTE**, mesma classe do card 4:5 acima; falta de texto de UM destaque específico é best-effort (só aquele destaque cai pro fallback single-image no publish, ver `resolveCarouselImageUrls`). **Idempotência por CONTEÚDO desde o #6064**: pula o destaque só quando os 4 arquivos existem E o texto ainda bate com o carimbo de `_internal/.carousel-source-hash.json`; texto editado depois (painel Revisão do Stage 4) é REGERADO na próxima invocação, sem `--force`. Rodar de novo depois de editar o social é barato e é o conserto que o invariante `carousel-cards-stale` (Stage 4) manda fazer.
 - **Revisor de crop (#3951, generalizado #4223).** Depois de gerar as imagens (inclusive o card):
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/

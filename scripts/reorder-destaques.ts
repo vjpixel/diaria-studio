@@ -16,6 +16,9 @@
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *   - `_internal/.social-source-hash.json` (recomputado quando o
  *     `03-social.md` foi de fato reordenado — #6062)
+ *   - `_internal/.carousel-source-hash.json` (chaves REINDEXADAS conforme
+ *     newOrder — #6068; os slides do carrossel são renomeados pelo mesmo
+ *     regex de imagem acima, então o carimbo precisa seguir junto)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
  * pro Drive/Cloudflare (editor roda upload-images-public manualmente após
@@ -95,6 +98,13 @@ import {
 } from "./insert-titulo-subtitulo.ts"; // #3980
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 import { hashFromApprovedFile } from "./lib/social-source-hash.ts"; // #6062
+import {
+  readCarouselSourceHashes,
+  writeCarouselSourceHashes,
+  carouselSourceHashPath,
+  type CarouselSourceHashes,
+  type DailyDestaqueId,
+} from "./lib/daily-carousel-card.ts"; // #6068
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -774,8 +784,10 @@ export function renameDestaquePrompts(
  * pra gravar e que o invariante de Stage 4 usa pra comparar — a forma do
  * hash nunca é recalculada aqui.
  *
- * Best-effort igual ao writer original: approved ausente/ilegível vira
- * warning, nunca aborta um reorder que já escreveu imagens e texto.
+ * Best-effort igual ao writer original (`merge-social-md.ts`): approved
+ * AUSENTE → skip silencioso (não há o que carimbar); approved ILEGÍVEL →
+ * `console.warn` + skip. Nenhum dos dois aborta um reorder que já escreveu
+ * imagens e texto.
  */
 export function refreshSocialSourceHash(
   editionDir: string,
@@ -806,6 +818,66 @@ export function refreshSocialSourceHash(
     );
   }
   return { path: hashPath, hash };
+}
+
+/**
+ * (#6068) Reindexa `_internal/.carousel-source-hash.json` conforme `newOrder`.
+ *
+ * Os slides do carrossel (`04-d{N}-carousel-{slot}-4x5.jpg`) já são
+ * RENOMEADOS por `renameDestaqueImages` — o regex de sufixo com hífen (#5085)
+ * os pega sem código dedicado. O carimbo, não: sem reindexar, um swap D1↔D2
+ * deixa a entrada `d1` com o hash do texto do ex-D1 enquanto o arquivo `d1` já
+ * é a arte do ex-D2. Consequência medida no review do #6068: o invariante
+ * `carousel-cards-stale` acusa ERROR **falso** nos dois destaques trocados,
+ * com a arte local genuinamente correta — e um editor que descarte esse
+ * alarme como "bug conhecido" deixa de re-subir o KV, que é o único jeito de
+ * a arte publicada acompanhar. Mesma classe do #6062, um arquivo ao lado.
+ *
+ * Reindexa em vez de recomputar: o texto de cada posição já foi movido pelo
+ * passo 4, então o hash correto da posição nova É o hash que estava na
+ * posição antiga — nada precisa ser re-hasheado.
+ *
+ * Sem carimbo em disco (edição sem carrossel, ou anterior ao #6064) → no-op.
+ */
+export function reindexCarouselSourceHashes(
+  editionDir: string,
+  newOrder: number[],
+  dryRun: boolean,
+): { path: string; hashes: CarouselSourceHashes } | null {
+  const stored = readCarouselSourceHashes(editionDir);
+  if (Object.keys(stored).length === 0) return null;
+
+  const reindexed: CarouselSourceHashes = { ...stored };
+
+  // Chaves ALÉM das posições desta edição (ex: `d3` sobrevivente de uma
+  // demoção 3→2) nunca são visitadas pelo laço abaixo e ficariam pra sempre
+  // no arquivo com um hash obsoleto. Nenhum consumidor as lê hoje (todos
+  // escopam por `readDestaqueCount`), mas dado morto que ninguém sinaliza é
+  // como o leitor humano se engana ao abrir o JSON. #6068.
+  for (const key of Object.keys(reindexed) as DailyDestaqueId[]) {
+    const pos = Number(key.slice(1));
+    if (Number.isFinite(pos) && pos > newOrder.length) {
+      console.warn(
+        `reorder-destaques: removendo entrada órfã '${key}' de .carousel-source-hash.json — ` +
+          `esta edição tem ${newOrder.length} destaques.`,
+      );
+      delete reindexed[key];
+    }
+  }
+
+  for (let i = 0; i < newOrder.length; i++) {
+    const novo = `d${i + 1}` as DailyDestaqueId;
+    const antigo = `d${newOrder[i]}` as DailyDestaqueId;
+    const hash = stored[antigo];
+    if (hash === undefined) delete reindexed[novo];
+    else reindexed[novo] = hash;
+  }
+
+  // `replace` (não merge): o reindex REMOVE entradas (posição de origem sem
+  // hash, chave órfã fora do range) — com merge, a escrita ressuscitaria do
+  // disco exatamente o que acabou de ser deletado.
+  if (!dryRun) writeCarouselSourceHashes(editionDir, reindexed, { replace: true });
+  return { path: carouselSourceHashPath(editionDir), hashes: reindexed };
 }
 
 function processJsonFile(
@@ -959,6 +1031,13 @@ function main(): void {
     const refreshed = refreshSocialSourceHash(editionDir, args.dryRun);
     if (refreshed) modified.rewritten.push(refreshed.path);
   }
+
+  // 4c. _internal/.carousel-source-hash.json (#6068) — INCONDICIONAL, ao
+  // contrário do 4b: o carimbo do carrossel indexa ARQUIVOS de slide, que
+  // `renameDestaqueImages` já renomeou lá em cima. Ele precisa seguir o
+  // rename mesmo numa edição cujo `03-social.md` nem existe ainda.
+  const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
+  if (carouselReindex) modified.rewritten.push(carouselReindex.path);
 
   // #3982: validação PÓS-reorder do limite de chars por slot (D1=1200,
   // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
