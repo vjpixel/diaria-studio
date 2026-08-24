@@ -42,6 +42,12 @@ describe("checkTitleClickbaitVulgar (#6008)", () => {
     assert.equal(result.ok, false);
   });
 
+  it("flagra 'Não vai acreditar' com acento, standalone (review #6024)", () => {
+    const result = checkTitleClickbaitVulgar(destaqueMd("Não vai acreditar: modelo engole processo"));
+    assert.equal(result.ok, false);
+    assert.match(result.errors[0].matched, /acreditar/i);
+  });
+
   it("flagra 'chocante'", () => {
     const result = checkTitleClickbaitVulgar(destaqueMd("O número chocante que a Meta escondeu"));
     assert.equal(result.ok, false);

@@ -45,7 +45,7 @@ export interface TitleClickbaitVulgarReport {
 // Frases proibidas, com/sem acento, case-insensitive.
 const PHRASE_RES: Array<[RegExp, string]> = [
   [/\bvoc[êe]\s+n[aã]o\s+vai\s+acreditar\b/i, "você não vai acreditar"],
-  [/\bnao\s+vai\s+acreditar\b/i, "não vai acreditar"],
+  [/\bn[aã]o\s+vai\s+acreditar\b/i, "não vai acreditar"],
   [/\bchocante\b/i, "chocante"],
   [/\bshocking\b/i, "shocking"],
   [/\bo\s+que\s+aconteceu\s+depois\b/i, "o que aconteceu depois"],
