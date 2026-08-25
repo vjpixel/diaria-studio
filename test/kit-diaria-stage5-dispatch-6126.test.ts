@@ -1,0 +1,319 @@
+/**
+ * test/kit-diaria-stage5-dispatch-6126.test.ts (#6126)
+ *
+ * Testa o ORQUESTRADOR (`runStage5KitDispatch`), não a lógica de decisão —
+ * essa vive em `test/kit-diaria-channel-6126.test.ts`.
+ *
+ * **Por que este arquivo existe** (achado P0 do review da PR #6138): os testes
+ * da lógica pura provam que `decideKitChannelDispatch`/`resolveAudienceTagId`
+ * devolvem o veredito certo *em isolamento*. Nenhum deles prova que o
+ * orquestrador **respeita** esse veredito antes de chamar `createBroadcast`.
+ *
+ * Um bug de wiring — `if` invertido, `return` esquecido num branch de skip,
+ * refactor que reordene passos — passaria por todos os 13 testes de lógica sem
+ * quebrar nenhum, e chegaria em produção fazendo exatamente o pior cenário do
+ * módulo: criar broadcast com filtro que casa com a base inteira, entregando a
+ * edição EM DOBRO aos 585 assinantes importados da Beehiiv.
+ *
+ * Daí a asserção que se repete em quase todo caso abaixo:
+ * **`createBroadcast` não foi chamado**. É o invariante central do canal.
+ *
+ * Espelha `test/brevo-diaria-stage5-dispatch-5772.test.ts`, o precedente do
+ * canal irmão.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  runStage5KitDispatch,
+  KitDiariaStateCorruptError,
+  type Stage5KitDeps,
+} from "../scripts/kit-diaria-stage5-dispatch.ts";
+import type { KitDiariaChannelConfig, KitDiariaPublished } from "../scripts/lib/kit-diaria-channel.ts";
+import { buildTagFilter, buildAllSubscribersFilter } from "../scripts/lib/kit-broadcasts.ts";
+
+const EDITION = "/tmp/edicao-fake-6126";
+const TAG_ID = 4242;
+
+interface Spy {
+  createCalls: Parameters<Stage5KitDeps["createBroadcast"]>[0][];
+  writeCalls: KitDiariaPublished[];
+  logs: string[];
+}
+
+function makeDeps(over: {
+  config?: KitDiariaChannelConfig | undefined;
+  existing?: KitDiariaPublished | null;
+  readState?: Stage5KitDeps["readState"];
+  writeState?: Stage5KitDeps["writeState"];
+  findTagId?: Stage5KitDeps["findTagId"];
+  buildPayload?: Stage5KitDeps["buildPayload"];
+  createBroadcast?: Stage5KitDeps["createBroadcast"];
+} = {}): { deps: Stage5KitDeps; spy: Spy } {
+  const spy: Spy = { createCalls: [], writeCalls: [], logs: [] };
+  const deps: Stage5KitDeps = {
+    readPlatformConfig: () => ({
+      kit_diaria: over.config === undefined ? { enabled: true } : over.config,
+    }),
+    readState: over.readState ?? (() => over.existing ?? null),
+    writeState:
+      over.writeState ??
+      ((_dir, state) => void spy.writeCalls.push(state)),
+    findTagId: over.findTagId ?? (async () => TAG_ID),
+    buildPayload:
+      over.buildPayload ??
+      (() => ({ html: "<p>oi</p>", subject: "Assunto", previewText: "Preview", unresolvedImages: [], renderWarnings: [] })),
+    createBroadcast:
+      over.createBroadcast ??
+      (async (input) => {
+        spy.createCalls.push(input);
+        return { id: 555 };
+      }),
+    log: (l) => void spy.logs.push(l),
+  };
+  // Envolve o createBroadcast customizado pra também espionar.
+  if (over.createBroadcast) {
+    const inner = over.createBroadcast;
+    deps.createBroadcast = async (input) => {
+      spy.createCalls.push(input);
+      return inner(input);
+    };
+  }
+  return { deps, spy };
+}
+
+describe("#6126 runStage5KitDispatch — o guard: nenhum caminho de recusa toca a rede", () => {
+  it("canal desligado ⇒ skipped e createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({ config: { enabled: false } });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "skipped");
+    assert.equal(spy.createCalls.length, 0);
+    assert.equal(spy.writeCalls.length, 0);
+  });
+
+  it("config ausente ⇒ skipped e createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({ config: undefined as unknown as KitDiariaChannelConfig });
+    // readPlatformConfig devolve { kit_diaria: { enabled: true } } quando
+    // `config === undefined`; forçamos o caso real de bloco ausente:
+    deps.readPlatformConfig = () => ({});
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "skipped");
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("tag inexistente (findTagId → null) ⇒ skipped, createBroadcast NÃO chamado", async () => {
+    // Cenário real: o marcador de cadastro nativo ainda não produziu ninguém.
+    const { deps, spy } = makeDeps({ findTagId: async () => null });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "skipped");
+    if (r.status === "skipped") assert.match(r.reason, /audiência INTEIRA/);
+    assert.equal(spy.createCalls.length, 0, "NUNCA criar broadcast com tag não resolvida");
+  });
+
+  it("tag id inválido (0) ⇒ skipped, createBroadcast NÃO chamado", async () => {
+    // `0` é falsy: um `if (tagId)` ingênuo pularia o guard e seguiria.
+    const { deps, spy } = makeDeps({ findTagId: async () => 0 });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "skipped");
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("findTagId rejeita (erro de rede) ⇒ failed, createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({
+      findTagId: async () => {
+        throw new Error("ECONNRESET");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "findTagIdByName");
+      assert.match(r.reason, /ECONNRESET/, "a causa original precisa sobreviver");
+    }
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("subject vazio ⇒ failed, createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({
+      buildPayload: () => ({ html: "<p>x</p>", subject: "   ", previewText: "p", unresolvedImages: [], renderWarnings: [] }),
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("buildPayload lança ⇒ failed com a causa, createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({
+      buildPayload: () => {
+        throw new Error("02-reviewed.md ausente");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") assert.match(r.reason, /02-reviewed/);
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("dry-run ⇒ skipped, sem createBroadcast e sem writeState", async () => {
+    const { deps, spy } = makeDeps();
+    const r = await runStage5KitDispatch(EDITION, deps, { dryRun: true });
+    assert.equal(r.status, "skipped");
+    assert.equal(spy.createCalls.length, 0, "dry-run não pode vazar pra chamada real");
+    assert.equal(spy.writeCalls.length, 0);
+  });
+});
+
+describe("#6126 runStage5KitDispatch — idempotência", () => {
+  it("estado existente ⇒ already_done sem tocar rede nem regravar", async () => {
+    const existing: KitDiariaPublished = {
+      broadcast_id: 777,
+      subject: "s",
+      preview_text: "p",
+      audience_tag: "kit-nativo",
+      audience_tag_id: TAG_ID,
+      status: "draft",
+    };
+    const { deps, spy } = makeDeps({ existing });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.deepEqual(r, { status: "already_done", broadcastId: 777 });
+    assert.equal(spy.createCalls.length, 0, "resume nunca cria um 2º broadcast");
+    assert.equal(spy.writeCalls.length, 0);
+  });
+});
+
+describe("#6126 runStage5KitDispatch — caminho feliz", () => {
+  it("envia com filtro DA TAG, nunca o da base inteira", async () => {
+    const { deps, spy } = makeDeps();
+    const r = await runStage5KitDispatch(EDITION, deps);
+
+    assert.equal(r.status, "ok");
+    assert.equal(spy.createCalls.length, 1);
+
+    const call = spy.createCalls[0];
+    // A asserção que justifica este arquivo existir:
+    assert.deepEqual(call.subscriber_filter, buildTagFilter(TAG_ID));
+    assert.notDeepEqual(
+      call.subscriber_filter,
+      buildAllSubscribersFilter(),
+      "jamais o filtro da base inteira",
+    );
+    assert.notDeepEqual(call.subscriber_filter, [], "jamais filtro vazio (= base inteira no Kit)");
+    // Rascunho: a Etapa 6 é quem agenda, sob o gate do editor.
+    assert.equal(call.send_at, null);
+    assert.equal(call.subject, "Assunto");
+    assert.equal(call.content, "<p>oi</p>");
+  });
+
+  it("grava o estado com o id RESOLVIDO e a tag usada (auditoria de 'para quem foi')", async () => {
+    const { deps, spy } = makeDeps();
+    await runStage5KitDispatch(EDITION, deps);
+    assert.equal(spy.writeCalls.length, 1);
+    assert.deepEqual(spy.writeCalls[0], {
+      broadcast_id: 555,
+      subject: "Assunto",
+      preview_text: "Preview",
+      audience_tag: "kit-nativo",
+      audience_tag_id: TAG_ID,
+      status: "draft",
+    });
+  });
+
+  it("audience_tag customizado é respeitado — habilita o rollout escalonado", async () => {
+    const seen: string[] = [];
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, audience_tag: "diaria-test-email" },
+      findTagId: async (name) => {
+        seen.push(name);
+        return 99;
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    assert.deepEqual(seen, ["diaria-test-email"]);
+    assert.deepEqual(spy.createCalls[0].subscriber_filter, buildTagFilter(99));
+  });
+});
+
+describe("#6126 runStage5KitDispatch — falha de rede na criação", () => {
+  it("createBroadcast rejeita ⇒ failed e estado NÃO é gravado", async () => {
+    // Gravar estado de um broadcast que não existe faria a próxima invocação
+    // reportar `already_done` para um id inexistente — pior que duplicar.
+    const { deps, spy } = makeDeps({
+      createBroadcast: async () => {
+        throw new Error("429 rate limited");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "createBroadcast");
+      assert.match(r.reason, /429/);
+    }
+    assert.equal(spy.writeCalls.length, 0, "não gravar estado de broadcast que não foi criado");
+  });
+});
+
+describe("#6126 runStage5KitDispatch — findings do review da PR #6138", () => {
+  it("finding 1: estado CORROMPIDO ⇒ failed, nunca 'dispatch de novo'", async () => {
+    // O bug original: JSON ilegível virava `null`, que `decideKitChannelDispatch`
+    // lê como "nunca despachado" — e o dispatch criava um SEGUNDO broadcast
+    // para a mesma edição. Newsletter em dobro, e envio não se desfaz.
+    const { deps, spy } = makeDeps({
+      readState: () => {
+        throw new KitDiariaStateCorruptError("kit-diaria-published.json não é JSON válido");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") assert.match(r.reason, /JSON válido/);
+    assert.equal(spy.createCalls.length, 0, "estado ilegível NUNCA pode virar 2º broadcast");
+  });
+
+  it("finding 2: writeState falhando ⇒ failed que AVISA que o broadcast já existe", async () => {
+    // Sem isso a exceção subia crua: broadcast órfão no Kit, estado local
+    // ausente, e o resume seguinte duplicava o envio.
+    const { deps, spy } = makeDeps({
+      writeState: () => {
+        throw new Error("ENOSPC");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "writeState");
+      assert.match(r.reason, /JÁ FOI CRIADO/, "quem lê o resumo precisa saber antes de re-rodar");
+      assert.match(r.reason, /555/, "e precisa do broadcast_id pra conferir no Kit");
+    }
+    assert.equal(spy.createCalls.length, 1);
+  });
+
+  it("finding 3: readPlatformConfig lançando ⇒ failed estruturado, não crash", async () => {
+    const { deps, spy } = makeDeps();
+    deps.readPlatformConfig = () => {
+      throw new Error("platform.config.json malformado");
+    };
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") assert.match(r.reason, /malformado/);
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("finding 4: warnings de render chegam ao RESULTADO, não só ao log", async () => {
+    // Warning só em stderr é warning que o editor nunca vê num `status: "ok"`,
+    // porque o orchestrator lê o JSON de stdout.
+    const { deps } = makeDeps({
+      buildPayload: () => ({
+        html: "<p>x</p>",
+        subject: "S",
+        previewText: "P",
+        unresolvedImages: ["04-d1-2x1.jpg"],
+        renderWarnings: ["bloco_perdido"],
+      }),
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") {
+      assert.deepEqual(r.unresolvedImages, ["04-d1-2x1.jpg"]);
+      assert.deepEqual(r.renderWarnings, ["bloco_perdido"]);
+    }
+  });
+});

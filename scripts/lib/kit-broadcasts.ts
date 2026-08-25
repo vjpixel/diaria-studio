@@ -232,7 +232,18 @@ export async function findTagIdByName(name: string, config?: KitConfig): Promise
     const page = await listTags({ perPage: 500, after, config });
     const match = page.tags.find((t) => t.name === name);
     if (match) return match.id;
-    if (!page.pagination?.has_next_page || !page.pagination.end_cursor) return null;
+    if (!page.pagination) {
+      // #6138 finding 6: 2xx sem metadado de paginação. Degradar pra "fim da
+      // lista" é a escolha SEGURA (o caller pula em vez de enviar), mas sem
+      // este log o `null` resultante seria reportado como "a tag não existe" —
+      // mandando quem investiga procurar no lugar errado.
+      process.stderr.write(
+        `[kit-broadcasts] aviso: listTags devolveu 2xx sem 'pagination' ao procurar "${name}" — ` +
+          `tratando como fim da lista. Se a tag existir no painel, suspeite da resposta da API, não do marcador.\n`,
+      );
+      return null;
+    }
+    if (!page.pagination.has_next_page || !page.pagination.end_cursor) return null;
     after = page.pagination.end_cursor;
   }
 }

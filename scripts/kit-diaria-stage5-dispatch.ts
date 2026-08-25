@@ -64,22 +64,63 @@ export type Stage5KitResult =
   | { status: "already_done"; broadcastId: number }
   | { status: "skipped"; reason: string }
   | { status: "failed"; step: string; reason: string }
-  | { status: "ok"; broadcastId: number; audienceTag: string; audienceTagId: number };
+  | {
+      status: "ok";
+      broadcastId: number;
+      audienceTag: string;
+      audienceTagId: number;
+      /** #6138 finding 4: warnings precisam chegar ao JSON (stdout), não só ao
+       *  stderr — o orchestrator lê o JSON pra montar o resumo, então warning
+       *  só logado é warning que o editor nunca vê num `status: "ok"`. */
+      unresolvedImages: string[];
+      renderWarnings: string[];
+    };
 
 export function resolveKitDiariaStatePath(editionDir: string): string {
   return resolve(editionDir, "_internal", "kit-diaria-published.json");
 }
 
+/** Estado local ilegível — distinto de ausente. Ver `readKitDiariaState`. */
+export class KitDiariaStateCorruptError extends Error {}
+
+/**
+ * Lê o estado desta edição. **Ausente ⇒ `null`; presente-mas-ilegível ⇒ lança.**
+ *
+ * A distinção é o ponto todo (achado CRÍTICO do review da PR #6138). Uma versão
+ * anterior deste código devolvia `null` nos dois casos, com o comentário de que
+ * recriar o broadcast seria "recuperável, o Kit devolve um id novo". **Isso
+ * descreve o bug, não a recuperação:** um segundo broadcast para a mesma edição
+ * é uma newsletter entregue em DOBRO à mesma audiência, e envio não se desfaz.
+ *
+ * E o cenário não é hipotético neste projeto: `data/editions/` mora na junction
+ * do OneDrive, que já produziu conflito de sync corrompendo arquivo de estado
+ * (mesmo modo de falha registrado em `data/sessions/`, #6130). Truncamento por
+ * crash no meio de `writeFileSync` tem o mesmo efeito.
+ *
+ * Lançar força o caller a decidir explicitamente — e ele traduz em `failed`,
+ * preservando o fail-soft (não derruba os demais publicadores) sem arriscar
+ * duplicidade.
+ */
 export function readKitDiariaState(editionDir: string): KitDiariaPublished | null {
   const p = resolveKitDiariaStatePath(editionDir);
   if (!existsSync(p)) return null;
+  let raw: string;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as KitDiariaPublished;
-  } catch {
-    // Estado ilegível é tratado como ausente de propósito: recriar o broadcast
-    // é recuperável (o Kit devolve um id novo e regravamos), enquanto abortar
-    // deixaria a edição sem o canal sem motivo claro.
-    return null;
+    raw = readFileSync(p, "utf8");
+  } catch (e) {
+    throw new KitDiariaStateCorruptError(
+      `${p} existe mas não pôde ser lido: ${(e as Error).message}. ` +
+        `Recusando tratar como "não despachado" — risco de broadcast duplicado.`,
+    );
+  }
+  try {
+    return JSON.parse(raw) as KitDiariaPublished;
+  } catch (e) {
+    throw new KitDiariaStateCorruptError(
+      `${p} existe mas não é JSON válido (${(e as Error).message}). ` +
+        `Recusando tratar como "não despachado" — risco de broadcast duplicado. ` +
+        `Confira no Kit se já existe broadcast desta edição; corrija ou remova o arquivo antes de re-rodar.`,
+    );
   }
 }
 
@@ -94,6 +135,22 @@ export interface Stage5KitDeps {
   readState(editionDir: string): KitDiariaPublished | null;
   writeState(editionDir: string, state: KitDiariaPublished): void;
   findTagId(name: string): Promise<number | null>;
+  /**
+   * Monta o payload da edição (HTML + subject + preview).
+   *
+   * É dependência injetada, e não chamada direta, por um motivo específico
+   * (achado do review da PR #6138): sem isso, `runStage5KitDispatch` só seria
+   * testável com uma edição real em disco — e o teste que mais importa aqui é
+   * justamente o do caminho FELIZ, onde se verifica que o `subscriber_filter`
+   * entregue a `createBroadcast` é o da tag e não o da base inteira.
+   */
+  buildPayload(editionDir: string): {
+    html: string;
+    subject: string;
+    previewText: string;
+    unresolvedImages: string[];
+    renderWarnings: string[];
+  };
   createBroadcast(input: {
     subject: string;
     content: string;
@@ -105,6 +162,7 @@ export interface Stage5KitDeps {
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
+  const log = (line: string) => process.stderr.write(`[kit-diaria stage5] ${line}\n`);
   return {
     readPlatformConfig: () =>
       JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
@@ -113,8 +171,29 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
     readState: readKitDiariaState,
     writeState: writeKitDiariaState,
     findTagId: (name) => findTagIdByName(name),
+    buildPayload: (editionDir) => {
+      const content = extractContent(editionDir);
+      const imagesPath = resolve(editionDir, "06-public-images.json");
+      const publicImages: PublicImagesFile = existsSync(imagesPath)
+        ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
+        : {};
+      const { html, unresolvedImages, renderWarnings } = buildKitHtml(content, publicImages);
+      if (unresolvedImages.length > 0) {
+        log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
+      }
+      if (renderWarnings.length > 0) {
+        log(`warn: ${renderWarnings.length} evento(s) de conteúdo perdido no render Kit.`);
+      }
+      return {
+        html,
+        subject: buildKitSubject(content),
+        previewText: buildKitPreviewText(content),
+        unresolvedImages,
+        renderWarnings: renderWarnings.map((w) => w.event),
+      };
+    },
     createBroadcast: (input) => createBroadcast(input),
-    log: (line) => process.stderr.write(`[kit-diaria stage5] ${line}\n`),
+    log,
   };
 }
 
@@ -123,11 +202,20 @@ export async function runStage5KitDispatch(
   deps: Stage5KitDeps,
   opts: { dryRun?: boolean } = {},
 ): Promise<Stage5KitResult> {
-  const decision = decideKitChannelDispatch({
-    config: deps.readPlatformConfig().kit_diaria,
-    existing: deps.readState(editionDir),
-    defaultAudienceTag: KIT_NATIVE_SIGNUP_MARKER,
-  });
+  // #6138 finding 3: config e estado são I/O local e podem lançar
+  // (`platform.config.json` malformado; estado corrompido, que
+  // `readKitDiariaState` agora lança de propósito em vez de mascarar). Sem
+  // este try, a exceção sobe crua e quebra a promessa de fail-soft do módulo.
+  let decision: ReturnType<typeof decideKitChannelDispatch>;
+  try {
+    decision = decideKitChannelDispatch({
+      config: deps.readPlatformConfig().kit_diaria,
+      existing: deps.readState(editionDir),
+      defaultAudienceTag: KIT_NATIVE_SIGNUP_MARKER,
+    });
+  } catch (e) {
+    return { status: "failed", step: "readState/readPlatformConfig", reason: (e as Error).message };
+  }
 
   if (decision.action === "already_done") {
     deps.log(`broadcast desta edição já existe (broadcast_id=${decision.broadcastId}) — no-op.`);
@@ -154,22 +242,16 @@ export async function runStage5KitDispatch(
     return { status: "skipped", reason: tagCheck.reason };
   }
 
-  const content = extractContent(editionDir);
-  const imagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: PublicImagesFile = existsSync(imagesPath)
-    ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
-    : {};
-
-  const { html, unresolvedImages, renderWarnings } = buildKitHtml(content, publicImages);
-  if (unresolvedImages.length > 0) {
-    deps.log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
+  let html: string;
+  let subject: string;
+  let previewText: string;
+  let unresolvedImages: string[];
+  let renderWarnings: string[];
+  try {
+    ({ html, subject, previewText, unresolvedImages, renderWarnings } = deps.buildPayload(editionDir));
+  } catch (e) {
+    return { status: "failed", step: "buildPayload", reason: (e as Error).message };
   }
-  if (renderWarnings.length > 0) {
-    deps.log(`warn: ${renderWarnings.length} evento(s) de conteúdo perdido no render Kit.`);
-  }
-
-  const subject = buildKitSubject(content);
-  const previewText = buildKitPreviewText(content);
   const subjectCheck = checkSubjectNotEmpty(subject);
   if (!subjectCheck.ok) {
     return { status: "failed", step: "buildKitSubject", reason: subjectCheck.reason };
@@ -196,17 +278,46 @@ export async function runStage5KitDispatch(
     return { status: "failed", step: "createBroadcast", reason: (e as Error).message };
   }
 
-  deps.writeState(editionDir, {
-    broadcast_id: created.id,
-    subject,
-    preview_text: previewText,
-    audience_tag: audienceTag,
-    audience_tag_id: tagCheck.tagId,
-    status: "draft",
-  });
+  // #6138 finding 2: o broadcast JÁ EXISTE no Kit a partir daqui. Se a escrita
+  // do estado local falhar (disco, permissão, conflito de sync do OneDrive —
+  // ver #6130) e a exceção subir crua, o resume seguinte não acha estado,
+  // decide `dispatch` de novo, e cria um SEGUNDO broadcast para a mesma
+  // edição. Capturar e dizer explicitamente que o broadcast já foi criado é o
+  // que permite a quem lê o resumo agir antes de re-rodar.
+  try {
+    deps.writeState(editionDir, {
+      broadcast_id: created.id,
+      subject,
+      preview_text: previewText,
+      audience_tag: audienceTag,
+      audience_tag_id: tagCheck.tagId,
+      status: "draft",
+    });
+  } catch (e) {
+    return {
+      status: "failed",
+      step: "writeState",
+      reason:
+        `broadcast_id=${created.id} JÁ FOI CRIADO no Kit, mas o estado local não pôde ser gravado: ` +
+        `${(e as Error).message}. NÃO re-rodar sem conferir no Kit — risco de broadcast duplicado.`,
+    };
+  }
 
   deps.log(`draft criado: broadcast_id=${created.id} · audiência: tag "${audienceTag}" (id=${tagCheck.tagId})`);
-  return { status: "ok", broadcastId: created.id, audienceTag, audienceTagId: tagCheck.tagId };
+  if (unresolvedImages.length > 0 || renderWarnings.length > 0) {
+    deps.log(
+      `⚠️ concluído COM avisos: ${unresolvedImages.length} imagem(ns) sem URL, ` +
+        `${renderWarnings.length} evento(s) de render — ver o JSON do resultado.`,
+    );
+  }
+  return {
+    status: "ok",
+    broadcastId: created.id,
+    audienceTag,
+    audienceTagId: tagCheck.tagId,
+    unresolvedImages,
+    renderWarnings,
+  };
 }
 
 export async function main(): Promise<void> {
@@ -218,12 +329,26 @@ export async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const result = await runStage5KitDispatch(resolve(ROOT, editionDirArg), productionDeps(), {
-    dryRun: hasFlag(argv, "dry-run"),
-  });
-  // Fail-soft: `failed` NÃO derruba a Etapa 5 (exit 0 com aviso), mesma
-  // disciplina do canal Brevo. O orchestrator lê o JSON pra montar o resumo.
+  // #6138 finding 3: try/catch de último recurso. O contrato deste script é
+  // "SEMPRE imprime JSON parseável em stdout" — o orchestrator lê o JSON pra
+  // montar o resumo da Etapa 5. Uma exceção inesperada escapando daqui
+  // quebraria esse contrato com um stack trace cru, e o canal sumiria do
+  // resumo em vez de aparecer como falha.
+  let result: Stage5KitResult;
+  try {
+    result = await runStage5KitDispatch(resolve(ROOT, editionDirArg), productionDeps(), {
+      dryRun: hasFlag(argv, "dry-run"),
+    });
+  } catch (e) {
+    result = { status: "failed", step: "unexpected", reason: (e as Error).message };
+  }
   console.log(JSON.stringify(result, null, 2));
+  // Espelha `brevo-diaria-stage5-dispatch.ts:248` (#6138 finding 6): exit 1 em
+  // `failed`. Fail-soft continua valendo — quem garante que a Etapa 5 não cai
+  // é o orchestrator, que trata este canal como opcional e lê o `status` do
+  // JSON; o exit code existe pra invocação manual/CI não reportar sucesso
+  // falso.
+  process.exitCode = result.status === "failed" ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
