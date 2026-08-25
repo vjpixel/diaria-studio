@@ -54,4 +54,19 @@ describe("mdInlineToHtml (#2001 follow-up: URLs com parênteses)", () => {
     assert.doesNotMatch(out, /<a\b/, `não deve emitir tag <a>: ${out}`);
     assert.ok(out.includes("[clique aqui]()"), `texto bruto deve ser preservado: ${out}`);
   });
+
+  it("#6084: itálico *texto* (asterisco único) vira <em>", () => {
+    const out = mdInlineToHtml("*Desde sexta-feira, rodando 24/7.*");
+    assert.ok(
+      out.includes("<em>Desde sexta-feira, rodando 24/7.</em>"),
+      `itálico ausente: ${out}`,
+    );
+  });
+
+  it("#6084: bold **texto** e itálico *texto* na mesma string não colidem", () => {
+    const out = mdInlineToHtml("Isto é **negrito** e isto é *itálico*.");
+    assert.ok(out.includes("<b>negrito</b>"), `bold ausente: ${out}`);
+    assert.ok(out.includes("<em>itálico</em>"), `itálico ausente: ${out}`);
+    assert.doesNotMatch(out, /<em>[^<]*negrito/, `bold não deve virar itálico: ${out}`);
+  });
 });

@@ -1618,6 +1618,12 @@ export function mdInlineToHtml(s: string): string {
   parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
   let out = parts.join("");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  // #6084: itálico `*texto*` (single asterisk) — mdInlineToHtml nunca
+  // suportou isso, diferente de processInlineItalics (usado no corpo dos
+  // destaques). Rodar DEPOIS do bold acima: pares `**...**` já viraram
+  // `<b>`, então o regex de asterisco único abaixo só encontra itálico de
+  // verdade, nunca metade de um par de bold já consumido.
+  out = out.replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
   return out;
 }
 
