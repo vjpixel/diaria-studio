@@ -36,6 +36,12 @@
  * `email1_brevo_id`/`email2_brevo_id` no store; `--cancel-pending` lê o
  * store e cancela tudo que ainda tiver id gravado.
  *
+ * #6176 (self-review Finding 1 do #6158): `--cancel-pending` roda ANTES do
+ * kill switch `onboarding.enabled: false` e do check de `resolveBeehiivConfig()`
+ * — cancelamento não detecta assinante nem chama a Beehiiv, e travar o
+ * cancelamento atrás da pausa da automação seria o oposto do desejado numa
+ * emergência. Único requisito: a credencial Brevo (`BREVO_DIARIA_API_KEY`).
+ *
  * Flags auxiliares (testes/operações): --store <path>, --snippets-dir <path>,
  * --skip-email1 --skip-email2 --skip-email3 (desliga etapas pontualmente).
  */
@@ -441,12 +447,38 @@ async function main(): Promise<void> {
   // valer — parseArgs() não lê env, então essa reordenação é segura.
   loadProjectEnv(args.envRoot);
   const cfg = loadOnboardingConfig(args.configPath);
+  const apiKeyEnv = cfg.api_key_env ?? "BREVO_DIARIA_API_KEY";
+  const brevoKey = process.env[apiKeyEnv];
+
+  // --- #6176 (self-review Finding 1 do #6158): `--cancel-pending` roda ANTES
+  // do kill switch (`onboarding.enabled: false`) e do check de
+  // `resolveBeehiivConfig()` — cancelar não detecta assinante nem chama a
+  // Beehiiv, então nenhum dos dois é estritamente necessário. Travar
+  // `--cancel-pending` atrás do kill switch é o oposto do desejado numa
+  // emergência: é justamente quando alguém pausa a automação por causa de um
+  // incidente (#6042/#6043) que precisa poder cancelar o que já está na
+  // fila. Único requisito real deste modo: a credencial Brevo (usada pelo
+  // DELETE). ---
+  if (args.cancelPending) {
+    if (!brevoKey) {
+      process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
+      process.exit(2);
+    }
+    const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
+    const results = await runCancelPending({ apiKey: brevoKey, storePath });
+    console.log(
+      JSON.stringify(
+        { mode: "cancel-pending", attempted: results.length, cancelled: results.filter((r) => r.ok).length, results },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
 
   // --- Kill switch (#5957) — ANTES de qualquer chamada externa, mesmo padrão
-  // do guard `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`. Ordem
-  // preservada tal qual antes do #6158 — inclusive para --cancel-pending, que
-  // segue sujeito ao mesmo guard (checagem determinística, nenhum caso testado
-  // exige que cancelamento ignore a pausa). ---
+  // do guard `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`.
+  // Não se aplica a `--cancel-pending` (tratado acima, antes deste ponto). ---
   if (cfg.enabled === false) {
     process.stdout.write(
       "[onboarding] ⏸️  automação PAUSADA (platform.config.json → onboarding.enabled: false) — " +
@@ -462,27 +494,12 @@ async function main(): Promise<void> {
     process.stderr.write(`[onboarding] ${beeCfg.reason}\n`);
     process.exit(2);
   }
-  const apiKeyEnv = cfg.api_key_env ?? "BREVO_DIARIA_API_KEY";
-  const brevoKey = process.env[apiKeyEnv];
   if (!brevoKey) {
     process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
     process.exit(2);
   }
 
   const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
-
-  // --- #6158: modo dedicado --cancel-pending — cancela e sai, sem detecção/envio. ---
-  if (args.cancelPending) {
-    const results = await runCancelPending({ apiKey: brevoKey, storePath });
-    console.log(
-      JSON.stringify(
-        { mode: "cancel-pending", attempted: results.length, cancelled: results.filter((r) => r.ok).length, results },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
 
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? cfg.snippets_dir ?? "data/snippets");
   const snippets = loadSnippets(snippetsDirAbs);
