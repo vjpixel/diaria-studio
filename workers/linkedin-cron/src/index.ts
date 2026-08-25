@@ -292,8 +292,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // carrossel semanal; #5330 renomeou "weekly" pra "weekly-clicked" /
   // "weekly-highlights", mas "weekly" cru segue aceito — entries antigas no
   // KV/DLQ e qualquer chamador que ainda não migrou não devem quebrar).
-  if (!/^(d[123]|weekly(-[a-z]+)?)$/.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, d3, or weekly[-mode]" }, 400);
+  if (!/^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/.test(body.destaque as string)) {
+    return json({ error: "destaque must be d1, d2, d3, weekly[-mode], or especial[-mode]" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados

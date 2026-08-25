@@ -129,7 +129,7 @@ const TARGET_TO_CHANNEL: Record<LinkedinTarget, ArtigoEspecialChannel> = {
  * as duas grafias. Não assuma `"pagina"/"perfil"` cru ao ler este store.
  */
 export function dispatchDestaqueFor(target: LinkedinTarget): string {
-  return `weekly-${target}`;
+  return `especial-${target}`;
 }
 
 /**
@@ -138,7 +138,7 @@ export function dispatchDestaqueFor(target: LinkedinTarget): string {
  * e não dá pra importar dele: o objetivo é falhar ANTES do dispatch em vez de
  * descobrir via HTTP 400 no meio da sequência.
  */
-export const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
+export const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
 
 /**
  * Guard de pré-voo: valida o `destaque` de TODOS os targets desta run contra o
