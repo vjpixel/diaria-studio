@@ -1912,3 +1912,41 @@ describe("renderWaveProposal (#4657)", () => {
     assert.doesNotMatch(out, /pico de campanha/);
   });
 });
+
+describe("renderWaveProposal — motivo dirigido por targetVolume (#6081)", () => {
+  it("REGRESSÃO #6081: fila cobre a política mas não o --volume → motivo NOMEIA o volume pedido, nunca 'inversão de safra'", () => {
+    // Cenário exato do #6075/#6081: volumes.total = 1000 (política), fila de
+    // 2000 cobre a política, mas o editor pediu --volume 5000. O render
+    // recomputava queueDeficit só contra volumes.total → 0 → caía no ramo
+    // "inversão de safra (fila cobre o volume, sem déficit real): 0" mesmo
+    // havendo plano de MV real dirigido pelo override. É a tela onde o editor
+    // aprova tudo — motivo falso ali é informação confirmada sem saber.
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000,
+          targetVolume: 5000,
+          mvBacklog: mvBacklogFixture([{ cohort: "ex-assinantes", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Verificação MV sob demanda/);
+    assert.match(out, /Motivo: déficit de fila contra --volume 5\.000 \(3\.000\)/);
+    assert.doesNotMatch(out, /inversão de safra/);
+    assert.doesNotMatch(out, /sem déficit real/);
+  });
+
+  it("targetVolume <= volumes.total não ativa o ramo novo (comportamento antigo preservado)", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 300,
+          targetVolume: 500, // MENOR que volumes.total (1000) — irrelevante
+          mvBacklog: mvBacklogFixture([{ cohort: "ex-assinantes", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: déficit de fila: 700/);
+    assert.doesNotMatch(out, /--volume/);
+  });
+});

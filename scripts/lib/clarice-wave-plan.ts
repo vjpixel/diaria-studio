@@ -1682,14 +1682,25 @@ export function renderWaveProposal(p: WaveProposal): string {
     // inversão (fila cobre o volume inteiro, não há déficit real nenhum).
     // Recomputa os dois aqui (puro, barato) só pra render, sem inflar o
     // shape de WaveProposal com um campo cuja única serventia é esta linha.
-    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, p.volumes.total);
+    // #6081: o déficit de fila do render usa a MESMA base que o
+    // `buildWaveProposal` usou (`mvDeficitTargetVolume` = targetVolume quando
+    // maior que volumes.total, #6075) — recomputar só contra `volumes.total`
+    // fazia o cenário exato do #6075 (fila cobre a política mas não o --volume
+    // pedido) sair com déficit 0 e cair no ramo de "inversão de safra",
+    // imprimindo um motivo falso na tela de aprovação humana.
+    const renderTargetVolume =
+      p.targetVolume !== undefined && p.targetVolume > p.volumes.total ? p.targetVolume : p.volumes.total;
+    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, renderTargetVolume);
     const inversionTail = p.cohortInversion?.coldTailCount ?? 0;
+    const volumeDriven = p.targetVolume !== undefined && p.targetVolume > p.volumes.total;
     const reason =
       queueDeficit > 0 && inversionTail > 0
         ? `déficit de fila (${fmt(queueDeficit)}) + inversão de safra (${fmt(inversionTail)}) — alvo pelo MAIOR dos dois`
-        : queueDeficit > 0
-          ? `déficit de fila: ${fmt(queueDeficit)}`
-          : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
+        : queueDeficit > 0 && volumeDriven
+          ? `déficit de fila contra --volume ${fmt(p.targetVolume ?? 0)} (${fmt(queueDeficit)}) — fila cobre a política (${fmt(p.volumes.total)}) mas não o volume pedido pelo editor`
+          : queueDeficit > 0
+            ? `déficit de fila: ${fmt(queueDeficit)}`
+            : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
     L.push(
       `  Motivo: ${reason} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
     );
