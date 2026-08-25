@@ -220,9 +220,21 @@ export const FILE_NOTIFIED_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * falso positivo conhecido de `findEditionsInProgress(4)` em
  * `studio-state.ts`.
  *
- * A corrida entre processos concorrentes — o outro achado do mesmo review —
- * está RESOLVIDA pelo merge-on-flush abaixo (`mergeFromDisk` relê o arquivo
- * antes de cada escrita, em vez de sobrescrever com a cópia em memória).
+ * A corrida entre processos concorrentes está muito REDUZIDA pelo
+ * merge-on-flush abaixo (`mergeFromDisk` relê o arquivo antes de cada escrita
+ * e reconcilia nos dois sentidos), mas **não eliminada**: não há lock entre o
+ * `readFileSync` e o `renameSync` do mesmo `flush()`. Dois processos podem ler
+ * no mesmo instante e escrever em sequência; quem escreve por último vence, e
+ * um `add` que só existia na memória do outro se perde. A janela caiu de "o
+ * tick inteiro" pra "um flush síncrono" — resolver de vez exigiria lockfile
+ * (padrão de `social-published-store.ts`), não feito porque o volume é ínfimo
+ * e o modo de falha degrada pro comportamento anterior, não pra um pior.
+ *
+ * Uma versão anterior desta docstring afirmava que a corrida estava
+ * "RESOLVIDA". Não estava — o review da PR #6153 mostrou dois caminhos de
+ * ressurreição de chave, ambos corrigidos ali, e este parágrafo foi reescrito
+ * porque "resolvido" faria um mantenedor futuro parar de investigar um relato
+ * de "gate não notificou".
  */
 export function createFileNotifiedStore(
   filePath: string,
@@ -261,9 +273,26 @@ export function createFileNotifiedStore(
   // vencendo o timestamp mais novo; entrada inválida no disco perde pra uma
   // válida em memória. Qualquer erro de leitura = segue com o mapa atual.
   const mergeFromDisk = (): void => {
+    let onDisk: Record<string, number> | null = null;
     try {
-      const onDisk = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, number>;
-      if (typeof onDisk !== "object" || onDisk === null || Array.isArray(onDisk)) return;
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, number>;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) onDisk = parsed;
+    } catch {
+      // arquivo ausente/corrompido → trata como "sem disco": mantém o que
+      // temos em memória (fail-soft), sem descartar nada.
+    }
+
+    if (onDisk !== null) {
+      // #6153 (achado P0 do review): o merge não pode ser só UNIÃO. Uma chave
+      // que existe em memória e SUMIU do disco foi deletada por outro
+      // processo — mantê-la a RESSUSCITA, e o efeito é silenciar a próxima
+      // notificação daquele gate. Como só quem adicionou nesta janela sabe
+      // que a ausência no disco é "ainda não persistida" (e não "deletada por
+      // terceiro"), a regra é: ausente no disco E não-adicionada-por-nós ⇒
+      // descarta.
+      for (const key of Object.keys(record)) {
+        if (onDisk[key] === undefined && !addedSinceFlush.has(key)) delete record[key];
+      }
       for (const [key, ts] of Object.entries(onDisk)) {
         // Chave deletada localmente nesta janela não é ressuscitada pelo
         // merge — o delete do caller precisa vencer o que está no disco.
@@ -271,26 +300,34 @@ export function createFileNotifiedStore(
         if (!isFiniteTimestamp(ts)) continue;
         if (!isFiniteTimestamp(record[key]) || ts > record[key]) record[key] = ts;
       }
-    } catch {
-      // arquivo ausente/corrompido → grava só o que temos (fail-soft)
     }
     prune(record);
   };
 
   let flushSeq = 0;
   const deletedSinceFlush = new Set<string>();
+  const addedSinceFlush = new Set<string>();
   const flush = (): void => {
     try {
       mkdirSync(dirname(filePath), { recursive: true });
       mergeFromDisk();
-      deletedSinceFlush.clear();
       // tmp com nome ÚNICO por write (pid + sequência): dois processos nunca
       // disputam o mesmo tmp (torn write) — rename é atômico por arquivo.
       const tmp = `${filePath}.tmp.${process.pid}.${flushSeq++}`;
       writeFileSync(tmp, JSON.stringify(record), "utf8");
       renameSync(tmp, filePath);
+      // #6153 (achado P0 do review): limpar SÓ depois do rename confirmado.
+      // Antes isto rodava antes da escrita — e se o write falhasse (disco,
+      // permissão, conflito de sync do OneDrive), o disco ficava com o valor
+      // ANTIGO enquanto a proteção contra ressurreição já tinha sido jogada
+      // fora. A próxima mutação de QUALQUER chave ressuscitava a deletada,
+      // num processo só, sem precisar de concorrência.
+      deletedSinceFlush.clear();
+      addedSinceFlush.clear();
     } catch {
-      // Falha de escrita nunca lança — dedup segue válido só em memória.
+      // Falha de escrita nunca lança — dedup segue válido só em memória, e
+      // os dois Sets são PRESERVADOS pra que a próxima tentativa ainda saiba
+      // o que foi deletado e o que ainda não chegou ao disco.
     }
   };
 
@@ -299,12 +336,18 @@ export function createFileNotifiedStore(
     add: (key) => {
       const ts = now();
       record[key] = Number.isFinite(ts) ? ts : Date.now();
+      // Marca ANTES do flush: `mergeFromDisk` usa isto pra distinguir
+      // "ausente no disco porque ainda não persistimos" (manter) de "ausente
+      // porque outro processo deletou" (descartar).
+      addedSinceFlush.add(key);
+      deletedSinceFlush.delete(key);
       flush();
     },
     delete: (key) => {
       if (record[key] !== undefined) {
         delete record[key];
         deletedSinceFlush.add(key);
+        addedSinceFlush.delete(key);
         flush();
       }
     },
