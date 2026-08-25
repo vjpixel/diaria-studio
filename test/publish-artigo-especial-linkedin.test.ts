@@ -170,8 +170,8 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
       assert.deepEqual(
         bodies.map((b) => [b.destaque, b.scheduled_at]),
         [
-          ["weekly-pagina", "2099-01-01T09:00:00-03:00"],
-          ["weekly-perfil", "2099-01-02T09:30:00-03:00"],
+          ["especial-pagina", "2099-01-01T09:00:00-03:00"],
+          ["especial-perfil", "2099-01-02T09:30:00-03:00"],
         ],
       );
     } finally {
@@ -398,7 +398,7 @@ describe("runArtigoEspecialLinkedinDispatch (#5979)", () => {
           // Simula o Worker rejeitando o item (DLQ) apos dispatchEntry ja ter
           // reportado "scheduled".
           const updated = {
-            // Casa pelo destaque COMO PERSISTIDO (`weekly-pagina` desde o
+            // Casa pelo destaque COMO PERSISTIDO (`especial-pagina` desde este fix (#6016); antes era `weekly-pagina`,
             // incidente de 23/08/2026 — `dispatchEntry` grava o valor que foi
             // ao Worker). Derivado de `dispatchDestaqueFor` de propósito, pra
             // este mock não voltar a congelar uma string literal que o
@@ -641,6 +641,9 @@ describe("destaque compatível com o contrato do Worker (incidente 23/08/2026)",
 
   it("channelForStoredDestaque lê as DUAS grafias do store (nova e pré-incidente)", () => {
     // Grafia nova: dispatchEntry persiste o destaque que foi ao Worker.
+    assert.equal(channelForStoredDestaque("especial-pagina"), "linkedin_pagina");
+    assert.equal(channelForStoredDestaque("especial-perfil"), "linkedin_perfil");
+    // Grafia do carrossel semanal segue lida (entries antigas no store).
     assert.equal(channelForStoredDestaque("weekly-pagina"), "linkedin_pagina");
     assert.equal(channelForStoredDestaque("weekly-perfil"), "linkedin_perfil");
     // Grafia antiga: entries gravadas antes do incidente seguem no arquivo.

@@ -129,7 +129,7 @@ const TARGET_TO_CHANNEL: Record<LinkedinTarget, ArtigoEspecialChannel> = {
  * as duas grafias. Não assuma `"pagina"/"perfil"` cru ao ler este store.
  */
 export function dispatchDestaqueFor(target: LinkedinTarget): string {
-  return `weekly-${target}`;
+  return `especial-${target}`;
 }
 
 /**
@@ -138,7 +138,7 @@ export function dispatchDestaqueFor(target: LinkedinTarget): string {
  * e não dá pra importar dele: o objetivo é falhar ANTES do dispatch em vez de
  * descobrir via HTTP 400 no meio da sequência.
  */
-export const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?)$/;
+export const WORKER_DESTAQUE_RE = /^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
 
 /**
  * Guard de pré-voo: valida o `destaque` de TODOS os targets desta run contra o
@@ -176,7 +176,12 @@ export function assertDispatchDestaquesValid(targets: readonly LinkedinTarget[])
  * que é justamente o modo de falha invisível que este arquivo tenta evitar.
  */
 export function channelForStoredDestaque(destaque: string): ArtigoEspecialChannel | null {
-  const bare = destaque.startsWith("weekly-") ? destaque.slice("weekly-".length) : destaque;
+  const bare =
+    destaque.startsWith("weekly-")
+      ? destaque.slice("weekly-".length)
+      : destaque.startsWith("especial-")
+        ? destaque.slice("especial-".length)
+        : destaque;
   return TARGET_TO_CHANNEL[bare as LinkedinTarget] ?? null;
 }
 
@@ -448,7 +453,12 @@ export async function runArtigoEspecialLinkedinDispatch(
           if (post.platform !== "linkedin" || post.status !== "failed") continue;
           const channel = channelForStoredDestaque(post.destaque);
           if (!channel) continue;
-          const target = (post.destaque.startsWith("weekly-") ? post.destaque.slice("weekly-".length) : post.destaque) as LinkedinTarget;
+          const bareTarget = post.destaque.startsWith("weekly-")
+            ? post.destaque.slice("weekly-".length)
+            : post.destaque.startsWith("especial-")
+              ? post.destaque.slice("especial-".length)
+              : post.destaque;
+          const target = bareTarget as LinkedinTarget;
           if (state.channels[channel]?.status === "failed") continue; // já refletido, evita write redundante
           const reason =
             typeof post.failure_reason === "string" ? post.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";
