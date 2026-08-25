@@ -269,6 +269,11 @@ async function main(): Promise<void> {
         // `aggregate-costs.ts` não teria como saber se o stage foi medido
         // isolado ou somando sessão concorrente.
         session_filter: result.session_filter,
+        // #6170: propaga o motivo do fallback pra `all_sessions` até o
+        // persist — `StageRow`/`applyUpdate` tratam a presença da chave
+        // (mesmo `undefined`) como o sinal pra limpar um motivo de um
+        // fallback anterior quando este `session_filter` for `current_session`.
+        session_filter_reason: result.session_filter_reason,
         sessions_excluded: result.sessions_excluded,
         subagent_tokens_in: result.subagent_tokens_in,
         subagent_tokens_out: result.subagent_tokens_out,
