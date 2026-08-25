@@ -143,6 +143,22 @@ describe("subscribeToKit (cursos, #6048 Fase 2/2)", () => {
     assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
   });
 
+  it("Kit responde erro → loga status + corpo (mesmo achado do worker poll, #6048)", async () => {
+    const errorBody = JSON.stringify({ errors: ["The API key is invalid"] });
+    const fetchMock = (async () => new Response(errorBody, { status: 401 })) as typeof fetch;
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => logged.push(msg);
+    try {
+      await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    } finally {
+      console.error = original;
+    }
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /\[cursos\] Kit respondeu 401/);
+    assert.match(logged[0], /API key is invalid/);
+  });
+
   it("fetch que lança → beehiiv_error, nunca propaga a exceção", async () => {
     const throwingFetch = (async () => {
       throw new Error("network down");

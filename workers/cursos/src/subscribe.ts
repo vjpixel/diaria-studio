@@ -233,6 +233,11 @@ export async function subscribeToKit(
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // mesma idempotência documentada em subscribeToKit do worker poll.
   if (res.ok) return { ok: true, status: res.status, beehiivStatus: "active" };
+  // #6048 (achado ao vivo no worker poll, 25/08/2026): branch de erro não-2xx
+  // era o único ponto silencioso aqui (o catch de exceção já logava) — foi
+  // exatamente esse tipo de silêncio que escondeu um KIT_API_KEY inválido.
+  const bodyText = await res.text().catch(() => "<unreadable>");
+  console.error(`[cursos] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
