@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { extractPostText, validateScheduledTime, needsReschedule, publishFacebookCarouselByUrl } from "../scripts/publish-facebook.ts";
 import { FACEBOOK_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
+import { resolveCarouselImageUrls } from "../scripts/lib/daily-carousel-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -304,5 +305,61 @@ describe("publishFacebookCarouselByUrl (#5348) — carrossel multi-foto a partir
       () => publishFacebookCarouselByUrl("111", "tok123", "v25.0", ["https://cdn.example.com/a.jpg"], "Legenda", "2027-12-25T11:00:00-03:00"),
       /Facebook POST \/feed.*HTTP 500/,
     );
+  });
+});
+
+// ─── #6095: carrossel diário reusado no dispatch diário do Facebook ─────────
+//
+// O dispatch diário (main()) decide carrossel vs single-image via
+// `resolveCarouselImageUrls` (mesmo helper que publish-instagram.ts já usa,
+// tudo-ou-nada — testado em test/daily-carousel-card.test.ts). Aqui:
+// (1) confirmamos que main() está de fato ligado a esse helper + a
+// `publishFacebookCarouselByUrl` (verificação estática, mesmo padrão de
+// test/publish-threads.test.ts "Fluxo Threads 2 passos"); (2) exercitamos o
+// contrato tudo-ou-nada com o shape real de `06-public-images.json` que o
+// script consome (`d{N}_4x5` + `d{N}_carousel_{p1,p2,p3,cta}`).
+describe("carrossel diário no dispatch do Facebook (#6095)", () => {
+  const src = readFileSync(resolve(__ROOT, "scripts/publish-facebook.ts"), "utf8");
+
+  it("main() importa resolveCarouselImageUrls de daily-carousel-card.ts (mesmo helper do Instagram)", () => {
+    assert.match(src, /import\s*\{\s*resolveCarouselImageUrls\s*\}\s*from\s*"\.\/lib\/daily-carousel-card\.ts"/);
+  });
+
+  it("main() lê 06-public-images.json best-effort (nunca lança se ausente)", () => {
+    assert.match(src, /06-public-images\.json/);
+    assert.match(src, /existsSync\(publicImagesPath\)/);
+  });
+
+  it("main() chama publishFacebookCarouselByUrl quando carouselImageUrls está resolvido, senão publishPhoto (fallback single-image)", () => {
+    assert.match(src, /carouselImageUrls\s*\?\s*await publishFacebookCarouselByUrl\(/);
+    assert.match(src, /:\s*await publishPhoto\(/);
+  });
+
+  const fullImages = {
+    d1_4x5: { url: "https://cdn.example.com/d1-4x5.jpg" },
+    d1_carousel_p1: { url: "https://cdn.example.com/d1-p1.jpg" },
+    d1_carousel_p2: { url: "https://cdn.example.com/d1-p2.jpg" },
+    d1_carousel_p3: { url: "https://cdn.example.com/d1-p3.jpg" },
+    d1_carousel_cta: { url: "https://cdn.example.com/d1-cta.jpg" },
+  };
+
+  it("5 slides completos → resolveCarouselImageUrls retorna as 5 URLs na ordem capa→p1→p2→p3→cta (carrossel)", () => {
+    const urls = resolveCarouselImageUrls(fullImages, "d1");
+    assert.deepEqual(urls, [
+      "https://cdn.example.com/d1-4x5.jpg",
+      "https://cdn.example.com/d1-p1.jpg",
+      "https://cdn.example.com/d1-p2.jpg",
+      "https://cdn.example.com/d1-p3.jpg",
+      "https://cdn.example.com/d1-cta.jpg",
+    ]);
+  });
+
+  it("1 slide faltando (ex: cta) → resolveCarouselImageUrls retorna null (fallback pro single-image, tudo-ou-nada)", () => {
+    const { d1_carousel_cta, ...withoutCta } = fullImages;
+    assert.equal(resolveCarouselImageUrls(withoutCta, "d1"), null);
+  });
+
+  it("06-public-images.json ausente (images undefined) → resolveCarouselImageUrls retorna null, dispatch nunca é bloqueado por isso", () => {
+    assert.equal(resolveCarouselImageUrls(undefined, "d1"), null);
   });
 });

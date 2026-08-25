@@ -83,6 +83,7 @@ import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -523,6 +524,15 @@ async function main() {
     publishedPath = internalPath;
   }
 
+  // #6095 — carrossel diário (capa + 3 parágrafos + CTA): lido best-effort,
+  // igual ao Facebook (Threads daily não exigia imagem antes, então ausência
+  // do arquivo/slides nunca é erro — só significa "sem carrossel", mesmo
+  // comportamento de hoje). Resolvido 1x fora do loop (não muda por destaque).
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages: { images?: Record<string, { url?: string }> } = existsSync(publicImagesPath)
+    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> })
+    : {};
+
   // Extrair destaques da seção '# Curto' — sem fallback (#4294)
   const destaques = extractDestaquesFromSocialMd(socialMd);
   const results: PostEntry[] = [];
@@ -686,10 +696,18 @@ async function main() {
         continue;
       }
 
+      // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+      // slides existem em 06-public-images.json; senão cai pro comportamento
+      // de sempre (image_url: null, post só-texto — Threads daily nunca
+      // suportou imagem única, só o carrossel muda aqui). Tudo-ou-nada via
+      // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+      const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+
       try {
         const response = await postToWorkerQueue(workerUrl, workerToken, {
           text: chunks[0],
           image_url: null,
+          ...(carouselImageUrls && { image_urls: carouselImageUrls }),
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "threads",

@@ -28,6 +28,7 @@ import {
   CONTAINER_POLL_MAX_ATTEMPTS,
 } from "../scripts/publish-threads.ts";
 import { postToWorkerQueue } from "../scripts/lib/worker-queue-client.ts"; // #3944 Parte B
+import { resolveCarouselImageUrls } from "../scripts/lib/daily-carousel-card.ts"; // #6095
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1249,5 +1250,67 @@ describe("skipped_no_curto: destaque incompleto (header presente, conteúdo vazi
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── #6095: carrossel diário reusado no enqueue --schedule do Threads ──────
+//
+// Threads daily NUNCA suportou imagem única no modo --schedule (payload
+// sempre mandava `image_url: null`, ver comentário original do script) — o
+// que muda aqui é só: quando os 5 slides do carrossel existem em
+// 06-public-images.json, o enqueue passa a incluir `image_urls` (o Worker
+// já despacha pro caminho fireThreadsCarousel via resolveImageUrls, sem
+// mudança nenhuma do lado do Worker). Fora isso, comportamento inalterado
+// (texto-só, image_url: null). Decisão tudo-ou-nada vem do MESMO helper que
+// o Instagram já usa (`resolveCarouselImageUrls`, testado em
+// test/daily-carousel-card.test.ts) — aqui confirmamos (1) a fiação estática
+// em main() e (2) o contrato tudo-ou-nada com o shape real do arquivo.
+describe("carrossel diário no enqueue --schedule do Threads (#6095)", () => {
+  const src = readFileSync(resolve(__ROOT, "scripts/publish-threads.ts"), "utf8");
+
+  it("main() importa resolveCarouselImageUrls de daily-carousel-card.ts (mesmo helper do Instagram)", () => {
+    assert.match(src, /import\s*\{\s*resolveCarouselImageUrls\s*\}\s*from\s*"\.\/lib\/daily-carousel-card\.ts"/);
+  });
+
+  it("main() lê 06-public-images.json best-effort (nunca lança se ausente — Threads daily nunca exigiu imagem)", () => {
+    assert.match(src, /06-public-images\.json/);
+    assert.match(src, /existsSync\(publicImagesPath\)/);
+  });
+
+  it("payload do enqueue inclui image_urls só quando carouselImageUrls está resolvido (spread condicional, image_url:null preservado)", () => {
+    assert.match(src, /image_url:\s*null,/, "deve preservar image_url: null (contrato original, texto-só)");
+    assert.match(
+      src,
+      /\.\.\.\(carouselImageUrls\s*&&\s*\{\s*image_urls:\s*carouselImageUrls\s*\}\)/,
+      "deve espalhar image_urls condicionalmente no payload de postToWorkerQueue",
+    );
+  });
+
+  const fullImages = {
+    d2_4x5: { url: "https://cdn.example.com/d2-4x5.jpg" },
+    d2_carousel_p1: { url: "https://cdn.example.com/d2-p1.jpg" },
+    d2_carousel_p2: { url: "https://cdn.example.com/d2-p2.jpg" },
+    d2_carousel_p3: { url: "https://cdn.example.com/d2-p3.jpg" },
+    d2_carousel_cta: { url: "https://cdn.example.com/d2-cta.jpg" },
+  };
+
+  it("5 slides completos → resolveCarouselImageUrls retorna as 5 URLs na ordem capa→p1→p2→p3→cta (carrossel enfileirado)", () => {
+    const urls = resolveCarouselImageUrls(fullImages, "d2");
+    assert.deepEqual(urls, [
+      "https://cdn.example.com/d2-4x5.jpg",
+      "https://cdn.example.com/d2-p1.jpg",
+      "https://cdn.example.com/d2-p2.jpg",
+      "https://cdn.example.com/d2-p3.jpg",
+      "https://cdn.example.com/d2-cta.jpg",
+    ]);
+  });
+
+  it("1 slide faltando (ex: p2) → resolveCarouselImageUrls retorna null (payload cai pro image_url:null de sempre, tudo-ou-nada)", () => {
+    const { d2_carousel_p2, ...withoutP2 } = fullImages;
+    assert.equal(resolveCarouselImageUrls(withoutP2, "d2"), null);
+  });
+
+  it("06-public-images.json ausente (images undefined) → resolveCarouselImageUrls retorna null, --schedule nunca é bloqueado por isso", () => {
+    assert.equal(resolveCarouselImageUrls(undefined, "d2"), null);
   });
 });

@@ -40,6 +40,7 @@ import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -735,6 +736,17 @@ async function main() {
     return;
   }
 
+  // #6095 — carrossel diário (capa + 3 parágrafos + CTA): lido best-effort,
+  // igual ao Threads. Ausência do arquivo/slides nunca é erro — o dispatch
+  // diário do Facebook sempre publicou via upload local (`publishPhoto`) e
+  // continua funcionando assim quando não há carrossel; só quando os 5
+  // slides estão completos é que trocamos pra `publishFacebookCarouselByUrl`
+  // (que exige URLs públicas, não arquivo local). Resolvido 1x fora do loop.
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages: { images?: Record<string, { url?: string }> } = existsSync(publicImagesPath)
+    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> })
+    : {};
+
   // #2343: derive destaque list from actual social MD (supports 2 or 3 destaques).
   const destaques = extractDestaquesFromSocialMd(socialMd, "facebook");
   const results: PostEntry[] = [];
@@ -825,6 +837,12 @@ async function main() {
       }
     }
 
+    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+    // slides existem em 06-public-images.json; senão cai pro post de imagem
+    // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
+    // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+    const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+
     // Publish with retry + exponential backoff (#725 bug #10)
     // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
     // entre tentativas (sem sleep após a última).
@@ -832,15 +850,26 @@ async function main() {
     let success = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        console.log(`Publishing facebook/${d} (attempt ${attempt})...`);
-        const result = await publishPhoto(
-          page_id,
-          page_access_token,
-          api_version,
-          imagePath,
-          caption,
-          scheduledAt
+        console.log(
+          `Publishing facebook/${d} (attempt ${attempt}${carouselImageUrls ? `, carrossel ${carouselImageUrls.length} fotos` : ""})...`,
         );
+        const result = carouselImageUrls
+          ? await publishFacebookCarouselByUrl(
+              page_id,
+              page_access_token,
+              api_version,
+              carouselImageUrls,
+              caption,
+              scheduledAt,
+            )
+          : await publishPhoto(
+              page_id,
+              page_access_token,
+              api_version,
+              imagePath,
+              caption,
+              scheduledAt
+            );
 
         const postId = result.post_id || result.id;
         const postUrl = `https://www.facebook.com/${page_id}/posts/${postId}`;
