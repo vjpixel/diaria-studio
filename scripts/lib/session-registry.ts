@@ -765,16 +765,20 @@ export interface SessionGcResult {
  *      `conservativeMaxAgeMs` (default 7 dias) — chute deliberadamente caro
  *      de errar pro lado seguro.
  *
- * **Limitação conhecida (achado do fleet review, #6130):** o branch 3 (PID
- * vivo protege incondicionalmente) só é alcançável hoje pro kind `continuo`
- * — `overnight`/`develop` nunca passam `--pid` no `register` nem chamam
- * `heartbeat` (grep em `.claude/skills/diaria-{overnight,develop}/SKILL.md`
- * confirma), então pra esses dois kinds a árvore inteira colapsa no branch 4
- * (`lastHeartbeat === startedAt` a sessão inteira). Seguro na prática hoje
- * (janela de 7 dias é folgada frente à duração real dessas sessões), mas a
- * garantia "processo vivo protege incondicionalmente" NÃO se aplica a eles
- * ainda. Fechar o buraco (passar `--pid $$` no `register` de overnight/
- * develop) é trabalho de fora deste módulo — registrado como follow-up.
+ * **Limitação do #6130 fechada pelo #6160:** o branch 3 (PID vivo protege
+ * incondicionalmente) era alcançável só pro kind `continuo` — `overnight`/
+ * `develop` chamavam `register --kind {overnight|develop}` SEM `--pid` (e
+ * nenhum dos dois chama `heartbeat`), colapsando a árvore inteira no branch
+ * 4 pra eles. Fechado sem exigir mudança nas skills: `.claude/hooks/
+ * inject-session-id.mjs` (o mesmo hook que já injeta `--session-id`
+ * automaticamente, #5156) agora também injeta `--pid {process.ppid}` em
+ * toda chamada standalone de `register` sem a flag — `process.ppid` do
+ * hook É o PID da sessão Claude Code corrente, porque o harness spawna o
+ * hook como filho direto dela a cada `PreToolUse`. `overnight`/`develop`
+ * ainda nunca chamam `heartbeat` (só `continuo` o faz), então
+ * `lastHeartbeat === startedAt` continua verdadeiro a sessão inteira pra
+ * eles — mas isso não impede mais o branch 3: a checagem de `pid` roda
+ * independente de quão stale o heartbeat esteja.
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
