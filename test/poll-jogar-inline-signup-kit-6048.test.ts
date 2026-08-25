@@ -150,6 +150,39 @@ describe("subscribeToKit (#6048)", () => {
     assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
   });
 
+  it("Kit responde erro → loga status + corpo (achado ao vivo 25/08/2026: catch mudo escondeu KIT_API_KEY inválido)", async () => {
+    const errorBody = JSON.stringify({ errors: ["The API key is invalid"] });
+    const fetchMock = (async () => new Response(errorBody, { status: 401 })) as typeof fetch;
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => logged.push(msg);
+    try {
+      await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    } finally {
+      console.error = original;
+    }
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /\[subscribeToKit\] Kit respondeu 401/);
+    assert.match(logged[0], /API key is invalid/);
+  });
+
+  it("fetch lança exceção → loga a exceção (nunca fica silencioso)", async () => {
+    const throwingFetch = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (msg: string) => logged.push(msg);
+    try {
+      const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, throwingFetch);
+      assert.deepEqual(r, { ok: false, status: 502, reason: "beehiiv_error" });
+    } finally {
+      console.error = original;
+    }
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /\[subscribeToKit\] fetch exception: Error: network down/);
+  });
+
   it("passa um AbortSignal de timeout pro fetch — mesma defesa contra hang de subscribeToBeehiiv", async () => {
     const fetchMock = makeFetchMock(201);
     await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);

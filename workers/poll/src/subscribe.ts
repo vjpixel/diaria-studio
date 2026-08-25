@@ -518,12 +518,22 @@ export async function subscribeToKit(
       // um POST simples de assinatura não deve travar a resposta ao usuário.
       signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
+    // #6048 achado ao vivo (25/08/2026, verificação do rollout do worker
+    // poll): antes desta linha, uma falha aqui era TOTALMENTE silenciosa —
+    // sem log nenhum — e foi exatamente isso que escondeu um KIT_API_KEY
+    // inválido até a 1ª tentativa real de cadastro. Log estruturado, nunca
+    // lança (mantém o fail-soft já documentado acima).
+    console.error(`[subscribeToKit] fetch exception: ${String(err)}`);
     return { ok: false, status: 502, reason: "beehiiv_error" };
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // ver docstring acima sobre a idempotência do Kit.
   if (res.ok) return { ok: true, status: res.status };
+  // #6048 — mesmo racional do catch acima: loga o corpo do erro do Kit
+  // (truncado, sem incluir o header de auth) em vez de descartar em silêncio.
+  const bodyText = await res.text().catch(() => "<unreadable>");
+  console.error(`[subscribeToKit] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
