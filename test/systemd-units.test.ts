@@ -158,6 +158,37 @@ describe("buildSystemdUnitFiles", () => {
     assert.ok(envIdx >= 0 && execIdx >= 0 && envIdx < execIdx);
   });
 
+  // #6038: achado ao vivo (journal, falha 24/08 11:00 UTC) mostrou units
+  // disparando antes de rede/mount OneDrive estarem prontos pós-boot
+  // (`ERR_MODULE_NOT_FOUND: 'tsx'`, ~1.9s wall clock). Todo unit gerado por
+  // este template precisa carregar `After=network-online.target` (mesmo
+  // padrão dos units hand-authored `diaria-studio-server.service`/
+  // `diaria-studio-tunnel.service`, que já tinham a linha) -- sem ela,
+  // `systemctl --user list-units --state=failed` acusa a task como falha
+  // real, não um problema de timing pós-boot.
+  it("service: After=network-online.target + Wants=network-online.target no [Unit] (#6038)", () => {
+    assert.match(files.serviceContent, /^After=network-online\.target$/m);
+    assert.match(files.serviceContent, /^Wants=network-online\.target$/m);
+  });
+
+  it("After=/Wants= vêm dentro de [Unit], antes de [Service] (#6038)", () => {
+    const unitIdx = files.serviceContent.indexOf("[Unit]");
+    const serviceIdx = files.serviceContent.indexOf("[Service]");
+    const afterIdx = files.serviceContent.indexOf("After=network-online.target");
+    const wantsIdx = files.serviceContent.indexOf("Wants=network-online.target");
+    assert.ok(unitIdx >= 0 && serviceIdx > unitIdx);
+    assert.ok(afterIdx > unitIdx && afterIdx < serviceIdx);
+    assert.ok(wantsIdx > unitIdx && wantsIdx < serviceIdx);
+  });
+
+  it("TODO SCHEDULED_TASKS gera After=/Wants=network-online.target no .service (#6038)", () => {
+    for (const t of SCHEDULED_TASKS) {
+      const f = buildSystemdUnitFiles(t, repoRootAbs);
+      assert.match(f.serviceContent, /^After=network-online\.target$/m, `${t.name}: falta After=`);
+      assert.match(f.serviceContent, /^Wants=network-online\.target$/m, `${t.name}: falta Wants=`);
+    }
+  });
+
   it("timer: OnCalendar (com fuso) + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
     assert.match(files.timerContent, /OnCalendar=\*-\*-\* 09:45:00 America\/Sao_Paulo/);
     assert.match(files.timerContent, /Persistent=true/);

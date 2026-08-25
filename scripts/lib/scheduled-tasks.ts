@@ -329,6 +329,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4052, #4320",
   },
   {
+    // #6093: mantém o Kit convergente com os assinantes ativos da Beehiiv
+    // (cria/reativa quem falta) — sem recorrência, o Kit volta a congelar
+    // no próximo assinante novo (comportamento observado antes do #6091:
+    // Kit travado em 585, todos `created_at: 2026-08-24`). Pré-requisito de
+    // QUALQUER switchover real do épico #461. Guard de blast radius (lista
+    // do Kit suspeita-vazia) já embutido no próprio script — nenhum guard
+    // adicional aqui. Horário 09:25 (issue sugeriu 09:20, mas esse minuto
+    // já é ocupado pela Diaria-Sunset-Weekly, domingo 09:20 -- dailies
+    // rodam todo dia da semana, então colidiriam nos domingos; 09:25 segue
+    // na mesma janela livre entre Diaria-Cursos-Kv-Sync (09:15) e os checks
+    // de drift matinais (09:30 em diante), sem colisão).
+    name: "Diaria-Kit-Subscriber-Sync",
+    description: "sync diario de assinantes ativos Beehiiv -> Kit (--push)",
+    steps: [{ key: "sync", script: "scripts/sync-beehiiv-subscribers-kit.ts", args: ["--push"] }],
+    logPath: "kit-subscriber-sync/.sync.log",
+    schedule: { kind: "daily", hour: 9, minute: 25 },
+    issue: "#461, #6091, #6092, #6093",
+  },
+  {
     name: "Diaria-Brevo-Diaria-Evaluate",
     description: "evaluate diario do canal brevo_diaria (--push)",
     steps: [{ key: "evaluate", script: "scripts/evaluate-brevo-diaria.ts", args: ["--push"] }],

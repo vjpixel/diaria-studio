@@ -127,6 +127,17 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
   const serviceContent = [
     "[Unit]",
     `Description=diar.ia.br: ${task.description}`,
+    // #6038: achado ao vivo (journal, falha 24/08 11:00 UTC, ~1.9s wall
+    // clock após um boot/user-manager restart -- `uptime -s` 2026-08-25
+    // 01:50:35 UTC) mostrou `ERR_MODULE_NOT_FOUND: 'tsx'`, sintoma típico
+    // de a task disparar antes de rede/mount do OneDrive (que fornece
+    // `data/`) estarem prontos. Mesmo padrão já usado pelos units
+    // hand-authored `diaria-studio-server.service`/`diaria-studio-
+    // tunnel.service` (scripts/studio/setup-studio-service-linux.sh,
+    // setup-remote-tunnel-linux.sh) -- copiado aqui pra TODOS os units
+    // gerados por este template, que antes não tinham nenhum `After=`.
+    "After=network-online.target",
+    "Wants=network-online.target",
     "",
     "[Service]",
     "Type=oneshot",

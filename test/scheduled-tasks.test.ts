@@ -869,3 +869,57 @@ describe("#5807 — Diaria-Sunset-Weekly registrada, semanal, DESLIGADA DE PROP�
     assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
   });
 });
+
+describe("#6093 — Diaria-Kit-Subscriber-Sync registrada, diária, sync Beehiiv -> Kit (--push)", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:25", () => {
+    const t = getScheduledTaskByName("Diaria-Kit-Subscriber-Sync");
+    assert.ok(t, "Diaria-Kit-Subscriber-Sync ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/sync-beehiiv-subscribers-kit.ts"],
+    );
+    assert.deepEqual(t!.steps[0].args, ["--push"]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 25 });
+  });
+
+  it("horário de 09:25 não colide com nenhuma outra daily nem com a weekly Diaria-Sunset-Weekly (domingo 09:20)", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Kit-Subscriber-Sync" && t.schedule.hour === 9 && t.schedule.minute === 25,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("sem guard.requiredFile — o script já tem guard de blast radius embutido (lista Kit suspeita-vazia)", () => {
+    const t = getScheduledTaskByName("Diaria-Kit-Subscriber-Sync")!;
+    assert.equal(t.guard, undefined);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Kit-Subscriber-Sync")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+
+  it("aparece em listScheduledTaskRows / CLI --list / CLI --json sem tocar nenhum consumidor (#5408)", () => {
+    const rows = listScheduledTaskRows();
+    assert.ok(rows.some((r) => r.name === "Diaria-Kit-Subscriber-Sync"));
+
+    const listOut = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    assert.match(listOut, /Diaria-Kit-Subscriber-Sync/);
+
+    const jsonOut = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    const parsed = JSON.parse(jsonOut);
+    assert.ok(parsed.some((t: { name: string }) => t.name === "Diaria-Kit-Subscriber-Sync"));
+  });
+});
