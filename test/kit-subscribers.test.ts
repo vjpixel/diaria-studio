@@ -10,6 +10,8 @@ import {
   listKitSubscribersPage,
   listAllKitSubscribers,
   createOrUpdateSubscriber,
+  getSubscriberById,
+  updateSubscriberFields,
 } from "../scripts/lib/kit-subscribers.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -115,6 +117,73 @@ describe("createOrUpdateSubscriber", () => {
         createOrUpdateSubscriber({ email_address: "a@b.com" }, TEST_CONFIG),
       ),
       /createOrUpdateSubscriber.*sem o envelope/,
+    );
+  });
+});
+
+describe("getSubscriberById (#6049)", () => {
+  it("GET /subscribers/{id} desembrulha o envelope subscriber, incluindo fields", async () => {
+    let capturedUrl = "";
+    const result = await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, {
+          subscriber: { id: 42, email_address: "a@b.com", state: "active", created_at: "x", fields: { apoio_nivel: "amigo" } },
+        });
+      }) as typeof fetch,
+      () => getSubscriberById(42, TEST_CONFIG),
+    );
+    assert.match(capturedUrl, /\/subscribers\/42$/);
+    assert.equal(result.id, 42);
+    assert.equal(result.fields?.apoio_nivel, "amigo");
+  });
+
+  it("resposta 2xx sem envelope subscriber lança erro nomeado", async () => {
+    await assert.rejects(
+      withMockFetch((async () => jsonResponse(200, {})) as typeof fetch, () => getSubscriberById(42, TEST_CONFIG)),
+      /getSubscriberById\(42\).*sem o envelope/,
+    );
+  });
+});
+
+describe("updateSubscriberFields (#6049)", () => {
+  it("PATCH /subscribers/{id} com body {fields} — desembrulha o envelope subscriber", async () => {
+    let captured: { url: string; init?: RequestInit } | undefined;
+    const result = await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        captured = { url, init };
+        return jsonResponse(200, {
+          subscriber: { id: 42, email_address: "a@b.com", state: "active", created_at: "x", fields: { apoio_nivel: "mantenedor" } },
+        });
+      }) as typeof fetch,
+      () => updateSubscriberFields(42, { apoio_nivel: "mantenedor" }, TEST_CONFIG),
+    );
+    assert.match(captured!.url, /\/subscribers\/42$/);
+    assert.equal(captured?.init?.method, "PATCH");
+    const body = JSON.parse(captured!.init!.body as string);
+    assert.deepEqual(body.fields, { apoio_nivel: "mantenedor" });
+    assert.equal(result.fields?.apoio_nivel, "mantenedor");
+  });
+
+  it("string vazia é aceita (limpeza de valor) — corpo carrega literalmente ''", async () => {
+    let captured: { init?: RequestInit } | undefined;
+    await withMockFetch(
+      (async (_url: string, init?: RequestInit) => {
+        captured = { init };
+        return jsonResponse(200, { subscriber: { id: 1, email_address: "a@b.com", state: "active", created_at: "x" } });
+      }) as typeof fetch,
+      () => updateSubscriberFields(1, { apoio_nivel: "" }, TEST_CONFIG),
+    );
+    const body = JSON.parse(captured!.init!.body as string);
+    assert.equal(body.fields.apoio_nivel, "");
+  });
+
+  it("resposta 2xx sem envelope subscriber lança erro nomeado", async () => {
+    await assert.rejects(
+      withMockFetch((async () => jsonResponse(200, {})) as typeof fetch, () =>
+        updateSubscriberFields(42, { apoio_nivel: "amigo" }, TEST_CONFIG),
+      ),
+      /updateSubscriberFields\(42\).*sem o envelope/,
     );
   });
 });
