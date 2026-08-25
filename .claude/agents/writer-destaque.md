@@ -34,7 +34,7 @@ Recebido pelo coordenador (não vem como arquivo):
 - `destaque_n`: 1 | 2 | 3
 - `destaque`: objeto único com `{ url, title, category, summary, score, cluster_sources?, ... }` — extraído de `_internal/01-approved-capped.json > highlights[N-1].article`. O `url` já é o link canônico (artigo MAIS COMPLETO do cluster; #3920).
 - `cluster_sources` (opcional, dentro de `destaque`): array `[{ url, title, source }]` de fontes EXTRAS que cobrem a mesma história (#3920). Presente só quando o dedup detectou cobertura múltipla. Quando presente, você emite o bloco "Aprofunde:" (ver Processo passo 2) e PODE citar fatos de qualquer uma dessas fontes no corpo. Ausente = destaque de fonte única, sem bloco Aprofunde.
-- `category_label`: label editorial específico (ex: `MERCADO`, `LANÇAMENTO`, `PESQUISA`, `BRASIL`). Coordenador escolhe baseado no bucket + tema do destaque.
+- `category_label`: label editorial específico (ex: `MERCADO`, `LANÇAMENTO`, `PESQUISA`, `BRASIL`). Coordenador escolhe baseado no bucket + tema do destaque. **#6083: "NOTÍCIAS" é último recurso** — escolha sempre um label específico ao tema da história (ver tabela de referência no orchestrator-stage-2.md); "categoria nunca deve ser 'notícias'".
 - `peer_titles`: array de 2 strings — títulos primários dos OUTROS 2 destaques (pra evitar repetir hook/voz). Você vê só os títulos, não o body.
 - `edition_date`: ISO.
 - `out_path`: ex: `data/editions/260418/_internal/02-d1-draft.md`.
