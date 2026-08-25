@@ -399,6 +399,12 @@ export function listSafeBackupFiles(repoRoot: string): string[] {
  * Pura — não lê disco. `records` não pode ser vazio.
  */
 export function mergeSessionRecords(records: readonly SessionRecord[]): SessionRecord {
+  // #6130 (achado do fleet review, P3 alta confiança): o invariante "records
+  // não pode ser vazio" só existia em comentário — um `records[0]!` mentia
+  // pro type checker. Falha nomeada em vez de um TypeError opaco.
+  if (records.length === 0) {
+    throw new Error("mergeSessionRecords: records não pode ser vazio");
+  }
   let primary = records[0]!;
   let primaryHb = Date.parse(primary.lastHeartbeat ?? primary.startedAt ?? "");
   for (const r of records.slice(1)) {
@@ -758,6 +764,17 @@ export interface SessionGcResult {
  *      registro do grupo tem `pid`) → só remove além da janela conservadora
  *      `conservativeMaxAgeMs` (default 7 dias) — chute deliberadamente caro
  *      de errar pro lado seguro.
+ *
+ * **Limitação conhecida (achado do fleet review, #6130):** o branch 3 (PID
+ * vivo protege incondicionalmente) só é alcançável hoje pro kind `continuo`
+ * — `overnight`/`develop` nunca passam `--pid` no `register` nem chamam
+ * `heartbeat` (grep em `.claude/skills/diaria-{overnight,develop}/SKILL.md`
+ * confirma), então pra esses dois kinds a árvore inteira colapsa no branch 4
+ * (`lastHeartbeat === startedAt` a sessão inteira). Seguro na prática hoje
+ * (janela de 7 dias é folgada frente à duração real dessas sessões), mas a
+ * garantia "processo vivo protege incondicionalmente" NÃO se aplica a eles
+ * ainda. Fechar o buraco (passar `--pid $$` no `register` de overnight/
+ * develop) é trabalho de fora deste módulo — registrado como follow-up.
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
