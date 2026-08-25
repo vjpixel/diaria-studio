@@ -36,6 +36,7 @@
  * `studio-push-notify.ts`) retornam `PushMessage`.
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendGmailMessage } from "./gmail-send.ts";
@@ -179,5 +180,76 @@ export function createInMemoryNotifiedStore(): NotifiedStore {
       seen.delete(key);
     },
     keys: () => [...seen],
+  };
+}
+
+// ─── Store de dedup PERSISTENTE em arquivo (#6125) ─────────────────────────
+//
+// O watcher de push-notify do Studio (`studio-push-notify.ts`) usava o store
+// em memória acima — mas o processo do studio-server tem histórico documentado
+// de restart (self-restart #5674, zumbi/crash-restart systemd #5737/#5759).
+// Cada restart zerava o dedup e um gate AINDA pendente era re-notificado por
+// e-mail (3 e-mails repetidos na madrugada de 25/08/2026, edição 260825).
+//
+// `createFileNotifiedStore` persiste as chaves (com timestamp) num JSON em
+// disco, sobrevivendo a restarts. Fail-soft TOTAL: leitura corrompida/ausente,
+// diretório inexistente ou falha de escrita NUNCA lançam — degradam pra
+// comportamento em memória (mesmo princípio do resto do canal de push).
+
+/** Entradas mais velhas que isso são podadas ao carregar/salvar — chaves de
+ * gate são efêmeras (edição resolve em horas); 30 dias é folga enorme e
+ * impede crescimento ilimitado do arquivo. */
+export const FILE_NOTIFIED_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Store de dedup persistido em `filePath` (JSON `{ key: timestampMs }`).
+ * Escrita síncrona e atômica o bastante pra este uso (tmp + rename) a cada
+ * mutação — o volume é ínfimo (1 write por notificação, não por tick).
+ */
+export function createFileNotifiedStore(
+  filePath: string,
+  opts: { now?: () => number; ttlMs?: number } = {},
+): NotifiedStore {
+  const now = opts.now ?? Date.now;
+  const ttlMs = opts.ttlMs ?? FILE_NOTIFIED_STORE_TTL_MS;
+
+  let record: Record<string, number> = {};
+  try {
+    record = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, number>;
+    if (typeof record !== "object" || record === null || Array.isArray(record)) record = {};
+  } catch {
+    record = {}; // ausente/corrompido → começa vazio (fail-soft)
+  }
+
+  // Podar entradas fora da TTL já no load.
+  const cutoff = now() - ttlMs;
+  for (const key of Object.keys(record)) {
+    if (typeof record[key] !== "number" || record[key] < cutoff) delete record[key];
+  }
+
+  const flush = (): void => {
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      const tmp = `${filePath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(record), "utf8");
+      renameSync(tmp, filePath);
+    } catch {
+      // Falha de escrita nunca lança — dedup segue válido só em memória.
+    }
+  };
+
+  return {
+    has: (key) => record[key] !== undefined,
+    add: (key) => {
+      record[key] = now();
+      flush();
+    },
+    delete: (key) => {
+      if (record[key] !== undefined) {
+        delete record[key];
+        flush();
+      }
+    },
+    keys: () => Object.keys(record),
   };
 }

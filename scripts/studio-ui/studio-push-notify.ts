@@ -90,11 +90,13 @@
 import {
   sendPushNotification,
   createInMemoryNotifiedStore,
+  createFileNotifiedStore,
   type NotifiedStore,
   type PushMessage,
   type SendPushNotificationOptions,
   type PushNotifyResult,
 } from "../lib/push-notify.ts";
+import { resolve } from "node:path";
 import { buildStudioState, type StudioState } from "./studio-state.ts";
 import type { ChatDoneEvent } from "./studio-chat.ts";
 
@@ -284,7 +286,15 @@ export function startPushNotifyWatcher(
   rootDir: string,
   opts: PushNotifyTickOptions & { pollIntervalMs?: number; store?: NotifiedStore } = {},
 ): PushNotifyWatchHandle {
-  const store = opts.store ?? createInMemoryNotifiedStore();
+  // #6125 — dedup PERSISTENTE em disco: o processo do studio-server tem
+  // histórico documentado de restart (#5674 self-restart, #5737/#5759 zumbi)
+  // e cada restart zerava o store em memória, re-notificando gates ainda
+  // pendentes. O arquivo vive em `data/` (mesmo padrão de
+  // `data/studio-chat-enabled.json`): sobrevive a restarts e é fail-soft
+  // (leitura/escrita que falharem degradam pra comportamento em memória).
+  const store =
+    opts.store ??
+    createFileNotifiedStore(resolve(rootDir, "data", "studio-push-notify-seen.json"));
   const interval = setInterval(() => {
     runPushNotifyTick(rootDir, store, opts).catch((e) => {
       // Fail-soft TOTAL (CLAUDE.md): erro aqui nunca deve derrubar o
