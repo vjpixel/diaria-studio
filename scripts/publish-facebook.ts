@@ -88,6 +88,21 @@ function loadPublished(path: string): SocialPublished {
   return { posts: [] };
 }
 
+// #6095 review #6107 — leitura tolerante de 06-public-images.json: arquivo
+// malformado/truncado NUNCA derruba o run — vira warning e trata como ausente
+// (carrossel cai pro single-image de sempre).
+function loadPublicImages(editionDir: string): Record<string, { url?: string }> | undefined {
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(publicImagesPath)) return undefined;
+  try {
+    return (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`WARN facebook: 06-public-images.json inválido (${msg}) — tratando como ausente.`);
+    return undefined;
+  }
+}
+
 /**
  * #2343: extrai a lista de destaques presentes na seção de uma plataforma do 03-social.md.
  * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição. Fallback para ["d1","d2","d3"]
@@ -744,10 +759,7 @@ async function main() {
   // carrossel diário. Ausente/parcial NUNCA bloqueia o canal:
   // resolveCarouselImageUrls devolve null e o post cai pro single-image de
   // sempre (publishPhoto com o arquivo local).
-  const publicImagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: Record<string, { url?: string }> | undefined = existsSync(publicImagesPath)
-    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images
-    : undefined;
+  const publicImages = loadPublicImages(editionDir);
 
   // #1056 — wrapper que injeta is_test:true em entries quando rodando test_mode
   const tagAndAppend = (entry: PostEntry): void => {

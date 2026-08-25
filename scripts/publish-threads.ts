@@ -100,6 +100,21 @@ function loadPublished(path: string): SocialPublished {
   return { posts: [] };
 }
 
+// #6095 review #6107 — leitura tolerante de 06-public-images.json: arquivo
+// malformado/truncado NUNCA derruba o run — vira warning e trata como ausente
+// (carrossel cai pro single-image de sempre via fireThreadsText no Worker).
+function loadPublicImages(editionDir: string): Record<string, { url?: string }> | undefined {
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(publicImagesPath)) return undefined;
+  try {
+    return (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`WARN threads: 06-public-images.json inválido (${msg}) — tratando como ausente.`);
+    return undefined;
+  }
+}
+
 /**
  * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
  * Sem fallback (#4294, mesmo contrato de `extractDestaquesFromCurto` em
@@ -511,10 +526,7 @@ async function main() {
   // Ausente/parcial NUNCA bloqueia o canal: resolveCarouselImageUrls devolve
   // null e o payload cai pro comportamento de sempre (image_url null →
   // fireThreadsText no Worker).
-  const publicImagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: Record<string, { url?: string }> | undefined = existsSync(publicImagesPath)
-    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images
-    : undefined;
+  const publicImages = loadPublicImages(editionDir);
 
   // Extrair data da edição do nome do diretório (#3944 Parte B — mesmo
   // padrão de publish-instagram.ts, usado por computeScheduledAt no modo --schedule).
