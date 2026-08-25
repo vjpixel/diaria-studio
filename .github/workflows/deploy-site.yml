@@ -1,0 +1,55 @@
+name: Deploy site Worker
+
+# #467: workers/site serve o acervo /p/{slug} (258 edições) a partir do
+# cache data/beehiiv-cache/posts/ — futuro candidato a servir o apex
+# diar.ia.br (cutover ainda NÃO feito, ver docs/apex-cutover-rollback.md).
+# Workflow no mesmo padrão de deploy-artigos.yml: dispara `wrangler deploy`
+# sempre que um push em master tocar `workers/site/**`.
+#
+# Nota: as páginas HTML geradas (workers/site/public/p/**) são COMMITADAS
+# — não geradas em CI. `scripts/gen-archive-pages.ts` roda localmente
+# (precisa do cache data/beehiiv-cache/posts/, que é gitignored/OneDrive,
+# indisponível no runner) e o resultado entra no PR como qualquer outro
+# static asset. Rerodar o script + commitar public/p/ quando o cache for
+# atualizado (beehiiv-sync.ts) e quiser refletir o acervo mais recente.
+#
+# Secrets reusados (mesmos do deploy-artigos.yml/deploy-poll.yml):
+# CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/site/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install site worker deps
+        working-directory: workers/site
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy
