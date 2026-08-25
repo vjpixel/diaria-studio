@@ -28,12 +28,14 @@ import {
   buildStalenessAlarmEmail,
   emptyStalenessAlarmState,
   staleEntryKey,
+  toAlarmFinding,
   type StaleHubEdition,
   type AgedStaleHubEdition,
 } from "../scripts/lib/hub-staleness-check.ts";
 import type { HubSourceEntry } from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
 import type { PublishDateOverridesResult } from "../scripts/lib/beehiiv-publish-date.ts";
+import { planAlarmReconciliation, emptyAlarmIssuesState, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 // Nenhum override em jogo nestes testes — passado explicitamente pra manter
 // a função inteiramente sintética (sem depender do arquivo commitado real).
@@ -342,5 +344,121 @@ describe("buildStalenessAlarmEmail (#5123)", () => {
     assert.match(body, /defasada há 4 dia\(s\)/);
     assert.match(body, /npx tsx scripts\/generate-hub-sources\.ts --hub anthropic-claude/);
     assert.match(body, /npx tsx scripts\/build-hub-page\.ts --all/);
+  });
+
+  it("com issueRefs (#6151) — cita a issue de cada entrada vencida", () => {
+    const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
+    const issueRefs = new Map([
+      [staleEntryKey(STALE_A), { issueNumber: 6200, url: "https://github.com/vjpixel/diaria-studio/issues/6200", action: "created" }],
+    ]);
+    const { body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"), issueRefs);
+    assert.match(body, /Issue: #6200 \(https:\/\/github\.com\/vjpixel\/diaria-studio\/issues\/6200\)/);
+  });
+
+  it("sem issueRefs (dry-run) — corpo não quebra, simplesmente omite a citação", () => {
+    const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
+    const { body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"));
+    assert.doesNotMatch(body, /Issue: #/);
+  });
+
+  it("issueRefs com action 'failed' — cita o motivo da falha em vez de um número", () => {
+    const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
+    const issueRefs = new Map([
+      [staleEntryKey(STALE_A), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+    ]);
+    const { body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"), issueRefs);
+    assert.match(body, /Issue: falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+});
+
+// ─── toAlarmFinding (#6151) — ponte pra scripts/lib/alarm-issues.ts ────────
+
+describe("toAlarmFinding (#6151)", () => {
+  const AGED_A: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
+
+  it("check é o slug do hub, fingerprint é a staleEntryKey (hub+edição)", () => {
+    const finding = toAlarmFinding(AGED_A);
+    assert.equal(finding.check, "anthropic-claude");
+    assert.equal(finding.fingerprint, staleEntryKey(AGED_A));
+    assert.equal(finding.fingerprint, "anthropic-claude:modelo-fictício-06-08");
+  });
+
+  it("family é sempre 'estado' — a issue se auto-resolve quando o dataset for regenerado", () => {
+    assert.equal(toAlarmFinding(AGED_A).family, "estado");
+  });
+
+  it("priority é P3 (cleanup/regen manual, não urgência de produção)", () => {
+    assert.equal(toAlarmFinding(AGED_A).priority, "P3");
+  });
+
+  it("body cita hub, edição, idade e o comando de regen correto", () => {
+    const { body } = toAlarmFinding(AGED_A);
+    assert.match(body, /Hub: anthropic-claude/);
+    assert.match(body, /2026-08-06 modelo-fictício-06-08/);
+    assert.match(body, /4 dia\(s\)/);
+    assert.match(body, /npx tsx scripts\/generate-hub-sources\.ts --hub anthropic-claude/);
+  });
+
+  it("2 hubs distintos geram findings com check/fingerprint distintos (nunca colidem)", () => {
+    const AGED_B: AgedStaleHubEdition = { ...STALE_B, firstSeenDate: "2026-08-09", ageDays: 1 };
+    const findingA = toAlarmFinding(AGED_A);
+    const findingB = toAlarmFinding(AGED_B);
+    assert.notEqual(findingA.check, findingB.check);
+    assert.notEqual(findingA.fingerprint, findingB.fingerprint);
+  });
+});
+
+// ─── Dedup por fingerprint via planAlarmReconciliation (#6151) ─────────────
+// Cobre o requisito central da issue: mesmo hub+edição já vencido numa
+// execução anterior (com issue já rastreada em AlarmIssuesState) NÃO gera
+// uma 2ª ação de criação na execução seguinte — só um `ensure` que
+// `applyAlarmReconciliation`/`ensureAlarmIssue` resolve como reuse (sem
+// tocar `gh` de novo pra criar). Este teste fica no nível PURO
+// (`planAlarmReconciliation`) — o roundtrip completo com `gh` mockado já é
+// coberto por `test/alarm-issues.test.ts`.
+
+describe("dedup — mesmo achado não gera 2 issues (#6151)", () => {
+  const AGED_A: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
+
+  it("achado NOVO (sem entry em state) -> 1 ação 'ensure'", () => {
+    const finding = toAlarmFinding(AGED_A);
+    const actions = planAlarmReconciliation([finding], emptyAlarmIssuesState(), 2);
+    assert.deepEqual(actions, [{ kind: "ensure", finding }]);
+  });
+
+  it("mesmo achado, MESMO fingerprint, já rastreado -> ainda gera 'ensure' (idempotente: ensureAlarmIssue reusa via cache, não recria)", () => {
+    const finding = toAlarmFinding(AGED_A);
+    const state: AlarmIssuesState = {
+      [`${finding.check}:${finding.fingerprint}`]: {
+        issueNumber: 6200,
+        url: "https://github.com/vjpixel/diaria-studio/issues/6200",
+        missingStreak: 0,
+        closedAt: null,
+        family: "estado",
+      },
+    };
+    const actions = planAlarmReconciliation([finding], state, 2);
+    // Só 1 ação — nunca 2 (nunca duplica a issue pro mesmo achado ainda
+    // pendente). `applyAlarmReconciliation` resolve essa ação como reuse via
+    // `cachedEntry`, sem chamar `gh issue create` de novo.
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0]!.kind, "ensure");
+  });
+
+  it("achado deixou de reproduzir (regenerado) -> comenta 'não reproduz mais' em vez de reabrir", () => {
+    const finding = toAlarmFinding(AGED_A);
+    const key = `${finding.check}:${finding.fingerprint}`;
+    const state: AlarmIssuesState = {
+      [key]: {
+        issueNumber: 6200,
+        url: "https://github.com/vjpixel/diaria-studio/issues/6200",
+        missingStreak: 0,
+        closedAt: null,
+        family: "estado",
+      },
+    };
+    // pending vazio — a entrada saiu de `stale` (dataset regenerado).
+    const actions = planAlarmReconciliation([], state, 2);
+    assert.deepEqual(actions, [{ kind: "comment_resolved", key, issueNumber: 6200 }]);
   });
 });

@@ -36,6 +36,7 @@
 import { HUB_KEYWORD_PATTERNS, collectHubSources, type HubSourceEntry } from "../generate-hub-sources.ts";
 import type { RawCachedPost } from "../generate-arquivo-titles.ts";
 import type { PublishDateOverridesResult } from "./beehiiv-publish-date.ts";
+import type { AlarmFinding } from "./alarm-issues.ts";
 
 /** Uma edição confirmada que casa o pattern de um hub mas não está no
  * dataset commitado daquele hub. */
@@ -149,6 +150,51 @@ export function staleEntryKey(entry: Pick<StaleHubEdition, "hubSlug" | "editionS
   return `${entry.hubSlug}:${entry.editionSlug}`;
 }
 
+/** Converte uma entrada vencida (`AgedStaleHubEdition`, já filtrada por
+ * `filterOverdue`) no `AlarmFinding` genérico que `scripts/lib/alarm-issues.ts`
+ * consome (#6151, mesmo padrão de `hub-drift-check.ts`'s `toAlarmFinding`).
+ * `check` = slug do hub (cada hub é seu próprio eixo, mesma convenção de
+ * `hub-drift-check.ts`). `fingerprint` = `staleEntryKey` — a MESMA chave
+ * usada pelo mapa de 1ª-detecção e por `computeStalenessFingerprint`, então
+ * a issue de uma entrada específica (hub+edição) é estável entre execuções.
+ * `family: "estado"` — a condição observada ("esta edição está no dataset
+ * commitado?") é RE-CHECÁVEL a cada execução: assim que o editor regenerar
+ * o dataset do hub, a entrada some de `stale` e o mecanismo de streak
+ * comenta/fecha a issue sozinho (mesmo racional de `hub-drift-check.ts`).
+ * Toda entrada nasce `P3` — cleanup/regen manual sem urgência de produção
+ * (diferente do `hub-drift-check.ts`, que é `P2` porque um hub fora do ar é
+ * um 404 real pro leitor; aqui é só um link interno que ainda não existe). */
+export function toAlarmFinding(entry: AgedStaleHubEdition): AlarmFinding {
+  const label = entry.editionTitle ?? entry.matchedHeadlines[0] ?? entry.editionSlug;
+  return {
+    check: entry.hubSlug,
+    fingerprint: staleEntryKey(entry),
+    family: "estado",
+    title: `[diar.ia.br] hub "${entry.hubSlug}" defasado — edição ${entry.editionSlug} fora do dataset`,
+    body: [
+      "Achado automático do alarme `Diaria-Hub-Staleness-Check`",
+      "(`scripts/hub-staleness-check.ts`).",
+      "",
+      `Hub: ${entry.hubSlug}`,
+      `Edição: ${entry.date} ${entry.editionSlug} ("${label}")`,
+      `Defasada desde ${entry.firstSeenDate} (${entry.ageDays} dia(s)).`,
+      "",
+      "A edição casa HUB_KEYWORD_PATTERNS deste hub mas seu slug não aparece",
+      `no dataset commitado (\`scripts/lib/hubs/${entry.hubSlug}-sources.generated.json\`).`,
+      "",
+      "Regenerar (decisão editorial de timing, #4924 item 2 — nunca automático):",
+      `  npx tsx scripts/generate-hub-sources.ts --hub ${entry.hubSlug}`,
+      "  npx tsx scripts/build-hub-page.ts --all",
+      "",
+      "Esta issue é criada automaticamente pelo alarme (#6151, mesmo padrão do",
+      "#5339) e será comentada/fechada sozinha quando a edição deixar de",
+      "aparecer como vencida (regenerada) por execuções consecutivas.",
+    ].join("\n"),
+    labels: ["enhancement"],
+    priority: "P3",
+  };
+}
+
 /** Mapa `staleEntryKey -> data ISO (YYYY-MM-DD) da 1ª detecção`. Persistido
  * pelo CLI entre execuções — é o que dá noção de "há quanto tempo" a uma
  * lista que, sozinha, não carrega histórico nenhum. */
@@ -254,11 +300,16 @@ export function shouldAlarmStaleness(
 }
 
 /** Pura: assunto + corpo (texto puro) do e-mail de alarme — mesmo padrão
- * de `buildHubDriftAlarmEmail`. */
+ * de `buildHubDriftAlarmEmail`. `issueRefs` (#6151, opcional) — mapa
+ * `staleEntryKey -> {issueNumber, url, action, error}` de
+ * `scripts/lib/alarm-issues.ts`, usado pra citar a issue de cada entrada
+ * vencida. `undefined` (dry-run, ou wiring ainda não chamado) omite a
+ * citação sem quebrar nada — mesmo fallback de `buildHubDriftAlarmEmail`. */
 export function buildStalenessAlarmEmail(
   overdue: readonly AgedStaleHubEdition[],
   thresholdDays: number,
   now: Date = new Date(),
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] ${overdue.length} edição(ões) defasada(s) nos hubs temáticos há ${thresholdDays}+ dias`;
 
@@ -281,6 +332,14 @@ export function buildStalenessAlarmEmail(
     for (const e of entries) {
       const label = e.editionTitle ?? e.matchedHeadlines[0] ?? e.editionSlug;
       lines.push(`    - ${e.date} ${e.editionSlug} ("${label}") — defasada há ${e.ageDays} dia(s)`);
+      const ref = issueRefs?.get(staleEntryKey(e));
+      if (ref) {
+        lines.push(
+          ref.action === "failed"
+            ? `      Issue: falha ao criar/reusar (${ref.error})`
+            : `      Issue: #${ref.issueNumber} (${ref.url})`,
+        );
+      }
     }
   }
   lines.push(
