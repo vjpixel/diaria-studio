@@ -65,8 +65,94 @@ const FOOTER_Y = H - 62;
 const TITLE_TOP = BAR_Y + 90;
 const TITLE_BOTTOM = FOOTER_Y - 90;
 
+/**
+ * Marcação inline de negrito (#6086 item c) — `**trecho**` no `title` vira
+ * `<tspan font-weight="700">` no SVG. O padrão 13 dos benchmarks
+ * (`context/instagram-benchmarks-5815.md`): exatamente UMA coisa em bold por
+ * slide — o bold é o resumo embutido no slide, não ênfase decorativa.
+ *
+ * Com o corpo do carrossel diário em tamanho FIXO (#6078), o bold passou a
+ * ser o único recurso de ênfase dentro do card.
+ */
+export interface InlineBoldSegment {
+  text: string;
+  bold: boolean;
+}
+
+/** Largura média de caractere BOLD como fração do corpo da fonte (aproximação, mesmo regime de `CHAR_WIDTH_RATIO`). Bold é ~7% mais largo que regular. */
+const BOLD_CHAR_WIDTH_RATIO = CHAR_WIDTH_RATIO * 1.07;
+
+/** Pure: divide `title` em segmentos plain/bold a partir da marcação `**...**`. Texto sem `**` volta 1 segmento plain (passthrough). */
+export function parseInlineBold(title: string): InlineBoldSegment[] {
+  const segments: InlineBoldSegment[] = [];
+  const re = /\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(title)) !== null) {
+    if (m.index > last) segments.push({ text: title.slice(last, m.index), bold: false });
+    segments.push({ text: m[1], bold: true });
+    last = m.index + m[0].length;
+  }
+  if (last < title.length) segments.push({ text: title.slice(last), bold: false });
+  return segments.length > 0 ? segments : [{ text: title, bold: false }];
+}
+
+/** Pure: o texto VISÍVEL — marcação `**...**` removida. É isto que o wrap mede (delimitadores não ocupam largura). */
+export function stripInlineBold(title: string): string {
+  return parseInlineBold(title)
+    .map((s) => s.text)
+    .join("");
+}
+
+/** Palavra com peso — unidade do wrap com marcação inline. */
+interface WeightedWord {
+  text: string;
+  bold: boolean;
+}
+
+function wordsWithWeight(title: string): WeightedWord[] {
+  return parseInlineBold(title).flatMap((seg) =>
+    seg.text
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((text) => ({ text, bold: seg.bold })),
+  );
+}
+
+/** Largura estimada da palavra em "caracteres regulares" (bold pesa mais). */
+function wordWidth(w: WeightedWord): number {
+  return w.text.length * (w.bold ? BOLD_CHAR_WIDTH_RATIO / CHAR_WIDTH_RATIO : 1);
+}
+
+function greedyWrapWeighted(words: WeightedWord[], maxCharsPerLine: number): WeightedWord[][] {
+  const lines: WeightedWord[][] = [];
+  let cur: WeightedWord[] = [];
+  let curWidth = 0;
+  for (const w of words) {
+    const ww = wordWidth(w);
+    const candidateWidth = cur.length === 0 ? ww : curWidth + 1 + ww; // +1 pelo espaço
+    if (candidateWidth > maxCharsPerLine && cur.length > 0) {
+      lines.push(cur);
+      cur = [w];
+      curWidth = ww;
+    } else {
+      cur.push(w);
+      curWidth = candidateWidth;
+    }
+  }
+  if (cur.length > 0) lines.push(cur);
+  return lines;
+}
+
 export interface FlatCardText {
   kicker: string;
+  /**
+   * Corpo do card. Aceita marcação inline de negrito (#6086 item c):
+   * `**trecho**` vira `<tspan font-weight="700">`. Os delimitadores NÃO
+   * contam pra largura no wrap — mede-se o texto visível (`stripInlineBold`),
+   * com peso maior pra trechos em bold. Máximo 1 trecho por slide (decisão
+   * editorial codificada no prompt do `social-writer`).
+   */
   title: string;
   /** Rodapé — texto livre (ex: "diar.ia.br" na capa, "Link na bio" no CTA). */
   footer: string;
@@ -122,24 +208,60 @@ export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
  * age sobre ele hoje (o card do semanal sairia cortado); a medição só passou
  * a torná-lo visível, e vale reportar se alguém quiser tratá-lo.
  */
-export function measureFlatCardBody(
+/** Linha já quebrada — palavras com peso + texto visível (o que `measureFlatCardBody` expõe). */
+export interface FlatCardLine {
+  words: WeightedWord[];
+  text: string;
+}
+
+function wrapBody(title: string, maxCharsPerLine: number): FlatCardLine[] {
+  const hasMarkup = title.includes("**");
+  if (!hasMarkup) {
+    // Sem marcação: caminho original intocado (wrapTitle + balanceamento) —
+    // o default do semanal (#5330) não pode mudar de linha por causa disto.
+    return wrapTitle(title, maxCharsPerLine).map((text) => ({ words: [{ text, bold: false }], text }));
+  }
+  // Com marcação: wrap guloso sobre o peso VISÍVEL (delimitadores fora da
+  // contagem, bold ~7% mais largo). O balanceamento do #4575 não se aplica
+  // aqui (opera sobre strings cegas a peso); parágrafos longos do carrossel
+  // diário (>24 palavras) já caem no guloso hoje, então é o mesmo regime.
+  return greedyWrapWeighted(wordsWithWeight(title), maxCharsPerLine).map((words) => ({
+    words,
+    text: words.map((w) => w.text).join(" "),
+  }));
+}
+
+/**
+ * Interno: resolve tamanho + linhas PONDERADAS (com peso bold) de um corpo.
+ * `buildFlatCardSvg` consome as linhas ponderadas pra emitir os `<tspan>`;
+ * `measureFlatCardBody` (API pública, pré-#6086c) projeta só o texto visível.
+ */
+function layoutCardBody(
   title: string,
-  layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
-): { size: number; lines: string[]; blockHeight: number; availableHeight: number; overflows: boolean } {
+  layout: FlatCardLayout,
+): { size: number; lines: FlatCardLine[]; blockHeight: number; availableHeight: number; overflows: boolean } {
   const availableWidth = W - PAD * 2;
   const availableHeight = TITLE_BOTTOM - TITLE_TOP;
 
   let size: number;
-  let lines: string[];
+  let lines: FlatCardLine[];
   if (layout.mode === "fill") {
     ({ size, lines } = fillingFontSize(title, availableWidth, availableHeight));
   } else {
     size = layout.size;
     const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO)));
-    lines = wrapTitle(title, maxCharsPerLine);
+    lines = wrapBody(title, maxCharsPerLine);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
   return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight };
+}
+
+export function measureFlatCardBody(
+  title: string,
+  layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
+): { size: number; lines: string[]; blockHeight: number; availableHeight: number; overflows: boolean } {
+  const { size, lines, blockHeight, availableHeight, overflows } = layoutCardBody(title, layout);
+  return { size, lines: lines.map((l) => l.text), blockHeight, availableHeight, overflows };
 }
 
 /**
@@ -150,17 +272,17 @@ export function measureFlatCardBody(
  * maior candidato e desce — o primeiro que couber é o resultado (nunca pior
  * que `TITLE_SIZE_MIN`, mesmo pra título absurdamente longo).
  */
-function fillingFontSize(title: string, availableWidth: number, availableHeight: number): { size: number; lines: string[] } {
+function fillingFontSize(title: string, availableWidth: number, availableHeight: number): { size: number; lines: FlatCardLine[] } {
   for (let size = TITLE_SIZE_MAX; size >= TITLE_SIZE_MIN; size -= TITLE_SIZE_STEP) {
     const maxCharsPerLine = Math.floor(availableWidth / (size * CHAR_WIDTH_RATIO));
     if (maxCharsPerLine < 1) continue;
-    const lines = wrapTitle(title, maxCharsPerLine);
+    const lines = wrapBody(title, maxCharsPerLine);
     const lineGap = Math.round(size * 1.18);
     const blockHeight = lines.length * lineGap;
     if (blockHeight <= availableHeight) return { size, lines };
   }
   const maxCharsPerLine = Math.max(1, Math.floor(availableWidth / (TITLE_SIZE_MIN * CHAR_WIDTH_RATIO)));
-  return { size: TITLE_SIZE_MIN, lines: wrapTitle(title, maxCharsPerLine) };
+  return { size: TITLE_SIZE_MIN, lines: wrapBody(title, maxCharsPerLine) };
 }
 
 const WORDMARK = "diar.ia.br";
@@ -192,7 +314,7 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
   const footerY = FOOTER_Y;
   const availableHeight = TITLE_BOTTOM - TITLE_TOP;
 
-  const { size, lines, blockHeight } = measureFlatCardBody(text.title, layout);
+  const { size, lines, blockHeight } = layoutCardBody(text.title, layout);
   const lineGap = Math.round(size * 1.18);
   // `fill` centraliza o bloco no espaço entre kicker e rodapé (o texto foi
   // dimensionado pra ocupá-lo). `fixed` ancora no TOPO: o branco que sobra
@@ -201,10 +323,32 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
   const blockTop = layout.mode === "fill" ? TITLE_TOP + (availableHeight - blockHeight) / 2 : TITLE_TOP;
   const firstBaselineY = blockTop + size * 0.85;
 
+  // #6086 item c: segmentos contíguos de mesmo peso viram um trecho só;
+  // trechos bold saem em `<tspan font-weight="700">`. Linha sem marcação
+  // renderiza exatamente como antes (esc puro, zero tspan) — o default do
+  // carrossel SEMANAL e de todo chamador pré-#6086c não muda um byte.
+  const lineMarkup = (line: FlatCardLine): string => {
+    // Segmentos contíguos de mesmo peso; o espaço entre segmentos de peso
+    // DIFERENTE fica SEMPRE fora do `<tspan>` (espaço na borda de um tspan é
+    // suscetível ao colapso de whitespace do XML).
+    const segs: { text: string; bold: boolean }[] = [];
+    for (const w of line.words) {
+      const last = segs[segs.length - 1];
+      if (last && last.bold === w.bold) last.text += ` ${w.text}`;
+      else segs.push({ text: w.text, bold: w.bold });
+    }
+    return segs
+      .map((s, i) => {
+        const sep = i > 0 ? " " : "";
+        return s.bold ? `${sep}<tspan font-weight="700">${esc(s.text)}</tspan>` : `${sep}${esc(s.text)}`;
+      })
+      .join("");
+  };
+
   const titleLines = lines
     .map(
       (line, i) =>
-        `<text x="${PAD}" y="${firstBaselineY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="${COLORS.ink}">${esc(line)}</text>`,
+        `<text x="${PAD}" y="${firstBaselineY + i * lineGap}" font-family="${FONTS.serif}" font-size="${size}" font-weight="400" fill="${COLORS.ink}">${lineMarkup(line)}</text>`,
     )
     .join("\n  ");
 
