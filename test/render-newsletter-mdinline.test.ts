@@ -85,4 +85,24 @@ describe("mdInlineToHtml (#2001 follow-up: URLs com parênteses)", () => {
     const out = mdInlineToHtml("Isto é _itálico_ com underscore.");
     assert.ok(out.includes(">itálico</em>"), `itálico com underscore ausente: ${out}`);
   });
+
+  it("#6087 CI: *[texto](url)* (itálico envolvendo link inteiro) vira <em><a>...</a></em> — mesma forma do bold já coberta em build-link-ctr.test.ts", () => {
+    const out = mdInlineToHtml("Confira *[a novidade](https://exemplo.com/novidade)* hoje.");
+    assert.match(
+      out,
+      /<em style="font-style:italic;"><a[^>]*href="https:\/\/exemplo\.com\/novidade"[^>]*>a novidade<\/a><\/em>/,
+      `itálico não envolveu o link corretamente: ${out}`,
+    );
+    assert.doesNotMatch(out, /\*/, `asterisco literal sobrando: ${out}`);
+  });
+
+  it("#6087 CI: **[texto](url)** (bold envolvendo link) não deixa asterisco literal sobrando (regressão do bug que quebrou o CI desta PR)", () => {
+    const out = mdInlineToHtml("Confira **[a novidade](https://exemplo.com/novidade)** hoje.");
+    assert.match(
+      out,
+      /<b><a[^>]*href="https:\/\/exemplo\.com\/novidade"[^>]*>a novidade<\/a><\/b>/,
+      `bold não envolveu o link corretamente: ${out}`,
+    );
+    assert.doesNotMatch(out, /\*/, `asterisco literal sobrando: ${out}`);
+  });
 });
