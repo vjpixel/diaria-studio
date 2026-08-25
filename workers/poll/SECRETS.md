@@ -52,6 +52,7 @@ criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
 | `KIT_API_URL` (var) | idem | **opcional** — override só pra teste (mock server local); default `https://api.kit.com/v4` |
 | `KIT_NAME_FIELD` (var) | idem | **opcional** — nome do custom field do Kit onde gravar o nome; ausente = nome não é enviado |
 | `KIT_UTM_SOURCE_FIELD`/`KIT_UTM_MEDIUM_FIELD`/`KIT_UTM_CAMPAIGN_FIELD`/`KIT_REFERRING_SITE_FIELD` (vars) | idem | **opcionais** — nomes de custom fields do Kit onde gravar atribuição UTM (a API de criação do Kit não tem UTM/referring-site nativo); **nenhum foi criado na conta de produção ainda** |
+| `KIT_ORIGEM_CADASTRO_FIELD` (var) | idem | **opcional** (#6048) — nome do custom field Kit onde gravar o marcador "entrou pelo funil" (distingue de quem foi só copiado pela sync Beehiiv→Kit); custom field `origem_cadastro` **já criado na conta de produção** (25/08/2026, id 1348066) — falta só setar esta var nos 3 workers (poll/cursos/reativar) pra ligar |
 | `SUBSCRIBE_BACKEND` (var) | `POST /jogar/subscribe` | **opcional** — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`. Seletor LOCAL a este worker — nenhum dispatch externo lê essa var |
 
 `subscribeToKit` (`src/subscribe.ts`) é o equivalente Kit de

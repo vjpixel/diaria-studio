@@ -139,9 +139,10 @@ export interface Env {
   KIT_REFERRING_SITE_FIELD?: string;
   /** #6048 — nome do custom field Kit que recebe o marcador de "entrou pelo
    *  funil" (`KIT_NATIVE_SIGNUP_MARKER`, scripts/lib/shared/kit-signup-origin.ts).
-   *  Já criado em produção (`origem_cadastro`, 25/08/2026) — falta só
-   *  `wrangler secret put` pra ligar. Mesmo degrade gracioso ausente dos
-   *  demais `KIT_*_FIELD` acima. */
+   *  VAR, não secret (mesmo tratamento dos demais `KIT_*_FIELD` acima —
+   *  nome de custom field não é sensível, ver SECRETS.md). Já criado em
+   *  produção (`origem_cadastro`, 25/08/2026) — falta só setar a var pra
+   *  ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
   /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
    * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado

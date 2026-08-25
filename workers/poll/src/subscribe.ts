@@ -54,7 +54,7 @@ import { json } from "./index";
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
-import { KIT_NATIVE_SIGNUP_MARKER } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
+import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -497,7 +497,7 @@ export async function subscribeToKit(
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
-  if (env.KIT_ORIGEM_CADASTRO_FIELD) fields[env.KIT_ORIGEM_CADASTRO_FIELD] = KIT_NATIVE_SIGNUP_MARKER;
+  applyKitSignupOriginField(fields, env);
 
   const body: Record<string, unknown> = {
     email_address: input.email,
