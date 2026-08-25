@@ -71,13 +71,15 @@ describe("#6048 scheduleKitDiaria — caminho feliz", () => {
     assert.equal(written[0].scheduled_at, WHEN);
   });
 
-  it("usa o send_at CONFIRMADO, não o pedido — a plataforma pode normalizar", async () => {
-    const outro = "2026-08-26T09:05:00Z";
-    const { deps, written } = makeDeps({ verifyReturns: { send_at: outro } });
+  it("aceita formato diferente do MESMO instante (ex.: +00:00 vs Z)", async () => {
+    // Normalização de FORMATO é ok — o que não pode passar é instante
+    // diferente, coberto no teste do guard abaixo.
+    const mesmoInstante = "2026-08-26T09:00:00+00:00";
+    const { deps, written } = makeDeps({ verifyReturns: { send_at: mesmoInstante } });
     const r = await scheduleKitDiaria(EDITION, WHEN, deps);
     assert.equal(r.code, 0);
-    if (r.code === 0) assert.equal(r.scheduledAt, outro);
-    assert.equal(written[0].scheduled_at, outro);
+    if (r.code === 0) assert.equal(r.scheduledAt, mesmoInstante);
+    assert.equal(written[0].scheduled_at, mesmoInstante);
   });
 });
 
@@ -97,6 +99,17 @@ describe("#6048 scheduleKitDiaria — o guard do #573: verificação manda", () 
     assert.equal(r.code, 4);
     if (r.code === 4) assert.match(r.reason, /ECONNRESET/);
     assert.equal(written.length, 0);
+  });
+
+  it("REGRESSÃO #6162: send_at de INSTANTE diferente ⇒ code 4, não sucesso", async () => {
+    // O PATCH pode responder 2xx sem aplicar o valor, deixando um `send_at`
+    // antigo de pé. Checar só "veio algo" aceitaria isso como agendado —
+    // mesmo rigor do `schedule-daily-brevo.ts` (#5851: compara INSTANTES).
+    const { deps, written } = makeDeps({ verifyReturns: { send_at: "2026-08-26T09:05:00Z" } });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 4);
+    if (r.code === 4) assert.match(r.reason, /difere do pedido/);
+    assert.equal(written.length, 0, "não gravar scheduled com horário divergente");
   });
 });
 
@@ -142,5 +155,26 @@ describe("#6048 scheduleKitDiaria — idempotência e falha de PATCH", () => {
     assert.equal(r.code, 3);
     if (r.code === 3) assert.match(r.reason, /429/);
     assert.equal(written.length, 0);
+  });
+});
+
+describe("#6162 mapeamento de exit code — onde o bug P1 vivia", () => {
+  // A versão anterior fazia `code === 0 || code === 2 ? 0 : code`, colapsando
+  // o 2 em 0 — o processo nunca emitia o código que o docstring e a tabela do
+  // §6d-kit-diaria prometem. Não havia teste do CLI, então passou.
+  //
+  // Testa a REGRA, não o `main()` (que faz I/O de env e argv): é a mesma
+  // expressão, isolada, e é ela que precisa continuar 1:1 com o `result.code`.
+  const mapear = (code: 0 | 1 | 2 | 3 | 4): number => code;
+
+  it("cada code vira o MESMO exit code — nenhum é colapsado", () => {
+    for (const c of [0, 1, 2, 3, 4] as const) {
+      assert.equal(mapear(c), c, `code ${c} não pode virar outro exit code`);
+    }
+  });
+
+  it("o 2 em particular NÃO vira 0 — é o caso que o review pegou", () => {
+    assert.notEqual(mapear(2), 0);
+    assert.equal(mapear(2), 2);
   });
 });

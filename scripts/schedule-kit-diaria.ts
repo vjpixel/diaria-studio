@@ -24,6 +24,7 @@
  *
  * Exit codes (a tabela do playbook em `orchestrator-stage-6.md` §6d-kit-diaria
  * precisa espelhar isto — ver #6147, que nasceu de uma tabela desatualizada):
+ *   1 — uso: `--edition-dir`/`--scheduled-at` ausente
  *   0 — agendado e verificado
  *   2 — canal desligado (`kit_diaria.enabled !== true`) ou estado ausente:
  *       NÃO é erro, é o caminho normal quando o canal não participou da edição
@@ -125,6 +126,18 @@ export async function scheduleKitDiaria(
   if (!confirmed.send_at) {
     return { code: 4, reason: `GET pós-PATCH não traz send_at — agendamento NÃO confirmado.` };
   }
+  // #6162 (achado do review): comparar INSTANTES, não só existência — mesmo
+  // rigor de `schedule-daily-brevo.ts` (#5851). Um PATCH pode responder 2xx
+  // sem aplicar o valor, deixando um `send_at` antigo de pé; checar só
+  // "veio algo" aceitaria esse caso como sucesso.
+  const pedidoMs = Date.parse(scheduledAt);
+  const recebidoMs = Date.parse(confirmed.send_at);
+  if (Number.isFinite(pedidoMs) && Number.isFinite(recebidoMs) && pedidoMs !== recebidoMs) {
+    return {
+      code: 4,
+      reason: `send_at confirmado (${confirmed.send_at}) difere do pedido (${scheduledAt}) — PATCH não aplicou o valor.`,
+    };
+  }
 
   deps.writeState(editionDir, { ...state, status: "scheduled", scheduled_at: confirmed.send_at });
   deps.log(`agendado para ${confirmed.send_at} (broadcast_id=${state.broadcast_id}) ✓`);
@@ -148,7 +161,12 @@ export async function main(): Promise<void> {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   }
   console.log(JSON.stringify(result, null, 2));
-  process.exitCode = result.code === 0 || result.code === 2 ? 0 : result.code;
+  // #6162 (achado P1 do review): NÃO colapsar o 2 em 0. O docstring acima, a
+  // tabela do §6d-kit-diaria e o precedente `schedule-daily-brevo.ts` tratam
+  // 0/2/3/4 como códigos distintos — colapsar faria o processo nunca emitir o
+  // 2 que a própria documentação promete. Quem lê o exit code do shell
+  // receberia "sucesso" onde o contrato diz "não participou".
+  process.exitCode = result.code;
 }
 
 if (isMainModule(import.meta.url)) {

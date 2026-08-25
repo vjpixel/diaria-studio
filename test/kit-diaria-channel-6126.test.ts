@@ -41,6 +41,30 @@ describe("#6126 decideKitChannelDispatch", () => {
     assert.deepEqual(d, { action: "already_done", broadcastId: 999 });
   });
 
+  it("REGRESSÃO #6162: backend === \"kit\" ⇒ skip, mesmo com o canal ligado", () => {
+    // Guard de exclusão mútua. Com o switchover ativo, o Passo 5c-1-kit já
+    // dispara pra audiência INTEIRA; rodar o canal paralelo junto entregaria
+    // a edição EM DOBRO a quem está nos dois filtros.
+    const d = decideKitChannelDispatch({
+      config: { enabled: true },
+      newsletterBackend: "kit",
+      existing: null,
+      defaultAudienceTag: DEFAULT_TAG,
+    });
+    assert.equal(d.action, "skip");
+    if (d.action === "skip") assert.match(d.reason, /EM DOBRO/);
+  });
+
+  it("backend \"beehiiv\" (o normal) não bloqueia o canal paralelo", () => {
+    const d = decideKitChannelDispatch({
+      config: { enabled: true },
+      newsletterBackend: "beehiiv",
+      existing: null,
+      defaultAudienceTag: DEFAULT_TAG,
+    });
+    assert.deepEqual(d, { action: "dispatch", audienceTag: DEFAULT_TAG });
+  });
+
   it("config ausente ⇒ skip (não dispatch)", () => {
     const d = decideKitChannelDispatch({ config: undefined, existing: null, defaultAudienceTag: DEFAULT_TAG });
     assert.equal(d.action, "skip");

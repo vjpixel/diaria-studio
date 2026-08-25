@@ -79,6 +79,18 @@ export type KitChannelDecision =
   | { action: "dispatch"; audienceTag: string };
 
 export interface DecideKitChannelInput {
+  /**
+   * `publishing.newsletter.backend`. Existe aqui por um guard de exclusão
+   * mútua (#6162, achado do review): quando o backend é `"kit"`, o Passo
+   * 5c-1-kit do Stage 5 dispara pra audiência INTEIRA
+   * (`buildAllSubscribersFilter`). Se este canal paralelo rodasse junto, quem
+   * estivesse nos dois filtros receberia a edição EM DOBRO.
+   *
+   * Antes disto a proteção era só uma nota em prosa ("não unificar os dois
+   * enquanto a partição estiver em uso") — e prosa não impede ninguém de
+   * virar uma flag esquecendo a outra.
+   */
+  newsletterBackend?: string;
   /** Bloco de config, ou `undefined`/`null` se ausente. */
   config: KitDiariaChannelConfig | undefined | null;
   /** Estado já persistido desta edição, se houver (idempotência em resume). */
@@ -104,6 +116,15 @@ export function decideKitChannelDispatch(input: DecideKitChannelInput): KitChann
 
   if (!config) {
     return { action: "skip", reason: "kit_diaria não configurado em platform.config.json." };
+  }
+  if (input.newsletterBackend === "kit") {
+    return {
+      action: "skip",
+      reason:
+        "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já envia pra audiência INTEIRA. " +
+        "Rodar o canal paralelo junto entregaria a edição EM DOBRO a quem está nos dois filtros. " +
+        "Desligue `kit_diaria.enabled` ao virar o backend.",
+    };
   }
   if (config.enabled !== true) {
     return {
