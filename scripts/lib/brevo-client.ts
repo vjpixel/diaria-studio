@@ -19,9 +19,23 @@
  * esgotar a cota que o caminho de ESCRITA (`clarice-build-segment.ts`/
  * `clarice-plan-wave.ts`) precisa — esses dois NUNCA chamam esse assert, são
  * o beneficiário da reserva, não quem a respeita.
+ *
+ * #6137: os mesmos dois pontos de `fetch` reais (`brevoRawFetch`/`brevoGet`)
+ * também detectam 401 com corpo "unrecognised IP" (bloqueio de allowlist de
+ * IP por CONTA — incidente #6124/#6132) e emitem achado estruturado via
+ * `brevo-unrecognised-ip-alarm.ts` (mesmo padrão do #5339). A companion
+ * module faz o I/O (estado + `gh`); este arquivo só chama
+ * `maybeReportUnrecognisedIp` com `res.clone()` (nunca consome o body que o
+ * caller ainda vai ler no branch `!res.ok`) — mantém-se "sem estado".
  */
 
 import { recordCampaignQuotaRemaining } from "./brevo-rate-state.ts";
+import {
+  maybeReportUnrecognisedIp,
+  maybeReconcileResolvedFindings,
+  resolveBrevoAccountLabel,
+  provesIpAllowlisted,
+} from "./brevo-unrecognised-ip-alarm.ts";
 
 // #5697: re-exportado pra quem já importa tudo de brevo-client.ts — a
 // implementação/estado vivem em brevo-rate-state.ts (módulo dedicado,
@@ -148,6 +162,37 @@ export class Brevo429Signal extends Error {
   }
 }
 
+/** #6137: extrai o valor do header `api-key` de um `RequestInit.headers` —
+ * todos os call sites deste módulo passam um objeto plano com a chave
+ * lowercase (`{"api-key": ...}`; confirmado via grep — nenhum call site usa
+ * `"Api-Key"` capitalizado), mas aceita uma instância `Headers` também por
+ * defensividade (nunca lança; `""` se ausente/shape inesperado, e
+ * `resolveBrevoAccountLabel` já trata `""` como "desconhecida" sem quebrar).
+ * #6156 P3: o fallback pro header capitalizado `"Api-Key"` foi removido —
+ * era código morto (nenhum call site real o produz). */
+function extractApiKeyFromInit(init: RequestInit): string {
+  const headers = init.headers as unknown;
+  if (headers && typeof (headers as Headers).get === "function") {
+    return (headers as Headers).get("api-key") ?? "";
+  }
+  const plain = headers as Record<string, string> | undefined;
+  return plain?.["api-key"] ?? "";
+}
+
+/**
+ * #6156 (fleet review do #6137) P1 — só teste: `brevoRawFetch`/`brevoGet`
+ * NUNCA `await`am `maybeReportUnrecognisedIp` (fire-and-forget) nem chamam
+ * `maybeReconcileResolvedFindings` inline (via `setImmediate`) — ver
+ * comentário nos dois call sites abaixo pro porquê. Testes que precisam de
+ * determinismo (assert sobre chamadas `gh` simuladas) esperam este helper
+ * ANTES de checar side-effects. NUNCA usado em produção.
+ */
+let pendingUnrecognisedIpWork: Promise<void> = Promise.resolve();
+
+export async function __waitForPendingUnrecognisedIpWork(): Promise<void> {
+  await pendingUnrecognisedIpWork;
+}
+
 /** Faz um `fetch` para a Brevo e lança `Brevo429Signal` em 429. */
 async function brevoRawFetch(
   url: string,
@@ -155,6 +200,47 @@ async function brevoRawFetch(
 ): Promise<Response> {
   const res = await fetch(url, init);
   maybeRecordCampaignRateLimit(url, res.headers); // #5697
+  if (res.status === 401 && typeof res.clone === "function") {
+    // #6137: `res.clone()` — o caller (brevoPost/brevoPut/etc.) ainda lê
+    // `await res.text()` no branch `!res.ok` logo abaixo na pilha; ler o
+    // body aqui sem clonar consumiria o stream e quebraria essa leitura.
+    // Guard `typeof res.clone === "function"`: vários testes deste repo
+    // mockam `fetch` com objetos planos sem `.clone()` (ex:
+    // brevo-list-all-lists.test.ts) — pular a detecção nesse caso é
+    // fail-soft, nunca deve quebrar um mock de teste nem uma resposta real
+    // (`fetch`/undici sempre implementam `.clone()`).
+    //
+    // #6156 P1 — NUNCA `await` aqui: `maybeReportUnrecognisedIp` pode
+    // spawnar `gh` (bloqueante, até alguns segundos) via
+    // `reportUnrecognisedIpFinding`. `brevo-client.ts` roda dentro do
+    // `Diaria-Studio-Server` (processo de vida longa) — um `await` aqui
+    // atrasaria tanto a propagação do erro pro caller original quanto
+    // qualquer outra rota HTTP concorrente do Studio (ver docstring de
+    // `BREVO_ALARM_GH_TIMEOUT_MS` em brevo-unrecognised-ip-alarm.ts pro
+    // trade-off completo). Fail-soft: a função já nunca lança (try/catch
+    // interno) — `.catch()` aqui é só defensivo contra unhandled rejection.
+    pendingUnrecognisedIpWork = maybeReportUnrecognisedIp(url, extractApiKeyFromInit(init), res.clone()).catch(
+      (e) => console.error("[brevo-client] maybeReportUnrecognisedIp falhou (fire-and-forget):", e),
+    );
+  } else if (provesIpAllowlisted(res.status)) {
+    // #6137 (auto-close): uma resposta que genuinamente prova que a conta+IP
+    // atual passaram a allowlist (nunca 401/429/5xx — #6156 P2, ver
+    // `provesIpAllowlisted`) reconcilia achados já rastreados dessa conta
+    // (fast path sem I/O extra se não há nenhum aberto).
+    //
+    // #6156 P1 — `setImmediate`, nunca inline: mesmo motivo do
+    // fire-and-forget acima (função síncrona que pode spawnar `gh`).
+    const account = resolveBrevoAccountLabel(extractApiKeyFromInit(init));
+    pendingUnrecognisedIpWork = new Promise((resolveWork) => {
+      setImmediate(() => {
+        try {
+          maybeReconcileResolvedFindings(account);
+        } finally {
+          resolveWork();
+        }
+      });
+    });
+  }
   if (res.status === 429) {
     throw new Brevo429Signal(res);
   }
@@ -363,6 +449,37 @@ export async function brevoGet(
       headers: { "api-key": apiKey, Accept: "application/json" },
     });
     maybeRecordCampaignRateLimit(path, r.headers); // #5697
+    if (r.status === 401 && typeof r.clone === "function") {
+      // #6137: `r.clone()` — o branch `!r.ok` abaixo ainda lê `await r.text()`
+      // pro corpo do erro; ler aqui sem clonar consumiria o stream. Guard
+      // `typeof r.clone === "function"`: ver mesma nota em `brevoRawFetch`
+      // acima — alguns testes deste repo mockam `fetch` sem `.clone()`.
+      //
+      // #6156 P1 — fire-and-forget, NUNCA `await` (mesma nota de
+      // `brevoRawFetch` acima): aqui é AINDA mais crítico, este `fetch` roda
+      // dentro do loop de retry (`for attempt <= RETRY_MS.length`), então um
+      // `await` bloquearia cada tentativa.
+      pendingUnrecognisedIpWork = maybeReportUnrecognisedIp(`https://api.brevo.com/v3${path}`, apiKey, r.clone()).catch(
+        (e) => console.error("[brevo-client] maybeReportUnrecognisedIp falhou (fire-and-forget):", e),
+      );
+    } else if (provesIpAllowlisted(r.status)) {
+      // #6137 (auto-close) + #6156 P1/P2 — ver mesma nota em `brevoRawFetch`
+      // acima. `provesIpAllowlisted` exclui 429/5xx (que este loop também
+      // retenta) — sem isso, um `brevoGet` que apanhasse 429/500 repetido
+      // chamaria a reconciliação uma vez por tentativa de retry, inflando o
+      // streak de "achado resolvido" sem nenhuma prova real de que a conta
+      // passou a allowlist.
+      const account = resolveBrevoAccountLabel(apiKey);
+      pendingUnrecognisedIpWork = new Promise((resolveWork) => {
+        setImmediate(() => {
+          try {
+            maybeReconcileResolvedFindings(account);
+          } finally {
+            resolveWork();
+          }
+        });
+      });
+    }
     if (r.status === 429 || r.status >= 500) {
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
       // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.

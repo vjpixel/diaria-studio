@@ -19,7 +19,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -230,6 +230,86 @@ describe("createFileNotifiedStore (#6125)", () => {
     s.add("k");
     s.delete("k");
     assert.equal(createFileNotifiedStore(p).has("k"), false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO #6153 P0: chave deletada por outro processo NÃO é ressuscitada por instância com cópia velha", () => {
+    // Cenário verificado com repro no review: A resolve o gate e deleta; B
+    // (zumbi, #5737/#5759) tem a chave em memória de um load anterior e faz
+    // QUALQUER mutação depois — o flush dela regravava a chave morta. Efeito:
+    // o mesmo gate reaparecendo depois ficaria SILENCIADO.
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    const opts = { now: () => t0 };
+
+    const seed = createFileNotifiedStore(p, opts);
+    seed.add("K");
+
+    const b = createFileNotifiedStore(p, opts); // B carrega K em memória
+    const a = createFileNotifiedStore(p, opts);
+    a.delete("K"); // disco fica sem K
+
+    b.add("outra"); // mutação não relacionada de B
+    assert.equal(
+      createFileNotifiedStore(p, opts).has("K"),
+      false,
+      "K não pode voltar ao disco — silenciaria a próxima notificação do gate",
+    );
+    assert.equal(createFileNotifiedStore(p, opts).has("outra"), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO #6153 P0: write que falha PRESERVA a proteção contra ressurreição", () => {
+    // `deletedSinceFlush.clear()` rodava ANTES do rename. Com o write
+    // falhando, o disco ficava com o valor ANTIGO e a proteção já tinha sido
+    // descartada — a próxima mutação ressuscitava a chave, num processo só.
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    const opts = { now: () => t0 };
+
+    const seed = createFileNotifiedStore(p, opts);
+    seed.add("K");
+
+    const s = createFileNotifiedStore(p, opts);
+    // Torna o diretório somente-leitura pra fazer o rename falhar.
+    chmodSync(dir, 0o500);
+    s.delete("K"); // flush falha em silêncio (fail-soft)
+    chmodSync(dir, 0o700);
+    s.add("outra"); // agora o flush funciona
+
+    assert.equal(
+      createFileNotifiedStore(p, opts).has("K"),
+      false,
+      "o delete precisa sobreviver a um flush que falhou",
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO merge-on-flush: flush da instância B preserva chave adicionada pela instância A (sem lost update)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    // A e B carregam o MESMO arquivo vazio (dois processos sobrepostos).
+    const a = createFileNotifiedStore(p, { now: () => t0 });
+    const b = createFileNotifiedStore(p, { now: () => t0 });
+    a.add("chave-A");
+    // B ainda não viu chave-A em memória; o flush dela não pode apagá-la.
+    b.add("chave-B");
+    // Ler com o MESMO `now` das escritas: `t0` é de 2023 e a poda de TTL (30
+    // dias) apagaria as duas chaves se a leitura usasse o relógio real.
+    assert.equal(createFileNotifiedStore(p, { now: () => t0 }).has("chave-A"), true);
+    assert.equal(createFileNotifiedStore(p, { now: () => t0 }).has("chave-B"), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("timestamps não-finitos no disco são descartados (não sobrevivem à TTL pra sempre)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    writeFileSync(p, JSON.stringify({ nan: "NaN", inf: 1e999, ok: Date.now() }), "utf8");
+    const s = createFileNotifiedStore(p);
+    assert.deepEqual(s.keys().sort(), ["ok"]);
     rmSync(dir, { recursive: true, force: true });
   });
 });

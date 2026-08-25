@@ -377,7 +377,7 @@ Falha do max = destaque inflado — re-disparar writer com instruction de trimar
   npx tsx scripts/check-stage2-invariants.ts \
     --edition-dir {EDITION_DIR}/
   ```
-  Cobre 4 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) `_internal/intentional-error.json` existe (#2284, migrado #3222) — placeholder OK, valores preenchidos pelo editor via chat (não mais via Drive). Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/intentional-error.json são todos invariantes do Stage 2.
+  Cobre 5 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) `_internal/intentional-error.json` existe (#2284, migrado #3222) — placeholder OK, valores preenchidos pelo editor via chat (não mais via Drive), (e) `intentional-error.json.reveal` (quando já preenchido) começa com "Na última edição" ou outra palavra-gancho temporal reconhecida pelo renderer (#6139) — sem isso, o box de reveal da EDIÇÃO SEGUINTE não é renderizado, silenciosamente. Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/intentional-error.json/reveal-temporal-prefix são todos invariantes do Stage 2.
 
 ### 2c. Processar social
 

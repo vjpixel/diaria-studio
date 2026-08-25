@@ -31,8 +31,12 @@
  * testar sem `setInterval` real; `startPushNotifyWatcher` só embrulha isso
  * num `setInterval`.
  *
- * Dedup: `NotifiedStore` em memória (1 por watcher — o processo do
- * studio-server já é de longa duração, não precisa persistir em disco). Uma
+ * Dedup: `NotifiedStore` PERSISTIDO em disco (#6125 —
+ * `createFileNotifiedStore`, `data/studio-push-notify-seen.json`). Era em
+ * memória, com a premissa de que "o processo do studio-server é de longa
+ * duração, não precisa persistir"; a premissa se provou FALSA — restart e
+ * processo zumbi (#5737/#5759) zeravam o dedup e o editor recebia o mesmo
+ * e-mail de gate pendente de novo. Uma
  * chave só é removida do store quando o evento de origem deixa de estar
  * pendente (gate respondido/aprovado) — se o MESMO gate reaparecer depois
  * (nova edição atingindo o stage 4, por ex.), notifica de novo. Uma chave só

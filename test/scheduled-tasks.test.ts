@@ -923,3 +923,49 @@ describe("#6093 — Diaria-Kit-Subscriber-Sync registrada, diária, sync Beehiiv
     assert.ok(parsed.some((t: { name: string }) => t.name === "Diaria-Kit-Subscriber-Sync"));
   });
 });
+
+describe("#6130 — Diaria-Session-Registry-Gc registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:55", () => {
+    const t = getScheduledTaskByName("Diaria-Session-Registry-Gc");
+    assert.ok(t, "Diaria-Session-Registry-Gc ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/session-registry-gc.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 55 });
+  });
+
+  it("horário de 09:55 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Session-Registry-Gc" && t.schedule.hour === 9 && t.schedule.minute === 55,
+    );
+    assert.deepEqual(collisions, []);
+  });
+});
+
+describe("#6130 — Diaria-Session-Registry-SafeBackup-Alarm registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 10:05", () => {
+    const t = getScheduledTaskByName("Diaria-Session-Registry-SafeBackup-Alarm");
+    assert.ok(t, "Diaria-Session-Registry-SafeBackup-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/session-registry-safebackup-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 5 });
+  });
+
+  it("horário de 10:05 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Session-Registry-SafeBackup-Alarm" && t.schedule.hour === 10 && t.schedule.minute === 5,
+    );
+    assert.deepEqual(collisions, []);
+  });
+});
