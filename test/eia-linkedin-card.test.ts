@@ -25,7 +25,10 @@ import {
   COMPOSITE_PHOTO_B_Y,
   SINGLE_PHOTO_Y,
   VOTE_CALL,
+  HEADLINE,
+  KICKER,
 } from "../scripts/lib/eia-linkedin-card.ts";
+import { resolveCliOptions } from "../scripts/gen-eia-linkedin-cards.ts";
 import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 
 /** Todos os `<rect>` do SVG como objetos com os atributos numéricos já parseados. */
@@ -79,7 +82,21 @@ describe("buildEiaCompositeOverlaySvg", () => {
 
   it("chama o voto e assina a marca", () => {
     assert.ok(svg.includes(VOTE_CALL));
+    assert.ok(svg.includes(KICKER.toUpperCase()));
     assert.match(svg, /diar<tspan[^>]*>\.<\/tspan>ia/);
+  });
+
+  it("abre com a PERGUNTA, acima da primeira foto", () => {
+    // O card circula solto no feed: quem só passa o olho na imagem precisa
+    // saber o que está sendo perguntado sem ler a legenda do post.
+    assert.ok(svg.includes(HEADLINE), "pergunta ausente da arte");
+    // HEADLINE termina em "?" — escapar antes de virar regex.
+    const literal = HEADLINE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const headlineY = Number(
+      svg.match(new RegExp(`y="(\\d+(?:\\.\\d+)?)"[^>]*>${literal}<`))?.[1] ?? 0,
+    );
+    assert.ok(headlineY > 0, "não achei a baseline da pergunta");
+    assert.ok(headlineY < COMPOSITE_PHOTO_A_Y, "pergunta invade a foto A");
   });
 
   it("usa fundo cheio no carimbo (nada translúcido sobre foto imprevisível)", () => {
@@ -111,8 +128,40 @@ describe("buildEiaSingleOverlaySvg", () => {
 
   it("mantém a legenda abaixo da foto e acima do rodapé", () => {
     const svg = buildEiaSingleOverlaySvg("A");
-    const captionY = Number(svg.match(/y="(\d+)"[^>]*text-anchor="middle"/)?.[1] ?? 0);
+    // Ancorado no TEXTO da legenda, não em `text-anchor="middle"` solto: o
+    // carimbo também é centralizado, e casar por atributo pegava o elemento
+    // errado assim que a geometria do carimbo mudasse (achado do review).
+    const captionY = Number(svg.match(/y="(\d+(?:\.\d+)?)"[^>]*>Opção A</)?.[1] ?? 0);
+    assert.ok(captionY > 0, "não achei a baseline da legenda");
     assert.ok(captionY > SINGLE_PHOTO_Y + PHOTO_H, "legenda invade a foto");
     assert.ok(captionY < SINGLE_H - 80, "legenda colide com o rodapé");
+  });
+
+  it("traz a mesma pergunta do composto", () => {
+    assert.ok(buildEiaSingleOverlaySvg("B").includes(HEADLINE));
+  });
+});
+
+describe("resolveCliOptions", () => {
+  it("lê --force independente da ordem das flags", () => {
+    // Regressão: com `parseArgsSimple`, `--force` antes de `--edition` engolia
+    // o token seguinte e a edição sumia.
+    for (const argv of [
+      ["--edition", "260824", "--force"],
+      ["--force", "--edition", "260824"],
+    ]) {
+      const { dir, force } = resolveCliOptions(argv);
+      assert.equal(force, true, `--force perdido em ${argv.join(" ")}`);
+      assert.match(dir, /260824$/, `edição perdida em ${argv.join(" ")}`);
+    }
+  });
+
+  it("sem --force, não força", () => {
+    assert.equal(resolveCliOptions(["--edition", "260824"]).force, false);
+  });
+
+  it("--out-dir tem precedência sobre --edition", () => {
+    const { dir } = resolveCliOptions(["--out-dir", "tmp/xyz", "--edition", "260824"]);
+    assert.match(dir, /xyz$/);
   });
 });

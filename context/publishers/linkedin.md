@@ -454,3 +454,30 @@ Publish, e o artigo agendado aparece em
   obrigatoriamente voz pessoal do editor, este campo é resumo factual e
   pode ser composto pela própria sessão que executa o Passo 8 da skill, a
   partir das manchetes já aprovadas no gate.
+
+---
+
+## É IA? no feed (publicação manual)
+
+O quiz "É IA?" não sai pelo `/diaria-5-publicacao` — é postado à mão. Antes
+de postar, gerar a arte carimbada:
+
+```
+npx tsx scripts/gen-eia-linkedin-cards.ts --edition AAMMDD
+```
+
+Saem 3 arquivos na raiz da edição. Use `01-eia-linkedin-ab.jpg` (composto
+4:5, as duas fotos empilhadas) num post de **imagem única** — é o caminho
+seguro, porque a colagem multi-imagem do LinkedIn corta as laterais de cada
+tile e come justamente o carimbo. Os avulsos `01-eia-linkedin-{A,B}.jpg`
+(1:1) existem pra quem quiser o multi-imagem mesmo assim.
+
+A arte abre com a pergunta ("Qual imagem foi gerada por IA?") porque muita
+gente passa o olho na imagem sem ler a legenda do post.
+
+Como não existe enquete com imagem no LinkedIn, o palpite vai nos
+comentários (A ou B) e o **gabarito é um comentário no próprio post, 48h
+depois** — não um post novo. O alcance orgânico se concentra nas primeiras
+24-48h e o post continua circulando enquanto recebe comentário; responder no
+mesmo dia mata o jogo pra quem chega no dia seguinte, e passar de 3 dias
+entrega o gabarito pra ninguém.

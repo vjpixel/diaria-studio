@@ -17,17 +17,22 @@
  *     fotos empilhadas. É o formato seguro — post de imagem única não passa
  *     pela colagem do feed, então nada é cortado e o leitor vê A e B juntos,
  *     que é a comparação que o quiz pede.
- *   - **avulso** (`buildEiaSingleOverlaySvg`): uma imagem 4:5 por opção, pra
+ *   - **avulso** (`buildEiaSingleOverlaySvg`): uma imagem 1:1 por opção, pra
  *     quem preferir o post multi-imagem. O carimbo fica no canto superior
  *     esquerdo da foto; a colagem de 2 imagens do LinkedIn corta as laterais
  *     de cada tile, então esse formato assume esse risco de propósito.
  *
+ * Os dois formatos abrem com a PERGUNTA (`HEADLINE`), não com o kicker da
+ * seção: o card circula solto no feed e muita gente nunca lê a legenda.
+ *
  * As funções `build*OverlaySvg` são PURAS e cobrem tudo menos as fotos
- * (fundo, kicker, carimbos, molduras, rodapé) — as fotos entram como
+ * (fundo, pergunta, carimbos, molduras, rodapé) — as fotos entram como
  * composite de buffer em `renderEia*Card`, pra não embutir base64 no SVG.
  */
 import sharp from "sharp";
 import { COLORS, FONTS } from "./shared/design-tokens.ts";
+// Canônica desde o #5330 — `weekly-flat-card.ts` já a reusa daqui em vez de duplicar.
+import { esc } from "../gen-social-card-4x5.ts";
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
@@ -46,12 +51,19 @@ const PAD = 60;
 export const PHOTO_W = CARD_W - PAD * 2;
 export const PHOTO_H = Math.round((PHOTO_W * 450) / 800);
 
-const KICKER_BAR_Y = 60;
-const KICKER_BASE_Y = 122;
+const BAR_Y = 60;
+/**
+ * A PERGUNTA é o topo do card, não o kicker "É IA?" (pedido do editor,
+ * 260825): muita gente passa o olho só na imagem e nunca lê a legenda, e
+ * sem ela o card é só duas fotos de mato. O "É IA?" migrou pro rodapé, onde
+ * ainda marca a seção sem roubar a linha que faz o leitor parar.
+ */
+const HEADLINE_BASE_Y = 128;
+const HEADLINE_SIZE = 50;
 
 /** Empilhado: A no topo, B embaixo, com o mesmo respiro entre e ao redor. */
-export const COMPOSITE_PHOTO_A_Y = 156;
-const COMPOSITE_GAP = 28;
+export const COMPOSITE_PHOTO_A_Y = 172;
+const COMPOSITE_GAP = 20;
 export const COMPOSITE_PHOTO_B_Y = COMPOSITE_PHOTO_A_Y + PHOTO_H + COMPOSITE_GAP;
 
 /** Avulso: foto no terço superior, legenda "Opção X" abaixo dela. */
@@ -62,36 +74,30 @@ const BADGE_SIZE = 112;
 const BADGE_INSET = 22;
 const BADGE_FONT_SIZE = 68;
 
+export const HEADLINE = "Qual imagem foi gerada por IA?";
 export const KICKER = "É IA?";
 export const VOTE_CALL = "Responda A ou B nos comentários";
 
 export type EiaOption = "A" | "B";
-
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /** `diar.ia.br` com os pontos e o TLD em teal — mesmo tratamento do card sem foto. */
 function wordmarkMarkup(): string {
   return `diar<tspan fill="${COLORS.brand}">.</tspan>ia<tspan fill="${COLORS.brand}">.</tspan><tspan fill="${COLORS.brand}">br</tspan>`;
 }
 
-function kickerMarkup(): string {
+function headlineMarkup(): string {
   return (
-    `<rect x="${PAD}" y="${KICKER_BAR_Y}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>\n` +
-    `  <text x="${PAD}" y="${KICKER_BASE_Y}" font-family="${FONT_SANS}" font-size="34" font-weight="700" letter-spacing="2" fill="${COLORS.brand}">${esc(KICKER.toUpperCase())}</text>`
+    `<rect x="${PAD}" y="${BAR_Y}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>\n` +
+    `  <text x="${PAD}" y="${HEADLINE_BASE_Y}" font-family="${FONTS.serif}" font-size="${HEADLINE_SIZE}" fill="${COLORS.ink}">${esc(HEADLINE)}</text>`
   );
 }
 
 /** Rodapé ancorado na base do card — a altura muda entre composto e avulso. */
 function footerMarkup(cardH: number): string {
   const y = cardH - 44;
+  const kicker = `<tspan fill="${COLORS.brand}">${esc(KICKER.toUpperCase())}</tspan>  ·  `;
   return (
-    `<text x="${PAD}" y="${y}" font-family="${FONT_SANS}" font-size="30" font-weight="600" fill="${COLORS.ink}">${esc(VOTE_CALL)}</text>\n` +
+    `<text x="${PAD}" y="${y}" font-family="${FONT_SANS}" font-size="30" font-weight="600" fill="${COLORS.ink}">${kicker}${esc(VOTE_CALL)}</text>\n` +
     `  <text x="${CARD_W - PAD}" y="${y}" text-anchor="end" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${wordmarkMarkup()}</text>`
   );
 }
@@ -132,7 +138,7 @@ function svgShell(inner: string, cardH: number): string {
 export function buildEiaCompositeOverlaySvg(): string {
   return svgShell(
     [
-      kickerMarkup(),
+      headlineMarkup(),
       frameMarkup(COMPOSITE_PHOTO_A_Y),
       frameMarkup(COMPOSITE_PHOTO_B_Y),
       badgeMarkup("A", COMPOSITE_PHOTO_A_Y),
@@ -148,7 +154,7 @@ export function buildEiaSingleOverlaySvg(letter: EiaOption): string {
   const caption = `Opção ${letter}`;
   return svgShell(
     [
-      kickerMarkup(),
+      headlineMarkup(),
       frameMarkup(SINGLE_PHOTO_Y),
       badgeMarkup(letter, SINGLE_PHOTO_Y),
       `<text x="${CARD_W / 2}" y="${SINGLE_CAPTION_BASE_Y}" text-anchor="middle" font-family="${FONTS.serif}" font-size="64" fill="${COLORS.ink}">${esc(caption)}</text>`,

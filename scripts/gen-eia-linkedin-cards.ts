@@ -27,7 +27,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseArgsSimple, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
@@ -88,18 +88,29 @@ export async function genEiaLinkedinCards(
   return { generated, skipped };
 }
 
+/**
+ * Pure: resolve argv pro par (diretório, force).
+ *
+ * `parseArgs` e não `parseArgsSimple` porque este script tem flag booleana:
+ * `parseArgsSimple` consome o token seguinte a QUALQUER `--key` sem checar se
+ * ele começa com `--`, então `--force --edition 260825` viraria
+ * `force: "--edition"` e a edição sumiria (a própria docstring dele avisa).
+ * Extraído de `main()` pra que a ordem das flags seja testável.
+ */
+export function resolveCliOptions(argv: string[]): { dir: string; force: boolean } {
+  const { values, flags } = parseArgs(argv);
+  return {
+    dir: values["out-dir"] ? resolve(values["out-dir"]) : editionDir(values.edition ?? ""),
+    force: flags.has("force"),
+  };
+}
+
 async function main(): Promise<void> {
-  const args = parseArgsSimple(process.argv.slice(2));
-  const dir = args["out-dir"]
-    ? resolve(args["out-dir"])
-    : editionDir(args.edition ?? "");
+  const { dir, force } = resolveCliOptions(process.argv.slice(2));
 
   await assertBrandSerifAvailable("gen-eia-linkedin-cards");
 
-  // `hasFlag` guarda a flag SEM o prefixo `--` (ver parseArgs).
-  const result = await genEiaLinkedinCards(dir, {
-    force: hasFlag(process.argv.slice(2), "force"),
-  });
+  const result = await genEiaLinkedinCards(dir, { force });
   console.log(JSON.stringify(result, null, 2));
 }
 
