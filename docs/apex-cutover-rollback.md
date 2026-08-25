@@ -9,6 +9,13 @@ Medido ao vivo via API da Cloudflare (zona `0c1a216dee80404257ce225a18fae896`).
 > **Este documento é o estado PRÉ-cutover.** Se ele divergir da realidade,
 > confie na zona, não neste arquivo — e atualize-o.
 
+**Decisão que este plano serve** (registrada nos comentários do #467,
+25/08/2026): o apex aponta pro **nosso Worker**; o Kit fica **só com o e-mail**.
+Isso não é a única saída possível — o Kit *tem* suporte a página em domínio
+raiz (confirmado no #6047) —, foi a escolhida para eliminar o mapa de 301 das
+258 edições. Sem esse contexto, a premissa "restaurar A/AAAA para a Beehiiv"
+parece contradizer o eixo da migração; não contradiz.
+
 ---
 
 ## 1. Estado a restaurar (valores exatos)
@@ -33,10 +40,14 @@ Fatos vizinhos, verificados na mesma medição:
 
 ## 2. Gatilhos de rollback
 
+> ⚠️ **Meça com user-agent de navegador.** `curl` cru leva challenge **403** da
+> Cloudflare no apex — e 403 de challenge **não distingue "no ar" de "fora do
+> ar"**. Usar o bloco da seção 5; um 403 de `curl -I` NÃO é gatilho.
+
 Reverter **sem discutir** se, após o cutover:
 
-1. `https://diar.ia.br/` não responde 200 por mais de ~10 min
-2. `https://diar.ia.br/p/{slug}` de uma edição conhecida não responde 200
+1. `https://diar.ia.br/` não responde 200 por mais de ~10 min *(medido com UA de navegador — ver aviso acima)*
+2. `https://diar.ia.br/p/{slug}` de uma edição conhecida não responde 200 *(idem)*
 3. O certificado não emite / erro de TLS no apex
 4. `/subscribe` ou os formulários param de aceitar cadastro
 
@@ -45,9 +56,43 @@ já nosso; página fora do ar, não.
 
 ## 3. Procedimento
 
-Restaurar é um PATCH em cada registro, de volta ao conteúdo da seção 1:
+### 3.1. Primeiro: o custom domain do Worker já assumiu o apex?
+
+Isso decide a ordem, e não dá pra adivinhar no meio do incidente:
 
 ```bash
+npx wrangler deployments domains list 2>/dev/null | grep -i "diar.ia.br"
+# ou, se o wrangler não cooperar, olhar no painel:
+#   Workers & Pages → {worker} → Settings → Domains & Routes
+```
+
+**Se apareceu o apex como custom domain: soltar o binding ANTES de mexer em
+DNS** (`npx wrangler deployments domains delete diar.ia.br`, ou pelo painel).
+Enquanto o binding existir, a Cloudflare mantém o roteamento pro Worker e o
+PATCH de A/AAAA não tem efeito visível.
+
+**Se não apareceu:** ir direto pro 3.2.
+
+### 3.2. Restaurar A/AAAA
+
+**Confirmar que os IDs ainda existem antes de dar PATCH** — anexar um custom
+domain pode fazer a Cloudflare criar/gerenciar registro próprio no lugar do
+manual, e aí o PATCH contra o id antigo devolve 404 no pior momento:
+
+```bash
+ZONE=0c1a216dee80404257ce225a18fae896
+
+curl -s "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records?name=diar.ia.br&type=A" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | grep -o '"id":"[^"]*"'
+```
+
+- **Id igual ao da seção 1** → PATCH (abaixo).
+- **Id diferente** → PATCH contra o id NOVO, mesmo corpo.
+- **Nenhum registro** → criar com POST (mesmo corpo, sem `/{id}` na URL).
+
+```bash
+ZONE=0c1a216dee80404257ce225a18fae896
+
 # A
 curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records/9246e7ffc5e6c8df11c979d31ca6cb1e" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
@@ -59,13 +104,14 @@ curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records/1e19
   --data '{"type":"AAAA","name":"diar.ia.br","content":"2001:12ff:0:2::95","proxied":true,"ttl":1}'
 ```
 
-`ZONE=0c1a216dee80404257ce225a18fae896`.
+`ttl: 1` = automático (exigido quando `proxied: true`).
 
-**Se o `custom_domain = true` do Worker tiver assumido o apex**, o PATCH acima
-pode não bastar: o binding de custom domain precisa ser removido antes
-(`wrangler` ou painel), senão a Cloudflare mantém o roteamento pro Worker. Essa
-é a ordem de reversão: **primeiro soltar o custom domain, depois restaurar
-A/AAAA.**
+### 3.3. O que este procedimento NÃO toca
+
+Tranquilização pra quem lê sob pressão: **os subdomínios não são afetados.**
+`arquivo.`, `especial.`, `livros.`, `cursos.` e `eia.` usam `custom_domain =
+true` em rotas próprias, e `news.`/`reativa.` são registros de envio
+independentes. Nenhum deles depende do A/AAAA do apex.
 
 ## 4. O que o rollback NÃO devolve
 
