@@ -37,9 +37,11 @@
  *   NUNCA a mesma confiança do Instagram/Threads. Falha genuína (DLQ) é
  *   detectada igual nos 3 canais.
  * - **Twitter**: fora de escopo deste script — não passa pelo Worker
- *   Cloudflare (via Buffer MCP, chamado direto pelo orchestrator top-level).
- *   `FIRE_AND_FORGET_PLATFORMS` em `lib/prev-social-status.ts` continua
- *   tratando `twitter` como terminal-by-design. Ver #5766 pra follow-up.
+ *   Cloudflare (via Buffer, chamado do orchestrator top-level ao publicar).
+ *   Tem reconciliador PRÓPRIO, `verify-twitter-posts.ts` (#5766), rodando no
+ *   mesmo check 0k logo antes deste script — via API GraphQL do Buffer, não
+ *   via este Worker. `FIRE_AND_FORGET_PLATFORMS` em `lib/prev-social-status.ts`
+ *   não trata mais `twitter` como terminal-by-design desde o #6152.
  *
  * ## Limitação conhecida do DLQ
  *

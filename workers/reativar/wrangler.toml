@@ -64,6 +64,12 @@ workers_dev = true
 # scripts/lib/shared/kit-signup-origin.ts). VAR, não secret — nome de custom
 # field não é sensível (mesmo tratamento dos demais KIT_*_FIELD, ver
 # workers/poll/SECRETS.md). Custom field já existe na conta Kit de produção
-# (id 1348066). Inerte até SUBSCRIBE_BACKEND virar "kit" neste worker
-# (ainda não virou).
+# (id 1348066). Ativo neste worker desde SUBSCRIBE_BACKEND = "kit" abaixo
+# (#6048 item 4/5).
 KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
+
+# #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
+# worker, poll e cursos já verificados ao vivo, reativar é o 3º e último).
+# env.SUBSCRIBE_BACKEND === "kit" em workers/reativar/src/index.ts — reativação
+# passa a ir pro Kit em vez da Beehiiv.
+SUBSCRIBE_BACKEND = "kit"

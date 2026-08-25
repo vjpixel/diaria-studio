@@ -1,0 +1,35 @@
+# workers/site — futuro hosting do apex diar.ia.br (#467, decisão do editor
+# 25/08/2026: "o apex aponta pro NOSSO Worker, não pro Kit — o Kit fica só
+# com o e-mail").
+#
+# Worker de static assets (sem script), mesmo padrão comprovado 3x em
+# produção (livros/cursos/artigos) — ver workers/artigos/wrangler.toml pro
+# histórico completo de por que uma Workers Route clássica escopada a um
+# path da raiz NÃO funcionou nesse cenário (causa raiz NÃO diagnosticada —
+# algo na config da zona, fora deste repo, impediu a Route de assumir
+# precedência; hipótese não confirmada é que a Beehiiv, dona do custom
+# hostname do apex, responde antes — ver a nota completa em
+# workers/artigos/wrangler.toml) e por que `custom_domain = true` é o único
+# caminho que funcionou na prática.
+#
+# ESTE Worker, especificamente, NÃO tem `custom_domain`/`routes` apontando
+# pro apex ainda — só `workers_dev = true`. Ligar o apex aqui é o CUTOVER em
+# si (soltar o custom hostname na Beehiiv → apontar o apex pra este Worker),
+# blast-radius real, fora do escopo desta unidade (1º item do checklist
+# revisado do #467 — só "Worker que serve /p/{slug} a partir dos 258 posts
+# em cache"). Plano de rollback documentado em docs/apex-cutover-rollback.md.
+#
+# Escopo ATUAL (gerado por scripts/gen-archive-pages.ts):
+#   public/p/{slug}/index.html — as 253 edições publicadas (status
+#   "confirmed") em data/beehiiv-cache/posts/, a partir de content.free.web.
+#
+# Fora de escopo desta unidade (itens 2-6 do checklist revisado do #467):
+#   - passo de pipeline que publica a página de uma edição NOVA
+#   - `/`, `/subscribe`, `/forms/*` (formulários postando pro Kit)
+#   - o cutover de DNS em si
+name = "diaria-site"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+[assets]
+directory = "./public"

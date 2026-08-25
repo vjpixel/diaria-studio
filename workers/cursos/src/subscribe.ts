@@ -233,6 +233,11 @@ export async function subscribeToKit(
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // mesma idempotência documentada em subscribeToKit do worker poll.
   if (res.ok) return { ok: true, status: res.status, beehiivStatus: "active" };
+  // #6048 (achado ao vivo no worker poll, 25/08/2026): branch de erro não-2xx
+  // era o único ponto silencioso aqui (o catch de exceção já logava) — foi
+  // exatamente esse tipo de silêncio que escondeu um KIT_API_KEY inválido.
+  const bodyText = await res.text().catch(() => "<unreadable>");
+  console.error(`[cursos] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
@@ -289,11 +294,25 @@ export async function handleGateSubscribe(
     // alguém eventualmente relê, é chamada externa viva que pode começar a
     // falhar a qualquer momento (Beehiiv fora, key revogada, 429) e derrubar
     // TODO cadastro vindo do gate sem deixar rastro.
+    // #6048 (achado do fleet review, PR #6161): as duas mensagens abaixo
+    // citavam "Beehiiv" hardcoded — desde SUBSCRIBE_BACKEND=kit neste
+    // worker, uma falha real do Kit (ex: KIT_API_KEY inválida, o cenário
+    // exato que o log novo de subscribeToKit existe pra capturar) logava
+    // "BEEHIIV_API_KEY ausentes", apontando pro backend errado. O nome da
+    // chave do contador (`fatalCadastroBeehiivFalhou`) NÃO foi renomeado —
+    // tem consumidores externos (scripts/cursos-error-alarm.ts e outros,
+    // grep confirma) que dependem do nome exato; renomear é trabalho à
+    // parte, fora de escopo desta correção pontual.
+    // Preposição concorda com o gênero de cada backend ("a Beehiiv" / "o
+    // Kit") — mantém a mensagem da Beehiiv EXATAMENTE como era (regex de
+    // `test/cursos-gate.test.ts` depende do texto literal).
+    const backendPhrase = env.SUBSCRIBE_BACKEND === "kit" ? "no Kit" : "na Beehiiv";
+    const credsPhrase = env.SUBSCRIBE_BACKEND === "kit" ? "do Kit" : "BEEHIIV_API_KEY/PUBLICATION_ID";
     if (result.reason === "not_configured") {
-      console.error("[cursos] BEEHIIV_API_KEY/PUBLICATION_ID ausentes — cadastro inline indisponível");
+      console.error(`[cursos] credenciais ${credsPhrase} ausentes — cadastro inline indisponível`);
       return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
     }
-    console.error(`[cursos] cadastro na Beehiiv falhou (HTTP ${result.status}) — nenhum assinante criado`);
+    console.error(`[cursos] cadastro ${backendPhrase} falhou (HTTP ${result.status}) — nenhum assinante criado`);
     await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou);
     return json({ ok: false, error: "subscribe_failed" }, 502, env);
   }

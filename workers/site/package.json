@@ -1,0 +1,15 @@
+{
+  "name": "diaria-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Worker de static assets — futuro hosting do acervo /p/{slug} do apex diar.ia.br (#467). Mesmo padrão de workers/artigos (npm ci exige lockfile).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
