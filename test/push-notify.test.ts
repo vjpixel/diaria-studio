@@ -19,6 +19,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   PUSH_IO_TIMEOUT_MS,
@@ -26,6 +29,7 @@ import {
   shouldNotify,
   markNotified,
   createInMemoryNotifiedStore,
+  createFileNotifiedStore,
   formatHaltNotifyMessage,
   type DedupRecord,
 } from "../scripts/lib/push-notify.ts";
@@ -175,5 +179,57 @@ describe("formatHaltNotifyMessage", () => {
     assert.match(msg.subject, /2b — Clarice review/);
     assert.match(msg.body, /mcp__clarice desconectado/);
     assert.match(msg.body, /reconecte e responda 'retry'/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFileNotifiedStore (#6125) — dedup persistente sobrevive a restart
+// ---------------------------------------------------------------------------
+
+describe("createFileNotifiedStore (#6125)", () => {
+  it("REGRESSÃO: chave gravada por uma instância é vista por outra (restart não perde dedup)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    const first = createFileNotifiedStore(p, { now: () => t0 });
+    assert.equal(first.has("edition-gate:260825:4"), false);
+    first.add("edition-gate:260825:4");
+    // "restart": instância NOVA lendo o MESMO arquivo
+    const second = createFileNotifiedStore(p, { now: () => t0 + 60_000 });
+    assert.equal(second.has("edition-gate:260825:4"), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("arquivo ausente/corrompido => store vazio, nunca lança (fail-soft)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    assert.equal(createFileNotifiedStore(join(dir, "nao-existe.json")).has("x"), false);
+    const bad = join(dir, "bad.json");
+    writeFileSync(bad, "{não é json", "utf8");
+    const s = createFileNotifiedStore(bad);
+    assert.equal(s.has("x"), false);
+    s.add("x"); // escrita sobre arquivo corrompido funciona
+    assert.equal(createFileNotifiedStore(bad).has("x"), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("TTL: entrada mais velha que ttlMs é podada no load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    const first = createFileNotifiedStore(p, { now: () => t0 });
+    first.add("velha");
+    const later = createFileNotifiedStore(p, { now: () => t0 + 31 * 24 * 60 * 60 * 1000 });
+    assert.equal(later.has("velha"), false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("delete remove e persiste", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const s = createFileNotifiedStore(p, { now: () => 1 });
+    s.add("k");
+    s.delete("k");
+    assert.equal(createFileNotifiedStore(p).has("k"), false);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
