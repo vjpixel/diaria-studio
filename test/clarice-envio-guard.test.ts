@@ -646,6 +646,20 @@ describe("clarice-envio-guard (#5026)", () => {
 
 // ─── #6134 — fallback NÃO desfaz override do editor (HOLD-por-decisão ≠ HOLD-por-risco) ───
 describe("clarice-envio-guard — fallback com override vigente (#6134)", () => {
+  // #6141 (achado do review): este describe é IRMÃO do de cima, não filho —
+  // então NÃO herda o before/after que injeta a key. Sem isso, `runEnvioGuard`
+  // aborta em "❌ BREVO_CLARICE_API_KEY não definida" antes de alcançar
+  // qualquer lógica de override, e os 2 testes falham com `guard-abort`.
+  let savedApiKey: string | undefined;
+  before(() => {
+    savedApiKey = process.env.BREVO_CLARICE_API_KEY;
+    process.env.BREVO_CLARICE_API_KEY = "test-key";
+  });
+  after(() => {
+    if (savedApiKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = savedApiKey;
+  });
+
   function transientResult(retryAfterSecs: number | null, reason = "GET .../api/campaigns falhou (503)"): StepResult {
     return { code: 3, stdout: JSON.stringify({ transient: true, retryAfterSecs, status: 503, reason }), stderr: reason };
   }
