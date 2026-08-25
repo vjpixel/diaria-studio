@@ -37,6 +37,7 @@ import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-publ
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário (reusa a resolução tudo-ou-nada do Instagram)
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -739,6 +740,15 @@ async function main() {
   const destaques = extractDestaquesFromSocialMd(socialMd, "facebook");
   const results: PostEntry[] = [];
 
+  // #6095 — mapa de imagens públicas da edição (06-public-images.json) pro
+  // carrossel diário. Ausente/parcial NUNCA bloqueia o canal:
+  // resolveCarouselImageUrls devolve null e o post cai pro single-image de
+  // sempre (publishPhoto com o arquivo local).
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages: Record<string, { url?: string }> | undefined = existsSync(publicImagesPath)
+    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images
+    : undefined;
+
   // #1056 — wrapper que injeta is_test:true em entries quando rodando test_mode
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
@@ -800,6 +810,13 @@ async function main() {
       continue;
     }
 
+    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5 slides
+    // estão completos em 06-public-images.json: publica via
+    // `publishFacebookCarouselByUrl` (mesma função do carrossel semanal,
+    // #5348). Qualquer slide faltando → tudo-ou-nada: fallback pro post
+    // single-image de sempre — nunca bloqueia o canal por causa do carrossel.
+    const carouselImageUrls = resolveCarouselImageUrls(publicImages, d);
+
     // Determine scheduling
     let scheduledAt: string | null = null;
     if (doSchedule) {
@@ -833,7 +850,16 @@ async function main() {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         console.log(`Publishing facebook/${d} (attempt ${attempt})...`);
-        const result = await publishPhoto(
+        const result = carouselImageUrls
+          ? await publishFacebookCarouselByUrl(
+              page_id,
+              page_access_token,
+              api_version,
+              carouselImageUrls,
+              caption,
+              scheduledAt
+            )
+          : await publishPhoto(
           page_id,
           page_access_token,
           api_version,

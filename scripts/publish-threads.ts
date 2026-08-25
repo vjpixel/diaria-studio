@@ -83,6 +83,7 @@ import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário (reusa infra do semanal via Worker)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -506,6 +507,15 @@ async function main() {
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
+  // #6095 — mapa de imagens públicas da edição (06-public-images.json).
+  // Ausente/parcial NUNCA bloqueia o canal: resolveCarouselImageUrls devolve
+  // null e o payload cai pro comportamento de sempre (image_url null →
+  // fireThreadsText no Worker).
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages: Record<string, { url?: string }> | undefined = existsSync(publicImagesPath)
+    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> }).images
+    : undefined;
+
   // Extrair data da edição do nome do diretório (#3944 Parte B — mesmo
   // padrão de publish-instagram.ts, usado por computeScheduledAt no modo --schedule).
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
@@ -687,9 +697,17 @@ async function main() {
       }
 
       try {
+        // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+        // slides estão completos em 06-public-images.json: manda `image_urls`
+        // no payload e o Worker despacha pro caminho `fireThreadsCarousel`
+        // (#5348, já genérico — nenhuma mudança no Worker). Qualquer slide
+        // faltando → tudo-ou-nada: payload de sempre (image_url null →
+        // fireThreadsText), nunca bloqueia o canal.
+        const carouselImageUrls = resolveCarouselImageUrls(publicImages, d);
         const response = await postToWorkerQueue(workerUrl, workerToken, {
           text: chunks[0],
           image_url: null,
+          ...(carouselImageUrls && { image_urls: carouselImageUrls }),
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "threads",
