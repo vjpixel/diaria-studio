@@ -59,6 +59,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./atomic-write.ts";
+import { spawnGhSync } from "./shared/gh-run.ts";
 import {
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
@@ -82,6 +83,37 @@ export const CHECK = "brevo-unrecognised-ip";
  * sem o achado fecha a issue sozinha. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
+/**
+ * #6156 (fleet review do #6137) — P1: `spawnSync("gh", ...)` é bloqueante e
+ * `brevo-client.ts` roda dentro do `Diaria-Studio-Server`, um processo Node
+ * de vida longa; `GH_SPAWN_TIMEOUT_MS` (10s, default do resto do projeto,
+ * `shared/gh-run.ts`) por chamada — e uma reconciliação pode disparar mais
+ * de uma chamada `gh` (`issue list`/`create`/`comment`/`close`) — travaria
+ * TODAS as rotas HTTP concorrentes do Studio por até ~10-40s.
+ *
+ * Não existe hoje no repo uma variante assíncrona de `gh` (grep por
+ * `execFile`/`promisify(exec)`/`spawn(` não plantonou nenhuma) e
+ * `applyAlarmReconciliation`/`GhRunFn` são inteiramente síncronos — usados
+ * por 9+ outros alarmes (`alarm-issues.ts`). Reescrever essa cadeia pra
+ * assíncrona é um refactor de escopo muito maior (afeta todo consumidor de
+ * `alarm-issues.ts`) — fora do escopo desta correção pontual.
+ *
+ * Mitigação de menor escopo adotada aqui (documentada, não elimina o stall
+ * por completo): (1) teto de spawn REDUZIDO só pra este caminho — 3s em vez
+ * de 10s, ainda generoso pra latência normal do `gh` mas limita o pior caso
+ * por chamada; (2) do lado de `brevo-client.ts`, as duas chamadas viram
+ * fire-and-forget/`setImmediate` (nunca `await`ada nem executada inline no
+ * meio do fetch) — não atrasa o caller original nem sua propagação de erro,
+ * e dá ao event loop uma chance de processar I/O pendente antes do
+ * `spawnSync` rodar. O bloqueio em si (spawnSync é síncrono por natureza)
+ * só desaparece de fato com um `child_process.spawn` assíncrono — trade-off
+ * aceito nesta correção porque o achado só dispara numa condição RARA (401
+ * de allowlist), não em tráfego de rotina, e o teto reduzido bound o pior
+ * caso a uma janela bem menor.
+ */
+const BREVO_ALARM_GH_TIMEOUT_MS = 3_000;
+const scopedGhRun: GhRunFn = (args, cwd) => spawnGhSync(args, cwd, BREVO_ALARM_GH_TIMEOUT_MS);
+
 // ─── Detecção (pura) ────────────────────────────────────────────────────────
 
 /** Formato observado ao vivo (#6124): "...using an unrecognised IP address
@@ -104,6 +136,29 @@ export function parseUnrecognisedIpBody(bodyText: string | null | undefined): st
   return match[1].replace(/\.$/, "");
 }
 
+/** #6156 (fleet review do #6137) P3 — union literal das 3 únicas saídas de
+ * `resolveBrevoAccountLabel`, em vez de `string` livre. Fecha a lacuna que
+ * deixava `buildUnrecognisedIpFinding` montar `BREVO_DESCONHECIDA_API_KEY`
+ * (env var que nunca existe) pro caso `"desconhecida"` — ver
+ * `ACCOUNT_API_KEY_ENV_VAR` abaixo, que agora amarra cada valor conhecido ao
+ * seu env var (ou `null` quando não há um). */
+export type BrevoAccountLabel = "clarice" | "diaria" | "desconhecida";
+
+/**
+ * Pura — #6156 P2: só respostas que genuinamente PROVAM que a conta+IP
+ * atual passaram pela allowlist da Brevo devem avançar o "tick" de
+ * auto-close (`maybeReconcileResolvedFindings`). 401 nunca (é o próprio
+ * bloqueio, tratado à parte). 429 (rate limit) e 5xx (erro do servidor)
+ * NÃO provam nada sobre a allowlist — só que a chamada não foi rejeitada
+ * POR ESSA razão específica; um IP ainda bloqueado pode perfeitamente
+ * receber 429/500 em vez de 401 (proxy/CDN na frente, downtime parcial),
+ * e tratar isso como "resolvido" fecharia prematuramente uma issue que
+ * documenta um incidente em andamento.
+ */
+export function provesIpAllowlisted(status: number): boolean {
+  return status !== 401 && status !== 429 && status < 500;
+}
+
 /** Pura — resolve qual conta Brevo (`clarice`/`diaria`) corresponde à
  * `apiKey` usada na chamada, comparando contra as duas envs conhecidas do
  * projeto. `"desconhecida"` se nenhuma bater (key custom/futura conta) —
@@ -111,14 +166,25 @@ export function parseUnrecognisedIpBody(bodyText: string | null | undefined): st
 export function resolveBrevoAccountLabel(
   apiKey: string,
   env: NodeJS.ProcessEnv = process.env,
-): string {
+): BrevoAccountLabel {
   if (apiKey && env.BREVO_CLARICE_API_KEY && apiKey === env.BREVO_CLARICE_API_KEY) return "clarice";
   if (apiKey && env.BREVO_DIARIA_API_KEY && apiKey === env.BREVO_DIARIA_API_KEY) return "diaria";
   return "desconhecida";
 }
 
+/** #6156 P3 — lookup explícito por `BrevoAccountLabel`, exaustivo por
+ * construção (TS recusa um valor que não bata com a union). `null` pra
+ * `"desconhecida"`: não há env var pra citar nesse caso, então o comando
+ * "pronto pra colar" da issue omite essa linha em vez de interpolar um nome
+ * de env var que nunca existe (`BREVO_DESCONHECIDA_API_KEY`). */
+const ACCOUNT_API_KEY_ENV_VAR: Record<BrevoAccountLabel, string | null> = {
+  clarice: "BREVO_CLARICE_API_KEY",
+  diaria: "BREVO_DIARIA_API_KEY",
+  desconhecida: null,
+};
+
 export interface UnrecognisedIpFindingParams {
-  account: string;
+  account: BrevoAccountLabel;
   ip: string;
   endpoint: string;
   timestamp: Date;
@@ -134,6 +200,15 @@ export function buildUnrecognisedIpFinding(params: UnrecognisedIpFindingParams):
   const { account, ip, endpoint, timestamp, hostIPv4, hostIPv6 } = params;
   const fingerprint = `${account}:${ip}`;
   const tsIso = timestamp.toISOString();
+  const envVar = ACCOUNT_API_KEY_ENV_VAR[account];
+  // #6156 P3 — só monta o comando "pronto pra colar" quando a conta foi
+  // resolvida pra um env var real; pra "desconhecida" (key custom/futura
+  // conta) não há env var pra citar, então a linha vira instrução manual em
+  // vez de interpolar `BREVO_DESCONHECIDA_API_KEY` (nunca existe).
+  const confirmLine = envVar
+    ? "     `npx tsx -e 'const r=await fetch(\"https://api.brevo.com/v3/account\"," +
+      `{headers:{"api-key":process.env.${envVar}!}}); console.log(r.status)'\``
+    : "     (conta não identificada — confirme manualmente com a key certa antes de fechar)";
   const body = [
     "Achado automático de `scripts/lib/brevo-client.ts` (#6137) — 401 da Brevo",
     'com corpo "unrecognised IP" (bloqueio de allowlist de IP por CONTA).',
@@ -156,8 +231,7 @@ export function buildUnrecognisedIpFinding(params: UnrecognisedIpFindingParams):
     "  2. Autorizar os DOIS IPs acima — mesmo que só um deles apareça no erro,",
     "     uma chamada seguinte pode sair pelo outro protocolo.",
     "  3. Confirmar com uma leitura real antes de fechar:",
-    "     `npx tsx -e 'const r=await fetch(\"https://api.brevo.com/v3/account\"," +
-      "{headers:{\"api-key\":process.env.BREVO_" + account.toUpperCase() + "_API_KEY!}}); console.log(r.status)'`",
+    confirmLine,
     "",
     "Esta issue é criada automaticamente pelo alarme #6137 — achado de ESTADO",
     "(re-checável, #5553): quando o IP for autorizado, o 401 para de reproduzir",
@@ -250,12 +324,19 @@ export interface ReportUnrecognisedIpOptions {
  * real que originou a detecção já aconteceu e não deve ser afetada por uma
  * falha no rastreio do achado).
  */
+/**
+ * Retorna `true` só se TODO outcome desta chamada teve sucesso (nenhum
+ * `action === "failed"`) — #6156 P2: o caller (`maybeReportUnrecognisedIp`)
+ * usa este retorno pra só marcar o dedup em-processo APÓS confirmar sucesso
+ * (nunca antes, senão uma falha transitória de `gh` no 1º achado silenciaria
+ * o fingerprint pro resto da vida do processo — ver `reportedInProcess`).
+ */
 export function reportUnrecognisedIpFinding(
   finding: AlarmFinding,
   opts: ReportUnrecognisedIpOptions = {},
-): void {
+): boolean {
   const cwd = opts.cwd ?? testOverrides.cwd ?? ROOT;
-  const run = opts.run ?? testOverrides.run;
+  const run = opts.run ?? testOverrides.run ?? scopedGhRun;
   const statePath = opts.statePath ?? testOverrides.statePath ?? DEFAULT_ALARM_ISSUES_STATE_PATH;
   const closeAfterRuns = opts.closeAfterRuns ?? CLOSE_ALARM_ISSUE_AFTER_RUNS;
   try {
@@ -266,8 +347,10 @@ export function reportUnrecognisedIpFinding(
       run,
     });
     saveUnrecognisedIpAlarmState(nextState, statePath);
+    let success = true;
     for (const outcome of findingOutcomes) {
       if (outcome.action === "failed") {
+        success = false;
         console.error(
           `[brevo-unrecognised-ip-alarm] issue não criada/reusada (${outcome.fingerprint}): ${outcome.error}`,
         );
@@ -277,8 +360,10 @@ export function reportUnrecognisedIpFinding(
         );
       }
     }
+    return success;
   } catch (e) {
     console.error("[brevo-unrecognised-ip-alarm] reconciliação falhou (fail-soft):", e);
+    return false;
   }
 }
 
@@ -298,17 +383,26 @@ export function reportUnrecognisedIpFinding(
  * (nunca toca entries de outra conta, mesmo que compartilhem o mesmo
  * `check`), avançando o streak/fechando quando aplicável.
  *
- * Fast path sem I/O: se não há entry aberta pra esta conta no estado local,
- * retorna sem tocar disco/gh — o caso comum (99%+ das chamadas, quando nunca
- * houve bloqueio ou ele já foi fechado). Fail-soft, mesma disciplina do
- * resto do módulo.
+ * Fast path sem I/O que EVITE tocar disco/gh não existe mais a partir daqui:
+ * `loadUnrecognisedIpAlarmState` já lê o disco (`existsSync`+`readFileSync`)
+ * ANTES do check `scopedEntries.length === 0` abaixo — o que o early-return
+ * evita é só o I/O EXTRA (`gh`, escrita) quando não há achado rastreado pra
+ * esta conta (o caso comum, 99%+ das chamadas). Fail-soft, mesma disciplina
+ * do resto do módulo.
+ *
+ * #6156 P2 — quando um fingerprint desta conta FECHA (streak esgotado),
+ * limpa a entrada correspondente de `reportedInProcess` (dedup em-processo):
+ * sem isso, se o MESMO IP for bloqueado de novo mais tarde no mesmo
+ * processo (padrão do incidente de origem #6124/#6132), `maybeReportUnrecognisedIp`
+ * veria o fingerprint ainda marcado como "reportado" e nunca reabriria o
+ * alarme — silêncio total apesar do `state.json` estar limpo.
  */
 export function maybeReconcileResolvedFindings(
-  account: string,
+  account: BrevoAccountLabel,
   opts: ReportUnrecognisedIpOptions = {},
 ): void {
   const cwd = opts.cwd ?? testOverrides.cwd ?? ROOT;
-  const run = opts.run ?? testOverrides.run;
+  const run = opts.run ?? testOverrides.run ?? scopedGhRun;
   const statePath = opts.statePath ?? testOverrides.statePath ?? DEFAULT_ALARM_ISSUES_STATE_PATH;
   const closeAfterRuns = opts.closeAfterRuns ?? CLOSE_ALARM_ISSUE_AFTER_RUNS;
   try {
@@ -320,6 +414,13 @@ export function maybeReconcileResolvedFindings(
     const scopedState: AlarmIssuesState = Object.fromEntries(scopedEntries);
     const { nextState: scopedNext } = applyAlarmReconciliation([], scopedState, { cwd, closeAfterRuns, run });
     saveUnrecognisedIpAlarmState({ ...state, ...scopedNext }, statePath);
+
+    for (const [key, entry] of Object.entries(scopedNext)) {
+      if (entry.closedAt && !scopedState[key]?.closedAt) {
+        const ip = key.slice(prefix.length);
+        reportedInProcess.delete(`${account}:${ip}`);
+      }
+    }
   } catch (e) {
     console.error("[brevo-unrecognised-ip-alarm] reconciliação de sucesso falhou (fail-soft):", e);
   }
@@ -327,8 +428,13 @@ export function maybeReconcileResolvedFindings(
 
 // ─── Glue chamado por brevo-client.ts (brevoRawFetch e brevoGet) ──────────
 
-/** Dedup EM PROCESSO — ver docstring do módulo. Resetável só via
- * `__resetUnrecognisedIpAlarmTestOverrides` (teste). */
+/** Dedup EM PROCESSO — ver docstring do módulo. Marcado só APÓS
+ * `reportUnrecognisedIpFinding` confirmar sucesso (#6156 P2 — nunca antes:
+ * uma falha transitória de `gh` não deve silenciar o fingerprint pra
+ * sempre) e limpo automaticamente por `maybeReconcileResolvedFindings`
+ * quando o achado correspondente fecha (reabre a possibilidade de reportar
+ * de novo se o MESMO IP for bloqueado outra vez neste mesmo processo).
+ * Resetável também via `__resetUnrecognisedIpAlarmTestOverrides` (teste). */
 const reportedInProcess = new Set<string>();
 
 /**
@@ -353,7 +459,6 @@ export async function maybeReportUnrecognisedIp(
     const account = resolveBrevoAccountLabel(apiKey);
     const fingerprint = `${account}:${ip}`;
     if (reportedInProcess.has(fingerprint)) return;
-    reportedInProcess.add(fingerprint);
 
     const hostIps = testOverrides.hostIps ?? (await resolveHostOutboundIps());
     const finding = buildUnrecognisedIpFinding({
@@ -364,7 +469,12 @@ export async function maybeReportUnrecognisedIp(
       hostIPv4: hostIps.ipv4,
       hostIPv6: hostIps.ipv6,
     });
-    reportUnrecognisedIpFinding(finding);
+    // #6156 P2 — só marca o dedup em-processo APÓS confirmar sucesso (nunca
+    // antes): uma falha transitória de `gh` aqui não deve silenciar
+    // permanentemente este fingerprint pro resto da vida do processo (ver
+    // docstring de `reportedInProcess` abaixo).
+    const reported = reportUnrecognisedIpFinding(finding);
+    if (reported) reportedInProcess.add(fingerprint);
   } catch (e) {
     console.error(
       "[brevo-unrecognised-ip-alarm] detecção/relato falhou (fail-soft, chamada Brevo real não afetada):",

@@ -24,12 +24,13 @@ import {
   reportUnrecognisedIpFinding,
   maybeReconcileResolvedFindings,
   loadUnrecognisedIpAlarmState,
+  provesIpAllowlisted,
   AUTHORISED_IPS_URL,
   CHECK,
   __setUnrecognisedIpAlarmTestOverrides,
   __resetUnrecognisedIpAlarmTestOverrides,
 } from "../scripts/lib/brevo-unrecognised-ip-alarm.ts";
-import { brevoPost, brevoGet } from "../scripts/lib/brevo-client.ts";
+import { brevoPost, brevoGet, __waitForPendingUnrecognisedIpWork } from "../scripts/lib/brevo-client.ts";
 
 const IP = "2804:1b3:a941:cb3a:9a28:a6ff:fe0c:1af7";
 const UNRECOGNISED_IP_BODY = JSON.stringify({
@@ -139,6 +140,53 @@ describe("buildUnrecognisedIpFinding (#6137, pura)", () => {
     assert.ok(!finding.body.includes("IPv4  null"));
     assert.ok(!finding.body.includes("IPv6  null"));
     assert.match(finding.body, /não resolvido/);
+  });
+
+  it("#6156 P3: account 'desconhecida' nunca interpola BREVO_DESCONHECIDA_API_KEY (env var inexistente)", () => {
+    const finding = buildUnrecognisedIpFinding({
+      account: "desconhecida",
+      ip: IP,
+      endpoint: "https://api.brevo.com/v3/account",
+      timestamp: new Date(),
+      hostIPv4: null,
+      hostIPv6: null,
+    });
+    assert.ok(!finding.body.includes("BREVO_DESCONHECIDA_API_KEY"));
+    assert.match(finding.body, /conta não identificada/);
+  });
+
+  it("account 'clarice'/'diaria' continuam citando o env var real no comando de confirmação", () => {
+    const finding = buildUnrecognisedIpFinding({
+      account: "clarice",
+      ip: IP,
+      endpoint: "https://api.brevo.com/v3/account",
+      timestamp: new Date(),
+      hostIPv4: null,
+      hostIPv6: null,
+    });
+    assert.ok(finding.body.includes("BREVO_CLARICE_API_KEY"));
+  });
+});
+
+describe("provesIpAllowlisted (#6156 P2, pura)", () => {
+  it("401 nunca prova allowlist (é o próprio bloqueio)", () => {
+    assert.equal(provesIpAllowlisted(401), false);
+  });
+
+  it("429 (rate limit) não prova allowlist", () => {
+    assert.equal(provesIpAllowlisted(429), false);
+  });
+
+  it("5xx (erro de servidor) não prova allowlist", () => {
+    assert.equal(provesIpAllowlisted(500), false);
+    assert.equal(provesIpAllowlisted(503), false);
+  });
+
+  it("2xx/3xx/4xx (exceto 401/429) provam allowlist", () => {
+    assert.equal(provesIpAllowlisted(200), true);
+    assert.equal(provesIpAllowlisted(201), true);
+    assert.equal(provesIpAllowlisted(404), true);
+    assert.equal(provesIpAllowlisted(403), true);
   });
 });
 
@@ -310,6 +358,11 @@ describe("wiring em brevo-client.ts (#6137)", () => {
         return true;
       },
     );
+    // #6156 P1: a detecção agora é fire-and-forget (nunca await'ada pelo
+    // caminho de fetch) — o teste precisa esperar o trabalho pendente antes
+    // de checar `calls`, senão a asserção corre uma race contra o `gh`
+    // simulado.
+    await __waitForPendingUnrecognisedIpWork();
 
     const createCalls = calls.filter((a) => a[0] === "issue" && a[1] === "create");
     assert.equal(createCalls.length, 1);
@@ -328,6 +381,7 @@ describe("wiring em brevo-client.ts (#6137)", () => {
       new Response(UNRECOGNISED_IP_BODY, { status: 401 })) as unknown as typeof fetch;
 
     await assert.rejects(() => brevoGet("fake-clarice-key", "/emailCampaigns/178"));
+    await __waitForPendingUnrecognisedIpWork();
 
     const createCalls = calls.filter((a) => a[0] === "issue" && a[1] === "create");
     assert.equal(createCalls.length, 1);
@@ -348,6 +402,7 @@ describe("wiring em brevo-client.ts (#6137)", () => {
     // (retries, ou vários scripts/units diferentes na mesma janela).
     for (let i = 0; i < 5; i++) {
       await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+      await __waitForPendingUnrecognisedIpWork();
     }
 
     const createCalls = calls.filter((a) => a[0] === "issue" && a[1] === "create");
@@ -360,6 +415,7 @@ describe("wiring em brevo-client.ts (#6137)", () => {
     globalThis.fetch = (async () => new Response(OTHER_401_BODY, { status: 401 })) as unknown as typeof fetch;
 
     await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+    await __waitForPendingUnrecognisedIpWork();
 
     assert.equal(calls.length, 0, "401 sem 'unrecognised IP' não deveria chamar gh nenhuma vez");
   });
@@ -371,8 +427,42 @@ describe("wiring em brevo-client.ts (#6137)", () => {
       new Response(JSON.stringify({ id: 1 }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
 
     await brevoPost("fake-clarice-key", "/contacts", {});
+    await __waitForPendingUnrecognisedIpWork();
 
     assert.equal(calls.length, 0);
+  });
+
+  it("#6156 P2: 429 nunca aciona a reconciliação (não prova que a conta+IP passaram a allowlist)", async () => {
+    const { run, calls } = makeFakeRun();
+    __setUnrecognisedIpAlarmTestOverrides({
+      run,
+      statePath,
+      cwd: "/repo",
+      hostIps: { ipv4: "1.2.3.4", ipv6: IP },
+    });
+
+    // 1: bloqueio detectado — cria a issue.
+    globalThis.fetch = (async () =>
+      new Response(UNRECOGNISED_IP_BODY, { status: 401 })) as unknown as typeof fetch;
+    await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+    await __waitForPendingUnrecognisedIpWork();
+    assert.equal(calls.filter((a) => a[0] === "issue" && a[1] === "create").length, 1);
+    calls.length = 0;
+
+    // 2: a MESMA conta passa a receber 429 (rate limit) — NÃO prova que o
+    // IP foi autorizado, então não deveria avançar o streak de "resolvido".
+    globalThis.fetch = (async () =>
+      new Response("", { status: 429, headers: { "retry-after": "0" } })) as unknown as typeof fetch;
+    await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}, (_ms: number) => Promise.resolve()));
+    await __waitForPendingUnrecognisedIpWork();
+
+    assert.equal(
+      calls.filter((a) => a[0] === "issue" && (a[1] === "comment" || a[1] === "close")).length,
+      0,
+      "429 nunca deveria acionar comment/close da issue aberta",
+    );
+    const state = loadUnrecognisedIpAlarmState(statePath);
+    assert.equal(state[`${CHECK}:clarice:${IP}`]?.closedAt, null, "achado deveria continuar aberto após só 429s");
   });
 
   it("auto-close fim-a-fim (#6137): 401 cria a issue; chamadas 200 seguintes fecham sozinhas", async () => {
@@ -389,18 +479,65 @@ describe("wiring em brevo-client.ts (#6137)", () => {
     globalThis.fetch = (async () =>
       new Response(UNRECOGNISED_IP_BODY, { status: 401 })) as unknown as typeof fetch;
     await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+    await __waitForPendingUnrecognisedIpWork();
     assert.equal(calls.filter((a) => a[0] === "issue" && a[1] === "create").length, 1);
 
     // IP foi autorizado — as próximas chamadas da MESMA conta voltam a 200.
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ id: 1 }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
     await brevoPost("fake-clarice-key", "/contacts", {});
+    await __waitForPendingUnrecognisedIpWork();
     await brevoPost("fake-clarice-key", "/contacts", {});
+    await __waitForPendingUnrecognisedIpWork();
 
     assert.equal(calls.filter((a) => a[0] === "issue" && a[1] === "comment").length, 1);
     assert.equal(calls.filter((a) => a[0] === "issue" && a[1] === "close").length, 1);
 
     const state = loadUnrecognisedIpAlarmState(statePath);
     assert.ok(state[`${CHECK}:clarice:${IP}`]?.closedAt);
+  });
+
+  it("#6156 P2: dedup em-processo limpa após auto-close — o MESMO IP bloqueado de novo reabre o alarme", async () => {
+    const { run, calls } = makeFakeRun();
+    __setUnrecognisedIpAlarmTestOverrides({
+      run,
+      statePath,
+      cwd: "/repo",
+      hostIps: { ipv4: "1.2.3.4", ipv6: IP },
+    });
+
+    // 1: bloqueio detectado — cria a issue.
+    globalThis.fetch = (async () =>
+      new Response(UNRECOGNISED_IP_BODY, { status: 401 })) as unknown as typeof fetch;
+    await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+    await __waitForPendingUnrecognisedIpWork();
+    assert.equal(calls.filter((a) => a[0] === "issue" && a[1] === "create").length, 1);
+
+    // 2-3: IP autorizado — 2 chamadas 200 consecutivas fecham a issue
+    // (closeAfterRuns=2, default do módulo).
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 1 }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    await brevoPost("fake-clarice-key", "/contacts", {});
+    await __waitForPendingUnrecognisedIpWork();
+    await brevoPost("fake-clarice-key", "/contacts", {});
+    await __waitForPendingUnrecognisedIpWork();
+    assert.ok(loadUnrecognisedIpAlarmState(statePath)[`${CHECK}:clarice:${IP}`]?.closedAt);
+
+    // 4: o MESMO IP é bloqueado de novo (ex: allowlist revertida) — sem a
+    // limpeza do dedup em-processo, isto ficaria silenciado pra sempre neste
+    // processo (fingerprint já "reportado"), apesar da issue estar fechada.
+    globalThis.fetch = (async () =>
+      new Response(UNRECOGNISED_IP_BODY, { status: 401 })) as unknown as typeof fetch;
+    await assert.rejects(() => brevoPost("fake-clarice-key", "/emailCampaigns", {}));
+    await __waitForPendingUnrecognisedIpWork();
+
+    const reopenOrCreateCalls = calls.filter(
+      (a) => a[0] === "issue" && (a[1] === "create" || a[1] === "reopen"),
+    );
+    assert.equal(
+      reopenOrCreateCalls.length,
+      2,
+      "recorrência após auto-close deveria reabrir/recriar o alarme, não ficar silenciada",
+    );
   });
 });
