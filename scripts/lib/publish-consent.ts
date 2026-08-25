@@ -24,6 +24,9 @@ export interface PublishConsent {
   twitter: Mode;
   /** #5772 — canal Brevo diária (segmento Pending, reativação). Default "auto" como os demais. */
   brevo: Mode;
+  /** #6162 — canal Kit PARALELO (#6126/#6048). Gate duplo: além deste
+   *  consent, só roda se `kit_diaria.enabled === true` em platform.config. */
+  kit: Mode;
   /** Origem da decisão pra rastreabilidade no run-log. */
   source: string;
 }
@@ -41,6 +44,7 @@ export function autoApproveConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
+      kit: "auto",
     source: "auto_approve_default",
   };
 }
@@ -59,6 +63,7 @@ export function defaultAutoConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
+      kit: "auto",
     source: "default_auto",
   };
 }
@@ -77,6 +82,7 @@ export function defaultManualConsent(): PublishConsent {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
+      kit: "manual",
     source: "default_manual",
   };
 }
@@ -98,7 +104,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo"]);
+  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "kit"]);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -112,6 +118,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     threads: skipped.has("threads") ? "manual" : "auto",
     twitter: skipped.has("twitter") ? "manual" : "auto",
     brevo: skipped.has("brevo") ? "manual" : "auto",
+    kit: skipped.has("kit") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
@@ -146,6 +153,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "auto",
       twitter: "auto",
       brevo: "auto",
+      kit: "auto",
       source: "editor_response_all",
     };
   }
@@ -158,6 +166,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "skipped",
       twitter: "skipped",
       brevo: "skipped",
+      kit: "skipped",
       source: "editor_response_none",
     };
   }
@@ -184,6 +193,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
+      kit: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {

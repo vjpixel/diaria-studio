@@ -131,7 +131,10 @@ export function writeKitDiariaState(editionDir: string, state: KitDiariaPublishe
 }
 
 export interface Stage5KitDeps {
-  readPlatformConfig(): { kit_diaria?: KitDiariaChannelConfig };
+  readPlatformConfig(): {
+    kit_diaria?: KitDiariaChannelConfig;
+    publishing?: { newsletter?: { backend?: string } };
+  };
   readState(editionDir: string): KitDiariaPublished | null;
   writeState(editionDir: string, state: KitDiariaPublished): void;
   findTagId(name: string): Promise<number | null>;
@@ -209,7 +212,8 @@ export async function runStage5KitDispatch(
   let decision: ReturnType<typeof decideKitChannelDispatch>;
   try {
     decision = decideKitChannelDispatch({
-      config: deps.readPlatformConfig().kit_diaria,
+        config: deps.readPlatformConfig().kit_diaria,
+      newsletterBackend: deps.readPlatformConfig().publishing?.newsletter?.backend,
       existing: deps.readState(editionDir),
       defaultAudienceTag: KIT_NATIVE_SIGNUP_MARKER,
     });
