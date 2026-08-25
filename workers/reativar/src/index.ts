@@ -590,7 +590,13 @@ export async function activateSubscriptionKit(
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
     if (!getRes.ok) {
-      console.error(JSON.stringify({ event: "reativar_kit_non_2xx", step: "get", status: getRes.status }));
+      // #6129: corpo da resposta (truncado) — só o status não distingue rede
+      // caída de config errada (ex: KIT_API_KEY inválida, custom field com
+      // nome errado) nos logs.
+      const getBodyText = await getRes.text().catch(() => "<unreadable>");
+      console.error(
+        JSON.stringify({ event: "reativar_kit_non_2xx", step: "get", status: getRes.status, body: getBodyText.slice(0, 500) }),
+      );
       return { ok: false, status: getRes.status, reason: "beehiiv_error" };
     }
     const body = (await getRes.json().catch(() => null)) as { subscribers?: { state?: string }[] } | null;
@@ -653,7 +659,12 @@ export async function activateSubscriptionKit(
     return { ok: false, status: 502, reason: "beehiiv_error" };
   }
   if (!res.ok) {
-    console.error(JSON.stringify({ event: "reativar_kit_non_2xx", step: "create", status: res.status }));
+    // #6129: mesmo racional do branch "get" acima — corpo (truncado) em vez
+    // de só o status.
+    const bodyText = await res.text().catch(() => "<unreadable>");
+    console.error(
+      JSON.stringify({ event: "reativar_kit_non_2xx", step: "create", status: res.status, body: bodyText.slice(0, 500) }),
+    );
     return { ok: false, status: res.status, reason: "beehiiv_error" };
   }
 

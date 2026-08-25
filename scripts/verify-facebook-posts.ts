@@ -18,6 +18,12 @@
  * Output: atualiza in-place o `06-social-published.json` da edição.
  */
 
+// #6166 — mesmo defeito do #6152 (verify-twitter-posts.ts): sem isto, as env
+// vars de credencial só existem quando o caller (shell, systemd) já carregou
+// o `.env` antes do spawn. Fora do systemd (sessão interativa do editor) elas
+// ficam invisíveis e a reconciliação é pulada em silêncio.
+import "dotenv/config";
+
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
