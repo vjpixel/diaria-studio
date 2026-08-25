@@ -292,8 +292,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // carrossel semanal; #5330 renomeou "weekly" pra "weekly-clicked" /
   // "weekly-highlights", mas "weekly" cru segue aceito — entries antigas no
   // KV/DLQ e qualquer chamador que ainda não migrou não devem quebrar).
-  if (!/^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, d3, weekly[-mode], or especial[-mode]" }, 400);
+  // `eia-{AAMMDD}`: post avulso do quiz "É IA?" (`scripts/publish-eia-social.ts`).
+  // Sufixo numérico e não `[a-z]` como os outros porque o discriminador aqui é
+  // a EDIÇÃO, não um modo — dois posts do quiz só diferem pela data.
+  if (!/^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?|eia-\d{6})$/.test(body.destaque as string)) {
+    return json({ error: "destaque must be d1, d2, d3, weekly[-mode], especial[-mode], or eia-{AAMMDD}" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados
