@@ -88,3 +88,13 @@ run_worker_first = true
 [[kv_namespaces]]
 binding = "CURSOS_SUBSCRIBERS"
 id = "a3415c3bf4b840d6975dbac290b99153"
+
+[vars]
+# #6048 (item 2/5 do checklist de migração Kit) — nome do custom field Kit
+# que recebe o marcador "entrou pelo funil" (KIT_NATIVE_SIGNUP_MARKER, ver
+# scripts/lib/shared/kit-signup-origin.ts). VAR, não secret — nome de custom
+# field não é sensível (mesmo tratamento dos demais KIT_*_FIELD, ver
+# workers/poll/SECRETS.md). Custom field já existe na conta Kit de produção
+# (id 1348066). Inerte até SUBSCRIBE_BACKEND virar "kit" neste worker
+# (ainda não virou).
+KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
