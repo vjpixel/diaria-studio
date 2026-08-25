@@ -70,6 +70,19 @@ export interface FlatCardText {
   title: string;
   /** Rodapé — texto livre (ex: "diar.ia.br" na capa, "Link na bio" no CTA). */
   footer: string;
+  /**
+   * Handle do Instagram (#6086 item a) — opcional, renderizado ao lado do
+   * wordmark (mesma linha do `footer`, sem crescer o card). `undefined`
+   * (default de todo chamador existente, inclusive capa/CTA do semanal em
+   * `fill`) não renderiza nada — comportamento idêntico ao pré-#6086.
+   */
+  handle?: string;
+  /**
+   * Micro-CTA fixo no canto inferior direito (#6086 item b) — opcional,
+   * mesma linha do rodapé (à direita, `text-anchor="end"`), também sem
+   * consumir espaço vertical novo. `undefined` = nada renderizado.
+   */
+  microCta?: string;
 }
 
 /**
@@ -195,13 +208,30 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
     )
     .join("\n  ");
 
+  // Handle (#6086 item a) — mesma linha do wordmark, tspan menor em vez de
+  // linha própria: mantém o rodapé com UMA altura só, então TITLE_BOTTOM não
+  // precisa mudar e o teto de linhas do corpo (#6078) não é afetado.
+  const handleMarkup = text.handle
+    ? `<tspan font-family="${FONT_SANS}" font-size="22" fill="${COLORS.ink}"> · ${esc(text.handle)}</tspan>`
+    : "";
+
+  // Micro-CTA (#6086 item b) — canto inferior DIREITO, mesma linha de base
+  // do rodapé (`footerY`), `text-anchor="end"` ancorado em `W - PAD` (a
+  // mesma margem direita do resto do card). Mesmo motivo do handle: cabe na
+  // largura sobrando da linha (rodapé raramente ocupa o card inteiro), sem
+  // reservar altura nova.
+  const microCtaMarkup = text.microCta
+    ? `<text x="${W - PAD}" y="${footerY}" text-anchor="end" font-family="${FONT_SANS}" font-size="24" font-weight="600" fill="${COLORS.brand}">${esc(text.microCta)}</text>`
+    : "";
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <rect x="0" y="0" width="${W}" height="${H}" fill="${COLORS.paper}"/>
   <rect x="${PAD}" y="${kickerY - 38}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>
   <text x="${PAD}" y="${kickerY}" font-family="${FONT_SANS}" font-size="30" font-weight="700" letter-spacing="2" fill="${COLORS.brand}">${esc(text.kicker.toUpperCase())}</text>
   ${titleLines}
-  <text x="${PAD}" y="${footerY}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${footerMarkup(text.footer)}</text>
+  <text x="${PAD}" y="${footerY}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${footerMarkup(text.footer)}${handleMarkup}</text>
+  ${microCtaMarkup}
 </svg>`;
 }
 

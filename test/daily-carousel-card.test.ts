@@ -22,6 +22,8 @@ import {
   findOverflowingCarouselSlides,
   DAILY_CAROUSEL_LAYOUT,
   DAILY_CAROUSEL_BODY_SIZE,
+  DAILY_CAROUSEL_HANDLE,
+  DAILY_CAROUSEL_MICRO_CTA,
   hashCarouselSlideTexts,
 } from "../scripts/lib/daily-carousel-card.ts";
 import { measureFlatCardBody, buildFlatCardSvg } from "../scripts/lib/weekly-flat-card.ts";
@@ -78,6 +80,17 @@ describe("buildCarouselSlideTexts (pure)", () => {
     assert.equal(texts.p3.kicker, "03 / 03");
     assert.equal(texts.cta.title, INSTAGRAM_CTA_LINE);
     for (const slot of CAROUSEL_SLIDE_SLOTS) assert.equal(texts[slot].footer, "diar.ia.br");
+  });
+
+  it("#6086 item a/b: p1/p2/p3 carregam handle + micro-CTA; o CTA final NÃO (seria redundante lá)", () => {
+    const genericText = "Um.\n\nDois.\n\nTrês.\n\n#InteligenciaArtificial";
+    const texts = buildCarouselSlideTexts(genericText);
+    for (const slot of ["p1", "p2", "p3"] as const) {
+      assert.equal(texts[slot].handle, DAILY_CAROUSEL_HANDLE);
+      assert.equal(texts[slot].microCta, DAILY_CAROUSEL_MICRO_CTA);
+    }
+    assert.equal(texts.cta.handle, undefined);
+    assert.equal(texts.cta.microCta, undefined);
   });
 
   it("remove o bloco de hashtags antes de dividir em parágrafos (splitBodyAndTags)", () => {
@@ -255,5 +268,75 @@ describe("buildFlatCardSvg com layout fixed ancora o texto no TOPO (#6078)", () 
   it("fixed usa o tamanho configurado no SVG, não um calculado", () => {
     const svg = buildFlatCardSvg({ kicker: "x", title: "Curto.", footer: "y" }, DAILY_CAROUSEL_LAYOUT);
     assert.match(svg, new RegExp(`font-size="${DAILY_CAROUSEL_BODY_SIZE}"`));
+  });
+});
+
+/**
+ * (#6086) Handle + micro-CTA no SVG rasterizado: presentes nos 3 slides de
+ * parágrafo, ausentes no slide de CTA (redundante lá) e ausentes por default
+ * em qualquer `FlatCardText` que não os declare (capa/CTA do carrossel
+ * SEMANAL, layout `fill` — nunca tocado por este item da issue).
+ */
+describe("handle + micro-CTA no SVG do carrossel diário (#6086 itens a/b)", () => {
+  it("slide de parágrafo (p1) renderiza handle e micro-CTA no SVG", () => {
+    const genericText = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.";
+    const texts = buildCarouselSlideTexts(genericText);
+    const svg = buildFlatCardSvg(texts.p1, DAILY_CAROUSEL_LAYOUT);
+    assert.match(svg, /· @diar\.ia\.br/, "handle deveria aparecer no rodapé, junto do wordmark");
+    assert.match(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
+  });
+
+  it("slide de CTA NÃO renderiza handle nem micro-CTA (redundante — o slide já é o convite)", () => {
+    const genericText = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.";
+    const texts = buildCarouselSlideTexts(genericText);
+    // #6086: nada de FlatCardText.handle/microCta setado pro CTA — confirma
+    // a fonte (buildCarouselSlideTexts), não só o SVG (o corpo do CTA, via
+    // INSTAGRAM_CTA_LINE, já menciona "@diar.ia.br" em texto corrido — não
+    // confundir com o handle do RODAPÉ, que é o que este item cobre).
+    assert.equal(texts.cta.handle, undefined);
+    assert.equal(texts.cta.microCta, undefined);
+    const svg = buildFlatCardSvg(texts.cta, DAILY_CAROUSEL_LAYOUT);
+    assert.doesNotMatch(svg, /· @diar\.ia\.br/, "sem tspan de handle no rodapé");
+    assert.doesNotMatch(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
+  });
+
+  it("FlatCardText sem handle/microCta (ex: capa/CTA do carrossel SEMANAL) não renderiza nada a mais — default inalterado", () => {
+    const svg = buildFlatCardSvg({ kicker: "Resumo semanal", title: "Título qualquer", footer: "diar.ia.br" });
+    assert.doesNotMatch(svg, /@diar\.ia\.br/, "handle nunca aparece sem opt-in explícito no FlatCardText");
+    assert.doesNotMatch(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
+  });
+});
+
+/**
+ * (#6086) Geometria: handle/microCta foram desenhados pra caber na MESMA
+ * linha do rodapé existente (tspan + `text-anchor="end"`), sem reservar
+ * altura nova — de propósito, pra não mexer no teto de 12 linhas que o #6078
+ * calibrou (62px -> 7,3% de reescrita, ver `DAILY_CAROUSEL_BODY_SIZE`).
+ * Trava aqui o teto EFETIVO pós-#6086: uma mudança futura de rodapé que volte
+ * a crescer verticalmente derruba este teste antes de derrubar a taxa de
+ * reescrita em produção.
+ */
+describe("teto de linhas do corpo do carrossel diário — inalterado pelo #6086 (geometria)", () => {
+  it("availableHeight/teto de linhas do layout fixo do diário continua o mesmo do #6078 (910px / 12 linhas)", () => {
+    const semFooterExtra = measureFlatCardBody("Texto qualquer.", DAILY_CAROUSEL_LAYOUT);
+    assert.equal(semFooterExtra.availableHeight, 910, "#6086 não deveria reduzir o espaço vertical do corpo");
+
+    const lineGap = Math.round(DAILY_CAROUSEL_BODY_SIZE * 1.18);
+    const maxLinesQueCabem = Math.floor(semFooterExtra.availableHeight / lineGap);
+    assert.equal(maxLinesQueCabem, 12, "teto de 12 linhas (#6078) preservado após handle + micro-CTA (#6086)");
+  });
+
+  it("um parágrafo real que cabia antes do #6086 continua cabendo (handle/micro-CTA não roubam espaço do corpo)", () => {
+    // ~300 chars, teto informado ao social-writer (DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET).
+    const paragrafo =
+      "Um parágrafo de tamanho representativo do que o social-writer produz normalmente, " +
+      "com várias frases encadeadas pra chegar perto do teto de caracteres orientado no prompt, " +
+      "sem no entanto estourar o limite real medido pela função de overflow.";
+    const texts = buildCarouselSlideTexts(`${paragrafo}\n\nOutro.\n\nTerceiro.`);
+    const overflowing = findOverflowingCarouselSlides(`${paragrafo}\n\nOutro.\n\nTerceiro.`);
+    assert.deepEqual(overflowing, [], "parágrafo dentro do teto histórico não deveria estourar após #6086");
+    // Confere também que o slide de fato carrega handle+microCta (não é um
+    // falso-negativo por eles terem sido omitidos do texto testado).
+    assert.equal(texts.p1.handle, DAILY_CAROUSEL_HANDLE);
   });
 });

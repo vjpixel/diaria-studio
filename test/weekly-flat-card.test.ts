@@ -104,6 +104,22 @@ describe("buildFlatCardSvg (pure)", () => {
     assert.ok(footerLine);
     assert.doesNotMatch(footerLine ?? "", /tspan/);
   });
+
+  it("#6086: FlatCardText com handle renderiza handle na MESMA linha do rodapé (tspan, sem <text> extra)", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", handle: "@diar.ia.br" });
+    assert.match(svg, /· @diar\.ia\.br/);
+  });
+
+  it("#6086: FlatCardText com microCta renderiza um <text> à direita (text-anchor=end), ancorado na linha do rodapé", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", microCta: "Segue pra mais" });
+    assert.match(svg, /<text x="1008" y="1288" text-anchor="end"[^>]*>Segue pra mais<\/text>/);
+  });
+
+  it("#6086: sem handle/microCta (capa/CTA do carrossel SEMANAL, layout fill) — nada extra é renderizado, default intocado", () => {
+    const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Título qualquer", footer: "diar.ia.br" });
+    assert.doesNotMatch(svg, /text-anchor="end"/);
+    assert.doesNotMatch(svg, /tspan[^>]*> · /);
+  });
 });
 
 describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
