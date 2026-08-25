@@ -214,6 +214,28 @@ export function buildTestSendFilter(tagId: number): KitSubscriberFilter {
 /**
  * Resolve o id de uma tag pelo NOME, sem criá-la se faltar (#6126).
  *
+ * ## ⚠️ A listagem do Kit tem ATRASO DE PROPAGAÇÃO (medido: ~1-2 min)
+ *
+ * Achado ao vivo em 25/08/2026: uma tag recém-criada (`POST /v4/tags` → 201)
+ * NÃO aparece imediatamente em `GET /v4/tags`. Medido: invisível logo após a
+ * criação, presente ~90s depois. O mesmo vale pra rename (`PUT`) — a listagem
+ * mostra o nome antigo por um tempo.
+ *
+ * Consequência prática pra quem chama isto: logo depois de criar/renomear
+ * uma tag de audiência, `findTagIdByName` pode devolver `null` mesmo com a
+ * tag existindo. O caller então PULA o envio — falha na direção segura, que é
+ * o desenho correto, mas produz um estado confuso: "canal ligado, tag criada,
+ * e mesmo assim inativo".
+ *
+ * **Se isso acontecer: esperar e re-rodar, não debugar a tag.** Confirmar
+ * existência por `GET /v4/subscribers/{id}/tags` (reflete na hora) em vez da
+ * listagem.
+ *
+ * Nota relacionada: `DELETE /v4/tags/{id}` responde **204 sem remover** e
+ * `GET /v4/tags/{id}` responde **404 pra qualquer id** (a rota não existe na
+ * v4) — nenhum dos dois serve como verificação. A listagem é a única fonte,
+ * respeitado o atraso acima.
+ *
  * Difere de `resolveTestSendTagId` de propósito: aquele CRIA a tag de teste
  * quando ausente, porque uma tag de teste vazia é inofensiva. Aqui não — a tag
  * de audiência (`kit-nativo`) ausente significa que o marcador de cadastro

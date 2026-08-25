@@ -212,7 +212,7 @@
   "kit_diaria": {
     "enabled": true,
     "enabled_note": "#6048 passo 1 (25/08/2026) — LIGADO com audiência mínima. `audience_tag` aponta pra `diaria-test-email` (1 destinatário: o editor), NÃO pra `kit-nativo`. Valida o dispatch numa edição real com blast radius de UM e-mail antes de qualquer cadastro de gente de verdade. Trocar pra `kit-nativo` é o passo 2, e só depois de #6048 virar SUBSCRIBE_BACKEND. NÃO confundir com publishing.newsletter.backend, que é o ramo EXCLUSIVO do switchover final (#6114).",
-    "audience_tag": "diaria-test-email",
-    "audience_tag_note": "#6048 passo 1 — rollout escalonado: `diaria-test-email` (1) → segmento curado → `kit-nativo` (cadastros nativos). CUIDADO: filtro vazio/não resolvido no Kit significa audiência INTEIRA, não vazia; por isso `findTagIdByName` recusa criar broadcast com tag ausente (#6126)."
+    "audience_tag": "kit-piloto-patrono",
+    "audience_tag_note": "#6048 passo 1b (25/08/2026) — PILOTO com os 4 Patronos, que o editor avisou e que ACEITARAM receber a edição duplicada (Beehiiv + Kit). Isso destrava a fase 2 do rollout escalonado da #6126 sem o custo social que a fechou: olhos humanos na renderização real ANTES de existir qualquer cadastro nativo. Tag `kit-piloto-patrono` aplicada aos 4 via API (apoio_nivel=patrono). Próximo: trocar pra `kit-nativo` quando os funis virarem (#6161). CUIDADO: filtro vazio/não resolvido no Kit significa audiência INTEIRA, não vazia (#6126)."
   }
 }
