@@ -135,6 +135,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  *     9=Threads auto, 10=Threads manual
  *     11=Twitter/X auto, 12=Twitter/X manual
  *     13=Brevo diária auto, 14=Brevo diária manual
+ *     15=Kit auto, 16=Kit manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -176,7 +177,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 14)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 16)) {
     return null;
   }
 
@@ -185,6 +186,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
   // #2479: Threads = 9 (auto) / 10 (manual).
   // #3994: Twitter/X = 11 (auto) / 12 (manual).
   // #5772: Brevo diária = 13 (auto) / 14 (manual).
+  // #6179: Kit = 15 (auto) / 16 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",
@@ -211,6 +213,8 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 12) out.twitter = "manual";
     else if (n === 13) out.brevo = "auto";
     else if (n === 14) out.brevo = "manual";
+    else if (n === 15) out.kit = "auto";
+    else if (n === 16) out.kit = "manual";
   }
   return out;
 }
@@ -229,7 +233,8 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
     consent.instagram === "auto" ||
     consent.threads === "auto" ||
     consent.twitter === "auto" ||
-    consent.brevo === "auto"
+    consent.brevo === "auto" ||
+    consent.kit === "auto"
   );
 }
 
@@ -245,6 +250,7 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
     consent.instagram === "skipped" &&
     consent.threads === "skipped" &&
     consent.twitter === "skipped" &&
-    consent.brevo === "skipped"
+    consent.brevo === "skipped" &&
+    consent.kit === "skipped"
   );
 }
