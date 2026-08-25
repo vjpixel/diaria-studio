@@ -433,6 +433,15 @@ async function handlePrereqFailure(
   // Distinguir aqui não muda a DECISÃO (as duas ainda suspendem, fail-closed
   // — ver docstring do arquivo), só a mensagem/reportId, pra quem lê o
   // relatório (ou audita depois) saber qual dos dois motivou a suspensão.
+  const overrideState = readClariceEnvioOverrideState(deps.rootDir, now, { onInvalid: (msg: string) => report.note(msg) });
+  // #6134 — escalada quando um override do editor está vigente sobre um freio HOLD.
+  if (lastBrake?.brake === "hold" && overrideState !== null && overrideState.brake === "hold" && new Date(overrideState.until).getTime() > now.getTime()) {
+    report.note(`⚠️  freio da noite era HOLD e há OVERRIDE DO EDITOR vigente (até ${overrideState.until}, motivo: ${overrideState.reason}, #${overrideState.issueRef}) — NÃO cancelando por precaução; escalando.`);
+    const reportId = `envio-${aammdd}-guard-prereq-fallback-override-vigente`;
+    writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ pré-requisito falhou, OVERRIDE vigente impede cancelamento — ESCALADO`, report.build());
+    return { code: 1, reportId, reportMarkdown: report.build() };
+  }
+
   const suspensionCause = lastBrake === null ? "ausente" : "nao-ok";
   report.note(
     lastBrake === null
