@@ -686,7 +686,11 @@ export function syncCode(
     const result = syncCodeLocked(spawn);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
-    return { ...result, ...measureSyncState(spawn) };
+    // Anotação explícita `GitSyncResult`: se um campo futuro colidir entre
+    // `result` e a medição, o compilador acusa em vez do spread vencer
+    // silenciosamente (review independente PR #6094).
+    const out: GitSyncResult = { ...result, ...measureSyncState(spawn) };
+    return out;
   } finally {
     lock.release();
   }
