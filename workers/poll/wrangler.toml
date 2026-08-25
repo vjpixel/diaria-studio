@@ -97,6 +97,14 @@ new_sqlite_classes = ["ScoreCounter"]
 # `arquivo`, mesmo host) chama POST /jogar/subscribe cross-origin.
 ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.diar.ia.br,https://arquivo.diar.ia.br"
 
+# #6048 (item 2/5 do checklist de migração Kit) — nome do custom field Kit
+# que recebe o marcador "entrou pelo funil" (KIT_NATIVE_SIGNUP_MARKER, ver
+# scripts/lib/shared/kit-signup-origin.ts). VAR, não secret — nome de custom
+# field não é sensível (mesmo tratamento dos demais KIT_*_FIELD, ver
+# SECRETS.md). Custom field já existe na conta Kit de produção (id 1348066).
+# Inerte até SUBSCRIBE_BACKEND virar "kit" neste worker (ainda não virou).
+KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
+
 # #3521: allowlist de origens autorizadas a embutir GET /embed dentro de um
 # <iframe> (CSP frame-ancestors, ver workers/poll/src/embed.ts). VAZIO =
 # ninguém autorizado (fail-closed) — configurar aqui quando o 1º parceiro
