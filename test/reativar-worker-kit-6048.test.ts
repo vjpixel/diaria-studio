@@ -9,7 +9,7 @@
  * (#633).
  */
 
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import {
   activateSubscriptionKit,
@@ -59,6 +59,36 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
     assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
     assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+  });
+
+  it("já ativo + KIT_ORIGEM_CADASTRO_FIELD configurado → marcador NÃO é escrito (early-return pula o POST), mas emite log estruturado (achado do fleet review #6127)", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [{ id: 1, state: "active" }] }),
+    });
+    const warnMock = mock.method(console, "warn", () => {});
+    try {
+      const env = kitEnv({ KIT_ORIGEM_CADASTRO_FIELD: "origem_cadastro" });
+      const r = await activateSubscriptionKit(env, "a@b.com", fetchImpl);
+      assert.deepEqual(r, { ok: true, status: 200, beehiivStatus: "active" });
+      assert.equal(warnMock.mock.callCount(), 1);
+      const logged = JSON.parse(String(warnMock.mock.calls[0].arguments[0]));
+      assert.equal(logged.event, "reativar_kit_marker_not_backfilled");
+    } finally {
+      warnMock.mock.restore();
+    }
+  });
+
+  it("já ativo SEM KIT_ORIGEM_CADASTRO_FIELD configurado → não emite o log (ruído evitado quando a var nem existe)", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [{ id: 1, state: "active" }] }),
+    });
+    const warnMock = mock.method(console, "warn", () => {});
+    try {
+      await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
+      assert.equal(warnMock.mock.callCount(), 0);
+    } finally {
+      warnMock.mock.restore();
+    }
   });
 
   it("não encontrado (GET: subscribers:[], nunca 404) → segue pro POST de upsert direto, SEM DELETE (achado ao vivo #6048: Kit é idempotente)", async () => {
@@ -118,6 +148,18 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
       utm_campaign: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
       referring_site: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite,
     });
+  });
+
+  it("marcador de origem só vai em fields quando KIT_ORIGEM_CADASTRO_FIELD está configurado (#6048)", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [] }),
+      post: () => jsonRes(201, { subscriber: { state: "active" } }),
+    });
+    const env = kitEnv({ KIT_ORIGEM_CADASTRO_FIELD: "origem_cadastro" });
+    await activateSubscriptionKit(env, "a@b.com", fetchImpl);
+    const post = calls.find((c) => c.method === "POST");
+    const body = post!.body as Record<string, unknown>;
+    assert.deepEqual(body.fields, { origem_cadastro: "kit-nativo" });
   });
 
   it("guard de descadastro nativo pendente (#4538 item B) bloqueia mesmo no caminho Kit — mesmo guard backend-agnóstico (Brevo)", async () => {

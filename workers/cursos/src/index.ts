@@ -99,6 +99,14 @@ export interface Env {
   KIT_UTM_MEDIUM_FIELD?: string;
   KIT_UTM_CAMPAIGN_FIELD?: string;
   KIT_REFERRING_SITE_FIELD?: string;
+  /** #6048 — nome do custom field Kit que recebe o marcador de "entrou pelo
+   *  funil" (`KIT_NATIVE_SIGNUP_MARKER`, scripts/lib/shared/kit-signup-origin.ts).
+   *  VAR, não secret (mesmo tratamento dos demais `KIT_*_FIELD` acima —
+   *  nome de custom field não é sensível, ver SECRETS.md do poll). Já
+   *  criado em produção (`origem_cadastro`, 25/08/2026) — falta só setar a
+   *  var pra ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD`
+   *  acima. */
+  KIT_ORIGEM_CADASTRO_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de

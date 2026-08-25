@@ -135,6 +135,15 @@ describe("subscribeToKit (#6048)", () => {
     });
   });
 
+  it("marcador de origem só vai em fields quando KIT_ORIGEM_CADASTRO_FIELD está configurado (#6048)", async () => {
+    const fetchMock = makeFetchMock(201);
+    const env = kitEnv();
+    env.KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro";
+    await subscribeToKit(env, { name: "", email: "a@b.com" }, fetchMock);
+    const body = JSON.parse(String(fetchMock.calls[0].init?.body));
+    assert.deepEqual(body.fields, { origem_cadastro: "kit-nativo" });
+  });
+
   it("Kit responde erro → beehiiv_error com o status (SubscribeResult compartilhado, sem reason dedicado)", async () => {
     const fetchMock = makeFetchMock(422);
     const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);

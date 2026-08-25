@@ -94,6 +94,7 @@ import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/ut
 import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
+import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -167,6 +168,14 @@ export interface Env {
   KIT_UTM_MEDIUM_FIELD?: string;
   KIT_UTM_CAMPAIGN_FIELD?: string;
   KIT_REFERRING_SITE_FIELD?: string;
+  /** #6048 — nome do custom field Kit que recebe o marcador de "entrou pelo
+   *  funil" (`KIT_NATIVE_SIGNUP_MARKER`, scripts/lib/shared/kit-signup-origin.ts).
+   *  VAR, não secret (mesmo tratamento dos demais `KIT_*_FIELD` acima —
+   *  nome de custom field não é sensível, ver SECRETS.md do poll). Já
+   *  criado em produção (`origem_cadastro`, 25/08/2026) — falta só setar a
+   *  var pra ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD`
+   *  acima. */
+  KIT_ORIGEM_CADASTRO_FIELD?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -542,6 +551,23 @@ export async function activateSubscription(
  * reintroduz a mesma sobrescrita que o #5231 resolveu do lado Beehiiv, sem
  * mitigação equivalente aqui. Fica pra quando/se o editor decidir ligar
  * atribuição de reativação via Kit (trabalho futuro, sem issue própria).
+ *
+ * ## Marcador de origem de cadastro (#6048) — LIMITAÇÃO CONHECIDA no early-return
+ *
+ * `applyKitSignupOriginField` (grava `KIT_NATIVE_SIGNUP_MARKER` em
+ * `KIT_ORIGEM_CADASTRO_FIELD`, ver `scripts/lib/shared/kit-signup-origin.ts`)
+ * só é alcançado no upsert (passo 2 abaixo) — o early-return de idempotência
+ * (passo 1, `existingState === "active"`) sai ANTES desse bloco. Um
+ * assinante que já está `active` no Kit no momento do clique de reativação
+ * — o caso mais provável sendo alguém copiado pela sync Beehiiv→Kit
+ * (#6091/#6093) — nunca recebe o marcador por essa via, mesmo clicando de
+ * verdade no link. Achado do fleet review pré-merge do #6127 (25/08/2026):
+ * silencioso e sem teste até então; agora logado (`reativar_kit_marker_not_backfilled`)
+ * quando `KIT_ORIGEM_CADASTRO_FIELD` está configurado, pra ficar observável
+ * em vez de indistinguível de "marcador nunca precisou". Backfillar via
+ * PATCH nesse caminho é possível mas muda o early-return de no-op puro pra
+ * escrita condicional — decisão de produto que fica pro editor, não
+ * implementada aqui.
  */
 export async function activateSubscriptionKit(
   env: Env,
@@ -570,6 +596,15 @@ export async function activateSubscriptionKit(
     const body = (await getRes.json().catch(() => null)) as { subscribers?: { state?: string }[] } | null;
     const existingState = body?.subscribers?.[0]?.state;
     if (existingState === "active") {
+      // #6048/#6127: este early-return pula o bloco de `fields` abaixo —
+      // um assinante que chega aqui JÁ ativo no Kit nunca recebe o
+      // marcador `origem_cadastro` (ver "Marcador de origem..." na
+      // docstring acima). Log estruturado só quando o marcador estaria
+      // configurado, pra não gerar ruído em ambientes onde a var nem
+      // existe ainda.
+      if (env.KIT_ORIGEM_CADASTRO_FIELD) {
+        console.warn(JSON.stringify({ event: "reativar_kit_marker_not_backfilled", reason: "already_active" }));
+      }
       return { ok: true, status: 200, beehiivStatus: "active" };
     }
   } catch (e) {
@@ -594,6 +629,13 @@ export async function activateSubscriptionKit(
   if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium;
   if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign;
   if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite;
+  // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
+  // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
+  // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
+  // NÃO cobre o early-return acima (assinante já active) — ver docstring
+  // desta função pra essa limitação conhecida (achado do fleet review,
+  // #6127) e o log estruturado que sinaliza quando isso acontece.
+  applyKitSignupOriginField(fields, env);
 
   const postBody: Record<string, unknown> = { email_address: email, state: "active" };
   if (Object.keys(fields).length > 0) postBody.fields = fields;
