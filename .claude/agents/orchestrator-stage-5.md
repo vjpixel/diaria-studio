@@ -177,6 +177,8 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b
 
 **ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** `{edition_url}` so pode ser derivada do slug do draft depois que o draft Beehiiv for criado, e o passo 5c-2 (abaixo) reescreve `03-social.md` inteiro substituindo `{edition_url}` — inclusive dentro do `## post_pixel`. **#3646:** o dispatch de Stage 5 (`publish-linkedin.ts`/`publish-facebook.ts`) em si nao consome mais `{edition_url}` pra nada — o main post do LinkedIn nao carrega URL (#595) e o `comment_diaria` que antes precisava dela foi aposentado (#3627). O consumidor real remanescente de `05-edition-url.txt` e o `## post_pixel`, resolvido no Stage 6 por `resolve-post-pixel.ts` (nunca passa pelo dispatch de `publish-linkedin.ts`, postagem 100% manual, #1690) — se a ordem for violada e `05-edition-url.txt` nao existir ainda, e o `post_pixel` do Stage 6 que sai com o fallback de URL bare, nao os posts do LinkedIn/Facebook. Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: draft Beehiiv → resolve URL → dispatch social.
 
+**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"beehiiv"` se ausente). Se `"kit"` → pular **todo** o Passo 5c-1 abaixo (Beehiiv) e seguir o **Passo 5c-1-kit** logo em seguida; senão (ausente ou `"beehiiv"`) → seguir o Passo 5c-1 normalmente e pular o 5c-1-kit. Em qualquer um dos dois casos, o Passo 5c-2 (guard anti-placeholder) roda igual depois — ele só depende de `_internal/05-edition-url.txt` existir, não de quem o escreveu.
+
 **Passo 5c-1: Newsletter Beehiiv.**
 
 **Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Resumo operacional: desde #4196 o fetch roda com timeout explícito (`AbortController`, 25s) e qualquer falha — HTTP não-2xx, timeout/abort, exceção de rede — aciona o fallback chunked base64 automaticamente via `classifyInsertResult`, sem seleção manual; o corpo inserido também é verificado quanto a tamanho plausível pós-paste (`verifyBodySizePlausible`) antes de declarar sucesso. Editor finaliza metadata na UI. Ver `context/publishers/beehiiv-playbook.md` para instruções detalhadas. Output: `_internal/05-published.json`.
@@ -192,6 +194,32 @@ npx tsx scripts/resolve-edition-url.ts \
 ```
 
 **Tab isolation no Chrome**: publish-newsletter e o unico agent Chrome em Etapa 5 — abre tab Beehiiv propria via `tabs_create_mcp`. LinkedIn e Facebook sao scripts shell sem browser.
+
+**Passo 5c-1-kit: Newsletter Kit (#464 — só quando `publishing.newsletter.backend === "kit"`).**
+
+Sem browser automation — `scripts/publish-newsletter-kit.ts` cria/atualiza o
+draft via Kit broadcasts API e dispara o test-send num único comando:
+
+```bash
+npx tsx scripts/publish-newsletter-kit.ts {EDITION_DIR}/ --send-test
+```
+
+O script já grava `_internal/newsletter-kit-published.json` (idempotente —
+reusa o mesmo `broadcast_id` numa 2ª invocação) e `_internal/05-edition-url.txt`
+(a partir do `public_url` do broadcast — mesmo artefato que o playbook
+Beehiiv produz, consumido pelo dispatch social no Passo 5c-3 e pelo
+`post_pixel` do Stage 6). Exit codes: `1` uso/erro genérico; `2` backend !=
+`"kit"` (não deveria acontecer aqui, já que este passo só roda quando o
+branch acima confirmou `"kit"` — se acontecer, é sinal de leitura
+divergente da config entre este passo e o branch, investigar); `7`
+assunto vazio (`content.title` ausente em `02-reviewed.md`).
+
+Se o script sair com código != 0, tratar como falha do dispatch newsletter
+(mesmo peso que uma falha do playbook Beehiiv) — não prosseguir pro
+Schedule (Stage 6) sem investigar; **não** existe modo "fix" automático
+pra este caminho (ver nota no Passo 5f abaixo) — qualquer problema de
+conteúdo precisa ser corrigido em `02-reviewed.md` e o script re-rodado
+(idempotente, `updateBroadcast` no mesmo `broadcast_id`).
 
 **Passo 5c-2: Guard anti-placeholder (#2454, nao-fatal desde #3277).**
 
@@ -277,7 +305,9 @@ Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
 
 ### 5f. Loop de review do email de teste (apos newsletter retornar)
 
-> NOTA: este loop **nao bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` ja completaram em 5c. O loop so toca o draft do Beehiiv (newsletter).
+> NOTA: este loop **nao bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` ja completaram em 5c. O loop so toca o draft do Beehiiv/Kit (newsletter).
+
+**Branch Kit (#464): passar `platform: "kit"` pro `review-test-email` quando `publishing.newsletter.backend === "kit"`** (Processo Kit da seção "Roteamento por plataforma" do agente — mesma checklist do Beehiiv, delta documentado lá). **Diferença de tratamento no passo 5 abaixo:** `publish-newsletter-kit.ts` não tem modo `fix` (não há automação de browser pra reaplicar issues via DOM — o conteúdo vem inteiramente de `02-reviewed.md`). Se `kept` não estiver vazio na tentativa 1, **não disparar re-fix automático** — logar warn `"review-test-email (kit) encontrou {N} problemas — sem fix automático neste backend (#464), seguindo pro Schedule"` e sair do loop direto com `review_status: "issues_unfixable"` (mesma semântica do caminho Beehiiv, só que sem a tentativa 2). O filtro de falso-positivos (4.5) roda igual. **`_internal/newsletter-kit-published.json` não tem os campos `review_completed`/`review_status`/`review_attempts`/`review_final_issues`** (schema `KitNewsletterPublished` não os inclui) — registrar o resultado da revisão via `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level {info se ok, warn se inconclusive/issues_unfixable} --message "review-test-email (kit): {review_status}" --details '{"attempts":N,"issues":[...]}'` em vez disso, e mencionar o mesmo resultado no resumo textual passado ao gate humano do Stage 6 (§6b) — o gate lê o resumo que o Stage 5 produz, não precisa de um campo estruturado num arquivo pra isso.
 
 - **Verificacao e correcao — NAO-BLOQUEANTE (#3839, decisao do editor 260721):**
   > **O botao "Send test email" do Beehiiv e um controle de UI que pode falhar em disparar (nao envia nenhuma chamada de rede) independente do conteudo — nao e um problema corrigivel via retry.** Por isso este loop tenta **no maximo 1 tentativa de verificacao + 1 tentativa de fix** (nunca 10). Se o test email nao confirmar, **loga warning e segue pro Schedule** (Stage 6) em vez de travar a Etapa 5. O caminho feliz (Gmail confirma recebimento de primeira) continua identico a antes.

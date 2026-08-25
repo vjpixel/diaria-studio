@@ -294,6 +294,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
 
   const existing = readPublishedState(editionDir);
   let broadcastId: number;
+  let publicUrl: string;
   if (existing) {
     log(`draft já existe (broadcast_id=${existing.broadcast_id}) — atualizando em vez de criar um 2º.`);
     const updated = await updateBroadcast(existing.broadcast_id, {
@@ -302,6 +303,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       content: html,
     });
     broadcastId = updated.id;
+    publicUrl = updated.public_url;
   } else {
     const created = await createBroadcast({
       subject,
@@ -311,7 +313,29 @@ export async function main(rootDirOverride?: string): Promise<void> {
       subscriber_filter: buildAllSubscribersFilter(),
     });
     broadcastId = created.id;
+    publicUrl = created.public_url;
     log(`draft criado: broadcast_id=${broadcastId}`);
+  }
+
+  // #464 (Stage 5 wiring, achado ao vivo): `05-edition-url.txt` é o mesmo
+  // artefato que o playbook Beehiiv grava (ver orchestrator-stage-5.md §5c-1)
+  // — consumido por publish-linkedin/publish-facebook/publish-instagram
+  // (substituição de `{edition_url}` em `03-social.md`) e pelo `post_pixel`
+  // do Stage 6. `public_url` do broadcast Kit é o equivalente direto.
+  // `mkdirSync` porque `_internal/` pode ainda não existir nesta invocação
+  // (1ª rodada da edição, antes de `writePublishedState` criar o diretório).
+  // Fail-soft (nunca aborta o publish por causa deste artefato secundário):
+  // se `public_url` vier vazio/ausente (não deveria, pelo schema documentado
+  // em kit-client.ts, mas nunca confirmado ao vivo pra este campo
+  // especificamente), avisa e segue — o social dispatch degrada pro
+  // fallback de URL bare já existente (ver docstring do #2454 no
+  // orchestrator), não trava a Etapa 5 inteira.
+  if (publicUrl) {
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(resolve(internalDir, "05-edition-url.txt"), publicUrl);
+  } else {
+    log("warn: broadcast sem public_url — 05-edition-url.txt não gravado (dispatch social usará fallback de URL bare).");
   }
 
   // #464 (achado do review, PR #6080): grava o estado do draft REAL
