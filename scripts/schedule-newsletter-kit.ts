@@ -9,10 +9,16 @@
  * PATCH de agendamento + verificação pós-mutação via GET, nunca reporta
  * "agendado" a partir só da resposta do PATCH.
  *
- * **Igual ao `publish-newsletter-kit.ts`, ainda NÃO chamado por nenhum
- * playbook do orchestrator** (Stage 5/6 não leem `publishing.newsletter.backend`
- * ainda — ver docstring de `checkKitBackendEnabled` lá). Mesmo guard aqui:
- * recusa rodar se o backend não for `"kit"`.
+ * **Chamado pelo orchestrator desde #464/PR #6096** — `orchestrator-stage-6.md`
+ * §6d-kit dispatcha este script quando `publishing.newsletter.backend ===
+ * "kit"` (mesma flag que `publish-newsletter-kit.ts` já lia sozinho antes
+ * dessa PR, agora também lida pelo playbook — ver §"Branch por backend" em
+ * `orchestrator-stage-5.md`/`orchestrator-stage-6.md`). O guard abaixo
+ * (`checkKitBackendEnabled`, reusado de `publish-newsletter-kit.ts`)
+ * continua existindo como defesa contra invocação standalone acidental —
+ * não é mais o único motivo de o script nunca rodar, já que o default do
+ * flag segue `"beehiiv"` e o dispatch do orchestrator só chama isto quando
+ * o flag já confirmou `"kit"`.
  *
  * ## Por que um script separado do `--send-test`
  *
@@ -28,7 +34,9 @@
  *   npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601>
  *
  * Exit codes:
- *   0 — agendado e verificado (GET confirma status "scheduled" + send_at correto)
+ *   0 — agendado e verificado (GET confirma status "scheduled" + send_at
+ *       correto NESTA chamada, ou já confirmado em invocação anterior —
+ *       idempotente, ver `alreadyScheduled` no resultado)
  *   1 — uso/erro genérico (args ausentes/inválidos)
  *   2 — `publishing.newsletter.backend` != "kit" (guard contra invocação fora do switchover)
  *   3 — `_internal/newsletter-kit-published.json` ausente ou sem broadcast_id
@@ -154,8 +162,18 @@ export function productionDeps(): ScheduleNewsletterKitDeps {
   };
 }
 
-if (isMainModule(import.meta.url)) {
-  loadProjectEnv(ROOT);
+/**
+ * #464 (achado do review, PR #6096): extraído como função exportada
+ * (`rootDirOverride` testável, mesmo padrão de `publish-newsletter-kit.ts::main`)
+ * — antes vivia inline no bloco `isMainModule`, usando `process.exit()`
+ * direto (mata o processo, inviável de testar) em vez de `process.exitCode`
+ * + `return`. Fecha a assimetria de cobertura de CLI apontada pelo
+ * pr-test-analyzer: o guard de backend != "kit" agora tem teste dedicado,
+ * como o do script irmão já tinha.
+ */
+export async function main(rootDirOverride?: string): Promise<void> {
+  const rootDir = rootDirOverride ?? ROOT;
+  loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
   const editionDirArg = getStringArg(argv, "edition-dir");
   const scheduledAtArg = getStringArg(argv, "scheduled-at");
@@ -163,19 +181,33 @@ if (isMainModule(import.meta.url)) {
     process.stderr.write(
       "uso: npx tsx scripts/schedule-newsletter-kit.ts --edition-dir <dir> --scheduled-at <ISO8601>\n",
     );
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
-  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
+  const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
   const backendCheck = checkKitBackendEnabled(platformConfig);
   if (!backendCheck.ok) {
     process.stderr.write(`[schedule-newsletter-kit] ERRO: ${backendCheck.reason}\n`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const editionDir = resolve(editionDirArg);
-  scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps()).then((result) => {
-    console.log(JSON.stringify(result));
-    process.exitCode = result.ok ? 0 : result.code;
+  const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps());
+  console.log(JSON.stringify(result));
+  process.exitCode = result.ok ? 0 : result.code;
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    // #464 (achado do review, PR #6096): sem este `.catch`, uma exceção não
+    // tratada (JSON.parse malformado em readPublishedState, erro de I/O em
+    // writePublishedState) derrubava com stack trace cru e exit code
+    // não-documentado, em vez do contrato estruturado {ok:false,code} que
+    // o resto do módulo estabelece — mesmo padrão já usado em
+    // `publish-newsletter-kit.ts` (arquivo irmão desta mesma PR).
+    process.stderr.write(`[schedule-newsletter-kit] erro fatal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+    process.exitCode = 1;
   });
 }

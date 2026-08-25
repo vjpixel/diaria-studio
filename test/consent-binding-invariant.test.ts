@@ -136,6 +136,17 @@ describe("checkConsentBinding (#1575)", () => {
     }
   });
 
+  it("consent.newsletter=manual não é afetado pelo backend (regressão trivial, mas garante que o branch novo não mudou o caminho manual)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "manual", facebook: "manual" });
+      const violations = checkConsentBinding(dir, "kit");
+      assert.equal(violations.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("consent.linkedin=auto + 06-social-published.json ausente → violation", () => {
     const dir = makeEditionDir();
     try {
@@ -527,6 +538,87 @@ describe("checkConsentBinding — canais dinâmicos via platform.config (#2488)"
       // linkedin e facebook OK → sem violation
       assert.equal(violations.length, 0,
         `sem violations esperadas; got: ${JSON.stringify(violations)}`);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+// #464 (achado do review, PR #6096): antes desta PR, o check de newsletter
+// olhava só 05-published.json — consent.newsletter="auto" real (o default
+// da Etapa 5, ver CLAUDE.md "Etapa 5 default = tudo automático") virava um
+// severity=error falso-positivo pra TODA edição com
+// `publishing.newsletter.backend: "kit"`, já que publish-newsletter-kit.ts
+// nunca escreve 05-published.json (escreve newsletter-kit-published.json).
+// `backendOverride` (2º arg de checkConsentBinding, só pra teste — produção
+// sempre lê platform.config.json de verdade via loadNewsletterBackend()).
+describe("checkConsentBinding — backend Kit (#464)", () => {
+  it("consent.newsletter=auto + backend kit + newsletter-kit-published.json ausente → violation menciona o arquivo certo", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
+      const violations = checkConsentBinding(dir, "kit");
+      const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
+      assert.ok(nl, "esperava consent-binding-newsletter");
+      assert.match(nl!.message, /newsletter-kit-published\.json ausente/);
+      assert.doesNotMatch(nl!.message, /05-published\.json/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("consent.newsletter=auto + backend kit + newsletter-kit-published.json sem broadcast_id → violation", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
+      writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), JSON.stringify({ status: "draft" }));
+      const violations = checkConsentBinding(dir, "kit");
+      const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
+      assert.ok(nl, "esperava consent-binding-newsletter");
+      assert.match(nl!.message, /broadcast_id/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("consent.newsletter=auto + backend kit + newsletter-kit-published.json com broadcast_id → ok, sem violation", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
+      writeFileSync(
+        resolve(dir, "_internal", "newsletter-kit-published.json"),
+        JSON.stringify({ broadcast_id: 555, status: "draft" }),
+      );
+      const violations = checkConsentBinding(dir, "kit");
+      assert.equal(violations.filter((v) => v.rule === "consent-binding-newsletter").length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("consent.newsletter=auto + backend kit + arquivo Beehiiv presente mas Kit ausente → ainda violation (o backend ATUAL decide qual arquivo importa)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
+      // Artefato do OUTRO backend presente — não deve contar como evidência
+      // de dispatch Kit (ex: resíduo de uma rodada anterior com o backend
+      // antigo, ou config alternada no meio de um resume).
+      writePublished(dir, { status: "draft", draft_url: "https://app.beehiiv.com/posts/abc/edit" });
+      const violations = checkConsentBinding(dir, "kit");
+      const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
+      assert.ok(nl, "05-published.json presente não deve satisfazer o backend kit");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("consent.newsletter=auto + backend beehiiv explícito (via override) → mesmo comportamento do default sem override", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
+      writePublished(dir, { status: "draft", draft_url: "https://app.beehiiv.com/posts/abc/edit" });
+      const violations = checkConsentBinding(dir, "beehiiv");
+      assert.equal(violations.filter((v) => v.rule === "consent-binding-newsletter").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }

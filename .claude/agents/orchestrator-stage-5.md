@@ -223,14 +223,27 @@ conteúdo precisa ser corrigido em `02-reviewed.md` e o script re-rodado
 
 **Passo 5c-2: Guard anti-placeholder (#2454, nao-fatal desde #3277).**
 
-**SO APOS o draft Beehiiv retornar** (passo 5c-1 completo), verificar que `05-edition-url.txt` existe. Se o arquivo foi gravado pelo playbook (§6.1 do beehiiv-playbook.md), apenas rodar o guard de validacao — sem re-escrever o arquivo:
+**SO APOS o draft (Beehiiv ou Kit) retornar** (passo 5c-1/5c-1-kit completo), verificar que `05-edition-url.txt` existe. Se o arquivo foi gravado pelo playbook (§6.1 do beehiiv-playbook.md) ou pelo script Kit (§5c-1-kit), apenas rodar o guard de validacao — sem re-escrever o arquivo:
 
 ```bash
-# Se ausente — gravar agora (ver passo 5c-1 acima):
-if [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
+# Se ausente E backend "beehiiv" — gravar agora (ver passo 5c-1 acima):
+if [ "{backend}" = "beehiiv" ] && [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
   npx tsx scripts/resolve-edition-url.ts --edition-dir {EDITION_DIR}/ --title "{titulo_d1}"
 fi
+```
 
+**Backend `"kit"`, arquivo AINDA ausente aqui (#464, achado do review, PR #6096) — NUNCA cair no fallback `resolve-edition-url.ts --title` acima.** Esse fallback deriva `https://diar.ia.br/p/{seoSlug(title)}` — domínio da Beehiiv, ERRADO pro Kit (`news.diar.ia.br`, ver K1.2 do `review-test-email.md`). `public_url` ausente no broadcast Kit nunca foi confirmado ao vivo (docstring do #464 em `publish-newsletter-kit.ts`) — se acontecer de verdade, é situação rara o bastante pra merecer olhar humano, não um domínio adivinhado errado indo pros posts sociais e pro `post_pixel` em silêncio:
+
+```bash
+if [ "{backend}" = "kit" ] && [ ! -f {EDITION_DIR}/_internal/05-edition-url.txt ]; then
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
+    --message "05-edition-url.txt ausente após publish-newsletter-kit.ts (public_url do broadcast veio vazio) — dispatch social/post_pixel vão sem URL de edição nesta rodada, revisar manualmente antes do Schedule"
+fi
+```
+
+Prosseguir pro guard anti-placeholder abaixo de qualquer forma (ele já tolera `{edition_url}` sobrevivendo como placeholder — é WARNING não-bloqueante, ver comentário do script) — só o fallback Beehiiv-específico é que não deve rodar pra Kit.
+
+```bash
 # Guard anti-placeholder (write-then-validate, #3223; nao-fatal, #3277): reescreve
 # 03-social.md substituindo {edition_url} pela URL real e SO ENTAO valida — se sobrar
 # algum placeholder {snake_case} nao-resolvido (que nao seja deferred), AVISA
@@ -407,10 +420,20 @@ npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}  # exit 2 (410/403) ou 3 (
 
 **Sempre** ao fim do Stage 5 — mesmo se publicacao foi manual ou algum canal ficou `pending_manual`:
 
+**Backend-aware (#464, achado do review — sem isso o Stage 6 nunca roda com `backend: "kit"`):** `--outputs` referencia o artefato que o passo 5c-1/5c-1-kit de fato escreveu — `assertSentinel` (Stage 6, pré-condição) checa exatamente os paths gravados aqui, não um path fixo. Backend `"beehiiv"` (default):
+
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 5 \
   --outputs "_internal/05-published.json"
+```
+
+Backend `"kit"`:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition {AAMMDD} --step 5 \
+  --outputs "_internal/newsletter-kit-published.json"
 ```
 
 **Marcar Stage 5 `done` AQUI (#1783).** Este e o mark-done canônico do Stage 5 é o §5i — acontece **antes** do Stage 6. Auto-carimbo de `end` via #1789:

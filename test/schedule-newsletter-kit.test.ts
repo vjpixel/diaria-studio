@@ -6,11 +6,19 @@
  * na 5, agendamento na 6). `patchSchedule`/`getBroadcastStatus`/
  * `readPublished`/`writePublished` injetados — nenhuma chamada de rede/I/O
  * real. Mesmo padrão de `test/schedule-daily-brevo-5772.test.ts`.
+ *
+ * `describe("main() — integração")` (achado do review, PR #6096 —
+ * pr-test-analyzer): fecha a assimetria de cobertura de CLI com o script
+ * irmão `publish-newsletter-kit.ts` (que já testava seu próprio guard de
+ * backend) — mesmo padrão de fixtures em disco + `fetch` mockado.
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { scheduleNewsletterKit, type ScheduleNewsletterKitDeps } from "../scripts/schedule-newsletter-kit.ts";
-import type { KitNewsletterPublished } from "../scripts/publish-newsletter-kit.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scheduleNewsletterKit, main, type ScheduleNewsletterKitDeps } from "../scripts/schedule-newsletter-kit.ts";
+import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "../scripts/publish-newsletter-kit.ts";
 
 const EDITION_DIR = "/fake/root/data/editions/2608/260825";
 const SCHEDULED_AT = "2026-08-26T09:00:00.000Z";
@@ -225,6 +233,124 @@ describe("scheduleNewsletterKit (#464)", () => {
       const result = await scheduleNewsletterKit(EDITION_DIR, SCHEDULED_AT, deps);
       assert.equal(patchCalled, true, `status=${status} deveria seguir o fluxo normal e chamar PATCH`);
       assert.equal(result.ok, true);
+    }
+  });
+});
+
+describe("main() — integração (guard de CLI)", () => {
+  let originalArgv: string[];
+  let originalFetch: typeof fetch;
+  const API_KEY_ENV_ORIG = process.env.KIT_API_KEY;
+
+  beforeEach(() => {
+    process.env.KIT_API_KEY = "kit_test_key_464_schedule";
+    originalArgv = process.argv;
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    globalThis.fetch = originalFetch;
+  });
+
+  after(() => {
+    if (API_KEY_ENV_ORIG === undefined) delete process.env.KIT_API_KEY;
+    else process.env.KIT_API_KEY = API_KEY_ENV_ORIG;
+  });
+
+  function writePlatformConfig(root: string, backend: string): void {
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ publishing: { newsletter: { backend } } }), "utf8");
+  }
+
+  it("--edition-dir/--scheduled-at ausentes: exitCode 1, nenhuma chamada de rede", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      globalThis.fetch = (async () => {
+        throw new Error("não deveria chamar fetch");
+      }) as typeof fetch;
+      process.argv = ["node", "schedule-newsletter-kit.ts"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 1);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("backend != kit: exitCode 2, nenhuma chamada de rede (mesmo guard do script irmão publish-newsletter-kit.ts)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
+    try {
+      writePlatformConfig(root, "beehiiv");
+      globalThis.fetch = (async () => {
+        throw new Error("não deveria chamar fetch");
+      }) as typeof fetch;
+      process.argv = ["node", "schedule-newsletter-kit.ts", "--edition-dir", root, "--scheduled-at", "2026-08-26T09:00:00.000Z"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 2);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("draft ausente: exitCode 3, sem chamada de rede (backend kit confirmado, mas nada pra agendar)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      globalThis.fetch = (async () => {
+        throw new Error("não deveria chamar fetch");
+      }) as typeof fetch;
+      process.argv = ["node", "schedule-newsletter-kit.ts", "--edition-dir", root, "--scheduled-at", "2026-08-26T09:00:00.000Z"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 3);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("caminho feliz de ponta a ponta: PATCH + GET mockados confirmam, exitCode 0, estado persistido", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      mkdirSync(join(root, "_internal"), { recursive: true });
+      writePublishedState(root, {
+        broadcast_id: 555,
+        subject: "Assunto",
+        preview_text: "Preview",
+        status: "draft",
+        test_broadcast_ids: [],
+      });
+      const calls: { method: string; pathname: string }[] = [];
+      globalThis.fetch = (async (url: string, init?: RequestInit) => {
+        const u = new URL(url);
+        calls.push({ method: init?.method ?? "GET", pathname: u.pathname });
+        if (u.pathname === "/v4/broadcasts/555" && (init?.method === "PATCH" || !init?.method || init.method === "GET")) {
+          const body = JSON.stringify({ broadcast: { id: 555, status: "scheduled", send_at: "2026-08-26T09:00:00.000Z" } });
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => "application/json" },
+            text: async () => body,
+          } as unknown as Response;
+        }
+        throw new Error(`chamada inesperada: ${init?.method ?? "GET"} ${u.pathname}`);
+      }) as typeof fetch;
+      process.argv = ["node", "schedule-newsletter-kit.ts", "--edition-dir", root, "--scheduled-at", "2026-08-26T09:00:00.000Z"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 0);
+      assert.equal(calls.length, 2, "1 PATCH + 1 GET de verificação");
+      const state = readPublishedState(root);
+      assert.equal(state?.status, "scheduled");
+      assert.equal(state?.scheduled_at, "2026-08-26T09:00:00.000Z");
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

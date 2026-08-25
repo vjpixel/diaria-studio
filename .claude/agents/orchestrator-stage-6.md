@@ -20,16 +20,19 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 
 ### Pre-condicao: sentinel Stage 5
 
+**`assertSentinel` compara contra os `outputs` GRAVADOS pelo §5h da Stage 5** (não um path fixo) — então este `assert` já lê o caminho certo automaticamente, seja qual for o backend, DESDE que §5h tenha gravado o output certo (ver "Branch por backend" no §5h da Stage 5, #464 — achado do review PR #6096: antes essa branch não existia e este `assert` FATALizava toda edição com `backend: "kit"`, já que o sentinel gravado apontava sempre pra `05-published.json`, que o Kit nunca escreve). `--outputs` aqui é só o valor a comparar se o sentinel ficar ausente/corrompido (ver exit `2` abaixo) — informar o esperado pro backend ATUAL:
+
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 5 \
   --outputs "_internal/05-published.json"
+# Backend "kit": --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Exit code handling:
 - `0` → continuar.
 - `1` → **FATAL:** "Etapa 5 (Publicacao) nao completou (sentinel ausente). Re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
-- `2` → **FATAL:** "05-published.json ausente. Re-rodar Etapa 5." Parar.
+- `2` → **FATAL:** artefato do backend atual ausente (`05-published.json` pra Beehiiv, `newsletter-kit-published.json` pra Kit). "Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
 
 ### 6a. Pre-requisitos
@@ -396,10 +399,20 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
+**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** Backend `"beehiiv"` (default):
+
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 6 \
   --outputs "_internal/05-published.json"
+```
+
+Backend `"kit"`:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition {AAMMDD} --step 6 \
+  --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Sentinel ausente = Stage 6 incompleto para fins de resume. Falha → logar warn, nao bloquear auto-reporter.
