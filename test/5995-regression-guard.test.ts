@@ -20,6 +20,14 @@
  * produzida com ele. O critério só pode ser reavaliado depois de N edições novas. Enquanto
  * isso, o #5995 continua ABERTO — este arquivo entrega o item 4 (guard
  * qualitativo por fixture), não o item 5.
+ *
+ * Item 5 (25/08/2026): o critério de fechamento foi REDEFINIDO de contagem
+ * cumulativa ("TOTAL ≤35" — inalcançável, o corpus só cresce) para TAXA EM
+ * JANELA (`computeWindowedRate`, `--window N`, default 20). A janela é
+ * verificável aqui sobre fixtures sintéticas; a medição operacional real
+ * continua sendo:
+ *
+ *     npx tsx scripts/analyze-bucket-overrides.ts --editions-dir data/editions [--window 20]
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -113,5 +121,87 @@ describe("#5995 anti-regress guard — fixtures do corpus real", () => {
     assert.equal(resumo.editionsWithMoves, 1);
     const direcao = resumo.directions.find((d) => d.direction === "lancamento->radar");
     assert.ok(direcao && direcao.count === 1, "a direção do movimento aparece no resumo");
+  });
+});
+
+describe("#5995 item 5 — taxa em janela (critério de fechamento)", () => {
+  // Fixture sintética: 30 edições. As 10 primeiras (histórico antigo) têm 2
+  // movimentos cada; as 20 últimas têm exatamente 1 movimento a cada 4 edições.
+  function fixture(n: number): Array<{ edition: string; moves: Array<{ direction: string }> }> {
+    return Array.from({ length: n }, (_, i) => ({
+      edition: String(260001 + i),
+      moves: i < 10 ? [{ direction: "radar->use_melhor" }, { direction: "lancamento->radar" }] : i % 4 === 0 ? [{ direction: "radar->use_melhor" }] : [],
+    })) as never;
+  }
+
+  it("computeWindowedRate mede só a janela, nunca o acumulado histórico", async () => {
+    const { computeWindowedRate } = await import("../scripts/analyze-bucket-overrides.ts");
+    const rate = computeWindowedRate(fixture(30), 20);
+
+    assert.equal(rate.requested, 20);
+    assert.equal(rate.editionsInWindow, 20);
+    assert.equal(rate.clamped, false);
+    // Janela: edições 10..29 → movimentos nas edições 12,16,20,24,28 = 5.
+    assert.equal(rate.totalMoves, 5, "só os movimentos DENTRO da janela contam (o histórico de 20 é ignorado)");
+    assert.equal(rate.editionsWithMoves, 5);
+    assert.equal(rate.movesPerEdition, 0.25);
+    assert.ok(Math.abs(rate.pctEditionsWithMoves - 25) < 1e-9);
+  });
+
+  it("janela maior que o corpus é ajustada (clamped) sem inventar edições", async () => {
+    const { computeWindowedRate } = await import("../scripts/analyze-bucket-overrides.ts");
+    const rate = computeWindowedRate(fixture(6), 20);
+
+    assert.equal(rate.editionsInWindow, 6);
+    assert.equal(rate.clamped, true);
+    assert.equal(rate.totalMoves, 12); // todas as 6 edições do fixture têm 2
+  });
+
+  it("corpus vazio → taxa zerada, sem NaN/divisão por zero", async () => {
+    const { computeWindowedRate } = await import("../scripts/analyze-bucket-overrides.ts");
+    const rate = computeWindowedRate([], 20);
+
+    assert.equal(rate.editionsInWindow, 0);
+    assert.equal(rate.totalMoves, 0);
+    assert.equal(rate.movesPerEdition, 0);
+    assert.equal(rate.pctEditionsWithMoves, 0);
+  });
+
+  it("summarize expõe a taxa em janela no summary (--window default 20)", async () => {
+    const { summarize, DEFAULT_WINDOW } = await import("../scripts/analyze-bucket-overrides.ts");
+
+    assert.equal(DEFAULT_WINDOW, 20);
+
+    const data = fixture(30);
+    const resumo = summarize(data as never, 0);
+    assert.ok(resumo.windowed, "summary carrega a taxa em janela quando há edições");
+    assert.equal(resumo.windowed!.editionsInWindow, DEFAULT_WINDOW);
+    assert.equal(resumo.windowed!.totalMoves, 5);
+    assert.equal(resumo.windowed!.movesPerEdition.toFixed(2), "0.25");
+
+    const custom = summarize(data as never, 0, 5);
+    assert.equal(custom.windowed!.editionsInWindow, 5);
+    assert.equal(custom.windowed!.totalMoves, 1, "janela de 5 pega só a edição 28 (1 movimento)");
+
+    const vazio = summarize([] as never, 0);
+    assert.equal(vazio.windowed, null, "sem corpus, windowed é null");
+  });
+
+  it("a taxa em janela NÃO cresce com o corpus — propriedade que mata o critério cumulativo antigo", async () => {
+    const { computeWindowedRate } = await import("../scripts/analyze-bucket-overrides.ts");
+    // Corpus A: 30 edições (as 10 primeiras com 2 movimentos cada).
+    // Corpus B: as MESMAS 30 edições precedidas de 50 edições antigas vazias.
+    const corpusA = fixture(30);
+    const corpusB = [
+      ...Array.from({ length: 50 }, (_, i) => ({ edition: `1${String(260000 + i)}`, moves: [] })),
+      ...corpusA,
+    ];
+    const antes = computeWindowedRate(corpusA as never, 20);
+    const depois = computeWindowedRate(corpusB as never, 20);
+
+    assert.equal(antes.totalMoves, depois.totalMoves, "mesma janela final → mesma contagem, independente do histórico anterior");
+    assert.equal(depois.movesPerEdition, antes.movesPerEdition);
+    // Enquanto isso, o TOTAL cumulativo quase dobra — é exatamente ele que nunca fecharia.
+    assert.ok(depois.totalMoves < 40, "janela permanece pequena mesmo com corpus grande");
   });
 });
