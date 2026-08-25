@@ -17,7 +17,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { planWave, TransientDashboardError, type PlanWaveOptions } from "../scripts/clarice-plan-wave.ts";
+import { planWave, TransientDashboardError, parseTargetVolumeArg, type PlanWaveOptions } from "../scripts/clarice-plan-wave.ts";
 
 const BASE_OPTS: Omit<PlanWaveOptions, "fetchImpl"> = {
   cycle: "2607-08",
@@ -87,5 +87,35 @@ describe("planWave: falha TRANSITÓRIA do dashboard (#5058)", () => {
         return true;
       },
     );
+  });
+});
+
+describe("parseTargetVolumeArg — regressão #6144 (getArg() nunca é undefined)", () => {
+  it("--target-volume ausente => undefined (não trata getArg(...)===\"\" como presente)", () => {
+    assert.equal(parseTargetVolumeArg(["--cycle", "2607-08", "--dates", "2026-08-26", "--json"]), undefined);
+  });
+
+  it("argv vazio => undefined", () => {
+    assert.equal(parseTargetVolumeArg([]), undefined);
+  });
+
+  it("--target-volume 5000 => 5000", () => {
+    assert.equal(parseTargetVolumeArg(["--target-volume", "5000"]), 5000);
+  });
+
+  it("--target-volume 0 => lança (não é positivo)", () => {
+    assert.throws(() => parseTargetVolumeArg(["--target-volume", "0"]));
+  });
+
+  it("--target-volume -10 => lança (não é positivo)", () => {
+    assert.throws(() => parseTargetVolumeArg(["--target-volume", "-10"]));
+  });
+
+  it("--target-volume abc => lança (não é inteiro)", () => {
+    assert.throws(() => parseTargetVolumeArg(["--target-volume", "abc"]));
+  });
+
+  it("--target-volume sem valor (flag pendurada) => lança, nunca vira undefined silencioso", () => {
+    assert.throws(() => parseTargetVolumeArg(["--target-volume"]));
   });
 });

@@ -62,7 +62,7 @@ import {
 import { loadSentOrQueuedEmails, excludeSentOrQueued } from "./clarice-build-segment.ts";
 import { brevoGet, fetchCommittedCampaignListIds, fetchDraftCampaigns } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
@@ -424,6 +424,25 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   });
 }
 
+/**
+ * `--target-volume N` (#6075): repassa o `--volume N` do editor
+ * (`clarice-envio-run.ts`) pro dimensionamento do MV sob demanda. Só
+ * `clarice-envio-run.ts` chama com este flag; invocação manual/gate sem
+ * ele preserva o comportamento pré-#6075 (retorna `undefined`).
+ *
+ * Extraída de `main()` (regressão #6144) porque `getArg` NUNCA retorna
+ * `undefined` — retorna `""` quando a flag está ausente (design documentado
+ * em `lib/cli-args.ts`). A versão anterior checava `getArg(...) !==
+ * undefined`, que é sempre `true`, então toda invocação SEM
+ * `--target-volume` (inclusive `clarice-envio-run.ts --plan-only`) caía na
+ * validação com `Number("") = 0` e abortava. `getIntArg` tem a semântica
+ * certa: `undefined` quando a flag está genuinamente ausente, lança quando
+ * presente mas inválida.
+ */
+export function parseTargetVolumeArg(argv: string[]): number | undefined {
+  return getIntArg(argv, "target-volume", { min: 1 });
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = requireCycleArg(argv);
   const dates = parseDatesArg(getArg(argv, "dates"));
@@ -442,18 +461,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const abcState = readClariceAbcState(REPO_ROOT);
   const lockedSubject = getArg(argv, "locked-subject") || lockedSubjectFromState(abcState);
 
-  // #6075 — `--target-volume N`: repassa o `--volume N` do editor
-  // (`clarice-envio-run.ts`) pro dimensionamento do MV sob demanda. Só
-  // `clarice-envio-run.ts` chama com este flag; invocação manual/gate sem
-  // ele preserva o comportamento pré-#6075.
-  const targetVolumeArg = getArg(argv, "target-volume");
   let targetVolume: number | undefined;
-  if (targetVolumeArg !== undefined) {
-    targetVolume = Number(targetVolumeArg);
-    if (!Number.isInteger(targetVolume) || targetVolume <= 0) {
-      console.error(`❌ --target-volume precisa ser um inteiro positivo (recebido: "${targetVolumeArg}").`);
-      process.exit(1);
-    }
+  try {
+    targetVolume = parseTargetVolumeArg(argv);
+  } catch (err) {
+    console.error(`❌ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 
   const proposal = await planWave({
