@@ -5,7 +5,11 @@
  * kill-switch morto — a interface `OnboardingConfig` declarava o campo, mas
  * `onboarding-welcome-run.ts` nunca o lia. Mesmo padrão de guard do
  * `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`: checar
- * ANTES de qualquer chamada externa (Beehiiv/Brevo).
+ * ANTES de qualquer chamada externa (Beehiiv/Brevo) — EXCETO `--cancel-pending`
+ * (#6176, self-review Finding 1 do #6158), que roda ANTES deste guard porque
+ * cancelamento não chama a Beehiiv e travá-lo atrás da pausa da automação
+ * seria o oposto do desejado numa emergência (ver `test-cancel-pending-...`
+ * abaixo, que cobre exatamente esse caso).
  *
  * Estratégia de teste (subprocesso real via `npx tsx`, não import direto de
  * `main()` — a função não é exportada e o script é pensado pra rodar como
@@ -82,7 +86,7 @@ const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 function runScript(
   configPath: string,
   storePath: string,
-  opts: { beehiivApiKeyOverride?: string; envRoot?: string } = {},
+  opts: { beehiivApiKeyOverride?: string; envRoot?: string; brevoApiKeyOverride?: string; extraArgs?: string[] } = {},
 ) {
   const env = { ...process.env };
   // Ambas as vars usam o mesmo override — não há caso de teste hoje que
@@ -94,6 +98,12 @@ function runScript(
     env.BEEHIIV_API_KEY = opts.beehiivApiKeyOverride;
     env.BEEHIIV_PUBLICATION_ID = opts.beehiivApiKeyOverride;
   }
+  // #6176: override isolado pra BREVO_DIARIA_API_KEY (credencial que
+  // `--cancel-pending` de fato usa — nunca a Beehiiv). Mesma técnica de
+  // string vazia/valor fixo do override acima, independente dele.
+  if (opts.brevoApiKeyOverride !== undefined) {
+    env.BREVO_DIARIA_API_KEY = opts.brevoApiKeyOverride;
+  }
   const cliArgs = [
     "tsx",
     resolve(__ROOT, "scripts/onboarding-welcome-run.ts"),
@@ -101,6 +111,7 @@ function runScript(
     configPath,
     "--store",
     storePath,
+    ...(opts.extraArgs ?? []),
   ];
   if (opts.envRoot !== undefined) cliArgs.push("--env-root", opts.envRoot);
   return spawnSync("npx", cliArgs, {
@@ -221,6 +232,64 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
       assert.ok(
         (result.stderr ?? "").includes("BEEHIIV_API_KEY"),
         `stderr deveria reclamar de credencial ausente, nunca tentar a chamada real: ${result.stderr}`,
+      );
+      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#6176 (self-review Finding 1 do #6158) — --cancel-pending funciona mesmo com enabled: false, sem imprimir a mensagem de pausa", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-onboarding-cancel-pending-enabled-false-"));
+    try {
+      const configPath = join(dir, "platform.config.json");
+      const storePath = join(dir, "store.json");
+      writeFileSync(configPath, JSON.stringify({ onboarding: { enabled: false } }));
+      // Store vazio (nunca criado) — `runCancelPending` itera 0 entries, então
+      // nenhuma chamada de rede real ao DELETE da Brevo acontece independente
+      // do valor da credencial; usamos um valor fixo só pra passar do check
+      // de "credencial ausente".
+      const result = runScript(configPath, storePath, {
+        brevoApiKeyOverride: "fixture_fake_brevo_key_do_not_use",
+        extraArgs: ["--cancel-pending"],
+      });
+
+      assert.equal(result.status, 0, `esperava exit 0, obteve ${result.status}. stderr: ${result.stderr}`);
+      assert.equal(
+        (result.stdout ?? "").includes("PAUSADA"),
+        false,
+        "--cancel-pending nunca deve bater no guard de pausa — é justamente o comando de emergência que precisa funcionar com a automação pausada",
+      );
+      const summary = JSON.parse(result.stdout ?? "{}");
+      assert.equal(summary.mode, "cancel-pending", `stdout deveria ser o resumo JSON do modo cancel-pending: ${result.stdout}`);
+      assert.equal(summary.attempted, 0, "store vazio — nada a cancelar, mas o modo deve rodar até o fim");
+      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#6176 — --cancel-pending ainda exige a credencial Brevo (independente de enabled), sem tentar cancelar sem key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-onboarding-cancel-pending-no-key-"));
+    try {
+      const configPath = join(dir, "platform.config.json");
+      const storePath = join(dir, "store.json");
+      writeFileSync(configPath, JSON.stringify({ onboarding: { enabled: false } }));
+
+      const result = runScript(configPath, storePath, {
+        brevoApiKeyOverride: "",
+        extraArgs: ["--cancel-pending"],
+      });
+
+      assert.equal(result.status, 2, `esperava exit 2 (credencial Brevo ausente), obteve ${result.status}. stdout: ${result.stdout}`);
+      assert.ok(
+        (result.stderr ?? "").includes("BREVO_DIARIA_API_KEY"),
+        `stderr deveria reclamar da credencial Brevo ausente: ${result.stderr}`,
+      );
+      assert.equal(
+        (result.stdout ?? "").includes("PAUSADA"),
+        false,
+        "não deveria sequer chegar no guard de pausa — falha antes, na credencial",
       );
       assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
     } finally {

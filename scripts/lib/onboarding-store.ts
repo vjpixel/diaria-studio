@@ -59,8 +59,20 @@ export interface OnboardingEntry {
   detected_at: string;
   /** ISO — quando o e-mail 1 transacional saiu (null = ainda não). */
   email1_sent_at: string | null;
+  /**
+   * #6158: `messageId`/`batchId` (UUIDv4) devolvido pela Brevo no POST
+   * `/smtp/email` — só existe porque o envio agora vai com `scheduledAt`
+   * (ver `onboarding-welcome-run.ts`). Formato cancelável via
+   * `DELETE /v3/smtp/email/{id}` (`brevoDelete`), diferente do antigo
+   * messageId de envio imediato (`...@smtp-relay.mailin.fr`), que a Brevo
+   * nunca aceita nesse endpoint. `null` = ainda não enviado, ou a Brevo não
+   * devolveu id (nunca bloqueia o envio em si).
+   */
+  email1_brevo_id: string | null;
   /** ISO — quando o e-mail 2 transacional saiu (null = ainda não). */
   email2_sent_at: string | null;
+  /** #6158 — mesma semântica de `email1_brevo_id`, para o e-mail 2 (D+3). */
+  email2_brevo_id: string | null;
   email3_state: OnboardingEmail3State;
   /** Id da campanha Brevo (rascunho) que continha este contato no D+10. */
   email3_campaign_id: number | null;

@@ -288,6 +288,33 @@ export async function brevoPost(
 }
 
 /**
+ * DELETE genérico pra Brevo (#6158). Usado pra cancelar um e-mail
+ * transacional AGENDADO (`DELETE /v3/smtp/email/{identifier}`, onde
+ * `identifier` é o `messageId`/`batchId` UUID retornado pelo POST quando
+ * `scheduledAt` foi usado — só esse formato é cancelável; o formato SMTP
+ * (`...@smtp-relay.mailin.fr`) de um envio imediato não é, ver
+ * `scripts/onboarding-welcome-run.ts`). Mesma disciplina de retry-on-429 do
+ * resto do módulo.
+ */
+export async function brevoDelete(
+  apiKey: string,
+  path: string,
+  _sleep = _defaultSleep,
+): Promise<void> {
+  await withBrevo429Retry(async () => {
+    const res = await brevoRawFetch(`https://api.brevo.com/v3${path}`, {
+      method: "DELETE",
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Brevo API DELETE ${path} falhou (${res.status}): ${text}`);
+    }
+    await res.body?.cancel().catch(() => {});
+  }, _sleep);
+}
+
+/**
  * GET de uma campanha Brevo. Usado pra validar status antes de PUT em
  * `--update-existing` (#1015) — Brevo rejeita update em campanha já enviada,
  * mas o erro é pouco amigável. Vale checar antes pra dar mensagem clara.

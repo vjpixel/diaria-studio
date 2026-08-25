@@ -26,6 +26,21 @@
  * Uso:
  *   npx tsx scripts/onboarding-welcome-run.ts             # dry-run (plano)
  *   npx tsx scripts/onboarding-welcome-run.ts --send      # executa de verdade
+ *   npx tsx scripts/onboarding-welcome-run.ts --cancel-pending  # cancela e-mails 1/2 ainda agendados (#6158)
+ *
+ * #6158 (24/08/2026, incidente #6042 — 585 e-mails indevidos e IMPOSSÍVEIS
+ * de cancelar): o envio real (`--send`) agora sempre vai com `scheduledAt`
+ * mínimo (60s à frente, `computeMinScheduledAt`) em vez de imediato — só
+ * assim a Brevo devolve um `messageId`/`batchId` formato UUIDv4, o único
+ * formato que `DELETE /v3/smtp/email/{id}` aceita. O id é persistido em
+ * `email1_brevo_id`/`email2_brevo_id` no store; `--cancel-pending` lê o
+ * store e cancela tudo que ainda tiver id gravado.
+ *
+ * #6176 (self-review Finding 1 do #6158): `--cancel-pending` roda ANTES do
+ * kill switch `onboarding.enabled: false` e do check de `resolveBeehiivConfig()`
+ * — cancelamento não detecta assinante nem chama a Beehiiv, e travar o
+ * cancelamento atrás da pausa da automação seria o oposto do desejado numa
+ * emergência. Único requisito: a credencial Brevo (`BREVO_DIARIA_API_KEY`).
  *
  * Flags auxiliares (testes/operações): --store <path>, --snippets-dir <path>,
  * --skip-email1 --skip-email2 --skip-email3 (desliga etapas pontualmente).
@@ -52,7 +67,8 @@ import {
   type OpenStats,
   type RunAction,
 } from "./lib/onboarding-state.ts";
-import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
+import { brevoPost, brevoGet, brevoDelete } from "./lib/brevo-client.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -232,8 +248,32 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-/** Envio transacional real (POST /v3/smtp/email). Retorna message-id quando a Brevo devolve. */
-async function sendTransactionalEmail(opts: {
+/**
+ * #6158: janela mínima antes de "agora" pra tornar o envio CANCELÁVEL.
+ * Envio SEM `scheduledAt` sai imediato e recebe um messageId formato SMTP
+ * (`...@smtp-relay.mailin.fr`) que o endpoint `DELETE /v3/smtp/email/{id}`
+ * não aceita — já causou dano real (#6042, 585 e-mails indevidos
+ * disparados, impossíveis de interromper). Com `scheduledAt`, a Brevo
+ * devolve um `messageId`/`batchId` formato UUIDv4, que É cancelável. 60s é
+ * o mínimo pedido pela issue — não confirmado ao vivo contra a API real
+ * (ninguém pode executar este script pra validar, ver guard de publicação);
+ * se a Brevo rejeitar por ser curto demais, o erro aparece via HTTP na
+ * chamada normal (branch de catch em `main()`) — não é um caminho silencioso.
+ */
+export const TRANSACTIONAL_SCHEDULE_LEAD_MS = 60_000;
+
+/** ISO 8601, `TRANSACTIONAL_SCHEDULE_LEAD_MS` à frente de `nowMs` (default: agora). */
+export function computeMinScheduledAt(nowMs: number = Date.now()): string {
+  return new Date(nowMs + TRANSACTIONAL_SCHEDULE_LEAD_MS).toISOString();
+}
+
+/**
+ * Envio transacional real (POST /v3/smtp/email) — SEMPRE com `scheduledAt`
+ * mínimo (#6158), nunca imediato. Retorna o `messageId`/`batchId` UUID
+ * quando a Brevo devolve (formato cancelável — ver
+ * `computeMinScheduledAt`/`TRANSACTIONAL_SCHEDULE_LEAD_MS` acima).
+ */
+export async function sendTransactionalEmail(opts: {
   apiKey: string;
   sender: { email: string; name: string };
   to: string;
@@ -246,8 +286,81 @@ async function sendTransactionalEmail(opts: {
     subject: opts.subject,
     htmlContent: opts.htmlContent,
     textContent: stripHtml(opts.htmlContent),
-  })) as { messageId?: string };
-  return res?.messageId ?? null;
+    scheduledAt: computeMinScheduledAt(),
+  })) as { messageId?: string; batchId?: string };
+  return res?.messageId ?? res?.batchId ?? null;
+}
+
+/**
+ * #6158: aplica o resultado de um envio transacional (email1/email2) numa
+ * entry do store — função pura, extraída pra ser testável sem precisar
+ * rodar `main()` inteiro (que faz chamadas de rede reais). O ID persistido
+ * aqui é o que `runCancelPending` usa depois pra cancelar via DELETE.
+ */
+export function applySendResult(
+  entry: OnboardingEntry,
+  kind: "email1" | "email2",
+  brevoId: string | null,
+  isoNow: string,
+): void {
+  if (kind === "email1") {
+    entry.email1_sent_at = isoNow;
+    entry.email1_brevo_id = brevoId;
+  } else {
+    entry.email2_sent_at = isoNow;
+    entry.email2_brevo_id = brevoId;
+  }
+}
+
+/**
+ * #6158 (`--cancel-pending`): varre o store por entries com um id Brevo
+ * ainda gravado (`email1_brevo_id`/`email2_brevo_id` != null) e tenta
+ * cancelar via `DELETE /v3/smtp/email/{id}`. Sucesso limpa o id do store
+ * (nada mais a cancelar); falha preserva o id (retry na próxima invocação —
+ * mesma semântica "skip forever só em sucesso" já usada em
+ * `verify-emails-mv.ts`, ver CLAUDE.md).
+ *
+ * Não distingue "ainda não saiu" de "já saiu" — a Brevo é quem sabe: um
+ * DELETE tarde demais simplesmente falha (a API não deixa cancelar o que já
+ * foi processado), e o resultado individual reporta isso sem abortar o lote.
+ */
+export interface CancelPendingResult {
+  subscription_id: string;
+  email: string;
+  field: "email1_brevo_id" | "email2_brevo_id";
+  id: string;
+  ok: boolean;
+  error?: string;
+}
+
+export async function runCancelPending(opts: {
+  apiKey: string;
+  storePath: string;
+}): Promise<CancelPendingResult[]> {
+  const { store } = readStore(opts.storePath);
+  const results: CancelPendingResult[] = [];
+  for (const entry of Object.values(store.entries)) {
+    for (const field of ["email1_brevo_id", "email2_brevo_id"] as const) {
+      const id = entry[field];
+      if (!id) continue;
+      try {
+        await brevoDelete(opts.apiKey, `/smtp/email/${encodeURIComponent(id)}`);
+        entry[field] = null;
+        results.push({ subscription_id: entry.subscription_id, email: entry.email, field, id, ok: true });
+      } catch (e) {
+        results.push({
+          subscription_id: entry.subscription_id,
+          email: entry.email,
+          field,
+          id,
+          ok: false,
+          error: (e as Error).message,
+        });
+      }
+    }
+  }
+  writeStore(store, opts.storePath);
+  return results;
 }
 
 /** Garante contato Brevo no cohort (cria/atualiza já adicionando à lista D+10). */
@@ -284,6 +397,8 @@ interface CliArgs {
   /** Override de teste — path absoluto pra raiz de onde `.env` é carregado (default: raiz real do repo, ver env-loader.ts). #5966. */
   envRoot?: string;
   skip: Set<"email1" | "email2" | "email3">;
+  /** #6158: modo dedicado — cancela via DELETE tudo que o store ainda tem como pendente, e sai. Não faz detecção nem envio nessa invocação. */
+  cancelPending: boolean;
 }
 
 /** Resumo JSON impresso no fim da rodada (stdout — consumível por alarmes/logs). */
@@ -297,10 +412,11 @@ interface RunSummary {
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { send: false, skip: new Set() };
+  const args: CliArgs = { send: false, skip: new Set(), cancelPending: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--send") args.send = true;
+    else if (a === "--cancel-pending") args.cancelPending = true;
     else if (a === "--store") args.storePath = argv[++i];
     else if (a === "--snippets-dir") args.snippetsDir = argv[++i];
     else if (a === "--config") args.configPath = argv[++i];
@@ -331,9 +447,38 @@ async function main(): Promise<void> {
   // valer — parseArgs() não lê env, então essa reordenação é segura.
   loadProjectEnv(args.envRoot);
   const cfg = loadOnboardingConfig(args.configPath);
+  const apiKeyEnv = cfg.api_key_env ?? "BREVO_DIARIA_API_KEY";
+  const brevoKey = process.env[apiKeyEnv];
+
+  // --- #6176 (self-review Finding 1 do #6158): `--cancel-pending` roda ANTES
+  // do kill switch (`onboarding.enabled: false`) e do check de
+  // `resolveBeehiivConfig()` — cancelar não detecta assinante nem chama a
+  // Beehiiv, então nenhum dos dois é estritamente necessário. Travar
+  // `--cancel-pending` atrás do kill switch é o oposto do desejado numa
+  // emergência: é justamente quando alguém pausa a automação por causa de um
+  // incidente (#6042/#6043) que precisa poder cancelar o que já está na
+  // fila. Único requisito real deste modo: a credencial Brevo (usada pelo
+  // DELETE). ---
+  if (args.cancelPending) {
+    if (!brevoKey) {
+      process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
+      process.exit(2);
+    }
+    const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
+    const results = await runCancelPending({ apiKey: brevoKey, storePath });
+    console.log(
+      JSON.stringify(
+        { mode: "cancel-pending", attempted: results.length, cancelled: results.filter((r) => r.ok).length, results },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
 
   // --- Kill switch (#5957) — ANTES de qualquer chamada externa, mesmo padrão
-  // do guard `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`. ---
+  // do guard `data/clarice-novos-enabled.json` em `clarice-novos-run.ts`.
+  // Não se aplica a `--cancel-pending` (tratado acima, antes deste ponto). ---
   if (cfg.enabled === false) {
     process.stdout.write(
       "[onboarding] ⏸️  automação PAUSADA (platform.config.json → onboarding.enabled: false) — " +
@@ -349,14 +494,13 @@ async function main(): Promise<void> {
     process.stderr.write(`[onboarding] ${beeCfg.reason}\n`);
     process.exit(2);
   }
-  const apiKeyEnv = cfg.api_key_env ?? "BREVO_DIARIA_API_KEY";
-  const brevoKey = process.env[apiKeyEnv];
   if (!brevoKey) {
     process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
     process.exit(2);
   }
 
   const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
+
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? cfg.snippets_dir ?? "data/snippets");
   const snippets = loadSnippets(snippetsDirAbs);
 
@@ -400,7 +544,9 @@ async function main(): Promise<void> {
       created_at: s.created,
       detected_at: detectedAt,
       email1_sent_at: null,
+      email1_brevo_id: null,
       email2_sent_at: null,
+      email2_brevo_id: null,
       email3_state: "pending",
       email3_campaign_id: null,
       email3_decided_at: null,
@@ -477,16 +623,15 @@ async function main(): Promise<void> {
       if (action.kind === "email1" || action.kind === "email2") {
         const snip = snippets[action.kind === "email1" ? 1 : 2];
         if (!snip) continue;
-        const messageId = await sendTransactionalEmail({
+        const brevoId = await sendTransactionalEmail({
           apiKey: brevoKey,
           sender,
           to: action.entry.email,
           subject: snip.assunto ?? "",
           htmlContent: snip.body,
         });
-        if (action.kind === "email1") action.entry.email1_sent_at = isoNow;
-        else action.entry.email2_sent_at = isoNow;
-        process.stderr.write(`[onboarding] ${action.kind} → ${action.entry.email}${messageId ? ` (${messageId})` : ""}\n`);
+        applySendResult(action.entry, action.kind, brevoId, isoNow);
+        process.stderr.write(`[onboarding] ${action.kind} → ${action.entry.email}${brevoId ? ` (${brevoId})` : ""}\n`);
       } else if (action.kind === "email3_campaign") {
         const snip = snippets[3];
         if (!snip) continue;
@@ -528,7 +673,14 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-main().catch((e) => {
-  process.stderr.write(`[onboarding] fatal: ${(e as Error).stack ?? e}\n`);
-  process.exit(1);
-});
+// #6158: guard de import — testes unitários novos importam `sendTransactionalEmail`/
+// `applySendResult`/`runCancelPending` diretamente deste módulo (pra mockar
+// `fetch` em vez de spawnar subprocesso); sem este guard, `main()` disparava
+// no próprio `import` do teste (achado ao vivo escrevendo os testes desta
+// issue — falhava tentando ler credenciais Beehiiv/Brevo do ambiente real).
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    process.stderr.write(`[onboarding] fatal: ${(e as Error).stack ?? e}\n`);
+    process.exit(1);
+  });
+}
