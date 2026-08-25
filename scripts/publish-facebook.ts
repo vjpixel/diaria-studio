@@ -40,6 +40,7 @@ import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -359,6 +360,22 @@ async function publishPhoto(
  * CALLER decide o bookkeeping de falha (`status:"failed"` + `reason`), não
  * esta função — mesmo contrato de `publishPhoto` acima.
  */
+/**
+ * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
+ * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
+ * ambos degradam pra "sem carrossel" ({}), preservando o contrato
+ * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch.
+ */
+export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
+  if (!existsSync(publicImagesPath)) return {};
+  try {
+    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
+  } catch (e: any) {
+    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
+    return {};
+  }
+}
+
 export async function publishFacebookCarouselByUrl(
   pageId: string,
   pageToken: string,
@@ -735,6 +752,15 @@ async function main() {
     return;
   }
 
+  // #6095 — carrossel diário (capa + 3 parágrafos + CTA): lido best-effort,
+  // igual ao Threads. Ausência do arquivo/slides nunca é erro — o dispatch
+  // diário do Facebook sempre publicou via upload local (`publishPhoto`) e
+  // continua funcionando assim quando não há carrossel; só quando os 5
+  // slides estão completos é que trocamos pra `publishFacebookCarouselByUrl`
+  // (que exige URLs públicas, não arquivo local). Resolvido 1x fora do loop.
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages = loadPublicImagesFile(publicImagesPath);
+
   // #2343: derive destaque list from actual social MD (supports 2 or 3 destaques).
   const destaques = extractDestaquesFromSocialMd(socialMd, "facebook");
   const results: PostEntry[] = [];
@@ -781,11 +807,22 @@ async function main() {
       continue;
     }
 
+    // #6095 self-review — resolver o carrossel ANTES de checar o arquivo
+    // local: a via carrossel usa URLs públicas de 06-public-images.json e
+    // não depende do arquivo local single-image, então checar o arquivo
+    // local primeiro podia falhar um destaque com carrossel completo por
+    // um arquivo que a via carrossel nem usa.
+    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+    // slides existem em 06-public-images.json; senão cai pro post de imagem
+    // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
+    // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+    const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+
     // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
     // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
     const imageFile = selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
-    if (!existsSync(imagePath)) {
+    if (!carouselImageUrls && !existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);
       const entry: PostEntry = {
         platform: "facebook",
@@ -832,15 +869,26 @@ async function main() {
     let success = false;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        console.log(`Publishing facebook/${d} (attempt ${attempt})...`);
-        const result = await publishPhoto(
-          page_id,
-          page_access_token,
-          api_version,
-          imagePath,
-          caption,
-          scheduledAt
+        console.log(
+          `Publishing facebook/${d} (attempt ${attempt}${carouselImageUrls ? `, carrossel ${carouselImageUrls.length} fotos` : ""})...`,
         );
+        const result = carouselImageUrls
+          ? await publishFacebookCarouselByUrl(
+              page_id,
+              page_access_token,
+              api_version,
+              carouselImageUrls,
+              caption,
+              scheduledAt,
+            )
+          : await publishPhoto(
+              page_id,
+              page_access_token,
+              api_version,
+              imagePath,
+              caption,
+              scheduledAt
+            );
 
         const postId = result.post_id || result.id;
         const postUrl = `https://www.facebook.com/${page_id}/posts/${postId}`;
