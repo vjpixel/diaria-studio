@@ -654,8 +654,28 @@ export function detectExistingWaveForSendDate(
 // Orquestração principal.
 // ---------------------------------------------------------------------------
 
+/**
+ * #6133 — `opts.volume` chega cru da CLI e pode ser string VAZIA (flag
+ * `--volume ""` ou env interpolada vazia). Passar `String("")` adiante como
+ * `--target-volume` derruba `clarice-plan-wave` no receptor (valida inteiro
+ * positivo) → o guard cai no fallback por precaução → tentativa de
+ * cancelamento indevido das ondas (#6124). Normaliza AQUI, no emissor:
+ * vazio/NaN/≤0/não-inteiro → `undefined` (não propaga o flag); inteiro
+ * positivo válido → number.
+ */
+export function normalizeTargetVolume(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isInteger(raw) && raw > 0 ? raw : undefined;
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (t === "") return undefined;
+    const n = Number(t);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  }
+  return undefined;
+}
+
 export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): Promise<EnvioRunResult> {
-  const requestedVolume = opts.volume;
+  const requestedVolume = normalizeTargetVolume((opts as { volume?: unknown }).volume);
   const now = deps.now();
   const aammdd = todayAammdd(now);
   const report = new ReportBuilder(`diar.ia.br Clarice envio ${aammdd}`);
