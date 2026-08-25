@@ -42,7 +42,16 @@ export function loadPosts(postsDir: string): ArchivePost[] {
   const posts: ArchivePost[] = [];
   for (const file of files) {
     const raw = readFileSync(join(postsDir, file), "utf8");
-    posts.push(JSON.parse(raw) as ArchivePost);
+    // Achado do fleet review (#467, silent-failure-hunter): sem o nome do
+    // arquivo na mensagem, um post_*.json corrompido (escrita não-atômica
+    // do sync) faria quem debugasse bisectar os 258 arquivos à mão. Aborta
+    // o lote inteiro (não degrada por-post) — é a mesma escolha que
+    // `buildArchivePageHtml` já faz pra HTML ausente/malformado.
+    try {
+      posts.push(JSON.parse(raw) as ArchivePost);
+    } catch (err) {
+      throw new Error(`gen-archive-pages: ${file} tem JSON inválido — ${(err as Error).message}`);
+    }
   }
   return posts;
 }

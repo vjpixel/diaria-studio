@@ -314,4 +314,16 @@ describe("loadPosts (integração, tmpdir)", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("post_*.json corrompido → erro nomeia o arquivo (achado do fleet review, #467)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-loadposts-corrupt-"));
+    try {
+      writeFileSync(join(tmp, "post_good.json"), JSON.stringify(makePost({ slug: "a" })), "utf8");
+      writeFileSync(join(tmp, "post_bad.json"), "{ isto não é json válido", "utf8");
+
+      assert.throws(() => loadPosts(tmp), /post_bad\.json tem JSON inválido/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
