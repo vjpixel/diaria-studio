@@ -135,6 +135,34 @@ export interface GitSyncResult {
   warnings: string[];
   /** true quando a edição pode continuar normalmente (sempre true — fail-soft). */
   proceed: true;
+  /**
+   * #6090: HEAD está em dia com origin/{branch}? Medido DEPOIS da tentativa de
+   * sync via `git rev-list --count HEAD..origin/master` — não inferido do
+   * outcome (o incidente 260825 provou que essa inferência falha:
+   * `stash_partial_failure_unrecovered` não é obviamente "não sincronizou").
+   * `false` também quando a medição em si falha (-1 em `commits_behind`).
+   */
+  up_to_date: boolean;
+  /**
+   * #6090: quantos commits HEAD está atrás de origin/master (0 quando
+   * `up_to_date`). `-1` = não foi possível medir (rev-list falhou).
+   */
+  commits_behind: number;
+}
+
+/**
+ * #6090: mede o estado real de sincronização AFTER-the-fact, com um único
+ * comando barato e local (`git rev-list --count HEAD..origin/master` — não
+ * depende de rede; usa o ref já trazido pelo fetch). Nunca lança — fail-soft,
+ * igual ao resto do módulo.
+ */
+export function measureSyncState(spawn: SpawnFn): { up_to_date: boolean; commits_behind: number } {
+  const res = spawn("git", ["rev-list", "--count", "HEAD..origin/master"]);
+  if (res.status !== 0 || !/^\d+\s*$/.test(res.stdout.trim())) {
+    return { up_to_date: false, commits_behind: -1 };
+  }
+  const count = Number.parseInt(res.stdout.trim(), 10);
+  return { up_to_date: count === 0, commits_behind: count };
 }
 
 /**
@@ -222,8 +250,13 @@ export interface LockFs {
  * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (7 ×
  * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não mais 8 ×
  * `GIT_TIMEOUT_MS` uniforme).
+ *
+ * #6090: o pior caso ganhou o 9º spawn — `measureSyncState()` roda
+ * `git rev-list --count HEAD..origin/master` DEPOIS da tentativa inteira,
+ * mas AINDA sob o lock (o spread acontece antes do `finally { release() }`),
+ * então entra na contagem que dimensiona `LOCK_STALE_MS`.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 8;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 9;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -643,17 +676,17 @@ export function syncCode(
       `rodada para evitar popar/aplicar o stash de um processo concorrente. ` +
       `Edição continua com o código local atual (pode estar levemente desatualizado ` +
       `se o outro sync ainda não terminou).`;
-    return {
-      outcome: "sync_in_progress",
-      message: msg,
-      branch_before: "unknown",
-      warnings: [msg],
-      proceed: true,
-    };
+    // #6090: NESTE caminho NÃO medimos — o invariante do #3423 é que nenhum
+    // comando git roda quando o lock está com outro processo (testado). Estado
+    // fica desconhecido (-1/false), conservador.
+    return { outcome: "sync_in_progress", message: msg, branch_before: "unknown", warnings: [msg], proceed: true, up_to_date: false, commits_behind: -1 };
   }
 
   try {
-    return syncCodeLocked(spawn);
+    const result = syncCodeLocked(spawn);
+    // #6090: estado de sincronização é SEMPRE medido after-the-fact via
+    // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
+    return { ...result, ...measureSyncState(spawn) };
   } finally {
     lock.release();
   }
@@ -663,8 +696,10 @@ export function syncCode(
  * Corpo real do sync, executado apenas com o lock (#3423) já adquirido pelo
  * chamador (`syncCode`). Extraído para função própria só para manter o
  * `try/finally` do lock enxuto — não é exportado nem chamado diretamente.
+ * #6090: os campos `up_to_date`/`commits_behind` são anexados pelo chamador
+ * (`syncCode`) via `measureSyncState()` após a tentativa inteira.
  */
-function syncCodeLocked(spawn: SpawnFn): GitSyncResult {
+function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "commits_behind"> {
   const warnings: string[] = [];
 
   // ── 1. Branch atual ────────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   syncCode,
+  measureSyncState,
   defaultSpawn,
   createFileLock,
   resolveSharedLockPath,
@@ -1400,5 +1401,92 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         `se este número divergiu, LOCK_STALE_MS (derivado de MAX_SEQUENTIAL_GIT_SPAWNS × GIT_TIMEOUT_MS) pode estar ` +
         `sub-dimensionado de novo (#3430 gap 1) — atualize a constante E o comentário que documenta a contagem em scripts/lib/git-sync.ts.`,
     );
+  });
+});
+
+// ── #6090: estado de sincronização medido after-the-fact ──────────────────
+describe("git-sync — #6090: up_to_date/commits_behind medidos via rev-list, nunca inferidos do outcome", () => {
+  /** Mock base de sync que FALHA num passo escolhido e mede N commits atrás. */
+  function makeFailureSpawn(failureKey: string): SpawnFn {
+    return makeSpawn({
+      [failureKey]: fail("(erro simulado)"),
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M arquivo.txt"),
+      "git rev-parse --verify refs/stash": ok(""),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": ok("Fast-forward"),
+      "git stash pop": ok(""),
+      "git rev-list --count HEAD..origin/master": ok("2\n"),
+    });
+  }
+
+  for (const key of [
+    "git fetch origin",
+    "git checkout master",
+    "git status --porcelain",
+    "git stash --include-untracked",
+    "git merge --ff-only origin/master",
+  ]) {
+    it(`outcome de falha (${key}) carrega up_to_date:false / commits_behind:2 e proceed:true`, () => {
+      const r = syncCode(makeFailureSpawn(key), NOOP_LOCK);
+      assert.equal(r.proceed, true, "fail-soft preservado — #6090 NÃO reverte a política de nunca bloquear");
+      assert.equal(r.up_to_date, false);
+      assert.equal(r.commits_behind, 2);
+    });
+  }
+
+  it("sync bem-sucedido alcançando origin → up_to_date:true / commits_behind:0", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git rev-list --count HEAD..origin/master": ok("0\n"),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "synced");
+    assert.equal(r.up_to_date, true);
+    assert.equal(r.commits_behind, 0);
+    assert.equal(r.proceed, true);
+  });
+
+  it("rev-list falhando → conservador: up_to_date:false / commits_behind:-1 (desconhecido)", () => {
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Already up to date."),
+      "git rev-list --count HEAD..origin/master": fail("fatal: not a git repository"),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.up_to_date, false);
+    assert.equal(r.commits_behind, -1);
+    assert.equal(r.proceed, true);
+  });
+
+  it("outcome 'already_up_to_date' com rev-list dizendo 3 atrás NÃO reporta up_to_date:true (a medição vence)", () => {
+    // O coração do #6090: inferir do outcome era o bug do incidente 260825.
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Already up to date."),
+      "git rev-list --count HEAD..origin/master": ok("3\n"),
+    });
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.up_to_date, false);
+    assert.equal(r.commits_behind, 3);
+  });
+
+  it("measureSyncState(): stdout não-numérico → {-1, false}", () => {
+    assert.deepEqual(measureSyncState(makeSpawn({})), { up_to_date: false, commits_behind: -1 });
+  });
+
+  it("measureSyncState(): stdout numérico parseado corretamente", () => {
+    assert.deepEqual(measureSyncState(makeSpawn({ "git rev-list --count HEAD..origin/master": ok("7\n") })), {
+      up_to_date: false,
+      commits_behind: 7,
+    });
   });
 });
