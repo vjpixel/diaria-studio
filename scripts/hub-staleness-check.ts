@@ -38,6 +38,22 @@
  * no caminho de PR. O comando sugerido (`buildRegenCommands`, impresso no
  * e-mail/relatório) é rodado manualmente pelo editor.
  *
+ * **Issue no GitHub por entrada vencida (#6151, mesmo padrão do #5339).**
+ * Diferente dos outros 9+ alarmes deste repo, este script mandava só e-mail
+ * — o achado não deixava rastro persistente além da caixa de entrada
+ * (achado #6151: dedup do e-mail confirmou que o mesmo drift já tinha sido
+ * alarmado antes, sem nenhuma issue aberta cobrindo). Cada entrada vencida
+ * agora vira/reusa 1 issue via `scripts/lib/alarm-issues.ts`
+ * (`toAlarmFinding`, `scripts/lib/hub-staleness-check.ts`) — `check` = slug
+ * do hub, `fingerprint` = `staleEntryKey` (hub+edição), `family: "estado"`
+ * (a issue se auto-comenta/fecha quando o editor regenerar o dataset e a
+ * entrada sumir de `stale`). Estado de tracking em
+ * `data/hubs/alarm-issues.json` (separado de `staleness-state.json` — mesmo
+ * racional de `hub-drift-check.ts`: idempotência do e-mail e tracking de
+ * issue são preocupações independentes). Continua **NUNCA** rodando os
+ * regens sozinho — a issue só documenta o achado, a decisão de quando
+ * regenerar continua manual (#4924 item 2).
+ *
  * Uso:
  *   npx tsx scripts/hub-staleness-check.ts                       # detecta + persiste + alarma se necessário
  *   npx tsx scripts/hub-staleness-check.ts --dry-run              # detecta + imprime, NÃO persiste nem alarma
@@ -67,6 +83,7 @@ import {
   advanceStalenessState,
   buildStalenessAlarmEmail,
   emptyStalenessAlarmState,
+  toAlarmFinding,
   type StaleHubEdition,
   type StaleFirstSeenMap,
   type StalenessAlarmState,
@@ -76,15 +93,26 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmIssuesState,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
 const HUBS_DATA_DIR = resolve(ROOT, "data/hubs");
 const STATE_PATH = join(HUBS_DATA_DIR, "staleness-state.json");
+const ALARM_ISSUES_STATE_PATH = join(HUBS_DATA_DIR, "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[hub-staleness-check]";
 const DEFAULT_THRESHOLD_DAYS = 3;
+/** #6151: task roda diária (09:30) — 2 execuções limpas consecutivas = 48h
+ * sem o achado antes de fechar a issue automaticamente, mesmo valor de
+ * `hub-drift-check.ts`/`beehiiv-home-meta-check.ts` pra cadência diária. */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 /** Lê os `{slug}-sources.generated.json` commitados dos hubs registrados em
  * `HUB_KEYWORD_PATTERNS`. Sempre commitados (diferente de `POSTS_DIR`) —
@@ -148,6 +176,27 @@ export function saveState(state: PersistedState, statePath: string = STATE_PATH)
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #6151) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional de
+// hub-drift-check.ts/beehiiv-home-meta-check.ts: idempotência do E-MAIL
+// (acima) e tracking de ISSUE por achado são preocupações independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
 /** `YYYY-MM-DD` em UTC — mesma resolução de `HubSourceEntry.date`/
  * `StaleHubEdition.date`. Determinístico via param injetável pra teste. */
 function todayISO(now: Date = new Date()): string {
@@ -194,13 +243,47 @@ async function main(): Promise<void> {
     `${LOG_PREFIX} ${stale.length} entrada(s) stale, ${overdue.length} vencida(s) (>= ${thresholdDays} dia(s)).`,
   );
 
+  // #6151 — reconcilia issue por entrada vencida ANTES de montar o e-mail (o
+  // e-mail cita a issue de cada achado pendente), mesmo padrão de
+  // hub-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
+  // não-dry-run, independente de um e-mail novo disparar nesta rodada.
+  const alarmFindings = overdue.map(toAlarmFinding);
+  const alarmIssuesState = loadAlarmIssuesState();
+  let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
+
   if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmIssuesState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
     console.log(`${LOG_PREFIX} --dry-run: snapshot NÃO persistido, alarme NÃO enviado, cursor NÃO avançado.`);
     if (shouldAlarmStaleness(state.alarm, overdue)) {
       const { subject, body } = buildStalenessAlarmEmail(overdue, thresholdDays, now);
       console.log(`${LOG_PREFIX} --dry-run: alarmaria com:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     }
     return;
+  }
+
+  const { nextState: nextAlarmIssuesState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmIssuesState, {
+    cwd: ROOT,
+    closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+  });
+  saveAlarmIssuesState(nextAlarmIssuesState);
+  // `fingerprint` já É `staleEntryKey(entry)` (ver `toAlarmFinding`) — a
+  // mesma chave que `buildStalenessAlarmEmail` usa pra citar a issue.
+  issueRefs = new Map(
+    findingOutcomes.map((o) => [
+      o.fingerprint,
+      { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+    ]),
+  );
+  for (const o of findingOutcomes) {
+    if (o.action === "failed") {
+      console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
+    } else {
+      console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+    }
   }
 
   // Snapshot diário — sempre escrito, mesmo `stale: []` (confirma que a task
@@ -213,7 +296,7 @@ async function main(): Promise<void> {
   // Alarme — #5123 item 3.
   let nextAlarmState = state.alarm;
   if (shouldAlarmStaleness(state.alarm, overdue)) {
-    const { subject, body } = buildStalenessAlarmEmail(overdue, thresholdDays, now);
+    const { subject, body } = buildStalenessAlarmEmail(overdue, thresholdDays, now, issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     // Mesmo racional de hub-drift-check.ts: sem try/catch — se o envio
     // falhar, o cursor abaixo não avança, então a próxima execução tenta
