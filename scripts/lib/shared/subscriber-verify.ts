@@ -126,3 +126,61 @@ export async function verifySubscriberViaBeehiivByEmail(
     return "verification_failed";
   }
 }
+
+export interface KitByEmailDeps {
+  fetchImpl?: typeof fetch;
+  baseUrl?: string;
+}
+
+/**
+ * Verificação SECUNDÁRIA equivalente à Beehiiv, mas contra o Kit (#6048,
+ * migração Beehiiv → Kit, #461/#463) — `GET /v4/subscribers?email_address=`,
+ * auth via header `X-Kit-Api-Key` (não Bearer, diferente da Beehiiv).
+ *
+ * **Diferença de shape confirmada ao vivo (24/08/2026): "não encontrado" é
+ * HTTP 200 com `subscribers: []`, NUNCA 404** — ao contrário do endpoint
+ * `by_email` da Beehiiv, que usa 404 legítimo pra "não existe". Testado
+ * contra um e-mail real não-cadastrado (`diariaeditor@gmail.com` na conta
+ * de produção): `200 {"subscribers":[],"pagination":{...}}`. Por isso o
+ * branch de "não encontrado" aqui é `subscribers.length === 0` dentro do
+ * `res.ok`, não um `res.status === 404` dedicado como no ramo Beehiiv.
+ *
+ * `state` do Kit é o enum confirmado no #6047: `active | cancelled | bounced
+ * | complained | inactive` — `active` mapeia pra `"active"`, os outros 4 pra
+ * `"inactive"` (mesmo agrupamento que a Beehiiv já faz pra
+ * `inactive`/`cancelled`). Qualquer não-2xx ou exceção de rede/parse vira
+ * `"verification_failed"` — mesma semântica do #4321 (distinto de "não é
+ * assinante").
+ *
+ * **Achado do review (PR #6082): ainda NÃO tem nenhum caller em produção.**
+ * `workers/poll/src/web-gate.ts` (`checkWebSubscriber`) segue chamando só
+ * `verifySubscriberViaBeehiivByEmail` — diferente de `subscribeToKit`
+ * (`workers/poll/src/subscribe.ts`), que já tem um branch real
+ * (`env.SUBSCRIBE_BACKEND === "kit"`), esta função existe mas não está
+ * wireada em lugar nenhum ainda. Fica pra quando `web-gate.ts` ganhar o
+ * mesmo seletor de backend — trabalho futuro do #6048, não coberto aqui.
+ */
+export async function verifySubscriberViaKitByEmail(
+  apiKey: string,
+  email: string,
+  deps: KitByEmailDeps = {},
+): Promise<SubscriberVerifyState> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = deps.baseUrl ?? "https://api.kit.com/v4";
+  try {
+    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+      headers: { "X-Kit-Api-Key": apiKey },
+    });
+    if (!res.ok) return "verification_failed";
+    const body = (await res.json()) as { subscribers?: { state?: string }[] };
+    const sub = body?.subscribers?.[0];
+    if (!sub) return "unknown";
+    if (sub.state === "active") return "active";
+    if (sub.state === "cancelled" || sub.state === "bounced" || sub.state === "complained" || sub.state === "inactive") {
+      return "inactive";
+    }
+    return "unknown";
+  } catch {
+    return "verification_failed";
+  }
+}

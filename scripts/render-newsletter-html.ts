@@ -16,11 +16,13 @@
  * --format html (default): outputs HTML body content for Beehiiv Custom HTML block
  * --format json: outputs structured JSON with all parsed sections
  * --out: write to file instead of stdout
- * --esp beehiiv|brevo: merge tag do link de voto do É IA? (#4266). Default
+ * --esp beehiiv|brevo|kit: merge tag do link de voto do É IA? (#4266). Default
  *   beehiiv (`{{email}}` cru — o token opaco do #4487 foi revertido neste
  *   ramo pelo #4581). brevo usa `{{ contact.POLL_TOKEN }}%40vote.eia.diaria.local`
- *   (token opaco, ainda vivo lá, #4517; `@` percent-encoded desde #4692) — só relevante pro modo --format html sem --split
- *   (É IA? standalone/split fica sempre Beehiiv).
+ *   (token opaco, ainda vivo lá, #4517; `@` percent-encoded desde #4692). kit
+ *   (#464) usa `{{ subscriber.email_address }}` (Liquid, cru — mesmo eixo de
+ *   identidade do beehiiv, sem token) — só relevante pro modo --format html
+ *   sem --split (É IA? standalone/split fica sempre Beehiiv).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
@@ -123,7 +125,7 @@ import {
 // alguém esquecer de adicionar aqui, o TS recusa compilar (propriedade
 // faltando) — um array `readonly Esp[]` não daria esse erro (achado do
 // review automatizado do PR #4267, type-design-analyzer).
-const ESP_SET: Record<Esp, true> = { beehiiv: true, brevo: true };
+const ESP_SET: Record<Esp, true> = { beehiiv: true, brevo: true, kit: true };
 const VALID_ESP = Object.keys(ESP_SET) as Esp[];
 
 // ── Main ──────────────────────────────────────────────────────────────
@@ -198,7 +200,7 @@ function main(): void {
 
   if (!editionDir) {
     console.error(
-      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo] [--patronos]\n" +
+      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo|kit] [--patronos]\n" +
         "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046\n" +
         `  --esp: merge tag do link de voto do É IA? (${VALID_ESP.join("|")}, default beehiiv). #4266\n` +
         "  --patronos: variante Patronos (#4275, Fase 1) — MESMO 02-reviewed.md, troca só o preenchimento dos slots de caixa via platform.config.json → boxes_divulgacao_patronos. Combine com --out apontando pra um arquivo distinto (ex: _internal/newsletter-final-patronos.html) — não sobrescreve o --out padrão sozinho.",
@@ -247,9 +249,9 @@ function main(): void {
   // #4266 — modo --split sempre emite È IA? standalone Beehiiv-only
   // (renderEiaStandalone não aceita esp, ver lib/newsletter-render-html.ts) —
   // mesmo padrão de aviso explícito já usado pra --split + --out (abaixo).
-  if (split && esp === "brevo") {
+  if (split && esp !== "beehiiv") {
     console.error(
-      "--split + --esp brevo: --esp ignorado. newsletter-eia.html do modo split é sempre Beehiiv (paste híbrido não suporta Brevo).",
+      `--split + --esp ${esp}: --esp ignorado. newsletter-eia.html do modo split é sempre Beehiiv (paste híbrido não suporta ${esp}).`,
     );
   }
 

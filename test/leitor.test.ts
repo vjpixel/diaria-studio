@@ -12,6 +12,7 @@ import {
   computeCtrPct,
   isLeitorV1,
   leitorInputFromBeehiivSubscriber,
+  leitorInputFromKitSubscriber,
   summarizeLeitores,
   parseLeitorArgs,
   DEFAULT_BACKUP_ROOT,
@@ -169,6 +170,74 @@ describe("click_rate nunca é usado", () => {
     // garantia real é o Proxy acima + a leitura do código fonte.
     const shapeWithoutClickRate = { status: "active", stats: { total_received: 10, total_unique_clicked: 1 } };
     assert.doesNotThrow(() => leitorInputFromBeehiivSubscriber(shapeWithoutClickRate));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// leitorInputFromKitSubscriber — extração simétrica pro Kit (#6050)
+// ---------------------------------------------------------------------------
+
+describe("leitorInputFromKitSubscriber", () => {
+  it("mapeia state → status, stats.sent → totalReceived, stats.clicked → totalUniqueClicked", () => {
+    const sub = { state: "active", stats: { sent: 238, clicked: 171 } };
+    const input = leitorInputFromKitSubscriber(sub);
+    assert.deepEqual(input, { status: "active", totalReceived: 238, totalUniqueClicked: 171 });
+  });
+
+  it("stats ausente/null vira 0/0, nunca NaN", () => {
+    assert.deepEqual(leitorInputFromKitSubscriber({ state: "active" }), {
+      status: "active",
+      totalReceived: 0,
+      totalUniqueClicked: 0,
+    });
+    assert.deepEqual(leitorInputFromKitSubscriber({ state: "active", stats: null }), {
+      status: "active",
+      totalReceived: 0,
+      totalUniqueClicked: 0,
+    });
+  });
+
+  it("state não-active (cancelled/bounced/complained/inactive) propaga pra isLeitorV1 rejeitar", () => {
+    for (const state of ["cancelled", "bounced", "complained", "inactive"]) {
+      const input = leitorInputFromKitSubscriber({ state, stats: { sent: 100, clicked: 10 } });
+      assert.equal(input.status, state);
+      assert.equal(isLeitorV1(input), false, `state=${state} nunca deveria passar em isLeitorV1`);
+    }
+  });
+
+  it("Proxy que lança ao acessar click_rate — leitorInputFromKitSubscriber nunca toca a chave (mesma disciplina da Beehiiv)", () => {
+    let accessed = false;
+    const stats = new Proxy(
+      { sent: 238, clicked: 171 },
+      {
+        get(target, prop, receiver) {
+          if (prop === "click_rate") {
+            accessed = true;
+            throw new Error("click_rate foi acessado — não deveria");
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      },
+    );
+    const sub = { state: "active", stats } as unknown as { state: string; stats: typeof stats };
+    const input = leitorInputFromKitSubscriber(sub);
+    assert.equal(accessed, false);
+    assert.deepEqual(input, { status: "active", totalReceived: 238, totalUniqueClicked: 171 });
+  });
+
+  it("KitSubscriberStatsShape (tipo aceito pela extração) não declara click_rate", () => {
+    const shapeWithoutClickRate = { state: "active", stats: { sent: 10, clicked: 1 } };
+    assert.doesNotThrow(() => leitorInputFromKitSubscriber(shapeWithoutClickRate));
+  });
+
+  it("resultado é equivalente ao da Beehiiv pro mesmo dado numérico — só o nome dos campos de origem muda", () => {
+    const beehiivInput = leitorInputFromBeehiivSubscriber({
+      status: "active",
+      stats: { total_received: 100, total_unique_clicked: 5 },
+    });
+    const kitInput = leitorInputFromKitSubscriber({ state: "active", stats: { sent: 100, clicked: 5 } });
+    assert.deepEqual(beehiivInput, kitInput);
+    assert.equal(isLeitorV1(beehiivInput), isLeitorV1(kitInput));
   });
 });
 

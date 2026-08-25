@@ -146,6 +146,27 @@ export interface Env {
    * `workers/poll/src/index.ts` (ver docstring lá). OPCIONAL — ausente =
    * `sendCompleteRegistrationEvent` é no-op silencioso. */
   META_CAPI_ACCESS_TOKEN?: string;
+  /**
+   * #6048 (Fase 2/2, migração Beehiiv → Kit, #461/#463): seleção de backend
+   * de ativação — mesmo padrão de `workers/poll/src/index.ts` (Fase 1,
+   * #6082). Ausente/qualquer valor != "kit" → Beehiiv (default,
+   * comportamento de hoje). Nenhum dispatch externo lê esta var ainda —
+   * switchover manual do editor.
+   */
+  SUBSCRIBE_BACKEND?: string;
+  /** Secret — `wrangler secret put KIT_API_KEY`. Sem ela,
+   * `activateSubscriptionKit` retorna `not_configured` mesmo com
+   * `SUBSCRIBE_BACKEND === "kit"` (mesmo padrão de `BEEHIIV_API_KEY` ausente). */
+  KIT_API_KEY?: string;
+  /** Override só pra teste (mock server local) — default `https://api.kit.com/v4`. */
+  KIT_API_URL?: string;
+  /** Nomes dos custom fields Kit onde gravar UTM/referring-site de reativação
+   * (Kit não tem atribuição nativa — achado ao vivo #6048) — nenhum criado
+   * em produção ainda, degrade gracioso. */
+  KIT_UTM_SOURCE_FIELD?: string;
+  KIT_UTM_MEDIUM_FIELD?: string;
+  KIT_UTM_CAMPAIGN_FIELD?: string;
+  KIT_REFERRING_SITE_FIELD?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -479,6 +500,127 @@ export async function activateSubscription(
   return { ok: true, status: res.status, beehiivStatus };
 }
 
+/**
+ * #6048 (Fase 2/2, migração Beehiiv → Kit, #461/#463): equivalente Kit de
+ * `activateSubscription` acima — MAIS SIMPLES que o caminho Beehiiv, não
+ * DELETE+CREATE. Achados ao vivo reusados sem redescobrir (ver docstring
+ * completa de `subscribeToKit` em `workers/poll/src/subscribe.ts`, Fase 1
+ * #6082):
+ *
+ * - `POST /v4/subscribers` é IDEMPOTENTE por e-mail — não existe o problema
+ *   Beehiiv de "registro Pending travado que precisa ser deletado antes de
+ *   recriar" (esse problema É a razão de existir do DELETE+CREATE acima).
+ *   Um único POST com `state: "active"` faz o mesmo trabalho de reativação
+ *   que o passo 3 do caminho Beehiiv faz — sem passo 1 (GET pra decidir) nem
+ *   passo 2 (DELETE) serem estruturalmente necessários.
+ * - `state: "active"` bypassa qualquer confirmação — mesmo efeito do
+ *   `double_opt_override: "off"` da Beehiiv (ver bloco DOUBLE OPT-IN em
+ *   `workers/poll/src/subscribe.ts`).
+ *
+ * Ainda assim, mantemos 1 GET inicial (`?email_address=`) só pra idempotência
+ * honesta — pessoa clica 2x, ou a via de score do `evaluate-brevo-diaria.ts`
+ * já promoveu — e pro guard de descadastro nativo pendente (#4538 item B,
+ * `checkNativeUnsubscribePending`, backend-agnóstico — Brevo é a fonte desse
+ * guard nos dois caminhos).
+ *
+ * ## Preservação de "origem original" (#5231) — NÃO IMPLEMENTADA para Kit
+ *
+ * O caminho Beehiiv (`activateSubscription`) lê a UTM original do GET e a
+ * preserva num `custom_fields` dedicado antes do DELETE+CREATE sobrescrever
+ * a atribuição com a UTM constante de reativação (`buildOrigemOriginalCustomFields`).
+ * Para Kit, este PR NÃO reimplementa esse mecanismo — degrade gracioso
+ * documentado explicitamente (mesmo padrão do #6048 Fase 1 pra UTM/nome):
+ * Kit não tem UTM nativo, só via `fields` customizado, e nenhum
+ * `KIT_ORIGEM_ORIGINAL_FIELD` foi criado em produção. Diferente da Beehiiv,
+ * o upsert do Kit só sobrescreve os `fields` que o POST de fato enviar — se
+ * nenhum `KIT_UTM_*_FIELD` estiver configurado, o POST não manda `fields`
+ * nenhum, e qualquer atribuição capturada no cadastro original (se algum dia
+ * gravada via `subscribeToKit`) fica intocada. Ou seja: a preservação
+ * acontece "de graça" pela semântica de upsert do Kit, SEM precisar do
+ * mecanismo de leitura+reescrita explícito que a Beehiiv exige — mas só
+ * enquanto os `KIT_UTM_*_FIELD` de reativação continuarem ausentes; ligá-los
+ * reintroduz a mesma sobrescrita que o #5231 resolveu do lado Beehiiv, sem
+ * mitigação equivalente aqui. Fica pra quando/se o editor decidir ligar
+ * atribuição de reativação via Kit (trabalho futuro, sem issue própria).
+ */
+export async function activateSubscriptionKit(
+  env: Env,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ActivateResult> {
+  const apiKey = env.KIT_API_KEY;
+  if (!apiKey) {
+    console.error(JSON.stringify({ event: "reativar_kit_not_configured" }));
+    return { ok: false, status: 503, reason: "not_configured" };
+  }
+
+  const base = env.KIT_API_URL ?? "https://api.kit.com/v4";
+  const authHeaders = { "X-Kit-Api-Key": apiKey, Accept: "application/json" };
+
+  // 1) idempotência — já active não precisa de mais nada.
+  try {
+    const getRes = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+    if (!getRes.ok) {
+      console.error(JSON.stringify({ event: "reativar_kit_non_2xx", step: "get", status: getRes.status }));
+      return { ok: false, status: getRes.status, reason: "beehiiv_error" };
+    }
+    const body = (await getRes.json().catch(() => null)) as { subscribers?: { state?: string }[] } | null;
+    const existingState = body?.subscribers?.[0]?.state;
+    if (existingState === "active") {
+      return { ok: true, status: 200, beehiivStatus: "active" };
+    }
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "get", error: String(e) }));
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
+
+  // 1.5) guard de descadastro nativo pendente (#4538 item B) — mesmo guard
+  // backend-agnóstico do caminho Beehiiv (fonte é sempre Brevo).
+  const nativeCheck = await checkNativeUnsubscribePending(env, email, fetchImpl);
+  if (nativeCheck.status === "confirmed_pending") {
+    console.warn(JSON.stringify({ event: "reativar_kit_blocked_native_unsubscribe_pending" }));
+    return { ok: true, status: 200, reason: "native_unsubscribe_pending" };
+  }
+
+  // 2) upsert direto — sem DELETE, ver docstring acima. `fields` só vai no
+  // corpo quando os respectivos KIT_*_FIELD estão configurados (nenhum
+  // criado em produção ainda) — ver seção "origem original" acima pro
+  // porquê de omitir `fields` também preservar atribuição por default.
+  const fields: Record<string, string> = {};
+  if (env.KIT_UTM_SOURCE_FIELD) fields[env.KIT_UTM_SOURCE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source;
+  if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium;
+  if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign;
+  if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite;
+
+  const postBody: Record<string, unknown> = { email_address: email, state: "active" };
+  if (Object.keys(fields).length > 0) postBody.fields = fields;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/subscribers`, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify(postBody),
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reativar_kit_fetch_failed", step: "create", error: String(e) }));
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
+  if (!res.ok) {
+    console.error(JSON.stringify({ event: "reativar_kit_non_2xx", step: "create", status: res.status }));
+    return { ok: false, status: res.status, reason: "beehiiv_error" };
+  }
+
+  // Kit sempre confirma `state: "active"` na resposta quando o POST manda
+  // `state: "active"` (achado ao vivo #6048, Fase 1) — sem o estado
+  // transitório "validating" que a Beehiiv tem, então sem retry necessário.
+  return { ok: true, status: res.status, beehiivStatus: "active" };
+}
+
 // ── HTML (puro) ───────────────────────────────────────────────────────────
 
 function page(title: string, body: string): string {
@@ -623,9 +765,14 @@ export async function handleConfirm(
     const html = parsed.error === "missing_email" ? renderMissingEmailPage() : renderInvalidEmailPage();
     return htmlResponse(html, 400);
   }
-  const result = sleepImpl
-    ? await activateSubscription(env, parsed.email, fetchImpl, sleepImpl)
-    : await activateSubscription(env, parsed.email, fetchImpl);
+  // #6048: mesma seleção de backend local ao handler — env.SUBSCRIBE_BACKEND
+  // não é lido por nenhum outro dispatch fora deste worker.
+  const useKit = env.SUBSCRIBE_BACKEND === "kit";
+  const result = useKit
+    ? await activateSubscriptionKit(env, parsed.email, fetchImpl)
+    : sleepImpl
+      ? await activateSubscription(env, parsed.email, fetchImpl, sleepImpl)
+      : await activateSubscription(env, parsed.email, fetchImpl);
   if (!result.ok) {
     const status = result.reason === "not_configured" ? 503 : 502;
     return htmlResponse(renderErrorPage(), status);

@@ -20,6 +20,7 @@ import {
   isPostPixel,
   groupByDestaque,
   channelsForSection,
+  renderDestaqueGroup,
 } from "../scripts/render-social-html.ts";
 
 const MD = `# LinkedIn
@@ -379,5 +380,84 @@ Post Instagram do d2.
       ["💼 LinkedIn", "📘 Facebook", "📷 Instagram"],
       "cada bloco legado rotulado com o canal único correspondente",
     );
+  });
+});
+
+describe("carrossel diário do Instagram — galeria de rolagem (#6005 Parte B / #6064)", () => {
+  const MD_D1 = `# Social
+
+## d1
+
+Texto único do d1.
+`;
+
+  const IMAGES_FULL = {
+    d1_4x5: { url: "https://img.example/d1-4x5.jpg" },
+    d1_carousel_p1: { url: "https://img.example/d1-p1.jpg" },
+    d1_carousel_p2: { url: "https://img.example/d1-p2.jpg" },
+    d1_carousel_p3: { url: "https://img.example/d1-p3.jpg" },
+    d1_carousel_cta: { url: "https://img.example/d1-cta.jpg" },
+  };
+
+  it("todos os 5 slides presentes → carouselImages populado com capa + p1 + p2 + p3 + cta, nesta ordem", () => {
+    const groups = groupByDestaque(parsePlatforms(MD_D1), IMAGES_FULL);
+    const d1 = groups.find((g) => g.key === "d1")!;
+    assert.ok(d1.carouselImages, "carouselImages deve existir quando os 5 slides estão presentes");
+    assert.deepEqual(
+      d1.carouselImages!.map((s) => s.url),
+      [
+        "https://img.example/d1-4x5.jpg",
+        "https://img.example/d1-p1.jpg",
+        "https://img.example/d1-p2.jpg",
+        "https://img.example/d1-p3.jpg",
+        "https://img.example/d1-cta.jpg",
+      ],
+      "ordem fixa: capa (d1_4x5) → p1 → p2 → p3 → cta",
+    );
+  });
+
+  it("qualquer slide ausente → carouselImages undefined (tudo-ou-nada, mesma regra de resolveCarouselImageUrls)", () => {
+    const { d1_carousel_cta, ...IMAGES_MISSING_CTA } = IMAGES_FULL;
+    const groups = groupByDestaque(parsePlatforms(MD_D1), IMAGES_MISSING_CTA);
+    const d1 = groups.find((g) => g.key === "d1")!;
+    assert.equal(d1.carouselImages, undefined, "sem os 5 slides, cai pro fallback de imagem única");
+    assert.ok(d1.imageUrl, "imageUrl (capa) continua disponível pro fallback");
+  });
+
+  it("É IA?/post_pixel nunca recebem carouselImages, mesmo com as chaves d1_carousel_* presentes", () => {
+    const MD_EIA_PIXEL = `# Social
+
+## eia
+
+Texto do É IA?
+
+## post_pixel
+
+Post pessoal.
+`;
+    const groups = groupByDestaque(parsePlatforms(MD_EIA_PIXEL), {
+      ...IMAGES_FULL,
+      eia_a: { url: "https://img.example/eia-a.jpg" },
+      eia_b: { url: "https://img.example/eia-b.jpg" },
+    });
+    for (const g of groups) {
+      assert.equal(g.carouselImages, undefined, `${g.key} não é destaque numerado — sem carrossel`);
+    }
+  });
+
+  it("renderDestaqueGroup: com carrossel completo, renderiza a galeria de rolagem no lugar da imagem única", () => {
+    const groups = groupByDestaque(parsePlatforms(MD_D1), IMAGES_FULL);
+    const html = renderDestaqueGroup(groups[0], "#000");
+    assert.ok(html.includes("carousel-gallery-scroll"), "galeria de rolagem presente");
+    assert.equal(countImgTags(html), 5, "5 slides renderizados, 1 <img> cada");
+    assert.ok(!html.includes(`<div class="post-image"><img`), "não cai no slot de imagem única quando o carrossel existe");
+  });
+
+  it("renderDestaqueGroup: sem carrossel completo, mantém o comportamento de imagem única (fallback)", () => {
+    const { d1_carousel_cta, ...IMAGES_MISSING_CTA } = IMAGES_FULL;
+    const groups = groupByDestaque(parsePlatforms(MD_D1), IMAGES_MISSING_CTA);
+    const html = renderDestaqueGroup(groups[0], "#000");
+    assert.ok(!html.includes("carousel-gallery-scroll"), "sem galeria quando o carrossel está incompleto");
+    assert.equal(countImgTags(html), 1, "1 <img> só — a capa, como single-image de sempre");
   });
 });

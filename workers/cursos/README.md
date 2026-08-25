@@ -109,6 +109,15 @@ client-side (lista pequena, sem backend de busca).
 3. `wrangler secret put BEEHIIV_API_KEY` (opcional — habilita verificação
    secundária + cadastro inline).
 4. `wrangler secret put BEEHIIV_PUBLICATION_ID` (opcional, par do anterior).
+4b. `wrangler secret put KIT_API_KEY` (opcional, #6048 Fase 2/2 — migração
+    Beehiiv → Kit) — habilita `subscribeToKit` como caminho alternativo de
+    cadastro inline. **Só tem efeito com `SUBSCRIBE_BACKEND=kit` setado
+    também** (Worker var, não secret); ausente/qualquer outro valor →
+    Beehiiv continua sendo o backend (default, sem mudança de comportamento).
+    `KIT_NAME_FIELD`/`KIT_UTM_SOURCE_FIELD`/`KIT_UTM_MEDIUM_FIELD`/
+    `KIT_UTM_CAMPAIGN_FIELD`/`KIT_REFERRING_SITE_FIELD` opcionais (mesmo
+    padrão de `BEEHIIV_NAME_FIELD`) — nenhum custom field criado em produção
+    ainda, degrade gracioso.
 5. Rodar `scripts/sync-cursos-subscribers-kv.ts` pra popular o KV pela 1ª vez
    — já agendado depois disso via systemd diariamente às 09:15 (task
    `Diaria-Cursos-Kv-Sync`, ver `docs/cursos-worker-alarm-setup.md`).

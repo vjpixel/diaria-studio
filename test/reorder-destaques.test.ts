@@ -31,8 +31,11 @@ import {
   renameSyncVerified,
   deriveTituloSubtitulo,
   parseArgs,
+  refreshSocialSourceHash,
+  reindexCarouselSourceHashes,
   type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
+import { hashFromApprovedFile } from "../scripts/lib/social-source-hash.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
@@ -1331,12 +1334,12 @@ describe("reorder-destaques CLI (#3980): TÍTULO/SUBTÍTULO pós-reorder", () =>
 });
 
 describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reorder", () => {
-  it("move D1 (limite 1200) pra D2 (limite 1000) com corpo excedente → WARN, sem hard-fail", () => {
+  it("corpo acima da janela única (900–1000, #6061) sobrevive ao reorder → WARN, sem hard-fail", () => {
     const dir = makeEditionDirFixture();
     try {
       const md = buildReviewedMdFixture({
         d1Title: "D1 grande",
-        d1Body: "A".repeat(1100), // cabia em D1 (≤1200) mas excede o novo teto de D2 (1000)
+        d1Body: "A".repeat(1100), // acima do teto da janela única (1000) — o WARN vem do texto, não do movimento
         d2Title: "D2 pequeno",
         d2Body: "A".repeat(600),
         d3Title: "D3 pequeno",
@@ -1455,6 +1458,331 @@ describe("reorder-destaques CLI (#5087): imagens renomeadas ANTES do texto — a
         originalApprovedCapped,
         "01-approved-capped.json não deveria ter sido tocado — imagem falhou primeiro",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #6062: .social-source-hash.json pós-reorder ─────────────────────────
+//
+// Bug original: o reorder propagava a nova ordem pro 03-social.md mas deixava
+// o carimbo de `_internal/.social-source-hash.json` (#1413) apontando pros
+// highlights ANTIGOS — `check-invariants.ts --stage 4` acusava
+// `social-hash-fresh` como ERROR com o social JÁ correto (edição 260825).
+// Testes via CLI porque a regressão possível é de FIAÇÃO em main(): a função
+// pura pode existir e ninguém chamá-la.
+
+function writeApprovedFixture(dir: string, urls: string[]): string {
+  const approvedPath = join(dir, "_internal", "01-approved.json");
+  writeFileSync(
+    approvedPath,
+    JSON.stringify(
+      {
+        highlights: urls.map((url, i) => ({
+          url,
+          title_options: [`Título ${i + 1}`, "Alt", "Alt2"],
+        })),
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  return approvedPath;
+}
+
+const SOCIAL_MD_FIXTURE = `# Social
+
+## d1
+
+Post D1...
+
+## d2
+
+Post D2...
+
+## d3
+
+Post D3...
+`;
+
+describe("reorder-destaques CLI (#6062): .social-source-hash.json", () => {
+  it("recarimba o hash com os highlights JÁ reordenados (era ERROR falso em social-hash-fresh)", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const approvedPath = writeApprovedFixture(dir, [
+        "https://a.com/1",
+        "https://b.com/2",
+        "https://c.com/3",
+      ]);
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+      const staleHash = hashFromApprovedFile(approvedPath);
+      writeFileSync(
+        hashPath,
+        JSON.stringify({ hash: staleHash, generated_at: "2026-08-25T00:00:00.000Z" }, null, 2),
+        "utf8",
+      );
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+
+      // O hash gravado tem que bater com o que o invariante de Stage 4
+      // recomputa do approved JÁ reordenado — senão o gate acusa stale.
+      const esperado = hashFromApprovedFile(approvedPath);
+      const gravado = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
+      assert.equal(gravado.hash, esperado);
+      assert.notEqual(
+        gravado.hash,
+        staleHash,
+        "o hash pré-reorder não pode sobreviver — era exatamente o falso positivo do #6062",
+      );
+
+      // E o arquivo precisa aparecer no relatório de modificados.
+      const report = JSON.parse(result.stdout) as { modified: { rewritten: string[] } };
+      assert.ok(
+        report.modified.rewritten.some((f) => f.endsWith(".social-source-hash.json")),
+        `hash deveria constar em modified.rewritten: ${result.stdout}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO recarimba quando não há 03-social.md — não inventa frescor pra social inexistente", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeApprovedFixture(dir, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+      assert.equal(
+        existsSync(hashPath),
+        false,
+        "sem 03-social.md não existe social pra declarar fresco",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não escreve o hash", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeApprovedFixture(dir, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+        "--dry-run",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+      assert.equal(existsSync(hashPath), false, "--dry-run não pode tocar o disco");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("refreshSocialSourceHash (#6062, unidade)", () => {
+  it("approved ausente → null, sem lançar (best-effort, não derruba o reorder)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-hash-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      assert.equal(refreshSocialSourceHash(dir, false), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("approved ilegível → warning + null, nunca exceção", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-hash-bad-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "01-approved.json"), "{ nao json", "utf8");
+      assert.equal(refreshSocialSourceHash(dir, false), null);
+      assert.equal(existsSync(join(dir, "_internal", ".social-source-hash.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #6068: carimbo do carrossel acompanha o reorder ─────────────────────
+//
+// `renameDestaqueImages` já renomeia `04-d{N}-carousel-{slot}-4x5.jpg` (o
+// regex de sufixo com hífen do #5085 pega esses nomes sem código dedicado),
+// mas o carimbo `_internal/.carousel-source-hash.json` indexa por destaque —
+// sem reindexar, um swap deixa a entrada `d1` com o hash do texto do ex-D1
+// enquanto o arquivo `d1` já é a arte do ex-D2, e `carousel-cards-stale`
+// acusa ERROR falso nos dois destaques trocados.
+
+function writeCarouselStamp(dir: string, hashes: Record<string, string>): string {
+  const path = join(dir, "_internal", ".carousel-source-hash.json");
+  writeFileSync(path, JSON.stringify({ hashes, generated_at: "2026-08-24T00:00:00.000Z" }, null, 2), "utf8");
+  return path;
+}
+
+function readCarouselStamp(dir: string): Record<string, string> {
+  const raw = readFileSync(join(dir, "_internal", ".carousel-source-hash.json"), "utf8");
+  return (JSON.parse(raw) as { hashes: Record<string, string> }).hashes;
+}
+
+describe("reorder-destaques CLI (#6068): .carousel-source-hash.json", () => {
+  it("swap D1↔D2 reindexa as entradas do carimbo junto com o rename dos slides", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+
+      const hashes = readCarouselStamp(dir);
+      assert.equal(hashes.d1, "hashD2", "a posição 1 agora tem a arte/texto do ex-D2");
+      assert.equal(hashes.d2, "hashD1");
+      assert.equal(hashes.d3, "hashD3", "d3 não se moveu");
+
+      const report = JSON.parse(result.stdout) as { modified: { rewritten: string[] } };
+      assert.ok(
+        report.modified.rewritten.some((f) => f.endsWith(".carousel-source-hash.json")),
+        `carimbo deveria constar em modified.rewritten: ${result.stdout}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run não reescreve o carimbo", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+        "--dry-run",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.deepEqual(readCarouselStamp(dir), { d1: "hashD1", d2: "hashD2", d3: "hashD3" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição sem carrossel (carimbo ausente) é no-op — não cria o arquivo", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.equal(existsSync(join(dir, "_internal", ".carousel-source-hash.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reindexCarouselSourceHashes (#6068, unidade)", () => {
+  it("carimbo ausente → null (nada a reindexar)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      assert.equal(reindexCarouselSourceHashes(dir, [2, 1, 3], false), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("entrada faltando na posição de origem não deixa hash velho na posição nova", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-parcial-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeCarouselStamp(dir, { d1: "hashD1", d3: "hashD3" }); // d2 nunca carimbado
+      const out = reindexCarouselSourceHashes(dir, [2, 1, 3], false);
+      assert.ok(out);
+      assert.equal(out!.hashes.d1, undefined, "origem (d2) não tinha hash — d1 não pode herdar o antigo");
+      assert.equal(out!.hashes.d2, "hashD1");
+      assert.equal(out!.hashes.d3, "hashD3");
+
+      // O que importa é o DISCO: a escrita mesclava com o arquivo antigo e
+      // ressuscitava a entrada recém-deletada (#6068).
+      const emDisco = readCarouselStamp(dir);
+      assert.equal(emDisco.d1, undefined, "o delete precisa chegar ao arquivo, não só ao objeto em memória");
+      assert.equal(emDisco.d2, "hashD1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("refreshSocialSourceHash — gate do 03-social.md (#6062/#6068)", () => {
+  it("social SEM seções `## d{N}` não recarimba: o arquivo continua na ordem velha", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ url: "https://a" }, { url: "https://b" }, { url: "https://c" }] }),
+        "utf8",
+      );
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+      writeFileSync(hashPath, JSON.stringify({ hash: "carimboVelho", generated_at: "2026-08-24T00:00:00.000Z" }), "utf8");
+      // existe, mas sem nenhum `## d{N}` — reorderSocialMd devolve igual
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\ntexto sem secoes de destaque\n", "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "3,2,1",
+      ]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+
+      const gravado = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
+      assert.equal(
+        gravado.hash,
+        "carimboVelho",
+        "recarimbar aqui diria 'fresco' pra um social que continua na ordem antiga — o falso NEGATIVO que o gate evita",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reindexCarouselSourceHashes — entradas órfãs (#6068)", () => {
+  it("edição de 2 destaques purga o d3 sobrevivente de uma demoção 3→2", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-carousel-orfa-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeCarouselStamp(dir, { d1: "hashD1", d2: "hashD2", d3: "hashD3-orfao" });
+
+      const out = reindexCarouselSourceHashes(dir, [2, 1], false);
+      assert.ok(out);
+      assert.equal(out!.hashes.d3, undefined, "d3 não existe mais nesta edição");
+
+      const emDisco = readCarouselStamp(dir);
+      assert.equal(emDisco.d3, undefined, "a purga precisa chegar ao arquivo");
+      assert.equal(emDisco.d1, "hashD2");
+      assert.equal(emDisco.d2, "hashD1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

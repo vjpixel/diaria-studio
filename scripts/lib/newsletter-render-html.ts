@@ -298,18 +298,31 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
  *
  * Ou seja: `esp` hoje carrega DOIS eixos — sintaxe do ESP **e** modelo de
  * identidade do votante (direto vs. resolvido por lookup no KV). Eram o mesmo
- * eixo entre o #4517 e o #4581. Se um 3º ESP entrar, vale separar os dois em
- * vez de esticar o ternário de `buildVoteUrl` — ver #4581.
+ * eixo entre o #4517 e o #4581. Um 3º ESP entrou no #464 (Kit) — virou
+ * `switch` em vez de esticar o ternário, exatamente como esta nota já
+ * previa.
+ *
+ * **Kit (#464, achado ao vivo 24/08/2026):** mesmo eixo de identidade do
+ * Beehiiv — direto, sem token/lookup no KV (`{{email}}` cru), porque o
+ * mesmo racional do #4581 vale aqui: o É IA? não distribui prêmio, então
+ * votar no lugar de outra pessoa não causa dano. Sintaxe de merge tag é a
+ * própria do Kit, Liquid: `{{ subscriber.email_address }}` — confirmado ao
+ * vivo expandindo pro e-mail real do destinatário (não deixa a chave
+ * literal, não introduz um `@` adjacente à chave como o achado do #4692 na
+ * Brevo). Ver `scripts/lib/kit-broadcasts.ts` pro resto do mecanismo de
+ * publicação via Kit.
  *
  * Cuidado ao editar `buildVoteUrl`: o sufixo `@vote.eia.diaria.local` só pode
  * acompanhar um TOKEN. Colado atrás de `{{email}}` (que já vira um e-mail
  * completo) produz 2 arrobas e derruba todo voto — é o bug do #4512, coberto
- * hoje por `test/vote-token-e2e-4512.test.ts`.
+ * hoje por `test/vote-token-e2e-4512.test.ts`. Kit usa `{{ subscriber.email_address }}`
+ * cru pela mesma razão do Beehiiv (sem token), então a mesma armadilha vale
+ * se algum dia ganhar um sufixo.
  * Exportado — `render-newsletter-html.ts` importa este tipo em vez de repetir
- * o union literal na validação do CLI, então um 3º ESP futuro só precisa
+ * o union literal na validação do CLI, então um 4º ESP futuro só precisa
  * mudar aqui.
  */
-export type Esp = "beehiiv" | "brevo";
+export type Esp = "beehiiv" | "brevo" | "kit";
 
 /**
  * #5176 (260813): padding vertical do `<p>` de corpo do DESTAQUE
@@ -335,13 +348,23 @@ export type Esp = "beehiiv" | "brevo";
  * foram medidos pela calibragem da issue e mantêm o comportamento atual
  * (pPad 0, margens hardcoded existentes) — threading `esp` por todos eles
  * seria escopo maior que o que a issue mediu, sem medição que o justifique.
+ *
+ * **Kit (#464): NÃO CALIBRADO, escolha provisória.** Ao contrário de
+ * Beehiiv/Brevo (medidos ao vivo contra um envio real, #5176), não existe
+ * ainda comparação visual de um e-mail Kit entregue. Assumindo o perfil
+ * Brevo (pPad 0, margem ×0,75) por não haver evidência de que o template
+ * "Text only" do Kit injete `padding` em `<p>` como o Beehiiv faz — mas é
+ * uma suposição, não uma medição. Recalibrar (mesmo método do #5176: e-mail
+ * de teste real, inspecionar o `<style>` computado) antes do 1º envio de
+ * produção via Kit.
  */
-const P_PAD_BY_ESP: Record<Esp, number> = { beehiiv: 4, brevo: 0 };
+const P_PAD_BY_ESP: Record<Esp, number> = { beehiiv: 4, brevo: 0, kit: 0 };
 /** Margem "cheia" de referência entre parágrafos (pré-#2456). O valor
  *  efetivo é `P_MARGIN_BASE * fator` — beehiiv fica em 8px (fator 0,5,
- *  inalterado desde #2456), brevo em 12px (fator 0,75). */
+ *  inalterado desde #2456), brevo em 12px (fator 0,75). kit (#464): mesmo
+ *  fator do brevo, NÃO CALIBRADO — ver docstring acima. */
 const P_MARGIN_BASE = 16;
-const P_MARGIN_FACTOR_BY_ESP: Record<Esp, number> = { beehiiv: 0.5, brevo: 0.75 };
+const P_MARGIN_FACTOR_BY_ESP: Record<Esp, number> = { beehiiv: 0.5, brevo: 0.75, kit: 0.75 };
 
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
@@ -1349,10 +1372,18 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // string entirely; the Worker normalizes this path form back to /vote's
   // existing handler. The identity remains a query parameter because merge
   // tags need to be expanded by the ESP.
-  const buildVoteUrl = (choice: "A" | "B") =>
-    esp === "brevo"
-      ? `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}`
-      : `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email={{email}}`;
+  // #464: Kit usa sintaxe Liquid própria (`{{ subscriber.email_address }}`),
+  // mas o MESMO eixo de identidade do Beehiiv (direto, sem token) — ver
+  // docstring de `Esp` acima.
+  const buildVoteUrl = (choice: "A" | "B") => {
+    const mergeTag =
+      esp === "brevo"
+        ? `{{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}`
+        : esp === "kit"
+          ? "{{ subscriber.email_address }}"
+          : "{{email}}";
+    return `${PUBLIC_GAME_BASE_URL}/vote/${eia.edition}/${choice}?email=${mergeTag}`;
+  };
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width={EIA_IMG_WIDTH} em pixels (container − sidePad×2 padding
@@ -1553,6 +1584,52 @@ export function renderSection(section: Section): string {
 // #2008/#2018: applyWordJoiner importado de ./word-joiner.ts (shared helper).
 // Ver scripts/lib/word-joiner.ts para documentação completa e GUARDED_DOMAINS.
 
+// #6084/#6087: bold + itálico aplicados por SEGMENTO DE TEXTO, nunca no HTML
+// já montado com os links embutidos. Aplicar sobre a string inteira DEPOIS de
+// já ter o HTML do link deixava um `*`/`**` literal dentro de uma URL (ex:
+// wildcard de Wayback Machine) colidir com o `*`/`**` de ênfase de fora do
+// link e corromper o atributo href (achado do review da PR #6087). Por
+// segmento de texto puro, antes do label do link virar HTML, essa colisão
+// nunca ocorre. Reusa processInlineItalics — mesmo regex/estilo inline
+// (`font-style:italic` explícito, compatibilidade Outlook) usado no corpo
+// dos destaques, inclusive suporte a `_texto_` além de `*texto*`.
+function applyEmphasis(text: string): string {
+  const bolded = text.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  return processInlineItalics(bolded);
+}
+
+/**
+ * #6087 CI fix: `**[texto](url)**`/`*[texto](url)*` (ênfase envolvendo um
+ * link INTEIRO) é caso de produção real e coberto por teste desde antes desta
+ * issue (`test/build-link-ctr.test.ts` — bold em volta de link vira
+ * `<b><a>...</a></b>`, o `extractLinks` do CTR depende dessa forma). Aplicar
+ * `applyEmphasis` por SEGMENTO (acima) resolve a colisão href×`*` do #6087,
+ * mas por si só QUEBRA esse caso: os marcadores ficam um em cada segmento
+ * (antes e depois do link), nunca formando um par `**...**`/`*...*` dentro do
+ * MESMO segmento, e sobram literais.
+ *
+ * Este helper detecta o marcador colado nos dois lados do link (bold `**`
+ * tem precedência sobre itálico `*`/`_` de caractere único) e devolve quantos
+ * caracteres consumir de cada lado — quem chama corta esses caracteres ANTES
+ * de montar o segmento de texto (pra não sobrarem como `*`/`_` soltos) e
+ * envolve o HTML do link no wrapper correspondente.
+ */
+function detectLinkEmphasisWrap(
+  input: string,
+  start: number,
+  end: number,
+): { wrap: "bold" | "italic" | null; markerLen: number } {
+  if (input.slice(start - 2, start) === "**" && input.slice(end, end + 2) === "**") {
+    return { wrap: "bold", markerLen: 2 };
+  }
+  const preChar = input[start - 1];
+  const postChar = input[end];
+  if (preChar && postChar === preChar && (preChar === "*" || preChar === "_")) {
+    return { wrap: "italic", markerLen: 1 };
+  }
+  return { wrap: null, markerLen: 0 };
+}
+
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
   const input = unescapeMd(s);
@@ -1568,26 +1645,32 @@ export function mdInlineToHtml(s: string): string {
     if (!url) continue;
     const labelEnd = input.indexOf("]", start + 1);
     const label = input.slice(start + 1, labelEnd);
+    const { wrap, markerLen } = detectLinkEmphasisWrap(input, start, end);
     // #2008: word-joiner aplicado nos segmentos de TEXTO (não no href da URL
     // nem no label do link — label já tem href explícito, sem risco de linkify).
     // #2532/#2533 review: wordmark também só nos segmentos de TEXTO (não no
     // label nem no href) — simétrico com processInlineLinks. Aplicado ANTES do
-    // passo de `**` abaixo, então um `**` em volta da marca vira `**{wordmark}**`
-    // → `<b>{wordmark}</b>`.
-    parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start))));
+    // passo de ênfase (bold/itálico), então um `**`/`*` em volta da marca vira
+    // `**{wordmark}**` → `<b>{wordmark}</b>`. Quando o link inteiro é
+    // envolvido por ênfase (`wrap` acima), os `markerLen` caracteres colados
+    // ao `[` já saem fora deste slice — processados como wrapper do link, não
+    // como texto solto.
+    const preEnd = wrap ? start - markerLen : start;
+    parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, preEnd)))));
     // #3102: reusa inlineLinkHtml (mesmo tratamento de `processInlineLinks`/
     // `renderBodyInline` — underline teal via text-decoration-color). Antes,
     // mdInlineToHtml tinha seu PRÓPRIO estilo de link (border-bottom teal), que
     // degrada de forma diferente no Outlook (mantém a linha teal) vs o resto do
     // e-mail (degrada pra sublinhado cor-do-texto) — 2 tratamentos sem motivo
     // funcional no mesmo email.
-    parts.push(inlineLinkHtml(label, url));
-    lastIdx = end;
+    let linkHtml = inlineLinkHtml(label, url);
+    if (wrap === "bold") linkHtml = `<b>${linkHtml}</b>`;
+    else if (wrap === "italic") linkHtml = `<em style="font-style:italic;">${linkHtml}</em>`;
+    parts.push(linkHtml);
+    lastIdx = wrap ? end + markerLen : end;
   }
-  parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
-  let out = parts.join("");
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-  return out;
+  parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx)))));
+  return parts.join("");
 }
 
 /**

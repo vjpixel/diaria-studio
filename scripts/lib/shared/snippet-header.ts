@@ -87,6 +87,20 @@ export function readBoxTituloFlag(content: string): boolean | null {
   return null;
 }
 
+/** `true` quando o snippet declara `seasonal:` no header (case-insensitive:
+ * `True`/`TRUE` contam); `false` quando `seasonal: false`; `null` quando
+ * ausente — usado pelo pipeline de curadoria pra distinguir ofertas
+ * pontuais (sazonais/de alta pull) de boxes permanentes.
+ */
+export function readSeasonalFlag(content: string): boolean | null {
+  const raw = parseBoxHeaderField(content, "seasonal");
+  if (raw === null) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return null;
+}
+
 /** Header inner MENOS as linhas `{key}:` de `keys` (case-insensitive),
  * trimado — o texto de "notas" que sobra pro editor livre (#3979: painel
  * "Notas", separado dos campos dedicados `nome`/`categoria`). `""` se não

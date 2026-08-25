@@ -1254,6 +1254,23 @@ export interface WaveProposalInput {
   /** Índice do 1º dia da onda (continua a numeração do ciclo). */
   startingWaveNumber: number;
   /**
+   * #6075 — override do volume-alvo pra fins de MV sob demanda, quando
+   * `--volume N` (editor) é MAIOR que o volume que a política propôs
+   * (`volumes.total`). Sem isto, `mvOnDemandPlan` é sempre dimensionado
+   * contra `volumes.total` — quando o editor pede mais do que a política
+   * escolheria e a fila cobre o volume da política mas não o pedido, o
+   * plano de MV sob demanda sai VAZIO e o guard de `clarice-envio-run.ts`
+   * nunca dispara a verificação (achado ao vivo 260824/25, onda d28).
+   * `undefined`, ou `<= volumes.total`, não muda nada — só entra em jogo
+   * quando é estritamente maior. Afeta SÓ o dimensionamento de
+   * `mvOnDemandPlan` (déficit/`targetVerifyCount`/`byCohort`) — os
+   * `blockers`/`consumedByCohort` continuam contra `volumes.total`, porque
+   * é o volume que ESTA proposta (sem `--volume`) de fato executaria;
+   * `clarice-envio-run.ts` já tem seu próprio guard de fila contra
+   * `desiredVolume` (linha ~1066), separado deste.
+   */
+  targetVolume?: number;
+  /**
    * #5140 — horas BRT do teste de HORÁRIO, quando ATIVO
    * (`data/clarice-hour-test.json`). `undefined`/vazio = sem teste, e a
    * proposta sai como sempre.
@@ -1439,7 +1456,17 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   const consumedByCohort = sliceCohortComposition(input.availableFirstSendByCohort, input.volumes.total);
   const cohortInversion = detectCohortInversion(consumedByCohort, input.mvBacklog);
 
-  const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, input.volumes.total);
+  // #6075 — o déficit que dimensiona o MV sob demanda usa `targetVolume`
+  // (o `--volume N` do editor) quando ele é MAIOR que `volumes.total` (o
+  // volume que a política teria proposto sozinha). Sem isto, um `--volume`
+  // acima da política com fila que já cobre `volumes.total` (mas não o
+  // pedido) zera `firstSendDeficit` e `mvOnDemandPlan.byCohort` sai vazio —
+  // o guard de `clarice-envio-run.ts` nunca roda a verificação sob demanda.
+  const mvDeficitTargetVolume =
+    input.targetVolume !== undefined && input.targetVolume > input.volumes.total
+      ? input.targetVolume
+      : input.volumes.total;
+  const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, mvDeficitTargetVolume);
   // #4787: o alvo de verificação cobre o MAIOR entre (a) o déficit de fila
   // tradicional e (b) a cauda fria que uma inversão de safra tornaria
   // substituível — os dois usam a MESMA máquina (`planMvOnDemand`, que já
@@ -1655,14 +1682,25 @@ export function renderWaveProposal(p: WaveProposal): string {
     // inversão (fila cobre o volume inteiro, não há déficit real nenhum).
     // Recomputa os dois aqui (puro, barato) só pra render, sem inflar o
     // shape de WaveProposal com um campo cuja única serventia é esta linha.
-    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, p.volumes.total);
+    // #6081: o déficit de fila do render usa a MESMA base que o
+    // `buildWaveProposal` usou (`mvDeficitTargetVolume` = targetVolume quando
+    // maior que volumes.total, #6075) — recomputar só contra `volumes.total`
+    // fazia o cenário exato do #6075 (fila cobre a política mas não o --volume
+    // pedido) sair com déficit 0 e cair no ramo de "inversão de safra",
+    // imprimindo um motivo falso na tela de aprovação humana.
+    const renderTargetVolume =
+      p.targetVolume !== undefined && p.targetVolume > p.volumes.total ? p.targetVolume : p.volumes.total;
+    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, renderTargetVolume);
     const inversionTail = p.cohortInversion?.coldTailCount ?? 0;
+    const volumeDriven = p.targetVolume !== undefined && p.targetVolume > p.volumes.total;
     const reason =
       queueDeficit > 0 && inversionTail > 0
         ? `déficit de fila (${fmt(queueDeficit)}) + inversão de safra (${fmt(inversionTail)}) — alvo pelo MAIOR dos dois`
-        : queueDeficit > 0
-          ? `déficit de fila: ${fmt(queueDeficit)}`
-          : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
+        : queueDeficit > 0 && volumeDriven
+          ? `déficit de fila contra --volume ${fmt(p.targetVolume ?? 0)} (${fmt(queueDeficit)}) — fila cobre a política (${fmt(p.volumes.total)}) mas não o volume pedido pelo editor`
+          : queueDeficit > 0
+            ? `déficit de fila: ${fmt(queueDeficit)}`
+            : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
     L.push(
       `  Motivo: ${reason} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
     );

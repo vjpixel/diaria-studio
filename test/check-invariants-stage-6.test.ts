@@ -170,6 +170,58 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  // #464 (achado do review, PR #6096): antes desta PR, checkScheduledAt só
+  // olhava pra 05-published.json — bloqueava severity=error TODA edição
+  // com backend "kit" (que nunca escreve esse arquivo), independente do
+  // Schedule do Kit ter funcionado ou não. `backendOverride` (2º arg, só
+  // pra teste — produção sempre lê platform.config.json de verdade).
+  it("backend kit: falha quando newsletter-kit-published.json ausente (não olha mais 05-published.json)", () => {
+    const v = checkScheduledAt(fixture, "kit");
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "scheduled-at-present");
+    assert.match(v[0].message, /newsletter-kit-published\.json/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("backend kit: falha quando newsletter-kit-published.json não tem scheduled_at nem status=scheduled", () => {
+    writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "draft" }));
+    const v = checkScheduledAt(fixture, "kit");
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "scheduled-at-present");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("backend kit: falha quando status='published' (status Kit do caminho feliz é 'scheduled', não 'published' como Beehiiv)", () => {
+    writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "published" }));
+    const v = checkScheduledAt(fixture, "kit");
+    assert.equal(v.length, 1, "status='published' não é um status Kit válido — só 'scheduled' ou scheduled_at presente");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("backend kit: passa com scheduled_at presente", () => {
+    writeFileSync(
+      join(fixture, "_internal", "newsletter-kit-published.json"),
+      JSON.stringify({ broadcast_id: 42, scheduled_at: "2026-08-26T09:00:00Z" }),
+    );
+    const v = checkScheduledAt(fixture, "kit");
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("backend kit: passa com status='scheduled' mesmo sem scheduled_at (idempotência do #6096 já cobre o caso real)", () => {
+    writeFileSync(join(fixture, "_internal", "newsletter-kit-published.json"), JSON.stringify({ broadcast_id: 42, status: "scheduled" }));
+    const v = checkScheduledAt(fixture, "kit");
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("backend beehiiv explícito: comportamento idêntico ao default (sem override)", () => {
+    writeFileSync(join(fixture, "_internal", "05-published.json"), JSON.stringify({ scheduled_at: "2026-08-05T09:00:00Z" }));
+    const v = checkScheduledAt(fixture, "beehiiv");
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
   it("checkEditionReport falha quando edition-report.html ausente", () => {
     const v = checkEditionReport(fixture);
     assert.equal(v.length, 1);

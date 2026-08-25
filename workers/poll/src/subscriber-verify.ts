@@ -62,3 +62,38 @@ export async function verifySubscriberViaBeehiivByEmail(
     return "verification_failed";
   }
 }
+
+export interface KitByEmailDeps {
+  fetchImpl?: typeof fetch;
+  baseUrl?: string;
+}
+
+/**
+ * Espelho de `verifySubscriberViaKitByEmail` — ver docstring completa em
+ * `scripts/lib/shared/subscriber-verify.ts` (#6048). `test/poll-shared-mirror-4054.test.ts`
+ * trava a divergência.
+ */
+export async function verifySubscriberViaKitByEmail(
+  apiKey: string,
+  email: string,
+  deps: KitByEmailDeps = {},
+): Promise<SubscriberVerifyState> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = deps.baseUrl ?? "https://api.kit.com/v4";
+  try {
+    const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
+      headers: { "X-Kit-Api-Key": apiKey },
+    });
+    if (!res.ok) return "verification_failed";
+    const body = (await res.json()) as { subscribers?: { state?: string }[] };
+    const sub = body?.subscribers?.[0];
+    if (!sub) return "unknown";
+    if (sub.state === "active") return "active";
+    if (sub.state === "cancelled" || sub.state === "bounced" || sub.state === "complained" || sub.state === "inactive") {
+      return "inactive";
+    }
+    return "unknown";
+  } catch {
+    return "verification_failed";
+  }
+}

@@ -2,7 +2,8 @@
  * test/brevo-dashboard-brevo-diaria-postmaster-4973.test.ts (#4973)
  *
  * A aba `brevo_diaria` (#4515) ganha a leitura do Google Postmaster Tools pro
- * domínio `diar.ia.br` (produzida por `scripts/postmaster-spam-sync.ts`,
+ * domínio deste canal (`reativa.diar.ia.br` desde #6046, era `diar.ia.br`;
+ * produzida por `scripts/postmaster-spam-sync.ts`,
  * generalizado pra N domínios no mesmo #4973 — ver
  * `test/postmaster-spam-sync.test.ts`). Este arquivo cobre o lado
  * CONSUMIDOR (dashboard):
@@ -64,9 +65,9 @@ function mkEntry(overrides: Partial<PostmasterSpamEntry> = {}): PostmasterSpamEn
 
 // ─── chave KV — fonte única com o produtor ───────────────────────────────────
 
-test("BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY — mesma função/valor que o produtor usa pra diar.ia.br, nunca a chave legada de clarice.ai (#4973)", () => {
-  assert.equal(BREVO_DIARIA_POSTMASTER_DOMAIN, "diar.ia.br");
-  assert.equal(BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY, additionalPostmasterSpamKvKey("diar.ia.br"));
+test("BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY — mesma função/valor que o produtor usa pro domínio de envio atual, nunca a chave legada de clarice.ai (#4973, migrado #6046)", () => {
+  assert.equal(BREVO_DIARIA_POSTMASTER_DOMAIN, "reativa.diar.ia.br");
+  assert.equal(BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY, additionalPostmasterSpamKvKey("reativa.diar.ia.br"));
   assert.notEqual(BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY, POSTMASTER_SPAM_KV_KEY);
 });
 
@@ -76,7 +77,7 @@ describe("renderBrevoDiariaPostmasterSpam (#4973)", () => {
   test("entry null → 'aguardando publicação' explícito, nunca string vazia/omitida", () => {
     const html = renderBrevoDiariaPostmasterSpam(null);
     assert.ok(html.includes("aguardando publicação"));
-    assert.ok(html.includes("diar.ia.br"));
+    assert.ok(html.includes("reativa.diar.ia.br"));
     assert.notEqual(html.trim(), "");
   });
 

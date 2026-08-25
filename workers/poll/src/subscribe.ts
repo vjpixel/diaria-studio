@@ -445,6 +445,83 @@ export async function subscribeToBeehiiv(
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
+/**
+ * #6048 (migração Beehiiv → Kit, #461/#463): equivalente Kit de
+ * `subscribeToBeehiiv` — mesmo contrato de entrada/saída, `SubscribeResult`
+ * compartilhado (`reason: "beehiiv_error"` cobre também erro do Kit; nomear
+ * um `"kit_error"` separado quebraria o consumo em `handleJogarSubscribe`
+ * sem ganho real — o handler só verifica `=== "not_configured"`).
+ *
+ * ## Endpoint e auth (achados ao vivo #464/#6047, reconfirmados aqui)
+ *
+ * `POST /v4/subscribers`, header `X-Kit-Api-Key` (não Bearer, diferente da
+ * Beehiiv). `state: "active"` na criação bypassa qualquer confirmação —
+ * confirmado ao vivo em 24/08/2026 (subscriber volta com `state: "active"`
+ * na resposta, sem nenhum passo pendente), mesmo efeito prático do
+ * `double_opt_override: "off"` da Beehiiv (ver bloco DOUBLE OPT-IN no topo
+ * do arquivo — a caixinha marcada nesta página já é o consentimento LGPD).
+ *
+ * **Idempotente por e-mail** (achado ao vivo, diferente da Beehiiv): 1º
+ * `POST` com um e-mail novo devolve 201; um 2º `POST` com o MESMO e-mail
+ * devolve 200 (mesmo `id`, atualiza `first_name`/`fields` se enviados) — não
+ * precisa de nenhum equivalente a `reactivate_existing: false`.
+ *
+ * ## Sem UTM/referring-site nativo (achado ao vivo #6048)
+ *
+ * Ao contrário da Beehiiv, a API de criação do Kit não tem campos nativos de
+ * atribuição — só `email_address`/`first_name`/`state`/`fields` (custom).
+ * `KIT_UTM_*_FIELD`/`KIT_REFERRING_SITE_FIELD` (env, nomes de custom field
+ * criados manualmente no dashboard, mesmo padrão de `BEEHIIV_NAME_FIELD`)
+ * habilitam gravar essa atribuição via `fields` quando configurados —
+ * NENHUM foi criado ainda na conta de produção (decisão de criar os campos
+ * fica pro editor, no momento do switchover). Ausentes → cadastro segue
+ * normal, só sem essa atribuição gravada (mesmo degrade gracioso do nome).
+ */
+export async function subscribeToKit(
+  env: Env,
+  input: { name: string; email: string },
+  fetchImpl: typeof fetch = fetch,
+  utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+): Promise<SubscribeResult> {
+  const apiKey = env.KIT_API_KEY;
+  if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
+
+  const base = env.KIT_API_URL ?? "https://api.kit.com/v4";
+  const fields: Record<string, string> = {};
+  if (input.name && env.KIT_NAME_FIELD) fields[env.KIT_NAME_FIELD] = input.name;
+  if (env.KIT_UTM_SOURCE_FIELD) fields[env.KIT_UTM_SOURCE_FIELD] = utm.source;
+  if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = utm.medium;
+  if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = utm.campaign;
+  if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = utm.referringSite;
+
+  const body: Record<string, unknown> = {
+    email_address: input.email,
+    state: "active",
+  };
+  if (Object.keys(fields).length > 0) body.fields = fields;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/subscribers`, {
+      method: "POST",
+      headers: {
+        "X-Kit-Api-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      // Mesmo timeout/rationale de SUBSCRIBE_FETCH_TIMEOUT_MS (Beehiiv) —
+      // um POST simples de assinatura não deve travar a resposta ao usuário.
+      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
+  // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
+  // ver docstring acima sobre a idempotência do Kit.
+  if (res.ok) return { ok: true, status: res.status };
+  return { ok: false, status: res.status, reason: "beehiiv_error" };
+}
+
 export interface SubscribeDeps {
   fetchImpl?: typeof fetch;
 }
@@ -490,7 +567,13 @@ export async function handleJogarSubscribe(
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
   const utm = resolveSubscribeUtm(v.source);
-  const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
+  // #6048: seleção de backend local a este handler — env.SUBSCRIBE_BACKEND
+  // não é lido por nenhum outro dispatch fora deste worker (mesmo estado do
+  // #464 pro publisher da newsletter: código pronto, switchover manual).
+  const result =
+    env.SUBSCRIBE_BACKEND === "kit"
+      ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl, utm)
+      : await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
   if (result.ok) {
     // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
     // — fire-and-forget best-effort, DEPOIS que o cadastro na Beehiiv já foi

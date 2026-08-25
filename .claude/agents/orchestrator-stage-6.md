@@ -20,16 +20,19 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 
 ### Pre-condicao: sentinel Stage 5
 
+**`assertSentinel` compara contra os `outputs` GRAVADOS pelo §5h da Stage 5** (não um path fixo) — então este `assert` já lê o caminho certo automaticamente, seja qual for o backend, DESDE que §5h tenha gravado o output certo (ver "Branch por backend" no §5h da Stage 5, #464 — achado do review PR #6096: antes essa branch não existia e este `assert` FATALizava toda edição com `backend: "kit"`, já que o sentinel gravado apontava sempre pra `05-published.json`, que o Kit nunca escreve). `--outputs` aqui é só o valor a comparar se o sentinel ficar ausente/corrompido (ver exit `2` abaixo) — informar o esperado pro backend ATUAL:
+
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 5 \
   --outputs "_internal/05-published.json"
+# Backend "kit": --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Exit code handling:
 - `0` → continuar.
 - `1` → **FATAL:** "Etapa 5 (Publicacao) nao completou (sentinel ausente). Re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
-- `2` → **FATAL:** "05-published.json ausente. Re-rodar Etapa 5." Parar.
+- `2` → **FATAL:** artefato do backend atual ausente (`05-published.json` pra Beehiiv, `newsletter-kit-published.json` pra Kit). "Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
 
 ### 6a. Pre-requisitos
@@ -43,7 +46,10 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
   ```
-- Ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
+**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"beehiiv"`). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
+
+- Backend `"beehiiv"` (default): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
+- Backend `"kit"`: ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_completed`/`review_status`/`review_final_issues` vêm de `data/run-log.jsonl` (ver nota no §5f do Stage 5 sobre por que este backend não os grava no arquivo por edição) — mencionar no resumo apenas se o Stage 5 tiver logado um `review_status` != implícito-ok.
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
 - Ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
@@ -177,6 +183,8 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 ### 6d. Executar Schedule do Beehiiv
 
+**Só roda com backend `"beehiiv"` (default, ver §6a).** Com backend `"kit"`, pular esta seção INTEIRA (incluindo a checagem de slug do bloco WhatsApp — ela existe pra um problema específico da UI de SEO/URL slug da Beehiiv que não tem equivalente no Kit: `public_url` do broadcast já é a URL final, sem etapa manual de slug que possa divergir dela) e seguir direto para **§6d-kit** abaixo.
+
 **Exibir banner pre-Schedule ao editor ANTES de pedir o clique** (evitar Publish acidental, incidente 260611 #2074):
 
 ```
@@ -298,6 +306,45 @@ prosseguir para §6e.
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
 
+### 6d-kit. Executar Schedule do Kit (#464 — só quando backend `"kit"`)
+
+**Exibir o mesmo banner de segurança do §6d antes de agendar** — a diferença
+aqui é que não há clique manual: o script faz o PATCH direto. Confirmar o
+horário com o editor antes de rodar (mesmo horário default calculado em
+§6a: amanhã 06:00 BRT).
+
+```bash
+npx tsx scripts/schedule-newsletter-kit.ts \
+  --edition-dir {EDITION_DIR}/ \
+  --scheduled-at {scheduled_at_iso}
+```
+
+O script faz PATCH `/broadcasts/{id}` (`send_at`) e só declara sucesso
+depois de um GET de verificação confirmar o `send_at` de volta — mesmo
+padrão de `verify-scheduled-post.ts` (Beehiiv, §6d) e `schedule-daily-brevo.ts`
+(§6d-brevo). Um broadcast Kit `completed` (já disparado) é **imutável** —
+sem retry automático além do já embutido em `kitFetch`.
+
+Exit codes:
+| Exit | Significado | Ação |
+|------|-------------|------|
+| `0` | Agendado e verificado. | Confirmar ao editor: "Agendado para {scheduled_at} ✓ (broadcast_id {id})". Seguir para §6e. |
+| `2` | `publishing.newsletter.backend` != `"kit"` (guard interno do script). | Não deveria acontecer aqui — mesma nota do §5c-1-kit sobre leitura divergente da config; investigar antes de prosseguir. |
+| `3` | `_internal/newsletter-kit-published.json` ausente/sem `broadcast_id`. | Etapa 5 não rodou o publisher Kit pra esta edição — voltar pro Stage 5 antes de continuar (não há o que agendar). |
+| `4` | PATCH falhou (erro de API). | Logar erro com o `reason` do JSON de stdout; **bloqueia** o Stage 6 (diferente do Brevo em §6d-brevo — aqui é o ÚNICO canal de newsletter, não um secundário) — investigar antes de retry manual. |
+| `5` | GET pós-PATCH não confirma o agendamento. | Mesmo tratamento do exit 4 — bloqueia, investigar antes de retry. |
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
+  --level {info se exit 0, error se 3/4/5} \
+  --message "newsletter kit stage6 schedule: exit {code}" \
+  --details '{json de saída do script}'
+```
+
+**Guard refresh-dedup apos schedule confirmado** — mesmo passo do §6d: rodar `/diaria-refresh-dedup`.
+
+Ao concluir §6d-kit com sucesso, seguir para §6d-brevo (se aplicável) e §6e normalmente — o resto do Stage 6 (auto-reporter, sentinel, invariants) não depende de qual backend de newsletter rodou.
+
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
 **Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c (Beehiiv) — decisão do editor, #5772: um único gate, um único horário pros dois canais.
@@ -329,6 +376,8 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
+**Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção — `schedule-newsletter-kit.ts` (§6d-kit) já grava `scheduled_at`/`status: "scheduled"` em `_internal/newsletter-kit-published.json` internamente, só depois de confirmar via GET (mesma garantia que este passo busca aqui pro caminho Beehiiv).
+
 Apos schedule confirmado (exit 0 do verify-scheduled-post ou reconciliacao de envio imediato), atualizar `05-published.json`:
 
 ```bash
@@ -350,10 +399,20 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
+**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** Backend `"beehiiv"` (default):
+
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 6 \
   --outputs "_internal/05-published.json"
+```
+
+Backend `"kit"`:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition {AAMMDD} --step 6 \
+  --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Sentinel ausente = Stage 6 incompleto para fins de resume. Falha → logar warn, nao bloquear auto-reporter.

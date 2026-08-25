@@ -74,7 +74,7 @@ export const FACEBOOK_CTA_LINE =
 
 /** Instagram: "link na bio" + follow (#3486, preservado). Sem URL crua — IG não linka no corpo. */
 export const INSTAGRAM_CTA_LINE =
-  "Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.";
+  "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.";
 
 /**
  * LinkedIn: `null` por decisão de preservar #595/#3627 — ver JSDoc do módulo

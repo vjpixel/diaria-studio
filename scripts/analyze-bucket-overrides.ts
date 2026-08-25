@@ -26,7 +26,7 @@
  * do scorer/stage1/writer) é ignorada — nunca é tratada como edição.
  *
  * Uso:
- *   npx tsx scripts/analyze-bucket-overrides.ts [--editions-dir data/editions] [--examples 5] [--json]
+ *   npx tsx scripts/analyze-bucket-overrides.ts [--editions-dir data/editions] [--examples 5] [--window 20] [--json]
  *
  * Sem `data/editions/` no ambiente (ex: worktree de subagente, sem a junction
  * local) o script imprime 0 edições processadas e sai limpo (exit 0) — não é
@@ -44,6 +44,9 @@ const ROOT = resolve(import.meta.dirname, "..");
 // Os 3 buckets cobertos por esta análise — `video` fica de fora de propósito
 // (não é editorial ambíguo do mesmo jeito; não aparece na medição da #5995).
 const TRACKED_BUCKETS: readonly Bucket[] = ["lancamento", "radar", "use_melhor"];
+
+/** Janela default da taxa (#5995 item 5): últimas 20 edições. */
+export const DEFAULT_WINDOW = 20;
 
 export interface BucketArticleLike {
   url?: string;
@@ -222,6 +225,52 @@ export interface AnalysisSummary {
   editionsWithMoves: number;
   totalMoves: number;
   directions: DirectionSummary[];
+  /** Taxa em janela (#5995 item 5). Null só quando não há edições no corpus. */
+  windowed: WindowedRate | null;
+}
+
+export interface WindowedRate {
+  /** Tamanho da janela pedido via --window (default 20). */
+  requested: number;
+  /** Edições efetivamente dentro da janela (min(requested, corpus)). */
+  editionsInWindow: number;
+  /** true quando o corpus era menor que a janela e a janela foi ajustada pra baixo. */
+  clamped: boolean;
+  /** Edições na janela com ≥1 movimentação. */
+  editionsWithMoves: number;
+  /** Total de movimentações dentro da janela — NÃO cumulativo. */
+  totalMoves: number;
+  /** movimentos / edição na janela (0 quando janela vazia). */
+  movesPerEdition: number;
+  /** % de edições na janela com ≥1 movimentação (0–100; 0 quando vazia). */
+  pctEditionsWithMoves: number;
+}
+
+/**
+ * Critério de fechamento do #5995 em forma de TAXA EM JANELA (item 5,
+ * comentário de 25/08/2026): o alvo "TOTAL ≤35" é inalcançável porque TOTAL
+ * é cumulativo sobre um corpus que só cresce. O que mede "quão errado o
+ * categorizador está HOJE" é a taxa sobre as últimas N edições.
+ *
+ * Puro e determinístico sobre a lista ordenada ascendente por AAMMDD que
+ * `analyzeEditionsUnderRoot` devolve: pega as últimas `window` edições e
+ * computa movimentos/edição e % de edições com ≥1 movimento nessa janela —
+ * nunca no acumulado histórico.
+ */
+export function computeWindowedRate(editionMoves: EditionMoves[], window: number): WindowedRate {
+  const requested = Math.max(1, Math.floor(window));
+  const slice = editionMoves.slice(-requested);
+  const totalMoves = slice.reduce((acc, e) => acc + e.moves.length, 0);
+  const editionsWithMoves = slice.filter((e) => e.moves.length > 0).length;
+  return {
+    requested,
+    editionsInWindow: slice.length,
+    clamped: slice.length < requested,
+    editionsWithMoves,
+    totalMoves,
+    movesPerEdition: slice.length > 0 ? totalMoves / slice.length : 0,
+    pctEditionsWithMoves: slice.length > 0 ? (editionsWithMoves / slice.length) * 100 : 0,
+  };
 }
 
 /**
@@ -241,7 +290,11 @@ function allDirectionPairs(): Array<[Bucket, Bucket]> {
   return pairs;
 }
 
-export function summarize(editionMoves: EditionMoves[], examplesPerDirection: number): AnalysisSummary {
+export function summarize(
+  editionMoves: EditionMoves[],
+  examplesPerDirection: number,
+  window = DEFAULT_WINDOW,
+): AnalysisSummary {
   const allMoves = editionMoves.flatMap((e) => e.moves);
   const editionsWithMoves = editionMoves.filter((e) => e.moves.length > 0).length;
 
@@ -264,6 +317,7 @@ export function summarize(editionMoves: EditionMoves[], examplesPerDirection: nu
     editionsWithMoves,
     totalMoves: allMoves.length,
     directions,
+    windowed: editionMoves.length > 0 ? computeWindowedRate(editionMoves, window) : null,
   };
 }
 
@@ -283,6 +337,19 @@ function renderReport(summary: AnalysisSummary): string {
   lines.push(`  ${"TOTAL".padEnd(27)} ${String(summary.totalMoves).padStart(4)}`);
   lines.push("");
 
+  if (summary.windowed) {
+    const w = summary.windowed;
+    lines.push(
+      `TAXA EM JANELA (#5995 item 5 — critério de fechamento, últimas ${w.editionsInWindow} edições` +
+        (w.clamped ? `, janela pedida de ${w.requested} ajustada ao tamanho do corpus` : "") + `):`,
+    );
+    lines.push(`  movimentos/edição:            ${w.movesPerEdition.toFixed(2)} (${w.totalMoves} em ${w.editionsInWindow})`);
+    lines.push(
+      `  edições com ≥1 movimentação:  ${w.editionsWithMoves} de ${w.editionsInWindow} (${Math.round(w.pctEditionsWithMoves)}%)`,
+    );
+    lines.push("  — a taxa em janela substitui o TOTAL cumulativo como critério: o acumulado histórico só cresce e nunca fecha.");
+    lines.push("");
+  }
   for (const d of summary.directions) {
     if (d.examples.length === 0) continue;
     lines.push(`Exemplos ${d.from} → ${d.to}:`);
@@ -300,10 +367,12 @@ function main(): void {
   const editionsDirArg = args["editions-dir"] ?? "data/editions";
   const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(ROOT, editionsDirArg);
   const examplesPerDirection = args["examples"] ? Number.parseInt(args["examples"], 10) : 5;
+  const windowArg = args["window"] ? Number.parseInt(args["window"], 10) : DEFAULT_WINDOW;
+  const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
   const asJson = "json" in args || process.argv.includes("--json");
 
   const editionMoves = analyzeEditionsUnderRoot(editionsDir);
-  const summary = summarize(editionMoves, Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5);
+  const summary = summarize(editionMoves, Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5, window);
 
   if (asJson) {
     console.log(JSON.stringify(summary, null, 2));

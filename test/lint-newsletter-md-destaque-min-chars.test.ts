@@ -37,7 +37,7 @@ function makeDestaqueMd(num: number, category: string, chars: number): string {
 describe("checkDestaqueMinChars (#914) — helper puro", () => {
   it("ok=true quando todos destaques atingem mínimo", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 950),
       "---",
       makeDestaqueMd(2, "PESQUISA", 950),
       "---",
@@ -48,7 +48,7 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
     assert.equal(r.errors.length, 0);
   });
 
-  it("ok=false quando D1 abaixo de 1000 (caso 260507 D1=999)", () => {
+  it("ok=false quando D1 abaixo de 900 (janela única #6061)", () => {
     const md = [
       makeDestaqueMd(1, "PRODUTO", 800),
       "---",
@@ -60,13 +60,13 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
     assert.equal(r.ok, false);
     assert.equal(r.errors.length, 1);
     assert.equal(r.errors[0].destaque, 1);
-    assert.equal(r.errors[0].min, 1000);
-    assert.ok(r.errors[0].chars < 1000);
+    assert.equal(r.errors[0].min, 900);
+    assert.ok(r.errors[0].chars < 900);
   });
 
   it("ok=false quando D2/D3 abaixo de 900 (caso 260507 D2=708, D3=679)", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 950),
       "---",
       makeDestaqueMd(2, "PESQUISA", 700),
       "---",
@@ -85,13 +85,13 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
     );
   });
 
-  it("D1 com exatos 1000 chars: passa (boundary)", () => {
-    const md = makeDestaqueMd(1, "PRODUTO", 1000);
+  it("D1 com exatos ~950 chars dentro da janela única (#6061): passa (boundary)", () => {
+    const md = makeDestaqueMd(1, "PRODUTO", 950);
     const r = checkDestaqueMinChars(md);
     // Gerado com 1000 X chars. measure exclui URL + collapse whitespace —
     // pode ficar ligeiramente diferente. O importante é validar boundary
     // logic: se < min, falha.
-    if (r.highlights[0].chars >= 1000) {
+    if (r.highlights[0].chars >= 900) {
       assert.equal(r.ok, true);
     } else {
       // Helper makeDestaqueMd não atinge precisamente 1000 — aceitamos
@@ -102,7 +102,7 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
 
   it("ignora destaques numerados além de 3 (não tem min definido)", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 950),
       "---",
       makeDestaqueMd(2, "PESQUISA", 950),
       "---",
@@ -124,8 +124,8 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
 });
 
 describe("DESTAQUE_MIN_CHARS constants", () => {
-  it("D1=1000, D2=900, D3=900 conforme #914", () => {
-    assert.equal(DESTAQUE_MIN_CHARS[1], 1000);
+  it("D1=D2=D3=900 — janela única (#6061, pedido do editor 24/08/2026)", () => {
+    assert.equal(DESTAQUE_MIN_CHARS[1], 900);
     assert.equal(DESTAQUE_MIN_CHARS[2], 900);
     assert.equal(DESTAQUE_MIN_CHARS[3], 900);
   });
@@ -147,7 +147,7 @@ describe("--check destaque-min-chars CLI (#914)", () => {
     try {
       const mdPath = join(dir, "02-reviewed.md");
       const md = [
-        makeDestaqueMd(1, "PRODUTO", 1100),
+        makeDestaqueMd(1, "PRODUTO", 950),
         "---",
         makeDestaqueMd(2, "PESQUISA", 950),
         "---",
@@ -168,7 +168,7 @@ describe("--check destaque-min-chars CLI (#914)", () => {
     try {
       const mdPath = join(dir, "02-reviewed.md");
       const md = [
-        makeDestaqueMd(1, "PRODUTO", 1100),
+        makeDestaqueMd(1, "PRODUTO", 950),
         "---",
         makeDestaqueMd(2, "PESQUISA", 600),
         "---",

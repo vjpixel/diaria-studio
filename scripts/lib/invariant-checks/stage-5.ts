@@ -51,6 +51,29 @@ function loadSocialsFromConfig(): string[] {
  */
 const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads", "twitter"]);
 
+/**
+ * #464 (achado do review, PR #6096) — `checkConsentBinding` (newsletter)
+ * checava só `_internal/05-published.json` (artefato do dispatch Beehiiv),
+ * o que faria um `consent.newsletter="auto"` real virar falso-positivo
+ * `severity: "error"` pra edição com `publishing.newsletter.backend: "kit"`
+ * (publish-newsletter-kit.ts escreve `newsletter-kit-published.json`, nunca
+ * `05-published.json`) — bloqueando `pipeline-sentinel.ts write` via
+ * `checkStageInvariantsForWrite` mesmo com o dispatch Kit tendo funcionado
+ * normalmente. Mesmo fallback (`"beehiiv"`) usado em `publish-newsletter-kit.ts::checkKitBackendEnabled`.
+ */
+function loadNewsletterBackend(): string {
+  const configPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return "beehiiv";
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
+      publishing?: { newsletter?: { backend?: string } };
+    };
+    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+  } catch {
+    return "beehiiv";
+  }
+}
+
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
 // 06-social-published.json) que só existem no Stage 5 (Publicação).
@@ -619,7 +642,12 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
  * #2488: canais sociais derivados de `platform.config.json#socials` — não
  * hard-coded. Adicionar canal ao config propaga aqui sem editar este arquivo.
  */
-function checkConsentBinding(editionDir: string): InvariantViolation[] {
+// #464 (achado do review, PR #6096): `backendOverride` opcional, só pra
+// teste — `loadNewsletterBackend()` lê `platform.config.json` do ROOT real
+// do repo, sem seam nenhum pra apontar pra um config fake, então testar o
+// branch "kit" sem este parâmetro exigiria mutar o config real do projeto.
+// Produção nunca passa este argumento (cai no `?? loadNewsletterBackend()`).
+function checkConsentBinding(editionDir: string, backendOverride?: string): InvariantViolation[] {
   const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
   if (!existsSync(consentPath)) return [];
   let consent: Record<string, string>;
@@ -640,17 +668,45 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
 
   // Newsletter check
   if (consent["newsletter"] === "auto") {
-    const publishedPath = resolve(editionDir, "_internal", "05-published.json");
+    // #464: qual artefato prova o dispatch depende do backend selecionado
+    // (ver docstring de loadNewsletterBackend acima) — Beehiiv escreve
+    // 05-published.json, Kit escreve newsletter-kit-published.json. Nunca
+    // os dois nem nenhum dos dois numa edição bem-sucedida.
+    const isKit = (backendOverride ?? loadNewsletterBackend()) === "kit";
+    const publishedPath = resolve(editionDir, "_internal", isKit ? "newsletter-kit-published.json" : "05-published.json");
     if (!existsSync(publishedPath)) {
       violations.push({
         rule: "consent-binding-newsletter",
-        message:
-          `consent.newsletter="auto" mas 05-published.json ausente — dispatch ` +
-          `Beehiiv (Chrome MCP) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
+        message: isKit
+          ? `consent.newsletter="auto" mas newsletter-kit-published.json ausente — dispatch ` +
+            `Kit (publish-newsletter-kit.ts) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`
+          : `consent.newsletter="auto" mas 05-published.json ausente — dispatch ` +
+            `Beehiiv (Chrome MCP) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
         source_issue: "#1575",
         severity: "error",
         file: publishedPath,
       });
+    } else if (isKit) {
+      try {
+        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as { status?: string; broadcast_id?: number };
+        if (typeof pub.broadcast_id !== "number") {
+          violations.push({
+            rule: "consent-binding-newsletter",
+            message: `consent.newsletter="auto" mas newsletter-kit-published.json não tem broadcast_id — dispatch automático não aconteceu.`,
+            source_issue: "#1575",
+            severity: "error",
+            file: publishedPath,
+          });
+        }
+      } catch (e) {
+        violations.push({
+          rule: "consent-binding-newsletter",
+          message: `newsletter-kit-published.json não parseável: ${(e as Error).message}`,
+          source_issue: "#1575",
+          severity: "error",
+          file: publishedPath,
+        });
+      }
     } else {
       try {
         const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {

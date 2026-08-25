@@ -81,6 +81,30 @@ Exit code handling:
 - `tutorial` → "USE MELHOR"
 - `video` → "VÍDEO"
 
+**#6083 (feedback do editor na 260825: "categoria nunca deve ser 'notícias'"):**
+"NOTÍCIAS" não carrega informação — qualquer destaque é uma notícia. Escolha
+SEMPRE um label específico ao tema da história antes de considerar o genérico.
+Lista de referência de primeira escolha (não exaustiva; crie label específico
+quando nenhum servir):
+
+| Tema | Label |
+|---|---|
+| País/bloco como protagonista | 🇧🇷 BRASIL, 🇺🇸 EUA, 🇨🇳 CHINA, 🇪🇺 UE |
+| Financiamento/investimento/aquisição | 💰 FINANCIAMENTO |
+| Novo modelo/capacidade de modelo | 🤖 MODELOS |
+| Regulação/legislação/processos | ⚖️ REGULAÇÃO |
+| Artigo científico/achievement de pesquisa | 🔬 PESQUISA |
+| Segurança/abuso/deepfake/crime | 🛡️ SEGURANÇA |
+| Mercado/negócio/receita | 📈 MERCADO |
+| Educação/ensino | 🎓 EDUCAÇÃO |
+| Hardware/chips/infra | 🖥️ HARDWARE |
+| Trabalho/empregos/profissões | 💼 TRABALHO |
+| Saúde/medicina | 🏥 SAÚDE |
+| Cultura/mídia/entretenimento | 🎬 CULTURA |
+
+Reserve "NOTÍCIAS" só para quando genuinamente NENHUM tema mais específico se
+aplicar — e nunca a 2+ destaques na mesma edição.
+
 ⚠️ **Não** derive de `highlights[N-1].bucket` (#1668): pós-#1629/#1611 o `bucket`
 carrega o bucket de SEÇÃO da newsletter (`lancamento`/`radar`/`use_melhor`/`video`,
 emitido por `merge-scored-chunks` → `scorer-select`), **não** a category do
@@ -195,11 +219,11 @@ Substitui as 6 invocações separadas que existiam aqui antes (1 processo Node p
 
 `section-counts` (#358, #907, #1629): valida que cada seção secundária respeita o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante. Ação: re-disparar writer com a violação no prompt.
 
-`destaque-min-chars` (#914) + `destaque-max-chars` (#964): validam mínimo e máximo de cada destaque (D1: 1000–1200, D2/D3: 900–1000). Falha do min = destaque anêmico — re-disparar writer com instruction explícita:
+`destaque-min-chars` (#914) + `destaque-max-chars` (#964): validam mínimo e máximo de cada destaque (janela única: todos 900–1000, #6061). Falha do min = destaque anêmico — re-disparar writer com instruction explícita:
 > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
 Falha do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
 
-`why-matters-length` (#3993): valida que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars). Ação: re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
+`why-matters-length` (#3993): valida que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars). Ação: re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora da janela única 900-1000 (#6061), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
 
 `aprofunde-format` (#3920): valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional). Ação: item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
 

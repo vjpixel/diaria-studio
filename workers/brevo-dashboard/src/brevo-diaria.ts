@@ -107,13 +107,20 @@ const BREVO_DIARIA_LASTGOOD_TTL = 24 * 3600; // 24h — mesma folga de LASTGOOD_
 export const BREVO_DIARIA_FETCH_LIMIT = 20;
 
 /**
- * #4973: domínio deste canal no Google Postmaster Tools — confirmado VERIFIED
- * com tráfego publicado na sondagem da issue (3 dias/21, todos 0,00% spam).
+ * #4973: domínio deste canal no Google Postmaster Tools. Era `diar.ia.br`
+ * (confirmado VERIFIED, sondagem original: 3 dias/21, todos 0,00% spam) — mas
+ * esse domínio agregava TODOS os envios do apex (apoiadores, reativação,
+ * canal Brevo, todos com DKIM próprio de `diar.ia.br`), não só este canal.
+ * #6046 (260824): `brevo_diaria` migrou de sender pra `reativa.diar.ia.br`,
+ * domínio de envio DEDICADO — registrado e VERIFICADO no Postmaster na mesma
+ * sessão (`postmaster-register-domain.ts`). Isso é estritamente melhor pra
+ * este painel: a leitura passa a isolar só o tráfego deste canal, em vez de
+ * ficar misturada com apoiadores/reativação antigos no mesmo domínio.
  * Chave KV via `additionalPostmasterSpamKvKey` (fonte única com o produtor,
  * `scripts/postmaster-spam-sync.ts`) — NUNCA a chave legada `postmaster:spam`
  * (essa é `clarice.ai`, lida pelo breaker da Rampa).
  */
-export const BREVO_DIARIA_POSTMASTER_DOMAIN = "diar.ia.br";
+export const BREVO_DIARIA_POSTMASTER_DOMAIN = "reativa.diar.ia.br";
 export const BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY = additionalPostmasterSpamKvKey(BREVO_DIARIA_POSTMASTER_DOMAIN);
 
 export type BrevoDiariaCampaignRow = BrevoCampaign & { listName?: string };
@@ -127,7 +134,8 @@ export interface BrevoDiariaTabData {
   /** Mensagem de erro do live fetch — presente em `stale:true` OU quando não há stale disponível (`campaigns: []`). */
   error?: string;
   /**
-   * #4973: leitura do Google Postmaster Tools pro domínio `diar.ia.br`
+   * #4973: leitura do Google Postmaster Tools pro domínio deste canal (ver
+   * `BREVO_DIARIA_POSTMASTER_DOMAIN` acima — `reativa.diar.ia.br` desde #6046)
    * (`scripts/postmaster-spam-sync.ts`, chave `BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY`)
    * — INDEPENDENTE do sucesso/falha do fetch de campanhas acima (lida sempre
    * que a aba está habilitada, mesmo quando `campaigns`/`stale`/`error` vêm
@@ -425,7 +433,7 @@ export function renderBrevoDiariaTabPanel(
   const rows = data.campaigns.map((c) => renderBrevoDiariaRow(c, t)).join("\n");
   return `${banner}<section class="phase2-section" id="brevodiaria-campaigns-table">
   <h2 class="section-title">Campanhas — brevo_diaria</h2>
-  <p class="section-note">Conta Brevo PRÓPRIA do editor (#4266/#4476), SEPARADA da parceria Clarice mostrada nas demais abas — segmento Pending da Beehiiv reativado por este canal. Circuit breakers: mesmos limiares da aba Agendamento (abertura&lt;${t.openRate.yellow}%, bounce duro≥${t.hardBounceRate.yellow}%, bounce total≥${t.bounceRate.yellow}%, spam≥${t.spamRate.yellow}%, unsub≥${t.unsubRate.yellow}%). <strong>Diferente da tabela Envios da Clarice, aqui o spam É colorido</strong> — a leitura do Google Postmaster Tools pro domínio diar.ia.br (painel abaixo, #4973) ainda não é atribuída POR CAMPANHA (sem FEEDBACK_LOOP_ID pra este domínio), então a coluna Spam desta tabela continua usando o <code>complaints</code> bruto da Brevo, que pode subcontar o spam real (mesma ressalva do #4063 pra Clarice); tratar como sinal, não medida definitiva.</p>
+  <p class="section-note">Conta Brevo PRÓPRIA do editor (#4266/#4476), SEPARADA da parceria Clarice mostrada nas demais abas — segmento Pending da Beehiiv reativado por este canal. Circuit breakers: mesmos limiares da aba Agendamento (abertura&lt;${t.openRate.yellow}%, bounce duro≥${t.hardBounceRate.yellow}%, bounce total≥${t.bounceRate.yellow}%, spam≥${t.spamRate.yellow}%, unsub≥${t.unsubRate.yellow}%). <strong>Diferente da tabela Envios da Clarice, aqui o spam É colorido</strong> — a leitura do Google Postmaster Tools pro domínio deste canal (painel abaixo, #4973) ainda não é atribuída POR CAMPANHA (sem FEEDBACK_LOOP_ID pra este domínio), então a coluna Spam desta tabela continua usando o <code>complaints</code> bruto da Brevo, que pode subcontar o spam real (mesma ressalva do #4063 pra Clarice); tratar como sinal, não medida definitiva.</p>
   ${renderBrevoDiariaPostmasterSpam(data.postmasterSpam)}
   <div class="table-wrap">
   <table id="brevodiaria-table">

@@ -10,8 +10,30 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/**
+ * #464 (achado do review, PR #6096) — mesmo helper de
+ * `invariant-checks/stage-5.ts::loadNewsletterBackend`, duplicado aqui (não
+ * extraído pra um módulo compartilhado só por 2 call sites de 4 linhas cada
+ * — extrair se um 3º aparecer).
+ */
+function loadNewsletterBackend(): string {
+  const configPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return "beehiiv";
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
+      publishing?: { newsletter?: { backend?: string } };
+    };
+    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+  } catch {
+    return "beehiiv";
+  }
+}
 
 /**
  * `.step-5-done.json` deve existir — Stage 5 completou o dispatch.
@@ -35,17 +57,25 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * `05-published.json` deve ter `scheduled_at` (ou `status: "published"` — envio
- * imediato detectado e reconciliado). Sem isso, Stage 6 completou sem agendar.
+ * `05-published.json` (Beehiiv) ou `newsletter-kit-published.json` (Kit —
+ * #464, achado do review PR #6096: hardcoded só em Beehiiv originalmente,
+ * fazia este invariant bloquear TODA edição com `publishing.newsletter.backend:
+ * "kit"`, mesmo com o Schedule do Kit tendo funcionado normalmente) deve ter
+ * `scheduled_at` (ou `status: "published"`/`"scheduled"` conforme o backend
+ * — envio imediato detectado e reconciliado no caso Beehiiv). Sem isso,
+ * Stage 6 completou sem agendar.
  */
-function checkScheduledAt(editionDir: string): InvariantViolation[] {
-  const path = resolve(editionDir, "_internal", "05-published.json");
+// #464 (achado do review, PR #6096): `backendOverride` opcional, só pra
+// teste — mesma justificativa de `checkConsentBinding` em invariant-checks/stage-5.ts.
+function checkScheduledAt(editionDir: string, backendOverride?: string): InvariantViolation[] {
+  const isKit = (backendOverride ?? loadNewsletterBackend()) === "kit";
+  const filename = isKit ? "newsletter-kit-published.json" : "05-published.json";
+  const path = resolve(editionDir, "_internal", filename);
   if (!existsSync(path)) {
     return [
       {
         rule: "scheduled-at-present",
-        message:
-          `_internal/05-published.json ausente — Stage 5 (Publicação) não completou o dispatch de newsletter.`,
+        message: `_internal/${filename} ausente — Stage 5 (Publicação) não completou o dispatch de newsletter.`,
         source_issue: "#1694",
         severity: "error",
         file: path,
@@ -59,20 +89,25 @@ function checkScheduledAt(editionDir: string): InvariantViolation[] {
     return [
       {
         rule: "scheduled-at-parseable",
-        message: `05-published.json não parseável: ${(e as Error).message}`,
+        message: `${filename} não parseável: ${(e as Error).message}`,
         source_issue: "#1694",
         severity: "error",
         file: path,
       },
     ];
   }
-  if (!data.scheduled_at && data.status !== "published") {
+  // #464: `KitNewsletterPublished.status` usa "scheduled" (não "published")
+  // pro caso feliz — Kit não tem o conceito de "envio imediato detectado e
+  // reconciliado" do Beehiiv (schedule-newsletter-kit.ts só grava `status:
+  // "scheduled"` depois de um GET confirmando `send_at`, nunca antes).
+  const okStatuses = isKit ? ["scheduled"] : ["published"];
+  if (!data.scheduled_at && !okStatuses.includes(data.status ?? "")) {
     return [
       {
         rule: "scheduled-at-present",
         message:
-          `05-published.json não tem scheduled_at (status=${data.status ?? "missing"}). ` +
-          `Stage 6 (Agendamento) não concluiu o Schedule do Beehiiv. ` +
+          `${filename} não tem scheduled_at (status=${data.status ?? "missing"}). ` +
+          `Stage 6 (Agendamento) não concluiu o Schedule ${isKit ? "do Kit" : "do Beehiiv"}. ` +
           `Re-rodar \`/diaria-6-agendamento {AAMMDD}\`.`,
         source_issue: "#1694",
         severity: "error",

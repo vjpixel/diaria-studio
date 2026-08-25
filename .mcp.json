@@ -7,6 +7,10 @@
         "X-Clarice-Api-Key": "${CLARICE_API_KEY}"
       }
     },
+    "kit": {
+      "type": "http",
+      "url": "https://app.kit.com/mcp"
+    },
     "google-ads": {
       "command": "pipx",
       "args": [

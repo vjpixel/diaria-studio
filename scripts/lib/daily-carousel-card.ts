@@ -18,7 +18,9 @@
  *      (`social-cta-lines.ts`) pra não divergir do texto que a legenda já usa.
  *
  * Os 4 slides SEM foto (2-5) reusam o layout `buildFlatCardSvg`/`renderFlatCard`
- * de `weekly-flat-card.ts` (paleta clara canônica, auto-size do título/corpo)
+ * de `weekly-flat-card.ts` (paleta clara canônica; título/corpo em TAMANHO
+ * FIXO desde o #6078 — ver `DAILY_CAROUSEL_LAYOUT`. O auto-size continua
+ * sendo o default do módulo e segue valendo pro carrossel SEMANAL)
  * — já é genérico o bastante (kicker/title/footer), não específico do
  * carrossel semanal apesar do nome do arquivo. Evita reimplementar SVG novo,
  * seguindo a própria recomendação do #6005 ("conferir antes de reimplementar
@@ -33,11 +35,73 @@
  * faz upload direto de dentro do Stage 3.
  */
 
-import { renderFlatCard, type FlatCardText } from "./weekly-flat-card.ts";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  renderFlatCard,
+  measureFlatCardBody,
+  stripInlineBold,
+  type FlatCardText,
+  type FlatCardLayout,
+} from "./weekly-flat-card.ts";
 import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
+
+/**
+ * Corpo dos slides do carrossel DIÁRIO — tamanho fixo, não auto-size
+ * (#6078 item 2, decisão do editor em 24/08/2026).
+ *
+ * 62px e não 64px por um motivo operacional, não estético: como a saída para
+ * o texto que não cabe é REESCREVER o parágrafo, o tamanho da fonte define a
+ * frequência com que isso cai no colo do editor. Medido sobre 219 parágrafos
+ * reais de d1/d2/d3 em 22 edições (`data/editions/*​/03-social.md`), com o
+ * mesmo wrap que o render usa:
+ *
+ *   | tamanho | teto      | precisariam de reescrita |
+ *   |---------|-----------|--------------------------|
+ *   | 62px    | 12 linhas | 16 de 219 · 7,3%         |
+ *   | 64px    | 11 linhas | 33 de 219 · 15,1%        |
+ *   | 72px    | 10 linhas | 84 de 219 · 38,4%        |
+ *
+ * 60px cabe as mesmas 12 linhas que 62px, então 62 domina (maior pelo mesmo
+ * custo). 62px também tem corte previsível — no histórico, tudo até 321
+ * caracteres coube e tudo a partir de 327 estourou; em 64px há uma zona
+ * cinza de 278–299 onde o resultado depende de quais palavras caem na quebra.
+ */
+export const DAILY_CAROUSEL_BODY_SIZE = 62;
+
+/** Layout dos 4 slides sem foto do carrossel diário. */
+export const DAILY_CAROUSEL_LAYOUT: FlatCardLayout = { mode: "fixed", size: DAILY_CAROUSEL_BODY_SIZE };
+
+/**
+ * Orientação de tamanho passada ao `social-writer` (`.claude/agents/`).
+ * DELIBERADAMENTE abaixo do máximo que coube no histórico (321): o limite
+ * real depende de quais palavras caem na quebra de linha, então o prompt
+ * pede folga e o guard mecânico (`findOverflowingCarouselSlides`) é quem
+ * decide de fato. Um número no prompt não substitui a medição.
+ */
+export const DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET = 300;
 
 export const CAROUSEL_SLIDE_SLOTS = ["p1", "p2", "p3", "cta"] as const;
 export type CarouselSlideSlot = (typeof CAROUSEL_SLIDE_SLOTS)[number];
+
+/**
+ * Destaques possíveis numa edição diária (2 ou 3, nunca 4 — regra editorial
+ * do #3369). Union fechado pelo mesmo motivo que `CarouselSlideSlot`: chave
+ * de carimbo digitada errada vira erro de compilação em vez de entrada órfã
+ * que nunca mais é lida (review de tipos do #6068).
+ */
+export const DAILY_DESTAQUE_IDS = ["d1", "d2", "d3"] as const;
+export type DailyDestaqueId = (typeof DAILY_DESTAQUE_IDS)[number];
+
+/**
+ * Capa do carrossel — slide 1, gerado por `gen-social-card-4x5.ts`, NUNCA por
+ * este módulo. Existe aqui pra quem cruza os 5 slides (invariantes de Stage 4)
+ * não remontar o nome à mão.
+ */
+export function carouselCoverFilename(destaque: string): string {
+  return `04-${destaque}-4x5.jpg`;
+}
 
 /**
  * Pure: divide o corpo de um texto (sem hashtags — já passado por
@@ -88,6 +152,21 @@ export function splitIntoParagraphCards(body: string, target = 3): string[] {
 }
 
 /**
+ * Handle + micro-CTA dos slides de PARÁGRAFO do carrossel diário (#6086
+ * itens a/b — padrões 7/8 de `context/instagram-benchmarks-5815.md`, que o
+ * #6005 Parte B não implementou). Nunca aplicados ao slide de CTA — lá o
+ * handle já aparece no `INSTAGRAM_CTA_LINE`/footer do slide, e um segundo
+ * convite a seguir seria redundante (a própria issue #6086 pede isso).
+ *
+ * Copy do micro-CTA é autoral deste projeto (não copiado de nenhuma conta de
+ * benchmark) — curto o bastante pra não competir com o corpo do texto,
+ * cabendo no canto inferior direito da MESMA linha do rodapé (sem consumir
+ * espaço vertical novo, ver `buildFlatCardSvg`).
+ */
+export const DAILY_CAROUSEL_HANDLE = "@diar.ia.br";
+export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
+
+/**
  * Pure: monta o `FlatCardText` de cada um dos 4 slides sem foto (3
  * parágrafos + CTA), a partir do texto genérico JÁ EXTRAÍDO de `## d{N}`
  * (com ou sem bloco de hashtags — `splitBodyAndTags` remove antes de
@@ -105,13 +184,134 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
   const total = paragraphs.length;
   const entries = paragraphs.map((title, i): [CarouselSlideSlot, FlatCardText] => [
     (`p${i + 1}` as CarouselSlideSlot),
-    { kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`, title, footer: "diar.ia.br" },
+    {
+      kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`,
+      title,
+      footer: "diar.ia.br",
+      handle: DAILY_CAROUSEL_HANDLE,
+      microCta: DAILY_CAROUSEL_MICRO_CTA,
+    },
   ]);
 
   return {
     ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
+    // CTA final: sem handle/microCta — redundante ali (ver comentário acima).
     cta: { kicker: "Newsletter grátis", title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
   };
+}
+
+/**
+ * (#6064 item 1) Carimbo de "com QUAL texto estes slides foram rasterizados".
+ *
+ * Os cards são imagem: o texto do `## d{N}` vira pixel no Stage 3 e não
+ * acompanha mais nenhuma edição posterior do `03-social.md` — e o editor edita
+ * exatamente esse arquivo no painel Revisão do Stage 4, DEPOIS do Stage 3.
+ * Sem carimbo, a legenda sai com o texto novo e a arte com o velho, em
+ * silêncio (a idempotência de `gen-carousel-cards.ts` era por EXISTÊNCIA de
+ * arquivo, não por conteúdo).
+ *
+ * Mesma ideia do `.social-source-hash.json` (#1413) uma camada acima: hash
+ * pequeno, determinístico, gravado por quem produz e comparado por quem
+ * publica.
+ *
+ * Hasheia os TEXTOS RENDERIZADOS (kicker + título de cada um dos 4 slides),
+ * não o bloco cru: assim uma edição que não muda o que aparece no card —
+ * mexer só nas hashtags, por exemplo — não força regeneração à toa.
+ *
+ * #6086 item c: o `title` entra CRU (com a marcação `**...**`), então mudar
+ * SÓ o negrito muda o hash e regenera a arte — exatamente o que se quer,
+ * mesma classe do layoutTag abaixo.
+ */
+export function hashCarouselSlideTexts(genericText: string): string {
+  const texts = buildCarouselSlideTexts(genericText);
+  const canonical = CAROUSEL_SLIDE_SLOTS.map(
+    // #6086: handle/microCta entram no rasterizado (rodapé) mas não em
+    // `body`/`title` — precisam estar no carimbo, senão a introdução dos
+    // itens a/b não invalida a arte já gerada com o rodapé antigo (mesma
+    // classe de silêncio que o `layoutTag` abaixo já corrige pro layout).
+    (slot) => `${texts[slot].kicker} || ${texts[slot].title} || ${texts[slot].handle ?? ""} || ${texts[slot].microCta ?? ""}`,
+  ).join(" ~~ ");
+  // #6078: o carimbo precisa cobrir o LAYOUT também, não só o texto. Sem isto,
+  // uma edição cujos slides foram rasterizados com o auto-size antigo tem
+  // carimbo batendo com o texto atual, `shouldRenderCarouselSlides` PULA o
+  // destaque, e a mudança de tipografia nunca chega na arte — silenciosamente,
+  // que é a falha que o #6064 existiu pra matar. Mudar tamanho/modo aqui
+  // invalida o carimbo de propósito: a arte antiga É velha em relação ao
+  // desenho atual, e regerar é barato.
+  const layoutTag = `layout:${DAILY_CAROUSEL_LAYOUT.mode}:${DAILY_CAROUSEL_LAYOUT.mode === "fixed" ? DAILY_CAROUSEL_LAYOUT.size : "auto"}`;
+  return createHash("sha256").update(`${canonical} ~~ ${layoutTag}`).digest("hex").slice(0, 16);
+}
+
+/**
+ * (#6064 item 1) Decisão pura de re-renderizar os slides de um destaque.
+ *
+ * Regra: `--force` sempre renderiza; slide faltando sempre renderiza; e —
+ * o ponto da issue — arquivo presente só é PULADO quando o carimbo bate com
+ * o texto atual. Carimbo ausente (edição anterior ao #6064) conta como
+ * divergente: regerar é barato, publicar arte defasada não.
+ */
+export function shouldRenderCarouselSlides(opts: {
+  allSlidesExist: boolean;
+  storedHash?: string;
+  currentHash: string;
+  force?: boolean;
+}): boolean {
+  if (opts.force) return true;
+  if (!opts.allSlidesExist) return true;
+  return opts.storedHash !== opts.currentHash;
+}
+
+/** Caminho do carimbo (um por edição, uma entrada por destaque). */
+export function carouselSourceHashPath(editionDir: string): string {
+  return resolve(editionDir, "_internal", ".carousel-source-hash.json");
+}
+
+export type CarouselSourceHashes = Partial<Record<DailyDestaqueId, string>>;
+
+/**
+ * Lê o carimbo. Ausente/ilegível → `{}` — quem chama distingue "sem entrada
+ * pra este destaque" (não dá pra verificar) de "entrada diferente"
+ * (stale de verdade); nenhum dos dois é motivo pra lançar aqui.
+ */
+export function readCarouselSourceHashes(editionDir: string): CarouselSourceHashes {
+  const path = carouselSourceHashPath(editionDir);
+  if (!existsSync(path)) return {}; // nunca gerado — normal, não loga
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as { hashes?: CarouselSourceHashes };
+    return data.hashes && typeof data.hashes === "object" ? data.hashes : {};
+  } catch (err) {
+    // Arquivo EXISTE mas não leu/parseou: escrita interrompida, conflito de
+    // sync do OneDrive, permissão. O fallback é seguro (regenera tudo), mas
+    // engolir sem log esconderia uma corrupção recorrente — mesmo padrão de
+    // `refreshSocialSourceHash` (reorder-destaques.ts). #6068.
+    console.warn(
+      `daily-carousel-card: warn — ${path} existe mas não parseou ` +
+        `(${(err as Error).message}); tratando como carimbo ausente (regenera os slides).`,
+    );
+    return {};
+  }
+}
+
+/**
+ * Grava o carimbo. Por padrão MESCLA com o que já existe — um destaque pulado
+ * nesta rodada (texto inalterado) mantém a entrada anterior em vez de sumir.
+ *
+ * `replace: true` grava exatamente o mapa passado. Necessário para quem
+ * precisa REMOVER entradas (`reindexCarouselSourceHashes` no reorder): com o
+ * merge, um `delete` feito no objeto em memória era desfeito na escrita, que
+ * ressuscitava a entrada antiga vinda do disco. #6068.
+ */
+export function writeCarouselSourceHashes(
+  editionDir: string,
+  hashes: CarouselSourceHashes,
+  opts: { replace?: boolean } = {},
+): void {
+  const merged = opts.replace ? { ...hashes } : { ...readCarouselSourceHashes(editionDir), ...hashes };
+  writeFileSync(
+    carouselSourceHashPath(editionDir),
+    JSON.stringify({ hashes: merged, generated_at: new Date().toISOString() }, null, 2) + "\n",
+    "utf8",
+  );
 }
 
 /** Nome do arquivo local (raiz da edição) de um slide sem foto do carrossel. */
@@ -132,9 +332,47 @@ export async function renderCarouselSlides(
   const texts = buildCarouselSlideTexts(genericText);
   const result = {} as Record<CarouselSlideSlot, string>;
   for (const slot of CAROUSEL_SLIDE_SLOTS) {
-    result[slot] = await renderFlatCard(texts[slot], outPaths[slot]);
+    result[slot] = await renderFlatCard(texts[slot], outPaths[slot], DAILY_CAROUSEL_LAYOUT);
   }
   return result;
+}
+
+/**
+ * Pure: quais slides de um destaque NÃO cabem no card com o tamanho fixo.
+ *
+ * Existe porque a política de overflow do carrossel diário é REESCREVER o
+ * texto (decisão do editor, #6078) — e uma política de reescrita só funciona
+ * se alguém FICAR SABENDO que estourou. Sem isto, o tamanho fixo degradaria
+ * exatamente como o auto-size degradava antes: em silêncio, na arte
+ * publicada.
+ *
+ * Consumido por `gen-carousel-cards.ts` (bloqueia o render) e pelo invariante
+ * `carousel-text-overflow` do Stage 4 (pega o caso do editor ter editado o
+ * social DEPOIS do Stage 3, quando o gen não roda de novo sozinho).
+ *
+ * `excess` é quanto o bloco passou do espaço, em px — serve pra estimar
+ * quanto texto precisa sair; `chars` é o tamanho do parágrafo, que é o que o
+ * editor de fato manipula.
+ */
+export function findOverflowingCarouselSlides(
+  genericText: string,
+): { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] {
+  const texts = buildCarouselSlideTexts(genericText);
+  const out: { slot: CarouselSlideSlot; chars: number; lines: number; excessPx: number }[] = [];
+  for (const slot of CAROUSEL_SLIDE_SLOTS) {
+    const m = measureFlatCardBody(texts[slot].title, DAILY_CAROUSEL_LAYOUT);
+    if (m.overflows) {
+      out.push({
+        slot,
+        // #6086 item c: chars é o que o editor manipula — texto visível, sem
+        // os delimitadores `**` (que não ocupam largura no card).
+        chars: stripInlineBold(texts[slot].title).length,
+        lines: m.lines.length,
+        excessPx: m.blockHeight - m.availableHeight,
+      });
+    }
+  }
+  return out;
 }
 
 /**

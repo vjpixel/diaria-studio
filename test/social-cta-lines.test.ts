@@ -105,7 +105,7 @@ describe("CHANNEL_CTA_LINES / constantes (#3991)", () => {
   });
 
   it("Instagram mantém 'link na bio' + follow (#3486 preservado)", () => {
-    assert.equal(INSTAGRAM_CTA_LINE, "Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.");
+    assert.equal(INSTAGRAM_CTA_LINE, "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.");
     assert.equal(CHANNEL_CTA_LINES.instagram, INSTAGRAM_CTA_LINE);
   });
 

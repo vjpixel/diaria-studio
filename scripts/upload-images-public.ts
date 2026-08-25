@@ -32,11 +32,11 @@ loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFL
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
+import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -361,11 +361,10 @@ export function mergeBaseFromCache(cachePath: string): Record<string, PublicImag
   return { ...loadCache(cachePath) };
 }
 
-/** #1418: md5 hex de um arquivo, pra detectar drift entre local e cache. */
-export function md5OfFile(path: string): string {
-  const bytes = readFileSync(path);
-  return createHash("md5").update(bytes).digest("hex");
-}
+// #1418, movido pra `lib/shared/file-md5.ts` no #6068 (invariantes de Stage 4
+// precisam do md5 sem carregar .env/googleapis) — re-exportado aqui pros
+// callers e testes que já importavam daqui.
+export { md5OfFile };
 
 /**
  * #1418: decide se um cached entry pode ser reused pra um source path local.

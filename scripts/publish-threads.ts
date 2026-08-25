@@ -83,6 +83,7 @@ import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -186,6 +187,24 @@ export function warnMissingEditionUrl(
  * Retorna lista com 1+ chunks. Se o texto cabe em um único post,
  * retorna `[text]` sem modificação.
  */
+/**
+ * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
+ * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
+ * ambos degradam pra "sem carrossel" ({}), preservando o contrato
+ * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch
+ * (mesmo helper duplicado em publish-facebook.ts — scripts não compartilham
+ * import entre si, ver test/lib-boundary.test.ts).
+ */
+export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
+  if (!existsSync(publicImagesPath)) return {};
+  try {
+    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
+  } catch (e: any) {
+    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
+    return {};
+  }
+}
+
 export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT): string[] {
   if (text.length <= maxLen) return [text];
 
@@ -523,6 +542,13 @@ async function main() {
     publishedPath = internalPath;
   }
 
+  // #6095 — carrossel diário (capa + 3 parágrafos + CTA): lido best-effort,
+  // igual ao Facebook (Threads daily não exigia imagem antes, então ausência
+  // do arquivo/slides nunca é erro — só significa "sem carrossel", mesmo
+  // comportamento de hoje). Resolvido 1x fora do loop (não muda por destaque).
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages = loadPublicImagesFile(publicImagesPath);
+
   // Extrair destaques da seção '# Curto' — sem fallback (#4294)
   const destaques = extractDestaquesFromSocialMd(socialMd);
   const results: PostEntry[] = [];
@@ -686,10 +712,18 @@ async function main() {
         continue;
       }
 
+      // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+      // slides existem em 06-public-images.json; senão cai pro comportamento
+      // de sempre (image_url: null, post só-texto — Threads daily nunca
+      // suportou imagem única, só o carrossel muda aqui). Tudo-ou-nada via
+      // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+      const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+
       try {
         const response = await postToWorkerQueue(workerUrl, workerToken, {
           text: chunks[0],
           image_url: null,
+          ...(carouselImageUrls && { image_urls: carouselImageUrls }),
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "threads",
