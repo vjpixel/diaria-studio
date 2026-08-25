@@ -79,6 +79,28 @@ export type AccountQuotaCheck =
  * contador negativo ou não-finito significa leitura corrompida da API, e
  * uma leitura corrompida não pode virar "tem cota, pode enviar".
  */
+/**
+ * ## Limitação conhecida: a cota é medida AGORA, não no horário do envio
+ *
+ * Achado do review (PR #6147). `toStatsDay(new Date())` reflete o dia UTC no
+ * instante em que o guard roda — normalmente o Stage 6, que acontece ANTES do
+ * disparo real (06:00 BRT / 09:00 UTC do dia seguinte).
+ *
+ * Consumo transacional que aconteça DEPOIS desta checagem e ANTES do envio
+ * fica invisível — o mesmo padrão do incidente de 260825, só que num timing
+ * diferente. Não é hipotético: foi exatamente um mass-send transacional
+ * (#6042/#6043) que esvaziou o balde.
+ *
+ * **Por que não é bloqueante:** o alarme `Diaria-Brevo-Diaria-Guardrail` roda
+ * a cada 4h e detecta campanha `suspended`, então a janela de silêncio cai de
+ * ~12h (o que se viu em 260825) pra no máximo ~4h. É mitigação, não conserto
+ * — o conserto seria reavaliar a cota imediatamente antes do disparo, que
+ * exigiria um hook que hoje não existe (quem dispara é o servidor da Brevo).
+ *
+ * **Corolário operacional:** volume transacional novo nesta conta sai do mesmo
+ * balde da newsletter. Antes de ligar qualquer envio transacional aqui,
+ * conferir o consumo — não basta a fila caber em `daily_send_cap`.
+ */
 export function checkAccountSendQuota(params: {
   dailyLimit: number;
   transactionalRequestsToday: number;
