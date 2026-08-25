@@ -55,10 +55,10 @@ describe("mdInlineToHtml (#2001 follow-up: URLs com parênteses)", () => {
     assert.ok(out.includes("[clique aqui]()"), `texto bruto deve ser preservado: ${out}`);
   });
 
-  it("#6084: itálico *texto* (asterisco único) vira <em>", () => {
+  it("#6084: itálico *texto* (asterisco único) vira <em> (mesmo estilo inline de processInlineItalics, compat Outlook)", () => {
     const out = mdInlineToHtml("*Desde sexta-feira, rodando 24/7.*");
     assert.ok(
-      out.includes("<em>Desde sexta-feira, rodando 24/7.</em>"),
+      out.includes('<em style="font-style:italic;">Desde sexta-feira, rodando 24/7.</em>'),
       `itálico ausente: ${out}`,
     );
   });
@@ -66,7 +66,23 @@ describe("mdInlineToHtml (#2001 follow-up: URLs com parênteses)", () => {
   it("#6084: bold **texto** e itálico *texto* na mesma string não colidem", () => {
     const out = mdInlineToHtml("Isto é **negrito** e isto é *itálico*.");
     assert.ok(out.includes("<b>negrito</b>"), `bold ausente: ${out}`);
-    assert.ok(out.includes("<em>itálico</em>"), `itálico ausente: ${out}`);
-    assert.doesNotMatch(out, /<em>[^<]*negrito/, `bold não deve virar itálico: ${out}`);
+    assert.ok(out.includes("<em"), `itálico ausente: ${out}`);
+    assert.ok(out.includes(">itálico</em>"), `itálico ausente: ${out}`);
+    assert.doesNotMatch(out, /<em[^>]*>[^<]*negrito/, `bold não deve virar itálico: ${out}`);
+  });
+
+  it("#6087 (review da #6084): asterisco literal dentro de URL não colide com itálico fora do link — href não corrompe", () => {
+    const out = mdInlineToHtml("Confira [aqui](https://web.archive.org/web/*/example.com) e *depois*.");
+    assert.ok(
+      out.includes('href="https://web.archive.org/web/*/example.com"'),
+      `href corrompido ou ausente: ${out}`,
+    );
+    assert.doesNotMatch(out, /href="[^"]*<em/, `<em> vazou pro atributo href: ${out}`);
+    assert.ok(out.includes(">depois</em>"), `itálico fora do link ausente: ${out}`);
+  });
+
+  it("#6087 (review da #6084): itálico com underscore _texto_ também suportado (paridade com processInlineItalics)", () => {
+    const out = mdInlineToHtml("Isto é _itálico_ com underscore.");
+    assert.ok(out.includes(">itálico</em>"), `itálico com underscore ausente: ${out}`);
   });
 });

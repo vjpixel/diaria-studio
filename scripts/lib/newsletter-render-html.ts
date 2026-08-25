@@ -1584,6 +1584,20 @@ export function renderSection(section: Section): string {
 // #2008/#2018: applyWordJoiner importado de ./word-joiner.ts (shared helper).
 // Ver scripts/lib/word-joiner.ts para documentação completa e GUARDED_DOMAINS.
 
+// #6084/#6087: bold + itálico aplicados por SEGMENTO DE TEXTO, nunca no HTML
+// já montado com os links embutidos. Aplicar sobre a string inteira DEPOIS de
+// já ter o HTML do link deixava um `*`/`**` literal dentro de uma URL (ex:
+// wildcard de Wayback Machine) colidir com o `*`/`**` de ênfase de fora do
+// link e corromper o atributo href (achado do review da PR #6087). Por
+// segmento de texto puro, antes do label do link virar HTML, essa colisão
+// nunca ocorre. Reusa processInlineItalics — mesmo regex/estilo inline
+// (`font-style:italic` explícito, compatibilidade Outlook) usado no corpo
+// dos destaques, inclusive suporte a `_texto_` além de `*texto*`.
+function applyEmphasis(text: string): string {
+  const bolded = text.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  return processInlineItalics(bolded);
+}
+
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
   const input = unescapeMd(s);
@@ -1603,9 +1617,9 @@ export function mdInlineToHtml(s: string): string {
     // nem no label do link — label já tem href explícito, sem risco de linkify).
     // #2532/#2533 review: wordmark também só nos segmentos de TEXTO (não no
     // label nem no href) — simétrico com processInlineLinks. Aplicado ANTES do
-    // passo de `**` abaixo, então um `**` em volta da marca vira `**{wordmark}**`
-    // → `<b>{wordmark}</b>`.
-    parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start))));
+    // passo de ênfase (bold/itálico), então um `**`/`*` em volta da marca vira
+    // `**{wordmark}**` → `<b>{wordmark}</b>`.
+    parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start)))));
     // #3102: reusa inlineLinkHtml (mesmo tratamento de `processInlineLinks`/
     // `renderBodyInline` — underline teal via text-decoration-color). Antes,
     // mdInlineToHtml tinha seu PRÓPRIO estilo de link (border-bottom teal), que
@@ -1615,16 +1629,8 @@ export function mdInlineToHtml(s: string): string {
     parts.push(inlineLinkHtml(label, url));
     lastIdx = end;
   }
-  parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
-  let out = parts.join("");
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-  // #6084: itálico `*texto*` (single asterisk) — mdInlineToHtml nunca
-  // suportou isso, diferente de processInlineItalics (usado no corpo dos
-  // destaques). Rodar DEPOIS do bold acima: pares `**...**` já viraram
-  // `<b>`, então o regex de asterisco único abaixo só encontra itálico de
-  // verdade, nunca metade de um par de bold já consumido.
-  out = out.replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
-  return out;
+  parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx)))));
+  return parts.join("");
 }
 
 /**
