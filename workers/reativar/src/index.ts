@@ -94,6 +94,7 @@ import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/ut
 import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
+import { KIT_NATIVE_SIGNUP_MARKER } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -167,6 +168,12 @@ export interface Env {
   KIT_UTM_MEDIUM_FIELD?: string;
   KIT_UTM_CAMPAIGN_FIELD?: string;
   KIT_REFERRING_SITE_FIELD?: string;
+  /** #6048 — nome do custom field Kit que recebe o marcador de "entrou pelo
+   *  funil" (`KIT_NATIVE_SIGNUP_MARKER`, scripts/lib/shared/kit-signup-origin.ts).
+   *  Já criado em produção (`origem_cadastro`, 25/08/2026) — falta só
+   *  `wrangler secret put` pra ligar. Mesmo degrade gracioso ausente dos
+   *  demais `KIT_*_FIELD` acima. */
+  KIT_ORIGEM_CADASTRO_FIELD?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -594,6 +601,10 @@ export async function activateSubscriptionKit(
   if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium;
   if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign;
   if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite;
+  // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
+  // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
+  // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
+  if (env.KIT_ORIGEM_CADASTRO_FIELD) fields[env.KIT_ORIGEM_CADASTRO_FIELD] = KIT_NATIVE_SIGNUP_MARKER;
 
   const postBody: Record<string, unknown> = { email_address: email, state: "active" };
   if (Object.keys(fields).length > 0) postBody.fields = fields;

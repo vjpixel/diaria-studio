@@ -120,6 +120,18 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     });
   });
 
+  it("marcador de origem só vai em fields quando KIT_ORIGEM_CADASTRO_FIELD está configurado (#6048)", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [] }),
+      post: () => jsonRes(201, { subscriber: { state: "active" } }),
+    });
+    const env = kitEnv({ KIT_ORIGEM_CADASTRO_FIELD: "origem_cadastro" });
+    await activateSubscriptionKit(env, "a@b.com", fetchImpl);
+    const post = calls.find((c) => c.method === "POST");
+    const body = post!.body as Record<string, unknown>;
+    assert.deepEqual(body.fields, { origem_cadastro: "kit-nativo" });
+  });
+
   it("guard de descadastro nativo pendente (#4538 item B) bloqueia mesmo no caminho Kit — mesmo guard backend-agnóstico (Brevo)", async () => {
     const { fetchImpl, calls } = routedFetch({
       get: () => jsonRes(200, { subscribers: [] }),

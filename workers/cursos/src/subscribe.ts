@@ -18,6 +18,7 @@ import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
+import { KIT_NATIVE_SIGNUP_MARKER } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -207,6 +208,10 @@ export async function subscribeToKit(
   if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = CURSOS_UTM_MEDIUM;
   if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = CURSOS_UTM_CAMPAIGN;
   if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = "cursos-gate-inline";
+  // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
+  // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
+  // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
+  if (env.KIT_ORIGEM_CADASTRO_FIELD) fields[env.KIT_ORIGEM_CADASTRO_FIELD] = KIT_NATIVE_SIGNUP_MARKER;
 
   const body: Record<string, unknown> = {
     email_address: input.email,
