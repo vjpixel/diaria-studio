@@ -84,7 +84,7 @@ import {
   type CohortVerifySummary,
 } from "./verify-emails-mv.ts";
 import { computeFirstSendDeficit, MV_ONDEMAND_APPROVAL_MARGIN, type MvOnDemandPlan } from "./lib/clarice-wave-plan.ts";
-import { planWave, parseDatesArg } from "./clarice-plan-wave.ts";
+import { planWave, parseDatesArg, parseTargetVolumeArg } from "./clarice-plan-wave.ts";
 import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DEFAULT_DASHBOARD_URL } from "./clarice-schedule-ramp.ts";
@@ -191,16 +191,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // o `--volume N` do editor (via `clarice-envio-run.ts`), este script
   // recomputava `mvOnDemandPlan` contra o volume da política, não contra o
   // que foi pedido — o mesmo bug de raiz, num 2º ponto que também chama
-  // `planWave()` do zero.
-  const targetVolumeArg = getArg(argv, "target-volume");
-  let targetVolume: number | undefined;
-  if (targetVolumeArg !== undefined) {
-    targetVolume = Number(targetVolumeArg);
-    if (!Number.isInteger(targetVolume) || targetVolume <= 0) {
-      console.error(`❌ --target-volume precisa ser um inteiro positivo (recebido: "${targetVolumeArg}").`);
-      process.exit(1);
-    }
-  }
+  // `planWave()` do zero. Reusa `parseTargetVolumeArg` de `clarice-plan-wave.ts`
+  // (fix #6144/#6145) — a versão inline daqui tinha a MESMA regressão: `getArg`
+  // nunca retorna `undefined`, então `targetVolumeArg !== undefined` era
+  // sempre `true` e toda invocação sem `--target-volume` (o caminho padrão
+  // do Passo 1 do fluxo documentado acima) caía em `Number("") = 0` e
+  // abortava com "--target-volume precisa ser um inteiro positivo" — achado
+  // pelo guard estrutural ampliado #6149 (padrão desacoplado do #4573).
+  const targetVolume = parseTargetVolumeArg(argv);
 
   // Recomputa a MESMA proposta que `/diaria-clarice-envio` já viu no Passo 1
   // — o `mvOnDemandPlan` embutido nela é a única fonte do recorte a
