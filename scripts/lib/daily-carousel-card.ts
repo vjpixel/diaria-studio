@@ -151,6 +151,21 @@ export function splitIntoParagraphCards(body: string, target = 3): string[] {
 }
 
 /**
+ * Handle + micro-CTA dos slides de PARÁGRAFO do carrossel diário (#6086
+ * itens a/b — padrões 7/8 de `context/instagram-benchmarks-5815.md`, que o
+ * #6005 Parte B não implementou). Nunca aplicados ao slide de CTA — lá o
+ * handle já aparece no `INSTAGRAM_CTA_LINE`/footer do slide, e um segundo
+ * convite a seguir seria redundante (a própria issue #6086 pede isso).
+ *
+ * Copy do micro-CTA é autoral deste projeto (não copiado de nenhuma conta de
+ * benchmark) — curto o bastante pra não competir com o corpo do texto,
+ * cabendo no canto inferior direito da MESMA linha do rodapé (sem consumir
+ * espaço vertical novo, ver `buildFlatCardSvg`).
+ */
+export const DAILY_CAROUSEL_HANDLE = "@diar.ia.br";
+export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
+
+/**
  * Pure: monta o `FlatCardText` de cada um dos 4 slides sem foto (3
  * parágrafos + CTA), a partir do texto genérico JÁ EXTRAÍDO de `## d{N}`
  * (com ou sem bloco de hashtags — `splitBodyAndTags` remove antes de
@@ -168,11 +183,18 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
   const total = paragraphs.length;
   const entries = paragraphs.map((title, i): [CarouselSlideSlot, FlatCardText] => [
     (`p${i + 1}` as CarouselSlideSlot),
-    { kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`, title, footer: "diar.ia.br" },
+    {
+      kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`,
+      title,
+      footer: "diar.ia.br",
+      handle: DAILY_CAROUSEL_HANDLE,
+      microCta: DAILY_CAROUSEL_MICRO_CTA,
+    },
   ]);
 
   return {
     ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
+    // CTA final: sem handle/microCta — redundante ali (ver comentário acima).
     cta: { kicker: "Newsletter grátis", title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
   };
 }
@@ -197,7 +219,13 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
  */
 export function hashCarouselSlideTexts(genericText: string): string {
   const texts = buildCarouselSlideTexts(genericText);
-  const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => `${texts[slot].kicker} || ${texts[slot].title}`).join(" ~~ ");
+  const canonical = CAROUSEL_SLIDE_SLOTS.map(
+    // #6086: handle/microCta entram no rasterizado (rodapé) mas não em
+    // `body`/`title` — precisam estar no carimbo, senão a introdução dos
+    // itens a/b não invalida a arte já gerada com o rodapé antigo (mesma
+    // classe de silêncio que o `layoutTag` abaixo já corrige pro layout).
+    (slot) => `${texts[slot].kicker} || ${texts[slot].title} || ${texts[slot].handle ?? ""} || ${texts[slot].microCta ?? ""}`,
+  ).join(" ~~ ");
   // #6078: o carimbo precisa cobrir o LAYOUT também, não só o texto. Sem isto,
   // uma edição cujos slides foram rasterizados com o auto-size antigo tem
   // carimbo batendo com o texto atual, `shouldRenderCarouselSlides` PULA o
