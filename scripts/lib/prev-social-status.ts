@@ -43,16 +43,27 @@
  * pra este módulo: se depois dessa reconciliação uma entry desses 3 canais
  * AINDA está `scheduled` e vencida, isso agora significa algo real (Worker
  * inalcançável, cron/alarm ainda não processou, ou reconciliação não rodou) —
- * voltou a ser `overdue-pollable`, não mais terminal-by-design. **Twitter
- * continua fora** — não passa pelo Worker (via Buffer MCP, chamado direto
- * pelo orchestrator), sem reconciliador equivalente ainda.
+ * voltou a ser `overdue-pollable`, não mais terminal-by-design.
+ *
+ * **#6152 — Twitter saiu deste conjunto também.** Estava desatualizado desde
+ * o próprio #5766: `verify-twitter-posts.ts` (via API GraphQL do Buffer) já
+ * reconcilia Twitter no check 0k, exatamente como `verify-social-worker-dispatch.ts`
+ * faz para LinkedIn/Instagram/Threads — só que o docstring nunca foi
+ * atualizado pra refletir isso. Consequência prática enquanto ficou parado:
+ * um post de Twitter `scheduled` vencido DEPOIS da reconciliação (falha real
+ * de publicação) era contado como `terminalByDesign` e nunca virava achado —
+ * ver #6152 pro incidente que expôs isso (post que falhou no Buffer, ninguém
+ * percebeu). Removido só depois de #6152 Parte 1+2 garantirem que a
+ * reconciliação de fato roda (sem gate silencioso por env ausente) — tirar
+ * antes trocaria silêncio por alarme falso diário.
  */
 
 /** Canais cujo `scheduled` é ESTADO TERMINAL — não há poll pós-dispatch.
- * Ver #5766 acima: LinkedIn/Instagram/Threads saíram deste conjunto porque
- * `verify-social-worker-dispatch.ts` agora reconcilia os 3 antes deste check
- * rodar. Só Twitter (via Buffer, sem reconciliador) permanece. */
-export const FIRE_AND_FORGET_PLATFORMS = new Set(["twitter"]);
+ * Ver #5766/#6152 acima: LinkedIn/Instagram/Threads e (desde #6152) Twitter
+ * saíram deste conjunto porque cada um tem reconciliador rodando no check 0k
+ * antes deste check 0l. Vazio por enquanto — mantido como `Set` (não removido)
+ * porque a forma (canal sem reconciliador ainda) pode voltar a existir. */
+export const FIRE_AND_FORGET_PLATFORMS = new Set<string>([]);
 
 export interface SocialPostLike {
   platform?: string;

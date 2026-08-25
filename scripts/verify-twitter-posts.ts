@@ -27,6 +27,13 @@
  * Output: atualiza in-place o `06-social-published.json` da edição.
  */
 
+// #6152 — sem isto, `process.env.BUFFER_ACCESS_TOKEN` só existe quando o
+// caller (shell, systemd) já carregou o `.env` antes do spawn. Fora do
+// systemd (sessão interativa do editor, `/diaria-edicao` na máquina local)
+// o token fica invisível e a reconciliação é pulada em silêncio — mesmo
+// com o token presente no `.env`.
+import "dotenv/config";
+
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

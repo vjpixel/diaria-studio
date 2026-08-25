@@ -459,13 +459,13 @@ Processar agora? [s/n/d]
 
 ### 0k. Verify FB + LinkedIn/Instagram/Threads + Twitter da edição anterior (#78, #5766, #5801) (→ coberto por `stage-0-run.ts`; referência/fallback)
 
-Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766) Twitter via API GraphQL do Buffer (`api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`. Não bloqueia — credenciais/Worker/token ausentes logam `warn` e seguem.
+Sempre roda, silencioso. Reconcilia `scheduled` → `published`/`failed` da edição anterior: Facebook via Graph API, LinkedIn/Instagram/Threads via `GET /list`/`GET /dlq` do Worker `diaria-linkedin-cron`, e (#5766) Twitter via API GraphQL do Buffer (`api.buffer.com/graphql` — NÃO a REST legacy `api.bufferapp.com`, que rejeita token pessoal com 401). Instagram/Threads: entrega real confirmada; LinkedIn: confiança mais fraca (só aceite do webhook Make) — via `verification_note`, ver `scripts/verify-social-worker-dispatch.ts`. Não bloqueia — credenciais/Worker/token ausentes logam `warn` e seguem. **`verify-twitter-posts.ts` roda sempre, sem gate por `BUFFER_ACCESS_TOKEN` (#6152)** — o script carrega o próprio `.env` (`import "dotenv/config"`) e decide sozinho; sem token, sai com código != 0 e o `|| echo` abaixo (fail-soft) já é a nota — um `if [ -n "$BUFFER_ACCESS_TOKEN" ]` prévio caçoava o passo do relatório em silêncio quando a var não estava pré-carregada no shell (achado ao vivo #6152: `.env` tinha o token e o `if` mesmo assim calava, porque a var só existe no processo que já carregou `.env`, nunca no shell puro).
 ```bash
 PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
 if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
   npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"; fi
 [ -n "$PREV" ] && (npx tsx scripts/verify-social-worker-dispatch.ts --edition-dir "$PREV/" || echo "verify-social-worker failed (non-fatal)")
-[ -n "$PREV" ] && [ -n "$BUFFER_ACCESS_TOKEN" ] && (npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal)")
+[ -n "$PREV" ] && (npx tsx scripts/verify-twitter-posts.ts --edition-dir "$PREV/" || echo "verify-twitter failed (non-fatal, sem BUFFER_ACCESS_TOKEN ou outra falha — ver stderr)")
 ```
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366) (→ coberto por `stage-0-run.ts`; referência/fallback)
