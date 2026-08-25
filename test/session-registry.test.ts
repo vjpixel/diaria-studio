@@ -857,6 +857,19 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
   const ONE_MIN_MS = 60 * 1000;
   const ONE_DAY_MS = 24 * 60 * ONE_MIN_MS;
 
+  it("#6130 fleet review (P2): conservativeMaxAgeMs não-positivo/NaN lança, nunca degrada em silêncio a janela conservadora", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s1", { tag: "Neo", startedAt: new Date(NOW - 5 * ONE_MIN_MS).toISOString() });
+
+    for (const bad of [0, -1, NaN, Infinity]) {
+      assert.throws(
+        () => planSessionGc(root, { now: NOW, conservativeMaxAgeMs: bad }),
+        /conservativeMaxAgeMs precisa ser finito e positivo/,
+        `deveria lançar para conservativeMaxAgeMs=${bad}`,
+      );
+    }
+  });
+
   it("sessão com heartbeat recente (dentro de SOFT_STALE_MS) é sempre mantida", () => {
     const root = freshRoot();
     registerSession(root, "develop", "s1", { tag: "Neo", startedAt: new Date(NOW - 5 * ONE_MIN_MS).toISOString() });

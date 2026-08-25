@@ -828,6 +828,16 @@ function decideSessionGc(
 export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): SessionGcResult[] {
   const now = opts.now ?? Date.now();
   const conservativeMaxAgeMs = opts.conservativeMaxAgeMs ?? GC_CONSERVATIVE_MAX_AGE_MS;
+  // #6130 (achado do fleet review, P2): a validação de positividade existia
+  // só no parser da CLI (`main()`, case "gc") — um caller programático
+  // passando 0/negativo/NaN derrubava em silêncio a janela conservadora que
+  // é a rede de segurança inteira do branch 4 de `decideSessionGc` (sem
+  // sinal de processo verificável). Falha alto e cedo em vez de degradar.
+  if (!Number.isFinite(conservativeMaxAgeMs) || conservativeMaxAgeMs <= 0) {
+    throw new Error(
+      `planSessionGc: conservativeMaxAgeMs precisa ser finito e positivo (recebido: ${conservativeMaxAgeMs})`,
+    );
+  }
   const isPidAlive = opts.isPidAlive ?? defaultIsPidAlive;
   const localTag = opts.localMachineTag ?? machineTag();
 
@@ -906,12 +916,25 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
   const plan = planSessionGc(repoRoot, opts);
   for (const entry of plan) {
     if (entry.action !== "removed") continue;
+    // #6130 (achado HIGH do fleet review): antes disto, uma falha de rmSync
+    // era engolida em silêncio E a entry continuava reportando "removed" —
+    // o operador via "removido" no output do CLI mesmo com o arquivo ainda
+    // no disco. Agora: loga a falha (mesmo padrão de `warnIoError`) e
+    // rebaixa a entry pra "kept" quando pelo menos 1 arquivo do grupo não
+    // foi confirmadamente removido — próxima execução do GC retenta.
+    let allRemoved = true;
     for (const file of entry.files) {
       try {
         if (existsSync(file)) rmSync(file);
-      } catch {
-        // Best-effort: próxima execução do GC retenta.
+        if (existsSync(file)) allRemoved = false; // rmSync "teve sucesso" mas o arquivo persiste (raro, ex: lock de outro processo)
+      } catch (e) {
+        allRemoved = false;
+        warnIoError(file, e);
       }
+    }
+    if (!allRemoved) {
+      entry.action = "kept";
+      entry.reason = `${entry.reason} [remoção falhou parcialmente — reportado como "kept", próxima execução retenta]`;
     }
   }
   return plan;
