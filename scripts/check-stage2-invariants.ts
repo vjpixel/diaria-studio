@@ -22,9 +22,15 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
-import { intentionalErrorJsonPath } from "./lib/intentional-errors.ts"; // #3222
+import { intentionalErrorJsonPath, loadIntentionalErrorJson } from "./lib/intentional-errors.ts"; // #3222 / #6139
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #4263
 import { verify as verifyUrl } from "./verify-accessibility.ts"; // #4730
+import {
+  extractRevealFromFrontmatter,
+  narrativeIsCatalogShaped,
+  narrativeIsGenericPlaceholder,
+} from "./render-erro-intencional.ts"; // #6139
+import { pickErroIntencionalReveal } from "./lib/newsletter-parse.ts"; // #6139 — MESMA função que o renderer usa
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -173,6 +179,67 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
     return {
       ok: false,
       label: "intentional_error_frontmatter_missing: _internal/intentional-error.json ausente — render-erro-intencional.ts não inseriu o placeholder (#2284/#3222)",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Pure (#6139): valida que `intentional-error.json.reveal` — quando o editor
+ * já o preencheu nesta MESMA edição — será RECONHECIDO pelo renderer da
+ * EDIÇÃO SEGUINTE como o parágrafo de reveal do bloco ERRO INTENCIONAL.
+ *
+ * Causa raiz do #6139: `reveal` é escrito na edição N pensando na edição
+ * N+1 (é o texto que `render-erro-intencional.ts::composeRevealText` vai
+ * copiar VERBATIM amanhã, sem prefixar "Na última edição" — pressupõe que o
+ * editor já escreveu a frase completa). O HTML render
+ * (`newsletter-render-html.ts::renderErroIntencionalReveal`, via
+ * `pickErroIntencionalReveal`) só reconhece esse parágrafo como reveal
+ * quando ele começa com o prefixo literal "Na última edição" OU contém uma
+ * das palavras-gancho temporais do fallback (último/anterior/passado/
+ * ontem/edições) — e explicitamente EXCLUI parágrafos que começam com
+ * "Nessa edição" (teaser da declaração corrente, não o reveal). Um `reveal`
+ * escrito como "Nesta/Nessa edição, …" (o editor pensando na edição ATUAL,
+ * não na PRÓXIMA que vai revelar isso) passava incólume por todos os checks
+ * existentes — o box de reveal simplesmente não aparecia na edição seguinte,
+ * silenciosamente, só um warning em stderr que ninguém olha no gate.
+ *
+ * Reusa `pickErroIntencionalReveal` — a MESMA função que o renderer chama —
+ * em vez de duplicar a lista de palavras-gancho aqui: se a heurística do
+ * renderer mudar, este check acompanha automaticamente.
+ *
+ * Roda só quando `reveal` está preenchido (campo ausente/placeholder é
+ * responsabilidade de outros checks — `checkIntentionalErrorFrontmatter`
+ * aqui, `intentional-error-flagged` no Stage 5) e só quando não é
+ * catalog-shaped/genérico (esses casos já têm guard dedicado — Stage 4
+ * `narrative-not-generic-placeholder`, #2419 — que produz mensagem mais
+ * específica; não duplicar aqui).
+ */
+export function checkRevealTemporalPrefix(editionDir: string): CheckResult {
+  const jsonPath = intentionalErrorJsonPath(editionDir);
+  const record = loadIntentionalErrorJson(jsonPath);
+  if (!record) {
+    return { ok: true, label: "intentional_error_missing: outro check captura isso" };
+  }
+  const reveal = extractRevealFromFrontmatter(record);
+  if (!reveal) {
+    return { ok: true, label: "reveal_missing: campo ainda não preenchido, outro check captura isso" };
+  }
+  if (narrativeIsCatalogShaped(reveal) || narrativeIsGenericPlaceholder(reveal)) {
+    // Já capturado por outro guard (Stage 4 narrative-not-generic-placeholder,
+    // #2419) com mensagem específica — não duplicar aqui.
+    return { ok: true, label: "reveal_catalog_or_generic: outro check captura isso" };
+  }
+  if (pickErroIntencionalReveal(reveal) === null) {
+    return {
+      ok: false,
+      label:
+        `reveal_no_temporal_prefix: intentional-error.json.reveal="${reveal.slice(0, 100)}` +
+        `${reveal.length > 100 ? "…" : ""}" não começa com "Na última edição" nem contém ` +
+        `palavra-gancho temporal reconhecida pelo renderer (último/anterior/passado/ontem/edições). ` +
+        `A edição SEGUINTE copia este texto verbatim (composeRevealText, #3222/#2419) e o box de ` +
+        `reveal do ERRO INTENCIONAL NÃO será renderizado — silenciosamente (#6139). Reescreva ` +
+        `\`reveal\` em ${jsonPath} começando com "Na última edição, ...".`,
     };
   }
   return { ok: true };
@@ -383,6 +450,7 @@ interface AggregateResult {
     clarice: CheckResult;
     erro_intencional: CheckResult;
     intentional_error_frontmatter: CheckResult;
+    reveal_temporal_prefix: CheckResult;
     urls_accessible: CheckResult;
   };
 }
@@ -400,10 +468,24 @@ export async function checkStage2Invariants(
   const clarice = checkClariceRan(editionDir);
   const erro_intencional = checkErroIntencionalRendered(editionDir);
   const intentional_error_frontmatter = checkIntentionalErrorFrontmatter(editionDir);
+  const reveal_temporal_prefix = checkRevealTemporalPrefix(editionDir);
   const urls_accessible = await checkUrlsAccessible(editionDir, cachePath, { reverify: opts.reverify });
   return {
-    ok: humanizador.ok && clarice.ok && erro_intencional.ok && intentional_error_frontmatter.ok && urls_accessible.ok,
-    checks: { humanizador, clarice, erro_intencional, intentional_error_frontmatter, urls_accessible },
+    ok:
+      humanizador.ok &&
+      clarice.ok &&
+      erro_intencional.ok &&
+      intentional_error_frontmatter.ok &&
+      reveal_temporal_prefix.ok &&
+      urls_accessible.ok,
+    checks: {
+      humanizador,
+      clarice,
+      erro_intencional,
+      intentional_error_frontmatter,
+      reveal_temporal_prefix,
+      urls_accessible,
+    },
   };
 }
 
@@ -428,6 +510,7 @@ async function main(): Promise<void> {
     if (!result.checks.clarice.ok) failed.push(`clarice: ${result.checks.clarice.label}`);
     if (!result.checks.erro_intencional.ok) failed.push(`erro_intencional: ${result.checks.erro_intencional.label}`);
     if (!result.checks.intentional_error_frontmatter.ok) failed.push(`intentional_error_frontmatter: ${result.checks.intentional_error_frontmatter.label}`);
+    if (!result.checks.reveal_temporal_prefix.ok) failed.push(`reveal_temporal_prefix: ${result.checks.reveal_temporal_prefix.label}`);
     if (!result.checks.urls_accessible.ok) failed.push(`urls_accessible: ${result.checks.urls_accessible.label}`);
     console.error(`\n[check-stage2-invariants] FAIL — ${failed.length} check(s) falharam:`);
     for (const f of failed) console.error(`  - ${f}`);

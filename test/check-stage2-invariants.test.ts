@@ -16,6 +16,7 @@ import {
   checkClariceRan,
   checkErroIntencionalRendered,
   checkIntentionalErrorFrontmatter,
+  checkRevealTemporalPrefix,
   checkStage2Invariants,
   checkUrlsAccessible,
 } from "../scripts/check-stage2-invariants.ts";
@@ -779,6 +780,146 @@ describe("checkIntentionalErrorFrontmatter (#2284/#3222)", () => {
       });
       const r = checkIntentionalErrorFrontmatter(dir);
       assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("checkRevealTemporalPrefix (#6139)", () => {
+  it("FAIL quando reveal começa com 'Nesta edição' (caso real 260825 — edição 260826 perdeu o box de reveal)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "confundiu o nome da agência de notícias",
+        location: "DESTAQUE 2",
+        category: "ortografico",
+        correct_value: "Bloomberg",
+        reveal: "Nesta edição, escrevi Blomberg onde o correto é Bloomberg.",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label!, /reveal_no_temporal_prefix/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL quando reveal começa com 'Nessa edição' (mesma classe do bug — prefixo da declaração CORRENTE, não do reveal)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "teste",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "Y",
+        reveal: "Nessa edição, escrevi X onde o correto é Y.",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label!, /reveal_no_temporal_prefix/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK quando reveal começa com 'Na última edição' (caminho feliz)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "teste",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "Y",
+        reveal: "Na última edição, escrevi X onde o correto é Y.",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK quando reveal usa palavra-gancho temporal alternativa reconhecida pelo renderer (ex: 'anterior')", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "teste",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "Y",
+        reveal: "Na edição anterior, escrevi X onde o correto é Y.",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK quando reveal ausente/placeholder (outro check captura)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "{PREENCHER}",
+        location: "{PREENCHER}",
+        category: "{PREENCHER}",
+        correct_value: "{PREENCHER}",
+        reveal: "{PREENCHER}",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK quando intentional-error.json não existe (outro check captura)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("OK (não duplica) quando reveal é catalog-shaped — já capturado por outro guard (#2419)", () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeIntentionalErrorRecord(dir, {
+        description: "teste",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "Y",
+        reveal: "DESTAQUE 2 lista o Spotify quando deveria ser o Deezer.",
+      });
+      const r = checkRevealTemporalPrefix(dir);
+      assert.equal(r.ok, true, `catalog-shaped não deve duplicar violação aqui: ${r.label}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("checkStage2Invariants — FAIL end-to-end quando reveal tem prefixo errado (#6139)", async () => {
+    const { dir, cleanup } = mkEdition({ withIntentionalError: false });
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      writeIntentionalErrorRecord(dir, {
+        description: "confundiu o nome da agência de notícias",
+        location: "DESTAQUE 2",
+        category: "ortografico",
+        correct_value: "Bloomberg",
+        reveal: "Nesta edição, escrevi Blomberg onde o correto é Bloomberg.",
+      });
+      const r = await checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.reveal_temporal_prefix.ok, false);
+      assert.match(r.checks.reveal_temporal_prefix.label ?? "", /reveal_no_temporal_prefix/);
     } finally {
       cleanup();
     }
