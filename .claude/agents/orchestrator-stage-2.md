@@ -81,6 +81,30 @@ Exit code handling:
 - `tutorial` → "USE MELHOR"
 - `video` → "VÍDEO"
 
+**#6083 (feedback do editor na 260825: "categoria nunca deve ser 'notícias'"):**
+"NOTÍCIAS" não carrega informação — qualquer destaque é uma notícia. Escolha
+SEMPRE um label específico ao tema da história antes de considerar o genérico.
+Lista de referência de primeira escolha (não exaustiva; crie label específico
+quando nenhum servir):
+
+| Tema | Label |
+|---|---|
+| País/bloco como protagonista | 🇧🇷 BRASIL, 🇺🇸 EUA, 🇨🇳 CHINA, 🇪🇺 UE |
+| Financiamento/investimento/aquisição | 💰 FINANCIAMENTO |
+| Novo modelo/capacidade de modelo | 🤖 MODELOS |
+| Regulação/legislação/processos | ⚖️ REGULAÇÃO |
+| Artigo científico/achievement de pesquisa | 🔬 PESQUISA |
+| Segurança/abuso/deepfake/crime | 🛡️ SEGURANÇA |
+| Mercado/negócio/receita | 📈 MERCADO |
+| Educação/ensino | 🎓 EDUCAÇÃO |
+| Hardware/chips/infra | 🖥️ HARDWARE |
+| Trabalho/empregos/profissões | 💼 TRABALHO |
+| Saúde/medicina | 🏥 SAÚDE |
+| Cultura/mídia/entretenimento | 🎬 CULTURA |
+
+Reserve "NOTÍCIAS" só para quando genuinamente NENHUM tema mais específico se
+aplicar — e nunca a 2+ destaques na mesma edição.
+
 ⚠️ **Não** derive de `highlights[N-1].bucket` (#1668): pós-#1629/#1611 o `bucket`
 carrega o bucket de SEÇÃO da newsletter (`lancamento`/`radar`/`use_melhor`/`video`,
 emitido por `merge-scored-chunks` → `scorer-select`), **não** a category do
