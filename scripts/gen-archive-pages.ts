@@ -14,7 +14,7 @@
  * #467), nem `/`, `/subscribe`, `/forms/*` (3º item) — ver PR body.
  *
  * Uso:
- *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p]
+ *   npx tsx scripts/gen-archive-pages.ts [--posts-dir data/beehiiv-cache/posts] [--out workers/site/public/p] [--sitemap workers/site/public/sitemap.xml]
  *
  * Idempotente — pode ser rerodado a qualquer momento pra refletir um cache
  * atualizado (`beehiiv-sync.ts`); sobrescreve os arquivos existentes.
@@ -67,16 +67,26 @@ export function generateArchivePages(
   }
   mkdirSync(outDir, { recursive: true });
 
+  // Slug já escrito nesta rodada — detecta colisão em vez de deixar o 2º
+  // post sobrescrever o `index.html` do 1º em silêncio (last-write-wins).
+  // Achado ao vivo no cache real: um `new-post` duplicado (ver comentário de
+  // `isPublishedPost`) — dado sujo neste dataset não é hipotético.
+  const writtenSlugs = new Set<string>();
   const writtenPosts: ArchivePost[] = [];
   for (const post of published) {
     if (!post.content?.free?.web) {
       skipped.push({ slug: post.slug, reason: "sem content.free.web" });
       continue;
     }
+    if (writtenSlugs.has(post.slug)) {
+      skipped.push({ slug: post.slug, reason: "slug duplicado — outro post já escreveu esta página nesta rodada" });
+      continue;
+    }
     const html = buildArchivePageHtml(post);
     const pageDir = join(outDir, post.slug);
     mkdirSync(pageDir, { recursive: true });
     writeFileSync(join(pageDir, "index.html"), html, "utf8");
+    writtenSlugs.add(post.slug);
     writtenPosts.push(post);
   }
   const written = writtenPosts.length;

@@ -17,7 +17,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,7 +31,7 @@ import {
   buildSitemapXml,
   sitemapEntriesForPosts,
 } from "../scripts/lib/site-archive-pages.ts";
-import { generateArchivePages } from "../scripts/gen-archive-pages.ts";
+import { generateArchivePages, loadPosts } from "../scripts/gen-archive-pages.ts";
 
 function makePost(overrides: Partial<ArchivePost> = {}): ArchivePost {
   return {
@@ -145,6 +145,28 @@ describe("buildArchivePageHtml", () => {
     assert.match(html, /content="Preço &quot;especial&quot; &amp; imposto"/);
   });
 
+  it("escapa HTML no título — dado externo (API Beehiiv), sem isso vira XSS refletido em <title>", () => {
+    const post = makePost({ meta_default_title: 'Preço "especial" & <script>alert(1)</script>' });
+    const html = buildArchivePageHtml(post);
+    assert.match(
+      html,
+      /<title>Preço &quot;especial&quot; &amp; &lt;script&gt;alert\(1\)&lt;\/script&gt;<\/title>/,
+    );
+    assert.doesNotMatch(html, /<title>[^<]*<script>/);
+  });
+
+  it("lança se o post não é publicado (status !== confirmed)", () => {
+    const post = makePost({ status: "draft" });
+    assert.throws(() => buildArchivePageHtml(post));
+  });
+
+  it("lança nomeando o slug se o HTML de origem não tem tag <html>", () => {
+    const post = makePost({
+      content: { free: { web: "<body><h1>sem html/head nenhum</h1></body>" } },
+    });
+    assert.throws(() => buildArchivePageHtml(post), /exemplo-de-edicao/);
+  });
+
   it("preserva o resto do documento sem tocar (body intacto)", () => {
     const html = buildArchivePageHtml(makePost());
     assert.match(html, /<h1>Exemplo<\/h1>/);
@@ -175,6 +197,13 @@ describe("buildSitemapXml / sitemapEntriesForPosts", () => {
     assert.match(xml, /<lastmod>2025-08-24<\/lastmod>/);
     assert.doesNotMatch(xml, /\/p\/b</);
   });
+
+  it("aceita publish_date em epoch MILISSEGUNDOS (branch > 1e12), não só segundos", () => {
+    const posts = [makePost({ slug: "c", publish_date: 1755993600000 })]; // mesma data, em ms
+    const entries = sitemapEntriesForPosts(posts);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].lastmod, "2025-08-24");
+  });
 });
 
 describe("generateArchivePages (integração, tmpdir)", () => {
@@ -195,6 +224,7 @@ describe("generateArchivePages (integração, tmpdir)", () => {
       assert.equal(result.written, 2);
       assert.equal(result.skipped.length, 1);
       assert.equal(result.skipped[0].slug, "sem-html");
+      assert.equal(result.skipped[0].reason, "sem content.free.web");
 
       const dirs = readdirSync(outDir).sort();
       assert.deepEqual(dirs, ["edicao-1", "edicao-2"]);
@@ -223,6 +253,63 @@ describe("generateArchivePages (integração, tmpdir)", () => {
 
       generateArchivePages([makePost({ slug: "fica" })], outDir, sitemapPath);
       assert.deepEqual(readdirSync(outDir).sort(), ["fica"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("slug duplicado: pula o 2º post em vez de sobrescrever o 1º silenciosamente", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-test-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      const first = makePost({
+        slug: "duplicado",
+        publish_date: 2000,
+        content: { free: { web: "<html><head></head><body><h1>primeiro</h1></body></html>" } },
+      });
+      const second = makePost({
+        slug: "duplicado",
+        publish_date: 1000,
+        content: { free: { web: "<html><head></head><body><h1>segundo</h1></body></html>" } },
+      });
+
+      const result = generateArchivePages([first, second], outDir, sitemapPath);
+
+      // written conta só 1 — a contagem reflete o que de fato existe em disco.
+      assert.equal(result.written, 1);
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].slug, "duplicado");
+      assert.match(result.skipped[0].reason, /slug duplicado/);
+
+      const html = readFileSync(join(outDir, "duplicado", "index.html"), "utf8");
+      assert.match(html, /primeiro/); // o 1º processado (mais recente) venceu, nunca sobrescrito
+
+      const sitemap = readFileSync(sitemapPath, "utf8");
+      // 1 <loc> só — nunca 2 <url> pro mesmo slug.
+      assert.equal((sitemap.match(/<loc>/g) ?? []).length, 1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadPosts (integração, tmpdir)", () => {
+  it("carrega só arquivos post_*.json, ignorando outros arquivos no mesmo diretório", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-loadposts-"));
+    try {
+      writeFileSync(join(tmp, "post_1.json"), JSON.stringify(makePost({ slug: "a" })), "utf8");
+      writeFileSync(join(tmp, "post_2.json"), JSON.stringify(makePost({ slug: "b" })), "utf8");
+      writeFileSync(join(tmp, "README.md"), "não é um post", "utf8");
+      writeFileSync(join(tmp, ".gitkeep"), "", "utf8");
+
+      const posts = loadPosts(tmp);
+
+      assert.equal(posts.length, 2);
+      assert.deepEqual(
+        posts.map((p) => p.slug).sort(),
+        ["a", "b"],
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
