@@ -294,7 +294,17 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     id: "on-hold",
     description:
       "Comentário indica que o trabalho foi colocado em espera permanente ou não será feito, sem a label correspondente.",
-    textPatterns: [/\bon-hold\b/i, /\bwontfix\b/i, /n[ãa]o (vamos|iremos) fazer (isso|essa|esta)/i],
+    // `wontfix`/`on-hold` usam o mesmo `NEGATION_LOOKBEHIND` do grupo
+    // `execution-guard` (#6116): sem o guard, "Não fechar como wontfix." —
+    // uma negação explícita do rótulo, não uma recomendação — casava como
+    // drift (#464/#463, achado ao vivo na sessão `/diaria-develop 260825`).
+    // A frase "não vamos/iremos fazer" já É a própria negação-alvo (o
+    // deferimento em si), então não leva o guard.
+    textPatterns: [
+      new RegExp(`${NEGATION_LOOKBEHIND}\\bon-hold\\b`, "i"),
+      new RegExp(`${NEGATION_LOOKBEHIND}\\bwontfix\\b`, "i"),
+      /n[ãa]o (vamos|iremos) fazer (isso|essa|esta)/i,
+    ],
     expectedLabels: ["on-hold", "wontfix"],
   },
 ];

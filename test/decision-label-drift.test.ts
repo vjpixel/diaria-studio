@@ -498,6 +498,47 @@ describe("execution-guard — dois fatores obrigatórios (#5958, achados de revi
   }
 });
 
+describe("on-hold — guard de negação (#6116)", () => {
+  it("#464/#463 real: 'Não fechar como wontfix.' não gera achado (negação, não recomendação)", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 464,
+      labels: ["P3", "bug"],
+      commentBodies: ["Comentário de 2026-05-08: Não fechar como wontfix."],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it("'Não colocar em on-hold' também não gera achado (2 tokens entre negação e alvo)", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 463,
+      labels: ["P3", "bug"],
+      commentBodies: ["Não colocar em on-hold — segue elegível pro overnight."],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it("caso positivo real: 'Marcar como wontfix.' sem negação e sem label continua gerando achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 9001,
+      labels: ["P3", "bug"],
+      commentBodies: ["Decisão do editor: marcar como wontfix, não vale o esforço."],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "on-hold");
+    assert.deepEqual(findings[0].expectedLabels, ["on-hold", "wontfix"]);
+  });
+
+  it("caso positivo real: 'Vai ficar em on-hold por enquanto.' sem label continua gerando achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 9002,
+      labels: ["P2", "enhancement"],
+      commentBodies: ["Vai ficar em on-hold por enquanto, sem prazo definido."],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "on-hold");
+  });
+});
+
 describe("execution-guard — quantificadores continuam limitados (#5958)", () => {
   it("prosa longa não degrada: janela e lookbehind são limitados", () => {
     // A segurança contra backtracking patológico vem dos limites `{0,60}` e
