@@ -36,7 +36,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
+import { resolveRunLogPath } from "./run-log.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -137,6 +139,54 @@ export interface RunEditionStagesResult {
   outcomes: StageOutcome[];
   exitCode: number;
   failedStage: number | null;
+  /**
+   * #6088: servidores MCP que logaram `mcp_disconnect` com reason
+   * `permission_not_granted_noninteractive` no `data/run-log.jsonl` durante
+   * ESTA execução do laço. Sessão `-p` nunca consegue aprovar permissão de
+   * MCP — o playbook trata como "indisponível" e pula em fail-soft (regra
+   * escrita para indisponibilidade REAL, não para este determinismo). O
+   * defasamento aqui é só VISIBILIDADE: nunca muda exitCode, mas aparece
+   * destacado no resumo pra deixar de ser silencioso.
+   */
+  mcpPermissionWarnings: string[];
+}
+
+/**
+ * #6088 (pure, testável): dado um bloco de linhas JSONL do run-log, retorna a
+ * lista dedup de servidores MCP que falharam por permissão não-aprovável em
+ * sessão não-interativa. Linhas malformadas são ignoradas (fail-soft).
+ */
+export function collectMcpPermissionFailures(jsonlLines: string[]): string[] {
+  const servers = new Set<string>();
+  for (const line of jsonlLines) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    let evt: { message?: unknown; details?: { server?: unknown; reason?: unknown } };
+    try {
+      evt = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (
+      typeof evt?.message === "string" &&
+      evt.message.includes("mcp_disconnect") &&
+      evt.details?.reason === "permission_not_granted_noninteractive" &&
+      typeof evt.details?.server === "string"
+    ) {
+      servers.add(evt.details.server);
+    }
+  }
+  return [...servers];
+}
+
+/** Lê as linhas do run-log (fail-soft: arquivo ausente/ilegível → vazio). */
+function readRunLogLines(runLogPath: string): string[] {
+  try {
+    if (!existsSync(runLogPath)) return [];
+    return readFileSync(runLogPath, "utf8").split("\n");
+  } catch {
+    return [];
+  }
 }
 
 export interface RunEditionStagesOptions {
@@ -241,6 +291,11 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
   const outcomes: StageOutcome[] = [];
   let exitCode = 0;
   let failedStage: number | null = null;
+
+  // #6088: snapshot do run-log antes/depois — só linhas NOVAS desta execução
+  // geram aviso (um mcp_disconnect de ontem não é culpa deste laço).
+  const runLogPath = resolveRunLogPath(repoRootAbs);
+  const runLogBefore = readRunLogLines(runLogPath);
 
   for (const { stage, skill } of plan) {
     // Resumabilidade no nível do DRIVER: stage concluído nem chega a
@@ -376,7 +431,22 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     }
   }
 
-  return { outcomes, exitCode, failedStage };
+  // #6088: servidores MCP que falharam por permissão nesta execução —
+  // visibilidade, não bloqueio (fail-soft do playbook permanece).
+  // Diff por CONTEÚDO (set), não por contagem de linhas: o elemento vazio
+  // final do split("\n") desloca slice(by-length) em 1 e perde a última linha.
+  const runLogAfter = readRunLogLines(runLogPath);
+  const beforeSet = new Set(runLogBefore);
+  const newLines = runLogAfter.filter((l) => !beforeSet.has(l));
+  const mcpPermissionWarnings = collectMcpPermissionFailures(newLines);
+  if (mcpPermissionWarnings.length > 0) {
+    onProgress(
+      `⚠ MCP sem permissão aprovável em sessão -p (#6088): ${mcpPermissionWarnings.join(", ")} — ` +
+        `seções que dependem deles foram PULADAS pelo playbook, não indisponíveis.`,
+    );
+  }
+
+  return { outcomes, exitCode, failedStage, mcpPermissionWarnings };
 }
 
 /**
@@ -393,6 +463,21 @@ export function formatStagesSummary(result: RunEditionStagesResult, aammdd: stri
   }
   if (result.failedStage !== null) {
     lines.push(`Interrompido no stage ${result.failedStage}. Stages seguintes não rodaram.`);
+  }
+  // #6088: banner de MCP pulado por permissão — nunca muda o veredito dos
+  // stages, mas NÃO pode ficar enterrado: é perda de dado real silenciosa.
+  // `?? []` tolera resultados montados por código anterior à #6088.
+  const mcpWarnings = result.mcpPermissionWarnings ?? [];
+  if (mcpWarnings.length > 0) {
+    lines.push(
+      `⚠ ATENÇÃO (#6088): os seguintes MCPs falharam por permissão não-aprovável em sessão headless ` +
+        `-p nesta execução: ${mcpWarnings.join(", ")}.`,
+    );
+    lines.push(
+      `  Seções que dependem deles (ex: §0-replies via Gmail, inbox drain, Beehiiv sem fallback) foram PULADAS ` +
+        `pelo playbook — isto é perda de função, não indisponibilidade transitória. ` +
+        `Rodar as seções afetadas na sessão interativa (top-level), onde a aprovação de permissão é possível.`,
+    );
   }
   return lines.join("\n");
 }

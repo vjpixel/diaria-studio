@@ -20,6 +20,7 @@ import {
   STAGE_PLAN,
   HEADLESS_FLAGS,
   runEditionStages,
+  collectMcpPermissionFailures,
   assertNoPublishStage,
   summarizeFailure,
   formatStagesSummary,
@@ -537,5 +538,107 @@ describe("wiring da skill /diaria-edicao (#5744)", () => {
       !/--through\s*[456]/.test(skill),
       "a skill nunca pode mandar spawnar Stage 4+ headless — são os gates humanos",
     );
+  });
+});
+
+// ── #6088: MCP permission_not_granted_noninteractive deixa de ser silencioso ──
+describe("edition-stage-runner — #6088: mcpPermissionWarnings", () => {
+  const MCP_LINE_GMAIL =
+    '{"timestamp":"2026-08-25T14:54:50.000Z","edition":"260825","stage":0,"agent":"orchestrator","level":"warn",' +
+    '"message":"mcp_disconnect: claude_ai_Gmail","details":{"server":"claude_ai_Gmail","kind":"mcp_disconnect",' +
+    '"reason":"permission_not_granted_noninteractive"}}';
+  const MCP_LINE_BEEHIIV = MCP_LINE_GMAIL.replaceAll("claude_ai_Gmail", "claude_ai_Beehiiv");
+
+  it("collectMcpPermissionFailures(): extrai servidores dedup do sintoma exato", () => {
+    const servers = collectMcpPermissionFailures([
+      MCP_LINE_GMAIL,
+      MCP_LINE_BEEHIIV,
+      MCP_LINE_GMAIL, // duplicata — dedup
+      '{"message":"mcp_disconnect: outro","details":{"server":"X","reason":"not_connected_in_session"}}', // outro reason
+      "linha não-JSON",
+      "",
+    ]);
+    assert.deepEqual(servers.sort(), ["claude_ai_Beehiiv", "claude_ai_Gmail"]);
+  });
+
+  it("collectMcpPermissionFailures(): nada compatível → vazio", () => {
+    assert.deepEqual(collectMcpPermissionFailures([]), []);
+    assert.deepEqual(collectMcpPermissionFailures(['{"message":"qualquer coisa"}']), []);
+  });
+
+  it("formatStagesSummary(): warnings aparecem como banner ⚠ explícito", () => {
+    const summary = formatStagesSummary(
+      {
+        outcomes: [{ stage: 1, skill: "diaria-1-pesquisa", status: "ok", exitCode: 0, durationMs: 1000 }],
+        exitCode: 0,
+        failedStage: null,
+        mcpPermissionWarnings: ["claude_ai_Gmail"],
+      },
+      AAMMDD,
+    );
+    assert.match(summary, /#6088/);
+    assert.match(summary, /claude_ai_Gmail/);
+    assert.match(summary, /PULADAS/);
+  });
+
+  it("runEditionStages(): mcp_disconnect novo no run-log durante a execução vira warning", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRepo = mkdtempSync(join(tmpdir(), "6088-"));
+    const { mkdirSync, writeFileSync, appendFileSync, rmSync } = await import("node:fs");
+    mkdirSync(join(tmpRepo, "data"), { recursive: true });
+    writeFileSync(join(tmpRepo, "data", "run-log.jsonl"), "linha-preexistente\n");
+
+    const world = sentinelWorld(0);
+    const progress: string[] = [];
+    // O spawn "completa" o stage e o playbook da sub-sessão loga o
+    // mcp_disconnect no run-log — é exatamente o que aconteceu na 260825.
+    const result = runEditionStages({
+      aammdd: AAMMDD,
+      editionDir: join(tmpRepo, "editions", AAMMDD),
+      repoRootAbs: tmpRepo,
+      resolveClaudeBin: () => "echo",
+      env: {},
+      plan: STAGE_PLAN.slice(0, 1),
+      execFn: ((_cmd: string, _args: string[]) => {
+        appendFileSync(join(tmpRepo, "data", "run-log.jsonl"), MCP_LINE_GMAIL + "\n");
+        world.complete(1);
+        return "";
+      }) as unknown as typeof import("node:child_process").execFileSync,
+      assertSentinelFn: world.assertFn,
+      onProgress: (m) => progress.push(m),
+    });
+
+    assert.equal(result.exitCode, 0, "fail-soft preservado: warning nunca muda o veredito do stage");
+    assert.deepEqual(result.mcpPermissionWarnings, ["claude_ai_Gmail"]);
+    assert.ok(progress.some((m) => m.includes("#6088") && m.includes("claude_ai_Gmail")));
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it("runEditionStages(): mcp_disconnect PREEXISTENTE no run-log NÃO gera warning", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tmpRepo = mkdtempSync(join(tmpdir(), "6088b-"));
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    mkdirSync(join(tmpRepo, "data"), { recursive: true });
+    writeFileSync(join(tmpRepo, "data", "run-log.jsonl"), MCP_LINE_GMAIL + "\n"); // de ontem
+
+    const world = sentinelWorld(0);
+    const result = runEditionStages({
+      aammdd: AAMMDD,
+      editionDir: join(tmpRepo, "editions", AAMMDD),
+      repoRootAbs: tmpRepo,
+      resolveClaudeBin: () => "echo",
+      env: {},
+      plan: STAGE_PLAN.slice(0, 1),
+      execFn: ((_cmd: string, _args: string[]) => {
+        world.complete(1);
+        return "";
+      }) as unknown as typeof import("node:child_process").execFileSync,
+      assertSentinelFn: world.assertFn,
+    });
+
+    assert.deepEqual(result.mcpPermissionWarnings, []);
+    rmSync(tmpRepo, { recursive: true, force: true });
   });
 });
