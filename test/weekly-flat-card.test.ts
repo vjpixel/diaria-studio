@@ -120,6 +120,61 @@ describe("buildFlatCardSvg (pure)", () => {
     assert.doesNotMatch(svg, /text-anchor="end"/);
     assert.doesNotMatch(svg, /tspan[^>]*> · /);
   });
+
+  it("#6136 item 1: compactHandle=true + handle -> rodapé é SÓ o handle ('@' em brand), nunca wordmark + handle", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", handle: "@diar.ia.br", compactHandle: true });
+    assert.match(svg, new RegExp(`<tspan fill="${COLORS.brand}">@</tspan>diar\\.ia\\.br`));
+    assert.doesNotMatch(svg, /diar<tspan/, "wordmark completo não deveria aparecer no modo compacto");
+    assert.doesNotMatch(svg, / · @diar\.ia\.br/, "sem o separador ' · ' do modo antigo — não é mais wordmark+handle");
+  });
+
+  it("#6136 item 1: compactHandle=true SEM handle -> cai pro rodapé normal (footer), nunca lança", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", compactHandle: true });
+    assert.match(svg, /diar<tspan/, "sem handle, o modo compacto não tem o que compactar — footer normal");
+  });
+
+  it("#6136 item 1: handle setado mas compactHandle ausente/false -> comportamento pré-#6136 preservado (wordmark + handle)", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "y", footer: "diar.ia.br", handle: "@diar.ia.br" });
+    assert.match(svg, / · @diar\.ia\.br/);
+    assert.match(svg, /diar<tspan/);
+  });
+});
+
+/**
+ * (#6136 item 2) `title` pode carregar UMA quebra de parágrafo (`\n\n`) —
+ * respiro visual de 1 linha entre os 2 blocos, dentro do MESMO card. Título
+ * sem `\n\n` (todo chamador pré-#6136, inclusive todo uso do carrossel
+ * SEMANAL) precisa continuar byte-a-byte igual.
+ */
+describe("quebra de parágrafo em title (#6136 item 2)", () => {
+  const FIXED = { mode: "fixed" as const, size: 62 };
+
+  it("título com \\n\\n quebra em 2 grupos de linha, com 1 linha de respiro entre eles", () => {
+    const { lines } = measureFlatCardBody("Primeiro bloco curto.\n\nSegundo bloco curto.", FIXED);
+    // 1 linha (bloco 1) + 1 respiro (vazia) + 1 linha (bloco 2) = 3
+    assert.equal(lines.length, 3);
+    assert.equal(lines[1], "", "linha do meio é o respiro — vazia");
+    assert.equal(lines[0], "Primeiro bloco curto.");
+    assert.equal(lines[2], "Segundo bloco curto.");
+  });
+
+  it("título SEM \\n\\n não muda — nenhuma linha de respiro inserida (default do semanal intocado)", () => {
+    const { lines } = measureFlatCardBody("Um título qualquer sem quebra.", FIXED);
+    assert.ok(!lines.includes(""), "sem \\n\\n no input, nunca deveria aparecer linha vazia");
+  });
+
+  it("blockHeight cresce em 1 lineGap por causa do respiro (consome altura, #6078)", () => {
+    const semQuebra = measureFlatCardBody("Bloco A.", FIXED);
+    const comQuebra = measureFlatCardBody("Bloco A.\n\nBloco B.", FIXED);
+    const lineGap = Math.round(62 * 1.18);
+    assert.equal(comQuebra.blockHeight, semQuebra.blockHeight + lineGap + Math.round(62 * 1.18));
+  });
+
+  it("o respiro não renderiza nenhum <text> visível com conteúdo (linha vazia no SVG)", () => {
+    const svg = buildFlatCardSvg({ kicker: "x", title: "Bloco A.\n\nBloco B.", footer: "y" }, FIXED);
+    assert.match(svg, /Bloco A\./);
+    assert.match(svg, /Bloco B\./);
+  });
 });
 
 describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {

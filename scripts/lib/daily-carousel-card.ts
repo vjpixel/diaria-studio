@@ -13,7 +13,9 @@
  *      (foto + título overlay). Este módulo NÃO regenera esse arquivo — só
  *      referencia a URL já publicada pra ele (ver `resolveCarouselImageUrls`).
  *   2-4. 3 cards de parágrafo — texto puro (sem foto), 1 parágrafo do corpo
- *      de `## d{destaque}` por card (`splitIntoParagraphCards`).
+ *      de `## d{destaque}` por card (`splitIntoParagraphCards`), quebrado em
+ *      até 2 blocos visuais DENTRO do mesmo card quando houver ponto de corte
+ *      viável (`splitParagraphIntoTwoBlocks`, #6136 item 2).
  *   5. CTA — texto puro, mesmo copy de `INSTAGRAM_CTA_LINE`
  *      (`social-cta-lines.ts`) pra não divergir do texto que a legenda já usa.
  *
@@ -79,8 +81,18 @@ export const DAILY_CAROUSEL_LAYOUT: FlatCardLayout = { mode: "fixed", size: DAIL
  * real depende de quais palavras caem na quebra de linha, então o prompt
  * pede folga e o guard mecânico (`findOverflowingCarouselSlides`) é quem
  * decide de fato. Um número no prompt não substitui a medição.
+ *
+ * Reduzido de 300 para 260 no #6136 item 2: a quebra do corpo em 2 blocos
+ * (`splitParagraphIntoTwoBlocks`) consome 1 das 12 linhas do teto do #6078
+ * como respiro entre os blocos (11 restantes pro texto em vez de 12) — sem
+ * reduzir a folga, a mesma contagem de caracteres que cabia em 62px antes
+ * passaria a estourar com mais frequência. ~13% de corte (11/12) sobre 300
+ * arredonda pra 260; não é uma remedição dos 219 parágrafos históricos do
+ * #6078 (esse dado não muda retroativamente), é a mesma folga proporcional
+ * aplicada ao espaço vertical que sobrou. Reavaliar com dado real (nova
+ * medição de taxa de reescrita) é trabalho futuro, não bloqueante aqui.
  */
-export const DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET = 300;
+export const DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET = 260;
 
 export const CAROUSEL_SLIDE_SLOTS = ["p1", "p2", "p3", "cta"] as const;
 export type CarouselSlideSlot = (typeof CAROUSEL_SLIDE_SLOTS)[number];
@@ -167,6 +179,75 @@ export const DAILY_CAROUSEL_HANDLE = "@diar.ia.br";
 export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
 
 /**
+ * (#6136 item 3) Kicker do slide de CTA final — upgrade de "Newsletter
+ * grátis" pra uma chamada explícita de ASSINATURA. O `title` desse slide
+ * (`INSTAGRAM_CTA_LINE`) é deliberadamente mantido intacto — mesmo copy da
+ * legenda, decisão original do #6005 Parte B pra não divergir — e por
+ * design nunca usa a palavra "assine" (o texto do Instagram evita CTA de
+ * e-mail explícito no corpo, ver `social-cta-lines.ts`). O kicker é a única
+ * linha do slide livre pra dizer isso sem tocar no corpo: pequena, no topo,
+ * cor de marca — não compete visualmente com o texto principal (mesma classe
+ * de risco que a issue pede pra evitar).
+ */
+export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
+
+/**
+ * (#6136 item 2) Pure: divide um bloco de texto em 2 sub-blocos, separados
+ * por `\n\n`, pra abrir um respiro visual DENTRO do mesmo card de parágrafo
+ * (não confundir com os 3 cards-parágrafo já existentes — isto é uma quebra
+ * dentro de CADA um deles).
+ *
+ * Critério de quebra: sentença mais próxima do meio do texto (mesmo espírito
+ * de `splitIntoParagraphCards`, que também prefere fronteira de sentença a
+ * corte arbitrário). Sem fronteira de sentença (texto de 1 frase só), cai
+ * pro espaço mais próximo do meio (fronteira de palavra). Nunca corta DENTRO
+ * de um trecho `**marcado**` (#6086 item c) — um corte ali quebraria o par
+ * de delimitadores, deixando `**` órfão na saída (regressão fácil de não
+ * perceber num teste que não testa marcação). Texto curto demais pra ter um
+ * ponto de corte viável (sem fronteira de sentença nem de palavra fora de
+ * um trecho marcado) volta INALTERADO — nunca produz um segundo bloco vazio.
+ */
+export function splitParagraphIntoTwoBlocks(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+
+  // Trechos `**...**` são intocáveis — nenhum candidato de corte pode cair
+  // dentro do intervalo [start, end) de um trecho marcado.
+  const boldRanges: [number, number][] = [];
+  {
+    const re = /\*\*[^*]+\*\*/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(trimmed)) !== null) boldRanges.push([m.index, m.index + m[0].length]);
+  }
+  const insideBold = (pos: number): boolean => boldRanges.some(([start, end]) => pos > start && pos < end);
+
+  const mid = trimmed.length / 2;
+  const candidates: number[] = [];
+
+  // Fronteiras de sentença: fim de `.`/`!`/`?` (+ fechamento de aspas/parênteses) seguido de espaço.
+  const sentenceRe = /[.!?]+(?:["'”’)\]]*)\s+/g;
+  let sm: RegExpExecArray | null;
+  while ((sm = sentenceRe.exec(trimmed)) !== null) {
+    const pos = sm.index + sm[0].length;
+    if (pos > 0 && pos < trimmed.length && !insideBold(pos)) candidates.push(pos);
+  }
+
+  if (candidates.length === 0) {
+    // Sem fronteira de sentença: cai pra fronteira de palavra (qualquer espaço fora de trecho marcado).
+    for (let i = 0; i < trimmed.length; i++) {
+      if (trimmed[i] === " " && !insideBold(i)) candidates.push(i + 1);
+    }
+  }
+  if (candidates.length === 0) return trimmed; // nada divisível — texto curto demais
+
+  const splitAt = candidates.reduce((best, pos) => (Math.abs(pos - mid) < Math.abs(best - mid) ? pos : best));
+  const first = trimmed.slice(0, splitAt).trim();
+  const second = trimmed.slice(splitAt).trim();
+  if (!first || !second) return trimmed;
+  return `${first}\n\n${second}`;
+}
+
+/**
  * Pure: monta o `FlatCardText` de cada um dos 4 slides sem foto (3
  * parágrafos + CTA), a partir do texto genérico JÁ EXTRAÍDO de `## d{N}`
  * (com ou sem bloco de hashtags — `splitBodyAndTags` remove antes de
@@ -186,9 +267,13 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
     (`p${i + 1}` as CarouselSlideSlot),
     {
       kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`,
-      title,
+      // #6136 item 2: quebra visual em 2 blocos dentro do MESMO card.
+      title: splitParagraphIntoTwoBlocks(title),
       footer: "diar.ia.br",
       handle: DAILY_CAROUSEL_HANDLE,
+      // #6136 item 1: rodapé compacto (só o handle, "@" em brand) — nunca
+      // wordmark + handle juntos, que repetia "diar.ia.br" na mesma linha.
+      compactHandle: true,
       microCta: DAILY_CAROUSEL_MICRO_CTA,
     },
   ]);
@@ -196,7 +281,8 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
   return {
     ...(Object.fromEntries(entries) as Record<"p1" | "p2" | "p3", FlatCardText>),
     // CTA final: sem handle/microCta — redundante ali (ver comentário acima).
-    cta: { kicker: "Newsletter grátis", title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
+    // #6136 item 3: kicker upgradado pra chamada explícita de assinatura.
+    cta: { kicker: DAILY_CAROUSEL_CTA_KICKER, title: INSTAGRAM_CTA_LINE, footer: "diar.ia.br" },
   };
 }
 
