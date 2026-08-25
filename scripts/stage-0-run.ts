@@ -343,8 +343,6 @@ export interface Stage0RunDeps {
   mkdirSync: (p: string) => void;
   readFile: (p: string) => string;
   writeFile: (path: string, content: string) => void;
-  /** Checa presença (não-vazia) de uma env var — injetável pra teste, sem ler process.env direto no meio da lógica. */
-  hasEnv: (name: string) => boolean;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
@@ -357,7 +355,6 @@ export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
     mkdirSync: (p) => mkdirSync(p, { recursive: true }),
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
-    hasEnv: (name) => Boolean(process.env[name]),
   };
 }
 
@@ -806,12 +803,16 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
       softStep(deps, report, "verify-facebook-posts (0k)", "scripts/verify-facebook-posts.ts", ["--edition-dir", `${prevDir}/`]);
     }
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
-    // #5766 — Twitter via API GraphQL do Buffer, token vem de env (não de
-    // arquivo, diferente do fb-credentials.json acima) — checagem via
-    // deps.hasEnv em vez de deps.existsSync.
-    if (deps.hasEnv("BUFFER_ACCESS_TOKEN")) {
-      softStep(deps, report, "verify-twitter-posts (0k)", "scripts/verify-twitter-posts.ts", ["--edition-dir", `${prevDir}/`]);
-    }
+    // #5766/#6152 — Twitter via API GraphQL do Buffer, token vem de env (não
+    // de arquivo, diferente do fb-credentials.json acima). Sem gate por
+    // hasEnv: verify-twitter-posts.ts agora carrega o próprio `.env`
+    // (`import "dotenv/config"`) e decide sozinho se tem token — se ainda
+    // faltar, o script sai com código != 0 e softStep já registra a nota
+    // fail-soft no relatório, em vez de um `if` mudo que fazia o passo sumir
+    // do relatório sem deixar rastro (achado ao vivo #6152: o `if` calava o
+    // skip mesmo com o token presente no `.env`, porque `hasEnv` também lê
+    // `process.env` deste processo, que não carrega `.env` sozinho).
+    softStep(deps, report, "verify-twitter-posts (0k)", "scripts/verify-twitter-posts.ts", ["--edition-dir", `${prevDir}/`]);
   }
 
   // --- 0l: status determinístico de social da edição anterior ---

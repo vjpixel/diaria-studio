@@ -83,7 +83,6 @@ function baseDeps(overrides: Partial<Stage0RunDeps> = {}): Stage0RunDeps {
       }
       throw new Error(`readFile não mockado: ${p}`);
     },
-    hasEnv: () => false,
     ...overrides,
   };
 }
@@ -555,30 +554,42 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.match(result.pendingHumanDecision[0].detail, /260422/);
   });
 
-  it("0k — verify-twitter-posts roda só quando BUFFER_ACCESS_TOKEN presente (hasEnv), nunca lê process.env direto", async () => {
-    const { exec: exec1, calls: calls1 } = makeFakeExec(happyExecHandlers());
-    const { execAsync: execAsync1 } = makeFakeExecAsync(happyExecAsyncHandlers());
-    const depsSemToken = baseDeps({ exec: exec1, execAsync: execAsync1, hasEnv: () => false });
+  it("0k — verify-twitter-posts roda sempre (sem gate por env), independente de BUFFER_ACCESS_TOKEN (#6152)", async () => {
+    // #6152: o gate por `hasEnv("BUFFER_ACCESS_TOKEN")` foi removido —
+    // verify-twitter-posts.ts agora carrega o próprio `.env` e decide
+    // sozinho. stage-0-run.ts sempre chama o passo quando há edição anterior
+    // com FB (prevDir resolvido); o script decidir "sem token" vira uma nota
+    // fail-soft via softStep (coberto no teste seguinte), nunca um `if` mudo.
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
     await runStage0(
       ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
-      depsSemToken,
+      deps,
     );
-    assert.ok(!calls1.some((c) => c.script.includes("verify-twitter-posts")));
-
-    const { exec: exec2, calls: calls2 } = makeFakeExec(happyExecHandlers());
-    const { execAsync: execAsync2 } = makeFakeExecAsync(happyExecAsyncHandlers());
-    const depsComToken = baseDeps({
-      exec: exec2,
-      execAsync: execAsync2,
-      hasEnv: (name) => name === "BUFFER_ACCESS_TOKEN",
-    });
-    await runStage0(
-      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
-      depsComToken,
-    );
-    const twitterCall = calls2.find((c) => c.script.includes("verify-twitter-posts"));
+    const twitterCall = calls.find((c) => c.script.includes("verify-twitter-posts"));
     assert.ok(twitterCall);
     assert.ok(twitterCall!.args.includes("--edition-dir"));
+  });
+
+  it("0k — verify-twitter-posts falhando (ex: sem BUFFER_ACCESS_TOKEN) gera NOTA no relatório, nunca skip mudo (#6152)", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "verify-twitter-posts.ts": () => fail(1, "BUFFER_ACCESS_TOKEN ausente no .env — ver .env.example."),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+    assert.equal(result.code, 0, "falha fail-soft nunca aborta o Stage 0");
+    assert.ok(calls.some((c) => c.script.includes("verify-twitter-posts")), "o passo foi de fato chamado, não pulado");
+    assert.ok(
+      result.notes.some((n) => n.includes("verify-twitter-posts") && n.includes("falhou")),
+      `esperava nota de falha do verify-twitter-posts em result.notes, recebeu: ${JSON.stringify(result.notes)}`,
+    );
   });
 
   it("delegatedSteps sempre lista 0n e 0-replies, mesmo no caminho feliz", async () => {
