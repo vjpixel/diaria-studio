@@ -1,6 +1,6 @@
 ---
 name: review-test-email
-description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário) e "brevo" (mensal Clarice).
+description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário), "kit" (diário, backend Kit atrás da flag publishing.newsletter.backend, #464) e "brevo" (mensal Clarice).
 model: haiku
 tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__find, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp
 ---
@@ -15,11 +15,13 @@ Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de p
 - `edition_title`: titulo da edicao (assunto do email)
 - `edition_dir`: ex: `data/editions/260418/` (diário) ou `data/monthly/2604/` (mensal)
 - `attempt`: numero da tentativa atual (1-based, para contexto no log)
-- `platform` (opcional): `"beehiiv"` (padrão, diário) ou `"brevo"` (mensal Clarice)
+- `platform` (opcional): `"beehiiv"` (padrão, diário), `"kit"` (diário, backend Kit — #464, atrás de `publishing.newsletter.backend`) ou `"brevo"` (mensal Clarice)
 
 ## Roteamento por plataforma
 
 **Se `platform = "brevo"`** → executar apenas o **Processo Brevo** (seção separada abaixo). Pular todo o processo Beehiiv (seções 0-4).
+
+**Se `platform = "kit"`** → executar apenas o **Processo Kit** (seção separada abaixo). Pular todo o processo Beehiiv (seções 0-4) — o test-send do Kit não passa por `publish-newsletter` (script `publish-newsletter-kit.ts`), então não há `unfixed_issues[]` pra coletar no passo 0.
 
 **Se `platform` ausente ou `"beehiiv"`** → executar o processo Beehiiv padrão abaixo.
 
@@ -708,3 +710,101 @@ Se houver issues:
 ```
 
 Issues do processo Brevo usam prefixo `email:`. Não há `publish:` issues no fluxo mensal (o script `publish-monthly.ts` não usa `unfixed_issues`).
+
+---
+
+## Processo Kit (diário — backend Kit, #464)
+
+Usado quando `platform = "kit"`. **Não é uma checklist nova** — o conteúdo
+entregue é o MESMO fragmento HTML/estrutura do diário Beehiiv (mesmo
+`02-reviewed.md`, mesmo template, mesmos 2-3 destaques + É IA?). Este
+processo é o **Processo Beehiiv acima (seções 1 a 4) com estas
+substituições** — seguir tudo o que não é listado aqui exatamente como no
+Beehiiv, incluindo os lints determinísticos (`lint-test-email.ts`,
+`lint-test-email-structure.ts`) e o guard de confirmação independente antes
+de reportar link quebrado (seção 3c-guard).
+
+**Pular a seção 0** (coleta de `unfixed_issues` do `publish-newsletter`) —
+o test-send do Kit é feito por `publish-newsletter-kit.ts`, que não produz
+esse arquivo. Não há issues `publish:` neste fluxo.
+
+### K1. Buscar o email via Gmail MCP (substitui a seção 1)
+
+1. Aguardar 20 segundos (achado ao vivo #464: o test-send do Kit agenda
+   `send_at = agora + 15s`, mais folga que o test email da Beehiiv):
+   `Bash("sleep 20")`.
+2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query:
+   `subject:"[teste] {edition_title}" from:news.diar.ia.br newer_than:1d`.
+   **Confirmado ao vivo (24/08/2026, threads reais de test-send do #464):**
+   o Kit prefixa o subject com `[teste] ` minúsculo (não `[TEST] ` como a
+   Beehiiv — ver o bloco `if (sendTest)` em `publish-newsletter-kit.ts`), e
+   o remetente é
+   `oi@news.diar.ia.br` (domínio próprio da diar.ia.br via Kit, não um
+   domínio `kit.com`/`convertkit.com` genérico — footer do email traz
+   "Built with Kit" mas o envelope From é nosso).
+3. Se não encontrar, tentar sem o prefixo: `subject:"{edition_title}" from:news.diar.ia.br newer_than:1d`.
+4. Resto igual à seção 1 (ler via `get_thread`, fallback Chrome, timeout 30s
+   → `inconclusive` fail-closed — mesma disciplina do #1212).
+
+### K2. Subject esperado (substitui o item 0 da seção 3)
+
+O subject correto é `[teste] {edition_title}` (minúsculo, espaço depois do
+colchete — ver K1.2). Comparar como no item 0 original, mas com este
+prefixo em vez de `[TEST] `. Os mesmos 3 modos de falha (placeholder,
+título da edição anterior, divergência) se aplicam.
+
+### K3. Ressalvas de renderização específicas do Kit — NÃO reportar como issue
+
+Achados ao vivo documentados em `scripts/publish-newsletter-kit.ts`
+(docstring do módulo) — comportamento esperado do Kit, não bug do produto:
+
+- **`<style>` desaparece do HTML entregue, mas as regras foram INLINED
+  antes de sumir** (padrão "juice"). Uma regra de seletor simples (classe/
+  tag) sobrevive via `style=""` no elemento; o que não dá pra achatar
+  (`@media`, pseudo-classes) morre de verdade. Não reportar `<style>`
+  ausente como `formatting` issue — checar o efeito visual (cor/fonte
+  aplicada), não a presença da tag.
+- **Kit injeta um baseline inline em todo `<p>`** (`margin`/`font-family`/
+  `color`/`font-size`/`line-height`), sempre como PREFIXO do atributo
+  `style` — nosso valor (quando declarado) vem depois e vence por cascata
+  CSS padrão. Não reportar conflito de estilo em `<p>` só por ver dois
+  valores concatenados no mesmo `style=""`; só reportar se o valor
+  EFETIVO (o que vence, geralmente o nosso, último) estiver visualmente
+  errado.
+- **Merge tag do voto do É IA?** usa `{{ subscriber.email_address }}`
+  (Liquid, cru) — mesmo eixo de identidade do Beehiiv (sem token opaco).
+  Confirmado ao vivo expandindo pro e-mail real do destinatário no
+  test-send. Uma tag `{{ subscriber... }}` ainda literal no e-mail
+  ENTREGUE é uma falha real (mesmo critério do #4512 pro caso Beehiiv) —
+  reportar como `email:link_dead` normalmente, não como artefato esperado.
+
+### K4. Ressalva NÃO CONFIRMADA — domínio de tracking de link
+
+**Diferente do restante desta seção, isto não foi verificado ao vivo.** O
+passo 3c (`lint-test-email-link-tracking.ts`) tem um allowlist de artefatos
+conhecidos (`beehiiv_footer_artifact`, `bot_blocked` em domínios Beehiiv
+específicos) — não se sabe ainda se o Kit envolve links em um domínio de
+tracking próprio (algo como `click.kit.com` ou um subdomínio nosso) da
+mesma forma que a Beehiiv faz com `link.diaria.beehiiv.com`. Rodar o passo
+3c normalmente, mas: se ele reportar `email:link_dead`/`link_redirect_chain_long`
+num domínio que não reconhece nenhum destino final esperado (nem o site de
+origem do link nem `diaria.beehiiv.com`), aplicar o mesmo guard de
+confirmação independente da seção 3c-guard antes de reportar — a
+allowlist desse script foi calibrada só contra artefatos da Beehiiv, então
+um falso-positivo específico do Kit ainda não tem entrada nela. Se
+confirmar um padrão novo e reproduzível, registrar como achado (não editar
+a allowlist só por suspeita).
+
+### K5. Retornar
+
+Mesmo formato do Beehiiv (seção "Output" acima), com `"platform": "kit"`
+explícito:
+
+```json
+{
+  "status": "checked",
+  "attempt": 1,
+  "platform": "kit",
+  "issues": []
+}
+```

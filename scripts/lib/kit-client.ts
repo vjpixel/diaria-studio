@@ -172,7 +172,14 @@ export async function listBroadcasts(
 
 export interface KitBroadcastDetail extends KitBroadcastSummary {
   content: string | null;
-  public_url: string;
+  // #464 (achado do review, PR #6096): tipado `string` até aqui, mas nunca
+  // confirmado ao vivo que o Kit sempre popula este campo — o único
+  // consumidor (`publish-newsletter-kit.ts`) já trata como possivelmente
+  // ausente em runtime (fail-soft, com teste dedicado pro caso ausente). O
+  // tipo `string` fingia uma garantia que o próprio código não confiava —
+  // `string | undefined` faz o compilador reforçar o mesmo guard que já
+  // existia em runtime, em vez de deixá-lo acidentalmente correto.
+  public_url: string | undefined;
   email_address: string;
   email_template: { id: number; name: string };
 }
