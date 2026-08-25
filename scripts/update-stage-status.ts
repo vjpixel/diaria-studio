@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { getMachineId } from "./lib/machine-id.ts"; // #3119: tageia o doc com a máquina que iniciou a run
+import type { SessionFilterReason } from "./lib/session-transcript.ts"; // #6170
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -67,6 +68,19 @@ export interface StageRow {
    * de subagente NÃO REGISTRADO pelo harness, nunca zero.
    */
   session_filter?: "current_session" | "all_sessions";
+  /**
+   * Motivo do fallback pra `all_sessions` (#6170) — `"no_session_id"` (env
+   * var ausente no ponto de chamada) ou `"session_file_not_found"` (arquivo
+   * de transcript não localizado). `session-transcript.ts` documenta que
+   * `all_sessions` SEMPRE carrega este campo em memória; antes deste tipo
+   * existir aqui, `StageRow` não declarava o campo e ele era descartado no
+   * persist — a linha ficava com `session_filter: "all_sessions"` sem rastro
+   * do porquê, impedindo diagnosticar de onde veio um custo contaminado
+   * (achado ao vivo: edição 260826, Stage 1 atribuiu 91% do custo a uma
+   * sessão alheia sem esse motivo registrado). Ausente sob `current_session`
+   * (não se aplica).
+   */
+  session_filter_reason?: SessionFilterReason;
   sessions_excluded?: number;
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
@@ -252,6 +266,7 @@ export interface UpdateOpts {
   tokens_out?: number;
   models?: string[];
   session_filter?: "current_session" | "all_sessions"; // #5413
+  session_filter_reason?: SessionFilterReason; // #6170
   sessions_excluded?: number;
   subagent_tokens_in?: number | null;
   subagent_tokens_out?: number | null;
@@ -344,6 +359,14 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       tokens_out: opts.tokens_out ?? r.tokens_out,
       models: opts.models ?? r.models,
       session_filter: opts.session_filter ?? r.session_filter,
+      // Igual a subagent_tokens_in/out abaixo: presença da chave é o
+      // critério, não `??`. `capture-stage-usage.ts` sempre inclui esta
+      // chave (mesmo `undefined`, quando `session_filter` virou
+      // `current_session`) — usar `??` preservaria um motivo de um fallback
+      // ANTERIOR mesmo depois de uma medição limpa ter substituído o
+      // `session_filter` (#6170).
+      session_filter_reason:
+        "session_filter_reason" in opts ? opts.session_filter_reason : r.session_filter_reason,
       sessions_excluded: opts.sessions_excluded ?? r.sessions_excluded,
       parse_errors: opts.parse_errors ?? r.parse_errors,
       // `??` NÃO serve aqui: `null` é um valor com significado ("subagente

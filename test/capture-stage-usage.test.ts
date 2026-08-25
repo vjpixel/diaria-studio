@@ -413,6 +413,16 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
         assert.equal(out.session_filter_reason, "no_session_id");
         assert.equal(out.tokens_in, 6_000_000, "soma as duas sessões");
         assert.equal(out.sessions_excluded, 0);
+
+        // #6170: session_filter_reason precisa sobreviver ao roundtrip de
+        // escrita+leitura de stage-status.json — antes desta issue, StageRow
+        // não declarava o campo e ele era descartado silenciosamente no
+        // persist, mesmo aparecendo corretamente no stdout desta mesma
+        // invocação (achado ao vivo: edição 260826, Stage 1 sem motivo em
+        // disco para um fallback all_sessions que atribuiu custo alheio).
+        const row = loadDoc(editionDir, "260508").rows.find((x) => x.stage === 1)!;
+        assert.equal(row.session_filter, "all_sessions");
+        assert.equal(row.session_filter_reason, "no_session_id");
       } finally {
         rmSync(editionRoot, { recursive: true, force: true });
         rmSync(transcriptsDir, { recursive: true, force: true });
