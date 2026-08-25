@@ -25,6 +25,8 @@ import {
   isChainedCommand,
   needsSessionId,
   alreadyHasSessionId,
+  needsPid,
+  alreadyHasPid,
   shellSingleQuote,
   buildUpdatedCommand,
 } from "../.claude/hooks/inject-session-id.mjs";
@@ -118,6 +120,52 @@ describe("alreadyHasSessionId", () => {
   });
 });
 
+describe("needsPid (#6160)", () => {
+  it("session-registry.ts register → true", () => {
+    assert.equal(needsPid("npx tsx scripts/lib/session-registry.ts register --kind overnight"), true);
+  });
+
+  it("subcomandos que não são register → false (nenhum outro aceita --pid)", () => {
+    for (const sub of ["heartbeat", "end", "claim-issue", "is-claimed", "merge-lock-acquire", "merge-lock-release", "list-active"]) {
+      assert.equal(
+        needsPid(`npx tsx scripts/lib/session-registry.ts ${sub} --kind overnight`),
+        false,
+        `esperava false para subcomando ${sub}`,
+      );
+    }
+  });
+
+  it("overnight-session-marker.ts → false (script sem noção de --pid)", () => {
+    assert.equal(needsPid("npx tsx scripts/overnight-session-marker.ts --start"), false);
+  });
+
+  it("comando encadeado → false, mesmo citando register", () => {
+    assert.equal(
+      needsPid("git pull && npx tsx scripts/lib/session-registry.ts register --kind overnight"),
+      false,
+    );
+  });
+
+  it("comando não relacionado → false", () => {
+    assert.equal(needsPid("npm test"), false);
+    assert.equal(needsPid(""), false);
+    assert.equal(needsPid(undefined), false);
+  });
+});
+
+describe("alreadyHasPid", () => {
+  it("detecta --pid já presente", () => {
+    assert.equal(
+      alreadyHasPid("npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 4242"),
+      true,
+    );
+  });
+
+  it("false quando ausente", () => {
+    assert.equal(alreadyHasPid("npx tsx scripts/lib/session-registry.ts register --kind overnight"), false);
+  });
+});
+
 describe("shellSingleQuote", () => {
   it("envolve em aspas simples", () => {
     assert.equal(shellSingleQuote("abc-123"), "'abc-123'");
@@ -179,10 +227,107 @@ describe("buildUpdatedCommand (#5156)", () => {
     );
     assert.equal(result, null);
   });
+
+  it("sem pid (3º argumento omitido), register não recebe --pid — retrocompatibilidade (#6160)", () => {
+    const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts register --kind overnight", "sess-abc");
+    assert.equal(result, "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-abc'");
+  });
+
+  it("injeta --session-id E --pid em session-registry.ts register (#6160)", () => {
+    const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts register --kind overnight", "sess-abc", 4242);
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-abc' --pid 4242",
+    );
+  });
+
+  it("comando já com --pid explícito não é sobrescrito (retrocompatibilidade, #6160)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 999",
+      "sess-abc",
+      4242,
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 999 --session-id 'sess-abc'",
+    );
+  });
+
+  it("comando já com --session-id mas sem --pid: injeta só --pid (#6160)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id ja-presente",
+      "sess-novo",
+      4242,
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id ja-presente --pid 4242",
+    );
+  });
+
+  it("comando já com --session-id E --pid → null (nada a injetar)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id ja-presente --pid 999",
+      "sess-novo",
+      4242,
+    );
+    assert.equal(result, null);
+  });
+
+  it("pid fornecido mas subcomando não é register (ex: heartbeat) → --pid nunca injetado", () => {
+    const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight", "sess-abc", 4242);
+    assert.equal(result, "npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --session-id 'sess-abc'");
+  });
+
+  it("pid fornecido mas sessionId ausente e comando já tem --session-id: null se register já tem --pid também", () => {
+    assert.equal(
+      buildUpdatedCommand(
+        "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id x --pid 1",
+        undefined,
+        4242,
+      ),
+      null,
+    );
+  });
+
+  it("pid=0 é um valor válido e ainda assim injeta (checagem estrita contra undefined/null, não falsy)", () => {
+    const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts register --kind overnight", "sess-abc", 0);
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-abc' --pid 0",
+    );
+  });
 });
 
 describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)", () => {
   it("PreToolUse Bash real (payload via stdin) → injeta --session-id no updatedInput.command emitido", () => {
+    const payload = {
+      session_id: "sess-real-abc",
+      tool_name: "Bash",
+      // #6160: heartbeat (não register) pra isolar a injeção de --session-id
+      // deste caso do --pid, coberto separadamente abaixo.
+      tool_input: { command: "npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight" },
+    };
+    const result = spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.equal(
+      output.hookSpecificOutput.updatedInput.command,
+      "npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --session-id 'sess-real-abc'",
+    );
+  });
+
+  it("PreToolUse Bash real com register (#6160) → injeta --session-id E --pid={process.pid do processo de teste}", () => {
+    // O hook é spawnado como filho DIRETO deste processo de teste (spawnSync),
+    // exatamente como o harness spawna o hook como filho direto da sessão
+    // Claude Code corrente — então process.ppid DENTRO do hook == process.pid
+    // AQUI (o processo que o spawnou).
     const payload = {
       session_id: "sess-real-abc",
       tool_name: "Bash",
@@ -199,7 +344,27 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
     assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
     assert.equal(
       output.hookSpecificOutput.updatedInput.command,
-      "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-real-abc'",
+      `npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-real-abc' --pid ${process.pid}`,
+    );
+  });
+
+  it("register já com --pid explícito via stdin real → --pid preservado, não sobrescrito (#6160)", () => {
+    const payload = {
+      session_id: "sess-real-abc",
+      tool_name: "Bash",
+      tool_input: { command: "npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 999" },
+    };
+    const result = spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(
+      output.hookSpecificOutput.updatedInput.command,
+      "npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 999 --session-id 'sess-real-abc'",
     );
   });
 

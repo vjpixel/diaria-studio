@@ -48,6 +48,21 @@
 // o comando roda exatamente como foi chamado, e os dois scripts-alvo já
 // tratam `--session-id` ausente como "formato antigo, comportamento pré-#5156"
 // (ver docblock de `overnight-session-marker.ts` e `session-registry.ts`).
+//
+// #6160: além de `--session-id`, injeta `--pid {process.ppid}` em chamadas
+// standalone de `session-registry.ts register` sem a flag. Nenhuma das
+// skills overnight/develop chama `register` com `--pid` nem chama
+// `heartbeat` (só o kind `continuo` faz as duas coisas hoje) — sem `pid`
+// gravado, `decideSessionGc` nunca alcança o branch "processo vivo protege
+// incondicionalmente" pra essas sessões, caindo direto na janela
+// conservadora de 7 dias por tempo (ver docblock de `decideSessionGc` em
+// `scripts/lib/session-registry.ts`). O hook roda como processo filho
+// direto do processo da sessão Claude Code corrente (spawnado pelo harness
+// a cada PreToolUse) — `process.ppid`, portanto, É o PID dessa sessão, o
+// mesmo processo que `defaultIsPidAlive`/`process.kill(pid, 0)` precisa
+// checar depois pra decidir se o registro ainda está "vivo". Mesma
+// disciplina fail-open do `--session-id`: `--pid` já presente no comando
+// nunca é sobrescrito.
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
@@ -55,6 +70,10 @@ const TARGET_REGISTRY = "session-registry.ts";
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
 const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+// #6160: só o subcomando `register` aceita `--pid` (ver CLI de
+// scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
+// homônimo, então a injeção de `--pid` é restrita a este subcomando.
+const REGISTER_SUBCOMMAND = /\bregister\b/;
 
 /**
  * Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`
@@ -87,6 +106,23 @@ export function alreadyHasSessionId(command) {
   return typeof command === "string" && /--session-id\b/.test(command);
 }
 
+/**
+ * Decide se `command` é candidato a injeção de `--pid` — só o subcomando
+ * `register` de `session-registry.ts` (#6160). Mesma restrição de comando
+ * encadeado que `needsSessionId` já aplica: nunca injeta no meio de um
+ * `&&`/`;`/`|`/script multi-linha.
+ */
+export function needsPid(command) {
+  if (typeof command !== "string" || command.trim() === "") return false;
+  if (isChainedCommand(command)) return false;
+  return command.includes(TARGET_REGISTRY) && REGISTER_SUBCOMMAND.test(command);
+}
+
+/** `true` se o comando já traz `--pid` explicitamente — nunca sobrescrever. */
+export function alreadyHasPid(command) {
+  return typeof command === "string" && /--pid\b/.test(command);
+}
+
 /** Escapa `sessionId` pra uso seguro dentro de aspas simples no shell POSIX. */
 export function shellSingleQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -96,12 +132,24 @@ export function shellSingleQuote(value) {
  * Função pura (mesmo padrão dos hooks irmãos, #4450/#3322) — decide o comando
  * modificado, ou `null` quando nenhuma injeção deve ocorrer. Sem I/O,
  * 100% testável.
+ *
+ * #6160: além de `--session-id`, injeta `--pid {pid}` em chamadas standalone
+ * de `session-registry.ts register` que ainda não trazem a flag — mesmo
+ * padrão de injeção automática, dessa vez fechando o branch de
+ * `decideSessionGc` que protege incondicionalmente um registro com processo
+ * vivo (só alcançável hoje pelo kind `continuo`, que já passa `--pid` à
+ * mão). `pid` é opcional e independente de `sessionId`: um comando que já
+ * tem `--session-id` mas ainda não tem `--pid` (ou vice-versa) recebe só a
+ * flag que falta.
  */
-export function buildUpdatedCommand(command, sessionId) {
-  if (!sessionId) return null;
-  if (!needsSessionId(command)) return null;
-  if (alreadyHasSessionId(command)) return null;
-  return `${command} --session-id ${shellSingleQuote(sessionId)}`;
+export function buildUpdatedCommand(command, sessionId, pid) {
+  const wantsSessionId = Boolean(sessionId) && needsSessionId(command) && !alreadyHasSessionId(command);
+  const wantsPid = (pid !== undefined && pid !== null) && needsPid(command) && !alreadyHasPid(command);
+  if (!wantsSessionId && !wantsPid) return null;
+  let updated = command;
+  if (wantsSessionId) updated += ` --session-id ${shellSingleQuote(sessionId)}`;
+  if (wantsPid) updated += ` --pid ${pid}`;
+  return updated;
 }
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
@@ -119,7 +167,13 @@ if (
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
-      const updated = buildUpdatedCommand(command, payload.session_id);
+      // #6160: process.ppid é o PID do processo pai deste hook — o processo
+      // da própria sessão Claude Code corrente, que o spawna a cada
+      // PreToolUse (ver docblock acima). Sempre definido (Node garante
+      // process.ppid), então pid nunca é undefined aqui — mas o parâmetro
+      // continua opcional em buildUpdatedCommand pra manter a função pura
+      // testável sem depender de process.*.
+      const updated = buildUpdatedCommand(command, payload.session_id, process.ppid);
       if (updated) {
         process.stdout.write(
           JSON.stringify({
