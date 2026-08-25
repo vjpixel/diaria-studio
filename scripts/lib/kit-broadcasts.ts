@@ -191,11 +191,50 @@ export async function resolveTestSendTagId(config?: KitConfig): Promise<number> 
   return created.id;
 }
 
+/**
+ * `subscriber_filter` escopado a UMA tag.
+ *
+ * **Cuidado (#6126):** um `subscriber_filter` ausente/vazio no Kit significa
+ * **audiência INTEIRA**, não audiência nenhuma — o modo de falha é enviar pra
+ * base toda, não pra ninguém. Por isso nenhum caller deve montar filtro de tag
+ * à mão nem passar `[]`: use este helper, e valide que o `tagId` foi resolvido
+ * ANTES de criar o broadcast.
+ */
+export function buildTagFilter(tagId: number): KitSubscriberFilter {
+  return [{ all: [{ type: "tag", ids: [tagId] }] }];
+}
+
 /** `subscriber_filter` escopado só à tag de test-send — ver docstring do
  *  módulo sobre por que isso substitui o test-send nativo que o Kit não
  *  tem. */
 export function buildTestSendFilter(tagId: number): KitSubscriberFilter {
-  return [{ all: [{ type: "tag", ids: [tagId] }] }];
+  return buildTagFilter(tagId);
+}
+
+/**
+ * Resolve o id de uma tag pelo NOME, sem criá-la se faltar (#6126).
+ *
+ * Difere de `resolveTestSendTagId` de propósito: aquele CRIA a tag de teste
+ * quando ausente, porque uma tag de teste vazia é inofensiva. Aqui não — a tag
+ * de audiência (`kit-nativo`) ausente significa que o marcador de cadastro
+ * nativo (#6048/PR #6127) ainda não rodou, e criar uma tag vazia produziria um
+ * filtro que casa com ninguém *ou*, se o caller tratar o erro mal, um filtro
+ * vazio que casa com TODO MUNDO. Devolver `null` força o caller a decidir
+ * explicitamente.
+ */
+export async function findTagIdByName(name: string, config?: KitConfig): Promise<number | null> {
+  // Pagina até o fim de propósito: uma conta com muitas tags poderia ter a
+  // procurada fora da 1ª página, e "não achei" aqui significa "não envie" —
+  // um falso negativo por paginação incompleta viraria canal silenciosamente
+  // pulado, sem erro visível.
+  let after: string | undefined;
+  for (;;) {
+    const page = await listTags({ perPage: 500, after, config });
+    const match = page.tags.find((t) => t.name === name);
+    if (match) return match.id;
+    if (!page.pagination?.has_next_page || !page.pagination.end_cursor) return null;
+    after = page.pagination.end_cursor;
+  }
 }
 
 /** `subscriber_filter` pra audiência completa — equivalente ao "enviar pra
