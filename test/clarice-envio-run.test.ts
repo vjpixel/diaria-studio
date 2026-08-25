@@ -14,6 +14,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   runEnvio,
+  normalizeTargetVolume,
   parseStepJson,
   resolveInheritedSubjects,
   detectMissedWaveToday,
@@ -1531,5 +1532,29 @@ describe("clarice-envio-run (#5026)", () => {
       }
       rmSync(root, { recursive: true, force: true });
     });
+  });
+});
+
+// ─── #6133 — normalização de --target-volume no emissor ───
+describe("normalizeTargetVolume (#6133)", () => {
+  it("REGRESSÃO: string vazia => undefined (nunca propaga --target-volume \"\")", () => {
+    assert.equal(normalizeTargetVolume(""), undefined);
+    assert.equal(normalizeTargetVolume("   "), undefined);
+  });
+  it("string numérica válida => number", () => {
+    assert.equal(normalizeTargetVolume("500"), 500);
+    assert.equal(normalizeTargetVolume(" 500 "), 500);
+  });
+  it("número válido => passa; NaN/negativo/não-inteiro/0 => undefined", () => {
+    assert.equal(normalizeTargetVolume(500), 500);
+    assert.equal(normalizeTargetVolume(0), undefined);
+    assert.equal(normalizeTargetVolume(-5), undefined);
+    assert.equal(normalizeTargetVolume(1.5), undefined);
+    assert.equal(normalizeTargetVolume(Number.NaN), undefined);
+  });
+  it("undefined e outros tipos => undefined", () => {
+    assert.equal(normalizeTargetVolume(undefined), undefined);
+    assert.equal(normalizeTargetVolume(null), undefined);
+    assert.equal(normalizeTargetVolume({}), undefined);
   });
 });
