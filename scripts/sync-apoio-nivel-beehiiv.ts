@@ -655,7 +655,10 @@ export async function applyApoioTagEntry(
 
 // ── logging do diff (dry-run e --push) ──────────────────────────────────
 
-function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
+/** Exportado (#6049) — `scripts/sync-apoio-nivel-kit.ts` reusa esta função de
+ * log tal qual (mesmo shape de diff, plataforma-agnóstica) em vez de
+ * duplicar as ~50 linhas de formatação. */
+export function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
   log(`${diff.toApply.length} adição(ões)/troca(s) de nível:`);
@@ -711,7 +714,8 @@ function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
   // rodadas seguidas. Não implementado — é decisão editorial, não técnica.
 }
 
-function logBlastRadiusGuard(guard: BlastRadiusGuardResult): void {
+/** Exportado (#6049) — mesma razão de `logDiff` acima. */
+export function logBlastRadiusGuard(guard: BlastRadiusGuardResult): void {
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
   const pct = (guard.ratio * 100).toFixed(1);
   log(
