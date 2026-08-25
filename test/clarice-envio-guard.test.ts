@@ -643,3 +643,72 @@ describe("clarice-envio-guard (#5026)", () => {
     });
   });
 });
+
+// ─── #6134 — fallback NÃO desfaz override do editor (HOLD-por-decisão ≠ HOLD-por-risco) ───
+describe("clarice-envio-guard — fallback com override vigente (#6134)", () => {
+  function transientResult(retryAfterSecs: number | null, reason = "GET .../api/campaigns falhou (503)"): StepResult {
+    return { code: 3, stdout: JSON.stringify({ transient: true, retryAfterSecs, status: 503, reason }), stderr: reason };
+  }
+
+  function writeBrakeSnapshot(root: string, aammdd: string, brake: "ok" | "hold" | "stop", reasons: string[] = ["x"]): void {
+    const dir = resolve(root, "data", "clarice-subscribers", "envio-reports");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `envio-${aammdd}-brake.json`), JSON.stringify({ brake, reasons, recordedAt: "2026-08-11T22:00:00.000Z" }), "utf8");
+  }
+
+  function writeOverride(root: string, untilIso: string): void {
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data", "clarice-envio-override.json"),
+      JSON.stringify({ brake: "hold", until: untilIso, reason: "pico 1,92% falso-positivo confirmado", issueRef: 5998 }),
+      "utf8",
+    );
+  }
+
+  it("REGRESSÃO (#6134): freio HOLD + override do editor VIGENTE => NÃO cancela; code 1 com reportId -override-vigente (escalado)", async () => {
+    const root = freshRoot();
+    writeBrakeSnapshot(root, "260811", "hold");
+    writeOverride(root, "2026-08-13T12:00:00.000Z"); // futuro relativo a NOW (12/08 08:00Z)
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+      "utf8",
+    );
+    const suspendCalls: number[] = [];
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+    });
+    const r = await runEnvioGuard(
+      baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+    );
+    assert.equal(r.code, 1, r.reportMarkdown);
+    assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-override-vigente");
+    assert.equal(suspendCalls.length, 0, "override vigente => NUNCA cancela por precaução");
+    assert.match(r.reportMarkdown, /OVERRIDE DO EDITOR vigente/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO (#6134): freio HOLD mas override EXPIRADO => fallback SUSPENDE normalmente (precaução vale de novo)", async () => {
+    const root = freshRoot();
+    writeBrakeSnapshot(root, "260811", "hold");
+    writeOverride(root, "2026-08-11T12:00:00.000Z"); // passado relativo a NOW
+    const dir = segmentsDir(root);
+    writeFileSync(
+      resolve(dir, "group-campaigns.json"),
+      JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+      "utf8",
+    );
+    const suspendCalls: number[] = [];
+    const { exec } = makeFakeExec({
+      "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+    });
+    const r = await runEnvioGuard(
+      baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+    );
+    assert.equal(r.code, 0, r.reportMarkdown);
+    assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou-nao-ok");
+    assert.deepEqual(suspendCalls, [999]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
