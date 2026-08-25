@@ -341,6 +341,7 @@ export function main(
       outcomes: [],
       exitCode: 1,
       failedStage: null,
+      mcpPermissionWarnings: [],
     };
     console.error(`[${nowIso()}] erro de configuração do plano de stages: ${(e as Error).message}`);
     runResult.outcomes.push({
