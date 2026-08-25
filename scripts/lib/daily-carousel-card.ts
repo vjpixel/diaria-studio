@@ -41,6 +41,7 @@ import { resolve } from "node:path";
 import {
   renderFlatCard,
   measureFlatCardBody,
+  stripInlineBold,
   type FlatCardText,
   type FlatCardLayout,
 } from "./weekly-flat-card.ts";
@@ -216,6 +217,10 @@ export function buildCarouselSlideTexts(genericText: string): Record<CarouselSli
  * Hasheia os TEXTOS RENDERIZADOS (kicker + título de cada um dos 4 slides),
  * não o bloco cru: assim uma edição que não muda o que aparece no card —
  * mexer só nas hashtags, por exemplo — não força regeneração à toa.
+ *
+ * #6086 item c: o `title` entra CRU (com a marcação `**...**`), então mudar
+ * SÓ o negrito muda o hash e regenera a arte — exatamente o que se quer,
+ * mesma classe do layoutTag abaixo.
  */
 export function hashCarouselSlideTexts(genericText: string): string {
   const texts = buildCarouselSlideTexts(genericText);
@@ -359,7 +364,9 @@ export function findOverflowingCarouselSlides(
     if (m.overflows) {
       out.push({
         slot,
-        chars: texts[slot].title.length,
+        // #6086 item c: chars é o que o editor manipula — texto visível, sem
+        // os delimitadores `**` (que não ocupam largura no card).
+        chars: stripInlineBold(texts[slot].title).length,
         lines: m.lines.length,
         excessPx: m.blockHeight - m.availableHeight,
       });

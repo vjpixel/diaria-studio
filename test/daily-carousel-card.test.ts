@@ -235,6 +235,31 @@ describe("hashCarouselSlideTexts cobre o layout (#6078)", () => {
   });
 });
 
+describe("#6086 item c: hash sensível à marcação de negrito", () => {
+  it("mudar SÓ o negrito (mesmo texto visível) muda o hash — arte regenera", () => {
+    const semBold = "Primeiro parágrafo com uma frase importante.\n\nSegundo parágrafo.\n\nFecho.";
+    const comBold = "Primeiro parágrafo com **uma frase importante**.\n\nSegundo parágrafo.\n\nFecho.";
+    assert.notEqual(hashCarouselSlideTexts(semBold), hashCarouselSlideTexts(comBold));
+  });
+
+  it("a marcação sobrevive intacta ao split/normalize (splitIntoParagraphCards não come os `**`)", () => {
+    const texts = buildCarouselSlideTexts(
+      "Parágrafo um **com destaque** no meio.\n\nParágrafo dois.\n\nParágrafo três.",
+    );
+    assert.match(texts.p1.title, /\*\*com destaque\*\*/);
+  });
+
+  it("overflow reporta chars do texto VISÍVEL, sem os delimitadores `**`", () => {
+    // Parágrafo que estoura as 12 linhas do teto em fixed 62px (~330+ chars).
+    const longo = ("palavra ".repeat(60) + "**trecho marcado**").trim();
+    const overflowing = findOverflowingCarouselSlides(`${longo}\n\np2.\n\np3.`);
+    assert.ok(overflowing.length > 0, "esperava overflow");
+    const p1 = overflowing.find((o) => o.slot === "p1")!;
+    const semMarcacao = findOverflowingCarouselSlides(`${longo.replace(/\*\*/g, "")}\n\np2.\n\np3.`).find((o) => o.slot === "p1")!;
+    assert.equal(p1.chars, semMarcacao.chars, "chars deve ser o texto visível — `**` não conta");
+  });
+});
+
 /**
  * (#6078, review da #6085) A âncora no TOPO é a mudança visual central do
  * layout `fixed`, e nenhum teste a exercitava no nível do SVG — só o cálculo

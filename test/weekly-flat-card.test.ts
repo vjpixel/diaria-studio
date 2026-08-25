@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildFlatCardSvg, resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
+import { buildFlatCardSvg, measureFlatCardBody, resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
 import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 
 /** Extrai o 1º `font-size="N"` de um SVG cujo fill é a cor de título (ink) — helper de teste. */
@@ -119,6 +119,77 @@ describe("buildFlatCardSvg (pure)", () => {
     const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "Título qualquer", footer: "diar.ia.br" });
     assert.doesNotMatch(svg, /text-anchor="end"/);
     assert.doesNotMatch(svg, /tspan[^>]*> · /);
+  });
+});
+
+describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
+  it("trecho marcado vira <tspan font-weight=\"700\">; resto fica peso 400 sem tspan", () => {
+    // fixed 62px: o trecho cabe numa linha — a asserção exata do tspan
+    // exige o trecho inteiro numa linha
+    const FIXED = { mode: "fixed" as const, size: 62 };
+    const svg = buildFlatCardSvg({ kicker: "x", title: "A **frase em destaque** B", footer: "y" }, FIXED);
+    assert.match(svg, />A <tspan font-weight="700">frase em destaque<\/tspan> B</);
+    assert.doesNotMatch(svg, /\*\*/); // delimitadores nunca vazam pro SVG
+  });
+
+  it("título SEM marcação renderiza exatamente como antes — nenhum tspan de peso no corpo (default do semanal inalterado)", () => {
+    const svg = buildFlatCardSvg({
+      kicker: "resumo semanal",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      footer: "diar.ia.br",
+    });
+    assert.doesNotMatch(svg, /<tspan font-weight="700">/);
+  });
+
+  it("QUEBRA DE LINHA conta só o texto VISÍVEL — delimitadores `**` não entram na largura (o caso que quebra)", () => {
+    // Em fixed 62px, maxCharsPerLine = floor(936 / (62 * 0.52)) = 29.
+    const DAILY = { mode: "fixed" as const, size: 62 };
+    const plainWord = "palavra"; // 7 chars
+    const boldContent = `${plainWord} `.repeat(3).trim(); // 21 chars visíveis
+    const title = `**${boldContent}**`; // 25 chars CRUS — contagem ingênua estouraria 29 com mais uma palavra
+    // Visível = 21 chars + " " + 6 = cabe numa linha só se os delimitadores forem ignorados.
+    // Um título equivalente SEM marcação de mesmo comprimento cru (29) também caberia;
+    // o ponto é: a versão marcada NÃO pode quebrar em 2 linhas só porque tem `**`.
+    const { lines } = measureFlatCardBody(title, DAILY);
+    assert.equal(lines.length, 1, `esperava 1 linha (texto visível cabe), veio ${lines.length}: ${JSON.stringify(lines)}`);
+    assert.equal(lines[0], boldContent);
+  });
+
+  it("wrap com marcação produz o MESMO texto visível que o equivalente sem marcação", () => {
+    const DAILY = { mode: "fixed" as const, size: 62 };
+    const visible = "Um parágrafo razoavelmente longo o bastante para quebrar em várias linhas no card de sessenta e dois pixels.";
+    // marca a partir do começo de uma palavra (marcação no meio de palavra é
+    // input malformado — a marcação delimita frases/trechos inteiros)
+    const marked = `**${visible.slice(0, 13)}**${visible.slice(13)}`;
+    const b = measureFlatCardBody(marked, DAILY).lines.join(" ");
+    assert.equal(b.replace(/\s+/g, " ").trim(), visible);
+  });
+
+  it("trecho bold pesa MAIS na largura — bold demais quebra mais cedo que o mesmo texto regular", () => {
+    const DAILY = { mode: "fixed" as const, size: 62 };
+    const text = "palavra ".repeat(12).trim();
+    const plainLines = measureFlatCardBody(text, DAILY).lines.length;
+    const boldLines = measureFlatCardBody(`**${text}**`, DAILY).lines.length;
+    assert.ok(boldLines >= plainLines, `bold deveria quebrar em >= linhas que regular (${boldLines} vs ${plainLines})`);
+  });
+
+  it("layout fill (default, semanal) continua funcionando com marcação — e sem marcação não muda nada", () => {
+    // fixed 62px pra ter o trecho inteiro numa linha e asserção exata.
+    const FIXED = { mode: "fixed" as const, size: 62 };
+    const svg = buildFlatCardSvg({ kicker: "x", title: "Capa **com destaque** da semana", footer: "diar.ia.br" }, FIXED);
+    assert.match(svg, /Capa <tspan font-weight="700">com destaque<\/tspan> da semana/);
+    assert.doesNotMatch(svg, /\*\*/);
+  });
+
+  it("parseInlineBold / stripInlineBold (pure helpers)", async () => {
+    const mod = await import("../scripts/lib/weekly-flat-card.ts");
+    assert.deepEqual(mod.parseInlineBold("sem marcação"), [{ text: "sem marcação", bold: false }]);
+    assert.deepEqual(mod.parseInlineBold("a **b** c"), [
+      { text: "a ", bold: false },
+      { text: "b", bold: true },
+      { text: " c", bold: false },
+    ]);
+    assert.equal(mod.stripInlineBold("a **b** c"), "a b c");
   });
 });
 
