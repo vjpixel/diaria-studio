@@ -53,6 +53,17 @@ npx wrangler secret put BREVO_DIARIA_API_KEY
 # → valor recomendado: "origem_original" (ORIGEM_ORIGINAL_FIELD_NAME em
 #   scripts/lib/shared/beehiiv-origem-original.ts)
 
+# 1d. Secret opcional (#6048 Fase 2/2, migração Beehiiv → Kit). Habilita
+# activateSubscriptionKit como caminho alternativo de ativação — upsert
+# direto (sem DELETE+CREATE), ver docstring do módulo. Só tem efeito com
+# SUBSCRIBE_BACKEND=kit setado também (Worker var, não secret); ausente/
+# qualquer outro valor → Beehiiv continua sendo o backend (default).
+npx wrangler secret put KIT_API_KEY
+# → mesma chave dos demais workers (poll, cursos) — ver .env.example
+# KIT_UTM_SOURCE_FIELD/KIT_UTM_MEDIUM_FIELD/KIT_UTM_CAMPAIGN_FIELD/
+# KIT_REFERRING_SITE_FIELD opcionais — nenhum custom field criado em
+# produção ainda, degrade gracioso (POST não manda `fields`).
+
 # 2. Deploy
 npx wrangler deploy
 # → confirma URL no output: https://reativar.diaria.workers.dev

@@ -176,6 +176,61 @@ export async function subscribeToBeehiiv(
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
+/**
+ * #6048 (Fase 2/2, migração Beehiiv → Kit, #461/#463): equivalente Kit de
+ * `subscribeToBeehiiv` acima — mesmo contrato/mecânica do worker `poll`
+ * (`workers/poll/src/subscribe.ts::subscribeToKit`, Fase 1 #6082). Achados
+ * ao vivo reusados sem redescobrir (ver docstring lá pro detalhe completo):
+ *
+ * - `POST /v4/subscribers` com `state: "active"` bypassa qualquer
+ *   confirmação — equivalente ao `double_opt_override: "off"` da Beehiiv.
+ *   Por isso `beehiivStatus` sai sempre `"active"` no sucesso (nome do campo
+ *   preservado do contrato Beehiiv pra não obrigar o caller —
+ *   `handleGateSubscribe` — a saber qual backend respondeu).
+ * - Idempotente por e-mail: 201 na 1ª chamada, 200 nas subsequentes.
+ * - Sem UTM/referring-site nativo — só via `fields` customizado
+ *   (`KIT_*_FIELD`, `Env`), nenhum criado em produção ainda — degrade com
+ *   graça (cadastro funciona sem eles).
+ */
+export async function subscribeToKit(
+  env: Env,
+  input: { name: string; email: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<SubscribeResult> {
+  const apiKey = env.KIT_API_KEY;
+  if (!apiKey) return { ok: false, status: 503, reason: "not_configured" };
+
+  const base = env.KIT_API_URL ?? "https://api.kit.com/v4";
+  const fields: Record<string, string> = {};
+  if (input.name && env.KIT_NAME_FIELD) fields[env.KIT_NAME_FIELD] = input.name;
+  if (env.KIT_UTM_SOURCE_FIELD) fields[env.KIT_UTM_SOURCE_FIELD] = CURSOS_UTM_SOURCE;
+  if (env.KIT_UTM_MEDIUM_FIELD) fields[env.KIT_UTM_MEDIUM_FIELD] = CURSOS_UTM_MEDIUM;
+  if (env.KIT_UTM_CAMPAIGN_FIELD) fields[env.KIT_UTM_CAMPAIGN_FIELD] = CURSOS_UTM_CAMPAIGN;
+  if (env.KIT_REFERRING_SITE_FIELD) fields[env.KIT_REFERRING_SITE_FIELD] = "cursos-gate-inline";
+
+  const body: Record<string, unknown> = {
+    email_address: input.email,
+    state: "active",
+  };
+  if (Object.keys(fields).length > 0) body.fields = fields;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/subscribers`, {
+      method: "POST",
+      headers: { "X-Kit-Api-Key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error("[cursos] fetch pra Kit lançou:", err);
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
+  // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
+  // mesma idempotência documentada em subscribeToKit do worker poll.
+  if (res.ok) return { ok: true, status: res.status, beehiivStatus: "active" };
+  return { ok: false, status: res.status, reason: "beehiiv_error" };
+}
+
 export interface SubscribeDeps {
   fetchImpl?: typeof fetch;
 }
@@ -216,7 +271,12 @@ export async function handleGateSubscribe(
   const rl = await checkSubscribeRateLimit(env.CURSOS_SUBSCRIBERS, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
-  const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl);
+  // #6048: mesma seleção de backend local ao handler do worker poll — env.
+  // SUBSCRIBE_BACKEND não é lido por nenhum outro dispatch fora deste worker.
+  const result =
+    env.SUBSCRIBE_BACKEND === "kit"
+      ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl)
+      : await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl);
   if (!result.ok) {
     // #4305: os dois ramos abaixo eram a MESMA classe de falha muda que este
     // PR corrigiu no `COOKIE_HMAC_SECRET` — 503/502 e ninguém avisado. O
