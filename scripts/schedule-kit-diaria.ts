@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+/**
+ * scripts/schedule-kit-diaria.ts (#6048 — wiring do canal Kit paralelo, #6126)
+ *
+ * Agenda o broadcast do **canal Kit PARALELO** criado por
+ * `kit-diaria-stage5-dispatch.ts` na Etapa 5. Roda na Etapa 6, sob o MESMO
+ * gate/horário do Schedule da Beehiiv — mesma divisão 5/6 do canal Brevo
+ * (`schedule-daily-brevo.ts`, #5772), que este script espelha.
+ *
+ * ## Por que NÃO é o `schedule-newsletter-kit.ts`
+ *
+ * Aquele serve o switchover final (#6114): lê
+ * `_internal/newsletter-kit-published.json` e é gated por
+ * `checkKitBackendEnabled` (exige `publishing.newsletter.backend === "kit"`).
+ * Este canal roda com o backend ainda em `"beehiiv"`, e tem estado próprio
+ * (`_internal/kit-diaria-published.json`). Reusar aquele exigiria atravessar
+ * os dois comportamentos com flags e acoplaria o caminho do #6114 a este.
+ *
+ * ## Verificação pós-mutação (#573)
+ *
+ * Nunca reporta "agendado" a partir da resposta do PATCH — relê o broadcast
+ * e confere o `send_at` de volta, mesmo padrão de `verify-scheduled-post.ts`
+ * (Beehiiv) e `schedule-daily-brevo.ts` (Brevo).
+ *
+ * Exit codes (a tabela do playbook em `orchestrator-stage-6.md` §6d-kit-diaria
+ * precisa espelhar isto — ver #6147, que nasceu de uma tabela desatualizada):
+ *   0 — agendado e verificado
+ *   2 — canal desligado (`kit_diaria.enabled !== true`) ou estado ausente:
+ *       NÃO é erro, é o caminho normal quando o canal não participou da edição
+ *   3 — PATCH falhou (erro de API)
+ *   4 — GET pós-PATCH não confirma o agendamento
+ *
+ * Uso:
+ *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z
+ */
+import { readFileSync, existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { updateBroadcast } from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
+import {
+  readKitDiariaState,
+  writeKitDiariaState,
+} from "./kit-diaria-stage5-dispatch.ts";
+import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export type ScheduleKitDiariaResult =
+  | { code: 0; scheduledAt: string; broadcastId: number }
+  | { code: 2; reason: string }
+  | { code: 3 | 4; reason: string };
+
+export interface ScheduleKitDiariaDeps {
+  readPlatformConfig(): { kit_diaria?: KitDiariaChannelConfig };
+  readState: typeof readKitDiariaState;
+  writeState: typeof writeKitDiariaState;
+  patch(id: number, sendAt: string): Promise<{ id: number }>;
+  verify(id: number): Promise<{ send_at?: string | null }>;
+  log(line: string): void;
+}
+
+export function productionDeps(rootDir: string = ROOT): ScheduleKitDiariaDeps {
+  return {
+    readPlatformConfig: () =>
+      JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
+        kit_diaria?: KitDiariaChannelConfig;
+      },
+    readState: readKitDiariaState,
+    writeState: writeKitDiariaState,
+    patch: (id, sendAt) => updateBroadcast(id, { send_at: sendAt }),
+    verify: (id) => getBroadcast(id),
+    log: (line) => process.stderr.write(`[kit-diaria schedule] ${line}\n`),
+  };
+}
+
+export async function scheduleKitDiaria(
+  editionDir: string,
+  scheduledAt: string,
+  deps: ScheduleKitDiariaDeps,
+): Promise<ScheduleKitDiariaResult> {
+  let cfg: { kit_diaria?: KitDiariaChannelConfig };
+  try {
+    cfg = deps.readPlatformConfig();
+  } catch (e) {
+    return { code: 3, reason: `platform.config.json ilegível: ${(e as Error).message}` };
+  }
+  if (cfg.kit_diaria?.enabled !== true) {
+    return { code: 2, reason: "kit_diaria.enabled não é true — canal não participou desta edição." };
+  }
+
+  let state: ReturnType<typeof readKitDiariaState>;
+  try {
+    state = deps.readState(editionDir);
+  } catch (e) {
+    // Estado corrompido é DIFERENTE de ausente (mesma disciplina do #6153):
+    // ausente = canal pulou; ilegível = alguém precisa olhar.
+    return { code: 3, reason: `estado do canal ilegível: ${(e as Error).message}` };
+  }
+  if (!state || typeof state.broadcast_id !== "number") {
+    return { code: 2, reason: "_internal/kit-diaria-published.json ausente — canal pulou a Etapa 5." };
+  }
+
+  // Idempotência em resume: já agendado é caminho feliz, não re-PATCH.
+  if (state.status === "scheduled" && state.scheduled_at) {
+    deps.log(`já agendado para ${state.scheduled_at} — no-op.`);
+    return { code: 0, scheduledAt: state.scheduled_at, broadcastId: state.broadcast_id };
+  }
+
+  try {
+    await deps.patch(state.broadcast_id, scheduledAt);
+  } catch (e) {
+    return { code: 3, reason: `PATCH falhou: ${(e as Error).message}` };
+  }
+
+  // #573 — confirmar por releitura, nunca pela resposta do PATCH.
+  let confirmed: { send_at?: string | null };
+  try {
+    confirmed = await deps.verify(state.broadcast_id);
+  } catch (e) {
+    return { code: 4, reason: `GET de verificação falhou: ${(e as Error).message}` };
+  }
+  if (!confirmed.send_at) {
+    return { code: 4, reason: `GET pós-PATCH não traz send_at — agendamento NÃO confirmado.` };
+  }
+
+  deps.writeState(editionDir, { ...state, status: "scheduled", scheduled_at: confirmed.send_at });
+  deps.log(`agendado para ${confirmed.send_at} (broadcast_id=${state.broadcast_id}) ✓`);
+  return { code: 0, scheduledAt: confirmed.send_at, broadcastId: state.broadcast_id };
+}
+
+export async function main(): Promise<void> {
+  loadProjectEnv();
+  const argv = process.argv.slice(2);
+  const editionDir = getArg(argv, "edition-dir");
+  const scheduledAt = getArg(argv, "scheduled-at");
+  if (!editionDir || !scheduledAt) {
+    console.error("uso: npx tsx scripts/schedule-kit-diaria.ts --edition-dir <dir> --scheduled-at <ISO>");
+    process.exitCode = 1;
+    return;
+  }
+  let result: ScheduleKitDiariaResult;
+  try {
+    result = await scheduleKitDiaria(resolve(ROOT, editionDir), scheduledAt, productionDeps());
+  } catch (e) {
+    result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
+  }
+  console.log(JSON.stringify(result, null, 2));
+  process.exitCode = result.code === 0 || result.code === 2 ? 0 : result.code;
+}
+
+if (isMainModule(import.meta.url)) {
+  await main();
+}

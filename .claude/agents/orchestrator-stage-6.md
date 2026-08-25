@@ -373,6 +373,23 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
   --details '{json de saída do script}'
 ```
 
+#### §6d-kit-diaria — canal Kit PARALELO (#6048/#6126)
+
+**Só quando `kit_diaria.enabled === true`.** Roda ao lado do Beehiiv/Brevo, pra audiência própria (`kit_diaria.audience_tag`). **Não é o §6d-kit**, que agenda o backend EXCLUSIVO do switchover (#6114) — coexistem enquanto a partição por origem de cadastro durar. Mesmo `scheduled_at` do Beehiiv, sob o MESMO gate, sem pergunta separada.
+
+```bash
+npx tsx scripts/schedule-kit-diaria.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4} --message "kit-diaria stage6 schedule: exit {code}"
+```
+
+| Exit | Ação |
+|------|------|
+| `0` | Confirmar: "Kit diária agendado para {scheduled_at} ✓ (broadcast_id {id})". |
+| `2` | Canal desligado ou estado ausente — **não é erro**, não participou desta edição; omitir do resumo. |
+| `3` | PATCH falhou / config-estado ilegível. Warn, **não bloqueia** (fail-soft do Brevo), sugerir retry. |
+| `4` | GET pós-PATCH não confirma `send_at`. Warn, não bloqueia. **Nunca reportar como agendado** — pode ter ficado rascunho. |
+
+
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
