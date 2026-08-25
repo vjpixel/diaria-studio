@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -17,6 +17,16 @@ import {
 
 const now = new Date("2026-04-24T12:00:00Z");
 const nowUnix = Math.floor(now.getTime() / 1000);
+
+describe("#6166 — carrega .env (mesmo defeito do #6152)", () => {
+  it("importa dotenv/config antes de qualquer leitura de process.env", () => {
+    const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", "verify-facebook-posts.ts"), "utf8");
+    const importIdx = src.indexOf('import "dotenv/config"');
+    assert.ok(importIdx >= 0, "esperava import \"dotenv/config\" no topo do arquivo");
+    const firstEnvReadIdx = src.indexOf("process.env.");
+    assert.ok(firstEnvReadIdx > importIdx, "o import de dotenv/config precisa vir ANTES de qualquer leitura de process.env");
+  });
+});
 
 function scheduledEntry(overrides: Partial<PostEntry> = {}): PostEntry {
   return {

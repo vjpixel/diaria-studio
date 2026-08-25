@@ -193,6 +193,47 @@ describe("activateSubscriptionKit (#6048 Fase 2/2)", () => {
     assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
   });
 
+  it("#6129 — Kit responde erro no POST → loga o CORPO da resposta (truncado), não só o status", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(200, { subscribers: [] }),
+      post: () => jsonRes(422, { message: "custom field inválido" }),
+    });
+    const errorMock = mock.method(console, "error", () => {});
+    try {
+      const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
+      assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
+      const call = errorMock.mock.calls.find((c) => {
+        const logged = JSON.parse(String(c.arguments[0]));
+        return logged.event === "reativar_kit_non_2xx" && logged.step === "create";
+      });
+      assert.ok(call, "esperava um log reativar_kit_non_2xx/create");
+      const logged = JSON.parse(String(call!.arguments[0]));
+      assert.match(logged.body, /custom field inválido/);
+    } finally {
+      errorMock.mock.restore();
+    }
+  });
+
+  it("#6129 — Kit responde erro no GET (idempotência) → loga o CORPO da resposta, não só o status", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(401, { message: "invalid api key" }),
+    });
+    const errorMock = mock.method(console, "error", () => {});
+    try {
+      const r = await activateSubscriptionKit(kitEnv(), "a@b.com", fetchImpl);
+      assert.deepEqual(r, { ok: false, status: 401, reason: "beehiiv_error" });
+      const call = errorMock.mock.calls.find((c) => {
+        const logged = JSON.parse(String(c.arguments[0]));
+        return logged.event === "reativar_kit_non_2xx" && logged.step === "get";
+      });
+      assert.ok(call, "esperava um log reativar_kit_non_2xx/get");
+      const logged = JSON.parse(String(call!.arguments[0]));
+      assert.match(logged.body, /invalid api key/);
+    } finally {
+      errorMock.mock.restore();
+    }
+  });
+
   it("fetch que lança no GET → beehiiv_error, nunca propaga a exceção", async () => {
     const throwingFetch = (async () => {
       throw new Error("network down");
