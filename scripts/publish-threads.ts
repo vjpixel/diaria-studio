@@ -187,6 +187,24 @@ export function warnMissingEditionUrl(
  * Retorna lista com 1+ chunks. Se o texto cabe em um único post,
  * retorna `[text]` sem modificação.
  */
+/**
+ * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
+ * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
+ * ambos degradam pra "sem carrossel" ({}), preservando o contrato
+ * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch
+ * (mesmo helper duplicado em publish-facebook.ts — scripts não compartilham
+ * import entre si, ver test/lib-boundary.test.ts).
+ */
+export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
+  if (!existsSync(publicImagesPath)) return {};
+  try {
+    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
+  } catch (e: any) {
+    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
+    return {};
+  }
+}
+
 export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT): string[] {
   if (text.length <= maxLen) return [text];
 
@@ -529,9 +547,7 @@ async function main() {
   // do arquivo/slides nunca é erro — só significa "sem carrossel", mesmo
   // comportamento de hoje). Resolvido 1x fora do loop (não muda por destaque).
   const publicImagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: { images?: Record<string, { url?: string }> } = existsSync(publicImagesPath)
-    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> })
-    : {};
+  const publicImages = loadPublicImagesFile(publicImagesPath);
 
   // Extrair destaques da seção '# Curto' — sem fallback (#4294)
   const destaques = extractDestaquesFromSocialMd(socialMd);

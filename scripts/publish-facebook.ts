@@ -360,6 +360,22 @@ async function publishPhoto(
  * CALLER decide o bookkeeping de falha (`status:"failed"` + `reason`), não
  * esta função — mesmo contrato de `publishPhoto` acima.
  */
+/**
+ * #6095/#6104 — lê 06-public-images.json best-effort para resolver o
+ * carrossel diário. Ausência do arquivo OU JSON corrompido nunca lança —
+ * ambos degradam pra "sem carrossel" ({}), preservando o contrato
+ * tudo-ou-nada de `resolveCarouselImageUrls` e nunca abortando o dispatch.
+ */
+export function loadPublicImagesFile(publicImagesPath: string): { images?: Record<string, { url?: string }> } {
+  if (!existsSync(publicImagesPath)) return {};
+  try {
+    return JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> };
+  } catch (e: any) {
+    console.warn(`WARN: falha ao parsear ${publicImagesPath} (${e.message}) — seguindo sem carrossel.`);
+    return {};
+  }
+}
+
 export async function publishFacebookCarouselByUrl(
   pageId: string,
   pageToken: string,
@@ -743,9 +759,7 @@ async function main() {
   // slides estão completos é que trocamos pra `publishFacebookCarouselByUrl`
   // (que exige URLs públicas, não arquivo local). Resolvido 1x fora do loop.
   const publicImagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: { images?: Record<string, { url?: string }> } = existsSync(publicImagesPath)
-    ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as { images?: Record<string, { url?: string }> })
-    : {};
+  const publicImages = loadPublicImagesFile(publicImagesPath);
 
   // #2343: derive destaque list from actual social MD (supports 2 or 3 destaques).
   const destaques = extractDestaquesFromSocialMd(socialMd, "facebook");
@@ -793,11 +807,22 @@ async function main() {
       continue;
     }
 
+    // #6095 self-review — resolver o carrossel ANTES de checar o arquivo
+    // local: a via carrossel usa URLs públicas de 06-public-images.json e
+    // não depende do arquivo local single-image, então checar o arquivo
+    // local primeiro podia falhar um destaque com carrossel completo por
+    // um arquivo que a via carrossel nem usa.
+    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+    // slides existem em 06-public-images.json; senão cai pro post de imagem
+    // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
+    // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+    const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+
     // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
     // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
     const imageFile = selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
-    if (!existsSync(imagePath)) {
+    if (!carouselImageUrls && !existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);
       const entry: PostEntry = {
         platform: "facebook",
@@ -836,12 +861,6 @@ async function main() {
         continue;
       }
     }
-
-    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
-    // slides existem em 06-public-images.json; senão cai pro post de imagem
-    // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
-    // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
-    const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
 
     // Publish with retry + exponential backoff (#725 bug #10)
     // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s

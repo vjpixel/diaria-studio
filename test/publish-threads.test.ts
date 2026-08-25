@@ -26,6 +26,7 @@ import {
   THREADS_CHAR_LIMIT,
   waitForContainerReady,
   CONTAINER_POLL_MAX_ATTEMPTS,
+  loadPublicImagesFile,
 } from "../scripts/publish-threads.ts";
 import { postToWorkerQueue } from "../scripts/lib/worker-queue-client.ts"; // #3944 Parte B
 import { resolveCarouselImageUrls } from "../scripts/lib/daily-carousel-card.ts"; // #6095
@@ -1312,5 +1313,40 @@ describe("carrossel diário no enqueue --schedule do Threads (#6095)", () => {
 
   it("06-public-images.json ausente (images undefined) → resolveCarouselImageUrls retorna null, --schedule nunca é bloqueado por isso", () => {
     assert.equal(resolveCarouselImageUrls(undefined, "d2"), null);
+  });
+
+  // #6104 self-review finding 2: JSON.parse de 06-public-images.json sem
+  // try/catch derrubava o dispatch inteiro do Threads se o arquivo
+  // estivesse corrompido (antes deste PR, Threads não dependia dele).
+  // Cobertura funcional real (não só static-source) via loadPublicImagesFile.
+  describe("loadPublicImagesFile (fail-soft, #6104)", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "publish-threads-test-"));
+    });
+
+    it("arquivo ausente → retorna {} sem lançar", () => {
+      const result = loadPublicImagesFile(join(dir, "06-public-images.json"));
+      assert.deepEqual(result, {});
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("JSON corrompido → retorna {} sem lançar (warning, não crash)", () => {
+      const p = join(dir, "06-public-images.json");
+      writeFileSync(p, "{ this is not valid json ][", "utf8");
+      assert.doesNotThrow(() => {
+        const result = loadPublicImagesFile(p);
+        assert.deepEqual(result, {});
+      });
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("JSON válido → retorna o objeto parseado normalmente", () => {
+      const p = join(dir, "06-public-images.json");
+      const payload = { images: { d2_4x5: { url: "https://cdn.example.com/d2-4x5.jpg" } } };
+      writeFileSync(p, JSON.stringify(payload), "utf8");
+      assert.deepEqual(loadPublicImagesFile(p), payload);
+      rmSync(dir, { recursive: true, force: true });
+    });
   });
 });

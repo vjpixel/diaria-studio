@@ -1,10 +1,17 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
-import { extractPostText, validateScheduledTime, needsReschedule, publishFacebookCarouselByUrl } from "../scripts/publish-facebook.ts";
+import {
+  extractPostText,
+  validateScheduledTime,
+  needsReschedule,
+  publishFacebookCarouselByUrl,
+  loadPublicImagesFile,
+} from "../scripts/publish-facebook.ts";
 import { FACEBOOK_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 import { resolveCarouselImageUrls } from "../scripts/lib/daily-carousel-card.ts";
 
@@ -361,5 +368,55 @@ describe("carrossel diário no dispatch do Facebook (#6095)", () => {
 
   it("06-public-images.json ausente (images undefined) → resolveCarouselImageUrls retorna null, dispatch nunca é bloqueado por isso", () => {
     assert.equal(resolveCarouselImageUrls(undefined, "d1"), null);
+  });
+
+  // #6104 self-review finding 2: JSON.parse de 06-public-images.json sem
+  // try/catch derrubava o dispatch inteiro do Facebook se o arquivo
+  // estivesse corrompido (antes deste PR, Facebook não dependia dele).
+  // Cobertura funcional real (não só static-source) via loadPublicImagesFile.
+  describe("loadPublicImagesFile (fail-soft, #6104)", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "publish-facebook-test-"));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("arquivo ausente → retorna {} sem lançar", () => {
+      const result = loadPublicImagesFile(join(dir, "06-public-images.json"));
+      assert.deepEqual(result, {});
+    });
+
+    it("JSON corrompido → retorna {} sem lançar (warning, não crash)", () => {
+      const p = join(dir, "06-public-images.json");
+      writeFileSync(p, "{ this is not valid json ][", "utf8");
+      assert.doesNotThrow(() => {
+        const result = loadPublicImagesFile(p);
+        assert.deepEqual(result, {});
+      });
+    });
+
+    it("JSON válido → retorna o objeto parseado normalmente", () => {
+      const p = join(dir, "06-public-images.json");
+      const payload = { images: { d1_4x5: { url: "https://cdn.example.com/d1-4x5.jpg" } } };
+      writeFileSync(p, JSON.stringify(payload), "utf8");
+      assert.deepEqual(loadPublicImagesFile(p), payload);
+    });
+  });
+
+  // #6104 self-review finding 1: a checagem de existsSync(imagePath) rodava
+  // ANTES da resolução do carrossel — um destaque com carrossel completo mas
+  // sem o arquivo local single-image falhava incorretamente, mesmo a via
+  // carrossel não dependendo desse arquivo.
+  it("resolveCarouselImageUrls(...) é calculado ANTES do guard de existsSync(imagePath) no loop de destaques", () => {
+    const carouselCallIdx = src.indexOf("const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);");
+    const guardIdx = src.indexOf("if (!carouselImageUrls && !existsSync(imagePath)) {");
+    assert.ok(carouselCallIdx >= 0, "resolveCarouselImageUrls deve ser chamado no loop de destaques");
+    assert.ok(guardIdx >= 0, "guard combinado carrossel+arquivo local deve existir");
+    assert.ok(
+      carouselCallIdx < guardIdx,
+      "carouselImageUrls deve ser resolvido antes do guard de arquivo local, senão um carrossel completo pode falhar por um arquivo local ausente que ele nem usa",
+    );
   });
 });
