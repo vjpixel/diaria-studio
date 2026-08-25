@@ -679,9 +679,14 @@ a{color:#0a5}
 }
 
 export function renderSuccessPage(): string {
+  // #6048 (achado ao vivo, rollout do worker cursos): esta página é
+  // compartilhada pelos dois backends (activateSubscription/Beehiiv e
+  // activateSubscriptionKit) — nomear "Beehiiv" aqui ficaria errado assim
+  // que SUBSCRIBE_BACKEND virar "kit" neste worker, e o nome do provedor
+  // não importa pro leitor de qualquer forma. Copy vendor-neutro.
   return page(
     "Cadastro confirmado",
-    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária direto pela Beehiiv a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>`,
+    `<h1>Cadastro confirmado!</h1><p>Você vai voltar a receber a diária a partir da próxima edição.</p><p><a href="https://diar.ia.br">Voltar pra diar.ia.br</a></p>`,
   );
 }
 
