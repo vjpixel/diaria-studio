@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoGet } from "./lib/brevo-client.ts";
+import { brevoGet, assertCampaignQuotaHeadroom, BrevoCampaignQuotaLowError } from "./lib/brevo-client.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import {
@@ -157,6 +157,42 @@ export function toAlarmFinding(
   };
 }
 
+/**
+ * #6034 — este alarme faz N `GET /emailCampaigns/{id}` (1 por campanha
+ * pendente, em `fetchCampaignStats`, mais 2 `GET /emailCampaigns?status=...`
+ * pra sent/scheduled) contra a família `/v3/emailCampaigns*` da Brevo — o
+ * MESMO formato de sweep que esgotou a cota horária (100 req/HORA por
+ * CONTA, #5215/#5219) e originou o mecanismo de reserva do #5697
+ * (`assertCampaignQuotaHeadroom`/`BrevoCampaignQuotaLowError`, ver
+ * `scripts/lib/brevo-rate-state.ts` e `scripts/clarice-audit-overlap.ts`,
+ * que já chama isso antes de um sweep análogo). Este script nunca foi
+ * atualizado pra respeitar essa reserva — quando a cota já estava baixa
+ * (writers como `clarice-build-segment.ts` consumindo o balde na mesma
+ * hora), `brevoGet` esgotava seu retry-with-backoff em 429 e lançava,
+ * derrubando o processo inteiro (`main().catch` -> `process.exit(1)`) —
+ * consistente com a unit systemd falhando (#6034, achado 24/08/2026 08:00
+ * BRT, horário em que outros jobs Clarice também competem pela mesma cota).
+ *
+ * `shouldSkipForLowQuota` decide ANTES de gastar 1 request sequer: se a
+ * cota observada está abaixo da reserva do #5697, este consumidor de
+ * leitura/diagnóstico recua (retorna o motivo em vez de lançar) — o caller
+ * loga e sai limpo (exit 0), sem crashar a unit systemd. Custo de pular 1
+ * ciclo é só atraso — o timer roda a cada 4h e a idempotência
+ * (`markEvaluated`) garante que nada é perdido, só adiado até a cota
+ * resetar (a cada hora). `null` quando não há motivo pra pular (cota Ok ou
+ * nunca observada ainda — `assertQuotaHeadroom` não recusa nesse caso, ver
+ * docstring de `brevo-rate-state.ts`).
+ */
+export function shouldSkipForLowQuota(assertQuota: () => void = assertCampaignQuotaHeadroom): string | null {
+  try {
+    assertQuota();
+    return null;
+  } catch (e) {
+    if (e instanceof BrevoCampaignQuotaLowError) return e.message;
+    throw e;
+  }
+}
+
 interface BrevoCampaignListItem {
   id: number;
   name: string;
@@ -210,6 +246,15 @@ async function main(): Promise<void> {
   if (!apiKey) {
     console.error("[clarice-guardrail-alarm] BREVO_CLARICE_API_KEY (ou BREVO_API_KEY) não definido.");
     process.exit(1);
+  }
+
+  // #6034: recua ANTES de gastar cota se a família /emailCampaigns* já
+  // está baixa (reserva do #5697) — evita crashar (exit 1) no meio do
+  // sweep por 429 esgotado; próxima execução do timer (4h) tenta de novo.
+  const skipReason = shouldSkipForLowQuota();
+  if (skipReason) {
+    console.log(`[clarice-guardrail-alarm] pulando esta execução — ${skipReason}`);
+    return;
   }
 
   const now = new Date();

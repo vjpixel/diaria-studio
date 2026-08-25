@@ -25,7 +25,8 @@ import {
   type CampaignGuardrailInput,
   type GuardrailAlarmState,
 } from "../scripts/lib/clarice-guardrail-alarm.ts";
-import { toAlarmFinding } from "../scripts/clarice-guardrail-alarm.ts";
+import { toAlarmFinding, shouldSkipForLowQuota } from "../scripts/clarice-guardrail-alarm.ts";
+import { BrevoCampaignQuotaLowError } from "../scripts/lib/brevo-client.ts";
 
 const NOW = new Date("2026-07-24T06:00:00.000Z"); // envio 9B saiu 06:00 BRT (09:00 UTC) do dia seguinte no incidente real
 
@@ -331,4 +332,33 @@ test("toAlarmFinding — family é sempre 'evento' — campanha só é avaliada 
   const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
   const finding = toAlarmFinding({ id: 146, name: "Clarice 2607 grupo:novos-260816" }, guardrail);
   assert.equal(finding.family, "evento");
+});
+
+// #6034: unit systemd falhou (exit 1) — hipótese confirmada por leitura de
+// código: este script faz N GETs/emailCampaigns (mesmo formato que o #5697
+// já flagou como o jeito de esgotar a cota horária da Brevo) sem nunca ter
+// sido atualizado pra respeitar a reserva `assertCampaignQuotaHeadroom`
+// daquela issue — `brevoGet` lançava quando o retry-with-backoff em 429
+// esgotava, derrubando o processo inteiro. `shouldSkipForLowQuota` fecha
+// esse gap: recua ANTES do sweep em vez de crashar no meio dele.
+test("shouldSkipForLowQuota — cota Ok (assertQuota não lança) — retorna null, sweep segue normalmente", () => {
+  const reason = shouldSkipForLowQuota(() => {});
+  assert.equal(reason, null);
+});
+
+test("shouldSkipForLowQuota — cota baixa (BrevoCampaignQuotaLowError) — retorna o motivo em vez de lançar (#6034)", () => {
+  const reason = shouldSkipForLowQuota(() => {
+    throw new BrevoCampaignQuotaLowError(5, 30);
+  });
+  assert.match(String(reason), /Cota da família \/v3\/emailCampaigns\* da Brevo está baixa/);
+});
+
+test("shouldSkipForLowQuota — erro que NÃO é BrevoCampaignQuotaLowError — relança (nunca mascara outra falha real)", () => {
+  assert.throws(
+    () =>
+      shouldSkipForLowQuota(() => {
+        throw new Error("falha de disco inesperada");
+      }),
+    /falha de disco inesperada/,
+  );
 });
