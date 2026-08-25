@@ -185,11 +185,22 @@ interface RouterOpts {
   /** #4532 (achado HIGH): força a página offset=0 do endpoint de listagem em
    * massa a responder com este status em vez de 200 (simula 404/5xx). */
   listContactsStatus?: number;
+  /** #6146 — consumo transacional do dia devolvido por
+   * `/v3/smtp/statistics/aggregatedReport`. Default 0 ("conta zerada"), que
+   * é o dia normal e mantém estes casos testando o que sempre testaram. */
+  transactionalRequestsToday?: number;
 }
 
 function installRouter(opts: RouterOpts): void {
   calls = [];
-  const { totalSubscribers, attributesExist = true, contactsPages, putStatus = 204, listContactsStatus } = opts;
+  const {
+    totalSubscribers,
+    attributesExist = true,
+    contactsPages,
+    putStatus = 204,
+    listContactsStatus,
+    transactionalRequestsToday = 0,
+  } = opts;
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -233,6 +244,13 @@ function installRouter(opts: RouterOpts): void {
       }
       if (method === "POST" && url.pathname === "/v3/emailCampaigns") {
         return jsonRes(201, { id: 999 });
+      }
+      // #6146 — guard de cota da CONTA (balde único transacional+marketing).
+      if (method === "GET" && url.pathname === "/v3/smtp/statistics/aggregatedReport") {
+        return jsonRes(200, { requests: transactionalRequestsToday });
+      }
+      if (method === "GET" && url.pathname === "/v3/account") {
+        return jsonRes(200, { plan: [{ type: "free", credits: 0, creditsType: "sendLimit" }] });
       }
     }
     if (url.hostname === "api.cloudflare.com" && method === "PUT" && url.pathname.includes("/storage/kv/namespaces/")) {

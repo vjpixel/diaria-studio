@@ -211,6 +211,14 @@ function installRouter(opts: { totalSubscribers: number; contactsPages: Array<Ar
       if (method === "POST" && url.pathname === "/v3/emailCampaigns/999/sendTest") {
         return jsonRes(204, {});
       }
+      // #6146 — guard de cota da CONTA. Conta zerada (`requests: 0`) é o dia
+      // normal; estes casos seguem testando o que sempre testaram.
+      if (method === "GET" && url.pathname === "/v3/smtp/statistics/aggregatedReport") {
+        return jsonRes(200, { requests: 0 });
+      }
+      if (method === "GET" && url.pathname === "/v3/account") {
+        return jsonRes(200, { plan: [{ type: "free", credits: 0, creditsType: "sendLimit" }] });
+      }
     }
     if (url.hostname === "api.cloudflare.com" && method === "PUT" && url.pathname.includes("/storage/kv/namespaces/")) {
       return jsonRes(200, { success: true, result: {} });

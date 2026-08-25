@@ -31,13 +31,23 @@
  *       (nada a agendar — canal foi pulado/falhou na Etapa 5, ou `--skip brevo`)
  *   3 — PUT falhou (erro de API)
  *   4 — GET de verificação pós-PUT não confirma o agendamento esperado
+ *   5 — cota da CONTA Brevo insuficiente/ilegível pro dia (#6146): agendar
+ *       aqui produziria uma campanha `suspended` no horário, em silêncio
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
+import { brevoPut, brevoGetCampaign, brevoGetList } from "./lib/brevo-client.ts";
+import {
+  BREVO_FREE_DAILY_SEND_LIMIT,
+  checkAccountSendQuota,
+  describeQuotaWarnings,
+  fetchAccountQuotaSnapshot,
+  toStatsDay,
+  type AccountQuotaCheck,
+} from "./lib/brevo-account-quota.ts"; // #6146
 import {
   readBrevoDiariaPublished,
   writeBrevoDiariaPublished,
@@ -49,6 +59,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface BrevoDiariaConfig {
   api_key_env: string;
+  /** #6146 — teto diário da CONTA. Default: BREVO_FREE_DAILY_SEND_LIMIT. */
+  account_daily_limit?: number;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -56,7 +68,7 @@ interface PlatformConfig {
 
 export type ScheduleDailyBrevoResult =
   | { ok: true; campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
-  | { ok: false; code: 2 | 3 | 4; reason: string };
+  | { ok: false; code: 2 | 3 | 4 | 5; reason: string };
 
 /**
  * Pura o suficiente pra ser testável — `deps.readPublished`/`deps.writePublished`/
@@ -68,6 +80,12 @@ export interface ScheduleDailyBrevoDeps {
   writePublished: (editionDir: string, state: BrevoDiariaPublished) => void;
   putSchedule: (campaignId: number, scheduledAt: string) => Promise<unknown>;
   getCampaign: (campaignId: number) => Promise<{ status: string; scheduledAt?: string | null }>;
+  /**
+   * #6146 — cota da CONTA Brevo (balde único transacional + marketing) pro
+   * dia corrente. Injetável como o resto; `productionDeps` lê a lista pra
+   * saber quantos destinatários o agendamento vai comprometer.
+   */
+  checkQuota: (listId: number) => Promise<{ check: AccountQuotaCheck; warnings: string[] }>;
 }
 
 export async function scheduleDailyBrevo(
@@ -99,6 +117,29 @@ export async function scheduleDailyBrevo(
       status: "already_scheduled",
       alreadyScheduled: true,
     };
+  }
+
+  // #6146: checado DEPOIS do short-circuit de idempotência acima (uma
+  // campanha já agendada não deve ser reprovada por cota — o compromisso já
+  // foi feito e é imutável) e ANTES do PUT, que é o ponto de não-retorno.
+  // Sem isto, a Etapa 6 agendava alegremente uma campanha que a Brevo iria
+  // suspender no horário por falta de cota, e ninguém ficava sabendo
+  // (incidente 260825).
+  let quota: { check: AccountQuotaCheck; warnings: string[] };
+  try {
+    quota = await deps.checkQuota(published.list_id);
+  } catch (e) {
+    return {
+      ok: false,
+      code: 5,
+      reason:
+        `não foi possível ler a cota da conta Brevo antes de agendar: ${(e as Error).message}. ` +
+        "Cota ilegível nunca vira permissão de agendamento (#6146).",
+    };
+  }
+  for (const w of quota.warnings) process.stderr.write(`[schedule-daily-brevo] AVISO: ${w}\n`);
+  if (!quota.check.ok) {
+    return { ok: false, code: 5, reason: quota.check.reason };
   }
 
   try {
@@ -159,6 +200,19 @@ export function productionDeps(rootDir: string = ROOT): ScheduleDailyBrevoDeps {
     getCampaign: async (campaignId) => {
       if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
       return brevoGetCampaign(apiKey, campaignId);
+    },
+    checkQuota: async (listId) => {
+      if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
+      const listInfo = await brevoGetList(apiKey, listId);
+      const snapshot = await fetchAccountQuotaSnapshot(apiKey, toStatsDay(new Date()));
+      return {
+        check: checkAccountSendQuota({
+          dailyLimit: brevoDiaria?.account_daily_limit ?? BREVO_FREE_DAILY_SEND_LIMIT,
+          transactionalRequestsToday: snapshot.transactionalRequestsToday,
+          recipients: listInfo.totalSubscribers,
+        }),
+        warnings: describeQuotaWarnings(snapshot),
+      };
     },
   };
 }

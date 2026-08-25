@@ -65,6 +65,7 @@ import {
   writeRolloutGuardrailState,
   applyGuardrailCheck,
   unpauseRollout,
+  selectUnalarmedSuspended,
   type CampaignGuardrailInput,
 } from "./lib/brevo-diaria-guardrail.ts";
 
@@ -98,6 +99,66 @@ interface BrevoCampaignDetail {
 async function fetchSentCampaigns(apiKey: string): Promise<BrevoCampaignListItem[]> {
   const { body } = await brevoGet(apiKey, "/emailCampaigns?status=sent&limit=50&sort=desc");
   return (body as BrevoCampaignsListResponse)?.campaigns ?? [];
+}
+
+interface SuspendedCampaign {
+  id: number;
+  name: string;
+  scheduledAt?: string | null;
+}
+
+/**
+ * I/O — campanhas em `suspended` (#6146).
+ *
+ * `fetchSentCampaigns` acima só enxerga `status=sent`, e é por isso que a
+ * suspensão da edição 260825 passou ~12h sem nenhum alarme: uma campanha
+ * suspensa NUNCA entra naquela lista, então o guardrail rodou 6 vezes no dia
+ * reportando "rollout OK" enquanto o canal estava caído. Uma campanha só vai
+ * pra `suspended` por ação da plataforma (falta de cota, revisão antifraude)
+ * ou do editor no painel — em nenhum dos casos ela se recupera sozinha.
+ */
+async function fetchSuspendedCampaigns(apiKey: string): Promise<SuspendedCampaign[]> {
+  const { body } = await brevoGet(apiKey, "/emailCampaigns?status=suspended&limit=50&sort=desc");
+  const campaigns = (body as { campaigns?: SuspendedCampaign[] })?.campaigns ?? [];
+  return campaigns.filter((c) => typeof c?.id === "number");
+}
+
+/**
+ * Alarme de campanha suspensa. Separado do alarme de circuit breaker
+ * (que reporta entregabilidade) porque a ação do editor é outra: aqui não
+ * há o que despausar, há uma campanha que não saiu e uma cota a investigar.
+ */
+async function alarmSuspendedCampaigns(
+  fresh: number[],
+  all: SuspendedCampaign[],
+  log: (msg: string) => void,
+): Promise<void> {
+  const byId = new Map(all.map((c) => [c.id, c]));
+  const subject = `[diar.ia.br] Campanha Brevo SUSPENSA — ${fresh.length} campanha(s) não enviada(s)`;
+  const body = [
+    "A Brevo marcou como `suspended` campanha(s) do canal diária que estavam agendadas.",
+    "Campanha suspensa NÃO envia e NÃO se recupera sozinha:",
+    "",
+    ...fresh.map((id) => {
+      const c = byId.get(id);
+      return `- #${id} "${c?.name ?? "(sem nome)"}" (agendada para: ${c?.scheduledAt ?? "?"})`;
+    }),
+    "",
+    "Causa mais provável (incidente 260825, #6146): a cota diária da CONTA acabou.",
+    "O plano free tem UM balde de 300 e-mails/dia compartilhado entre transacional e",
+    "marketing — um pico de transacional consome a cota e a campanha de marketing",
+    "morre suspensa no horário agendado.",
+    "",
+    "Investigar o consumo do dia:",
+    "",
+    "  curl -H \"api-key: $BREVO_DIARIA_API_KEY\" \\",
+    "    'https://api.brevo.com/v3/smtp/statistics/aggregatedReport?startDate=AAAA-MM-DD&endDate=AAAA-MM-DD'",
+    "",
+    `(alarme automático — checagem rodou em ${new Date().toISOString()})`,
+  ].join("\n");
+  const to = resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  await sendGmailMessage(to, subject, body);
+  log(`campanha(s) suspensa(s) ${fresh.join(", ")} — e-mail de alarme enviado pra ${to}.`);
 }
 
 async function fetchCampaignStats(apiKey: string, id: number): Promise<CampaignGuardrailInput | null> {
@@ -149,6 +210,34 @@ async function main(): Promise<void> {
   if (!apiKey) {
     log(`ERRO: ${brevoDiaria!.api_key_env} não definido no ambiente.`);
     process.exit(2);
+  }
+
+  // #6146: ANTES da avaliação de entregabilidade, e independente dela — o
+  // fluxo abaixo tem early-returns (`evaluation === null`) que pulariam esta
+  // checagem se ela viesse depois. Persiste o dedup só DEPOIS do e-mail sair:
+  // gravar antes e falhar o envio perderia o alarme de vez, porque a próxima
+  // rodada já consideraria o id "alarmado".
+  const suspended = await fetchSuspendedCampaigns(apiKey!);
+  if (suspended.length > 0) {
+    const stateForSuspended = readRolloutGuardrailState();
+    const { fresh, next } = selectUnalarmedSuspended(
+      stateForSuspended,
+      suspended.map((c) => c.id),
+    );
+    if (fresh.length === 0) {
+      log(`${suspended.length} campanha(s) suspensa(s) na conta — todas já alarmadas, sem novo e-mail.`);
+    } else if (isDryRun) {
+      log(`--dry-run: alarmaria ${fresh.length} campanha(s) suspensa(s) nova(s): ${fresh.join(", ")} — NÃO persiste.`);
+    } else {
+      try {
+        await alarmSuspendedCampaigns(fresh, suspended, log);
+        writeRolloutGuardrailState(next);
+      } catch (e) {
+        // Não persiste o dedup — a próxima rodada (4h) tenta de novo. Um
+        // alarme repetido é barato; um alarme perdido é o bug do #6146.
+        log(`AVISO: falha ao alarmar campanha(s) suspensa(s) ${fresh.join(", ")}: ${(e as Error).message}`);
+      }
+    }
   }
 
   const campaignList = await fetchSentCampaigns(apiKey!);

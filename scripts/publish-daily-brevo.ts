@@ -52,7 +52,9 @@
  * excedido; 4 credenciais do token de voto ausentes; 5 falha ao injetar o
  * token em ≥1 contato; 6 divergência entre a enumeração e
  * `listInfo.totalSubscribers` (#4532); 7 assunto vazio/em branco
- * (`content.title` ausente, #4588).
+ * (`content.title` ausente, #4588); 8 cota da CONTA Brevo esgotada pro dia
+ * (#6146 — balde único transacional+marketing, ver
+ * `scripts/lib/brevo-account-quota.ts`).
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
@@ -114,6 +116,13 @@ import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-i
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
+import {
+  BREVO_FREE_DAILY_SEND_LIMIT,
+  checkAccountSendQuota,
+  describeQuotaWarnings,
+  fetchAccountQuotaSnapshot,
+  toStatsDay,
+} from "./lib/brevo-account-quota.ts"; // #6146
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -123,6 +132,10 @@ interface BrevoDiariaConfig {
   sender_email: string | null;
   sender_name: string;
   daily_send_cap: number;
+  /** #6146 — teto da CONTA (balde único transacional+marketing). Default:
+   * BREVO_FREE_DAILY_SEND_LIMIT. Distinto de `daily_send_cap`, que é o teto
+   * da FILA de reativação. */
+  account_daily_limit?: number;
   /** #5086 — destinatário default de `--send-test` quando `--send-test-to`
    * não é passado. Ausente/null é válido (config antiga, ou editor ainda não
    * configurou) — nesse caso `--send-test` sem `--send-test-to` é rejeitado
@@ -740,6 +753,31 @@ export async function main(rootDirOverride?: string): Promise<void> {
     process.exitCode = 3;
     return;
   }
+
+  // #6146: cota da CONTA, distinta do cap da LISTA acima. `daily_send_cap`
+  // pergunta "a fila cresceu demais?"; isto pergunta "a conta ainda pode
+  // enviar hoje?". A edição 260825 passou no primeiro e morreu no segundo —
+  // o backlog transacional do #6042 tinha consumido os 300/dia do plano free
+  // horas antes, e a Brevo suspendeu a campanha em silêncio no horário
+  // agendado. Ver scripts/lib/brevo-account-quota.ts.
+  const accountDailyLimit = brevoDiaria!.account_daily_limit ?? BREVO_FREE_DAILY_SEND_LIMIT;
+  const quotaSnapshot = await fetchAccountQuotaSnapshot(apiKey!, toStatsDay(new Date()));
+  for (const w of describeQuotaWarnings(quotaSnapshot)) log(`AVISO: ${w}`);
+  const quotaCheck = checkAccountSendQuota({
+    dailyLimit: accountDailyLimit,
+    transactionalRequestsToday: quotaSnapshot.transactionalRequestsToday,
+    recipients: listInfo.totalSubscribers,
+  });
+  if (!quotaCheck.ok) {
+    log(`ERRO: ${(quotaCheck as { ok: false; reason: string }).reason}`);
+    // Windows fix (#4651): mesma razão dos blocos vizinhos — já houve await fetch.
+    process.exitCode = 8;
+    return;
+  }
+  log(
+    `cota da conta OK: ${quotaCheck.consumed}/${accountDailyLimit} consumido(s) hoje por transacional, ` +
+      `${quotaCheck.available} disponível(is), campanha precisa de ${listInfo.totalSubscribers}.`,
+  );
 
   // #4517: popula o token opaco de voto (`POLL_TOKEN`) pra TODA a lista Brevo
   // ANTES de criar a campanha — paridade com a proteção Beehiiv do #4487.
