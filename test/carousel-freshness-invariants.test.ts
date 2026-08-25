@@ -33,7 +33,10 @@ import {
   checkCarouselCardsStale,
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
+  checkCarouselTextOverflow,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { createHash } from "node:crypto";
+import { buildCarouselSlideTexts } from "../scripts/lib/daily-carousel-card.ts";
 import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
@@ -661,6 +664,135 @@ describe("#6068 — bordas endereçadas no 2º round de review", () => {
       const violations = checkCarouselCardsStale(dir);
       assert.equal(violations.length, 1);
       assert.match(violations[0].message, /d1, d3/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * (#6078 item 2) `carousel-text-overflow` — o guard que torna a política
+ * "parágrafo que não cabe é REESCRITO" observável. Sem ele, o tamanho fixo
+ * degradaria em silêncio na arte publicada, que é exatamente a classe de
+ * falha que o #6064 consertou na direção oposta.
+ */
+describe("carousel-text-overflow (#6078)", () => {
+  const paraDe = (n: number) => {
+    let s = "";
+    while (s.length < n) s += (s ? " " : "") + "palavra";
+    return s.slice(0, n).trim();
+  };
+
+  it("texto dentro do limite: nenhuma violação", () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+      assert.deepEqual(checkCarouselTextOverflow(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parágrafo grande demais: ERROR nomeando o destaque e mandando reescrever", () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, [paraDe(80), paraDe(800), paraDe(90)].join("\n\n"));
+      const v = checkCarouselTextOverflow(dir);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "carousel-text-overflow");
+      assert.equal(v[0].severity, "error", "conteúdo que não pode ser rasterizado bloqueia, não avisa");
+      assert.match(v[0].message, /## d1/);
+      assert.match(v[0].message, /REESCREVER/i);
+      assert.match(v[0].message, /p2/, "diz QUAL parágrafo encurtar");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("03-social.md ausente: silencioso (não é este check que cobre)", () => {
+    const dir = makeEdition();
+    try {
+      assert.deepEqual(checkCarouselTextOverflow(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a regra está registrada no Stage 4", () => {
+    const ids = getRulesForStage(4).map((r) => r.id);
+    assert.ok(ids.includes("carousel-text-overflow"), "sem registro, o gate nunca roda o check");
+  });
+
+  it("carimbo no formato ANTIGO (sem layoutTag) força regeneração em vez de pular", () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, TEXTO_D1);
+      writeSlides(dir, "d1");
+      // simula o carimbo que a versão pré-#6078 teria gravado: hash SÓ do texto
+      const canonical = CAROUSEL_SLIDE_SLOTS.map((slot) => {
+        const t = buildCarouselSlideTexts(TEXTO_D1)[slot];
+        return `${t.kicker} || ${t.title}`;
+      }).join(" ~~ ");
+      const hashAntigo = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+      writeCarouselSourceHashes(dir, { d1: hashAntigo });
+
+      assert.equal(
+        shouldRenderCarouselSlides({
+          allSlidesExist: true,
+          storedHash: hashAntigo,
+          currentHash: hashCarouselSlideTexts(TEXTO_D1),
+          force: false,
+        }),
+        true,
+        "arte rasterizada com o layout antigo NUNCA pode ser pulada por hash batendo",
+      );
+      const v = checkCarouselCardsStale(dir);
+      assert.equal(v.length, 1, "e o Stage 4 acusa, mandando regerar");
+      assert.equal(v[0].severity, "error");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aborta reportando TODOS os destaques transbordantes, não só o primeiro", async () => {
+    const dir = makeEdition();
+    try {
+      // d1 e d3 estouram; d2 está OK — o erro precisa nomear os dois
+      writeFileSync(
+        join(dir, "03-social.md"),
+        ["# Social", "", "## d1", "", paraDe(800), "", "## d2", "", "Texto curto d2.", "", "## d3", "", paraDe(900), ""].join("\n"),
+        "utf8",
+      );
+      await assert.rejects(
+        () => genCarouselCards(dir, { render: async (_t, o) => o }),
+        (err) => {
+          assert.match((err as Error).message, /d1/);
+          assert.match((err as Error).message, /d3/);
+          assert.match((err as Error).message, /2 destaque\(s\) afetado\(s\)/);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("genCarouselCards ABORTA em vez de rasterizar transbordando", async () => {
+    const dir = makeEdition();
+    try {
+      writeSocial(dir, [paraDe(80), paraDe(800), paraDe(90)].join("\n\n"));
+      let chamou = false;
+      await assert.rejects(
+        () =>
+          genCarouselCards(dir, {
+            render: async (_t, outPaths) => {
+              chamou = true;
+              return outPaths;
+            },
+          }),
+        /não cabem no card|REESCREVER/i,
+      );
+      assert.equal(chamou, false, "o render nunca pode ser chamado com texto que transborda");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
