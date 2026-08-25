@@ -194,9 +194,22 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-14 → null (#3994/#5772: range estendido pra Twitter/X + Brevo diária)", () => {
-    assert.equal(parseEditorResponse("15"), null);
+  it("número fora do range 1-16 → null (#6179: range estendido pro Kit)", () => {
+    assert.equal(parseEditorResponse("17"), null);
     assert.equal(parseEditorResponse("0,1"), null);
+  });
+
+  it("'15' → Kit auto (canais não mencionados ficam manual) (#6179)", () => {
+    const c = parseEditorResponse("15");
+    assert.ok(c);
+    assert.equal(c.kit, "auto");
+    assert.equal(c.newsletter, "manual");
+  });
+
+  it("'16' → Kit manual (#6179)", () => {
+    const c = parseEditorResponse("16");
+    assert.ok(c);
+    assert.equal(c.kit, "manual");
   });
 
   it("'7' → Instagram auto (canais não mencionados ficam manual) (#49)", () => {
@@ -386,5 +399,72 @@ describe("canal Brevo diária (#5772)", () => {
       }),
       false,
     );
+  });
+});
+
+describe("canal Kit (#6162/#6179)", () => {
+  it("autoApproveConsent/defaultAutoConsent incluem kit auto", () => {
+    assert.equal(autoApproveConsent().kit, "auto");
+    assert.equal(defaultAutoConsent().kit, "auto");
+  });
+
+  it("defaultManualConsent inclui kit manual", () => {
+    assert.equal(defaultManualConsent().kit, "manual");
+  });
+
+  it("'kit' é canal válido em --skip", () => {
+    const c = parseSkipFlag("kit");
+    assert.ok(c, "kit deve ser um canal válido em --skip");
+    assert.equal(c.kit, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+  });
+
+  it("'all' → kit auto; 'none' → kit skipped", () => {
+    assert.equal(parseEditorResponse("all")?.kit, "auto");
+    assert.equal(parseEditorResponse("none")?.kit, "skipped");
+  });
+
+  it("hasAnyAutoChannel true quando só kit é auto (#6179)", () => {
+    assert.equal(
+      hasAnyAutoChannel({
+        newsletter: "manual",
+        linkedin: "manual",
+        facebook: "manual",
+        instagram: "manual",
+        threads: "manual",
+        twitter: "manual",
+        brevo: "manual",
+        kit: "auto",
+        source: "x",
+      }),
+      true,
+    );
+  });
+
+  it("hasAnyAutoChannel false quando tudo manual incluindo kit (#6179)", () => {
+    assert.equal(hasAnyAutoChannel(defaultManualConsent()), false);
+  });
+
+  it("allChannelsSkipped false quando kit não-skipped mas resto skipped (#6179)", () => {
+    assert.equal(
+      allChannelsSkipped({
+        newsletter: "skipped",
+        linkedin: "skipped",
+        facebook: "skipped",
+        instagram: "skipped",
+        threads: "skipped",
+        twitter: "skipped",
+        brevo: "skipped",
+        kit: "manual",
+        source: "x",
+      }),
+      false,
+    );
+  });
+
+  it("allChannelsSkipped true quando tudo skipped incluindo kit (#6179)", () => {
+    const c = parseEditorResponse("none")!;
+    assert.equal(allChannelsSkipped(c), true);
   });
 });

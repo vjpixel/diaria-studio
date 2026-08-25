@@ -88,7 +88,7 @@ function usage(): string {
     "                              canais válidos: newsletter, linkedin, facebook, instagram, threads, twitter, brevo, kit",
     "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5,7,9,11,13')",
     "                              9=Threads auto, 10=Threads manual, 11=Twitter/X auto, 12=Twitter/X manual",
-    "                              13=Brevo diária auto, 14=Brevo diária manual",
+    "                              13=Brevo diária auto, 14=Brevo diária manual, 15=Kit auto, 16=Kit manual",
     "",
     "Opcional:",
     "  --out <path>                override do default data/editions/{AAMMDD}/_internal/05-publish-consent.json",
