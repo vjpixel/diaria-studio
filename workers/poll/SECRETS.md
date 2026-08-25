@@ -62,7 +62,8 @@ criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
 ```bash
 cd workers/poll
 echo "$KIT_API_KEY" | npx wrangler secret put KIT_API_KEY
-echo "kit" | npx wrangler secret put SUBSCRIBE_BACKEND
+# SUBSCRIBE_BACKEND é var, não secret — não sensível (mesmo tratamento dos
+# demais KIT_*_FIELD). Setar em [vars] no wrangler.toml, não via `secret put`.
 ```
 
 ## Optional secrets (#3996 — migração cross-device via link mágico)

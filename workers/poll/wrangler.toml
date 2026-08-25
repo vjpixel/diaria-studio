@@ -102,8 +102,15 @@ ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.
 # scripts/lib/shared/kit-signup-origin.ts). VAR, não secret — nome de custom
 # field não é sensível (mesmo tratamento dos demais KIT_*_FIELD, ver
 # SECRETS.md). Custom field já existe na conta Kit de produção (id 1348066).
-# Inerte até SUBSCRIBE_BACKEND virar "kit" neste worker (ainda não virou).
+# Ativo neste worker desde SUBSCRIBE_BACKEND = "kit" abaixo (#6048 item 4/5).
 KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
+
+# #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
+# worker, poll primeiro por ser o de menor volume). env.SUBSCRIBE_BACKEND ===
+# "kit" em workers/poll/src/subscribe.ts (linha ~579) — cadastro via "É IA?"
+# passa a ir pro Kit em vez da Beehiiv. cursos/reativar seguem em Beehiiv até
+# verificação ao vivo deste worker confirmar o funil Kit ponta a ponta.
+SUBSCRIBE_BACKEND = "kit"
 
 # #3521: allowlist de origens autorizadas a embutir GET /embed dentro de um
 # <iframe> (CSP frame-ancestors, ver workers/poll/src/embed.ts). VAZIO =
