@@ -371,7 +371,7 @@ export function reportUnrecognisedIpFinding(
  * #6137 (auto-close) — chamada pra QUALQUER resposta da `conta` que NÃO seja
  * o 401 "unrecognised IP" (`brevo-client.ts` chama isto no ramo contrário do
  * `maybeReportUnrecognisedIp`). Sem periodicidade própria (este alarme não
- * roda via systemd timer, ao contrário dos outros 9 alarmes do projeto — a
+ * roda via systemd timer, ao contrário da maioria dos outros alarmes do projeto — a
  * detecção é embutida na chamada real), o mecanismo de streak de
  * `alarm-issues.ts` só reconcilia quando ALGUÉM chama `applyAlarmReconciliation`
  * de novo com o achado ausente de `pending` — sem este complemento, uma
