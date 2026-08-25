@@ -68,14 +68,41 @@
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *   npx tsx scripts/lib/session-registry.ts gc [--max-age-days N] [--dry-run]
  * (`--session-id X` funciona também se passado explicitamente — o hook só
  * injeta quando a flag está AUSENTE, nunca sobrescreve um valor já presente.)
+ *
+ * **#6130 — conflitos de sync do OneDrive e GC de registros encerrados.**
+ * `data/sessions/` vive numa junction OneDrive compartilhada entre máquinas
+ * e pode bifurcar um arquivo de sessão em cópias de conflito com sufixo
+ * `-safeBackup-NNNN` (ex: `continuo-predator-{uuid}-predator-safeBackup-0001.json`)
+ * — o `#5427` já fazia `listActiveSessions` IGNORAR essas cópias pra não
+ * ressuscitar sessão já encerrada (arquivo real removido, só o backup
+ * sobrou). O `#6130` fecha o lado oposto: quando o arquivo REAL de uma
+ * sessão AINDA VIVA coexiste com backups divergentes (conflito ocorreu
+ * enquanto `claimed_issues` estava sendo escrito), um claim podia
+ * desaparecer do registro efetivo se só existisse no backup — permitindo
+ * duas sessões na mesma issue. `listActiveSessions`/`isIssueClaimedByOther`
+ * agora leem a UNIÃO de `claimed_issues` do arquivo real + todo backup cujo
+ * nome começa com o stem do real (ver `mergeSessionRecords`) — fail-safe:
+ * preferir "está reivindicada" a "não está". Backup ÓRFÃO (sem arquivo real
+ * correspondente — sessão já encerrada) continua ignorado, comportamento
+ * do #5427 preservado.
+ *
+ * `gc` (novo, #6130) remove registros de sessão ENCERRADA — mas NUNCA por
+ * staleness de heartbeat sozinha: uma sessão pode estar viva e só ter
+ * parado de bater heartbeat (achado ao vivo do #6130 — `stale: true` com
+ * processo `claude` ainda rodando no `helios`). Ver docstring de
+ * `planSessionGc` pra árvore de decisão completa (checagem de PID vivo na
+ * MESMA máquina, janela conservadora bem maior que qualquer heartbeat
+ * esperado quando não há sinal de processo verificável).
  */
 
 import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
+import { writeFileAtomic } from "./atomic-write.ts";
 
 export type SessionKind = "overnight" | "develop" | "continuo";
 
@@ -248,9 +275,24 @@ function readJsonSafe<T>(path: string): T | null {
   }
 }
 
+/**
+ * #6130 item 4 (reduzir a janela de conflito de escrita): write-then-rename
+ * atômico (`writeFileAtomic`, já usado por outros outputs do pipeline) em
+ * vez de `writeFileSync` in-place — elimina a classe "leitura vê arquivo
+ * PARCIALMENTE escrito" (kill/crash/sync do OneDrive no meio de um write).
+ * **Não elimina** a classe "lost update" de duas sessões fazendo
+ * leitura→merge→escrita concorrente sobre o MESMO registro (ex: duas
+ * chamadas de `claimIssue` pra sessões DIFERENTES nunca colidem — cada uma
+ * escreve seu PRÓPRIO arquivo — mas duas chamadas concorrentes pra a MESMA
+ * sessão, do tipo que só aconteceria por bug de dispatch, ainda podem
+ * perder uma escrita) — isso exigiria locking/CAS por registro, avaliado
+ * como refactor grande demais pra esta unidade (ver corpo da issue #6130,
+ * item sem checkbox). `mkdirSync` continua incondicional antes do write —
+ * `writeFileAtomic` não cria o diretório pai.
+ */
 function writeJsonSafe(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value), "utf8");
+  writeFileAtomic(path, JSON.stringify(value), { fsync: false });
 }
 
 /**
@@ -318,35 +360,113 @@ export function endSession(repoRoot: string, kind: SessionKind, sessionId: strin
   return true;
 }
 
+/** Nomes de arquivo `.json` de sessão (real ou backup) em `data/sessions/` —
+ * exclui dotfiles (`.merge-lock.json` etc). Fail-soft: diretório ausente ou
+ * erro de leitura → array vazio, nunca lança. Ordem não é garantida
+ * (`readdirSync` bruto). */
+function listSessionJsonFiles(repoRoot: string): string[] {
+  const dir = sessionsDir(repoRoot);
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."));
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Lista as sessões ativas (não-stale) de `data/sessions/`. Ignora
- * `.merge-lock.json` e qualquer arquivo dotfile (prefixo `.`) — só registros
- * de sessão de verdade. Fail-soft: diretório ausente ou erro de leitura →
- * array vazio, nunca lança.
+ * Nomes de toda cópia de conflito do OneDrive (`-safeBackup-NNNN`) presente
+ * em `data/sessions/` — usado pelo alarme dedicado (#6130,
+ * `scripts/session-registry-safebackup-alarm.ts`) pra sinalizar que o sync
+ * de `data/` teve um conflito de escrita concorrente, órfão ou não.
+ */
+export function listSafeBackupFiles(repoRoot: string): string[] {
+  return listSessionJsonFiles(repoRoot)
+    .filter((n) => n.includes("-safeBackup-"))
+    .sort();
+}
+
+/**
+ * Une um grupo de registros (arquivo real + eventuais cópias de conflito do
+ * MESMO sessionId, #6130) num único `SessionRecord` efetivo:
+ *   - `claimed_issues`: UNIÃO de todos os arrays do grupo — fail-safe,
+ *     preferir "está reivindicada" a "não está" (ver docstring do módulo).
+ *   - demais campos (phase, pid, active_worktrees, lastHeartbeat…): copiados
+ *     do registro com o `lastHeartbeat` MAIS RECENTE do grupo — se qualquer
+ *     cópia mostra atividade recente, o grupo inteiro é tratado como
+ *     recente (mesmo princípio fail-safe: preferir "viva" a "stale").
+ *
+ * Pura — não lê disco. `records` não pode ser vazio.
+ */
+export function mergeSessionRecords(records: readonly SessionRecord[]): SessionRecord {
+  let primary = records[0]!;
+  let primaryHb = Date.parse(primary.lastHeartbeat ?? primary.startedAt ?? "");
+  for (const r of records.slice(1)) {
+    const hb = Date.parse(r.lastHeartbeat ?? r.startedAt ?? "");
+    if (Number.isFinite(hb) && (!Number.isFinite(primaryHb) || hb > primaryHb)) {
+      primary = r;
+      primaryHb = hb;
+    }
+  }
+  const claimedUnion = new Set<number>();
+  for (const r of records) for (const issue of r.claimed_issues ?? []) claimedUnion.add(issue);
+  return { ...primary, claimed_issues: [...claimedUnion].sort((a, b) => a - b) };
+}
+
+/**
+ * Agrupa os arquivos de `data/sessions/` por identidade de sessão (stem do
+ * arquivo REAL, sem sufixo `-safeBackup-`) e retorna 1 `SessionRecord`
+ * mesclado (`mergeSessionRecords`) por identidade ANCORADA num arquivo real
+ * existente. Backup ÓRFÃO (nenhum arquivo real cujo stem seja prefixo dele)
+ * é ignorado aqui — mesmo comportamento do #5427: sessão já encerrada
+ * (arquivo real removido por `endSession`) não ressuscita como ativa só
+ * porque uma cópia de conflito antiga sobrou no disco. O match de backup →
+ * real é por PREFIXO DE STRING (nunca assume formato de `sessionId`, que
+ * pode ser um UUID em produção ou um id arbitrário em teste) — mais
+ * específico (stem mais longo) vence em caso de ambiguidade.
+ */
+function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-"));
+  const backupNames = names.filter((n) => n.includes("-safeBackup-"));
+
+  const realStems = realNames.map((n) => n.slice(0, -".json".length)).sort((a, b) => b.length - a.length);
+  const backupsByRealStem = new Map<string, string[]>();
+  for (const backup of backupNames) {
+    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    if (!matchStem) continue; // órfão — ver docstring acima
+    const list = backupsByRealStem.get(matchStem) ?? [];
+    list.push(backup);
+    backupsByRealStem.set(matchStem, list);
+  }
+
+  const dir = sessionsDir(repoRoot);
+  const merged: SessionRecord[] = [];
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const groupNames = [realName, ...(backupsByRealStem.get(stem) ?? [])];
+    const records = groupNames
+      .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
+      .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
+    if (records.length === 0) continue;
+    merged.push(mergeSessionRecords(records));
+  }
+  return merged;
+}
+
+/**
+ * Lista as sessões ativas (não-stale) de `data/sessions/`, já com a UNIÃO
+ * de claims de eventuais backups de conflito do OneDrive resolvida (#6130,
+ * ver `readMergedSessionGroups`/`mergeSessionRecords`). Fail-soft: diretório
+ * ausente ou erro de leitura → array vazio, nunca lança.
  */
 export function listActiveSessions(
   repoRoot: string,
   now: number = Date.now(),
   maxAgeMs: number = MAX_SESSION_AGE_MS,
 ): SessionRecord[] {
-  const dir = sessionsDir(repoRoot);
-  if (!existsSync(dir)) return [];
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
   const out: SessionRecord[] = [];
-  for (const name of entries) {
-    // #5427: OneDrive (sync de `data/` entre máquinas) às vezes gera cópias de
-    // conflito com sufixo `-safeBackup-NNNN` de arquivos `data/sessions/*.json`.
-    // Uma cópia de conflito de uma sessão JÁ ENCERRADA (cujo arquivo real já foi
-    // removido por `endSession`) não deve ser lida como sessão ativa — isso
-    // bloqueava issues via `is-claimed` indefinidamente.
-    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
-    const record = readJsonSafe<SessionRecord>(join(dir, name));
-    if (!record || !record.sessionId || !record.kind) continue;
+  for (const record of readMergedSessionGroups(repoRoot)) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) continue;
@@ -357,7 +477,7 @@ export function listActiveSessions(
     // pequena no futuro (dentro da tolerância) é jitter normal entre
     // máquinas e conta como ativa normalmente, sem log.
     if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) {
-      warnClockSkew("listActiveSessions", name, ageMs);
+      warnClockSkew("listActiveSessions", `${record.kind}-${record.machineTag}-${record.sessionId}`, ageMs);
       continue;
     }
     if (ageMs > maxAgeMs) continue;
@@ -557,6 +677,246 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
   return true;
 }
 
+// ─── GC de registros encerrados (#6130) ────────────────────────────────────
+
+/**
+ * Janela CONSERVADORA usada quando não é possível confirmar liveness de
+ * processo (sessão registrada por OUTRA máquina, ou sem `pid` gravado) — bem
+ * maior que qualquer heartbeat esperado (`SOFT_STALE_MS` = 90min,
+ * `MAX_SESSION_AGE_MS` = 24h), de propósito: sem sinal de processo, GC por
+ * tempo sozinho é chute (ver "Ressalva importante" do #6130 — um registro
+ * `stale: true` correspondeu a uma sessão VIVA que só parou de bater
+ * heartbeat). 7 dias é a mesma ordem de grandeza do achado ao vivo da issue
+ * (arquivo mais velho encontrado tinha 10 dias) — folgado o bastante pra
+ * nunca remover algo que ainda pode estar em uso, curto o bastante pra
+ * `data/sessions/` não crescer pra sempre.
+ */
+export const GC_CONSERVATIVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Checa se `pid` corresponde a um processo vivo — padrão "kill -0"
+ * (`process.kill(pid, 0)` nunca envia sinal de verdade, só testa
+ * existência; funciona em POSIX e Windows). `ESRCH` (processo não existe)
+ * → `false`; `EPERM` (existe, mas sem permissão de sinalizar) → `true`
+ * (existe é o que importa aqui, não permissão); qualquer outro erro →
+ * `false` por segurança de INTERPRETAÇÃO (nunca finge "vivo" sobre um erro
+ * que não sabemos classificar) — mas ver `decideSessionGc`: um resultado
+ * `false` por si só só remove o registro se TAMBÉM estiver na mesma máquina
+ * E além de `SOFT_STALE_MS`, nunca por PID sozinho.
+ */
+export function defaultIsPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+export interface SessionGcOptions {
+  now?: number;
+  /** Default `GC_CONSERVATIVE_MAX_AGE_MS`. */
+  conservativeMaxAgeMs?: number;
+  /** Injetável pra teste — default `defaultIsPidAlive`. */
+  isPidAlive?: (pid: number) => boolean;
+  /** Default `machineTag()` local. */
+  localMachineTag?: string;
+}
+
+export type SessionGcAction = "removed" | "kept";
+
+export interface SessionGcResult {
+  /** Rótulo legível da identidade avaliada — `{kind}-{machineTag}-{sessionId}`
+   * pro grupo ancorado num arquivo real, ou `orphan-backup:{arquivo}` pra um
+   * backup sem arquivo real correspondente. */
+  identity: string;
+  /** Paths ABSOLUTOS de todo arquivo pertencente a esta identidade (arquivo
+   * real + backups do grupo, ou só o próprio arquivo pra um órfão). */
+  files: string[];
+  action: SessionGcAction;
+  /** Explicação legível da decisão — sempre populada, inclusive pra `"kept"`
+   * (auditabilidade: por que este registro NÃO foi removido). */
+  reason: string;
+}
+
+/**
+ * Árvore de decisão pura (sem I/O) usada tanto pro grupo ancorado num
+ * arquivo real quanto pra um backup órfão avaliado sozinho — ver docstring
+ * de `planSessionGc`.
+ *
+ * **Nunca remove por staleness de heartbeat sozinha** (ressalva do #6130):
+ *   1. Heartbeat mais recente do grupo dentro de `SOFT_STALE_MS` (90min) →
+ *      mantém — claramente ativa.
+ *   2. Heartbeat "no futuro" (clock skew) → mantém — nunca trata como
+ *      abandonado.
+ *   3. Além de `SOFT_STALE_MS`: se ALGUM registro do grupo foi escrito pela
+ *      MÁQUINA LOCAL e carrega `pid`, a liveness do PROCESSO decide —
+ *      `pid` vivo → mantém, INDEPENDENTE de quão velho o heartbeat esteja
+ *      (é exatamente o cenário da ressalva: sessão viva que parou de bater
+ *      heartbeat); `pid` confirmado morto → remove.
+ *   4. Sem sinal de processo verificável (máquina diferente, ou nenhum
+ *      registro do grupo tem `pid`) → só remove além da janela conservadora
+ *      `conservativeMaxAgeMs` (default 7 dias) — chute deliberadamente caro
+ *      de errar pro lado seguro.
+ */
+function decideSessionGc(
+  records: readonly SessionRecord[],
+  now: number,
+  conservativeMaxAgeMs: number,
+  isPidAlive: (pid: number) => boolean,
+  localTag: string,
+): { action: SessionGcAction; reason: string } {
+  let maxHeartbeatMs = -Infinity;
+  for (const r of records) {
+    const hb = Date.parse(r.lastHeartbeat ?? r.startedAt ?? "");
+    if (Number.isFinite(hb) && hb > maxHeartbeatMs) maxHeartbeatMs = hb;
+  }
+  if (!Number.isFinite(maxHeartbeatMs)) {
+    return { action: "kept", reason: "timestamp ilegível em todos os arquivos do grupo — GC nunca remove sem sinal de idade confiável" };
+  }
+
+  const ageMs = now - maxHeartbeatMs;
+  if (ageMs < 0) {
+    return { action: "kept", reason: "heartbeat no futuro (possível clock skew) — nunca tratado como abandonado" };
+  }
+  if (ageMs <= SOFT_STALE_MS) {
+    return { action: "kept", reason: `heartbeat recente (${Math.round(ageMs / 60000)}min, dentro da janela de liveness de 90min) — sessão claramente ativa` };
+  }
+
+  for (const r of records) {
+    if (r.machineTag === localTag && typeof r.pid === "number") {
+      if (isPidAlive(r.pid)) {
+        return {
+          action: "kept",
+          reason:
+            `heartbeat stale (${Math.round(ageMs / 60000)}min) mas processo pid=${r.pid} confirmado VIVO na máquina ` +
+            `local (${localTag}) — nunca remove registro de sessão viva (ressalva #6130)`,
+        };
+      }
+      return {
+        action: "removed",
+        reason: `heartbeat stale (${Math.round(ageMs / 60000)}min) e processo pid=${r.pid} confirmado MORTO na máquina local (${localTag})`,
+      };
+    }
+  }
+
+  if (ageMs > conservativeMaxAgeMs) {
+    return {
+      action: "removed",
+      reason:
+        `heartbeat stale há ${Math.round(ageMs / 86_400_000)} dia(s), sem sinal de processo verificável ` +
+        `(máquina diferente ou sem pid registrado) — além da janela conservadora de ${Math.round(conservativeMaxAgeMs / 86_400_000)} dia(s)`,
+    };
+  }
+  return {
+    action: "kept",
+    reason:
+      `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo verificável e ainda dentro da ` +
+      "janela conservadora — GC não arrisca remover sessão que pode estar viva",
+  };
+}
+
+/**
+ * Plano PURO (sem tocar disco) de GC de `data/sessions/` (#6130) — avalia
+ * todo grupo ancorado num arquivo real (arquivo real + seus backups, ver
+ * `readMergedSessionGroups`) e todo backup ÓRFÃO (sem arquivo real
+ * correspondente — o caso canônico de "sessão encerrada, sobrou o
+ * straggler") via `decideSessionGc`. Arquivo(s) ilegível(is)/corrompido(s)
+ * nunca são removidos (mantém por segurança de interpretação — GC nunca
+ * remove estado que não consegue entender).
+ */
+export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): SessionGcResult[] {
+  const now = opts.now ?? Date.now();
+  const conservativeMaxAgeMs = opts.conservativeMaxAgeMs ?? GC_CONSERVATIVE_MAX_AGE_MS;
+  const isPidAlive = opts.isPidAlive ?? defaultIsPidAlive;
+  const localTag = opts.localMachineTag ?? machineTag();
+
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-"));
+  const backupNames = names.filter((n) => n.includes("-safeBackup-"));
+  const realStems = realNames.map((n) => n.slice(0, -".json".length)).sort((a, b) => b.length - a.length);
+
+  const backupsByRealStem = new Map<string, string[]>();
+  const orphanBackups: string[] = [];
+  for (const backup of backupNames) {
+    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    if (matchStem) {
+      const list = backupsByRealStem.get(matchStem) ?? [];
+      list.push(backup);
+      backupsByRealStem.set(matchStem, list);
+    } else {
+      orphanBackups.push(backup);
+    }
+  }
+
+  const results: SessionGcResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const groupNames = [realName, ...(backupsByRealStem.get(stem) ?? [])];
+    const groupPaths = groupNames.map((n) => join(dir, n));
+    const records = groupNames
+      .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
+      .filter((r): r is SessionRecord => r !== null && !!r.sessionId && !!r.kind);
+    if (records.length === 0) {
+      results.push({
+        identity: stem,
+        files: groupPaths,
+        action: "kept",
+        reason: "arquivo(s) ilegível(is)/corrompido(s) — GC nunca remove estado que não consegue interpretar",
+      });
+      continue;
+    }
+    const decision = decideSessionGc(records, now, conservativeMaxAgeMs, isPidAlive, localTag);
+    results.push({
+      identity: `${records[0]!.kind}-${records[0]!.machineTag}-${records[0]!.sessionId}`,
+      files: groupPaths,
+      ...decision,
+    });
+  }
+
+  for (const backup of orphanBackups) {
+    const path = join(dir, backup);
+    const record = readJsonSafe<SessionRecord>(path);
+    if (!record) {
+      results.push({
+        identity: `orphan-backup:${backup}`,
+        files: [path],
+        action: "kept",
+        reason: "backup órfão ilegível/corrompido — GC nunca remove estado que não consegue interpretar",
+      });
+      continue;
+    }
+    const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag);
+    results.push({ identity: `orphan-backup:${backup}`, files: [path], ...decision });
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planSessionGc` — remove (best-effort, `rmSync` por arquivo, nunca
+ * lança) todo arquivo de todo grupo com `action: "removed"`. Fail-soft por
+ * arquivo: se um `rmSync` individual falhar (ex: I/O transitório do
+ * OneDrive), os demais arquivos do plano continuam sendo processados — a
+ * próxima execução retenta o que sobrou.
+ */
+export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions = {}): SessionGcResult[] {
+  const plan = planSessionGc(repoRoot, opts);
+  for (const entry of plan) {
+    if (entry.action !== "removed") continue;
+    for (const file of entry.files) {
+      try {
+        if (existsSync(file)) rmSync(file);
+      } catch {
+        // Best-effort: próxima execução do GC retenta.
+      }
+    }
+  }
+  return plan;
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 /**
@@ -584,7 +944,7 @@ function requireSessionId(values: Record<string, string>): string {
 
 function main(): void {
   const argv = process.argv.slice(2);
-  const { positional, values } = parseArgs(argv);
+  const { positional, values, flags } = parseArgs(argv);
   const command = positional[0];
   const repoRoot = process.cwd();
 
@@ -665,11 +1025,33 @@ function main(): void {
         if (!ok) process.exitCode = 1;
         break;
       }
+      case "gc": {
+        const maxAgeDaysRaw = values["max-age-days"];
+        const conservativeMaxAgeMs =
+          maxAgeDaysRaw !== undefined ? Number(maxAgeDaysRaw) * 24 * 60 * 60 * 1000 : undefined;
+        if (maxAgeDaysRaw !== undefined && (!Number.isFinite(conservativeMaxAgeMs) || conservativeMaxAgeMs! <= 0)) {
+          throw new Error(`--max-age-days deve ser um número positivo, recebido "${maxAgeDaysRaw}"`);
+        }
+        const opts = conservativeMaxAgeMs !== undefined ? { conservativeMaxAgeMs } : {};
+        const isDryRun = flags.has("dry-run");
+        const plan = isDryRun ? planSessionGc(repoRoot, opts) : garbageCollectSessions(repoRoot, opts);
+        for (const entry of plan) {
+          const verb = isDryRun && entry.action === "removed" ? "would-remove" : entry.action;
+          process.stdout.write(`session-registry: gc ${verb} ${entry.identity} (${entry.files.length} arquivo(s)) — ${entry.reason}\n`);
+        }
+        const removedCount = plan.filter((e) => e.action === "removed").length;
+        process.stdout.write(
+          `session-registry: gc ${isDryRun ? "--dry-run: " : ""}${removedCount}/${plan.length} identidade(s) ${isDryRun ? "seriam removidas" : "removidas"}\n`,
+        );
+        break;
+      }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release|gc> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
-            "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n",
+            "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
+            "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
+            "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );
         process.exitCode = 1;
     }

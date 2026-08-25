@@ -1290,6 +1290,47 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // do editor, mesma disciplina do #5845/#5754/#5704 acima.
     issue: "#5908",
   },
+  {
+    name: "Diaria-Session-Registry-Gc",
+    description:
+      "GC de registros ENCERRADOS de data/sessions/ (arquivo real + backups de conflito do OneDrive) — " +
+      "nunca por staleness de heartbeat sozinha, ver decideSessionGc",
+    steps: [{ key: "gc", script: "scripts/session-registry-gc.ts" }],
+    logPath: "sessions/.gc.log",
+    // 09:55 BRT — fim do cluster matinal de checks/alarmes 09:00-10:20 (ver
+    // grep de `kind: "daily"` neste arquivo), depois do
+    // Diaria-Onboarding-Welcome-Run (09:05) e antes do cluster 10:00-10:20.
+    // Sem urgência de horário (limpeza de estado morto, não algo que o
+    // editor precise ver de manhã) — só evita colidir com o resto.
+    schedule: { kind: "daily", hour: 9, minute: 55 },
+    // Sem guard: `garbageCollectSessions`/`planSessionGc` já são fail-soft
+    // (data/sessions/ ausente → plano vazio, ver scripts/lib/session-registry.ts)
+    // e o wrapper confirma existsSync(DATA_DIR) antes de tentar qualquer coisa.
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6130",
+  },
+  {
+    name: "Diaria-Session-Registry-SafeBackup-Alarm",
+    description:
+      "alarme de cópia de conflito do OneDrive (*-safeBackup-*) presente em data/sessions/ — cria/reusa/fecha " +
+      "issue por arquivo via alarm-issues.ts",
+    steps: [{ key: "alarm", script: "scripts/session-registry-safebackup-alarm.ts" }],
+    logPath: "sessions/.safebackup-alarm.log",
+    // 10:05 BRT — logo depois do GC (09:55, acima), pra alarmar sobre
+    // qualquer backup que o GC não pôde limpar ainda (ex: ancorado a uma
+    // sessão ainda ativa) na mesma janela matinal de checks/alarmes.
+    schedule: { kind: "daily", hour: 10, minute: 5 },
+    // Sem guard — listSafeBackupFiles/o wrapper já tratam data/ ausente
+    // como "nada a checar" (ver scripts/session-registry-safebackup-alarm.ts).
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6130",
+  },
 ];
 
 /**

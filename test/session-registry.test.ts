@@ -25,11 +25,17 @@ import {
   acquireMergeLock,
   releaseMergeLock,
   requireKind,
+  listSafeBackupFiles,
+  mergeSessionRecords,
+  planSessionGc,
+  garbageCollectSessions,
+  GC_CONSERVATIVE_MAX_AGE_MS,
   MAX_SESSION_AGE_MS,
   SOFT_STALE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
   type MergeLockIo,
+  type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
@@ -699,5 +705,312 @@ describe("clock skew — listActiveSessions/acquireMergeLock nunca escondem/roub
     }
     assert.match(stderrOutput, /clock skew/i);
     assert.match(stderrOutput, /sess-a/);
+  });
+});
+
+// ─── #6130 — união de claims de backups do OneDrive (defeito 2 da issue) ───
+
+/** Escreve um arquivo de sessão bruto sob `data/sessions/{name}` — usado pra
+ * simular cópias de conflito do OneDrive (`-safeBackup-NNNN`), que nunca são
+ * produzidas por `registerSession`/`claimIssue` (essas sempre escrevem o
+ * nome "real"). */
+function writeRawSessionFile(root: string, name: string, record: Partial<SessionRecord>): void {
+  mkdirSync(sessionsDir(root), { recursive: true });
+  writeFileSync(join(sessionsDir(root), name), JSON.stringify(record), "utf8");
+}
+
+describe("mergeSessionRecords (#6130)", () => {
+  it("une claimed_issues de todos os registros e usa o de heartbeat mais recente como base", () => {
+    const older: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T14:26:00.000Z",
+      claimed_issues: [1, 2],
+      phase: "implementando",
+    };
+    const newer: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T15:32:00.000Z",
+      claimed_issues: [1, 2, 3],
+      phase: "pausado-edicao",
+    };
+    const merged = mergeSessionRecords([older, newer]);
+    assert.deepEqual(merged.claimed_issues, [1, 2, 3]);
+    assert.equal(merged.lastHeartbeat, "2026-08-18T15:32:00.000Z", "campos não-claim vêm do registro mais recente");
+    assert.equal(merged.phase, "pausado-edicao");
+  });
+
+  it("une um claim que existe SÓ no registro mais antigo (o cenário real do #6130 — claim desaparece do 'atual')", () => {
+    const older: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T15:16:00.000Z",
+      claimed_issues: [5657], // presente só aqui — divergência real medida na issue
+    };
+    const newerSemClaim: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T15:32:00.000Z",
+      claimed_issues: [],
+    };
+    const merged = mergeSessionRecords([older, newerSemClaim]);
+    assert.deepEqual(merged.claimed_issues, [5657], "fail-safe: claim de QUALQUER registro do grupo sobrevive na união");
+  });
+});
+
+describe("listSafeBackupFiles (#6130)", () => {
+  it("diretório ausente → array vazio", () => {
+    assert.deepEqual(listSafeBackupFiles(freshRoot()), []);
+  });
+
+  it("lista só arquivos com sufixo -safeBackup-, ordenados", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "sess-1", { tag: "predator" });
+    writeRawSessionFile(root, "continuo-predator-sess-1-predator-safeBackup-0002.json", { kind: "continuo" });
+    writeRawSessionFile(root, "continuo-predator-sess-1-predator-safeBackup-0001.json", { kind: "continuo" });
+
+    assert.deepEqual(listSafeBackupFiles(root), [
+      "continuo-predator-sess-1-predator-safeBackup-0001.json",
+      "continuo-predator-sess-1-predator-safeBackup-0002.json",
+    ]);
+  });
+});
+
+describe("listActiveSessions / isIssueClaimedByOther — união de claims de backup do MESMO sessionId (#6130)", () => {
+  const NOW = Date.parse("2026-08-18T16:00:00.000Z");
+
+  it("is-claimed enxerga um claim presente SÓ num backup, ausente do arquivo real 'atual'", () => {
+    const root = freshRoot();
+    // Arquivo real — claim 5657 já foi removido/nunca chegou aqui (conflito de sync).
+    registerSession(root, "continuo", "s1", { tag: "predator", startedAt: "2026-08-18T15:00:00.000Z" });
+    claimIssue(root, "continuo", "s1", 5518, "predator", "2026-08-18T15:32:00.000Z");
+    // Backup do MESMO sessionId carrega um claim que o arquivo real não tem.
+    writeRawSessionFile(root, "continuo-predator-s1-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s1",
+      startedAt: "2026-08-18T15:00:00.000Z",
+      lastHeartbeat: "2026-08-18T15:16:00.000Z",
+      claimed_issues: [5518, 5657],
+    });
+
+    const owner = isIssueClaimedByOther(root, 5657, "sess-outra", NOW);
+    assert.ok(owner !== null, "claim que só existe no backup ainda bloqueia outra sessão (fail-safe)");
+    assert.equal(owner.sessionId, "s1");
+    assert.deepEqual(owner.claimed_issues, [5518, 5657]);
+  });
+
+  it("heartbeat mais recente do GRUPO (não só do arquivo real) decide staleness", () => {
+    const root = freshRoot();
+    // Arquivo real com heartbeat velho (>90min) — sozinho já seria stale.
+    const staleHb = new Date(NOW - 3 * 60 * 60 * 1000).toISOString();
+    registerSession(root, "continuo", "s2", { tag: "predator", startedAt: staleHb });
+    heartbeat(root, "continuo", "s2", {}, "predator", staleHb);
+    claimIssue(root, "continuo", "s2", 42, "predator", staleHb);
+    // Backup com heartbeat FRESCO (o sync gravou uma versão mais nova como
+    // cópia de conflito em vez de sobrescrever o arquivo real).
+    const freshHb = new Date(NOW - 5 * 60 * 1000).toISOString();
+    writeRawSessionFile(root, "continuo-predator-s2-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s2",
+      startedAt: staleHb,
+      lastHeartbeat: freshHb,
+      claimed_issues: [42],
+    });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].stale, false, "heartbeat fresco do backup mantém o grupo não-stale");
+    assert.ok(isIssueClaimedByOther(root, 42, "sess-outra", NOW) !== null, "não-stale => claim ainda bloqueia");
+  });
+
+  it("backup ÓRFÃO (sem arquivo real correspondente) continua NUNCA ressuscitando claim (#5427 preservado)", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "continuo-predator-s-encerrada-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s-encerrada",
+      startedAt: new Date(NOW - 60 * 1000).toISOString(),
+      lastHeartbeat: new Date(NOW - 60 * 1000).toISOString(),
+      claimed_issues: [999],
+    });
+
+    assert.deepEqual(listActiveSessions(root, NOW), []);
+    assert.equal(isIssueClaimedByOther(root, 999, "sess-outra", NOW), null, "backup órfão não reivindica nada");
+  });
+});
+
+// ─── #6130 — GC de registros encerrados ────────────────────────────────────
+
+describe("planSessionGc / garbageCollectSessions (#6130)", () => {
+  const NOW = Date.parse("2026-08-25T12:00:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+  const ONE_DAY_MS = 24 * 60 * ONE_MIN_MS;
+
+  it("sessão com heartbeat recente (dentro de SOFT_STALE_MS) é sempre mantida", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s1", { tag: "Neo", startedAt: new Date(NOW - 5 * ONE_MIN_MS).toISOString() });
+
+    const plan = planSessionGc(root, { now: NOW });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept");
+  });
+
+  it("ressalva #6130: heartbeat MUITO stale mas pid confirmado VIVO na máquina local — NUNCA remove", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s-viva", {
+      tag: "helios",
+      pid: 4242,
+      startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(), // além até da janela conservadora
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: (pid) => pid === 4242 });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept", "processo vivo protege o registro mesmo com heartbeat morto há 10 dias");
+    assert.match(plan[0].reason, /VIVO/);
+  });
+
+  it("mesma máquina, pid confirmado MORTO, heartbeat além de SOFT_STALE_MS — remove (não precisa esperar a janela conservadora)", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s-morta", {
+      tag: "helios",
+      pid: 9999,
+      startedAt: new Date(NOW - 2 * 60 * ONE_MIN_MS).toISOString(), // 2h — stale mas bem aquém de 7 dias
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "removed");
+    assert.match(plan[0].reason, /MORTO/);
+  });
+
+  it("máquina DIFERENTE (sem como checar pid) — mantém até a janela conservadora, remove depois", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "s-remota", {
+      tag: "helios",
+      pid: 111,
+      startedAt: new Date(NOW - 2 * ONE_DAY_MS).toISOString(), // stale, mas < 7 dias
+    });
+
+    const keptPlan = planSessionGc(root, { now: NOW, localMachineTag: "Neo", isPidAlive: () => true });
+    assert.equal(keptPlan[0].action, "kept", "sem sinal de processo verificável NESTA máquina, ainda dentro da janela conservadora");
+
+    const removedPlan = planSessionGc(root, {
+      now: NOW + 6 * ONE_DAY_MS, // agora 8 dias de idade total — além dos 7 dias default
+      localMachineTag: "Neo",
+      isPidAlive: () => true,
+    });
+    assert.equal(removedPlan[0].action, "removed", "além da janela conservadora, sem sinal de processo — GC remove");
+  });
+
+  it("sem pid registrado (registro antigo) — mesmo tratamento de 'sem sinal verificável'", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s-sem-pid", { tag: "Neo", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "Neo", isPidAlive: () => true });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "removed", "10 dias > janela conservadora de 7 dias, sem pid pra checar");
+  });
+
+  it("respeita conservativeMaxAgeMs customizado", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s-custom", { tag: "Neo", startedAt: new Date(NOW - 3 * ONE_DAY_MS).toISOString() });
+
+    const kept = planSessionGc(root, { now: NOW, conservativeMaxAgeMs: 5 * ONE_DAY_MS });
+    assert.equal(kept[0].action, "kept");
+    const removed = planSessionGc(root, { now: NOW, conservativeMaxAgeMs: 2 * ONE_DAY_MS });
+    assert.equal(removed[0].action, "removed");
+  });
+
+  it("planSessionGc é PURO — nunca toca disco, mesmo quando decide 'removed'", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s-old", { tag: "Neo", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
+    const path = sessionFilePath(root, "develop", "Neo", "s-old");
+
+    const plan = planSessionGc(root, { now: NOW });
+    assert.equal(plan[0].action, "removed");
+    assert.ok(existsSync(path), "plan sozinho nunca remove nada do disco");
+  });
+
+  it("garbageCollectSessions aplica a remoção de fato (best-effort rmSync)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s-old", { tag: "Neo", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
+    const path = sessionFilePath(root, "develop", "Neo", "s-old");
+    assert.ok(existsSync(path));
+
+    const plan = garbageCollectSessions(root, { now: NOW });
+    assert.equal(plan[0].action, "removed");
+    assert.equal(existsSync(path), false);
+  });
+
+  it("garbageCollectSessions remove o GRUPO inteiro (real + backups) junto", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s-grupo", { tag: "predator", startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString() });
+    const realPath = sessionFilePath(root, "continuo", "predator", "s-grupo");
+    writeRawSessionFile(root, "continuo-predator-s-grupo-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s-grupo",
+      startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
+      lastHeartbeat: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
+      claimed_issues: [],
+    });
+    const backupPath = join(sessionsDir(root), "continuo-predator-s-grupo-predator-safeBackup-0001.json");
+    assert.ok(existsSync(realPath));
+    assert.ok(existsSync(backupPath));
+
+    const plan = garbageCollectSessions(root, { now: NOW });
+    assert.equal(plan.length, 1, "real + backup avaliados como 1 grupo/1 decisão");
+    assert.equal(plan[0].action, "removed");
+    assert.equal(existsSync(realPath), false);
+    assert.equal(existsSync(backupPath), false, "backup do grupo removido junto");
+  });
+
+  it("backup ÓRFÃO velho (sem arquivo real — sessão já encerrada) é removido pelo GC — é o caso canônico do item 1", () => {
+    const root = freshRoot();
+    const backupPath = join(sessionsDir(root), "develop-Neo-s-encerrada-Neo-safeBackup-0001.json");
+    writeRawSessionFile(root, "develop-Neo-s-encerrada-Neo-safeBackup-0001.json", {
+      kind: "develop",
+      machineTag: "Neo",
+      sessionId: "s-encerrada",
+      startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
+      lastHeartbeat: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
+      claimed_issues: [],
+    });
+
+    const plan = garbageCollectSessions(root, { now: NOW, localMachineTag: "Neo" });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].identity, "orphan-backup:develop-Neo-s-encerrada-Neo-safeBackup-0001.json");
+    assert.equal(plan[0].action, "removed");
+    assert.equal(existsSync(backupPath), false);
+  });
+
+  it("arquivo ilegível/corrompido nunca é removido pelo GC", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "develop-Neo-corrompido.json"), "{not valid json", "utf8");
+
+    const plan = planSessionGc(root, { now: NOW });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept");
+    assert.match(plan[0].reason, /ilegível/);
+  });
+
+  it("diretório ausente → plano vazio, nunca lança", () => {
+    assert.deepEqual(planSessionGc(freshRoot(), { now: NOW }), []);
+  });
+
+  it("GC_CONSERVATIVE_MAX_AGE_MS é o default quando conservativeMaxAgeMs não é passado (7 dias)", () => {
+    assert.equal(GC_CONSERVATIVE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000);
   });
 });
