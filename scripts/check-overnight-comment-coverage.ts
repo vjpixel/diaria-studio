@@ -32,6 +32,7 @@ import {
   checkLabelCoverage,
   deriveCandidateIssues,
   deriveLabelCandidates,
+  sessionKindFromPlanPath,
   type CandidateIssue,
   type IssueCommentLike,
   type LabelCandidateIssue,
@@ -186,7 +187,10 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const verdict = checkCoverage(candidates, commentsByIssue);
+  // #6115: a sessão chamadora vem do path do plan.json — comentário de
+  // cobertura postado por /diaria-develop diz "develop", não "overnight".
+  const kind = sessionKindFromPlanPath(planPath);
+  const verdict = checkCoverage(candidates, commentsByIssue, kind ?? undefined);
 
   if (verdict.unresolved.length > 0) {
     const list = verdict.unresolved.map((c) => `#${c.number}`).join(", ");

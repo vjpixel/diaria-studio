@@ -147,13 +147,50 @@ export interface IssueCommentLike {
 }
 
 /**
- * Pure: `true` se ao menos 1 comentário contém "overnight" (case-
- * insensitive) — o sinal de "esta issue já recebeu o comentário mandatado
- * pelo SKILL.md/#5777". Ver docblock do módulo para o porquê de não filtrar
- * por timestamp/autor.
+ * Sessão chamadora do gate (#6115). `overnight` | `develop` | `continuo` —
+ * as 3 skills que hoje reusam este gate. `undefined` = agnóstico (aceita
+ * qualquer um dos tokens, comportamento pré-#6115).
  */
-export function hasOvernightComment(comments: IssueCommentLike[]): boolean {
-  return comments.some((c) => typeof c.body === "string" && /overnight/i.test(c.body));
+export type CoverageSessionKind = "overnight" | "develop" | "continuo";
+
+const KIND_TOKENS: Readonly<Record<CoverageSessionKind, RegExp>> = {
+  overnight: /overnight/i,
+  develop: /(diaria-)?develop/i,
+  continuo: /(diaria-)?continuo/i,
+};
+
+/**
+ * Pure: `true` se ao menos 1 comentário contém o token da sessão chamadora
+ * (case-insensitive) — o sinal de "esta issue já recebeu o comentário
+ * mandatado pelo SKILL.md/#5777". Ver docblock do módulo para o porquê de
+ * não filtrar por timestamp/autor.
+ *
+ * #6115: o critério original exigia literalmente "overnight" em TODOS os
+ * casos — falso positivo em toda sessão `/diaria-develop`, cujos comentários
+ * dizem "sessão /diaria-develop..." e nunca contêm "overnight". Agora o
+ * chamador informa a sessão (`kind`) e o token correspondente é aceito; sem
+ * `kind`, qualquer dos 3 tokens cobre (comportamento legado preservado).
+ */
+export function hasOvernightComment(
+  comments: IssueCommentLike[],
+  kind?: CoverageSessionKind,
+): boolean {
+  const token = kind ? KIND_TOKENS[kind] : /(overnight|(diaria-)?develop|(diaria-)?continuo)/i;
+  return comments.some((c) => typeof c.body === "string" && token.test(c.body));
+}
+
+/**
+ * Pure: deriva a sessão chamadora do path do `plan.json` (#6115) —
+ * `data/overnight/{AAMMDD}/plan.json` → `"overnight"`,
+ * `data/develop/...` → `"develop"`, `data/continuo/...` → `"continuo"`.
+ * Path desconhecido → `null` (chamador cai no modo agnóstico de
+ * `hasOvernightComment`). Nunca lança.
+ */
+export function sessionKindFromPlanPath(planPath: string): CoverageSessionKind | null {
+  if (/\/develop(\/|\.)/.test(planPath) || planPath.includes("data/develop")) return "develop";
+  if (/\/continuo(\/|\.)/.test(planPath) || planPath.includes("data/continuo")) return "continuo";
+  if (/\/overnight(\/|\.)/.test(planPath) || planPath.includes("data/overnight")) return "overnight";
+  return null;
 }
 
 export type CoverageVerdictStatus = "ok" | "missing" | "not-evaluated";
@@ -181,6 +218,7 @@ export interface CoverageVerdict {
 export function checkCoverage(
   candidates: CandidateIssue[],
   commentsByIssue: Map<number, IssueCommentLike[] | null>,
+  kind?: CoverageSessionKind,
 ): CoverageVerdict {
   if (candidates.length === 0) return { status: "not-evaluated", missing: [], unresolved: [] };
 
@@ -192,7 +230,7 @@ export function checkCoverage(
       unresolved.push(candidate);
       continue;
     }
-    if (!hasOvernightComment(comments)) {
+    if (!hasOvernightComment(comments, kind)) {
       missing.push(candidate);
     }
   }

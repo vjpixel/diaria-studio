@@ -17,6 +17,7 @@ import {
   hasOvernightComment,
   isRefsNotClosesBody,
   requiredLabelForMotivo,
+  sessionKindFromPlanPath,
   type CandidateIssue,
   type LabelCandidateIssue,
   type PlanIssueLike,
@@ -67,6 +68,46 @@ describe("hasOvernightComment", () => {
 
   it("array vazio → false", () => {
     assert.equal(hasOvernightComment([]), false);
+  });
+
+  // #6115 — bug reproduzido ao vivo na sessão /diaria-develop 260825: comentário
+  // de cobertura legítimo diz "sessão /diaria-develop..." e o gate exigia
+  // literalmente "overnight", acusando falso positivo.
+  it("#6115: kind=develop aceita comentário que só contém '/diaria-develop' (bug ao vivo)", () => {
+    const comments = [
+      { body: "Pulada nesta rodada: investigação registrada. — sessão /diaria-develop 260825" },
+    ];
+    assert.equal(hasOvernightComment(comments, "develop"), true);
+  });
+
+  it("#6115: kind=develop NÃO aceita comentário sem nenhum token de sessão", () => {
+    assert.equal(hasOvernightComment([{ body: "comentário do editor" }], "develop"), false);
+  });
+
+  it("#6115: kind=overnight preserva comportamento original (exige 'overnight')", () => {
+    const comments = [{ body: "sessão /diaria-develop cobre esta issue" }];
+    assert.equal(hasOvernightComment(comments, "overnight"), false);
+  });
+
+  it("#6115: sem kind (agnóstico) aceita qualquer token das 3 skills", () => {
+    assert.equal(hasOvernightComment([{ body: "— continuo 260825" }]), true);
+    assert.equal(hasOvernightComment([{ body: "Rodada Overnight: pulada" }]), true);
+    assert.equal(hasOvernightComment([{ body: "/diaria-develop" }]), true);
+    assert.equal(hasOvernightComment([{ body: "nada aqui" }]), false);
+  });
+});
+
+// ─── sessionKindFromPlanPath (#6115) ────────────────────────────────────────
+
+describe("sessionKindFromPlanPath", () => {
+  it("deriva overnight/develop/continuo do path do plan.json", () => {
+    assert.equal(sessionKindFromPlanPath("data/overnight/260819/plan.json"), "overnight");
+    assert.equal(sessionKindFromPlanPath("data/develop/260825/plan.json"), "develop");
+    assert.equal(sessionKindFromPlanPath("/abs/path/data/continuo/260824/plan.json"), "continuo");
+  });
+
+  it("path desconhecido → null (modo agnóstico)", () => {
+    assert.equal(sessionKindFromPlanPath("data/outro-lugar/plan.json"), null);
   });
 });
 
