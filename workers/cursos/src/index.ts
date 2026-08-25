@@ -75,6 +75,30 @@ export interface Env {
   BEEHIIV_PUBLICATION_ID?: string;
   BEEHIIV_API_URL?: string;
   BEEHIIV_NAME_FIELD?: string;
+  /**
+   * #6048 (Fase 2/2, migração Beehiiv → Kit, #461/#463): seleção de backend
+   * do cadastro inline — mesmo padrão de `workers/poll/src/index.ts` (Fase
+   * 1, #6082). Ausente/qualquer valor != "kit" → Beehiiv (default,
+   * comportamento de hoje). Nenhum dispatch externo lê esta var ainda —
+   * switchover manual do editor.
+   */
+  SUBSCRIBE_BACKEND?: string;
+  /** Secret — `wrangler secret put KIT_API_KEY`. Sem ela, `subscribeToKit`
+   * retorna `not_configured` mesmo com `SUBSCRIBE_BACKEND === "kit"` (mesmo
+   * padrão de `BEEHIIV_API_KEY` ausente). */
+  KIT_API_KEY?: string;
+  /** Override só pra teste (mock server local) — default `https://api.kit.com/v4`. */
+  KIT_API_URL?: string;
+  /** Nome do custom field Kit onde gravar o nome capturado (mesmo papel de
+   * `BEEHIIV_NAME_FIELD`) — nenhum criado em produção ainda, degrade gracioso. */
+  KIT_NAME_FIELD?: string;
+  /** Nomes dos custom fields Kit onde gravar UTM/referring-site (Kit não tem
+   * atribuição nativa — achado ao vivo #6048) — nenhum criado em produção
+   * ainda, degrade gracioso (fields simplesmente não vão no corpo). */
+  KIT_UTM_SOURCE_FIELD?: string;
+  KIT_UTM_MEDIUM_FIELD?: string;
+  KIT_UTM_CAMPAIGN_FIELD?: string;
+  KIT_REFERRING_SITE_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de
