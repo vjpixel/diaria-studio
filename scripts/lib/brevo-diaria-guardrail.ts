@@ -238,6 +238,18 @@ export interface RolloutGuardrailState {
    * `sentAfter` — ver "Janela de agregação pós-unpause" no header do módulo pro racional
    * completo (achado de self-review pós-implementação do item 9 da #4476). */
   unpaused_at: string | null;
+  /**
+   * #6146 — ids de campanha `suspended` que já geraram alarme. Dedup puro:
+   * o guardrail roda a cada 4h e uma campanha suspensa fica suspensa pra
+   * sempre (a Brevo nunca a "des-suspende" sozinha), então sem isto o
+   * mesmo incidente viraria um e-mail a cada 4 horas, indefinidamente.
+   *
+   * Deliberadamente SEPARADO do latch `rollout_paused`: suspensão é um
+   * problema de cota/plataforma, não uma quebra de entregabilidade — pausar
+   * o backfill de contatos não corrige nem mitiga, só esconde o sintoma
+   * atrás de um segundo estado que o editor teria de despausar à mão.
+   */
+  alarmed_suspended_campaign_ids: number[];
 }
 
 export function emptyRolloutGuardrailState(): RolloutGuardrailState {
@@ -248,6 +260,25 @@ export function emptyRolloutGuardrailState(): RolloutGuardrailState {
     last_checked_at: null,
     last_campaign_count: 0,
     unpaused_at: null,
+    alarmed_suspended_campaign_ids: [],
+  };
+}
+
+/**
+ * Pura — quais campanhas suspensas ainda não foram alarmadas. Devolve
+ * também o próximo estado, pra o call site persistir só depois de alarmar
+ * (nunca antes: gravar primeiro e falhar o e-mail depois perderia o alarme
+ * de vez, já que a 2ª rodada consideraria o id "já alarmado").
+ */
+export function selectUnalarmedSuspended(
+  state: RolloutGuardrailState,
+  suspendedIds: number[],
+): { fresh: number[]; next: RolloutGuardrailState } {
+  const known = new Set(state.alarmed_suspended_campaign_ids);
+  const fresh = suspendedIds.filter((id) => !known.has(id));
+  return {
+    fresh,
+    next: { ...state, alarmed_suspended_campaign_ids: [...state.alarmed_suspended_campaign_ids, ...fresh] },
   };
 }
 
@@ -347,6 +378,13 @@ export function readRolloutGuardrailState(path: string = DEFAULT_GUARDRAIL_STATE
       // Ausente em estado gravado antes deste campo existir → null, mesmo
       // efeito de "nunca despausado" (sem corte na agregação) — fail-soft.
       unpaused_at: typeof raw.unpaused_at === "string" ? raw.unpaused_at : null,
+      // #6146: ausente em estado gravado antes deste campo existir → lista
+      // vazia. Consequência assumida: numa 1ª rodada após o upgrade, uma
+      // campanha suspensa preexistente alarma uma vez. Alarmar de novo é
+      // estritamente melhor que engolir um alarme por causa de migração.
+      alarmed_suspended_campaign_ids: Array.isArray(raw.alarmed_suspended_campaign_ids)
+        ? raw.alarmed_suspended_campaign_ids.filter((v: unknown) => typeof v === "number")
+        : [],
     };
   } catch {
     return emptyRolloutGuardrailState();

@@ -187,6 +187,7 @@ test("applyGuardrailCheck — LATCH: já pausado + resultado SAUDÁVEL na checag
     last_checked_at: "2026-08-05T09:00:00.000Z",
     last_campaign_count: 1,
     unpaused_at: null,
+    alarmed_suspended_campaign_ids: [],
   };
   const healthyEvaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign()]); // tudo verde agora
   const next = applyGuardrailCheck(pausedState, healthyEvaluation, NOW);
@@ -204,6 +205,7 @@ test("unpauseRollout — limpa o latch explicitamente (única forma de despausar
     last_checked_at: "2026-08-05T09:00:00.000Z",
     last_campaign_count: 1,
     unpaused_at: null,
+    alarmed_suspended_campaign_ids: [],
   };
   const next = unpauseRollout(pausedState, NOW);
   assert.equal(next.rollout_paused, false);
@@ -220,6 +222,7 @@ test("unpauseRollout — grava unpaused_at (achado de self-review: sem isso o pr
     last_checked_at: "2026-08-05T09:00:00.000Z",
     last_campaign_count: 1,
     unpaused_at: null,
+    alarmed_suspended_campaign_ids: [],
   };
   const next = unpauseRollout(pausedState, NOW);
   assert.equal(next.unpaused_at, NOW.toISOString());
@@ -317,6 +320,9 @@ test("readRolloutGuardrailState/writeRolloutGuardrailState — round-trip", () =
       last_checked_at: "2026-08-06T09:00:00.000Z",
       last_campaign_count: 3,
       unpaused_at: "2026-08-04T09:00:00.000Z",
+      // #6146 — round-trip do estado COMPLETO; campo novo entra aqui pra o
+      // teste continuar provando que nada se perde na ida e volta.
+      alarmed_suspended_campaign_ids: [29],
     };
     writeRolloutGuardrailState(state, path);
     const read = readRolloutGuardrailState(path);

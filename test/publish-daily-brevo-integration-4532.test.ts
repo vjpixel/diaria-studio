@@ -185,11 +185,22 @@ interface RouterOpts {
   /** #4532 (achado HIGH): força a página offset=0 do endpoint de listagem em
    * massa a responder com este status em vez de 200 (simula 404/5xx). */
   listContactsStatus?: number;
+  /** #6146 — consumo transacional do dia devolvido por
+   * `/v3/smtp/statistics/aggregatedReport`. Default 0 ("conta zerada"), que
+   * é o dia normal e mantém estes casos testando o que sempre testaram. */
+  transactionalRequestsToday?: number;
 }
 
 function installRouter(opts: RouterOpts): void {
   calls = [];
-  const { totalSubscribers, attributesExist = true, contactsPages, putStatus = 204, listContactsStatus } = opts;
+  const {
+    totalSubscribers,
+    attributesExist = true,
+    contactsPages,
+    putStatus = 204,
+    listContactsStatus,
+    transactionalRequestsToday = 0,
+  } = opts;
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -234,6 +245,13 @@ function installRouter(opts: RouterOpts): void {
       if (method === "POST" && url.pathname === "/v3/emailCampaigns") {
         return jsonRes(201, { id: 999 });
       }
+      // #6146 — guard de cota da CONTA (balde único transacional+marketing).
+      if (method === "GET" && url.pathname === "/v3/smtp/statistics/aggregatedReport") {
+        return jsonRes(200, { requests: transactionalRequestsToday });
+      }
+      if (method === "GET" && url.pathname === "/v3/account") {
+        return jsonRes(200, { plan: [{ type: "free", credits: 0, creditsType: "sendLimit" }] });
+      }
     }
     if (url.hostname === "api.cloudflare.com" && method === "PUT" && url.pathname.includes("/storage/kv/namespaces/")) {
       return jsonRes(200, { success: true, result: {} });
@@ -275,6 +293,49 @@ afterEach(() => {
 });
 
 describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta (#4532)", () => {
+  it("#6146: cota da conta estourada NÃO bloqueia a Etapa 5 — rascunho é criado, com AVISO (o gate duro é a Etapa 6)", async () => {
+    const root = mkTmpRoot();
+    const stderr: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as NodeJS.WriteStream).write = ((chunk: string | Uint8Array) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      writePlatformConfig(root, { daily_send_cap: 300 });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      // Cenário 260825: os 300/dia já consumidos por transacional. Criar o
+      // rascunho não gasta cota nenhuma e o dia do envio ainda nem existe
+      // aqui — barrar seria punir o caso comum em que a Etapa 5 roda antes
+      // da virada UTC e o envio cai num balde novo.
+      installRouter({
+        totalSubscribers: 10,
+        contactsPages: generateContactsPages(10),
+        transactionalRequestsToday: 300,
+      });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      process.exitCode = undefined;
+
+      await main(root);
+
+      assert.equal(process.exitCode, undefined, "cota da conta não pode abortar a Etapa 5");
+      assert.ok(
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        "o rascunho deveria ter sido criado assim mesmo",
+      );
+      const out = stderr.join("");
+      assert.match(out, /AVISO: se esta campanha fosse enviada HOJE, não caberia/);
+      assert.match(out, /Etapa 6/, "o aviso precisa apontar onde está o gate real");
+    } finally {
+      (process.stderr as NodeJS.WriteStream).write = originalWrite;
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("#4651 (pr-test-analyzer, achado M): checkDailySendCap falha (lista acima do cap) → aborta com exitCode 3 via main() real, sem enumerar a lista nem criar a campanha", async () => {
     const root = mkTmpRoot();
     try {

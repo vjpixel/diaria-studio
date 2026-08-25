@@ -364,10 +364,11 @@ Exit codes:
 | `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
 | `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
+| `5` | **Cota da CONTA Brevo insuficiente pro tamanho da campanha (#6146).** O plano free tem 300 e-mails/dia num balde ÚNICO (transacional + marketing) — outro processo pode ter gastado a cota mesmo com a FILA folgada (`daily_send_cap`). Também cobre falha de leitura da cota, que degrada pra "não agenda". | Warn, **não bloqueia** o resto do Stage 6 (mesmo fail-soft dos exits 3/4). **Mas comunicar ao editor com destaque, não como warn de rodapé:** foi exatamente este cenário que derrubou o canal por ~12h em silêncio em 260825 — campanha criada, agendada, e a Brevo marcou `suspended` com `sent: 0`. **NÃO sugerir retry cego** (diferente do 3/4): repetir o comando falha igual enquanto a cota não virar. O guard mede o dia UTC do ENVIO; se o envio é amanhã, a Brevo nem aceita consultar aquele dia (HTTP 400) e o veredito passa de graça — nesse caso o sinal útil é o aviso de TRANSBORDO no stderr. Conferir o consumo antes de qualquer retry (`scripts/lib/brevo-account-quota.ts`). |
 
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-  --level {info se exit 0, warn se 3/4, info se 2} \
+  --level {info se exit 0, warn se 3/4/5, info se 2} \
   --message "brevo-diaria stage6 schedule: exit {code}" \
   --details '{json de saída do script}'
 ```
@@ -647,6 +648,6 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 
 **#4924:** se 6b-9 imprimiu algo, incluir `⚠ Hubs temáticos defasados` no resumo, após a linha do Relatório. Stdout vazio → omitir a seção (sem afirmar "hubs em dia").
 
-**#5772:** se `_internal/brevo-diaria-published.json` existia em §6a, incluir a linha `Brevo diária: agendado para {scheduled_at} ✓` (exit 0 de §6d-brevo) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4) no resumo. Se o arquivo nunca existiu (canal pulado/falhou na Etapa 5), omitir a linha por completo — não afirmar "Brevo diária: pulado" quando o canal nunca fez parte desta edição.
+**#5772:** se `_internal/brevo-diaria-published.json` existia em §6a, incluir a linha `Brevo diária: agendado para {scheduled_at} ✓` (exit 0 de §6d-brevo) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5 — no caso do 5, o `reason` já diz que é cota da conta esgotada, #6146) no resumo. Se o arquivo nunca existiu (canal pulado/falhou na Etapa 5), omitir a linha por completo — não afirmar "Brevo diária: pulado" quando o canal nunca fez parte desta edição.
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e metricas finais.

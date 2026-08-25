@@ -27,6 +27,21 @@
  * processo contínuo (o backfill) — não há "1 envio" pra nomear, e reagir mais
  * rápido a bounce/spam é estritamente mais seguro (nunca menos) que esperar.
  *
+ * ## Alarme de campanha suspensa (#6146)
+
+ * Mecanismo SEPARADO do circuit breaker acima, no mesmo script só porque
+ * já roda de 4 em 4h contra esta conta. Detecta campanha em
+ * `status=suspended` e manda e-mail — uma vez por id (`selectUnalarmedSuspended`).
+ *
+ * Existe porque `fetchSentCampaigns` só lista `status=sent`: em 25/08/2026
+ * este guardrail rodou 6× reportando `rollout OK` enquanto a campanha da
+ * edição estava suspensa e o canal, caído. Ele era estruturalmente incapaz
+ * de ver o problema.
+ *
+ * NÃO mexe no latch `rollout_paused`: suspensão é cota/plataforma, não
+ * entregabilidade — pausar o backfill não corrige nada e ainda criaria um
+ * segundo estado pro editor despausar à mão.
+ *
  * ## Latch — não despausa sozinho
  *
  * Uma vez pausado, o estado permanece pausado até `--unpause` explícito
@@ -65,7 +80,9 @@ import {
   writeRolloutGuardrailState,
   applyGuardrailCheck,
   unpauseRollout,
+  selectUnalarmedSuspended,
   type CampaignGuardrailInput,
+  type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +117,90 @@ async function fetchSentCampaigns(apiKey: string): Promise<BrevoCampaignListItem
   return (body as BrevoCampaignsListResponse)?.campaigns ?? [];
 }
 
+interface SuspendedCampaign {
+  id: number;
+  name: string;
+  scheduledAt?: string | null;
+}
+
+/**
+ * I/O — campanhas em `suspended` (#6146).
+ *
+ * `fetchSentCampaigns` acima só enxerga `status=sent`, e é por isso que a
+ * suspensão da edição 260825 passou ~12h sem nenhum alarme: uma campanha
+ * suspensa NUNCA entra naquela lista, então o guardrail rodou 6 vezes no dia
+ * reportando "rollout OK" enquanto o canal estava caído. Uma campanha só vai
+ * pra `suspended` por ação da plataforma (falta de cota, revisão antifraude)
+ * ou do editor no painel — em nenhum dos casos ela se recupera sozinha.
+ */
+async function fetchSuspendedCampaigns(
+  apiKey: string,
+  log: (msg: string) => void,
+): Promise<SuspendedCampaign[]> {
+  const { body } = await brevoGet(apiKey, "/emailCampaigns?status=suspended&limit=50&sort=desc");
+  const campaigns = (body as { campaigns?: SuspendedCampaign[] })?.campaigns;
+  // `?? []` aqui seria o bug do #6146 de novo, um nível acima: "não consegui
+  // ler" viraria "não há campanha suspensa", e o alarme nunca dispararia.
+  // `brevoGet` devolve `{status: 404, body: {}}` SEM lançar, então um 404 ou
+  // uma troca de contrato chegariam exatamente assim. Leitura ilegível é
+  // erro — mesma regra de `fetchTransactionalRequests`.
+  if (!Array.isArray(campaigns)) {
+    throw new Error(
+      "GET /emailCampaigns?status=suspended não devolveu `campaigns` como array " +
+        `(recebido: ${JSON.stringify(campaigns)}) — lista de campanhas suspensas ilegível.`,
+    );
+  }
+  const usable = campaigns.filter((c) => typeof c?.id === "number");
+  if (usable.length !== campaigns.length) {
+    log(
+      `AVISO: ${campaigns.length - usable.length} entrada(s) de campanha suspensa sem \`id\` numérico, ` +
+        "ignorada(s) — resposta parcialmente malformada da Brevo.",
+    );
+  }
+  return usable;
+}
+
+/**
+ * Alarme de campanha suspensa. Separado do alarme de circuit breaker
+ * (que reporta entregabilidade) porque a ação do editor é outra: aqui não
+ * há o que despausar, há uma campanha que não saiu e uma cota a investigar.
+ */
+async function alarmSuspendedCampaigns(
+  fresh: number[],
+  all: SuspendedCampaign[],
+  log: (msg: string) => void,
+): Promise<void> {
+  const byId = new Map(all.map((c) => [c.id, c]));
+  const subject = `[diar.ia.br] Campanha Brevo SUSPENSA — ${fresh.length} campanha(s) não enviada(s)`;
+  const body = [
+    "A Brevo marcou como `suspended` campanha(s) do canal diária que estavam agendadas.",
+    "Campanha suspensa NÃO envia e NÃO se recupera sozinha:",
+    "",
+    ...fresh.map((id) => {
+      const c = byId.get(id);
+      return `- #${id} "${c?.name ?? "(sem nome)"}" (agendada para: ${c?.scheduledAt ?? "?"})`;
+    }),
+    "",
+    "A Brevo suspende por mais de um motivo — cota da conta esgotada, revisão",
+    "antifraude, ou ação manual no painel. Checar o painel se o consumo abaixo",
+    "estiver normal.",
+    "",
+    "Hipótese a descartar primeiro (foi a causa em 260825, #6146): o plano free tem",
+    "UM balde de 300 e-mails/dia compartilhado entre transacional e marketing — um",
+    "pico de transacional consome a cota e a campanha morre suspensa no horário.",
+    "",
+    "Investigar o consumo do dia:",
+    "",
+    "  curl -H \"api-key: $BREVO_DIARIA_API_KEY\" \\",
+    "    'https://api.brevo.com/v3/smtp/statistics/aggregatedReport?startDate=AAAA-MM-DD&endDate=AAAA-MM-DD'",
+    "",
+    `(alarme automático — checagem rodou em ${new Date().toISOString()})`,
+  ].join("\n");
+  const to = resolveEditorEmail(PLATFORM_CONFIG_PATH);
+  await sendGmailMessage(to, subject, body);
+  log(`campanha(s) suspensa(s) ${fresh.join(", ")} — e-mail de alarme enviado pra ${to}.`);
+}
+
 async function fetchCampaignStats(apiKey: string, id: number): Promise<CampaignGuardrailInput | null> {
   const { status, body } = await brevoGet(apiKey, `/emailCampaigns/${id}?statistics=globalStats`);
   if (status === 404) return null;
@@ -118,6 +219,50 @@ async function fetchCampaignStats(apiKey: string, id: number): Promise<CampaignG
     hardBounces: gs.hardBounces ?? 0,
     softBounces: gs.softBounces ?? 0,
   };
+}
+
+export interface SuspendedCampaignsDeps {
+  fetchSuspended: () => Promise<SuspendedCampaign[]>;
+  readState: () => RolloutGuardrailState;
+  writeState: (state: RolloutGuardrailState) => void;
+  alarm: (fresh: number[], all: SuspendedCampaign[]) => Promise<void>;
+  isDryRun: boolean;
+  log: (msg: string) => void;
+}
+
+/**
+ * Detecta e alarma campanhas suspensas (#6146). Extraída de `main()` com
+ * deps injetáveis porque a ordem aqui é o comportamento inteiro — e ordem
+ * errada custa um alarme perdido, que é o bug original.
+ *
+ * Regra que não pode mudar: persistir o dedup SÓ depois do e-mail sair.
+ * Gravar antes e falhar o envio marcaria o id como "já alarmado" e a
+ * campanha suspensa nunca mais geraria alarme. Alarme repetido é barato;
+ * alarme engolido é o #6146 se repetindo.
+ */
+export async function handleSuspendedCampaigns(deps: SuspendedCampaignsDeps): Promise<void> {
+  const suspended = await deps.fetchSuspended();
+  if (suspended.length === 0) return;
+
+  const { fresh, next } = selectUnalarmedSuspended(
+    deps.readState(),
+    suspended.map((c) => c.id),
+  );
+  if (fresh.length === 0) {
+    deps.log(`${suspended.length} campanha(s) suspensa(s) na conta — todas já alarmadas, sem novo e-mail.`);
+    return;
+  }
+  if (deps.isDryRun) {
+    deps.log(`--dry-run: alarmaria ${fresh.length} campanha(s) suspensa(s) nova(s): ${fresh.join(", ")} — NÃO persiste.`);
+    return;
+  }
+  try {
+    await deps.alarm(fresh, suspended);
+    deps.writeState(next);
+  } catch (e) {
+    // Não persiste o dedup — a próxima rodada (4h) tenta de novo.
+    deps.log(`AVISO: falha ao alarmar campanha(s) suspensa(s) ${fresh.join(", ")}: ${(e as Error).message}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -150,6 +295,18 @@ async function main(): Promise<void> {
     log(`ERRO: ${brevoDiaria!.api_key_env} não definido no ambiente.`);
     process.exit(2);
   }
+
+  // #6146: ANTES da avaliação de entregabilidade, e independente dela — o
+  // fluxo abaixo tem early-returns (`evaluation === null`) que pulariam esta
+  // checagem se ela viesse depois.
+  await handleSuspendedCampaigns({
+    fetchSuspended: () => fetchSuspendedCampaigns(apiKey!, log),
+    readState: () => readRolloutGuardrailState(),
+    writeState: (st) => writeRolloutGuardrailState(st),
+    alarm: (fresh, all) => alarmSuspendedCampaigns(fresh, all, log),
+    isDryRun,
+    log,
+  });
 
   const campaignList = await fetchSentCampaigns(apiKey!);
   const stats: CampaignGuardrailInput[] = [];

@@ -32,6 +32,12 @@ function makeDeps(overrides: Partial<ScheduleDailyBrevoDeps> = {}): ScheduleDail
     writePublished: overrides.writePublished ?? (() => {}),
     putSchedule: overrides.putSchedule ?? (async () => ({})),
     getCampaign: overrides.getCampaign ?? (async () => ({ status: "queued", scheduledAt: SCHEDULED_AT })),
+    // #6146 — default "tem cota de sobra": estes casos testam o fluxo de
+    // agendamento, não o guard de cota (coberto em
+    // test/brevo-account-quota-6146.test.ts).
+    checkQuota:
+      overrides.checkQuota ??
+      (async () => ({ check: { ok: true as const, consumed: 0, available: 300 }, warnings: [] })),
   };
 }
 

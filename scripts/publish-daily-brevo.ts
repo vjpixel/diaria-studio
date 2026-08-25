@@ -42,6 +42,9 @@
  *      contra `listInfo.totalSubscribers` (`checkContactCountReconciliation`)
  *      — enumerar MENOS contatos que a lista realmente tem (silenciosamente,
  *      sem nenhum `failed`) também aborta.
+ *   6b. Cota da CONTA Brevo (#6146 — balde único de 300/dia, transacional +
+ *      marketing, `scripts/lib/brevo-account-quota.ts`). Só AVISA aqui; ver
+ *      a nota de exit codes abaixo.
  *   7. Cria a campanha Brevo (`POST /emailCampaigns`) — sem `--send-now`/
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).
@@ -52,7 +55,9 @@
  * excedido; 4 credenciais do token de voto ausentes; 5 falha ao injetar o
  * token em ≥1 contato; 6 divergência entre a enumeração e
  * `listInfo.totalSubscribers` (#4532); 7 assunto vazio/em branco
- * (`content.title` ausente, #4588).
+ * (`content.title` ausente, #4588). A cota da CONTA (#6146) NÃO tem exit
+ * code aqui de propósito — vira aviso, porque rascunho não consome cota e o
+ * dia do envio ainda não é conhecido; o gate duro é a Etapa 6.
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
@@ -114,10 +119,18 @@ import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-i
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
+import {
+  checkAccountSendQuota,
+  resolveAccountDailyLimit,
+  describeQuotaWarnings,
+  fetchAccountQuotaSnapshot,
+  toStatsDay,
+  type BrevoAccountLimitConfig,
+} from "./lib/brevo-account-quota.ts"; // #6146
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface BrevoDiariaConfig {
+interface BrevoDiariaConfig extends BrevoAccountLimitConfig {
   api_key_env: string;
   list_id: number | null;
   sender_email: string | null;
@@ -739,6 +752,44 @@ export async function main(rootDirOverride?: string): Promise<void> {
     // abertos. process.exitCode + return deixa o event loop drenar sozinho.
     process.exitCode = 3;
     return;
+  }
+
+  // #6146: cota da CONTA, distinta do cap da LISTA acima. `daily_send_cap`
+  // pergunta "a fila cresceu demais?"; isto pergunta "a conta ainda pode
+  // enviar?". A edição 260825 passou no primeiro e morreu no segundo.
+  //
+  // AVISO, não abort, e de propósito: este script só cria RASCUNHO (nunca
+  // `--send-now`/`--schedule-at`, #4980), então nada aqui consome cota — e,
+  // mais importante, o horário do envio ainda não existe neste ponto. Barrar
+  // a criação do rascunho por causa da cota de HOJE puniria o caso comum em
+  // que a Etapa 5 roda antes da virada UTC e o envio cai num balde novo. O
+  // gate DURO fica na Etapa 6 (`schedule-daily-brevo.ts`), que já conhece o
+  // `scheduledAt` e portanto o dia certo pra consultar.
+  const accountDailyLimit = resolveAccountDailyLimit(brevoDiaria!);
+  const today = toStatsDay(new Date());
+  try {
+    const quotaSnapshot = await fetchAccountQuotaSnapshot(apiKey!, today, today);
+    for (const w of describeQuotaWarnings(quotaSnapshot, accountDailyLimit)) log(`AVISO: ${w}`);
+    const quotaCheck = checkAccountSendQuota({
+      dailyLimit: accountDailyLimit,
+      transactionalRequestsOnSendDay: quotaSnapshot.transactionalRequestsOnSendDay,
+      recipients: listInfo.totalSubscribers,
+    });
+    if (!quotaCheck.ok) {
+      log(
+        `AVISO: se esta campanha fosse enviada HOJE, não caberia — ${(quotaCheck as { ok: false; reason: string }).reason} ` +
+          "O rascunho vai ser criado assim mesmo (não consome cota); quem barra o agendamento é a Etapa 6.",
+      );
+    } else {
+      log(
+        `cota da conta em ${today}: ${quotaCheck.consumed}/${accountDailyLimit} consumido(s) por transacional, ` +
+          `${quotaCheck.available} disponível(is), lista tem ${listInfo.totalSubscribers}.`,
+      );
+    }
+  } catch (e) {
+    // Leitura de cota é informativa nesta etapa — não pode derrubar a criação
+    // do rascunho. Na Etapa 6, onde ela DECIDE, a mesma falha é bloqueante.
+    log(`AVISO: não foi possível ler a cota da conta Brevo (informativo nesta etapa): ${(e as Error).message}`);
   }
 
   // #4517: popula o token opaco de voto (`POLL_TOKEN`) pra TODA a lista Brevo
