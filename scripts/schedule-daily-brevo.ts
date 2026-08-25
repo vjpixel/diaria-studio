@@ -41,8 +41,9 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { brevoPut, brevoGetCampaign, brevoGetList } from "./lib/brevo-client.ts";
 import {
-  BREVO_FREE_DAILY_SEND_LIMIT,
   checkAccountSendQuota,
+  resolveAccountDailyLimit,
+  type BrevoAccountLimitConfig,
   describeQuotaWarnings,
   fetchAccountQuotaSnapshot,
   toStatsDay,
@@ -57,10 +58,8 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface BrevoDiariaConfig {
+interface BrevoDiariaConfig extends BrevoAccountLimitConfig {
   api_key_env: string;
-  /** #6146 — teto diário da CONTA. Default: BREVO_FREE_DAILY_SEND_LIMIT. */
-  account_daily_limit?: number;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -85,7 +84,7 @@ export interface ScheduleDailyBrevoDeps {
    * dia corrente. Injetável como o resto; `productionDeps` lê a lista pra
    * saber quantos destinatários o agendamento vai comprometer.
    */
-  checkQuota: (listId: number) => Promise<{ check: AccountQuotaCheck; warnings: string[] }>;
+  checkQuota: (listId: number, sendDay: string) => Promise<{ check: AccountQuotaCheck; warnings: string[] }>;
 }
 
 export async function scheduleDailyBrevo(
@@ -127,7 +126,11 @@ export async function scheduleDailyBrevo(
   // (incidente 260825).
   let quota: { check: AccountQuotaCheck; warnings: string[] };
   try {
-    quota = await deps.checkQuota(published.list_id);
+    // O dia consultado é o do ENVIO, não o de hoje: a cota da Brevo zera por
+    // dia UTC, e a Etapa 6 às vezes roda antes da virada (a campanha 27 foi
+    // criada 20/08 23:57 UTC pra enviar 21/08 09:00 UTC). Consultar "hoje"
+    // aqui mediria um balde que não é o que vai despachar a campanha.
+    quota = await deps.checkQuota(published.list_id, toStatsDay(new Date(scheduledAtIso)));
   } catch (e) {
     return {
       ok: false,
@@ -201,17 +204,18 @@ export function productionDeps(rootDir: string = ROOT): ScheduleDailyBrevoDeps {
       if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
       return brevoGetCampaign(apiKey, campaignId);
     },
-    checkQuota: async (listId) => {
+    checkQuota: async (listId, sendDay) => {
       if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
       const listInfo = await brevoGetList(apiKey, listId);
-      const snapshot = await fetchAccountQuotaSnapshot(apiKey, toStatsDay(new Date()));
+      const snapshot = await fetchAccountQuotaSnapshot(apiKey, sendDay);
+      const dailyLimit = resolveAccountDailyLimit(brevoDiaria);
       return {
         check: checkAccountSendQuota({
-          dailyLimit: brevoDiaria?.account_daily_limit ?? BREVO_FREE_DAILY_SEND_LIMIT,
-          transactionalRequestsToday: snapshot.transactionalRequestsToday,
+          dailyLimit,
+          transactionalRequestsOnSendDay: snapshot.transactionalRequestsOnSendDay,
           recipients: listInfo.totalSubscribers,
         }),
-        warnings: describeQuotaWarnings(snapshot),
+        warnings: describeQuotaWarnings(snapshot, dailyLimit),
       };
     },
   };

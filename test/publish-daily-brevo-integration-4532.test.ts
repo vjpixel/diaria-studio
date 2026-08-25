@@ -293,6 +293,49 @@ afterEach(() => {
 });
 
 describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta (#4532)", () => {
+  it("#6146: cota da conta estourada NÃO bloqueia a Etapa 5 — rascunho é criado, com AVISO (o gate duro é a Etapa 6)", async () => {
+    const root = mkTmpRoot();
+    const stderr: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as NodeJS.WriteStream).write = ((chunk: string | Uint8Array) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      writePlatformConfig(root, { daily_send_cap: 300 });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      // Cenário 260825: os 300/dia já consumidos por transacional. Criar o
+      // rascunho não gasta cota nenhuma e o dia do envio ainda nem existe
+      // aqui — barrar seria punir o caso comum em que a Etapa 5 roda antes
+      // da virada UTC e o envio cai num balde novo.
+      installRouter({
+        totalSubscribers: 10,
+        contactsPages: generateContactsPages(10),
+        transactionalRequestsToday: 300,
+      });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+      process.exitCode = undefined;
+
+      await main(root);
+
+      assert.equal(process.exitCode, undefined, "cota da conta não pode abortar a Etapa 5");
+      assert.ok(
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        "o rascunho deveria ter sido criado assim mesmo",
+      );
+      const out = stderr.join("");
+      assert.match(out, /AVISO: se esta campanha fosse enviada HOJE, não caberia/);
+      assert.match(out, /Etapa 6/, "o aviso precisa apontar onde está o gate real");
+    } finally {
+      (process.stderr as NodeJS.WriteStream).write = originalWrite;
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("#4651 (pr-test-analyzer, achado M): checkDailySendCap falha (lista acima do cap) → aborta com exitCode 3 via main() real, sem enumerar a lista nem criar a campanha", async () => {
     const root = mkTmpRoot();
     try {
