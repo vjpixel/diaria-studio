@@ -481,3 +481,29 @@ depois** — não um post novo. O alcance orgânico se concentra nas primeiras
 24-48h e o post continua circulando enquanto recebe comentário; responder no
 mesmo dia mata o jogo pra quem chega no dia seguinte, e passar de 3 dias
 entrega o gabarito pra ninguém.
+
+### Link no corpo — exceção ao #595/#3627, escopo deste post
+
+Decisão do editor em 25/08/2026: o post do É IA? **leva a URL no corpo**,
+diferente do invariante geral desta página (post principal do LinkedIn sem
+link externo, `LINKEDIN_CTA_LINE = null` em `scripts/lib/social-cta-lines.ts`).
+A alternativa oferecida foi link no primeiro comentário; o editor preferiu no
+corpo mesmo sabendo do custo. Trade-off aceito: alcance menor em troca de
+clique atribuível — sem URL no post, o único caminho até o `/jogar` seria o
+comentário, que muita gente não abre.
+
+**A exceção é só deste post manual.** Os posts diários automáticos da Etapa 5
+continuam sem link no corpo; mudar isso é editar `LINKEDIN_CTA_LINE` e não
+foi pedido.
+
+Link com UTM (mesmo formato do `scripts/lib/shared/utm-registry.ts` —
+`utm_source` por rede, `utm_medium=organic_social`, campanha própria
+`eia-post`), apontando pro jogo e não pra home, porque quem acabou de
+palpitar tem onde continuar e a página tem cadastro embutido:
+
+```
+https://eia.diar.ia.br/jogar?utm_source=linkedin&utm_medium=organic_social&utm_campaign=eia-post
+```
+
+A URL fecha o post **sem ponto final** — pontuação colada na query string é
+engolida por linkificador de algumas redes.
