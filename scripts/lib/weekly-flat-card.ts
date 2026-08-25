@@ -152,6 +152,14 @@ export interface FlatCardText {
    * contam pra largura no wrap — mede-se o texto visível (`stripInlineBold`),
    * com peso maior pra trechos em bold. Máximo 1 trecho por slide (decisão
    * editorial codificada no prompt do `social-writer`).
+   *
+   * (#6136 item 2) Aceita também UMA quebra de parágrafo (`\n\s*\n`) — vira
+   * um respiro vertical de 1 linha entre os dois blocos, dentro do MESMO
+   * card (não confundir com os cards de parágrafo do carrossel, que já são
+   * 1 por slide). Só o carrossel DIÁRIO injeta essa quebra
+   * (`splitParagraphIntoTwoBlocks` em `daily-carousel-card.ts`); título sem
+   * `\n\n` (todo chamador pré-#6136, inclusive o semanal) renderiza
+   * exatamente como antes.
    */
   title: string;
   /** Rodapé — texto livre (ex: "diar.ia.br" na capa, "Link na bio" no CTA). */
@@ -163,6 +171,22 @@ export interface FlatCardText {
    * `fill`) não renderiza nada — comportamento idêntico ao pré-#6086.
    */
   handle?: string;
+  /**
+   * (#6136 item 1) Quando `true` E `handle` está setado, o rodapé renderiza
+   * SÓ o handle (com o `@` em `COLORS.brand`) — nunca o wordmark completo
+   * (`footer`) seguido do handle, que lia como "diar.ia.br @diar.ia.br"
+   * (mesmo nome duas vezes na mesma linha, achado ao vivo do editor). `footer`
+   * continua obrigatório (usado quando `compactHandle` é `false`/ausente, ou
+   * quando `handle` não está setado) — o campo não vira redundante, só passa
+   * a ser ignorado no rodapé nesse modo específico.
+   *
+   * Restrito ao carrossel DIÁRIO por decisão de segurança (a issue #6136
+   * deixou a critério de quem implementou): nenhum chamador do carrossel
+   * SEMANAL seta `handle` hoje, então o comportamento dele já não muda; este
+   * flag existe pra deixar isso explícito e à prova de um `handle` futuro
+   * sendo adicionado ali sem querer herdar o modo compacto.
+   */
+  compactHandle?: boolean;
   /**
    * Micro-CTA fixo no canto inferior direito (#6086 item b) — opcional,
    * mesma linha do rodapé (à direita, `text-anchor="end"`), também sem
@@ -214,7 +238,10 @@ export interface FlatCardLine {
   text: string;
 }
 
-function wrapBody(title: string, maxCharsPerLine: number): FlatCardLine[] {
+/** Linha "espaçadora" — sem conteúdo, consome 1 `lineGap` de altura pra abrir respiro entre parágrafos (#6136 item 2). */
+const BLANK_LINE: FlatCardLine = { words: [], text: "" };
+
+function wrapSingleParagraph(title: string, maxCharsPerLine: number): FlatCardLine[] {
   const hasMarkup = title.includes("**");
   if (!hasMarkup) {
     // Sem marcação: caminho original intocado (wrapTitle + balanceamento) —
@@ -229,6 +256,23 @@ function wrapBody(title: string, maxCharsPerLine: number): FlatCardLine[] {
     words,
     text: words.map((w) => w.text).join(" "),
   }));
+}
+
+/**
+ * (#6136 item 2) `title` pode carregar UMA quebra de parágrafo (`\n\s*\n`,
+ * mesmo delimitador de `splitIntoParagraphCards`) — cada lado quebra
+ * independente (`wrapSingleParagraph`) e os dois grupos de linhas são unidos
+ * por uma `BLANK_LINE`, abrindo um respiro vertical de 1 linha entre os
+ * blocos. Título sem `\n\n` (todo chamador pré-#6136) cai direto no caminho
+ * de 1 parágrafo — comportamento intocado.
+ */
+function wrapBody(title: string, maxCharsPerLine: number): FlatCardLine[] {
+  const paragraphs = title.split(/\n\s*\n/).map((p) => p.trim());
+  if (paragraphs.length <= 1) return wrapSingleParagraph(title, maxCharsPerLine);
+  return paragraphs.reduce<FlatCardLine[]>((acc, p, i) => {
+    const group = wrapSingleParagraph(p, maxCharsPerLine);
+    return i === 0 ? group : [...acc, BLANK_LINE, ...group];
+  }, []);
 }
 
 /**
@@ -304,6 +348,18 @@ function footerMarkup(footer: string): string {
 }
 
 /**
+ * (#6136 item 1) Rodapé em MODO COMPACTO — só o handle, `@` em `COLORS.brand`,
+ * resto em `COLORS.ink`. Substitui inteiramente `footerMarkup(footer) + handleMarkup`
+ * (que lia "diar.ia.br · @diar.ia.br", o mesmo nome duas vezes) quando
+ * `FlatCardText.compactHandle` está ligado. Handle sem `@` inicial (entrada
+ * malformada) cai no texto plano — nunca lança.
+ */
+function handleOnlyMarkup(handle: string): string {
+  if (!handle.startsWith("@")) return esc(handle);
+  return `<tspan fill="${COLORS.brand}">@</tspan>${esc(handle.slice(1))}`;
+}
+
+/**
  * Pure: monta o SVG do card sem foto — paleta CLARA canônica da marca
  * (`COLORS.paper`/`COLORS.ink`/`COLORS.brand`, mesma do site/newsletter),
  * kicker no topo, título GRANDE preenchendo o espaço disponível (auto-size
@@ -352,12 +408,16 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
     )
     .join("\n  ");
 
-  // Handle (#6086 item a) — mesma linha do wordmark, tspan menor em vez de
-  // linha própria: mantém o rodapé com UMA altura só, então TITLE_BOTTOM não
-  // precisa mudar e o teto de linhas do corpo (#6078) não é afetado.
-  const handleMarkup = text.handle
-    ? `<tspan font-family="${FONT_SANS}" font-size="22" fill="${COLORS.ink}"> · ${esc(text.handle)}</tspan>`
-    : "";
+  // (#6136 item 1) Modo compacto: rodapé vira SÓ o handle (`@` em brand),
+  // nunca wordmark + handle juntos (lia "diar.ia.br · @diar.ia.br", mesmo
+  // nome repetido). Fora desse modo, comportamento intocado — handle (#6086
+  // item a) segue como tspan menor na mesma linha do wordmark.
+  const footerLineMarkup =
+    text.compactHandle && text.handle
+      ? handleOnlyMarkup(text.handle)
+      : `${footerMarkup(text.footer)}${
+          text.handle ? `<tspan font-family="${FONT_SANS}" font-size="22" fill="${COLORS.ink}"> · ${esc(text.handle)}</tspan>` : ""
+        }`;
 
   // Micro-CTA (#6086 item b) — canto inferior DIREITO, mesma linha de base
   // do rodapé (`footerY`), `text-anchor="end"` ancorado em `W - PAD` (a
@@ -374,7 +434,7 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
   <rect x="${PAD}" y="${kickerY - 38}" width="64" height="6" rx="3" fill="${COLORS.brand}"/>
   <text x="${PAD}" y="${kickerY}" font-family="${FONT_SANS}" font-size="30" font-weight="700" letter-spacing="2" fill="${COLORS.brand}">${esc(text.kicker.toUpperCase())}</text>
   ${titleLines}
-  <text x="${PAD}" y="${footerY}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${footerMarkup(text.footer)}${handleMarkup}</text>
+  <text x="${PAD}" y="${footerY}" font-family="${FONTS.serif}" font-size="34" fill="${COLORS.ink}">${footerLineMarkup}</text>
   ${microCtaMarkup}
 </svg>`;
 }

@@ -14,6 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   splitIntoParagraphCards,
+  splitParagraphIntoTwoBlocks,
   buildCarouselSlideTexts,
   carouselSlideFilename,
   carouselImageKeys,
@@ -24,11 +25,13 @@ import {
   DAILY_CAROUSEL_BODY_SIZE,
   DAILY_CAROUSEL_HANDLE,
   DAILY_CAROUSEL_MICRO_CTA,
+  DAILY_CAROUSEL_CTA_KICKER,
   hashCarouselSlideTexts,
 } from "../scripts/lib/daily-carousel-card.ts";
 import { measureFlatCardBody, buildFlatCardSvg } from "../scripts/lib/weekly-flat-card.ts";
 import { createHash } from "node:crypto";
 import { INSTAGRAM_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
+import { COLORS } from "../scripts/lib/shared/design-tokens.ts";
 
 describe("splitIntoParagraphCards (pure)", () => {
   it("caso comum: exatamente 3 parágrafos (separados por linha em branco) -> passthrough 1:1", () => {
@@ -71,6 +74,9 @@ describe("splitIntoParagraphCards (pure)", () => {
 
 describe("buildCarouselSlideTexts (pure)", () => {
   it("produz p1/p2/p3 (kicker de posição) + cta (INSTAGRAM_CTA_LINE)", () => {
+    // Parágrafos curtos demais pra ter ponto de corte viável (#6136 item 2)
+    // -> splitParagraphIntoTwoBlocks devolve o texto inalterado, título
+    // continua um match exato.
     const genericText = "Um.\n\nDois.\n\nTrês.\n\n#InteligenciaArtificial #Agentes";
     const texts = buildCarouselSlideTexts(genericText);
     assert.equal(texts.p1.title, "Um.");
@@ -93,12 +99,70 @@ describe("buildCarouselSlideTexts (pure)", () => {
     assert.equal(texts.cta.microCta, undefined);
   });
 
+  it("#6136 item 1: p1/p2/p3 pedem rodapé compacto (só handle); o CTA final NÃO (não tem handle pra compactar)", () => {
+    const genericText = "Um.\n\nDois.\n\nTrês.\n\n#InteligenciaArtificial";
+    const texts = buildCarouselSlideTexts(genericText);
+    for (const slot of ["p1", "p2", "p3"] as const) assert.equal(texts[slot].compactHandle, true);
+    assert.equal(texts.cta.compactHandle, undefined);
+  });
+
+  it("#6136 item 3: kicker do CTA final é a chamada de assinatura, não 'Newsletter grátis'", () => {
+    const genericText = "Um.\n\nDois.\n\nTrês.\n\n#InteligenciaArtificial";
+    const texts = buildCarouselSlideTexts(genericText);
+    assert.equal(texts.cta.kicker, DAILY_CAROUSEL_CTA_KICKER);
+  });
+
   it("remove o bloco de hashtags antes de dividir em parágrafos (splitBodyAndTags)", () => {
     const genericText = "Um.\n\nDois.\n\nTrês.\n\n#Tag1 #Tag2 #Tag3";
     const texts = buildCarouselSlideTexts(genericText);
     for (const slot of ["p1", "p2", "p3"] as const) {
       assert.doesNotMatch(texts[slot].title, /#Tag/);
     }
+  });
+
+  it("#6136 item 2: parágrafo com fronteira de sentença viável sai quebrado em 2 blocos (\\n\\n)", () => {
+    const longo =
+      "Primeira frase do parágrafo, com informação relevante pro leitor. Segunda frase fecha a ideia com mais contexto.";
+    const genericText = `${longo}\n\nDois.\n\nTrês.\n\n#Tag`;
+    const texts = buildCarouselSlideTexts(genericText);
+    assert.match(texts.p1.title, /\n\n/);
+  });
+});
+
+describe("splitParagraphIntoTwoBlocks (pure, #6136 item 2)", () => {
+  it("texto curto demais (sem fronteira de sentença nem de palavra) volta inalterado", () => {
+    assert.equal(splitParagraphIntoTwoBlocks("Um."), "Um.");
+    assert.equal(splitParagraphIntoTwoBlocks(""), "");
+  });
+
+  it("2 frases -> quebra na fronteira de sentença mais próxima do meio", () => {
+    const texto = "Primeira frase aqui. Segunda frase fecha o parágrafo com mais contexto.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    const [first, second] = result.split("\n\n");
+    assert.equal(`${first} ${second}`.replace(/\s+/g, " "), texto);
+    assert.ok(first.endsWith("."), "1º bloco deveria terminar em fronteira de sentença");
+  });
+
+  it("1 frase só, mas longa -> cai pra fronteira de PALAVRA mais próxima do meio", () => {
+    const texto = "Uma frase única mas bem mais longa, sem ponto final nenhum no meio dela toda";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.match(result, /\n\n/);
+    const [first, second] = result.split("\n\n");
+    assert.equal(`${first} ${second}`, texto);
+  });
+
+  it("nunca corta DENTRO de um trecho **marcado** (#6086 item c) — marcação sai intacta num dos dois blocos", () => {
+    const texto = "Parágrafo um **com destaque** no meio dele todo, bem no centro do texto.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.match(result, /\*\*com destaque\*\*/, "marcação precisa sobreviver INTEIRA");
+    // nenhum `**` órfão (contagem par de delimitadores)
+    assert.equal((result.match(/\*\*/g) ?? []).length % 2, 0);
+  });
+
+  it("resultado sempre reconstrói o texto original (sem perder nem duplicar conteúdo)", () => {
+    const texto = "Frase A com algum conteúdo. Frase B com mais conteúdo ainda pra garantir tamanho.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.equal(result.replace(/\n\n/g, " "), texto);
   });
 });
 
@@ -302,12 +366,17 @@ describe("buildFlatCardSvg com layout fixed ancora o texto no TOPO (#6078)", () 
  * em qualquer `FlatCardText` que não os declare (capa/CTA do carrossel
  * SEMANAL, layout `fill` — nunca tocado por este item da issue).
  */
-describe("handle + micro-CTA no SVG do carrossel diário (#6086 itens a/b)", () => {
-  it("slide de parágrafo (p1) renderiza handle e micro-CTA no SVG", () => {
+describe("handle + micro-CTA no SVG do carrossel diário (#6086 itens a/b, rodapé compacto desde #6136 item 1)", () => {
+  it("slide de parágrafo (p1) renderiza handle compacto (@ verde, sem wordmark) e micro-CTA no SVG", () => {
     const genericText = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.";
     const texts = buildCarouselSlideTexts(genericText);
     const svg = buildFlatCardSvg(texts.p1, DAILY_CAROUSEL_LAYOUT);
-    assert.match(svg, /· @diar\.ia\.br/, "handle deveria aparecer no rodapé, junto do wordmark");
+    assert.match(
+      svg,
+      new RegExp(`<tspan fill="${COLORS.brand}">@</tspan>diar\\.ia\\.br`),
+      "handle compacto: '@' em brand seguido do resto do handle",
+    );
+    assert.doesNotMatch(svg, /diar<tspan/, "#6136 item 1: sem wordmark completo — nunca 'diar.ia.br @diar.ia.br'");
     assert.match(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
   });
 
@@ -321,7 +390,7 @@ describe("handle + micro-CTA no SVG do carrossel diário (#6086 itens a/b)", () 
     assert.equal(texts.cta.handle, undefined);
     assert.equal(texts.cta.microCta, undefined);
     const svg = buildFlatCardSvg(texts.cta, DAILY_CAROUSEL_LAYOUT);
-    assert.doesNotMatch(svg, /· @diar\.ia\.br/, "sem tspan de handle no rodapé");
+    assert.doesNotMatch(svg, new RegExp(`<tspan fill="${COLORS.brand}">@</tspan>`), "sem tspan de handle compacto no rodapé");
     assert.doesNotMatch(svg, new RegExp(DAILY_CAROUSEL_MICRO_CTA));
   });
 
