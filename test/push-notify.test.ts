@@ -232,4 +232,30 @@ describe("createFileNotifiedStore (#6125)", () => {
     assert.equal(createFileNotifiedStore(p).has("k"), false);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("REGRESSÃO merge-on-flush: flush da instância B preserva chave adicionada pela instância A (sem lost update)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    const t0 = 1_700_000_000_000;
+    // A e B carregam o MESMO arquivo vazio (dois processos sobrepostos).
+    const a = createFileNotifiedStore(p, { now: () => t0 });
+    const b = createFileNotifiedStore(p, { now: () => t0 });
+    a.add("chave-A");
+    // B ainda não viu chave-A em memória; o flush dela não pode apagá-la.
+    b.add("chave-B");
+    // Ler com o MESMO `now` das escritas: `t0` é de 2023 e a poda de TTL (30
+    // dias) apagaria as duas chaves se a leitura usasse o relógio real.
+    assert.equal(createFileNotifiedStore(p, { now: () => t0 }).has("chave-A"), true);
+    assert.equal(createFileNotifiedStore(p, { now: () => t0 }).has("chave-B"), true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("timestamps não-finitos no disco são descartados (não sobrevivem à TTL pra sempre)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "push-notify-file-store-"));
+    const p = join(dir, "seen.json");
+    writeFileSync(p, JSON.stringify({ nan: "NaN", inf: 1e999, ok: Date.now() }), "utf8");
+    const s = createFileNotifiedStore(p);
+    assert.deepEqual(s.keys().sort(), ["ok"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

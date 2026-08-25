@@ -206,12 +206,36 @@ export const FILE_NOTIFIED_STORE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * Escrita síncrona e atômica o bastante pra este uso (tmp + rename) a cada
  * mutação — o volume é ínfimo (1 write por notificação, não por tick).
  */
+/**
+ * ## Limitação conhecida que a persistência introduziu (review da PR #6143)
+ *
+ * Em memória, um restart ZERAVA o dedup — falha segura (notifica demais).
+ * Persistido, o dedup sobrevive, e a falha passa a poder ser SILENCIOSA:
+ *
+ * A chave só é removida quando um tick OBSERVA o gate deixar de estar
+ * pendente. Se a sequência "resolvido → pendente de novo pela mesma chave"
+ * acontecer inteiramente com o studio-server FORA DO AR, o processo que
+ * reinicia carrega do disco uma chave "já notificada" que ninguém limpou, e
+ * a nova ocorrência fica muda até o TTL. Fica mais provável combinada com o
+ * falso positivo conhecido de `findEditionsInProgress(4)` em
+ * `studio-state.ts`.
+ *
+ * A corrida entre processos concorrentes — o outro achado do mesmo review —
+ * está RESOLVIDA pelo merge-on-flush abaixo (`mergeFromDisk` relê o arquivo
+ * antes de cada escrita, em vez de sobrescrever com a cópia em memória).
+ */
 export function createFileNotifiedStore(
   filePath: string,
   opts: { now?: () => number; ttlMs?: number } = {},
 ): NotifiedStore {
   const now = opts.now ?? Date.now;
   const ttlMs = opts.ttlMs ?? FILE_NOTIFIED_STORE_TTL_MS;
+
+  // Timestamps não-finitos (NaN/Infinity de um JSON malformado ou relógio
+  // quebrado) sobreviveriam à poda pra sempre (qualquer comparação com
+  // cutoff é false) — descartados no load, no merge e na escrita.
+  const isFiniteTimestamp = (v: unknown): v is number =>
+    typeof v === "number" && Number.isFinite(v);
 
   let record: Record<string, number> = {};
   try {
@@ -221,16 +245,48 @@ export function createFileNotifiedStore(
     record = {}; // ausente/corrompido → começa vazio (fail-soft)
   }
 
-  // Podar entradas fora da TTL já no load.
-  const cutoff = now() - ttlMs;
-  for (const key of Object.keys(record)) {
-    if (typeof record[key] !== "number" || record[key] < cutoff) delete record[key];
-  }
+  // Podar entradas fora da TTL e entradas com timestamp inválido já no load.
+  const prune = (r: Record<string, number>): void => {
+    const cutoff = now() - ttlMs;
+    for (const key of Object.keys(r)) {
+      if (!isFiniteTimestamp(r[key]) || r[key] < cutoff) delete r[key];
+    }
+  };
+  prune(record);
 
+  // Merge-on-flush (#6125 review): relê o arquivo em disco antes de gravar e
+  // incorpora chaves que OUTRO processo adicionou desde o nosso load — sem
+  // isso, cada flush sobrescreveria o arquivo inteiro com o mapa em memória,
+  // apagando dedup de instâncias concorrentes (lost update). União por chave,
+  // vencendo o timestamp mais novo; entrada inválida no disco perde pra uma
+  // válida em memória. Qualquer erro de leitura = segue com o mapa atual.
+  const mergeFromDisk = (): void => {
+    try {
+      const onDisk = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, number>;
+      if (typeof onDisk !== "object" || onDisk === null || Array.isArray(onDisk)) return;
+      for (const [key, ts] of Object.entries(onDisk)) {
+        // Chave deletada localmente nesta janela não é ressuscitada pelo
+        // merge — o delete do caller precisa vencer o que está no disco.
+        if (deletedSinceFlush.has(key)) continue;
+        if (!isFiniteTimestamp(ts)) continue;
+        if (!isFiniteTimestamp(record[key]) || ts > record[key]) record[key] = ts;
+      }
+    } catch {
+      // arquivo ausente/corrompido → grava só o que temos (fail-soft)
+    }
+    prune(record);
+  };
+
+  let flushSeq = 0;
+  const deletedSinceFlush = new Set<string>();
   const flush = (): void => {
     try {
       mkdirSync(dirname(filePath), { recursive: true });
-      const tmp = `${filePath}.tmp`;
+      mergeFromDisk();
+      deletedSinceFlush.clear();
+      // tmp com nome ÚNICO por write (pid + sequência): dois processos nunca
+      // disputam o mesmo tmp (torn write) — rename é atômico por arquivo.
+      const tmp = `${filePath}.tmp.${process.pid}.${flushSeq++}`;
       writeFileSync(tmp, JSON.stringify(record), "utf8");
       renameSync(tmp, filePath);
     } catch {
@@ -241,12 +297,14 @@ export function createFileNotifiedStore(
   return {
     has: (key) => record[key] !== undefined,
     add: (key) => {
-      record[key] = now();
+      const ts = now();
+      record[key] = Number.isFinite(ts) ? ts : Date.now();
       flush();
     },
     delete: (key) => {
       if (record[key] !== undefined) {
         delete record[key];
+        deletedSinceFlush.add(key);
         flush();
       }
     },
