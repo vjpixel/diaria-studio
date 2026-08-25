@@ -1584,6 +1584,52 @@ export function renderSection(section: Section): string {
 // #2008/#2018: applyWordJoiner importado de ./word-joiner.ts (shared helper).
 // Ver scripts/lib/word-joiner.ts para documentação completa e GUARDED_DOMAINS.
 
+// #6084/#6087: bold + itálico aplicados por SEGMENTO DE TEXTO, nunca no HTML
+// já montado com os links embutidos. Aplicar sobre a string inteira DEPOIS de
+// já ter o HTML do link deixava um `*`/`**` literal dentro de uma URL (ex:
+// wildcard de Wayback Machine) colidir com o `*`/`**` de ênfase de fora do
+// link e corromper o atributo href (achado do review da PR #6087). Por
+// segmento de texto puro, antes do label do link virar HTML, essa colisão
+// nunca ocorre. Reusa processInlineItalics — mesmo regex/estilo inline
+// (`font-style:italic` explícito, compatibilidade Outlook) usado no corpo
+// dos destaques, inclusive suporte a `_texto_` além de `*texto*`.
+function applyEmphasis(text: string): string {
+  const bolded = text.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  return processInlineItalics(bolded);
+}
+
+/**
+ * #6087 CI fix: `**[texto](url)**`/`*[texto](url)*` (ênfase envolvendo um
+ * link INTEIRO) é caso de produção real e coberto por teste desde antes desta
+ * issue (`test/build-link-ctr.test.ts` — bold em volta de link vira
+ * `<b><a>...</a></b>`, o `extractLinks` do CTR depende dessa forma). Aplicar
+ * `applyEmphasis` por SEGMENTO (acima) resolve a colisão href×`*` do #6087,
+ * mas por si só QUEBRA esse caso: os marcadores ficam um em cada segmento
+ * (antes e depois do link), nunca formando um par `**...**`/`*...*` dentro do
+ * MESMO segmento, e sobram literais.
+ *
+ * Este helper detecta o marcador colado nos dois lados do link (bold `**`
+ * tem precedência sobre itálico `*`/`_` de caractere único) e devolve quantos
+ * caracteres consumir de cada lado — quem chama corta esses caracteres ANTES
+ * de montar o segmento de texto (pra não sobrarem como `*`/`_` soltos) e
+ * envolve o HTML do link no wrapper correspondente.
+ */
+function detectLinkEmphasisWrap(
+  input: string,
+  start: number,
+  end: number,
+): { wrap: "bold" | "italic" | null; markerLen: number } {
+  if (input.slice(start - 2, start) === "**" && input.slice(end, end + 2) === "**") {
+    return { wrap: "bold", markerLen: 2 };
+  }
+  const preChar = input[start - 1];
+  const postChar = input[end];
+  if (preChar && postChar === preChar && (preChar === "*" || preChar === "_")) {
+    return { wrap: "italic", markerLen: 1 };
+  }
+  return { wrap: null, markerLen: 0 };
+}
+
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
   const input = unescapeMd(s);
@@ -1599,26 +1645,32 @@ export function mdInlineToHtml(s: string): string {
     if (!url) continue;
     const labelEnd = input.indexOf("]", start + 1);
     const label = input.slice(start + 1, labelEnd);
+    const { wrap, markerLen } = detectLinkEmphasisWrap(input, start, end);
     // #2008: word-joiner aplicado nos segmentos de TEXTO (não no href da URL
     // nem no label do link — label já tem href explícito, sem risco de linkify).
     // #2532/#2533 review: wordmark também só nos segmentos de TEXTO (não no
     // label nem no href) — simétrico com processInlineLinks. Aplicado ANTES do
-    // passo de `**` abaixo, então um `**` em volta da marca vira `**{wordmark}**`
-    // → `<b>{wordmark}</b>`.
-    parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, start))));
+    // passo de ênfase (bold/itálico), então um `**`/`*` em volta da marca vira
+    // `**{wordmark}**` → `<b>{wordmark}</b>`. Quando o link inteiro é
+    // envolvido por ênfase (`wrap` acima), os `markerLen` caracteres colados
+    // ao `[` já saem fora deste slice — processados como wrapper do link, não
+    // como texto solto.
+    const preEnd = wrap ? start - markerLen : start;
+    parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx, preEnd)))));
     // #3102: reusa inlineLinkHtml (mesmo tratamento de `processInlineLinks`/
     // `renderBodyInline` — underline teal via text-decoration-color). Antes,
     // mdInlineToHtml tinha seu PRÓPRIO estilo de link (border-bottom teal), que
     // degrada de forma diferente no Outlook (mantém a linha teal) vs o resto do
     // e-mail (degrada pra sublinhado cor-do-texto) — 2 tratamentos sem motivo
     // funcional no mesmo email.
-    parts.push(inlineLinkHtml(label, url));
-    lastIdx = end;
+    let linkHtml = inlineLinkHtml(label, url);
+    if (wrap === "bold") linkHtml = `<b>${linkHtml}</b>`;
+    else if (wrap === "italic") linkHtml = `<em style="font-style:italic;">${linkHtml}</em>`;
+    parts.push(linkHtml);
+    lastIdx = wrap ? end + markerLen : end;
   }
-  parts.push(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx))));
-  let out = parts.join("");
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-  return out;
+  parts.push(applyEmphasis(applyBrandWordmark(applyWordJoiner(input.slice(lastIdx)))));
+  return parts.join("");
 }
 
 /**
