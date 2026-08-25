@@ -294,6 +294,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
 
   const existing = readPublishedState(editionDir);
   let broadcastId: number;
+  let publicUrl: string | undefined;
   if (existing) {
     log(`draft já existe (broadcast_id=${existing.broadcast_id}) — atualizando em vez de criar um 2º.`);
     const updated = await updateBroadcast(existing.broadcast_id, {
@@ -302,6 +303,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       content: html,
     });
     broadcastId = updated.id;
+    publicUrl = updated.public_url;
   } else {
     const created = await createBroadcast({
       subject,
@@ -311,6 +313,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       subscriber_filter: buildAllSubscribersFilter(),
     });
     broadcastId = created.id;
+    publicUrl = created.public_url;
     log(`draft criado: broadcast_id=${broadcastId}`);
   }
 
@@ -337,6 +340,37 @@ export async function main(rootDirOverride?: string): Promise<void> {
     test_broadcast_ids: existing?.test_broadcast_ids ?? [],
   };
   writePublishedState(editionDir, state);
+
+  // #464 (Stage 5 wiring): `05-edition-url.txt` é o mesmo artefato que o
+  // playbook Beehiiv grava (ver orchestrator-stage-5.md §5c-1) — consumido
+  // por publish-linkedin/publish-facebook/publish-instagram (substituição
+  // de `{edition_url}` em `03-social.md`) e pelo `post_pixel` do Stage 6.
+  // `public_url` do broadcast Kit é o equivalente direto. Roda DEPOIS de
+  // `writePublishedState` acima (achado do review, PR #6096): o
+  // `broadcast_id` do draft real precisa estar persistido ANTES de
+  // qualquer I/O secundário que possa falhar — senão um erro de disco
+  // aqui (cheio, permissão) propagaria pra fora de `main()` sem o estado
+  // do draft ter sido salvo, e uma invocação seguinte veria `existing =
+  // null` e criaria um 2º draft de produção (exatamente o bug que a
+  // ordem "estado primeiro" logo acima já existe pra evitar). Try/catch
+  // dedicado torna esse fail-soft real, não só uma checagem de valor
+  // vazio — nenhuma falha aqui propaga pra fora de `main()`.
+  try {
+    if (publicUrl) {
+      const internalDir = resolve(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(resolve(internalDir, "05-edition-url.txt"), publicUrl);
+    } else {
+      // #464: nunca confirmado ao vivo que o Kit sempre popula `public_url`
+      // (ver docstring de `KitBroadcastDetail` em kit-client.ts) — se
+      // acontecer de verdade, o orchestrator (§5c-2) trata a ausência
+      // deste arquivo como sinal pra warning explícito, nunca cai no
+      // fallback de URL Beehiiv (domínio errado pro Kit).
+      log("warn: broadcast sem public_url — 05-edition-url.txt não gravado.");
+    }
+  } catch (e) {
+    log(`warn: falha ao gravar 05-edition-url.txt (${e instanceof Error ? e.message : String(e)}) — draft/estado já persistidos, artefato secundário não gravado.`);
+  }
 
   if (sendTest) {
     // #464: broadcast SEPARADO e descartável — nunca o de produção (ver

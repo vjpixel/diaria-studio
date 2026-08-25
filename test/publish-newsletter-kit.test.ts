@@ -252,7 +252,14 @@ describe("main() — integração", () => {
       const editionDir = writeEdition(root, "260998");
       mockFetch((call) => {
         if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
-          return jsonRes(201, { broadcast: { id: 555, subject: (call.body as { subject: string }).subject, status: "draft" } });
+          return jsonRes(201, {
+            broadcast: {
+              id: 555,
+              subject: (call.body as { subject: string }).subject,
+              status: "draft",
+              public_url: "https://news.diar.ia.br/p/555",
+            },
+          });
         }
         throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
       });
@@ -268,6 +275,11 @@ describe("main() — integração", () => {
         { all: [{ type: "all_subscribers" }] },
       ]);
       assert.equal((calls[0].body as { send_at: string | null }).send_at, null, "draft real é sempre send_at:null");
+      assert.equal(
+        readFileSync(join(editionDir, "_internal", "05-edition-url.txt"), "utf8"),
+        "https://news.diar.ia.br/p/555",
+        "05-edition-url.txt gravado a partir do public_url do broadcast (mesmo artefato que o playbook Beehiiv produz)",
+      );
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
@@ -288,7 +300,7 @@ describe("main() — integração", () => {
       });
       mockFetch((call) => {
         if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
-          return jsonRes(200, { broadcast: { id: 777, status: "draft" } });
+          return jsonRes(200, { broadcast: { id: 777, status: "draft", public_url: "https://news.diar.ia.br/p/777" } });
         }
         throw new Error(`chamada inesperada (esperava só PATCH /broadcasts/777): ${call.method} ${call.pathname}`);
       });
@@ -327,7 +339,7 @@ describe("main() — integração", () => {
       });
       mockFetch((call) => {
         if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
-          return jsonRes(200, { broadcast: { id: 777, status: "draft" } });
+          return jsonRes(200, { broadcast: { id: 777, status: "draft", public_url: "https://news.diar.ia.br/p/777" } });
         }
         throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
       });
@@ -360,7 +372,7 @@ describe("main() — integração", () => {
         if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
           createdBroadcasts.push(call.body);
           const id = createdBroadcasts.length === 1 ? 555 : 556;
-          return jsonRes(201, { broadcast: { id, status: "draft" } });
+          return jsonRes(201, { broadcast: { id, status: "draft", public_url: `https://news.diar.ia.br/p/${id}` } });
         }
         throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
       });
@@ -378,6 +390,36 @@ describe("main() — integração", () => {
       assert.equal(state?.broadcast_id, 555, "estado rastreia o draft REAL, não o de teste");
       assert.deepEqual(state?.test_broadcast_ids, [556]);
       assert.equal(state?.status, "test_sent");
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("broadcast sem public_url: não grava 05-edition-url.txt, mas o publish inteiro não falha (fail-soft)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      mockFetch((call) => {
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          // public_url ausente da resposta — nunca confirmado ao vivo que o
+          // Kit sempre popula este campo (ver docstring do #464 na main()).
+          return jsonRes(201, { broadcast: { id: 555, status: "draft" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined, "public_url ausente não deve virar exitCode de erro");
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.broadcast_id, 555, "draft real ainda é criado e rastreado normalmente");
+      assert.equal(
+        existsSync(join(editionDir, "_internal", "05-edition-url.txt")),
+        false,
+        "sem public_url, o artefato secundário simplesmente não é gravado",
+      );
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

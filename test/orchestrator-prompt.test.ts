@@ -247,7 +247,16 @@ describe("orchestrator-prompt (#634)", () => {
       // não só entre stages. Arquivo foi a 791 linhas. Teto bumped de
       // 780→800 com headroom pequeno.
       "orchestrator-stage-4.md": 800,
-      "orchestrator-stage-5.md": 455,
+      // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
+      // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
+      // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
+      // automation], branch condicional antes do 5c-1 Beehiiv, e o loop de
+      // review §5f ganhou o branch Kit — `review-test-email` com
+      // `platform: "kit"` e sem fix-mode automático nesse backend, mais o
+      // guard do §5c-2 evitando o fallback de URL Beehiiv-específico
+      // quando o backend é Kit). Arquivo foi a 508 linhas. Teto bumped de
+      // 455→525 com headroom pequeno.
+      "orchestrator-stage-5.md": 525,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
@@ -263,7 +272,15 @@ describe("orchestrator-prompt (#634)", () => {
       // schedule-daily-brevo.ts fail-soft após o Schedule Beehiiv
       // confirmado). Arquivo foi a 593 linhas. Teto bumped de 560→600 com
       // headroom pequeno.
-      "orchestrator-stage-6.md": 600,
+      // #464 (PR #6096): +60 linhas (mesmo wiring por backend do lado do
+      // Stage 6 — §6a lê `publishing.newsletter.backend` e ramifica de
+      // onde vêm os campos do resumo; §6d ganhou a nota "só roda com
+      // beehiiv"; §6d-kit inteiro, nova seção espelhando §6d-brevo, que
+      // invoca `schedule-newsletter-kit.ts`; §6e ganhou o skip pra backend
+      // kit; e a Pre-condição de sentinel Stage 5 ganhou a explicação de
+      // por que `assertSentinel` já lê o path certo automaticamente).
+      // Arquivo foi a 653 linhas. Teto bumped de 600→675 com headroom pequeno.
+      "orchestrator-stage-6.md": 675,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];
