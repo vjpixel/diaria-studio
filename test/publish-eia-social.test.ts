@@ -13,7 +13,9 @@ import {
   imagesForChannel,
   parseScheduledAt,
   buildPlans,
+  pendingChannels,
   EIA_CHANNELS,
+  type EiaPublishedState,
 } from "../scripts/publish-eia-social.ts";
 
 const ART = { composite: "/ab.jpg", a: "/A.jpg", b: "/B.jpg" };
@@ -54,6 +56,16 @@ describe("extractChannelText", () => {
 
   it("devolve null pra canal ausente", () => {
     assert.equal(extractChannelText(MD, "bluesky"), null);
+  });
+
+  it("não trunca o corpo numa linha que começa com '# '", () => {
+    // Só `## ` (ou o fim do arquivo) encerra a seção: uma linha de markdown
+    // editada à mão que comece com "# " cortaria o post em silêncio, e o que
+    // sairia publicado seria menos do que o editor escreveu.
+    const comCerquilha = "# É IA? social\n\n## linkedin\n\nPrimeira linha.\n\n# 5 minutos por dia\n\nÚltima linha.\n\n## facebook\n\nOutro.\n";
+    const body = extractChannelText(comCerquilha, "linkedin");
+    assert.ok(body?.includes("Última linha."), "corpo truncado no '# '");
+    assert.ok(!body?.includes("Outro."), "vazou a seção vizinha");
   });
 
   it("não confunde o comentário do topo com corpo de post", () => {
@@ -102,5 +114,47 @@ describe("parseScheduledAt", () => {
 
   it("recusa data no passado", () => {
     assert.throws(() => parseScheduledAt("2026-08-25T09:50:00-03:00", now), /passado/);
+  });
+
+  it("recusa dia que não existe no mês em vez de rolar pra frente", () => {
+    // Regressão: `new Date("2026-02-30...")` NÃO é Invalid Date — o JS
+    // normaliza pra 2 de março em silêncio. Um typo de dia agendava pro dia
+    // errado numa conta pública sem nenhum aviso.
+    assert.throws(() => parseScheduledAt("2026-02-30T09:50:00-03:00", now), /dia inexistente/);
+    assert.throws(() => parseScheduledAt("2026-04-31T09:50:00-03:00", now), /dia inexistente/);
+    // Dia 00 já cai antes, em Invalid Date — importa que seja recusado, não por qual caminho.
+    assert.throws(() => parseScheduledAt("2026-09-00T09:50:00-03:00", now));
+  });
+
+  it("aceita os limites reais do calendário", () => {
+    for (const raw of ["2026-08-31T09:50:00-03:00", "2028-02-29T09:50:00-03:00", "2026-09-30T09:50:00-03:00"]) {
+      assert.doesNotThrow(() => parseScheduledAt(raw, now), `${raw} é data válida`);
+    }
+  });
+});
+
+describe("pendingChannels", () => {
+  const plans = buildPlans(MD, ART, new Set());
+  const state: EiaPublishedState = {
+    edition: "260824",
+    scheduled_at: "2026-08-26T12:50:00.000Z",
+    channels: { linkedin: { ref: "queue:x", scheduled_at: "2026-08-26T12:50:00.000Z" } },
+  };
+
+  it("pula canal já agendado — a fila do Worker não deduplica", () => {
+    const { todo, alreadyDone } = pendingChannels(plans, state, false);
+    assert.deepEqual(alreadyDone, ["linkedin"]);
+    assert.ok(!todo.some((p) => p.channel === "linkedin"));
+    assert.equal(todo.length, plans.length - 1);
+  });
+
+  it("sem estado, tudo é pendente", () => {
+    assert.equal(pendingChannels(plans, null, false).todo.length, plans.length);
+  });
+
+  it("--force ignora o registro", () => {
+    const { todo, alreadyDone } = pendingChannels(plans, state, true);
+    assert.equal(todo.length, plans.length);
+    assert.deepEqual(alreadyDone, []);
   });
 });

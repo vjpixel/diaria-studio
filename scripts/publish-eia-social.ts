@@ -31,7 +31,7 @@
  *
  * Uso:
  *   npx tsx scripts/publish-eia-social.ts --edition AAMMDD \
- *     --at 2026-08-26T09:50:00-03:00 [--skip canal[,canal]] [--dry-run]
+ *     --at 2026-08-26T09:50:00-03:00 [--skip canal[,canal]] [--dry-run] [--force]
  *
  * `--at` é obrigatório e precisa ser ISO com offset — nada de "amanhã 9h"
  * resolvido aqui: o fuso da máquina que dispara não é necessariamente o do
@@ -39,6 +39,14 @@
  *
  * `--dry-run` faz TUDO menos as chamadas de escrita (nem upload de imagem,
  * nem enfileiramento, nem Graph API) e imprime o plano.
+ *
+ * IDEMPOTENTE por canal: cada agendamento bem-sucedido é gravado em
+ * `_internal/eia-social-published.json`, e um canal já registrado é PULADO
+ * numa nova execução. Isso é o que torna o retry seguro depois de uma falha
+ * parcial — a fila do Worker não deduplica nada (cada `/queue` gera key nova
+ * com `randomUUID`), então um re-run cego viraria post duplicado em conta
+ * pública. `--force` ignora o registro; use sabendo que ele cria um post NOVO,
+ * não move o que já está agendado.
  *
  * Best-effort por canal: falha de um canal não aborta os demais — o resumo
  * final lista `scheduled` e `failed` separados, e o exit code é != 0 se
@@ -48,8 +56,8 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
@@ -78,7 +86,10 @@ export interface EiaDispatchPlan {
  */
 export function extractChannelText(md: string, channel: string): string | null {
   const normalized = md.replace(/\r\n/g, "\n");
-  const re = new RegExp(`(?:^|\\n)## ${channel}\\n([\\s\\S]*?)(?=\\n## |\\n# |$)`, "i");
+  // Termina só em `## ` ou fim do arquivo. NÃO em `# `: uma linha do corpo que
+  // por acaso comece com "# " (markdown editado à mão) truncaria o post em
+  // silêncio, e o que sai publicado seria menos do que o editor escreveu.
+  const re = new RegExp(`(?:^|\\n)## ${channel}\\n([\\s\\S]*?)(?=\\n## |$)`, "i");
   const body = normalized.match(re)?.[1]?.trim();
   if (!body) return null;
   // Uma citação `>` no topo é comentário do arquivo, nunca corpo de post.
@@ -104,11 +115,23 @@ export function buildPlans(md: string, art: { composite: string; a: string; b: s
 
 /** Pure: valida que `--at` é ISO com offset e está no futuro. */
 export function parseScheduledAt(raw: string, now: Date): string {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)$/.test(raw)) {
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)$/);
+  if (!m) {
     throw new Error(`--at inválido: ${JSON.stringify(raw)} — use ISO com offset, ex: 2026-08-26T09:50:00-03:00`);
   }
   const at = new Date(raw);
   if (Number.isNaN(at.getTime())) throw new Error(`--at não é uma data válida: ${raw}`);
+
+  // Dia fora do mês NÃO vira Invalid Date — o JS rola pra frente em silêncio
+  // (`2026-02-30` → 2 de março). Hora e mês estourados dão Invalid Date e caem
+  // acima; só o dia escapa, e um typo de dia agenda pro dia errado numa conta
+  // pública. `Date.UTC(y, mo, 0)` dá o último dia do mês `mo` (1-indexado).
+  const [, y, mo, d] = m;
+  const lastDay = new Date(Date.UTC(Number(y), Number(mo), 0)).getUTCDate();
+  if (Number(d) < 1 || Number(d) > lastDay) {
+    throw new Error(`--at tem dia inexistente no mês: ${raw} (${y}-${mo} vai até ${lastDay})`);
+  }
+
   if (at.getTime() <= now.getTime()) throw new Error(`--at está no passado: ${raw}`);
   return at.toISOString();
 }
@@ -118,12 +141,18 @@ async function scheduleFacebook(
   imageUrl: string,
   scheduledAtIso: string,
 ): Promise<string> {
-  const pageId = process.env.FACEBOOK_PAGE_ID ?? "";
   const apiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
+  let pageId = process.env.FACEBOOK_PAGE_ID ?? "";
   let token = process.env.FACEBOOK_PAGE_ACCESS_TOKEN ?? "";
-  if (!token) {
+  // Fallback pro arquivo legado nos DOIS campos, como `publish-facebook.ts`:
+  // ambiente que ainda guarda o page_id só ali funcionava lá e falharia aqui.
+  if (!pageId || !token) {
     const credsPath = resolve(process.cwd(), "data/.fb-credentials.json");
-    if (existsSync(credsPath)) token = JSON.parse(readFileSync(credsPath, "utf8")).page_access_token ?? "";
+    if (existsSync(credsPath)) {
+      const creds = JSON.parse(readFileSync(credsPath, "utf8"));
+      pageId ||= creds.page_id ?? "";
+      token ||= creds.page_access_token ?? "";
+    }
   }
   if (!pageId || !token) throw new Error("Facebook sem credencial (FACEBOOK_PAGE_ID + token no env ou data/.fb-credentials.json)");
 
@@ -143,17 +172,88 @@ async function scheduleFacebook(
   return (JSON.parse(body).id as string) ?? "(sem id)";
 }
 
+/**
+ * Estado persistido do dispatch — o que impede um re-run de duplicar post em
+ * conta pública. A fila do Worker NÃO deduplica (cada `/queue` gera uma key
+ * com `crypto.randomUUID()`), então dois dispatches idênticos viram dois
+ * posts. Mesmo papel do `06-social-published.json` da Etapa 5.
+ */
+export interface EiaPublishedState {
+  edition: string;
+  scheduled_at: string;
+  channels: Record<string, { ref: string; scheduled_at: string }>;
+}
+
+export function eiaPublishedStatePath(dir: string): string {
+  return resolve(dir, "_internal", "eia-social-published.json");
+}
+
+export function readEiaPublishedState(dir: string): EiaPublishedState | null {
+  const p = eiaPublishedStatePath(dir);
+  if (!existsSync(p)) return null;
+  return JSON.parse(readFileSync(p, "utf8")) as EiaPublishedState;
+}
+
+/**
+ * Pure: quais canais ainda precisam ser despachados.
+ *
+ * Um canal já registrado é pulado mesmo que o `--at` seja outro: reagendar
+ * exige `--force`, porque o registro anterior é um post que JÁ existe na
+ * plataforma — despachar de novo cria um segundo, não move o primeiro.
+ */
+export function pendingChannels(
+  plans: EiaDispatchPlan[],
+  state: EiaPublishedState | null,
+  force: boolean,
+): { todo: EiaDispatchPlan[]; alreadyDone: string[] } {
+  if (force || !state) return { todo: plans, alreadyDone: [] };
+  const todo: EiaDispatchPlan[] = [];
+  const alreadyDone: string[] = [];
+  for (const plan of plans) {
+    if (state.channels[plan.channel]) alreadyDone.push(plan.channel);
+    else todo.push(plan);
+  }
+  return { todo, alreadyDone };
+}
+
+/** Registra um canal recém-agendado, preservando o que já estava no arquivo. */
+export function recordScheduled(
+  dir: string,
+  edition: string,
+  scheduledAtIso: string,
+  channel: string,
+  ref: string,
+): void {
+  const p = eiaPublishedStatePath(dir);
+  mkdirSync(dirname(p), { recursive: true });
+  const prev = readEiaPublishedState(dir);
+  const next: EiaPublishedState = {
+    edition,
+    scheduled_at: scheduledAtIso,
+    channels: { ...(prev?.channels ?? {}), [channel]: { ref, scheduled_at: scheduledAtIso } },
+  };
+  writeFileSync(p, JSON.stringify(next, null, 2) + "\n");
+}
+
 export interface EiaDispatchResult {
   scheduled: { channel: string; ref: string }[];
+  skipped_already_scheduled: string[];
   failed: { channel: string; error: string }[];
   twitter_handoff: { text: string; image_url: string; due_at: string } | null;
 }
 
 async function main(): Promise<void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
-  const dir = values["out-dir"] ? resolve(values["out-dir"]) : editionDir(values.edition ?? "");
+  // `--edition` é sempre obrigatório, inclusive com `--out-dir`: ela compõe a
+  // key do KV e o `destaque`, então um default silencioso colidiria entre
+  // execuções e produziria `destaque` fora do formato `eia-\d{6}`.
+  const edition = values.edition ?? "";
+  if (!/^\d{6}$/.test(edition)) throw new Error("--edition AAMMDD é obrigatório (6 dígitos)");
+  const dir = values["out-dir"] ? resolve(values["out-dir"]) : editionDir(edition);
   const dryRun = flags.has("dry-run");
-  const skip = new Set((values.skip ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+  const force = flags.has("force");
+  // Case-insensitive: `--skip Twitter` tem que pular o twitter, não passar batido.
+  const skip = new Set((values.skip ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 
   const scheduledAtIso = parseScheduledAt(values.at ?? "", new Date());
 
@@ -169,20 +269,49 @@ async function main(): Promise<void> {
     if (!existsSync(p)) throw new Error(`Arte ausente (${k}): ${p} — rode gen-eia-linkedin-cards.ts antes.`);
   }
 
-  const plans = buildPlans(readFileSync(mdPath, "utf8"), files, skip);
-  const edition = values.edition ?? "eia";
+  const allPlans = buildPlans(readFileSync(mdPath, "utf8"), files, skip);
+  const state = readEiaPublishedState(dir);
+  const { todo: plans, alreadyDone } = pendingChannels(allPlans, state, force);
+
+  const result: EiaDispatchResult = {
+    scheduled: [],
+    skipped_already_scheduled: alreadyDone,
+    failed: [],
+    twitter_handoff: null,
+  };
+
+  if (alreadyDone.length > 0) {
+    console.log(
+      `[eia-social] já agendados, pulando: ${alreadyDone.join(", ")} — ` +
+        `${eiaPublishedStatePath(dir)}. Use --force pra despachar de novo (cria post NOVO, não move o existente).`,
+    );
+  }
+  if (plans.length === 0) {
+    console.log("[eia-social] nada a fazer.");
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
 
   console.log(`[eia-social] ${plans.length} canal(is), agendado para ${scheduledAtIso}${dryRun ? " (DRY-RUN)" : ""}`);
 
-  const result: EiaDispatchResult = { scheduled: [], failed: [], twitter_handoff: null };
+  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? "";
+  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  // Checado ANTES do upload: sem credencial do Worker os canais dele iam
+  // falhar de qualquer jeito, e aí as artes teriam subido à toa.
+  if (!dryRun && plans.some((p) => WORKER_CHANNELS.has(p.channel)) && (!workerUrl || !workerToken)) {
+    throw new Error("DIARIA_LINKEDIN_CRON_URL/TOKEN ausentes — necessários para linkedin/instagram/threads");
+  }
 
   // Upload das artes ANTES de qualquer dispatch: se o KV falhar, ninguém é
-  // agendado apontando pra imagem que não existe.
+  // agendado apontando pra imagem que não existe. Só os slots que algum canal
+  // do lote de fato usa.
   const publicUrl: Record<string, string> = {};
   const kvNamespaceId = JSON.parse(readFileSync(resolve(process.cwd(), "platform.config.json"), "utf8"))?.poll?.kv_namespace_id;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id ausente");
 
+  const neededPaths = new Set(plans.flatMap((p) => p.images));
   for (const [slot, path] of Object.entries(files)) {
+    if (!neededPaths.has(path)) continue;
     const key = `img-${edition}-eia-${slot}.jpg`;
     if (dryRun) {
       publicUrl[path] = `https://eia.diar.ia.br/img/${key}`;
@@ -191,9 +320,6 @@ async function main(): Promise<void> {
     publicUrl[path] = await uploadImageToWorkerKV(path, key, { kvNamespaceId });
     console.log(`[eia-social] arte ${slot} → ${publicUrl[path]}`);
   }
-
-  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
 
   for (const plan of plans) {
     const urls = plan.images.map((p) => publicUrl[p]);
@@ -210,8 +336,8 @@ async function main(): Promise<void> {
         continue;
       }
 
+      let ref: string;
       if (WORKER_CHANNELS.has(plan.channel)) {
-        if (!workerUrl || !workerToken) throw new Error("DIARIA_LINKEDIN_CRON_URL/TOKEN ausentes");
         const queued = await postToWorkerQueue(workerUrl, workerToken, {
           text: plan.text,
           ...(urls.length > 1 ? { image_urls: urls } : { image_url: urls[0] }),
@@ -219,10 +345,15 @@ async function main(): Promise<void> {
           destaque: `eia-${edition}`,
           channel: plan.channel as "linkedin" | "instagram" | "threads",
         });
-        result.scheduled.push({ channel: plan.channel, ref: queued.key });
+        ref = queued.key;
       } else {
-        result.scheduled.push({ channel: plan.channel, ref: await scheduleFacebook(plan.text, urls[0], scheduledAtIso) });
+        ref = await scheduleFacebook(plan.text, urls[0], scheduledAtIso);
       }
+      result.scheduled.push({ channel: plan.channel, ref });
+      // Grava a CADA canal, não no fim: um crash no meio do lote não pode
+      // apagar a memória do que já foi agendado — é isso que faz o re-run ser
+      // seguro.
+      recordScheduled(dir, edition, scheduledAtIso, plan.channel, ref);
       console.log(`[eia-social] ${plan.channel}: agendado`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
