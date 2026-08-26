@@ -115,7 +115,7 @@ const CURSOS_UTM_CAMPAIGN = CURSOS_GATE_INLINE_UTM.campaign;
 
 /** Mesmo endpoint/contrato de `subscribeToBeehiiv` do #3580 — `fetchImpl`
  * injetável pra teste, nunca faz rede real em testes. */
-export async function subscribeToBeehiiv(
+async function subscribeToBeehiiv(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -193,7 +193,7 @@ export async function subscribeToBeehiiv(
  *   (`KIT_*_FIELD`, `Env`), nenhum criado em produção ainda — degrade com
  *   graça (cadastro funciona sem eles).
  */
-export async function subscribeToKit(
+async function subscribeToKit(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -241,6 +241,42 @@ export async function subscribeToKit(
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
+/**
+ * #6291: parser tolerante de `env.SUBSCRIBE_BACKEND` — mesma classe de bug
+ * do #6048 (fallback silencioso pro backend legado), por outra porta.
+ * `"Kit"`, `"kit "`, `"beehiv"` caíam em Beehiiv sem nenhum aviso antes
+ * desta função. Trim + lowercase tolera espaço/capitalização; qualquer
+ * valor que não seja `"kit"`/`"beehiiv"`/vazio loga o valor bruto (nunca
+ * lança) antes de degradar pro default. Mesmo mecanismo de
+ * `workers/poll/src/subscribe.ts::resolveBackend`, portado (não importado —
+ * ver header do arquivo sobre acoplamento cross-worker).
+ */
+function resolveBackend(env: Pick<Env, "SUBSCRIBE_BACKEND">): "beehiiv" | "kit" {
+  const raw = (env.SUBSCRIBE_BACKEND ?? "").trim().toLowerCase();
+  if (raw === "kit") return "kit";
+  if (raw && raw !== "beehiiv") {
+    console.error(`[cursos] SUBSCRIBE_BACKEND desconhecido: ${JSON.stringify(env.SUBSCRIBE_BACKEND)} — caindo em beehiiv`);
+  }
+  return "beehiiv";
+}
+
+/**
+ * #6291: ÚNICO ponto de entrada pro cadastro — ramifica por
+ * `SUBSCRIBE_BACKEND` (via `resolveBackend`) e chama o backend certo.
+ * `subscribeToBeehiiv`/`subscribeToKit` acima NÃO são mais exportadas: um
+ * novo call site que esquecesse de ramificar (o bug original do #6048) não
+ * alcança mais as funções cruas — o compilador recusa a importação direta.
+ */
+export async function subscribeViaConfiguredBackend(
+  env: Env,
+  input: { name: string; email: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<SubscribeResult> {
+  return resolveBackend(env) === "kit"
+    ? subscribeToKit(env, input, fetchImpl)
+    : subscribeToBeehiiv(env, input, fetchImpl);
+}
+
 export interface SubscribeDeps {
   fetchImpl?: typeof fetch;
 }
@@ -281,12 +317,10 @@ export async function handleGateSubscribe(
   const rl = await checkSubscribeRateLimit(env.CURSOS_SUBSCRIBERS, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
-  // #6048: mesma seleção de backend local ao handler do worker poll — env.
-  // SUBSCRIBE_BACKEND não é lido por nenhum outro dispatch fora deste worker.
-  const result =
-    env.SUBSCRIBE_BACKEND === "kit"
-      ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl)
-      : await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl);
+  // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
+  // de `subscribeViaConfiguredBackend` acima.
+  const backend = resolveBackend(env);
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl);
   if (!result.ok) {
     // #4305: os dois ramos abaixo eram a MESMA classe de falha muda que este
     // PR corrigiu no `COOKIE_HMAC_SECRET` — 503/502 e ninguém avisado. O
@@ -306,8 +340,8 @@ export async function handleGateSubscribe(
     // Preposição concorda com o gênero de cada backend ("a Beehiiv" / "o
     // Kit") — mantém a mensagem da Beehiiv EXATAMENTE como era (regex de
     // `test/cursos-gate.test.ts` depende do texto literal).
-    const backendPhrase = env.SUBSCRIBE_BACKEND === "kit" ? "no Kit" : "na Beehiiv";
-    const credsPhrase = env.SUBSCRIBE_BACKEND === "kit" ? "do Kit" : "BEEHIIV_API_KEY/PUBLICATION_ID";
+    const backendPhrase = backend === "kit" ? "no Kit" : "na Beehiiv";
+    const credsPhrase = backend === "kit" ? "do Kit" : "BEEHIIV_API_KEY/PUBLICATION_ID";
     if (result.reason === "not_configured") {
       console.error(`[cursos] credenciais ${credsPhrase} ausentes — cadastro inline indisponível`);
       return json({ ok: false, error: "subscribe_unavailable" }, 503, env);

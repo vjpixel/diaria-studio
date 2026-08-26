@@ -360,7 +360,7 @@ export async function checkSubscribeRateLimit(
 export interface SubscribeResult {
   ok: boolean;
   status: number;
-  reason?: "not_configured" | "beehiiv_error";
+  reason?: "not_configured" | "subscribe_error";
 }
 
 /**
@@ -395,7 +395,7 @@ export const SUBSCRIBE_FETCH_TIMEOUT_MS = 8000;
  * deste arquivo); `send_welcome_email: true` dispara o fluxo de boas-vindas
  * configurado na publicação.
  */
-export async function subscribeToBeehiiv(
+async function subscribeToBeehiiv(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -440,16 +440,16 @@ export async function subscribeToBeehiiv(
       signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
     });
   } catch {
-    return { ok: false, status: 502, reason: "beehiiv_error" };
+    return { ok: false, status: 502, reason: "subscribe_error" };
   }
   if (res.ok) return { ok: true, status: res.status };
-  return { ok: false, status: res.status, reason: "beehiiv_error" };
+  return { ok: false, status: res.status, reason: "subscribe_error" };
 }
 
 /**
  * #6048 (migração Beehiiv → Kit, #461/#463): equivalente Kit de
  * `subscribeToBeehiiv` — mesmo contrato de entrada/saída, `SubscribeResult`
- * compartilhado (`reason: "beehiiv_error"` cobre também erro do Kit; nomear
+ * compartilhado (`reason: "subscribe_error"` cobre também erro do Kit; nomear
  * um `"kit_error"` separado quebraria o consumo em `handleJogarSubscribe`
  * sem ganho real — o handler só verifica `=== "not_configured"`).
  *
@@ -478,7 +478,7 @@ export async function subscribeToBeehiiv(
  * fica pro editor, no momento do switchover). Ausentes → cadastro segue
  * normal, só sem essa atribuição gravada (mesmo degrade gracioso do nome).
  */
-export async function subscribeToKit(
+async function subscribeToKit(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -525,7 +525,7 @@ export async function subscribeToKit(
     // inválido até a 1ª tentativa real de cadastro. Log estruturado, nunca
     // lança (mantém o fail-soft já documentado acima).
     console.error(`[subscribeToKit] fetch exception: ${String(err)}`);
-    return { ok: false, status: 502, reason: "beehiiv_error" };
+    return { ok: false, status: 502, reason: "subscribe_error" };
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // ver docstring acima sobre a idempotência do Kit.
@@ -534,7 +534,49 @@ export async function subscribeToKit(
   // (truncado, sem incluir o header de auth) em vez de descartar em silêncio.
   const bodyText = await res.text().catch(() => "<unreadable>");
   console.error(`[subscribeToKit] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
-  return { ok: false, status: res.status, reason: "beehiiv_error" };
+  return { ok: false, status: res.status, reason: "subscribe_error" };
+}
+
+/**
+ * #6291: parser tolerante de `env.SUBSCRIBE_BACKEND` — mesma classe de bug do
+ * #6048 (fallback silencioso pro backend legado), por outra porta. Antes
+ * desta função, todo call site fazia `env.SUBSCRIBE_BACKEND === "kit"` cru:
+ * `"Kit"`, `"kit "`, `"beehiv"` (typo) caíam em Beehiiv sem nenhum aviso —
+ * indistinguível de "backend Beehiiv escolhido de propósito". Trim + lowercase
+ * tolera espaço/capitalização; qualquer valor que não seja `"kit"`/`"beehiiv"`/
+ * vazio loga o valor bruto (nunca lança) antes de degradar pro default. O
+ * TOML do worker está fora do alcance do type checker de qualquer jeito — só
+ * o runtime pode pegar isso.
+ */
+function resolveBackend(env: Pick<Env, "SUBSCRIBE_BACKEND">): "beehiiv" | "kit" {
+  const raw = (env.SUBSCRIBE_BACKEND ?? "").trim().toLowerCase();
+  if (raw === "kit") return "kit";
+  if (raw && raw !== "beehiiv") {
+    console.error(`[subscribe] SUBSCRIBE_BACKEND desconhecido: ${JSON.stringify(env.SUBSCRIBE_BACKEND)} — caindo em beehiiv`);
+  }
+  return "beehiiv";
+}
+
+/**
+ * #6291: ÚNICO ponto de entrada pro cadastro — ramifica por
+ * `SUBSCRIBE_BACKEND` (via `resolveBackend`) e chama o backend certo.
+ * `subscribeToBeehiiv`/`subscribeToKit` acima NÃO são mais exportadas: um 6º
+ * call site que esquecesse de ramificar (o bug original do #6048) não
+ * alcança mais as funções cruas — o compilador recusa a importação direta.
+ * O erro deixa de ser detectável (por um teste de regex) e passa a ser
+ * inexprimível (por tipo). `test/subscribe-backend-branching-guard-6048.test.ts`
+ * (guard de regex que só cobria os call sites já existentes) foi removido —
+ * este é o guard estrutural que o substitui.
+ */
+export async function subscribeViaConfiguredBackend(
+  env: Env,
+  input: { name: string; email: string },
+  fetchImpl: typeof fetch = fetch,
+  utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+): Promise<SubscribeResult> {
+  return resolveBackend(env) === "kit"
+    ? subscribeToKit(env, input, fetchImpl, utm)
+    : subscribeToBeehiiv(env, input, fetchImpl, utm);
 }
 
 export interface SubscribeDeps {
@@ -543,8 +585,8 @@ export interface SubscribeDeps {
 
 /**
  * Handler `POST /jogar/subscribe` (#3580). Fluxo: parse → valida (honeypot /
- * opt-in / e-mail) → rate-limit por IP → `subscribeToBeehiiv`. Sempre responde
- * JSON (com CORS via `json(env)`).
+ * opt-in / e-mail) → rate-limit por IP → `subscribeViaConfiguredBackend`.
+ * Sempre responde JSON (com CORS via `json(env)`).
  *
  * Respostas:
  *   - 200 `{ ok: true }`  — assinou (ou honeypot silenciosamente descartado)
@@ -582,18 +624,10 @@ export async function handleJogarSubscribe(
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
   const utm = resolveSubscribeUtm(v.source);
-  // #6048: seleção de backend local a este handler — env.SUBSCRIBE_BACKEND
-  // não é lido por nenhum dispatch fora do worker `poll`, mas DENTRO do
-  // worker são 5 handlers que ramificam, não só este (achado do rollout
-  // incompleto original — ver a lista completa e o guard estrutural na
-  // docstring de `SUBSCRIBE_BACKEND` em index.ts, e
-  // test/subscribe-backend-branching-guard-6048.test.ts como fonte de
-  // verdade sobre completude). Mesmo estado do #464 pro publisher da
-  // newsletter: código pronto, switchover manual.
-  const result =
-    env.SUBSCRIBE_BACKEND === "kit"
-      ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl, utm)
-      : await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
+  // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
+  // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
+  // desguardado deixou de ser possível.
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, utm);
   if (result.ok) {
     // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
     // — fire-and-forget best-effort, DEPOIS que o cadastro na Beehiiv já foi
