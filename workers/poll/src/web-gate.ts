@@ -54,6 +54,7 @@ import type { Env } from "./index";
 import { corsHeaders, json } from "./index";
 import {
   verifySubscriberViaBeehiivByEmail,
+  verifySubscriberViaKitByEmail,
   verifySubscriberViaKv,
 } from "./subscriber-verify";
 import { checkKvRateLimit, clientIpFromRequest, type RateLimitResult } from "./rate-limit";
@@ -71,6 +72,13 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
 // `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).
 import { applyBrandWordmark } from "../../../scripts/lib/shared/brand-wordmark.ts";
+// #6048: união das fontes de verificação (KV/Beehiiv legado + Kit). Puro,
+// sem I/O — importado direto pelo mesmo motivo de `brand-wordmark` acima, em
+// vez de virar mais um espelho a manter em sincronia.
+import {
+  resolveSubscriberUnionDetailed,
+  type SourceResult,
+} from "../../../scripts/lib/shared/subscriber-union.ts";
 
 /** Nome do cookie de sessão do caminho `/jogar` — namespace próprio, distinto
  * de `diaria_cursos_session` (#4052): domínios/workers diferentes, mas o
@@ -219,19 +227,51 @@ export type GateCheckResult = "active" | "not_active";
  * disponível cai em `"not_active"` — o form de cadastro inline cobre esse caso.
  */
 export async function checkWebSubscriber(env: Env, email: string): Promise<GateCheckResult> {
+  const { state } = await checkWebSubscriberDetailed(env, email);
+  return state === "active" ? "active" : "not_active";
+}
+
+/**
+ * #6048 — a mesma verificação, preservando de ONDE veio a resposta e quais
+ * fontes falharam.
+ *
+ * Existe separado de `checkWebSubscriber` porque o `GateCheckResult` binário
+ * ("active"/"not_active") apaga a distinção que a decisão do editor exige
+ * registrar: **fonte fora do ar não é "não-assinante"**. O gate em si segue
+ * binário (o fallback documentado do #4052 — mostrar o form de cadastro — é
+ * seguro e não muda), mas quem quiser logar/medir degradação usa esta.
+ *
+ * Consulta as TRÊS fontes sempre, sem curto-circuito no primeiro `active`:
+ * o custo é uma requisição a mais num caminho já assíncrono, e em troca o
+ * `failedSources` não mente por omissão — curto-circuitar esconderia uma
+ * fonte quebrada justamente nos casos em que tudo pareceu funcionar.
+ */
+export async function checkWebSubscriberDetailed(
+  env: Env,
+  email: string,
+): Promise<ReturnType<typeof resolveSubscriberUnionDetailed>> {
+  const results: SourceResult[] = [];
+
   if (env.SUBSCRIBERS_KV) {
-    const viaKv = await verifySubscriberViaKv(env.SUBSCRIBERS_KV, email);
-    if (viaKv === "active") return "active";
+    results.push({ source: "kv", state: await verifySubscriberViaKv(env.SUBSCRIBERS_KV, email) });
   }
 
   if (env.BEEHIIV_API_KEY && env.BEEHIIV_PUBLICATION_ID) {
-    const viaApi = await verifySubscriberViaBeehiivByEmail(env.BEEHIIV_API_KEY, env.BEEHIIV_PUBLICATION_ID, email, {
-      baseUrl: env.BEEHIIV_API_URL,
+    results.push({
+      source: "beehiiv",
+      state: await verifySubscriberViaBeehiivByEmail(env.BEEHIIV_API_KEY, env.BEEHIIV_PUBLICATION_ID, email, {
+        baseUrl: env.BEEHIIV_API_URL,
+      }),
     });
-    if (viaApi === "active") return "active";
   }
 
-  return "not_active";
+  // #6048 — sem esta fonte, quem cadastrou pelo Kit (funis já migrados em
+  // #6127/#6131) vota como não-assinante. Era o buraco que fechava a issue.
+  if (env.KIT_API_KEY) {
+    results.push({ source: "kit", state: await verifySubscriberViaKitByEmail(env.KIT_API_KEY, email) });
+  }
+
+  return resolveSubscriberUnionDetailed(results);
 }
 
 /** Mesmo regex de forbidden-chars/formato de `isValidVoteEmailFormat` (lib.ts)
