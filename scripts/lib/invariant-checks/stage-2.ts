@@ -341,7 +341,7 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
   const result = checkSocialHumanizerSentinel(editionDir);
   if (result.ok) return [];
 
-  // Ação concreta nomeada explicitamente em ambos os ramos (#6316 finding 1) —
+  // Ação concreta nomeada explicitamente em ambos os ramos (#6305 finding 1 do self-review) —
   // uma mensagem que só diz "diverge"/"ausente" sem dizer o que rodar custa
   // uma sessão inteira de investigação. O ramo hash_mismatch é o caso comum
   // do fluxo legítimo pós-gate humano de §2d (editor edita 03-social.md no

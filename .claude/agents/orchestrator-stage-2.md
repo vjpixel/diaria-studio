@@ -549,7 +549,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
     ```
     Falha = warning, **não bloqueia** (gate já aprovou).
 
-  - **Re-gravar sentinel de humanizador social pós-gate (#6316).** Rodar de novo, **depois** da aprovação do gate acima e **antes** do `pipeline-sentinel.ts write` abaixo:
+  - **Re-gravar sentinel de humanizador social pós-gate (#6305).** Rodar de novo, **depois** da aprovação do gate acima e **antes** do `pipeline-sentinel.ts write` abaixo:
     ```bash
     npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
     ```

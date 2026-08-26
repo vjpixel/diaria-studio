@@ -334,7 +334,7 @@ describe("social-humanizer-sentinel-written (#6305)", () => {
   });
 
   /**
-   * #6316 finding 1 — o caso hash_mismatch dispara num fluxo LEGÍTIMO (editor
+   * #6305 finding 1 do self-review — o caso hash_mismatch dispara num fluxo LEGÍTIMO (editor
    * edita 03-social.md no gate humano de §2d, e nada re-hashava até o
    * orchestrator-stage-2.md ganhar o passo dedicado que roda
    * check-humanizer-social.ts --write de novo pós-gate). Uma mensagem que só
@@ -342,7 +342,7 @@ describe("social-humanizer-sentinel-written (#6305)", () => {
    * investigação — a mensagem precisa nomear o comando a rodar.
    */
   it("sentinel gravado mas 03-social.md mudou depois (hash_mismatch) → mensagem nomeia a ação concreta", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6316-hash-mismatch-"));
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6305-hash-mismatch-"));
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado\n");
@@ -350,7 +350,7 @@ describe("social-humanizer-sentinel-written (#6305)", () => {
       writeSentinel(dir);
 
       // Simula o gate humano de §2d editando 03-social.md DEPOIS do --write
-      // (sem re-rodar o sentinel) — o cenário legítimo que o #6316 corrige.
+      // (sem re-rodar o sentinel) — o cenário legítimo que o PR do #6305 corrige.
       writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado E editado no gate\n");
 
       const result = checkStageInvariantsForWrite(dir, 2);
