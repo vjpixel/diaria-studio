@@ -212,6 +212,26 @@ export interface SessionRecord {
   [key: string]: unknown;
 }
 
+/**
+ * Um `SessionRecord` que JÁ PASSOU por `listActiveSessions` — `stale` está
+ * computado, não é mais opcional.
+ *
+ * Existe porque a distinção importa e não estava expressa em lugar nenhum:
+ * `stale` é OPCIONAL em `SessionRecord` (nunca é persistido em disco), e todo
+ * consumidor que decide por `if (peer.stale) continue` trata `undefined`
+ * exatamente como `false`. Passar records CRUS — saídos de `readJsonSafe`/
+ * `readMergedSessionGroups` — para `findSessionConflicts`/
+ * `isIssueClaimedByOther` faria **todos** contarem como vivos em silêncio,
+ * ressuscitando claims de sessões mortas justamente nas funções que existem
+ * pra respeitar staleness (#5474).
+ *
+ * Hoje todos os call sites de produção fazem a coisa certa. Exigir este tipo
+ * na assinatura transforma isso de disciplina em garantia: o compilador
+ * recusa a lista crua, e quem quiser consultá-la precisa ir por
+ * `listActiveSessions` primeiro.
+ */
+export type ActiveSessionRecord = SessionRecord & { stale: boolean };
+
 interface MergeLockRecord {
   heldBy: string;
   acquiredAt: string;
@@ -658,8 +678,8 @@ export function listActiveSessions(
   repoRoot: string,
   now: number = Date.now(),
   maxAgeMs: number = MAX_SESSION_AGE_MS,
-): SessionRecord[] {
-  const out: SessionRecord[] = [];
+): ActiveSessionRecord[] {
+  const out: ActiveSessionRecord[] = [];
   for (const record of readMergedSessionGroups(repoRoot)) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
@@ -703,7 +723,7 @@ export interface ClaimIssueResult {
   ok: boolean;
   reason: ClaimIssueReason;
   /** Registro da sessão que já segura a issue — presente só em `blocked-by-other`. */
-  blockedBy?: SessionRecord;
+  blockedBy?: ActiveSessionRecord;
 }
 
 export interface ClaimIssueOptions {
@@ -768,7 +788,7 @@ export function claimIssueCheckAndSet(
 
   const alreadyOwn = (current.claimed_issues ?? []).includes(issueNumber);
   let reason: ClaimIssueReason = "claimed";
-  let overriddenOwner: SessionRecord | undefined;
+  let overriddenOwner: ActiveSessionRecord | undefined;
   if (alreadyOwn) {
     reason = "already-own";
   } else {
@@ -822,7 +842,7 @@ export function isIssueClaimedByOther(
   issueNumber: number,
   excludeSessionId: string,
   now: number = Date.now(),
-): SessionRecord | null {
+): ActiveSessionRecord | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
     // #5474: claim de sessão STALE (heartbeat morto ha mais de SOFT_STALE_MS,
@@ -1356,14 +1376,24 @@ export function beaconPathsOverlap(a: string, b: string): boolean {
 
 export type SessionConflictKind = "branch-drift" | "branch-shared" | "path-overlap";
 
-export interface SessionConflict {
-  kind: SessionConflictKind;
-  /** Peer envolvido — ausente em `branch-drift`, que é sobre o próprio registro. */
-  peer?: SessionRecord;
-  detail: string;
-  /** Caminhos que de fato colidiram — só em `path-overlap`. */
-  paths?: string[];
-}
+/**
+ * Union DISCRIMINADA por `kind` — a correlação entre o tipo do conflito e os
+ * campos que ele carrega é garantia de compilador, não convenção:
+ *
+ *   - `branch-drift` NUNCA tem `peer` (é sobre o próprio registro);
+ *   - `branch-shared` e `path-overlap` SEMPRE têm;
+ *   - só `path-overlap` carrega `paths`.
+ *
+ * Declarar isso como um shape único com campos opcionais deixaria
+ * `{ kind: "path-overlap", peer: undefined }` representável — semanticamente
+ * absurdo, e o consumidor precisaria re-checar `kind` antes de tocar `peer`.
+ * A Parte D da #6168 prevê consumidores que vão querer `conflict.peer.sessionId`
+ * pra abrir conversa com quem colidiu; a union dá exhaustiveness a eles de graça.
+ */
+export type SessionConflict =
+  | { kind: "branch-drift"; detail: string }
+  | { kind: "branch-shared"; peer: ActiveSessionRecord; detail: string }
+  | { kind: "path-overlap"; peer: ActiveSessionRecord; detail: string; paths: string[] };
 
 export interface FindSessionConflictsOptions {
   /** `sessionId` de quem pergunta — sempre excluído dos peers. */
@@ -1407,7 +1437,7 @@ export interface FindSessionConflictsOptions {
  * (#6168), então uma sessão interativa morta há 15 min já não bloqueia.
  */
 export function findSessionConflicts(
-  sessions: readonly SessionRecord[],
+  sessions: readonly ActiveSessionRecord[],
   opts: FindSessionConflictsOptions,
 ): SessionConflict[] {
   const conflicts: SessionConflict[] = [];
@@ -1662,7 +1692,7 @@ export function findLiveMergeGrant(
   repoRoot: string,
   sessionId: string,
   now: number = Date.now(),
-): { grant: MergeGrant; grantedBy: SessionRecord } | null {
+): { grant: MergeGrant; grantedBy: ActiveSessionRecord } | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (!isCoordinatorKind(session.kind)) continue;
     if (session.stale) continue;
