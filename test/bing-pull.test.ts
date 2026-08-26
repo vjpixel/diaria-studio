@@ -457,7 +457,7 @@ describe("parseBingKeywordSeedsCsv (#5253)", () => {
 
 describe("bingKeywordSeedsPath (#5253)", () => {
   it("aponta pra seed/keywords.csv relativo ao root informado", () => {
-    // Separador vem de `path.join` (#6206): comparar contra `/repo/seed/...`
+    // Separador vem de `path.resolve` (#6206): comparar contra `/repo/seed/...`
     // literal só valia em POSIX — no Windows a função devolve
     // `C:\repo\seed\keywords.csv`, correto, e a regex acusava defeito onde não
     // havia. O que interessa é "é `seed/keywords.csv` DENTRO do root", e isso
