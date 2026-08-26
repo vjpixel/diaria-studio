@@ -9,6 +9,10 @@ name: PR Checks (#970)
 #    workers/arquivo/src/hubs/*.generated.ts correspondente. Roda isolado do
 #    job `test` completo (~5min) do ci.yml pra pegar o drift em segundos
 #    (#4897 — o padrão pegou o CI de surpresa 3x na mesma sessão develop).
+# 5. Typecheck ratchet: tsc -p tsconfig.test.json --noEmit (scripts/** +
+#    test/**, diferente do tsconfig.json raiz do ci.yml que só cobre
+#    scripts/**) contra baseline committed (tsc-baseline.json) — só reprova
+#    erro de tipo NOVO, nunca os ~1.062 pré-existentes (#6217).
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -102,3 +106,24 @@ jobs:
       - run: npm ci
       - name: Run test/hub-page-drift.test.ts
         run: npx tsx --test test/hub-page-drift.test.ts
+
+  typecheck-ratchet:
+    # #6217 — tsconfig.json raiz (npm run typecheck, ci.yml) só cobre
+    # scripts/**, deixando todo guard de tipo escrito em test/** decorativo.
+    # Este check liga tsconfig.test.json (scripts/** + test/**) sem
+    # reprovar o master pelos erros pré-existentes (~1.062 na baseline
+    # inicial) — só falha quando aparece um erro NOVO (arquivo+código sem
+    # entry em tsc-baseline.json, ou mais ocorrências de um erro já
+    # conhecido). Ver scripts/lib/tsc-baseline.ts pro contrato exato e
+    # scripts/typecheck-ratchet.ts pra como baixar a baseline.
+    name: Typecheck ratchet (test/**, #6217)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run typecheck-ratchet
+        run: npx tsx scripts/typecheck-ratchet.ts

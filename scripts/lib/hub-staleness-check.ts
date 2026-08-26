@@ -150,45 +150,99 @@ export function staleEntryKey(entry: Pick<StaleHubEdition, "hubSlug" | "editionS
   return `${entry.hubSlug}:${entry.editionSlug}`;
 }
 
-/** Converte uma entrada vencida (`AgedStaleHubEdition`, já filtrada por
- * `filterOverdue`) no `AlarmFinding` genérico que `scripts/lib/alarm-issues.ts`
- * consome (#6151, mesmo padrão de `hub-drift-check.ts`'s `toAlarmFinding`).
- * `check` = slug do hub (cada hub é seu próprio eixo, mesma convenção de
- * `hub-drift-check.ts`). `fingerprint` = `staleEntryKey` — a MESMA chave
- * usada pelo mapa de 1ª-detecção e por `computeStalenessFingerprint`, então
- * a issue de uma entrada específica (hub+edição) é estável entre execuções.
- * `family: "estado"` — a condição observada ("esta edição está no dataset
- * commitado?") é RE-CHECÁVEL a cada execução: assim que o editor regenerar
- * o dataset do hub, a entrada some de `stale` e o mecanismo de streak
+/** Pura: agrupa entradas vencidas por `hubSlug` — granularidade REAL da
+ * issue (#6254: a versão anterior gerava 1 `AlarmFinding` por entrada,
+ * ou seja, por `(hub × edição)` — 11 issues pra 4 hubs na rodada 260826).
+ * Ordena por `hubSlug` (determinístico) e preserva a ordem de `overdue`
+ * dentro de cada grupo (já vem ordenada por `findStaleHubEditions`). */
+export function groupOverdueByHub(
+  overdue: readonly AgedStaleHubEdition[],
+): { hubSlug: string; entries: AgedStaleHubEdition[] }[] {
+  const byHub = new Map<string, AgedStaleHubEdition[]>();
+  for (const entry of overdue) {
+    const list = byHub.get(entry.hubSlug) ?? [];
+    list.push(entry);
+    byHub.set(entry.hubSlug, list);
+  }
+  return [...byHub.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([hubSlug, entries]) => ({ hubSlug, entries }));
+}
+
+/** Fingerprint fixo do achado "hub defasado" (#6254). Antes do #6254 o
+ * fingerprint era `staleEntryKey(entry)` = `${hubSlug}:${editionSlug}` —
+ * como o MARCADOR de dedup é sempre `${check}:${fingerprint}`
+ * (`alarmFindingMarker`, `scripts/lib/alarm-issues.ts`) e `check` já É o
+ * `hubSlug`, o marcador saía com o hub duplicado
+ * (`anthropic-claude:anthropic-claude:edicao`). Com a granularidade agora
+ * fixada em "1 issue por hub" (`check` já identifica o achado sozinho), o
+ * fingerprint não precisa carregar mais nenhuma informação — só não pode
+ * repetir `check`. Constante, não vazio, pra ficar legível no marcador
+ * (`anthropic-claude:dataset-defasado`) e não colidir com o fingerprint
+ * "vazio" de nenhum outro achado deste `check`. */
+export const STALE_HUB_FINDING_FINGERPRINT = "dataset-defasado";
+
+/** Converte TODAS as entradas vencidas de UM hub (agrupadas por
+ * `groupOverdueByHub`) num único `AlarmFinding` que `scripts/lib/alarm-issues.ts`
+ * consome (#6151, granularidade corrigida no #6254 — mesmo padrão de
+ * `hub-drift-check.ts`'s `toAlarmFinding`, mas 1:N em vez de 1:1). `check` =
+ * slug do hub (cada hub é seu próprio eixo, mesma convenção de
+ * `hub-drift-check.ts`). `fingerprint` = `STALE_HUB_FINDING_FINGERPRINT`
+ * (constante — ver docstring dela) — a issue de um hub é estável entre
+ * execuções INDEPENDENTE de quais edições específicas estão vencidas no
+ * momento; o corpo lista todas elas. `family: "estado"` — a condição
+ * observada ("este hub tem alguma edição fora do dataset commitado?") é
+ * RE-CHECÁVEL a cada execução: assim que a ÚLTIMA edição vencida do hub for
+ * regenerada, o hub some de `overdue` e o mecanismo de streak
  * comenta/fecha a issue sozinho (mesmo racional de `hub-drift-check.ts`).
  * Toda entrada nasce `P3` — cleanup/regen manual sem urgência de produção
  * (diferente do `hub-drift-check.ts`, que é `P2` porque um hub fora do ar é
- * um 404 real pro leitor; aqui é só um link interno que ainda não existe). */
-export function toAlarmFinding(entry: AgedStaleHubEdition): AlarmFinding {
-  const label = entry.editionTitle ?? entry.matchedHeadlines[0] ?? entry.editionSlug;
+ * um 404 real pro leitor; aqui é só um link interno que ainda não existe).
+ *
+ * **Limitação conhecida (#6254, registrada no PR — fora do escopo desta
+ * unidade):** se uma NOVA edição do mesmo hub ficar vencida enquanto a
+ * issue já está aberta, `ensureAlarmIssue` REUSA a issue existente (mesmo
+ * fingerprint) sem editar o corpo — a lista de edições da issue fica
+ * congelada na última vez que ela foi criada/reaberta, mesmo que o
+ * conjunto real (`overdue`) tenha crescido. A issue permanece correta
+ * quanto ao FATO "este hub está defasado" (não gera issue duplicada, não
+ * fecha cedo demais), só a lista detalhada pode ficar desatualizada — o
+ * snapshot diário (`data/hubs/staleness-{data}.json`) é a fonte sempre
+ * atual caso o corpo da issue precise ser conferido. */
+export function toAlarmFinding(hubSlug: string, entries: readonly AgedStaleHubEdition[]): AlarmFinding {
+  const sorted = [...entries].sort(
+    (a, b) => a.date.localeCompare(b.date) || a.editionSlug.localeCompare(b.editionSlug),
+  );
   return {
-    check: entry.hubSlug,
-    fingerprint: staleEntryKey(entry),
+    check: hubSlug,
+    fingerprint: STALE_HUB_FINDING_FINGERPRINT,
     family: "estado",
-    title: `[diar.ia.br] hub "${entry.hubSlug}" defasado — edição ${entry.editionSlug} fora do dataset`,
+    title: `[diar.ia.br] hub "${hubSlug}" defasado — ${sorted.length} edição(ões) fora do dataset`,
     body: [
       "Achado automático do alarme `Diaria-Hub-Staleness-Check`",
       "(`scripts/hub-staleness-check.ts`).",
       "",
-      `Hub: ${entry.hubSlug}`,
-      `Edição: ${entry.date} ${entry.editionSlug} ("${label}")`,
-      `Defasada desde ${entry.firstSeenDate} (${entry.ageDays} dia(s)).`,
+      `Hub: ${hubSlug}`,
+      `${sorted.length} edição(ões) defasada(s):`,
+      ...sorted.map((entry) => {
+        const label = entry.editionTitle ?? entry.matchedHeadlines[0] ?? entry.editionSlug;
+        return `  - ${entry.date} ${entry.editionSlug} ("${label}") — defasada desde ${entry.firstSeenDate} (${entry.ageDays} dia(s))`;
+      }),
       "",
-      "A edição casa HUB_KEYWORD_PATTERNS deste hub mas seu slug não aparece",
-      `no dataset commitado (\`scripts/lib/hubs/${entry.hubSlug}-sources.generated.json\`).`,
+      "A(s) edição(ões) acima casam HUB_KEYWORD_PATTERNS deste hub mas seu slug",
+      `não aparece no dataset commitado (\`scripts/lib/hubs/${hubSlug}-sources.generated.json\`).`,
       "",
       "Regenerar (decisão editorial de timing, #4924 item 2 — nunca automático):",
-      `  npx tsx scripts/generate-hub-sources.ts --hub ${entry.hubSlug}`,
+      `  npx tsx scripts/generate-hub-sources.ts --hub ${hubSlug}`,
       "  npx tsx scripts/build-hub-page.ts --all",
       "",
-      "Esta issue é criada automaticamente pelo alarme (#6151, mesmo padrão do",
-      "#5339) e será comentada/fechada sozinha quando a edição deixar de",
-      "aparecer como vencida (regenerada) por execuções consecutivas.",
+      "Esta issue é criada automaticamente pelo alarme (#6151/#6254, mesmo padrão",
+      "do #5339) e cobre TODAS as edições vencidas deste hub numa única issue.",
+      "Será comentada/fechada sozinha quando NENHUMA edição do hub aparecer mais",
+      "como vencida (dataset regenerado) por execuções consecutivas. Se uma nova",
+      "edição vencer enquanto esta issue está aberta, o corpo NÃO é atualizado",
+      "automaticamente (#6254, limitação conhecida) — conferir",
+      "`data/hubs/staleness-{data}.json` pro snapshot mais atual.",
     ].join("\n"),
     labels: ["enhancement"],
     priority: "P3",
@@ -300,11 +354,13 @@ export function shouldAlarmStaleness(
 }
 
 /** Pura: assunto + corpo (texto puro) do e-mail de alarme — mesmo padrão
- * de `buildHubDriftAlarmEmail`. `issueRefs` (#6151, opcional) — mapa
- * `staleEntryKey -> {issueNumber, url, action, error}` de
- * `scripts/lib/alarm-issues.ts`, usado pra citar a issue de cada entrada
- * vencida. `undefined` (dry-run, ou wiring ainda não chamado) omite a
- * citação sem quebrar nada — mesmo fallback de `buildHubDriftAlarmEmail`. */
+ * de `buildHubDriftAlarmEmail`. `issueRefs` (#6151, opcional; chave mudou
+ * de `staleEntryKey` pra `hubSlug` no #6254 — granularidade da issue agora
+ * é por hub, não por hub+edição) — mapa `hubSlug -> {issueNumber, url,
+ * action, error}` de `scripts/lib/alarm-issues.ts`, usado pra citar a
+ * issue de cada hub vencido (1 citação por hub, não repetida por edição).
+ * `undefined` (dry-run, ou wiring ainda não chamado) omite a citação sem
+ * quebrar nada — mesmo fallback de `buildHubDriftAlarmEmail`. */
 export function buildStalenessAlarmEmail(
   overdue: readonly AgedStaleHubEdition[],
   thresholdDays: number,
@@ -329,17 +385,17 @@ export function buildStalenessAlarmEmail(
   }
   for (const [hubSlug, entries] of [...byHub.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${hubSlug}:`);
+    const ref = issueRefs?.get(hubSlug);
+    if (ref) {
+      lines.push(
+        ref.action === "failed"
+          ? `    Issue: falha ao criar/reusar (${ref.error})`
+          : `    Issue: #${ref.issueNumber} (${ref.url})`,
+      );
+    }
     for (const e of entries) {
       const label = e.editionTitle ?? e.matchedHeadlines[0] ?? e.editionSlug;
       lines.push(`    - ${e.date} ${e.editionSlug} ("${label}") — defasada há ${e.ageDays} dia(s)`);
-      const ref = issueRefs?.get(staleEntryKey(e));
-      if (ref) {
-        lines.push(
-          ref.action === "failed"
-            ? `      Issue: falha ao criar/reusar (${ref.error})`
-            : `      Issue: #${ref.issueNumber} (${ref.url})`,
-        );
-      }
     }
   }
   lines.push(

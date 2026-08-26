@@ -38,21 +38,26 @@
  * no caminho de PR. O comando sugerido (`buildRegenCommands`, impresso no
  * e-mail/relatório) é rodado manualmente pelo editor.
  *
- * **Issue no GitHub por entrada vencida (#6151, mesmo padrão do #5339).**
- * Diferente dos outros 9+ alarmes deste repo, este script mandava só e-mail
- * — o achado não deixava rastro persistente além da caixa de entrada
- * (achado #6151: dedup do e-mail confirmou que o mesmo drift já tinha sido
- * alarmado antes, sem nenhuma issue aberta cobrindo). Cada entrada vencida
- * agora vira/reusa 1 issue via `scripts/lib/alarm-issues.ts`
- * (`toAlarmFinding`, `scripts/lib/hub-staleness-check.ts`) — `check` = slug
- * do hub, `fingerprint` = `staleEntryKey` (hub+edição), `family: "estado"`
- * (a issue se auto-comenta/fecha quando o editor regenerar o dataset e a
- * entrada sumir de `stale`). Estado de tracking em
- * `data/hubs/alarm-issues.json` (separado de `staleness-state.json` — mesmo
- * racional de `hub-drift-check.ts`: idempotência do e-mail e tracking de
- * issue são preocupações independentes). Continua **NUNCA** rodando os
- * regens sozinho — a issue só documenta o achado, a decisão de quando
- * regenerar continua manual (#4924 item 2).
+ * **Issue no GitHub por HUB defasado (#6151, mesmo padrão do #5339;
+ * granularidade corrigida no #6254).** Diferente dos outros 9+ alarmes
+ * deste repo, este script mandava só e-mail — o achado não deixava rastro
+ * persistente além da caixa de entrada (achado #6151: dedup do e-mail
+ * confirmou que o mesmo drift já tinha sido alarmado antes, sem nenhuma
+ * issue aberta cobrindo). Todas as entradas vencidas de um mesmo hub agora
+ * viram/reusam 1 ÚNICA issue via `scripts/lib/alarm-issues.ts`
+ * (`groupOverdueByHub` + `toAlarmFinding`, `scripts/lib/hub-staleness-check.ts`)
+ * — `check` = slug do hub, `fingerprint` = constante
+ * (`STALE_HUB_FINDING_FINGERPRINT`), `family: "estado"` (a issue se
+ * auto-comenta/fecha quando NENHUMA edição do hub aparecer mais como
+ * vencida). **Achado #6254 (260826): a 1ª versão gerava 1 issue por
+ * `(hub × edição)` — 11 issues pra 4 hubs numa única rodada, crescendo sem
+ * teto — porque `fingerprint` incluía o slug da edição.** Estado de
+ * tracking em `data/hubs/alarm-issues.json` (separado de
+ * `staleness-state.json` — mesmo racional de `hub-drift-check.ts`:
+ * idempotência do e-mail e tracking de issue são preocupações
+ * independentes). Continua **NUNCA** rodando os regens sozinho — a issue só
+ * documenta o achado, a decisão de quando regenerar continua manual (#4924
+ * item 2).
  *
  * Uso:
  *   npx tsx scripts/hub-staleness-check.ts                       # detecta + persiste + alarma se necessário
@@ -84,6 +89,7 @@ import {
   buildStalenessAlarmEmail,
   emptyStalenessAlarmState,
   toAlarmFinding,
+  groupOverdueByHub,
   type StaleHubEdition,
   type StaleFirstSeenMap,
   type StalenessAlarmState,
@@ -247,7 +253,9 @@ async function main(): Promise<void> {
   // e-mail cita a issue de cada achado pendente), mesmo padrão de
   // hub-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
-  const alarmFindings = overdue.map(toAlarmFinding);
+  // #6254 — 1 finding POR HUB (agrupado via groupOverdueByHub), não 1 por
+  // entrada — a versão anterior gerava 1 issue por (hub × edição).
+  const alarmFindings = groupOverdueByHub(overdue).map(({ hubSlug, entries }) => toAlarmFinding(hubSlug, entries));
   const alarmIssuesState = loadAlarmIssuesState();
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
 
@@ -270,11 +278,13 @@ async function main(): Promise<void> {
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
   });
   saveAlarmIssuesState(nextAlarmIssuesState);
-  // `fingerprint` já É `staleEntryKey(entry)` (ver `toAlarmFinding`) — a
-  // mesma chave que `buildStalenessAlarmEmail` usa pra citar a issue.
+  // #6254 — chave agora é `o.check` (= hubSlug), não mais `o.fingerprint`
+  // (que virou uma constante, `STALE_HUB_FINDING_FINGERPRINT` — a
+  // granularidade da issue é por hub). `buildStalenessAlarmEmail` faz o
+  // mesmo lookup por hubSlug.
   issueRefs = new Map(
     findingOutcomes.map((o) => [
-      o.fingerprint,
+      o.check,
       { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
     ]),
   );
