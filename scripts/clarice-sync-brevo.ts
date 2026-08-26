@@ -33,7 +33,12 @@
  * destinatários das campanhas enviadas numa janela recente
  * (`--opens-window-days`, default 7 dias — encolhida de 30 no #5946 pra
  * caber no teto de 100 req/hora da Brevo (ver docstring de
- * `DEFAULT_OPENS_CATCHUP_WINDOW_DAYS` abaixo para o histórico completo),
+ * `DEFAULT_OPENS_CATCHUP_WINDOW_DAYS` abaixo para o histórico completo)) e
+ * fatiando QUANTAS dentro da janela são forçadas a re-exportar POR RUN
+ * (`--opens-max-refresh`, default 20 — ver docstring de
+ * `DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN`, #5946 follow-up: a janela
+ * sozinha não bastou, o volume DENTRO dela continuou crescendo com a
+ * cadência de envio),
  * reusando a MESMA infra de export por campanha, já validada ao vivo em
  * 260802) via `POST /emailCampaigns/{id}/exportRecipients`, que reporta
  * `Total Opens` por destinatário independente de `modifiedAt`. Os e-mails com
@@ -71,9 +76,11 @@ import {
   makeRealCampaignExportClient,
   getOrFetchCampaignCache,
   isWithinRefetchWindow,
+  loadCampaignCache,
   CAMPAIGN_CACHE_DIR,
   type CampaignExportClient,
   type CampaignCache,
+  type SentCampaignRef,
 } from "./clarice-engagement-cohorts-v2.ts"; // #4688: reusa a infra de export por campanha (#4451)
 
 /**
@@ -199,6 +206,72 @@ export const DEFAULT_OPENS_CATCHUP_WINDOW_DAYS = 7;
 export const OPENS_CATCHUP_CACHE_DIR = resolve(CAMPAIGN_CACHE_DIR, "..", "opens-catchup");
 
 /**
+ * #5946: teto de quantas campanhas JÁ CACHEADAS este RUN força re-export
+ * (`forceRefresh: true`). Antes desta issue, TODA campanha na janela era
+ * forçada todo dia (`forceRefresh: true` incondicional) — quando a janela
+ * cresceu (~62-121 campanhas, ver diagnóstico da issue), isso sozinho
+ * excede o teto de 100 req/hora/CONTA da família `/v3/emailCampaigns*`
+ * (`docs/brevo-rate-limits.md`), compartilhado com `clarice-build-segment.ts`/
+ * `clarice-plan-wave.ts` na mesma hora.
+ *
+ * A janela (#5946, PR #5971) já foi encolhida de 30→7 dias, mas o volume de
+ * campanhas DENTRO da janela continua crescendo com a cadência de envio —
+ * encolher a janela de novo penaliza a cobertura de opens tardios. Em vez
+ * disso, fatia-se o TRABALHO por execução: só as `maxRefreshPerRun`
+ * campanhas mais "estagnadas" (sem export, ou com o `exportedAt` mais
+ * antigo — `pickCampaignsToRefresh` abaixo) são forçadas a re-exportar
+ * nesta run; as demais reusam o cache em disco já existente (sem chamada de
+ * rede — `getOrFetchCampaignCache` com `forceRefresh: false` só busca se
+ * NÃO houver cache, então uma campanha nunca vista ainda é sempre buscada,
+ * independente do teto).
+ *
+ * Progresso é DURÁVEL sem precisar de um checkpoint dedicado: o
+ * `exportedAt` de cada `CampaignCache` já persiste em disco
+ * (`OPENS_CATCHUP_CACHE_DIR`) entre execuções — a campanha refrescada hoje
+ * fica com `exportedAt` recente e cai para o fim da fila de prioridade
+ * amanhã; a que não coube hoje (a mais antiga) sobe pro topo. Rotação
+ * auto-corretiva: uma campanha que falhar o export mantém o `exportedAt`
+ * velho (ou ausente) e continua prioritária nas próximas execuções, até
+ * conseguir. 20 campanhas ≈ 2 chamadas Brevo cada (export + poll) ≈ 40
+ * requisições — cabe com folga no teto de 100/h mesmo somando a paginação
+ * do listing e outros consumidores da mesma hora.
+ */
+export const DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN = 20;
+
+/**
+ * #5946: decide QUAIS campanhas (dentre as `recent`, já filtradas pela
+ * janela) ganham `forceRefresh: true` nesta execução. Pura/testável — sem
+ * I/O, recebe o `exportedAt` já lido do cache em disco pelo chamador.
+ *
+ * Prioridade: campanha SEM cache (nunca exportada — `undefined`) sempre
+ * vem antes de qualquer campanha já cacheada (precisa de baseline antes de
+ * mais nada); entre as já cacheadas, a de `exportedAt` mais ANTIGO (a mais
+ * estagnada, a que há mais tempo não recebe re-export) vem primeiro. Ordem
+ * estável por id em empates (determinístico p/ teste). `max <= 0` ou
+ * `recent.length <= max` → sem corte, refresca todas (comportamento
+ * anterior preservado quando o volume já cabe no orçamento).
+ */
+export function pickCampaignsToRefresh(
+  recent: SentCampaignRef[],
+  exportedAtById: Map<number, string | undefined>,
+  max: number,
+): Set<number> {
+  if (max <= 0 || recent.length <= max) return new Set(recent.map((c) => c.id));
+  const ranked = [...recent].sort((a, b) => {
+    const ea = exportedAtById.get(a.id);
+    const eb = exportedAtById.get(b.id);
+    if (ea === undefined && eb === undefined) return a.id - b.id;
+    if (ea === undefined) return -1; // nunca exportada → prioridade máxima
+    if (eb === undefined) return 1;
+    const ta = Date.parse(ea);
+    const tb = Date.parse(eb);
+    if (ta !== tb) return ta - tb; // mais antigo primeiro
+    return a.id - b.id;
+  });
+  return new Set(ranked.slice(0, max).map((c) => c.id));
+}
+
+/**
  * Extrai o conjunto de e-mails normalizados com abertura registrada em
  * QUALQUER dos caches de campanha passados (union — um opener em 2
  * campanhas diferentes entra 1x). Pura — testável sem rede (#633).
@@ -224,6 +297,14 @@ export interface OpensCatchupDeps {
   windowDays?: number;
   nowMs?: number;
   concurrency?: number;
+  /**
+   * #5946: teto de campanhas JÁ CACHEADAS forçadas a re-exportar nesta run
+   * (ver docstring de `DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN`). Campanha
+   * sem cache ainda é sempre buscada, independente deste teto — só o
+   * RE-fetch de quem já tem baseline é fatiado. `undefined` cai no default;
+   * `<= 0` desliga o fatiamento (refresca todas, comportamento pré-#5946).
+   */
+  maxRefreshPerRun?: number;
   /**
    * #4722 item 2: mesma semântica do `--limit` do loop principal — trunca
    * quantos openers são de fato re-buscados/upsertados (debug/teste rápido).
@@ -253,6 +334,16 @@ export interface OpensCatchupDeps {
 export interface OpensCatchupResult {
   campaignsConsidered: number;
   campaignsInWindow: number;
+  /**
+   * #5946: campanhas na janela que NÃO foram re-exportadas nesta execução por
+   * causa do teto `maxRefreshPerRun` — leram do cache em disco. Sem este
+   * número, um streak que persista depois do fatiamento é indiagnosticável:
+   * `campaignsInWindow` conta todas as campanhas da janela (refrescadas ou
+   * não), então não distingue "o teto está grande demais pra cota do momento"
+   * de "o problema não era volume de re-export". É a primeira pergunta de
+   * quem for investigar o próximo streak do alarme #5339.
+   */
+  campaignsSkippedRefresh: number;
   campaignsFailed: number;
   openersFound: number;
   contactsUpdated: number;
@@ -297,6 +388,18 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   const campaigns = await deps.client.listSentCampaigns();
   const recent = campaigns.filter((c) => isWithinRefetchWindow(c, nowMs, windowDays));
 
+  // #5946: fatia QUAIS campanhas da janela são forçadas a re-exportar nesta
+  // run (ver docstring de DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN/
+  // pickCampaignsToRefresh) — o teto protege a cota compartilhada da família
+  // /v3/emailCampaigns* sem encolher a janela em si. Lê o `exportedAt` já
+  // persistido em disco (fonte de progresso durável entre execuções, sem
+  // checkpoint dedicado).
+  const maxRefreshPerRun = deps.maxRefreshPerRun ?? DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN;
+  const exportedAtById = new Map<number, string | undefined>(
+    recent.map((c) => [c.id, loadCampaignCache(c.id, cacheDir)?.exportedAt]),
+  );
+  const toForceRefresh = pickCampaignsToRefresh(recent, exportedAtById, maxRefreshPerRun);
+
   const caches: CampaignCache[] = [];
   let campaignsFailed = 0;
   // #5401: era um `for` SEQUENCIAL — 1 export+poll+download de CSV por vez.
@@ -317,11 +420,13 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   // loop estar sequencial.
   await pool(recent, concurrency, async (campaign) => {
     try {
-      // dentro da janela → sempre re-exporta (mesma semântica de isWithinRefetchWindow
-      // em clarice-engagement-cohorts-v2.ts: captura engajamento tardio).
+      // #5946: só as `maxRefreshPerRun` campanhas mais estagnadas (ou sem
+      // cache ainda) forçam re-export nesta run — as demais reusam o cache
+      // em disco (forceRefresh: false só bate a rede se NÃO houver cache,
+      // então uma campanha nova é sempre buscada mesmo fora do teto).
       const { cache } = await getOrFetchCampaignCache(deps.client, campaign, {
         cacheDir,
-        forceRefresh: true,
+        forceRefresh: toForceRefresh.has(campaign.id),
       });
       caches.push(cache);
     } catch (e) {
@@ -413,6 +518,13 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   return {
     campaignsConsidered: campaigns.length,
     campaignsInWindow: recent.length,
+    // Só conta quem REALMENTE leu do cache: campanha sem `exportedAt` é
+    // sempre exportada (não há baseline em disco pra reusar), esteja ela no
+    // teto ou não — `recent.length - toForceRefresh.size` contaria essas
+    // erradamente como puladas.
+    campaignsSkippedRefresh: recent.filter(
+      (c) => exportedAtById.get(c.id) !== undefined && !toForceRefresh.has(c.id),
+    ).length,
     campaignsFailed,
     openersFound: openersFull.size,
     contactsUpdated,
@@ -480,6 +592,11 @@ export async function main(
   const catchOpensEnabled = !hasFlag(argv, "no-catch-opens");
   const opensWindowDays =
     getIntArg(argv, "opens-window-days") ?? DEFAULT_OPENS_CATCHUP_WINDOW_DAYS;
+  // #5946: teto de campanhas JÁ CACHEADAS forçadas a re-exportar por run —
+  // ver docstring de DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN.
+  // `--opens-max-refresh 0` desliga o fatiamento (comportamento pré-#5946).
+  const opensMaxRefreshPerRun =
+    getIntArg(argv, "opens-max-refresh", { min: 0 }) ?? DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN;
   // #4717 follow-up (achado 1): SEMPRE passado explicitamente pro
   // runOpensCatchup abaixo — nunca deixar o default implícito de dentro de
   // runOpensCatchup decidir. `--cache-dir` existe só pra teste isolar o
@@ -596,7 +713,8 @@ export async function main(
   let opensCatchup: OpensCatchupOutcome | null = null;
   if (modifiedSince && catchOpensEnabled) {
     console.error(
-      `🔄 catch-up de opens (janela ${opensWindowDays}d) — campanhas enviadas recentemente…`,
+      `🔄 catch-up de opens (janela ${opensWindowDays}d, até ${opensMaxRefreshPerRun || "∞"} ` +
+        `re-export(s)/run) — campanhas enviadas recentemente…`,
     );
     try {
       const campaignClient = makeRealCampaignExportClient(apiKey);
@@ -610,6 +728,7 @@ export async function main(
         windowDays: opensWindowDays,
         concurrency, // #4688 self-review: reusa o mesmo --concurrency do loop principal (era hardcoded default 4)
         cacheDir: opensCatchupCacheDir, // #4717 follow-up (achado 1 + 5): nunca o default implícito
+        maxRefreshPerRun: opensMaxRefreshPerRun, // #5946: fatia o re-export por run pra caber no rate limit
         limit: limitArg > 0 ? limitArg : undefined, // #4722 item 2: --limit agora também cobre o catch-up
         transaction: (fn) => {
           // #4722 item 3: mesmo padrão BEGIN/COMMIT/ROLLBACK do flush() do
@@ -627,7 +746,8 @@ export async function main(
       });
       console.error(
         `✅ catch-up: ${result.campaignsInWindow}/${result.campaignsConsidered} campanhas na janela ` +
-          `(${result.campaignsFailed} falharam) · ${result.openersFound} openers · ` +
+          `(${result.campaignsFailed} falharam, ${result.campaignsSkippedRefresh} do cache sem re-export) · ` +
+          `${result.openersFound} openers · ` +
           `${result.contactsUpdated} contatos atualizados (${result.contactsFailed} falharam)`,
       );
       opensCatchup = { ok: true, result };
