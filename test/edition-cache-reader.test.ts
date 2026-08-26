@@ -168,6 +168,16 @@ describe("normalizeKitBroadcast", () => {
     assert.equal(got.stats, undefined);
   });
 
+  it("propaga `public` sem transformação (#6184 — discriminador de edição real vs probe/teste)", () => {
+    // gen-archive-pages.ts (#6184) filtra sobre este campo antes de gerar
+    // página de acervo pra um broadcast Kit — se este passthrough quebrar,
+    // probe/piloto/test-send voltariam a ficar indistinguíveis de edição
+    // real neste módulo (mesmo risco que #6362 item 2 já documentou pro
+    // lado da leitura REST ao vivo).
+    assert.equal(normalizeKitBroadcast({ ...baseSummary, public: true }).public, true);
+    assert.equal(normalizeKitBroadcast({ ...baseSummary, public: false }).public, false);
+  });
+
   it("com `clicks` no raw file, stats.clicks normaliza cada item (#6185)", () => {
     const got = normalizeKitBroadcast({
       ...baseSummary,
