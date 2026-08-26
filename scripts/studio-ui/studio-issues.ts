@@ -46,7 +46,7 @@
  */
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
-import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack } from "../lib/issue-exec-track.ts";
+import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -106,7 +106,7 @@ export interface TriageIssue {
    * explícito, ex.: `label:alarm-evento`) de `overnight` **por omissão**
    * (`default` — nenhuma label disse o contrário, ninguém olhou). `null` só
    * quando a classificação foi feita sem o detalhe (caller legado). */
-  execTrackMatched: string | null;
+  execTrackMatched: ExecTrackMatch | null;
 }
 
 export interface TriagePr {
@@ -265,7 +265,7 @@ ${i.body ?? ""}`);
       // qualquer input, e `classifyExecTrack` só protege contra issue
       // fechada quando `state` chega até ela.
       execTrack: result.track,
-      execTrackMatched: result.matched,
+      execTrackMatched: result.matched as ExecTrackMatch,
     };
   });
 }
