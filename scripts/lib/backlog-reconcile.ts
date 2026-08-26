@@ -376,10 +376,45 @@ export interface SiblingBlockLabelInconsistencyAlarm {
  * a função agrupa por mãe internamente; diferente dos padrões 1-4, que
  * operam issue-a-issue, este precisa ver o conjunto de uma vez.
  */
+/**
+ * Marcador que SILENCIA o alarme de assimetria entre filhas, escrito no corpo
+ * da issue-MÃE: `<!-- sibling-block-reviewed: {label} -->`.
+ *
+ * Existe porque este alarme, sozinho, nunca converge a zero. Diferente dos
+ * padrões 1-4, a assimetria de label ENTRE eixos é o estado CORRETO permanente
+ * de uma decomposição por eixo (#463 → #6184-#6187: dois eixos têm bloqueio
+ * real, dois não têm). Sem uma saída, a reconciliação diária alarmaria essa
+ * mãe para sempre.
+ *
+ * E "alarme que sempre acha" é exatamente o anti-padrão que a #6199 acabou de
+ * eliminar do `Diaria-On-Hold-Vencimento-Alarm` — lá o digest inteiro tinha
+ * virado ruído fixo, e o texto da issue é explícito em que esse é "o pior
+ * estado possível para um alarme, porque ensina a ignorá-lo". Introduzir o
+ * mesmo padrão na mesma rodada em que ele foi removido seria incoerente.
+ *
+ * O marcador é POR LABEL, não por mãe: reconhecer que a assimetria de
+ * `kit-migration` está certa não silencia uma assimetria futura de
+ * `external-blocker` na mesma decomposição — que seria informação nova.
+ */
+export function siblingBlockReviewedLabels(parentBody: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!parentBody) return out;
+  const re = /<!--\s*sibling-block-reviewed:\s*([a-z0-9._-]+)\s*-->/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(parentBody)) !== null) out.add(m[1].toLowerCase());
+  return out;
+}
+
 export function detectSiblingBlockLabelInconsistency(
   issues: readonly BacklogIssueInput[],
 ): SiblingBlockLabelInconsistencyAlarm[] {
   const byParent = new Map<number, BacklogIssueInput[]>();
+  // Corpo da mãe indexado à parte: é onde mora o marcador de reconhecimento.
+  // A mãe pode não estar em `issues` (fechada, ou fora da janela buscada) —
+  // nesse caso não há marcador a ler e o alarme segue o caminho normal.
+  const parentBodyByNumber = new Map<number, string | null | undefined>();
+  for (const issue of issues) parentBodyByNumber.set(issue.number, issue.body);
+
   for (const issue of issues) {
     if (issue.state === "CLOSED") continue;
     const parentNumber = extractParentRef(issue.body);
@@ -394,7 +429,12 @@ export function detectSiblingBlockLabelInconsistency(
   const findings: SiblingBlockLabelInconsistencyAlarm[] = [];
   for (const [parentNumber, siblings] of byParent) {
     if (siblings.length < 2) continue;
+    const reviewed = siblingBlockReviewedLabels(parentBodyByNumber.get(parentNumber));
     for (const label of INHERITABLE_BLOCK_LABELS) {
+      // Assimetria já revisada e declarada correta pelo editor no corpo da
+      // mãe — ver `siblingBlockReviewedLabels`. É o que dá convergência a
+      // este alarme.
+      if (reviewed.has(label.toLowerCase())) continue;
       const withLabel = siblings.filter((s) => s.labels.includes(label));
       const withoutLabel = siblings.filter((s) => !s.labels.includes(label));
       if (withLabel.length === 0 || withoutLabel.length === 0) continue;

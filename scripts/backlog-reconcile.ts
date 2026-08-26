@@ -199,7 +199,9 @@ function printReport(findings: readonly ReconcileFinding[], applied: Map<number,
       const withStr = a.withLabel.map((s) => `#${s.number}`).join(", ");
       const withoutStr = a.withoutLabel.map((s) => `#${s.number}`).join(", ");
       console.log(
-        `mãe #${a.parentNumber} — padrão ${a.patternId}: label \`${a.label}\` inconsistente entre filhas — COM: [${withStr}], SEM: [${withoutStr}]. Revisar se o bloqueio é genuinamente por eixo.`,
+        `mãe #${a.parentNumber} — padrão ${a.patternId}: label \`${a.label}\` inconsistente entre filhas — COM: [${withStr}], SEM: [${withoutStr}]. ` +
+          `Revisar se o bloqueio é genuinamente por eixo. Se for (decomposição correta), acrescentar ao corpo da #${a.parentNumber}: ` +
+          `<!-- sibling-block-reviewed: ${a.label} --> — é o que faz este alarme parar de repetir. Sem isso ele nunca converge a zero.`,
       );
       continue;
     } else {

@@ -394,21 +394,56 @@ describe("detectSiblingBlockLabelInconsistency — padrão 5 (#6201 item 7, semp
     assert.deepEqual(findings[0].withoutLabel.map((s) => s.number), [6184]);
   });
 
-  it("estado JÁ CORRIGIDO por eixo (kit-migration só em #6185/#6186, que têm bloqueio real) CONTINUA alarmando — não é bug, ver docstring", () => {
-    // Diferente dos padrões 3/4 (que podem convergir a zero achados quando o
-    // estado real for corrigido), este padrão NUNCA converge a zero pra uma
-    // mãe genuinamente decomposta por eixo com bloqueios reais distintos —
-    // a assimetria de label ENTRE os eixos é o estado CORRETO permanente,
-    // não uma contradição a resolver. O achado aqui é sempre um convite pra
-    // revisão humana ("essa diferença é intencional?"), nunca um sinal de
-    // erro a ser feito desaparecer via edição de label — ver docstring de
-    // `detectSiblingBlockLabelInconsistency`.
+  it("estado JÁ CORRIGIDO por eixo continua alarmando ENQUANTO a mãe não reconhecer a assimetria", () => {
+    // A assimetria de label ENTRE eixos é o estado CORRETO permanente de uma
+    // decomposição por eixo — não uma contradição a resolver por edição de
+    // label. Por isso o alarme continua achando aqui: sem reconhecimento, a
+    // pergunta "essa diferença é intencional?" segue aberta.
+    //
+    // O caminho de convergência é o marcador na MÃE (teste seguinte), não
+    // mexer nas filhas. Sem ele este alarme nunca zeraria — que é o
+    // anti-padrão que a #6199 removeu do alarme de on-hold na mesma rodada
+    // ("alarme que sempre acha ensina a ser ignorado").
     const fixed6184 = d6184; // nunca teve a label — correto, sem bloqueio real
     const fixed6187 = { ...d6187, labels: ["enhancement", "P2", "diaria"] }; // label removida — correto, sem bloqueio real
     const findings = detectSiblingBlockLabelInconsistency([fixed6184, d6185, d6186, fixed6187]);
     assert.equal(findings.length, 1);
     assert.deepEqual(findings[0].withLabel.map((s) => s.number).sort((a, b) => a - b), [6185, 6186]);
     assert.deepEqual(findings[0].withoutLabel.map((s) => s.number).sort((a, b) => a - b), [6184, 6187]);
+  });
+
+  it("marcador `sibling-block-reviewed` no corpo da MÃE silencia — é o que dá convergência", () => {
+    const fixed6187 = { ...d6187, labels: ["enhancement", "P2", "diaria"] };
+    const mae = issue({
+      number: 463,
+      title: "épica: camada de leitura",
+      labels: ["enhancement", "epic-guarda-chuva"],
+      body: "decomposta por eixo\n<!-- sibling-block-reviewed: kit-migration -->",
+    });
+    const findings = detectSiblingBlockLabelInconsistency([mae, d6184, d6185, d6186, fixed6187]);
+    assert.deepEqual(findings, []);
+  });
+
+  it("o marcador é POR LABEL: reconhecer kit-migration não silencia external-blocker", () => {
+    // Assimetria futura numa label DIFERENTE é informação nova, e silenciar a
+    // mãe inteira a esconderia.
+    const mae = issue({
+      number: 463,
+      title: "épica: camada de leitura",
+      labels: ["enhancement", "epic-guarda-chuva"],
+      body: "<!-- sibling-block-reviewed: kit-migration -->",
+    });
+    const a = { ...d6184, labels: [...d6184.labels, "external-blocker"] };
+    const findings = detectSiblingBlockLabelInconsistency([mae, a, d6185, d6186, d6187]);
+    const labels = findings.map((f) => f.label);
+    assert.ok(!labels.includes("kit-migration"), "kit-migration devia estar silenciada");
+    assert.ok(labels.includes("external-blocker"), "external-blocker é assimetria nova, tem que aparecer");
+  });
+
+  it("mãe ausente do conjunto (fechada/fora da janela) não silencia por omissão", () => {
+    const fixed6187 = { ...d6187, labels: ["enhancement", "P2", "diaria"] };
+    const findings = detectSiblingBlockLabelInconsistency([d6184, d6185, d6186, fixed6187]);
+    assert.equal(findings.length, 1, "sem corpo de mãe pra ler, o alarme segue o caminho normal");
   });
 
   it("unanimidade (todas com, ou todas sem) não é achado", () => {
