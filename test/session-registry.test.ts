@@ -1629,7 +1629,12 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     assert.match(plan[0].reason, /VIVO/);
   });
 
-  it("mesma máquina, pid confirmado MORTO, heartbeat além de SOFT_STALE_MS — remove (não precisa esperar a janela conservadora)", () => {
+  it("#6294: mesma máquina, pid reportado MORTO, heartbeat além de SOFT_STALE_MS mas dentro da janela conservadora — MANTÉM (pid morto deixou de remover na hora)", () => {
+    // Antes do #6294 este cenário removia imediatamente (branch 3 tratava
+    // "pid morto" como sinal positivo). A fonte do pid (process.ppid, via
+    // hook/beacon) foi medida gravando o pid de um processo efêmero, não o
+    // da sessão real — "morto" não é mais confiável o bastante pra pular a
+    // janela conservadora. Ver docstring de decideSessionGc.
     const root = freshRoot();
     registerSession(root, "continuo", "s-morta", {
       tag: "helios",
@@ -1639,8 +1644,35 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
 
     const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
     assert.equal(plan.length, 1);
-    assert.equal(plan[0].action, "removed");
-    assert.match(plan[0].reason, /MORTO/);
+    assert.equal(plan[0].action, "kept", "pid morto cai pra janela conservadora, não remove na hora");
+    assert.doesNotMatch(plan[0].reason, /\bMORTO\b/);
+  });
+
+  it("#6294: mesma máquina, pid reportado MORTO, heartbeat ALÉM da janela conservadora — remove (mesmo caminho de 'sem pid')", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s-morta-velha", {
+      tag: "helios",
+      pid: 9999,
+      startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(), // 10 dias > janela conservadora de 7
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "removed", "além da janela conservadora, remove independente do pid reportar morto");
+  });
+
+  it("#6294: pid VIVO continua protegendo incondicionalmente, sem mudança de comportamento", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s-viva-2", {
+      tag: "helios",
+      pid: 4242,
+      startedAt: new Date(NOW - 10 * ONE_DAY_MS).toISOString(),
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: (pid) => pid === 4242 });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept");
+    assert.match(plan[0].reason, /VIVO/);
   });
 
   it("máquina DIFERENTE (sem como checar pid) — mantém até a janela conservadora, remove depois", () => {
