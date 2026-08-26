@@ -1,5 +1,5 @@
 /**
- * test/gen-archive-pages.test.ts (#467, regressão #633)
+ * test/gen-archive-pages.test.ts (#467, regressão #633; #6184 Kit)
  *
  * Cobre o miolo puro (scripts/lib/site-archive-pages.ts) e o gerador
  * (scripts/gen-archive-pages.ts) com fixtures sintéticas — sem depender do
@@ -13,11 +13,15 @@
  *   - meta description cai pra subtitle/preview_text quando
  *     meta_default_description vem null (#5101 item 2).
  *   - draft/slug placeholder ("new-post") nunca gera página.
+ *
+ * #6184 adiciona: `kitUnifiedPostToArchivePost` (adaptador puro
+ * UnifiedCachedPost → ArchivePost) e `loadKitArchivePosts` (gating por
+ * `read_backend`, filtro `public===true`, fixture de `data/kit-cache/broadcasts/`).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,9 +34,11 @@ import {
   buildArchivePageHtml,
   buildSitemapXml,
   sitemapEntriesForPosts,
+  kitUnifiedPostToArchivePost,
   UnresolvedMergeTagError,
 } from "../scripts/lib/site-archive-pages.ts";
-import { generateArchivePages, loadPosts } from "../scripts/gen-archive-pages.ts";
+import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
+import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
 
 function makePost(overrides: Partial<ArchivePost> = {}): ArchivePost {
   return {
@@ -615,5 +621,150 @@ describe("buildArchivePageHtml — {{email_address_id}}, o identificador DOMINAN
       comTag('<!DOCTYPE html><html><head></head><body><a href="https://x/v?email={{email}}">v</a><a href="https://x/l/z_SUBSCRIBER_ID_{{email_address_id}}">l</a></body></html>'),
     );
     assert.ok(!/\{\{[a-z_]+\}\}/i.test(html), "nenhuma merge tag pode sobrar");
+  });
+});
+
+function makeUnifiedKitPost(overrides: Partial<UnifiedCachedPost> = {}): UnifiedCachedPost {
+  return {
+    origin: "kit",
+    slug: "edicao-kit",
+    title: "Assunto Kit",
+    subtitle: "Prévia curta",
+    subject: "Assunto Kit",
+    web_url: "https://diar.ia.br/kit/edicao-kit",
+    publish_date: 1_700_000_000,
+    status: "confirmed",
+    content: { free: { web: "<!DOCTYPE html><html><head></head><body><h1>Kit</h1></body></html>" } },
+    public: true,
+    ...overrides,
+  };
+}
+
+describe("kitUnifiedPostToArchivePost (#6184 — adaptador Kit → ArchivePost)", () => {
+  it("mapeia os campos comuns 1:1", () => {
+    const got = kitUnifiedPostToArchivePost(makeUnifiedKitPost());
+    assert.deepEqual(got, {
+      slug: "edicao-kit",
+      title: "Assunto Kit",
+      subtitle: "Prévia curta",
+      preview_text: null,
+      meta_default_title: null,
+      meta_default_description: null,
+      status: "confirmed",
+      web_url: "https://diar.ia.br/kit/edicao-kit",
+      displayed_date: null,
+      publish_date: 1_700_000_000,
+      content: { free: { web: "<!DOCTYPE html><html><head></head><body><h1>Kit</h1></body></html>" } },
+    });
+  });
+
+  it("devolve null quando não há slug resolvível — mesmo critério de um post Beehiiv sem slug", () => {
+    assert.equal(kitUnifiedPostToArchivePost(makeUnifiedKitPost({ slug: undefined })), null);
+  });
+
+  it("title ausente cai pro slug (nunca undefined — buildArchivePageHtml precisa de string)", () => {
+    const got = kitUnifiedPostToArchivePost(makeUnifiedKitPost({ title: undefined }));
+    assert.equal(got?.title, "edicao-kit");
+  });
+
+  it("o resultado é gerável por buildArchivePageHtml (integração fina com o resto do pipeline)", () => {
+    const archivePost = kitUnifiedPostToArchivePost(makeUnifiedKitPost())!;
+    assert.equal(isPublishedPost(archivePost), true);
+    const html = buildArchivePageHtml(archivePost);
+    assert.match(html, /<html lang="pt-BR">/);
+    assert.match(html, /<title>Assunto Kit<\/title>/);
+  });
+});
+
+describe("loadKitArchivePosts (#6184 — gating por read_backend + filtro public)", () => {
+  function writeConfig(tmp: string, readBackend: string | undefined): string {
+    const configPath = join(tmp, "platform.config.json");
+    const body =
+      readBackend === undefined
+        ? {}
+        : { publishing: { newsletter: { read_backend: readBackend } } };
+    writeFileSync(configPath, JSON.stringify(body), "utf8");
+    return configPath;
+  }
+
+  function writeKitBroadcast(dir: string, filename: string, overrides: Record<string, unknown> = {}): void {
+    writeFileSync(
+      join(dir, filename),
+      JSON.stringify({
+        id: 1,
+        subject: "Edição Kit real",
+        send_at: null,
+        status: "completed",
+        public: true,
+        published_at: "2026-08-20T09:00:00Z",
+        created_at: "2026-08-20T08:00:00Z",
+        preview_text: null,
+        description: "Prévia",
+        thumbnail_alt: null,
+        thumbnail_url: null,
+        publication_id: 1,
+        public_url: "https://diar.ia.br/kit/edicao-real",
+        content: "<!DOCTYPE html><html><head></head><body><h1>Real</h1></body></html>",
+        ...overrides,
+      }),
+      "utf8",
+    );
+  }
+
+  it("read_backend ausente (default beehiiv) devolve [] mesmo com cache Kit populado", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json");
+      const configPath = writeConfig(tmp, undefined);
+      assert.deepEqual(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }), []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=beehiiv explícito também devolve []", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json");
+      const configPath = writeConfig(tmp, "beehiiv");
+      assert.deepEqual(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }), []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=kit: inclui broadcast public:true, exclui public:false (probe/piloto/test-send)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json", { public: true, public_url: "https://diar.ia.br/kit/real" });
+      writeKitBroadcast(kitDir, "b2.json", { public: false, public_url: "https://diar.ia.br/kit/probe" });
+      const configPath = writeConfig(tmp, "kit");
+
+      const posts = loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath });
+
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].slug, "real");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=kit sem diretório de cache (nenhum kit-sync.ts rodou ainda) devolve [] sem lançar", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const configPath = writeConfig(tmp, "kit");
+      assert.deepEqual(
+        loadKitArchivePosts({ kitBroadcastsDir: join(tmp, "nao-existe"), configPath }),
+        [],
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

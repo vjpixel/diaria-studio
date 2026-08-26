@@ -1,9 +1,11 @@
 /**
- * fetch-monthly-posts.ts (#403)
+ * fetch-monthly-posts.ts (#403; migrado pra ler de Kit atrás da flag, #6184)
  *
  * Substitui o subagente `collect-monthly-runner` por script determinístico
- * que usa a API REST do Beehiiv diretamente. Elimina dependência de MCP em
- * subagente (MCPs nativos do Claude.ai não são repassados a subagentes).
+ * que usa a API REST (Beehiiv ou Kit — `platform.config.json` →
+ * `publishing.newsletter.backend`, via `scripts/lib/shared/newsletter-read-source.ts`)
+ * diretamente. Elimina dependência de MCP em subagente (MCPs nativos do
+ * Claude.ai não são repassados a subagentes).
  *
  * Busca todos os posts publicados no mês e grava o markdown bruto em
  * `data/monthly/{ciclo}/raw-posts/post_{id8}_{AAMMDD}.txt`.
@@ -15,66 +17,34 @@
  *   npx tsx scripts/fetch-monthly-posts.ts 2604
  *
  * Variáveis de ambiente (dotenv carregado automaticamente):
- *   BEEHIIV_API_KEY — obrigatório
+ *   BEEHIIV_API_KEY (backend "beehiiv") ou KIT_API_KEY (backend "kit") —
+ *   obrigatória, conforme `publishing.newsletter.backend`.
+ *
+ * Nota (#6184): `convertBeehiivHtmlToMarkdown` (nome do arquivo original)
+ * roda igual para conteúdo Kit — não foi verificado ao vivo que o parser
+ * lida bem com o HTML do Kit (shape pode diferir do Beehiiv); o fallback de
+ * gravar HTML bruto (#2794) cobre a lacuna sem falhar silenciosamente.
  *
  * Output (stdout): JSON { yymm, cycle, posts_found, downloaded, skipped_existing,
  *                         posts_with_html_fallback, out_dir, warnings }
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   parseMonthlyCycleArg,
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
 import { convertBeehiivHtmlToMarkdown } from "./lib/mensal/monthly-html-convert.ts";
-import { beehiivApiBase } from "./lib/beehiiv-config.ts";
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// #2834/#2850: base URL centralizada em lib/beehiiv-config.ts (antes hardcoded
-// sem suportar o override `BEEHIIV_API_URL` que os demais scripts Beehiiv
-// já respeitam — ganho incidental, mesmo valor default).
-const BEEHIIV_API = beehiivApiBase();
-
-interface BeehiivPost {
-  id: string;
-  title?: string;
-  web_url?: string;
-  publish_date: number; // Unix timestamp (seconds) — Beehiiv usa "publish_date", não "published_at"
-}
-
-interface BeehiivListResponse {
-  data: BeehiivPost[];
-  total_results?: number;
-  total_pages?: number;
-  page?: number;
-}
-
-interface BeehiivPostDetail {
-  content?: {
-    free?: {
-      web?: string;   // HTML versão web
-      email?: string; // HTML versão email (REST API não tem markdown)
-    };
-  };
-}
-
-interface BeehiivPostResponse {
-  data: BeehiivPostDetail;
-}
-
-async function apiFetch<T>(path: string, apiKey: string): Promise<T> {
-  const res = await fetch(`${BEEHIIV_API}${path}`, {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(`Beehiiv API ${res.status} ${path}: ${await res.text()}`);
-  }
-  return (await res.json()) as T;
-}
+import {
+  resolveNewsletterReadConfig,
+  listNewsletterPostsInWindow,
+  fetchNewsletterPostContent,
+  type NormalizedNewsletterPost,
+} from "./lib/shared/newsletter-read-source.ts"; // #6184
+import { isMainModule } from "./lib/cli-args.ts";
 
 function yyymmToWindow(yymm: string): { start: Date; end: Date } {
   const year = 2000 + parseInt(yymm.slice(0, 2), 10);
@@ -85,8 +55,15 @@ function yyymmToWindow(yymm: string): { start: Date; end: Date } {
   };
 }
 
-function toAammdd(unixSeconds: number): string {
-  const d = new Date(unixSeconds * 1000);
+function id8(postId: string): string {
+  return postId.replace(/^post_/, "").slice(0, 8);
+}
+
+/** #6184: `NormalizedNewsletterPost.publishedAtIso` é ISO 8601 nos dois
+ *  backends (Beehiiv era Unix seconds antes desta migração — a conversão
+ *  agora acontece dentro de `newsletter-read-source.ts`, não aqui). */
+function toAammddFromIso(iso: string): string {
+  const d = new Date(iso);
   return (
     String(d.getUTCFullYear()).slice(2) +
     String(d.getUTCMonth() + 1).padStart(2, "0") +
@@ -94,79 +71,7 @@ function toAammdd(unixSeconds: number): string {
   );
 }
 
-function id8(postId: string): string {
-  return postId.replace(/^post_/, "").slice(0, 8);
-}
-
-async function fetchPostsForMonth(
-  pubId: string,
-  apiKey: string,
-  win: { start: Date; end: Date },
-): Promise<BeehiivPost[]> {
-  const collected: BeehiivPost[] = [];
-  let page = 1;
-
-  while (true) {
-    // Sem filtro de status: Beehiiv usa "confirmed" para posts publicados,
-    // não "published" como seria de esperar. Filtrar client-side pela janela
-    // de datas é suficiente para excluir rascunhos (publish_date = 0 ou nulo).
-    // #972: `newest_first` retorna oldest first na Beehiiv API v2. Usar
-    // `publish_date` + `direction=desc` pra paginar do mais recente.
-    const params = new URLSearchParams({
-      per_page: "50",
-      order_by: "publish_date",
-      direction: "desc",
-      page: String(page),
-    });
-    const data = await apiFetch<BeehiivListResponse>(
-      `/publications/${pubId}/posts?${params}`,
-      apiKey,
-    );
-    const posts = data.data ?? [];
-    if (posts.length === 0) break;
-
-    let anyInWindow = false;
-    let allBefore = true;
-
-    for (const p of posts) {
-      const ms = p.publish_date * 1000;
-      if (ms >= win.start.getTime() && ms < win.end.getTime()) {
-        collected.push(p);
-        anyInWindow = true;
-        allBefore = false;
-      } else if (ms >= win.end.getTime()) {
-        allBefore = false;
-      }
-    }
-
-    if (!anyInWindow && allBefore) break; // all posts are before our window
-    if (data.total_pages && page >= data.total_pages) break;
-    page++;
-  }
-
-  return collected;
-}
-
-async function fetchContent(
-  postId: string,
-  pubId: string,
-  apiKey: string,
-): Promise<{ markdown?: string; html?: string }> {
-  const params = new URLSearchParams();
-  params.append("expand[]", "free_web_content");
-  params.append("expand[]", "free_email_content");
-  const res = await apiFetch<BeehiivPostResponse>(
-    `/publications/${pubId}/posts/${postId}?${params}`,
-    apiKey,
-  );
-  // REST API retorna apenas HTML — sem endpoint markdown na Beehiiv API v2.
-  // free.email (HTML email) é preferido por ser mais próximo do formato
-  // que o MCP retorna; free.web como fallback.
-  const html = res.data?.content?.free?.email || res.data?.content?.free?.web || undefined;
-  return { markdown: undefined, html };
-}
-
-async function main() {
+export async function main() {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
   if (!cycle) {
@@ -180,18 +85,13 @@ async function main() {
 
   const yymm = cycleToYymm(cycle);
 
-  const apiKey = process.env.BEEHIIV_API_KEY;
-  if (!apiKey) {
-    console.error("BEEHIIV_API_KEY não definida. Configure no .env.");
+  // #6184: resolve backend (Beehiiv ou Kit) + credenciais correspondentes.
+  const readConfigResult = resolveNewsletterReadConfig();
+  if (!readConfigResult.ok) {
+    console.error(readConfigResult.reason);
     process.exit(1);
   }
-
-  const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-  const pubId: string = process.env.BEEHIIV_PUBLICATION_ID ?? cfg.beehiiv?.publicationId;
-  if (!pubId) {
-    console.error("publicationId não encontrado em platform.config.json ou BEEHIIV_PUBLICATION_ID.");
-    process.exit(1);
-  }
+  const readConfig = readConfigResult.config;
 
   const win = yyymmToWindow(yymm);
   // Usar monthlyDir com allowLegacyFallback: false — escrita SEMPRE no formato novo
@@ -203,7 +103,10 @@ async function main() {
     `[fetch-monthly-posts] ${cycle}: ${win.start.toISOString().slice(0, 10)} → ${win.end.toISOString().slice(0, 10)}\n`,
   );
 
-  const posts = await fetchPostsForMonth(pubId, apiKey, win);
+  const posts: NormalizedNewsletterPost[] = await listNewsletterPostsInWindow(readConfig, {
+    startMs: win.start.getTime(),
+    endMs: win.end.getTime(),
+  });
   process.stderr.write(`[fetch-monthly-posts] ${posts.length} posts no mês\n`);
 
   const warnings: string[] = [];
@@ -212,7 +115,11 @@ async function main() {
   let htmlFallback = 0;
 
   for (const post of posts) {
-    const filename = `post_${id8(post.id)}_${toAammdd(post.publish_date)}.txt`;
+    // `publishedAtIso` é `string` NÃO-nulo (#6362 item 5) —
+    // `listNewsletterPostsInWindow` só inclui posts com timestamp
+    // parseável, e o tipo agora reflete isso (nunca mais um cast/`as string`
+    // assumindo o que o tipo já deveria garantir).
+    const filename = `post_${id8(post.id)}_${toAammddFromIso(post.publishedAtIso)}.txt`;
     const filepath = resolve(outDir, filename);
 
     if (existsSync(filepath)) {
@@ -221,12 +128,10 @@ async function main() {
     }
 
     process.stderr.write(`  ↓ ${filename}\n`);
-    const content = await fetchContent(post.id, pubId, apiKey);
+    const content = await fetchNewsletterPostContent(readConfig, post.id);
 
     let text: string;
-    if (content.markdown) {
-      text = content.markdown;
-    } else if (content.html) {
+    if (content.html) {
       // #2791: sem markdown, converte o HTML pro pseudo-markdown que
       // collect-monthly.ts (parsePost/splitSections) já sabe parsear —
       // em vez de gravar HTML bruto, que o parser não entende (0 destaques).
@@ -252,7 +157,7 @@ async function main() {
   }
 
   if (posts.length === 0) {
-    warnings.push("Nenhum post encontrado no mês — verificar publicationId e BEEHIIV_API_KEY.");
+    warnings.push("Nenhum post encontrado no mês — verificar credenciais/backend (BEEHIIV_API_KEY+publicationId ou KIT_API_KEY).");
   }
 
   console.log(
@@ -269,7 +174,11 @@ async function main() {
   );
 }
 
-main().catch((e) => {
-  console.error(e instanceof Error ? e.message : String(e));
-  process.exit(1);
-});
+// Guard contra import em tests — só rodar main() quando invocado como CLI
+// (mesmo padrão de refresh-dedup.ts/refresh-past-editions.ts, #6184).
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  });
+}

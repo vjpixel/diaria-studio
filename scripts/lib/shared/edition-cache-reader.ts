@@ -144,6 +144,22 @@ export interface UnifiedCachedPost {
    *  semântica de `never_enriched`, ver `enrichment-state.ts`); presente
    *  com `clicks: []` = buscado e confirmado zero. */
   stats?: UnifiedClickStats;
+  /**
+   * Discriminador "é edição real, não probe/teste" (#6184 — item exigido
+   * pelo consumidor que este campo foi adicionado pra servir,
+   * `gen-archive-pages.ts`). Só existe no vocabulário Kit
+   * (`KitBroadcastSummary.public`, confirmado no #6323: "Kit broadcast real
+   * precisa de `public: true` pra virar página pública") — Beehiiv não tem
+   * conceito equivalente, `normalizeBeehiivPost` sempre deixa `undefined`.
+   * Mesmo discriminador que `collectAllCompletedKitPosts` já usa em
+   * `newsletter-read-source.ts` (#6362 item 2) — duplicado aqui, não
+   * importado de lá, porque aquele módulo é leitura REST ao vivo e este é
+   * leitura de cache em arquivo; nenhum dos dois importa do outro.
+   * **Caller decide o que fazer com isto** — este módulo só passa o valor
+   * adiante, nunca filtra sozinho (mesma filosofia de `status`: normaliza,
+   * não decide "publicado o suficiente pra quê").
+   */
+  public?: boolean;
 }
 
 /** Cliques por link no vocabulário Beehiiv — shape estruturalmente
@@ -323,6 +339,7 @@ export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost
     thumbnail_url: b.thumbnail_url ?? undefined,
     content: b.content ? { free: { web: b.content } } : undefined,
     stats: b.clicks ? { clicks: b.clicks.map(normalizeKitClick) } : undefined,
+    public: b.public,
   };
 }
 

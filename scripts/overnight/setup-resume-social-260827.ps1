@@ -66,6 +66,15 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RunOnlyIfNetworkAvailable
 
+# #3775/#3780: Register-ScheduledTask -Force substitui a task INTEIRA (ao
+# contrário de Set-ScheduledTask, que só atualiza os campos passados) —
+# qualquer propriedade não especificada nesta chamada volta ao default,
+# incluindo Enabled=True. Se o editor tinha desabilitado a task manualmente
+# antes de re-rodar este script, restaurar esse estado aqui; senão o -Force
+# reativa a task silenciosamente, sem log nem aviso (mesmo padrão de
+# setup-edicao-schedule.ps1).
+$Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
 Register-ScheduledTask `
     -TaskName    $TaskName `
     -Action      $Action `
@@ -74,6 +83,10 @@ Register-ScheduledTask `
     -Description $TaskDesc `
     -RunLevel    Limited `
     -Force | Out-Null
+
+if ($Existing -and $Existing.State -eq "Disabled") {
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+}
 
 Write-Output "Task '$TaskName' registrada — dispara uma vez em 2026-08-27 06:10 (fuso local da máquina)."
 Write-Output ""

@@ -67,7 +67,7 @@ import {
   safeParseKv,
 } from "./lib";
 import { invalidateSnapshot } from "./leaderboard-routes";
-import { resolveSubscribeUtm, subscribeToBeehiiv, subscribeToKit } from "./subscribe"; // #4125 item 4: UTM próprio ("jogar-identify"), não o default "jogar"; #6048: subscribeToKit — ramificação por bEnv.SUBSCRIBE_BACKEND
+import { resolveSubscribeUtm, subscribeViaConfiguredBackend } from "./subscribe"; // #4125 item 4: UTM próprio ("jogar-identify"), não o default "jogar"; #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 // #3996 (Fase B): ciclo de import seguro com magic-link.ts (mesmo padrão já
 // documentado no header deste arquivo e no de magic-link.ts) — valores só
 // usados em request-time, nunca no top-level de nenhum dos dois módulos.
@@ -537,13 +537,9 @@ export async function handleJogarIdentify(
       // ("jogar-identify-inline") já cobre este call site (form ON-PAGE) —
       // `magic-link.ts` (link de e-mail, mesmo triplo) sobrescreve o campo.
       const utm = resolveSubscribeUtm("jogar-identify");
-      // #6048: seleção de backend local a este handler — mesmo padrão de
-      // handleJogarSubscribe (subscribe.ts:585-591). bEnv.SUBSCRIBE_BACKEND
-      // ausente/"beehiiv" mantém o caminho pré-existente.
-      const result =
-        bEnv.SUBSCRIBE_BACKEND === "kit"
-          ? await subscribeToKit(bEnv, { name, email }, fetchImpl, utm)
-          : await subscribeToBeehiiv(bEnv, { name, email }, fetchImpl, utm);
+      // #6291: seleção de backend via a ÚNICA função exportada — ver
+      // docstring de `subscribeViaConfiguredBackend` em subscribe.ts.
+      const result = await subscribeViaConfiguredBackend(bEnv, { name, email }, fetchImpl, utm);
       subscribed = result.ok;
       if (!subscribed) {
         // #4311 (item 3): antes só a EXCEÇÃO (catch abaixo) deixava rastro —
