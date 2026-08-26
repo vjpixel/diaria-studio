@@ -1,25 +1,30 @@
 /**
  * test/issue-route.test.ts (#5969 Fase 1)
  *
- * Cobre `scripts/lib/issue-route.ts` (mapeamento puro veredito→labels) e
- * `scripts/route-issue.ts` (verbo de I/O — sempre com `GhRunFn` em memória,
- * NUNCA `gh` real, mesmo padrão de `test/wait-until-sync.test.ts` e
+ * Cobre `scripts/lib/issue-route.ts` (mapeamento puro veredito->labels) e
+ * `scripts/route-issue.ts` (verbo de I/O — sempre com `GhRunFn` em memoria,
+ * NUNCA `gh` real, mesmo padrao de `test/wait-until-sync.test.ts` e
  * `test/alarm-issues.test.ts`).
  *
  * Casos exigidos pela issue:
- *   1. mapeamento veredito→labels: idempotência (aplicar duas vezes dá o
+ *   1. mapeamento veredito->labels: idempotencia (aplicar duas vezes da o
  *      mesmo resultado) e "remove as labels erradas de vereditos anteriores".
- *   2. validação pós-escrita: falha ruidosa quando classifyExecTrack não
+ *   2. validacao pos-escrita: falha ruidosa quando classifyExecTrack nao
  *      bate com o --track pedido.
+ *   3. #6197 — 5 labels (3a) passam no round-trip; --motivo seleciona label
+ *      especifica; 3b preserva label de bloqueio preexistente.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyRouteLabelPlan,
+  autoMotivoForTrack,
   diffRouteLabelPlan,
+  MOTIVO_LABEL,
   planRouteLabels,
   ROUTABLE_LABELS,
   ROUTE_TRACKS,
+  type RouteMotivo,
   type RouteTrack,
 } from "../scripts/lib/issue-route.ts";
 import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
@@ -29,9 +34,9 @@ import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 // ─── planRouteLabels / applyRouteLabelPlan — mapeamento puro ────────────────
 
 describe("planRouteLabels — round-trip contra classifyExecTrack", () => {
-  // "agendada" é o único veredito sem label (o sinal é o marcador
-  // aguardando-ate: no CORPO, não uma label — ver docstring do módulo) então
-  // seu round-trip é testado à parte, abaixo, com o marcador no body.
+  // "agendada" e o unico veredito sem label (o sinal e o marcador
+  // aguardando-ate: no CORPO, nao uma label — ver docstring do modulo) entao
+  // seu round-trip e testado a parte, abaixo, com o marcador no body.
   for (const track of ROUTE_TRACKS.filter((t) => t !== "agendada")) {
     it(`aplicar o plano de "${track}" a partir de zero labels faz classifyExecTrack devolver "${track}"`, () => {
       const plan = planRouteLabels(track);
@@ -55,6 +60,48 @@ describe("planRouteLabels — round-trip contra classifyExecTrack", () => {
   });
 });
 
+describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
+  // Cada --motivo mapeia a uma label que classifyExecTrack reconhece e
+  // devolve o track pedido — garantido pelo round-trip a seguir.
+  const cases: Array<[RouteTrack, string]> = [
+    // bloqueada
+    ["bloqueada", "conta-de-terceiro"],
+    ["bloqueada", "plataforma"],
+    ["bloqueada", "kit"],
+    ["bloqueada", "execucao"],
+    // fora-de-rodada
+    ["fora-de-rodada", "epica"],
+    ["fora-de-rodada", "sem-direcao"],
+    ["fora-de-rodada", "decisao"],
+    ["fora-de-rodada", "alarme-estado"],
+    // overnight
+    ["overnight", "alarme-evento"],
+  ];
+
+  for (const [track, motivo] of cases) {
+    it(`--track ${track} --motivo ${motivo} adiciona ${MOTIVO_LABEL[motivo]} e round-trip bate`, () => {
+      const plan = planRouteLabels(track, motivo as RouteMotivo);
+      const expectedLabel = MOTIVO_LABEL[motivo];
+      assert.deepEqual(plan.add, [expectedLabel]);
+      const nextLabels = applyRouteLabelPlan([], plan);
+      const resolved = classifyExecTrack({ labels: nextLabels, body: "", state: "OPEN" });
+      assert.equal(
+        resolved,
+        track,
+        `--motivo ${motivo} produziu label ${expectedLabel} que classifica como "${resolved}", esperado "${track}"`,
+      );
+    });
+  }
+
+  it("alarm-evento round-trip: --track overnight --motivo alarme-evento", () => {
+    const plan = planRouteLabels("overnight", "alarme-evento");
+    assert.deepEqual(plan.add, ["alarm-evento"]);
+    const nextLabels = applyRouteLabelPlan([], plan);
+    const resolved = classifyExecTrack({ labels: nextLabels, body: "", state: "OPEN" });
+    assert.equal(resolved, "overnight");
+  });
+});
+
 describe("planRouteLabels — remove sinais conflitantes de vereditos anteriores", () => {
   it("rotear pra develop a partir de uma issue bloqueada remove a label de bloqueio", () => {
     const plan = planRouteLabels("develop");
@@ -75,14 +122,42 @@ describe("planRouteLabels — remove sinais conflitantes de vereditos anteriores
     assert.deepEqual(new Set(next), new Set(["bloqueio-execucao"]));
   });
 
-  it("preserva labels que não pertencem a ROUTABLE_LABELS (ex: tipo/prioridade)", () => {
+  it("preserva labels que n\u00e3o pertencem a ROUTABLE_LABELS (ex: tipo/prioridade)", () => {
     const plan = planRouteLabels("develop");
     const next = applyRouteLabelPlan(["enhancement", "P2", "windows"], plan);
     assert.deepEqual(new Set(next), new Set(["enhancement", "P2", "develop-track"]));
   });
 });
 
-describe("applyRouteLabelPlan — idempotência", () => {
+describe("planRouteLabels -- motivo seleciona label especifica (3b)", () => {
+  it("bloqueada --motivo conta-de-terceiro adiciona external-blocker, nao bloqueio-execucao", () => {
+    const plan = planRouteLabels("bloqueada", "conta-de-terceiro");
+    assert.deepEqual(plan.add, ["external-blocker"]);
+    assert.ok(!plan.remove.includes("external-blocker"));
+    assert.ok(plan.remove.includes("bloqueio-execucao"));
+  });
+
+  it("bloqueada --motivo execucao adiciona bloqueio-execucao", () => {
+    const plan = planRouteLabels("bloqueada", "execucao");
+    assert.deepEqual(plan.add, ["bloqueio-execucao"]);
+  });
+
+  it("fora-de-rodada --motivo epica adiciona epic-guarda-chuva, nao on-hold", () => {
+    const plan = planRouteLabels("fora-de-rodada", "epica");
+    assert.deepEqual(plan.add, ["epic-guarda-chuva"]);
+    assert.ok(!plan.remove.includes("epic-guarda-chuva"));
+    assert.ok(plan.remove.includes("on-hold"));
+  });
+
+  it("motivo invalido lanca erro listando valores validos", () => {
+    assert.throws(
+      () => planRouteLabels("bloqueada", "nao-existe" as RouteMotivo),
+      /motivo desconhecido/,
+    );
+  });
+});
+
+describe("planRouteLabels — idempotencia", () => {
   for (const track of ROUTE_TRACKS) {
     it(`aplicar o plano de "${track}" duas vezes seguidas converge pro mesmo conjunto (${track})`, () => {
       const plan = planRouteLabels(track);
@@ -93,26 +168,68 @@ describe("applyRouteLabelPlan — idempotência", () => {
   }
 });
 
-describe("diffRouteLabelPlan — só o que muda de verdade", () => {
-  it("labels já corretas não geram diff nenhum (0 chamadas de gh issue edit)", () => {
+describe("diffRouteLabelPlan — so o que muda de verdade", () => {
+  it("labels ja corretas não geram diff nenhum (0 chamadas de gh issue edit)", () => {
     const plan = planRouteLabels("develop");
     const { toAdd, toRemove } = diffRouteLabelPlan(["develop-track", "enhancement"], plan);
     assert.deepEqual(toAdd, []);
     assert.deepEqual(toRemove, []);
   });
 
-  it("calcula toAdd/toRemove ordenados e mínimos", () => {
+  it("calcula toAdd/toRemove ordenados e minimos", () => {
     const plan = planRouteLabels("bloqueada");
     const { toAdd, toRemove } = diffRouteLabelPlan(["windows", "external-blocker"], plan);
     assert.deepEqual(toAdd, ["bloqueio-execucao"]);
-    // "bloqueada" canonicaliza pra uma única label (bloqueio-execucao) — o
-    // veredito é "sessão nenhuma destrava sozinha", então a razão específica
-    // anterior (external-blocker) é substituída, não preservada ao lado.
+    // "bloqueada" sem --motivo usa a label generica (bloqueio-execucao) via
+    // TRACK_ADD_LABEL. A preservacao de label especifica (3b) e feita no
+    // nivel do verbo routeIssue() (autoMotivoForTrack), nao nessa funcao
+    // pura — que sempre usa o default generativo.
     assert.deepEqual(toRemove, ["external-blocker", "windows"]);
   });
 });
 
-// ─── routeIssue — I/O via GhRunFn em memória (sem rede/gh real) ────────────
+describe("diffRouteLabelPlan — --motivo muda o diff", () => {
+  it("bloqueada --motivo conta-de-terceiro preserva external-blocker no diff (nao remove)", () => {
+    const plan = planRouteLabels("bloqueada", "conta-de-terceiro");
+    const { toAdd, toRemove } = diffRouteLabelPlan(["external-blocker", "windows"], plan);
+    assert.deepEqual(toAdd, []);
+    assert.deepEqual(toRemove, ["windows"]);
+    assert.ok(!toRemove.includes("external-blocker"));
+  });
+});
+
+// ─── autoMotivoForTrack — preservacao 3b ────────────────────────────────────
+
+describe("autoMotivoForTrack — #6197 item 3b", () => {
+  it("bloqueada + external-blocker presente devolve motivo conta-de-terceiro", () => {
+    assert.equal(autoMotivoForTrack("bloqueada", ["external-blocker"]), "conta-de-terceiro");
+  });
+
+  it("bloqueada + kit-migration presente devolve motivo kit", () => {
+    assert.equal(autoMotivoForTrack("bloqueada", ["kit-migration"]), "kit");
+  });
+
+  it("bloqueada + beehiiv presente devolve motivo plataforma", () => {
+    assert.equal(autoMotivoForTrack("bloqueada", ["beehiiv"]), "plataforma");
+  });
+
+  it("bloqueada sem label de bloqueio devolve undefined (usa default generico)", () => {
+    assert.equal(autoMotivoForTrack("bloqueada", ["enhancement"]), undefined);
+  });
+
+  it("credencial-escopo sozinha devolve undefined (sozinha classifica overnight)", () => {
+    assert.equal(autoMotivoForTrack("bloqueada", ["credencial-escopo"]), undefined);
+    assert.equal(autoMotivoForTrack("bloqueada", ["credencial-escopo", "external-blocker"]), "conta-de-terceiro");
+  });
+
+  it("tracks diferentes de bloqueada sempre devolvem undefined", () => {
+    assert.equal(autoMotivoForTrack("develop", ["external-blocker"]), undefined);
+    assert.equal(autoMotivoForTrack("overnight", ["external-blocker"]), undefined);
+    assert.equal(autoMotivoForTrack("fora-de-rodada", ["external-blocker"]), undefined);
+  });
+});
+
+// ─── routeIssue — I/O via GhRunFn em memoria (sem rede/gh real) ────────────
 
 interface FakeIssueState {
   labels: string[];
@@ -122,8 +239,8 @@ interface FakeIssueState {
 }
 
 /** Stub de `GhRunFn` que serve `gh issue view --json labels,body,state,comments`
- * a partir de estado em memória e aplica `gh issue edit --add-label/--remove-label`,
- * `gh issue comment --body` de volta nele. Mesma técnica de `fakeGh` em
+ * a partir de estado em memoria e aplica `gh issue edit --add-label/--remove-label`,
+ * `gh issue comment --body` de volta nele. Mesma tecnica de `fakeGh` em
  * `test/wait-until-sync.test.ts`. */
 function fakeGh(initial: FakeIssueState): { run: GhRunFn; state: FakeIssueState; calls: string[][] } {
   const state: FakeIssueState = {
@@ -137,7 +254,7 @@ function fakeGh(initial: FakeIssueState): { run: GhRunFn; state: FakeIssueState;
     calls.push(args);
     if (args[0] === "issue" && args[1] === "view") {
       // `scripts/lib/wait-until-sync.ts` chama `gh issue view N --json body -q .body`
-      // (stdout = corpo cru, não JSON) — distinto do `--json labels,body,state,comments`
+      // (stdout = corpo cru, nao JSON) — distinto do `--json labels,body,state,comments`
       // que `scripts/route-issue.ts` usa (stdout = JSON completo). O `-q`/`--jq`
       // real sempre anexa 1 "\n" extra (replicado aqui como no fakeGh de
       // test/wait-until-sync.test.ts).
@@ -187,7 +304,7 @@ describe("routeIssue — fluxo feliz", () => {
     const result = routeIssue({
       issue: 42,
       track: "develop",
-      reason: "exige a máquina Windows",
+      reason: "exige a maquina Windows",
       cwd: "/tmp",
       ghRun: gh.run,
     });
@@ -234,7 +351,7 @@ describe("routeIssue — fluxo feliz", () => {
       ghRun: gh.run,
     });
     assert.equal(result.ok, false);
-    assert.match(result.error ?? "", /só é aceito com --track agendada/);
+    assert.match(result.error ?? "", /aceito com --track agendada/);
     assert.equal(gh.calls.length, 0);
   });
 
@@ -258,7 +375,7 @@ describe("routeIssue — fluxo feliz", () => {
     assert.doesNotMatch(gh.state.body, /aguardando-ate/);
   });
 
-  it("dedup: rodar o mesmo veredito+razão duas vezes não duplica o comentário", () => {
+  it("dedup: rodar o mesmo veredito+razao duas vezes nao duplica o comentario", () => {
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const opts = {
       issue: 47,
@@ -275,49 +392,142 @@ describe("routeIssue — fluxo feliz", () => {
   });
 });
 
-describe("routeIssue — validação pós-escrita falha ruidosamente", () => {
-  it("issue CLOSED nunca vira 'develop' — validação recusa e reporta o resolvedTrack real", () => {
+describe("routeIssue --motivo #6197 item 2", () => {
+  it("--track bloqueada --motivo conta-de-terceiro adiciona external-blocker (nao bloqueio-execucao)", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 53,
+      track: "bloqueada",
+      motivo: "conta-de-terceiro",
+      reason: "API da Beehiiv responde 403",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.labelsAdded, ["external-blocker"]);
+    assert.ok(gh.state.labels.includes("external-blocker"));
+    assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
+  });
+
+  it("--track agendada --motivo epica adiciona epic-guarda-chuva", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 54,
+      track: "agendada",
+      until: "2026-10-01",
+      motivo: "epica",
+      reason: "issue e uma epica; sub-issues em andamento",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-23T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.labelsAdded, ["epic-guarda-chuva"]);
+    assert.ok(gh.state.labels.includes("epic-guarda-chuva"));
+  });
+
+  it("motivo invalido falha antes de qualquer I/O", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 55,
+      track: "bloqueada",
+      motivo: "nao-existe" as RouteMotivo,
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /motivo desconhecido/);
+    assert.equal(gh.calls.length, 0);
+  });
+});
+
+describe("routeIssue #6197 3b — preservacao de label de bloqueio preexistente", () => {
+  it("roteia pra bloqueada preservando external-blocker (sem --motivo)", () => {
+    const gh = fakeGh({ labels: ["external-blocker"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 56,
+      track: "bloqueada",
+      reason: "depende de conta externa",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(gh.state.labels.includes("external-blocker"));
+    assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
+    assert.deepEqual(result.labelsAdded, []);
+    assert.equal(result.validated, true);
+  });
+
+  it("roteia pra bloqueada preservando kit-migration", () => {
+    const gh = fakeGh({ labels: ["kit-migration"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 57,
+      track: "bloqueada",
+      reason: "migracao de kit em andamento",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(gh.state.labels.includes("kit-migration"));
+    assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
+  });
+
+  it("roteia pra bloqueada sem label especifica adiciona bloqueio-execucao (default)", () => {
+    const gh = fakeGh({ labels: ["enhancement"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 58,
+      track: "bloqueada",
+      reason: "sem label especifica ainda",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(gh.state.labels.includes("bloqueio-execucao"));
+  });
+});
+
+describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
+  it("issue CLOSED nunca vira 'develop' — validacao recusa e reporta o resolvedTrack real", () => {
     const gh = fakeGh({ labels: [], body: "", state: "CLOSED", comments: [] });
     const result = routeIssue({ issue: 48, track: "develop", cwd: "/tmp", ghRun: gh.run });
     assert.equal(result.ok, false);
     assert.equal(result.validated, false);
     assert.equal(result.resolvedTrack, "fora-de-rodada");
-    assert.match(result.error ?? "", /validação pós-escrita falhou/);
+    assert.match(result.error ?? "", /falhou/);
     assert.match(result.error ?? "", /pedido --track develop/);
-    // As escritas já feitas (label) não são silenciadas mesmo com a falha:
+    // As escritas ja feitas (label) nao sao silenciadas mesmo com a falha:
     assert.deepEqual(result.labelsAdded, ["develop-track"]);
   });
 
-  it("label de OUTRO mecanismo (fora de ROUTABLE_LABELS, ex: 'alarm') sobrevivendo ao plano faz a validação de 'overnight' falhar", () => {
-    // "alarm" é deliberadamente fora do escopo de route-issue (owned by
-    // scripts/lib/alarm-issues.ts — ver docstring do módulo) — route-issue
-    // não a remove ao rotear pra "overnight". A VALIDAÇÃO precisa pegar essa
-    // divergência (classifyExecTrack devolve "fora-de-rodada", não
-    // "overnight"), não só confiar que o plano de labels bastou.
+  it("label 'alarm' agora e gerenciada (em ROUTABLE_LABELS) — route-issue a remove ao rotear pra overnight e valida ok", () => {
+    // #6197 (3a) — alarm agora e ROUTABLE_LABELS, entao route-issue remove ela
+    // ao rotear pra overnight e a validacao passa. O teste antigo esperava
+    // que alarm sobrevivesse; agora ela e gerenciada pelo verbo.
     const gh = fakeGh({ labels: ["alarm"], body: "", state: "OPEN", comments: [] });
-    const result = routeIssue({ issue: 49, track: "overnight", cwd: "/tmp", ghRun: gh.run });
-    assert.equal(result.ok, false);
-    assert.equal(result.resolvedTrack, "fora-de-rodada");
-    assert.match(result.error ?? "", /pedido --track overnight/);
-    assert.match(result.error ?? "", /fora-de-rodada/);
-    // A label "alarm" continua lá — route-issue não pisa em estado de outro
-    // mecanismo, mesmo quando isso significa a validação falhar.
-    assert.ok(gh.state.labels.includes("alarm"));
+    const result = routeIssue({
+      issue: 49,
+      track: "overnight",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    assert.ok(!gh.state.labels.includes("alarm"));
   });
 });
 
-describe("routeIssue — falhas de gh (fail-soft explícito, nunca silencioso)", () => {
+describe("routeIssue — falhas de gh (fail-soft explicito, nunca silencioso)", () => {
   it("gh issue view falhando na leitura inicial devolve ok:false sem tentar editar", () => {
     const run: GhRunFn = (args) => {
       if (args[0] === "issue" && args[1] === "view") return { status: 1, stdout: "", stderr: "gh: not authenticated" };
-      throw new Error(`não devia chamar: ${args.join(" ")}`);
+      throw new Error(`nao devia chamar: ${args.join(" ")}`);
     };
     const result = routeIssue({ issue: 50, track: "develop", cwd: "/tmp", ghRun: run });
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /not authenticated/);
   });
 
-  it("gh issue comment falhando reporta commentAction 'failed' sem reverter labels já escritas", () => {
+  it("gh issue comment falhando reporta commentAction 'failed' sem reverter labels ja escritas", () => {
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const run: GhRunFn = (args, cwd) => {
       if (args[0] === "issue" && args[1] === "comment") return { status: 1, stdout: "", stderr: "gh: rate limited" };
@@ -328,5 +538,26 @@ describe("routeIssue — falhas de gh (fail-soft explícito, nunca silencioso)",
     assert.equal(result.commentAction, "failed");
     assert.equal(result.labelsAdded.length, 1);
     assert.ok(gh.state.labels.includes("develop-track"));
+  });
+});
+
+describe("planRouteLabels — 5 labels #6197 (3a) em ROUTABLE_LABELS", () => {
+  const newLabels = ["epic-guarda-chuva", "decisao-registrada", "alarm", "alarm-evento", "sem-direcao-acionavel"];
+  for (const label of newLabels) {
+    it(`"${label}" esta em ROUTABLE_LABELS`, () => {
+      assert.ok(ROUTABLE_LABELS.includes(label), `${label} deveria estar em ROUTABLE_LABELS`);
+    });
+  }
+
+  it("rotear pra overnight remove as 5 novas labels", () => {
+    const plan = planRouteLabels("overnight");
+    const next = applyRouteLabelPlan(newLabels, plan);
+    assert.deepEqual(next, []);
+  });
+
+  it("rotear pra develop remove as 5 novas labels e adiciona develop-track", () => {
+    const plan = planRouteLabels("develop");
+    const next = applyRouteLabelPlan(newLabels, plan);
+    assert.deepEqual(next, ["develop-track"]);
   });
 });
