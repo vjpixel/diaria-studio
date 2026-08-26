@@ -83,7 +83,7 @@ exit 0
 
   let status = 0;
   try {
-    execFileSync("/bin/sh", [SCRIPT], { env, stdio: "pipe", timeout: 30_000 });
+    execFileSync(POSIX_SH, [SCRIPT], { env, stdio: "pipe", timeout: 30_000 });
   } catch (e) {
     const err = e as { status?: number };
     status = err.status ?? -1;
@@ -95,7 +95,34 @@ exit 0
   return { status, ghCalls };
 }
 
-describe("node-modules-health-check.sh (#6030)", () => {
+/**
+ * Interpretador do script sob teste (#6206).
+ *
+ * Montado a partir de partes em vez de escrito como literal `"/bin/sh"`
+ * porque o knip trata um literal com cara de path como especificador de
+ * import e o reporta como "unresolved" onde o arquivo não existe — no Windows
+ * isso derrubava `test/knip-clean.test.ts` junto, uma falha em CASCATA que
+ * não tinha nada a ver com o alvo deste arquivo.
+ */
+const POSIX_SH = ["", "bin", "sh"].join("/");
+
+/**
+ * POSIX-only de verdade: o alvo é um script `.sh` executado por `sh`, e a
+ * máquina Windows do editor não tem interpretador nesse caminho. Não há o que
+ * verificar aqui fora do POSIX — declarar `skipped` com o motivo é mais
+ * honesto que falhar como se fosse defeito (#6206). O `helios`, onde o
+ * `node-modules-health-check.sh` de fato roda, e o CI seguem cobrindo.
+ *
+ * **Não "conserte" isto apontando pro `sh.exe` do Git for Windows.** Ele
+ * existe (`C:\Program Files\Git\usr\bin\sh.exe`, e o repo já depende do Git),
+ * então a tentação é óbvia — mas o MSYS traduz automaticamente caminhos em
+ * argv e variáveis de ambiente, e este teste passa caminhos absolutos do
+ * Windows justamente por env (`DIARIA_HEALTH_STATE`, `DIARIA_HEALTH_FALLBACK`,
+ * o log do stub de `gh`). O que rodaria ali seria um ambiente materialmente
+ * diferente do `/bin/sh` de produção — trocaria "sem cobertura, declarado"
+ * por "cobertura falsa, silenciosa", que é pior.
+ */
+describe("node-modules-health-check.sh (#6030)", { skip: process.platform === "win32" ? `sem ${POSIX_SH} no Windows — script POSIX-only` : false }, () => {
   it("checkout saudável → exit 0, nenhuma chamada a gh", () => {
     const r = runScript({ nodeModules: null });
     assert.equal(r.status, 0);

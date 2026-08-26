@@ -282,7 +282,7 @@ describe("#5408 — enumeração programática (listScheduledTaskRows / --list /
   });
 
   it("CLI --list imprime exatamente SCHEDULED_TASKS.length linhas em stdout", () => {
-    const out = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
+    const out = execFileSync(process.execPath, ["--import", "tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
       cwd: ROOT,
       encoding: "utf8",
     });
@@ -291,7 +291,7 @@ describe("#5408 — enumeração programática (listScheduledTaskRows / --list /
   });
 
   it("CLI --json imprime um array JSON de tamanho SCHEDULED_TASKS.length", () => {
-    const out = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
+    const out = execFileSync(process.execPath, ["--import", "tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
       cwd: ROOT,
       encoding: "utf8",
     });
@@ -909,13 +909,13 @@ describe("#6093 — Diaria-Kit-Subscriber-Sync registrada, diária, sync Beehiiv
     const rows = listScheduledTaskRows();
     assert.ok(rows.some((r) => r.name === "Diaria-Kit-Subscriber-Sync"));
 
-    const listOut = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
+    const listOut = execFileSync(process.execPath, ["--import", "tsx", "scripts/lib/scheduled-tasks.ts", "--list"], {
       cwd: ROOT,
       encoding: "utf8",
     });
     assert.match(listOut, /Diaria-Kit-Subscriber-Sync/);
 
-    const jsonOut = execFileSync("npx", ["tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
+    const jsonOut = execFileSync(process.execPath, ["--import", "tsx", "scripts/lib/scheduled-tasks.ts", "--json"], {
       cwd: ROOT,
       encoding: "utf8",
     });
@@ -967,5 +967,33 @@ describe("#6130 — Diaria-Session-Registry-SafeBackup-Alarm registrada, diária
       (t) => t.name !== "Diaria-Session-Registry-SafeBackup-Alarm" && t.schedule.hour === 10 && t.schedule.minute === 5,
     );
     assert.deepEqual(collisions, []);
+  });
+});
+
+describe("#6198 — Diaria-Backlog-Reconcile registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 10:10", () => {
+    const t = getScheduledTaskByName("Diaria-Backlog-Reconcile");
+    assert.ok(t, "Diaria-Backlog-Reconcile ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/backlog-reconcile.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 10 });
+  });
+
+  it("horário de 10:10 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Backlog-Reconcile" && t.schedule.hour === 10 && t.schedule.minute === 10,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Backlog-Reconcile").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/backlog-reconcile.ts"));
   });
 });

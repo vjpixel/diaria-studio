@@ -79,6 +79,10 @@ describe("arquivos commitados não têm link da Clarice sem via=diaria (#1910)",
     { dir: "scripts", exts: [".ts"] },
     { dir: "workers", exts: [".ts"] },
   ];
+  /**
+   * Podados por NOME, em qualquer profundidade — nenhum deles jamais contém
+   * arquivo commitado, sob nenhuma árvore.
+   */
   const SKIP_DIRS = new Set([
     "node_modules",
     ".git",
@@ -86,6 +90,25 @@ describe("arquivos commitados não têm link da Clarice sem via=diaria (#1910)",
     "build",
     ".wrangler",
   ]);
+
+  /**
+   * Podados por CAMINHO relativo à raiz do repo, nunca por nome (#6206).
+   *
+   * `.claude/worktrees/` são checkouts de trabalho gitignorados das sessões
+   * overnight/develop — não são "arquivos commitados", que é o alvo declarado
+   * desta varredura. Numa máquina com worktree sobrando, o walk entrava neles
+   * e reportava o `data/monthly/.../draft.md` de OUTRA sessão como violação do
+   * repo; além do falso positivo, o resultado do teste passava a depender de
+   * quantas sessões tinham rodado antes.
+   *
+   * Casar por caminho e não por basename é deliberado: podar todo diretório
+   * chamado `worktrees`/`data` em qualquer nível tiraria da varredura um
+   * futuro `scripts/lib/data/` — nome perfeitamente plausível — sem nenhum
+   * sinal, que é exatamente o modo de falha "o teste para de testar" que este
+   * arquivo existe pra evitar. Hoje só um caminho precisa ser podado, e é o
+   * único listado.
+   */
+  const SKIP_PATHS = new Set([join(".claude", "worktrees")]);
 
   // Walk fail-loud: se um ROOT some (rename/refactor), o erro propaga em vez de
   // virar conjunto vazio silencioso. Diretórios opcionais não existem aqui —
@@ -95,6 +118,7 @@ describe("arquivos commitados não têm link da Clarice sem via=diaria (#1910)",
     for (const e of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) continue;
+        if (SKIP_PATHS.has(join(dir, e.name))) continue;
         out.push(...walk(join(dir, e.name), exts));
       } else if (exts.includes(extname(e.name))) {
         out.push(join(dir, e.name));

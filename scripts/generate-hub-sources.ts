@@ -51,7 +51,7 @@
  * cache armazenando `title`/`subtitle` em NFD (combining mark separado, ex:
  * "ç" = "c" + U+0327) em vez de NFC.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -65,9 +65,9 @@ import {
 import { findPrimarySourceUrl, stripTrackingParams } from "./lib/hub-primary-source.ts";
 import { isSafeUrlScheme } from "./lib/shared/markdown-links.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
+import { loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
 
 export interface HubSourceEntry {
@@ -480,28 +480,28 @@ export function collectHubSources(
   return { rows, warnings };
 }
 
-/** Lê `data/beehiiv-cache/posts/*.json`, isolando falha de parse POR ARQUIVO
- * (mesmo padrão de `loadRawPosts` em `generate-arquivo-titles.ts`) — um JSON
- * truncado/corrompido em um post não pode abortar a geração inteira sem
- * dizer qual arquivo é o culpado. Exportado (#4924) — `scripts/lib/hub-staleness-check.ts`
- * reusa esta mesma leitura pra auditar TODOS os hubs de uma vez, em vez de
- * duplicar a leitura de `POSTS_DIR`. */
+/**
+ * Lê a camada de leitura unificada Beehiiv + Kit (#6187/#6184 —
+ * `scripts/lib/shared/edition-cache-reader.ts`), ordenada por data. Antes
+ * lia só `data/beehiiv-cache/posts/*.json` diretamente; migrado pra
+ * `loadUnifiedEditionCache` pra que todo consumidor pendurado nisto
+ * (`scripts/lib/hub-staleness-check.ts`, `corpus-index-coverage-report.ts`,
+ * `regenerate-entity-pages.ts` e, transitivamente, `lib/entities/*.ts` +
+ * `lib/shared/entity-page.ts`) passe a ver edições publicadas no Kit
+ * automaticamente, sem precisar de mudança própria em nenhum deles — é
+ * exatamente o ponto da camada unificada (achado central do #6187: o cache
+ * é híbrido permanente, não uma migração transitória).
+ *
+ * `UnifiedCachedPost` é estruturalmente compatível com `RawCachedPost`
+ * (mesmos nomes de campo) — o cast é seguro, não um `as unknown as`.
+ *
+ * Continua lançando se `data/beehiiv-cache/posts/` (fonte primária hoje)
+ * estiver ausente — mesmo comportamento de antes; um cache Kit ainda
+ * ausente (`data/kit-cache/broadcasts/`, nenhum `kit-sync.ts` escreve nele
+ * ainda) nunca lança, só contribui 0 edições.
+ */
 export function loadPosts(): RawCachedPost[] {
-  if (!existsSync(POSTS_DIR)) {
-    throw new Error(
-      `${POSTS_DIR} ausente — precisa do junction data/ (OneDrive) populado por beehiiv-sync.ts. Ver CLAUDE.md label "local".`,
-    );
-  }
-  const posts: RawCachedPost[] = [];
-  const files = readdirSync(POSTS_DIR).filter((f) => f.endsWith(".json") && f !== "index.json");
-  for (const f of files) {
-    try {
-      posts.push(JSON.parse(readFileSync(resolve(POSTS_DIR, f), "utf8")) as RawCachedPost);
-    } catch (e) {
-      process.stderr.write(`[generate-hub-sources] ⚠ falha ao parsear ${f}: ${e instanceof Error ? e.message : e}\n`);
-    }
-  }
-  return posts;
+  return loadUnifiedEditionCache() as RawCachedPost[];
 }
 
 const TITLES_CACHE_PATH = resolve(ROOT, "workers/arquivo/src/titles-cache.json");
@@ -650,8 +650,9 @@ function main(): void {
   // #4918 Conserto 2, "caminho barato": preenche `editionTitle` no JSON já
   // commitado a partir de `titles-cache.json` (também commitado) — NÃO
   // precisa do junction `data/`, roda em sessão cloud. Modo separado do
-  // fluxo normal (que precisa de `data/beehiiv-cache/posts`, ver
-  // `loadPosts` abaixo) — sai antes de checar `POSTS_DIR`.
+  // fluxo normal (que precisa de `data/beehiiv-cache/posts` via
+  // `loadUnifiedEditionCache`, ver `loadPosts` abaixo) — sai antes de
+  // checar o cache.
   if (argv.includes("--backfill-titles")) {
     runBackfillTitles(hub, { dryRun });
     return;

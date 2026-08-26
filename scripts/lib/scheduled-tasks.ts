@@ -1332,14 +1332,37 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#6130",
   },
   {
+    name: "Diaria-Backlog-Reconcile",
+    description:
+      "reconciliação diária do backlog aberto — corrige mecanicamente marcador aguardando-ate: em conflito com " +
+      "label de deferimento (padrões 1/2), e alarma (sem corrigir) label de bloqueio herdada de mãe pra filha " +
+      "e checkbox aberto em issue fora-de-rodada (padrões 3/4)",
+    steps: [{ key: "reconcile", script: "scripts/backlog-reconcile.ts" }],
+    logPath: "backlog-reconcile/.reconcile.log",
+    // 10:10 BRT — logo depois do Diaria-Session-Registry-SafeBackup-Alarm
+    // (10:05, acima), fechando o cluster matinal de checks/alarmes
+    // 09:00-10:20 (ver grep de `kind: "daily"` neste arquivo) sem colidir
+    // com nenhuma outra entrada já registrada.
+    schedule: { kind: "daily", hour: 10, minute: 10 },
+    // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
+    // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
+    // falhou" como "backlog limpo").
+    // DECLARADA, NÃO ARMADA nesta unidade — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6198",
+  },
+  {
     name: "Diaria-Dmarc-Drain",
     description: "drena e agrega os relatorios DMARC de news.diar.ia.br, alarma se aparecer volume nao-autenticado",
     steps: [{ key: "drain", script: "scripts/dmarc-drain.ts" }],
     logPath: "dmarc-reports/.drain.log",
-    // 10:10 BRT — logo depois de Diaria-Session-Registry-SafeBackup-Alarm
-    // (10:05, acima), fim do cluster matinal de checks/alarmes deste
-    // registro (09:00-10:20).
-    schedule: { kind: "daily", hour: 10, minute: 10 },
+    // 10:25 BRT — logo depois de Diaria-Hub-Staleness-Check (10:20), fechando
+    // o cluster matinal de checks/alarmes. Nasceu pedindo 10:10, mesmo slot
+    // que Diaria-Backlog-Reconcile (#6198) pediu no mesmo dia — as duas
+    // unidades foram desenvolvidas em worktrees isolados e escolheram o
+    // mesmo buraco livre. Resolvido no merge da rodada overnight 260826.
+    schedule: { kind: "daily", hour: 10, minute: 25 },
     // Sem guard: fetchReports() é fail-soft por design (busca vazia = 0
     // relatórios, nunca erro) — a única falha dura é a BUSCA em si (Gmail
     // API indisponível/auth), que o próprio script já reporta com exit != 0.

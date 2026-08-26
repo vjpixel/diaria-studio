@@ -21,12 +21,19 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   isLegacySentinelEdition,
   SENTINEL_MECHANISM_CUTOFF_AAMMDD,
 } from "../scripts/pipeline-sentinel.ts";
 
-const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+// `fileURLToPath` e não `new URL(...).pathname` (#6206): no Windows o pathname
+// de uma file URL vem com barra ANTES da letra do drive (`/C:/Users/...`), e
+// `resolve` sobre isso produz um caminho inexistente. `sentinelCli` apontava
+// pro vazio, `spawnSync` falhava, e as 3 asserções deste arquivo comparavam o
+// `status: null` do spawn frustrado contra o exit code esperado — falha que
+// parecia do CLI sob teste, sem nunca tê-lo executado.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sentinelCli = join(repoRoot, "scripts", "pipeline-sentinel.ts");
 
 describe("isLegacySentinelEdition (#5678)", () => {

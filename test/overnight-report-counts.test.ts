@@ -259,9 +259,16 @@ describe("register-report.ts: guard de contagem (#5521)", () => {
    * Os casos abaixo só exercitam caminhos que saem ANTES de registrar.
    */
   const run = (title: string, kind = "overnight", htmlPath = reportPath) => {
+    // `process.execPath` + `--import tsx` e não `npx` (#6206): no Windows o
+    // executável é `npx.cmd`, e `spawnSync` sem `shell: true` responde ENOENT
+    // com `status: -1` — o teste então comparava `-1 !== 1` e falhava como se o
+    // guard não tivesse bloqueado, quando na verdade o script nunca rodou.
+    // Este é o mesmo idioma que `pipeline-sentinel-legacy-cutoff.test.ts` já
+    // usa, e ainda evita a camada extra de resolução do `npx`.
     const r = spawnSync(
-      "npx",
+      process.execPath,
       [
+        "--import",
         "tsx",
         join(ROOT, "scripts", "register-report.ts"),
         "--kind", kind,
