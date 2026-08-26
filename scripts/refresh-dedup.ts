@@ -41,10 +41,11 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { editionsRoot as getEditionsRoot } from "./lib/edition-paths.ts";
+import { decideArchiveRefresh, renderRefreshDecision } from "./lib/site-archive-refresh.ts"; // #6202
 import {
   type Post,
   populateLinksFromTracking,
@@ -273,6 +274,19 @@ interface PublishedJson {
  *
  * Retorna true quando arquivo foi escrito/atualizado.
  */
+/**
+ * Slugs que já têm página no acervo do site (#6202).
+ *
+ * Diretório ausente devolve `[]` — clone fresco ou máquina sem o Worker
+ * checado out não é erro, é "ainda não há acervo local".
+ */
+export function listarSlugsComPagina(pagesDir: string): string[] {
+  if (!existsSync(pagesDir)) return [];
+  return readdirSync(pagesDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+}
+
 export function autoStampPublishedJson(
   editionsRoot: string,
   post: Post,
@@ -525,6 +539,35 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
         `[refresh-dedup] Auto-stamped 05-published.json pra ${stamped} edição(ões) (#978)\n`,
       );
     }
+    // #6202 — o acervo do site (workers/site) sai do MESMO cache que acabou
+    // de ser atualizado. Este é o ponto onde o render web de uma edição nova
+    // passa a existir; antes dele, não existe (foi o P0 que derrubou a 1ª
+    // tentativa, que tentava publicar no Stage 6).
+    //
+    // Só DETECTA e avisa — não gera nem publica. Gerar é
+    // `gen-archive-pages.ts`; publicar é `git push` → deploy-site.yml.
+    // Automatizar o commit a partir daqui foi deixado de fora de propósito:
+    // com sessões autônomas concorrentes no mesmo checkout (realidade desde
+    // 26/08), escrita em git a partir do pipeline é risco que precisa de
+    // decisão própria, não efeito colateral de um refresh de dedup.
+    try {
+      const decisao = decideArchiveRefresh({
+        // `truncated` já é a lista de edições PUBLICADAS deste script
+        // (`Post.published_at` é obrigatório) — não precisa filtrar status.
+        // Falta só descartar slug ausente e o lixo `new-post`, o mesmo que
+        // `isPublishedPost` descarta do lado do acervo (achado ao vivo #6167).
+        slugsNoCache: truncated
+          .map((p) => p.slug)
+          .filter((slug): slug is string => typeof slug === "string" && slug !== "" && slug !== "new-post"),
+        slugsComPagina: listarSlugsComPagina(resolve(ROOT, "workers", "site", "public", "p")),
+      });
+      if (decisao.precisa) process.stderr.write(`${renderRefreshDecision(decisao)}\n`);
+    } catch (e) {
+      // Fail-soft: o acervo do site é acessório ao dedup, que é o trabalho
+      // real desta função. Nunca derrubar por causa dele.
+      process.stderr.write(`[site-archive] aviso: checagem pulada — ${(e as Error).message}\n`);
+    }
+
     if (reports > 0) {
       process.stderr.write(
         `[refresh-dedup] Gerou edition-report.html pra ${reports} edição(ões) faltante(s) (#1950)\n`,
