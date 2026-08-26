@@ -55,8 +55,7 @@
  *   CLOUDFLARE_WORKERS_TOKEN - token com permissão Workers KV (required)
  */
 
-import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
@@ -446,11 +445,7 @@ async function main(): Promise<void> {
   process.exitCode = result.failed > 0 ? 1 : 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[inject-poll-token] ${(e as Error).message}`);
     process.exit(1);
