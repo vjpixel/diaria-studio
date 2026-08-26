@@ -15,7 +15,13 @@ import {
   composeTrainBatches,
   bisectBatch,
   worstCaseCiRuns,
+  parseClosesIssues,
+  buildTrainPrTitle,
+  buildTrainPrBody,
+  buildTrainMergeCommitTitle,
+  buildTrainMergeCommitBody,
   type TrainCandidate,
+  type TrainPrInfo,
 } from "../scripts/lib/merge-train.ts";
 
 describe("filesCollide", () => {
@@ -214,5 +220,99 @@ describe("worstCaseCiRuns — apoio à calibragem de K, não usado em runtime", 
     const worst = worstCaseCiRuns(k);
     assert.ok(worst <= k + Math.ceil(Math.log2(k)) + k, `worst=${worst} deveria ficar perto de K+logK`);
     assert.ok(worst >= k, "nunca pode custar MENOS runs que o número de PRs no pior caso");
+  });
+});
+
+describe("parseClosesIssues", () => {
+  it("reconhece close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved, case-insensitive", () => {
+    assert.deepEqual(parseClosesIssues("Closes #10"), [10]);
+    assert.deepEqual(parseClosesIssues("closes #11"), [11]);
+    assert.deepEqual(parseClosesIssues("CLOSED #12"), [12]);
+    assert.deepEqual(parseClosesIssues("Fix #13"), [13]);
+    assert.deepEqual(parseClosesIssues("fixes #14"), [14]);
+    assert.deepEqual(parseClosesIssues("Fixed #15"), [15]);
+    assert.deepEqual(parseClosesIssues("Resolve #16"), [16]);
+    assert.deepEqual(parseClosesIssues("resolves #17"), [17]);
+    assert.deepEqual(parseClosesIssues("Resolved #18"), [18]);
+  });
+
+  it("extrai múltiplas issues em linhas/frases diferentes, ordenadas e sem duplicata", () => {
+    const body = "Closes #20\n\nAlgum texto.\n\nFixes #10 e também resolves #20 de novo.";
+    assert.deepEqual(parseClosesIssues(body), [10, 20]);
+  });
+
+  it("ignora #N sem keyword de fechamento na frente (ex: Refs)", () => {
+    assert.deepEqual(parseClosesIssues("Refs #30, não fecha nada"), []);
+  });
+
+  it("corpo sem nenhuma keyword devolve lista vazia", () => {
+    assert.deepEqual(parseClosesIssues("Descrição qualquer, sem issue nenhuma."), []);
+  });
+});
+
+describe("buildTrainPrTitle / buildTrainPrBody — PR-trem descartável nunca fecha issue", () => {
+  const prInfos: TrainPrInfo[] = [
+    { pr: 100, headRefName: "develop/fix-100", title: "fix: primeira coisa", issueNumbers: [10] },
+    { pr: 101, headRefName: "develop/fix-101", title: "fix: segunda coisa", issueNumbers: [11, 12] },
+  ];
+
+  it("título nomeia o tamanho do lote e os números de PR", () => {
+    const title = buildTrainPrTitle({ prs: [100, 101] });
+    assert.match(title, /lote de 2/);
+    assert.match(title, /#100/);
+    assert.match(title, /#101/);
+  });
+
+  it("corpo usa Refs — nenhuma keyword de fechamento do GitHub aciona auto-close (invariante real, via parseClosesIssues)", () => {
+    // Não basta o texto não conter a PALAVRA "close" (o corpo explica em
+    // prosa por que NÃO fecha, e essa explicação legitimamente contém a
+    // palavra) — o invariante que importa é que o GITHUB não reconheça
+    // nenhuma keyword de auto-close neste corpo. `parseClosesIssues` é o
+    // MESMO parser usado em produção (fetchTrainPrInfo, merge-train-live.ts)
+    // pra extrair keywords reais — reusá-lo aqui é a prova direta.
+    const body = buildTrainPrBody({ prs: [100, 101] }, prInfos);
+    assert.match(body, /Refs #100, #101/);
+    assert.deepEqual(parseClosesIssues(body), [], "nenhuma issue pode ser auto-fechada pelo PR-trem descartável");
+    assert.match(body, /#10/);
+    assert.match(body, /#11/);
+    assert.match(body, /#12/);
+  });
+
+  it("corpo degrada bem quando um PR do lote não tem TrainPrInfo (nunca lança)", () => {
+    const body = buildTrainPrBody({ prs: [100, 999] }, prInfos);
+    assert.match(body, /#999/);
+  });
+});
+
+describe("buildTrainMergeCommitTitle / buildTrainMergeCommitBody — commit squash é o merge de verdade (decisão do editor, 1 commit por lote)", () => {
+  const prInfos: TrainPrInfo[] = [
+    { pr: 100, headRefName: "develop/fix-100", title: "fix: primeira coisa", issueNumbers: [10] },
+    { pr: 101, headRefName: "develop/fix-101", title: "fix: segunda coisa", issueNumbers: [11, 12] },
+  ];
+
+  it("título nomeia o lote", () => {
+    const title = buildTrainMergeCommitTitle({ prs: [100, 101] });
+    assert.match(title, /lote de 2/);
+    assert.match(title, /#100.*#101|#101.*#100/);
+  });
+
+  it("corpo tem 1 linha Closes com a UNIÃO ordenada de todas as issues do lote", () => {
+    const body = buildTrainMergeCommitBody({ prs: [100, 101] }, prInfos);
+    assert.match(body, /^Closes #10, #11, #12$/m);
+  });
+
+  it("issue repetida entre 2 PRs do lote aparece só 1 vez no Closes", () => {
+    const dup: TrainPrInfo[] = [
+      { pr: 100, headRefName: "a", title: "a", issueNumbers: [10, 20] },
+      { pr: 101, headRefName: "b", title: "b", issueNumbers: [20] },
+    ];
+    const body = buildTrainMergeCommitBody({ prs: [100, 101] }, dup);
+    assert.match(body, /^Closes #10, #20$/m);
+  });
+
+  it("nenhum PR do lote tem issue detectada — corpo NÃO tem linha Closes (nunca uma linha vazia 'Closes ')", () => {
+    const semIssue: TrainPrInfo[] = [{ pr: 100, headRefName: "a", title: "a", issueNumbers: [] }];
+    const body = buildTrainMergeCommitBody({ prs: [100] }, semIssue);
+    assert.doesNotMatch(body, /Closes/);
   });
 });

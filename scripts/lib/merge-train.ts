@@ -12,28 +12,24 @@
  * `paths-ignore` de `ci.yml`).
  *
  * ESCOPO DESTE ARQUIVO: só a lógica DECIDÍVEL sem tocar `git`/`gh` — quais
- * PRs entram em qual lote (nunca 2 colidentes juntos, nunca mais que K) e
- * como bissectar um lote que voltou vermelho. Isso é o que os 2 critérios
- * de aceite testáveis sem infra viva cobrem:
- *   - "Dois PRs colidentes nunca entram no mesmo trem" → composeTrainBatches
- *   - "Lote vermelho... bissecta — nunca deixa PR verde preso indefinidamente"
- *     → bisectBatch (a METADE da bisecção; a execução real — rebase em
- *     cadeia, disparo de CI, merge sob lock — é orquestração viva, fora
- *     deste módulo puro, ver nota de blast-radius abaixo)
+ * PRs entram em qual lote (nunca 2 colidentes juntos, nunca mais que K),
+ * como bissectar um lote que voltou vermelho, e a formatação PURA de
+ * título/corpo do PR-trem e do commit squash (texto, sem I/O). A
+ * ORQUESTRAÇÃO viva (rebase/push, `gh pr create`, polling de CI, merge sob
+ * lock) mora em `scripts/lib/merge-train-live.ts` — separado de propósito,
+ * pra manter este arquivo 100% testável sem `git`/`gh`/rede.
  *
- * FORA DESTE ARQUIVO, DE PROPÓSITO (#6300 segue com resíduo depois desta
- * unidade — ver comentário registrado na issue): a execução real —
- * `git rebase`/push de uma branch de integração, disparo e polling de UM
- * run de CI sobre essa branch, merge de cada PR do lote em sequência sob
- * `session-registry.ts merge-lock-acquire`/`release` — muda o comportamento
- * de merge que TODA sessão autônoma (overnight/develop/contínuo) depende
- * agora mesmo. Testar essa parte ao vivo, com sessões concorrentes já
- * mergeando PRs reais nesta mesma janela (medido na própria issue: "rajada
- * de merges com 4 sessões ativas"), é exatamente o cenário de blast-radius
- * cat. D que esta skill (`.claude/skills/diaria-develop/SKILL.md`, Gate B)
- * exige confirmação explícita ANTES de aplicar em escala — não fabricar
- * essa confirmação numa sessão sem o editor revisando o diff-walkthrough
- * ao vivo. A wiring fica para quando isso rodar sob Gate B.
+ * **Execução viva AUTORIZADA (2ª decisão do editor, comentário
+ * `decisao-editor` de 26/08/2026, mesmo dia — responde às 4 perguntas que
+ * o parágrafo anterior desta issue deixou em aberto):** rollout nas três
+ * skills de uma vez (overnight/develop/contínuo); default ATIVO sem flag
+ * de opt-in (degrada sozinho pro caminho de hoje se algo falhar — mesma
+ * garantia que a bissecção já dá); 1 commit squash por lote com
+ * `Closes #N1, #N2, #N3` (mesma convenção da fusão de cluster colidente no
+ * develop, #4319 — revert é tudo-ou-nada pro lote); testar ao vivo contra
+ * PRs reais é autorizado, com cautela (lote pequeno, abortar pro
+ * 1-a-1 se colidir com outra sessão). Ver `scripts/lib/merge-train-live.ts`
+ * e `scripts/run-merge-train.ts` (CLI executável) pra implementação.
  */
 
 export interface TrainCandidate {
@@ -172,4 +168,93 @@ export function worstCaseCiRuns(batchSize: number): number {
   // recursivo das duas metades.
   const mid = Math.ceil(batchSize / 2);
   return 1 + worstCaseCiRuns(mid) + worstCaseCiRuns(batchSize - mid);
+}
+
+/** Uma unidade (PR) já com os metadados que a orquestração viva precisa —
+ * ver `fetchTrainPrInfo` em `merge-train-live.ts` pro producer real (via
+ * `gh pr view`). Tipo aqui porque as funções de formatação abaixo são
+ * puras e não devem importar nada de `merge-train-live.ts` (que faz I/O). */
+export interface TrainPrInfo {
+  readonly pr: number;
+  readonly headRefName: string;
+  readonly title: string;
+  /** Issues que este PR fecha, extraídas do corpo (ver `parseClosesIssues`). */
+  readonly issueNumbers: readonly number[];
+}
+
+/**
+ * Extrai números de issue de palavras-chave de fechamento do GitHub
+ * (`close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/
+ * `resolved` + `#N`, case-insensitive — mesmo vocabulário que o GitHub
+ * reconhece pra auto-close). Usado tanto pra ler o que cada PR do lote já
+ * fecha (`fetchTrainPrInfo`) quanto, indiretamente, pra montar o commit
+ * squash do trem (`buildTrainMergeCommitBody` abaixo — que NÃO reusa esta
+ * função, e sim recebe os números já resolvidos por PR, porque cada PR
+ * pode fechar >1 issue e a lista final é a UNIÃO ordenada de todas).
+ */
+export function parseClosesIssues(body: string): number[] {
+  const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+  const found = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) found.add(Number(m[1]));
+  return [...found].sort((a, b) => a - b);
+}
+
+/** Título do PR-trem descartável (achado pelo `gh pr diff --name-only` de
+ * cada PR do lote, aberto só pra disparar o run único de CI sobre a
+ * combinação — nunca é o merge final, ver `mergeTrainBatch` em
+ * `merge-train-live.ts`). */
+export function buildTrainPrTitle(batch: TrainBatch): string {
+  return `[trem] lote de ${batch.prs.length}: ${batch.prs.map((n) => `#${n}`).join(", ")}`;
+}
+
+/** Corpo do PR-trem — nunca contém `Closes`/`Fixes` (não é ele quem fecha
+ * as issues; o commit squash final é, ver `buildTrainMergeCommitBody`) —
+ * só `Refs`, pra não fechar nada antes da hora se alguém mergeasse este
+ * PR descartável por engano. */
+export function buildTrainPrBody(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const lines = batch.prs.map((n) => {
+    const info = byNumber.get(n);
+    const issues = info?.issueNumbers.length ? ` (${info.issueNumbers.map((i) => `#${i}`).join(", ")})` : "";
+    return `- #${n}${info ? `: ${info.title}` : ""}${issues}`;
+  });
+  return (
+    `PR-trem descartável (#6300) — valida a COMBINAÇÃO destes ${batch.prs.length} PRs com 1 run de CI só.\n\n` +
+    `${lines.join("\n")}\n\n` +
+    `Refs ${batch.prs.map((n) => `#${n}`).join(", ")} — NÃO CLOSES (fechamento acontece no squash-merge deste PR-trem, não aqui).\n\n` +
+    `Nunca mergear este PR isoladamente por engano — ele É o merge, mas o commit squash usa uma mensagem própria com \`Closes\` pras issues.`
+  );
+}
+
+/** Título do commit squash final — o merge de verdade (`mergeTrainBatch`
+ * em `merge-train-live.ts` usa isto como `--subject` do `gh pr merge
+ * --squash`). */
+export function buildTrainMergeCommitTitle(batch: TrainBatch): string {
+  return `trem(#6300): lote de ${batch.prs.length} unidades — ${batch.prs.map((n) => `#${n}`).join(", ")}`;
+}
+
+/**
+ * Corpo do commit squash final — a UNIÃO ordenada de `issueNumbers` de
+ * TODOS os PRs do lote, uma linha `Closes #A, #B, #C` (decisão do editor,
+ * 26/08/2026: 1 commit squash só por lote, mesma convenção de fusão de
+ * cluster colidente do develop, #4319 — revert é tudo-ou-nada pro lote
+ * inteiro). PR sem nenhuma issue detectada (`issueNumbers` vazio) não
+ * quebra nada — só não contribui número nenhum pra linha `Closes`.
+ */
+export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const allIssues = new Set<number>();
+  for (const n of batch.prs) {
+    for (const i of byNumber.get(n)?.issueNumbers ?? []) allIssues.add(i);
+  }
+  const closesLine = allIssues.size > 0 ? `Closes ${[...allIssues].sort((a, b) => a - b).map((i) => `#${i}`).join(", ")}` : "";
+  const prList = batch.prs.map((n) => `#${n}`).join(", ");
+  return [
+    `Trem de merge (#6300) — ${batch.prs.length} PRs validados juntos com 1 run de CI: ${prList}.`,
+    "",
+    closesLine,
+  ]
+    .filter((l) => l !== "")
+    .join("\n");
 }

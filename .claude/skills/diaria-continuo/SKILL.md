@@ -316,6 +316,13 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   checklist canônico que todo subagente implementador do overnight/develop
   lê) e o cita — não reproduz — no prompt de dispatch de cada subagente
   implementador.
+- **Trem de merge (#6300, decisão do editor 26/08/2026, default ATIVO):**
+  o parágrafo "Trem de merge" do Gate 2 do overnight (`.claude/skills/
+  diaria-overnight/SKILL.md`) se aplica aqui por citação, igual ao resto
+  desta seção — única diferença é `--kind continuo` em vez de `--kind
+  overnight` na chamada de `scripts/run-merge-train.ts`. Mesmo gatilho
+  (≥2 unidades Gate-2-verde sem colisão de arquivo ao mesmo tempo), mesma
+  degradação automática (bissecta até o piso se o lote vier vermelho).
 - **Reusa o formato de `plan.json`** descrito em
   `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 7) — mesmos
   campos (`issues[]`, `timeline`, `stall_events`, `resume_state`, etc.) sob
