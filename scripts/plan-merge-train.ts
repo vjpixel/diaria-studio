@@ -4,7 +4,7 @@
  *
  * CLI de PLANEJAMENTO (read-only, sem mutação de git/gh) pro trem de merge
  * — ver `scripts/lib/merge-train.ts` pro miolo puro e o cabeçalho daquele
- * arquivo pro racional completo. A EXECUÇÃO viva (rebase/merge de
+ * arquivo pro racional completo. A EXECUÇÃO viva (merge em cadeia de
  * integração, PR-trem, polling de CI, merge sob lock) mora em
  * `scripts/run-merge-train.ts` — autorizada pelo editor em 26/08/2026 (ver
  * cabeçalho de `scripts/lib/merge-train.ts`); este script continua

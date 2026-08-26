@@ -49,7 +49,16 @@ export function filesForPr(prNumber: number, cwd: string): string[] {
  */
 export function isGateOneGreen(prNumber: number, cwd: string): boolean {
   const res = runGh(["pr", "view", String(prNumber), "--json", "statusCheckRollup"], cwd);
-  if (!res.ok) return false; // erro de gh = não verde, nunca "assume verde"
+  if (!res.ok) {
+    // erro de gh = não verde, nunca "assume verde" — mas achado do fleet
+    // review (PR #6361): sem log, uma falha TRANSITÓRIA de gh (timeout,
+    // rate-limit) fica indistinguível de "PR genuinamente vermelho" pra
+    // quem lê a saída de `--open` depois — os outros 2 pontos de exclusão
+    // silenciosa desta função (limite de 500 atingido, entrada malformada)
+    // já logam; este era o único que não.
+    console.error(`isGateOneGreen: gh pr view falhou pro PR #${prNumber} (excluído da descoberta, causa pode ser transitória): ${res.error}`);
+    return false;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(res.stdout);

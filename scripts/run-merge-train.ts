@@ -28,9 +28,12 @@
  *
  * Exit codes:
  *   0 = todos os PRs candidatos terminaram em `merged`/`solo-merged`
- *   1 = pelo menos 1 terminou `solo-failed` (falha real de merge — não
- *       "vermelho de CI", que sempre resolve via bisecção até o piso) OU
- *       `gh`/preparação falhou antes de processar qualquer lote
+ *   1 = pelo menos 1 terminou `solo-failed` OU `lock-blocked` (falha real
+ *       de merge — não "vermelho de CI", que sempre resolve via bisecção
+ *       até o piso; `lock-blocked` é um lote que provou passar junto no CI
+ *       mas não conseguiu a janela de merge lock após retries, ou falhou
+ *       na revalidação de Gate 2 — ver `scripts/lib/merge-train-live.ts`)
+ *       OU `gh`/preparação falhou antes de processar qualquer lote
  *   2 = uso inválido (--session-id/--kind ausentes; nem --prs nem --open;
  *       --prs vazio/token inválido; --max-batch-size inválido)
  */
@@ -136,16 +139,19 @@ async function main() {
   const batches = composeTrainBatches(candidates, maxBatchSize);
   console.log(`run-merge-train: ${candidates.length} PR(s), ${batches.length} lote(s) composto(s) (kind=${kind}, maxBatchSize=${maxBatchSize})`);
 
-  // Processa os lotes SEQUENCIALMENTE — mesmo checkout local é reusado
-  // pra montar cada branch de integração; rodar em paralelo colidiria
-  // consigo mesmo (não é um problema do trem, é do checkout compartilhado
-  // — mesma limitação que qualquer sessão já tem hoje pra qualquer merge).
+  // Processa os lotes SEQUENCIALMENTE — cada um monta seu próprio worktree
+  // isolado (`buildIntegrationBranch`), então não colidiria em paralelo,
+  // mas o MERGE de verdade é serializado pelo lock de qualquer forma;
+  // rodar sequencial aqui é simplicidade da 1ª versão, não uma exigência
+  // de correção (diferente da versão anterior, quando tudo acontecia no
+  // checkout principal compartilhado).
   const allOutcomes: TrainBatchOutcome[] = [];
   for (const batch of batches) {
     const batchPrInfos = prInfos.filter((p) => batch.prs.includes(p.pr));
     const outcomes = await runMergeTrain(runner, batch, batchPrInfos, {
       sessionId,
       kind,
+      mainCwd: cwd,
       ...(ciTimeoutMs !== undefined ? { ciTimeoutMs } : {}),
       ...(ciPollIntervalMs !== undefined ? { ciPollIntervalMs } : {}),
     });
@@ -155,7 +161,12 @@ async function main() {
   console.log(`run-merge-train: ${allOutcomes.length} resultado(s):`);
   for (const o of allOutcomes) console.log(printOutcome(o));
 
-  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed");
+  // "abandoned" NUNCA é status final por si só — todo lote abandoned é
+  // sempre bissectado e reprocessado até virar um dos status terminais
+  // abaixo (registrado no array só como rastro de ONDE a bisecção
+  // aconteceu). Falha real = solo-failed (piso da bissecção falhou) OU
+  // lock-blocked (lote provou passar mas não conseguiu mergear).
+  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked");
   process.exit(hasRealFailure ? 1 : 0);
 }
 

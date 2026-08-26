@@ -22,6 +22,7 @@ import {
   buildTrainMergeCommitBody,
   type TrainCandidate,
   type TrainPrInfo,
+  type TrainBatch,
 } from "../scripts/lib/merge-train.ts";
 
 describe("filesCollide", () => {
@@ -175,7 +176,7 @@ describe("bisectBatch — critério de aceite: lote vermelho bissecta, nunca dei
   it("bissecção repetida converge pro piso (lotes de tamanho 1) em log2(N) passos", () => {
     // Simula o loop de orquestração viva (fora deste módulo): bissecta até
     // todo sub-lote ter tamanho 1 — nunca deveria rodar pra sempre.
-    let frontier = [{ prs: [1, 2, 3, 4, 5, 6, 7] }];
+    let frontier: TrainBatch[] = [{ prs: [1, 2, 3, 4, 5, 6, 7] }];
     let rounds = 0;
     const MAX_ROUNDS = 10; // generoso — log2(7) ≈ 3
     while (frontier.some((b) => b.prs.length > 1)) {

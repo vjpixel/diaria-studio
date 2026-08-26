@@ -15,7 +15,7 @@
  * PRs entram em qual lote (nunca 2 colidentes juntos, nunca mais que K),
  * como bissectar um lote que voltou vermelho, e a formatação PURA de
  * título/corpo do PR-trem e do commit squash (texto, sem I/O). A
- * ORQUESTRAÇÃO viva (rebase/push, `gh pr create`, polling de CI, merge sob
+ * ORQUESTRAÇÃO viva (merge em cadeia num worktree isolado, `gh pr create`, polling de CI, merge sob
  * lock) mora em `scripts/lib/merge-train-live.ts` — separado de propósito,
  * pra manter este arquivo 100% testável sem `git`/`gh`/rede.
  *
