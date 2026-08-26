@@ -216,6 +216,17 @@
    cor herdada mudar, a borda segue junto sem ninguém precisar lembrar. */
 .dispatch-fora-de-rodada { border-color: currentColor; opacity: 0.7; }
 
+/* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
+   de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de
+   docs/studio-ui-ux-guidelines.md, tooltip não é suficiente sozinho); esta
+   classe reforça no visual pra quem está escaneando a coluna rápido.
+   `border-style: dashed` é o MESMO tratamento que `.dispatch-epica` usa pra
+   "isto não é uma classificação fechada/verificada" — reaproveita o
+   vocabulário visual já estabelecido em vez de inventar um 2º idioma
+   (hachura, ícone) só pra este caso. Empilha por cima de `.dispatch-overnight`
+   (cor do texto/borda vem de lá; aqui só o estilo da borda muda). */
+.dispatch-default { border-style: dashed; }
+
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·
    elegível"), sem indicar qual tabela é afetada. O chip repete isso junto
