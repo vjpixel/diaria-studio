@@ -22,6 +22,7 @@ import {
   endSession,
   listActiveSessions,
   claimIssue,
+  claimIssueCheckAndSet,
   isIssueClaimedByOther,
   acquireMergeLock,
   releaseMergeLock,
@@ -365,6 +366,104 @@ describe("claimIssue / isIssueClaimedByOther (item 3 do #5156)", () => {
     claimIssue(root, "overnight", "sess-old", 7, "host-a");
 
     assert.equal(isIssueClaimedByOther(root, 7, "sess-b", NOW), null);
+  });
+});
+
+// ─── claimIssueCheckAndSet — check-and-set (#6236) ─────────────────────────
+
+describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236)", () => {
+  const NOW = Date.parse("2026-08-26T11:00:00.000Z");
+
+  it("cenário real da issue: 2ª sessão ativa tenta reivindicar a mesma issue e é RECUSADA", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-overnight", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+    registerSession(root, "continuo", "sess-continuo", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    // sessão overnight reivindica primeiro (claim ~11:20 no incidente real).
+    const first = claimIssueCheckAndSet(root, "overnight", "sess-overnight", 6232, "host-a", new Date(NOW).toISOString());
+    assert.equal(first.ok, true);
+    assert.equal(first.reason, "claimed");
+
+    // sessão continuo tenta reivindicar a MESMA issue (claim ~11:27) — deve ser recusada.
+    const second = claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6232, "host-a", new Date(NOW + 7 * 60 * 1000).toISOString());
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "blocked-by-other");
+    assert.ok(second.blockedBy);
+    assert.equal(second.blockedBy?.sessionId, "sess-overnight");
+    assert.equal(second.blockedBy?.kind, "overnight");
+
+    // a issue NÃO foi adicionada ao registro da sessão continuo (recusa é real, não só relatada).
+    const continuoContent = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "host-a", "sess-continuo"), "utf8"));
+    assert.deepEqual(continuoContent.claimed_issues ?? [], []);
+  });
+
+  it("idempotência preservada: reivindicar issue que a PRÓPRIA sessão já segura é no-op de sucesso, nunca recusa", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-1", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const first = claimIssueCheckAndSet(root, "develop", "sess-1", 100, "host-a", new Date(NOW).toISOString());
+    assert.equal(first.ok, true);
+    assert.equal(first.reason, "claimed");
+
+    // retomada — mesma sessão, mesma issue, "now" mais tarde (heartbeat renovado).
+    const second = claimIssueCheckAndSet(root, "develop", "sess-1", 100, "host-a", new Date(NOW + 60 * 60 * 1000).toISOString());
+    assert.equal(second.ok, true);
+    assert.equal(second.reason, "already-own");
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-1"), "utf8"));
+    assert.deepEqual(content.claimed_issues, [100]);
+  });
+
+  it("--force toma o claim de uma sessão ATIVA (não-stale) mesmo assim, reportando quem foi sobreposto", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-a", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    registerSession(root, "develop", "sess-b", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    claimIssueCheckAndSet(root, "overnight", "sess-a", 42, "host-a", new Date(NOW).toISOString());
+
+    // sem --force: recusado (mesmo caminho do teste acima).
+    const denied = claimIssueCheckAndSet(root, "develop", "sess-b", 42, "host-a", new Date(NOW + 60 * 1000).toISOString());
+    assert.equal(denied.ok, false);
+
+    // com --force: toma o claim, mas AVISA quem estava segurando via blockedBy.
+    const forced = claimIssueCheckAndSet(root, "develop", "sess-b", 42, "host-a", new Date(NOW + 60 * 1000).toISOString(), { force: true });
+    assert.equal(forced.ok, true);
+    assert.equal(forced.reason, "forced-override");
+    assert.ok(forced.blockedBy, "force deve reportar quem estava segurando, pro chamador avisar alto");
+    assert.equal(forced.blockedBy?.sessionId, "sess-a");
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-b"), "utf8"));
+    assert.deepEqual(content.claimed_issues, [42]);
+  });
+
+  it("sessão STALE segurando a issue NÃO bloqueia — claim procede sem precisar de --force", () => {
+    const root = freshRoot();
+    const staleHeartbeat = new Date(NOW - 3 * 60 * 60 * 1000).toISOString(); // 3h stale > SOFT_STALE_MS (90min)
+    registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
+    claimIssueCheckAndSet(root, "overnight", "sess-morta", 7, "host-a", staleHeartbeat);
+
+    registerSession(root, "develop", "sess-viva", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    const result = claimIssueCheckAndSet(root, "develop", "sess-viva", 7, "host-a", new Date(NOW).toISOString());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, "claimed", "claim de sessão stale não exige --force — segue o fluxo normal");
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-viva"), "utf8"));
+    assert.deepEqual(content.claimed_issues, [7]);
+  });
+
+  it("sessão própria inexistente → no-op-session-missing, nunca lança", () => {
+    const root = freshRoot();
+    const result = claimIssueCheckAndSet(root, "overnight", "sess-inexistente", 1, "host-a");
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "no-op-session-missing");
+    assert.equal(result.blockedBy, undefined);
   });
 });
 

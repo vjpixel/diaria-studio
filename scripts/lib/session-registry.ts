@@ -66,7 +66,12 @@
  *     "Defeito 4" do #5797. `end` também distingue "removeu de fato" de "não
  *     havia nada pra remover": esta última reporta `exit 1` e a mensagem
  *     "nothing to end", nunca "ended".)
- *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N
+ *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N [--force]
+ *     (#6236: check-and-set — recusa (`exit 1`) quando outra sessão ATIVA já
+ *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
+ *     mesmo assim — escape hatch pra retomar issue de sessão morta sem
+ *     esperar a staleness de 24h. Reivindicar o que a própria sessão já tem
+ *     é sempre no-op de sucesso, nunca recusa.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
@@ -499,9 +504,116 @@ export function listActiveSessions(
 }
 
 /**
- * Adiciona `issueNumber` a `claimed_issues` da sessão (item 3 do #5156).
- * Retorna `false` sem lançar quando a sessão não existe (nunca registrada,
- * encerrada, corrompida) — mesmo contrato de `heartbeat`.
+ * Motivo do resultado de `claimIssueCheckAndSet` (#6236). `ok: true` cobre
+ * três casos de sucesso (`claimed`, `already-own`, `forced-override`);
+ * `ok: false` cobre dois de falha (`no-op-session-missing`,
+ * `blocked-by-other`) — `blockedBy` só é populado neste último.
+ */
+export type ClaimIssueReason =
+  | "claimed"
+  | "already-own"
+  | "no-op-session-missing"
+  | "blocked-by-other"
+  | "forced-override";
+
+export interface ClaimIssueResult {
+  ok: boolean;
+  reason: ClaimIssueReason;
+  /** Registro da sessão que já segura a issue — presente só em `blocked-by-other`. */
+  blockedBy?: SessionRecord;
+}
+
+export interface ClaimIssueOptions {
+  /**
+   * Escape hatch (#6236) — assume a issue mesmo que outra sessão ATIVA (não
+   * stale) já a segure. Existe pro caso legítimo de retomar issue de sessão
+   * que morreu sem liberar o registro (heartbeat parou, mas ainda dentro da
+   * janela `SOFT_STALE_MS`/`MAX_SESSION_AGE_MS`) — staleness sozinha já
+   * destrava isso sem `force` (ver `reason: "claimed"` quando o dono
+   * anterior está stale), então `force` só entra em jogo contra dono ATIVO.
+   */
+  force?: boolean;
+}
+
+/**
+ * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão SÓ
+ * DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
+ * antes desta mudança, `claimIssue` escrevia cego no próprio arquivo sem
+ * nunca consultar os das outras sessões; a checagem vivia inteiramente no
+ * chamador via `is-claimed`, com uma janela TOCTOU clássica entre os dois
+ * comandos). Reusa `isIssueClaimedByOther` — a mesma função que o CLI
+ * `is-claimed` já usa — em vez de reimplementar a consulta.
+ *
+ * Casos:
+ * - Sessão do próprio `sessionId`/`tag` não existe (nunca registrada,
+ *   encerrada, corrompida) → `{ ok: false, reason: "no-op-session-missing" }`.
+ * - A PRÓPRIA sessão já segura a issue → no-op idempotente,
+ *   `{ ok: true, reason: "already-own" }` (nunca recusa — usado em retomada).
+ * - Outra sessão ATIVA (não-stale) já segura a issue e `force` não foi
+ *   passado → recusa, `{ ok: false, reason: "blocked-by-other", blockedBy }`.
+ * - Outra sessão ATIVA já segura a issue e `force: true` → toma o claim
+ *   mesmo assim, `{ ok: true, reason: "forced-override" }` (chamador deve
+ *   avisar alto quem estava segurando, via `blockedBy` do retorno — este
+ *   helper não loga por si, é puro).
+ * - Ninguém segura (ou só uma sessão STALE segura — `isIssueClaimedByOther`
+ *   já ignora sessão stale, #5474) → claim normal,
+ *   `{ ok: true, reason: "claimed" }`, sem precisar de `force`.
+ *
+ * **Não fecha a janela TOCTOU entre MÁQUINAS diferentes** (mesma ressalva do
+ * merge lock, #6182): a leitura de `isIssueClaimedByOther` e a escrita deste
+ * claim não são atômicas entre si sobre o junction OneDrive — duas máquinas
+ * podem, na mesma janela de poucos milissegundos, cada uma ler "ninguém
+ * segura" e escrever seu próprio claim, porque `O_CREAT|O_EXCL`/leitura+escrita
+ * sobre cópias sincronizadas via OneDrive não é uma transação atômica cross-
+ * inode. Dentro da MESMA máquina (onde múltiplos processos Node leem/escrevem
+ * o mesmo arquivo local, sem lag de sync) a janela fecha de fato — foi
+ * exatamente aí que a colisão real do #6236 aconteceu (duas sessões,
+ * `overnight` e `continuo`, na mesma máquina).
+ */
+export function claimIssueCheckAndSet(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issueNumber: number,
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
+): ClaimIssueResult {
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current) return { ok: false, reason: "no-op-session-missing" };
+
+  const alreadyOwn = (current.claimed_issues ?? []).includes(issueNumber);
+  let reason: ClaimIssueReason = "claimed";
+  let overriddenOwner: SessionRecord | undefined;
+  if (alreadyOwn) {
+    reason = "already-own";
+  } else {
+    const nowMs = Date.parse(now);
+    const other = isIssueClaimedByOther(repoRoot, issueNumber, sessionId, Number.isFinite(nowMs) ? nowMs : Date.now());
+    if (other) {
+      if (!options.force) return { ok: false, reason: "blocked-by-other", blockedBy: other };
+      reason = "forced-override";
+      overriddenOwner = other;
+    }
+  }
+
+  const claimed = new Set(current.claimed_issues ?? []);
+  claimed.add(issueNumber);
+  writeJsonSafe(path, {
+    ...current,
+    claimed_issues: [...claimed].sort((a, b) => a - b),
+    lastHeartbeat: now,
+  });
+  return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };
+}
+
+/**
+ * Wrapper booleano de `claimIssueCheckAndSet` (#6236) — mantém a assinatura
+ * histórica (`true`/`false`) pros chamadores que só precisam saber se o
+ * claim colou, sem inspecionar o motivo. Ver `claimIssueCheckAndSet` para o
+ * comportamento completo (check-and-set contra outras sessões ativas,
+ * idempotência, `force`).
  */
 export function claimIssue(
   repoRoot: string,
@@ -510,18 +622,9 @@ export function claimIssue(
   issueNumber: number,
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
 ): boolean {
-  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current) return false;
-  const claimed = new Set(current.claimed_issues ?? []);
-  claimed.add(issueNumber);
-  writeJsonSafe(path, {
-    ...current,
-    claimed_issues: [...claimed].sort((a, b) => a - b),
-    lastHeartbeat: now,
-  });
-  return true;
+  return claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options).ok;
 }
 
 /**
@@ -1045,9 +1148,38 @@ function main(): void {
         const sessionId = requireSessionId(values);
         const issue = Number(values.issue);
         if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
-        const ok = claimIssue(repoRoot, kind, sessionId, issue);
-        process.stdout.write(`session-registry: claim-issue ${ok ? "ok" : "no-op (sessão inexistente)"}\n`);
-        if (!ok) process.exitCode = 1;
+        const force = flags.has("force");
+        const result = claimIssueCheckAndSet(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
+        switch (result.reason) {
+          case "claimed":
+            process.stdout.write("session-registry: claim-issue ok (claimed)\n");
+            break;
+          case "already-own":
+            process.stdout.write("session-registry: claim-issue ok (already-own, no-op)\n");
+            break;
+          case "forced-override": {
+            const owner = result.blockedBy;
+            process.stdout.write(
+              `session-registry: claim-issue ok (FORCED — tomado de ${owner?.kind}-${owner?.sessionId} ` +
+                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})\n`,
+            );
+            break;
+          }
+          case "no-op-session-missing":
+            process.stdout.write("session-registry: claim-issue no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+          case "blocked-by-other": {
+            const owner = result.blockedBy;
+            process.stdout.write(
+              `session-registry: claim-issue RECUSADO — issue #${issue} já está reivindicada por ` +
+                `${owner?.kind}-${owner?.machineTag}-${owner?.sessionId} (desde ${owner?.startedAt}, ` +
+                `último heartbeat ${owner?.lastHeartbeat}). Use --force para tomar mesmo assim.\n`,
+            );
+            process.exitCode = 1;
+            break;
+          }
+        }
         break;
       }
       case "is-claimed": {
