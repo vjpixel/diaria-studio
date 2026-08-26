@@ -341,19 +341,25 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
   const result = checkSocialHumanizerSentinel(editionDir);
   if (result.ok) return [];
 
+  // Ação concreta nomeada explicitamente em ambos os ramos (#6316 finding 1) —
+  // uma mensagem que só diz "diverge"/"ausente" sem dizer o que rodar custa
+  // uma sessão inteira de investigação. O ramo hash_mismatch é o caso comum
+  // do fluxo legítimo pós-gate humano de §2d (editor edita 03-social.md no
+  // gate; nada re-hashava até o orchestrator-stage-2.md ganhar o passo
+  // dedicado) — por isso nomeia a causa (texto mudou) e a ação (re-rodar
+  // --write) juntas, sem depender só do sufixo genérico abaixo.
+  const action = `rode \`npx tsx scripts/check-humanizer-social.ts --write --edition-dir ${editionDir}/\``;
   const detail =
     result.reason === "sentinel_missing"
-      ? "_internal/.humanizer-social-done.json ausente — check-humanizer-social.ts --write não rodou no fim do Stage 2 (#6305)"
+      ? `_internal/.humanizer-social-done.json ausente — check-humanizer-social.ts --write não rodou no fim do Stage 2 (#6305). ${action} (o sentinel nunca foi registrado)`
       : `_internal/.humanizer-social-done.json hash diverge (stored=${result.stored.slice(0, 12)}… ` +
-        `current=${result.current.slice(0, 12)}…) — 03-social.md mudou após a última humanização sem regravar o sentinel`;
+        `current=${result.current.slice(0, 12)}…) — 03-social.md mudou após o último registro do sentinel. ` +
+        `${action} (o texto de 03-social.md mudou depois do último registro do sentinel)`;
 
   return [
     {
       rule: "social-humanizer-sentinel-written",
-      message:
-        `03-social.md: ${detail}. Rodar ` +
-        `\`npx tsx scripts/check-humanizer-social.ts --write --edition-dir ${editionDir}/\` ` +
-        `antes de concluir o Stage 2.`,
+      message: `03-social.md: ${detail}.`,
       source_issue: "#6305",
       severity: "error" as const,
       file: "03-social.md",

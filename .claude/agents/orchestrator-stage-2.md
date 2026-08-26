@@ -549,6 +549,13 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
     ```
     Falha = warning, **não bloqueia** (gate já aprovou).
 
+  - **Re-gravar sentinel de humanizador social pós-gate (#6316).** Rodar de novo, **depois** da aprovação do gate acima e **antes** do `pipeline-sentinel.ts write` abaixo:
+    ```bash
+    npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
+    ```
+    **Por que este passo existe aqui (não é redundante com a chamada de §2c):** o gate de §2d convida o editor a editar `03-social.md` diretamente — mudança legítima e esperada. A chamada `--write` de §2c grava o hash sobre o texto de ANTES do gate; se o editor mexer no arquivo durante o gate (mesmo 1 palavra), o hash fica stale e a regra `social-humanizer-sentinel-written` (`scripts/lib/invariant-checks/stage-2.ts`, #6305) bloqueia o `pipeline-sentinel.ts write` logo abaixo com `hash_mismatch` — não porque algo quebrou, mas porque ninguém re-registrou o texto que o editor de fato aprovou. Re-rodar aqui fecha esse gap: o hash final bate com o texto pós-gate, e `hash_mismatch` volta a significar só o caso real (alguém editou `03-social.md` por fora deste playbook, sem re-humanizar/re-registrar). **Não remover como "já rodou em §2c"** — é exatamente essa suposição que reintroduz o falso-positivo.
+    Exit code handling: mesmo padrão da chamada de §2c — `0` = sentinel regravado; `1` = falha ao gravar (permissão, disco) — logar warn e **CONTINUAR Stage 2** (Stage 4/gate de write abaixo vai bloquear até o sentinel ser gravado manualmente).
+
   - **Escrever sentinel de conclusão do Stage 2:**
     ```bash
     npx tsx scripts/pipeline-sentinel.ts write \

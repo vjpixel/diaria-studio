@@ -332,4 +332,42 @@ describe("social-humanizer-sentinel-written (#6305)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * #6316 finding 1 — o caso hash_mismatch dispara num fluxo LEGÍTIMO (editor
+   * edita 03-social.md no gate humano de §2d, e nada re-hashava até o
+   * orchestrator-stage-2.md ganhar o passo dedicado que roda
+   * check-humanizer-social.ts --write de novo pós-gate). Uma mensagem que só
+   * diz "hash diverge" sem nomear a ação concreta custa uma sessão inteira de
+   * investigação — a mensagem precisa nomear o comando a rodar.
+   */
+  it("sentinel gravado mas 03-social.md mudou depois (hash_mismatch) → mensagem nomeia a ação concreta", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6316-hash-mismatch-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado\n");
+      writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "# Social\n## d1\ntexto pré-humanizador\n");
+      writeSentinel(dir);
+
+      // Simula o gate humano de §2d editando 03-social.md DEPOIS do --write
+      // (sem re-rodar o sentinel) — o cenário legítimo que o #6316 corrige.
+      writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado E editado no gate\n");
+
+      const result = checkStageInvariantsForWrite(dir, 2);
+      const violation = result.errors.find((v) => v.rule === "social-humanizer-sentinel-written");
+      assert.ok(violation, "esperava violação social-humanizer-sentinel-written com hash divergente");
+      assert.match(
+        violation!.message,
+        /check-humanizer-social\.ts --write/,
+        "mensagem precisa nomear o comando concreto a rodar, não só dizer que o hash diverge",
+      );
+      assert.match(
+        violation!.message,
+        /mudou depois do último registro do sentinel/,
+        "mensagem precisa nomear a CAUSA (texto mudou após o último registro) junto da ação",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
