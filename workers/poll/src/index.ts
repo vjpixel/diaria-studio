@@ -460,7 +460,7 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
 // de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
-import { handleJogarSubscribe, subscribeToBeehiiv, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe";
+import { handleJogarSubscribe, subscribeToBeehiiv, subscribeToKit, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6048: subscribeToKit — ramificação por env.SUBSCRIBE_BACKEND
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #5167 item 7: página de destino do double opt-in (opt_in_redirect_url,
 // ver docstring de confirmado.ts) — sem KV/brand, mesmo padrão de
@@ -1435,7 +1435,13 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       // `/set-name` (tela de resultado do voto), distinto de qualquer outro
       // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
       const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE };
-      const result = await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, utm);
+      // #6048: seleção de backend local a este handler — mesmo padrão de
+      // handleJogarSubscribe (subscribe.ts:585-591). env.SUBSCRIBE_BACKEND
+      // ausente/"beehiiv" mantém o caminho pré-existente.
+      const result =
+        env.SUBSCRIBE_BACKEND === "kit"
+          ? await subscribeToKit(env, { name: cleanName, email }, fetch, utm)
+          : await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, utm);
       if (result.ok) {
         score.optin = true;
         signupOutcome = "subscribed";
