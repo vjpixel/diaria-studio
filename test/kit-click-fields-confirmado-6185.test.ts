@@ -32,9 +32,17 @@ const AMOSTRA_REAL = JSON.parse(
   readFileSync(resolve(ROOT, "test/fixtures/kit-broadcast-click-6185.json"), "utf8"),
 ) as Record<string, unknown>;
 
-/** Só os campos de dado — os `_origem`/`_por_que` são documentação da fixture. */
+/**
+ * Só os campos de dado.
+ *
+ * Lista EXPLÍCITA e não `startsWith("_")` (achado do review): um campo real
+ * do Kit prefixado com `_` seria descartado em silêncio pela convenção,
+ * mascarando exatamente o `inesperado` que este arquivo existe pra pegar.
+ * Enumerar os metadados custa uma linha e não tem esse buraco.
+ */
+const CHAVES_META = new Set(["_origem", "_por_que"]);
 function semMeta(o: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith("_")));
+  return Object.fromEntries(Object.entries(o).filter(([k]) => !CHAVES_META.has(k)));
 }
 
 describe("#6185 amostra real do Kit — formato travado", () => {
@@ -54,6 +62,11 @@ describe("#6185 amostra real do Kit — formato travado", () => {
       assert.deepEqual(v.ausentes, [], "nenhum campo declarado pode faltar na amostra real");
       assert.deepEqual(v.tipoDivergente, [], "nenhum campo declarado pode vir com tipo errado");
       assert.deepEqual(v.presentes.sort(), [...CAMPOS_DECLARADOS].sort());
+      // Afirmado de propósito (achado do review): antes isto passava por
+      // acaso — a fixture só tem os campos declarados, então `inesperados`
+      // vinha vazio sem ninguém exigir. Se o Kit passar a devolver um campo
+      // novo, quero saber por asserção, não por sorte.
+      assert.deepEqual(v.inesperados, [], "campo novo do Kit precisa ser acusado, não ignorado");
     }
   });
 
@@ -98,5 +111,25 @@ describe("#6185 amostra real do Kit — formato travado", () => {
       assert.ok(v.ausentes.includes("unique_clicks"), "o campo sumido precisa ser acusado");
       assert.ok(v.inesperados.includes("clicks"), "o nome novo precisa aparecer");
     }
+  });
+});
+
+describe("#6216 review — `id` malformado é pego como os demais", () => {
+  it("id com tipo errado ⇒ tipoDivergente, não passa batido", () => {
+    // O mecanismo é genérico (itera CAMPOS_DECLARADOS), mas não havia caso
+    // explícito provando que o campo recém-declarado entra nele.
+    const v = interpretClicksResponse({ clicks: [{ ...semMeta(AMOSTRA_REAL), id: "1881132950" }] });
+    assert.equal(v.status, "confirmado");
+    if (v.status === "confirmado") {
+      const d = v.tipoDivergente.find((x) => x.campo === "id");
+      assert.deepEqual(d, { campo: "id", esperado: "number", recebido: "string" });
+    }
+  });
+
+  it("id AUSENTE ⇒ reportado como ausente", () => {
+    const semId = { ...semMeta(AMOSTRA_REAL) };
+    delete (semId as Record<string, unknown>).id;
+    const v = interpretClicksResponse({ clicks: [semId] });
+    if (v.status === "confirmado") assert.ok(v.ausentes.includes("id"));
   });
 });
