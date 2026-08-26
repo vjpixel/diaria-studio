@@ -752,7 +752,7 @@ describe("#5704 — Diaria-Google-Ads-Spend-Ingest registrada, diária, systemd-
   });
 });
 
-describe("#5754 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, NÃO armada", () => {
+describe("#5754/#6267 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, DESLIGADA DE PROPÓSITO", () => {
   it("está presente no registro, com o step apontando pro build-hub-page.ts com --all --check-facts, domingo 08:05", () => {
     const t = getScheduledTaskByName("Diaria-Hub-Pages-Build");
     assert.ok(t, "Diaria-Hub-Pages-Build ausente de SCHEDULED_TASKS");
@@ -766,6 +766,37 @@ describe("#5754 — Diaria-Hub-Pages-Build registrada, semanal, systemd-only, N�
     assert.deepEqual(t!.steps[0].args, ["--all", "--check-facts"]);
     assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 8, minute: 5 });
     assert.equal(t!.issue, "#5754");
+  });
+
+  it("enabled: false (#6267) — como declarada a task NÃO PODE ter sucesso; religar exige resolver 2 bloqueadores", () => {
+    // Bloqueador 1: `--check-facts` sem `--skip-fact-check` exige
+    // `data/hub-fact-check/{slug}-report.json`, que NUNCA existiu pra nenhum
+    // hub (o dispatch do `fact-checker mode:hub` nunca foi ligado — ver
+    // `.claude/agents/fact-checker.md` §"Modo hub"). Armada, ela aborta
+    // `exit 2` no 1º hub todo domingo, sem gerar um `.generated.ts`.
+    // Bloqueador 2: `UPDATED_DATE` é hand-written por hub e
+    // `validateHubContent` exige `updatedDate >= sourceEditions[0].date`
+    // (guard do #5124), então nem "só regenerar as fontes" roda
+    // desassistido — com as fontes regeneradas, 5 testes de render quebram,
+    // e a checkout compartilhada ficaria suja toda semana.
+    // Decisão do editor (#6267, 26/08/2026): o regen fica MANUAL (#6274).
+    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
+    assert.equal(
+      t.enabled,
+      false,
+      "task deve seguir DESLIGADA até os 2 bloqueadores do #6267 serem resolvidos — ver docs/scheduled-tasks-registry.md",
+    );
+  });
+
+  it("nunca ganha --skip-fact-check (destravar contornando o gate de conteúdo é o oposto da decisão do #5754)", () => {
+    // Distinto da asserção de `args` acima, que trava a lista EXATA de hoje:
+    // esta nomeia o invariante — se um dia a lista mudar legitimamente, a de
+    // cima é atualizada, esta continua barrando a flag que anularia o gate.
+    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
+    assert.ok(
+      !(t.steps[0].args ?? []).includes("--skip-fact-check"),
+      "contornar o fact-check em run desassistida é pior que falhar alto (#5754) — se o objetivo é destravar, resolva o #6267",
+    );
   });
 
   it("domingo 08:05 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
@@ -995,36 +1026,5 @@ describe("#6198 — Diaria-Backlog-Reconcile registrada, diária, systemd-only",
   it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
     const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Backlog-Reconcile").flatMap((t) => t.steps);
     assert.ok(!others.some((s) => s.script === "scripts/backlog-reconcile.ts"));
-  });
-});
-
-describe("#6267 — Diaria-Hub-Pages-Build DESLIGADA DE PROPÓSITO (não 'ainda não armada')", () => {
-  it("enabled: false — como declarada a task não pode ter sucesso, e religar exige resolver 2 bloqueadores", () => {
-    // Bloqueador 1: `--check-facts` sem `--skip-fact-check` exige
-    // `data/hub-fact-check/{slug}-report.json`, que NUNCA existiu pra nenhum
-    // hub (o dispatch do `fact-checker mode:hub` nunca foi ligado, ver
-    // `.claude/agents/fact-checker.md`) — armada, ela aborta `exit 2` no 1º
-    // hub todo domingo.
-    // Bloqueador 2: `UPDATED_DATE` é hand-written por hub e
-    // `validateHubContent` exige `updatedDate >= sourceEditions[0].date`
-    // (guard do #5124), então nem a variante "só regenerar as fontes" roda
-    // desassistida — com as fontes regeneradas, 5 testes de render quebram.
-    // Decisão do editor (#6267, 26/08/2026): regen fica MANUAL.
-    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
-    assert.equal(
-      t.enabled,
-      false,
-      "task deve seguir DESLIGADA até os 2 bloqueadores do #6267 serem resolvidos — ver docs/scheduled-tasks-registry.md",
-    );
-  });
-
-  it("mantém --check-facts sem --skip-fact-check (o #5754 decidiu falhar alto, não contornar a verificação)", () => {
-    const t = getScheduledTaskByName("Diaria-Hub-Pages-Build")!;
-    const args = t.steps[0].args ?? [];
-    assert.ok(args.includes("--check-facts"), "--check-facts é o gate de conteúdo do #5754");
-    assert.ok(
-      !args.includes("--skip-fact-check"),
-      "contornar o fact-check em run desassistida é pior que falhar alto (#5754) — se o objetivo é destravar, resolva o #6267",
-    );
   });
 });
