@@ -4,6 +4,29 @@ Preparado em **25/08/2026**, antes de qualquer ação. Existe porque a capacidad
 central do cutover — `custom_domain = true` no apex depois que a Beehiiv soltar
 o custom hostname — **não é testável antes**: o teste é a própria janela.
 
+> **CUTOVER EXECUTADO em 26/08/2026, 23:12 UTC — com outage de ~1 min.**
+> `PUT /accounts/{id}/workers/domains` (attach do Custom Domain) recusou com
+> **HTTP 409** assim que a Beehiiv soltou o hostname:
+> ```
+> {"code":100117,"message":"Hostname 'diar.ia.br' already has externally
+> managed DNS records (A, CNAME, etc). Delete them first or try a different
+> hostname."}
+> ```
+> Nessa janela — domínio já solto da Beehiiv, Custom Domain ainda não anexado —
+> `diar.ia.br` respondeu **403 "DNS points to prohibited IP"**: os A/AAAA da
+> §1 abaixo ainda apontavam pro IP da Beehiiv, que vira proibido na hora em que
+> o binding dela se solta. Corrigido na hora: `DELETE` dos dois registros da
+> §1 (`9246e7ff...`/`1e19bf32...`), depois `--cutover --apply` de novo — o
+> Custom Domain assumiu e emitiu certificado em seguida.
+>
+> **O passo que faltava neste documento e no script:** remover A/AAAA
+> ANTES de tentar o attach, não depois de ele falhar. Sem isso a sequência
+> "Beehiiv desconecta → script anexa" tem uma janela real de outage entre os
+> dois passos. Rastreado em **#6373** (P1) — corrigir o script pra fazer os
+> dois passos atômicos antes de rodar este playbook de novo. Até lá, quem for
+> repetir o cutover (rollback seguido de reaplicação, ex.) precisa fazer o
+> `DELETE` manual da §1 **antes** de `--cutover --apply`, não depois do 409.
+
 Medido ao vivo via API da Cloudflare (zona `0c1a216dee80404257ce225a18fae896`).
 
 > **Este documento é o estado PRÉ-cutover.** Se ele divergir da realidade,
