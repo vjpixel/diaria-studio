@@ -105,6 +105,18 @@ ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.
 # Ativo neste worker desde SUBSCRIBE_BACKEND = "kit" abaixo (#6048 item 4/5).
 KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
 
+# #6318 — nomes dos custom fields Kit que recebem a atribuição do cadastro.
+# Sem estas vars o worker calcula o triplo UTM corretamente e o DESCARTA
+# (o gate-por-ausência em subscribeToKit só anexa `fields` para as chaves
+# configuradas) — foi exatamente o que aconteceu entre 25/08 e 26/08: toda a
+# base nova entrou no Kit sem origem nenhuma. Os 4 campos já existem na conta
+# de produção (criados 26/08). VARs, não secrets — nome de custom field não é
+# sensível, mesmo tratamento de KIT_ORIGEM_CADASTRO_FIELD acima.
+KIT_UTM_SOURCE_FIELD = "utm_source"
+KIT_UTM_MEDIUM_FIELD = "utm_medium"
+KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
+KIT_REFERRING_SITE_FIELD = "referring_site"
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll primeiro por ser o de menor volume). env.SUBSCRIBE_BACKEND ===
 # "kit" em workers/poll/src/subscribe.ts (linha ~579) — cadastro via "É IA?"

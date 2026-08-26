@@ -68,8 +68,28 @@ workers_dev = true
 # (#6048 item 4/5).
 KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro"
 
+# #6318 — nomes dos custom fields Kit que recebem a atribuição do cadastro.
+# Sem estas vars o worker calcula o triplo UTM corretamente e o DESCARTA
+# (o gate-por-ausência em subscribeToKit só anexa `fields` para as chaves
+# configuradas) — foi exatamente o que aconteceu entre 25/08 e 26/08: toda a
+# base nova entrou no Kit sem origem nenhuma. Os 4 campos já existem na conta
+# de produção (criados 26/08). VARs, não secrets — nome de custom field não é
+# sensível, mesmo tratamento de KIT_ORIGEM_CADASTRO_FIELD acima.
+KIT_UTM_SOURCE_FIELD = "utm_source"
+KIT_UTM_MEDIUM_FIELD = "utm_medium"
+KIT_UTM_CAMPAIGN_FIELD = "utm_campaign"
+KIT_REFERRING_SITE_FIELD = "referring_site"
+
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll e cursos já verificados ao vivo, reativar é o 3º e último).
 # env.SUBSCRIBE_BACKEND === "kit" em workers/reativar/src/index.ts — reativação
 # passa a ir pro Kit em vez da Beehiiv.
 SUBSCRIBE_BACKEND = "kit"
+
+# #6318 — paridade com poll/cursos. A ausência deste bloco deixou o worker
+# `reativar` SEM NENHUM log retido: quando a atribuição sumiu no switchover,
+# poll e cursos ainda tinham os Workers Logs (que registram a URL com query
+# string) como fonte de reconstrução, e reativar não tinha nada. O ponto cego
+# não retroage, mas não se repete.
+[observability]
+enabled = true
