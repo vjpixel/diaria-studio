@@ -85,6 +85,14 @@ export const ROUTE_TRACKS: readonly RouteTrack[] = EXEC_TRACK_UI.map((e) => e.tr
  * o veredito — não uma lista nova, uma cópia dos literais que já existem
  * lá, mantida sincronizada pelo teste de round-trip (ver docstring do
  * módulo).
+ *
+ * #6197 (3a) — as 5 labels abaixo foram ADICIONADAS:
+ * `epic-guarda-chuva`, `decisao-registrada`, `alarm`, `alarm-evento`,
+ * `sem-direcao-acionavel`. Antes, estavam "donas de outro mecanismo" e
+ * não podiam ser aplicadas via verbo — #6197 mostra casos reais onde
+ * precisavam (épica decomposta, alarme de estado, etc.). Agora o editor
+ * pode aplicá-las explicitamente via `--motivo`, e o round-trip garante
+ * que o `track` resultante bate com o pedido.
  */
 export const ROUTABLE_LABELS: readonly string[] = [
   // fora-de-rodada — OUT_OF_ROUND_LABELS
@@ -102,7 +110,62 @@ export const ROUTABLE_LABELS: readonly string[] = [
   "windows",
   "trade-off-real",
   "develop-track",
+  // #6197 (3a) — labels de mecanismos paralelos que o verbo agora pode aplicar:
+  // RESOLVED_BY_PROSE_LABELS (fora-de-rodada) + ALARM_EVENT_LABEL (overnight)
+  "epic-guarda-chuva",
+  "decisao-registrada",
+  "alarm",
+  "alarm-evento",
+  "sem-direcao-acionavel",
 ];
+
+/**
+ * Mapeamento estruturado de `--motivo` → label (#6197 item 2).
+ *
+ * `--motivo` é um argumento opcional do verbo que seleciona a label Mais
+ * específica pra um veredito, em vez de deixar o `TRACK_ADD_LABEL` escolher
+ * a genérica. Ex.: `--track bloqueada --motivo conta-de-terceiro` aplica
+ * `external-blocker` (não `bloqueio-execucao`); `--track fora-de-rodada
+ * --motivo epica` aplica `epic-guarda-chuva` (não `on-hold`).
+ *
+ * A escolha de cada motivo mapeia pra exatamente uma label que
+ * `classifyExecTrack` reconhece — garantido pelo teste de round-trip:
+ * aplicar o plano → `classifyExecTrack` devolve o track pedido.
+ *
+ * `credencial` NÃO está aqui: `credencial-escopo` sozinha classifica
+ * `overnight` (não `bloqueada`) — só faz sentido PAIADA com
+ * `external-blocker` (downgrade de `bloqueada` → `develop`, cat. A, #5694).
+ * Pra aplicar o par, use `--motivo conta-de-terceiro` (que adiciona
+ * `external-blocker`): o `credencial-escopo` sobrevive no plano só se já
+ * estiver na issue.
+ */
+export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
+  // bloqueada
+  "conta-de-terceiro": "external-blocker",
+  "plataforma": "beehiiv",
+  "kit": "kit-migration",
+  "execucao": "bloqueio-execucao",
+  // fora-de-rodada
+  "epica": "epic-guarda-chuva",
+  "sem-direcao": "sem-direcao-acionavel",
+  "decisao": "decisao-registrada",
+  "alarme-estado": "alarm",
+  // overnight
+  "alarme-evento": "alarm-evento",
+};
+
+/** Labels de bloqueio específicas que `route-issue.ts` preserva ao rotear
+ * pra `bloqueada` sem `--motivo` (3b) — a issue já carrega o sinal certo,
+ * não há porque substituí-lo pela genérica `bloqueio-execucao`.
+ *
+ * NÃO inclui `credencial-escopo` (não é `BLOCKED_LABELS`, classifica
+ * `overnight` sozinha) nem `bloqueio-execucao` (é a genérica — se já
+ * existe, não precisa adicionar nada). */
+const BLOCKED_SPECIFIC_LABELS = new Set([
+  "external-blocker",
+  "kit-migration",
+  "beehiiv",
+]);
 
 /**
  * Label canônica ADICIONADA por veredito — a mais genérica/segura das
@@ -134,17 +197,47 @@ export interface RouteLabelPlan {
   readonly remove: readonly string[];
 }
 
+/** Tipo `|`-union explícito pra `--motivo` (chaves de `MOTIVO_LABEL`). */
+export type RouteMotivo = keyof typeof MOTIVO_LABEL;
+
 /**
  * Mapeamento puro veredito→labels. Não faz I/O, não conhece o estado atual
  * da issue — devolve sempre o MESMO plano pro mesmo `track` (determinístico,
  * por isso idempotente: aplicar o mesmo plano duas vezes sobre o estado já
  * convergido não muda nada).
+ *
+ * `motivo` (#6197 item 2) substitui a label genérica do veredito pela mais
+ * específica: `--track bloqueada --motivo conta-de-terceiro` adiciona
+ * `external-blocker` (não `bloqueio-execucao`). Sem `motivo`, usa o
+ * default genérico de `TRACK_ADD_LABEL`.
  */
-export function planRouteLabels(track: RouteTrack): RouteLabelPlan {
-  const add = TRACK_ADD_LABEL[track];
-  const addList = add ? [add] : [];
+export function planRouteLabels(track: RouteTrack, motivo?: RouteMotivo): RouteLabelPlan {
+  if (motivo && !(motivo in MOTIVO_LABEL)) {
+    throw new Error(`--motivo desconhecido: "${motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}`);
+  }
+  const addLabel = motivo ? MOTIVO_LABEL[motivo] : TRACK_ADD_LABEL[track];
+  const addList = addLabel ? [addLabel] : [];
   const remove = ROUTABLE_LABELS.filter((l) => !addList.includes(l));
   return { add: addList, remove };
+}
+
+/**
+ * Auto-deriva `--motivo` a partir das labels atuais da issue (#6197 item 3b).
+ * Quando o editor roteia pra `bloqueada` sem `--motivo` e a issue já carrega
+ * uma label específica de bloqueio (`external-blocker`, `kit-migration`,
+ * `beehiiv`), preserva-a em vez de substituir por `bloqueio-execucao`.
+ *
+ * Retorna `undefined` quando não há motivo a derivar — aí o caller usa o
+ * `TRACK_ADD_LABEL` genérico.
+ */
+export function autoMotivoForTrack(track: RouteTrack, currentLabels: readonly string[]): RouteMotivo | undefined {
+  if (track === "bloqueada") {
+    const found = currentLabels.find((l) => BLOCKED_SPECIFIC_LABELS.has(l));
+    if (found) {
+      return Object.entries(MOTIVO_LABEL).find(([, label]) => label === found)?.[0] as RouteMotivo | undefined;
+    }
+  }
+  return undefined;
 }
 
 /**

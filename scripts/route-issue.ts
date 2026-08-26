@@ -42,13 +42,36 @@
  * `--reason` é opcional mas fortemente recomendado — vira o corpo legível
  * do comentário; sem ele, o comentário só carrega o marcador + o veredito.
  * `--until` só é aceito (e exigido) com `--track agendada`.
+ *
+ * ## `--motivo` (#6197 item 2 — label específica vs genérica)
+ *
+ * `--motivo` substitui a label genérica do veredito pela mais específica.
+ * Ex.: `--track bloqueada --motivo conta-de-terceiro` adiciona
+ * `external-blocker` (não `bloqueio-execucao`). Sem `--motivo`, o verbo
+ * auto-deriva uma label específica se a issue já a carregar (3b) e só então
+ * recorre ao default genérico de `TRACK_ADD_LABEL`.
+ *
+ * Valores válidos (fonte: `MOTIVO_LABEL` em `issue-route.ts`):
+ *
+ *   --track bloqueada:     conta-de-terceiro, plataforma, kit, execucao
+ *   --track fora-de-rodada: epica, sem-direcao, decisao, alarme-estado
+ *   --track overnight:     alarme-evento
+ *
+ * ## 3b — preservação de label específica (#6197)
+ *
+ * Roteando pra `bloqueada` sem `--motivo`, se a issue já carrega uma label
+ * de `BLOCKED_LABELS` (ex: `external-blocker`), ela é PRESERVADA em vez
+ * de ser substituída por `bloqueio-execucao`.
  */
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
+  autoMotivoForTrack,
   diffRouteLabelPlan,
+  MOTIVO_LABEL,
   planRouteLabels,
   ROUTE_TRACKS,
+  type RouteMotivo,
   type RouteTrack,
 } from "./lib/issue-route.ts";
 import { classifyExecTrack } from "./lib/issue-exec-track.ts";
@@ -60,6 +83,11 @@ export interface RouteIssueOptions {
   issue: number;
   track: RouteTrack;
   reason?: string;
+  /** `--motivo` estruturado (#6197 item 2) — seleciona a label específica
+   * do veredito em vez da genérica. Opcional; quando ausente, `routeIssue`
+   * tenta auto-derivar de labels já presentes (#6197 item 3b) e só então
+   * recorre ao default genérico de `TRACK_ADD_LABEL`. */
+  motivo?: RouteMotivo;
   /** ISO date/datetime (`AAAA-MM-DD` ou `AAAA-MM-DDTHH:mm:ssZ`) — só válido
    * (e obrigatório) com `track === "agendada"`. */
   until?: string;
@@ -140,8 +168,12 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   const { issue, track, reason, until, cwd, now = new Date() } = options;
   const ghRun = options.ghRun ?? spawnGhSync;
 
+  // Validation antés da I/O: --motivo explícito, e --until só com agendada.
+  if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
+    return failResult(`--motivo desconhecido: "${options.motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}`);
+  }
   if (track === "agendada" && !until) {
-    return failResult(`--track agendada exige --until AAAA-MM-DD (sem data não há como produzir esse veredito).`);
+    return failResult(`--track agendada exige --until AAAA-MM-DD (sem data não há como produzir esse vereditado).`);
   }
   if (track !== "agendada" && until) {
     return failResult(`--until só é aceito com --track agendada (recebido --track ${track}).`);
@@ -152,8 +184,11 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     return failResult(`falha ao ler estado da issue #${issue}: ${fetchedBefore.error}`);
   }
 
+  // Resolve `--motivo`: explícito > auto-derivado (#6197 3b) > undefined (genérico).
+  const motivo = options.motivo ?? autoMotivoForTrack(track, fetchedBefore.data.labels);
+
   // Passo 1 — labels: aplica e remove o conjunto certo pro veredito.
-  const plan = planRouteLabels(track);
+  const plan = planRouteLabels(track, motivo);
   const { toAdd, toRemove } = diffRouteLabelPlan(fetchedBefore.data.labels, plan);
   if (toAdd.length > 0 || toRemove.length > 0) {
     const args = ["issue", "edit", String(issue)];
@@ -275,12 +310,14 @@ function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   let issue: number | undefined;
   let track: string | undefined;
   let reason: string | undefined;
+  let motivo: string | undefined;
   let until: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--issue") issue = Number(argv[++i]);
     else if (a === "--track") track = argv[++i];
     else if (a === "--reason") reason = argv[++i];
+    else if (a === "--motivo") motivo = argv[++i];
     else if (a === "--until") until = argv[++i];
     else return { error: `argumento desconhecido: ${a}` };
   }
@@ -290,7 +327,10 @@ function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   if (!track || !(ROUTE_TRACKS as string[]).includes(track)) {
     return { error: `--track é obrigatório, um de: ${ROUTE_TRACKS.join(", ")}` };
   }
-  return { issue, track: track as RouteTrack, reason, until, cwd: process.cwd() };
+  if (motivo && !(motivo in MOTIVO_LABEL)) {
+    return { error: `--motivo desconhecido: "${motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}` };
+  }
+  return { issue, track: track as RouteTrack, reason, motivo: motivo as RouteMotivo | undefined, until, cwd: process.cwd() };
 }
 
 async function main() {
