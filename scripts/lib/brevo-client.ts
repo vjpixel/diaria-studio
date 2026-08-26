@@ -36,6 +36,10 @@ import {
   resolveBrevoAccountLabel,
   provesIpAllowlisted,
 } from "./brevo-unrecognised-ip-alarm.ts";
+// #6035/#5942/#5653: classificador puro de erro Brevo — decora as mensagens
+// de erro deste módulo com a ação exata (ex: "adicione o IP X em
+// authorised_ips") em vez de deixar o operador decifrar o JSON cru.
+import { formatBrevoApiError } from "./brevo-error-classify.ts";
 
 // #5697: re-exportado pra quem já importa tudo de brevo-client.ts — a
 // implementação/estado vivem em brevo-rate-state.ts (módulo dedicado,
@@ -91,22 +95,50 @@ function maybeRecordCampaignRateLimit(url: string, headers: Headers | undefined 
 const MAX_WAIT_MS = 30_000; // 30s — cap de espera por tentativa
 const MAX_ATTEMPTS = 3;     // total de tentativas (1 original + 2 re-tentativas)
 
-export function parseRetryAfterMs(headers: Headers, fallbackMs = 2000): number {
+/**
+ * #6035/#5942 — orçamento MÁXIMO que `withBrevo429Retry` está disposto a
+ * dormir esperando UM 429 específico resolver, antes de desistir. Nomeado à
+ * parte de `MAX_WAIT_MS` (mesmo valor hoje, 30s) porque são conceitos
+ * diferentes: `MAX_WAIT_MS` é o TETO de espera por tentativa (nunca dorme
+ * mais que isso, mesmo com Retry-After maior); `BREVO_RETRY_GIVE_UP_MS` é o
+ * limiar que decide se vale a pena tentar dormir esse teto. Achado ao vivo
+ * (24-25/08/2026, #6124): a Brevo respondeu 429 com `Retry-After: 3402`
+ * (~57min) — a versão anterior deste código ignorava esse número, dormia os
+ * 30s cheios e retentava, garantidamente fadada a falhar de novo (o rate
+ * limit é por CONTA/HORA, não se resolve em 30s) — só decidia "desistir"
+ * depois de queimar 2 esperas de 30s (~60s) pra um resultado já sabido
+ * de antemão. Quando o Retry-After real excede este orçamento, desistir
+ * JÁ é estritamente melhor: mesmo resultado final, sem o sleep inútil.
+ */
+const BREVO_RETRY_GIVE_UP_MS = MAX_WAIT_MS;
+
+/** Uncapped — extrai o delta real (segundos) que a Brevo pediu, sem aplicar
+ * `MAX_WAIT_MS`. `null` se nenhum dos dois headers trouxer um valor
+ * utilizável. Extraído de `parseRetryAfterMs` (#6035) pra permitir decidir
+ * "esse tempo cabe no orçamento?" ANTES de truncar o valor — truncar
+ * primeiro (comportamento anterior) escondia a diferença entre "Retry-After
+ * de 25s" (cabe, vale dormir) e "Retry-After de 3402s" (não cabe, dormir o
+ * teto é desperdício certo). */
+export function parseRetryAfterSecs(headers: Headers): number | null {
   const retryAfter = headers.get("retry-after");
   const sibReset = headers.get("x-sib-ratelimit-reset");
-  let deltaS: number | null = null;
   if (retryAfter != null) {
     const v = Number(retryAfter);
-    if (!isNaN(v) && v >= 0) deltaS = v; // F2 fix: v>=0 aceita retry-after:0 (RFC 7231: retry imediato)
+    if (!isNaN(v) && v >= 0) return v; // F2 fix: v>=0 aceita retry-after:0 (RFC 7231: retry imediato)
   } else if (sibReset != null) {
     const v = Number(sibReset);
     if (!isNaN(v)) {
       // #2307: v>=0 aceita reset:0 (janela já passou → retry imediato), igual a retry-after:0
-      deltaS = v >= 1e9
+      return v >= 1e9
         ? Math.max(0, Math.ceil(v - Date.now() / 1000))
         : v >= 0 ? v : null;
     }
   }
+  return null;
+}
+
+export function parseRetryAfterMs(headers: Headers, fallbackMs = 2000): number {
+  const deltaS = parseRetryAfterSecs(headers);
   if (deltaS == null) return Math.min(fallbackMs, MAX_WAIT_MS);
   return Math.min(deltaS * 1000, MAX_WAIT_MS);
 }
@@ -136,6 +168,18 @@ export async function withBrevo429Retry<T>(
       return await fn(attempt);
     } catch (e) {
       if (e instanceof Brevo429Signal) {
+        const retryAfterSecs = parseRetryAfterSecs(e.response.headers);
+        // #6035/#5942 — Retry-After real excede o orçamento por tentativa:
+        // dormir o teto e retentar é aritmeticamente garantido a falhar de
+        // novo (mesma janela horária ainda estourada) — desiste JÁ, sem
+        // dormir, em vez de queimar as tentativas restantes.
+        if (retryAfterSecs != null && retryAfterSecs * 1000 > BREVO_RETRY_GIVE_UP_MS) {
+          throw new Error(
+            `Brevo API 429 — Retry-After ${retryAfterSecs}s excede o orçamento de ` +
+            `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
+            `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
+          );
+        }
         if (attempt < MAX_ATTEMPTS - 1) {
           const waitMs = parseRetryAfterMs(e.response.headers);
           await _sleep(waitMs);
@@ -275,7 +319,7 @@ export async function brevoPost(
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Brevo API POST ${path} falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("POST", path, res.status, text));
     }
 
     const ct = res.headers.get("content-type") ?? "";
@@ -308,7 +352,7 @@ export async function brevoDelete(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Brevo API DELETE ${path} falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("DELETE", path, res.status, text));
     }
     await res.body?.cancel().catch(() => {});
   }, _sleep);
@@ -337,7 +381,7 @@ export async function brevoGetCampaign(
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Brevo API GET /emailCampaigns/${campaignId} falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("GET", `/emailCampaigns/${campaignId}`, res.status, text));
     }
     // `subject` (#4704 fleet review): a API sempre devolve o campo — já tipado
     // em `CampaignDetail` (scripts/clarice-cta-ab-setup.ts), só faltava aqui.
@@ -365,7 +409,7 @@ export async function brevoGetList(
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Brevo API GET /contacts/lists/${listId} falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("GET", `/contacts/lists/${listId}`, res.status, text));
     }
     const data = await res.json() as { id: number; name: string; totalSubscribers: number; totalBlacklisted?: number };
     return data;
@@ -399,7 +443,7 @@ export async function brevoPut(
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Brevo API PUT ${path} falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("PUT", path, res.status, text));
     }
 
     const ct = res.headers.get("content-type") ?? "";
@@ -435,7 +479,7 @@ export async function brevoListAllLists(
         // (ex: 401 com página HTML de 5KB). 500 chars é suficiente pra diagnóstico.
         const rawText = await res.text();
         const text = rawText.length > 500 ? rawText.slice(0, 500) + "… [truncado]" : rawText;
-        throw new Error(`Brevo API GET /contacts/lists falhou (${res.status}): ${text}`);
+        throw new Error(formatBrevoApiError("GET", "/contacts/lists", res.status, text));
       }
       return (await res.json()) as { lists?: { id: number; name: string }[] };
     }, _sleep);
@@ -521,7 +565,7 @@ export async function brevoGet(
     if (r.status === 404) return { status: 404, body: {} };
     if (!r.ok) {
       const t = await r.text().catch(() => "");
-      throw new Error(`Brevo GET ${path} falhou (${r.status}): ${t.slice(0, 200)}`);
+      throw new Error(formatBrevoApiError("GET", path, r.status, t.slice(0, 200)));
     }
     const t = await r.text();
     try {
@@ -730,7 +774,7 @@ export async function brevoSendNow(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Brevo API POST /emailCampaigns/${campaignId}/sendNow falhou (${res.status}): ${text}`);
+      throw new Error(formatBrevoApiError("POST", `/emailCampaigns/${campaignId}/sendNow`, res.status, text));
     }
     await res.body?.cancel().catch(() => {});
   }, _sleep);
@@ -864,7 +908,7 @@ export async function brevoListAllFolders(
       if (!res.ok) {
         const rawText = await res.text();
         const text = rawText.length > 500 ? rawText.slice(0, 500) + "… [truncado]" : rawText;
-        throw new Error(`Brevo API GET /contacts/folders falhou (${res.status}): ${text}`);
+        throw new Error(formatBrevoApiError("GET", "/contacts/folders", res.status, text));
       }
       return (await res.json()) as { folders?: { id: number; name: string }[] };
     }, _sleep);

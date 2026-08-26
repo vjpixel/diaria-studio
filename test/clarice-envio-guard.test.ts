@@ -622,6 +622,47 @@ describe("clarice-envio-guard (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // #5942 — regressão do achado ao vivo 25/08/2026 (#6124/#6132): o
+    // fallback tentou suspender 2 campanhas e apanhou 401 "unrecognised IP"
+    // NAS DUAS, mas o reportId/título saíram indistinguíveis de qualquer
+    // outra falha de suspensão — corpo do erro é o texto REAL copiado do
+    // log (`.envio-guard.log` linha 186), não um fake genérico.
+    it("fallback + suspensão falha por BLOQUEIO DE IP DA BREVO (401 unrecognised IP) => reportId/título distintos, severidade máxima (#5942)", async () => {
+      const root = freshRoot();
+      writeBrakeSnapshot(root, "260811", "hold");
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([
+          { key: "d28-ter25-H06", campaignId: 178, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" },
+          { key: "d28-ter25-H10", campaignId: 179, listId: 501, subject: "y", scheduledAt: "2026-08-12T13:00:00.000Z", status: "scheduled" },
+        ]),
+        "utf8",
+      );
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const unrecognisedIpError = () =>
+        new Error(
+          'Brevo API PUT /emailCampaigns/178/status falhou (401): {"message":"We have detected you are using an ' +
+            'unrecognised IP address 2804:1b3:a941:cb3a:9a28:a6ff:fe0c:1af7. If you performed this action make sure ' +
+            'to add the new IP address in this link: https://app.brevo.com/security/authorised_ips","code":"unauthorized"}',
+        );
+      const r = await runEnvioGuard(
+        baseDeps(root, {
+          exec,
+          sleep: () => Promise.resolve(),
+          setCampaignStatus: async () => { throw unrecognisedIpError(); },
+        }),
+      );
+      assert.equal(r.code, 2, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelamento-incompleto-ip-bloqueado");
+      assert.match(r.reportMarkdown, /BLOQUEIO DE ALLOWLIST DE IP/);
+      assert.match(r.reportMarkdown, /CAMPANHA PODE DISPARAR SEM O FREIO/);
+      assert.match(r.reportMarkdown, /2804:1b3:a941:cb3a:9a28:a6ff:fe0c:1af7/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("clarice-envio-risk (2º pré-requisito) esgota retry, plan-wave já tinha sucedido => fallback ainda assim funciona (deriva pendência do registro local, não de proposal)", async () => {
       const root = freshRoot();
       writeBrakeSnapshot(root, "260811", "ok");
