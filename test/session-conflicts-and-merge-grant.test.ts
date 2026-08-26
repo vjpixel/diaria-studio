@@ -517,7 +517,7 @@ describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funç�
       assert.ok(found);
       assert.equal(found.grant.grantedTo, "interativa");
       assert.equal(found.grant.pr, 6303);
-      assert.ok(found.path.includes("overnight-Neo-coord.json"));
+      assert.ok(found.path.includes(`overnight-${LOCAL_TAG}-coord.json`));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -577,7 +577,7 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
         lastHeartbeat: new Date(Date.now() - 1_000).toISOString(),
         merge_grant: { grantedTo: "interativa", grantedBy: "coord", grantedAt, pr: 6303 },
       };
-      const path = join(root, "data", "sessions", "overnight-Neo-coord.json");
+      const path = join(root, "data", "sessions", `overnight-${LOCAL_TAG}-coord.json`);
       writeFileSync(path, JSON.stringify(record), "utf8");
 
       const payload = { session_id: "interativa", tool_name: "Bash", tool_input: { command: "gh pr merge 6303 --squash" } };
@@ -608,7 +608,7 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
         startedAt: isoAgo(60_000),
         lastHeartbeat: isoAgo(1_000),
       };
-      const path = join(root, "data", "sessions", "overnight-Neo-coord.json");
+      const path = join(root, "data", "sessions", `overnight-${LOCAL_TAG}-coord.json`);
       const before = JSON.stringify(record);
       writeFileSync(path, before, "utf8");
 
