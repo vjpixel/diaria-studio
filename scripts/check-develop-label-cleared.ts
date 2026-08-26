@@ -38,8 +38,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import {
   checkDevelopLabelCleared,
+  isWorkFinished,
   type DevelopGateIssueState,
   type DevelopGatePlanIssue,
 } from "./lib/develop-label-gate.ts";
@@ -112,17 +114,40 @@ function main(): void {
   }
   let planIssues: DevelopGatePlanIssue[];
   try {
-    const plan = JSON.parse(readFileSync(planPath, "utf8")) as { issues?: DevelopGatePlanIssue[] };
-    planIssues = plan.issues ?? [];
+    const plan = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<DevelopGatePlanIssue>;
+    // `normalizeIssues` e NÃO leitura direta de `plan.issues` (#4817/#4860):
+    // o `plan.json` do `/diaria-develop` foi observado ao vivo no formato
+    // DICT chaveado pelo número da issue (`data/develop/260808b/plan.json`),
+    // apesar do SKILL.md dizer que "reusa o schema do overnight" (array).
+    // `for...of` sobre um dict lança `TypeError: ... is not iterable` — é o
+    // crash exato que o #4817 corrigiu em `render-overnight-timeline.ts`, e o
+    // #4860 achou o mesmo mismatch em mais 4 consumidores que engoliam o dict
+    // como vazio, perdendo o dado em silêncio.
+    //
+    // Achado do fleet review #6320: este era o ÚNICO dos 11 consumidores de
+    // `plan.issues` que lia o campo direto. Pior, uma primeira tentativa de
+    // correção minha rejeitava "não-array" com `exit 2` — o que teria feito o
+    // gate falhar duro justamente sobre o formato legítimo. O normalizador
+    // resolve os dois shapes e é o contrato do repo.
+    planIssues = normalizeIssues<DevelopGatePlanIssue>(plan);
   } catch (e) {
     process.stderr.write(`${LOG_PREFIX} plan.json ilegível (${(e as Error).message}): ${planPath}\n`);
     process.exitCode = 2;
     return;
   }
 
+  // Só as issues que ESTA sessão terminou entram no veredito — as demais o
+  // gate ignora por design. Buscar as outras seria trabalho jogado fora E
+  // superfície de falha a mais: cada `gh issue view` é síncrono com timeout de
+  // 20s, então um plano de 40 issues levaria até ~13min e cada timeout viraria
+  // uma issue "não consultada" (achado do fleet review, #6320). Filtrar aqui
+  // colapsa isso pro que de fato importa — num plano de 42 issues com 3
+  // mergeadas, são 3 buscas em vez de 42.
+  const toFetch = planIssues.filter(isWorkFinished);
+
   const states: DevelopGateIssueState[] = [];
   const fetchErrors: string[] = [];
-  for (const issue of planIssues) {
+  for (const issue of toFetch) {
     const fetched = fetchIssue(issue.number, cwd);
     if (fetched.error) {
       fetchErrors.push(`#${issue.number}: ${fetched.error}`);
@@ -135,7 +160,11 @@ function main(): void {
   // Degradar em silêncio aqui seria pior: o gate passaria dizendo "ok" sobre
   // dado que não conseguiu ler (a doença que o #6303 corrigiu no guard de
   // merge — estado indeterminado nunca deve virar aprovação implícita).
-  if (states.length === 0 && planIssues.length > 0) {
+  // `toFetch`, não `planIssues`: um plano só com issues NÃO terminais não tem
+  // nada a consultar, e reportar "o gate não rodou" ali seria alarme falso na
+  // direção oposta — o gate rodou e concluiu, corretamente, que não havia o
+  // que avaliar.
+  if (states.length === 0 && toFetch.length > 0) {
     process.stderr.write(
       `${LOG_PREFIX} nenhuma issue pôde ser consultada via gh (${fetchErrors.length} falha(s)) — ` +
         `fail-soft (#738), exit 0. NÃO é um veredito de "sem resíduo": o gate não rodou.\n` +
@@ -159,9 +188,18 @@ function main(): void {
   }
 
   if (result.ok) {
+    // A ressalva vai DENTRO da linha de veredito, não só num stderr anterior
+    // (achado HIGH do fleet review #6320). Sem isto, uma falha PARCIAL do `gh`
+    // produzia "ok — nenhum resíduo" com `exit 0`, e a issue que TINHA resíduo
+    // podia ser exatamente a que deu timeout. É literalmente a doença que o
+    // #6303 acabou de corrigir no guard de merge — "estado indeterminado nunca
+    // vira aprovação implícita" — reintroduzida aqui pelo caminho parcial.
+    const ressalva =
+      fetchErrors.length > 0
+        ? ` — ATENÇÃO: ${fetchErrors.length} issue(s) NÃO consultada(s) (ver stderr acima), FORA deste veredito`
+        : "";
     process.stdout.write(
-      `${LOG_PREFIX} ok — ${result.cleared.length} issue(s) terminada(s) já saíram do track Develop, ` +
-        "nenhum resíduo.\n",
+      `${LOG_PREFIX} ok — ${result.cleared.length} issue(s) terminada(s) confirmada(s) sem resíduo${ressalva}.\n`,
     );
     return;
   }

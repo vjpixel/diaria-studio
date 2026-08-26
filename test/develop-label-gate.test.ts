@@ -56,9 +56,16 @@ describe("#6271 — isWorkFinished separa 'terminei' de 'não trabalhei'", () =>
     assert.equal(isWorkFinished({ number: 1, status: "pulada", motivo: "decisao-adiada" }), false);
   });
 
-  it("pendente e draft-ci-vermelho NÃO contam — trabalho ainda aberto", () => {
+  it("pendente NÃO conta — trabalho ainda aberto", () => {
     assert.equal(isWorkFinished({ number: 1, status: "pendente" }), false);
-    assert.equal(isWorkFinished({ number: 1, status: "draft-ci-vermelho" }), false);
+  });
+
+  it("draft-ci-vermelho CONTA — o repo já roteia o resto pro overnight (#6320)", () => {
+    // `pr-terminal-state.ts` descreve este status como "handoff
+    // intencional — PR fica aberto de propósito PRO OVERNIGHT SEGUINTE
+    // pegar". Se o resto do trabalho já é do overnight, a razão
+    // develop-específica foi consumida.
+    assert.equal(isWorkFinished({ number: 1, status: "draft-ci-vermelho" }), true);
   });
 
   it("status ausente ou desconhecido NÃO conta (conservador por design)", () => {
@@ -196,5 +203,81 @@ describe("#6271 — o gate acusa resíduo e só resíduo", () => {
       [6114, 6181, 6206],
       "os 3 resíduos, e só eles",
     );
+  });
+});
+
+// ─── Achados do fleet review #6320 ─────────────────────────────────────────
+
+describe("#6320 — justificativa não-string nunca lança e nunca justifica", () => {
+  // O campo é preenchido À MÃO pelo coordenador seguindo a SKILL.md, então um
+  // typo plausível (`true`, um objeto) fazia `.trim()` lançar — exceção crua
+  // num módulo cujo contrato é ser puro.
+  for (const valor of [true, 42, { motivo: "x" }, ["x"], null]) {
+    it(`${JSON.stringify(valor)} → tratado como ausente, gate acusa normalmente`, () => {
+      const r = checkDevelopLabelCleared(
+        [{ number: 1, status: "mergeada", develop_track_justificado: valor as never }],
+        [{ number: 1, labels: DEV_LABELS }],
+      );
+      assert.equal(r.ok, false, "justificativa que não é texto não justifica nada");
+      assert.deepEqual(r.justified, []);
+    });
+  }
+});
+
+describe("#6320 — presença/ausência de dado é o que decide, não outra coisa", () => {
+  it("duas issues IDÊNTICAS, só uma com estado buscado → só ela é avaliada", () => {
+    // O teste anterior ("issue sem dado é ignorada") passava tanto pela
+    // intenção quanto por qualquer bug que fizesse a função sair cedo. Este
+    // isola a variável: mesmo status, mesmas labels, e a única diferença é
+    // haver ou não entrada em `issueStates`.
+    const r = checkDevelopLabelCleared(
+      [
+        { number: 111, status: "mergeada" },
+        { number: 222, status: "mergeada" },
+      ],
+      [{ number: 111, labels: DEV_LABELS }],
+    );
+    assert.deepEqual(r.findings.map((f) => f.number), [111], "só a que tinha dado vira finding");
+    assert.deepEqual(r.cleared, []);
+  });
+
+  it("estado com labels mas SEM body não quebra (body é opcional)", () => {
+    const r = checkDevelopLabelCleared(
+      [{ number: 1, status: "mergeada" }],
+      [{ number: 1, labels: CLEAN_LABELS }],
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.cleared, [1]);
+  });
+});
+
+describe("#6320 — o desbloqueio por credencial-escopo escapa do probe por label isolada", () => {
+  it("external-blocker + credencial-escopo classifica develop, mas nenhuma label ISOLADA classifica", () => {
+    // Limitação conhecida e aceita de `developTriggeringLabels`: ela testa
+    // label a label pra não duplicar os literais de `classifyExecTrack`. No
+    // desbloqueio do #5694 o track `develop` sai da COMBINAÇÃO, então o probe
+    // devolve vazio — o veredito do gate segue CORRETO (usa o conjunto
+    // inteiro), só a mensagem perde a lista e cai no fallback "(nenhuma; ver
+    // corpo)". Travado aqui pra que a limitação seja intencional, não
+    // surpresa de quem lê o output.
+    const combo = ["external-blocker", "credencial-escopo"];
+    assert.deepEqual(developTriggeringLabels(combo), [], "nenhuma label isolada dá develop");
+
+    const r = checkDevelopLabelCleared(
+      [{ number: 5694, status: "mergeada" }],
+      [{ number: 5694, labels: combo }],
+    );
+    assert.equal(r.ok, false, "o veredito usa o conjunto inteiro e acusa certo");
+    assert.deepEqual(r.findings[0]!.developLabels, [], "a mensagem é que degrada, não o veredito");
+  });
+
+  it("windows + external-blocker classifica bloqueada → não é finding", () => {
+    // Precedência de `classifyExecTrack`: bloqueada vence develop. A issue
+    // saiu do track, que é o desfecho correto.
+    const r = checkDevelopLabelCleared(
+      [{ number: 1, status: "mergeada" }],
+      [{ number: 1, labels: ["windows", "external-blocker"] }],
+    );
+    assert.equal(r.ok, true);
   });
 });

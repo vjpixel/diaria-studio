@@ -15,8 +15,11 @@
  * tentou.
  *
  * A causa é estrutural: **todos os call sites de roteamento do develop são de
- * ENTRADA.** Das 6 ocorrências de `route-issue` em
- * `.claude/skills/diaria-develop/SKILL.md`, uma única é de SAÍDA (remover
+ * ENTRADA.** Medido em `origin/master`, ANTES deste gate existir (a própria
+ * correção acrescenta call sites de saída àquele arquivo, então re-rodar o
+ * `grep` hoje dá outro número — é evidência congelada, não invariante): das
+ * 6 ocorrências de `route-issue` em
+ * `.claude/skills/diaria-develop/SKILL.md`, uma única era de SAÍDA (remover
  * `trade-off-real` ao fechar uma cat. C) — e ela cobre exatamente 1 das 3
  * labels que disparam `develop`. Para `windows` e `develop-track` não há
  * instrução nenhuma:
@@ -111,6 +114,21 @@ import { classifyExecTrack, type ExecTrack } from "./issue-exec-track.ts";
 export const WORK_FINISHED_STATUSES: readonly string[] = [
   "mergeada",
   "entregue-fora-de-codigo",
+  // `draft-ci-vermelho` entrou no fleet review #6320, com evidência do próprio
+  // repo: `scripts/lib/pr-terminal-state.ts` descreve este status como
+  // "handoff intencional — PR fica aberto de propósito PRO OVERNIGHT SEGUINTE
+  // pegar", e a SKILL.md o lista lado a lado com `mergeada` entre os terminais.
+  //
+  // Isso é decisivo pro critério deste gate: se o projeto já roteia o resto do
+  // trabalho (consertar CI) pro overnight, então a razão DEVELOP-específica —
+  // Chrome logado, ComfyUI, decisão do editor — foi consumida. Deixá-lo de
+  // fora reintroduzia o sink exatamente pra este status: uma issue `windows`
+  // cujo PR terminou em draft ficaria com a label presa sem ninguém checar.
+  //
+  // Se algum dia um caso concreto mostrar que CI vermelho às vezes exige a
+  // máquina do editor de volta, o lugar de registrar isso é aqui, com o caso —
+  // não removendo o status em silêncio.
+  "draft-ci-vermelho",
 ];
 
 /**
@@ -167,7 +185,16 @@ export function isWorkFinished(issue: Readonly<DevelopGatePlanIssue>): boolean {
 }
 
 /**
- * As 3 labels que fazem `classifyExecTrack` rotear pra `develop`. Derivadas
+ * As 3 labels SIMPLES que fazem `classifyExecTrack` rotear pra `develop`.
+ *
+ * **Não é a enumeração completa dos caminhos pro track**: existe um 4º,
+ * COMPOSTO — `external-blocker` + `credencial-escopo` (cat. A, #5694) —, e
+ * um probe label a label estruturalmente não o alcança (nenhuma das duas
+ * isolada dá `develop`). Isso NÃO afeta o veredito: `checkDevelopLabelCleared`
+ * chama `classifyExecTrack` com o conjunto INTEIRO e acusa a issue
+ * corretamente. O que degrada é só a MENSAGEM, que cai no fallback
+ * "(nenhuma; ver corpo)" em vez de nomear a label. Travado em teste pra que
+ * a limitação seja intencional, não surpresa de quem lê o output. Derivadas
  * por PROBE contra o próprio classificador, não redigitadas: se ele mudar o
  * conjunto, isto acompanha sozinho — mesma disciplina de `ROUTABLE_LABELS`,
  * que também se ancora no classificador em vez de duplicar literais.
@@ -207,7 +234,14 @@ export function checkDevelopLabelCleared(
       cleared.push(issue.number);
       continue;
     }
-    if ((issue.develop_track_justificado ?? "").trim() !== "") {
+    // `typeof` e não só `?? ""` (achado do fleet review #6320): o campo é
+    // preenchido À MÃO pelo coordenador seguindo a SKILL.md, então um typo
+    // plausível (`develop_track_justificado: true`, ou um objeto) faria o
+    // `?? ""` passar o valor adiante e o `.trim()` LANÇAR — exceção crua num
+    // módulo cujo contrato inteiro é ser puro e não lançar. Não-string é
+    // tratado como ausente: justificativa que não é texto não justifica nada.
+    const justificativa = issue.develop_track_justificado;
+    if (typeof justificativa === "string" && justificativa.trim() !== "") {
       justified.push(issue.number);
       continue;
     }
