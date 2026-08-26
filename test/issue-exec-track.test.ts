@@ -367,65 +367,40 @@ describe("classifyExecTrack — resolvida por prosa/alarme (#5532)", () => {
   });
 });
 
-describe("classifyExecTrack — EPIC guarda-chuva e ambígua-sem-direção (#5968)", () => {
-  it("label epic-guarda-chuva sozinha → fora-de-rodada", () => {
-    assert.equal(track(["epic-guarda-chuva"]), "fora-de-rodada");
-  });
-
+describe("classifyExecTrack — ambígua-sem-direção (#5968)", () => {
   it("label sem-direcao-acionavel sozinha → fora-de-rodada", () => {
     assert.equal(track(["sem-direcao-acionavel"]), "fora-de-rodada");
   });
 
-  it("issue sem nenhuma das duas labels novas continua overnight (sem regressão)", () => {
+  it("issue sem a label continua overnight (sem regressão)", () => {
     assert.equal(track(["bug", "P2"]), "overnight");
     assert.equal(track([]), "overnight");
-  });
-
-  it("epic-guarda-chuva + enhancement/P1 (caso real #5116) → fora-de-rodada", () => {
-    assert.equal(track(["enhancement", "P1", "growth", "epic-guarda-chuva"]), "fora-de-rodada");
   });
 
   it("sem-direcao-acionavel + bug/P2 (caso real #5959) → fora-de-rodada", () => {
     assert.equal(track(["bug", "P2", "sem-direcao-acionavel"]), "fora-de-rodada");
   });
 
-  it("bloqueio real vence epic-guarda-chuva", () => {
-    assert.equal(track(["epic-guarda-chuva", "external-blocker"]), "bloqueada");
-  });
-
   it("bloqueio real vence sem-direcao-acionavel", () => {
     assert.equal(track(["sem-direcao-acionavel", "kit-migration"]), "bloqueada");
-  });
-
-  it("windows vence epic-guarda-chuva (vira develop, não fora-de-rodada)", () => {
-    assert.equal(track(["epic-guarda-chuva", "windows"]), "develop");
   });
 
   it("trade-off-real vence sem-direcao-acionavel (vira develop)", () => {
     assert.equal(track(["sem-direcao-acionavel", "trade-off-real"]), "develop");
   });
 
-  it("on-hold (fora-de-rodada de 1ª checagem) vence as duas — mesma resposta, motivo diferente", () => {
-    assert.equal(track(["on-hold", "epic-guarda-chuva"]), "fora-de-rodada");
+  it("on-hold vence sem-direcao-acionavel — mesma resposta, motivo diferente", () => {
     assert.equal(track(["on-hold", "sem-direcao-acionavel"]), "fora-de-rodada");
   });
 
-  it("marcador de data futura vence as duas (vira agendada, não fora-de-rodada)", () => {
-    assert.equal(
-      track(["epic-guarda-chuva"], "<!-- aguardando-ate: 2026-09-01 -->"),
-      "agendada",
-    );
+  it("marcador de data futura vence sem-direcao-acionavel (vira agendada)", () => {
     assert.equal(
       track(["sem-direcao-acionavel"], "<!-- aguardando-ate: 2026-09-01 -->"),
       "agendada",
     );
   });
 
-  it("issue fechada com qualquer uma das duas → fora-de-rodada (state vence tudo)", () => {
-    assert.equal(
-      classifyExecTrack({ labels: ["epic-guarda-chuva"], body: "", now: NOW, state: "CLOSED" }),
-      "fora-de-rodada",
-    );
+  it("issue fechada → fora-de-rodada (state vence tudo)", () => {
     assert.equal(
       classifyExecTrack({
         labels: ["sem-direcao-acionavel"],
@@ -433,6 +408,64 @@ describe("classifyExecTrack — EPIC guarda-chuva e ambígua-sem-direção (#596
         now: NOW,
         state: "CLOSED",
       }),
+      "fora-de-rodada",
+    );
+  });
+});
+
+describe("classifyExecTrack — EPIC guarda-chuva (#5968; precedência revista no #6201)", () => {
+  it("label epic-guarda-chuva sozinha → epica (não mais fora-de-rodada, #6201)", () => {
+    assert.equal(track(["epic-guarda-chuva"]), "epica");
+  });
+
+  it("issue sem a label continua overnight (sem regressão)", () => {
+    assert.equal(track(["bug", "P2"]), "overnight");
+    assert.equal(track([]), "overnight");
+  });
+
+  it("epic-guarda-chuva + enhancement/P1 (caso real #5116) → epica", () => {
+    assert.equal(track(["enhancement", "P1", "growth", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("epic-guarda-chuva + enhancement/P2 (caso real #5969) → epica", () => {
+    assert.equal(track(["enhancement", "P2", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("epic-guarda-chuva + enhancement/P1 (caso real #6191) → epica", () => {
+    assert.equal(track(["enhancement", "P1", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("epic-guarda-chuva + enhancement/P2/diaria/mensal, sem kit-migration (caso real #463 hoje) → epica", () => {
+    assert.equal(track(["enhancement", "P2", "diaria", "mensal", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("epic-guarda-chuva + kit-migration + beehiiv (caso real #461) → epica, NÃO bloqueada (#6201 — a razão de ser da mudança)", () => {
+    // Antes do #6201, essa combinação classificava "bloqueada" — pra obter
+    // a leitura "é uma épica" era preciso REMOVER kit-migration/beehiiv,
+    // que são bloqueios reais (é exatamente o que aconteceu com #463 na
+    // auditoria de 26/08). Agora a issue mantém as DUAS labels verdadeiras
+    // e classifica "epica" — nenhuma informação precisa ser apagada.
+    assert.equal(track(["enhancement", "P2", "kit-migration", "beehiiv", "epic-guarda-chuva"]), "epica");
+  });
+
+  it("windows NÃO vence mais epic-guarda-chuva (#6201 — antes virava develop)", () => {
+    assert.equal(track(["epic-guarda-chuva", "windows"]), "epica");
+  });
+
+  it("on-hold (fora-de-rodada de 1ª checagem) vence epic-guarda-chuva — o editor tirando de circulação é mais forte que 'é uma épica'", () => {
+    assert.equal(track(["on-hold", "epic-guarda-chuva"]), "fora-de-rodada");
+  });
+
+  it("marcador de data futura NÃO vence mais epic-guarda-chuva (#6201 — antes virava agendada)", () => {
+    assert.equal(
+      track(["epic-guarda-chuva"], "<!-- aguardando-ate: 2026-09-01 -->"),
+      "epica",
+    );
+  });
+
+  it("issue fechada → fora-de-rodada (state vence tudo, inclusive epica)", () => {
+    assert.equal(
+      classifyExecTrack({ labels: ["epic-guarda-chuva"], body: "", now: NOW, state: "CLOSED" }),
       "fora-de-rodada",
     );
   });
@@ -551,8 +584,8 @@ describe("parseWaitUntil", () => {
 });
 
 describe("EXEC_TRACK_LABELS", () => {
-  it("cobre os 5 valores do tipo (#5682 acrescenta agendada)", () => {
-    const tracks: ExecTrack[] = ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"];
+  it("cobre os 6 valores do tipo (#5682 acrescenta agendada, #6201 acrescenta epica)", () => {
+    const tracks: ExecTrack[] = ["overnight", "develop", "agendada", "bloqueada", "epica", "fora-de-rodada"];
     for (const t of tracks) {
       assert.equal(typeof EXEC_TRACK_LABELS[t], "string");
       assert.ok(EXEC_TRACK_LABELS[t].length > 0);
@@ -564,9 +597,9 @@ describe("EXEC_TRACK_LABELS", () => {
 describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
   // Este é o guard que impede a 2ª fonte de verdade voltar: `triagem.js`
   // renderiza A PARTIR daqui (via `data.execTrackUi`), em vez de redeclarar os
-  // 5 valores. Antes disso, um 6º valor quebraria o build do servidor (pelo
-  // `Record<ExecTrack, string>`) e passaria silencioso no cliente, caindo no
-  // fallback sem tradução nem tooltip.
+  // valores. Antes disso, um valor novo (ex: `epica`, #6201) quebraria o
+  // build do servidor (pelo `Record<ExecTrack, string>`) e passaria
+  // silencioso no cliente, caindo no fallback sem tradução nem tooltip.
   it("tem uma entrada por valor do tipo, com label e explicação preenchidas", () => {
     assert.equal(EXEC_TRACK_UI.length, Object.keys(EXEC_TRACK_LABELS).length);
     for (const entry of EXEC_TRACK_UI) {
@@ -581,7 +614,7 @@ describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
     // classificador (que checa `bloqueada` antes de `agendada`).
     assert.deepEqual(
       EXEC_TRACK_UI.map((e) => e.track),
-      ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"],
+      ["overnight", "develop", "agendada", "bloqueada", "epica", "fora-de-rodada"],
     );
   });
 
@@ -698,9 +731,9 @@ describe("classifyExecTrackWithRule — matched (#6200)", () => {
     assert.equal(r.matched, "label:alarm");
   });
 
-  it("label epic-guarda-chuva → label:epic-guarda-chuva", () => {
+  it("label epic-guarda-chuva → epica, label:epic-guarda-chuva (#6201 — era fora-de-rodada)", () => {
     const r = classifyExecTrackWithRule({ labels: ["epic-guarda-chuva"], body: "", now: NOW });
-    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.track, "epica");
     assert.equal(r.matched, "label:epic-guarda-chuva");
   });
 

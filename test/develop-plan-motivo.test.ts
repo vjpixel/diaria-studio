@@ -254,6 +254,13 @@ describe("findHeliosBuraco — #5907(b), buraco do helios", () => {
     assert.deepEqual(findHeliosBuraco(issues), [5878]);
   });
 
+  it("exec_track_painel epica também é reportado (#6201 — nunca implementada direto, sem-sentido pro helios 'deixar' pra depois)", () => {
+    const issues: DevelopPlanIssueLike[] = [
+      { number: 461, status: "deixado-para-o-helios", exec_track_painel: "epica" },
+    ];
+    assert.deepEqual(findHeliosBuraco(issues), [461]);
+  });
+
   it("track overnight é legítimo (helios pega sozinho) — não reporta", () => {
     const issues: DevelopPlanIssueLike[] = [
       { number: 5904, status: "deixado-para-o-helios", exec_track_painel: "overnight" },

@@ -15,7 +15,7 @@
  * O que este gate falha:
  * - `exec_track_painel` ausente ou não-string em qualquer entrada de
  *   `issues[]` com `number` numérico (o caso do 6a que nunca rodou);
- * - valor string FORA do enum de 5 tracks (`ExecTrack`, `issue-exec-track.ts`)
+ * - valor string FORA do enum de tracks (`ExecTrack`, `issue-exec-track.ts`)
  *   — typo grava classificação que nenhum consumidor reconhece, que é a
  *   mesma mentira estrutural de um rótulo inventado.
  *
@@ -45,12 +45,22 @@ import type { ExecTrack } from "./issue-exec-track.ts";
 
 /** Os únicos valores válidos de `exec_track_painel` — espelho do enum
  * `ExecTrack` de `issue-exec-track.ts` (reexportado como literal pra este
- * módulo não depender de I/O nem arrastar o classify pro bundle do gate). */
+ * módulo não depender de I/O nem arrastar o classify pro bundle do gate).
+ *
+ * `readonly ExecTrack[]` (array, não `Record<ExecTrack, ...>`) NÃO força o
+ * compilador a conferir que todo valor do union está listado — um 7º valor
+ * futuro passaria batido aqui sem quebrar o build, exatamente o gap que
+ * `epica` (#6201) expôs ao entrar no union (união passou de 5 pra 6 valores;
+ * esta lista precisou de edição manual, sem guard de tipo travando). Se um
+ * novo `ExecTrack` entrar de novo, conferir esta lista manualmente — não há
+ * teste dedicado a isso hoje (oportunidade de follow-up, não escopo do
+ * #6201). */
 export const EXEC_TRACK_VALUES: readonly ExecTrack[] = [
   "overnight",
   "develop",
   "agendada",
   "bloqueada",
+  "epica",
   "fora-de-rodada",
 ];
 

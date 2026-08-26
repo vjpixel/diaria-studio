@@ -54,7 +54,8 @@
  * Valores válidos (fonte: `MOTIVO_LABEL` em `issue-route.ts`):
  *
  *   --track bloqueada:     conta-de-terceiro, plataforma, kit, execucao
- *   --track fora-de-rodada: epica, sem-direcao, decisao, alarme-estado
+ *   --track epica:          epica (default sem --motivo — ver `TRACK_ADD_LABEL`)
+ *   --track fora-de-rodada: sem-direcao, decisao, alarme-estado
  *   --track overnight:     alarme-evento
  *
  * ## 3b — preservação de label específica (#6197)

@@ -34,6 +34,7 @@ import {
   detectMarkerDeferralConflict,
   detectInheritedBlockLabel,
   detectOpenChecklistInTerminalIssue,
+  detectSiblingBlockLabelInconsistency,
   extractParentRef,
   splitFindingsByAction,
   type BacklogIssueInput,
@@ -104,9 +105,11 @@ function fetchIssueMinimal(issueNumber: number, cwd: string, ghRun: GhRunFn): { 
   }
 }
 
-/** Roda as 4 detecções sobre o backlog inteiro. Busca mãe sob demanda (com
+/** Roda as 5 detecções sobre o backlog inteiro. Busca mãe sob demanda (com
  * cache local — várias filhas podem referenciar a mesma mãe) só quando o
- * padrão 3 tem uma referência a resolver. */
+ * padrão 3 tem uma referência a resolver. Padrão 5 (#6201) opera sobre o
+ * conjunto inteiro de uma vez (agrupa por mãe internamente), não issue a
+ * issue como os demais — roda uma única vez fora do loop. */
 export function evaluateBacklog(
   issues: readonly BacklogIssueInput[],
   now: Date,
@@ -134,6 +137,8 @@ export function evaluateBacklog(
     const checklistFinding = detectOpenChecklistInTerminalIssue(issue, execTrack);
     if (checklistFinding) findings.push(checklistFinding);
   }
+
+  findings.push(...detectSiblingBlockLabelInconsistency(issues));
 
   return findings;
 }
@@ -190,6 +195,15 @@ function printReport(findings: readonly ReconcileFinding[], applied: Map<number,
       console.log(
         `#${a.issue} — ${a.title} — padrão ${a.patternId}: herda [${a.sharedLabels.join(", ")}] da mãe #${a.parentNumber}.`,
       );
+    } else if (a.patternId === "sibling-block-label-inconsistency") {
+      const withStr = a.withLabel.map((s) => `#${s.number}`).join(", ");
+      const withoutStr = a.withoutLabel.map((s) => `#${s.number}`).join(", ");
+      console.log(
+        `mãe #${a.parentNumber} — padrão ${a.patternId}: label \`${a.label}\` inconsistente entre filhas — COM: [${withStr}], SEM: [${withoutStr}]. ` +
+          `Revisar se o bloqueio é genuinamente por eixo. Se for (decomposição correta), acrescentar ao corpo da #${a.parentNumber}: ` +
+          `<!-- sibling-block-reviewed: ${a.label} --> — é o que faz este alarme parar de repetir. Sem isso ele nunca converge a zero.`,
+      );
+      continue;
     } else {
       console.log(
         `#${a.issue} — ${a.title} — padrão ${a.patternId}: track ${a.execTrack} com ${a.openCheckboxCount} checkbox(es) aberto(s).`,

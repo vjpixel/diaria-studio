@@ -2,9 +2,9 @@
  * scripts/lib/backlog-reconcile.ts (#6198)
  *
  * Lógica PURA (sem I/O) da reconciliação diária do backlog aberto — a task
- * que percorre todas as issues abertas e trata os 4 padrões de drift
- * descritos na #6198, todos detectáveis cruzando labels × marcador
- * `aguardando-ate:` × estado, sem ler prosa:
+ * que percorre todas as issues abertas e trata os padrões de drift
+ * descritos na #6198 (1-4) e #6201 (5), todos detectáveis cruzando labels ×
+ * marcador `aguardando-ate:` × estado, sem ler prosa:
  *
  *   1. Marcador `aguardando-ate:` futuro **+** label de deferimento
  *      (`not-this-week`/`next-month`/`on-hold`/`wontfix`) na mesma issue —
@@ -16,6 +16,12 @@
  *      #N") para a issue-filha — fixture real #6187.
  *   4. Issue classificada `fora-de-rodada` que ainda carrega checkbox
  *      (`- [ ] `) aberto no corpo — fixture real #6047.
+ *   5. (#6201 item 7) Label de `INHERITABLE_BLOCK_LABELS` presente em
+ *      ALGUMAS filhas de uma mãe e ausente em OUTRAS — fixtures reais
+ *      #6184-#6187 (filhas de #463). Complementa o padrão 3: aquele só
+ *      enxerga "a filha herdou a label da mãe"; este enxerga a ASSIMETRIA
+ *      entre filhas, que é o sintoma "contorno por omissão não deixa
+ *      rastro" (a #6184 ficou sem a label por omissão, não por decisão).
  *
  * ─── Separação obrigatória: correção segura × alarme ───────────────────────
  *
@@ -39,11 +45,12 @@
  * contradição pura entre marcador e deferimento — nunca "um sinal isolado
  * que ela ache errado" (a frase literal da restrição da #6198).
  *
- * Padrões 3 e 4 exigem contexto que este módulo não tem acesso mecânico a
+ * Padrões 3, 4 e 5 exigem contexto que este módulo não tem acesso mecânico a
  * (o corpo da issue-filha precisa ser lido para saber se o escopo dela de
  * fato depende do bloqueio herdado; um checkbox aberto pode ter sido
- * resolvido em outra issue, só descobrível lendo aquela outra issue) — por
- * isso são **sempre alarme**, nunca correção.
+ * resolvido em outra issue, só descobrível lendo aquela outra issue; qual
+ * lado de uma assimetria entre filhas está certo exige ler o eixo de cada
+ * uma) — por isso são **sempre alarme**, nunca correção.
  *
  * ─── Idempotência ────────────────────────────────────────────────────────
  *
@@ -302,6 +309,150 @@ export function detectInheritedBlockLabel(
   };
 }
 
+// ─── Padrão 5 — label de bloqueio inconsistente entre filhas da mesma mãe (ALARME, #6201) ──
+
+/** Referência mínima a uma issue, pra listar nos dois lados do achado sem
+ * carregar o objeto `BacklogIssueInput` inteiro. */
+export interface SiblingIssueRef {
+  number: number;
+  title: string;
+  url: string;
+}
+
+export interface SiblingBlockLabelInconsistencyAlarm {
+  action: "alarm";
+  patternId: "sibling-block-label-inconsistency";
+  parentNumber: number;
+  /** Label de `INHERITABLE_BLOCK_LABELS` em disputa entre as filhas. */
+  label: string;
+  /** Filhas (referenciando a mesma mãe) que CARREGAM a label. */
+  withLabel: SiblingIssueRef[];
+  /** Filhas (referenciando a mesma mãe) que NÃO carregam a label. */
+  withoutLabel: SiblingIssueRef[];
+}
+
+/**
+ * Detecta o padrão 5 (#6201 item 7): entre as issues-filhas de uma MESMA
+ * mãe (agrupadas por `extractParentRef` — mesmo mecanismo do padrão 3), uma
+ * label de bloqueio real (`INHERITABLE_BLOCK_LABELS`) presente em ALGUMAS
+ * mas AUSENTE em OUTRAS.
+ *
+ * Motivação (auditoria de 26/08, #6201): quando uma migração vira "mãe" e é
+ * decomposta em filhas por EIXO (#6184-#6187, filhas de #463), o bloqueio
+ * de cada eixo é genuinamente diferente — cliques por link (#6185) e stats
+ * agregado (#6186) de fato dependiam de envio/clique real na época; cache
+ * híbrido (#6187) e metadados (#6184) eram código local puro, sem bloqueio.
+ * A label `kit-migration` foi aplicada por padrão a TODAS as filhas menos
+ * uma (#6184, que ficou "por omissão" sem a label) — o padrão 3
+ * (`detectInheritedBlockLabel`) só enxerga o caso onde a label da MÃE
+ * também está na filha; ele não flagra a ASSIMETRIA entre filhas
+ * (#6185/#6186/#6187 com a label, #6184 sem), que é justamente o sintoma
+ * "contorno por omissão não deixa rastro" citado na issue.
+ *
+ * Mecânico, como os padrões 3/4: não julga QUAL lado está certo (a label
+ * pode estar faltando na que não tem, ou sobrando na que tem — os dois são
+ * plausíveis sem ler o corpo de cada filha para confirmar o eixo real),
+ * só sinaliza a divergência pra revisão humana. Sempre ALARME.
+ *
+ * **Diferença deliberada dos padrões 3/4: este NUNCA converge a zero achados
+ * pra uma mãe genuinamente decomposta por eixo com bloqueios reais
+ * distintos.** Nos padrões 3/4, o estado corrigido é o estado SEM o achado
+ * (label removida da filha / checkbox fechado). Aqui, o estado CORRETO de
+ * uma decomposição por eixo é justamente a assimetria — algumas filhas
+ * bloqueadas, outras não, e isso é voz ativa, não bug (é o próprio ponto do
+ * item 7 da #6201: o bloqueio virou "por eixo", não "por migração"). Rodar
+ * a reconciliação diária contra `#463` decomposta continuará emitindo este
+ * alarme indefinidamente, mesmo depois de confirmado que a divisão está
+ * correta — é sinal esperado, não regressão do gate de idempotência que os
+ * padrões 1/2 garantem (ver docstring do módulo, seção Idempotência). Uma
+ * forma de silenciar um caso já revisado (comentário-marcador, por exemplo)
+ * é trabalho futuro fora do escopo do #6201, não implementado aqui.
+ *
+ * Unânime (todas com a label, ou todas sem) não é achado — divergência zero
+ * não indica nada de errado. Só entra grupo com ≥2 filhas referenciando a
+ * mesma mãe (não há "inconsistência" possível com 1 filha só).
+ *
+ * `issues` é o backlog OPEN inteiro (mesmo formato de `fetchOpenBacklog`) —
+ * a função agrupa por mãe internamente; diferente dos padrões 1-4, que
+ * operam issue-a-issue, este precisa ver o conjunto de uma vez.
+ */
+/**
+ * Marcador que SILENCIA o alarme de assimetria entre filhas, escrito no corpo
+ * da issue-MÃE: `<!-- sibling-block-reviewed: {label} -->`.
+ *
+ * Existe porque este alarme, sozinho, nunca converge a zero. Diferente dos
+ * padrões 1-4, a assimetria de label ENTRE eixos é o estado CORRETO permanente
+ * de uma decomposição por eixo (#463 → #6184-#6187: dois eixos têm bloqueio
+ * real, dois não têm). Sem uma saída, a reconciliação diária alarmaria essa
+ * mãe para sempre.
+ *
+ * E "alarme que sempre acha" é exatamente o anti-padrão que a #6199 acabou de
+ * eliminar do `Diaria-On-Hold-Vencimento-Alarm` — lá o digest inteiro tinha
+ * virado ruído fixo, e o texto da issue é explícito em que esse é "o pior
+ * estado possível para um alarme, porque ensina a ignorá-lo". Introduzir o
+ * mesmo padrão na mesma rodada em que ele foi removido seria incoerente.
+ *
+ * O marcador é POR LABEL, não por mãe: reconhecer que a assimetria de
+ * `kit-migration` está certa não silencia uma assimetria futura de
+ * `external-blocker` na mesma decomposição — que seria informação nova.
+ */
+export function siblingBlockReviewedLabels(parentBody: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!parentBody) return out;
+  const re = /<!--\s*sibling-block-reviewed:\s*([a-z0-9._-]+)\s*-->/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(parentBody)) !== null) out.add(m[1].toLowerCase());
+  return out;
+}
+
+export function detectSiblingBlockLabelInconsistency(
+  issues: readonly BacklogIssueInput[],
+): SiblingBlockLabelInconsistencyAlarm[] {
+  const byParent = new Map<number, BacklogIssueInput[]>();
+  // Corpo da mãe indexado à parte: é onde mora o marcador de reconhecimento.
+  // A mãe pode não estar em `issues` (fechada, ou fora da janela buscada) —
+  // nesse caso não há marcador a ler e o alarme segue o caminho normal.
+  const parentBodyByNumber = new Map<number, string | null | undefined>();
+  for (const issue of issues) parentBodyByNumber.set(issue.number, issue.body);
+
+  for (const issue of issues) {
+    if (issue.state === "CLOSED") continue;
+    const parentNumber = extractParentRef(issue.body);
+    if (parentNumber === null) continue;
+    const group = byParent.get(parentNumber) ?? [];
+    group.push(issue);
+    byParent.set(parentNumber, group);
+  }
+
+  const toRef = (i: BacklogIssueInput): SiblingIssueRef => ({ number: i.number, title: i.title, url: i.url });
+
+  const findings: SiblingBlockLabelInconsistencyAlarm[] = [];
+  for (const [parentNumber, siblings] of byParent) {
+    if (siblings.length < 2) continue;
+    const reviewed = siblingBlockReviewedLabels(parentBodyByNumber.get(parentNumber));
+    for (const label of INHERITABLE_BLOCK_LABELS) {
+      // Assimetria já revisada e declarada correta pelo editor no corpo da
+      // mãe — ver `siblingBlockReviewedLabels`. É o que dá convergência a
+      // este alarme.
+      if (reviewed.has(label.toLowerCase())) continue;
+      const withLabel = siblings.filter((s) => s.labels.includes(label));
+      const withoutLabel = siblings.filter((s) => !s.labels.includes(label));
+      if (withLabel.length === 0 || withoutLabel.length === 0) continue;
+      findings.push({
+        action: "alarm",
+        patternId: "sibling-block-label-inconsistency",
+        parentNumber,
+        label,
+        withLabel: withLabel.map(toRef),
+        withoutLabel: withoutLabel.map(toRef),
+      });
+    }
+  }
+
+  findings.sort((a, b) => a.parentNumber - b.parentNumber || a.label.localeCompare(b.label));
+  return findings;
+}
+
 // ─── Padrão 4 — checkbox aberto em issue fora-de-rodada (ALARME) ───────────
 
 /** Casa uma linha de checkbox markdown ABERTO (`- [ ] texto`), tolerando
@@ -370,7 +521,15 @@ export type ReconcileFinding =
   | MarkerDeferralFinding
   | MarkerWontfixConflictAlarm
   | InheritedBlockLabelAlarm
-  | OpenChecklistInTerminalIssueAlarm;
+  | OpenChecklistInTerminalIssueAlarm
+  | SiblingBlockLabelInconsistencyAlarm;
+
+type ReconcileAlarm =
+  | MarkerDeferralConflictAlarm
+  | MarkerWontfixConflictAlarm
+  | InheritedBlockLabelAlarm
+  | OpenChecklistInTerminalIssueAlarm
+  | SiblingBlockLabelInconsistencyAlarm;
 
 /** Separa achados em "corrigidos"/"a corrigir" (padrão 1/2, `action ===
  * "fix"`) e "só alarmados" (o resto) — o relatório da task precisa das duas
@@ -378,10 +537,10 @@ export type ReconcileFinding =
  * misturando os dois. */
 export function splitFindingsByAction(findings: readonly ReconcileFinding[]): {
   fixes: MarkerDeferralConflictFix[];
-  alarms: Array<MarkerDeferralConflictAlarm | MarkerWontfixConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm>;
+  alarms: ReconcileAlarm[];
 } {
   const fixes: MarkerDeferralConflictFix[] = [];
-  const alarms: Array<MarkerDeferralConflictAlarm | MarkerWontfixConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm> = [];
+  const alarms: ReconcileAlarm[] = [];
   for (const f of findings) {
     if (f.action === "fix") fixes.push(f);
     else alarms.push(f);
