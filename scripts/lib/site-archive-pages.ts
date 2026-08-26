@@ -212,6 +212,76 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // para esses 91 posts, quebrando `gen-archive-pages.ts` (acervo público
   // inteiro) e `publish-edition-site-page.ts` (#6202). O replace existia
   // justamente para tratar o caso que o guard rejeitava antes de ele agir.
+  //
+  // DECISÃO DO EDITOR (#6210, 26/08/2026): a página WEB do acervo não tem
+  // identidade de assinante, então o link de voto não pode simplesmente
+  // zerar `email=` (endpoint `/vote` exige identidade — o link ficaria
+  // quebrado, exatamente a alternativa que o editor descartou). O clique
+  // deve levar pro fluxo `/jogar?edition=...` — mesmo worker `poll`, já tem
+  // gate próprio e identidade anônima (`WEB_TOKEN_DOMAIN`,
+  // `isAnonymousWebIdentity` em workers/poll/src/lib.ts). Roda ANTES do
+  // fallback genérico abaixo. As duas escolhas (A e B) da mesma edição
+  // colapsam pro MESMO link — `/jogar` já apresenta as duas imagens e
+  // captura o clique, não precisa (nem aceita) receber a escolha por query.
+  //
+  // As DUAS variantes de shape abaixo (legado query-string e o atual
+  // path-based) descartam de propósito TUDO que vem depois de
+  // `choice=[AB]`/`{{email}}` até o fechamento do atributo (`[^"'\s]*`
+  // no fim de cada regex) — inclusive `utm_source`/`utm_medium`/
+  // `utm_campaign`/`sig`. Achado do fleet review desta PR: as duas regexes
+  // tratavam isso de forma ASSIMÉTRICA (legado descartava, path-based não
+  // consumia e deixava o UTM da newsletter vazar pro link do acervo) — o
+  // vazamento é o pior dos dois lados: um clique na página WEB (sem
+  // contexto de e-mail) saindo com `utm_medium=newsletter` mente sobre a
+  // origem do tráfego pra qualquer análise a jusante. Unificado: os dois
+  // shapes agora descartam igual, e é a escolha certa aqui — o clique é de
+  // OUTRA origem (arquivo público), então UTM de newsletter não pertence a
+  // ele de jeito nenhum; se um dia o acervo precisar de UTM próprio, isso é
+  // decisão nova, não reaproveitar o que veio grudado no HTML da Beehiiv.
+  html = html.replace(
+    /https?:\/\/([a-z0-9.-]+)\/vote\?email=\{\{email\}\}&edition=([^&"'\s]+)&choice=[AB][^"'\s]*/gi,
+    (_match, domain: string, edition: string) => `https://${domain}/jogar?edition=${edition}`,
+  );
+
+  // Mesmo tratamento, shape de URL diferente: `/vote/{edition}/{A|B}?email=`
+  // (path-based, não query-string) é o formato ATUAL de `buildVoteUrl` em
+  // newsletter-render-html.ts (#5675 — edição/escolha saíram da query pra
+  // evitar quoted-printable corromper `&` no envio da Beehiiv) — é o link
+  // que `_internal/newsletter-final.html` carrega quando o passo de
+  // pipeline do #6202 publica uma edição NOVA como página pública, então
+  // precisa da mesma correção que o formato legado acima. `[^"'\s]*` no
+  // fim consome o `&utm_source=...&utm_medium=...&utm_campaign=...` que
+  // SEMPRE segue `{{email}}` neste shape no cache real (medido: 100% das
+  // ocorrências) — sem isso, o UTM de newsletter sobrevivia grudado no
+  // `/jogar?edition=...` resultante (ver nota acima).
+  html = html.replace(
+    /https?:\/\/([a-z0-9.-]+)\/vote\/([^/"'\s]+)\/[AB]\?email=\{\{email\}\}[^"'\s]*/gi,
+    (_match, domain: string, edition: string) => `https://${domain}/jogar?edition=${edition}`,
+  );
+
+  // Guard ANTES do fallback genérico (achado do fleet review desta PR):
+  // se sobrou um `/vote...{{email}}` que os dois padrões acima NÃO
+  // reconheceram (shape novo — já mudou 3× nos últimos ~2 meses: #4581 →
+  // #5675 → #6210 — ordem de query diferente, `choice` fora de A/B, etc.),
+  // o fallback genérico abaixo zeraria `email=` e reproduziria em
+  // SILÊNCIO o bug original do #6210: um `/vote?email=&...` sem
+  // identidade, que o endpoint rejeita. Falha alto e nomeia o slug em vez
+  // de deixar esse caso cair no fallback — mesmo padrão de
+  // `verifyNoUnresolvedMergeTags` logo abaixo, só que aplicado ANTES do
+  // replace que apagaria a evidência (a tag já estaria resolvida — pra
+  // vazio — quando o guard de saída rodasse, então ele nunca pegaria isto).
+  const staleVoteLink = html.match(/\/vote(?:\?|\/[^"'\s]*\?)[^"'\s]*\{\{email\}\}[^"'\s]*/i);
+  if (staleVoteLink) {
+    throw new UnresolvedMergeTagError(post.slug, [staleVoteLink[0]]);
+  }
+
+  // Fallback genérico — cobre `email={{email}}` fora de um link de voto
+  // (confirmado no cache real: link de tracking de anúncio da Beehiiv,
+  // `_bhiiv=opp_...`, e magic link `magic.beehiiv.com/v1/...`) e qualquer
+  // shape futuro que o guard acima não pegue por não ter `/vote` no path.
+  // Continua zerando o valor porque não há como saber, em geral, que o
+  // destino é um link de voto que aceita /jogar — só os 2 padrões
+  // explícitos acima têm essa garantia.
   html = html.replace(/email=\{\{email\}\}/gi, "email=");
 
   // `{{email_address_id}}` é o OUTRO identificador de assinante que a Beehiiv

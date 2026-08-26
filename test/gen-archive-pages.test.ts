@@ -444,6 +444,141 @@ describe("buildArchivePageHtml — link de voto com merge tag padrão (#6210 × 
   });
 });
 
+// Decisão do editor #6210 (26/08/2026): o link de voto real (com edition+
+// choice) não pode só zerar `email=` — o endpoint /vote exige identidade e
+// o link ficaria quebrado. Precisa apontar pro fluxo /jogar (anônimo).
+describe("buildArchivePageHtml — link de voto real vira /jogar (#6210, decisão do editor)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("email={{email}}&edition=X&choice=A vira /jogar?edition=X, mesmo domínio", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=A&utm_source=diar.ia.br">A</a>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=B&utm_source=diar.ia.br">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(
+      html.includes('href="https://poll.diaria.workers.dev/jogar?edition=260812"'),
+      "link de voto deve virar /jogar?edition=... no mesmo domínio",
+    );
+    assert.ok(!/\/vote\?/.test(html), "não pode sobrar link pro /vote quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+    // As duas escolhas (A e B) da mesma edição colapsam pro MESMO link —
+    // /jogar apresenta as duas imagens e captura o clique, não recebe
+    // a escolha por query.
+    const jogarLinks = html.match(/href="https:\/\/poll\.diaria\.workers\.dev\/jogar\?edition=260812"/g);
+    assert.strictEqual(jogarLinks?.length, 2);
+  });
+
+  it("preserva o domínio original (eia.diar.ia.br vs poll.diaria.workers.dev vs legado)", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote?email={{email}}&edition=260515&choice=A&utm_source=x">A</a>' +
+          '<a href="https://diar-ia-poll.diaria.workers.dev/vote?email={{email}}&edition=260515&choice=B&sig=&utm_source=x">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260515"'));
+    assert.ok(html.includes('href="https://diar-ia-poll.diaria.workers.dev/jogar?edition=260515"'));
+  });
+
+  it("formato path-based /vote/{edition}/{A|B}?email={{email}} (buildVoteUrl atual, #5675) também vira /jogar", () => {
+    // newsletter-render-html.ts (buildVoteUrl) gera este shape, não o
+    // query-string legado — é o link que newsletter-final.html carrega
+    // quando o #6202 publica uma edição nova como página pública.
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/A?email={{email}}">A</a>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/B?email={{email}}">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260827"'));
+    assert.ok(!/\/vote\//.test(html), "não pode sobrar link pro /vote/ path-based quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+  });
+
+  // Achado do fleet review desta PR: no cache real, o shape path-based
+  // SEMPRE tem UTM de newsletter grudado depois de {{email}} — sem
+  // consumir isso, o UTM sobrevivia colado no /jogar resultante, e um
+  // clique da página WEB (sem contexto de e-mail) saía mentindo
+  // utm_medium=newsletter. Trava o comportamento correto (descartar,
+  // igual ao shape legado) contra o shape REAL, não um fixture idealizado.
+  it("descarta o UTM de newsletter grudado no shape path-based (achado do fleet review — vazamento real no cache)", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote/260826/A?email={{email}}&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=empresas-recontratam-quem-demitiu-por-ia">A</a>' +
+          '<a href="https://eia.diar.ia.br/vote/260826/B?email={{email}}&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=empresas-recontratam-quem-demitiu-por-ia">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(
+      html.includes('href="https://eia.diar.ia.br/jogar?edition=260826"'),
+      "link deve virar /jogar?edition=X limpo, sem UTM de newsletter grudado",
+    );
+    assert.ok(!/utm_medium=newsletter/.test(html), "clique da página WEB não pode sair atribuído a newsletter");
+    assert.ok(!/\/vote\//.test(html));
+    assert.ok(!/\{\{email\}\}/.test(html));
+  });
+
+  // O shape legado (query-string) já descartava trailing content por
+  // construção — este teste só documenta que os DOIS shapes agora se
+  // comportam igual (achado do fleet review: antes eram assimétricos).
+  it("shape legado também descarta o mesmo jeito — os dois shapes agora são simétricos", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260511&choice=A&sig=&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=x">A</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://poll.diaria.workers.dev/jogar?edition=260511"'));
+    assert.ok(!/utm_medium=newsletter/.test(html));
+  });
+});
+
+// Achado do fleet review desta PR: sem este guard, um shape de link de
+// voto que os 2 padrões reconhecidos NÃO cobrem (ordem de query diferente,
+// choice fora de A/B, etc.) caía em silêncio no fallback genérico — que
+// zera email= e reproduz o bug ORIGINAL do #6210 (link /vote sem
+// identidade, quebrado) sem nenhum sinal de erro.
+describe("buildArchivePageHtml — guard contra shape de /vote não reconhecido (#6210, achado do fleet review)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("choice fora de A/B (shape não reconhecido) lança em vez de degradar pro fallback silencioso", () => {
+    assert.throws(
+      () =>
+        buildArchivePageHtml(
+          comVoto(
+            '<!DOCTYPE html><html><head></head><body>' +
+              '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=C">C</a>' +
+              '</body></html>',
+          ),
+        ),
+      /merge tag não resolvida/,
+    );
+  });
+
+  it("ordem de query invertida (edition antes de email) lança em vez de degradar pro fallback silencioso", () => {
+    assert.throws(
+      () =>
+        buildArchivePageHtml(
+          comVoto(
+            '<!DOCTYPE html><html><head></head><body>' +
+              '<a href="https://poll.diaria.workers.dev/vote?edition=260812&email={{email}}&choice=A">A</a>' +
+              '</body></html>',
+          ),
+        ),
+      /merge tag não resolvida/,
+    );
+  });
+});
+
 // #6256 — a whitelist de sanitizes SÓ trata {{email}}/{{email_address_id}};
 // qualquer OUTRA merge tag desconhecida precisa lançar um tipo DISTINGUÍVEL
 // (não só um Error genérico) pra generateArchivePages poder degradar por
