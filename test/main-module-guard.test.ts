@@ -37,10 +37,50 @@ import { isMainModule } from "../scripts/lib/cli-args.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPTS = join(ROOT, "scripts");
 
-/** Qualquer comparação de `import.meta.url` contra um template `file://...`
- * montado à mão. Cobre as variantes já vistas no repo — `file://${argv1}` e
- * `file:///${argv1.replace(...)}` — sem depender do nome da variável. */
-const RAW_GUARD_RE = /import\.meta\.url\s*===\s*`file:\/\//;
+/**
+ * `import.meta.url` e um literal `file://` na MESMA expressão — em qualquer
+ * ordem, com template literal ou string comum.
+ *
+ * A primeira versão deste invariante era `/import\.meta\.url\s*===\s*`file:\/\//`
+ * e tinha dois pontos cegos que o review do #6193 achou: operandos invertidos
+ * (`` `file://${argv1}` === import.meta.url ``) e concatenação em vez de
+ * template (`import.meta.url === "file://" + argv1`). Nenhuma das duas existia
+ * no repo, mas o propósito deste teste é banir a forma indefinidamente — um
+ * guard reintroduzido em qualquer uma delas passaria batido, e o modo de falha
+ * (no-op silencioso, exit 0) é o mesmo.
+ *
+ * Delimitado por `;`/quebra de linha pra não casar duas construções não
+ * relacionadas na mesma linha. Aplicado só a linhas de código (ver
+ * `containsRawGuard`) — senão o próprio comentário que explica o bug em
+ * `route-issue.ts` se autodenunciaria.
+ */
+const RAW_GUARD_RE =
+  /import\.meta\.url[^\n;]*(`file:\/\/|["']file:\/\/)|(`file:\/\/|["']file:\/\/)[^\n;]*import\.meta\.url/;
+
+/**
+ * Verdadeiro se alguma linha de CÓDIGO casa o guard cru.
+ *
+ * Descarta linha de comentário em vez de tentar remover comentários do texto:
+ * o alvo procurado contém `//` (`file://`), então qualquer regex que corte a
+ * partir de `//` trunca justamente o que deveria encontrar — duas tentativas
+ * diferentes de `stripComments` morreram nisso (`file://` virava `file:`,
+ * depois `file:///` virava `file:/`), **anulando o invariante em silêncio**.
+ * Os controles positivos abaixo pegaram as duas; inspeção não pegaria
+ * nenhuma, porque o teste continuava passando contra o repo limpo.
+ *
+ * O guard cru é sempre uma expressão de uma linha (as 4 formas conhecidas
+ * cabem numa), então varredura linha a linha basta e não tem o problema
+ * acima.
+ */
+function containsRawGuard(source: string): boolean {
+  return source
+    .split("\n")
+    .filter((line) => {
+      const t = line.trimStart();
+      return !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+    })
+    .some((line) => RAW_GUARD_RE.test(line));
+}
 
 function walkTsFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -110,7 +150,7 @@ describe("isMainModule (#6191)", () => {
 describe("nenhum script monta o guard de main module à mão (#6191)", () => {
   it("scripts/**/*.ts usam isMainModule, não template `file://`", () => {
     const offenders = walkTsFiles(SCRIPTS)
-      .filter((f) => RAW_GUARD_RE.test(readFileSync(f, "utf8")))
+      .filter((f) => containsRawGuard(readFileSync(f, "utf8")))
       .map((f) => f.slice(ROOT.length + 1).replaceAll("\\", "/"));
 
     assert.deepEqual(
@@ -120,5 +160,35 @@ describe("nenhum script monta o guard de main module à mão (#6191)", () => {
         offenders.map((f) => `  - ${f}`).join("\n") +
         `\nUse: import { isMainModule } from "./lib/cli-args.ts"; if (isMainModule(import.meta.url)) { ... }`,
     );
+  });
+
+  it("o invariante pega as 4 formas do guard cru, não só a que existia no repo", () => {
+    // Controles positivos. As duas primeiras são as que este arquivo removeu
+    // de scripts/; as duas últimas são os pontos cegos que o review do #6193
+    // apontou na 1ª versão do regex — nunca existiram no repo, e é por isso
+    // que precisam de controle sintético pra não voltarem a passar batido.
+    const shapes = [
+      "if (import.meta.url === `file://${process.argv[1]}`) {",
+      "import.meta.url === `file:///${_argv1.replace(/^\\//, '')}`",
+      "if (`file://${argv1}` === import.meta.url) {", // operandos invertidos
+      'if (import.meta.url === "file://" + argv1) {', // concatenação, não template
+    ];
+    for (const shape of shapes) {
+      assert.ok(containsRawGuard(shape), `deveria acusar: ${shape}`);
+    }
+  });
+
+  it("o invariante não acusa o uso correto nem o bug descrito em comentário", () => {
+    // Controles negativos. O 2º é o caso concreto que motivou `stripComments`:
+    // `route-issue.ts` documenta a forma quebrada em prosa, e sem a remoção de
+    // comentários o arquivo consertado se autodenunciaria.
+    const clean = [
+      "if (isMainModule(import.meta.url)) {\n  main();\n}",
+      "// a comparação crua `import.meta.url === \"file://\" + process.argv[1]` nunca casa\nif (isMainModule(import.meta.url)) {",
+      "const u = new URL(import.meta.url);\nconst prefix = `file://`;",
+    ];
+    for (const snippet of clean) {
+      assert.equal(containsRawGuard(snippet), false, `falso positivo em: ${snippet}`);
+    }
   });
 });
