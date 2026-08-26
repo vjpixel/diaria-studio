@@ -438,6 +438,65 @@ describe("buildArchivePageHtml — link de voto com merge tag padrão (#6210 × 
   });
 });
 
+// Decisão do editor #6210 (26/08/2026): o link de voto real (com edition+
+// choice) não pode só zerar `email=` — o endpoint /vote exige identidade e
+// o link ficaria quebrado. Precisa apontar pro fluxo /jogar (anônimo).
+describe("buildArchivePageHtml — link de voto real vira /jogar (#6210, decisão do editor)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("email={{email}}&edition=X&choice=A vira /jogar?edition=X, mesmo domínio", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=A&utm_source=diar.ia.br">A</a>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=B&utm_source=diar.ia.br">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(
+      html.includes('href="https://poll.diaria.workers.dev/jogar?edition=260812"'),
+      "link de voto deve virar /jogar?edition=... no mesmo domínio",
+    );
+    assert.ok(!/\/vote\?/.test(html), "não pode sobrar link pro /vote quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+    // As duas escolhas (A e B) da mesma edição colapsam pro MESMO link —
+    // /jogar apresenta as duas imagens e captura o clique, não recebe
+    // a escolha por query.
+    const jogarLinks = html.match(/href="https:\/\/poll\.diaria\.workers\.dev\/jogar\?edition=260812"/g);
+    assert.strictEqual(jogarLinks?.length, 2);
+  });
+
+  it("preserva o domínio original (eia.diar.ia.br vs poll.diaria.workers.dev vs legado)", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote?email={{email}}&edition=260515&choice=A&utm_source=x">A</a>' +
+          '<a href="https://diar-ia-poll.diaria.workers.dev/vote?email={{email}}&edition=260515&choice=B&sig=&utm_source=x">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260515"'));
+    assert.ok(html.includes('href="https://diar-ia-poll.diaria.workers.dev/jogar?edition=260515"'));
+  });
+
+  it("formato path-based /vote/{edition}/{A|B}?email={{email}} (buildVoteUrl atual, #5675) também vira /jogar", () => {
+    // newsletter-render-html.ts (buildVoteUrl) gera este shape, não o
+    // query-string legado — é o link que newsletter-final.html carrega
+    // quando o #6202 publica uma edição nova como página pública.
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/A?email={{email}}">A</a>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/B?email={{email}}">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260827"'));
+    assert.ok(!/\/vote\//.test(html), "não pode sobrar link pro /vote/ path-based quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+  });
+});
+
 // #6256 — a whitelist de sanitizes SÓ trata {{email}}/{{email_address_id}};
 // qualquer OUTRA merge tag desconhecida precisa lançar um tipo DISTINGUÍVEL
 // (não só um Error genérico) pra generateArchivePages poder degradar por
