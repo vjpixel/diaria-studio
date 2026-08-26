@@ -575,6 +575,24 @@ describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
     assert.ok(gh.state.labels.includes("alarm"));
   });
 
+  it("'decisao-registrada' sozinha tem o MESMO conflito de precedencia que 'alarm' (#6223)", () => {
+    // Simetria: `decisao-registrada` esta no mesmo degrau de precedencia que
+    // `alarm` em RESOLVED_BY_PROSE_LABELS. Sem este caso, a unica prova de que
+    // o conflito e' da FAMILIA de proveniencia — e nao uma peculiaridade do
+    // `alarm` — ficava so no nivel puro do plano, onde `alarm-evento` mascara
+    // o efeito (vence a precedencia e devolve `overnight`).
+    const gh = fakeGh({ labels: ["decisao-registrada"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 52,
+      track: "overnight",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.resolvedTrack, "fora-de-rodada");
+    assert.ok(gh.state.labels.includes("decisao-registrada"));
+  });
+
   it("a mesma issue de alarme roteada pra 'fora-de-rodada' valida ok e mantem a proveniencia (#6223)", () => {
     const gh = fakeGh({ labels: ["alarm"], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
