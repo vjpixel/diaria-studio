@@ -369,6 +369,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       subject,
       preview_text: previewText,
       content: html,
+      public: true,
     });
     broadcastId = updated.id;
     publicUrl = updated.public_url;
@@ -379,6 +380,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
       preview_text: previewText,
       send_at: null, // rascunho — Etapa 6 é quem agenda de verdade
       subscriber_filter: buildAllSubscribersFilter(),
+      // #6323 (achado ao vivo): sem `public: true` o Kit nunca gera um
+      // `public_url` com slug — a doc oficial confirma que o campo controla
+      // exatamente isso ("publish this broadcast to the web... appears in a
+      // newsletter feed"). Sem ele, `public_url` volta um stub vazio
+      // (`https://{pub}.kit.com/posts/`, sem slug), quebrando {edition_url}
+      // em todos os posts sociais + post_pixel (Stage 6).
+      public: true,
     });
     broadcastId = created.id;
     publicUrl = created.public_url;
