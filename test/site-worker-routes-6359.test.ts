@@ -105,6 +105,39 @@ describe("workers/site/public/_redirects — /subscribe (#6359)", () => {
     const rule = rules.find((r) => r.source === "/subscribe");
     assert.match(rule!.destination, /kit\.com/, "destino esperado é a conta Kit — backend ativo desde o switchover #6114");
   });
+
+  /**
+   * Achado do fleet review (PR #6363, correção pós-review, confiança ALTA
+   * confirmada ao vivo pelo coordenador): `_redirects` é exact-match, sem
+   * curinga — `/subscribe` (sem barra) e `/subscribe/` (com barra) são
+   * paths DIFERENTES, e `html_handling = "drop-trailing-slash"` só
+   * normaliza barra quando existe um ASSET por trás (não é o caso aqui).
+   * Sem a regra dedicada abaixo, `/subscribe/` cai na resolução de asset,
+   * não acha nada, e devolve 404 — regressão de uma URL que o apex (Beehiiv)
+   * trata hoje (200 em `/subscribe`, 301 em `/subscribe/`). Foi justamente
+   * a ausência desta variante no teste original que deixou o buraco
+   * invisível na 1ª rodada de review.
+   */
+  it("também redireciona /subscribe/ (barra final) — html_handling NÃO cobre isto (não é asset)", () => {
+    const rules = parseRedirectsFile(readFileSync(redirectsPath, "utf8"));
+    const rule = rules.find((r) => r.source === "/subscribe/");
+    assert.ok(
+      rule,
+      "nenhuma regra /subscribe/ (barra final) em _redirects — regrediria a URL que a Beehiiv trata hoje (301 pra /subscribe)",
+    );
+    assert.ok(
+      rule!.code >= 300 && rule!.code < 400,
+      `code ${rule!.code} não é um status de redirect (300-399)`,
+    );
+    // Destino pode ser o path relativo /subscribe (mesmo comportamento da
+    // Beehiiv hoje) ou direto a URL da Kit — qualquer um dos dois fecha o
+    // buraco; o que este teste trava é que a regra EXISTE e redireciona,
+    // nunca que ela precisa apontar pro mesmo lugar exato da regra acima.
+    assert.ok(
+      rule!.destination === "/subscribe" || /^https:\/\//.test(rule!.destination),
+      `destino inesperado: ${rule!.destination}`,
+    );
+  });
 });
 
 describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão, #6359)", () => {
