@@ -41,6 +41,7 @@ import {
   sendMagicLinkEmail,
   confirmMergeHtmlResponse,
   handleConfirmMerge,
+  hasProvenEmailPossession,
   MAGIC_LINK_TTL_SEC,
   MAGIC_LINK_SEND_RATE_LIMIT,
   type PendingMerge,
@@ -348,6 +349,17 @@ describe("handleConfirmMerge (#3996)", () => {
     assert.equal(merged.total, 12, "soma (10 + 2), mesma disciplina de mergeWebScores");
     assert.equal(merged.correct, 9);
     assert.equal(await isIdentifyLinked(env, "ana@x.com", ANON_B), true, "par marcado como confirmado pós-merge");
+  });
+
+  it("#6293: clicar no link mágico grava o marcador de posse provada para o e-mail", async () => {
+    const env = makeEnv();
+    assert.equal(await hasProvenEmailPossession(env, "ana@x.com"), false, "antes do clique, nenhuma posse provada");
+
+    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "", optin: false });
+    const res = await handleConfirmMerge(confirmUrl(token), env);
+    assert.equal(res.status, 200);
+
+    assert.equal(await hasProvenEmailPossession(env, "ana@x.com"), true, "clique no magic link é a prova de posse — handleJogarGateVerify (web-gate.ts) lê exatamente este marcador");
   });
 
   it("replay do mesmo link (2º clique) → 400, NÃO re-mergeia (sem duplicar soma)", async () => {

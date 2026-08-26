@@ -14,11 +14,20 @@
  * "confirmed") embutido no payload assinado (prefixo "pending:", nunca
  * colide com e-mail real — ":" é rejeitado por isValidVoteEmailFormat).
  * `handleJogarGateSubscribe` emite "pending" (a confirmação da Beehiiv segue
- * em paralelo). `handleJogarGateVerify` (que já confirma "active") continua
- * emitindo "confirmed" — comportamento inalterado. `handleVote` só aplica o
- * override de identidade quando a sessão é "confirmed". O gate por rodada
- * (`handleJogarPage`) aceita QUALQUER sessão (pending ou confirmed) — seu
- * único objetivo é liberar o jogo, não decidir identidade de escrita.
+ * em paralelo). `handleVote` só aplica o override de identidade quando a
+ * sessão é "confirmed". O gate por rodada (`handleJogarPage`) aceita
+ * QUALQUER sessão (pending ou confirmed) — seu único objetivo é liberar o
+ * jogo, não decidir identidade de escrita.
+ *
+ * #6293 (correção subsequente, ver `test/poll-web-gate-possession-6293.test.ts`):
+ * `handleJogarGateVerify` promovia a "confirmed" qualquer e-mail que
+ * `checkWebSubscriber` visse como "active" — o que deixou de provar posse
+ * desde o #5095 (`double_opt_override: "off"`). Hoje `handleJogarGateVerify`
+ * só emite "confirmed" quando o e-mail já provou posse via magic link
+ * (`hasProvenEmailPossession`, magic-link.ts); sem o marcador, emite
+ * "pending" — o teste correspondente aqui foi atualizado (era o que
+ * documentava, com "comportamento inalterado", o comportamento que o #6293
+ * corrigiu).
  *
  * Também cobre o achado relacionado (mesma issue, comentário do editor
  * 260727): `handleJogarGateSubscribe`/`handleJogarGateVerify` não bloqueavam
@@ -82,13 +91,6 @@ const VALID_TOKEN = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
 const VALID_EMAIL = `${VALID_TOKEN}@web.eia.diaria.local`;
 
 describe("#4121: readWebSession — marcador pending/confirmed embutido no payload assinado", () => {
-  it("issueWebSessionCookie sem state (default) → confirmed", async () => {
-    const setCookie = await issueWebSessionCookie("s", "a@b.com");
-    const raw = setCookie.split(";")[0].split("=")[1];
-    const session = await readWebSession("s", `${WEB_SESSION_COOKIE}=${raw}`);
-    assert.deepEqual(session, { email: "a@b.com", pending: false });
-  });
-
   it('issueWebSessionCookie com state="pending" → pending:true, email correto (sem o prefixo)', async () => {
     const setCookie = await issueWebSessionCookie("s", "a@b.com", "pending");
     const raw = setCookie.split(";")[0].split("=")[1];
@@ -116,7 +118,7 @@ describe("#4121: readWebSession — marcador pending/confirmed embutido no paylo
     const rawPending = pendingCookie.split(";")[0].split("=")[1];
     assert.equal(await readWebSessionEmail("s", `${WEB_SESSION_COOKIE}=${rawPending}`), "pend@b.com");
 
-    const confirmedCookie = await issueWebSessionCookie("s", "conf@b.com");
+    const confirmedCookie = await issueWebSessionCookie("s", "conf@b.com", "confirmed");
     const rawConfirmed = confirmedCookie.split(";")[0].split("=")[1];
     assert.equal(await readWebSessionEmail("s", `${WEB_SESSION_COOKIE}=${rawConfirmed}`), "conf@b.com");
   });
@@ -149,8 +151,8 @@ describe("#4121: handleJogarGateSubscribe emite cookie PENDING (não confirmed)"
   });
 });
 
-describe("#4121: handleJogarGateVerify continua emitindo cookie CONFIRMED (comportamento inalterado)", () => {
-  it("assinante ativo confirmado → cookie de sessão é CONFIRMED (pending:false)", async () => {
+describe("#6293: handleJogarGateVerify — 'active' sozinho NÃO promove mais a CONFIRMED", () => {
+  it("assinante ativo SEM posse provada → cookie de sessão é PENDING (correção do #6293)", async () => {
     const { subscriberKvKey } = await import("../workers/poll/src/subscriber-verify.ts");
     const email = "ativo@example.com";
     const key = await subscriberKvKey(email);
@@ -167,7 +169,7 @@ describe("#4121: handleJogarGateVerify continua emitindo cookie CONFIRMED (compo
     const setCookie = getCookieHeader(res);
     const raw = setCookie!.split(";")[0].split("=")[1];
     const session = await readWebSession("cookie-secret", `${WEB_SESSION_COOKIE}=${raw}`);
-    assert.deepEqual(session, { email, pending: false });
+    assert.deepEqual(session, { email, pending: true }, "active na Beehiiv/KV não é mais prova de posse — só o marcador de magic link é");
   });
 });
 
@@ -188,7 +190,7 @@ describe("#4121: GET /vote?brand=web — override de identidade só com sessão 
 
   it("sessão CONFIRMED → sobrepõe identidade normalmente (comportamento pré-#4121 preservado)", async () => {
     const env = makeEnv();
-    const confirmedCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com")).split(";")[0];
+    const confirmedCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent(VALID_EMAIL)}&edition=260701&choice=A&brand=web`, {
         headers: { Cookie: confirmedCookie },

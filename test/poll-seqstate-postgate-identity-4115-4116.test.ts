@@ -87,7 +87,7 @@ describe("GET /jogar/seq-state — identidade pós-gate (#4115)", () => {
     const env = makeEnv({
       [`web:vote:260602:${REAL_EMAIL}`]: JSON.stringify({ choice: "A", correct: true }),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
 
     const withCookie = await seqState(env, ["260602"], cookie);
     assert.deepEqual(withCookie, [{ edition: "260602", voted: true, correct: true }]);
@@ -103,7 +103,7 @@ describe("GET /jogar/seq-state — identidade pós-gate (#4115)", () => {
     const env = makeEnv({
       [`web:vote:260601:${TOKEN}`]: JSON.stringify({ choice: "B", correct: false }),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601"], cookie);
     assert.deepEqual(state, [{ edition: "260601", voted: true, correct: false }]);
   });
@@ -114,7 +114,7 @@ describe("GET /jogar/seq-state — identidade pós-gate (#4115)", () => {
       [`web:vote:260602:${REAL_EMAIL}`]: JSON.stringify({ choice: "B", correct: false }),
       [`web:vote:260603:${REAL_EMAIL}`]: JSON.stringify({ choice: "A", correct: true }),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601", "260602", "260603", "260604"], cookie);
     assert.deepEqual(state, [
       { edition: "260601", voted: true, correct: true },
@@ -128,14 +128,14 @@ describe("GET /jogar/seq-state — identidade pós-gate (#4115)", () => {
     const env = makeEnv({
       [`web:vote:260602:${REAL_EMAIL}`]: JSON.stringify({ choice: "A", correct: true }),
     });
-    const forged = (await issueWebSessionCookie("secret-errado", REAL_EMAIL)).split(";")[0];
+    const forged = (await issueWebSessionCookie("secret-errado", REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260602"], forged);
     assert.deepEqual(state, [{ edition: "260602", voted: false, correct: null }]);
   });
 
   it("token continua obrigatório no parâmetro, mesmo com cookie válido (guard #3976/#4011 intocado)", async () => {
     const env = makeEnv();
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(REAL_EMAIL)}&editions=260601`, {
         headers: { Cookie: cookie },
@@ -201,7 +201,7 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
     // Pior caso realista: jogador identificado, nada votado ainda — a 2ª fase
     // tem o máximo de edições pra reconsultar.
     const { env, gets } = countingEnv();
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     await seqState(env, monthEditions, cookie);
     // Pior caso do desenho antigo (pré-#4115) seria 62 (31 × 2). Com as duas
     // fases + o orçamento free-plan-safe do #4443 (45), o teto real cai pra
@@ -219,7 +219,7 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
     seed[`web:vote:${monthEditions[0]}:${TOKEN}`] = JSON.stringify({ choice: "B", correct: false });
 
     const { env, gets } = countingEnv(seed);
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, monthEditions, cookie);
 
     // #4443: +1 frente ao pré-#4443 (31 + 1) — a checagem de agregado
