@@ -555,7 +555,7 @@ aqui.
    - **(c) Bloqueio genuíno não-decisão** — credencial-runtime, conta
      externa, ação humana fora do repo (inclusive prospecção/contato com
      terceiros no mundo real). **Aplicar a label `external-blocker`**
-     (`gh issue edit N --add-label external-blocker`, se ainda ausente —
+     (`gh issue edit N --add-label external-blocker`, se ainda ausente — #5462 — **ressalva #6196: `route-issue` (`npx tsx scripts/route-issue.ts --issue N --track bloqueada`) substitui isso quando mergeado; até lá, `gh issue edit` ainda aceitável**)
      #5462/#5533: sem ela a Triagem do Studio não enxerga a issue como
      Bloqueada, mesmo racional do `trade-off-real` no lote de perguntas do
      passo 4) na mesma respiração do comentário na issue registrando
@@ -724,7 +724,7 @@ aqui.
    cara de "decisão pendente": comentário começando com o marcador de
    `formatExecutionBlockMarker` (`scripts/lib/issue-decisions.ts`,
    `{recorded_at, motivo, sessao: "continuo"}`) seguido de prosa explicando
-   o que falta; `gh issue edit N --add-label bloqueio-execucao`; classificar
+   o que falta; **usar `route-issue`** (`npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "bloqueio-execucao"` — #6196: substitui `gh issue edit N --add-label bloqueio-execucao` que nunca tinha chamador no write-path das SKILLs; até #6196 mergear, `gh issue edit` ainda aceitável); classificar
    como (c) bloqueio de execução na tabela do passo 5 abaixo, nunca reabrir
    a pergunta da decisão em si.
    **Tabela obrigatória antes de dormir (#5376 fleet review — forcing
@@ -744,7 +744,7 @@ aqui.
    fecha uma "rodada" com relatório final como overnight/develop — o
    equivalente aqui é o momento logo antes de ir pro passo 6 (dormir): rodar
    `npx tsx scripts/check-state-changed-pending.ts --plan data/continuo/{AAMMDD}/plan.json`.
-   Qualquer `gh issue edit N --add-label {not-this-week|trade-off-real|external-blocker|...}`
+   Qualquer `route-issue` (`npx tsx scripts/route-issue.ts --issue N --track {agendada|destravada}` — #6196: substitui `gh issue edit N --add-label ...` direto que nunca tinha chamador no write-path das SKILLs; até #6196 mergear, `gh issue edit` ainda aceitável como fallback)
    aplicado fora do fluxo normal de decisão (passo 5 acima), ou claim de
    `session-registry` encerrada/removida manualmente durante o ciclo, deve já
    ter sido registrada na hora com `--add-pending {N}` — este é só o ponto
