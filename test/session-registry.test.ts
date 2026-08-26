@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,10 @@ import {
   claimIssue,
   claimIssueCheckAndSet,
   isIssueClaimedByOther,
+  findActiveSessionsOfKind,
+  findStaleSessionsOfKind,
+  hasActiveSessionOfKind,
+  checkSessionsScanHealth,
   acquireMergeLock,
   releaseMergeLock,
   requireKind,
@@ -520,6 +524,123 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
     const sessions = listActiveSessions(root, NOW);
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].stale, false);
+  });
+});
+
+// ─── findActiveSessionsOfKind / hasActiveSessionOfKind (#6277 item 3) ──────
+
+describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclusão contínuo × overnight (#6277)", () => {
+  const NOW = Date.parse("2026-08-26T11:27:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+
+  it("cenário real do #6236: overnight ativo é visível pro contínuo ANTES de reivindicar issue nova", () => {
+    const root = freshRoot();
+    // overnight iniciado 11:20 (claim da #6232 no incidente real).
+    registerSession(root, "overnight", "sess-overnight", {
+      tag: "host-a",
+      startedAt: new Date(NOW - 7 * ONE_MIN_MS).toISOString(),
+    });
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), true);
+    const found = findActiveSessionsOfKind(root, "overnight", undefined, NOW);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].sessionId, "sess-overnight");
+  });
+
+  it("sem sessão do kind → active:false (e a própria sessão do contínuo não conta como overnight)", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    assert.deepEqual(findActiveSessionsOfKind(root, "overnight", undefined, NOW), []);
+  });
+
+  it("overnight STALE não bloqueia — sai de findActive e aparece em findStale", () => {
+    const root = freshRoot();
+    // 3h de heartbeat morto: dentro de MAX_SESSION_AGE_MS, além de SOFT_STALE_MS.
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS).toISOString();
+    registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    const stale = findStaleSessionsOfKind(root, "overnight", undefined, NOW);
+    assert.equal(stale.length, 1, "sessão stale continua VISÍVEL — nunca descartada em silêncio");
+    assert.equal(stale[0].sessionId, "sess-morta");
+  });
+
+  it("excludeSessionId não se enxerga: sessão perguntando pelo próprio kind ignora a si mesma", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "continuo", undefined, NOW), true, "sem exclude, se enxerga");
+    assert.equal(
+      hasActiveSessionOfKind(root, "continuo", "hermes-cron-5d791ef6fc2c", NOW),
+      false,
+      "com exclude, a própria sessão não conta",
+    );
+  });
+
+  it("filtra por kind: overnight ativo não faz develop parecer ativo", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-overnight", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), true);
+    assert.equal(hasActiveSessionOfKind(root, "develop", undefined, NOW), false);
+    assert.equal(hasActiveSessionOfKind(root, "continuo", undefined, NOW), false);
+  });
+
+  it("fail-soft: data/sessions/ inexistente → active:false, nunca lança", () => {
+    const root = freshRoot();
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    assert.deepEqual(findStaleSessionsOfKind(root, "overnight", undefined, NOW), []);
+  });
+
+  /**
+   * #6277 (achado do review): `active: false` tinha DOIS significados
+   * indistinguíveis — "não há sessão" e "não consegui ler o diretório". Para
+   * uma decisão de exclusão mútua, confundir os dois é fail-OPEN: uma falha de
+   * I/O transitória (EACCES/EBUSY no junction do OneDrive) fazia o contínuo
+   * concluir "nenhum overnight rodando" e voltar a duplicar o trabalho dele.
+   * `checkSessionsScanHealth` separa os dois casos para o CLI expor
+   * `uncertain: true` e o chamador poder fail-CLOSED.
+   */
+  describe("checkSessionsScanHealth — separa 'não há sessão' de 'não deu pra ler'", () => {
+    it("diretório ausente é ok:true — clone fresco/sessão cloud é resposta honesta, não degradação", () => {
+      assert.deepEqual(checkSessionsScanHealth(freshRoot()), { ok: true });
+    });
+
+    it("diretório legível e vazio é ok:true", () => {
+      const root = freshRoot();
+      mkdirSync(sessionsDir(root), { recursive: true });
+      assert.deepEqual(checkSessionsScanHealth(root), { ok: true });
+    });
+
+    it("diretório existente mas ILEGÍVEL é ok:false com o código do erro", () => {
+      const root = freshRoot();
+      const dir = sessionsDir(root);
+      mkdirSync(dir, { recursive: true });
+      // Remove o bit de leitura: readdirSync passa a lançar EACCES.
+      chmodSync(dir, 0o000);
+      try {
+        // root ignora permissões de arquivo — se a suíte rodar como root o
+        // readdir sucede e não há o que asserir.
+        if (process.getuid?.() === 0) return;
+        const health = checkSessionsScanHealth(root);
+        assert.equal(health.ok, false, "diretório ilegível não pode passar por 'vazio'");
+        assert.ok(health.error, "o código do erro precisa chegar ao chamador");
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    });
   });
 });
 
