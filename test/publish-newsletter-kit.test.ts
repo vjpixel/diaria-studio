@@ -274,6 +274,11 @@ describe("main() — integração", () => {
       assert.deepEqual((calls[0].body as { subscriber_filter: unknown[] }).subscriber_filter, []);
       assert.equal((calls[0].body as { send_at: string | null }).send_at, null, "draft real é sempre send_at:null");
       assert.equal(
+        (calls[0].body as { public: boolean }).public,
+        true,
+        "#6323: sem public:true o Kit nunca gera public_url com slug (confirmado ao vivo, doc oficial)",
+      );
+      assert.equal(
         readFileSync(join(editionDir, "_internal", "05-edition-url.txt"), "utf8"),
         "https://news.diar.ia.br/p/555",
         "05-edition-url.txt gravado a partir do public_url do broadcast (mesmo artefato que o playbook Beehiiv produz)",
@@ -311,10 +316,11 @@ describe("main() — integração", () => {
       // derivado da edição atual, não os valores antigos do estado — senão
       // uma atualização de conteúdo silenciosamente não atualiza nada de
       // verdade no Kit.
-      const patchBody = calls[0].body as { subject: string; preview_text: string; content: string };
+      const patchBody = calls[0].body as { subject: string; preview_text: string; content: string; public: boolean };
       assert.equal(patchBody.subject, "Modelos se replicam sozinhos");
       assert.match(patchBody.content, /Modelos se replicam sozinhos/);
       assert.notEqual(patchBody.subject, "Assunto antigo");
+      assert.equal(patchBody.public, true, "#6323: PATCH também precisa forçar public:true (draft antigo pode ter sido criado sem)");
       const state = readPublishedState(editionDir);
       assert.equal(state?.broadcast_id, 777);
     } finally {

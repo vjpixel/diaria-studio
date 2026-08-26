@@ -293,6 +293,15 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * `is-claimed`) é o único lugar que trata `stale: true` como sinal
  * NÃO-bloqueante — uma claim de sessão com heartbeat morto há mais de
  * `SOFT_STALE_MS` não impede outra sessão de reivindicar a mesma issue.
+ *
+ * **`SOFT_STALE_MS` é rede de segurança, não o sinal primário de liveness na
+ * prática (#6327).** Desde o beacon (`.claude/hooks/session-beacon.mjs`,
+ * #6303), `lastHeartbeat` de QUALQUER sessão viva — coordenadora ou não —
+ * normalmente já vem fresco por outro caminho, a cada chamada de ferramenta,
+ * sem a skill precisar chamar nada. Este teto de 90min só é o que decide na
+ * prática quando esse caminho falha (beacon desligado, worktree vinculado,
+ * `data/` ausente) — ver a docstring de `heartbeat()` abaixo pro mecanismo
+ * completo e o que quebra em silêncio se o beacon for reduzido/desligado.
  */
 export const SOFT_STALE_MS = 90 * 60 * 1000;
 
@@ -849,6 +858,61 @@ export function registerSession(
  * Atualiza `lastHeartbeat` (+ um patch opcional de `phase`/`active_worktrees`)
  * de uma sessão já registrada. Retorna `false`, nunca lança, quando não há
  * sessão pra atualizar (nunca registrada, já encerrada, ou JSON corrompido).
+ *
+ * **`overnight`/`develop` nunca chamam esta função diretamente — e isso é
+ * esperado, não um buraco (#6327).** `lastHeartbeat` dessas duas sessões
+ * coordenadoras é mantido por um mecanismo DIFERENTE: `.claude/hooks/
+ * session-beacon.mjs` (`PreToolUse`, #6303) escreve no registro EXISTENTE da
+ * sessão (via `findExistingSessionFile`) a cada chamada de ferramenta,
+ * atualizando `lastHeartbeat` como efeito colateral — sem que a skill precise
+ * chamar `heartbeat` em lugar nenhum. Só `continuo` chama este export direto
+ * (2 call sites hoje). A garantia efetiva pras 3: `lastHeartbeat` de QUALQUER
+ * sessão viva fica fresco enquanto ela roda QUALQUER ferramenta (Bash, Edit,
+ * Write, NotebookEdit — o matcher do hook), automaticamente.
+ *
+ * **Isto era falso até o #6303, e uma docstring desatualizada (a versão
+ * anterior deste comentário, e trechos de `decideSessionGc` acima) continuou
+ * descrevendo o estado pré-#6303 depois que o beacon já tinha fechado o
+ * buraco — o #6327 é a correção.** Medido ao vivo em 26/08/2026: uma sessão
+ * `develop` com 171min de vida tinha heartbeat de 0min; uma `overnight` com
+ * 246min tinha heartbeat de 4min — nenhuma das duas jamais chamou
+ * `heartbeat` neste módulo.
+ *
+ * **O acoplamento é implícito e vale a pena nomear (contra-argumento honesto
+ * do #6327, não varrido):** um mecanismo de OBSERVABILIDADE (o beacon) virou
+ * pré-requisito de um mecanismo de CORREÇÃO (claim válida — `SOFT_STALE_MS`
+ * só destrava issue de sessão morta se o heartbeat de fato parar). Isso
+ * quebra em SILÊNCIO se o beacon for desligado (`.claude/settings.json`),
+ * reduzido em frequência, ou não rodar por algum dos guards dele (worktree
+ * vinculado, `data/` ausente) — nesses casos `lastHeartbeat` volta a
+ * congelar em `startedAt` e `SOFT_STALE_MS` volta a ser o único sinal, exatamente
+ * como era antes do #6303, sem nenhum alarme dedicado pra essa regressão.
+ * `test/session-beacon-hook.test.ts` (describe "#6327") trava que o beacon
+ * atualiza `lastHeartbeat` de um registro de kind COORDENADOR (não só
+ * `interactive`) — é o que impede reduzir/desligar o beacon de virar uma
+ * mudança silenciosamente perigosa.
+ *
+ * **Decisão registrada (#6327 critério de aceite 4) — sessão coordenadora
+ * rodando de WORKTREE VINCULADO:** o beacon pula de propósito quando o
+ * próprio processo está num worktree vinculado (`isLinkedWorktree`, #6303
+ * blast radius 3 — existe pra não registrar SUBAGENTES implementadores, que
+ * sempre rodam com `isolation: "worktree"`). Isso também bloquearia o
+ * heartbeat de uma coordenadora que, por algum motivo, rodasse a partir de um
+ * worktree em vez do checkout principal. **Decisão: aceitável ficar stale
+ * nesse caso, sem heartbeat por caminho alternativo.** Três razões: (1) por
+ * convenção do repo (`context/overnight-dispatch-rules.md` item 11, "o
+ * coordenador precisa ver o diff FINAL... existe fora do worktree do
+ * subagente de propósito" — item 3, "Bootstrap do worktree", descreve a
+ * mesma premissa em prosa mais indireta), worktree é SEMPRE do subagente
+ * implementador — a coordenadora roda no checkout principal; uma
+ * coordenadora em worktree vinculado é configuração fora do padrão
+ * documentado, não o caso comum a otimizar; (2) o fallback já existe e
+ * é seguro: `SOFT_STALE_MS` (90min) volta a valer sozinho, exatamente como
+ * antes do #6303 — nenhuma claim fica presa pra sempre, só demora até 90min
+ * a mais pra destravar; (3) adicionar um call site de `heartbeat` só pra esse
+ * caso reabriria o próprio argumento do #6168 que motivou o beacon existir
+ * ("o que depende de skill lembrar, não acontece") — pra um cenário que hoje
+ * não tem instância real conhecida.
  */
 export function heartbeat(
   repoRoot: string,
@@ -1189,6 +1253,127 @@ export function claimIssue(
   options: ClaimIssueOptions = {},
 ): boolean {
   return claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options).ok;
+}
+
+/**
+ * Loga (stderr, nunca lança) que `unclaimIssue` achou o arquivo da PRÓPRIA
+ * sessão em disco mas não conseguiu ler o conteúdo (#6337 fleet review item
+ * 2 — mesma classe de bug que `warnUnreadablePromotionSource`/
+ * `outcome: "promotion-failed-unreadable"` corrigiram em `registerSession`,
+ * #6326). `readJsonSafe` devolve `null` tanto pra "arquivo ausente" quanto
+ * pra "JSON malformado" — SEM logar o segundo caso (comentário no próprio
+ * `readJsonSafe`: "comportamento pré-existente preservado, silencioso").
+ * Colapsar os dois em `no-op-session-missing` faria o chamador (a skill)
+ * tratar uma claim que está ATIVA no disco — só momentaneamente ilegível,
+ * cenário recorrente de sync do OneDrive, ver #5161/#6130/#6326 — como se a
+ * sessão nunca tivesse existido, seguindo em frente sem soltar nada e sem
+ * nenhum sinal de que algo está errado.
+ */
+function warnUnclaimUnreadable(sessionId: string, path: string): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso — unclaim-issue achou o registro de sessionId="${sessionId}" em "${path}" mas ` +
+        "não conseguiu ler o conteúdo (JSON corrompido/parcialmente sincronizado pelo OneDrive). A claim pode " +
+        'estar ATIVA no disco — isto NÃO é "sessão inexistente" (reason: "no-op-unreadable"); investigar antes de ' +
+        "assumir que não há nada pra soltar.\n",
+    );
+  } catch {
+    // Nunca deixar um log de warning quebrar o caminho fail-soft principal.
+  }
+}
+
+/**
+ * Motivo do resultado de `unclaimIssue` (#6317) — espelha `ClaimIssueReason`
+ * no formato, mas o conjunto é o inverso: nenhum caso carrega `blockedBy`
+ * (não existe "outra sessão bloqueando" pra soltar — só a própria sessão
+ * pode `unclaim`, ver docstring de `unclaimIssue`). `no-op-unreadable`
+ * (#6337 fleet review item 2) é distinto de `no-op-session-missing` de
+ * propósito — ver `warnUnclaimUnreadable` acima pro racional.
+ */
+export type UnclaimIssueReason = "unclaimed" | "no-op-not-claimed" | "no-op-session-missing" | "no-op-unreadable";
+
+export interface UnclaimIssueResult {
+  ok: boolean;
+  reason: UnclaimIssueReason;
+}
+
+/**
+ * Inverso de `claimIssueCheckAndSet` (#6317) — remove `issueNumber` de
+ * `claimed_issues` da PRÓPRIA sessão (`kind`+`tag`+`sessionId`) e regrava com
+ * o mesmo `writeJsonSafe` atômico. Existe porque `claim-issue` não tinha
+ * inverso: a única forma de soltar uma issue era `end`, que encerra a sessão
+ * inteira e solta TODAS — inviável para uma sessão longa que termina uma
+ * issue no meio de outras ainda em voo (#6317, evidência 1 do #6168
+ * acontecendo de novo).
+ *
+ * **Só remove da própria sessão — nunca mexe na claim de outra** (mesma
+ * disciplina de `releaseMergeLock`, que recusa liberar lock alheio). Não há
+ * parâmetro `force`/`sessionId` alheio nesta função de propósito: não existe
+ * caso de uso legítimo de uma sessão soltar a claim de outra — isso é
+ * responsabilidade de `end` (a sessão dona morreu) ou de staleness
+ * (`SOFT_STALE_MS`) destravando sozinha. **O que de fato garante "só a
+ * própria sessão"** não é o TIPO de `sessionId` (é `string` crua, igual
+ * `claimIssueCheckAndSet`/`registerSession`/`heartbeat` — deliberadamente não
+ * branded aqui pra não criar inconsistência nova só neste ponto do módulo) —
+ * é `.claude/hooks/inject-session-id.mjs` injetando o `session_id` REAL do
+ * payload do harness antes do comando rodar; um chamador que forjasse
+ * `--session-id` manualmente contornaria isso, mas nenhum call site
+ * documentado faz isso (mesma confiança que todo o resto do módulo deposita
+ * na injeção automática).
+ *
+ * Quatro desfechos, nenhum deles lança:
+ * - Sessão do próprio `sessionId`/`tag` NUNCA existiu (arquivo ausente) →
+ *   `{ ok: false, reason: "no-op-session-missing" }`.
+ * - Arquivo EXISTE mas não pôde ser lido (JSON corrompido/parcial — comum
+ *   durante sync do OneDrive) → `{ ok: false, reason: "no-op-unreadable" }`,
+ *   com aviso em stderr (`warnUnclaimUnreadable`) — distinto do caso acima de
+ *   propósito (#6337 fleet review item 2): a claim pode estar ATIVA no disco,
+ *   só momentaneamente ilegível, e reportar "sessão inexistente" faria o
+ *   chamador seguir em frente sem soltar nada e sem nenhum sinal de alerta —
+ *   exatamente a classe de bug que `outcome: "promotion-failed-unreadable"`
+ *   corrigiu em `registerSession` (#6326).
+ * - Issue não estava em `claimed_issues` desta sessão → **no-op honesto**,
+ *   `{ ok: false, reason: "no-op-not-claimed" }` — nunca finge sucesso (mesmo
+ *   padrão que `endSession` adotou no #5797: distinguir "removeu" de "não
+ *   havia o que remover", nunca reportar `ok: true` sem uma mudança real de
+ *   estado em disco).
+ * - Issue estava reivindicada → remove, regrava, `{ ok: true, reason:
+ *   "unclaimed" }`.
+ *
+ * **Não é compare-and-swap** — herda a mesma limitação de lost-update já
+ * documentada em `writeJsonSafe` (o beacon escreve neste MESMO arquivo a
+ * cada chamada de ferramenta da sessão): entre a leitura e a escrita deste
+ * `unclaimIssue`, um write concorrente do beacon pode perder campos. Mesmo
+ * risco residual que o resto do módulo aceita nesse arquivo, não uma
+ * regressão nova introduzida aqui.
+ */
+export function unclaimIssue(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issueNumber: number,
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+): UnclaimIssueResult {
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current) {
+    if (existsSync(path)) {
+      warnUnclaimUnreadable(sessionId, path);
+      return { ok: false, reason: "no-op-unreadable" };
+    }
+    return { ok: false, reason: "no-op-session-missing" };
+  }
+
+  const claimed = current.claimed_issues ?? [];
+  if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };
+
+  writeJsonSafe(path, {
+    ...current,
+    claimed_issues: claimed.filter((n) => n !== issueNumber),
+    lastHeartbeat: now,
+  });
+  return { ok: true, reason: "unclaimed" };
 }
 
 /**
@@ -1564,12 +1749,24 @@ export interface SessionGcResult {
  * 4 pra eles. Fechado sem exigir mudança nas skills: `.claude/hooks/
  * inject-session-id.mjs` (o mesmo hook que já injeta `--session-id`
  * automaticamente, #5156) agora também injeta `--pid {process.ppid}` em
- * toda chamada standalone de `register` sem a flag. `overnight`/`develop`
- * ainda nunca chamam `heartbeat` (só `continuo` o faz), então
- * `lastHeartbeat === startedAt` continua verdadeiro a sessão inteira pra
- * eles — mas isso não impede mais o branch 3: a checagem de `pid` roda
- * independente de quão stale o heartbeat esteja (só que, desde #6294, só o
- * lado VIVO desse branch pesa na decisão).
+ * toda chamada standalone de `register` sem a flag — `process.ppid` do
+ * hook É o PID da sessão Claude Code corrente, porque o harness spawna o
+ * hook como filho direto dela a cada `PreToolUse`. `overnight`/`develop`
+ * ainda nunca chamam `heartbeat` DIRETAMENTE — mas **isto não significa
+ * `lastHeartbeat === startedAt` a sessão inteira** (correção do #6327: o
+ * texto desta seção, até aqui, afirmava exatamente isso, e a medição ao vivo
+ * mostrou o oposto — ver a docstring de `heartbeat` acima pro mecanismo
+ * completo). Na prática o branch 3 (PID vivo) raramente chega a ser
+ * exercitado pra esses 2 kinds porque o branch 1 (heartbeat recente) já
+ * resolve primeiro — o beacon mantém `lastHeartbeat` fresco o tempo todo que
+ * a sessão está ativa chamando QUALQUER ferramenta, então o branch 3
+ * continua existindo como rede de segurança (heartbeat MESMO ASSIM stale —
+ * beacon desligado, worktree vinculado, `data/` ausente), não como o
+ * caminho comum que este texto descrevia antes — e é nesse caminho de rede
+ * de segurança que a checagem de `pid` continua rodando independente de
+ * quão stale o heartbeat esteja (só que, desde #6294, só o lado VIVO desse
+ * branch pesa sozinho na decisão — "pid morto" não é mais sinal positivo de
+ * remoção, ver docstring de `decideSessionGc` abaixo).
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
@@ -2356,6 +2553,38 @@ function main(): void {
         }
         break;
       }
+      case "unclaim-issue": {
+        const kind = requireKind(values.kind);
+        const sessionId = requireSessionId(values);
+        const issue = Number(values.issue);
+        if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
+        const result = unclaimIssue(repoRoot, kind, sessionId, issue);
+        switch (result.reason) {
+          case "unclaimed":
+            process.stdout.write(`session-registry: unclaim-issue ok (issue #${issue} liberada)\n`);
+            break;
+          case "no-op-not-claimed":
+            process.stdout.write(
+              `session-registry: unclaim-issue no-op (issue #${issue} não estava reivindicada por esta sessão)\n`,
+            );
+            process.exitCode = 1;
+            break;
+          case "no-op-session-missing":
+            process.stdout.write("session-registry: unclaim-issue no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+          case "no-op-unreadable":
+            process.stdout.write(
+              "session-registry: unclaim-issue no-op — registro EXISTE mas está ILEGÍVEL agora (JSON corrompido/" +
+                "parcialmente sincronizado pelo OneDrive). A claim pode estar ATIVA — isto NÃO é 'sessão " +
+                "inexistente'; investigar antes de assumir que não há nada pra soltar (aviso já emitido em " +
+                "stderr).\n",
+            );
+            process.exitCode = 1;
+            break;
+        }
+        break;
+      }
       case "is-claimed": {
         const issue = Number(values.issue);
         if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
@@ -2516,9 +2745,11 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|" +
-            "active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
+            "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
             "merge-lock-release|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
+            "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
+            "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
             "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
