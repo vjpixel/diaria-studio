@@ -280,7 +280,12 @@ describe("orchestrator-prompt (#634)", () => {
       // kit; e a Pre-condição de sentinel Stage 5 ganhou a explicação de
       // por que `assertSentinel` já lê o path certo automaticamente).
       // Arquivo foi a 653 linhas. Teto bumped de 600→675 com headroom pequeno.
-      "orchestrator-stage-6.md": 675,
+      // #6098 (26/08): +28 linhas do clique automatizado em Schedule — a
+      // sequência de 3 cliques, o fallback manual obrigatório e o exit 3 novo
+      // de `verify-scheduled-post.ts`. Teto 675→700. Cabe no prompt porque é
+      // o passo que o orchestrator EXECUTA; virar link externo o tornaria
+      // invisível justamente pra quem precisa segui-lo.
+      "orchestrator-stage-6.md": 700,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

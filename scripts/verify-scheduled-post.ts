@@ -38,7 +38,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { getArg, parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -212,6 +212,28 @@ export function verifyScheduledPost(
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
+/**
+ * O agendamento confirmado está num INSTANTE diferente do pedido?
+ *
+ * Exportada de propósito (#6098): o teste importa ESTA função, não uma cópia
+ * da regra. Um teste que reimplementa a lógica passa mesmo quando o script
+ * quebra — foi o que aconteceu na 1ª versão, e a sabotagem provou.
+ *
+ * `undefined` (sem `--expect-scheduled-at`) ⇒ nunca diverge: o caminho
+ * manual mantém o comportamento anterior ao #6098.
+ *
+ * Data impossível de parsear ⇒ nunca diverge. Falhar aqui trocaria um
+ * agendamento bom por alarme falso; ausência de comparação possível é
+ * silêncio, não acusação.
+ */
+export function divergeDoEsperado(esperado: string | undefined, recebido: string | null): boolean {
+  if (esperado === undefined) return false;
+  const p = Date.parse(esperado);
+  const r = recebido ? Date.parse(recebido) : Number.NaN;
+  if (!Number.isFinite(p) || !Number.isFinite(r)) return false;
+  return p !== r;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const postId = args.values["post-id"];
@@ -252,6 +274,10 @@ async function main(): Promise<void> {
   }
 
   const now = new Date();
+  // #6098 — opcional por back-compat: sem ele, o comportamento é o de
+  // sempre (só confere `state`). Quem automatiza o clique DEVE passar.
+  const expectScheduledAt = getArg(process.argv.slice(2), "expect-scheduled-at");
+
   const result = verifyScheduledPost(post, editionDir, now);
 
   // Emitir diagnóstico pra stderr (visível ao top-level e ao editor).
@@ -264,6 +290,25 @@ async function main(): Promise<void> {
         `   (regra "publicação manual requer refresh-dedup" do CLAUDE.md)\n\n`,
     );
   } else if (result.state === "scheduled") {
+    // #6098 — quando o clique em Schedule passa a ser AUTOMATIZADO, ninguém
+    // lê a data no modal. `state === "scheduled"` deixa de ser suficiente:
+    // clicar a opção errada ("Next usual send time" quando o alvo era outro
+    // dia/horário) produz um agendado perfeitamente válido, no dia errado.
+    //
+    // Mesma correção que o #6162 fez no canal Kit: comparar INSTANTES, não
+    // só existência. Com clique manual o editor via a data; automatizado,
+    // este é o único ponto que vê.
+    if (divergeDoEsperado(expectScheduledAt, result.scheduled_at)) {
+        process.stderr.write(
+          `\n⚠️  HORÁRIO DIVERGENTE — o post está agendado, mas para ${result.scheduled_at},\n` +
+            `   e o esperado era ${expectScheduledAt}.\n` +
+            `   Provável opção errada escolhida no modal de Schedule.\n` +
+            `   O post NÃO está no ar ainda — corrigir o agendamento no painel Beehiiv.\n\n`,
+        );
+        process.stdout.write(JSON.stringify({ ...result, expected_scheduled_at: expectScheduledAt }, null, 2) + "\n");
+      process.exitCode = 3;
+      return;
+    }
     process.stderr.write(
       `[verify-scheduled-post] OK — post agendado para ${result.scheduled_at} ✓\n`,
     );
@@ -279,6 +324,8 @@ async function main(): Promise<void> {
   //   0 = scheduled (agendado corretamente)
   //   1 = published (envio imediato — requer ação)
   //   2 = unknown/draft ou erro (já tratado acima)
+  //   3 = scheduled, mas em horário DIFERENTE do esperado (#6098) — só
+  //       possível com --expect-scheduled-at
   if (result.state === "scheduled") {
     process.exitCode = 0;
     return;

@@ -194,21 +194,31 @@ NAO clique em "Publish now" — isso dispara envio imediato pra toda a audiencia
 
 Navegar para `draft_url` no Chrome e executar o passo de Schedule do Beehiiv conforme documentado em `context/publishers/beehiiv-playbook.md` §9 (Verificar slug pos-Schedule) e §10 (Verificar estado pos-Schedule).
 
-**Ao receber confirmacao do editor que agendou ("agendado", "ok", "pronto" ou equivalente):**
+**Clique AUTOMATIZADO (#6098, decisao do editor 25/08).** O gate humano de §6c continua onde esta — o que deixou de ser manual e o CLIQUE, nao a aprovacao. Depois da aprovacao, executar via `computer.left_click`:
+
+1. botao **Schedule** (pagina Review) → abre o modal "When should this publish?"
+2. **opcao de horario correspondente ao `{scheduled_at}` aprovado no gate** — NAO assumir que "Next usual send time" e o alvo
+3. botao **Schedule** do modal → toast "Your post is scheduled!"
+
+**Fallback pro manual, sempre:** se qualquer um dos 3 cliques falhar (modal nao abre, nao fecha, elemento nao encontrado), parar e pedir o clique ao editor com o banner pre-Schedule acima. Falha de clique NUNCA vira falha de edicao.
 
 **Verificar estado via `scripts/verify-scheduled-post.ts` (#573, #2074 — obrigatorio):**
 
 ```bash
 npx tsx scripts/verify-scheduled-post.ts \
   --post-id {post_id} \
-  --edition-dir {EDITION_DIR}/
+  --edition-dir {EDITION_DIR}/ \
+  --expect-scheduled-at {scheduled_at_iso}
 ```
+
+⚠️ **`--expect-scheduled-at` e OBRIGATORIO no caminho automatizado (#6098).** Com clique manual o editor lia a data no modal; automatizado, esta flag e o unico ponto que ve. Sem ela, clicar a opcao errada no passo 2 produz um agendamento perfeitamente valido **no dia errado**, e o exit 0 diz que deu tudo certo.
 
 | Exit | Estado | Acao |
 |------|--------|------|
-| `0` | `scheduled` — agendado corretamente | Confirmar horario ao editor: "Agendado para {scheduled_at} ✓" |
+| `0` | `scheduled` no horario esperado | Confirmar ao editor: "Agendado para {scheduled_at} ✓" |
 | `1` | `published` — envio imediato detectado | Sequencia de reconciliacao abaixo |
 | `2` | `unknown` / `draft` / erro | Alertar editor; verificar manualmente no dashboard Beehiiv |
+| `3` | `scheduled` no horario **ERRADO** (#6098) | Opcao errada no modal. O post NAO esta no ar — corrigir o agendamento no painel e re-verificar |
 
 **Sequencia de reconciliacao (exit 1 — publicado imediato):**
 

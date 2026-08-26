@@ -849,11 +849,29 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 ### 6. Salvar como rascunho
 
-- **NÃO clicar em Schedule, Publish, ou Send.**
+- **NÃO clicar em Publish ou Send.** (Schedule passou a ser automatizado — ver nota abaixo.)
 - Clicar em "Save draft" / "Save as draft".
 - Capturar `draft_url` da barra de endereço (deve conter `/posts/{id}/edit`).
 
-**Por que o playbook para no draft (não tenta Schedule via automação)** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão: **Schedule é sempre manual**, mesmo se o resto do flow rodar 100% automático — não vale gastar mais ciclos tentando contornar.
+**Schedule automatizado desde #6098 (26/08/2026), com fallback manual.**
+
+Medido ao vivo na edição 260825: a sequência de TRÊS cliques funciona.
+
+1. `computer.left_click` no botão **Schedule** (página Review) → abre o modal *"When should this publish?"*
+2. clique na **opção de horário** desejada
+3. clique no **Schedule do modal** → toast *"Your post is scheduled!"*, URL vira `?scheduled=true`
+
+Confirmado no backend (`get_post` + `verify-scheduled-post.ts`): `status: "scheduled"`, `scheduled_at` batendo. Não foi falso-positivo de UI.
+
+⚠️ **O passo 2 é o perigoso.** A opção *"Next usual send time"* pode não ser o alvo da edição. Com clique manual o editor lê a data no modal; automatizado, ninguém lê — por isso `verify-scheduled-post.ts --expect-scheduled-at` é **obrigatório** no caminho automatizado (exit 3 = agendado no horário ERRADO). Sem essa flag, um agendamento no dia errado passa como sucesso.
+
+**Fallback nunca opcional:** se qualquer um dos 3 cliques falhar, ou a verificação não confirmar, cair pro fluxo manual — pedir o clique ao editor. Falha de clique nunca vira falha de edição.
+
+---
+
+**Nota histórica — por que o playbook dizia o oposto por 3 meses** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão registrada à época: *"Schedule é sempre manual, não vale gastar mais ciclos tentando contornar"*.
+
+**O que mudou, e a hipótese que sobra.** O #6098 refez o teste 3 meses depois e funcionou. Duas explicações possíveis, nenhuma investigada a fundo: (a) a Beehiiv relaxou o guard de user-activation; (b) o guard nunca cobriu o clique DENTRO do modal — só o botão que o abre —, e o #1198 pode não ter testado exatamente a sequência de 3 cliques acima. A nota fica porque a conclusão anterior era razoável com a evidência de então: o valor dela não é estar certa, é registrar que "testamos 5 mecanismos e nenhum funcionou" foi verdade em maio.
 
 ### 6.1. Gravar 05-edition-url.txt (#2454)
 
