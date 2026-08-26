@@ -295,6 +295,61 @@ export interface WorkerDomainDetachOp {
   domainId: string;
 }
 
+/** Entrada mínima de Workers Custom Domain que este módulo precisa ler. */
+export interface CustomDomainLike {
+  id: string;
+  hostname: string;
+}
+
+/**
+ * Todos os Custom Domains que casam o apex. Existe para que o caller NUNCA
+ * chame `.find()` cru — a mesma disciplina que `buildRollbackDnsPlan` aplica
+ * a registros A/AAAA (achado do silent-failure-hunter na PR #6364).
+ *
+ * A assimetria que isto elimina: a PR endureceu duplicata de DNS para erro
+ * duro, mas deixou a busca de Custom Domain em `.find()` de primeiro match —
+ * mesma classe de bug, outro recurso. Se dois bindings casassem o apex
+ * (estado de dashboard perdido, rodada anterior que falhou no meio), o
+ * `--rollback` desanexaria só o primeiro e deixaria o segundo no ar, com o
+ * apex ainda roteando pro Worker enquanto o script diz "restaurado".
+ *
+ * **Provavelmente inalcançável na prática** — espera-se que a Cloudflare
+ * imponha unicidade de hostname no attach. Isto é defesa em profundidade
+ * barata, não correção de bug demonstrado; a alternativa considerada era
+ * documentar a isenção, e guardar custa menos que explicar por que não.
+ */
+export function findApexCustomDomains<T extends CustomDomainLike>(
+  domains: readonly T[],
+  hostname: string = APEX_HOSTNAME,
+): T[] {
+  return domains.filter((d) => d.hostname === hostname);
+}
+
+/**
+ * O ÚNICO Custom Domain do apex, ou `null` se não houver nenhum.
+ *
+ * Lança se houver mais de um — mesmo racional (e mesma forma de mensagem) do
+ * guard de duplicata de `buildRollbackDnsPlan`: não dá pra saber qual é o
+ * "certo" sem revisão humana, e desanexar N-1 em silêncio é pior que travar.
+ * Use em caminhos de MUTAÇÃO (`--rollback`); `--status` deve reportar a
+ * duplicata em vez de lançar, porque a função dele é justamente mostrar o
+ * estado, inclusive um estado anômalo.
+ */
+export function selectSingleApexCustomDomain<T extends CustomDomainLike>(
+  domains: readonly T[],
+  hostname: string = APEX_HOSTNAME,
+): T | null {
+  const matches = findApexCustomDomains(domains, hostname);
+  if (matches.length > 1) {
+    throw new Error(
+      `apex-cutover: ${matches.length} Workers Custom Domains encontrados para ${hostname} ` +
+        `(esperado no máximo 1) — não dá pra saber qual desanexar sem revisão humana. ` +
+        `Rode --status, resolva a duplicata no painel da Cloudflare, e repita --rollback.`,
+    );
+  }
+  return matches[0] ?? null;
+}
+
 /**
  * Plano do `--cutover`: um único attach de Workers Custom Domain (ver
  * docstring do módulo pro porquê deste mecanismo). Não gera NENHUMA operação

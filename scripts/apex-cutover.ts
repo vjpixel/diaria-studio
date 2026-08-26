@@ -105,6 +105,8 @@ import {
   verifyDnsRestored,
   verifyCustomDomainDetached,
   verifyCutoverAttached,
+  findApexCustomDomains,
+  selectSingleApexCustomDomain,
 } from "./lib/apex-cutover.ts";
 
 loadProjectEnv();
@@ -399,7 +401,18 @@ export async function runStatus(cfg: Config, fetchFn: typeof fetch = fetch): Pro
     fetchWorkerRoutes(ZONE_ID, cfg.token, fetchFn),
     fetchWorkerCustomDomains(cfg.accountId, cfg.token, fetchFn),
   ]);
-  const apexCustomDomain = customDomainsAll.find((d) => d.hostname === APEX_HOSTNAME) ?? null;
+  // `--status` REPORTA duplicata em vez de lançar: a função dele é mostrar o
+  // estado, inclusive um estado anômalo que o operador precisa ver antes de
+  // decidir. Quem lança é o caminho de mutação (`--rollback`).
+  const apexCustomDomains = findApexCustomDomains(customDomainsAll);
+  const apexCustomDomain = apexCustomDomains[0] ?? null;
+  if (apexCustomDomains.length > 1) {
+    console.error(
+      `${LOG_PREFIX} ATENÇÃO: ${apexCustomDomains.length} Workers Custom Domains casam ` +
+        `${APEX_HOSTNAME} (esperado no máximo 1). --rollback vai RECUSAR nesse estado. ` +
+        `Resolva a duplicata no painel da Cloudflare antes de qualquer --apply.`,
+    );
+  }
 
   const workerProbes: Record<string, number | null> = {};
   for (const path of STATUS_PROBE_PATHS) {
@@ -524,7 +537,9 @@ export async function runRollback(cfg: Config, apply: boolean, fetchFn: typeof f
     fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
     fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
   ]);
-  const apexCustomDomain = customDomainsAll.find((d) => d.hostname === APEX_HOSTNAME) ?? null;
+  // Lança se houver mais de um Custom Domain casando o apex — mesmo racional
+  // do guard de duplicata de DNS abaixo, e ANTES de qualquer mutação.
+  const apexCustomDomain = selectSingleApexCustomDomain(customDomainsAll);
   const actualRecords = [...aRecords, ...aaaaRecords];
 
   // buildRollbackPlan (via buildRollbackDnsPlan) lança se houver mais de 1

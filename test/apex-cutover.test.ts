@@ -37,6 +37,8 @@ import {
   verifyDnsRestored,
   verifyCustomDomainDetached,
   verifyCutoverAttached,
+  findApexCustomDomains,
+  selectSingleApexCustomDomain,
 } from "../scripts/lib/apex-cutover.ts";
 
 const OK_ROOT_BODY = `<html><head><title>diar.ia.br</title></head><body></body></html>`;
@@ -494,5 +496,41 @@ describe("Constantes de conteúdo esperado (#6364, item 1) — sanidade", () => 
   it("EXPECTED_SUBSCRIBE_REDIRECT_HOST é um host, sem protocolo/path", () => {
     assert.equal(EXPECTED_SUBSCRIBE_REDIRECT_HOST.includes("://"), false);
     assert.equal(EXPECTED_SUBSCRIBE_REDIRECT_HOST.includes("/"), false);
+  });
+});
+
+describe("Custom Domain do apex — duplicata tratada como o DNS (P3 silent-failure-hunter, PR #6364)", () => {
+  const OTHER = { id: "cd-outro", hostname: "especial.diar.ia.br" };
+  const APEX_1 = { id: "cd-1", hostname: APEX_HOSTNAME };
+  const APEX_2 = { id: "cd-2", hostname: APEX_HOSTNAME };
+
+  it("findApexCustomDomains devolve só os que casam o apex", () => {
+    assert.deepEqual(findApexCustomDomains([OTHER, APEX_1]), [APEX_1]);
+    assert.deepEqual(findApexCustomDomains([OTHER]), []);
+  });
+
+  it("selectSingleApexCustomDomain: nenhum → null (caminho normal pré-cutover)", () => {
+    assert.equal(selectSingleApexCustomDomain([OTHER]), null);
+    assert.equal(selectSingleApexCustomDomain([]), null);
+  });
+
+  it("selectSingleApexCustomDomain: exatamente 1 → devolve ele", () => {
+    assert.deepEqual(selectSingleApexCustomDomain([OTHER, APEX_1]), APEX_1);
+  });
+
+  it("selectSingleApexCustomDomain: 2 casando o apex → LANÇA, nunca escolhe 'o primeiro'", () => {
+    // Sem este guard, `--rollback` desanexaria só `cd-1` e deixaria `cd-2`
+    // no ar — o apex seguiria roteando pro Worker enquanto o script diz
+    // "restaurado e verificado". Mesma classe do guard de duplicata de DNS,
+    // que esta mesma PR endureceu para registros A/AAAA.
+    assert.throws(
+      () => selectSingleApexCustomDomain([APEX_1, APEX_2, OTHER]),
+      (e: Error) => e.message.includes("2 Workers Custom Domains") && e.message.includes(APEX_HOSTNAME),
+    );
+  });
+
+  it("a mensagem cita a contagem REAL, não um literal fixo", () => {
+    const three = [APEX_1, APEX_2, { id: "cd-3", hostname: APEX_HOSTNAME }];
+    assert.throws(() => selectSingleApexCustomDomain(three), /3 Workers Custom Domains/);
   });
 });
