@@ -189,6 +189,33 @@ const EXECUTION_SELF_SUFFICIENT =
 const NEGATION_LOOKBEHIND =
   "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|sem(?!\\s+d[úu]vida))\\s(?:\\S+\\s){0,2})";
 
+/**
+ * Guard de negação pra padrões de FRASE ÚNICA (#6258) — `deferred-vague`,
+ * `trade-off-real` e `external-blocker` casam um substantivo/expressão isolada
+ * ("bloqueio externo", "aguardando", "trade-off real"), sem a estrutura de
+ * dois fatores capacidade×impedimento que os grupos `execution-guard`/
+ * `on-hold` usam. Confirmado ao vivo na rodada 260826 (#6258): "Nenhum
+ * bloqueio externo — overnight contínuo." e "Não há bloqueio externo aqui."
+ * casavam `external-blocker` — o detector lia só a afirmação, não a negação
+ * que vinha 0-1 palavra antes dela.
+ *
+ * Janela DELIBERADAMENTE mais curta que `NEGATION_LOOKBEHIND` (0-1 token,
+ * não 0-2): a armadilha simétrica é "sem credencial, é bloqueio externo" —
+ * um bloqueio REAL, apesar do `sem`, porque o `sem` nega "credencial" (a
+ * causa), não "bloqueio externo" (a consequência afirmada logo depois do
+ * "é"). Com janela 0-2, `sem credencial, é ` (2 tokens: "credencial," e "é")
+ * cai dentro da distância e o guard engoliria esse achado verdadeiro — o
+ * efeito perverso que a #6258 pede pra evitar (falso negativo custa mais
+ * aqui: enterra issue trabalhável). Janela 0-1 cobre os dois casos reais
+ * observados ("Nenhum bloqueio externo" = 0 tokens; "Não há bloqueio externo"
+ * = 1 token, "há") sem alcançar o token extra ("é") que a armadilha precisa.
+ * Mesma lista de negação de `NEGATION_LOOKBEHIND`, mais `inexistente` e
+ * `zero` (vocabulário citado na issue, sem caso real ainda — inclusão
+ * barata, mesmo padrão de completude do catálogo acima).
+ */
+const SIMPLE_NEGATION_LOOKBEHIND =
+  "(?<!\\b(?:n[ãa]o|nenhum[ao]?s?|nada|inexistente|zero|sem(?!\\s+d[úu]vida))\\s(?:\\S+\\s){0,1})";
+
 /** Distância máxima entre os dois fatores — aproxima "mesma frase" sem
  * atravessar ponto final nem quebra de linha. */
 const TWO_FACTOR_WINDOW = "[^.\\n]{0,60}";
@@ -242,7 +269,14 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
       // `execution-guard` abaixo) com um achado de destino errado. Prosa
       // legítima ("aguardando pré-requisito", "aguardando até segunda") segue
       // casando: o lookahead barra só o hífen do nome do marcador.
-      /aguardando(?!-ate)/i,
+      //
+      // `aguardando` leva o guard de negação (#6258) — "sem aguardando" não é
+      // português natural, mas "nada aguardando" ("nada está aguardando
+      // decisão") é. As outras 4 frases já embutem `n[ãa]o`/negação como
+      // parte do PRÓPRIO sinal de deferimento ("não despachar", "não
+      // atendido", "ainda não é a hora") — aplicar o guard nelas negaria a
+      // negação que É o sinal, então ficam de fora de propósito.
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}aguardando(?!-ate)`, "i"),
       /n[ãa]o despachar/i,
       /pr[ée]-requisito(s)? (ainda )?n[ãa]o atendido/i,
       /ainda n[ãa]o (é|eh) a hora/i,
@@ -254,18 +288,28 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     id: "trade-off-real",
     description:
       "Comentário identifica trade-off editorial/produto real sem a label trade-off-real aplicada.",
-    textPatterns: [/trade-?off[\s-]*real/i],
+    textPatterns: [new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}trade-?off[\\s-]*real`, "i")],
     expectedLabels: ["trade-off-real"],
   },
   {
     id: "external-blocker",
     description:
       "Comentário indica bloqueio externo (conta de terceiro, credencial, acesso a painel) sem label de bloqueio correspondente.",
+    // Guard de negação (#6258, achado ao vivo na rodada 260826): sem ele,
+    // "Nenhum bloqueio externo — overnight contínuo." e "Não há bloqueio
+    // externo aqui." casavam do mesmo jeito que "Tem bloqueio externo: falta
+    // credencial do painel." — o detector lia a afirmação sem olhar a
+    // negação logo antes. Ver `SIMPLE_NEGATION_LOOKBEHIND` acima pra janela
+    // e o caso-armadilha ("sem credencial, é bloqueio externo", que É um
+    // bloqueio real apesar do `sem`).
     textPatterns: [
-      /bloqueio externo/i,
-      /falta acesso a (um |uma )?(painel|conta)/i,
-      /conta de terceiro/i,
-      /credencial (pendente|faltando|necess[áa]ria)/i,
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}bloqueio externo`, "i"),
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}falta acesso a (um |uma )?(painel|conta)`, "i"),
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}conta de terceiro`, "i"),
+      new RegExp(
+        `${SIMPLE_NEGATION_LOOKBEHIND}credencial (pendente|faltando|necess[áa]ria)`,
+        "i",
+      ),
     ],
     expectedLabels: ["external-blocker", "kit-migration", "beehiiv", "bloqueio-execucao"],
   },

@@ -553,3 +553,98 @@ describe("execution-guard — quantificadores continuam limitados (#5958)", () =
     assert.ok(ms < 2_000, `varredura levou ${ms.toFixed(0)}ms — quantificador virou ilimitado?`);
   });
 });
+
+describe("external-blocker/deferred-vague — guard de negação (#6258)", () => {
+  // Trechos REAIS da rodada `/diaria-overnight` 260826 (issue #6258) — não
+  // construídos. Os três primeiros são o achado que motivou a issue: o
+  // detector casava `external-blocker` na frase que NEGA bloqueio externo, o
+  // que roteia a issue pra Bloqueada (`classifyExecTrack`) e a tira da fila
+  // autônoma por engano — o efeito perverso é que a negação disciplinada
+  // ("nenhum bloqueio externo") é justamente como uma sessão autônoma
+  // registra que avaliou e não achou impedimento.
+  it("#6210 real: 'Nenhum bloqueio externo. Aguardando review independente antes de merge.' não gera external-blocker", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6210,
+      labels: [],
+      commentBodies: [
+        "…3 commits, 0 reviews, test FAIL). Nenhum bloqueio externo. Aguardando review independente antes de merge.",
+      ],
+    });
+    assert.ok(
+      !findings.some((f) => f.patternId === "external-blocker"),
+      "negação direta não deveria casar external-blocker",
+    );
+  });
+
+  it("#6184 real: 'Nenhum bloqueio externo — overnight contínuo.' não gera achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6184,
+      labels: [],
+      commentBodies: [
+        "…Próximo wake: implementar branch e testes. Nenhum bloqueio externo — overnight contínuo.",
+      ],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it("'Não há bloqueio externo aqui.' (1 token de distância) também não gera achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 1,
+      labels: [],
+      commentBodies: ["Não há bloqueio externo aqui."],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it("afirmação continua gerando achado: 'Tem bloqueio externo: falta credencial do painel.'", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 2,
+      labels: [],
+      commentBodies: ["Tem bloqueio externo: falta credencial do painel."],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "external-blocker");
+  });
+
+  it("armadilha simétrica: 'sem credencial, é bloqueio externo' CONTINUA gerando achado (o `sem` nega a credencial, não o bloqueio)", () => {
+    // Risco espelhado do guard: uma janela larga demais engoliria este
+    // achado VERDADEIRO só porque a palavra `sem` aparece antes na frase —
+    // aqui `sem` nega "credencial" (a causa), não "bloqueio externo" (a
+    // consequência afirmada logo após "é"). Ver `SIMPLE_NEGATION_LOOKBEHIND`
+    // em decision-label-drift.ts pra por que a janela é 0-1 token, não 0-2.
+    const findings = detectLabelDrift({
+      issueNumber: 3,
+      labels: [],
+      commentBodies: ["sem credencial, é bloqueio externo"],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "external-blocker");
+  });
+
+  it("guard também cobre trade-off-real e o 'aguardando' de deferred-vague", () => {
+    assert.deepEqual(
+      detectLabelDrift({
+        issueNumber: 4,
+        labels: [],
+        commentBodies: ["Nenhum trade-off real aqui, decisão óbvia."],
+      }),
+      [],
+    );
+    assert.deepEqual(
+      detectLabelDrift({
+        issueNumber: 5,
+        labels: [],
+        commentBodies: ["Não há nada aguardando decisão nesta issue."],
+      }),
+      [],
+    );
+    // Afirmação segue casando pros dois.
+    const tradeOff = detectLabelDrift({
+      issueNumber: 6,
+      labels: [],
+      commentBodies: ["Isto é trade-off real de produto."],
+    });
+    assert.equal(tradeOff.length, 1);
+    assert.equal(tradeOff[0].patternId, "trade-off-real");
+  });
+});
