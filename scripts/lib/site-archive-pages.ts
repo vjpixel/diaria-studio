@@ -149,6 +149,13 @@ export function buildArchivePageHtml(post: ArchivePost): string {
     html = html.replace(/<html[^>]*>/i, (full) => `${full}<head>${headInject}</head>`);
   }
 
+  // Guard (#6210): rejeita qualquer merge tag não resolvida antes de publicar.
+  verifyNoUnresolvedMergeTags(html, post.slug);
+
+  // Sanitiza links de voto com merge tag crua — substitui por valor vazio
+  // até a decisão editorial sobre o voto na superfície web (#6210).
+  html = html.replace(/email=\{\{email\}\}/gi, "email=");
+
   return html;
 }
 
@@ -209,4 +216,18 @@ export function buildSitemapXml(entries: SitemapEntry[]): string {
     })
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
+}
+
+/** Guard (#6210): rejeita HTML com merge tag não resolvida (ex: `{{email}}` literal).
+ * O vazamento das 87 páginas do acervo vem do `content.free.web` da Beehiiv —
+ * a tag chega crua, e sem esta verificação a página publica o template como texto.
+ */
+export function verifyNoUnresolvedMergeTags(html: string, slug: string): void {
+  // Qualquer `{{...}}` que não seja uma substituição já feita pelo gerador indica vazamento.
+  const unresolved = html.match(/\{\{[^}]+\}\}/g);
+  if (unresolved && unresolved.length > 0) {
+    throw new Error(
+      `post "${slug}" contém merge tag não resolvida no HTML (${unresolved[0]} ... ${unresolved.length} ocorrências) — guard #6210 rejeitou`,
+    );
+  }
 }
