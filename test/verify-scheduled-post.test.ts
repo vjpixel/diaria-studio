@@ -446,6 +446,84 @@ describe("verify-scheduled-post e2e via mock HTTP server (#4638)", () => {
     }
   });
 
+  // #6098 — o clique em Schedule passou a ser AUTOMATIZADO, e o passo 2 da
+  // sequência escolhe uma OPÇÃO de horário no modal. A errada produz um
+  // agendamento válido no dia errado. Estes 3 casos cobrem o wiring REAL de
+  // `--expect-scheduled-at` até o exit code — o review da PR #6241 apontou
+  // (com razão) que testar só a função pura deixava a fiação sem cobertura.
+
+  it("#6098 scheduled no horário ESPERADO → exit 0", async () => {
+    const postId = "post_e2e_hora_ok";
+    const path = `/publications/${PUB_ID}/posts/${postId}`;
+    const futureUnix = Math.floor(Date.now() / 1000) + 3600;
+    const esperadoIso = new Date(futureUnix * 1000).toISOString();
+    const { server, url } = await startMockBeehiiv(path, {
+      status: 200,
+      body: { data: { id: postId, status: "confirmed", publish_date: futureUnix } },
+    });
+    const dir = makeTmpEditionDirE2e();
+    try {
+      const r = await spawnScriptAsync(
+        ["--post-id", postId, "--edition-dir", dir, "--expect-scheduled-at", esperadoIso],
+        { ...process.env, BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: PUB_ID, BEEHIIV_API_URL: url },
+      );
+      assert.equal(r.status, 0, `esperado exit 0 — stderr: ${r.stderr}`);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#6098 REGRESSÃO: scheduled no horário ERRADO → exit 3, não 0", async () => {
+    // O cenário que a automação torna possível: opção errada no modal.
+    const postId = "post_e2e_hora_errada";
+    const path = `/publications/${PUB_ID}/posts/${postId}`;
+    const futureUnix = Math.floor(Date.now() / 1000) + 3600;
+    const outroDiaIso = new Date((futureUnix + 86400) * 1000).toISOString();
+    const { server, url } = await startMockBeehiiv(path, {
+      status: 200,
+      body: { data: { id: postId, status: "confirmed", publish_date: futureUnix } },
+    });
+    const dir = makeTmpEditionDirE2e();
+    try {
+      const r = await spawnScriptAsync(
+        ["--post-id", postId, "--edition-dir", dir, "--expect-scheduled-at", outroDiaIso],
+        { ...process.env, BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: PUB_ID, BEEHIIV_API_URL: url },
+      );
+      assert.equal(r.status, 3, `esperado exit 3 — stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.expected_scheduled_at, outroDiaIso, "o esperado precisa sair no JSON pra auditoria");
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#6098 REGRESSÃO P1: placeholder não substituído → exit 3, NÃO passa batido", async () => {
+    // Com `getArg` (a 1ª versão), este caso e o de flag ausente colapsavam em
+    // `""` → NaN → "não diverge" → exit 0. O guard existia no código e não no
+    // comportamento.
+    const postId = "post_e2e_placeholder";
+    const path = `/publications/${PUB_ID}/posts/${postId}`;
+    const futureUnix = Math.floor(Date.now() / 1000) + 3600;
+    const { server, url } = await startMockBeehiiv(path, {
+      status: 200,
+      body: { data: { id: postId, status: "confirmed", publish_date: futureUnix } },
+    });
+    const dir = makeTmpEditionDirE2e();
+    try {
+      const r = await spawnScriptAsync(
+        ["--post-id", postId, "--edition-dir", dir, "--expect-scheduled-at", "{scheduled_at_iso}"],
+        { ...process.env, BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: PUB_ID, BEEHIIV_API_URL: url },
+      );
+      assert.equal(r.status, 3, `esperado exit 3 — stderr: ${r.stderr}`);
+      assert.match(r.stderr, /INVÁLIDO/);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("branch immediate_send_detected → exit 1 (fetch real em voo, publish_date no passado)", async () => {
     const postId = "post_e2e_published";
     const path = `/publications/${PUB_ID}/posts/${postId}`;

@@ -1094,7 +1094,7 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 ### 9. Verificar slug pós-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570
 
-**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
+**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule é automatizado desde #6098 (fallback manual) — depois que o clique confirmar, verificar e corrigir o slug. O mangling independe de quem clicou.
 
 **#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
 
@@ -1159,6 +1159,25 @@ npx tsx scripts/verify-scheduled-post.ts \
 | `0` | `scheduled` — agendado corretamente | Confirmar horário: "Agendado para {scheduled_at} ✓ — {data_alvo} 06:00 BRT" |
 | `1` | `published` — envio imediato detectado | Ver sequência de reconciliação abaixo |
 | `2` | `unknown` / `draft` / erro de API / config ausente | Alertar editor; verificar manualmente no dashboard Beehiiv (`get_post` via MCP + inspecionar `publish_date` vs agora) |
+| `3` | `scheduled` **no horário ERRADO** (#6098) — ou `--expect-scheduled-at` inválido/não substituído | Opção errada no modal, ou substituição quebrada. O post **NÃO está no ar**. Ver sequência abaixo |
+
+**Sequência de recuperação (exit 3 — agendado no horário errado):**
+
+Diferente do exit 1, aqui **nada foi enviado** — dá pra corrigir sem reconciliar nada.
+
+1. **Não re-tentar o clique automatizado.** Se ele escolheu a opção errada uma vez, escolherá de novo — o modal não mudou.
+2. Abrir `draft_url` e corrigir o agendamento **à mão**, escolhendo a data/hora que o gate aprovou.
+3. Re-rodar a verificação com o mesmo `--expect-scheduled-at`, até exit `0`.
+4. Só então seguir pro §6e.
+
+Relatar ao editor:
+
+```
+⚠️ AGENDADO NO HORÁRIO ERRADO — o clique automatizado escolheu {scheduled_at},
+e o aprovado no gate foi {esperado}.
+Nada foi enviado. Corrija no painel Beehiiv e eu re-verifico.
+```
+
 
 **Banner pré-Schedule (exibir ANTES de pedir confirmação ao editor):**
 
