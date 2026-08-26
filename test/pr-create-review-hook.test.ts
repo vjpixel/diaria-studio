@@ -1,9 +1,10 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir, hostname } from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   resolveEffort,
   buildReviewInstruction,
@@ -16,6 +17,8 @@ import {
   extractCreatedPrUrl,
   isGhPrCreateCommand,
   shouldEmitReviewInstruction,
+  resolveEmitDecision,
+  logSuppressedReviewInstruction,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -1020,36 +1023,42 @@ describe("extractCreatedPrUrl (#6298 fix 1)", () => {
   });
 });
 
-describe("isGhPrCreateCommand (#6298 fix 2, espelha isGhPrMergeCommand)", () => {
-  it("comando standalone gh pr create → true", () => {
-    assert.equal(isGhPrCreateCommand("gh pr create --title x --body y"), true);
+describe("isGhPrCreateCommand (#6298 fix 2; contrato de 3 estados desde o fleet review pós-#6298, finding #1)", () => {
+  it('comando standalone gh pr create → "create"', () => {
+    assert.equal(isGhPrCreateCommand("gh pr create --title x --body y"), "create");
   });
 
-  it("gh pr create depois de separador (&&) → true", () => {
-    assert.equal(isGhPrCreateCommand("git push && gh pr create --title x"), true);
+  it('gh pr create depois de separador (&&) → "create"', () => {
+    assert.equal(isGhPrCreateCommand("git push && gh pr create --title x"), "create");
   });
 
-  it("gh pr comment → false (o comando real do incidente #6298)", () => {
-    assert.equal(isGhPrCreateCommand("gh pr comment 6282 --body-file /tmp/body.md"), false);
+  it('gh pr comment → "not-create" (o comando real do incidente #6298)', () => {
+    assert.equal(isGhPrCreateCommand("gh pr comment 6282 --body-file /tmp/body.md"), "not-create");
   });
 
-  it("gh pr create citado dentro de --body de OUTRO comando → false", () => {
+  it('gh pr create citado dentro de --body de OUTRO comando → "not-create"', () => {
     const cmd = `gh pr comment 6282 --body "rode gh pr create depois disso"`;
-    assert.equal(isGhPrCreateCommand(cmd), false);
+    assert.equal(isGhPrCreateCommand(cmd), "not-create");
   });
 
-  it("gh pr create citado dentro de --body com newline LITERAL dentro das aspas → false (#5805-style)", () => {
+  it('gh pr create citado dentro de --body com newline LITERAL dentro das aspas → "not-create" (#5805-style)', () => {
     // Mesmo caso que a docstring de isGhPrMergeCommand descreve: um --body com
     // newline literal DENTRO das aspas duplas — stripQuotedSpans varre char a
     // char (não linha a linha), então o span aberto pelo `"` só fecha no `"`
     // seguinte, mesmo atravessando quebras de linha.
     const cmd = 'gh pr comment 6282 --body "medi X e Y\ngh pr create nao deveria disparar aqui\nfim"';
-    assert.equal(isGhPrCreateCommand(cmd), false);
+    assert.equal(isGhPrCreateCommand(cmd), "not-create");
   });
 
-  it("command não-string → false", () => {
-    assert.equal(isGhPrCreateCommand(undefined), false);
-    assert.equal(isGhPrCreateCommand(null), false);
+  // Finding #1 do fleet review pós-#6298 (confiança alta, P2): antes desta
+  // mudança, `command` ausente resolvia o MESMO `false` que um comando
+  // reconhecido como NÃO sendo `gh pr create` — colapsando "sei que não é"
+  // com "não sei". Este teste é a regressão direta: os dois casos agora
+  // resolvem estados DIFERENTES, e nenhum dos dois é o boolean antigo.
+  it('command não-string → "unknown", distinto de "not-create" (finding #1: ausência ≠ negação)', () => {
+    assert.equal(isGhPrCreateCommand(undefined), "unknown");
+    assert.equal(isGhPrCreateCommand(null), "unknown");
+    assert.notEqual(isGhPrCreateCommand(undefined), isGhPrCreateCommand("gh pr comment 1"));
   });
 });
 
@@ -1081,5 +1090,224 @@ describe("shouldEmitReviewInstruction (#6298 — combina os dois fixes)", () => 
     // algum motivo), fix 2 sozinho já barra pelo comando.
     const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
     assert.equal(shouldEmitReviewInstruction(resp, "gh pr comment 6282 --body-file /tmp/body.md"), null);
+  });
+});
+
+// Finding #2 do fleet review pós-#6298 (confiança alta, P2): resolveEmitDecision
+// expõe o motivo que shouldEmitReviewInstruction escondia atrás de um `null`
+// só — os 3 motivos indistinguíveis (nenhuma URL, URL de comentário/review,
+// comando não é gh pr create) agora resolvem `reason` diferentes.
+describe("resolveEmitDecision (#6298 finding #2 — motivo de supressão observável)", () => {
+  it('nenhuma URL de PR na saída → { prUrl: null, reason: "no_pr_url" }', () => {
+    const result = resolveEmitDecision("Usage: gh pr create [flags]", undefined);
+    assert.deepEqual(result, { prUrl: null, reason: "no_pr_url" });
+  });
+
+  it('URL de comentário (#issuecomment-N) → { prUrl: null, reason: "comment_or_review_url" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.deepEqual(result, { prUrl: null, reason: "comment_or_review_url" });
+  });
+
+  it('URL de review (#pullrequestreview-N) → reason "comment_or_review_url"', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#pullrequestreview-9876543210";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.equal(result.reason, "comment_or_review_url");
+  });
+
+  it('URL limpa + comando NÃO é gh pr create → { prUrl: null, reason: "not_gh_pr_create" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, "gh pr comment 6282 --body-file /tmp/body.md");
+    assert.deepEqual(result, { prUrl: null, reason: "not_gh_pr_create" });
+  });
+
+  it('URL limpa + comando gh pr create → { prUrl, reason: "ok" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, "gh pr create --title x --body y");
+    assert.deepEqual(result, { prUrl: "https://github.com/vjpixel/diaria-studio/pull/6282", reason: "ok" });
+  });
+
+  it('URL limpa + comando ausente (unknown) → { prUrl, reason: "ok" } (permissivo, nunca not_gh_pr_create)', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.deepEqual(result, { prUrl: "https://github.com/vjpixel/diaria-studio/pull/6282", reason: "ok" });
+  });
+
+  it("shouldEmitReviewInstruction continua um wrapper fino — mesma URL/null que resolveEmitDecision().prUrl", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(
+      shouldEmitReviewInstruction(resp, "gh pr create --title x"),
+      resolveEmitDecision(resp, "gh pr create --title x").prUrl,
+    );
+    assert.equal(
+      shouldEmitReviewInstruction("no url here", undefined),
+      resolveEmitDecision("no url here", undefined).prUrl,
+    );
+  });
+});
+
+describe("logSuppressedReviewInstruction (#6298 finding #2)", () => {
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `pr-create-review-hook-suppressed-log-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  function readLoggedEvents(root: string) {
+    const logPath = join(root, "data", "run-log.jsonl");
+    return readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
+
+  it("grava reason + comando truncado no formato de scripts/log-event.ts", () => {
+    const root = freshRoot();
+    logSuppressedReviewInstruction(
+      { reason: "not_gh_pr_create", command: "gh pr comment 1 --body x" },
+      { repoRoot: root },
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.agent, "code-review");
+    assert.equal(event.level, "info");
+    assert.equal(event.message, "review_instruction_suppressed");
+    assert.deepEqual(event.details, { reason: "not_gh_pr_create", command: "gh pr comment 1 --body x" });
+  });
+
+  it("command ausente → details.command é null, não lança", () => {
+    const root = freshRoot();
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction({ reason: "no_pr_url", command: undefined }, { repoRoot: root }),
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.command, null);
+  });
+
+  it("command gigante é truncado em 500 chars", () => {
+    const root = freshRoot();
+    const hugeCommand = "gh pr comment 1 --body " + "x".repeat(1000);
+    logSuppressedReviewInstruction({ reason: "not_gh_pr_create", command: hugeCommand }, { repoRoot: root });
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.command.length, 500);
+  });
+
+  it("é fail-soft: appendFn lançando erro nunca propaga", () => {
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction(
+        { reason: "no_pr_url", command: undefined },
+        {
+          repoRoot: freshRoot(),
+          appendFn: () => {
+            throw new Error("ENOSPC: no space left on device");
+          },
+        },
+      ),
+    );
+  });
+
+  it("é fail-soft: mkdirFn lançando erro nunca propaga", () => {
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction(
+        { reason: "no_pr_url", command: undefined },
+        {
+          repoRoot: freshRoot(),
+          mkdirFn: () => {
+            throw new Error("EACCES: permission denied");
+          },
+        },
+      ),
+    );
+  });
+
+  it("cria data/ se ainda não existir (worktree/tmpdir sem a pasta)", () => {
+    const root = freshRoot();
+    logSuppressedReviewInstruction({ reason: "no_pr_url", command: undefined }, { repoRoot: root });
+    assert.equal(readLoggedEvents(root).length, 1);
+  });
+});
+
+// Finding #3 do fleet review pós-#6298 (confiança média, P2): a fiação
+// `payload.tool_input?.command` no entrypoint CLI é referência NOVA nesta PR
+// e nunca era exercitada fim-a-fim — toda a suíte acima chama as funções
+// exportadas diretamente, nunca o hook como PROCESSO real lendo JSON do
+// stdin. Se o nome/caminho do campo estivesse errado no payload real emitido
+// pelo harness, o hook degradaria pro caminho permissivo e o #6298
+// reapareceria em produção com a suíte inteira verde. Spawna o hook via
+// `node` de verdade, alimentando o payload pelo stdin, e confere o stdout.
+//
+// Isolamento: `resolveMainRepoRoot()`/`resolveEffort` chamam `git` sem `cwd`
+// explícito, herdando o cwd do processo — sem isolar, o subprocesso real
+// escreveria em `data/run-log.jsonl` da junction OneDrive COMPARTILHADA
+// (mesmo risco documentado no describe "checkRoundActive DEFAULT real"
+// acima). Por isso cada teste roda com `cwd` apontando pra um repo git
+// TEMPORÁRIO — `resolveMainRepoRoot()` resolve `git rev-parse
+// --git-common-dir` relativo a esse cwd, redirecionando toda escrita de log
+// pro tmpdir isolado.
+describe("hook como processo real, fim-a-fim (#6298 fleet review, finding #3)", () => {
+  const HOOK_PATH = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    ".claude",
+    "hooks",
+    "pr-create-review.mjs",
+  );
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function isolatedGitRoot() {
+    const root = mkdtempSync(join(tmpdir(), "pr-create-review-e2e-"));
+    roots.push(root);
+    execFileSync("git", ["init", "--quiet"], { cwd: root, timeout: 10_000 });
+    return root;
+  }
+
+  function runHook(payload: unknown, cwd: string) {
+    return spawnSync(process.execPath, [HOOK_PATH], {
+      cwd,
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+  }
+
+  it("(a) payload de gh pr comment com URL de #issuecomment- → stdout vazio, sem additionalContext", () => {
+    const root = isolatedGitRoot();
+    const payload = {
+      session_id: "sessao-teste-e2e",
+      tool_input: { command: "gh pr comment 6282 --body-file /tmp/body.md" },
+      tool_response: "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867\n",
+    };
+    const result = runHook(payload, root);
+    assert.equal(result.status, 0);
+    assert.equal((result.stdout ?? "").trim(), "");
+  });
+
+  it("(b) payload de gh pr create com URL limpa → stdout com additionalContext", () => {
+    const root = isolatedGitRoot();
+    const payload = {
+      session_id: "sessao-teste-e2e",
+      tool_input: { command: "gh pr create --title x --body y" },
+      tool_response: "https://github.com/vjpixel/diaria-studio/pull/6282\n",
+    };
+    const result = runHook(payload, root);
+    assert.equal(result.status, 0);
+    const stdout = (result.stdout ?? "").trim();
+    assert.ok(stdout.length > 0, "esperava stdout não-vazio com additionalContext");
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "PostToolUse");
+    assert.match(parsed.hookSpecificOutput.additionalContext, /pull\/6282/);
   });
 });

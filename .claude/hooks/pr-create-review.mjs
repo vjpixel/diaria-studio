@@ -15,21 +15,36 @@
 //      observed firing for a standalone `gh pr comment …` call — cause not
 //      confirmed at the harness layer — so this script no longer trusts it
 //      exclusively; see point 3 below.**
-//   3. `shouldEmitReviewInstruction` decides whether to actually emit, combining
-//      two checks (#6298): (a) `extractCreatedPrUrl` rejects a `tool_response`
-//      URL that carries a `#issuecomment-\d+`/`#discussion_r\d+`/
-//      `#pullrequestreview-\d+` fragment — the shape of a COMMENT/REVIEW URL,
-//      never a freshly-created PR's own URL (the bug in #6298: `gh pr
-//      comment`'s stdout is such a URL, and the old regex matched it because
-//      it only looked as far as the PR number, ignoring the fragment after);
-//      (b) when `payload.tool_input.command` is available, it must actually be
-//      a `gh pr create` invocation (`isGhPrCreateCommand`, mirroring
-//      `isGhPrMergeCommand` in the sibling hook `block-gh-pr-merge-subagent.mjs`)
-//      — not `gh pr comment`, and not a citation of the string "gh pr create"
+//   3. `shouldEmitReviewInstruction` (thin wrapper over `resolveEmitDecision`)
+//      decides whether to actually emit, combining two checks (#6298): (a)
+//      `extractCreatedPrUrl` rejects a `tool_response` URL that carries a
+//      `#issuecomment-\d+`/`#discussion_r\d+`/`#pullrequestreview-\d+`
+//      fragment — the shape of a COMMENT/REVIEW URL, never a freshly-created
+//      PR's own URL (the bug in #6298: `gh pr comment`'s stdout is such a URL,
+//      and the old regex matched it because it only looked as far as the PR
+//      number, ignoring the fragment after); (b) when
+//      `payload.tool_input.command` is available, it must actually be a `gh
+//      pr create` invocation (`isGhPrCreateCommand`, duplicated from — but no
+//      longer contract-identical to — `isGhPrMergeCommand` in the sibling
+//      hook `block-gh-pr-merge-subagent.mjs`: this one returns a 3-state
+//      `"create" | "not-create" | "unknown"`, never a boolean, precisely so
+//      "command absent" can never collapse into "definitely not a create"
+//      again — the ambiguity a fleet review flagged after #6298 shipped) —
+//      not `gh pr comment`, and not a citation of the string "gh pr create"
 //      inside a quoted `--body`/`--title` of some OTHER command. `command`
-//      ABSENT from the payload degrades to permissive (decide from the URL
-//      alone, same as pre-#6298) — never to silent: this hook's failure
-//      direction is "an extra review" over "no review at all".
+//      ABSENT from the payload resolves `"unknown"`, which the call site
+//      treats as permissive (decide from the URL alone, same as pre-#6298) —
+//      never as silent-deny: this hook's failure direction is "an extra
+//      review" over "no review at all".
+//   4. Every path that does NOT end in an emitted review instruction — no PR
+//      URL at all, a comment/review URL, or a command confirmed NOT to be
+//      `gh pr create` — logs its reason via `logSuppressedReviewInstruction`
+//      (`data/run-log.jsonl`, message `review_instruction_suppressed`). Added
+//      after a fleet review found the 3 reasons indistinguishable in the only
+//      observable output (silence): a CORRECT suppression (comment URL) and
+//      an INCORRECT one (a genuine PR misclassified by an edge case) produced
+//      the exact same nothing. Fail-soft, same contract as
+//      `logEffortDecision` below — a logging failure never blocks anything.
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
@@ -672,37 +687,145 @@ export function stripQuotedSpans(command) {
 }
 
 /**
- * `true` se `command` contém `gh pr create` como um comando REAL — só no
+ * Classifica `command` quanto a ser (ou não) um `gh pr create` REAL — só no
  * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
- * newline). Mesma lógica de `isGhPrMergeCommand` (ver docstring de
- * `stripQuotedSpans` acima para o porquê da duplicação).
+ * newline). Ver docstring de `stripQuotedSpans` acima para o porquê da
+ * duplicação da lógica de parsing com `isGhPrMergeCommand`.
+ *
+ * **Finding do fleet review pós-#6298 (confiança alta, P2):** este espelho de
+ * `isGhPrMergeCommand` reusava também o CONTRATO boolean dele — mas a
+ * polaridade em que os dois são consumidos é OPOSTA. Em
+ * `block-gh-pr-merge-subagent.mjs`, `false` no comando ausente implementa
+ * fail-OPEN corretamente sozinho (nenhum bloqueio por falta de dado). Aqui, o
+ * fail-safe correto é o INVERSO — comando ausente tem que continuar
+ * permissivo (emitir a instrução) —, então antes desta mudança o call site
+ * (`shouldEmitReviewInstruction`) precisava de um `typeof command ===
+ * "string" &&` só pra não deixar esta função decidir sozinha sobre um dado
+ * que ela não tinha. Um `false` sozinho não distinguia "sei que NÃO é `gh pr
+ * create`" de "não sei, o campo não veio" — quem carregava essa distinção era
+ * o call site, não o contrato da função; "simplificar" removendo o `typeof`
+ * (parece redundante à primeira vista, já que a função trata non-string)
+ * inverteria o fail-safe e reabriria o #6298.
+ *
+ * Por isso o retorno deixou de ser boolean: três estados explícitos,
+ * `"create"` | `"not-create"` | `"unknown"` (comando ausente/não-string) — o
+ * chamador trata `"unknown"` como permissivo SEM precisar checar `typeof`
+ * primeiro (ver `resolveEmitDecision`/`shouldEmitReviewInstruction` abaixo).
+ * `isGhPrMergeCommand` no hook irmão continua boolean de propósito (sua
+ * polaridade de fail-open já está correta como boolean) — os dois NÃO são
+ * mais contract-idênticos, só compartilham `stripQuotedSpans`/o regex de
+ * âncora, que seguem sincronizados à mão como antes.
  */
 export function isGhPrCreateCommand(command) {
-  if (typeof command !== "string") return false;
+  if (typeof command !== "string") return "unknown";
   const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped);
+  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped)
+    ? "create"
+    : "not-create";
+}
+
+/**
+ * Regex só de DETECÇÃO (não de extração) de uma URL de PR com fragmento de
+ * comentário/review — usado só por `resolveEmitDecision` pra distinguir a
+ * razão (a) "não há URL de PR nenhuma" de (b) "há URL, mas é de
+ * comentário/review", quando `extractCreatedPrUrl` já devolveu `null` pras
+ * duas. Deliberadamente mais simples que o regex de extração (sem o guard
+ * anti-backtracking `(?!\d)`): aqui só interessa SE existe, nunca o valor
+ * exato capturado.
+ */
+const PR_URL_WITH_COMMENT_FRAGMENT_RE =
+  /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|discussion_r\d+|pullrequestreview-\d+)/;
+
+/**
+ * Finding do fleet review pós-#6298 (confiança alta, P2): `shouldEmitReviewInstruction`
+ * devolvia `null` pra três razões indistinguíveis — (a) não há URL de PR na
+ * saída, (b) a URL é de comentário/review, (c) o comando não é `gh pr
+ * create` — e o call site de produção (`if (prUrl) {...}` sem `else`) nunca
+ * observava qual. Uma supressão CORRETA (b, comentário) e uma potencialmente
+ * INCORRETA (c, edge case de comando não reconhecido classificando errado
+ * uma PR genuína) produziam o mesmo silêncio. Isso importa porque a #6298
+ * registra que a causa raiz na camada do harness nunca foi confirmada — é
+ * exatamente esse tipo de silêncio que vai precisar ser diagnosticado nesse
+ * cenário de novo.
+ *
+ * `resolveEmitDecision` é o núcleo decisório completo, com o motivo explícito
+ * — `reason` é `"no_pr_url"` | `"comment_or_review_url"` |
+ * `"not_gh_pr_create"` | `"ok"`. `shouldEmitReviewInstruction` (abaixo) segue
+ * existindo como wrapper fino só com `.prUrl`, pra não quebrar quem só
+ * precisa saber SE deve disparar.
+ */
+export function resolveEmitDecision(toolResponseText, command) {
+  const prUrl = extractCreatedPrUrl(toolResponseText);
+  if (!prUrl) {
+    const text = typeof toolResponseText === "string" ? toolResponseText : "";
+    const reason = PR_URL_WITH_COMMENT_FRAGMENT_RE.test(text) ? "comment_or_review_url" : "no_pr_url";
+    return { prUrl: null, reason };
+  }
+  const commandState = isGhPrCreateCommand(command);
+  if (commandState === "not-create") return { prUrl: null, reason: "not_gh_pr_create" };
+  return { prUrl, reason: "ok" };
 }
 
 /**
  * Decisão pura combinando os dois fixes do #6298: existe uma URL de PR
  * genuinamente criada (fix 1) E, quando o comando está disponível no payload,
  * ele de fato é um `gh pr create` (fix 2)? Retorna a URL a usar, ou `null`
- * quando não deve disparar.
+ * quando não deve disparar. Wrapper fino sobre `resolveEmitDecision` — ver lá
+ * pro motivo da supressão, quando precisar dele.
  *
  * **Direção do fail-safe, deliberada:** este hook é `PostToolUse` e nunca
  * pode bloquear nada — só ADICIONA contexto. Errar para "não disparou" custa
  * uma PR sem review, o que é PIOR que um review a mais (o custo que motivou
  * a #6298). Por isso `command` ausente do payload (campo não populado —
  * formato de payload mais antigo, ou falha de extração) degrada para
- * PERMISSIVO: decide só pela URL, exatamente como o comportamento pré-#6298.
- * Só quando `command` está presente E não é um `gh pr create` real é que o
- * fix 2 nega o disparo — nunca por ausência do campo.
+ * PERMISSIVO via `isGhPrCreateCommand` resolvendo `"unknown"` (nunca
+ * `"not-create"`): decide só pela URL, exatamente como o comportamento
+ * pré-#6298. Só quando o comando está presente E resolve `"not-create"` é
+ * que o fix 2 nega o disparo — nunca por ausência do campo.
  */
 export function shouldEmitReviewInstruction(toolResponseText, command) {
-  const prUrl = extractCreatedPrUrl(toolResponseText);
-  if (!prUrl) return null;
-  if (typeof command === "string" && !isGhPrCreateCommand(command)) return null;
-  return prUrl;
+  return resolveEmitDecision(toolResponseText, command).prUrl;
+}
+
+/**
+ * Finding do fleet review pós-#6298 (confiança alta, P2, mesmo achado de
+ * `resolveEmitDecision`): loga a RAZÃO de uma supressão em
+ * `data/run-log.jsonl` (mesmo arquivo/formato de `logEffortDecision`,
+ * message `review_instruction_suppressed`) — sem isto, os 3 motivos de
+ * `shouldEmitReviewInstruction` devolver `null` continuavam indistinguíveis
+ * do lado de fora, mesmo com `resolveEmitDecision` já os separando
+ * internamente. Chamado pelo entrypoint CLI pra TODO `reason !== "ok"`, não
+ * só pro caminho (c) `not_gh_pr_create` — que é o mecanismo NOVO desta PR e o
+ * mais provável de ter edge case não coberto, mas os outros dois custam
+ * quase nada a mais pra logar e fecham a mesma lacuna de observabilidade.
+ *
+ * Fail-soft, mesmo contrato de `logEffortDecision`: uma falha ao logar nunca
+ * pode propagar nem bloquear o hook. `command` é truncado (500 chars) antes
+ * de gravar — evita inflar `run-log.jsonl` com um `--body` de PR gigante.
+ */
+export function logSuppressedReviewInstruction(
+  { reason, command },
+  { repoRoot = resolveMainRepoRoot(), appendFn = appendFileSync, mkdirFn = mkdirSync } = {},
+) {
+  try {
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: null,
+      agent: "code-review",
+      level: "info",
+      message: "review_instruction_suppressed",
+      details: {
+        reason,
+        command: typeof command === "string" ? command.slice(0, 500) : null,
+      },
+    };
+    const logPath = join(repoRoot, "data", "run-log.jsonl");
+    mkdirFn(dirname(logPath), { recursive: true });
+    appendFn(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // Swallow everything, same contract as logEffortDecision above.
+  }
 }
 
 // #2019: CLI guard — só roda o corpo do hook quando este arquivo é o entrypoint
@@ -722,7 +845,8 @@ if (
         typeof payload.tool_response === "string"
           ? payload.tool_response
           : JSON.stringify(payload.tool_response ?? "");
-      const prUrl = shouldEmitReviewInstruction(resp, payload.tool_input?.command);
+      const command = payload.tool_input?.command;
+      const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
       if (prUrl) {
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
@@ -738,6 +862,10 @@ if (
             },
           }),
         );
+      } else {
+        // Fleet review pós-#6298 (finding #2): torna a supressão observável —
+        // ver docstring de logSuppressedReviewInstruction acima.
+        logSuppressedReviewInstruction({ reason: emitReason, command });
       }
     } catch {
       // Swallow everything: a hook that errors must not block the PR creation.
