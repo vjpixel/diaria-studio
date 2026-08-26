@@ -2912,6 +2912,55 @@ export function parseHourTestCampaign(campaignName: string): { hourBrt: number }
   return h >= 0 && h <= 23 ? { hourBrt: h } : null;
 }
 
+/**
+ * #6308: as 2 campanhas do braço 06:00 que a #6307 identificou como criadas
+ * SEM o sufixo `-H{HH}` (recuperação manual durante instabilidade de
+ * rate-limit, 21-23/08/2026) — `parseHourTestCampaign` nunca vai reconhecê-
+ * las pelo nome, então elas precisam de um sinal alternativo pra entrar na
+ * apuração.
+ *
+ * Allowlist de `campaignId` fechada e comentada — não `scheduledAt`/janela
+ * de tempo — por ser o caso mais estreito que resolve o incidente MEDIDO
+ * sem risco de capturar uma campanha FUTURA que legitimamente não pertença
+ * ao teste: um horário (`scheduledAt` = 09:00Z) sozinho não distingue "onda
+ * H06 sem sufixo" de qualquer outra campanha do grupo (ex: `reativacao`,
+ * `engajados`) que por coincidência saia às 06:00 BRT sem fazer parte do
+ * teste #5140. `campaignId` é imutável na Brevo e não tem esse risco de
+ * colisão — ver `data/clarice-subscribers/2607-08/segments/group-campaigns.json`
+ * pro registro completo (key, listId, status) das 2 entradas.
+ *
+ * Renomear as campanhas na Brevo (`PUT /v3/emailCampaigns/{id}`) resolveria
+ * na fonte sem precisar desta allowlist — não escolhido porque é escrita ao
+ * vivo contra uma campanha já `sent`, fora do escopo desta correção (#6308
+ * documenta a decisão).
+ *
+ *   164 → d25-sab22    (22/08/2026, scheduled 09:00Z = 06:00 BRT)
+ *   166 → d26-dom23    (23/08/2026, scheduled 09:00Z = 06:00 BRT)
+ *
+ * Nunca crescer esta lista silenciosamente — cada entrada nova é um
+ * incidente reconciliado manualmente, não um padrão a generalizar (é isso
+ * que o guard preventivo da #6307 em `clarice-schedule-group.ts` existe pra
+ * evitar precisar de mais entradas aqui).
+ */
+const HOUR_TEST_CAMPAIGN_ID_FALLBACK: ReadonlyMap<number, number> = new Map([
+  [164, 6], // d25-sab22 — #6307/#6308
+  [166, 6], // d26-dom23 — #6307/#6308
+]);
+
+/**
+ * Resolve a célula (hora BRT) de UMA campanha pro teste de horário — nome
+ * primeiro (`parseHourTestCampaign`), allowlist de `campaignId` como
+ * fallback (#6308, ver docstring de `HOUR_TEST_CAMPAIGN_ID_FALLBACK`). Usada
+ * por `aggregateHourTest` no lugar de chamar `parseHourTestCampaign`
+ * diretamente. Exportado pra teste unitário.
+ */
+export function resolveHourTestCampaignCell(campaign: { id: number; name: string }): { hourBrt: number } | null {
+  const byName = parseHourTestCampaign(campaign.name);
+  if (byName) return byName;
+  const hourBrt = HOUR_TEST_CAMPAIGN_ID_FALLBACK.get(campaign.id);
+  return hourBrt !== undefined ? { hourBrt } : null;
+}
+
 function emptyHourCell(hourBrt: number): HourCellSummary {
   return {
     hourBrt,
@@ -2981,7 +3030,7 @@ export function aggregateHourTest(
   const excludedDaySet = new Set<string>();
   const acc = new Map<number, { sent: number; delivered: number; opens: number; clicksAttributed: number; clicksTotal: number; unattributed: number; unsub: number; bounces: number; count: number }>();
   for (const c of campaigns) {
-    const parsed = parseHourTestCampaign(c.name);
+    const parsed = resolveHourTestCampaignCell(c);
     if (!parsed) continue;
     if (scoped) {
       if (!window) continue; // sem janela válida — exclui tudo (#5189)

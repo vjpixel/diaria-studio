@@ -265,6 +265,49 @@ export function checkSingleStrategyAgainstHourTest(
   );
 }
 
+/**
+ * #6307: guard ESPELHO de `checkSingleStrategyAgainstHourTest` acima, mas do
+ * lado da CAMPANHA/CLI em vez do lado da LISTA — fecha o buraco que causou o
+ * incidente: `clarice-schedule-group.ts --create` aceita qualquer `--key`
+ * sem checar se o teste de HORÁRIO (#5140) está ativo, então uma key de
+ * recuperação manual sem o sufixo `-H{HH}` (ex: `d25-sab22` em vez de
+ * `d25-sab22-H06`) cria uma campanha real que `parseHourTestCampaign`
+ * (dashboard) nunca reconhece — o envio acontece normalmente, mas some da
+ * apuração do teste (#6308 é o reparo retroativo dos 2 dias já afetados).
+ *
+ * O caminho AUTOMÁTICO (`buildWaveProposal`/`clarice-envio-run.ts`) sempre
+ * aplica `hourCellLabel` nos dois braços de forma consistente e nunca passa
+ * por este guard — ele existe só pro caminho MANUAL/CLI direto (`--group`
+ * com `--key` digitada à mão), que foi exatamente o que faltou no incidente
+ * de origem (não há `envio-260821.md`/`envio-260822.md` de sucesso pros dias
+ * afetados, só `-abort`/`-lock-held` — indício de recuperação manual durante
+ * instabilidade de rate-limit).
+ *
+ * PURA, mesmo padrão de `checkSingleStrategyAgainstHourTest`: devolve a
+ * mensagem de erro (abortar) quando o choque é real, `null` quando é seguro
+ * seguir. `ignoreHourTest` é o mesmo escape hatch (`--ignore-hour-test`) —
+ * pra quando a campanha genuinamente não faz parte do teste de horário
+ * (outro grupo, ex: `reativacao`, `engajados`) mesmo com o teste ativo.
+ * Exportado pra teste unitário.
+ */
+export function checkKeyAgainstHourTest(
+  key: string,
+  hourTestState: ClariceHourTestState,
+  ignoreHourTest: boolean,
+): string | null {
+  if (ignoreHourTest) return null;
+  if (hourTestState.status !== "ativo") return null;
+  if (/-[Hh]\d{2}$/.test(key)) return null; // já tem o sufixo de célula — nada a fazer
+  const hours = hourTestState.hoursBrt.join(",");
+  return (
+    `--key '${key}' não termina em -H{HH}, mas o teste de HORÁRIO (#5140) está ATIVO ` +
+      `(braços ${hours} BRT desde ${hourTestState.startedAt}). Uma campanha criada sem o sufixo ` +
+      `some da apuração do painel (#6307/#6308). Passe --key '${key}-H{HH}' correspondente ao braço ` +
+      `desta campanha (ex: '${key}-H${hours.split(",")[0]?.padStart(2, "0") ?? "HH"}'), ` +
+      `ou --ignore-hour-test se esta campanha genuinamente não faz parte do teste.`
+  );
+}
+
 /** Lê `--nome valor` ou `--nome=valor` do argv. Devolve null se ausente. */
 function readFlagValue(argv: string[], name: string): string | null {
   for (let i = 0; i < argv.length; i += 1) {
