@@ -51,6 +51,8 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import {
   normalizeLinkTitleMap,
@@ -396,9 +398,20 @@ describe("push-link-titles-kv.ts CLI (#4198)", () => {
     assert.match(result.stderr, /Uso: push-link-titles-kv\.ts/);
   });
 
-  test("--all sem nenhum ciclo com prioritized.md (ambiente sem data/ real) → exit 1", () => {
-    const result = runCli(["--all", "--dry-run"]);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /nenhum ciclo com prioritized\.md/);
+  test("--all sem nenhum ciclo com prioritized.md → exit 1 (#6222: fixture isolada via --monthly-dir, nunca escaneia data/ real)", () => {
+    // #6222: sem `--monthly-dir`, este teste dependia de `data/monthly/`
+    // estar ausente (a forma do CI) — numa máquina com `data/` real
+    // (editor, `helios`) SEMPRE há ao menos 1 ciclo com prioritized.md,
+    // então `--all` encontrava ciclos de verdade e o teste falhava. Um
+    // tmpdir vazio reproduz "nenhum ciclo encontrado" deterministicamente,
+    // em qualquer ambiente.
+    const emptyDir = mkdtempSync(join(tmpdir(), "push-link-titles-empty-"));
+    try {
+      const result = runCli(["--all", "--dry-run", "--monthly-dir", emptyDir]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /nenhum ciclo com prioritized\.md/);
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
   });
 });

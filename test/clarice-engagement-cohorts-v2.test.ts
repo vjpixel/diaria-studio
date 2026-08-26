@@ -14,13 +14,30 @@
  *     (Fase 2).
  *   - computeCohorts (import direto de clarice-engagement-cohorts.ts): sem
  *     regressão — mesmo comportamento de hoje, alimentado pelo agregado v2.
+ *
+ * #6222: guard de rede file-wide (`installNetworkRequestGuard`, ver
+ * test/_helpers/network-guard.ts) instalado em `test.before`/`test.after`
+ * abaixo — nenhum teste deste arquivo pode alcançar `https.request`/
+ * `http.request` reais, nem os que mockam só `globalThis.fetch` (que não
+ * cobre `node:https`, o caminho que `uploadTextToWorkerKV` usa e que
+ * vazava pra rede real da Cloudflare quando `data/` tinha opt-outs
+ * administrativos reais).
  */
 
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { installNetworkRequestGuard } from "./_helpers/network-guard.ts";
+
+let restoreNetworkGuard: () => void;
+before(() => {
+  restoreNetworkGuard = installNetworkRequestGuard();
+});
+after(() => {
+  restoreNetworkGuard();
+});
 import {
   csvRowToFlags,
   normalizeEmail,
@@ -914,6 +931,20 @@ test("pushCohortsToKV: erro do uploadFn propaga (nunca engole silenciosamente)",
 // com --push nenhum desses 2 testes chega a tocar rede de escrita real: o
 // caminho sem --push nunca invoca pushCohortsToKV, e o caminho com --push
 // aciona o guard anti-clobber (universe=0) ANTES de chamar uploadFn.
+//
+// #6222: os dois testes abaixo passam `--db-path` apontando pra um path
+// dentro de um tmpdir isolado (nunca criado, sempre "ausente" pro
+// `fetchAdminOptOutEmails`) — SEM isso, `main()` cai no `DEFAULT_DB_PATH`
+// real. Numa máquina onde `data/` existe (editor, `helios`), o store de
+// produção tem opt-outs administrativos reais (`sends_count > 0` +
+// blacklisted/unsubscribed), e `applyAdminOptOuts` os ADICIONA ao
+// agregado mesmo com campanhas=[] — `cohorts.universe` deixa de ser 0, o
+// guard anti-clobber NUNCA dispara, e (no teste com `--push`) o código
+// segue até `uploadTextToWorkerKV` com credenciais fake, batendo na API
+// real da Cloudflare (404). `--db-path` isolado torna os dois testes
+// determinísticos independente da forma do ambiente (`data/` presente ou
+// não) — ver `main: --db-path aponta pra store isolado…` abaixo pro
+// cenário inverso (opt-outs presentes) coberto explicitamente.
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
   const originals: Record<string, string | undefined> = {};
@@ -935,14 +966,17 @@ test("main: sem --push, backfill real (mockado) completa sem NUNCA acionar o gua
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
   try {
-    await withEnv(
-      { BREVO_CLARICE_API_KEY: "fake-key-test", CLOUDFLARE_ACCOUNT_ID: undefined, CLOUDFLARE_WORKERS_TOKEN: undefined },
-      async () => {
-        // Sem --push, o guard de credenciais Cloudflare (que lançaria) nem é
-        // avaliado — completa normalmente mesmo com as credenciais ausentes.
-        await main([]);
-      },
-    );
+    await withTmpDbDir(async (dbPath) => {
+      await withEnv(
+        { BREVO_CLARICE_API_KEY: "fake-key-test", CLOUDFLARE_ACCOUNT_ID: undefined, CLOUDFLARE_WORKERS_TOKEN: undefined },
+        async () => {
+          // Sem --push, o guard de credenciais Cloudflare (que lançaria) nem é
+          // avaliado — completa normalmente mesmo com as credenciais ausentes.
+          // --db-path isolado (#6222): nunca lê o DEFAULT_DB_PATH real.
+          await main(["--db-path", dbPath]);
+        },
+      );
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -960,16 +994,21 @@ test("main: --push com backfill vazio (universe=0) aciona o guard anti-clobber e
     throw new Error("__exit__");
   };
   try {
-    await withEnv(
-      {
-        BREVO_CLARICE_API_KEY: "fake-key-test",
-        CLOUDFLARE_ACCOUNT_ID: "fake-account",
-        CLOUDFLARE_WORKERS_TOKEN: "fake-token",
-      },
-      async () => {
-        await assert.rejects(main(["--push"]), /__exit__/);
-      },
-    );
+    await withTmpDbDir(async (dbPath) => {
+      await withEnv(
+        {
+          BREVO_CLARICE_API_KEY: "fake-key-test",
+          CLOUDFLARE_ACCOUNT_ID: "fake-account",
+          CLOUDFLARE_WORKERS_TOKEN: "fake-token",
+        },
+        async () => {
+          // --db-path isolado (#6222): nunca lê o DEFAULT_DB_PATH real —
+          // sem opt-outs administrativos reais, universe permanece 0 e o
+          // guard dispara determinísticamente independente do ambiente.
+          await assert.rejects(main(["--push", "--db-path", dbPath]), /__exit__/);
+        },
+      );
+    });
     assert.equal(exitCode, 1);
   } finally {
     process.exit = originalExit;
@@ -1003,4 +1042,69 @@ test("main: --push sem CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN falha ANTE
   } finally {
     process.exit = originalExit;
   }
+});
+
+// ─── Regressão #6222 — reprodução determinística do "grupo A" via fixture ──
+//
+// Reproduz, sem tocar `data/` real nem rede, o cenário exato que o #6222
+// documentou: um store com opt-outs administrativos reais (`sends_count >
+// 0` + blacklisted/unsubscribed) faz `applyAdminOptOuts` ADICIONAR entradas
+// ao agregado mesmo com `listSentCampaigns` mockado pra `[]` —
+// `cohorts.universe` deixa de ser 0, o guard anti-clobber (linha ~755)
+// NUNCA dispara, e `--push` segue até `uploadTextToWorkerKV` (node:https,
+// fora do mock de `fetch`). Duas garantias nesta ordem:
+//   1. `--db-path` (fixture isolada) reproduz a condição "data/ real" sem
+//      depender da forma do ambiente — passa igual em CI, na máquina do
+//      editor, ou num worktree limpo.
+//   2. O `installNetworkRequestGuard` file-wide (topo do arquivo) intercepta
+//      `https.request` ANTES de qualquer socket abrir — a asserção espera o
+//      erro do PRÓPRIO guard (`[network-guard #6222]`), nunca um erro de
+//      rede real (timeout, DNS, 404 da Cloudflare) — prova que a chamada é
+//      barrada em processo, não que ela "aconteceu e falhou".
+test("main: opt-outs administrativos reais (via --db-path) tornam universe != 0 e o código chega em uploadTextToWorkerKV — bloqueado pelo guard de rede, nunca pelo anti-clobber (#6222)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
+  let exitCode: number | undefined;
+  const originalExit = process.exit;
+  // @ts-expect-error — mock de process.exit só para este teste
+  process.exit = (code?: number) => {
+    exitCode = code;
+    throw new Error("__exit__");
+  };
+  try {
+    await withTmpDbDir(async (dbPath) => {
+      const db = openClariceDb(dbPath);
+      db.exec(
+        `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, sends_count, updated_at) VALUES
+          ('opt-out-administrativo@x.com', 1, 0, 1, '${new Date().toISOString()}')`,
+      );
+      db.close();
+
+      await withEnv(
+        {
+          BREVO_CLARICE_API_KEY: "fake-key-test",
+          CLOUDFLARE_ACCOUNT_ID: "fake-account",
+          CLOUDFLARE_WORKERS_TOKEN: "fake-token",
+        },
+        async () => {
+          // Confirma a pré-condição do cenário ANTES de rodar main(): com
+          // este store, o agregado não fica vazio mesmo com campanhas=[].
+          const admin = fetchAdminOptOutEmails(dbPath);
+          if (!admin.available) throw new Error("esperado available=true (pré-condição do cenário)");
+          assert.equal(admin.emails.size, 1, "pré-condição do cenário: opt-out real presente no store");
+
+          // Se o guard anti-clobber (bug do #6222) disparasse aqui, o erro
+          // seria "__exit__" com exitCode 1 SEM nunca tocar https.request —
+          // a asserção abaixo espera o erro do NETWORK GUARD, provando que
+          // o código passou do guard anti-clobber e tentou mesmo escrever.
+          await assert.rejects(main(["--push", "--db-path", dbPath]), /\[network-guard #6222\]/);
+        },
+      );
+    });
+  } finally {
+    process.exit = originalExit;
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(exitCode, undefined, "process.exit nunca deveria ter sido chamado — o guard de rede lança antes");
 });
