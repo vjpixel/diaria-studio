@@ -326,7 +326,12 @@ describe("#6168 Parte B — CRITÉRIO DE ACEITE: registro nasce só de chamadas 
     // Simula a sequência real de uma sessão interativa: edita 2 arquivos,
     // roda um typecheck, commita, cria PR. Nenhum `register`, nenhum
     // `heartbeat`, nenhuma linha de SKILL.md envolvida.
-    let record: Record<string, unknown> | null = null;
+    // Tipado como `any` de proposito: `record` so e atribuido DENTRO do
+    // closure `step`, e a analise de fluxo do TS nao enxerga isso — ela
+    // estreita pra `null` no ponto das assercoes e todo acesso vira
+    // `never`. O valor real e sempre um record do beacon.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let record: any = null;
     let t = 0;
     const step = (over: Record<string, unknown>) => {
       t += MIN_WRITE_INTERVAL_MS + 1000;
@@ -355,7 +360,12 @@ describe("#6168 Parte B — CRITÉRIO DE ACEITE: registro nasce só de chamadas 
   it("a MESMA sessão que edita e NÃO commita fica com dirty_paths — o sintoma da evidência 2", () => {
     // O tick do contínuo que deixou 4 arquivos sem commit em master e
     // reportou "concluído". Com o beacon, isso fica visível a qualquer peer.
-    let record: Record<string, unknown> | null = null;
+    // Tipado como `any` de proposito: `record` so e atribuido DENTRO do
+    // closure `step`, e a analise de fluxo do TS nao enxerga isso — ela
+    // estreita pra `null` no ponto das assercoes e todo acesso vira
+    // `never`. O valor real e sempre um record do beacon.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let record: any = null;
     let t = 0;
     const step = (over: Record<string, unknown>) => {
       t += MIN_WRITE_INTERVAL_MS + 1000;

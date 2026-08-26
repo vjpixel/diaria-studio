@@ -41,8 +41,8 @@ import {
   normalizeBeaconPath,
   registerSession,
   resolveMergeAdmission,
+  type ActiveSessionRecord,
   type MergeAnnouncement,
-  type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
 import {
   CLOCK_SKEW_TOLERANCE_MS as HOOK_CLOCK_SKEW_TOLERANCE_MS,
@@ -79,14 +79,20 @@ function makeTempRepo(): string {
   return root;
 }
 
-function peer(over: Partial<SessionRecord> & Pick<SessionRecord, "kind" | "sessionId">): SessionRecord {
+// Devolve `ActiveSessionRecord` (com `stale` obrigatorio) e nao `SessionRecord`:
+// e o que `findSessionConflicts` exige desde o #6303, justamente pra impedir
+// que uma lista CRUA de disco (sem `stale` computado) seja tratada como toda
+// viva. O fixture precisa refletir a mesma precondicao do call site real.
+function peer(
+  over: Partial<ActiveSessionRecord> & Pick<ActiveSessionRecord, "kind" | "sessionId">,
+): ActiveSessionRecord {
   return {
     machineTag: "Neo",
     startedAt: isoAgo(60_000),
     lastHeartbeat: isoAgo(60_000),
     stale: false,
     ...over,
-  } as SessionRecord;
+  } as ActiveSessionRecord;
 }
 
 // ─── Normalização e teto de caminhos ───────────────────────────────────────
@@ -218,7 +224,11 @@ describe("#6168 Parte C — conflicts é consulta, e nunca cria arquivo", () => 
     });
     assert.equal(conflicts.length, 1);
     assert.equal(conflicts[0]!.kind, "branch-drift");
-    assert.equal(conflicts[0]!.peer, undefined, "branch-drift é sobre o próprio registro, não sobre peer");
+    // "branch-drift não tem peer" deixou de ser asserção de runtime e virou
+    // garantia de COMPILADOR no #6303: `SessionConflict` é union discriminada,
+    // e o branch `branch-drift` sequer declara o campo. Tentar ler
+    // `conflicts[0].peer` aqui não compila mais — que é exatamente o ponto.
+    assert.ok(!("peer" in conflicts[0]!), "branch-drift é sobre o próprio registro, não sobre peer");
   });
 
   it("branch-shared só conta na MESMA máquina", () => {
