@@ -115,9 +115,11 @@ export async function main() {
   let htmlFallback = 0;
 
   for (const post of posts) {
-    // `publishedAtIso` nunca é null aqui — `listNewsletterPostsInWindow` só
-    // inclui posts com timestamp parseável (#6184).
-    const filename = `post_${id8(post.id)}_${toAammddFromIso(post.publishedAtIso as string)}.txt`;
+    // `publishedAtIso` é `string` NÃO-nulo (#6362 item 5) —
+    // `listNewsletterPostsInWindow` só inclui posts com timestamp
+    // parseável, e o tipo agora reflete isso (nunca mais um cast/`as string`
+    // assumindo o que o tipo já deveria garantir).
+    const filename = `post_${id8(post.id)}_${toAammddFromIso(post.publishedAtIso)}.txt`;
     const filepath = resolve(outDir, filename);
 
     if (existsSync(filepath)) {

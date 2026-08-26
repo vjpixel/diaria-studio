@@ -255,18 +255,17 @@ function sortDesc(posts: Post[]): Post[] {
 
 /**
  * Converte NormalizedNewsletterPost (#6184 — Beehiiv ou Kit) + html buscado
- * em `Post` canônico do raw JSON.
+ * em `Post` canônico do raw JSON. `summary.publishedAtIso` é `string`
+ * NÃO-nulo (#6362 item 5 — `listRecentNewsletterPosts` já filtra summaries
+ * sem timestamp parseável antes de devolvê-los, e o tipo agora reflete
+ * essa garantia em vez de um `string | null` que exigia um guard morto
+ * aqui), então esta função nunca precisa recusar um summary.
  */
 function toCanonicalPost(
   summary: NormalizedNewsletterPost,
   html: string | null,
   webUrl: string | null,
-): Post | null {
-  // Defensivo: `listRecentNewsletterPosts` já filtra summaries sem timestamp
-  // parseável antes de devolvê-los — este `null` nunca deveria disparar na
-  // prática, mas `publishedAtIso` é tipado `string | null` (#6184), então o
-  // check fica explícito em vez de um `!` assumindo presença.
-  if (!summary.publishedAtIso) return null;
+): Post {
   return {
     id: summary.id,
     title: summary.title,
@@ -334,12 +333,7 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   for (const summary of incomingSummaries) {
     process.stderr.write(`  ↓ ${summary.id} (${summary.title ?? "sem título"})\n`);
     const { html, webUrl } = await fetchNewsletterPostContent(cfg.readConfig, summary.id);
-    const canonical = toCanonicalPost(summary, html, webUrl);
-    if (canonical) incomingPosts.push(canonical);
-    else
-      process.stderr.write(
-        `    ! pulando ${summary.id}: sem timestamp parseável\n`,
-      );
+    incomingPosts.push(toCanonicalPost(summary, html, webUrl));
   }
 
   const merged = isBootstrap
