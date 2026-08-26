@@ -29,6 +29,8 @@ import {
   emptyStalenessAlarmState,
   staleEntryKey,
   toAlarmFinding,
+  groupOverdueByHub,
+  STALE_HUB_FINDING_FINGERPRINT,
   type StaleHubEdition,
   type AgedStaleHubEdition,
 } from "../scripts/lib/hub-staleness-check.ts";
@@ -346,10 +348,10 @@ describe("buildStalenessAlarmEmail (#5123)", () => {
     assert.match(body, /npx tsx scripts\/build-hub-page\.ts --all/);
   });
 
-  it("com issueRefs (#6151) — cita a issue de cada entrada vencida", () => {
+  it("com issueRefs (#6151, chave = hubSlug desde #6254) — cita a issue do hub vencido", () => {
     const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
     const issueRefs = new Map([
-      [staleEntryKey(STALE_A), { issueNumber: 6200, url: "https://github.com/vjpixel/diaria-studio/issues/6200", action: "created" }],
+      [STALE_A.hubSlug, { issueNumber: 6200, url: "https://github.com/vjpixel/diaria-studio/issues/6200", action: "created" }],
     ]);
     const { body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"), issueRefs);
     assert.match(body, /Issue: #6200 \(https:\/\/github\.com\/vjpixel\/diaria-studio\/issues\/6200\)/);
@@ -364,7 +366,7 @@ describe("buildStalenessAlarmEmail (#5123)", () => {
   it("issueRefs com action 'failed' — cita o motivo da falha em vez de um número", () => {
     const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
     const issueRefs = new Map([
-      [staleEntryKey(STALE_A), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+      [STALE_A.hubSlug, { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
     ]);
     const { body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"), issueRefs);
     assert.match(body, /Issue: falha ao criar\/reusar \(gh não autenticado\)/);
@@ -373,61 +375,140 @@ describe("buildStalenessAlarmEmail (#5123)", () => {
 
 // ─── toAlarmFinding (#6151) — ponte pra scripts/lib/alarm-issues.ts ────────
 
-describe("toAlarmFinding (#6151)", () => {
+describe("groupOverdueByHub (#6254)", () => {
+  it("agrupa entradas do MESMO hub num único grupo — nunca 1 grupo por entrada", () => {
+    const AGED_A1: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
+    const AGED_A2: AgedStaleHubEdition = {
+      ...STALE_A,
+      editionSlug: "outra-edicao-anthropic",
+      date: "2026-08-08",
+      firstSeenDate: "2026-08-08",
+      ageDays: 2,
+    };
+    const groups = groupOverdueByHub([AGED_A1, AGED_A2]);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0]!.hubSlug, "anthropic-claude");
+    assert.equal(groups[0]!.entries.length, 2);
+  });
+
+  it("2 hubs distintos -> 2 grupos, ordenados por hubSlug", () => {
+    const AGED_A: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
+    const AGED_B: AgedStaleHubEdition = { ...STALE_B, firstSeenDate: "2026-08-09", ageDays: 1 };
+    // Passa B antes de A pra provar que a ordenação é do agrupador, não da
+    // ordem de entrada.
+    const groups = groupOverdueByHub([AGED_B, AGED_A]);
+    assert.deepEqual(groups.map((g) => g.hubSlug), ["anthropic-claude", "openai-chatgpt"]);
+  });
+
+  it("lista vazia -> nenhum grupo", () => {
+    assert.deepEqual(groupOverdueByHub([]), []);
+  });
+});
+
+describe("toAlarmFinding (#6151, granularidade corrigida no #6254)", () => {
   const AGED_A: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
 
-  it("check é o slug do hub, fingerprint é a staleEntryKey (hub+edição)", () => {
-    const finding = toAlarmFinding(AGED_A);
+  it("check é o slug do hub; fingerprint é a constante STALE_HUB_FINDING_FINGERPRINT (não staleEntryKey)", () => {
+    const finding = toAlarmFinding("anthropic-claude", [AGED_A]);
     assert.equal(finding.check, "anthropic-claude");
-    assert.equal(finding.fingerprint, staleEntryKey(AGED_A));
-    assert.equal(finding.fingerprint, "anthropic-claude:modelo-fictício-06-08");
+    assert.equal(finding.fingerprint, STALE_HUB_FINDING_FINGERPRINT);
+    assert.notEqual(finding.fingerprint, staleEntryKey(AGED_A));
+  });
+
+  it("#6254 — o marcador de dedup (check:fingerprint) NUNCA repete o nome do hub", () => {
+    const finding = toAlarmFinding("anthropic-claude", [AGED_A]);
+    const marker = `${finding.check}:${finding.fingerprint}`;
+    assert.equal(marker, "anthropic-claude:dataset-defasado");
+    // A versão anterior produzia "anthropic-claude:anthropic-claude:..." —
+    // garante que "anthropic-claude" aparece exatamente 1 vez no marcador.
+    const occurrences = marker.split("anthropic-claude").length - 1;
+    assert.equal(occurrences, 1);
+  });
+
+  it("#6254 — mesmo hub com N edições vencidas produz 1 finding, não N", () => {
+    const AGED_A2: AgedStaleHubEdition = {
+      ...STALE_A,
+      editionSlug: "outra-edicao-anthropic",
+      date: "2026-08-08",
+      firstSeenDate: "2026-08-08",
+      ageDays: 2,
+    };
+    const groups = groupOverdueByHub([AGED_A, AGED_A2]);
+    assert.equal(groups.length, 1);
+    const findings = groups.map(({ hubSlug, entries }) => toAlarmFinding(hubSlug, entries));
+    assert.equal(findings.length, 1);
+    assert.match(findings[0]!.title, /2 edição\(ões\)/);
+    assert.match(findings[0]!.body, /modelo-fictício-06-08/);
+    assert.match(findings[0]!.body, /outra-edicao-anthropic/);
+  });
+
+  it("#6254 — mesmo hub em 2 edições vencidas em execuções distintas continua com o MESMO check+fingerprint (dedup real)", () => {
+    // Simula 2 execuções do alarme: a 1ª só viu a edição A vencida, a 2ª viu
+    // A e B (nova edição do MESMO hub venceu). O finding tem que resolver
+    // pro MESMO check+fingerprint nas duas execuções — é isso que garante
+    // que planAlarmReconciliation reusa a issue em vez de criar outra.
+    const findingRun1 = toAlarmFinding("anthropic-claude", [AGED_A]);
+    const AGED_A2: AgedStaleHubEdition = {
+      ...STALE_A,
+      editionSlug: "outra-edicao-anthropic",
+      date: "2026-08-08",
+      firstSeenDate: "2026-08-08",
+      ageDays: 2,
+    };
+    const findingRun2 = toAlarmFinding("anthropic-claude", [AGED_A, AGED_A2]);
+    assert.equal(findingRun1.check, findingRun2.check);
+    assert.equal(findingRun1.fingerprint, findingRun2.fingerprint);
   });
 
   it("family é sempre 'estado' — a issue se auto-resolve quando o dataset for regenerado", () => {
-    assert.equal(toAlarmFinding(AGED_A).family, "estado");
+    assert.equal(toAlarmFinding("anthropic-claude", [AGED_A]).family, "estado");
   });
 
   it("priority é P3 (cleanup/regen manual, não urgência de produção)", () => {
-    assert.equal(toAlarmFinding(AGED_A).priority, "P3");
+    assert.equal(toAlarmFinding("anthropic-claude", [AGED_A]).priority, "P3");
   });
 
   it("body cita hub, edição, idade e o comando de regen correto", () => {
-    const { body } = toAlarmFinding(AGED_A);
+    const { body } = toAlarmFinding("anthropic-claude", [AGED_A]);
     assert.match(body, /Hub: anthropic-claude/);
     assert.match(body, /2026-08-06 modelo-fictício-06-08/);
     assert.match(body, /4 dia\(s\)/);
     assert.match(body, /npx tsx scripts\/generate-hub-sources\.ts --hub anthropic-claude/);
   });
 
-  it("2 hubs distintos geram findings com check/fingerprint distintos (nunca colidem)", () => {
+  it("2 hubs distintos geram findings com check distinto (nunca colidem) — fingerprint é a mesma constante nos dois", () => {
     const AGED_B: AgedStaleHubEdition = { ...STALE_B, firstSeenDate: "2026-08-09", ageDays: 1 };
-    const findingA = toAlarmFinding(AGED_A);
-    const findingB = toAlarmFinding(AGED_B);
+    const findingA = toAlarmFinding("anthropic-claude", [AGED_A]);
+    const findingB = toAlarmFinding("openai-chatgpt", [AGED_B]);
     assert.notEqual(findingA.check, findingB.check);
-    assert.notEqual(findingA.fingerprint, findingB.fingerprint);
+    // Fingerprint é a MESMA constante — check já distingue os 2 achados
+    // (chave completa é check:fingerprint, então "anthropic-claude:X" !=
+    // "openai-chatgpt:X" mesmo com X igual).
+    assert.equal(findingA.fingerprint, findingB.fingerprint);
   });
 });
 
-// ─── Dedup por fingerprint via planAlarmReconciliation (#6151) ─────────────
-// Cobre o requisito central da issue: mesmo hub+edição já vencido numa
-// execução anterior (com issue já rastreada em AlarmIssuesState) NÃO gera
-// uma 2ª ação de criação na execução seguinte — só um `ensure` que
+// ─── Dedup por fingerprint via planAlarmReconciliation (#6151/#6254) ───────
+// Cobre o requisito central das issues: mesmo hub, com 1+ edições vencidas
+// numa execução anterior (com issue já rastreada em AlarmIssuesState) NÃO
+// gera uma 2ª ação de criação na execução seguinte — só um `ensure` que
 // `applyAlarmReconciliation`/`ensureAlarmIssue` resolve como reuse (sem
-// tocar `gh` de novo pra criar). Este teste fica no nível PURO
+// tocar `gh` de novo pra criar), mesmo que o CONJUNTO de edições vencidas
+// tenha mudado entre execuções. Este teste fica no nível PURO
 // (`planAlarmReconciliation`) — o roundtrip completo com `gh` mockado já é
 // coberto por `test/alarm-issues.test.ts`.
 
-describe("dedup — mesmo achado não gera 2 issues (#6151)", () => {
+describe("dedup — mesmo hub não gera 2 issues, mesmo com N edições vencidas (#6151/#6254)", () => {
   const AGED_A: AgedStaleHubEdition = { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 };
 
   it("achado NOVO (sem entry em state) -> 1 ação 'ensure'", () => {
-    const finding = toAlarmFinding(AGED_A);
+    const finding = toAlarmFinding("anthropic-claude", [AGED_A]);
     const actions = planAlarmReconciliation([finding], emptyAlarmIssuesState(), 2);
     assert.deepEqual(actions, [{ kind: "ensure", finding }]);
   });
 
-  it("mesmo achado, MESMO fingerprint, já rastreado -> ainda gera 'ensure' (idempotente: ensureAlarmIssue reusa via cache, não recria)", () => {
-    const finding = toAlarmFinding(AGED_A);
+  it("mesmo hub, MESMO check+fingerprint, já rastreado -> ainda gera 'ensure' (idempotente: ensureAlarmIssue reusa via cache, não recria)", () => {
+    const finding = toAlarmFinding("anthropic-claude", [AGED_A]);
     const state: AlarmIssuesState = {
       [`${finding.check}:${finding.fingerprint}`]: {
         issueNumber: 6200,
@@ -438,15 +519,39 @@ describe("dedup — mesmo achado não gera 2 issues (#6151)", () => {
       },
     };
     const actions = planAlarmReconciliation([finding], state, 2);
-    // Só 1 ação — nunca 2 (nunca duplica a issue pro mesmo achado ainda
+    // Só 1 ação — nunca 2 (nunca duplica a issue pro mesmo hub ainda
     // pendente). `applyAlarmReconciliation` resolve essa ação como reuse via
     // `cachedEntry`, sem chamar `gh issue create` de novo.
     assert.equal(actions.length, 1);
     assert.equal(actions[0]!.kind, "ensure");
   });
 
+  it("mesmo hub, execução anterior tinha só 1 edição vencida, execução atual tem 2 -> continua 1 'ensure' (não 2)", () => {
+    const AGED_A2: AgedStaleHubEdition = {
+      ...STALE_A,
+      editionSlug: "outra-edicao-anthropic",
+      date: "2026-08-08",
+      firstSeenDate: "2026-08-08",
+      ageDays: 2,
+    };
+    const findingRun1 = toAlarmFinding("anthropic-claude", [AGED_A]);
+    const state: AlarmIssuesState = {
+      [`${findingRun1.check}:${findingRun1.fingerprint}`]: {
+        issueNumber: 6200,
+        url: "https://github.com/vjpixel/diaria-studio/issues/6200",
+        missingStreak: 0,
+        closedAt: null,
+        family: "estado",
+      },
+    };
+    const findingRun2 = toAlarmFinding("anthropic-claude", [AGED_A, AGED_A2]);
+    const actions = planAlarmReconciliation([findingRun2], state, 2);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0]!.kind, "ensure");
+  });
+
   it("achado deixou de reproduzir (regenerado) -> comenta 'não reproduz mais' em vez de reabrir", () => {
-    const finding = toAlarmFinding(AGED_A);
+    const finding = toAlarmFinding("anthropic-claude", [AGED_A]);
     const key = `${finding.check}:${finding.fingerprint}`;
     const state: AlarmIssuesState = {
       [key]: {
@@ -457,7 +562,8 @@ describe("dedup — mesmo achado não gera 2 issues (#6151)", () => {
         family: "estado",
       },
     };
-    // pending vazio — a entrada saiu de `stale` (dataset regenerado).
+    // pending vazio — TODAS as entradas do hub saíram de `overdue` (dataset
+    // regenerado).
     const actions = planAlarmReconciliation([], state, 2);
     assert.deepEqual(actions, [{ kind: "comment_resolved", key, issueNumber: 6200 }]);
   });
