@@ -280,7 +280,11 @@ describe("orchestrator-prompt (#634)", () => {
       // kit; e a Pre-condição de sentinel Stage 5 ganhou a explicação de
       // por que `assertSentinel` já lê o path certo automaticamente).
       // Arquivo foi a 653 linhas. Teto bumped de 600→675 com headroom pequeno.
-      "orchestrator-stage-6.md": 675,
+      // #6202 (26/08): +16 linhas do §6d-site (passo que publica a página da
+      // edição no Worker `diaria-site`) — teto 675→700. O passo é o que
+      // destrava a janela de cutover do #467, então cabe no prompt em vez de
+      // virar link externo que o orchestrator não lê.
+      "orchestrator-stage-6.md": 700,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

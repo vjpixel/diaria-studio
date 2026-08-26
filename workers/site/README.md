@@ -11,13 +11,16 @@ acervo `/p/{slug}` das 253 edições publicadas** (`status: "confirmed"` em
 cutover de DNS (fora de escopo, blast-radius real, ver
 `docs/apex-cutover-rollback.md`).
 
-Fora de escopo aqui, itens 2-6 do checklist do #467:
+Fora de escopo aqui, itens do checklist do #467:
 
-- passo de pipeline que publica a página de uma edição NOVA (o cache atual
-  é um snapshot do que já existe; edições futuras ainda não passam por
-  este Worker)
 - `/`, `/subscribe`, `/forms/*` (home + formulários postando pro Kit)
 - o cutover de DNS em si
+
+**O passo de pipeline que publica a página de uma edição NOVA já existe
+(#6202):** `scripts/publish-edition-site-page.ts`, dispatchado no Stage 6
+(§6d-site em `.claude/agents/orchestrator-stage-6.md`) depois do agendamento
+confirmado — commita+empurra `public/p/{slug}` a cada edição, então o acervo
+deste Worker deixou de ser um snapshot estático das 253 edições antigas.
 
 ## Por que um Worker novo, e não estender `workers/arquivo`
 
