@@ -77,6 +77,13 @@ describe("classifyGuardReportId", () => {
     assert.equal(classifyGuardReportId(`envio-${AAMMDD}-guard-algum-motivo-novo-nunca-visto`, AAMMDD), "alarm");
   });
 
+  // #6221 — o override vigente (#6134) e o UNICO caso de "escalated": o
+  // guard fez o certo (nao cancelou por cima da decisao do editor) e ainda
+  // assim precisa de atencao humana — mas nao e "alarm" (falha).
+  it('REGRESSAO (#6221): "-prereq-fallback-override-vigente" => escalated, NAO alarm (escalada deliberada, nao falha)', () => {
+    assert.equal(classifyGuardReportId(`envio-${AAMMDD}-guard-prereq-fallback-override-vigente`, AAMMDD), "escalated");
+  });
+
   it("reportId de OUTRO dia (aammdd não bate) => alarm — nunca confunde relatório de ontem com o de hoje", () => {
     assert.equal(classifyGuardReportId("envio-260811-guard-ok", AAMMDD), "alarm");
   });
@@ -101,6 +108,23 @@ describe("evaluateGuardAlarm", () => {
   it("relatório -guard-prereq-fallback-deixou-passar => alarm-failure (cenário central da issue #5220)", () => {
     const r = evaluateGuardAlarm([report(`envio-${AAMMDD}-guard-prereq-fallback-deixou-passar`, 100)], AAMMDD);
     assert.deepEqual(r, { verdict: "alarm-failure", reportId: `envio-${AAMMDD}-guard-prereq-fallback-deixou-passar` });
+  });
+
+  it("REGRESSAO (#6221): relatório -guard-prereq-fallback-override-vigente => alarm-escalated, NUNCA alarm-failure", () => {
+    const r = evaluateGuardAlarm([report(`envio-${AAMMDD}-guard-prereq-fallback-override-vigente`, 100)], AAMMDD);
+    assert.deepEqual(r, { verdict: "alarm-escalated", reportId: `envio-${AAMMDD}-guard-prereq-fallback-override-vigente` });
+  });
+
+  it("REGRESSAO (#6221): TODO outro sufixo -prereq-* que NÃO seja override-vigente continua alarm-failure, sem mudança", () => {
+    for (const suffix of [
+      "-prereq-fallback-deixou-passar",
+      "-prereq-fallback-cancelou",
+      "-prereq-fallback-cancelamento-incompleto",
+      "-prereq-falhou-sem-pendencia",
+    ]) {
+      const r = evaluateGuardAlarm([report(`envio-${AAMMDD}-guard${suffix}`, 100)], AAMMDD);
+      assert.equal(r.verdict, "alarm-failure", `esperava alarm-failure pra "${suffix}"`);
+    }
   });
 
   // #6041 — P2 alarm-evento (evento histórico, não se auto-resolve): o
@@ -172,6 +196,17 @@ describe("idempotência — shouldSendGuardAlarm / markGuardAlarmed", () => {
     const evaluation = { verdict: "alarm-no-report" as const, reportId: null };
     assert.equal(shouldSendGuardAlarm(evaluation, emptyEnvioGuardAlarmState(), AAMMDD), true);
   });
+
+  it("REGRESSAO (#6221): alarm-escalated também alarma (ainda precisa de atencao humana, so nao e falha)", () => {
+    const evaluation = { verdict: "alarm-escalated" as const, reportId: `envio-${AAMMDD}-guard-prereq-fallback-override-vigente` };
+    assert.equal(shouldSendGuardAlarm(evaluation, emptyEnvioGuardAlarmState(), AAMMDD), true);
+  });
+
+  it("REGRESSAO (#6221): alarm-escalated + JA alarmado pro MESMO aammdd => nao reenvia (mesma disciplina de alarm-failure)", () => {
+    const evaluation = { verdict: "alarm-escalated" as const, reportId: `envio-${AAMMDD}-guard-prereq-fallback-override-vigente` };
+    const state = markGuardAlarmed(emptyEnvioGuardAlarmState(), AAMMDD);
+    assert.equal(shouldSendGuardAlarm(evaluation, state, AAMMDD), false);
+  });
 });
 
 describe("buildGuardAlarmEmail", () => {
@@ -190,6 +225,24 @@ describe("buildGuardAlarmEmail", () => {
     assert.match(body, new RegExp(reportId));
     assert.match(body, /fallback/);
     assert.match(body, /06:00/);
+  });
+
+  // #6221 — vocabulario distinto pra escalada deliberada: nunca "falhou".
+  it('REGRESSAO (#6221): alarm-escalated NUNCA usa a palavra "falhou" no assunto, e deixa claro que nao e falha', () => {
+    const reportId = `envio-${AAMMDD}-guard-prereq-fallback-override-vigente`;
+    const { subject, body } = buildGuardAlarmEmail({ verdict: "alarm-escalated", reportId }, AAMMDD);
+    assert.doesNotMatch(subject, /falhou/i);
+    assert.match(subject, /escalou/i);
+    assert.match(subject, new RegExp(reportId));
+    assert.match(body, /N[ãa]O [ée] uma falha/i);
+    assert.match(body, /[Nn]enhuma a[çc][ãa]o autom[áa]tica foi tomada/);
+    assert.match(body, /override/i);
+  });
+
+  it("REGRESSAO (#6221): alarm-failure segue com vocabulario de falha (nao regrediu pro outro lado)", () => {
+    const reportId = `envio-${AAMMDD}-guard-lock-held`;
+    const { subject } = buildGuardAlarmEmail({ verdict: "alarm-failure", reportId }, AAMMDD);
+    assert.match(subject, /falhou/i);
   });
 });
 

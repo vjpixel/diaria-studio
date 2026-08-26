@@ -36,6 +36,21 @@
  *   - NENHUM relatório `-guard-*` encontrado pra `aammdd` — a task nem
  *     rodou (crash antes do try, systemd não disparou, máquina desligada
  *     na janela 05:00) — ALARME.
+ *
+ * **#6221 — sufixo `-prereq-fallback-override-vigente` é caso à PARTE
+ * dentro de "QUALQUER OUTRO", com verdict próprio: `alarm-escalated`, não
+ * `alarm-failure`.** É o único desfecho em que o guard, de propósito, NÃO
+ * agiu sozinho — pré-requisito falhou, freio da noite era HOLD, e há
+ * override do editor vigente sobre esse HOLD (#6134): cancelar desfaria uma
+ * decisão explícita do editor, então o guard escala pro humano em vez de
+ * cancelar. Ainda gera e-mail/issue (ação humana É necessária — o freio não
+ * foi reavaliado com dado fresco), mas o VOCABULÁRIO muda: "escalou", não
+ * "falhou". Achado ao vivo (#6215): o e-mail/issue anterior ("falhou")
+ * levou um coordenador de overnight a ler um comportamento CORRETO como bug
+ * e quase recomendar uma ação (liberar IP na Brevo) que teria revertido a
+ * decisão do editor. Todo outro sufixo `-prereq-*`/`-cancelamento-
+ * incompleto`/`-lock-held`/`-abort`/desconhecido continua `alarm-failure`,
+ * sem mudança.
  */
 
 // Notas de evento (alarm-evento, #5553):
@@ -44,7 +59,7 @@
 //     Registra como evento histórico (family: "evento"); não se auto-resolve.
 //     Regressão: test/clarice-envio-guard-alarm.test.ts.
 
-export type EnvioGuardAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure";
+export type EnvioGuardAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure" | "alarm-escalated";
 
 export interface EnvioGuardAlarmReportFile {
   reportId: string;
@@ -54,6 +69,14 @@ export interface EnvioGuardAlarmReportFile {
 /** Sufixos de `reportId` (após `envio-{aammdd}-guard`) que representam desfecho ESPERADO — nunca alarme. Ver docstring do módulo pra origem de cada um. */
 const OK_SUFFIXES = new Set(["-paused", "-nada-a-fazer", "-ok", "-cancelou"]);
 
+/** #6221 — sufixo(s) que representam ESCALADA DELIBERADA (o guard fez o
+ * certo, não agiu sozinho por precaução): ainda alarma (ação humana é
+ * necessária), mas com vocabulário/verdict distintos de `alarm-failure`.
+ * Ver docstring do módulo. Hoje só o caso do override vigente (#6134) —
+ * lista deixada extensível de propósito, mas sem generalizar sem um caso
+ * concreto novo. */
+const ESCALATED_SUFFIXES = new Set(["-prereq-fallback-override-vigente"]);
+
 /** Entre candidatos do MESMO `aammdd`, o mais recente por mtime — se o guard rodou 2x no dia (retry manual + task agendada), o desfecho que importa é o ÚLTIMO. */
 export function pickLatestGuardReport(
   candidates: ReadonlyArray<EnvioGuardAlarmReportFile>,
@@ -62,12 +85,17 @@ export function pickLatestGuardReport(
   return candidates.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
 }
 
-/** `reportId` que não começa com `envio-{aammdd}-guard` é forma inesperada — trata como alarme (mesmo racional fail-toward-alarming do módulo). */
-export function classifyGuardReportId(reportId: string, aammdd: string): "ok" | "alarm" {
+/** `reportId` que não começa com `envio-{aammdd}-guard` é forma inesperada — trata como alarme (mesmo racional fail-toward-alarming do módulo).
+ * #6221 — 3 valores agora, não 2: `"escalated"` é o caso do override vigente
+ * (ver `ESCALATED_SUFFIXES`), distinto de `"alarm"` (falha real) mesmo os
+ * dois alarmando. */
+export function classifyGuardReportId(reportId: string, aammdd: string): "ok" | "escalated" | "alarm" {
   const prefix = `envio-${aammdd}-guard`;
   if (!reportId.startsWith(prefix)) return "alarm";
   const suffix = reportId.slice(prefix.length);
-  return OK_SUFFIXES.has(suffix) ? "ok" : "alarm";
+  if (OK_SUFFIXES.has(suffix)) return "ok";
+  if (ESCALATED_SUFFIXES.has(suffix)) return "escalated";
+  return "alarm";
 }
 
 export interface EnvioGuardAlarmEvaluation {
@@ -83,7 +111,12 @@ export function evaluateGuardAlarm(
   const latest = pickLatestGuardReport(candidates);
   if (!latest) return { verdict: "alarm-no-report", reportId: null };
   const classification = classifyGuardReportId(latest.reportId, aammdd);
-  return { verdict: classification === "ok" ? "ok" : "alarm-failure", reportId: latest.reportId };
+  // #6221 — 3 vias, não 2: "escalated" vira `alarm-escalated` (ação humana
+  // necessária, mas NÃO é falha — ver docstring do módulo), nunca colapsado
+  // em `alarm-failure`.
+  const verdict: EnvioGuardAlarmVerdict =
+    classification === "ok" ? "ok" : classification === "escalated" ? "alarm-escalated" : "alarm-failure";
+  return { verdict, reportId: latest.reportId };
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +173,25 @@ export function buildGuardAlarmEmail(
         `  systemctl --user status diaria-clarice-envio-guard.service\n` +
         `  journalctl --user -u diaria-clarice-envio-guard.service -n 100\n\n` +
         `Se ainda der tempo antes das 06:00, verifique a campanha manualmente no painel Brevo.` +
+        issueLine,
+    };
+  }
+  if (evaluation.verdict === "alarm-escalated") {
+    return {
+      subject: `⚠️ Diaria-Clarice-Envio-Guard ESCALOU em ${aammdd} (${evaluation.reportId}) — ação humana requerida`,
+      body:
+        `A rodada de ${aammdd} da task Diaria-Clarice-Envio-Guard (05:00 BRT) ESCALOU pra você — ` +
+        `relatório: data/clarice-subscribers/envio-reports/${evaluation.reportId}.md ` +
+        `(também na superfície de Relatórios do Studio, /relatorios).\n\n` +
+        `**Isto NÃO é uma falha do guard.** Os pré-requisitos (clarice-plan-wave/clarice-envio-risk) ` +
+        `falharam mesmo após retry, o freio da noite era HOLD, e há um override SEU vigente sobre esse ` +
+        `HOLD (#6134) — o guard leu isso corretamente e NÃO cancelou a onda por precaução, porque ` +
+        `cancelar teria desfeito a sua própria decisão. Nenhuma ação automática foi tomada. É o ` +
+        `comportamento DESEJADO sempre que há override vigente — o guard escala pra você em vez de agir ` +
+        `sozinho justamente porque a decisão já é sua, e ele não tem como saber se ela ainda vale com ` +
+        `dado fresco.\n\n` +
+        `Leia o relatório pra confirmar o motivo/prazo do override; se ele expirar antes da onda disparar ` +
+        `(06:00 BRT) numa próxima rodada, o guard volta a decidir sozinho com base no fallback normal.` +
         issueLine,
     };
   }

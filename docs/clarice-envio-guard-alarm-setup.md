@@ -14,12 +14,13 @@ Esta task é **isolada**: lê só a família `envio-{aammdd}-guard-*`, nunca com
 - `-nada-a-fazer` — sem onda pendente hoje. **OK.**
 - `-ok` — freio fresco reavaliado, dentro do aceitável (caminho normal, feliz). **OK.**
 - `-cancelou` — freio fresco em STOP, onda cancelada com sucesso — o guard fez exatamente o que devia. **OK** — é o caminho normal funcionando, não uma falha da automação.
-- **qualquer outro sufixo** — **ALARME**. Cobre deliberadamente:
+- **qualquer outro sufixo** — alarma (verdict `alarm-failure`, salvo o caso abaixo). Cobre deliberadamente:
   - `-cancelamento-incompleto` — cancelamento NÃO confirmado (mesmo achado CRITICAL do silent-failure-hunter que já protege o caminho normal do guard).
   - `-lock-held` / `-abort` — falha dura.
-  - **TODOS os `-prereq-*`** (#5220 — `-prereq-fallback-deixou-passar`, `-prereq-fallback-cancelou`, `-prereq-fallback-cancelamento-incompleto`, `-prereq-falhou-sem-pendencia`) — **mesmo quando o fallback "funcionou"** (deixou a onda passar com o freio anterior OK, ou suspendeu por precaução com sucesso), o guard NÃO conseguiu reavaliar o freio com dado FRESCO, que é a função inteira dele. Isso é sempre digno de atenção do editor, nunca silencioso.
+  - **TODOS os `-prereq-*` exceto `-prereq-fallback-override-vigente`** (#5220 — `-prereq-fallback-deixou-passar`, `-prereq-fallback-cancelou`, `-prereq-fallback-cancelamento-incompleto`, `-prereq-falhou-sem-pendencia`) — **mesmo quando o fallback "funcionou"** (deixou a onda passar com o freio anterior OK, ou suspendeu por precaução com sucesso), o guard NÃO conseguiu reavaliar o freio com dado FRESCO, que é a função inteira dele. Isso é sempre digno de atenção do editor, nunca silencioso.
   - um sufixo desconhecido/futuro — fail-toward-alarming de propósito, mesmo racional de `clarice-envio-alarm.ts`.
-- **nenhum relatório `-guard-*` encontrado** pra hoje — a task das 05:00 nem chegou a rodar (systemd não disparou, máquina desligada/hibernando na janela, crash antes do `try`). **ALARME.**
+- **`-prereq-fallback-override-vigente`** — alarma com verdict **`alarm-escalated`**, DISTINTO de `alarm-failure` (#6221). É o único caso em que o guard NÃO tentou fazer nada sozinho de propósito: pré-requisito falhou, o freio da noite era HOLD, e há um override do editor vigente sobre esse HOLD (#6134) — cancelar teria desfeito a decisão do editor, então o guard escala em vez de agir. Ainda assim exige atenção humana (o freio não foi reavaliado com dado fresco) — o e-mail/issue deste caso usa vocabulário próprio ("escalou", nunca "falhou") e diz explicitamente que nenhuma ação automática foi tomada. Achado ao vivo (#6215): o vocabulário anterior ("falhou") levou um coordenador de overnight a ler esta escalada correta como bug e quase recomendar uma ação (liberar IP na Brevo) que teria revertido a decisão do editor.
+- **nenhum relatório `-guard-*` encontrado** pra hoje — a task das 05:00 nem chegou a rodar (systemd não disparou, máquina desligada/hibernando na janela, crash antes do `try`). Verdict `alarm-no-report`. **ALARME.**
 
 ## Por que checar o relatório local em vez de reconsultar a Brevo
 
@@ -48,6 +49,7 @@ Depois do guard das 05:00 (o orçamento de retry+fallback do #5220 cabe folgado 
 1. Abra o relatório citado no e-mail (`data/clarice-subscribers/envio-reports/{reportId}.md`, também na superfície de Relatórios do Studio, `/relatorios`) — a causa exata está lá, inclusive qual decisão o fallback tomou (se aplicável).
 2. Se o e-mail citar um `reportId` com sufixo `-prereq-fallback-deixou-passar`, a onda já foi deixada seguir pro disparo das 06:00 com base no ÚLTIMO freio conhecido (não num dado fresco) — se ainda der tempo antes das 06:00, verifique a campanha manualmente no painel Brevo.
 3. Se o sufixo for `-prereq-fallback-cancelou` (ou `-guard-cancelou` do caminho normal), a onda já foi suspensa — nada urgente a fazer, mas vale entender a causa raiz do pré-requisito que falhou.
+3a. Se o sufixo for `-prereq-fallback-override-vigente`, o guard NÃO agiu de propósito — é o comportamento desejado com um override do editor vigente (#6134). Confirme que o override ainda vale (motivo/prazo estão no relatório); se sim, nada a fazer.
 4. Se o e-mail disser que **nenhum relatório foi encontrado**, o guard das 05:00 nem chegou a rodar — verifique `systemctl --user status diaria-clarice-envio-guard.service` / `journalctl --user -u diaria-clarice-envio-guard.service -n 100`, e considere checar a campanha manualmente no painel Brevo antes das 06:00.
 
 ## Setup (ação local one-time do editor)
