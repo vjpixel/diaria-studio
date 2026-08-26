@@ -28,8 +28,40 @@
  * - Não decide QUANDO usar Kit vs Beehiiv pra escrita/publicação — isso é
  *   `platform.config.json` → `publishing.newsletter.backend` (#464),
  *   ortogonal a este módulo de LEITURA histórica.
- * - Não busca cliques por link nem stats agregado — eixos separados da
- *   #463 (#6185/#6186), com bloqueios próprios (dependem de clique real).
+ * - Não BUSCA cliques por link em nenhuma API — isso continua sendo
+ *   `beehiiv-clicks-enricher` (via MCP) do lado Beehiiv e
+ *   `getBroadcastClicks` (`kit-client.ts`) do lado Kit. Este módulo só
+ *   NORMALIZA o que já está em disco pro shape unificado — ver `stats`
+ *   abaixo (#6185, item 2 reescrito).
+ *
+ * ## Cliques por link (`stats`, #6185)
+ *
+ * `UnifiedCachedPost.stats.clicks` resolve a ORIGEM da edição (mesma
+ * partição do resto da migração — Beehiiv para a base legada congelada no
+ * corte, Kit para quem se cadastrou depois) e devolve os cliques por link
+ * JÁ NO VOCABULÁRIO BEEHIIV (`NormalizedLinkClick`, ver abaixo) —
+ * consumidor não precisa saber de qual origem veio.
+ *
+ * - **Beehiiv**: `stats.clicks` já vem nesse vocabulário no cache real
+ *   (escrito por `apply-mcp-clicks.ts`, que mapeia a resposta do MCP
+ *   `list_post_clicks`) — passthrough direto, sem transformação.
+ * - **Kit**: `getBroadcastClicks` (`kit-client.ts`, campos confirmados
+ *   contra clique real em 26/08/2026, #6185) devolve `{id, url,
+ *   unique_clicks, click_to_delivery_rate, click_to_open_rate}` — SEM a
+ *   distinção verified/unverified que a Beehiiv tem (bot-filtering).
+ *   `normalizeKitClick` aproxima: usa `unique_clicks` pros três campos de
+ *   contagem (`unique_clicks`, `unique_verified_clicks`, `verified_clicks`)
+ *   e `click_to_open_rate` pros dois campos de taxa. **É uma aproximação
+ *   documentada, não um dado que o Kit reporta separado** — se algum
+ *   consumidor um dia precisar distinguir "clique verificado" no Kit, a
+ *   resposta é "o Kit não tem esse conceito", não um bug de mapeamento
+ *   aqui.
+ * - **Não há escritor do cache Kit ainda** (mesma ressalva de
+ *   `loadKitCache` abaixo) — `normalizeKitBroadcast` já sabe ler `clicks`
+ *   se o raw file carregar esse campo (contrato pronto pro futuro
+ *   `kit-sync.ts`/`apply-kit-clicks.ts`), mas hoje nenhum arquivo real
+ *   tem isso — `stats` fica `undefined` pra todo broadcast Kit até esse
+ *   escritor existir.
  *
  * ## Shape normalizado
  *
@@ -68,7 +100,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { KitBroadcastDetail, KitBroadcastSummary } from "../kit-client.ts";
+import type { KitBroadcastClick, KitBroadcastDetail, KitBroadcastSummary } from "../kit-client.ts";
 
 const MODULE_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 const ROOT = resolve(MODULE_DIR, "..", "..", "..");
@@ -106,7 +138,44 @@ export interface UnifiedCachedPost {
    *  `KIT_STATUS_TO_BEEHIIV_STATUS`. */
   status?: string;
   thumbnail_url?: string;
-  content?: { free?: { web?: string } };
+  content?: { free?: { web?: string; email?: string } };
+  /** Cliques por link, já resolvidos pra fonte certa — ver seção "Cliques
+   *  por link" na docstring do módulo. `undefined` = nunca buscado (mesma
+   *  semântica de `never_enriched`, ver `enrichment-state.ts`); presente
+   *  com `clicks: []` = buscado e confirmado zero. */
+  stats?: UnifiedClickStats;
+}
+
+/** Cliques por link no vocabulário Beehiiv — shape estruturalmente
+ * compatível com `LegacyClick` (`apply-mcp-clicks.ts`), **incluindo o
+ * aninhamento sob `email`**: `build-link-ctr.ts::matchClick` lê
+ * `c.email?.verified_clicks` etc., não campos soltos. Duplicado aqui em
+ * vez de importado (mesma razão de `slugFromUrl` abaixo: `lib/shared/` não
+ * importa de `scripts/` raiz, ver `test/lib-boundary.test.ts` — a fronteira
+ * não PROÍBE esse import especificamente, mas manter os módulos de
+ * `lib/shared/` sem dependência de scripts CLI da raiz evita que um
+ * refactor de CLI arraste este módulo de leitura junto). */
+export interface NormalizedLinkClick {
+  url: string;
+  url_hash?: string;
+  email: {
+    verified_clicks: number;
+    unique_verified_clicks: number;
+    unique_clicks: number;
+    click_rate?: number;
+    click_rate_verified?: number;
+  };
+  web?: { total_clicked?: number; total_unique_clicked?: number };
+}
+
+/** Shape de `stats` no cache normalizado — unique_opens é passthrough do
+ *  Beehiiv; o Kit não tem hoje um equivalente lido por este módulo (ver
+ *  docstring). `enrichment_state` é passthrough de
+ *  `scripts/lib/shared/enrichment-state.ts`. */
+export interface UnifiedClickStats {
+  email?: { unique_opens?: number };
+  clicks?: NormalizedLinkClick[];
+  enrichment_state?: string;
 }
 
 /** Shape mínimo lido de cada `data/beehiiv-cache/posts/{id}.json` — mesmos
@@ -123,7 +192,38 @@ interface RawBeehiivPostFile {
   publish_date?: number | null;
   status?: string;
   thumbnail_url?: string;
-  content?: { free?: { web?: string } };
+  content?: { free?: { web?: string; email?: string } };
+  stats?: UnifiedClickStats;
+}
+
+/** Shape de 1 broadcast Kit em cache, estendido com um campo `clicks`
+ * FUTURO (ver docstring do módulo — nenhum escritor grava isto ainda).
+ * `KitBroadcastSummary`/`KitBroadcastDetail` (`kit-client.ts`) não têm
+ * campo de cliques; este é o contrato que um `apply-kit-clicks.ts` futuro
+ * seguiria pra anexar cliques ao arquivo de cache do broadcast. */
+type RawKitBroadcastFile = KitBroadcastSummary &
+  Partial<Pick<KitBroadcastDetail, "content" | "public_url">> & {
+    clicks?: KitBroadcastClick[];
+  };
+
+/**
+ * Normaliza 1 click do Kit (`getBroadcastClicks`, campos confirmados
+ * #6185) pro vocabulário Beehiiv. O Kit não distingue clique
+ * verificado/não-verificado (bot-filtering) — `unique_clicks` é usado pros
+ * três campos de contagem, e `click_to_open_rate` pros dois de taxa. Ver
+ * ressalva completa na docstring do módulo ("Cliques por link").
+ */
+export function normalizeKitClick(c: KitBroadcastClick): NormalizedLinkClick {
+  return {
+    url: c.url,
+    email: {
+      unique_clicks: c.unique_clicks,
+      unique_verified_clicks: c.unique_clicks,
+      verified_clicks: c.unique_clicks,
+      click_rate: c.click_to_open_rate,
+      click_rate_verified: c.click_to_open_rate,
+    },
+  };
 }
 
 /**
@@ -182,17 +282,19 @@ export function normalizeBeehiivPost(raw: RawBeehiivPostFile): UnifiedCachedPost
     status: raw.status,
     thumbnail_url: raw.thumbnail_url,
     content: raw.content,
+    stats: raw.stats,
   };
 }
 
 /**
  * Normaliza 1 broadcast do Kit pro shape unificado. `public_url` ausente é
  * tratado explicitamente (ver docstring do módulo) — nunca um `!`/cast que
- * assumiria presença.
+ * assumiria presença. `stats.clicks` só aparece se o raw file carregar
+ * `clicks` (ver `RawKitBroadcastFile`) — hoje isso nunca acontece na
+ * prática (sem escritor, ver docstring do módulo), mas o mapeamento já
+ * fica pronto.
  */
-export function normalizeKitBroadcast(
-  b: KitBroadcastSummary & Partial<Pick<KitBroadcastDetail, "content" | "public_url">>,
-): UnifiedCachedPost {
+export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost {
   const webUrl = b.public_url; // pode ser undefined — não assumir presença (#6096)
   return {
     origin: "kit",
@@ -220,6 +322,7 @@ export function normalizeKitBroadcast(
     status: KIT_STATUS_TO_BEEHIIV_STATUS[b.status] ?? b.status,
     thumbnail_url: b.thumbnail_url ?? undefined,
     content: b.content ? { free: { web: b.content } } : undefined,
+    stats: b.clicks ? { clicks: b.clicks.map(normalizeKitClick) } : undefined,
   };
 }
 
@@ -266,8 +369,7 @@ export function loadKitCache(dir: string = DEFAULT_KIT_BROADCASTS_DIR): UnifiedC
   const files = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "index.json");
   for (const f of files) {
     try {
-      const raw = JSON.parse(readFileSync(resolve(dir, f), "utf8")) as KitBroadcastSummary &
-        Partial<Pick<KitBroadcastDetail, "content" | "public_url">>;
+      const raw = JSON.parse(readFileSync(resolve(dir, f), "utf8")) as RawKitBroadcastFile;
       posts.push(normalizeKitBroadcast(raw));
     } catch (e) {
       process.stderr.write(
