@@ -586,8 +586,9 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
 
 /**
  * Adquire o lock global de merge (item 4 do #5156) — serializa `gh pr merge` +
- * `git pull` entre sessões concorrentes (mesma máquina é atômico via `O_EXCL`;
- * entre máquinas via OneDrive o lock é **advisory** — ver docblock). TTL curto: um lock mais velho que
+ * `git pull` entre sessões concorrentes (mesma máquina é atômico via
+ * `O_EXCL`; entre máquinas via OneDrive o lock é **advisory** — ver o
+ * docblock do módulo e o #6182). TTL curto: um lock mais velho que
  * `MERGE_LOCK_TTL_MS` é tratado como abandonado (coordenador crashou
  * segurando o lock) e liberado automaticamente pro próximo adquirente —
  * nunca trava a máquina pra sempre.
@@ -595,9 +596,12 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  * **#5161 fleet review item 1 (CRÍTICO):** a versão anterior fazia
  * read→check→write sem NENHUMA primitiva atômica — duas sessões podiam ler
  * "sem lock" simultaneamente e ambas escreverem, ambas recebendo `true`,
- * quebrando a exclusão mútua que é o propósito inteiro deste mecanismo
- * (exatamente o cenário cross-máquina via `data/` OneDrive que o #5156
- * existe pra proteger). Fix em duas partes:
+ * quebrando a exclusão mútua NA MESMA MÁQUINA, que é o mínimo esperado
+ * deste mecanismo. (O #5161 descrevia esse bug como sendo "o cenário
+ * cross-máquina via `data/` OneDrive que o #5156 existe pra proteger" — o
+ * #6182 corrigiu essa parte: o fix abaixo resolve a corrida entre processos
+ * do MESMO filesystem; entre máquinas o lock segue advisory, e nenhuma das
+ * duas partes muda isso.) Fix em duas partes:
  *   1. **Fast path (mesma máquina — nenhuma concorrência com outro inode):**
  *      criação exclusiva atômica (`writeFileSync(path, data, { flag: "wx" })`,
  *      que mapeia pra `O_CREAT | O_EXCL`). Entre processos DIFERENTES no
