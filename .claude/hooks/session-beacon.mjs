@@ -106,6 +106,19 @@ import { hostname } from "node:os";
 /** Kind das sessões registradas por este hook. Nunca coordenador — ver blast radius 2. */
 export const BEACON_KIND = "interactive";
 
+/**
+ * Duplicado de `COORDINATOR_SESSION_KINDS` (`scripts/lib/session-registry.ts`)
+ * — hook self-contained, mesma razão documentada em `pr-create-review.mjs`/
+ * `block-gh-pr-merge-subagent.mjs`. `test/session-beacon-blast-radius.test.ts`
+ * trava que os dois conjuntos não divergem.
+ *
+ * Usado por `findExistingSessionFile` (#6326 fleet review item 3) pra
+ * preferir um registro COORDENADOR sobre um `interactive` pro MESMO
+ * sessionId, em vez de decidir por ordem alfabética — ver docstring de
+ * `findExistingSessionFile`.
+ */
+export const COORDINATOR_KIND_PREFIXES = ["overnight", "develop", "continuo"];
+
 /** Duplicado de `TOUCHED_PATHS_CAP` em session-registry.ts (hook self-contained). */
 export const TOUCHED_PATHS_CAP = 200;
 
@@ -353,19 +366,71 @@ export function buildBeaconRecord(previous, event) {
  * esse registro, nunca criar um `interactive-*` paralelo pro mesmo
  * `sessionId` (isso a faria aparecer duas vezes em `list-active` e contar
  * duplicado em todo consumidor).
+ *
+ * **#6326 fleet review item 3 — desempate por KIND, não por ordem
+ * alfabética.** A versão anterior fazia só `.sort()[0]` sobre todo match do
+ * sufixo. Isso é correto SÓ por acidente: alfabeticamente
+ * `continuo` < `develop` < `interactive` < `overnight`. Então, quando os dois
+ * arquivos presentes eram `{develop|continuo}-*` + `interactive-*`, o
+ * coordenador vinha primeiro (certo, por sorte de ordenação) — mas quando
+ * eram `interactive-*` + `overnight-*` (o par exato medido ao vivo no
+ * `helios` pela #6326), `interactive` vinha ANTES de `overnight` e o beacon
+ * escolhia o arquivo ERRADO **permanentemente**: escrevia heartbeat no
+ * `interactive-*` só recém-promovido-e-removido por `registerSession`,
+ * recriando-o, e o `overnight-*` coordenador ficava sem heartbeat do beacon
+ * dali em diante. Agora: se QUALQUER match for de kind coordenador
+ * (`COORDINATOR_KIND_PREFIXES`), prefere ele explicitamente sobre
+ * `interactive` — nunca depende de ordenação lexicográfica de novo.
  */
 export function findExistingSessionFile(sessionsDir, sessionId, fs = { existsSync, readdirSync }) {
   try {
     if (!fs.existsSync(sessionsDir)) return null;
     const suffix = `-${sessionId}.json`;
-    const match = fs
+    const matches = fs
       .readdirSync(sessionsDir)
-      .filter((n) => n.endsWith(suffix) && !n.startsWith(".") && !n.includes("-safeBackup-"))
+      .filter((n) => n.endsWith(suffix) && !n.startsWith(".") && !n.includes("-safeBackup-"));
+    if (matches.length === 0) return null;
+    const coordinatorMatches = matches
+      .filter((n) => COORDINATOR_KIND_PREFIXES.some((k) => n.startsWith(`${k}-`)))
       .sort();
-    return match.length > 0 ? match[0] : null;
+    if (coordinatorMatches.length > 0) return coordinatorMatches[0];
+    return matches.sort()[0];
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve, IMEDIATAMENTE ANTES do write (#6326 fleet review item 3), o path
+ * onde o beacon vai gravar — reduz (nunca elimina) a janela de corrida entre
+ * a resolução original de `path` (feita mais cedo nesta mesma invocação) e o
+ * `writeJsonAtomic`: se `registerSession` promoveu e removeu o arquivo
+ * resolvido nesse meio-tempo (a skill rodando `register` concorrente à
+ * própria chamada de ferramenta que disparou este beacon), escrever cego no
+ * `resolvedPath` recriaria exatamente o `interactive-*` que acabou de ser
+ * removido.
+ *
+ * Se `resolvedPath` ainda existe, usa ele (caminho comum, sem custo extra —
+ * só um `existsSync`). Se sumiu, re-resolve via `findExistingSessionFile`
+ * (que agora já prefere kind coordenador, ver acima) — achando um registro
+ * novo (o promovido), escreve nele; não achando nada, cai de volta no
+ * `resolvedPath` original (comportamento anterior, cria o registro do zero).
+ *
+ * **Risco residual, deliberadamente não eliminado:** não há lock
+ * cross-processo aqui (mesma limitação documentada pro merge lock em
+ * `scripts/lib/session-registry.ts`, #6182) — entre este `existsSync` e o
+ * `writeJsonAtomic` que o chama, o arquivo re-resolvido ainda pode, em
+ * teoria, ser promovido/removido de novo por outra chamada concorrente. Isto
+ * estreita a janela de corrida de "toda a duração de uma chamada de
+ * ferramenta" pra "os poucos microssegundos entre um `existsSync` e um
+ * write atômico" — não a fecha por completo. Nunca lança (mesma disciplina
+ * fail-open do hook inteiro — qualquer erro aqui cai no catch externo do
+ * entrypoint).
+ */
+export function resolveWritePathAtWriteTime(sessionsDir, sessionId, resolvedPath, fs = { existsSync, readdirSync }) {
+  if (fs.existsSync(resolvedPath)) return resolvedPath;
+  const reresolved = findExistingSessionFile(sessionsDir, sessionId, fs);
+  return reresolved ? join(sessionsDir, reresolved) : resolvedPath;
 }
 
 /** Write atômico (write-then-rename), mesmo padrão de `writeFileAtomic` — ver #6130 item 4. */
@@ -456,7 +521,15 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         // spawna o hook como filho direto dela) — mesmo racional do #6160.
         pid: process.ppid,
       });
-      if (record) writeJsonAtomic(path, record);
+      if (record) {
+        // #6326 fleet review item 3: re-resolve o path de escrita agora,
+        // reduzindo (não eliminando — ver docstring de
+        // `resolveWritePathAtWriteTime`) a janela de corrida com
+        // `registerSession` promovendo este MESMO sessionId entre a
+        // resolução original de `path` (acima) e este write.
+        const writePath = resolveWritePathAtWriteTime(sessionsDir, sessionId, path);
+        writeJsonAtomic(writePath, record);
+      }
       // Nunca emitir saída: este hook não altera nem bloqueia a chamada.
     } catch {
       // Fail-open total — ver "CUSTO E FAIL-OPEN" no topo.
