@@ -442,6 +442,8 @@ npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
 ```
 Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.
 
+**Não é mais só um passo em prosa (#6305).** Caso real (edição 260827): o humanizador rodou de fato (snapshot `03-social-pre-humanizador.md` presente, diff confirmando reescrita), mas esta chamada `--write` nunca aconteceu numa sessão via `run-edition-stages.ts` — e o `humanizer-ran` (guard mecânico de #6009 que já bloqueava o `write` do sentinel de Stage 2) não capturava isso, porque ele só prova que a skill `humanizador` rodou (via snapshot), não que este passo seguinte rodou. O Stage 4 só descobriu no `check-humanizer-social.ts --check`, exit 1, tarde demais pra ser barato de corrigir. A regra `social-humanizer-sentinel-written` (`scripts/lib/invariant-checks/stage-2.ts`) fecha essa lacuna: `pipeline-sentinel.ts write --step 2` (mesmo gate do `humanizer-ran`) agora também recusa gravar o sentinel do Stage 2 se `_internal/.humanizer-social-done.json` estiver ausente ou com hash divergente do `03-social.md` atual — pular esta chamada não passa mais silenciosamente.
+
 Exit code handling:
 - `0` → sentinel gravado com sucesso.
 - `1` → falha ao gravar (permissão, disco) — logar warn e **CONTINUAR Stage 2**. Stage 4 vai bloquear com exit 1 até o sentinel ser gravado manualmente.

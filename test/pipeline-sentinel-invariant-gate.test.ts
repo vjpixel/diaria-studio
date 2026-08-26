@@ -31,6 +31,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkStageInvariantsForWrite } from "../scripts/pipeline-sentinel.ts";
+import { writeSentinel } from "../scripts/check-humanizer-social.ts"; // #6305
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sentinelCli = join(repoRoot, "scripts", "pipeline-sentinel.ts");
@@ -250,6 +251,85 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
       assert.equal(existsSync(join(monthlyDir, "_internal", ".step-2-done.json")), true);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #6305 — Regressão: `humanizer-ran` (assertHumanized, snapshot-based) prova
+ * que a skill `humanizador` foi invocada — não prova que o passo SEGUINTE e
+ * independente do playbook (`check-humanizer-social.ts --write`, que grava
+ * `_internal/.humanizer-social-done.json`) de fato rodou. Cenário real da
+ * edição 260827: o snapshot `03-social-pre-humanizador.md` existia (humanizer
+ * rodou, humanizer-ran passava), mas o `--write` nunca aconteceu — o Stage 2
+ * seguiu pra Etapa 3 sem o sentinel, e só o gate do Stage 4
+ * (`check-humanizer-social.ts --check`) descobriu isso depois, exit 1.
+ *
+ * A nova regra `social-humanizer-sentinel-written` fecha essa lacuna
+ * bloqueando `pipeline-sentinel.ts write --step 2` mecanicamente — sem
+ * depender do passo em prosa do playbook ser lembrado.
+ */
+describe("social-humanizer-sentinel-written (#6305)", () => {
+  it("humanizer rodou (snapshot presente) mas sentinel --write nunca aconteceu → write recusado, e humanizer-ran sozinho NÃO capturaria isso", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6305-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      // Mesmo estado real da edição 260827: 03-social.md existe, o snapshot
+      // pré-humanizador existe (prova que a skill rodou) — mas
+      // `.humanizer-social-done.json` nunca foi gravado.
+      writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado\n");
+      writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "# Social\n## d1\ntexto pré-humanizador\n");
+
+      const result = checkStageInvariantsForWrite(dir, 2);
+
+      assert.equal(result.passed, false);
+      assert.ok(
+        result.errors.some((v) => v.rule === "social-humanizer-sentinel-written"),
+        "esperava violação social-humanizer-sentinel-written quando o sentinel nunca foi gravado",
+      );
+      // A prova do gap real do #6305: o guard PRÉ-EXISTENTE (humanizer-ran)
+      // não acusa nada aqui — o snapshot está presente e não-stale, então
+      // ele passa silenciosamente. Sem a nova regra, nada bloquearia o write.
+      assert.ok(
+        !result.errors.some((v) => v.rule === "humanizer-ran"),
+        "humanizer-ran não deveria acusar nada aqui — é exatamente o gap que o #6305 fecha",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sentinel gravado via check-humanizer-social.ts --write (writeSentinel) → violação desaparece", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6305-ok-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "03-social.md"), "# Social\n## d1\ntexto humanizado\n");
+      writeFileSync(join(dir, "_internal", "03-social-pre-humanizador.md"), "# Social\n## d1\ntexto pré-humanizador\n");
+
+      // Passo que faltou na sessão real da issue #6305 — rodá-lo aqui fecha o loop.
+      writeSentinel(dir);
+
+      const result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "social-humanizer-sentinel-written"),
+        "sentinel gravado e hash bate com 03-social.md atual — não deveria mais violar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("03-social.md ausente (Stage 2 ainda não produziu) → sem violação (outro check captura)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-social-6305-missing-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "social-humanizer-sentinel-written"),
+        "sem 03-social.md ainda, este check não deveria disparar (arquivo ausente é responsabilidade de outro check)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
