@@ -163,8 +163,8 @@
       "mode": "draft",
       "template": "HTML",
       "test_email": "vjpixel@gmail.com",
-      "backend": "beehiiv",
-      "backend_note": "#464 (24/08/2026) — 'beehiiv' (default, playbook Chrome-automation atual) ou 'kit' (scripts/publish-newsletter-kit.ts, API REST, sem browser automation). Achado do review (#6080): esta chave hoje só é lida pelo próprio publish-newsletter-kit.ts (guard contra invocação acidental) — o orchestrator/Stage 5 ainda NÃO dispatcha por ela, então trocar pra 'kit' aqui não afeta /diaria-5-publicacao. Wiring do dispatch automático é trabalho futuro."
+      "backend": "kit",
+      "backend_note": "#464/#6114 — \"beehiiv\" (playbook Chrome-automation) ou \"kit\" (scripts/publish-newsletter-kit.ts, API REST, sem browser automation). Trocado pra \"kit\" em 26/08/2026 — switchover do #6114, autorizado pelo editor. O Stage 5 ramifica por esta chave (orchestrator-stage-5.md, Passo 5c-1 vs 5c-1-kit — wiring do PR #6096) e os invariants de Stage 5/6 tambem a leem: trocar aqui MUDA a publicacao real. A nota anterior afirmava que so publish-newsletter-kit.ts lia a chave — era verdade no #6080 e ficou obsoleta com o #6096; nao restaurar. Pre-condicao verificada antes da virada: scripts/reconcile-beehiiv-kit.ts com \"so na Beehiiv: 0\" (guard do #6269)."
     },
     "social": {
       "mode": "draft_or_schedule",
