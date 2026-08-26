@@ -583,8 +583,13 @@ export async function handleJogarSubscribe(
 
   const utm = resolveSubscribeUtm(v.source);
   // #6048: seleção de backend local a este handler — env.SUBSCRIBE_BACKEND
-  // não é lido por nenhum outro dispatch fora deste worker (mesmo estado do
-  // #464 pro publisher da newsletter: código pronto, switchover manual).
+  // não é lido por nenhum dispatch fora do worker `poll`, mas DENTRO do
+  // worker são 5 handlers que ramificam, não só este (achado do rollout
+  // incompleto original — ver a lista completa e o guard estrutural na
+  // docstring de `SUBSCRIBE_BACKEND` em index.ts, e
+  // test/subscribe-backend-branching-guard-6048.test.ts como fonte de
+  // verdade sobre completude). Mesmo estado do #464 pro publisher da
+  // newsletter: código pronto, switchover manual.
   const result =
     env.SUBSCRIBE_BACKEND === "kit"
       ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl, utm)

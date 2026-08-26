@@ -33,3 +33,30 @@ workers_dev = true
 
 [assets]
 directory = "./public"
+# html_handling = "drop-trailing-slash" (#467, achado ao vivo 26/08/2026):
+# o default do Cloudflare Workers Assets é "auto-trailing-slash", que
+# canonicaliza pastas (`p/{slug}/index.html`) pra forma COM barra —
+# `/p/{slug}` responderia 307 -> `/p/{slug}/`. Isso contradiz os 3 outros
+# sinais SEM barra: as 258 URLs indexadas pelo Google hoje (via Beehiiv,
+# que serve /p/{slug} 200 direto), as ~1.950 referências a essa forma no
+# repo, e o próprio `<link rel="canonical">` que buildArchivePageHtml
+# (scripts/lib/site-archive-pages.ts, via archiveUrlForSlug) grava sem
+# barra em cada página. Sinal contraditório é exatamente o cenário que
+# docs/seo-notes.md Fato 2 documenta como o risco real da migração anterior
+# (10 URLs presas semanas em "cópia, canônica divergente" mesmo com os
+# outros 3 sinais corretos) — "drop-trailing-slash" faz `/p/{slug}` servir
+# 200 direto e `/p/{slug}/` redirecionar de volta pra forma sem barra,
+# eliminando a ambiguidade antes do cutover. Confirmado na doc oficial:
+# https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/
+# — valores possíveis são auto-trailing-slash (default) / force-trailing-slash
+# / drop-trailing-slash / none. Teste de regressão:
+# test/site-worker-html-handling-467.test.ts.
+#
+# ESCOPO: vale pro bloco [assets] INTEIRO deste Worker, não só `/p/*` — quem
+# implementar os itens 2-6 do #467 (`/`, `/subscribe`, `/forms/*`, a página
+# de edição nova) neste mesmo `public/` herda `drop-trailing-slash` global
+# de graça. Reconferir se essa é a forma canônica certa pra esses alvos
+# também (ex: um form de subscribe costuma não ter uma forma "canônica"
+# indexada do mesmo jeito que uma página de edição) antes de assumir que
+# nada precisa mudar aqui.
+html_handling = "drop-trailing-slash"

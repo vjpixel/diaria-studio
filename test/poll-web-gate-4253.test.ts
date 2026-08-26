@@ -559,7 +559,7 @@ describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (
 
     // Sessão válida (simula pós-verify/subscribe bem-sucedidos) — gate não
     // deve reaparecer, então o dispatch cai direto no branch sem edition.
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com", "confirmed")).split(";")[0];
     const nextRes = await worker.fetch(
       new Request(`https://poll.test${target}`, {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },
@@ -669,7 +669,7 @@ describe("#4271: gate via link de edição única de verdade preserva o destino 
     const target = new Function(`return ${expr};`)() as string;
     assert.match(target, /[?&]edition=260601\b/, "#4271: alvo de goToGame() deve preservar a edição pedida");
 
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com", "confirmed")).split(";")[0];
     const nextRes = await worker.fetch(
       new Request(`https://poll.test${target}`, {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },

@@ -303,10 +303,15 @@ export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL, LAYOUT.sidePa
  * `margin-left/right: auto` sobrevive porque o Kit escreve `text-align`, nunca
  * `margin` — não há colisão. Centraliza o BLOCO em vez do texto.
  *
- * **A linha de unsubscribe + endereço continua à esquerda e não tem conserto
- * por CSS** — é `<p>` com texto, e só `text-align` a centralizaria. Depende de
- * configuração no painel do Kit (item em aberto na #6181). Não tentar de novo
- * com `!important`: já foi testado, é o mecanismo errado.
+ * **A linha de unsubscribe + endereço continua à esquerda e NÃO TEM CONSERTO
+ * — nem por CSS, nem por painel (#6181, veredito final 26/08/2026).** Painel
+ * do Kit (`app.kit.com`) investigado inteiro em `/diaria-develop` 260826b:
+ * varrida toda `Settings → Email` (Email addresses, Verified sending
+ * domains, Click Tracking Domain, Default time zone, Mailing address,
+ * Unsubscribe survey, Subscriber consent/GDPR) e `Settings → Brand` — zero
+ * controle de alinhamento de rodapé/template em qualquer um. Parede de
+ * plataforma, não pendência: não reabrir sem uma capacidade nova do Kit.
+ * Não tentar de novo com `!important`: já foi testado, é o mecanismo errado.
  */
 export const KIT_FOOTER_STYLE_BLOCK = `
 <style>

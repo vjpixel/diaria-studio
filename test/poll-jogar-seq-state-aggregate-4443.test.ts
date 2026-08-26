@@ -298,7 +298,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
     const { env, gets } = countingEnv({
       [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify(seq),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, monthEditions, cookie);
 
     assert.ok(gets() <= 4, `caminho rápido deve custar ≤4 gets — gastou ${gets()}`);
@@ -309,7 +309,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
   it("contrato de resposta: mesma ORDEM das edições pedidas", async () => {
     const seq: SeqMonthMap = { "260601": true, "260603": false, "260602": null };
     const { env } = countingEnv({ [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify(seq) });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260603", "260601", "260602"], cookie);
     assert.deepEqual(state.map((e) => e.edition), ["260603", "260601", "260602"]);
   });
@@ -317,7 +317,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
   it("anti-spoiler: correct:null no agregado (voto sem gabarito na hora) sai como voted:true, correct:null — nunca 'não votado'", async () => {
     const seq: SeqMonthMap = { "260601": null };
     const { env } = countingEnv({ [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify(seq) });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601"], cookie);
     assert.deepEqual(state, [{ edition: "260601", voted: true, correct: null }]);
   });
@@ -325,7 +325,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
   it("edição ausente do agregado → voted:false, correct:null", async () => {
     const seq: SeqMonthMap = { "260601": true };
     const { env } = countingEnv({ [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify(seq) });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601", "260602"], cookie);
     assert.deepEqual(state, [
       { edition: "260601", voted: true, correct: true },
@@ -338,7 +338,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
       [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify({ "260602": true }),
       [`web:seq:2026-06:${TOKEN}`]: JSON.stringify({ "260601": false }),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601", "260602"], cookie);
     assert.deepEqual(state, [
       { edition: "260601", voted: true, correct: false },
@@ -351,7 +351,7 @@ describe("handleJogarSeqState — caminho rápido: agregado presente (#4443)", (
       [`web:seq:2026-06:${REAL_EMAIL}`]: JSON.stringify({ "260601": true }),
       [`web:seq:2026-06:${TOKEN}`]: JSON.stringify({ "260601": false }),
     });
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     const state = await seqState(env, ["260601"], cookie);
     assert.deepEqual(state, [{ edition: "260601", voted: true, correct: true }]);
   });
@@ -397,7 +397,7 @@ describe("handleJogarSeqState — fallback: agregado ausente (#4443)", () => {
 
   it("orçamento total do fallback (1 get de agregado + fases por edição) cabe em SEQ_STATE_SUBREQUEST_BUDGET", async () => {
     const { env, gets } = countingEnv();
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     await seqState(env, monthEditions, cookie);
     assert.ok(gets() <= SEQ_STATE_SUBREQUEST_BUDGET, `orçamento estourado: ${gets()} > ${SEQ_STATE_SUBREQUEST_BUDGET}`);
   });
@@ -442,7 +442,7 @@ describe("handleJogarSeqState — self-heal (#4443)", () => {
       [`web:vote:260602:${REAL_EMAIL}`]: JSON.stringify({ choice: "B", correct: false }),
     };
     const { env, kv } = countingEnv(seed);
-    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL, "confirmed")).split(";")[0];
     await seqState(env, ["260601", "260602"], cookie);
 
     const tokenAgg = JSON.parse(kv._map.get(`web:seq:2026-06:${TOKEN}`) ?? "{}");

@@ -83,6 +83,18 @@
  *       ausente, slug não-extraível de `post_url`, ou `post_url` ausente sem
  *       `--slug`) — diferente do `2`, isto é sintoma de bug num stage
  *       anterior e merece atenção, não silêncio.
+ *   5 — GUARD (#6202): `buildArchivePageHtml` recusou o HTML por merge tag
+ *       não resolvida (`UnresolvedMergeTagError`, guard do #6210/#6256 —
+ *       mesma função que o gerador do acervo usa, `lib/site-archive-pages.ts`).
+ *       Falha fechada: NADA é escrito nem commitado. **Não é o caminho comum**
+ *       — a merge tag padrão do link de voto (`?email={{email}}`, presente em
+ *       toda edição Beehiiv) já é sanitizada dentro de `buildArchivePageHtml`
+ *       antes deste guard rodar; `5` só dispara pra tag DESCONHECIDA (ex:
+ *       backend Kit, ou uma variante nova). Nomeia a(s) tag(s) na mensagem.
+ *       Agnóstico à decisão pendente do #6210 (o que a página web deve fazer
+ *       com o bloco de voto do É IA? — remover parâmetro, apontar pro
+ *       `/jogar`, ou remover o bloco): este guard só recusa publicar o
+ *       literal cru, não decide como resolvê-lo.
  *
  * Uso:
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir data/editions/AAMMDD --slug o-slug-do-post
@@ -93,7 +105,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { buildArchivePageHtml } from "./lib/site-archive-pages.ts";
+import { buildArchivePageHtml, UnresolvedMergeTagError } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -143,7 +155,8 @@ export type PublishPageResult =
   | { code: 0; slug: string; bytes: number; published: boolean }
   | { code: 2; reason: string }
   | { code: 3; reason: string }
-  | { code: 4; reason: string };
+  | { code: 4; reason: string }
+  | { code: 5; reason: string; tags: string[] };
 
 /**
  * Lê os artefatos da edição.
@@ -382,6 +395,20 @@ export function publishEditionSitePage(
   try {
     html = buildArchivePageHtml(built.post);
   } catch (e) {
+    if (e instanceof UnresolvedMergeTagError) {
+      // #6202 guard: recusa fechada, ANTES de qualquer write/commit/push.
+      // `e.tags` já vem deduplicado (ver docstring de UnresolvedMergeTagError
+      // em lib/site-archive-pages.ts). Não é sintoma de bug de config — é o
+      // caminho esperado até o #6210 decidir o que a página web faz com o
+      // bloco de voto (ver docstring do módulo pro exit code 5).
+      const reason =
+        `página de /p/${built.post.slug} recusada — merge tag não resolvida: ${e.tags.join(", ")}. ` +
+        `newsletter-final.html é insumo de E-MAIL (o ESP expande a merge tag só no ENVIO); uma página ` +
+        `web estática nunca passa por essa expansão. Nada foi escrito/commitado. Resolver via #6210 ` +
+        `(o que a página web faz com o bloco de voto do É IA?), não neste passo.`;
+      deps.log(`GUARD (#6202): ${reason}`);
+      return { code: 5, reason, tags: e.tags };
+    }
     const reason = `render da página falhou: ${(e as Error).message}`;
     deps.log(reason);
     return { code: 3, reason };
