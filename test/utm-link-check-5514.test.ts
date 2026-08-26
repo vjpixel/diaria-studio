@@ -96,7 +96,7 @@ describe("hasFullUtmCoverage", () => {
 describe("CLI check-utm-coverage.ts", () => {
   it("--text com link incompleto sai com exit 0 em modo advisory (default)", () => {
     // Não lança → exit 0, mesmo com achado (advisory por padrão, só --strict falha).
-    execFileSync("npx", ["tsx", "scripts/check-utm-coverage.ts", "--text", "https://diar.ia.br/"], {
+    execFileSync(process.execPath, ["--import", "tsx", "scripts/check-utm-coverage.ts", "--text", "https://diar.ia.br/"], {
       encoding: "utf-8",
       stdio: "pipe",
     });
@@ -105,8 +105,8 @@ describe("CLI check-utm-coverage.ts", () => {
   it("--text com link incompleto sai com exit 1 em --strict", () => {
     assert.throws(() => {
       execFileSync(
-        "npx",
-        ["tsx", "scripts/check-utm-coverage.ts", "--text", "https://diar.ia.br/", "--strict"],
+        process.execPath,
+        ["--import", "tsx", "scripts/check-utm-coverage.ts", "--text", "https://diar.ia.br/", "--strict"],
         { encoding: "utf-8", stdio: "pipe" },
       );
     });
@@ -114,8 +114,9 @@ describe("CLI check-utm-coverage.ts", () => {
 
   it("--text com link completo sai 0 mesmo em --strict", () => {
     execFileSync(
-      "npx",
+      process.execPath,
       [
+        "--import",
         "tsx",
         "scripts/check-utm-coverage.ts",
         "--text",
@@ -129,7 +130,7 @@ describe("CLI check-utm-coverage.ts", () => {
 
   it("sem --text nem --file sai com exit 2", () => {
     assert.throws(() => {
-      execFileSync("npx", ["tsx", "scripts/check-utm-coverage.ts"], { encoding: "utf-8", stdio: "pipe" });
+      execFileSync(process.execPath, ["--import", "tsx", "scripts/check-utm-coverage.ts"], { encoding: "utf-8", stdio: "pipe" });
     });
   });
 });

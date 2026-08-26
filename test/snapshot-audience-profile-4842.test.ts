@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import {
   snapshotAudienceProfile,
   SNAPSHOT_FILENAME,
@@ -30,10 +30,10 @@ describe("snapshotAudienceProfile (unit)", () => {
 
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.dest, join("/edicoes/260423", "_internal", SNAPSHOT_FILENAME));
+      assert.equal(result.dest, resolve("/edicoes/260423", "_internal", SNAPSHOT_FILENAME));
     }
-    assert.deepEqual(copyCalls, [["/context/audience-profile.md", join("/edicoes/260423", "_internal", SNAPSHOT_FILENAME)]]);
-    assert.deepEqual(mkdirCalls, [join("/edicoes/260423", "_internal")]);
+    assert.deepEqual(copyCalls, [["/context/audience-profile.md", resolve("/edicoes/260423", "_internal", SNAPSHOT_FILENAME)]]);
+    assert.deepEqual(mkdirCalls, [resolve("/edicoes/260423", "_internal")]);
   });
 
   it("profile fonte ausente → fail-soft, ok:false com motivo, sem copiar", () => {
@@ -54,8 +54,8 @@ describe("snapshotAudienceProfile (unit)", () => {
 
 describe("snapshot-audience-profile CLI (#4842)", () => {
   function runCli(args: string[]) {
-    const projectRoot = join(import.meta.dirname, "..");
-    const scriptPath = join(projectRoot, "scripts", "snapshot-audience-profile.ts");
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const scriptPath = resolve(projectRoot, "scripts", "snapshot-audience-profile.ts");
     return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
       cwd: projectRoot,
       encoding: "utf8",
@@ -64,16 +64,16 @@ describe("snapshot-audience-profile CLI (#4842)", () => {
   }
 
   it("grava o snapshot em _internal/ a partir de --source explícito", () => {
-    const dir = mkdtempSync(join(tmpdir(), "snapshot-audience-profile-"));
+    const dir = mkdtempSync(resolve(tmpdir(), "snapshot-audience-profile-"));
     try {
-      const editionDir = join(dir, "260423");
-      const sourcePath = join(dir, "fake-audience-profile.md");
+      const editionDir = resolve(dir, "260423");
+      const sourcePath = resolve(dir, "fake-audience-profile.md");
       writeFileSync(sourcePath, "# Perfil da audiência\n\nCTR BR: 5%\n", "utf8");
 
       const r = runCli(["--edition-dir", editionDir, "--source", sourcePath]);
       assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
 
-      const destPath = join(editionDir, "_internal", SNAPSHOT_FILENAME);
+      const destPath = resolve(editionDir, "_internal", SNAPSHOT_FILENAME);
       assert.ok(existsSync(destPath), "snapshot não foi gravado");
       assert.equal(readFileSync(destPath, "utf8"), readFileSync(sourcePath, "utf8"));
 
@@ -85,16 +85,16 @@ describe("snapshot-audience-profile CLI (#4842)", () => {
   });
 
   it("--source apontando pra arquivo inexistente → exit 0 (fail-soft), sem escrever nada", () => {
-    const dir = mkdtempSync(join(tmpdir(), "snapshot-audience-profile-missing-"));
+    const dir = mkdtempSync(resolve(tmpdir(), "snapshot-audience-profile-missing-"));
     try {
-      const editionDir = join(dir, "260423");
-      const sourcePath = join(dir, "nao-existe.md");
+      const editionDir = resolve(dir, "260423");
+      const sourcePath = resolve(dir, "nao-existe.md");
 
       const r = runCli(["--edition-dir", editionDir, "--source", sourcePath]);
       assert.equal(r.status, 0, "fail-soft: nunca deve abortar o Stage 0");
       assert.match(r.stderr, /WARN/);
 
-      const destPath = join(editionDir, "_internal", SNAPSHOT_FILENAME);
+      const destPath = resolve(editionDir, "_internal", SNAPSHOT_FILENAME);
       assert.ok(!existsSync(destPath));
     } finally {
       rmSync(dir, { recursive: true, force: true });
