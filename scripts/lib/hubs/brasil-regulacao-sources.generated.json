@@ -131,7 +131,8 @@
     "primarySourceUrls": [
       "https://canaltech.com.br/carros/usar-oculos-com-ia-ao-volante-pode-pesar-no-bolso-entenda-o-porque/"
     ],
-    "editionTitle": "Como ter acesso à Alexa+"
+    "editionTitle": "Como ter acesso à Alexa+",
+    "manual": true
   },
   {
     "date": "2026-07-03",
@@ -143,7 +144,8 @@
     "primarySourceUrls": [
       "https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/julho/gestao-lanca-matriz-de-competencias-em-inteligencia-artificial"
     ],
-    "editionTitle": "Governo dos EUA pode virar sócio da OpenAI"
+    "editionTitle": "Governo dos EUA pode virar sócio da OpenAI",
+    "manual": true
   },
   {
     "date": "2026-08-04",
@@ -155,6 +157,7 @@
     "primarySourceUrls": [
       "https://saudedigitalnews.com.br/03/08/2026/a-inteligencia-artificial-ja-entrou-na-medicina-o-proximo-desafio-e-saber-quem-governa-essa-inteligencia/"
     ],
-    "editionTitle": "Hacker chinês usa DeepSeek em ataques autônomos"
+    "editionTitle": "Hacker chinês usa DeepSeek em ataques autônomos",
+    "manual": true
   }
 ]

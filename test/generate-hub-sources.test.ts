@@ -22,6 +22,7 @@ import {
   backfillEditionTitles,
   computeHubSourcesDiff,
   writeGeneratedHubSources,
+  mergeManualHubSources,
   type HubSourceEntry,
 } from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
@@ -379,5 +380,74 @@ describe("writeGeneratedHubSources (#5203) — regressão: --dry-run não escrev
   it("com --dry-run e arquivo ainda inexistente: não cria o arquivo", () => {
     writeGeneratedHubSources(outPath, [freshRow], { dryRun: true });
     assert.equal(existsSync(outPath), false);
+  });
+});
+
+/**
+ * #5125 (26/08/2026) — entrada curada à mão sobrevive ao regen.
+ *
+ * `collectHubSources` só casa `HUB_KEYWORD_PATTERNS` contra
+ * `[title, ...subtitle]`; texto de RADAR nunca entra nesse scan, então
+ * edição cujo lastro no tema está só no RADAR precisa ser adicionada à mão.
+ * Antes destes testes, `runGenerate` sobrescrevia o JSON inteiro sem merge e
+ * apagava essas entradas em silêncio — medido em 26/08 como 3 entradas de
+ * `brasil-regulacao` (só 2 documentadas no comentário do pattern) — a 3ª
+ * entrou pelo próprio commit de regen `03066efd`/#5632 e ninguém atualizou a
+ * prosa, que é o modo de falha de um aviso escrito em comentário. Marcação
+ * no DADO não depende de ninguém lembrar.
+ */
+describe("mergeManualHubSources (#5125)", () => {
+  const manualRow: HubSourceEntry = {
+    date: "2026-06-30",
+    editionSlug: "como-ter-acesso-alexa",
+    url: "https://diar.ia.br/p/como-ter-acesso-alexa",
+    matchedHeadlines: ["Usar óculos com IA ao volante pode pesar no bolso"],
+    manual: true,
+  };
+  const derivedRow: HubSourceEntry = {
+    date: "2026-08-19",
+    editionSlug: "tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    url: "https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    matchedHeadlines: ["TSE exige aviso em propaganda eleitoral com IA"],
+  };
+
+  it("reinjeta a entrada manual que a coleta fresca não redescobriu", () => {
+    const merged = mergeManualHubSources([manualRow, derivedRow], [derivedRow]);
+    const slugs = merged.map((r) => r.editionSlug);
+    assert.ok(
+      slugs.includes("como-ter-acesso-alexa"),
+      "entrada manual foi apagada pelo regen — é exatamente o bug do #5125",
+    );
+    assert.equal(merged.length, 2);
+  });
+
+  it("mantém a ordem por data crescente de collectHubSources (sem diff espúrio)", () => {
+    const merged = mergeManualHubSources([manualRow, derivedRow], [derivedRow]);
+    assert.deepEqual(
+      merged.map((r) => r.date),
+      ["2026-06-30", "2026-08-19"],
+    );
+  });
+
+  it("quando o pattern REDESCOBRE a entrada, usa a versão fresca mas preserva a marca manual", () => {
+    // Cenário real: `collectHubSources` passa a casar uma manchete que antes
+    // só existia curada — o dado fresco vence, mas perder `manual: true` faria
+    // a entrada voltar a ser apagável se o pattern regredir depois.
+    const fresh: HubSourceEntry = { ...manualRow, manual: undefined, matchedHeadlines: ["nova"] };
+    delete (fresh as { manual?: true }).manual;
+    const merged = mergeManualHubSources([manualRow], [fresh]);
+    assert.equal(merged.length, 1);
+    assert.deepEqual(merged[0].matchedHeadlines, ["nova"]);
+    assert.equal(merged[0].manual, true, "marca manual foi perdida no round-trip");
+  });
+
+  it("sem nenhuma entrada manual, devolve a coleta intacta", () => {
+    const merged = mergeManualHubSources([derivedRow], [derivedRow]);
+    assert.deepEqual(merged, [derivedRow]);
+  });
+
+  it("entrada SEM manual:true não é preservada (só curadoria explícita sobrevive)", () => {
+    const merged = mergeManualHubSources([derivedRow], []);
+    assert.deepEqual(merged, [], "entrada derivada obsoleta deveria sair no regen");
   });
 });
