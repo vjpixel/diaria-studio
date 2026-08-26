@@ -169,8 +169,8 @@ describe("analyze-runtime-fixes CLI (#1210 item 5)", () => {
         );
       }
       const result = spawnSync(
-        "npx",
-        ["tsx", "scripts/analyze-runtime-fixes.ts", "--editions-dir", root, "--json", "--min-editions", "3"],
+        process.execPath,
+        ["--import", "tsx", "scripts/analyze-runtime-fixes.ts", "--editions-dir", root, "--json", "--min-editions", "3"],
         { cwd: ROOT, encoding: "utf8" },
       );
       assert.equal(result.status, 0, result.stderr);
@@ -187,8 +187,8 @@ describe("analyze-runtime-fixes CLI (#1210 item 5)", () => {
     const root = mkdtempSync(join(tmpdir(), "analyze-rf-cli-md-"));
     try {
       const result = spawnSync(
-        "npx",
-        ["tsx", "scripts/analyze-runtime-fixes.ts", "--editions-dir", root],
+        process.execPath,
+        ["--import", "tsx", "scripts/analyze-runtime-fixes.ts", "--editions-dir", root],
         { cwd: ROOT, encoding: "utf8" },
       );
       assert.equal(result.status, 0, result.stderr);

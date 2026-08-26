@@ -85,6 +85,16 @@ describe("arquivos commitados não têm link da Clarice sem via=diaria (#1910)",
     "dist",
     "build",
     ".wrangler",
+    // `.claude/worktrees/` são checkouts de trabalho gitignorados das sessões
+    // overnight/develop (#6206) — não são "arquivos commitados", que é o alvo
+    // declarado desta varredura. Numa máquina com worktree sobrando, o walk
+    // entrava neles e reportava um `data/monthly/.../draft.md` de OUTRA sessão
+    // como violação do repo. Além de falso positivo, o resultado do teste
+    // passava a depender de quantas sessões tinham rodado antes.
+    "worktrees",
+    // `data/` é gitignored por inteiro (junction do OneDrive) — o comentário
+    // acima já declarava a intenção de pular, mas o nome nunca estava na lista.
+    "data",
   ]);
 
   // Walk fail-loud: se um ROOT some (rename/refactor), o erro propaga em vez de

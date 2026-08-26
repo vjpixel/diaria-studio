@@ -53,7 +53,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +115,9 @@ function runScript(
     ...(opts.extraArgs ?? []),
   ];
   if (opts.envRoot !== undefined) cliArgs.push("--env-root", opts.envRoot);
+  // Baseline do store real tirada antes de QUALQUER spawn (#6206) — ver
+  // `realStoreBaseline`.
+  if (realStoreBaseline === undefined) realStoreBaseline = fingerprintRealStore();
   return spawnSync("npx", cliArgs, {
     cwd: __ROOT,
     encoding: "utf8",
@@ -124,6 +128,44 @@ function runScript(
 
 /** Path do store real de produção — nunca deve ser tocado por este arquivo. */
 const REAL_STORE_PATH = resolve(__ROOT, "data/onboarding/store.json");
+
+/**
+ * Impressão digital do store real — `null` quando o arquivo não existe (#6206).
+ *
+ * Até aqui o isolamento era verificado com `existsSync(REAL_STORE_PATH) === false`,
+ * que mede a coisa errada em qualquer máquina onde o store legitimamente existe.
+ * No CI (`ubuntu-latest`) `data/` nem é criado, então a asserção passava
+ * **vacuamente**: teria passado igual se o script tivesse aberto e reescrito o
+ * arquivo, desde que o apagasse depois. Na máquina Windows do editor, onde
+ * `data/` é um junction pro OneDrive com o store real de 300+ KB, ela falhava
+ * sempre — 6 das 52 falhas locais do #6206 — sem que nada estivesse errado.
+ *
+ * Comparar CONTEÚDO antes/depois testa a intenção declarada ("não deve ser
+ * tocado"), roda igual nas duas plataformas, e é estritamente mais forte que a
+ * checagem antiga: pega escrita seguida de restauração de nome, que
+ * `existsSync` nunca pegaria.
+ */
+function fingerprintRealStore(): string | null {
+  if (!existsSync(REAL_STORE_PATH)) return null;
+  const { size } = statSync(REAL_STORE_PATH);
+  const hash = createHash("sha256").update(readFileSync(REAL_STORE_PATH)).digest("hex");
+  return `${size}:${hash}`;
+}
+
+/**
+ * Impressão digital capturada ANTES do primeiro spawn deste arquivo.
+ *
+ * Tirada uma vez só, e não por teste, de propósito: o invariante é "nenhum
+ * teste deste arquivo toca o store real". Re-snapshotar a cada teste
+ * mascararia uma escrita feita pelo teste anterior, que passaria a ser o novo
+ * baseline.
+ */
+let realStoreBaseline: string | null | undefined;
+
+/** Falha se o store real mudou (ou passou a existir) desde o primeiro spawn. */
+function assertRealStoreUntouched(): void {
+  assert.equal(fingerprintRealStore(), realStoreBaseline ?? null, "store real de produção não deve ser tocado");
+}
 
 describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboarding.enabled", () => {
   it("enabled: false — sai cedo (exit 0), sem tentar nenhuma chamada externa, store isolado", () => {
@@ -145,7 +187,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
         false,
         "guard deve disparar ANTES do check de credencial Beehiiv — não deveria nem chegar lá",
       );
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -170,7 +212,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
         false,
         "não deveria imprimir mensagem de pausa quando enabled: true",
       );
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -190,7 +232,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
         (result.stderr ?? "").includes("BEEHIIV_API_KEY"),
         `stderr deveria reclamar de credencial ausente: ${result.stderr}`,
       );
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -233,7 +275,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
         (result.stderr ?? "").includes("BEEHIIV_API_KEY"),
         `stderr deveria reclamar de credencial ausente, nunca tentar a chamada real: ${result.stderr}`,
       );
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -263,7 +305,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
       const summary = JSON.parse(result.stdout ?? "{}");
       assert.equal(summary.mode, "cancel-pending", `stdout deveria ser o resumo JSON do modo cancel-pending: ${result.stdout}`);
       assert.equal(summary.attempted, 0, "store vazio — nada a cancelar, mas o modo deve rodar até o fim");
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -291,7 +333,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
         false,
         "não deveria sequer chegar no guard de pausa — falha antes, na credencial",
       );
-      assert.equal(existsSync(REAL_STORE_PATH), false, "store real de produção não deve ser tocado");
+      assertRealStoreUntouched();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
