@@ -332,6 +332,13 @@ async function runStatus(cfg: Config): Promise<number> {
     apexProbes[path] = await httpProbeStatus(`https://${APEX_HOSTNAME}${path}`);
   }
 
+  // Reusa os probes já coletados acima (mesmos paths) pra mostrar de graça se
+  // "--cutover" seria aceito hoje — sem chamada extra.
+  const cutoverPrecondition = evaluateCutoverPrecondition({
+    workerRootStatus: workerProbes["/"] ?? null,
+    workerSubscribeStatus: workerProbes["/subscribe"] ?? null,
+  });
+
   const summary = {
     zone_id: ZONE_ID,
     dns: { A: aRecords, AAAA: aaaaRecords },
@@ -343,6 +350,7 @@ async function runStatus(cfg: Config): Promise<number> {
       worker: workerProbes,
       apex: apexProbes,
     },
+    cutover_precondition: cutoverPrecondition,
   };
 
   console.log(JSON.stringify(summary, null, 2));
