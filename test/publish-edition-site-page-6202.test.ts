@@ -21,7 +21,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,6 +33,7 @@ import {
   publishEditionSitePage,
   readEditionInputs,
   commitAndPushSitePage,
+  productionDeps,
   EditionInputsInvalid,
   type PublishPageDeps,
   type GitRunner,
@@ -134,7 +135,10 @@ function makeDeps(over: Partial<PublishPageDeps> = {}): Harness {
   const deps: PublishPageDeps = {
     readEditionInputs: () => INPUTS,
     writePage: (slug, html) => void escritas.push({ slug, html }),
-    publish: () => void publishes++,
+    publish: () => {
+      publishes++;
+      return { pushed: true };
+    },
     log: () => {},
     ...over,
   };
@@ -206,7 +210,10 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
       writePage: () => {
         throw new Error("EACCES");
       },
-      publish: () => void (publishChamado = true),
+      publish: () => {
+        publishChamado = true;
+        return { pushed: true };
+      },
     });
     const r = publishEditionSitePage("/x", deps);
     assert.equal(r.code, 3);
@@ -260,6 +267,13 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
     assert.equal(escritas.length, 2, "cada chamada escreve — a idempotência real vive em commitAndPushSitePage");
     assert.deepEqual(escritas[0], escritas[1], "mesmo slug, mesmo html nas duas chamadas");
     if (r1.code === 0 && r2.code === 0) assert.equal(r1.slug, r2.slug);
+  });
+
+  it("REGRESSÃO P1-B: publish() não lança mas não confirma push ⇒ code 0, published:false (nunca inferido de ausência de exceção)", () => {
+    const { deps } = makeDeps({ publish: () => ({ pushed: false }) });
+    const r = publishEditionSitePage("/x", deps);
+    assert.equal(r.code, 0);
+    if (r.code === 0) assert.equal(r.published, false, "published só é true quando publish() confirma o push");
   });
 });
 
@@ -333,7 +347,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       const deps: PublishPageDeps = {
         readEditionInputs,
         writePage: (slug, html) => void escritas.push({ slug, html }),
-        publish: () => {},
+        publish: () => ({ pushed: true }),
         log: () => {},
       };
       const r = publishEditionSitePage(dir, deps, { slug: "titulo-real-da-fixture" });
@@ -372,65 +386,228 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  describe("REGRESSÃO P2-F: backend Kit não pode virar no-op silencioso permanente", () => {
+    function makeKitLikeEditionDir(): string {
+      // newsletter-final.html existe (pré-render é backend-agnóstico) MAS
+      // 05-published.json NUNCA existe em edição Kit — ela escreve
+      // newsletter-kit-published.json em vez disso.
+      const dir = mkdtempSync(join(tmpdir(), "diaria-site-page-6202-kit-"));
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "newsletter-final.html"), "<p>corpo Kit</p>", "utf8");
+      return dir;
+    }
+
+    function makeRootWithBackend(backend: string): string {
+      const rootDir = mkdtempSync(join(tmpdir(), "diaria-site-page-6202-root-"));
+      writeFileSync(
+        join(rootDir, "platform.config.json"),
+        JSON.stringify({ publishing: { newsletter: { backend } } }),
+        "utf8",
+      );
+      return rootDir;
+    }
+
+    it("backend kit, sem --slug ⇒ lança EditionInputsInvalid nomeando a lacuna (não mais null/code 2 silencioso)", () => {
+      const dir = makeKitLikeEditionDir();
+      const rootDir = makeRootWithBackend("kit");
+      try {
+        assert.throws(
+          () => readEditionInputs(dir, undefined, rootDir),
+          (err: unknown) => err instanceof EditionInputsInvalid && /Kit/.test((err as Error).message),
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it("backend kit, COM --slug ⇒ ainda cai no null benigno (slug não resolve o arquivo faltante de qualquer forma)", () => {
+      const dir = makeKitLikeEditionDir();
+      const rootDir = makeRootWithBackend("kit");
+      try {
+        // Com slugOverride, o guard do P2-F não entra em ação — mas o
+        // arquivo 05-published.json continua ausente, então o caminho antigo
+        // (`!htmlExists || !publishedExists`) devolve null (code 2) mesmo
+        // assim. Documentado aqui pra não regredir: o guard é só pra
+        // DIAGNÓSTICO do caso mudo, não uma segunda fonte de slug pro Kit.
+        assert.equal(readEditionInputs(dir, "um-slug-qualquer", rootDir), null);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it("backend beehiiv (default) com o mesmo estado de arquivos ⇒ continua null benigno (code 2)", () => {
+      const dir = makeKitLikeEditionDir();
+      const rootDir = makeRootWithBackend("beehiiv");
+      try {
+        assert.equal(readEditionInputs(dir, undefined, rootDir), null);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wrangler deploy", () => {
-  it("caminho feliz: add, commit e push, nesta ordem", () => {
+  /** git de teste com defaults sãos (branch master, sem staged alheio, status limpo). */
+  function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "status") return " M workers/site/public/p/abc/index.html\n";
+      const cmd = args[0];
+      if (overrides[cmd]) return overrides[cmd]!(args);
+      if (cmd === "rev-parse") return "master\n";
+      if (cmd === "status") return "";
+      if (cmd === "diff") return "";
       return "";
     };
+    return { git, calls };
+  }
+
+  it("caminho feliz: add, status, diff, commit e push, nesta ordem", () => {
+    const { git, calls } = makeGit({
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
     const r = commitAndPushSitePage("/repo", "abc", git);
-    assert.equal(r.changed, true);
+    assert.equal(r.committed, true);
+    assert.equal(r.pushed, true);
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["add", "status", "commit", "push"],
+      ["rev-parse", "add", "status", "diff", "commit", "push"],
     );
   });
 
-  it("2ª chamada sem mudança pula commit/push (idempotente, sem commit vazio)", () => {
+  it("commit é escopado ao pathspec da página, nunca o índice inteiro (#6202 review P1-A)", () => {
+    const { git, calls } = makeGit({
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
+    commitAndPushSitePage("/repo", "abc", git);
+    const commitCall = calls.find((c) => c[0] === "commit")!;
+    assert.deepEqual(commitCall.slice(-2), ["--", "workers/site/public/p/abc"]);
+  });
+
+  it("REGRESSÃO P1-A: staged alheio fora do pathspec ⇒ lança, NÃO commita (checkout compartilhado, #5156)", () => {
+    const { git, calls } = makeGit({
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      // `git diff --cached --name-only` mostra um arquivo de outra sessão além
+      // do nosso — cenário real de `git add` alheio no mesmo checkout.
+      diff: () => "workers/site/public/p/abc/index.html\nscripts/algum-arquivo-de-outra-sessao.ts\n",
+    });
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /algum-arquivo-de-outra-sessao\.ts/);
+    assert.ok(!calls.some((c) => c[0] === "commit"), "nunca commita quando há staged alheio");
+    assert.ok(!calls.some((c) => c[0] === "push"), "nunca empurra quando o commit foi abortado");
+  });
+
+  it("2ª chamada sem mudança pula o commit, MAS ainda tenta o push (idempotente, sem commit vazio)", () => {
     const calls: string[][] = [];
     let statusCallCount = 0;
     const git: GitRunner = (args) => {
       calls.push(args);
+      if (args[0] === "rev-parse") return "master\n";
       if (args[0] === "status") {
         statusCallCount++;
         return statusCallCount === 1 ? " M workers/site/public/p/abc/index.html\n" : "";
       }
+      if (args[0] === "diff") return "workers/site/public/p/abc/index.html\n";
       return "";
     };
     const r1 = commitAndPushSitePage("/repo", "abc", git);
     const r2 = commitAndPushSitePage("/repo", "abc", git);
-    assert.equal(r1.changed, true);
-    assert.equal(r2.changed, false, "sem diff no path, não há o que comitar");
+    assert.equal(r1.committed, true);
+    assert.equal(r2.committed, false, "sem diff no path, não há o que comitar");
+    assert.equal(r2.pushed, true, "push ainda roda mesmo sem commit novo nesta chamada");
     assert.equal(
       calls.filter((c) => c[0] === "commit").length,
       1,
       "2ª chamada não gera commit vazio",
     );
-    assert.equal(calls.filter((c) => c[0] === "push").length, 1);
+    assert.equal(calls.filter((c) => c[0] === "push").length, 2, "push é tentado nas 2 chamadas");
+  });
+
+  it("REGRESSÃO P1-B: commit sem push (rodada anterior) ⇒ 2ª chamada com status limpo AINDA tenta o push", () => {
+    // Reproduz o cenário do finding: um commit já existe localmente (de uma
+    // rodada anterior cujo push falhou), então `status --porcelain` já sai
+    // limpo — mas o push nunca aconteceu. A chamada precisa tentar de novo.
+    const pushCalls: string[][] = [];
+    const git: GitRunner = (args) => {
+      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "status") return ""; // limpo: nada novo pra commitar
+      if (args[0] === "push") {
+        pushCalls.push(args);
+        return "";
+      }
+      return "";
+    };
+    const r = commitAndPushSitePage("/repo", "abc", git);
+    assert.equal(r.committed, false, "nada novo a commitar");
+    assert.equal(r.pushed, true, "mas o push roda mesmo assim");
+    assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
+  });
+
+  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem add/commit/push (#6202 review)", () => {
+    const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /overnight\/algo/);
+    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index");
   });
 
   it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage)", () => {
-    const git: GitRunner = (args) => {
-      if (args[0] === "status") return " M x\n";
-      if (args[0] === "push") throw new Error("non-fast-forward");
-      return "";
-    };
+    const { git } = makeGit({
+      status: () => " M x\n",
+      diff: () => "workers/site/public/p/abc\n",
+      push: () => {
+        throw new Error("non-fast-forward");
+      },
+    });
     assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /non-fast-forward/);
   });
 
   it("nunca chama wrangler — mecanismo é só git", () => {
+    const { git, calls } = makeGit({ status: () => " M x\n", diff: () => "workers/site/public/p/abc\n" });
+    commitAndPushSitePage("/repo", "abc", git);
+    for (const c of calls) assert.notEqual(c[0], "wrangler");
+  });
+});
+
+describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
+  it("writePage escreve de verdade no disco (fs real, não mockado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-site-page-6202-prod-"));
+    try {
+      const deps = productionDeps(dir);
+      deps.writePage("meu-slug", "<html><body>oi</body></html>");
+      const written = readFileSync(join(dir, "workers", "site", "public", "p", "meu-slug", "index.html"), "utf8");
+      assert.equal(written, "<html><body>oi</body></html>");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publish() amarra corretamente com um GitRunner injetado (commit+push reais simulados)", () => {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
-      if (args[0] === "status") return " M x\n";
+      if (args[0] === "rev-parse") return "master\n";
+      if (args[0] === "status") return " M workers/site/public/p/meu-slug/index.html\n";
+      if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
       return "";
     };
-    commitAndPushSitePage("/repo", "abc", git);
-    for (const c of calls) assert.notEqual(c[0], "wrangler");
+    const deps = productionDeps("/repo", git);
+    const result = deps.publish("meu-slug");
+    assert.equal(result.pushed, true);
+    assert.deepEqual(
+      calls.map((c) => c[0]),
+      ["rev-parse", "add", "status", "diff", "commit", "push"],
+    );
+  });
+
+  it("publish() propaga falha do GitRunner injetado (branch errada)", () => {
+    const git: GitRunner = (args) => (args[0] === "rev-parse" ? "outra-branch\n" : "");
+    const deps = productionDeps("/repo", git);
+    assert.throws(() => deps.publish("meu-slug"), /outra-branch/);
   });
 });
 

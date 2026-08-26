@@ -64,9 +64,13 @@
  *
  * Escrever a mesma página duas vezes é inofensivo (mesmo conteúdo, mesmo
  * caminho). `commitAndPushSitePage` não gera commit vazio: se `git status
- * --porcelain` não acusar mudança no caminho da página, pula commit/push —
- * por isso `--skip-publish` existe pra quando só a escrita local importa, e o
- * resultado informa se algo mudou de fato (`published`).
+ * --porcelain` não acusar mudança no caminho da página, pula o `commit` —
+ * mas SEMPRE tenta o `push` (#6202 review, problema P1-B: status limpo
+ * significa "nada novo a commitar", não "nada a empurrar" — um commit de uma
+ * rodada anterior pode ter ficado sem push por falha de rede/auth, e só
+ * tentar de novo nessa 2ª chamada recupera isso). `--skip-publish` existe pra
+ * quando só a escrita local importa; o resultado informa se o push está
+ * confirmado em dia com o remoto (`published`).
  *
  * Exit codes:
  *   0 — página escrita (e publicada — commit+push — se pedido)
@@ -88,7 +92,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { buildArchivePageHtml } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 
@@ -98,11 +102,40 @@ const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
 /** Sinaliza "artefato PRESENTE mas com conteúdo inválido" — vira `code: 4`. */
 export class EditionInputsInvalid extends Error {}
 
+/**
+ * Lê `publishing.newsletter.backend` de `platform.config.json` (default
+ * `"beehiiv"` — mesmo default usado por `publish-newsletter-kit.ts`).
+ * Fail-soft: config ausente/ilegível nunca lança, cai no default — este
+ * helper só é chamado dentro de um caminho que já é `code: 2` benigno por
+ * padrão, então uma falha de leitura aqui não deve regredir isso pra pior.
+ */
+function readNewsletterBackend(rootDir: string): string {
+  try {
+    const raw = readFileSync(join(rootDir, "platform.config.json"), "utf8");
+    const cfg = JSON.parse(raw) as { publishing?: { newsletter?: { backend?: string } } };
+    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+  } catch {
+    return "beehiiv";
+  }
+}
+
+/**
+ * Resultado de `publish()`: `pushed` indica se o push está CONFIRMADAMENTE em
+ * dia com o remoto ao final da chamada (#6202 review P1-B) — verdadeiro tanto
+ * quando este `publish()` de fato empurrou algo quanto quando não havia nada
+ * pendente a empurrar (já publicado por uma rodada anterior). `publish()`
+ * lança em qualquer falha (branch errada, commit/push com erro) — nunca
+ * retorna `pushed: false` como forma de reportar erro.
+ */
+export interface PublishResult {
+  pushed: boolean;
+}
+
 export interface PublishPageDeps {
   readEditionInputs(editionDir: string, slugOverride?: string): EditionPageInputs | null;
   writePage(slug: string, html: string): void;
-  /** Commit + push (ou noop se nada mudou). Nunca é `wrangler deploy` — ver docstring do módulo. */
-  publish(slug: string): void;
+  /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo. */
+  publish(slug: string): PublishResult;
   log(line: string): void;
 }
 
@@ -124,11 +157,42 @@ export type PublishPageResult =
  * Retorna `null` só quando os ARQUIVOS estão ausentes (`code: 2`, benigno).
  * Lança `EditionInputsInvalid` quando os arquivos existem mas o conteúdo é
  * inválido/inesperado (`code: 4` — ex: sem `post_url` e sem `slugOverride`).
+ *
+ * @param rootDirForBackend Raiz onde ler `platform.config.json` pra detectar
+ *   `publishing.newsletter.backend` (ver P2-F abaixo). Default `ROOT` (raiz
+ *   real do projeto); parâmetro só existe pra permitir teste isolado sem
+ *   depender/mutar o `platform.config.json` real do repo.
  */
-export function readEditionInputs(editionDir: string, slugOverride?: string): EditionPageInputs | null {
+export function readEditionInputs(
+  editionDir: string,
+  slugOverride?: string,
+  rootDirForBackend: string = ROOT,
+): EditionPageInputs | null {
   const htmlPath = join(editionDir, "_internal", "newsletter-final.html");
   const publishedPath = join(editionDir, "_internal", "05-published.json");
-  if (!existsSync(htmlPath) || !existsSync(publishedPath)) return null;
+  const htmlExists = existsSync(htmlPath);
+  const publishedExists = existsSync(publishedPath);
+
+  if (!htmlExists || !publishedExists) {
+    // #6202 review, problema P2-F: o caminho Kit nunca escreve
+    // `05-published.json` (escreve `newsletter-kit-published.json`) —
+    // pré-render (Stage 4) É backend-agnóstico, então `newsletter-final.html`
+    // existe mesmo em edição Kit. Sem esta checagem, backend Kit caía pra
+    // sempre no `code: 2` benigno ("nada a publicar ainda"), indistinguível
+    // do caso normal "edição ainda não chegou no Stage 4/6" — a mesma doença
+    // do P0 original, só que no outro backend (#464 ainda não liga o
+    // dispatch, mas quando ligar isto teria voltado a ser um no-op mudo).
+    if (htmlExists && !publishedExists && !slugOverride && readNewsletterBackend(rootDirForBackend) === "kit") {
+      throw new EditionInputsInvalid(
+        "backend Kit selecionado (publishing.newsletter.backend) — newsletter-final.html existe, mas " +
+          "05-published.json (única fonte de slug do caminho Beehiiv) nunca é escrito por edições Kit, " +
+          "e §6d-site ainda não tem uma fonte de slug própria pro Kit. Não é um bug de estado, é lacuna " +
+          "de wiring: passe --slug explicitamente (ver §6d-site em orchestrator-stage-6.md) até o #464 " +
+          "ligar o dispatch Kit com uma fonte dedicada.",
+      );
+    }
+    return null;
+  }
 
   const published = JSON.parse(readFileSync(publishedPath, "utf8")) as {
     post_url?: string;
@@ -191,11 +255,28 @@ const defaultGitRunner: GitRunner = (args, cwd) =>
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
 /**
- * `git add` + `git commit` + `git push` da pasta da página, sem commit
- * vazio: se `git status --porcelain` não acusar mudança no caminho depois do
- * `add`, o conteúdo já é idêntico ao commitado — pula commit/push (2ª
- * publicação da mesma edição é sempre um noop nesta camada, sem depender de
- * lógica própria pra comparar bytes).
+ * `git add` + (`git commit` condicional) + `git push` da pasta da página.
+ *
+ * #6202 review, problema P1-C: recusa rodar fora de `master`. O deploy real
+ * (`.github/workflows/deploy-site.yml`) só dispara em push a master — commitar
+ * numa branch errada (checkout compartilhado com sessões overnight/develop
+ * concorrentes, #5156) nunca aciona o deploy e este script reportaria sucesso
+ * falso. Lança — o chamador (`publishEditionSitePage`) converte em `code: 3`.
+ *
+ * #6202 review, problema P1-A: `commit` é escopado ao MESMO pathspec do
+ * `add`/`status` (nunca commita o índice inteiro) — e antes de commitar,
+ * confirma que NADA além do pathspec da página está staged. Um `git add`
+ * alheio (sessão concorrente no mesmo checkout compartilhado) entraria no
+ * commit e iria pra master sem review; a checagem lança em vez de commitar
+ * silenciosamente por cima.
+ *
+ * #6202 review, problema P1-B: `status --porcelain` limpo significa "nada
+ * NOVO a commitar" — não "nada a empurrar". Um commit de uma rodada anterior
+ * pode ter ficado sem push (falha de rede/auth) e o status já sai limpo nesse
+ * caso. Por isso o `push` roda SEMPRE (não só quando há commit novo nesta
+ * chamada) — `git push` é idempotente: sem nada pendente, sai 0 sem efeito
+ * ("Everything up-to-date"). `pushed: true` no retorno significa "confirmado
+ * em dia com o remoto ao final desta chamada", nunca "algo mudou".
  *
  * `git` injetado — não roda git de verdade fora de `productionDeps`.
  */
@@ -203,20 +284,56 @@ export function commitAndPushSitePage(
   rootDir: string,
   slug: string,
   git: GitRunner = defaultGitRunner,
-): { changed: boolean } {
-  const relPageDir = join("workers", "site", "public", "p", slug);
+): { committed: boolean; pushed: boolean } {
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
+  if (branch !== "master") {
+    throw new Error(
+      `checkout não está em master (branch atual: '${branch}') — commit/push abortado antes de tocar ` +
+        `qualquer arquivo. .github/workflows/deploy-site.yml só dispara em push a master; commitar de ` +
+        `outra branch nunca aciona o deploy e reportaria sucesso falso. Provável sessão concorrente ` +
+        `trocou de branch neste checkout compartilhado (#5156, #6202 review problema P1-C).`,
+    );
+  }
+
+  // Forward-slash sempre — git normaliza pathspecs assim mesmo no Windows, e
+  // é o formato em que `git status --porcelain`/`git diff --name-only`
+  // devolvem paths (necessário pra comparação exata abaixo).
+  const relPageDir = ["workers", "site", "public", "p", slug].join("/");
+
   git(["add", "--", relPageDir], rootDir);
   const status = git(["status", "--porcelain", "--", relPageDir], rootDir);
-  if (!status.trim()) return { changed: false };
-  git(
-    ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202`],
-    rootDir,
-  );
+  const committed = status.trim().length > 0;
+
+  if (committed) {
+    const stagedFiles = git(["diff", "--cached", "--name-only"], rootDir)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const prefix = `${relPageDir}/`;
+    const outsidePathspec = stagedFiles.filter((f) => f !== relPageDir && !f.startsWith(prefix));
+    if (outsidePathspec.length > 0) {
+      throw new Error(
+        `git add -- ${relPageDir} deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
+          `pathspec — provável mudança concorrente no mesmo checkout compartilhado (#5156, #6202 review ` +
+          `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
+      );
+    }
+    git(
+      ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202`, "--", relPageDir],
+      rootDir,
+    );
+  }
+
   git(["push"], rootDir);
-  return { changed: true };
+  return { committed, pushed: true };
 }
 
-export function productionDeps(rootDir: string = ROOT): PublishPageDeps {
+/**
+ * @param git Injetável (#6202 review, problema P2-G) — permite exercitar a
+ *   amarração de `publish` com um `GitRunner` controlado, sem depender de um
+ *   repositório git real. Default: `defaultGitRunner` (git de verdade).
+ */
+export function productionDeps(rootDir: string = ROOT, git: GitRunner = defaultGitRunner): PublishPageDeps {
   return {
     readEditionInputs,
     writePage: (slug, html) => {
@@ -225,7 +342,8 @@ export function productionDeps(rootDir: string = ROOT): PublishPageDeps {
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     publish: (slug) => {
-      commitAndPushSitePage(rootDir, slug);
+      const { pushed } = commitAndPushSitePage(rootDir, slug, git);
+      return { pushed };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
@@ -241,28 +359,40 @@ export function publishEditionSitePage(
     inputs = deps.readEditionInputs(editionDir, opts.slug);
   } catch (e) {
     if (e instanceof EditionInputsInvalid) {
+      deps.log(`artefato presente mas inválido: ${e.message}`);
       return { code: 4, reason: e.message };
     }
-    return { code: 3, reason: `artefatos da edição ilegíveis: ${(e as Error).message}` };
+    const reason = `artefatos da edição ilegíveis: ${(e as Error).message}`;
+    deps.log(reason);
+    return { code: 3, reason };
   }
   if (!inputs) {
-    return { code: 2, reason: "edição sem newsletter-final.html ou sem 05-published.json — nada a publicar ainda" };
+    const reason = "edição sem newsletter-final.html ou sem 05-published.json — nada a publicar ainda";
+    deps.log(reason);
+    return { code: 2, reason };
   }
 
   const built = buildEditionArchivePost(inputs);
-  if (!built.ok) return { code: 4, reason: built.reason };
+  if (!built.ok) {
+    deps.log(`artefato presente mas inválido: ${built.reason}`);
+    return { code: 4, reason: built.reason };
+  }
 
   let html: string;
   try {
     html = buildArchivePageHtml(built.post);
   } catch (e) {
-    return { code: 3, reason: `render da página falhou: ${(e as Error).message}` };
+    const reason = `render da página falhou: ${(e as Error).message}`;
+    deps.log(reason);
+    return { code: 3, reason };
   }
 
   try {
     deps.writePage(built.post.slug, html);
   } catch (e) {
-    return { code: 3, reason: `escrita da página falhou: ${(e as Error).message}` };
+    const reason = `escrita da página falhou: ${(e as Error).message}`;
+    deps.log(reason);
+    return { code: 3, reason };
   }
   deps.log(`página escrita: /p/${built.post.slug} (${html.length} bytes)`);
 
@@ -271,16 +401,27 @@ export function publishEditionSitePage(
     return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
   }
 
+  let publishResult: PublishResult;
   try {
-    deps.publish(built.post.slug);
+    publishResult = deps.publish(built.post.slug);
   } catch (e) {
     // A página JÁ está escrita (e pode já estar commitada, se só o push
     // falhou) — a próxima rodada/push manual a leva junto. Por isso a
     // falha de publicação não invalida o trabalho, só adia.
-    return { code: 3, reason: `commit/push falhou (a página ficou escrita localmente): ${(e as Error).message}` };
+    const reason = `commit/push falhou (a página ficou escrita localmente): ${(e as Error).message}`;
+    deps.log(reason);
+    return { code: 3, reason };
   }
-  deps.log(`publicado — git commit+push ok, /p/${built.post.slug} entra no próximo deploy de workers/site`);
-  return { code: 0, slug: built.post.slug, bytes: html.length, published: true };
+
+  // #6202 review, problema P1-B: `published` só é `true` quando `publish()`
+  // confirma o push (de fato ocorreu, ou já estava em dia com o remoto) —
+  // nunca inferido do sucesso de `deps.writePage`/da ausência de exceção.
+  if (publishResult.pushed) {
+    deps.log(`publicado — git commit+push ok, /p/${built.post.slug} entra no próximo deploy de workers/site`);
+    return { code: 0, slug: built.post.slug, bytes: html.length, published: true };
+  }
+  deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não entra no próximo deploy ainda`);
+  return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
 }
 
 export async function main(): Promise<void> {
@@ -293,7 +434,21 @@ export async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const slug = getArg(argv, "slug") || undefined;
+  // #6202 review, problema P2-E: `getArg` colapsa "--slug ausente" e "--slug
+  // presente mas vazio/sem valor" no mesmo `""` — um `--slug ""` acidental
+  // virava silenciosamente "nenhum slug passado", com o diagnóstico
+  // resultante apontando pro lugar errado. `getStringArg` distingue os dois
+  // (lança em `--slug` sem valor, `--slug=`, ou valor vazio/whitespace após
+  // `.trim()`) e devolve `undefined` só quando a flag está genuinamente
+  // ausente.
+  let slug: string | undefined;
+  try {
+    slug = getStringArg(argv, "slug", { example: "titulo-da-edicao" });
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+    return;
+  }
   let result: PublishPageResult;
   try {
     result = publishEditionSitePage(resolve(ROOT, editionDir), productionDeps(), {

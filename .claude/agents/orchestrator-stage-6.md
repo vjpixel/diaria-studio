@@ -406,14 +406,15 @@ guard do bloco WhatsApp comparou e confirmou bater):
 npx tsx scripts/publish-edition-site-page.ts \
   --edition-dir {EDITION_DIR} \
   --slug {slug_atual_do_get_post}
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4} --message "site-page stage6 publish: exit {code}"
 ```
 
 | exit | significado | ação |
 |---|---|---|
 | `0` | página escrita e publicada (`git commit` + `push` de `workers/site/public/p/{slug}`) | seguir |
 | `2` | edição sem `newsletter-final.html`/`05-published.json` — arquivo ainda não existe, nada a publicar | seguir, logar info |
-| `3` | escrita, commit ou push falhou | **logar warn e seguir** |
-| `4` | artefato PRESENTE mas inválido (html/título vazio, slug não-extraível, ou `--slug` ausente e sem `post_url`) — sintoma de bug num stage anterior | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
+| `3` | escrita, commit ou push falhou (inclui checkout fora de `master` — o script recusa comitar/empurrar de outra branch) | **logar warn e seguir** |
+| `4` | artefato PRESENTE mas inválido (html/título vazio, slug não-extraível, `--slug` ausente e sem `post_url`, **ou backend `"kit"` sem `--slug`** — ainda sem fonte de slug própria, #464 não ligou o dispatch Kit ainda) — sintoma de bug num stage anterior (ou lacuna de wiring conhecida no caso Kit) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
 
 **Fail-soft absoluto:** publicar no site é acessório ao envio. Nenhum exit pode bloquear §6e nem o auto-reporter. No `3`, a página costuma ficar escrita (e, se só o `push` falhou, já commitada) localmente — a próxima rodada/push manual a leva junto. **Mecanismo: `git commit` + `push`, nunca `wrangler deploy` local** — `.github/workflows/deploy-site.yml` documenta que `workers/site/public/p/**` é COMMITADO e o deploy real dispara por push a master; publicar via wrangler local deixaria o worker em produção divergente do repo, sem sinal.
 
