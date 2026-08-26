@@ -60,12 +60,10 @@ function captureEmitError(run: () => void): { stdout: string; stderr: string; ex
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   const origExitCode = process.exitCode;
   process.exitCode = undefined;
-  // @ts-expect-error -- monkey-patch só para captura em teste, assinatura completa não é necessária
   process.stdout.write = (chunk: string) => {
     stdoutChunks.push(String(chunk));
     return true;
   };
-  // @ts-expect-error -- idem
   process.stderr.write = (chunk: string) => {
     stderrChunks.push(String(chunk));
     return true;
