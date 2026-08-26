@@ -1347,11 +1347,30 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
     // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
     // falhou" como "backlog limpo").
+    // DECLARADA, NÃO ARMADA nesta unidade — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6198",
+  },
+  {
+    name: "Diaria-Dmarc-Drain",
+    description: "drena e agrega os relatorios DMARC de news.diar.ia.br, alarma se aparecer volume nao-autenticado",
+    steps: [{ key: "drain", script: "scripts/dmarc-drain.ts" }],
+    logPath: "dmarc-reports/.drain.log",
+    // 10:25 BRT — logo depois de Diaria-Hub-Staleness-Check (10:20), fechando
+    // o cluster matinal de checks/alarmes. Nasceu pedindo 10:10, mesmo slot
+    // que Diaria-Backlog-Reconcile (#6198) pediu no mesmo dia — as duas
+    // unidades foram desenvolvidas em worktrees isolados e escolheram o
+    // mesmo buraco livre. Resolvido no merge da rodada overnight 260826.
+    schedule: { kind: "daily", hour: 10, minute: 25 },
+    // Sem guard: fetchReports() é fail-soft por design (busca vazia = 0
+    // relatórios, nunca erro) — a única falha dura é a BUSCA em si (Gmail
+    // API indisponível/auth), que o próprio script já reporta com exit != 0.
     // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
     // disciplina do #5845/#5908/#5754/#6130 acima) — armar via
     // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
     // é ação POSTERIOR do editor.
-    issue: "#6198",
+    issue: "#6189",
   },
 ];
 
