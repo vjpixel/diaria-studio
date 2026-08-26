@@ -23,6 +23,7 @@ import {
   labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
+  PROVENIENCE_LABELS,
   ROUTABLE_LABELS,
   ROUTE_TRACKS,
   type RouteMotivo,
@@ -114,10 +115,27 @@ describe("planRouteLabels — remove sinais conflitantes de vereditos anteriores
     assert.deepEqual(new Set(next), new Set(["develop-track"]));
   });
 
-  it("rotear pra overnight a partir de qualquer estado anterior limpa todas as ROUTABLE_LABELS", () => {
+  it("rotear pra overnight limpa as ROUTABLE_LABELS de VEREDITO e preserva as de PROVENIENCIA (#6223)", () => {
     const plan = planRouteLabels("overnight");
     const next = applyRouteLabelPlan([...ROUTABLE_LABELS], plan);
-    assert.deepEqual(next, []);
+    // #6223: `alarm`/`alarm-evento`/`decisao-registrada` registram DE ONDE a
+    // issue veio, nao o veredito atual — outro mecanismo e dono delas
+    // (`alarm-issues.ts`, `issue-decisions.ts`). Rotear nunca as apaga.
+    assert.deepEqual(new Set(next), new Set(PROVENIENCE_LABELS));
+  });
+
+  it("nenhuma PROVENIENCE_LABEL entra no conjunto `remove` de nenhum track (#6223)", () => {
+    // Guard direto contra a regressao: e no plano, nao no resultado aplicado,
+    // que a remocao indevida nasceria.
+    for (const track of ROUTE_TRACKS) {
+      const plan = planRouteLabels(track);
+      for (const prov of PROVENIENCE_LABELS) {
+        assert.ok(
+          !plan.remove.includes(prov),
+          `track ${track} nao pode remover a label de proveniencia ${prov}`,
+        );
+      }
+    }
   });
 
   it("rotear pra bloqueada a partir de develop troca develop-track por bloqueio-execucao", () => {
@@ -537,10 +555,13 @@ describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
     assert.deepEqual(result.labelsAdded, ["develop-track"]);
   });
 
-  it("label 'alarm' agora e gerenciada (em ROUTABLE_LABELS) — route-issue a remove ao rotear pra overnight e valida ok", () => {
-    // #6197 (3a) — alarm agora e ROUTABLE_LABELS, entao route-issue remove ela
-    // ao rotear pra overnight e a validacao passa. O teste antigo esperava
-    // que alarm sobrevivesse; agora ela e gerenciada pelo verbo.
+  it("label 'alarm' sobrevive ao roteamento e o conflito de precedencia falha RUIDOSAMENTE (#6223)", () => {
+    // #6223 reverteu o comportamento do #6197 (3a): `alarm` e PROVENIENCIA,
+    // nao veredito — `route-issue` nunca a apaga. Consequencia deliberada:
+    // `alarm` vence `overnight` na precedencia de `classifyExecTrack`, entao
+    // pedir `--track overnight` numa issue de alarme e um conflito real, e a
+    // validacao pos-escrita tem que gritar em vez de silenciar apagando a
+    // label. Rotear pra `fora-de-rodada` e o caminho correto nesse caso.
     const gh = fakeGh({ labels: ["alarm"], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
       issue: 49,
@@ -548,9 +569,42 @@ describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
       cwd: "/tmp",
       ghRun: gh.run,
     });
+    assert.equal(result.ok, false);
+    assert.equal(result.validated, false);
+    assert.equal(result.resolvedTrack, "fora-de-rodada");
+    // a proveniencia continua na issue — e esse o ponto do #6223
+    assert.ok(gh.state.labels.includes("alarm"));
+  });
+
+  it("'decisao-registrada' sozinha tem o MESMO conflito de precedencia que 'alarm' (#6223)", () => {
+    // Simetria: `decisao-registrada` esta no mesmo degrau de precedencia que
+    // `alarm` em RESOLVED_BY_PROSE_LABELS. Sem este caso, a unica prova de que
+    // o conflito e' da FAMILIA de proveniencia — e nao uma peculiaridade do
+    // `alarm` — ficava so no nivel puro do plano, onde `alarm-evento` mascara
+    // o efeito (vence a precedencia e devolve `overnight`).
+    const gh = fakeGh({ labels: ["decisao-registrada"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 52,
+      track: "overnight",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.resolvedTrack, "fora-de-rodada");
+    assert.ok(gh.state.labels.includes("decisao-registrada"));
+  });
+
+  it("a mesma issue de alarme roteada pra 'fora-de-rodada' valida ok e mantem a proveniencia (#6223)", () => {
+    const gh = fakeGh({ labels: ["alarm"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 49,
+      track: "fora-de-rodada",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
     assert.equal(result.ok, true);
     assert.equal(result.validated, true);
-    assert.ok(!gh.state.labels.includes("alarm"));
+    assert.ok(gh.state.labels.includes("alarm"));
   });
 });
 
@@ -587,16 +641,19 @@ describe("planRouteLabels — 5 labels #6197 (3a) em ROUTABLE_LABELS", () => {
     });
   }
 
-  it("rotear pra overnight remove as 5 novas labels", () => {
+  it("rotear pra overnight remove as 2 de veredito e preserva as 3 de proveniencia (#6223)", () => {
     const plan = planRouteLabels("overnight");
     const next = applyRouteLabelPlan(newLabels, plan);
-    assert.deepEqual(next, []);
+    assert.deepEqual(new Set(next), new Set(PROVENIENCE_LABELS));
+    // as 2 de veredito puro somem
+    assert.ok(!next.includes("epic-guarda-chuva"));
+    assert.ok(!next.includes("sem-direcao-acionavel"));
   });
 
-  it("rotear pra develop remove as 5 novas labels e adiciona develop-track", () => {
+  it("rotear pra develop preserva as 3 de proveniencia e adiciona develop-track (#6223)", () => {
     const plan = planRouteLabels("develop");
     const next = applyRouteLabelPlan(newLabels, plan);
-    assert.deepEqual(next, ["develop-track"]);
+    assert.deepEqual(new Set(next), new Set([...PROVENIENCE_LABELS, "develop-track"]));
   });
 });
 
