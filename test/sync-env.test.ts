@@ -23,7 +23,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EnvBackupError, LocalOnlyEnvKeysError, syncEnv } from "../scripts/sync-env.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -278,9 +279,16 @@ describe("entrypoint guard (#5679)", () => {
     // determinística (ENOENT) em vez de uma chamada de rede real — o que
     // importa aqui é só confirmar que main() RODOU (e portanto imprimiu
     // algo em vez de sair silencioso), não o resultado do sync em si.
-    const strippedPath = process.env.PATH?.split(":")
-      .filter((entry) => !existsSync(join(entry, "doppler")))
-      .join(":");
+    // `path.delimiter` e não `":"` fixo (#6206): no Windows o PATH é separado
+    // por `;`, então fatiar por `:` devolvia UMA entrada gigante, o filtro não
+    // removia nada e o `doppler` continuava alcançável — o subprocesso fazia a
+    // sincronização REAL (chamada de rede + escrita de `.env`) e saía 0, o
+    // oposto do que este teste quer. Antes do fix de `repoRoot` acima isso
+    // ficava escondido: o spawn falhava por caminho inexistente e o
+    // `notEqual(status, 0)` passava pelo motivo errado.
+    const strippedPath = process.env.PATH?.split(delimiter)
+      .filter((entry) => !existsSync(join(entry, "doppler")) && !existsSync(join(entry, "doppler.exe")))
+      .join(delimiter);
 
     const result = spawnSync(
       process.execPath,
