@@ -18,6 +18,18 @@
  * 4. **Publicar é `git commit` + `push`, nunca `wrangler deploy` local**
  *    (#6202 review, problema 3) — o deploy real acontece via CI em push a
  *    master (`.github/workflows/deploy-site.yml`).
+ * 5. **GUARD de merge tag não resolvida (#6202, achado P0 do fleet review
+ *    não incorporado à PR #6209).** `buildArchivePageHtml` (o MESMO usado
+ *    pelo gerador do acervo, `lib/site-archive-pages.ts`) já recusa HTML com
+ *    `{{...}}` não resolvido via `UnresolvedMergeTagError` (guard entregue
+ *    sob #6210/#6256, PRs #6214/#6255/#6260 — confirmado no histórico antes
+ *    deste branch existir). O que faltava — e é o que este arquivo cobre a
+ *    partir daqui — é `publishEditionSitePage` reconhecer esse tipo
+ *    ESPECÍFICO de erro e mapear pra um exit code PRÓPRIO (`5`) com mensagem
+ *    acionável, em vez de cair no balde genérico `3` ("render falhou"), que
+ *    mistura bug de código com recusa deliberada de publicação. Não
+ *    reimplementa detecção — reusa o guard existente, escopo estritamente de
+ *    wiring + exit code dedicado.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -274,6 +286,68 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
     const r = publishEditionSitePage("/x", deps);
     assert.equal(r.code, 0);
     if (r.code === 0) assert.equal(r.published, false, "published só é true quando publish() confirma o push");
+  });
+
+  describe("GUARD (#6202): UnresolvedMergeTagError ⇒ code 5, nada escrito/publicado", () => {
+    it("merge tag DESCONHECIDA (não coberta pelo sanitize de {{email}}/{{email_address_id}}) ⇒ code 5", () => {
+      // {{first_name}} é o mesmo fixture usado em
+      // test/gen-archive-pages.test.ts pro guard #6256 — não é uma tag real
+      // do pipeline diário, só ilustra "qualquer tag que o sanitize não
+      // cobre" (o caso motivador real seria o backend Kit, `{{
+      // subscriber.email_address }}`, que também não está na whitelist).
+      const { deps, escritas, contarPublishes } = makeDeps({
+        readEditionInputs: () => ({ ...INPUTS, html: "<p>Olá {{first_name}}, bem-vindo</p>" }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 5);
+      if (r.code === 5) {
+        assert.deepEqual(r.tags, ["{{first_name}}"]);
+        assert.match(r.reason, /\{\{first_name\}\}/);
+        assert.match(r.reason, /6210/, "aponta pra onde a decisão de fundo é tomada, sem tomá-la aqui");
+      }
+      assert.equal(escritas.length, 0, "falha fechada: NADA escrito em disco");
+      assert.equal(contarPublishes(), 0, "e nada commitado/publicado");
+    });
+
+    it("2 tags diferentes, uma repetida ⇒ `tags` deduplicado (mesmo dedup de UnresolvedMergeTagError)", () => {
+      const { deps } = makeDeps({
+        readEditionInputs: () => ({
+          ...INPUTS,
+          html: "<p>{{first_name}} e {{first_name}} de novo, e {{last_name}}</p>",
+        }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 5);
+      if (r.code === 5) assert.deepEqual(r.tags, ["{{first_name}}", "{{last_name}}"]);
+    });
+
+    it("REGRESSÃO — não regride o caso PADRÃO: `?email={{email}}` (link de voto Beehiiv) publica normalmente, code 0", () => {
+      // A tag mais comum do pipeline (presente em toda edição Beehiiv) é
+      // sanitizada DENTRO de buildArchivePageHtml antes deste guard rodar —
+      // não deveria disparar `5`. Ver docstring do módulo (exit code 5) e
+      // `buildArchivePageHtml — link de voto com merge tag padrão` em
+      // test/gen-archive-pages.test.ts.
+      const { deps, escritas } = makeDeps({
+        readEditionInputs: () => ({
+          ...INPUTS,
+          html: '<p><a href="https://joga.diar.ia.br/vote/260827/A?email={{email}}">Vote</a></p>',
+        }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 0, "a tag padrão do voto é sanitizada, não rejeitada — não deveria virar 5");
+      assert.equal(escritas.length, 1);
+      assert.ok(!escritas[0].html.includes("{{email}}"), "a tag crua não sobrevive na página publicada");
+    });
+
+    it("erro de render que NÃO é UnresolvedMergeTagError continua caindo no code 3 genérico (sem título ⇒ falha ANTES de chegar em buildArchivePageHtml)", () => {
+      // buildEditionArchivePost já recusa título vazio (code 4) antes de
+      // buildArchivePageHtml rodar — este teste existe só pra deixar
+      // explícito que o guard novo (5) não engoliu nenhum dos códigos
+      // existentes (2/3/4) por engano de `instanceof`.
+      const { deps } = makeDeps({ readEditionInputs: () => ({ ...INPUTS, title: "" }) });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 4, "título vazio continua code 4, não foi capturado pelo novo ramo");
+    });
   });
 });
 
