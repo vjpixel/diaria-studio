@@ -21,6 +21,8 @@ import {
   getBroadcast,
   getBroadcastClicks,
   getBroadcastStats,
+  kitBroadcastCtrPct,
+  type KitBroadcastStats,
 } from "../scripts/lib/kit-client.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -366,5 +368,57 @@ describe("getBroadcastStats", () => {
           return true;
         }),
     );
+  });
+});
+
+describe("kitBroadcastCtrPct (#6186 — semântica confirmada contra envio real 26/08/2026)", () => {
+  /** Números REAIS medidos no broadcast `25609304` (piloto Patronos,
+   *  `status: completed`), do comentário de desbloqueio da #6186 — não
+   *  inventados. Ver a tabela de confirmação na docstring de
+   *  `KitBroadcastStats` em `scripts/lib/kit-client.ts`. */
+  const MEASURED_STATS_25609304: KitBroadcastStats = {
+    recipients: 5,
+    open_rate: 60.0,
+    emails_opened: 3,
+    click_rate: 40.0,
+    unsubscribe_rate: 0,
+    unsubscribes: 0,
+    total_clicks: 3,
+    show_total_clicks: true,
+    status: "completed",
+    progress: 100,
+    open_tracking_disabled: false,
+    click_tracking_disabled: false,
+  };
+
+  it("lê click_rate diretamente — é CTR sobre entregas, não click-to-open", () => {
+    assert.equal(kitBroadcastCtrPct(MEASURED_STATS_25609304), 40.0);
+  });
+
+  it("trava a semântica: NÃO bate com a fórmula click-to-open da Beehiiv (total_clicks/emails_opened)", () => {
+    const clickToOpen =
+      (MEASURED_STATS_25609304.total_clicks / MEASURED_STATS_25609304.emails_opened) * 100;
+    assert.equal(clickToOpen, 100.0); // a armadilha da Beehiiv, se aplicada aqui, daria 100%
+    assert.notEqual(
+      kitBroadcastCtrPct(MEASURED_STATS_25609304),
+      clickToOpen,
+      "kitBroadcastCtrPct nunca pode coincidir com a fórmula click-to-open — se coincidir, alguém trocou a semântica",
+    );
+  });
+
+  it("trava a semântica: NÃO bate com total_clicks/recipients (CTR ingênuo por cliques, não por clicadores)", () => {
+    const naiveClicksOverRecipients =
+      (MEASURED_STATS_25609304.total_clicks / MEASURED_STATS_25609304.recipients) * 100;
+    assert.equal(naiveClicksOverRecipients, 60.0);
+    assert.notEqual(
+      kitBroadcastCtrPct(MEASURED_STATS_25609304),
+      naiveClicksOverRecipients,
+      "click_rate do Kit conta CLICADORES únicos, não CLIQUES — total_clicks/recipients não é a fórmula certa",
+    );
+  });
+
+  it("bate com unique_clicked/delivered (2 clicadores distintos / 5 destinatários)", () => {
+    const uniqueClickedOverDelivered = (2 / MEASURED_STATS_25609304.recipients) * 100;
+    assert.equal(kitBroadcastCtrPct(MEASURED_STATS_25609304), uniqueClickedOverDelivered);
   });
 });

@@ -49,6 +49,31 @@
  * não quebra em torno de `{{`/`}}` como o achado do #4692 na Brevo). É essa
  * a tag que `Esp: "kit"` usa em `newsletter-render-html.ts` pro link de
  * voto do É IA? — ver docstring de `buildVoteUrl` lá.
+ *
+ * ## `email_template_id` — veredito da investigação de painel (#6181, 26/08/2026)
+ *
+ * Broadcast do piloto Patronos (`25609304`) saiu com `email_template_id:
+ * undefined`, resolvendo pro template DEFAULT da conta. Confirmado via
+ * `list_email_templates`: a conta tem exatamente 2, ambos categoria
+ * `Classic` — `Text only` (id 5472839, `is_default: true`, é o que
+ * renderizou o piloto) e `Copy of Modern for Cold Subscribers` (id
+ * 5475525, resíduo da automação deletada em #6128).
+ *
+ * **Duas perguntas seguem sem resposta, e são PAREDE DE PLATAFORMA — não
+ * pendência de trabalho, não reabrir sem uma capacidade nova do Kit:**
+ *
+ * 1. **O 2º template (`Copy of Modern for Cold Subscribers`) renderiza o
+ *    rodapé centralizado?** Sem rota pra inspecionar: `/email_templates` e
+ *    `/email_templates/{id}/edit` dão 404 no painel, e a API só devolve
+ *    `content` pra templates da categoria `Starting point` — os dois desta
+ *    conta são `Classic`, retornam `null`. Ver exigiria abrir o composer de
+ *    um broadcast real, arriscando autosave num rascunho de produção — não
+ *    feito de propósito.
+ * 2. **Dá pra limpar o template órfão?** Não — mesma parede: sem rota de
+ *    painel (mesmo 404 acima) e a API v4 não tem endpoint de delete de
+ *    template (mesma limitação já documentada pras 3 tags órfãs do #6128,
+ *    ver a docstring de `kitFetch` em `kit-client.ts`). Só via composer ou
+ *    suporte do Kit, se algum dia importar.
  */
 
 import { kitFetch } from "./kit-client.ts";
