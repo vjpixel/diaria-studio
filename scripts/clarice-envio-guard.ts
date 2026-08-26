@@ -139,6 +139,11 @@ import { readLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import type { WaveProposal } from "./lib/clarice-wave-plan.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import { readClariceEnvioOverrideState, applyEnvioOverride } from "./lib/clarice-envio-override.ts";
+// #5942 — detecta se a falha ao suspender foi especificamente um bloqueio de
+// allowlist de IP da Brevo (a mensagem já vem decorada por
+// `formatBrevoApiError`, ver brevo-client.ts #6035, mas aqui precisamos
+// saber SE é essa classe pra marcar a severidade — não só exibir o texto).
+import { parseUnrecognisedIpBody } from "./lib/brevo-unrecognised-ip-alarm.ts";
 
 loadProjectEnv();
 // `new URL("..", import.meta.url).pathname` quebra no Windows (dobra a drive
@@ -371,11 +376,18 @@ async function cancelPendingWaves(
   report: ReportBuilder,
   cycle: string,
   pending: PendingWave[],
-): Promise<{ allConfirmed: boolean }> {
+): Promise<{ allConfirmed: boolean; anyIpBlocked: boolean }> {
   const entries = readCampaignEntries(deps.rootDir, cycle, (msg) => report.note(msg));
   const apiKey = process.env.BREVO_CLARICE_API_KEY!;
   let allConfirmed = true;
   let anySucceeded = false;
+  // #5942 — distingue a PIOR classe de falha de cancelamento: bloqueio de
+  // allowlist de IP da Brevo (401 "unrecognised IP"). Diferente de qualquer
+  // outra falha ("campaignId desconhecido", erro genérico da API), este
+  // caso é conhecidamente NÃO-transitório (não resolve sozinho re-tentando)
+  // e sempre significa "a campanha PODE DISPARAR sem o freio" — precisa ser
+  // inequívoco no log/report, não só mais uma linha ❌ entre outras.
+  let anyIpBlocked = false;
   for (const p of pending) {
     const entry = entries.find((e) => e.key === p.key);
     if (!entry) {
@@ -405,13 +417,24 @@ async function cancelPendingWaves(
         anySucceeded = true;
         report.note(`ℹ️  "${p.key}" (campaignId ${entry.campaignId}): já estava SUSPENSA na Brevo — nada a suspender, estado seguro.`);
       } else {
-        report.note(`❌ "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender — ${(e as Error).message}. Cancelar manualmente pelo painel Brevo.`);
+        const blockedIp = parseUnrecognisedIpBody((e as Error).message);
+        if (blockedIp) {
+          anyIpBlocked = true;
+          report.note(
+            `🔴🔴 "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender por BLOQUEIO DE ALLOWLIST DE IP ` +
+              `DA BREVO (${blockedIp}) — CAMPANHA PODE DISPARAR SEM O FREIO. ${(e as Error).message} ` +
+              `Cancelar manualmente pelo painel Brevo AGORA — não é transitório, não vai resolver sozinho ` +
+              `numa próxima rodada.`,
+          );
+        } else {
+          report.note(`❌ "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender — ${(e as Error).message}. Cancelar manualmente pelo painel Brevo.`);
+        }
         allConfirmed = false;
       }
     }
   }
   if (anySucceeded) writeCampaignEntries(deps.rootDir, cycle, entries);
-  return { allConfirmed };
+  return { allConfirmed, anyIpBlocked };
 }
 
 /**
@@ -505,14 +528,22 @@ async function handlePrereqFailure(
       ? "fallback: nenhum snapshot de freio da rodada das 19:00 foi encontrado (ausente ou ilegível) — suspendendo por precaução (escopo reduzido: cancela, não recria — ver docstring do arquivo)."
       : `fallback: freio da noite foi MEDIDO como ${lastBrake.brake.toUpperCase()} (não-OK) — suspendendo por precaução (escopo reduzido: cancela, não recria — ver docstring do arquivo).`,
   );
-  const { allConfirmed } = await cancelPendingWaves(deps, report, cycle, pending);
+  const { allConfirmed, anyIpBlocked } = await cancelPendingWaves(deps, report, cycle, pending);
   const code = allConfirmed ? 0 : 2;
+  // #5942 — reportId/título distintos quando a causa da falha é BLOQUEIO DE
+  // IP (severidade máxima, "campanha PODE disparar sem freio" — ver
+  // docstring de `cancelPendingWaves`), nunca colapsado no mesmo
+  // `cancelamento-incompleto` genérico de qualquer outra causa.
   const reportId = allConfirmed
     ? `envio-${aammdd}-guard-prereq-fallback-cancelou-${suspensionCause}`
-    : `envio-${aammdd}-guard-prereq-fallback-cancelamento-incompleto-${suspensionCause}`;
+    : anyIpBlocked
+      ? `envio-${aammdd}-guard-prereq-fallback-cancelamento-incompleto-ip-bloqueado`
+      : `envio-${aammdd}-guard-prereq-fallback-cancelamento-incompleto-${suspensionCause}`;
   const title = allConfirmed
     ? `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ pré-requisito falhou, onda suspensa por precaução (fallback, freio ${suspensionCause})`
-    : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️⚠️ pré-requisito falhou E cancelamento de fallback INCOMPLETO, agir manualmente (freio ${suspensionCause})`;
+    : anyIpBlocked
+      ? `diar.ia.br Clarice envio guard ${aammdd} — 🔴🔴 IP BLOQUEADO NA BREVO, campanha PODE DISPARAR SEM FREIO, agir AGORA`
+      : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️⚠️ pré-requisito falhou E cancelamento de fallback INCOMPLETO, agir manualmente (freio ${suspensionCause})`;
   if (!allConfirmed) {
     report.note("⚠️  NEM TODA onda pendente foi confirmada suspensa no fallback — a campanha pode disparar às 06:00. Verificar o painel Brevo manualmente antes do disparo.");
   }
@@ -664,13 +695,22 @@ export async function runEnvioGuard(deps: EnvioGuardDeps): Promise<EnvioGuardRes
     // só é 0 quando TODA onda pendente foi de fato suspensa — uma falha de
     // API ou um campaignId desconhecido em QUALQUER onda vira `code: 2`,
     // nunca colapsado no mesmo 0 do caminho feliz.
-    const { allConfirmed } = await cancelPendingWaves(deps, report, cycle, pending);
+    const { allConfirmed, anyIpBlocked } = await cancelPendingWaves(deps, report, cycle, pending);
 
     const code = allConfirmed ? 0 : 2;
-    const reportId = allConfirmed ? `envio-${aammdd}-guard-cancelou` : `envio-${aammdd}-guard-cancelamento-incompleto`;
+    // #5942 — mesma distinção do caminho de fallback acima: bloqueio de IP
+    // é a PIOR causa possível de cancelamento incompleto, ganha reportId e
+    // título próprios em vez do "cancelamento-incompleto" genérico.
+    const reportId = allConfirmed
+      ? `envio-${aammdd}-guard-cancelou`
+      : anyIpBlocked
+        ? `envio-${aammdd}-guard-cancelamento-incompleto-ip-bloqueado`
+        : `envio-${aammdd}-guard-cancelamento-incompleto`;
     const title = allConfirmed
       ? `diar.ia.br Clarice envio guard ${aammdd} — onda cancelada (freio STOP)`
-      : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ CANCELAMENTO INCOMPLETO, agir manualmente`;
+      : anyIpBlocked
+        ? `diar.ia.br Clarice envio guard ${aammdd} — 🔴🔴 IP BLOQUEADO NA BREVO, campanha PODE DISPARAR SEM FREIO, agir AGORA`
+        : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ CANCELAMENTO INCOMPLETO, agir manualmente`;
     if (!allConfirmed) {
       report.note("⚠️  NEM TODA onda pendente foi confirmada suspensa — a campanha pode disparar às 06:00 mesmo com o freio em STOP. Verificar o painel Brevo manualmente antes do disparo.");
     }
