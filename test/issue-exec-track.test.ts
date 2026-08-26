@@ -15,10 +15,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyExecTrack,
+  classifyExecTrackWithRule,
   parseWaitUntil,
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
   type ExecTrack,
+  EXEC_TRACK_MATCH_CATALOG,
 } from "../scripts/lib/issue-exec-track.ts";
 
 /** Data fixa — nenhum teste deste arquivo pode depender do relógio real. */
@@ -586,5 +588,204 @@ describe("EXEC_TRACK_UI — vocabulário servido ao front", () => {
   it("nenhuma explicação repetida — cada valor diz algo próprio", () => {
     const explains = new Set(EXEC_TRACK_UI.map((e) => e.explain));
     assert.equal(explains.size, EXEC_TRACK_UI.length);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6200 — matched: qual regra da cadeia de precedência decidiu o track.
+// Cada teste abaixo confere UM caso da cadeia, garantindo que `matched` seja
+// o prefixo `category:detail` correto — não só o `track` (a parte fácil).
+describe("classifyExecTrackWithRule — matched (#6200)", () => {
+  it("state CLOSED → state:closed", () => {
+    const r = classifyExecTrackWithRule({ labels: ["bug"], body: "", now: NOW, state: "CLOSED" });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "state:closed");
+  });
+
+  it("label on-hold → label:on-hold", () => {
+    const r = classifyExecTrackWithRule({ labels: ["on-hold"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:on-hold");
+  });
+
+  it("label wontfix → label:wontfix", () => {
+    const r = classifyExecTrackWithRule({ labels: ["wontfix"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:wontfix");
+  });
+
+  it("label external-blocker → label:external-blocker (bloqueio real)", () => {
+    const r = classifyExecTrackWithRule({ labels: ["external-blocker"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:external-blocker");
+  });
+
+  it("label kit-migration → label:kit-migration", () => {
+    const r = classifyExecTrackWithRule({ labels: ["kit-migration"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:kit-migration");
+  });
+
+  it("label beehiiv → label:beehiiv", () => {
+    const r = classifyExecTrackWithRule({ labels: ["beehiiv"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:beehiiv");
+  });
+
+  it("label bloqueio-execucao → label:bloqueio-execucao", () => {
+    const r = classifyExecTrackWithRule({ labels: ["bloqueio-execucao"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:bloqueio-execucao");
+  });
+
+  it("marcador aguardando-ate futuro → marker:aguardando-ate", () => {
+    const r = classifyExecTrackWithRule({ labels: [], body: "<!-- aguardando-ate: 2026-09-01 -->", now: NOW });
+    assert.equal(r.track, "agendada");
+    assert.equal(r.matched, "marker:aguardando-ate");
+  });
+
+  it("label not-this-week → label:not-this-week (2ª checagem bloqueada)", () => {
+    const r = classifyExecTrackWithRule({ labels: ["not-this-week"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:not-this-week");
+  });
+
+  it("label next-month → label:next-month", () => {
+    const r = classifyExecTrackWithRule({ labels: ["next-month"], body: "", now: NOW });
+    assert.equal(r.track, "bloqueada");
+    assert.equal(r.matched, "label:next-month");
+  });
+
+  it("label windows → label:windows", () => {
+    const r = classifyExecTrackWithRule({ labels: ["windows"], body: "", now: NOW });
+    assert.equal(r.track, "develop");
+    assert.equal(r.matched, "label:windows");
+  });
+
+  it("label trade-off-real → label:trade-off-real", () => {
+    const r = classifyExecTrackWithRule({ labels: ["trade-off-real"], body: "", now: NOW });
+    assert.equal(r.track, "develop");
+    assert.equal(r.matched, "label:trade-off-real");
+  });
+
+  it("external-blocker + credencial-escopo → label:credencial-escopo", () => {
+    const r = classifyExecTrackWithRule({ labels: ["external-blocker", "credencial-escopo"], body: "", now: NOW });
+    assert.equal(r.track, "develop");
+    assert.equal(r.matched, "label:credencial-escopo");
+  });
+
+  it("label develop-track → label:develop-track", () => {
+    const r = classifyExecTrackWithRule({ labels: ["develop-track"], body: "", now: NOW });
+    assert.equal(r.track, "develop");
+    assert.equal(r.matched, "label:develop-track");
+  });
+
+  it("label alarm-evento → label:alarm-evento", () => {
+    const r = classifyExecTrackWithRule({ labels: ["alarm-evento"], body: "", now: NOW });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "label:alarm-evento");
+  });
+
+  it("label decisao-registrada → label:decisao-registrada", () => {
+    const r = classifyExecTrackWithRule({ labels: ["decisao-registrada"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:decisao-registrada");
+  });
+
+  it("label alarm → label:alarm", () => {
+    const r = classifyExecTrackWithRule({ labels: ["alarm"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:alarm");
+  });
+
+  it("label epic-guarda-chuva → label:epic-guarda-chuva", () => {
+    const r = classifyExecTrackWithRule({ labels: ["epic-guarda-chuva"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:epic-guarda-chuva");
+  });
+
+  it("label sem-direcao-acionavel → label:sem-direcao-acionavel", () => {
+    const r = classifyExecTrackWithRule({ labels: ["sem-direcao-acionavel"], body: "", now: NOW });
+    assert.equal(r.track, "fora-de-rodada");
+    assert.equal(r.matched, "label:sem-direcao-acionavel");
+  });
+
+  it("nada combina → default (overnight por omissão)", () => {
+    const r = classifyExecTrackWithRule({ labels: ["bug", "P2"], body: "", now: NOW });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "default");
+  });
+
+  it("ambiguidade textual → default (não é trade-off real sem label)", () => {
+    const r = classifyExecTrackWithRule({ labels: [], body: "precisamos decidir entre X e Y", now: NOW });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "default");
+  });
+});
+
+describe("classifyExecTrack — assinatura antiga preservada (#6200)", () => {
+  it("continua devolvendo só ExecTrack (string), sem matched", () => {
+    const result = classifyExecTrack({ labels: ["trade-off-real"], body: "", now: NOW });
+    assert.equal(result, "develop");
+    assert.equal(typeof result, "string");
+  });
+});
+
+// #6200 — guard de CONTRATO da união `ExecTrackMatch`, verificado em tempo de
+// COMPILAÇÃO (`npx tsc --noEmit`), não em runtime.
+//
+// Por que existe: os testes de `matched` acima já asseriam cada valor que o
+// classificador produz, e mesmo assim `"label:develop-track"` ficou de fora da
+// união — porque `ExecTrackResult.matched` é tipado `string` (escape hatch
+// deliberado: o valor é montado como `label:${nome}` em runtime). Com isso, a
+// união pôde divergir do runtime sem nenhum teste quebrar, e o docstring ainda
+// classificou `develop-track` como `bloqueada` (ele roteia pra `develop`).
+//
+// O catálogo vive em `scripts/lib/issue-exec-track.ts` (EXEC_TRACK_MATCH_CATALOG),
+// não aqui: `tsconfig.json` inclui só `scripts/**/*.ts`, então anotação de tipo
+// escrita em `test/` não é verificada por `npx tsc --noEmit`. Lá o catálogo é
+// `readonly ExecTrackMatch[]` e quebra a compilação se a união encolher; aqui
+// conferimos o outro lado — que o runtime não emita nada fora dele.
+
+describe("ExecTrackMatch — união cobre todo valor que o runtime emite (#6200)", () => {
+  it("todo `matched` produzido pelo classificador está no catálogo tipado", () => {
+    // Cada entrada exercita a regra que produz aquele `matched`, fechando o
+    // loop entre runtime e união: o array acima não compila se a união
+    // encolher, e este teste falha se o runtime emitir algo fora dela.
+    const casos: Array<{ labels: string[]; body?: string; state?: "OPEN" | "CLOSED" }> = [
+      { labels: [], state: "CLOSED" },
+      { labels: ["on-hold"] },
+      { labels: ["wontfix"] },
+      { labels: ["external-blocker"] },
+      { labels: ["kit-migration"] },
+      { labels: ["beehiiv"] },
+      { labels: ["bloqueio-execucao"] },
+      { labels: [], body: "<!-- aguardando-ate: 2099-01-01 -->" },
+      { labels: ["not-this-week"] },
+      { labels: ["next-month"] },
+      { labels: ["windows"] },
+      { labels: ["trade-off-real"] },
+      { labels: ["external-blocker", "credencial-escopo"] },
+      { labels: ["develop-track"] },
+      { labels: ["alarm-evento"] },
+      { labels: ["decisao-registrada"] },
+      { labels: ["alarm"] },
+      { labels: ["epic-guarda-chuva"] },
+      { labels: ["sem-direcao-acionavel"] },
+      { labels: [] },
+    ];
+
+    for (const caso of casos) {
+      const r = classifyExecTrackWithRule({
+        labels: caso.labels,
+        body: caso.body ?? "",
+        now: NOW,
+        state: caso.state,
+      });
+      assert.ok(
+        (EXEC_TRACK_MATCH_CATALOG as readonly string[]).includes(r.matched),
+        `matched "${r.matched}" (labels: ${JSON.stringify(caso.labels)}) fora da união ExecTrackMatch`,
+      );
+    }
   });
 });

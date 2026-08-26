@@ -92,6 +92,113 @@
  * por issue, e a união dos cinco cobre o backlog aberto inteiro. */
 export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "fora-de-rodada";
 
+/**
+ * Identificador da regra que decidiu o `track`. Formato `category:detail`
+ * (ver abaixo para os valores) — serve pra o painel distinuguir um `overnight`
+ * **verificado** (sinal positivo explícito) de um `overnight` **por omissão**
+ * (nenhuma label disse o contrário, ninguém olhou). #6200.
+ *
+ * - `state:closed`          — `state === "CLOSED"` (nunca candidata)
+ * - `label:on-hold`         — `OUT_OF_ROUND_LABELS` (1ª checagem)
+ * - `label:wontfix`         — idem
+ * - `label:external-blocker` — `BLOCKED_LABELS` com bloqueio real (2ª checagem do passo 2)
+ * - `label:kit-migration`   — idem
+ * - `label:beehiiv`         — idem
+ * - `label:bloqueio-execucao` — idem
+ * - `marker:aguardando-ate` — marcador futuro → `agendada`
+ * - `label:not-this-week`   — 2ª checagem `bloqueada` (deferimento vago)
+ * - `label:next-month`      — idem
+ * - `label:windows`         — → `develop`
+ * - `label:trade-off-real`  — → `develop`
+ * - `label:credencial-escopo` — `external-blocker` + `credencial-escopo` → `develop` (cat. A)
+ * - `label:develop-track`  — bloqueio humano/dependência sem data → `develop` (#5948)
+ * - `label:alarm-evento`    — → `overnight` (alarme de EVENTO PASSADO)
+ * - `label:decisao-registrada` — 2ª checagem `fora-de-rodada`
+ * - `label:alarm`           — idem
+ * - `label:epic-guarda-chuva` — idem
+ * - `label:sem-direcao-acionavel` — idem
+ * - `default`               — nenhuma label/marcador/marker decidiu; issue nasce `overnight` por construção
+ *
+ * O prefixo `label:` / `marker:` / `state:` / `default` é parte do contrato:
+ * o painel de Triagem filtra por categoria sem parsear o detalhe. Novas
+ * categorias só entram com novos prefixos aqui — nunca literais novos sem
+ * atualizar este tipo.
+ */
+export type ExecTrackMatch =
+  | "state:closed"
+  | "label:on-hold"
+  | "label:wontfix"
+  | "label:external-blocker"
+  | "label:kit-migration"
+  | "label:beehiiv"
+  | "label:bloqueio-execucao"
+  | "marker:aguardando-ate"
+  | "label:not-this-week"
+  | "label:next-month"
+  | "label:windows"
+  | "label:trade-off-real"
+  | "label:credencial-escopo"
+  | "label:develop-track"
+  | "label:alarm-evento"
+  | "label:decisao-registrada"
+  | "label:alarm"
+  | "label:epic-guarda-chuva"
+  | "label:sem-direcao-acionavel"
+  | "default";
+
+/**
+ * Catálogo COMPLETO dos valores que `classifyExecTrackWithRule` emite em
+ * `matched`. Mora aqui — e não no teste — de propósito: `tsconfig.json` inclui
+ * só `scripts/**\/*.ts`, então uma anotação de tipo escrita em `test/` NUNCA é
+ * verificada por `npx tsc --noEmit` e vira guard decorativo.
+ *
+ * Sendo `readonly ExecTrackMatch[]`, remover um membro da união quebra o
+ * literal correspondente aqui em tempo de compilação. É o que faltava quando
+ * `"label:develop-track"` ficou fora da união apesar de o runtime emiti-lo e de
+ * haver teste asserindo o valor: `ExecTrackResult.matched` é `string` (escape
+ * hatch deliberado — o valor é montado como `label:${nome}`), então nada
+ * confrontava união × runtime. `test/issue-exec-track.test.ts` fecha o outro
+ * lado, conferindo que todo `matched` emitido está neste catálogo. #6200.
+ */
+export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
+  "state:closed",
+  "label:on-hold",
+  "label:wontfix",
+  "label:external-blocker",
+  "label:kit-migration",
+  "label:beehiiv",
+  "label:bloqueio-execucao",
+  "marker:aguardando-ate",
+  "label:not-this-week",
+  "label:next-month",
+  "label:windows",
+  "label:trade-off-real",
+  "label:credencial-escopo",
+  "label:develop-track",
+  "label:alarm-evento",
+  "label:decisao-registrada",
+  "label:alarm",
+  "label:epic-guarda-chuva",
+  "label:sem-direcao-acionavel",
+  "default",
+] as const;
+
+/** Resultado estendido de `classifyExecTrack` (#6200) — inclui a regra que
+ * decidiu, pra o painel distinguir `overnight` verificado de `overnight` por
+ * omissão. `classifyExecTrack` (que preserva a assinatura antiga → `ExecTrack`)
+ * delega pra cá e descarta `matched`; callers que precisam do detalhe chamam
+ * `classifyExecTrackWithRule` diretamente. */
+export interface ExecTrackResult {
+  track: ExecTrack;
+  /** Regra que decidiu — ver `ExecTrackMatch` pra lista de valores canônicos.
+   * Tipo `string` (não `ExecTrackMatch`) porque o valor é dinâmico em runtime
+   * (`label:${labelName}` onde `labelName` vem do `gh` e não do Set fixo do
+   * TS). `ExecTrackMatch` existe como documentação/catálogo, e `matched`
+   * sempre bate num dos valores listados lá — só não dá pra provar isso ao
+   * compilador. #6200. */
+  matched: string;
+}
+
 /** Fora de qualquer rodada: o editor tirou de circulação, não é "ainda não". */
 const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
 
@@ -360,40 +467,51 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  * marcador próprio; uma issue sem nenhum dos dois é, por construção, trabalho
  * que o overnight pega — inclusive a ambígua que ele ainda vai triar.
  */
-export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
+export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResult {
   const { labels, body, now = new Date(), state } = input;
-  if (state === "CLOSED") return "fora-de-rodada";
+  if (state === "CLOSED") return { track: "fora-de-rodada", matched: "state:closed" };
   const has = (l: string) => labels.includes(l);
 
-  if (labels.some((l) => OUT_OF_ROUND_LABELS.has(l))) return "fora-de-rodada";
+  const outOfRound = labels.find((l) => OUT_OF_ROUND_LABELS.has(l));
+  if (outOfRound) return { track: "fora-de-rodada", matched: `label:${outOfRound}`  };
 
   // #5694 — `external-blocker` + `credencial-escopo` sai de `BLOCKED_LABELS`
   // (vira `develop` no passo 5 abaixo). Só essa combinação específica: outra
   // label de `BLOCKED_LABELS` presente na mesma issue continua bloqueando.
   const isCredentialScopeUnblock = has("external-blocker") && has(CREDENCIAL_ESCOPO_LABEL);
 
-  if (
-    labels.some(
-      (l) => BLOCKED_LABELS.has(l) && !(l === "external-blocker" && isCredentialScopeUnblock),
-    )
-  )
-    return "bloqueada";
+  const blockedLabel = labels.find(
+    (l) => BLOCKED_LABELS.has(l) && !(l === "external-blocker" && isCredentialScopeUnblock),
+  );
+  if (blockedLabel) return { track: "bloqueada", matched: `label:${blockedLabel}`  };
 
   const waitUntil = parseWaitUntil(body);
-  if (waitUntil && waitUntil.getTime() > now.getTime()) return "agendada";
+  if (waitUntil && waitUntil.getTime() > now.getTime()) return { track: "agendada", matched: "marker:aguardando-ate" };
 
-  if (labels.some((l) => DEFERRED_LABELS.has(l))) return "bloqueada";
+  const deferredLabel = labels.find((l) => DEFERRED_LABELS.has(l));
+  if (deferredLabel) return { track: "bloqueada", matched: `label:${deferredLabel}`  };
 
-  if (labels.some((l) => MACHINE_DEVELOP_LABELS.has(l))) return "develop";
-  if (has(TRADE_OFF_LABEL)) return "develop";
-  if (isCredentialScopeUnblock) return "develop";
-  if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return "develop";
+  // Passo 5 — develop (máquina, trade-off, credencial-escopo, humano).
+  const machineLabel = labels.find((l) => MACHINE_DEVELOP_LABELS.has(l));
+  if (machineLabel) return { track: "develop", matched: `label:${machineLabel}`  };
+  if (has(TRADE_OFF_LABEL)) return { track: "develop", matched: "label:trade-off-real" };
+  if (isCredentialScopeUnblock) return { track: "develop", matched: "label:credencial-escopo" };
+  if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return { track: "develop", matched: "label:develop-track" };
 
-  if (has(ALARM_EVENT_LABEL)) return "overnight";
+  if (has(ALARM_EVENT_LABEL)) return { track: "overnight", matched: "label:alarm-evento" };
 
-  if (labels.some((l) => RESOLVED_BY_PROSE_LABELS.has(l))) return "fora-de-rodada";
+  const proseLabel = labels.find((l) => RESOLVED_BY_PROSE_LABELS.has(l));
+  if (proseLabel) return { track: "fora-de-rodada", matched: `label:${proseLabel}`  };
 
-  return "overnight";
+  return { track: "overnight", matched: "default" };
+}
+
+/** Assinatura original preservada (#6200) — devolve só o `track`. Callers
+ * antigos (`studio-issues.ts`, `state-changed-tracker.ts`, testes) continuam
+ * funcionando sem mudança; quem precisa do detalhe da regra migra pra
+ * `classifyExecTrackWithRule`. */
+export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
+  return classifyExecTrackWithRule(input).track;
 }
 
 /** Rótulo curto pra UI (badge/dropdown). Separado do tipo pra manter o valor

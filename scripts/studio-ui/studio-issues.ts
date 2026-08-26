@@ -46,7 +46,7 @@
  */
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
-import { classifyExecTrack, EXEC_TRACK_UI, type ExecTrack } from "../lib/issue-exec-track.ts";
+import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -101,6 +101,12 @@ export interface TriageIssue {
    * do `/diaria-overnight`/`/diaria-develop`. Determinístico: lê labels +
    * marcador `aguardando-ate:`, nunca infere julgamento a partir de prosa. */
   execTrack: ExecTrack;
+  /** Regra da cadeia de precedência que decidiu `execTrack` (#6200) —
+   * permite ao painel distinguir `overnight` **verificado** (sinal positivo
+   * explícito, ex.: `label:alarm-evento`) de `overnight` **por omissão**
+   * (`default` — nenhuma label disse o contrário, ninguém olhou). `null` só
+   * quando a classificação foi feita sem o detalhe (caller legado). */
+  execTrackMatched: ExecTrackMatch | null;
 }
 
 export interface TriagePr {
@@ -241,7 +247,9 @@ function labelNames(raw: Array<{ name: string }> | undefined): string[] {
 export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
   return raw.map((i) => {
     const labels = labelNames(i.labels);
-    const files = extractFilePaths(`${i.title}\n${i.body ?? ""}`);
+    const files = extractFilePaths(`${i.title}
+${i.body ?? ""}`);
+    const result = classifyExecTrackWithRule({ labels, body: i.body, state: i.state });
     return {
       number: i.number,
       title: i.title,
@@ -256,7 +264,8 @@ export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
       // por `--state open`: `parseIssues` é uma função pura, testável com
       // qualquer input, e `classifyExecTrack` só protege contra issue
       // fechada quando `state` chega até ela.
-      execTrack: classifyExecTrack({ labels, body: i.body, state: i.state }),
+      execTrack: result.track,
+      execTrackMatched: result.matched as ExecTrackMatch,
     };
   });
 }
