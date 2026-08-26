@@ -584,6 +584,56 @@ describe("CLI end-to-end — harness real via stdin (#6303 Finding H, mesmo padr
     assert.equal(result.stderr, "");
     assert.deepEqual(readdirSync(sessionsDir), []);
   });
+
+  // #6327 — travando a garantia que a docstring de `heartbeat` (session-registry.ts)
+  // agora documenta explicitamente: `overnight`/`develop` nunca chamam
+  // `heartbeat` neste módulo, e MESMO ASSIM `lastHeartbeat` fica fresco,
+  // porque o beacon ENRIQUECE o registro coordenador EXISTENTE em vez de
+  // criar um `interactive-*` paralelo. Sem este teste, reduzir/desligar o
+  // beacon (ou quebrar `findExistingSessionFile`) pareceria uma mudança
+  // inócua de um hook de observabilidade — na prática destrava a garantia de
+  // exclusão mútua entre sessões que este achado documenta.
+  it(
+    "beacon atualiza lastHeartbeat de um registro de kind COORDENADOR já existente, " +
+      "sem criar um interactive-* paralelo (#6327)",
+    () => {
+      const { hookPath, sessionsDir } = makeIsolatedHookCopy();
+      const sessionId = "sess-e2e-coord";
+      const coordFile = join(sessionsDir, `overnight-Neo-${sessionId}.json`);
+      const originalHeartbeat = iso(-60 * 60 * 1000); // 1h atrás — nunca chamou heartbeat() diretamente
+      writeFileSync(
+        coordFile,
+        JSON.stringify({
+          kind: "overnight",
+          machineTag: "Neo",
+          sessionId,
+          startedAt: originalHeartbeat,
+          lastHeartbeat: originalHeartbeat,
+          claimed_issues: [1, 2],
+        }),
+      );
+
+      const result = runHook(hookPath, {
+        session_id: sessionId,
+        tool_name: "Bash",
+        tool_input: { command: "gh pr list" },
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+
+      const files = readdirSync(sessionsDir);
+      assert.deepEqual(files, [`overnight-Neo-${sessionId}.json`], "nenhum interactive-* paralelo foi criado");
+
+      const record = JSON.parse(readFileSync(coordFile, "utf8"));
+      assert.equal(record.kind, "overnight", "o kind coordenador é preservado — o beacon nunca reclassifica");
+      assert.deepEqual(record.claimed_issues, [1, 2], "claims existentes sobrevivem intactas");
+      assert.notEqual(
+        record.lastHeartbeat,
+        originalHeartbeat,
+        "lastHeartbeat avançou — é isto que mantém a claim fora de SOFT_STALE_MS sem a skill chamar heartbeat()",
+      );
+    },
+  );
 });
 
 describe("#6303 P1/P2 — o beacon NÃO registra subagente", () => {

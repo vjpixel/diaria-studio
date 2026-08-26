@@ -7,7 +7,7 @@
  * comando de exemplo/instrução dentro de um `SKILL.md` que invoca
  * `scripts/overnight-session-marker.ts --start`/`--phase` ou
  * `scripts/lib/session-registry.ts register|heartbeat|end|claim-issue|
- * is-claimed|merge-lock-acquire|merge-lock-release` **encadeado ou pipado**
+ * unclaim-issue|is-claimed|merge-lock-acquire|merge-lock-release` **encadeado ou pipado**
  * (`&&`/`;`/`|`/multi-linha) dentro do MESMO trecho de código (bloco cercado
  * ```...``` ou span inline `...`).
  *
@@ -47,7 +47,7 @@ const TARGET_REGISTRY = "session-registry.ts";
 // — duplicado aqui de propósito, mesmo espírito "self-contained" dos hooks
 // (este é um teste estático, não deve importar um .mjs de hook pra isto).
 const INJECTABLE_SUBCOMMANDS =
-  /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
 // Mesma heurística de encadeamento de .claude/hooks/inject-session-id.mjs
 // (isChainedCommand) — inclusive o `\r?\n`: um bloco cercado multi-linha
 // conta como "encadeado" porque a injeção automática do hook real também o

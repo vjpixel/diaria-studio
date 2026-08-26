@@ -71,8 +71,17 @@ describe("needsSessionId", () => {
     assert.equal(needsSessionId("npx tsx scripts/overnight-session-marker.ts --end"), false);
   });
 
-  it("session-registry.ts register/heartbeat/end/claim-issue/is-claimed/merge-lock-* → true", () => {
-    for (const sub of ["register", "heartbeat", "end", "claim-issue", "is-claimed", "merge-lock-acquire", "merge-lock-release"]) {
+  it("session-registry.ts register/heartbeat/end/claim-issue/unclaim-issue/is-claimed/merge-lock-* → true", () => {
+    for (const sub of [
+      "register",
+      "heartbeat",
+      "end",
+      "claim-issue",
+      "unclaim-issue",
+      "is-claimed",
+      "merge-lock-acquire",
+      "merge-lock-release",
+    ]) {
       assert.equal(
         needsSessionId(`npx tsx scripts/lib/session-registry.ts ${sub} --kind overnight`),
         true,
@@ -228,6 +237,17 @@ describe("buildUpdatedCommand (#5156)", () => {
   it("injeta --session-id em session-registry.ts register", () => {
     const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts register --kind overnight", "sess-abc");
     assert.equal(result, "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-abc'");
+  });
+
+  it("injeta --session-id em session-registry.ts unclaim-issue (#6317 — precisa saber DE QUEM remover)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind develop --issue 6317",
+      "sess-abc",
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind develop --issue 6317 --session-id 'sess-abc'",
+    );
   });
 
   it("retorna null quando o comando já tem --session-id (nunca sobrescreve)", () => {
