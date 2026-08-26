@@ -364,11 +364,7 @@ Antes do fan-out, rodar a mesma análise de cluster que o `/diaria-develop` já 
 
 **Dispatchar um subagente implementador por unidade da onda** — issue solo ou lote inteiro (#2024) — (`Agent`, `subagent_type: "general-purpose"`, `isolation: "worktree"` — nunca um agente especializado do repo: eles têm toolset restrito e não conseguem commitar/pushar).
 
-**Imediatamente após dispatchar a onda, publicar a contagem de worktrees (#6299 — call site de ABERTURA, obrigatório):**
-```bash
-npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --active-worktrees {N}
-```
-onde `{N}` = worktrees desta sessão vivos agora. **Standalone, nunca em `&&`/pipe/heredoc** (`context/overnight-dispatch-rules.md` item 18) — encadear quebra a injeção do `--session-id` e a publicação vira no-op silencioso. Sem esta chamada, `list-active` soma zero pra esta sessão e uma `/diaria-develop` concorrente abre os 6 dela por cima dos 3 daqui.
+**Imediatamente após dispatchar a onda, publicar a contagem de worktrees (#6299 — call site de ABERTURA, obrigatório):** rodar `npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --active-worktrees {N}`, onde `{N}` = worktrees desta sessão vivos agora. **Standalone, nunca em `&&`/pipe/heredoc nem dentro de um bloco de código multi-linha** (`context/overnight-dispatch-rules.md` item 18) — encadear quebra a injeção do `--session-id` e a publicação vira no-op silencioso; é por isso que este comando aparece aqui em span inline e não em bloco cercado (`test/skill-chained-session-command-guard-6232.test.ts` reprova o bloco, pelo mesmo critério que o hook usa). Sem esta chamada, `list-active` soma zero pra esta sessão e uma `/diaria-develop` concorrente abre os 6 dela por cima dos 3 daqui.
 
 O prompt do subagente inclui, obrigatoriamente:
    - **instrução literal de ler `context/overnight-dispatch-rules.md` no início da própria sessão (#3453 Rec 4)** — é o checklist canônico das regras obrigatórias (guard de publicação, convenção de branch, bootstrap, disciplina de testes #2959, #633, marcador `no-regression-test`, self-review #2038, não-executar-review-multi-agente). Citar o **path** no prompt em vez de reproduzir o texto completo das regras encurta o prompt de dispatch do coordenador (o custo cresce ~19× por noite). Os bullets abaixo continuam sendo a fonte que espelha esse arquivo — mantê-lo em sincronia ao editar qualquer regra de dispatch;
@@ -493,11 +489,7 @@ O prompt do subagente inclui, obrigatoriamente:
        --message "merged" \
        --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}}'
      ```
-     Depois: limpar o worktree do subagente (`git worktree prune` + remover diretório) e deletar a branch remota (`git push origin --delete overnight/fix-NNNN`). **Em seguida, republicar a contagem (#6299 — call site de FECHAMENTO, obrigatório, par do call site de abertura no passo 4):**
-     ```bash
-     npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --active-worktrees {N}
-     ```
-     com o `{N}` já decrementado. **Standalone**, mesma disciplina de injeção. Só o par abertura+fechamento mantém o número honesto: publicar só ao abrir faz a sessão parecer permanentemente cheia e sufoca a concorrente pelo resto da noite.
+     Depois: limpar o worktree do subagente (`git worktree prune` + remover diretório) e deletar a branch remota (`git push origin --delete overnight/fix-NNNN`). **Em seguida, republicar a contagem (#6299 — call site de FECHAMENTO, obrigatório, par do call site de abertura no passo 2):** rodar `npx tsx scripts/lib/session-registry.ts heartbeat --kind overnight --active-worktrees {N}` com o `{N}` já decrementado. **Standalone**, mesma disciplina de injeção do call site de abertura — span inline, nunca bloco cercado (`test/skill-chained-session-command-guard-6232.test.ts` reprova o bloco, pelo mesmo critério de `isChainedCommand` que o hook usa). Só o par abertura+fechamento mantém o número honesto: publicar só ao abrir faz a sessão parecer permanentemente cheia e sufoca a concorrente pelo resto da noite.
    - Vermelho (de verdade) → registrar `timeline.fix_iteration_{K} = now()` (K = 1 ou 2) em `plan.json` e emitir:
      ```bash
      npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
