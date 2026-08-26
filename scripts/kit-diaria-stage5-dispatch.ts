@@ -49,7 +49,7 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractContent } from "./lib/newsletter-parse.ts";
 import { buildKitHtml, buildKitSubject, buildKitPreviewText, checkSubjectNotEmpty } from "./publish-newsletter-kit.ts";
 import type { PublicImagesFile } from "./substitute-image-urls.ts";
-import { createBroadcast, findTagIdByName, buildTagFilter } from "./lib/kit-broadcasts.ts";
+import { createBroadcast, findTagIdByName, buildTagFilter, KIT_TEST_SEND_TAG_NAME } from "./lib/kit-broadcasts.ts";
 import { KIT_NATIVE_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts";
 import {
   decideKitChannelDispatch,
@@ -158,10 +158,12 @@ export interface Stage5KitDeps {
     subject: string;
     content: string;
     preview_text: string;
-    send_at: null;
+    send_at: string | null;
     subscriber_filter: ReturnType<typeof buildTagFilter>;
   }): Promise<{ id: number }>;
   log(line: string): void;
+  /** Injetável pra o `--send-test` ter horário determinístico em teste. */
+  now(): number;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
@@ -197,13 +199,14 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
     },
     createBroadcast: (input) => createBroadcast(input),
     log,
+    now: () => Date.now(),
   };
 }
 
 export async function runStage5KitDispatch(
   editionDir: string,
   deps: Stage5KitDeps,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; sendTest?: boolean } = {},
 ): Promise<Stage5KitResult> {
   // #6138 finding 3: config e estado são I/O local e podem lançar
   // (`platform.config.json` malformado; estado corrompido, que
@@ -230,7 +233,13 @@ export async function runStage5KitDispatch(
     return { status: "skipped", reason: decision.reason };
   }
 
-  const { audienceTag } = decision;
+  // #6181: `--send-test` troca a audiência pela tag de teste (1 destinatário)
+  // SEM tocar no resto do fluxo — mesmo payload, mesmo guard de resolução.
+  // Existe porque `publish-newsletter-kit.ts --send-test` é gated por
+  // `checkKitBackendEnabled` (exige backend "kit"), o OPOSTO deste canal: não
+  // havia forma suportada de testar o HTML daqui antes de agendar.
+  const audienceTag = opts.sendTest ? KIT_TEST_SEND_TAG_NAME : decision.audienceTag;
+  if (opts.sendTest) deps.log(`--send-test: audiência trocada para "${audienceTag}"`);
 
   // Guard central (#6126): resolver a tag ANTES de montar qualquer coisa.
   // `findTagIdByName` NÃO cria a tag se faltar — ver docstring lá.
@@ -275,11 +284,26 @@ export async function runStage5KitDispatch(
       preview_text: previewText,
       // Rascunho: a Etapa 6 é quem agenda, sob o MESMO gate do Schedule da
       // Beehiiv — mesma divisão 5/6 do canal Brevo (#5772).
-      send_at: null,
+      // Teste dispara sozinho em ~1 min; produção nasce rascunho (Etapa 6 agenda).
+      send_at: opts.sendTest ? new Date(deps.now() + 60_000).toISOString() : null,
       subscriber_filter: buildTagFilter(tagCheck.tagId),
     });
   } catch (e) {
     return { status: "failed", step: "createBroadcast", reason: (e as Error).message };
+  }
+
+  if (opts.sendTest) {
+    // Descartável: NÃO grava estado — senão o dispatch de produção veria
+    // `already_done` e nunca criaria o broadcast real desta edição.
+    deps.log(`test-send criado: broadcast_id=${created.id} → tag "${audienceTag}"`);
+    return {
+      status: "ok",
+      broadcastId: created.id,
+      audienceTag,
+      audienceTagId: tagCheck.tagId,
+      unresolvedImages,
+      renderWarnings,
+    };
   }
 
   // #6138 finding 2: o broadcast JÁ EXISTE no Kit a partir daqui. Se a escrita
@@ -342,6 +366,7 @@ export async function main(): Promise<void> {
   try {
     result = await runStage5KitDispatch(resolve(ROOT, editionDirArg), productionDeps(), {
       dryRun: hasFlag(argv, "dry-run"),
+    sendTest: hasFlag(argv, "send-test"),
     });
   } catch (e) {
     result = { status: "failed", step: "unexpected", reason: (e as Error).message };

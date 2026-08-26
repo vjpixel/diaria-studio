@@ -16,6 +16,17 @@
  * (`_internal/kit-diaria-published.json`). Reusar aquele exigiria atravessar
  * os dois comportamentos com flags e acoplaria o caminho do #6114 a este.
  *
+ * ## ⚠️ Editar broadcast agendado DESAGENDA (#6181)
+ *
+ * Medido ao vivo em 25/08/2026: `PATCH /v4/broadcasts/{id}` com `subject`
+ * responde **200 e zera o `send_at`** — o broadcast volta a rascunho, em
+ * silêncio, sem erro. No piloto dos Patronos, aplicar "- patronos" no assunto
+ * cancelou o envio do dia seguinte; só não virou incidente porque houve
+ * reconferência.
+ *
+ * **Qualquer edição de broadcast agendado exige RODAR ESTE SCRIPT DE NOVO.**
+ * Não confie no 200 do PATCH — confira o `send_at` depois.
+ *
  * ## Verificação pós-mutação (#573)
  *
  * Nunca reporta "agendado" a partir da resposta do PATCH — relê o broadcast
@@ -59,7 +70,7 @@ export interface ScheduleKitDiariaDeps {
   readState: typeof readKitDiariaState;
   writeState: typeof writeKitDiariaState;
   patch(id: number, sendAt: string): Promise<{ id: number }>;
-  verify(id: number): Promise<{ send_at?: string | null }>;
+  verify(id: number): Promise<{ send_at?: string | null; subject?: string; preview_text?: string | null }>;
   log(line: string): void;
 }
 
@@ -117,7 +128,7 @@ export async function scheduleKitDiaria(
   }
 
   // #573 — confirmar por releitura, nunca pela resposta do PATCH.
-  let confirmed: { send_at?: string | null };
+  let confirmed: { send_at?: string | null; subject?: string; preview_text?: string | null };
   try {
     confirmed = await deps.verify(state.broadcast_id);
   } catch (e) {
@@ -139,7 +150,17 @@ export async function scheduleKitDiaria(
     };
   }
 
-  deps.writeState(editionDir, { ...state, status: "scheduled", scheduled_at: confirmed.send_at });
+  // #6181: reler subject/preview do broadcast em vez de preservar os locais.
+  // Editar o subject no painel (ou por PATCH, como o "- patronos" do piloto)
+  // deixava o arquivo local mentindo pra quem auditasse depois — o Kit é a
+  // fonte de verdade, e agora o estado reflete o que de fato vai sair.
+  deps.writeState(editionDir, {
+    ...state,
+    subject: confirmed.subject ?? state.subject,
+    preview_text: confirmed.preview_text ?? state.preview_text,
+    status: "scheduled",
+    scheduled_at: confirmed.send_at,
+  });
   deps.log(`agendado para ${confirmed.send_at} (broadcast_id=${state.broadcast_id}) ✓`);
   return { code: 0, scheduledAt: confirmed.send_at, broadcastId: state.broadcast_id };
 }

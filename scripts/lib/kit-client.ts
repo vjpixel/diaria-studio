@@ -81,6 +81,38 @@ function isRetriableStatus(status: number): boolean {
  * docstring do módulo) — não é sobrescrevível via `retry`, só os outros
  * campos de `FetchRetryOptions` (`attempts`/`backoffMs`/`sleep`/`timeoutMs`).
  */
+/**
+ * ## ⚠️ Armadilhas da API v4 do Kit — resposta de sucesso ≠ efeito (#6181)
+ *
+ * Quatro comportamentos medidos ao vivo em 25/08/2026, cada um responsável por
+ * pelo menos uma conclusão errada naquela sessão. **Nenhum é bug do nosso
+ * código; todos são "a API respondeu OK e não fez o que diz".**
+ *
+ * | operação | responde | efeito real |
+ * |---|---|---|
+ * | `DELETE /v4/tags/{id}` | **204** | **não remove** — a tag continua na listagem |
+ * | `GET /v4/tags/{id}` | **404** sempre | **a rota não existe** na v4; 404 não prova ausência |
+ * | `GET /v4/tags` logo após criar | sem a tag | **atraso de ~90s** de propagação |
+ * | `PATCH /v4/broadcasts/{id}` (subject) | **200** | **ZERA o `send_at`** — desagenda em silêncio |
+ *
+ * ### Consequências práticas
+ *
+ * 1. **Nunca verificar tag por `GET /v4/tags/{id}`.** A listagem `GET /v4/tags`
+ *    é a única fonte — respeitado o atraso.
+ * 2. **`204` num `DELETE` não é prova de remoção.** Conferir pela listagem.
+ * 3. **Tag recém-criada pode "não existir" por ~90s.** `findTagIdByName`
+ *    devolvendo `null` logo após um `POST /tags` é esperado — esperar e
+ *    re-rodar, não caçar bug. O caller pula o envio (falha segura), mas o
+ *    estado confunde: "canal ligado, tag criada, e mesmo assim inativo".
+ * 4. **Editar broadcast agendado desagenda.** Qualquer `PATCH` num broadcast
+ *    com `send_at` exige reagendar depois — ver `schedule-kit-diaria.ts`.
+ *    Esta foi a mais cara: no piloto dos Patronos, mudar o assunto cancelou o
+ *    envio do dia seguinte sem erro nenhum.
+ *
+ * Regra geral que resume as quatro: **nesta API, confirme por releitura, nunca
+ * pelo status da mutação.** É a mesma disciplina do #573, aqui obrigatória por
+ * comportamento da plataforma, não por precaução.
+ */
 export async function kitFetch<T = unknown>(
   path: string,
   opts: {
