@@ -34,9 +34,17 @@ Fatos vizinhos, verificados na mesma medição:
 - **0 rotas de Worker** na zona (a fantasma `diar.ia.br/2026/o-agente*` foi
   removida em 25/08 — ver #467). Se aparecer rota nova, não é resíduo: é algo
   que o cutover criou.
-- O token de API do projeto **escreve DNS mas NÃO lê custom hostnames**
+- O token de API do projeto **NÃO lê custom hostnames**
   (`Authentication error` em `/custom_hostnames`). O lado Cloudflare for SaaS
   da Beehiiv só é observável pelo painel — não automatizar checagem por ali.
+  **Correção (26/08/2026):** o texto original desta linha dizia só "escreve
+  DNS" — incompleto. Confirmado ao vivo que o token também escreve **Workers
+  routes** da zona (`DELETE /zones/{z}/workers/routes/{id-inexistente}` →
+  HTTP **404**, não 403 — 404 prova permissão de escrita, só o recurso não
+  existe) e, por extensão, o recurso de Workers Custom Domains usado pelo
+  `--cutover` de `scripts/apex-cutover.ts` (ver §7 abaixo). A única lacuna
+  real do token é `/custom_hostnames` (produto Cloudflare for SaaS da
+  Beehiiv) — nada relacionado à nossa zona.
 
 ## 2. Gatilhos de rollback
 
@@ -175,3 +183,46 @@ continuar como antes, o apex ainda não é nosso, independentemente do 200.
       **e** ao da Cloudflare (rollback)
 - [ ] Janela fora do horário de envio da edição (06:00 BRT) e do cluster de
       tasks matinais (09:00-09:50) — ver `docs/scheduled-tasks-registry.md`
+
+## 7. `scripts/apex-cutover.ts` — o lado Cloudflare deste plano é um script, não mais um procedimento manual
+
+Achado ao vivo em 26/08/2026 (comentários do #467): o cutover não é "editor em
+dois painéis" — é **um**. O painel da Beehiiv (`Disconnect domain`) é o único
+passo humano; tudo que este documento descreve do lado Cloudflare (seções 3-5)
+está mecanizado em `scripts/apex-cutover.ts`, dry-run por padrão:
+
+```bash
+npx tsx scripts/apex-cutover.ts --status              # lê o estado atual (nunca muta)
+npx tsx scripts/apex-cutover.ts --cutover              # imprime o plano (dry-run)
+npx tsx scripts/apex-cutover.ts --cutover --apply      # executa
+npx tsx scripts/apex-cutover.ts --rollback             # imprime o plano (dry-run)
+npx tsx scripts/apex-cutover.ts --rollback --apply     # executa — restaura exatamente a §1
+```
+
+O que o script faz por você, e onde:
+
+- **§1 (estado a restaurar):** `--status` lê os registros A/AAAA do apex com
+  os IDs atuais direto da zona — nunca precisa reconferir este arquivo à mão.
+- **§2 (gatilhos):** `--status` já mede com User-Agent de navegador, pelos
+  mesmos paths desta seção.
+- **§3 (procedimento):** `--rollback` faz a ordem certa sozinho — solta o
+  Custom Domain (3.1) ANTES de restaurar A/AAAA (3.2), e resolve o "id
+  diferente" da 3.2 automaticamente (lê o id atual e faz PATCH nele).
+- **`--cutover`** mecaniza o passo que faltava documentar aqui: anexa o apex
+  ao Worker `diaria-site` via **Workers Custom Domain**
+  (`PUT /accounts/{account}/workers/domains`) — o mesmo mecanismo por trás de
+  `custom_domain = true` em `wrangler.toml`, comprovado 3× em produção neste
+  projeto (`livros.`, `cursos.`, `especial.diar.ia.br`). Justificativa
+  completa do porquê deste mecanismo (e não uma Workers Route clássica, já
+  refutada pra este apex, nem editar `wrangler.toml` + `wrangler deploy`) no
+  docstring de `scripts/lib/apex-cutover.ts`. **Guard de pré-condição
+  embutido:** recusa (exit 1) se o Worker não responder 200 em `/` e
+  `/subscribe` — mecaniza o bloqueio duro do #6359, em implementação
+  paralela a este script.
+- **Verificação pós-mutação (#573):** todo `--apply` termina relendo o
+  estado da API (nunca confia na resposta do PUT/PATCH/POST/DELETE).
+- **O que o script NUNCA toca:** MX/TXT/CAA do apex, nem a Beehiiv — o
+  `Disconnect domain` continua manual, no painel dela.
+
+Testes (sem rede, sem mock de `fetch` — o módulo puro não faz I/O):
+`test/apex-cutover.test.ts`.
