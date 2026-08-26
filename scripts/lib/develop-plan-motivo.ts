@@ -160,12 +160,14 @@ export function findInvalidPuladaMotivos(
 /**
  * #5907 (b) — `deixado-para-o-helios` aplicado a issue que o helios NUNCA
  * pega manda a issue pra um buraco: o develop não faz, o overnight não faz.
- * Issue com track painel `develop` ou `bloqueada` não pode terminar como
- * `pulada` com esse motivo — o roteamento label-driven (`classifyExecTrack`)
- * é quem decide pra onde ela vai, e esses tracks exigem máquina/editor que
- * esta sessão não representa. Terminações legítimas para essas tracks:
- * `mergeada`, `entregue-fora-de-codigo`, `nao-tentada`, ou `pulada` com
- * outro motivo do vocabulário.
+ * Issue com track painel `develop`, `bloqueada` ou `epica` não pode terminar
+ * como `pulada` com esse motivo — o roteamento label-driven
+ * (`classifyExecTrack`) é quem decide pra onde ela vai, e nenhum desses
+ * tracks é algo que o overnight pegaria sozinho (`develop`/`bloqueada`
+ * exigem máquina/editor que esta sessão não representa; `epica`, #6201,
+ * nunca é implementada direto — delegada às issues-filhas). Terminações
+ * legítimas para essas tracks: `mergeada`, `entregue-fora-de-codigo`,
+ * `nao-tentada`, ou `pulada` com outro motivo do vocabulário.
  *
  * Pure: devolve os números das issues cujo status é exatamente
  * `deixado-para-o-helios` com `exec_track_painel` conhecido e incompatível.
@@ -179,7 +181,7 @@ export function findHeliosBuraco(
   for (const issue of issues) {
     if (issue?.status !== "deixado-para-o-helios") continue;
     const track = typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : null;
-    if (track === "develop" || track === "bloqueada") {
+    if (track === "develop" || track === "bloqueada" || track === "epica") {
       out.push(typeof issue.number === "number" ? issue.number : Number.NaN);
     }
   }
