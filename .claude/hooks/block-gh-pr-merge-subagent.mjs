@@ -92,7 +92,107 @@ const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 // subagente ativo pra proteger.
 const SOFT_STALE_MS = 90 * 60 * 1000;
 
+// #6168: o kind `interactive` (escrito automaticamente pelo beacon,
+// `.claude/hooks/session-beacon.mjs`) NÃO entra aqui, e isso é uma decisão,
+// não um esquecimento — uma sessão interativa não despacha subagente
+// implementador nem decide quando entra merge, então promovê-la a
+// coordenadora por relabel furaria exatamente o que este guard protege.
+// O caminho legítimo dela pro merge é a concessão de janela (#6296, ver
+// `readLiveMergeGrantFor` abaixo). `test/session-beacon-blast-radius.test.ts`
+// trava que este conjunto continua com 3 kinds.
 export const COORDINATOR_KINDS = new Set(["overnight", "develop", "continuo"]);
+
+/** TTL da concessão de janela (#6296) — duplicado de `MERGE_GRANT_TTL_MS` em
+ * session-registry.ts, porque este hook é self-contained (sem import de `.ts`). */
+const MERGE_GRANT_TTL_MS = 10 * 60 * 1000;
+
+/** TTL do merge lock (#5156 item 4) — duplicado de `MERGE_LOCK_TTL_MS`. */
+const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Lê `data/sessions/.merge-lock.json` e devolve quem o segura AGORA (#6296
+ * defeito 1).
+ *
+ * Três retornos distintos, e a distinção é o miolo da correção:
+ *   - `string`      — `sessionId` que segura o lock, dentro do TTL;
+ *   - `null`        — o arquivo NÃO existe: ninguém segura (estado conhecido);
+ *   - `undefined`   — não deu pra determinar (erro de I/O, JSON corrompido,
+ *                     `data/` ausente). **Nunca** é tratado como `null`.
+ *
+ * Por que a distinção importa: o critério de aceite da #6296 diz
+ * "coordenadora sem lock não mergeia", mas ler isso literalmente sobre um
+ * estado INDETERMINADO transformaria uma falha transitória do OneDrive
+ * (EBUSY/EPERM, que `session-registry.ts` já documenta como realista aqui) em
+ * bloqueio de merge legítimo. Estado desconhecido nunca bloqueia; estado
+ * conhecido, sim.
+ */
+export function readMergeLockHolder(repoRoot, now = Date.now()) {
+  const path = join(sessionsDir(repoRoot), ".merge-lock.json");
+  try {
+    if (!existsSync(path)) return null;
+  } catch {
+    return undefined;
+  }
+  try {
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    if (!record || typeof record.heldBy !== "string" || record.heldBy === "") return undefined;
+    const acquiredMs = Date.parse(record.acquiredAt);
+    if (!Number.isFinite(acquiredMs)) return undefined;
+    const ageMs = now - acquiredMs;
+    // Expirado (TTL) = ninguém segura de fato; `session-registry.ts` já trata
+    // lock além do TTL como abandonado e roubável.
+    if (ageMs > MERGE_LOCK_TTL_MS) return null;
+    return record.heldBy;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Procura, entre as sessões COORDENADORAS ativas desta máquina, uma concessão
+ * de janela de merge viva emitida para `sessionId` (#6296).
+ *
+ * Duplicado (não importado) de `findLiveMergeGrant`/`isMergeGrantLive` de
+ * `scripts/lib/session-registry.ts` — mesma razão self-contained do resto
+ * deste arquivo. As duas cópias são travadas por teste.
+ *
+ * Invariantes que NÃO podem afrouxar aqui:
+ *   - só coordenadora concede (`COORDINATOR_KINDS`);
+ *   - `grantedTo === grantedBy` nunca vale, mesmo gravado à mão — auto-
+ *     concessão é justamente o contorno que esta feature existe pra não abrir;
+ *   - concessão consumida (`consumedAt`) não vale: uso único;
+ *   - fora do TTL não vale.
+ */
+export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now()) {
+  if (typeof sessionId !== "string" || sessionId === "") return null;
+  const dir = sessionsDir(repoRoot);
+  let entries;
+  try {
+    if (!existsSync(dir)) return null;
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (!record || !COORDINATOR_KINDS.has(record.kind)) continue;
+      const grant = record.merge_grant;
+      if (!grant || grant.grantedTo !== sessionId) continue;
+      if (grant.consumedAt) continue;
+      if (grant.grantedTo === grant.grantedBy) continue;
+      const grantedMs = Date.parse(grant.grantedAt);
+      if (!Number.isFinite(grantedMs)) continue;
+      const ageMs = now - grantedMs;
+      if (ageMs < 0 || ageMs > MERGE_GRANT_TTL_MS) continue;
+      return grant;
+    } catch {
+      // Entrada corrompida — ignora só ela, segue as demais.
+    }
+  }
+  return null;
+}
 
 /**
  * Resolve a raiz do checkout PRINCIPAL do repo — nunca a raiz de um worktree
@@ -270,10 +370,51 @@ export function isGhPrMergeCommand(command) {
  * propósito, porque aqui o custo de um falso negativo é maior que o de um
  * falso positivo).
  */
-export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId) {
+export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId, ctx = {}) {
   if (!activeCoordinatorSessionIds || activeCoordinatorSessionIds.size === 0) return false;
   if (callerSessionId === undefined || callerSessionId === null || callerSessionId === "") return false;
-  return !activeCoordinatorSessionIds.has(callerSessionId);
+
+  // #6296 — DEFEITO 2: a janela concedida por conversa ganha representação
+  // mecânica. Medido ao vivo em 260826: o protocolo inteiro da Parte F do
+  // #6168 rodou (peer achado, SendMessage entregue, colisão por arquivo
+  // conferida nos 3 PRs dele, janela concedida, merge lock adquirido) e o
+  // `gh pr merge` foi bloqueado assim mesmo, porque este guard só olhava
+  // `session_id` contra o registro. A conversa chegou a acordo e não teve
+  // efeito nenhum sobre o mecanismo.
+  //
+  // A concessão NÃO afrouxa o guard: continua sendo a COORDENADORA quem
+  // decide que um merge entra (ela é a única que concede, e nunca a si
+  // mesma), com TTL curto e uso único. O que muda é que a decisão dela agora
+  // é legível por este hook em vez de existir só no transcript de duas
+  // sessões.
+  if (ctx.hasLiveGrant === true) return false;
+
+  const isCoordinator = activeCoordinatorSessionIds.has(callerSessionId);
+  if (!isCoordinator) return true; // comportamento pré-#6296, inalterado
+
+  // #6296 — DEFEITO 1: dois mecanismos governavam a mesma ação sem se
+  // compor. `grep -c 'mergeLock\|merge-lock\|\.merge-lock'` neste arquivo
+  // devolvia 0: o guard nunca consultava o lock, então "quem tem direito de
+  // mergear" e "a janela de merge está livre agora" eram perguntas
+  // respondidas por mecanismos que não se falavam.
+  //
+  // Leitura deliberadamente mais ESTREITA que a letra do critério de aceite
+  // ("coordenadora sem lock não mergeia"), e o motivo é a direção do
+  // fail-safe:
+  //   - lock seguro por OUTRA sessão   → bloqueia (é o dano real: dois
+  //     merges concorrentes em master);
+  //   - lock ausente E há OUTRA coordenadora ativa → bloqueia (há contenção
+  //     de verdade; pegar o lock deixa de depender de a skill lembrar);
+  //   - lock ausente E esta é a ÚNICA coordenadora → PERMITE. Não há com
+  //     quem serializar, e bloquear aqui quebraria toda rodada solo — que é
+  //     o caso comum — sem prevenir dano nenhum;
+  //   - estado do lock INDETERMINADO (`undefined`: I/O do OneDrive,
+  //     JSON corrompido) → PERMITE. Nunca transformar falha transitória de
+  //     leitura em bloqueio de merge legítimo.
+  const holder = ctx.mergeLockHolder;
+  if (typeof holder === "string" && holder !== callerSessionId) return true;
+  if (holder === null && activeCoordinatorSessionIds.size > 1) return true;
+  return false;
 }
 
 /** Mensagem mostrada ao subagente quando a chamada é negada (#5716). */
@@ -307,7 +448,13 @@ if (
       if (!isGhPrMergeCommand(command)) return;
       const repoRoot = resolveMainRepoRoot();
       const activeIds = readActiveCoordinatorSessionIds(repoRoot);
-      if (shouldBlockGhPrMerge(activeIds, payload.session_id)) {
+      const ctx = {
+        // #6296: os dois sinais que o guard passou a compor — a janela
+        // concedida por uma coordenadora, e quem segura o merge lock agora.
+        hasLiveGrant: readLiveMergeGrantFor(repoRoot, payload.session_id) !== null,
+        mergeLockHolder: readMergeLockHolder(repoRoot),
+      };
+      if (shouldBlockGhPrMerge(activeIds, payload.session_id, ctx)) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {

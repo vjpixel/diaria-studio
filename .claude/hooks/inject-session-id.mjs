@@ -69,7 +69,20 @@ const TARGET_REGISTRY = "session-registry.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
-const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+// #6168/#6296: `conflicts`, `grant-merge`, `check-merge-grant` e
+// `consume-merge-grant` entram pelo MESMO motivo que `is-claimed` entrou no
+// #5161 item 4 — todos recebem `--session-id` como a identidade de quem
+// pergunta, e sem a flag injetada degradam em silêncio para algo errado:
+//   - `conflicts` sem session-id não consegue se auto-excluir dos peers, e a
+//     própria sessão aparece como conflito consigo mesma;
+//   - `check-merge-grant`/`consume-merge-grant` procurariam uma concessão
+//     emitida pra string vazia (nunca encontram, e o merge legítimo é
+//     bloqueado);
+//   - `grant-merge` não saberia QUEM está concedendo, e a checagem de
+//     auto-concessão (`grantedTo === grantedBy`, o invariante que impede o
+//     contorno do guard #5716) nunca dispararia.
+const INJECTABLE_SUBCOMMANDS =
+  /\b(register|heartbeat|end|claim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release)\b/;
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.
