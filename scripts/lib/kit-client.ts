@@ -118,18 +118,24 @@ function isRetriableStatus(status: number): boolean {
  *    Duas leituras ficaram corretas **imediatamente** e são as que valem:
  *
  *    - `GET /subscribers/{id}/tags` — direção inversa, sem atraso observado
- *    - `GET /broadcasts/{id}/stats` → `recipients` — o número que o envio
- *      realmente vai usar
+ *    - `GET /broadcasts/{id}/stats` → `recipients` — já contava o assinante
+ *      novo (5) enquanto a listagem ainda dizia 4
  *
- *    O `recipients` é o mais decisivo: enquanto a listagem ainda dizia 4, ele
- *    já dizia 5. **O envio resolve a audiência ao vivo, não pela listagem
- *    defasada** — então uma conferência de audiência de broadcast deve olhar
- *    `recipients`, nunca contar linha de `/tags/{id}/subscribers`.
+ *    **Para conferir a audiência de um broadcast, olhe `recipients`** — nunca
+ *    conte linha de `/tags/{id}/subscribers`.
+ *
+ *    Limite do que foi medido, para ninguém esticar a conclusão: a leitura
+ *    foi feita num broadcast **agendado, ainda não disparado**. Isso prova que
+ *    `recipients` está mais atual que a listagem de tag — **não** prova que o
+ *    envio resolve a audiência no instante do disparo. Se um dia importar
+ *    saber se taguear DEPOIS do agendamento altera quem recebe, isso é uma
+ *    medição nova (taguear, agendar, deixar disparar, conferir a entrega), e
+ *    não uma consequência desta.
  *
  * Regra geral que resume as cinco: **nesta API, confirme por releitura, nunca
  * pelo status da mutação** — e, quando houver mais de um jeito de reler,
- * prefira o que o próprio envio consulta. A #5 mostra que releitura pelo
- * caminho errado é tão enganosa quanto confiar no status.
+ * prefira o mais próximo do efeito que você quer confirmar. A #5 mostra que
+ * releitura pelo caminho errado é tão enganosa quanto confiar no status.
  *
  * ---
  *
