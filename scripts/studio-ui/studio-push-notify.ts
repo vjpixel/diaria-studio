@@ -196,6 +196,34 @@ function editionGateKey(edition: string, stage: number): string {
   return `edition-gate:${edition}:${stage}`;
 }
 
+/**
+ * Guard de plausibilidade do id de edição (#6193).
+ *
+ * `buildStudioState` enumera TUDO que existe em `data/editions/` — não há
+ * validação de formato ali, de propósito (o layout aceita diretórios sem a
+ * convenção AAMMDD, ex: os `replay-*` do harness de replay). Isso é correto
+ * para a UI, e errado para o E-MAIL: em 26/08/2026 o editor recebeu
+ * "[diar.ia.br Studio] Gate pendente — edição 919011" porque
+ * `test/pipeline-sentinel-invariant-gate.test.ts` gravava AAMMDD sintéticos
+ * direto no `data/` real do checkout principal (corrigido no mesmo PR). O
+ * teste era a causa daquela vez; este guard é o que impede a CLASSE — bastam
+ * um teste novo, um replay ou um script com bug para reproduzir.
+ *
+ * Escopo deliberadamente estreito: filtra só a NOTIFICAÇÃO. A edição
+ * continua aparecendo normalmente no Studio (`GET /api/state`), inclusive
+ * `replay-*` — o que se perde é o e-mail sobre ela, que nunca foi útil.
+ */
+export function isPlausibleEditionId(edition: string): boolean {
+  if (!/^\d{6}$/.test(edition)) return false;
+  const year = 2000 + Number(edition.slice(0, 2));
+  const month = Number(edition.slice(2, 4));
+  const day = Number(edition.slice(4, 6));
+  const d = new Date(year, month - 1, day);
+  // Reconfirma os componentes — o construtor de `Date` rola 260231 (31/fev)
+  // silenciosamente pro mês seguinte em vez de rejeitar.
+  return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
 function chatGateKey(toolUseId: string): string {
   return `chat-gate:${toolUseId}`;
 }
@@ -232,7 +260,20 @@ export async function runPushNotifyTick(
 
   const state = buildStateFn(rootDir);
 
-  const editionKeys = state.gatesPending.map((g) => editionGateKey(g.edition, g.stage));
+  // #6193: gate de edição com id implausível nunca vira e-mail — mas o
+  // descarte é LOGADO, nunca silencioso: se algo está escrevendo edição
+  // sintética no `data/` real, isso é um bug a perseguir, não ruído a
+  // esconder.
+  const implausible = state.gatesPending.filter((g) => !isPlausibleEditionId(g.edition));
+  if (implausible.length > 0) {
+    const ids = [...new Set(implausible.map((g) => g.edition))].join(", ");
+    process.stderr.write(
+      `[studio-push-notify] gate ignorado — id de edição implausível (não é AAMMDD válido): ${ids}\n`,
+    );
+  }
+  const editionKeys = state.gatesPending
+    .filter((g) => isPlausibleEditionId(g.edition))
+    .map((g) => editionGateKey(g.edition, g.stage));
   const chatKeys = state.chatPermissionsPending.map((p) => chatGateKey(p.toolUseId));
   const currentKeys = [...editionKeys, ...chatKeys];
 

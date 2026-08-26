@@ -23,6 +23,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -123,17 +124,47 @@ describe("checkStageInvariantsForWrite (#6009) — unit", () => {
 });
 
 /**
- * Roda `pipeline-sentinel.ts write` como subprocesso real (exercita o CLI,
- * não só a lib). `cwd` fica fixo em `repoRoot` (não num tmpdir isolado) —
- * `--import tsx` precisa resolver o pacote `tsx` a partir de um `cwd` com
- * `node_modules`, e este worktree não tem `data/` real (junction OneDrive
- * ausente em worktree novo — ver CLAUDE.md), então escrever sob
- * `repoRoot/data/editions/{aamm}/{aammdd}` com um AAMMDD exclusivo do teste
- * é seguro e não risca dado de produção.
+ * Sandbox de repo para o CLI (#6193).
+ *
+ * `pipeline-sentinel.ts` resolve o diretório da edição a partir do `cwd`
+ * (`resolveEditionDir(args, process.cwd())` → `resolve(cwd, "data",
+ * "editions")`), então rodar o subprocesso com `cwd: repoRoot` escreve no
+ * `data/` REAL. A versão anterior deste arquivo fazia exatamente isso,
+ * apoiada na premissa — escrita no docstring — de que "este worktree não tem
+ * `data/` real (junction OneDrive ausente em worktree novo)". A premissa é
+ * FALSA no checkout principal, onde `data/` É a junction: os AAMMDD
+ * sintéticos `919011`/`919012` viraram edições de verdade em
+ * `data/editions/9190/`, o watcher do Studio (`studio-push-notify.ts`) leu
+ * aquilo como gate pendente e mandou e-mail ao editor —
+ * "[diar.ia.br Studio] Gate pendente — edição 919011" — em 26/08/2026. Como
+ * `data/` sincroniza por OneDrive, o lixo ainda se propagava para as outras
+ * máquinas.
+ *
+ * O sandbox mantém as duas condições que o CLI precisa: um `cwd` com
+ * `node_modules` resolvível (`--import tsx`), via symlink para o do repo, e
+ * um `data/` próprio, descartável. `--dir` NÃO serve aqui: ele desliga o
+ * gate de invariantes (só roda "no layout padrão da diária, sem `--dir`"),
+ * que é justamente o que estes testes exercitam.
  */
-function runWrite(args: string[]): { status: number | null; stderr: string; stdout: string } {
+function makeSandboxRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "sentinel-gate-"));
+  symlinkSync(join(repoRoot, "node_modules"), join(root, "node_modules"), "dir");
+  return root;
+}
+
+/** Remove o sandbox sem NUNCA seguir o symlink de `node_modules` do repo. */
+function removeSandboxRoot(root: string): void {
+  rmSync(join(root, "node_modules"), { force: true }); // unlink do symlink, não do alvo
+  rmSync(root, { recursive: true, force: true });
+}
+
+/**
+ * Roda `pipeline-sentinel.ts write` como subprocesso real (exercita o CLI,
+ * não só a lib), com `cwd` no sandbox — nunca no repo.
+ */
+function runWrite(args: string[], cwd: string): { status: number | null; stderr: string; stdout: string } {
   const result = spawnSync(process.execPath, ["--import", "tsx", sentinelCli, "write", ...args], {
-    cwd: repoRoot,
+    cwd,
     encoding: "utf8",
   });
   return { status: result.status, stderr: result.stderr, stdout: result.stdout };
@@ -142,7 +173,8 @@ function runWrite(args: string[]): { status: number | null; stderr: string; stdo
 describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — CLI", () => {
   it("Stage 2 com invariantes falhando (humanizer não rodou) → write recusado, sentinel NÃO gravado", () => {
     const aammdd = "919011";
-    const editionDir = join(repoRoot, "data", "editions", aammdd.slice(0, 4), aammdd);
+    const sandbox = makeSandboxRoot();
+    const editionDir = join(sandbox, "data", "editions", aammdd.slice(0, 4), aammdd);
     try {
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       // Simula a edição real: 02-reviewed.md e 03-social.md existem mas o
@@ -151,14 +183,10 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
       writeFileSync(join(editionDir, "02-reviewed.md"), "conteúdo qualquer\n");
       writeFileSync(join(editionDir, "03-social.md"), "# Social\n## d1\ntexto\n");
 
-      const { status, stderr } = runWrite([
-        "--edition",
-        aammdd,
-        "--step",
-        "2",
-        "--outputs",
-        "02-reviewed.md,03-social.md",
-      ]);
+      const { status, stderr } = runWrite(
+        ["--edition", aammdd, "--step", "2", "--outputs", "02-reviewed.md,03-social.md"],
+        sandbox,
+      );
 
       assert.equal(status, 1);
       assert.match(stderr, /check-invariants --stage 2/);
@@ -169,28 +197,32 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
         "sentinel não deve ser gravado quando invariantes falham",
       );
     } finally {
-      rmSync(editionDir, { recursive: true, force: true });
+      removeSandboxRoot(sandbox);
     }
   });
 
   it("Stage 2 com --bypass-reason → grava o sentinel mesmo com invariantes falhando (warn, não bloqueia)", () => {
     const aammdd = "919012";
-    const editionDir = join(repoRoot, "data", "editions", aammdd.slice(0, 4), aammdd);
+    const sandbox = makeSandboxRoot();
+    const editionDir = join(sandbox, "data", "editions", aammdd.slice(0, 4), aammdd);
     try {
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       writeFileSync(join(editionDir, "02-reviewed.md"), "conteúdo qualquer\n");
       writeFileSync(join(editionDir, "03-social.md"), "# Social\n## d1\ntexto\n");
 
-      const { status, stderr } = runWrite([
-        "--edition",
-        aammdd,
-        "--step",
-        "2",
-        "--outputs",
-        "02-reviewed.md,03-social.md",
-        "--bypass-reason",
-        "teste de regressão #6009",
-      ]);
+      const { status, stderr } = runWrite(
+        [
+          "--edition",
+          aammdd,
+          "--step",
+          "2",
+          "--outputs",
+          "02-reviewed.md,03-social.md",
+          "--bypass-reason",
+          "teste de regressão #6009",
+        ],
+        sandbox,
+      );
 
       assert.equal(status, 0);
       assert.match(stderr, /bypass-reason/);
@@ -200,7 +232,7 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
         "--bypass-reason deve permitir o write mesmo com invariantes falhando",
       );
     } finally {
-      rmSync(editionDir, { recursive: true, force: true });
+      removeSandboxRoot(sandbox);
     }
   });
 

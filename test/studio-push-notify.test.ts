@@ -33,6 +33,7 @@ import {
   summarizeChatResult,
   formatChatDoneMessage,
   maybeNotifyChatDone,
+  isPlausibleEditionId,
 } from "../scripts/studio-ui/studio-push-notify.ts";
 import { createInMemoryNotifiedStore, type PushMessage } from "../scripts/lib/push-notify.ts";
 import type { StudioState } from "../scripts/studio-ui/studio-state.ts";
@@ -436,5 +437,72 @@ describe("maybeNotifyChatDone (#3822) — threshold + fail-soft", () => {
       thresholdMs: 30_000,
     });
     assert.deepEqual(result, { ok: false, error: "network down" });
+  });
+});
+
+// ─── #6193 — gate de edição com id implausível não vira e-mail ─────────────
+/**
+ * Em 26/08/2026 o editor recebeu "[diar.ia.br Studio] Gate pendente — edição
+ * 919011". `919011` não é uma data: `test/pipeline-sentinel-invariant-gate`
+ * gravava AAMMDD sintéticos direto no `data/` real do checkout principal, o
+ * watcher leu aquilo como edição de verdade e notificou. O teste foi
+ * corrigido no mesmo PR; estes casos cobrem a CLASSE — qualquer origem de
+ * edição sintética para de gerar e-mail.
+ */
+describe("isPlausibleEditionId (#6193)", () => {
+  it("aceita AAMMDD real", () => {
+    for (const id of ["260826", "260101", "251231", "240229"]) {
+      assert.equal(isPlausibleEditionId(id), true, `${id} deveria ser plausível`);
+    }
+  });
+
+  it("rejeita o id sintético do incidente e outros meses/dias impossíveis", () => {
+    // 260229 entra aqui de propósito: 2026 NÃO é bissexto, e o guard precisa
+    // rejeitar 29/fev fora de ano bissexto (o construtor de `Date` rolaria
+    // pro dia 1º de março em silêncio). 240229 existe e está no caso acima.
+    for (const id of ["919011", "919012", "261301", "260132", "260000", "260230", "260229"]) {
+      assert.equal(isPlausibleEditionId(id), false, `${id} NÃO deveria ser plausível`);
+    }
+  });
+
+  it("rejeita o que não é 6 dígitos (inclui os diretórios replay-* do harness)", () => {
+    for (const id of ["replay-writer-a", "2608", "26082", "2608261", "", "26-08-26"]) {
+      assert.equal(isPlausibleEditionId(id), false, `${id} NÃO deveria ser plausível`);
+    }
+  });
+});
+
+describe("runPushNotifyTick — não notifica gate de edição implausível (#6193)", () => {
+  it("edição sintética 919011 pendente no state → nenhum e-mail enviado", async () => {
+    const sent: PushMessage[] = [];
+    const store = new Set<string>();
+    const buildStateFn = () => stateWith({ gatesPending: [{ edition: "919011", stage: 4 }] });
+    const notifyFn = async (msg: PushMessage) => {
+      sent.push(msg);
+      return { ok: true as const };
+    };
+    const notified = await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    assert.deepEqual(sent, [], "nenhum e-mail deveria sair para edição implausível");
+    assert.deepEqual(notified, []);
+  });
+
+  it("edição real pendente na MESMA rodada continua notificando", async () => {
+    const sent: PushMessage[] = [];
+    const store = new Set<string>();
+    const buildStateFn = () =>
+      stateWith({
+        gatesPending: [
+          { edition: "919011", stage: 4 },
+          { edition: "260826", stage: 4 },
+        ],
+      });
+    const notifyFn = async (msg: PushMessage) => {
+      sent.push(msg);
+      return { ok: true as const };
+    };
+    await runPushNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    assert.equal(sent.length, 1, "só a edição real deveria notificar");
+    assert.match(sent[0]!.subject, /260826/);
+    assert.doesNotMatch(sent[0]!.subject, /919011/);
   });
 });
