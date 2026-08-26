@@ -40,6 +40,7 @@
  * Uso:
  *   npx tsx scripts/kit-diaria-stage5-dispatch.ts <edition-dir>
  *   npx tsx scripts/kit-diaria-stage5-dispatch.ts <edition-dir> --dry-run
+ *   npx tsx scripts/kit-diaria-stage5-dispatch.ts <edition-dir> --send-test
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -353,7 +354,7 @@ export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const editionDirArg = argv.find((a) => !a.startsWith("--"));
   if (!editionDirArg) {
-    console.error("uso: npx tsx scripts/kit-diaria-stage5-dispatch.ts <edition-dir> [--dry-run]");
+    console.error("uso: npx tsx scripts/kit-diaria-stage5-dispatch.ts <edition-dir> [--dry-run] [--send-test]");
     process.exitCode = 1;
     return;
   }
@@ -366,7 +367,7 @@ export async function main(): Promise<void> {
   try {
     result = await runStage5KitDispatch(resolve(ROOT, editionDirArg), productionDeps(), {
       dryRun: hasFlag(argv, "dry-run"),
-    sendTest: hasFlag(argv, "send-test"),
+      sendTest: hasFlag(argv, "send-test"),
     });
   } catch (e) {
     result = { status: "failed", step: "unexpected", reason: (e as Error).message };

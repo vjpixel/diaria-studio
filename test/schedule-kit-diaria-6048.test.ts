@@ -178,3 +178,36 @@ describe("#6162 mapeamento de exit code — onde o bug P1 vivia", () => {
     assert.equal(mapear(2), 2);
   });
 });
+
+describe("#6183 relê subject/preview do broadcast — o estado local não pode mentir", () => {
+  it("REGRESSÃO: subject editado no Kit vence o local (o caso do \"- patronos\")", async () => {
+    // Cenário real do piloto 260826: o assunto foi editado via PATCH depois do
+    // Stage 5, e o estado local seguia com o antigo — quem auditasse depois
+    // leria um assunto que não foi o enviado.
+    const { deps, written } = makeDeps({
+      verifyReturns: { send_at: WHEN, subject: "Assunto - patronos", preview_text: "Preview novo" },
+    });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.equal(written[0].subject, "Assunto - patronos", "o Kit é a fonte de verdade");
+    assert.equal(written[0].preview_text, "Preview novo");
+  });
+
+  it("preview_text NULL do Kit é preservado como null, não mascarado pelo local", async () => {
+    // `null` é valor legítimo (editor removeu o preview no painel). Com `??`
+    // em vez de checagem de `undefined`, cairia no local stale — que é
+    // exatamente o bug que esta releitura existe pra evitar.
+    const { deps, written } = makeDeps({
+      verifyReturns: { send_at: WHEN, subject: "S", preview_text: null },
+    });
+    await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(written[0].preview_text, null, "null do Kit não pode virar o valor antigo");
+  });
+
+  it("campos AUSENTES na resposta caem no local — resposta parcial não apaga estado", async () => {
+    const { deps, written } = makeDeps({ verifyReturns: { send_at: WHEN } });
+    await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(written[0].subject, draft.subject);
+    assert.equal(written[0].preview_text, draft.preview_text);
+  });
+});

@@ -156,8 +156,12 @@ export async function scheduleKitDiaria(
   // fonte de verdade, e agora o estado reflete o que de fato vai sair.
   deps.writeState(editionDir, {
     ...state,
-    subject: confirmed.subject ?? state.subject,
-    preview_text: confirmed.preview_text ?? state.preview_text,
+    // #6183 (achado P2 do review): checagem explícita de `undefined`, NÃO `??`.
+    // `preview_text` é `string | null` na API — `null` é valor LEGÍTIMO (o
+    // editor removeu o preview no painel). Com `??`, um `null` do Kit cairia
+    // no valor local stale, contradizendo o motivo desta releitura existir.
+    subject: confirmed.subject !== undefined ? confirmed.subject : state.subject,
+    preview_text: confirmed.preview_text !== undefined ? confirmed.preview_text : state.preview_text,
     status: "scheduled",
     scheduled_at: confirmed.send_at,
   });

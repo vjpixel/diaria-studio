@@ -112,6 +112,12 @@ function isRetriableStatus(status: number): boolean {
  * Regra geral que resume as quatro: **nesta API, confirme por releitura, nunca
  * pelo status da mutação.** É a mesma disciplina do #573, aqui obrigatória por
  * comportamento da plataforma, não por precaução.
+ *
+ * ---
+ *
+ * (Fundido com o docstring original de `kitFetch` abaixo — #6183, achado do
+ * review: dois blocos JSDoc consecutivos fazem a IDE associar só o último, e
+ * a explicação de retry/config/auth sumia do hover.)
  */
 export async function kitFetch<T = unknown>(
   path: string,

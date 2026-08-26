@@ -64,7 +64,10 @@ export interface KitDiariaChannelConfig {
 export interface KitDiariaPublished {
   broadcast_id: number;
   subject: string;
-  preview_text: string;
+  /** #6183: `string | null` porque a API do Kit devolve `null` quando o
+   *  editor remove o preview text no painel — e o estado local reflete o
+   *  broadcast, não o que montamos no Stage 5. */
+  preview_text: string | null;
   /** Nome da tag usada, gravado para auditoria: responde "para quem foi?". */
   audience_tag: string;
   /** Id resolvido no momento do dispatch — a tag pode ser recriada depois. */
