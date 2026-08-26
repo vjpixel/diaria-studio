@@ -30,6 +30,7 @@ import {
   buildArchivePageHtml,
   buildSitemapXml,
   sitemapEntriesForPosts,
+  UnresolvedMergeTagError,
 } from "./lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -59,6 +60,12 @@ export function loadPosts(postsDir: string): ArchivePost[] {
 export interface GenerateResult {
   written: number;
   skipped: { slug: string; reason: string }[];
+  /**
+   * Subconjunto de `skipped` cuja causa foi merge tag desconhecida (#6256) —
+   * separado pra o report final poder listar "quantos, quais posts, quais
+   * tags" numa passada, sem re-parsear a string de `reason`.
+   */
+  unresolvedMergeTags: { slug: string; tags: string[] }[];
 }
 
 export function generateArchivePages(
@@ -68,6 +75,7 @@ export function generateArchivePages(
 ): GenerateResult {
   const published = selectPublishedPosts(posts);
   const skipped: { slug: string; reason: string }[] = [];
+  const unresolvedMergeTags: { slug: string; tags: string[] }[] = [];
 
   // Regenera do zero — evita órfão de um slug que saiu do cache (ex:
   // despublicado) continuar servindo página velha.
@@ -91,7 +99,31 @@ export function generateArchivePages(
       skipped.push({ slug: post.slug, reason: "slug duplicado — outro post já escreveu esta página nesta rodada" });
       continue;
     }
-    const html = buildArchivePageHtml(post);
+    let html: string;
+    try {
+      html = buildArchivePageHtml(post);
+    } catch (err) {
+      // Degradação POR POST — só para merge tag desconhecida (#6256). Este é
+      // o caso vizinho ao de `loadPosts` acima, mas com o veredito OPOSTO de
+      // propósito: lá um JSON corrompido é sinal de sync quebrado (continuar
+      // publicaria dado parcial de UM post que nem devia estar ali), então
+      // aborta o lote inteiro. Aqui o resto do acervo está íntegro — uma tag
+      // nova que a Beehiiv passou a emitir é um problema DAQUELE post, não
+      // do lote. Não uniformizar os dois: se um dia alguém tentar, a
+      // distinção editorial (dado corrompido vs. dado íntegro mas com um
+      // padrão novo) é o motivo, não coincidência de código.
+      if (err instanceof UnresolvedMergeTagError) {
+        unresolvedMergeTags.push({ slug: post.slug, tags: err.tags });
+        skipped.push({
+          slug: post.slug,
+          reason: `merge tag não resolvida: ${err.tags.join(", ")}`,
+        });
+        continue;
+      }
+      // Qualquer OUTRO erro (status inesperado, sem <html> na origem, etc.)
+      // segue abortando o lote inteiro — sinal estrutural, não "1 tag nova".
+      throw err;
+    }
     const pageDir = join(outDir, post.slug);
     mkdirSync(pageDir, { recursive: true });
     writeFileSync(join(pageDir, "index.html"), html, "utf8");
@@ -106,7 +138,7 @@ export function generateArchivePages(
   mkdirSync(dirname(sitemapPath), { recursive: true });
   writeFileSync(sitemapPath, sitemap, "utf8");
 
-  return { written, skipped };
+  return { written, skipped, unresolvedMergeTags };
 }
 
 async function main() {
@@ -124,6 +156,25 @@ async function main() {
     for (const s of result.skipped) console.log(`    - ${s.slug}: ${s.reason}`);
   }
   console.log(`  sitemap: ${sitemapPath}`);
+
+  // Falha no FIM, com o relatório COMPLETO (#6256) — nunca no primeiro post
+  // encontrado. Os outros já foram escritos em disco acima; isto só sinaliza
+  // (exit code != 0) que o corpus tem tag(s) que o sanitize ainda não cobre,
+  // pra quem rodar o script localmente (ver nota em deploy-site.yml — a
+  // geração roda fora do CI, o resultado é commitado à mão) decidir se
+  // adiciona o sanitize ou aceita o post fora do acervo por enquanto.
+  if (result.unresolvedMergeTags.length > 0) {
+    const allTags = new Set<string>();
+    console.error(
+      `gen-archive-pages: ${result.unresolvedMergeTags.length} posts com merge tag desconhecida — pulados, NÃO impediram os outros ${result.written} de serem gerados:`,
+    );
+    for (const p of result.unresolvedMergeTags) {
+      console.error(`    - ${p.slug}: ${p.tags.join(", ")}`);
+      for (const t of p.tags) allTags.add(t);
+    }
+    console.error(`  tags desconhecidas no corpus (${allTags.size}): ${[...allTags].join(", ")}`);
+    process.exitCode = 1;
+  }
 }
 
 if (isMainModule(import.meta.url)) {
