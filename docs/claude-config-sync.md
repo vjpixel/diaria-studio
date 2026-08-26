@@ -49,6 +49,51 @@ revisão. Por ora a sincronização de memória é **manual** (copiar o arquivo
 alternativa de um mecanismo assistido (diff + confirmação antes de
 empurrar) fica pra quando isso doer na prática.
 
+## Propagação: automática desde o #6310 (era manual e silenciosa)
+
+**O que mudou:** até 26/08/2026 nada puxava o `claude-config`. Commitar uma
+mudança de config a fazia valer **só** na máquina onde foi feita (onde
+`~/.claude/settings.json` é symlink pro repo); nas outras ela simplesmente não
+existia até alguém rodar `bootstrap` à mão. Nenhum hook, nenhuma task agendada
+— verificado.
+
+O modo de falha era silencioso: a máquina não erra, só roda config velha. Já
+tinha acontecido uma vez (ver "Atualização (260810)" abaixo: `model`/
+`effortLevel` divergentes do committed, sem aviso). O caso que motivou a
+correção: 3 commits (`d28b5b6` habilitando o `pr-review-toolkit`, `d6c2fc5`
+ligando `remoteControlAtStartup`, `2c96997` gravando `outputStyle`) live no
+`helios` e ausentes no Neo e no ZenBook, sem sinal disso em lugar nenhum.
+
+**Como funciona agora:** hook `SessionStart` no `settings.json` do próprio
+repo chama `sync-check.cjs` (também no repo), que se auto-destaca e sai em
+~50 ms — a sessão nunca espera rede. Como o arquivo que carrega o hook **é** o
+arquivo sincronizado, instalar num lugar arma todas as máquinas; um cron
+precisaria ser armado máquina a máquina, repetindo o problema.
+
+**Contrato, deliberadamente conservador:**
+
+| situação | o que faz |
+|---|---|
+| árvore limpa, remoto à frente | `git pull --ff-only` |
+| working tree sujo | **avisa e NÃO puxa** — sujo aqui é edição direta em `~/.claude/*`, decisão do editor |
+| divergência non-ff | avisa e não força; nunca merge/rebase/stash automático |
+| offline, git ausente, repo ausente | registra e segue; exit 0 sempre |
+| `~/.claude/X` é **cópia** e não symlink | avisa — é o caso do Windows sem Modo Desenvolvedor |
+
+Aquele último é o que faltava enxergar: `bootstrap.ps1` cai num fallback de
+cópia quando o symlink falha, e a partir daí o pull atualiza o repo mas o
+conteúdo **nunca chega** a `~/.claude`. A máquina fica permanentemente
+defasada mesmo com bootstrap rodado.
+
+**Onde olhar:** `~/claude-config/.sync-state.json` (resultado do último check,
+com timestamp) e `.sync-check.log` (só o que precisa de ação — caminho feliz é
+silencioso). Ambos gitignored: sem isso a árvore ficaria permanentemente suja
+e o próprio script recusaria puxar, auto-desativando o mecanismo.
+
+**Ainda manual:** `memory/` (ver acima) e o `bootstrap` inicial de máquina
+nova — o sync automático mantém o repo atualizado, mas não cria symlink que
+nunca existiu.
+
 ## Setup numa máquina nova
 
 ```bash
