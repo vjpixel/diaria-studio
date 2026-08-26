@@ -35,7 +35,15 @@
  * @see scripts/lib/issue-exec-track.ts (fonte do enum `ExecTrack`)
  * @see scripts/lib/develop-plan-motivo.ts (`findHeliosBuraco`, consumidor do campo — gap b)
  * @see scripts/lib/develop-target-set-coverage.ts (gate irmão — mesma forma)
- * @see .claude/skills/diaria-develop/SKILL.md Fase 2 (onde o CLI roda)
+ * @see .claude/skills/diaria-develop/SKILL.md Fase 2 (onde o CLI develop-específico roda)
+ *
+ * #6204 item 1 — este módulo NUNCA foi específico de develop de verdade
+ * (opera sobre `{ issues: [...] }` genérico, sem nenhum campo exclusivo de
+ * develop). `scripts/check-exec-track-coverage.ts` reusa exatamente estas
+ * funções pra dar o mesmo gate ao `/diaria-overnight` (Fase 0 passo 4a) e ao
+ * `/diaria-continuo` (passo 3) — o nome do arquivo ficou "develop" por
+ * história, não por escopo; `scripts/check-develop-exec-track-coverage.ts`
+ * continua sendo o CLI específico do develop, sem mudança de call site.
  */
 
 import { readFileSync } from "node:fs";

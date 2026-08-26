@@ -245,10 +245,12 @@ Capturar URL retornada na stdout — usar como `issue_url` no relatório (em amb
 
 #### 6b. Para "criar nova issue"
 
+**Declarar o track na criação quando já é sabido (#6205).** Antes de montar o `--label`, avaliar se o próprio signal já deixa claro o track — não é sempre o caso (a maioria dos post-mortems nasce sem sinal suficiente, e isso é esperado, não um gap a preencher artificialmente): `signal.suggested_action`/evidência menciona explicitamente conta de terceiro, credencial, ou allowlist do editor → `bloqueada`; menciona máquina Windows (Chrome logado/ComfyUI) → `develop`. Nesses dois casos, computar as labels extras via `npx tsx scripts/route-issue.ts --for-create --track {track} --motivo {motivo}` (`scripts/lib/issue-route.ts`, mesmo módulo que a Triagem/overnight/develop/continuo usam) e somar ao `--label` abaixo. **Sem sinal claro no achado, nasce sem essas labels extras (`overnight` implícito por omissão de `classifyExecTrack`) — nunca inventar um track pra parecer mais completo.**
+
 ```bash
 gh issue create --repo {repo} \
   --title "{signal.title}" \
-  --label "post-mortem,from-edition-{AAMMDD},P{severity_to_priority}" \
+  --label "post-mortem,from-edition-{AAMMDD},P{severity_to_priority}[,{labels extras de --for-create, se houver}]" \
   --body "$(cat <<'EOF'
 {formatted body com evidência + suggested_action}
 EOF

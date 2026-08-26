@@ -247,6 +247,21 @@ export type RouteMotivo = keyof typeof MOTIVO_LABEL;
  * `external-blocker` (não `bloqueio-execucao`). Sem `motivo`, usa o
  * default genérico de `TRACK_ADD_LABEL`.
  */
+/**
+ * `labelsForNewIssue` (#6205) — o subconjunto de `planRouteLabels` útil na
+ * CRIAÇÃO de uma issue nova, quando não existe estado anterior a diffar
+ * contra (não há `remove` — a issue ainda não tem nenhuma label). Devolve
+ * só `add`, pronto pra `gh issue create --label {labelsForNewIssue(...).join(",")}`.
+ *
+ * `track === "agendada"` não tem label própria (ver docstring do módulo) —
+ * `add` sai vazio; o CALLER precisa inserir o marcador `aguardando-ate:` no
+ * CORPO da issue separadamente (`upsertWaitUntilMarker`,
+ * `scripts/lib/wait-until-sync.ts`) — este helper não conhece o corpo.
+ */
+export function labelsForNewIssue(track: RouteTrack, motivo?: RouteMotivo): readonly string[] {
+  return planRouteLabels(track, motivo).add;
+}
+
 export function planRouteLabels(track: RouteTrack, motivo?: RouteMotivo): RouteLabelPlan {
   if (motivo && !(motivo in MOTIVO_LABEL)) {
     throw new Error(`--motivo desconhecido: "${motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}`);
