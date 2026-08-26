@@ -30,11 +30,15 @@ import {
   assertAllowedDnsRecordType,
   evaluateCutoverPrecondition,
   buildCutoverPlan,
+  buildCutoverDnsDeletePlan,
+  extractCutoverDnsDeleteOps,
+  extractCutoverAttachOp,
   buildRollbackDnsPlan,
   buildRollbackPlan,
   extractRollbackDnsOps,
   assertPlanTouchesOnlyAllowedRecordTypes,
   verifyDnsRestored,
+  verifyDnsRemoved,
   verifyCustomDomainDetached,
   verifyCutoverAttached,
   findApexCustomDomains,
@@ -154,18 +158,60 @@ describe("evaluateCutoverPrecondition — guard de pré-condição (#467, coraç
   });
 });
 
-describe("buildCutoverPlan — mecanismo Workers Custom Domain", () => {
-  it("gera exatamente 1 attach, hostname=apex, service=diaria-site", () => {
-    const plan = buildCutoverPlan();
-    assert.equal(plan.workerDomainOp.op, "attach");
-    assert.equal(plan.workerDomainOp.hostname, APEX_HOSTNAME);
-    assert.equal(plan.workerDomainOp.service, WORKER_NAME);
-    assert.equal(plan.workerDomainOp.zoneId, ZONE_ID);
+describe("buildCutoverPlan — remoção de A/AAAA legado ANTES do attach (#6373)", () => {
+  it("zona vazia (sem A/AAAA legado): plano tem só o attach, nenhum passo dns-delete", () => {
+    const plan = buildCutoverPlan([]);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].kind, "attach");
+    const attach = extractCutoverAttachOp(plan);
+    assert.equal(attach.op, "attach");
+    assert.equal(attach.hostname, APEX_HOSTNAME);
+    assert.equal(attach.service, WORKER_NAME);
+    assert.equal(attach.zoneId, ZONE_ID);
   });
 
-  it("nunca gera operação de DNS — o attach gerencia isso, tocar A/AAAA seria disputar", () => {
-    const plan = buildCutoverPlan() as unknown as { dnsOps?: unknown };
-    assert.equal(plan.dnsOps, undefined);
+  it("zona com A/AAAA legado (estado real pré-cutover): 2 passos dns-delete ANTES do attach", () => {
+    const actual = PRE_CUTOVER_DNS_RECORDS.map((r) => ({ id: r.id, type: r.type }));
+    const plan = buildCutoverPlan(actual);
+    assert.equal(plan.length, 3);
+    assert.equal(plan[0].kind, "dns-delete");
+    assert.equal(plan[1].kind, "dns-delete");
+    assert.equal(plan[2].kind, "attach");
+
+    const deleteOps = extractCutoverDnsDeleteOps(plan);
+    assert.equal(deleteOps.length, 2);
+    assert.deepEqual(
+      deleteOps.map((o) => o.type).sort(),
+      ["A", "AAAA"],
+    );
+    for (const op of deleteOps) assert.equal(op.op, "delete");
+  });
+
+  it("zona com só A legado (sem AAAA): 1 passo dns-delete (A) + attach, nessa ordem", () => {
+    const plan = buildCutoverPlan([{ id: "a-1", type: "A" }]);
+    assert.equal(plan.length, 2);
+    assert.deepEqual(
+      extractCutoverDnsDeleteOps(plan).map((o) => o.type),
+      ["A"],
+    );
+    assert.equal(plan[plan.length - 1].kind, "attach");
+  });
+
+  it("2 registros A na zona: buildCutoverDnsDeletePlan/buildCutoverPlan lançam — nunca apaga 'o primeiro'", () => {
+    assert.throws(
+      () =>
+        buildCutoverPlan([
+          { id: "a-1", type: "A" },
+          { id: "a-2", type: "A" },
+        ]),
+      /2 registros A encontrados/,
+    );
+  });
+
+  it("plano gerado nunca toca tipo fora de A/AAAA — mesma allowlist do rollback", () => {
+    const actual = PRE_CUTOVER_DNS_RECORDS.map((r) => ({ id: r.id, type: r.type }));
+    const plan = buildCutoverPlan(actual);
+    assert.doesNotThrow(() => assertPlanTouchesOnlyAllowedRecordTypes(extractCutoverDnsDeleteOps(plan)));
   });
 });
 
@@ -373,9 +419,21 @@ describe("Guard MX/TXT/CAA — nenhum plano gerado toca esses tipos (requisito n
     }
   });
 
-  it("o plano de buildCutoverPlan não tem sequer um campo de tipo de DNS — não há o que auditar", () => {
-    const plan = buildCutoverPlan();
-    assert.equal("type" in plan.workerDomainOp, false);
+  it("o plano real de buildCutoverPlan (todos os cenários) nunca inclui tipo fora de A/AAAA", () => {
+    const scenarios = [
+      buildCutoverPlan([]),
+      buildCutoverPlan([{ id: "a-1", type: "A" }]),
+      buildCutoverPlan([{ id: "a-1", type: "A" }, { id: "b-1", type: "AAAA" }]),
+    ];
+    for (const plan of scenarios) {
+      assert.doesNotThrow(() => assertPlanTouchesOnlyAllowedRecordTypes(extractCutoverDnsDeleteOps(plan)));
+    }
+  });
+
+  it("o attach de buildCutoverPlan não tem sequer um campo de tipo de DNS — não há o que auditar", () => {
+    const plan = buildCutoverPlan([]);
+    const attach = extractCutoverAttachOp(plan);
+    assert.equal("type" in attach, false);
   });
 });
 
@@ -456,6 +514,25 @@ describe("verifyDnsRestored — verificação pós-mutação (#573), nunca confi
     assert.equal(r.restored, false);
     assert.match(r.mismatches[0], /^AAAA:/);
     assert.match(r.mismatches[0], /2 registros encontrados/);
+  });
+});
+
+describe("verifyDnsRemoved — verificação pós-DELETE ANTES do attach (#6373)", () => {
+  it("A e AAAA de fato sumiram da zona: removed=true", () => {
+    const r = verifyDnsRemoved([], ["A", "AAAA"]);
+    assert.equal(r.removed, true);
+    assert.deepEqual(r.remaining, []);
+  });
+
+  it("A ainda aparece na releitura: removed=false, remaining=['A']", () => {
+    const r = verifyDnsRemoved([{ type: "A" }], ["A", "AAAA"]);
+    assert.equal(r.removed, false);
+    assert.deepEqual(r.remaining, ["A"]);
+  });
+
+  it("só checa os tipos passados em typesDeleted — um AAAA presente não conta se não fazia parte do delete", () => {
+    const r = verifyDnsRemoved([{ type: "AAAA" }], ["A"]);
+    assert.equal(r.removed, true);
   });
 });
 

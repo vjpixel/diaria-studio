@@ -21,15 +21,25 @@
  *                403 da Cloudflare no apex, e 403 de challenge NÃO distingue
  *                "no ar" de "fora do ar" (docs/apex-cutover-rollback.md §2).
  *
- *   --cutover    Aponta o apex pro Worker `diaria-site` via Workers Custom
- *                Domain (`PUT /accounts/{account}/workers/domains` — ver o
+ *   --cutover    Remove o A/AAAA legado do apex (se existir) e ENTÃO aponta o
+ *                apex pro Worker `diaria-site` via Workers Custom Domain
+ *                (`PUT /accounts/{account}/workers/domains` — ver o
  *                docstring de `scripts/lib/apex-cutover.ts` pro porquê deste
  *                mecanismo e não uma Route clássica nem
- *                `wrangler.toml`+`wrangler deploy`). GUARD DE PRÉ-CONDIÇÃO
- *                (o coração desta unidade): recusa — exit != 0, mensagem
- *                clara — a menos que `/` sirva 200 com o `<title>` real
- *                (não só "responder alguma coisa") **e** `/subscribe`
- *                redirecione (3xx) para o perfil Kit hospedado
+ *                `wrangler.toml`+`wrangler deploy`). **Ordem das duas
+ *                mutações dentro do MESMO `--apply` (#6373):** (1) DELETE do
+ *                A/AAAA legado, (2) releitura confirmando a remoção, (3) só
+ *                então o PUT do attach — nessa ordem, sempre. A 1ª execução
+ *                real (26/08/2026) tentou o attach direto e causou ~1min de
+ *                outage real (409 da Cloudflare porque a zona ainda tinha o
+ *                A/AAAA da Beehiiv — ver `docs/apex-cutover-rollback.md`,
+ *                blockquote de topo). Se o DELETE falhar, ou a releitura
+ *                mostrar que o registro sobreviveu, o script ABORTA antes do
+ *                attach — nunca segue pro PUT num estado incerto. GUARD DE
+ *                PRÉ-CONDIÇÃO (roda ANTES de tudo isso, sem mudança): recusa
+ *                — exit != 0, mensagem clara — a menos que `/` sirva 200 com
+ *                o `<title>` real (não só "responder alguma coisa") **e**
+ *                `/subscribe` redirecione (3xx) para o perfil Kit hospedado
  *                (`diar-ia-br.kit.com`) — ver `evaluateCutoverPrecondition`
  *                em `scripts/lib/apex-cutover.ts` pro porquê de dois
  *                critérios diferentes (#6359/#6363/#6365 em implementação
@@ -99,10 +109,13 @@ import {
   type DnsRecordSnapshot,
   evaluateCutoverPrecondition,
   buildCutoverPlan,
+  extractCutoverDnsDeleteOps,
+  extractCutoverAttachOp,
   buildRollbackPlan,
   extractRollbackDnsOps,
   assertPlanTouchesOnlyAllowedRecordTypes,
   verifyDnsRestored,
+  verifyDnsRemoved,
   verifyCustomDomainDetached,
   verifyCutoverAttached,
   findApexCustomDomains,
@@ -296,6 +309,15 @@ export async function patchDnsRecord(
   );
 }
 
+export async function deleteDnsRecord(
+  zoneId: string,
+  token: string,
+  id: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<CfResponse<unknown>> {
+  return cfRequest("DELETE", `/zones/${zoneId}/dns_records/${id}`, token, undefined, fetchFn);
+}
+
 export async function createDnsRecord(
   zoneId: string,
   token: string,
@@ -471,7 +493,15 @@ export async function runCutover(cfg: Config, apply: boolean, fetchFn: typeof fe
 
   console.error(`${LOG_PREFIX} guard OK — "/" serve a página certa e "/subscribe" redireciona pro destino esperado.`);
 
-  const plan = buildCutoverPlan();
+  console.error(`${LOG_PREFIX} lendo registros A/AAAA atuais do apex (${APEX_HOSTNAME})...`);
+  const [aRecords, aaaaRecords] = await Promise.all([
+    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
+    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
+  ]);
+  // buildCutoverPlan (via buildCutoverDnsDeletePlan) lança se houver mais de
+  // 1 registro do mesmo tipo na zona — propaga pro catch de main() como erro
+  // explícito (exit 2), nunca silenciosamente escolhe "o primeiro".
+  const plan = buildCutoverPlan([...aRecords, ...aaaaRecords]);
   console.log(JSON.stringify({ mode: "cutover", apply, plan }, null, 2));
 
   if (!apply) {
@@ -479,17 +509,69 @@ export async function runCutover(cfg: Config, apply: boolean, fetchFn: typeof fe
     return 0;
   }
 
+  // ── Passo 1: remover A/AAAA legado ANTES do attach (#6373) ────────────────
+  // A 1ª execução real deste script tentou o attach direto contra uma zona
+  // com A/AAAA da Beehiiv ainda presente e causou ~1min de outage real (ver
+  // docstring de buildCutoverPlan em scripts/lib/apex-cutover.ts). Este bloco
+  // fecha essa janela: remove o legado e CONFIRMA a remoção antes de tentar
+  // o PUT — nunca o inverso.
+  const dnsDeleteSteps = extractCutoverDnsDeleteOps(plan);
+  if (dnsDeleteSteps.length === 0) {
+    console.error(`${LOG_PREFIX} nenhum A/AAAA legado na zona — nada a remover, indo direto pro attach.`);
+  } else {
+    for (const op of dnsDeleteSteps) {
+      console.error(`${LOG_PREFIX} aplicando: DELETE dns_records/${op.id} (${op.type}, legado)...`);
+      const delRes = await deleteDnsRecord(ZONE_ID, cfg.token, op.id, fetchFn);
+      if (!delRes.success) {
+        console.error(
+          `\n${LOG_PREFIX} DELETE ${op.type} falhou: HTTP ${delRes.status} — ${formatCfError(delRes)}. ` +
+            `Abortando ANTES do attach — nunca tentar o PUT com o legado ainda incerto na zona.\n`,
+        );
+        return 2;
+      }
+    }
+
+    // #573 — nunca confiar na resposta do DELETE. Reler antes de seguir.
+    console.error(`${LOG_PREFIX} relendo A/AAAA para confirmar remoção antes do attach...`);
+    let aAfterDelete: DnsRecordSnapshot[], aaaaAfterDelete: DnsRecordSnapshot[];
+    try {
+      [aAfterDelete, aaaaAfterDelete] = await Promise.all([
+        fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
+        fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
+      ]);
+    } catch (e) {
+      console.error(
+        `\n${LOG_PREFIX} MUTAÇÃO PODE TER SIDO APLICADA — releitura pós-DELETE falhou: ` +
+          `${(e as Error).message}. Rode --status antes de repetir --apply.\n`,
+      );
+      return 2;
+    }
+    const removedTypes = dnsDeleteSteps.map((op) => op.type);
+    const removeCheck = verifyDnsRemoved([...aAfterDelete, ...aaaaAfterDelete], removedTypes);
+    if (!removeCheck.removed) {
+      console.error(
+        `\n${LOG_PREFIX} ATENÇÃO — releitura pós-DELETE mostra que ainda existe: ` +
+          `${removeCheck.remaining.join(", ")}. Abortando ANTES do attach — nunca seguir pro PUT num ` +
+          `estado incerto.\n`,
+      );
+      return 2;
+    }
+    console.error(`${LOG_PREFIX} confirmado — A/AAAA legado removido.`);
+  }
+
+  // ── Passo 2: attach do Workers Custom Domain ───────────────────────────────
+  const attachOp = extractCutoverAttachOp(plan);
   console.error(
     `${LOG_PREFIX} aplicando: PUT /accounts/${cfg.accountId}/workers/domains ` +
-      `(hostname=${plan.workerDomainOp.hostname}, service=${plan.workerDomainOp.service})...`,
+      `(hostname=${attachOp.hostname}, service=${attachOp.service})...`,
   );
   const attachRes = await attachCustomDomain(
     cfg.accountId,
     cfg.token,
-    plan.workerDomainOp.hostname,
-    plan.workerDomainOp.service,
-    plan.workerDomainOp.zoneId,
-    plan.workerDomainOp.zoneName,
+    attachOp.hostname,
+    attachOp.service,
+    attachOp.zoneId,
+    attachOp.zoneName,
     fetchFn,
   );
   if (!attachRes.success) {

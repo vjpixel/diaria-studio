@@ -350,27 +350,140 @@ export function selectSingleApexCustomDomain<T extends CustomDomainLike>(
   return matches[0] ?? null;
 }
 
+export interface DnsDeleteOp {
+  op: "delete";
+  type: AllowedDnsRecordType;
+  id: string;
+}
+
+/** Um passo do plano de cutover, na ORDEM EM QUE DEVE SER EXECUTADO. Mesma
+ * técnica de união discriminada de `RollbackStep` (ver docstring lá pro
+ * racional: com um único array ordenado, a ordem é uma propriedade do PLANO,
+ * testável diretamente, em vez de uma convenção imperativa dentro do
+ * executor que um refactor descuidado pode inverter sem quebrar tipo nem
+ * teste de unidade). */
+export type CutoverStep =
+  | { readonly kind: "dns-delete"; readonly dns: DnsDeleteOp }
+  | { readonly kind: "attach"; readonly attach: WorkerDomainAttachOp };
+
+export type CutoverPlan = readonly CutoverStep[];
+
 /**
- * Plano do `--cutover`: um único attach de Workers Custom Domain (ver
- * docstring do módulo pro porquê deste mecanismo). Não gera NENHUMA operação
- * de DNS A/AAAA — o attach de Custom Domain cria/gerencia o registro
- * necessário "on your behalf" (doc oficial da Cloudflare); tocar A/AAAA
- * manualmente no cutover seria disputar com esse gerenciamento, não
- * cooperar com ele. É o rollback (`buildRollbackPlan`) que precisa restaurar
- * A/AAAA explicitamente, porque reverter o attach não devolve sozinho o
- * estado anterior (mesma assimetria já registrada em
- * `docs/apex-cutover-rollback.md` §4).
+ * Constrói os passos de remoção de A/AAAA legado, um por tipo presente na
+ * zona HOJE. Mesma disciplina de duplicata de `buildRollbackDnsPlan`: mais
+ * de 1 registro do mesmo tipo é erro DURO, nunca "apaga o primeiro e segue"
+ * — não dá pra saber qual dos N é o resíduo da Beehiiv sem revisão humana, e
+ * apagar o errado por adivinhação é pior que travar.
+ *
+ * @param actualRecords  registros A/AAAA lidos da zona AGORA (só id+type —
+ *   o delete não precisa de mais nada).
  */
-export function buildCutoverPlan(): { workerDomainOp: WorkerDomainAttachOp } {
-  return {
-    workerDomainOp: {
+export function buildCutoverDnsDeletePlan(
+  actualRecords: readonly Pick<DnsRecordSnapshot, "id" | "type">[],
+): DnsDeleteOp[] {
+  const ops: DnsDeleteOp[] = [];
+
+  for (const type of ALLOWED_DNS_RECORD_TYPES) {
+    const matches = actualRecords.filter((r) => {
+      assertAllowedDnsRecordType(r.type);
+      return r.type === type;
+    });
+
+    if (matches.length > 1) {
+      throw new Error(
+        `apex-cutover: ${matches.length} registros ${type} encontrados na zona para ` +
+          `${APEX_HOSTNAME} (esperado no máximo 1) — não dá pra saber qual é o "certo" sem revisão ` +
+          `humana. Rode --status, resolva a duplicata na zona da Cloudflare, e repita --cutover.`,
+      );
+    }
+    const existing = matches[0];
+    if (existing) {
+      ops.push({ op: "delete", type, id: existing.id });
+    }
+  }
+
+  return ops;
+}
+
+/**
+ * Plano completo do `--cutover`: remoção do A/AAAA legado (se existir)
+ * PRIMEIRO, attach do Workers Custom Domain DEPOIS — nessa ordem, dentro do
+ * MESMO `--apply` (#6373).
+ *
+ * **Por que a remoção precisa vir ANTES do attach, e por que automatizar
+ * (opção A da issue) em vez de só recusar com um guard (opção B):**
+ * a 1ª execução real deste script (26/08/2026, 23:12 UTC) tentou o attach
+ * direto contra uma zona com A/AAAA legado apontando pro IP da Beehiiv —
+ * `PUT /accounts/{id}/workers/domains` recusou com HTTP 409
+ * (`"Hostname ... already has externally managed DNS records"`). Isso por
+ * si só é inofensivo (mutação nunca aconteceu) — mas o passo humano que
+ * precede o `--cutover --apply` (Beehiiv → Disconnect domain) já tinha
+ * rodado, e SÓ a Beehiiv desconectada + Custom Domain ainda não anexado
+ * deixa a zona apontando pra um IP que a própria Cloudflare marca como
+ * "proibido" pra outros hostnames — outage real de ~1 min, medido ao vivo
+ * (ver `docs/apex-cutover-rollback.md`, blockquote de topo, e #6373).
+ * Um guard que só detecta e recusa (opção B) devolveria o operador pro
+ * mesmo ponto de partida — Beehiiv já desconectada, zona ainda com o A/AAAA
+ * problemático — e a janela de outage reabriria assim que ele rodasse
+ * `--cutover --apply` de novo depois de remover manualmente. A automação
+ * (opção A) fecha a CLASSE do bug: a mesma invocação que já é o ponto de
+ * não-retorno (depois do `Disconnect domain` manual) remove o obstáculo e
+ * ataca o attach, sem depender do operador lembrar de um passo manual extra
+ * no meio de um incidente.
+ *
+ * O attach de Custom Domain cria/gerencia o registro DNS necessário "on your
+ * behalf" (doc oficial da Cloudflare) — por isso o plano deste módulo só
+ * REMOVE o A/AAAA legado, nunca cria um novo; criar seria disputar com esse
+ * gerenciamento, não cooperar com ele. É o rollback (`buildRollbackPlan`)
+ * que precisa restaurar A/AAAA explicitamente depois, porque reverter o
+ * attach não devolve sozinho o estado anterior (mesma assimetria já
+ * registrada em `docs/apex-cutover-rollback.md` §4).
+ *
+ * @param actualDnsRecords  registros A/AAAA lidos da zona AGORA. Lança se
+ *   houver mais de 1 registro do mesmo tipo (ver `buildCutoverDnsDeletePlan`).
+ */
+export function buildCutoverPlan(
+  actualDnsRecords: readonly Pick<DnsRecordSnapshot, "id" | "type">[],
+): CutoverPlan {
+  const steps: CutoverStep[] = [];
+
+  for (const dns of buildCutoverDnsDeletePlan(actualDnsRecords)) {
+    steps.push({ kind: "dns-delete", dns });
+  }
+
+  steps.push({
+    kind: "attach",
+    attach: {
       op: "attach",
       hostname: APEX_HOSTNAME,
       service: WORKER_NAME,
       zoneId: ZONE_ID,
       zoneName: APEX_HOSTNAME,
     },
-  };
+  });
+
+  return steps;
+}
+
+/** Extrai só os passos de remoção de DNS de um `CutoverPlan`, na ordem em
+ * que aparecem — usado pelo assert de allowlist e por qualquer caller que
+ * precise só do lado DNS sem se importar com o attach. */
+export function extractCutoverDnsDeleteOps(plan: CutoverPlan): DnsDeleteOp[] {
+  return plan
+    .filter((s): s is { kind: "dns-delete"; dns: DnsDeleteOp } => s.kind === "dns-delete")
+    .map((s) => s.dns);
+}
+
+/** Extrai o passo de attach de um `CutoverPlan` — sempre presente (todo
+ * `CutoverPlan` termina com exatamente 1 attach); lança em vez de devolver
+ * `undefined` porque a ausência seria bug interno deste módulo, não um
+ * estado de zona esperável. */
+export function extractCutoverAttachOp(plan: CutoverPlan): WorkerDomainAttachOp {
+  const step = plan.find((s): s is { kind: "attach"; attach: WorkerDomainAttachOp } => s.kind === "attach");
+  if (!step) {
+    throw new Error("apex-cutover: plano de cutover sem passo de attach — bug interno em buildCutoverPlan.");
+  }
+  return step.attach;
 }
 
 // ── Plano de rollback (--rollback) ───────────────────────────────────────────
@@ -595,6 +708,25 @@ export function verifyDnsRestored(
   }
 
   return { restored: mismatches.length === 0, mismatches };
+}
+
+/**
+ * Verifica se os tipos de A/AAAA que o `--cutover` mandou apagar de fato
+ * sumiram da zona — lido de volta via GET, nunca a partir da resposta do
+ * DELETE (#573). Só checa os tipos passados em `typesDeleted` (os que o
+ * plano de fato tentou remover) — um tipo que nunca existiu na zona não é
+ * "não removido", é irrelevante pra esta verificação.
+ *
+ * Usada pelo `--cutover --apply` ANTES do attach: se algum tipo apagado
+ * ainda aparecer na releitura, o caller aborta sem tentar o `PUT` — nunca
+ * segue pro attach num estado incerto (#6373).
+ */
+export function verifyDnsRemoved(
+  actualRecords: readonly Pick<DnsRecordSnapshot, "type">[],
+  typesDeleted: readonly AllowedDnsRecordType[],
+): { removed: boolean; remaining: AllowedDnsRecordType[] } {
+  const remaining = typesDeleted.filter((type) => actualRecords.some((r) => r.type === type));
+  return { removed: remaining.length === 0, remaining };
 }
 
 /**
