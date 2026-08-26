@@ -1,9 +1,12 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
-// standalone de `scripts/overnight-session-marker.ts` (--start/--phase) e
+// standalone de `scripts/overnight-session-marker.ts` (--start/--phase),
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
-// is-claimed/merge-lock-acquire/merge-lock-release) que ainda não trazem a
-// flag (#5156; `is-claimed` adicionado no #5161 fleet review item 4 — ver
-// nota abaixo sobre `INJECTABLE_SUBCOMMANDS`).
+// is-claimed/merge-lock-acquire/merge-lock-release) e
+// `scripts/resolve-develop-plan-path.ts` (incondicional — o script inteiro
+// exige a flag, sem noção de subcomando) que ainda não trazem a flag (#5156;
+// `is-claimed` adicionado no #5161 fleet review item 4 — ver nota abaixo
+// sobre `INJECTABLE_SUBCOMMANDS`; `resolve-develop-plan-path.ts` adicionado
+// no #6259/#6265 — ver `SESSION_ID_TARGETS`).
 //
 // Wired in .claude/settings.json under hooks.PreToolUse, matcher "Bash".
 //
@@ -66,6 +69,12 @@
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
+// #6259/#6265: `resolve-develop-plan-path.ts` é o 3º alvo — diferente dos
+// outros dois, não tem noção de subcomando: o script INTEIRO exige
+// `--session-id` (ele mesmo aborta com exit 2 se ausente, ver seu próprio
+// `--session-id ausente` guard), então "precisa de --session-id" é
+// incondicional pra qualquer chamada standalone que cite o script.
+const TARGET_RESOLVE_PLAN_PATH = "resolve-develop-plan-path.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -74,6 +83,30 @@ const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.
 const REGISTER_SUBCOMMAND = /\bregister\b/;
+
+// #6259/#6265: tabela de alvos pra `needsSessionId` — generalizado de "2
+// constantes + 2 `if`s" pra uma lista, porque um 3º alvo com regra PRÓPRIA
+// (incondicional, sem subcomando) deixaria o padrão anterior repetitivo.
+// Cada entrada decide, a partir do `command` JÁ sabido conter `match`, se a
+// flag é necessária — mantém as regras de `overnight-session-marker.ts` e
+// `session-registry.ts` byte-a-byte idênticas ao comportamento anterior
+// (mesmas regexes, mesma ordem de checagem), só movidas pra dentro da tabela.
+// `needsPid` NÃO usa esta tabela de propósito — `--pid` continua exclusivo
+// de `session-registry.ts register` (nenhum outro alvo aceita o parâmetro).
+const SESSION_ID_TARGETS = [
+  {
+    match: TARGET_MARKER,
+    needsSessionId: (command) => /--start\b/.test(command) || /--phase\b/.test(command),
+  },
+  {
+    match: TARGET_REGISTRY,
+    needsSessionId: (command) => INJECTABLE_SUBCOMMANDS.test(command),
+  },
+  {
+    match: TARGET_RESOLVE_PLAN_PATH,
+    needsSessionId: () => true,
+  },
+];
 
 /**
  * Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`
@@ -92,11 +125,8 @@ export function isChainedCommand(command) {
 export function needsSessionId(command) {
   if (typeof command !== "string" || command.trim() === "") return false;
   if (isChainedCommand(command)) return false;
-  if (command.includes(TARGET_MARKER)) {
-    return /--start\b/.test(command) || /--phase\b/.test(command);
-  }
-  if (command.includes(TARGET_REGISTRY)) {
-    return INJECTABLE_SUBCOMMANDS.test(command);
+  for (const target of SESSION_ID_TARGETS) {
+    if (command.includes(target.match)) return target.needsSessionId(command);
   }
   return false;
 }
