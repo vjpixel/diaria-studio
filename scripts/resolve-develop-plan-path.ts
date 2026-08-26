@@ -1,14 +1,21 @@
 #!/usr/bin/env npx tsx
 /**
- * resolve-develop-plan-path.ts (#6265)
+ * resolve-develop-plan-path.ts (#6265, generalizado no #6328)
  *
  * CLI para o resolver de colisão de `plan.json` do `/diaria-develop` — ver
- * `scripts/lib/develop-plan-collision.ts` pra lógica pura/documentação
- * completa (racional da escolha de desenho, por que overnight não usa
- * isto, etc). Este arquivo só monta o `DevelopPlanProbe` real (leitura de
- * `data/develop/{AAMMDD}{suffix}/plan.json` do disco) e imprime o path
- * resolvido — ponto de entrada de linha de comando, mesmo padrão de
- * `scripts/lib/machine-id.ts`.
+ * `scripts/lib/plan-path-resolution.ts` pra lógica pura/documentação
+ * completa (racional da escolha de desenho, escopo cross-máquina, etc —
+ * módulo compartilhado com `scripts/resolve-overnight-plan-path.ts` desde
+ * o #6328). Este arquivo só monta o probe real (leitura de
+ * `data/develop/{AAMMDD}{suffix}/plan.json` do disco, via
+ * `createFsPlanProbe`) e imprime o path resolvido — ponto de entrada de
+ * linha de comando, mesmo padrão de `scripts/lib/machine-id.ts`.
+ *
+ * **Wrapper fino, sem mudança de contrato de saída nem de comportamento
+ * observável (#6328):** continua importando `resolveDevelopPlanPath` de
+ * `scripts/lib/develop-plan-collision.ts` (que por sua vez delega pro
+ * miolo genérico) — o `/diaria-develop` está em produção agora e depende
+ * deste caminho exatamente como estava.
  *
  * Chamado pela Fase 0 passo 9 de `.claude/skills/diaria-develop/SKILL.md`
  * ANTES da escrita inicial de `plan.json` (e de novo em qualquer re-write
@@ -25,33 +32,18 @@
  * dispatch-rules.md` item 18); passar manualmente também funciona (uso em
  * teste/debug).
  *
- * @see scripts/lib/develop-plan-collision.ts
+ * @see scripts/lib/plan-path-resolution.ts (miolo puro, compartilhado)
+ * @see scripts/lib/develop-plan-collision.ts (wrapper específico do develop)
+ * @see scripts/resolve-overnight-plan-path.ts (CLI irmão, #6328)
  * @see .claude/skills/diaria-develop/SKILL.md
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import {
-  resolveDevelopPlanPath,
-  type DevelopPlanProbeResult,
-} from "./lib/develop-plan-collision.ts";
+import { resolveDevelopPlanPath } from "./lib/develop-plan-collision.ts";
+import { createFsPlanProbe } from "./lib/plan-path-resolution.ts";
 
 const DEVELOP_BASE_DIR = "data/develop";
-
-function realProbe(path: string): DevelopPlanProbeResult {
-  if (!existsSync(path)) return { exists: false };
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { session_id?: unknown };
-    const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
-    return { exists: true, sessionId };
-  } catch {
-    // plan.json existente mas ilegível (JSON malformado, conflito de sync
-    // do OneDrive em voo) — tratado como "existe, session_id desconhecido"
-    // (nunca "não existe"): a checagem de colisão continua conservadora,
-    // nunca escreve por cima de um arquivo que não conseguiu ler.
-    return { exists: true, sessionId: null };
-  }
-}
+const realProbe = createFsPlanProbe();
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));

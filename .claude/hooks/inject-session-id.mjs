@@ -1,12 +1,14 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
 // standalone de `scripts/overnight-session-marker.ts` (--start/--phase),
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
-// is-claimed/merge-lock-acquire/merge-lock-release) e
-// `scripts/resolve-develop-plan-path.ts` (incondicional — o script inteiro
-// exige a flag, sem noção de subcomando) que ainda não trazem a flag (#5156;
+// is-claimed/merge-lock-acquire/merge-lock-release),
+// `scripts/resolve-develop-plan-path.ts` e `scripts/resolve-overnight-
+// plan-path.ts` (incondicional pros 2 últimos — o script inteiro exige a
+// flag, sem noção de subcomando) que ainda não trazem a flag (#5156;
 // `is-claimed` adicionado no #5161 fleet review item 4 — ver nota abaixo
 // sobre `INJECTABLE_SUBCOMMANDS`; `resolve-develop-plan-path.ts` adicionado
-// no #6259/#6265 — ver `SESSION_ID_TARGETS`).
+// no #6259/#6265; `resolve-overnight-plan-path.ts` adicionado no #6328,
+// mesmo motivo — ver `SESSION_ID_TARGETS`).
 //
 // Wired in .claude/settings.json under hooks.PreToolUse, matcher "Bash".
 //
@@ -75,6 +77,12 @@ const TARGET_REGISTRY = "session-registry.ts";
 // `--session-id ausente` guard), então "precisa de --session-id" é
 // incondicional pra qualquer chamada standalone que cite o script.
 const TARGET_RESOLVE_PLAN_PATH = "resolve-develop-plan-path.ts";
+// #6328: `resolve-overnight-plan-path.ts` é o 4º alvo, irmão direto do
+// anterior — mesmo script genérico (`scripts/lib/plan-path-resolution.ts`)
+// por trás, mesma regra incondicional de `--session-id`. Nome distinto o
+// suficiente (`overnight` vs `develop`) pra `command.includes(...)` nunca
+// confundir os dois.
+const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -121,6 +129,10 @@ const SESSION_ID_TARGETS = [
   },
   {
     match: TARGET_RESOLVE_PLAN_PATH,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_RESOLVE_OVERNIGHT_PLAN_PATH,
     needsSessionId: () => true,
   },
 ];
