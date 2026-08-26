@@ -312,3 +312,23 @@ describe("keepLatestPerName — timestamp MISTO nunca produz falso-verde", () =>
     assert.equal(r.verdict, "pass");
   });
 });
+
+describe("mensagem de pass não conta entradas supersedidas", () => {
+  it("diz quantas são VIGENTES e quantas foram ignoradas", () => {
+    // Antes dizia "11 check(s), todos concluídos com sucesso" para um rollup
+    // com 5 CANCELLED dentro — veredito certo, frase falsa.
+    const r = evaluatePrChecksGate([
+      { name: "a", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "a", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+      { name: "b", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+    ]);
+    assert.equal(r.verdict, "pass");
+    assert.match(r.reason, /2 check\(s\) vigente/);
+    assert.match(r.reason, /1 entrada\(s\) de run supersedida/);
+  });
+
+  it("sem supersedidas, a frase antiga (mais curta) permanece", () => {
+    const r = evaluatePrChecksGate([{ name: "a", status: "COMPLETED", conclusion: "SUCCESS" }]);
+    assert.equal(r.reason, "1 check(s), todos concluídos com sucesso.");
+  });
+});

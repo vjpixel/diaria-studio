@@ -216,7 +216,9 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
 
   // Descarta runs supersedidas por force-push antes de julgar — ver
   // `keepLatestPerName`.
-  for (const raw of keepLatestPerName(statusCheckRollup as PrCheckNode[])) {
+  const vigentes = keepLatestPerName(statusCheckRollup as PrCheckNode[]);
+
+  for (const raw of vigentes) {
     const node = (raw ?? {}) as PrCheckNode;
     const label = typeof node.name === "string" && node.name.length > 0 ? node.name : "(sem nome)";
 
@@ -281,7 +283,15 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
     verdict: "pass",
     failingChecks: [],
     pendingChecks: [],
-    reason: `${statusCheckRollup.length} check(s), todos concluídos com sucesso.`,
+    // Conta as VIGENTES, não o rollup cru: com runs supersedidas por
+    // force-push, o cru inclui entradas CANCELLED, e dizer "N checks, todos
+    // com sucesso" sobre um número que inclui canceladas é afirmar algo
+    // falso. Medido no PR #6239: 11 entradas cruas, 6 vigentes, 5 canceladas.
+    reason:
+      vigentes.length === statusCheckRollup.length
+        ? `${vigentes.length} check(s), todos concluídos com sucesso.`
+        : `${vigentes.length} check(s) vigente(s), todos concluídos com sucesso ` +
+          `(${statusCheckRollup.length - vigentes.length} entrada(s) de run supersedida por force-push ignorada(s)).`,
   };
 }
 
