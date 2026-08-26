@@ -296,6 +296,21 @@ export interface OpensCatchupDeps {
   cacheDir?: string;
   windowDays?: number;
   nowMs?: number;
+  /**
+   * #6352: gerador do `exportedAt` gravado em disco a cada export real
+   * (repassado a `getOrFetchCampaignCache`'s `opts.now`, que só grava o
+   * relógio de parede se ninguém injetar nada). Sem este wiring, `nowMs`
+   * acima só afetava o filtro de janela (`isWithinRefetchWindow`) — a
+   * gravação do `exportedAt` que decide a ROTAÇÃO (`pickCampaignsToRefresh`)
+   * sempre caía no `Date.now()` real, então 2 execuções sequenciais rápidas
+   * o bastante (comum em CI) podiam colidir no mesmo milissegundo e reabrir
+   * o empate por id em vez de rotacionar (achado ao vivo #6352: `run 3`
+   * exigia `exportedAt` da campanha 1 estritamente mais recente que o da
+   * campanha 2, mas as duas chamadas de `runOpensCatchup` em sequência
+   * rápida gravavam o mesmo instante). Produção nunca passa isto — cai no
+   * default real; só o teste precisa de um relógio determinístico.
+   */
+  now?: () => string;
   concurrency?: number;
   /**
    * #5946: teto de campanhas JÁ CACHEADAS forçadas a re-exportar nesta run
@@ -427,6 +442,7 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
       const { cache } = await getOrFetchCampaignCache(deps.client, campaign, {
         cacheDir,
         forceRefresh: toForceRefresh.has(campaign.id),
+        now: deps.now,
       });
       caches.push(cache);
     } catch (e) {
