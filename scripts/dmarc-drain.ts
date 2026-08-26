@@ -19,7 +19,7 @@
  * `google-auth.ts`/`gFetch` usado por `inbox-drain.ts`/`sync-apoio-nivel-beehiiv.ts`).
  * `fetchDmarcAttachments` é o único ponto de I/O de rede — busca threads via
  * `gmailQuery` (default: assunto padrão de relatório DMARC OU remetente
- * `dmarc-noreply@google.com`), percorre os `parts` de cada mensagem
+ * `noreply-dmarc-support@google.com`), percorre os `parts` de cada mensagem
  * recursivamente à procura de anexos (mimeType zip/gzip/octet-stream, ou
  * `filename` terminando em `.zip`/`.xml.gz`/`.xml`) e baixa o conteúdo via
  * `GET messages/{id}/attachments/{attachmentId}`.
@@ -94,7 +94,7 @@ const LOG_PREFIX = "[dmarc-drain]";
  * cobre com folga a janela de 2-4 semanas que a decisão de enforcement da
  * #6111 precisa acumular, sem crescer sem limite a cada execução. */
 const DEFAULT_GMAIL_QUERY =
-  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR from:dmarc-noreply@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
+  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR subject:"Report Domain: diar.ia.br" OR subject:"Report domain: diar.ia.br" OR from:noreply-dmarc-support@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
 
 /** #5339: 2 execuções limpas consecutivas antes de fechar a issue de alarme
  * automaticamente — mesmo valor dos demais alarmes diários deste repo. */
