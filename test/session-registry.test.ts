@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, wr
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
   sessionFilePath,
   sessionsDir,
@@ -36,6 +37,7 @@ import {
   mergeSessionRecords,
   planSessionGc,
   garbageCollectSessions,
+  resolveRepoRoot,
   GC_CONSERVATIVE_MAX_AGE_MS,
   MAX_SESSION_AGE_MS,
   SOFT_STALE_MS,
@@ -72,6 +74,84 @@ describe("sessionFilePath / sessionsDir / mergeLockPath", () => {
 
   it("sessionsDir e mergeLockPath compartilham o mesmo diretório", () => {
     assert.equal(mergeLockPath("/repo"), join(sessionsDir("/repo"), ".merge-lock.json"));
+  });
+});
+
+// ─── resolveRepoRoot (#6372) ────────────────────────────────────────────────
+//
+// Reproduz o cenário real da issue: `session-registry.ts` rodando com o cwd
+// dentro de um `git worktree` vinculado (não o checkout principal) — antes
+// do #6372, `main()` resolvia `repoRoot = process.cwd()` e passava a
+// operar, em silêncio, sobre um `data/sessions/` fantasma criado dentro do
+// próprio worktree. `resolveRepoRoot()` precisa devolver a raiz do checkout
+// PRINCIPAL mesmo quando chamado com `cwd` apontando para dentro do
+// worktree.
+
+/** `true` só se o `git` do sistema aceitar `--path-format` (>= 2.31) — mesmo
+ * guard fail-soft que `resolveRepoRoot`/`resolveSharedLockPath` já assumem
+ * em produção. Evita falso-negativo em runners com git muito antigo. */
+function gitSupportsPathFormat(): boolean {
+  const res = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    cwd: tmpdir(),
+    encoding: "utf8",
+  });
+  // Fora de um repo git, o comando ainda deve reconhecer a flag (falha com
+  // "not a git repository", não com "unknown option") — status !== 0 aqui é
+  // esperado; o que importa é que stderr não reclame da FLAG em si.
+  return !/unrecognized|unknown option/i.test(res.stderr ?? "");
+}
+
+/** Monta um repo git real em tmpdir + 1 worktree vinculado dele. Retorna os
+ * dois paths absolutos (resolvidos via `git rev-parse`, não `join`/`resolve`
+ * puro, pra já vir normalizado contra qualquer symlink de `tmpdir()` no SO —
+ * mesma preocupação que motivou este teste em primeiro lugar). */
+function makeRepoWithWorktree(): { mainRoot: string; worktreeRoot: string } {
+  const mainRoot = freshRoot();
+  mkdirSync(mainRoot, { recursive: true });
+  const run = (args: string[], cwd: string) => {
+    const res = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(res.status, 0, `git ${args.join(" ")} falhou: ${res.stderr}`);
+    return res.stdout;
+  };
+  run(["init", "-q", "-b", "main"], mainRoot);
+  run(["config", "user.email", "test@example.com"], mainRoot);
+  run(["config", "user.name", "Test"], mainRoot);
+  run(["commit", "-q", "--allow-empty", "-m", "init"], mainRoot);
+  const resolvedMainRoot = run(
+    ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+    mainRoot,
+  ).trim();
+
+  const worktreeRoot = join(tmpdir(), `session-registry-test-wt-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  roots.push(worktreeRoot);
+  run(["worktree", "add", "-q", worktreeRoot, "-b", "wt-branch"], mainRoot);
+
+  return { mainRoot: resolvedMainRoot, worktreeRoot };
+}
+
+describe("resolveRepoRoot — resolve o checkout PRINCIPAL, nunca o worktree/cwd (#6372)", { skip: !gitSupportsPathFormat() }, () => {
+  it("a partir do checkout principal, devolve o próprio checkout principal", () => {
+    const { mainRoot } = makeRepoWithWorktree();
+    assert.equal(resolveRepoRoot(mainRoot), mainRoot);
+  });
+
+  it("a partir de um worktree vinculado, devolve o checkout PRINCIPAL — não o worktree (regressão #6372)", () => {
+    const { mainRoot, worktreeRoot } = makeRepoWithWorktree();
+    const resolved = resolveRepoRoot(worktreeRoot);
+    assert.equal(resolved, mainRoot);
+    assert.notEqual(
+      resolved,
+      worktreeRoot,
+      "resolveRepoRoot não pode devolver o worktree — é exatamente o bug do #6372 " +
+        "(data/sessions/ fantasma criado dentro do worktree)",
+    );
+  });
+
+  it("fail-soft: fora de qualquer repo git, cai pro próprio cwd passado", () => {
+    const notARepo = join(tmpdir(), `session-registry-test-not-a-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(notARepo, { recursive: true });
+    roots.push(notARepo);
+    assert.equal(resolveRepoRoot(notARepo), notARepo);
   });
 });
 

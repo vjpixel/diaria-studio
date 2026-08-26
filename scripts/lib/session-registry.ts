@@ -130,6 +130,7 @@
 import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
@@ -2448,11 +2449,67 @@ function requireSessionId(values: Record<string, string>): string {
   return sessionId;
 }
 
+/**
+ * Resolve a raiz do checkout PRINCIPAL do repositório (#6372) — nunca
+ * `process.cwd()` nem `git rev-parse --show-toplevel`, os dois candidatos
+ * óbvios que devolvem o WORKTREE atual em vez do checkout principal.
+ *
+ * `data/` é uma junction/symlink OneDrive que só existe no checkout
+ * principal — um `git worktree` vinculado (`.claude/worktrees/agent-*`,
+ * onde TODO subagente implementador de overnight/develop/continuo roda,
+ * `isolation: "worktree"`) não a herda. Antes deste fix, `main()` resolvia
+ * `repoRoot` via `process.cwd()`: uma sessão cujo cwd persistisse dentro de
+ * um worktree (`cd` num Bash anterior — o cwd persiste entre chamadas
+ * Bash, ver docstring do harness) fazia TODO comando deste CLI
+ * (`register`, `claim-issue`, `is-claimed`, `merge-lock-acquire`,
+ * `list-active`) criar/ler um `data/sessions/` NOVO e VAZIO dentro do
+ * worktree, silenciosamente — exit 0 sempre, sem aviso. Isso desarmava, em
+ * silêncio, exatamente os 3 mecanismos que existem pra impedir 2 sessões
+ * colidirem na mesma issue/merge.
+ *
+ * `git rev-parse --path-format=absolute --git-common-dir` aponta pro `.git`
+ * REAL compartilhado entre o checkout principal e TODO worktree vinculado
+ * do mesmo repositório (mesmo mecanismo de `resolveSharedLockPath` em
+ * `scripts/lib/git-sync.ts`, #3430 — verificado empiricamente ali: rodar o
+ * comando tanto do checkout principal quanto de dentro de
+ * `.claude/worktrees/agent-*` devolve o EXATO mesmo path absoluto). Para o
+ * checkout principal, `.git` é um diretório real direto na raiz do repo —
+ * `dirname()` desse path é a raiz. `--show-toplevel`, ao contrário, devolve
+ * o toplevel do PRÓPRIO worktree (o mesmo bug que `resolveSharedLockPath`
+ * já descartou por esse motivo) — não usar.
+ *
+ * Fail-soft: se o comando git falhar (não é repo git, git indisponível,
+ * versão de git anterior a 2.31 sem `--path-format`), cai pra `cwd` —
+ * comportamento pré-#6372, correto pro caso comum (processo já rodando na
+ * raiz do checkout principal), só reabrindo o gap de worktree quando o git
+ * não está disponível pra desambiguar.
+ *
+ * `cwd` (default `process.cwd()`) existe como parâmetro explícito — não só
+ * pra deixar `git rev-parse` correr no diretório certo, mas pra tornar a
+ * função testável sem precisar mutar o cwd real do processo de teste
+ * (`process.chdir` afetaria QUALQUER outro teste rodando no mesmo processo).
+ */
+export function resolveRepoRoot(cwd: string = process.cwd()): string {
+  try {
+    const res = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.status === 0 && res.stdout && res.stdout.trim()) {
+      return dirname(res.stdout.trim());
+    }
+  } catch {
+    // git indisponível/timeout — fail-soft pro cwd, ver docstring acima.
+  }
+  return cwd;
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const { positional, values, flags } = parseArgs(argv);
   const command = positional[0];
-  const repoRoot = process.cwd();
+  const repoRoot = resolveRepoRoot();
 
   try {
     switch (command) {
@@ -2523,16 +2580,16 @@ function main(): void {
         const result = claimIssueCheckAndSet(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
         switch (result.reason) {
           case "claimed":
-            process.stdout.write("session-registry: claim-issue ok (claimed)\n");
+            process.stdout.write(`session-registry: claim-issue ok (claimed) [repoRoot=${repoRoot}]\n`);
             break;
           case "already-own":
-            process.stdout.write("session-registry: claim-issue ok (already-own, no-op)\n");
+            process.stdout.write(`session-registry: claim-issue ok (already-own, no-op) [repoRoot=${repoRoot}]\n`);
             break;
           case "forced-override": {
             const owner = result.blockedBy;
             process.stdout.write(
               `session-registry: claim-issue ok (FORCED — tomado de ${owner?.kind}-${owner?.sessionId} ` +
-                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})\n`,
+                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat}) [repoRoot=${repoRoot}]\n`,
             );
             break;
           }
@@ -2630,7 +2687,9 @@ function main(): void {
       case "merge-lock-acquire": {
         const sessionId = requireSessionId(values);
         const ok = acquireMergeLock(repoRoot, sessionId);
-        process.stdout.write(`session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"}\n`);
+        process.stdout.write(
+          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} [repoRoot=${repoRoot}]\n`,
+        );
         if (!ok) process.exitCode = 1;
         break;
       }
