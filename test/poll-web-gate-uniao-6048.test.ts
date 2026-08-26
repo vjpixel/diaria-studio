@@ -152,3 +152,58 @@ describe("#6048 checkWebSubscriber — contrato binário preservado", () => {
     assert.equal(await checkWebSubscriber(envCom({ SUBSCRIBERS_KV: kv }), email), "active");
   });
 });
+
+describe("#6208 review — lacunas de borda que o review apontou", () => {
+  it("env SEM fonte nenhuma ⇒ unknown/not_active, sem lançar", async () => {
+    const vazio = {} as unknown as Env;
+    const o = await checkWebSubscriberDetailed(vazio, "x@exemplo.com");
+    assert.equal(o.state, "unknown", "nenhuma fonte consultada ≠ 'verificamos e não achamos'");
+    assert.deepEqual(o.results, []);
+    assert.equal(await checkWebSubscriber(vazio, "x@exemplo.com"), "not_active");
+  });
+
+  it("REGRESSÃO: KV que LANÇA vira verification_failed, não derruba a chamada", async () => {
+    // `verifySubscriberViaKv` é a única fonte sem try/catch próprio. Antes de
+    // paralelizar com allSettled, uma exceção dela quebrava o gate inteiro —
+    // e o tema desta issue é justamente que fonte quebrada não pode produzir
+    // resposta errada.
+    const kvExplosivo = {
+      get: async () => {
+        throw new Error("KV indisponível");
+      },
+    } as unknown as Env["SUBSCRIBERS_KV"];
+    const o = await checkWebSubscriberDetailed(envCom({ SUBSCRIBERS_KV: kvExplosivo }), "x@exemplo.com");
+    assert.ok(o.failedSources.includes("kv"), "a falha do KV precisa aparecer");
+    assert.equal(o.state, "verification_failed");
+  });
+
+  it("KV lançando NÃO impede as outras fontes de responderem active", async () => {
+    const kvExplosivo = {
+      get: async () => {
+        throw new Error("KV indisponível");
+      },
+    } as unknown as Env["SUBSCRIBERS_KV"];
+    kitResponder = () => jsonRes({ subscribers: [{ state: "active" }] });
+    const o = await checkWebSubscriberDetailed(envCom({ SUBSCRIBERS_KV: kvExplosivo }), "x@exemplo.com");
+    assert.equal(o.state, "active", "allSettled: uma rejeição não derruba as demais");
+    assert.equal(o.activeSource, "kit");
+    assert.deepEqual(o.failedSources, ["kv"], "mas a degradação continua visível");
+  });
+
+  it("as fontes rodam em PARALELO, não em série", async () => {
+    // Achado P2: "nunca curto-circuitar" não implica correr em série.
+    let emVoo = 0;
+    let maxSimultaneo = 0;
+    const lento = async () => {
+      emVoo++;
+      maxSimultaneo = Math.max(maxSimultaneo, emVoo);
+      await new Promise((r) => setTimeout(r, 20));
+      emVoo--;
+      return jsonRes({ subscribers: [] });
+    };
+    beehiivResponder = lento as unknown as () => Response;
+    kitResponder = lento as unknown as () => Response;
+    await checkWebSubscriberDetailed(envCom(), "x@exemplo.com");
+    assert.ok(maxSimultaneo >= 2, `esperava ≥2 chamadas simultâneas, houve ${maxSimultaneo}`);
+  });
+});

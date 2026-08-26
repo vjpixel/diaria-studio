@@ -115,7 +115,12 @@ export interface Env {
    * newsletter: existe o código, o switchover é manual). */
   SUBSCRIBE_BACKEND?: string;
   /** #6048 — API key do Kit (`X-Kit-Api-Key`), só relevante quando
-   * `SUBSCRIBE_BACKEND === "kit"`. Ausente → `subscribeToKit` retorna
+   * `SUBSCRIBE_BACKEND === "kit"` PRA CADASTRO. **#6048: também é consumida
+   * INCONDICIONALMENTE pela leitura** — `checkWebSubscriberDetailed`
+   * (`web-gate.ts`) usa esta key pra verificar se quem vota é assinante do
+   * Kit, independente de `SUBSCRIBE_BACKEND`. Ligar a key só pra testar o
+   * funil de cadastro ativa, junto, esse segundo consumidor. Ausente →
+   * `subscribeToKit` retorna
    * `not_configured` (mesmo contrato de `subscribeToBeehiiv`). */
   KIT_API_KEY?: string;
   /** #6048 — override da base da API do Kit, só pra teste (mock server
