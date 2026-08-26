@@ -198,16 +198,66 @@ export function shouldBlockAskUserQuestion(marker, now = Date.now(), callerSessi
   return callerSessionId === marker.session_id;
 }
 
-/** Mensagem mostrada ao coordenador quando a chamada é negada (#4450). */
-export const BLOCK_REASON =
-  "AskUserQuestion bloqueado pelo guard mecânico do overnight (#4450): há uma rodada /diaria-overnight " +
-  "ativa nesta máquina em Fase autônoma (data/overnight/.active-session-*.json com phase: \"autonomous\"). " +
+/**
+ * Prefixo ESTÁTICO da mensagem (#4450) — regra e ação sugerida, que não
+ * mudam conforme o marker/chamador.
+ */
+const BLOCK_REASON_BASE =
+  "AskUserQuestion bloqueado pelo guard mecânico do overnight (#4450). " +
   "Regra 1 (HARD RULE) de .claude/skills/diaria-overnight/SKILL.md proíbe QUALQUER AskUserQuestion depois " +
   "do briefing da Fase 0 — nenhuma exceção por fase (Fase 1, re-scans, mini-rodadas, Fase 1.5). " +
   "Issue ou finding ambíguo agora: marque status \"pulada\" e comente na issue explicando exatamente qual " +
   "decisão falta (vira pergunta do briefing da PRÓXIMA rodada) — nunca pergunte ao editor. Decisão reversível " +
   "de baixo blast radius (criar issue com prioridade justificada, escolher entre implementações tecnicamente " +
   "equivalentes): aja direto, a pergunta \"devo fazer X?\" já é a resposta \"sim\".";
+
+/** Retrocompat — usado por quem ainda importar a constante estática (nunca com o prefixo dinâmico). */
+export const BLOCK_REASON = BLOCK_REASON_BASE;
+
+/**
+ * (#6232) Monta a mensagem de bloqueio DINÂMICA, distinguindo os dois
+ * cenários que produzem `shouldBlockAskUserQuestion === true` — a mensagem
+ * anterior (`BLOCK_REASON_BASE` sozinho) dizia só "há uma rodada ativa
+ * nesta máquina", que não diferenciava:
+ *
+ *   (a) **"você É a rodada"** — `marker.session_id` presente e igual a
+ *       `callerSessionId`: a própria sessão overnight autônoma tentou
+ *       perguntar. Caso normal do #4450 original.
+ *   (b) **"marker anônimo, escopo por máquina"** — `marker.session_id`
+ *       ausente (formato pré-#5156): bloqueia QUALQUER sessão desta
+ *       máquina, inclusive uma sessão interativa com o editor presente ou
+ *       um `/diaria-develop` rodando em paralelo — o falso positivo que
+ *       motivou a issue #6232. A mensagem agora nomeia essa possibilidade
+ *       explicitamente e aponta pro `--allow-no-session-id`/causa raiz, em
+ *       vez de deixar quem foi bloqueado adivinhar por horas (como
+ *       aconteceu ao vivo em #6232) se o bloqueio é "sou eu" ou
+ *       "compartilho a máquina com um marker que não sabe quem é".
+ *
+ * Função pura — nunca lança, sempre devolve string.
+ */
+export function buildBlockReason(marker, callerSessionId) {
+  let scopeNote;
+  if (marker && (marker.session_id === undefined || marker.session_id === null)) {
+    scopeNote =
+      "ESCOPO: o marker ativo (data/overnight/.active-session-*.json) NÃO TEM session_id (formato anônimo, " +
+      "pré-#5156) — o bloqueio é POR MÁQUINA, não por sessão: qualquer sessão rodando nesta máquina é bloqueada " +
+      "agora, mesmo que não seja a rodada overnight (sessão interativa com o editor presente, /diaria-develop " +
+      "em paralelo, etc — ver #6232). Se você não é a rodada /diaria-overnight autônoma, este é o cenário de " +
+      "falso positivo do #6232: a causa típica é o marker ter sido gravado sem session_id porque " +
+      "overnight-session-marker.ts --start/--phase rodou encadeado/pipado (a injeção automática de " +
+      "--session-id só funciona em comando standalone) — corrigir a chamada da rodada overnight resolve pra " +
+      "próxima vez; por ora, o bloqueio vale mesmo assim.";
+  } else if (marker && callerSessionId && marker.session_id === callerSessionId) {
+    scopeNote =
+      `ESCOPO: você É a rodada /diaria-overnight autônoma que gravou este marker (session_id "${marker.session_id}") ` +
+      "— o bloqueio está correto, o guard te reconheceu como a própria rodada em Fase autônoma.";
+  } else {
+    // Não deveria ser alcançável (shouldBlockAskUserQuestion só retorna true
+    // nos dois casos acima) — nota genérica em vez de assumir formato.
+    scopeNote = "ESCOPO: há uma rodada /diaria-overnight ativa nesta máquina em Fase autônoma.";
+  }
+  return `${BLOCK_REASON_BASE} ${scopeNote}`;
+}
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-askuserquestion-overnight-autonomous.test.ts).
@@ -233,7 +283,7 @@ if (
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
-              permissionDecisionReason: BLOCK_REASON,
+              permissionDecisionReason: buildBlockReason(marker, payload.session_id),
             },
           }),
         );

@@ -80,6 +80,18 @@
  *   npx tsx scripts/overnight-session-marker.ts --end
  * (`--session-id X` é sempre injetado automaticamente pelo hook acima — nunca
  * precisa ser passado manualmente pela skill.)
+ *
+ * **`--start`/`--phase` sem `--session-id` (#6232):** falha alto por padrão
+ * (`resolveSessionIdOrThrow`, ver docstring dela abaixo) — um marker anônimo
+ * muda o escopo do bloqueio de `AskUserQuestion` de 1 sessão pra a máquina
+ * inteira, sem aviso nenhum antes deste PR. A causa típica é o comando ter
+ * sido chamado encadeado/pipado (`&&`/`;`/`|`/heredoc), o que faz
+ * `inject-session-id.mjs` recusar a injeção de propósito (`context/
+ * overnight-dispatch-rules.md` item 18) — a correção normal é chamar
+ * standalone. Fora do harness (debug manual, script rodando sem sessão
+ * Claude Code), passar `--allow-no-session-id` grava o marker no formato
+ * antigo mesmo assim, mas sempre com aviso alto no stderr — nunca em
+ * silêncio.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -163,19 +175,90 @@ export function setPhase(repoRoot: string, phase: OvernightPhase, sessionId?: st
   }
 }
 
+/**
+ * (#6232) Resolve o `session_id` a gravar/atualizar no marker antes de
+ * `--start`/`--phase` rodarem — nunca deixa passar em silêncio o caso que
+ * causou o incidente de origem: um marker gravado SEM `session_id` muda o
+ * ESCOPO do bloqueio de `AskUserQuestion` de "esta sessão" pra "a máquina
+ * inteira" (fallback pré-#5156 em
+ * `.claude/hooks/block-askuserquestion-overnight-autonomous.mjs`), e nada
+ * sinalizava essa degradação até agora — o script gravava com sucesso e
+ * seguia calado (achado ao vivo #6232: as duas causas raiz, chamadas
+ * encadeadas/pipadas que `.claude/hooks/inject-session-id.mjs` recusa de
+ * propósito, não injetaram `--session-id`, e nada avisou).
+ *
+ * Três caminhos, mutuamente exclusivos:
+ *   1. `sessionId` presente → devolve ele, sem aviso — caminho normal
+ *      (chamada standalone, injeção automática funcionou).
+ *   2. `sessionId` ausente + `allowAnonymous` (`--allow-no-session-id`) →
+ *      devolve `undefined` (marker sai no formato antigo, pré-#5156) MAS
+ *      avisa ALTO no stderr — opt-in explícito, nunca silencioso. Existe pra
+ *      não travar um caminho legítimo fora do harness (chamada manual de
+ *      debug, script rodando fora de uma sessão Claude Code) — mas quem
+ *      escolhe isso precisa VER que escolheu.
+ *   3. `sessionId` ausente sem o opt-in → lança. **Decisão deste PR:** falha
+ *      dura, simétrica ao `requireSessionId` de
+ *      `scripts/lib/session-registry.ts` (que já lança sem opt-in nenhum) —
+ *      a assimetria entre os dois scripts, um falhando alto e o outro
+ *      degradando em silêncio pra exatamente a mesma causa (comando
+ *      encadeado/pipado que `inject-session-id.mjs` recusa), foi o próprio
+ *      achado da issue. Falhar duro aqui não quebra nenhum fluxo de
+ *      resume/skill documentado: toda chamada de `--start`/`--phase` das
+ *      skills overnight é standalone (nunca `&&`/`;`/pipe/heredoc — a skill
+ *      já instrui isso pra `session-registry.ts`, ver `context/
+ *      overnight-dispatch-rules.md` item 18) e roda dentro do harness, onde
+ *      `payload.session_id` está disponível pro hook injetar. Só quebra
+ *      exatamente o padrão que já era o bug (chamada encadeada) — e quebrar
+ *      ALTO nesse caso é o comportamento correto: melhor um `exit 1`
+ *      explícito no passo 1 da Fase 0 do que um marker anônimo silencioso
+ *      travando `AskUserQuestion` pra máquina inteira horas depois.
+ */
+export function resolveSessionIdOrThrow(
+  sessionId: string | undefined,
+  allowAnonymous: boolean,
+): string | undefined {
+  if (sessionId) return sessionId;
+  if (allowAnonymous) {
+    process.stderr.write(
+      "overnight-session-marker: AVISO — gravando marker SEM session_id (--allow-no-session-id). " +
+        "Isso muda o escopo do guard de AskUserQuestion de 1 SESSÃO pra a MÁQUINA INTEIRA " +
+        "(fallback pré-#5156 em .claude/hooks/block-askuserquestion-overnight-autonomous.mjs) — " +
+        "qualquer outra sessão nesta máquina também será bloqueada durante a Fase autônoma. " +
+        "Use só quando você sabe que é isso que quer (#6232).\n",
+    );
+    return undefined;
+  }
+  throw new Error(
+    "--session-id ausente. Normalmente injetado automaticamente por .claude/hooks/inject-session-id.mjs " +
+      "quando este comando roda STANDALONE (nunca em &&/;/pipe/heredoc — ver context/overnight-dispatch-rules.md " +
+      "item 18). Um marker sem session_id muda o escopo do bloqueio de AskUserQuestion de 1 sessão pra a " +
+      "MÁQUINA INTEIRA, sem aviso nenhum antes deste PR (#6232) — por isso este script agora falha alto em vez " +
+      "de degradar em silêncio. Corrija a chamada pra standalone (deixa a injeção automática funcionar), passe " +
+      "--session-id explicitamente, ou — só se for essa a intenção — passe --allow-no-session-id.",
+  );
+}
+
 if (isMainModule(import.meta.url)) {
   const repoRoot = process.cwd();
   const argv = process.argv.slice(2);
   const arg = argv[0];
+  const parsed = parseArgs(argv);
   // #5156: --session-id normalmente chega injetado por .claude/hooks/inject-session-id.mjs
   // (a skill nunca sabe o próprio session_id pra passar manualmente) — parseado via
   // parseArgs pra não depender de posição fixa relativa a --phase <valor>.
-  const sessionId = parseArgs(argv).values["session-id"];
+  const rawSessionId = parsed.values["session-id"];
+  const allowAnonymous = parsed.flags.has("allow-no-session-id");
   if (arg === "--start") {
-    startSession(repoRoot, new Date().toISOString(), sessionId);
-    process.stdout.write(
-      `overnight session marker: started, phase=briefing${sessionId ? `, session_id=${sessionId}` : ""} (${activeSessionPath(repoRoot)})\n`,
-    );
+    try {
+      const sessionId = resolveSessionIdOrThrow(rawSessionId, allowAnonymous);
+      startSession(repoRoot, new Date().toISOString(), sessionId);
+      process.stdout.write(
+        `overnight session marker: started, phase=briefing${sessionId ? `, session_id=${sessionId}` : ""} (${activeSessionPath(repoRoot)})\n`,
+      );
+    } catch (err) {
+      process.stderr.write(`overnight-session-marker: erro — ${(err as Error).message}\n`);
+      process.exitCode = 1;
+    }
   } else if (arg === "--end") {
     endSession(repoRoot);
     process.stdout.write(`overnight session marker: ended (${activeSessionPath(repoRoot)})\n`);
@@ -184,13 +267,21 @@ if (isMainModule(import.meta.url)) {
     if (phase !== "briefing" && phase !== "autonomous") {
       process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --phase <briefing|autonomous>\n");
       process.exitCode = 1;
-    } else if (setPhase(repoRoot, phase, sessionId)) {
-      process.stdout.write(`overnight session marker: phase=${phase} (${activeSessionPath(repoRoot)})\n`);
     } else {
-      process.stderr.write(
-        `overnight session marker: nenhum marker ativo em ${activeSessionPath(repoRoot)} — rode --start antes de --phase\n`,
-      );
-      process.exitCode = 1;
+      try {
+        const sessionId = resolveSessionIdOrThrow(rawSessionId, allowAnonymous);
+        if (setPhase(repoRoot, phase, sessionId)) {
+          process.stdout.write(`overnight session marker: phase=${phase} (${activeSessionPath(repoRoot)})\n`);
+        } else {
+          process.stderr.write(
+            `overnight session marker: nenhum marker ativo em ${activeSessionPath(repoRoot)} — rode --start antes de --phase\n`,
+          );
+          process.exitCode = 1;
+        }
+      } catch (err) {
+        process.stderr.write(`overnight-session-marker: erro — ${(err as Error).message}\n`);
+        process.exitCode = 1;
+      }
     }
   } else {
     process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --start | --end | --phase <briefing|autonomous>\n");

@@ -7,6 +7,7 @@ import {
   shouldBlockAskUserQuestion,
   readActiveMarker,
   activeSessionPath,
+  buildBlockReason,
 } from "../.claude/hooks/block-askuserquestion-overnight-autonomous.mjs";
 
 // #4450: guard MECÂNICO contra o incidente da rodada 260801/02 — o
@@ -197,5 +198,43 @@ describe("readActiveMarker (#4450)", () => {
       activeSessionPath("/repo", "my-host"),
       join("/repo", "data", "overnight", ".active-session-my-host.json"),
     );
+  });
+});
+
+// #6232: a mensagem de bloqueio distingue "você É a rodada" de "marker
+// anônimo escopado por máquina" — antes deste PR os dois casos produziam o
+// mesmo texto genérico ("há uma rodada ativa nesta máquina"), o que fez o
+// diagnóstico do incidente de origem levar horas.
+describe("buildBlockReason (#6232)", () => {
+  it("marker anônimo (sem session_id) → menciona escopo por MÁQUINA e o #6232", () => {
+    const marker = { started_at: "2026-08-26T10:00:00.000Z", phase: "autonomous" };
+    const reason = buildBlockReason(marker, "sessao-interativa-xyz");
+    assert.match(reason, /NÃO TEM session_id/);
+    assert.match(reason, /POR MÁQUINA/);
+    assert.match(reason, /#6232/);
+  });
+
+  it("marker com session_id igual ao chamador → diz 'você É a rodada'", () => {
+    const marker = { started_at: "2026-08-26T10:00:00.000Z", phase: "autonomous", session_id: "sessao-overnight-abc" };
+    const reason = buildBlockReason(marker, "sessao-overnight-abc");
+    assert.match(reason, /você É a rodada/);
+    assert.match(reason, /sessao-overnight-abc/);
+  });
+
+  it("sempre inclui a regra/ação de base (#4450), independente do cenário", () => {
+    const anonReason = buildBlockReason({ started_at: "x", phase: "autonomous" }, "a");
+    const selfReason = buildBlockReason(
+      { started_at: "x", phase: "autonomous", session_id: "a" },
+      "a",
+    );
+    for (const reason of [anonReason, selfReason]) {
+      assert.match(reason, /Regra 1/);
+      assert.match(reason, /marque status "pulada"/);
+    }
+  });
+
+  it("nunca lança, mesmo com marker null/undefined (fail-open já garante que isto não é chamado nesse caso, mas a função em si é defensiva)", () => {
+    assert.doesNotThrow(() => buildBlockReason(null, "x"));
+    assert.doesNotThrow(() => buildBlockReason(undefined, undefined));
   });
 });
