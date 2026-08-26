@@ -464,3 +464,70 @@ describe("shouldSkipPost — incremental skip por identidade (#1567 finding H)",
     assert.equal(shouldSkipPost({ ...base, date: "2026-05-20", title: "Edição B de 20/05" }), false);
   });
 });
+
+describe("build-link-ctr CLI — origem resolvida via camada unificada (#6185)", () => {
+  let tmpRoot: string;
+
+  before(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "link-ctr-kit-origin-"));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("edição de origem Kit (data/kit-cache/broadcasts/) entra no CSV ao lado das edições Beehiiv", () => {
+    const dir = tmpRoot;
+    fs.mkdirSync(path.join(dir, "data", "beehiiv-cache", "posts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "data", "kit-cache", "broadcasts"), { recursive: true });
+
+    const oldEnough = Math.floor(Date.parse("2026-05-01T00:00:00Z") / 1000);
+    const beehiivPost = {
+      id: "p-beehiiv",
+      title: "Edição Beehiiv",
+      status: "confirmed",
+      publish_date: oldEnough,
+      content: { free: { email: '<a href="https://exemplo.com/beehiiv-link">Matéria Beehiiv</a>' } },
+      stats: { email: { unique_opens: 100 }, clicks: [] },
+    };
+    fs.writeFileSync(
+      path.join(dir, "data", "beehiiv-cache", "posts", "p-beehiiv.json"),
+      JSON.stringify(beehiivPost),
+      "utf8",
+    );
+
+    // #6185: broadcast Kit com `clicks` já anexado (contrato de um futuro
+    // apply-kit-clicks.ts — nenhum escritor real existe ainda, ver docstring
+    // de edition-cache-reader.ts) — confirma que a camada unificada entrega
+    // esses cliques no vocabulário Beehiiv sem o consumidor saber da origem.
+    const kitBroadcast = {
+      id: 999,
+      subject: "Edição Kit",
+      status: "completed",
+      published_at: "2026-05-02T09:00:00Z",
+      content: '<a href="https://exemplo.com/kit-link">Matéria Kit</a>',
+      clicks: [{ id: 1, url: "https://exemplo.com/kit-link", unique_clicks: 4, click_to_delivery_rate: 0.1, click_to_open_rate: 0.4 }],
+    };
+    fs.writeFileSync(
+      path.join(dir, "data", "kit-cache", "broadcasts", "broadcast_999.json"),
+      JSON.stringify(kitBroadcast),
+      "utf8",
+    );
+
+    const script = path.resolve(import.meta.dirname, "..", "scripts", "build-link-ctr.ts");
+    const r = spawnNpx(["tsx", script], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, `esperado exit 0. stderr: ${r.stderr}`);
+
+    const csv = fs.readFileSync(path.join(dir, "data", "link-ctr-table.csv"), "utf8");
+    assert.ok(csv.includes("exemplo.com/beehiiv-link"), `link Beehiiv ausente do CSV: ${csv}`);
+    assert.ok(csv.includes("exemplo.com/kit-link"), `link Kit ausente do CSV — origem não resolvida: ${csv}`);
+
+    const kitLine = csv.split("\n").find((l) => l.includes("kit-link"));
+    assert.ok(kitLine, "linha do link Kit não encontrada");
+    // unique_verified_clicks (índice 8 do header, ver `header` em build-link-ctr.ts)
+    // vem de `unique_clicks` do Kit — aproximação documentada (Kit não distingue
+    // verified/unverified).
+    const cells = kitLine!.split(",");
+    assert.equal(cells[8], "4", `unique_verified_clicks esperado=4 (de unique_clicks do Kit): ${kitLine}`);
+  });
+});

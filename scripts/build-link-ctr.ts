@@ -33,8 +33,17 @@ import {
   formatUntrustedCsvAbort,
   ALLOW_CLICK_LOSS_FLAG,
 } from './lib/shared/ctr-rebuild-guard.ts';
+// #6185: camada de leitura unificada Beehiiv+Kit (#6187 item 3) — resolve a
+// origem da edição (partição pelo cutover, não uma escolha por consumidor) e
+// devolve os posts das duas fontes já no mesmo vocabulário, `stats.clicks`
+// incluso. Hoje `data/kit-cache/` está sempre vazio na prática (nenhum
+// escritor existe ainda, ver docstring do módulo) — este script continua
+// processando só Beehiiv até esse dia, mas passa a herdar Kit automaticamente
+// quando o cache existir, sem precisar de outra mudança aqui.
+import { loadUnifiedEditionCache } from './lib/shared/edition-cache-reader.ts';
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
+const KIT_BROADCASTS_DIR = path.join(process.cwd(), 'data/kit-cache/broadcasts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
 
 // ─── Noise filters ────────────────────────────────────────────────────────────
@@ -537,11 +546,14 @@ function main() {
     }
   }
 
-  const files = fs.readdirSync(POSTS_DIR).filter(f => f !== 'index.json');
-
-  const posts: any[] = files.map(f =>
-    JSON.parse(fs.readFileSync(path.join(POSTS_DIR, f), 'utf8'))
-  );
+  // #6185: lê Beehiiv + Kit (origem resolvida por cache, não por consumidor).
+  // `loadUnifiedEditionCache` já lança se POSTS_DIR (Beehiiv) não existir —
+  // mesma checagem que o `existsSync` acima fazia, agora feita 1x na camada
+  // compartilhada.
+  const posts: any[] = loadUnifiedEditionCache({
+    beehiivPostsDir: POSTS_DIR,
+    kitBroadcastsDir: KIT_BROADCASTS_DIR,
+  });
 
   // Sort by publish_date ascending
   posts.sort((a, b) => (a.publish_date ?? 0) - (b.publish_date ?? 0));

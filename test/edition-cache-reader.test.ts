@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import {
   normalizeBeehiivPost,
   normalizeKitBroadcast,
+  normalizeKitClick,
   mergeEditionsByDate,
   loadBeehiivCache,
   loadKitCache,
@@ -37,7 +38,19 @@ describe("normalizeBeehiivPost", () => {
       content: { free: { web: "<p>corpo</p>" } },
     };
     const got = normalizeBeehiivPost(raw);
-    assert.deepEqual(got, { origin: "beehiiv", ...raw });
+    assert.deepEqual(got, { origin: "beehiiv", ...raw, stats: undefined });
+  });
+
+  it("passa `stats.clicks` adiante sem transformação (#6185) — Beehiiv já escreve no vocabulário certo", () => {
+    const stats = {
+      email: { unique_opens: 500 },
+      clicks: [
+        { url: "https://exemplo.com/x", email: { unique_clicks: 3, unique_verified_clicks: 2, verified_clicks: 2 } },
+      ],
+      enrichment_state: "enriched_n",
+    };
+    const got = normalizeBeehiivPost({ slug: "post-x", stats });
+    assert.deepEqual(got.stats, stats);
   });
 
   it("campos ausentes viram undefined, não lança", () => {
@@ -148,6 +161,70 @@ describe("normalizeKitBroadcast", () => {
       "scheduled",
       "sending",
     ]);
+  });
+
+  it("sem `clicks` no raw file, stats fica undefined (nenhum escritor do cache Kit existe ainda)", () => {
+    const got = normalizeKitBroadcast(baseSummary);
+    assert.equal(got.stats, undefined);
+  });
+
+  it("com `clicks` no raw file, stats.clicks normaliza cada item (#6185)", () => {
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      clicks: [
+        { id: 1, url: "https://exemplo.com/a", unique_clicks: 5, click_to_delivery_rate: 0.1, click_to_open_rate: 0.4 },
+      ],
+    });
+    assert.deepEqual(got.stats, {
+      clicks: [
+        {
+          url: "https://exemplo.com/a",
+          email: {
+            unique_clicks: 5,
+            unique_verified_clicks: 5,
+            verified_clicks: 5,
+            click_rate: 0.4,
+            click_rate_verified: 0.4,
+          },
+        },
+      ],
+    });
+  });
+});
+
+describe("normalizeKitClick (#6185 — clique real confirmado contra broadcast 25609304)", () => {
+  it("mapeia url/unique_clicks direto; sem distinção verified/unverified, usa unique_clicks pros 3 campos", () => {
+    // Amostra real — test/fixtures/kit-broadcast-click-6185.json
+    const got = normalizeKitClick({
+      id: 1881132950,
+      url: "https://www.beehiiv.com?via=Diaria",
+      unique_clicks: 1,
+      click_to_delivery_rate: 0.2,
+      click_to_open_rate: 0.5,
+    });
+    assert.deepEqual(got, {
+      url: "https://www.beehiiv.com?via=Diaria",
+      email: {
+        unique_clicks: 1,
+        unique_verified_clicks: 1,
+        verified_clicks: 1,
+        click_rate: 0.5,
+        click_rate_verified: 0.5,
+      },
+    });
+  });
+
+  it("unique_clicks=0 (link sem clique) não vira undefined/NaN em nenhum campo", () => {
+    const got = normalizeKitClick({
+      id: 2,
+      url: "https://exemplo.com/sem-clique",
+      unique_clicks: 0,
+      click_to_delivery_rate: 0,
+      click_to_open_rate: 0,
+    });
+    assert.equal(got.email.unique_clicks, 0);
+    assert.equal(got.email.unique_verified_clicks, 0);
+    assert.equal(got.email.verified_clicks, 0);
   });
 });
 
