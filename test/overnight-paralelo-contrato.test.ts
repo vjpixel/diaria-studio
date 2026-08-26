@@ -74,8 +74,18 @@ describe("#6299 — o overnight declara paralelismo, com teto", () => {
       "o teto do overnight sumiu ou mudou de forma — sem número explícito o fan-out não tem limite legível",
     );
 
-    const developCap = read(DEVELOP).match(/teto (?:de )?(\d+)/i);
-    assert.ok(developCap, "não achei o teto do develop pra comparar — se ele mudou de forma, ajustar ESTE teste junto");
+    // Ancorar na DECLARAÇÃO autoritativa do develop, não na 1ª ocorrência
+    // solta de "teto" no arquivo. A versão anterior usava /teto (?:de )?(\d+)/i
+    // sobre o arquivo inteiro e caía numa célula de tabela comparativa; acertava
+    // o 6 por acidente (a célula vizinha diz "teto **3**", que só não casou
+    // porque o markdown bold separa "teto " do dígito). Uma edição estética
+    // naquela tabela passaria a comparar contra o número errado, em silêncio
+    // — achado do re-review da #6330.
+    const developCap = read(DEVELOP).match(/Teto de concorrência\D{0,40}?(\d+)/i);
+    assert.ok(
+      developCap,
+      "não achei a declaração autoritativa do teto do develop ('Teto de concorrência ... N') — se ela mudou de forma, ajustar ESTE teste junto, nunca afrouxar a regex pra pegar qualquer 'teto'",
+    );
 
     const o = Number(overnightCap[1]);
     const d = Number(developCap[1]);
@@ -190,6 +200,36 @@ describe("#6299 — active_worktrees deixou de ser cosmético", () => {
       s,
       /ainda não é chamado por nenhuma skill/i,
       "a seção de coexistência voltou a dizer que o write-path não tem chamador, contradizendo os call sites da Fase 1 — se o overnight de fato parar de chamar, remover os call sites E esta afirmação juntos",
+    );
+  });
+
+  it("o DEVELOP também não afirma que o overnight não chama — contradição CRUZADA", () => {
+    // O 1º fix desta issue corrigiu só o lado overnight e deixou o item 6
+    // espelhado do develop dizendo "nenhum call site desta skill (nem do
+    // overnight) invoca esse comando" — que virou falso no mesmo commit.
+    // Nenhum teste pegou, porque todos liam só OVERNIGHT. Corrigir um lado de
+    // uma afirmação mantida em dois arquivos é meio trabalho, e o leitor que
+    // consulta o arquivo errado recebe a versão falsa (achado do re-review
+    // da #6330).
+    const s = read(DEVELOP);
+    assert.doesNotMatch(
+      s,
+      /nem do overnight\) invoca esse comando/i,
+      "o develop voltou a afirmar que o overnight não chama heartbeat --active-worktrees — desde o #6299 ele chama, em 2 call sites",
+    );
+    // E o par positivo: o develop precisa registrar a assimetria DENTRO do
+    // item 6, senão uma sessão develop lê "não mecanizado" e assume que o
+    // overnight também não publica — a leitura que a faz abrir 6 por cima dos
+    // 3 dele. Escopar ao item 6 e não ao arquivo: o develop já cita #6299
+    // noutro trecho (a correção da "supervisão humana"), então um
+    // `match(/#6299/)` global passaria mesmo com este item intocado — vácuo,
+    // que é o defeito que este arquivo inteiro existe pra não cometer.
+    const item6 = s.match(/6\. \*\*Teto de concorrência por sessão\*\*[\s\S]{0,1400}/)?.[0] ?? "";
+    assert.ok(item6, "não achei o item 6 do develop — se ele mudou de forma/numeração, ajustar este teste");
+    assert.match(
+      item6,
+      /#6299/,
+      "o item 6 do develop não registra que o overnight passou a publicar active_worktrees (#6299) — sem isso a assimetria fica invisível justamente pra quem precisa dela",
     );
   });
 });
