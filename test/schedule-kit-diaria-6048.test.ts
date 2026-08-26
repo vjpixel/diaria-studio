@@ -29,6 +29,7 @@ const draft: KitDiariaPublished = {
 function makeDeps(
   over: Partial<{
     enabled: boolean;
+    newsletterBackend: string;
     state: KitDiariaPublished | null;
     readStateThrows: boolean;
     patchThrows: boolean;
@@ -39,7 +40,12 @@ function makeDeps(
   const written: KitDiariaPublished[] = [];
   const patched: number[] = [];
   const deps: ScheduleKitDiariaDeps = {
-    readPlatformConfig: () => ({ kit_diaria: { enabled: over.enabled ?? true } }),
+    readPlatformConfig: () => ({
+      kit_diaria: { enabled: over.enabled ?? true },
+      ...(over.newsletterBackend !== undefined
+        ? { publishing: { newsletter: { backend: over.newsletterBackend } } }
+        : {}),
+    }),
     readState: (() => {
       if (over.readStateThrows) throw new Error("kit-diaria-published.json não é JSON válido");
       return over.state === undefined ? draft : over.state;
@@ -155,6 +161,36 @@ describe("#6048 scheduleKitDiaria — idempotência e falha de PATCH", () => {
     assert.equal(r.code, 3);
     if (r.code === 3) assert.match(r.reason, /429/);
     assert.equal(written.length, 0);
+  });
+});
+
+describe("#6321/#6313 guard de exclusão mútua — backend \"kit\" vence mesmo com enabled true", () => {
+  // O achado: `platform.config.json` continuou com `kit_diaria.enabled: true`
+  // depois do switchover pra backend "kit" (#6114), o que sugeria envio EM
+  // DOBRO — a Etapa 5 já era protegida por `decideKitChannelDispatch`, mas
+  // este script (Etapa 6) lia a flag crua, sem essa checagem. O cenário que
+  // a issue nomeia como dano potencial: "entregar a edição duplicada".
+  it("backend === \"kit\" + enabled true ⇒ code 2, sem PATCH (nunca agenda em dobro)", async () => {
+    const { deps, patched, written } = makeDeps({ enabled: true, newsletterBackend: "kit" });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 2);
+    if (r.code === 2) assert.match(r.reason, /backend.*"kit"/);
+    assert.equal(patched.length, 0, "nunca fazer PATCH no canal paralelo quando o switchover já cobre a base inteira");
+    assert.equal(written.length, 0);
+  });
+
+  it("backend === \"beehiiv\" + enabled true ⇒ segue o caminho normal (não é o guard que bloqueia)", async () => {
+    const { deps, patched } = makeDeps({ enabled: true, newsletterBackend: "beehiiv" });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.deepEqual(patched, [4242]);
+  });
+
+  it("backend ausente na config (formato antigo) + enabled true ⇒ segue o caminho normal", async () => {
+    const { deps, patched } = makeDeps({ enabled: true });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 0);
+    assert.deepEqual(patched, [4242]);
   });
 });
 

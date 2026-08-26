@@ -66,7 +66,10 @@ export type ScheduleKitDiariaResult =
   | { code: 3 | 4; reason: string };
 
 export interface ScheduleKitDiariaDeps {
-  readPlatformConfig(): { kit_diaria?: KitDiariaChannelConfig };
+  readPlatformConfig(): {
+    kit_diaria?: KitDiariaChannelConfig;
+    publishing?: { newsletter?: { backend?: string } };
+  };
   readState: typeof readKitDiariaState;
   writeState: typeof writeKitDiariaState;
   patch(id: number, sendAt: string): Promise<{ id: number }>;
@@ -79,6 +82,7 @@ export function productionDeps(rootDir: string = ROOT): ScheduleKitDiariaDeps {
     readPlatformConfig: () =>
       JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
         kit_diaria?: KitDiariaChannelConfig;
+        publishing?: { newsletter?: { backend?: string } };
       },
     readState: readKitDiariaState,
     writeState: writeKitDiariaState,
@@ -93,11 +97,29 @@ export async function scheduleKitDiaria(
   scheduledAt: string,
   deps: ScheduleKitDiariaDeps,
 ): Promise<ScheduleKitDiariaResult> {
-  let cfg: { kit_diaria?: KitDiariaChannelConfig };
+  let cfg: {
+    kit_diaria?: KitDiariaChannelConfig;
+    publishing?: { newsletter?: { backend?: string } };
+  };
   try {
     cfg = deps.readPlatformConfig();
   } catch (e) {
     return { code: 3, reason: `platform.config.json ilegível: ${(e as Error).message}` };
+  }
+  // #6321 — mesmo guard de exclusão mútua do `decideKitChannelDispatch`
+  // (scripts/lib/kit-diaria-channel.ts): com o backend já em "kit", o
+  // switchover (#6114) envia pra audiência INTEIRA e este canal paralelo
+  // NUNCA deve agendar, mesmo que `kit_diaria.enabled` tenha ficado `true`
+  // por engano (dívida corrigida no próprio #6321/#6313, não garantia
+  // futura). Checado ANTES de `enabled` — igual à ordem do dispatch da
+  // Etapa 5, propositalmente.
+  if (cfg.publishing?.newsletter?.backend === "kit") {
+    return {
+      code: 2,
+      reason:
+        "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já agenda pra audiência " +
+        "INTEIRA; agendar o canal paralelo também entregaria a edição EM DOBRO. Canal não participa.",
+    };
   }
   if (cfg.kit_diaria?.enabled !== true) {
     return { code: 2, reason: "kit_diaria.enabled não é true — canal não participou desta edição." };
