@@ -64,6 +64,38 @@ export function findRouteIssueViolations(content: string): string[] {
   return violations;
 }
 
+/**
+ * Um marcador de exceção deve cobrir UMA linha, não uma vizinhança.
+ *
+ * A janela de ±3 linhas que `findRouteIssueViolations` usa é o que permite ao
+ * marcador ficar na linha de cima em vez de poluir o texto — mas ela também é
+ * o vetor de abuso apontado no self-review do #6196: colar um marcador perto
+ * de uma linha genuinamente prescritiva a exime de carona, sem que ninguém
+ * tenha escrito uma justificativa pra ELA. Um marcador que alcança 2+ linhas
+ * com `gh issue edit` é indistinguível de abuso, então é tratado como erro —
+ * a correção é mover a linha prescritiva pra fora da janela ou dar a ela o
+ * próprio marcador, com o próprio motivo.
+ *
+ * Retorna uma violação por marcador excessivamente abrangente.
+ */
+export function findOverreachingExemptions(content: string): string[] {
+  const lines = content.split("\n");
+  const violations: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!ROUTE_ISSUE_EXEMPT_RE.test(lines[i])) continue;
+    const covered: number[] = [];
+    for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 4); j++) {
+      if (lines[j].includes("gh issue edit")) covered.push(j + 1);
+    }
+    if (covered.length > 1) {
+      violations.push(
+        `${i + 1}: marcador de exceção alcança ${covered.length} linhas com \`gh issue edit\` (${covered.join(", ")}) — cada uma precisa do próprio motivo`,
+      );
+    }
+  }
+  return violations;
+}
+
 describe("invariante #6196 — route-issue referenciado nas SKILLs", () => {
   it("cada SKILL.md que menciona `gh issue edit` também menciona `route-issue` (ou está exempta com motivo)", () => {
     const skillsDir = resolve(import.meta.dirname, "../.claude/skills");
@@ -131,5 +163,48 @@ describe("invariante #6196 — sanidade do fixture usado no scan real", () => {
     for (const f of skmdFiles) {
       assert.ok(statSync(f).size > 0, `${f} está vazio`);
     }
+  });
+});
+
+describe("mecanismo de exceção não pode eximir por vizinhança (#6196)", () => {
+  it("nenhum marcador nas SKILLs reais alcança mais de uma linha com `gh issue edit`", () => {
+    const skillsDir = resolve(import.meta.dirname, "../.claude/skills");
+    const todas: string[] = [];
+    for (const f of findSkmdFiles(skillsDir)) {
+      for (const v of findOverreachingExemptions(readFileSync(f, "utf8"))) {
+        todas.push(`${f}:${v}`);
+      }
+    }
+    assert.deepEqual(todas, [], `Exceções abrangentes demais (#6196):\n    ${todas.join("\n    ")}`);
+  });
+
+  it("marcador que alcança 2 linhas prescritivas é acusado", () => {
+    const conteudo = [
+      "linha usando `gh issue edit N --add-label a`",
+      "<!-- route-issue-exempt: motivo que só vale pra uma delas -->",
+      "outra linha usando `gh issue edit N --add-label b`",
+    ].join("\n");
+    assert.equal(findOverreachingExemptions(conteudo).length, 1);
+  });
+
+  it("marcador que alcança exatamente 1 linha é aceito", () => {
+    const conteudo = [
+      "<!-- route-issue-exempt: define o gatilho, não instrui rodar -->",
+      "toda vez que alguém rodar `gh issue edit N --add-label x`, registre",
+    ].join("\n");
+    assert.deepEqual(findOverreachingExemptions(conteudo), []);
+  });
+
+  it("linha com `gh issue edit` fora da janela do marcador não é contada", () => {
+    const conteudo = [
+      "linha usando `gh issue edit N --add-label a`",
+      "filler",
+      "filler",
+      "filler",
+      "<!-- route-issue-exempt: motivo -->",
+      "linha usando `gh issue edit N --add-label b`",
+    ].join("\n");
+    // só a linha 6 cai na janela (±3) do marcador na linha 5; a linha 1 não.
+    assert.deepEqual(findOverreachingExemptions(conteudo), []);
   });
 });
