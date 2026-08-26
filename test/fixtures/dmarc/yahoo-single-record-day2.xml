@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<feedback>
+  <report_metadata>
+    <org_name>Yahoo</org_name>
+    <email>dmarchelp@yahoo-inc.com</email>
+    <report_id>1756253000.1234567</report_id>
+    <date_range>
+      <begin>1756252800</begin>
+      <end>1756339199</end>
+    </date_range>
+  </report_metadata>
+  <policy_published>
+    <domain>news.diar.ia.br</domain>
+    <adkim>r</adkim>
+    <aspf>r</aspf>
+    <p>none</p>
+    <pct>100</pct>
+  </policy_published>
+  <record>
+    <row>
+      <source_ip>209.85.220.41</source_ip>
+      <count>17</count>
+      <policy_evaluated>
+        <disposition>none</disposition>
+        <dkim>pass</dkim>
+        <spf>pass</spf>
+      </policy_evaluated>
+    </row>
+    <identifiers>
+      <header_from>news.diar.ia.br</header_from>
+    </identifiers>
+    <auth_results>
+      <dkim>
+        <domain>news.diar.ia.br</domain>
+        <result>pass</result>
+      </dkim>
+      <spf>
+        <domain>news.diar.ia.br</domain>
+        <result>pass</result>
+      </spf>
+    </auth_results>
+  </record>
+</feedback>

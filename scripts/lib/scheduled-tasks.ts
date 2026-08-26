@@ -1331,6 +1331,24 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // é ação POSTERIOR do editor.
     issue: "#6130",
   },
+  {
+    name: "Diaria-Dmarc-Drain",
+    description: "drena e agrega os relatorios DMARC de news.diar.ia.br, alarma se aparecer volume nao-autenticado",
+    steps: [{ key: "drain", script: "scripts/dmarc-drain.ts" }],
+    logPath: "dmarc-reports/.drain.log",
+    // 10:10 BRT — logo depois de Diaria-Session-Registry-SafeBackup-Alarm
+    // (10:05, acima), fim do cluster matinal de checks/alarmes deste
+    // registro (09:00-10:20).
+    schedule: { kind: "daily", hour: 10, minute: 10 },
+    // Sem guard: fetchReports() é fail-soft por design (busca vazia = 0
+    // relatórios, nunca erro) — a única falha dura é a BUSCA em si (Gmail
+    // API indisponível/auth), que o próprio script já reporta com exit != 0.
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754/#6130 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6189",
+  },
 ];
 
 /**
