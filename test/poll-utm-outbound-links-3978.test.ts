@@ -83,14 +83,14 @@ describe("SUBSCRIBE_UTM_SOURCE — fonte única de verdade movida pra lib.ts (#3
   });
 
   it("subscribeToBeehiiv (subscribe.ts, cadastro inline #3580) usa o mesmo valor no payload — import direto de lib.ts desde o #3978 (antes: de ./jogar)", async () => {
-    const { subscribeToBeehiiv } = await import("../workers/poll/src/subscribe.ts");
+    const { subscribeViaConfiguredBackend } = await import("../workers/poll/src/subscribe.ts");
     let capturedBody: Record<string, unknown> | null = null;
     const fakeFetch = (async (_url: string, init?: RequestInit) => {
       capturedBody = JSON.parse((init?.body as string) ?? "{}");
       return new Response(null, { status: 201 });
     }) as unknown as typeof fetch;
     const env = { BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "p" } as any;
-    await subscribeToBeehiiv(env, { name: "", email: "a@b.com" }, fakeFetch);
+    await subscribeViaConfiguredBackend(env, { name: "", email: "a@b.com" }, fakeFetch);
     assert.equal((capturedBody as unknown as Record<string, unknown>)?.utm_source, LIB_SUBSCRIBE_UTM_SOURCE);
   });
 });

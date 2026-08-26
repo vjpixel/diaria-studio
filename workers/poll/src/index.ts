@@ -109,18 +109,20 @@ export interface Env {
    * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
   BEEHIIV_NAME_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
-   * cadastro inline — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`.
-   * Nenhum dispatch automático fora deste worker lê esta var, mas DENTRO do
-   * worker `poll` são 5 handlers, não 1 (achado do rollout incompleto do
-   * #6048 original — só `handleJogarSubscribe` ramificava): `handleJogarSubscribe`
-   * (subscribe.ts), `handleJogarGateSubscribe` (web-gate.ts),
-   * `handleJogarIdentify` (identify.ts), `handleSetName` (este arquivo,
-   * caixa clarice do `/set-name`) e `handleConfirmMerge` (magic-link.ts).
-   * Fonte de verdade sobre COMPLETUDE (não confiar só nesta lista em prosa,
-   * que já ficou defasada uma vez): `test/subscribe-backend-branching-guard-6048.test.ts`,
-   * guard estrutural que falha se algum call site novo de `subscribeToBeehiiv(`
-   * não ramificar por esta var. (Mesmo estado do #464 pro publisher da
-   * newsletter: existe o código, o switchover é manual.) */
+   * cadastro inline — `"beehiiv"` (default, ausente/desconhecido = beehiiv)
+   * ou `"kit"` (parse tolerante a espaço/capitalização, ver `resolveBackend`
+   * em subscribe.ts). O #6048 original tinha 5 handlers ramificando cada um
+   * seu próprio ternário `env.SUBSCRIBE_BACKEND === "kit" ? ... : ...` — 4
+   * deles esqueceram, e um guard de regex detectava a regressão sem
+   * IMPEDI-la (um 6º call site novo continuava alcançando as funções cruas).
+   * #6291: os 5 handlers (`handleJogarSubscribe` em subscribe.ts,
+   * `handleJogarGateSubscribe` em web-gate.ts, `handleJogarIdentify` em
+   * identify.ts, `handleSetName` neste arquivo, `handleConfirmMerge` em
+   * magic-link.ts) chamam todos `subscribeViaConfiguredBackend` (subscribe.ts)
+   * — a ÚNICA função exportada que toca o backend; `subscribeToBeehiiv`/
+   * `subscribeToKit` não são mais exportadas, então um 6º handler que
+   * tentasse pular a ramificação não compila. (Mesmo estado do #464 pro
+   * publisher da newsletter: existe o código, o switchover é manual.) */
   SUBSCRIBE_BACKEND?: string;
   /** #6048 — API key do Kit (`X-Kit-Api-Key`), só relevante quando
    * `SUBSCRIBE_BACKEND === "kit"` PRA CADASTRO. **#6048: também é consumida
@@ -468,7 +470,7 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
 // de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
-import { handleJogarSubscribe, subscribeToBeehiiv, subscribeToKit, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6048: subscribeToKit — ramificação por env.SUBSCRIBE_BACKEND
+import { handleJogarSubscribe, subscribeViaConfiguredBackend, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #5167 item 7: página de destino do double opt-in (opt_in_redirect_url,
 // ver docstring de confirmado.ts) — sem KV/brand, mesmo padrão de
@@ -1443,13 +1445,9 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       // `/set-name` (tela de resultado do voto), distinto de qualquer outro
       // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
       const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE };
-      // #6048: seleção de backend local a este handler — mesmo padrão de
-      // handleJogarSubscribe (subscribe.ts:585-591). env.SUBSCRIBE_BACKEND
-      // ausente/"beehiiv" mantém o caminho pré-existente.
-      const result =
-        env.SUBSCRIBE_BACKEND === "kit"
-          ? await subscribeToKit(env, { name: cleanName, email }, fetch, utm)
-          : await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, utm);
+      // #6291: seleção de backend via a ÚNICA função exportada — ver
+      // docstring de `subscribeViaConfiguredBackend` em subscribe.ts.
+      const result = await subscribeViaConfiguredBackend(env, { name: cleanName, email }, fetch, utm);
       if (result.ok) {
         score.optin = true;
         signupOutcome = "subscribed";

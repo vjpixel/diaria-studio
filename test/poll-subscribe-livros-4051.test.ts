@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import {
   handleJogarSubscribe,
   resolveSubscribeUtm,
-  subscribeToBeehiiv,
+  subscribeViaConfiguredBackend,
 } from "../workers/poll/src/subscribe.ts";
 import worker, { corsHeaders, type Env } from "../workers/poll/src/index.ts";
 
@@ -141,10 +141,10 @@ describe("resolveSubscribeUtm (#4051)", () => {
 
 // ── subscribeToBeehiiv honra o triplo UTM passado ───────────────────────────
 
-describe("subscribeToBeehiiv — UTM parametrizado (#4051)", () => {
+describe("subscribeViaConfiguredBackend — UTM parametrizado (#4051)", () => {
   it("manda o triplo UTM resolvido pro payload da Beehiiv, não mais hardcoded", async () => {
     const fetchMock = makeFetchMock(201);
-    await subscribeToBeehiiv(
+    await subscribeViaConfiguredBackend(
       beehiivEnv(),
       { name: "", email: "ana@example.com" },
       fetchMock,
