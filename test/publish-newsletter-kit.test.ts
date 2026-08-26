@@ -271,9 +271,7 @@ describe("main() — integração", () => {
       assert.equal(state?.broadcast_id, 555);
       assert.equal(state?.status, "draft");
       assert.equal(calls.length, 1);
-      assert.deepEqual((calls[0].body as { subscriber_filter: unknown[] }).subscriber_filter, [
-        { all: [{ type: "all_subscribers" }] },
-      ]);
+      assert.deepEqual((calls[0].body as { subscriber_filter: unknown[] }).subscriber_filter, []);
       assert.equal((calls[0].body as { send_at: string | null }).send_at, null, "draft real é sempre send_at:null");
       assert.equal(
         readFileSync(join(editionDir, "_internal", "05-edition-url.txt"), "utf8"),
