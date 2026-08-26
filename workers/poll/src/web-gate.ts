@@ -54,6 +54,7 @@ import type { Env } from "./index";
 import { corsHeaders, json } from "./index";
 import {
   verifySubscriberViaBeehiivByEmail,
+  verifySubscriberViaKitByEmail,
   verifySubscriberViaKv,
 } from "./subscriber-verify";
 import { checkKvRateLimit, clientIpFromRequest, type RateLimitResult } from "./rate-limit";
@@ -71,6 +72,15 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
 // `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).
 import { applyBrandWordmark } from "../../../scripts/lib/shared/brand-wordmark.ts";
+// #6048: união das fontes de verificação (KV/Beehiiv legado + Kit). Puro,
+// sem I/O — importado direto pelo mesmo motivo de `brand-wordmark` acima, em
+// vez de virar mais um espelho a manter em sincronia.
+import {
+  resolveSubscriberUnionDetailed,
+  type SourceResult,
+  type SubscriberVerifyState,
+  type UnionOutcome,
+} from "../../../scripts/lib/shared/subscriber-union.ts";
 
 /** Nome do cookie de sessão do caminho `/jogar` — namespace próprio, distinto
  * de `diaria_cursos_session` (#4052): domínios/workers diferentes, mas o
@@ -211,27 +221,79 @@ function jsonWithCookie(data: unknown, status: number, env: Env, setCookie: stri
 export type GateCheckResult = "active" | "not_active";
 
 /**
- * Verifica se `email` é assinante ATIVO da diar.ia.br. PRIMÁRIO: `env.SUBSCRIBERS_KV`
- * (mesma população/formato de chave de `CURSOS_SUBSCRIBERS`, #4052). SECUNDÁRIO
- * (só se o binding faltar/"unknown" E os secrets Beehiiv estiverem
- * configurados): `by_email` direto na API — não confirmado ao vivo (mesma nota
- * de `subscriber-verify.ts`). Nunca lança; ausência de qualquer verificação
- * disponível cai em `"not_active"` — o form de cadastro inline cobre esse caso.
+ * Verifica se `email` é assinante ATIVO da diar.ia.br.
+ *
+ * **#6048 — não é mais primário/secundário.** Consulta as TRÊS fontes
+ * configuradas (KV, Beehiiv, Kit) em paralelo e une os vereditos: qualquer
+ * uma dizendo "active" basta, e nenhuma é pulada — ver
+ * `checkWebSubscriberDetailed` abaixo pro porquê e pra semântica de falha.
+ *
+ * A fonte Kit é o que faz quem cadastrou pelos funis migrados (#6127/#6131)
+ * parar de votar como não-assinante.
+ *
+ * Nunca lança; ausência de qualquer verificação disponível cai em
+ * `"not_active"` — o form de cadastro inline cobre esse caso (#4052).
  */
 export async function checkWebSubscriber(env: Env, email: string): Promise<GateCheckResult> {
+  const { state } = await checkWebSubscriberDetailed(env, email);
+  return state === "active" ? "active" : "not_active";
+}
+
+/**
+ * #6048 — a mesma verificação, preservando de ONDE veio a resposta e quais
+ * fontes falharam.
+ *
+ * Existe separado de `checkWebSubscriber` porque o `GateCheckResult` binário
+ * ("active"/"not_active") apaga a distinção que a decisão do editor exige
+ * registrar: **fonte fora do ar não é "não-assinante"**. O gate em si segue
+ * binário (o fallback documentado do #4052 — mostrar o form de cadastro — é
+ * seguro e não muda), mas quem quiser logar/medir degradação usa esta.
+ *
+ * Consulta as TRÊS fontes sempre, sem curto-circuito no primeiro `active`:
+ * o custo é uma requisição a mais num caminho já assíncrono, e em troca o
+ * `failedSources` não mente por omissão — curto-circuitar esconderia uma
+ * fonte quebrada justamente nos casos em que tudo pareceu funcionar.
+ */
+export async function checkWebSubscriberDetailed(env: Env, email: string): Promise<UnionOutcome> {
+  const tarefas: { source: string; run: () => Promise<SubscriberVerifyState> }[] = [];
+
   if (env.SUBSCRIBERS_KV) {
-    const viaKv = await verifySubscriberViaKv(env.SUBSCRIBERS_KV, email);
-    if (viaKv === "active") return "active";
+    const kv = env.SUBSCRIBERS_KV;
+    tarefas.push({ source: "kv", run: () => verifySubscriberViaKv(kv, email) });
   }
 
   if (env.BEEHIIV_API_KEY && env.BEEHIIV_PUBLICATION_ID) {
-    const viaApi = await verifySubscriberViaBeehiivByEmail(env.BEEHIIV_API_KEY, env.BEEHIIV_PUBLICATION_ID, email, {
-      baseUrl: env.BEEHIIV_API_URL,
-    });
-    if (viaApi === "active") return "active";
+    const key = env.BEEHIIV_API_KEY;
+    const pub = env.BEEHIIV_PUBLICATION_ID;
+    const baseUrl = env.BEEHIIV_API_URL;
+    tarefas.push({ source: "beehiiv", run: () => verifySubscriberViaBeehiivByEmail(key, pub, email, { baseUrl }) });
   }
 
-  return "not_active";
+  // #6048 — sem esta fonte, quem cadastrou pelo Kit (funis já migrados em
+  // #6127/#6131) vota como não-assinante. Era o buraco que fechava a issue.
+  if (env.KIT_API_KEY) {
+    const key = env.KIT_API_KEY;
+    tarefas.push({ source: "kit", run: () => verifySubscriberViaKitByEmail(key, email) });
+  }
+
+  // Em PARALELO (achado P2 do review da PR #6208). "Nunca curto-circuitar" —
+  // que é o ponto da issue — NÃO implica correr em série: as 3 fontes são
+  // independentes, nenhuma decide se a próxima roda. Em série pagávamos a
+  // SOMA das latências em todo gate check, inclusive no caso mais comum
+  // (assinante já no KV, que antes nem tocava a rede).
+  //
+  // `allSettled` e não `all`: uma rejeição não pode derrubar as outras duas.
+  // `verifySubscriberViaKv` é a única que ainda pode lançar (não tem
+  // try/catch próprio, ao contrário das duas de rede) — aqui ela degrada pra
+  // `verification_failed`, coerente com o invariante desta issue: fonte
+  // quebrada nunca vira "não-assinante".
+  const settled = await Promise.allSettled(tarefas.map((t) => t.run()));
+  const results: SourceResult[] = settled.map((r, i) => ({
+    source: tarefas[i].source,
+    state: r.status === "fulfilled" ? r.value : "verification_failed",
+  }));
+
+  return resolveSubscriberUnionDetailed(results);
 }
 
 /** Mesmo regex de forbidden-chars/formato de `isValidVoteEmailFormat` (lib.ts)

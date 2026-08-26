@@ -59,6 +59,20 @@ export async function subscriberKvKey(email: string): Promise<string> {
  * `=== "active"` (o único caso positivo) não precisam de nenhuma mudança —
  * este valor é aditivo à união.
  */
+/**
+ * Teto por chamada de verificação (#6208, achado P2 do review).
+ *
+ * Antes do #6048 a ausência de timeout só mordia quem NÃO estava no KV.
+ * Agora as 3 fontes são consultadas sempre, então uma API travada atrasaria
+ * TODO gate check — inclusive o de quem já é `active` no KV e antes nem
+ * tocava a rede. O blast radius mudou de parcial pra universal, e é isso que
+ * torna o timeout necessário aqui e agora.
+ *
+ * Estouro vira `verification_failed` pelo `catch` que já existe — nunca
+ * "não é assinante".
+ */
+export const DEFAULT_VERIFY_TIMEOUT_MS = 5000;
+
 export type SubscriberVerifyState = "active" | "inactive" | "unknown" | "verification_failed";
 
 /**
@@ -82,6 +96,8 @@ export async function verifySubscriberViaKv(
 export interface BeehiivByEmailDeps {
   fetchImpl?: typeof fetch;
   baseUrl?: string;
+  /** #6208 — ver `DEFAULT_VERIFY_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 /**
@@ -113,7 +129,7 @@ export async function verifySubscriberViaBeehiivByEmail(
   try {
     const res = await fetchImpl(
       `${base}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`,
-      { headers: { Authorization: `Bearer ${apiKey}` } },
+      { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS) },
     );
     if (res.status === 404) return "unknown";
     if (!res.ok) return "verification_failed";
@@ -130,6 +146,8 @@ export async function verifySubscriberViaBeehiivByEmail(
 export interface KitByEmailDeps {
   fetchImpl?: typeof fetch;
   baseUrl?: string;
+  /** #6208 — ver `DEFAULT_VERIFY_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 /**
@@ -170,6 +188,7 @@ export async function verifySubscriberViaKitByEmail(
   try {
     const res = await fetchImpl(`${base}/subscribers?email_address=${encodeURIComponent(email)}`, {
       headers: { "X-Kit-Api-Key": apiKey },
+      signal: AbortSignal.timeout(deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS),
     });
     if (!res.ok) return "verification_failed";
     const body = (await res.json()) as { subscribers?: { state?: string }[] };
