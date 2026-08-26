@@ -78,7 +78,24 @@ const TARGET_RESOLVE_PLAN_PATH = "resolve-develop-plan-path.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
-const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+// #6168/#6296: `conflicts`, `grant-merge`, `check-merge-grant` e
+// `consume-merge-grant` entram pelo MESMO motivo que `is-claimed` entrou no
+// #5161 item 4 — todos recebem `--session-id` como a identidade de quem
+// pergunta. O modo de falha SEM a flag injetada não é uniforme entre os 4
+// (achado do fleet review #6303 — a versão anterior deste comentário dizia
+// "degradam em silêncio" pros 4, o que só é verdade pro primeiro):
+//   - `conflicts` usa `values["session-id"] ?? ""` direto, sem passar por
+//     `requireSessionId` — sem a flag, degrada EM SILÊNCIO: não consegue se
+//     auto-excluir dos peers, e a própria sessão aparece como conflito
+//     consigo mesma;
+//   - `grant-merge`, `check-merge-grant` e `consume-merge-grant` chamam
+//     `requireSessionId(values)`, que FALHA ALTO E CEDO (erro explícito
+//     "--session-id ausente…", nunca um resultado incorreto silencioso) —
+//     mesmo assim vale injetar aqui, porque o erro evitável (subcomando
+//     abortando por falta da flag) é o que a injeção existe pra prevenir,
+//     não porque o resultado errado seria silencioso.
+const INJECTABLE_SUBCOMMANDS =
+  /\b(register|heartbeat|end|claim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release)\b/;
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.

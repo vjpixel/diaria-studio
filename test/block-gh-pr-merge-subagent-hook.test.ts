@@ -5,8 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   isGhPrMergeCommand,
+  extractGhPrMergeTargetPr,
   shouldBlockGhPrMerge,
   readActiveCoordinatorSessionIds,
+  readActiveCoordinatorScan,
+  readMergeLockHolder,
+  readLiveMergeGrantFor,
+  LOCK_HOLDER_CORRUPTED,
   sessionsDir,
   machineTag,
   BLOCK_REASON,
@@ -279,10 +284,360 @@ describe("readActiveCoordinatorSessionIds (#5716)", () => {
   });
 });
 
-describe("BLOCK_REASON (#5716)", () => {
+describe("BLOCK_REASON (#5716, reescrito no #6303 Finding K)", () => {
   it("menciona a Regra 11 e como o subagente deve proceder (retornar ao coordenador)", () => {
     assert.match(BLOCK_REASON, /[Rr]egra 11/);
     assert.match(BLOCK_REASON, /coordenador/);
     assert.match(BLOCK_REASON, /self-review/);
+  });
+
+  it("distingue coordenadora expirada (register renova) de não-coordenadora (nunca register)", () => {
+    // #6303 Finding K: a versão anterior recomendava `register` incondicional,
+    // que é o antipadrão exato que o guard #6296 existe pra fechar (uma
+    // sessão interativa "virando" coordenadora fabricando o próprio registro).
+    assert.match(BLOCK_REASON, /RENOVAR o registro que já era seu/);
+    assert.match(BLOCK_REASON, /NUNCA rode `register`/);
+    assert.match(BLOCK_REASON, /grant-merge/);
+    assert.match(BLOCK_REASON, /check-merge-grant/);
+  });
+});
+
+// ─── extractGhPrMergeTargetPr (#6303 Finding S) ────────────────────────────
+
+describe("extractGhPrMergeTargetPr (#6303 Finding S)", () => {
+  it("extrai o número quando vem logo após 'merge'", () => {
+    assert.equal(extractGhPrMergeTargetPr("gh pr merge 6303 --squash"), 6303);
+  });
+
+  it("extrai o número quando vem DEPOIS das flags", () => {
+    assert.equal(extractGhPrMergeTargetPr("gh pr merge --squash --auto 6303"), 6303);
+  });
+
+  it("sem número (gh infere pela branch corrente) → undefined, indeterminado", () => {
+    assert.equal(extractGhPrMergeTargetPr("gh pr merge --squash"), undefined);
+  });
+
+  it("número dentro de uma string entre aspas nunca é confundido com o alvo", () => {
+    assert.equal(
+      extractGhPrMergeTargetPr('gh pr merge --body "encerrado depois de 100 dias" 6303'),
+      6303,
+    );
+  });
+
+  it("comando que não é gh pr merge → undefined", () => {
+    assert.equal(extractGhPrMergeTargetPr("gh pr view 6303"), undefined);
+    assert.equal(extractGhPrMergeTargetPr(undefined), undefined);
+    assert.equal(extractGhPrMergeTargetPr(null), undefined);
+  });
+
+  it("pega o número da invocação REAL, depois de um separador", () => {
+    assert.equal(extractGhPrMergeTargetPr("cd worktree && gh pr merge 42 --squash"), 42);
+  });
+});
+
+// ─── shouldBlockGhPrMerge com concessão ESCOPADA a um PR (#6303 Finding S) ─
+
+describe("shouldBlockGhPrMerge — concessão escopada ao PR (#6303 Finding S)", () => {
+  const coords = new Set(["coord-a"]);
+
+  it("grant pra #100 + merge de #100 → permite", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "interativa", { hasLiveGrant: true, grantPr: 100, targetPr: 100 }),
+      false,
+    );
+  });
+
+  it("grant pra #100 + merge de #200 → BLOQUEIA (permissão em branco fechada)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "interativa", { hasLiveGrant: true, grantPr: 100, targetPr: 200 }),
+      true,
+    );
+  });
+
+  it("grant SEM pr (genérico) → permite pra qualquer alvo (retrocompat)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "interativa", { hasLiveGrant: true, grantPr: undefined, targetPr: 200 }),
+      false,
+    );
+  });
+
+  it("grant pra #100 + alvo INDETERMINADO → BLOQUEIA (a dúvida fecha, não abre)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "interativa", { hasLiveGrant: true, grantPr: 100, targetPr: undefined }),
+      true,
+    );
+  });
+});
+
+// ─── readActiveCoordinatorScan — sinal de degradação (#6303 Finding B) ─────
+
+describe("readActiveCoordinatorScan (#6303 Finding B)", () => {
+  const roots = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `scan-degraded-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    return root;
+  }
+  const NOW = Date.parse("2026-08-26T12:00:00.000Z");
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  it("diretório ausente → ids vazio, degraded FALSE (estado conhecido, não incerteza)", () => {
+    const scan = readActiveCoordinatorScan(freshRoot(), NOW);
+    assert.deepEqual(scan.ids, new Set());
+    assert.equal(scan.degraded, false);
+  });
+
+  it("varredura limpa (uma sessão válida) → degraded FALSE", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(
+      join(sessionsDir(root), "overnight-helios-s1.json"),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "s1",
+        lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        machineTag: machineTag(),
+      }),
+      "utf8",
+    );
+    const scan = readActiveCoordinatorScan(root, NOW);
+    assert.deepEqual(scan.ids, new Set(["s1"]));
+    assert.equal(scan.degraded, false);
+  });
+
+  it("JSON malformado numa entrada → degraded TRUE, mas as demais entram normalmente", () => {
+    // #6303 Finding B: é exatamente o cenário que anula a leniência "solo" —
+    // uma 2ª coordenadora real cuja entrada falhou ao ler não pode fazer a
+    // sobrevivente se achar sozinha.
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
+    writeFileSync(
+      join(sessionsDir(root), "overnight-helios-s2.json"),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "s2",
+        lastHeartbeat: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        machineTag: machineTag(),
+      }),
+      "utf8",
+    );
+    const scan = readActiveCoordinatorScan(root, NOW);
+    assert.deepEqual(scan.ids, new Set(["s2"]));
+    assert.equal(scan.degraded, true);
+  });
+
+  it("readActiveCoordinatorSessionIds (wrapper) continua devolvendo só o Set, ignorando degraded", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "overnight-helios-broken.json"), "{not valid json", "utf8");
+    assert.deepEqual(readActiveCoordinatorSessionIds(root, NOW), new Set());
+  });
+});
+
+describe("shouldBlockGhPrMerge — varredura degradada anula a leniência solo (#6303 Finding B)", () => {
+  const coords = new Set(["coord-a"]);
+
+  it("varredura DEGRADADA + lock ausente + 1 coordenadora → BLOQUEIA (não confia na contagem)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "coord-a", { mergeLockHolder: null, scanDegraded: true }),
+      true,
+    );
+  });
+
+  it("varredura CONFIRMADA + mesma situação → permite (comportamento normal preservado)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "coord-a", { mergeLockHolder: null, scanDegraded: false }),
+      false,
+    );
+  });
+});
+
+// ─── readMergeLockHolder — os 4 estados (#6303 Finding C/G) ────────────────
+
+describe("readMergeLockHolder — os 4 estados (#6303 Finding C, coberto por teste no Finding G)", () => {
+  const roots = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `merge-lock-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    return root;
+  }
+  const NOW = Date.parse("2026-08-26T12:00:00.000Z");
+
+  it("ausente → null", () => {
+    assert.equal(readMergeLockHolder(freshRoot(), NOW), null);
+  });
+
+  it("válido e fresco → sessionId de quem segura", () => {
+    const root = freshRoot();
+    writeFileSync(
+      join(sessionsDir(root), ".merge-lock.json"),
+      JSON.stringify({ heldBy: "coord-a", acquiredAt: new Date(NOW - 1000).toISOString() }),
+      "utf8",
+    );
+    assert.equal(readMergeLockHolder(root, NOW), "coord-a");
+  });
+
+  it("expirado pelo TTL → null (abandonado, ninguém segura de fato)", () => {
+    const root = freshRoot();
+    writeFileSync(
+      join(sessionsDir(root), ".merge-lock.json"),
+      JSON.stringify({ heldBy: "coord-a", acquiredAt: new Date(NOW - 3 * 60 * 1000).toISOString() }),
+      "utf8",
+    );
+    assert.equal(readMergeLockHolder(root, NOW), null);
+  });
+
+  it("JSON malformado (existe, ilegível) → LOCK_HOLDER_CORRUPTED (POSSE, não 'livre')", () => {
+    const root = freshRoot();
+    writeFileSync(join(sessionsDir(root), ".merge-lock.json"), "{not valid json", "utf8");
+    assert.equal(readMergeLockHolder(root, NOW), LOCK_HOLDER_CORRUPTED);
+  });
+
+  it("shape inválido (sem heldBy) → LOCK_HOLDER_CORRUPTED, mesmo tratamento", () => {
+    const root = freshRoot();
+    writeFileSync(join(sessionsDir(root), ".merge-lock.json"), JSON.stringify({ foo: "bar" }), "utf8");
+    assert.equal(readMergeLockHolder(root, NOW), LOCK_HOLDER_CORRUPTED);
+  });
+
+  it("acquiredAt ilegível → LOCK_HOLDER_CORRUPTED, mesmo tratamento", () => {
+    const root = freshRoot();
+    writeFileSync(
+      join(sessionsDir(root), ".merge-lock.json"),
+      JSON.stringify({ heldBy: "coord-a", acquiredAt: "não-é-data" }),
+      "utf8",
+    );
+    assert.equal(readMergeLockHolder(root, NOW), LOCK_HOLDER_CORRUPTED);
+  });
+
+  it("LOCK_HOLDER_CORRUPTED faz o guard BLOQUEAR — é o ponto do fix", () => {
+    const coords = new Set(["coord-a"]);
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "coord-a", { mergeLockHolder: LOCK_HOLDER_CORRUPTED }),
+      true,
+    );
+  });
+});
+
+// ─── readLiveMergeGrantFor via arquivos reais (#6303 Finding G) ────────────
+
+describe("readLiveMergeGrantFor — arquivos reais (#6303 Finding G, clock skew do Finding A)", () => {
+  const roots = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `live-grant-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    return root;
+  }
+  function writeCoordinator(root, filename, record) {
+    writeFileSync(join(sessionsDir(root), filename), JSON.stringify(record), "utf8");
+  }
+  const NOW = Date.parse("2026-08-26T12:00:00.000Z");
+  const base = (overrides) => ({
+    kind: "overnight",
+    sessionId: "coord-a",
+    lastHeartbeat: new Date(NOW).toISOString(),
+    machineTag: machineTag(),
+    ...overrides,
+  });
+
+  it("grant válido → retorna o grant", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
+    }));
+    const found = readLiveMergeGrantFor(root, "interativa", NOW);
+    assert.ok(found);
+    assert.equal(found.grantedTo, "interativa");
+  });
+
+  it("grant expirado pelo TTL → null", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW - 11 * 60 * 1000).toISOString(),
+      },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("grant consumido → null (uso único)", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW).toISOString(),
+        consumedAt: new Date(NOW).toISOString(),
+      },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("auto-concessão (grantedTo === grantedBy) → null, mesmo gravada à mão", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: { grantedTo: "coord-a", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "coord-a", NOW), null);
+  });
+
+  it("grant de OUTRA sessão → null pra quem pergunta", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: { grantedTo: "outra-sessao", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("grantedAt poucos segundos NO FUTURO, dentro da tolerância de skew → AINDA VALE (#6303 Finding A, o bug real)", () => {
+    // Reproduz o cenário exato do Finding A: uma coordenadora com o relógio
+    // levemente adiantado concede a janela — o timestamp parece "no futuro"
+    // pra quem lê. Antes do fix (`ageMs < 0` puro) isto era descartado em
+    // silêncio, anulando a #6296 no cenário cross-máquina que ela existe pra
+    // cobrir.
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW + 5_000).toISOString(), // 5s no futuro — dentro dos 60s de tolerância
+      },
+    }));
+    const found = readLiveMergeGrantFor(root, "interativa", NOW);
+    assert.ok(found, "concessão poucos segundos no futuro deveria continuar valendo (clock skew normal)");
+  });
+
+  it("grantedAt MUITO no futuro, além da tolerância → null (não é mais jitter normal)", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      merge_grant: {
+        grantedTo: "interativa",
+        grantedBy: "coord-a",
+        grantedAt: new Date(NOW + 5 * 60 * 1000).toISOString(), // 5min no futuro
+      },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
+  });
+
+  it("coordenadora concedente STALE (heartbeat morto há mais de 90min) → concessão não vale (defesa em profundidade)", () => {
+    const root = freshRoot();
+    writeCoordinator(root, "overnight-x-coord-a.json", base({
+      lastHeartbeat: new Date(NOW - 91 * 60 * 1000).toISOString(),
+      merge_grant: { grantedTo: "interativa", grantedBy: "coord-a", grantedAt: new Date(NOW).toISOString() },
+    }));
+    assert.equal(readLiveMergeGrantFor(root, "interativa", NOW), null);
   });
 });

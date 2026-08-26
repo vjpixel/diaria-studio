@@ -653,9 +653,16 @@ describe("requireKind aceita o kind \"continuo\" (#5293)", () => {
     assert.equal(requireKind("continuo"), "continuo");
   });
 
-  it("rejeita valor inválido/ausente com mensagem citando os 3 kinds válidos", () => {
-    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight", "develop" ou "continuo"/);
-    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight", "develop" ou "continuo"/);
+  it("aceita também \"interactive\" desde o #6168 — o kind do beacon", () => {
+    // O beacon (`.claude/hooks/session-beacon.mjs`) registra sessões
+    // interativas automaticamente. Sem `requireKind` aceitá-lo, todo
+    // subcomando do CLI usado sobre esse registro sairia com exit 1.
+    assert.equal(requireKind("interactive"), "interactive");
+  });
+
+  it("rejeita valor inválido/ausente com mensagem citando os 4 kinds válidos", () => {
+    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight", "develop", "continuo" ou "interactive"/);
+    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight", "develop", "continuo" ou "interactive"/);
   });
 });
 

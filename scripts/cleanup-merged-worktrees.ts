@@ -91,7 +91,7 @@ import { statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
+import { isCoordinatorKind, listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
 
 export interface WorktreeEntry {
   /** Path absoluto do worktree (normalizado com `/`). */
@@ -291,12 +291,26 @@ function listWorktreesSafe(cwd: string): WorktreeEntry[] {
 /**
  * Decide se a varredura destrutiva deve ser pulada por segurança (#5156 item
  * 9) — pura, testável sem tocar `data/sessions/` real. Pula quando existe
- * ≥1 sessão ativa registrada E `confirmShared` não foi passado. Registro
- * vazio (opt-in ainda não adotado, ou nenhuma outra sessão rodando) nunca
- * pula — comportamento idêntico ao pré-#5156.
+ * ≥1 sessão COORDENADORA ativa registrada E `confirmShared` não foi passado.
+ * Registro vazio (nenhuma outra sessão rodando) nunca pula — comportamento
+ * idêntico ao pré-#5156.
+ *
+ * **#6168 — só sessão COORDENADORA conta.** Antes desta issue a checagem era
+ * "qualquer sessão ativa", o que estava certo enquanto só as 3 skills se
+ * registravam. Com o beacon (`.claude/hooks/session-beacon.mjs`) registrando
+ * TODA sessão interativa automaticamente, "qualquer sessão ativa" passaria a
+ * ser verdade praticamente sempre — o guard viraria um `return true`
+ * permanente e a limpeza de worktree nunca mais rodaria, em silêncio. É o
+ * item 1 do blast radius que a Parte B da issue nomeia explicitamente.
+ *
+ * O que o guard protege é worktree em uso por um IMPLEMENTADOR despachado —
+ * e só coordenadora despacha implementador. Uma sessão interativa não abre
+ * worktree em `.claude/worktrees/` por conta própria; quando ela abre um à
+ * mão, quem o remove é ela mesma.
  */
 export function shouldSkipForSharedSession(activeSessions: SessionRecord[], confirmShared: boolean): boolean {
-  return activeSessions.length > 0 && !confirmShared;
+  const coordinators = activeSessions.filter((s) => isCoordinatorKind(s.kind));
+  return coordinators.length > 0 && !confirmShared;
 }
 
 function listActiveSessionsSafe(repoRoot: string): SessionRecord[] {

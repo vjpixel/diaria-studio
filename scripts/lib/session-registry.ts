@@ -2,10 +2,15 @@
 /**
  * scripts/lib/session-registry.ts (#5156)
  *
- * Registro compartilhado e leve de sessões `/diaria-overnight`/`/diaria-develop`
- * ATIVAS — mecanismo pedido pela "Direção sugerida" do #5156, que audita 11
- * colisões concretas entre as duas skills rodando em paralelo (mesma máquina ou
- * máquinas diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
+ * Registro compartilhado e leve de sessões ATIVAS — `/diaria-overnight`,
+ * `/diaria-develop`, `/diaria-continuo`, e (desde #6168) sessões INTERATIVAS
+ * comuns via o beacon automático (`.claude/hooks/session-beacon.mjs`).
+ * (#6303 Finding Q: o texto anterior aqui listava só overnight/develop —
+ * já estava impreciso antes do #6168 adicionar `continuo`, e o #6168 piorou
+ * ao acrescentar o 4º kind sem atualizar este parágrafo.) Nasceu pela
+ * "Direção sugerida" do #5156, que audita 11 colisões concretas entre as
+ * skills coordenadoras rodando em paralelo (mesma máquina ou máquinas
+ * diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
  *
  * Um arquivo por sessão viva: `data/sessions/{kind}-{machineTag}-{sessionId}.json`.
  * `sessionId` é o `session_id` que o harness do Claude Code injeta no payload de
@@ -76,6 +81,22 @@
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *   npx tsx scripts/lib/session-registry.ts conflicts [--paths a.ts,b.ts] [--branch X]
+ *     (#6168 Parte C — CONSULTA "quem mais está mexendo nisto?", nunca
+ *     adquire nada nem cria arquivo; `exit 1` = sobreposição real com peer
+ *     VIVO, `exit 0` = livre.)
+ *   npx tsx scripts/lib/session-registry.ts grant-merge --kind ... --granted-to SESSION_ID [--pr N]
+ *     (#6296 — só coordenadora concede, nunca a si mesma; TTL curto, uso
+ *     único. Ver `grantMergeWindow`.)
+ *   npx tsx scripts/lib/session-registry.ts check-merge-grant
+ *     (#6296 — confirma se existe concessão viva pra esta sessão; `exit 1`
+ *     quando não há. Ver `findLiveMergeGrant`.)
+ *   npx tsx scripts/lib/session-registry.ts consume-merge-grant
+ *     (#6296 — marca a concessão viva desta sessão como consumida, uso
+ *     único; desde #6303 também disparado automaticamente por
+ *     `.claude/hooks/consume-merge-grant-on-merge.mjs` após um `gh pr merge`
+ *     bem-sucedido, sem depender de a sessão beneficiada lembrar de chamar
+ *     isto à mão. Ver `consumeMergeGrant`.)
  *   npx tsx scripts/lib/session-registry.ts gc [--max-age-days N] [--dry-run]
  * (`--session-id X` funciona também se passado explicitamente — o hook só
  * injeta quando a flag está AUSENTE, nunca sobrescreve um valor já presente.)
@@ -112,7 +133,55 @@ import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
-export type SessionKind = "overnight" | "develop" | "continuo";
+/**
+ * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
+ * AUTOMATICAMENTE pelo hook `.claude/hooks/session-beacon.mjs` (nenhuma skill
+ * chama `register` pra ela). Fecha o buraco 3 da issue: até aqui só as 3
+ * skills coordenadoras se registravam, e a maioria das sessões reais —
+ * interativas — era invisível ao registro (incidente #5751: o `helios` tinha
+ * #5738 em `claimed_issues` enquanto uma sessão interativa a implementava e
+ * mergeava em paralelo).
+ *
+ * **Não é coordenadora, e isso é deliberado.** `COORDINATOR_SESSION_KINDS`
+ * (abaixo) NÃO a inclui: uma sessão interativa não despacha subagente
+ * implementador nem decide quando entra merge, então promovê-la a
+ * coordenadora por relabel furaria o guard do #5716. O caminho legítimo dela
+ * pro merge é a concessão de janela (`merge_grant`, #6296), nunca o kind.
+ */
+export type SessionKind = "overnight" | "develop" | "continuo" | "interactive";
+
+/**
+ * Os 3 kinds que rodam uma RODADA coordenada (`/diaria-overnight`,
+ * `/diaria-develop`, `/diaria-continuo`) — despacham subagentes
+ * implementadores e decidem quando um merge entra. `interactive` fica de
+ * fora de propósito (ver `SessionKind`).
+ *
+ * Espelha `COORDINATOR_KINDS` de `.claude/hooks/block-gh-pr-merge-subagent.mjs`,
+ * que é self-contained (`.mjs`, sem import de `.ts`) e por isso mantém a
+ * própria cópia — `test/session-beacon-blast-radius.test.ts` trava que os
+ * dois conjuntos não divergem.
+ */
+export const COORDINATOR_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo"];
+
+/** `true` quando `kind` é uma das 3 coordenadoras (#6168). */
+export function isCoordinatorKind(kind: string): boolean {
+  return (COORDINATOR_SESSION_KINDS as readonly string[]).includes(kind);
+}
+
+/** Um worktree aberto por uma sessão (#6168 Parte A) — substitui e subsume o
+ * `active_worktrees?: number`, que era só uma contagem e nunca foi populado
+ * por skill nenhuma (#5156 item 6). */
+export interface WorktreeRef {
+  path: string;
+  branch?: string;
+  issue?: number;
+}
+
+/** Último verbo observado numa sessão + quando (#6168 Parte A). */
+export interface SessionLastAction {
+  verb: string;
+  at: string;
+}
 
 export interface SessionRecord {
   kind: SessionKind;
@@ -124,6 +193,35 @@ export interface SessionRecord {
   pid?: number;
   active_worktrees?: number;
   claimed_issues?: number[];
+  /** Branch atual do checkout desta sessão (#6168 Parte A). Lido de
+   * `.git/HEAD` pelo beacon — sem subprocesso. É o campo que responde "a
+   * branch ainda é minha?" antes de um `git commit` (evidência 5 da issue:
+   * outra sessão fez `checkout master` no meio, o commit caiu em master, e
+   * `commit`/`push` reportaram sucesso). */
+  branch?: string;
+  /** Worktrees abertos por esta sessão (#6168 Parte A). */
+  worktrees?: WorktreeRef[];
+  /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
+   * pra prefixo de diretório quando estoura. */
+  touched_paths?: string[];
+  /** Subconjunto de `touched_paths` ainda NÃO commitado — acumula em
+   * Edit/Write e zera num `git commit`. É o campo com valor operacional real
+   * (evidência 2 da issue: um tick terminou deixando 4 arquivos sem commit em
+   * `master` num checkout compartilhado e reportou "concluído"; um beacon que
+   * só dissesse `last_action: "commit"` não distinguiria isso de trabalho
+   * fechado). */
+  dirty_paths?: string[];
+  /** Último verbo observado + timestamp (#6168 Parte A). */
+  last_action?: SessionLastAction;
+  /** Concessão de janela de merge EMITIDA por esta sessão coordenadora
+   * (#6296). Campo no próprio record, deliberadamente NÃO um arquivo novo em
+   * `data/sessions/` — o #6168 tem critério de aceite explícito de que nada
+   * além de `.merge-lock.json` aparece ali, e a #6296 já admitia "arquivo
+   * dedicado OU campo no próprio record". Ver `grantMergeWindow`. */
+  merge_grant?: MergeGrant;
+  /** Anúncio de merge desta sessão (#6168 Parte F) — publicado no registro pra
+   * alcançar peer que o `ListAgents` não lista naquele instante. */
+  merge_announcement?: MergeAnnouncement;
   /**
    * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
    * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
@@ -134,6 +232,26 @@ export interface SessionRecord {
   stale?: boolean;
   [key: string]: unknown;
 }
+
+/**
+ * Um `SessionRecord` que JÁ PASSOU por `listActiveSessions` — `stale` está
+ * computado, não é mais opcional.
+ *
+ * Existe porque a distinção importa e não estava expressa em lugar nenhum:
+ * `stale` é OPCIONAL em `SessionRecord` (nunca é persistido em disco), e todo
+ * consumidor que decide por `if (peer.stale) continue` trata `undefined`
+ * exatamente como `false`. Passar records CRUS — saídos de `readJsonSafe`/
+ * `readMergedSessionGroups` — para `findSessionConflicts`/
+ * `isIssueClaimedByOther` faria **todos** contarem como vivos em silêncio,
+ * ressuscitando claims de sessões mortas justamente nas funções que existem
+ * pra respeitar staleness (#5474).
+ *
+ * Hoje todos os call sites de produção fazem a coisa certa. Exigir este tipo
+ * na assinatura transforma isso de disciplina em garantia: o compilador
+ * recusa a lista crua, e quem quiser consultá-la precisa ir por
+ * `listActiveSessions` primeiro.
+ */
+export type ActiveSessionRecord = SessionRecord & { stale: boolean };
 
 interface MergeLockRecord {
   heldBy: string;
@@ -178,8 +296,94 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  */
 export const SOFT_STALE_MS = 90 * 60 * 1000;
 
+/**
+ * Janela de liveness do kind `interactive` (#6168) — MUITO menor que os 90
+ * min de `SOFT_STALE_MS`, e a razão é a objeção que quase derrubou a Parte B
+ * da issue: uma sessão interativa **não emite heartbeat depois que a conversa
+ * termina**. O beacon é hook `PreToolUse`, então o heartbeat é automático
+ * *enquanto a sessão está viva* — sem nenhuma skill precisar lembrar de nada —
+ * mas quando o editor fecha a conversa as chamadas simplesmente param, e o
+ * registro sobrevive.
+ *
+ * Com a janela de 90 min compartilhada, registrar interativas trocaria risco
+ * de COLISÃO por risco de CLAIM ÓRFÃ — que é pior, porque não se resolve
+ * sozinha: overnight/develop pulariam issues por até 1h30 por causa de uma
+ * sessão que já morreu (é literalmente a evidência 1 da issue, com uma sessão
+ * develop segurando #6128/#6181 depois de terminada).
+ *
+ * 15 minutos: folgado o bastante pra cobrir o editor lendo/pensando entre duas
+ * chamadas de ferramenta, curto o bastante pra uma conversa encerrada liberar
+ * as claims dela dentro de um ciclo de rodada, não de uma hora e meia.
+ */
+export const INTERACTIVE_SOFT_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Janela de liveness aplicável a `kind` (#6168) — `interactive` tem a sua
+ * própria (ver `INTERACTIVE_SOFT_STALE_MS`); os 3 kinds coordenadores mantêm
+ * `SOFT_STALE_MS` sem nenhuma mudança de comportamento.
+ */
+export function softStaleMsForKind(kind: string): number {
+  return kind === "interactive" ? INTERACTIVE_SOFT_STALE_MS : SOFT_STALE_MS;
+}
+
 /** TTL do merge lock (item 4) — merge + pull não deveria levar mais que isso. */
 export const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * TTL da concessão de janela de merge (#6296). Maior que `MERGE_LOCK_TTL_MS`
+ * de propósito: o lock cobre só `gh pr merge` → `git pull` (segundos), mas a
+ * concessão nasce de uma CONVERSA entre sessões — o peer confere colisão por
+ * arquivo nos PRs abertos dele antes de conceder, e quem recebeu ainda vai
+ * rodar o gate de 2 condições antes de mergear. 10 minutos cobre esse
+ * intervalo sem virar permissão semi-permanente.
+ */
+export const MERGE_GRANT_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Teto de `touched_paths`/`dirty_paths` por sessão (#6168 Parte A). Acima
+ * disso, `collapseTouchedPaths` troca os caminhos por prefixos de diretório —
+ * o beacon roda em TODA chamada de ferramenta, e um registro que cresce sem
+ * limite num diretório sincronizado por OneDrive é exatamente o tipo de
+ * arquivo que gera cópia de conflito `-safeBackup-NNNN` (#5427/#6130).
+ */
+export const TOUCHED_PATHS_CAP = 200;
+
+/**
+ * Concessão de janela de merge (#6296) — emitida por uma sessão COORDENADORA
+ * registrada para uma outra sessão (tipicamente interativa) que negociou a
+ * janela por conversa (Parte F do #6168).
+ *
+ * Uso único e TTL curto: morre no primeiro merge (`consumedAt`) ou em
+ * `MERGE_GRANT_TTL_MS`, o que vier antes. Nunca é permissão permanente, e
+ * **ninguém concede a si mesmo** (ver `grantMergeWindow`) — é isso que
+ * preserva a propriedade que o #5716 protege (o coordenador decide quando
+ * entra merge) em vez de contorná-la.
+ */
+export interface MergeGrant {
+  /** `sessionId` de quem recebeu a janela. */
+  grantedTo: string;
+  /** `sessionId` da coordenadora que concedeu. */
+  grantedBy: string;
+  /** PR que a janela autoriza — informativo/auditoria. */
+  pr?: number;
+  grantedAt: string;
+  /** Preenchido quando a janela é consumida; concessão consumida não vale mais. */
+  consumedAt?: string;
+}
+
+/**
+ * Anúncio de merge (#6168 Parte F) — "vou mergear o PR X, que fecha as issues
+ * Y e toca os arquivos Z". Publicado tanto pelo canal ativo (`SendMessage` ao
+ * peer vivo) quanto no registro, porque o canal só alcança peer que o
+ * `ListAgents` lista naquele instante.
+ */
+export interface MergeAnnouncement {
+  sessionId: string;
+  pr?: number;
+  issues?: number[];
+  paths?: string[];
+  announcedAt: string;
+}
 
 /**
  * Tolerância de clock skew entre máquinas (#5161 fleet review item 2).
@@ -305,8 +509,19 @@ function writeJsonSafe(path: string, value: unknown): void {
 
 /**
  * Registra uma sessão ativa. Idempotente — chamar de novo com o mesmo
- * kind/tag/sessionId sobrescreve o registro (mesmo padrão de `startSession` em
+ * kind/tag/sessionId atualiza o registro (mesmo padrão de `startSession` em
  * `overnight-session-marker.ts`).
+ *
+ * **#6294 — re-registrar NÃO apaga mais `claimed_issues`.** Até aqui esta
+ * função montava o record do zero com `claimed_issues: []`, então não existia
+ * caminho suportado pra corrigir um campo (`pid`, tipicamente) sem destruir as
+ * claims em voo: uma sessão com 12 issues reivindicadas que rodasse `register`
+ * de novo — que é literalmente o que `BLOCK_REASON` do #5716 sugere a quem se
+ * vê bloqueado por engano — perdia as 12 em silêncio, liberando-as pra outras
+ * sessões no meio do trabalho. Agora o re-registro PRESERVA `claimed_issues`,
+ * `startedAt` e os campos de beacon do registro anterior, e só sobrescreve o
+ * que foi passado explicitamente. Registro novo (nenhum arquivo anterior)
+ * continua nascendo com `claimed_issues: []`, comportamento inalterado.
  */
 export function registerSession(
   repoRoot: string,
@@ -316,16 +531,22 @@ export function registerSession(
 ): SessionRecord {
   const tag = meta.tag ?? machineTag();
   const now = meta.startedAt ?? new Date().toISOString();
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const previous = readJsonSafe<SessionRecord>(path);
   const record: SessionRecord = {
+    ...(previous ?? {}),
     kind,
     machineTag: tag,
     sessionId,
-    startedAt: now,
+    // `startedAt` do registro ORIGINAL é preservado — re-registrar não
+    // rejuvenesce a sessão (senão um `register` de correção zeraria a idade
+    // que `planSessionGc`/`listActiveSessions` usam pra decidir staleness).
+    startedAt: previous?.startedAt ?? now,
     lastHeartbeat: now,
-    claimed_issues: [],
+    claimed_issues: previous?.claimed_issues ?? [],
   };
   if (meta.pid !== undefined) record.pid = meta.pid;
-  writeJsonSafe(sessionFilePath(repoRoot, kind, tag, sessionId), record);
+  writeJsonSafe(path, record);
   return record;
 }
 
@@ -523,8 +744,8 @@ export function listActiveSessions(
   repoRoot: string,
   now: number = Date.now(),
   maxAgeMs: number = MAX_SESSION_AGE_MS,
-): SessionRecord[] {
-  const out: SessionRecord[] = [];
+): ActiveSessionRecord[] {
+  const out: ActiveSessionRecord[] = [];
   for (const record of readMergedSessionGroups(repoRoot)) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
@@ -543,7 +764,10 @@ export function listActiveSessions(
     // #5474: `stale` é só um sinal computado — nunca remove a sessão da lista
     // (isso quebraria consumidores como `overnight-watchdog.ts`/
     // `cleanup-merged-worktrees.ts`, que dependem da lista completa).
-    out.push({ ...record, stale: ageMs > SOFT_STALE_MS });
+    // #6168: a janela é POR KIND — `interactive` usa a sua, bem menor, porque
+    // não emite heartbeat depois que a conversa acaba (ver
+    // `INTERACTIVE_SOFT_STALE_MS`). Os 3 kinds coordenadores não mudam.
+    out.push({ ...record, stale: ageMs > softStaleMsForKind(record.kind) });
   }
   return out;
 }
@@ -565,7 +789,7 @@ export interface ClaimIssueResult {
   ok: boolean;
   reason: ClaimIssueReason;
   /** Registro da sessão que já segura a issue — presente só em `blocked-by-other`. */
-  blockedBy?: SessionRecord;
+  blockedBy?: ActiveSessionRecord;
 }
 
 export interface ClaimIssueOptions {
@@ -630,7 +854,7 @@ export function claimIssueCheckAndSet(
 
   const alreadyOwn = (current.claimed_issues ?? []).includes(issueNumber);
   let reason: ClaimIssueReason = "claimed";
-  let overriddenOwner: SessionRecord | undefined;
+  let overriddenOwner: ActiveSessionRecord | undefined;
   if (alreadyOwn) {
     reason = "already-own";
   } else {
@@ -684,7 +908,7 @@ export function isIssueClaimedByOther(
   issueNumber: number,
   excludeSessionId: string,
   now: number = Date.now(),
-): SessionRecord | null {
+): ActiveSessionRecord | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
     // #5474: claim de sessão STALE (heartbeat morto ha mais de SOFT_STALE_MS,
@@ -931,6 +1155,24 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
 export const GC_CONSERVATIVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * Janela conservadora do kind `interactive` (#6168) — 2 horas, contra os 7
+ * DIAS dos kinds coordenadores. Sem isto, a Parte B da issue pioraria o
+ * problema que ela existe pra resolver: o beacon registra toda sessão
+ * interativa automaticamente, e sessão interativa termina sem chamar `end`
+ * (não há skill nenhuma pra chamar) — com a janela de 7 dias, `data/sessions/`
+ * encheria de registros mortos, cada um segurando as claims dele contra
+ * overnight/develop até a staleness resolver.
+ *
+ * 2h é folgado frente à janela de liveness de 15 min
+ * (`INTERACTIVE_SOFT_STALE_MS`) — dá 8× de margem pra uma sessão que só parou
+ * de chamar ferramenta por um tempo longo — e curto frente ao dano de um
+ * registro órfão. O branch de PID vivo continua vencendo os dois: uma sessão
+ * interativa com processo confirmadamente vivo na máquina local nunca é
+ * removida, por mais stale que o heartbeat esteja.
+ */
+export const GC_INTERACTIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * Checa se `pid` corresponde a um processo vivo — padrão "kill -0"
  * (`process.kill(pid, 0)` nunca envia sinal de verdade, só testa
  * existência; funciona em POSIX e Windows). `ESRCH` (processo não existe)
@@ -1027,12 +1269,28 @@ function decideSessionGc(
     return { action: "kept", reason: "timestamp ilegível em todos os arquivos do grupo — GC nunca remove sem sinal de idade confiável" };
   }
 
+  // #6168: janela de liveness E janela conservadora são POR KIND —
+  // `interactive` usa as suas, bem menores, porque nasce do beacon
+  // automático e nunca chama `end` (ver INTERACTIVE_SOFT_STALE_MS /
+  // GC_INTERACTIVE_MAX_AGE_MS). Kind ausente/desconhecido cai nos valores
+  // dos coordenadores, que são os conservadores — nunca remove mais cedo
+  // sobre um registro que não se conseguiu classificar.
+  const groupKind = records[0]?.kind ?? "";
+  const softStaleMs = softStaleMsForKind(groupKind);
+  const effectiveMaxAgeMs =
+    groupKind === "interactive" ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS) : conservativeMaxAgeMs;
+
   const ageMs = now - maxHeartbeatMs;
   if (ageMs < 0) {
     return { action: "kept", reason: "heartbeat no futuro (possível clock skew) — nunca tratado como abandonado" };
   }
-  if (ageMs <= SOFT_STALE_MS) {
-    return { action: "kept", reason: `heartbeat recente (${Math.round(ageMs / 60000)}min, dentro da janela de liveness de 90min) — sessão claramente ativa` };
+  if (ageMs <= softStaleMs) {
+    return {
+      action: "kept",
+      reason:
+        `heartbeat recente (${Math.round(ageMs / 60000)}min, dentro da janela de liveness de ` +
+        `${Math.round(softStaleMs / 60000)}min pro kind "${groupKind || "desconhecido"}") — sessão claramente ativa`,
+    };
   }
 
   for (const r of records) {
@@ -1052,12 +1310,13 @@ function decideSessionGc(
     }
   }
 
-  if (ageMs > conservativeMaxAgeMs) {
+  if (ageMs > effectiveMaxAgeMs) {
     return {
       action: "removed",
       reason:
-        `heartbeat stale há ${Math.round(ageMs / 86_400_000)} dia(s), sem sinal de processo verificável ` +
-        `(máquina diferente ou sem pid registrado) — além da janela conservadora de ${Math.round(conservativeMaxAgeMs / 86_400_000)} dia(s)`,
+        `heartbeat stale há ${Math.round(ageMs / 60_000)}min, sem sinal de processo verificável ` +
+        `(máquina diferente ou sem pid registrado) — além da janela conservadora de ` +
+        `${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind "${groupKind || "desconhecido"}"`,
     };
   }
   return {
@@ -1192,6 +1451,444 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
   return plan;
 }
 
+// ─── Beacon: caminhos tocados (#6168 Parte A) ──────────────────────────────
+
+/**
+ * Normaliza um caminho pra comparação entre sessões: separadores POSIX, sem
+ * `./` inicial, sem barra final. `data/` é compartilhado entre Windows
+ * (`Neo`) e Linux (`helios`), então um caminho gravado com `\` por uma máquina
+ * precisa casar com o mesmo caminho gravado com `/` pela outra — sem isto, a
+ * detecção de sobreposição seria cega justamente no cenário cross-máquina que
+ * a issue chama de caso normal.
+ */
+export function normalizeBeaconPath(path: string): string {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+}
+
+/**
+ * Aplica o teto de `TOUCHED_PATHS_CAP` colapsando caminhos pra prefixo de
+ * DIRETÓRIO em vez de truncar. Truncar perderia a informação de que a sessão
+ * mexeu naquela área; o prefixo preserva o sinal de sobreposição (que é o que
+ * `findSessionConflicts` consome) num espaço menor.
+ *
+ * Colapsa um nível por passada, do mais fundo pro mais raso, até caber ou até
+ * não haver mais o que colapsar. Pura, determinística (saída sempre ordenada).
+ */
+export function collapseTouchedPaths(paths: readonly string[], cap: number = TOUCHED_PATHS_CAP): string[] {
+  let current = [...new Set(paths.map(normalizeBeaconPath))].filter((p) => p !== "");
+  if (current.length <= cap) return current.sort();
+
+  // Colapsa progressivamente: a cada passada, todo caminho com mais de `depth`
+  // segmentos vira o prefixo de `depth` segmentos.
+  const maxDepth = Math.max(...current.map((p) => p.split("/").length));
+  for (let depth = maxDepth - 1; depth >= 1; depth--) {
+    current = [
+      ...new Set(
+        current.map((p) => {
+          const parts = p.split("/");
+          return parts.length > depth ? parts.slice(0, depth).join("/") : p;
+        }),
+      ),
+    ];
+    if (current.length <= cap) break;
+  }
+  // Ainda acima do teto mesmo colapsado ao 1º segmento (repo com muitos
+  // diretórios de topo): corta, mas de forma determinística e ordenada.
+  return current.sort().slice(0, cap);
+}
+
+/**
+ * `true` quando dois caminhos se sobrepõem — iguais, ou um é prefixo de
+ * DIRETÓRIO do outro. O teste de prefixo exige a barra (`a/b` cobre `a/b/c`,
+ * mas `a/b` NÃO cobre `a/bc`) — sem isso, o colapso de `collapseTouchedPaths`
+ * geraria falso positivo entre diretórios de nome parecido.
+ */
+export function beaconPathsOverlap(a: string, b: string): boolean {
+  const x = normalizeBeaconPath(a);
+  const y = normalizeBeaconPath(b);
+  if (x === "" || y === "") return false;
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+// ─── `conflicts`: consulta, nunca aquisição (#6168 Parte C) ────────────────
+
+/**
+ * Union DISCRIMINADA por `kind` — a correlação entre o tipo do conflito e os
+ * campos que ele carrega é garantia de compilador, não convenção:
+ *
+ *   - `branch-drift` NUNCA tem `peer` (é sobre o próprio registro);
+ *   - `branch-shared` e `path-overlap` SEMPRE têm;
+ *   - só `path-overlap` carrega `paths`.
+ *
+ * Declarar isso como um shape único com campos opcionais deixaria
+ * `{ kind: "path-overlap", peer: undefined }` representável — semanticamente
+ * absurdo, e o consumidor precisaria re-checar `kind` antes de tocar `peer`.
+ * A Parte D da #6168 prevê consumidores que vão querer `conflict.peer.sessionId`
+ * pra abrir conversa com quem colidiu; a union dá exhaustiveness a eles de graça.
+ */
+export type SessionConflict =
+  | { kind: "branch-drift"; detail: string }
+  | { kind: "branch-shared"; peer: ActiveSessionRecord; detail: string }
+  | { kind: "path-overlap"; peer: ActiveSessionRecord; detail: string; paths: string[] };
+
+export interface FindSessionConflictsOptions {
+  /** `sessionId` de quem pergunta — sempre excluído dos peers. */
+  sessionId: string;
+  /** Caminhos que esta sessão está prestes a tocar. */
+  paths?: readonly string[];
+  /** Branch atual do checkout de quem pergunta (`git branch --show-current`). */
+  branch?: string;
+  /** Registro da PRÓPRIA sessão, quando disponível — habilita `branch-drift`. */
+  ownRecord?: SessionRecord | null;
+  /** Tag da máquina de quem pergunta — `branch-shared` só compara peers da MESMA máquina. */
+  machineTag?: string;
+}
+
+/**
+ * Consulta PURA: "quem mais está mexendo nisto agora?" (#6168 Parte C).
+ *
+ * **Não adquire nada e não cria arquivo nenhum** — é o critério de aceite
+ * explícito da issue ("nenhum arquivo de lock NOVO"). Responde e devolve o
+ * peer; o que fazer com a resposta é decisão de quem chamou (Parte D:
+ * conversar; Parte F: ordenar o merge).
+ *
+ * Três conflitos, e o primeiro é o que a evidência 5 da issue pedia:
+ *
+ * - **`branch-drift`** — a branch registrada por ESTA sessão no beacon não é
+ *   mais a branch do checkout. Significa que outra sessão trocou o checkout
+ *   embaixo (`sync-code.ts` faz `git checkout master` quando `branch !=
+ *   master`, e é o Passo 0 de toda edição/rodada). Não envolve peer: é a
+ *   checagem barata de "a branch ainda é minha?" antes de um `git commit`,
+ *   que teria pego no ato o incidente em que `commit`/`push` reportaram
+ *   sucesso e o commit foi parar em `master`.
+ * - **`branch-shared`** — um peer vivo da MESMA máquina declara a mesma
+ *   branch. Só faz sentido intra-máquina: máquinas diferentes têm checkouts
+ *   diferentes, e homônimos de branch ali não colidem.
+ * - **`path-overlap`** — caminhos desta sessão sobrepõem `touched_paths`/
+ *   `dirty_paths` de um peer vivo. `dirty_paths` (não-commitado) é reportado
+ *   à parte porque é o sinal mais forte: trabalho em voo, sem branch ainda.
+ *
+ * **Sessão `stale` nunca conflita** — mesma semântica que
+ * `isIssueClaimedByOther` já aplica (#5474), agora com a janela por kind
+ * (#6168), então uma sessão interativa morta há 15 min já não bloqueia.
+ */
+export function findSessionConflicts(
+  sessions: readonly ActiveSessionRecord[],
+  opts: FindSessionConflictsOptions,
+): SessionConflict[] {
+  const conflicts: SessionConflict[] = [];
+  const myPaths = (opts.paths ?? []).map(normalizeBeaconPath).filter((p) => p !== "");
+
+  // 1. branch-drift — sobre o PRÓPRIO registro, não sobre peer.
+  const knownBranch = opts.ownRecord?.branch;
+  if (opts.branch && knownBranch && knownBranch !== opts.branch) {
+    conflicts.push({
+      kind: "branch-drift",
+      detail:
+        `a branch registrada por esta sessão era "${knownBranch}" e o checkout está agora em "${opts.branch}" — ` +
+        "outra sessão provavelmente trocou o checkout no meio (sync-code.ts faz `git checkout master` quando a " +
+        "branch não é master). Commitar agora pode cair na branch errada, com `commit`/`push` reportando sucesso.",
+    });
+  }
+
+  for (const peer of sessions) {
+    if (peer.sessionId === opts.sessionId) continue;
+    if (peer.stale) continue;
+
+    // 2. branch-shared — só intra-máquina (ver docstring).
+    if (
+      opts.branch &&
+      peer.branch === opts.branch &&
+      (opts.machineTag === undefined || peer.machineTag === opts.machineTag)
+    ) {
+      conflicts.push({
+        kind: "branch-shared",
+        peer,
+        detail: `${peer.kind}@${peer.machineTag} declara a MESMA branch "${opts.branch}" no mesmo checkout`,
+      });
+    }
+
+    // 3. path-overlap — dirty (não-commitado) é o sinal mais forte.
+    if (myPaths.length > 0) {
+      const peerDirty = (peer.dirty_paths ?? []).map(normalizeBeaconPath);
+      const peerTouched = (peer.touched_paths ?? []).map(normalizeBeaconPath);
+      const hitsDirty = myPaths.filter((mine) => peerDirty.some((theirs) => beaconPathsOverlap(mine, theirs)));
+      const hitsTouched = myPaths.filter((mine) => peerTouched.some((theirs) => beaconPathsOverlap(mine, theirs)));
+      const hits = [...new Set([...hitsDirty, ...hitsTouched])].sort();
+      if (hits.length > 0) {
+        conflicts.push({
+          kind: "path-overlap",
+          peer,
+          paths: hits,
+          detail:
+            `${peer.kind}@${peer.machineTag} já tocou ${hits.length} caminho(s) em comum` +
+            (hitsDirty.length > 0
+              ? ` — ${hitsDirty.length} deles com edição NÃO COMMITADA (${hitsDirty.slice(0, 5).join(", ")})`
+              : ""),
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+// ─── Parte F: ordenação de merge pela conversa (#6168) ─────────────────────
+
+export type MergeAdmission = "proceed" | "yield" | "fallback-to-lock";
+
+export interface PeerAnnouncement extends MergeAnnouncement {
+  /** `true` só com ACK EXPLÍCITO do peer. Ausência/`false` = silêncio. */
+  acked?: boolean;
+}
+
+/**
+ * Vencedor determinístico entre dois anúncios de merge (#6168 Parte F):
+ * timestamp mais ANTIGO vence; empate (ou timestamp ilegível dos dois lados)
+ * resolve pelo `sessionId` lexicograficamente MENOR.
+ *
+ * A propriedade que importa é que **as duas pontas calculam o mesmo vencedor
+ * sozinhas**, sem barganha e sem round-trip — é isso que substitui o lock
+ * como mecanismo primário sem introduzir deadlock. Pura e total: timestamp
+ * ilegível de um lado perde pro legível do outro (nunca deixa a comparação
+ * indefinida).
+ */
+export function decideMergeOrder(a: MergeAnnouncement, b: MergeAnnouncement): MergeAnnouncement {
+  const ta = Date.parse(a.announcedAt);
+  const tb = Date.parse(b.announcedAt);
+  const aOk = Number.isFinite(ta);
+  const bOk = Number.isFinite(tb);
+  if (aOk && !bOk) return a;
+  if (!aOk && bOk) return b;
+  if (aOk && bOk && ta !== tb) return ta < tb ? a : b;
+  return a.sessionId <= b.sessionId ? a : b;
+}
+
+export interface MergeAdmissionResult {
+  admission: MergeAdmission;
+  reason: string;
+  /** Anúncio vencedor quando houve disputa. */
+  winner?: MergeAnnouncement;
+  /** Peer que motivou `yield`/`fallback-to-lock`. */
+  blockedBy?: PeerAnnouncement;
+}
+
+/**
+ * Decide se esta sessão pode mergear AGORA, dado o próprio anúncio e o que os
+ * peers responderam (#6168 Parte F). Pura.
+ *
+ * Ordem de avaliação, e ela importa:
+ *
+ * 1. **Anúncio concorrente vence ACK.** Se algum peer anunciou merge próprio,
+ *    o vencedor sai de `decideMergeOrder` — independente de ter havido ACK.
+ *    Perdi → `yield` (e espero o aviso de "mergeado" pra dar `git pull` ANTES
+ *    do meu CI, que é o que o lock nunca deu: ele solta a janela sem dizer o
+ *    QUE mudou, e o outro descobre por conflito).
+ * 2. **Silêncio NUNCA é cessão** (regra dura da issue). Peer sem `acked`
+ *    explícito → `fallback-to-lock`: degrada pro `merge-lock-acquire` de
+ *    sempre, nunca pra "ninguém reclamou, então é meu". É o que impede a
+ *    conversa de virar canal de falso consenso.
+ * 3. **Sem peer nenhum** → também `fallback-to-lock`: não há com quem
+ *    combinar, então vale o piso. Degradar pro mecanismo antigo é sempre
+ *    permitido; assumir exclusividade por ausência, nunca.
+ * 4. Todos os peers deram ACK e ninguém anunciou merge concorrente →
+ *    `proceed`.
+ */
+export function resolveMergeAdmission(
+  mine: MergeAnnouncement,
+  peers: readonly PeerAnnouncement[],
+): MergeAdmissionResult {
+  const competing = peers.filter((p) => p.pr !== undefined || p.announcedAt);
+  if (competing.length > 0) {
+    let winner: MergeAnnouncement = mine;
+    let winnerPeer: PeerAnnouncement | undefined;
+    for (const peer of competing) {
+      const next = decideMergeOrder(winner, peer);
+      if (next !== winner) {
+        winner = next;
+        winnerPeer = peer;
+      }
+    }
+    if (winner.sessionId !== mine.sessionId) {
+      return {
+        admission: "yield",
+        reason:
+          `anúncio concorrente de ${winner.sessionId} (${winner.announcedAt}) vence a ordenação determinística ` +
+          "(timestamp mais antigo; empate pelo sessionId menor) — ceder e aguardar o aviso de merge concluído " +
+          "antes de dar git pull e rodar o próprio CI",
+        winner,
+        blockedBy: winnerPeer,
+      };
+    }
+  }
+
+  const silent = peers.find((p) => p.acked !== true);
+  if (silent) {
+    return {
+      admission: "fallback-to-lock",
+      reason:
+        `peer ${silent.sessionId} não deu ACK explícito — silêncio NUNCA é cessão (#6168 Parte D). ` +
+        "Cair no merge-lock-acquire de sempre.",
+      blockedBy: silent,
+    };
+  }
+  if (peers.length === 0) {
+    return {
+      admission: "fallback-to-lock",
+      reason: "nenhum peer alcançável pra combinar a ordem — vale o piso (merge-lock-acquire)",
+    };
+  }
+  return {
+    admission: "proceed",
+    reason: `${peers.length} peer(s) deram ACK explícito e nenhum anunciou merge concorrente`,
+  };
+}
+
+// ─── Concessão de janela de merge (#6296) ──────────────────────────────────
+
+export type GrantMergeReason =
+  | "granted"
+  | "self-grant-refused"
+  | "not-a-coordinator"
+  | "grantee-is-coordinator-refused"
+  | "no-op-session-missing";
+
+export interface GrantMergeResult {
+  ok: boolean;
+  reason: GrantMergeReason;
+  grant?: MergeGrant;
+}
+
+/**
+ * Concede a janela de merge a OUTRA sessão (#6296) — gravada como campo
+ * `merge_grant` no record da coordenadora que concede, nunca num arquivo
+ * novo.
+ *
+ * Motivação medida (260826, `helios`): o protocolo da Parte F foi executado à
+ * mão e cada passo funcionou — `ListAgents` achou o peer, `SendMessage`
+ * entregou, o peer conferiu colisão por arquivo nos 3 PRs dele, concedeu a
+ * janela, e o `merge-lock-acquire` deu ok. **E o `gh pr merge` foi bloqueado
+ * assim mesmo**, porque o guard do #5716 compara `session_id` contra
+ * `data/sessions/` e sessão interativa não está lá. A conversa chegou a
+ * acordo e não teve efeito nenhum sobre o mecanismo. Esta função é o que dá
+ * ao acordo uma representação que o guard consegue ler.
+ *
+ * Duas recusas, ambas estruturais:
+ * - **`self-grant-refused`** — ninguém concede a si mesmo. É o que preserva a
+ *   propriedade que o #5716 protege (a coordenadora decide quando entra
+ *   merge) em vez de contorná-la; sem isso, "conceder a si mesma" seria só um
+ *   relabel com outro nome.
+ * - **`not-a-coordinator`** — só overnight/develop/continuo concedem.
+ */
+export function grantMergeWindow(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  grantedTo: string,
+  meta: { pr?: number; tag?: string; now?: string } = {},
+): GrantMergeResult {
+  if (!isCoordinatorKind(kind)) return { ok: false, reason: "not-a-coordinator" };
+  if (grantedTo === sessionId || grantedTo.trim() === "") return { ok: false, reason: "self-grant-refused" };
+
+  // #6303 review cruzado (P1·a): recusa conceder a OUTRA COORDENADORA.
+  //
+  // Até aqui só o CONCEDENTE era validado (`isCoordinatorKind(kind)`) e só a
+  // auto-concessão era barrada. O kind de `grantedTo` nunca era olhado —
+  // então `grant-merge --granted-to {sessionId de outra coordenadora}`
+  // sucedia. Combinado com o ramo de concessão que, no guard, saía ANTES da
+  // checagem de lock, isso deixava a coordenadora beneficiada pular a
+  // serialização. Concessão cruzada (A→B, B→A) e ambas mergeavam sem lock.
+  //
+  // A concessão existe pra dar caminho a quem NÃO tem identidade de
+  // coordenadora — tipicamente uma sessão interativa. Coordenadora já tem o
+  // direito por si; o que ela precisa respeitar é o merge lock, e conceder
+  // entre pares seria justamente um jeito de contorná-lo.
+  //
+  // Defesa em profundidade, não redundância: esta recusa responde "quem pode
+  // receber"; a reordenação no guard responde "quando pode usar". Fechar só
+  // uma das duas deixaria a outra metade aberta a um `merge_grant` gravado
+  // por outro caminho.
+  const grantee = listActiveSessions(repoRoot).find((s) => s.sessionId === grantedTo);
+  if (grantee && isCoordinatorKind(grantee.kind)) {
+    return { ok: false, reason: "grantee-is-coordinator-refused" };
+  }
+
+  const tag = meta.tag ?? machineTag();
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current) return { ok: false, reason: "no-op-session-missing" };
+
+  const now = meta.now ?? new Date().toISOString();
+  const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
+  if (meta.pr !== undefined) grant.pr = meta.pr;
+  writeJsonSafe(path, { ...current, merge_grant: grant, lastHeartbeat: now });
+  return { ok: true, reason: "granted", grant };
+}
+
+/**
+ * `true` quando `grant` ainda vale em `now`: não consumida, dentro do TTL, e
+ * emitida para `sessionId`. Pura. Timestamp ilegível nunca vale (nunca
+ * concede sobre estado que não se conseguiu interpretar).
+ */
+export function isMergeGrantLive(
+  grant: MergeGrant | undefined,
+  sessionId: string,
+  now: number = Date.now(),
+  ttlMs: number = MERGE_GRANT_TTL_MS,
+): boolean {
+  if (!grant || grant.grantedTo !== sessionId) return false;
+  if (grant.consumedAt) return false;
+  if (grant.grantedTo === grant.grantedBy) return false; // auto-concessão nunca vale, mesmo se gravada à mão
+  const grantedMs = Date.parse(grant.grantedAt);
+  if (!Number.isFinite(grantedMs)) return false;
+  const ageMs = now - grantedMs;
+  // Idade negativa além da tolerância de skew: não trata como válida por
+  // tempo indefinido, mas também não rouba — mesma disciplina do merge lock.
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) return false;
+  return ageMs <= ttlMs;
+}
+
+/**
+ * Procura, entre as sessões COORDENADORAS ativas, uma concessão viva emitida
+ * pra `sessionId` (#6296). Retorna a concessão + quem concedeu, ou `null`.
+ */
+export function findLiveMergeGrant(
+  repoRoot: string,
+  sessionId: string,
+  now: number = Date.now(),
+): { grant: MergeGrant; grantedBy: ActiveSessionRecord } | null {
+  for (const session of listActiveSessions(repoRoot, now)) {
+    if (!isCoordinatorKind(session.kind)) continue;
+    if (session.stale) continue;
+    if (isMergeGrantLive(session.merge_grant, sessionId, now)) {
+      return { grant: session.merge_grant!, grantedBy: session };
+    }
+  }
+  return null;
+}
+
+/**
+ * Marca a concessão como consumida (uso único, #6296). Chamado logo após o
+ * `gh pr merge` que a janela autorizou. Retorna `false` quando não havia
+ * concessão viva pra consumir — nunca lança.
+ */
+export function consumeMergeGrant(repoRoot: string, sessionId: string, now: number = Date.now()): boolean {
+  const found = findLiveMergeGrant(repoRoot, sessionId, now);
+  if (!found) return false;
+  const owner = found.grantedBy;
+  const path = sessionFilePath(repoRoot, owner.kind, owner.machineTag, owner.sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current || !current.merge_grant) return false;
+  writeJsonSafe(path, {
+    ...current,
+    merge_grant: { ...current.merge_grant, consumedAt: new Date(now).toISOString() },
+  });
+  return true;
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 /**
@@ -1199,10 +1896,28 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
  * chamador em produção.
  */
 export function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop" && value !== "continuo") {
-    throw new Error(`--kind deve ser "overnight", "develop" ou "continuo", recebido "${value}"`);
+  if (value !== "overnight" && value !== "develop" && value !== "continuo" && value !== "interactive") {
+    throw new Error(
+      `--kind deve ser "overnight", "develop", "continuo" ou "interactive", recebido "${value}"`,
+    );
   }
   return value;
+}
+
+/**
+ * Como `requireKind`, mas recusa `interactive` (#6168) — usada nos
+ * subcomandos que só fazem sentido pra uma coordenadora. Hoje: `grant-merge`
+ * (só coordenadora concede janela, #6296).
+ */
+export function requireCoordinatorKind(value: string | undefined): SessionKind {
+  const kind = requireKind(value);
+  if (!isCoordinatorKind(kind)) {
+    throw new Error(
+      `--kind "${kind}" não é uma sessão coordenadora — só overnight/develop/continuo podem executar esta operação. ` +
+        "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296).",
+    );
+  }
+  return kind;
 }
 
 function requireSessionId(values: Record<string, string>): string {
@@ -1358,6 +2073,88 @@ function main(): void {
         if (!ok) process.exitCode = 1;
         break;
       }
+      case "conflicts": {
+        // #6168 Parte C — CONSULTA, nunca aquisição: não cria arquivo nenhum.
+        // exit 1 = sobreposição real com peer VIVO; exit 0 = livre (inclusive
+        // quando o único peer sobreposto está stale).
+        const sessionId = values["session-id"] ?? "";
+        const paths = (values.paths ?? "")
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p !== "");
+        const branch = values.branch;
+        const tag = values.tag ?? machineTag();
+        const sessions = listActiveSessions(repoRoot);
+        const ownRecord = sessions.find((s) => s.sessionId === sessionId) ?? null;
+        const opts: FindSessionConflictsOptions = { sessionId, paths, ownRecord, machineTag: tag };
+        if (branch) opts.branch = branch;
+        const conflicts = findSessionConflicts(sessions, opts);
+        process.stdout.write(JSON.stringify({ conflicts, count: conflicts.length }, null, 2) + "\n");
+        if (conflicts.length > 0) process.exitCode = 1;
+        break;
+      }
+      case "grant-merge": {
+        // #6296 — só coordenadora concede, e nunca a si mesma.
+        const kind = requireCoordinatorKind(values.kind);
+        const sessionId = requireSessionId(values);
+        const grantedTo = values["granted-to"];
+        if (!grantedTo) throw new Error("--granted-to (sessionId de quem recebe a janela) é obrigatório");
+        const pr = values.pr ? Number(values.pr) : undefined;
+        const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, pr !== undefined ? { pr } : {});
+        switch (result.reason) {
+          case "granted":
+            process.stdout.write(
+              `session-registry: grant-merge ok — janela concedida a ${grantedTo}` +
+                `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único\n`,
+            );
+            break;
+          case "self-grant-refused":
+            process.stdout.write(
+              "session-registry: grant-merge RECUSADO — uma sessão nunca concede janela a si mesma (#6296). " +
+                "É isso que preserva a propriedade do #5716 em vez de contorná-la.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "not-a-coordinator":
+            process.stdout.write("session-registry: grant-merge RECUSADO — só overnight/develop/continuo concedem\n");
+            process.exitCode = 1;
+            break;
+          case "grantee-is-coordinator-refused":
+            process.stdout.write(
+              `session-registry: grant-merge RECUSADO — ${grantedTo} é uma sessão COORDENADORA ativa (#6303). ` +
+                "Coordenadora já tem direito de mergear por si; o que ela precisa respeitar é o merge lock, e " +
+                "conceder entre pares seria justamente um jeito de contorná-lo. A concessão existe pra quem NÃO " +
+                "tem identidade de coordenadora (tipicamente uma sessão interativa). Se as duas rodadas precisam " +
+                "mergear, elas se serializam pelo merge-lock-acquire, não por concessão.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "no-op-session-missing":
+            process.stdout.write("session-registry: grant-merge no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+        }
+        break;
+      }
+      case "check-merge-grant": {
+        const sessionId = requireSessionId(values);
+        const found = findLiveMergeGrant(repoRoot, sessionId);
+        process.stdout.write(
+          JSON.stringify({ granted: found !== null, grant: found?.grant ?? null, grantedBy: found?.grantedBy ?? null }) +
+            "\n",
+        );
+        if (!found) process.exitCode = 1;
+        break;
+      }
+      case "consume-merge-grant": {
+        const sessionId = requireSessionId(values);
+        const ok = consumeMergeGrant(repoRoot, sessionId);
+        process.stdout.write(
+          `session-registry: consume-merge-grant ${ok ? "ok (janela consumida — uso único)" : "no-op (nenhuma janela viva)"}\n`,
+        );
+        if (!ok) process.exitCode = 1;
+        break;
+      }
       case "gc": {
         const maxAgeDaysRaw = values["max-age-days"];
         const conservativeMaxAgeMs =
@@ -1380,11 +2177,18 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|active-of-kind|merge-lock-acquire|merge-lock-release|gc> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|" +
+            "active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
+            "merge-lock-release|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
             "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
+            "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
+            "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
+            "  grant-merge --granted-to X [--pr N]: concede janela de merge a OUTRA sessão (#6296) — só " +
+            "coordenadora concede, nunca a si mesma; TTL curto, uso único. check-merge-grant/consume-merge-grant " +
+            "são o lado de quem recebeu.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );

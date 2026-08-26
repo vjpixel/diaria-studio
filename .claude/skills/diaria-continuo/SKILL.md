@@ -12,8 +12,11 @@ effort: medium
 > no `session-registry`, `continuo-plan-rotation.ts`,
 > `continuo-cost-summary.ts`, `check-continuo-token-instrumentation.ts`, o hook
 > `notify-continuo-askuserquestion.mjs`, `COORDINATOR_KINDS`) é consumida por
-> uma skill que **não vive neste repo**: a `hermes-diaria-continuo`, local do
-> `helios`, disparada por um cron do Claude Code a cada 60min DENTRO deste
+> uma skill que **não vive neste repo**: a `hermes-diaria-continuo` (mora em
+> `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/`, **não**
+> em `~/.claude/skills/`, onde só existe o `humanizador`), disparada por um
+> cron **do Hermes** (`~/.hermes/cron/jobs.json`, job `5d791ef6fc2c`,
+> `every 60m` — **não** é um cron do Claude Code) a cada 60min DENTRO deste
 > checkout. O #6059 deletou tudo isso junto com a skill e quebrou o loop de
 > produção dela — revertido no #6060. Guard mecânico:
 > `test/continuo-infra-consumidor-externo.test.ts`. Remover ESTE arquivo
@@ -235,6 +238,38 @@ entre wakes e pode alarmar falso-positivo de stall, exatamente o cenário que
 o mecanismo de `HEALTHY_IDLE_PHASES` existe pra evitar. O heartbeat não é
 opcional só porque o wake "não achou nada" — é justamente esse caso que o
 watchdog precisa distinguir de uma sessão travada.
+
+**Consulta de `conflicts` nos 3 pontos + fim de tick (#6168 Partes C/E).**
+Esta skill compartilha o checkout com overnight e develop, e é a que mais
+colide na prática (em 26/08 disputou a #6232 com o overnight às 11:20 × 11:27,
+e os DOIS claims sucederam — foi o achado que gerou #6236/#6242). Três
+consultas, todas com `npx tsx scripts/lib/session-registry.ts conflicts ...`
+como comando **standalone** (encadear quebra a injeção de `--session-id`,
+item 18 de `context/overnight-dispatch-rules.md`):
+
+1. **antes de abrir worktree** — `conflicts --paths {arquivos da unidade}
+   --branch {atual}`. Responde por ARQUIVO, não por issue: é o caso de duas
+   sessões em issues diferentes, sem colisão de claim nenhuma, editando o
+   mesmo arquivo (buraco 2 da #6168). `exit 1` = sobreposição com peer VIVO.
+2. **antes de `git commit`** — `conflicts --branch $(git branch --show-current)`.
+   `branch-drift` significa que outra sessão trocou o checkout embaixo (o
+   `sync-code.ts` faz `git checkout master` quando a branch não é master, e é
+   o Passo 0 de toda edição/rodada). É a checagem mais barata das três e a que
+   pega o incidente em que `commit` e `push` reportam SUCESSO e o commit foi
+   parar em `master`.
+3. **na SAÍDA, antes de encerrar o tick** — junto do `end` obrigatório abaixo.
+
+**Encerrar o registro ao fim de CADA tick — não é opcional (#6168).** A skill
+externa `hermes-diaria-continuo` (no `helios`, fora deste repo) registra com um
+`session-id` ESTÁVEL entre ticks. Sem `end` no fechamento, o registro sobrevive
+carregando `claimed_issues` de trabalho já encerrado, e nada distingue "tick
+rodando agora" de "tick que terminou há 50 min" — na prática, overnight e
+develop pulam issues por até 90 minutos por causa de claims de um tick morto.
+Ao fechar o tick: `git status --porcelain` limpo (sujo → commitar, stashar ou
+mover pra fora do repo; **nunca** encerrar deixando trabalho não commitado em
+`master` no checkout compartilhado — foi exatamente o que um tick fez em
+26/08, reportando "concluído"), depois `npx tsx
+scripts/lib/session-registry.ts end --kind continuo` (standalone).
 
 **Consentimento (revisado #5332, 15/08/2026 — não é mais
 `disable-model-invocation`).** O gate de consentimento original — a flag no

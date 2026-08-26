@@ -87,6 +87,17 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-beacon.mjs\"",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -99,6 +110,13 @@
             "if": "Bash(gh pr create*)",
             "shell": "bash",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs\"",
+            "if": "Bash(gh pr merge*)",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }
