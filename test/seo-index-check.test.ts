@@ -249,7 +249,7 @@ describe("extractSnapshotFamily + findPreviousSnapshotPath (#5118 item 3a)", () 
       "/repo/data/seo/index-status-2026-08-16.json",
       () => listing,
     );
-    assert.equal(prev, "/repo/data/seo/index-status-2026-08-10.json");
+    assert.equal(prev, resolve("/repo/data/seo", "index-status-2026-08-10.json"));
   });
 
   it("nenhum snapshot anterior da família: null", () => {
@@ -511,14 +511,14 @@ describe("defaultJsonOutPath + resolveMdPath (#4909 — .md não pode mais colid
   it("defaultJsonOutPath sem suffix é o path histórico index-status-{data}.json", () => {
     assert.equal(
       defaultJsonOutPath("/repo/data/seo", "2026-08-10"),
-      "/repo/data/seo/index-status-2026-08-10.json",
+      resolve("/repo/data/seo", "index-status-2026-08-10.json"),
     );
   });
 
   it("defaultJsonOutPath com suffix insere -{suffix} antes da data (2ª fonte no mesmo dia)", () => {
     assert.equal(
       defaultJsonOutPath("/repo/data/seo", "2026-08-10", "arquivo"),
-      "/repo/data/seo/index-status-arquivo-2026-08-10.json",
+      resolve("/repo/data/seo", "index-status-arquivo-2026-08-10.json"),
     );
   });
 
