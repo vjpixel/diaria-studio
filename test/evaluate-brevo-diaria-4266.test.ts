@@ -321,7 +321,7 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
   it("erro HTTP não-404 (ex: 403) → lança (propaga o fail-loud de brevoGet)", async () => {
     globalThis.fetch = (async () => jsonRes(403, {})) as typeof fetch;
     try {
-      await assert.rejects(() => fetchBrevoContactState("key", "a@b.com"), /Brevo GET .* falhou \(403\)/);
+      await assert.rejects(() => fetchBrevoContactState("key", "a@b.com"), /Brevo API GET .* falhou \(403\)/);
     } finally {
       restore();
     }
