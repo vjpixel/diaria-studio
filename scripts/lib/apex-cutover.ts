@@ -170,12 +170,35 @@ export const PRE_CUTOVER_DNS_RECORDS: readonly DnsRecordSnapshot[] = [
 
 // ── Guard de pré-condição do --cutover (o coração desta unidade) ────────────
 
+/** Marcador de conteúdo esperado em `GET /` — a home própria do Worker
+ * (`workers/site/public/index.html`, #6363) declara este `<title>`. Só
+ * responder 200 não prova que a página é a certa — um Worker que capture uma
+ * exceção e devolva HTML de erro com status 200 passaria despercebido sem
+ * esta checagem (achado do fleet review da PR #6364, F1). */
+export const EXPECTED_ROOT_MARKER = "<title>diar.ia.br</title>";
+
+/** Host de destino esperado do redirect de `/subscribe` — o perfil hospedado
+ * padrão da conta Kit (`https://diar-ia-br.kit.com/`, decisão registrada no
+ * PR #6363/#6359: sem página própria, sem UTM próprio — isso é escopo do
+ * #6318). `/subscribe` é um REDIRECT por design, nunca 200 — exigir 200
+ * estrito aqui bloquearia o cutover pra sempre contra a implementação
+ * correta. */
+export const EXPECTED_SUBSCRIBE_REDIRECT_HOST = "diar-ia-br.kit.com";
+
 export interface CutoverPreconditionInput {
   /** Status HTTP observado em `GET /` do Worker (host workers.dev — não o
    * apex, que ainda não é nosso antes do cutover). `null` = erro de rede. */
   workerRootStatus: number | null;
-  /** Status HTTP observado em `GET /subscribe` do Worker. */
+  /** Corpo da resposta de `GET /`. `null` = erro de rede ou corpo
+   * ilegível — tratado como reprovação (fail closed), nunca como "sem
+   * informação, deixa passar". */
+  workerRootBody: string | null;
+  /** Status HTTP observado em `GET /subscribe` do Worker, com
+   * `redirect: "manual"` (preserva o 3xx em vez de segui-lo). */
   workerSubscribeStatus: number | null;
+  /** Header `Location` da resposta de `/subscribe`. `null` quando ausente,
+   * erro de rede, ou resposta não é redirect. */
+  workerSubscribeLocation: string | null;
 }
 
 export interface CutoverPreconditionResult {
@@ -187,16 +210,28 @@ export interface CutoverPreconditionResult {
 }
 
 /**
- * Recusa o cutover se o Worker `diaria-site` não responder 200 em `/` e
- * `/subscribe`. Mecaniza o bloqueio que hoje só existe em prosa (issue #467,
- * comentário de 26/08 20:58Z) — cortar o apex antes disso derruba a
- * superfície de cadastro em produção, sem fallback pra Beehiiv (o custom
- * hostname dela é justamente o que se solta na virada).
+ * Recusa o cutover se o Worker `diaria-site` não SERVIR de fato `/` e
+ * `/subscribe` — não só "responder alguma coisa". Mecaniza o bloqueio que
+ * hoje só existe em prosa (issue #467, comentário de 26/08 20:58Z) — cortar
+ * o apex antes disso derruba a superfície de cadastro em produção, sem
+ * fallback pra Beehiiv (o custom hostname dela é justamente o que se solta
+ * na virada).
  *
- * Único critério: 200 exato em cada path. Um 30x (redirect) ou 4xx/5xx
- * bloqueia igual — a promessa é "serve a página", não "responde alguma
- * coisa". Hoje (26/08/2026) os dois dão 404 — é exatamente o #6359, em
- * implementação paralela a esta unidade.
+ * Dois critérios DIFERENTES, um por path — reflete o que cada um realmente é:
+ *
+ *   - `/` é uma página própria (#6363): exige 200 **e** o corpo conter
+ *     {@link EXPECTED_ROOT_MARKER}. Só o status não basta — um Worker que
+ *     capture uma exceção e devolva HTML de erro com 200 passaria pelo guard
+ *     antigo (F1 do fleet review da PR #6364) mesmo sem servir a página real.
+ *   - `/subscribe` é um REDIRECT por design (`_redirects` → perfil Kit
+ *     hospedado, #6359/#6363): exigir 200 aqui bloquearia o cutover pra
+ *     sempre, mesmo com a implementação correta no ar. O critério certo é
+ *     "redireciona (3xx) para o destino esperado" — 3xx sozinho não basta
+ *     (um redirect pro lugar errado também reprova, ver #6365 sobre o
+ *     destino do Kit não ter verificação contínua).
+ *
+ * Erro de rede (`null`) sempre bloqueia (fail closed) — nunca é tratado como
+ * "sem informação, deixa passar".
  */
 export function evaluateCutoverPrecondition(
   input: CutoverPreconditionInput,
@@ -208,12 +243,37 @@ export function evaluateCutoverPrecondition(
       `Worker ${WORKER_NAME} respondeu ${input.workerRootStatus ?? "erro de rede"} em "/" ` +
         `(esperado 200) — ver #6359.`,
     );
-  }
-  if (input.workerSubscribeStatus !== 200) {
+  } else if (!input.workerRootBody || !input.workerRootBody.includes(EXPECTED_ROOT_MARKER)) {
     blockers.push(
-      `Worker ${WORKER_NAME} respondeu ${input.workerSubscribeStatus ?? "erro de rede"} em "/subscribe" ` +
-        `(esperado 200) — ver #6359.`,
+      `Worker ${WORKER_NAME} respondeu 200 em "/" mas o corpo não contém o marcador esperado ` +
+        `(${JSON.stringify(EXPECTED_ROOT_MARKER)}) — responder 200 não é servir a página certa ` +
+        `(pode ser uma página de erro capturada). Ver #6359.`,
     );
+  }
+
+  const subscribeStatus = input.workerSubscribeStatus;
+  const isRedirect = subscribeStatus !== null && subscribeStatus >= 300 && subscribeStatus < 400;
+  if (!isRedirect) {
+    blockers.push(
+      `Worker ${WORKER_NAME} respondeu ${subscribeStatus ?? "erro de rede"} em "/subscribe" ` +
+        `(esperado redirect 3xx para ${EXPECTED_SUBSCRIBE_REDIRECT_HOST}) — ver #6359/#6365.`,
+    );
+  } else {
+    let redirectHost: string | null = null;
+    if (input.workerSubscribeLocation) {
+      try {
+        redirectHost = new URL(input.workerSubscribeLocation).host;
+      } catch {
+        redirectHost = null;
+      }
+    }
+    if (redirectHost !== EXPECTED_SUBSCRIBE_REDIRECT_HOST) {
+      blockers.push(
+        `Worker ${WORKER_NAME} redirecionou "/subscribe" para ` +
+          `"${input.workerSubscribeLocation ?? "(sem header Location)"}" — esperado destino ` +
+          `${EXPECTED_SUBSCRIBE_REDIRECT_HOST}. Ver #6365 (destino do Kit sem verificação contínua).`,
+      );
+    }
   }
 
   return { ready: blockers.length === 0, blockers };
@@ -296,10 +356,16 @@ export type DnsOp = DnsPatchOp | DnsCreateOp;
  *     mesmo corpo.
  *   - não existe nenhum registro desse tipo → CREATE.
  *
- * `actualRecords` deve conter no máximo 1 registro por tipo A/AAAA no apex —
- * se a zona tiver mais de um (estado anômalo), o primeiro de cada tipo é
- * usado e o caller deve investigar antes de aplicar (esta função não
- * detecta duplicatas; é decisão de leitura, não de escrita).
+ * `actualRecords` deve conter no máximo 1 registro por tipo A/AAAA no apex.
+ * **Duplicata é erro DURO, não decisão silenciosa de leitura** (achado do
+ * silent-failure-hunter na PR #6364, P1): antes desta versão, mais de um
+ * registro do mesmo tipo fazia esta função pegar "o primeiro" e seguir —
+ * um PATCH no primeiro A com um segundo A stale ainda na zona causa
+ * resolução DNS em round-robin, e o operador só saberia investigando a zona
+ * por conta própria (o docstring dizia isso, mas nenhum caller de fato
+ * investigava). Agora lança antes de gerar qualquer operação — não dá pra
+ * saber qual dos N registros é o "certo" sem revisão humana, e gerar um
+ * plano que ignora N-1 deles seria pior que travar.
  */
 export function buildRollbackDnsPlan(
   actualRecords: readonly Pick<DnsRecordSnapshot, "id" | "type">[],
@@ -308,10 +374,19 @@ export function buildRollbackDnsPlan(
 
   for (const expected of PRE_CUTOVER_DNS_RECORDS) {
     assertAllowedDnsRecordType(expected.type);
-    const existing = actualRecords.find((r) => {
+    const matches = actualRecords.filter((r) => {
       assertAllowedDnsRecordType(r.type);
       return r.type === expected.type;
     });
+
+    if (matches.length > 1) {
+      throw new Error(
+        `apex-cutover: ${matches.length} registros ${expected.type} encontrados na zona para ` +
+          `${expected.name} (esperado no máximo 1) — não dá pra saber qual é o "certo" sem revisão ` +
+          `humana. Rode --status, resolva a duplicata na zona da Cloudflare, e repita --rollback.`,
+      );
+    }
+    const existing = matches[0];
 
     if (existing) {
       ops.push({
@@ -339,27 +414,66 @@ export function buildRollbackDnsPlan(
   return ops;
 }
 
+/** Um passo do plano de rollback, na ORDEM EM QUE DEVE SER EXECUTADO. União
+ * discriminada em vez de dois campos independentes (`detachOp`/`dnsOps`) de
+ * propósito (achado do pr-test-analyzer na PR #6364, F2): com dois campos
+ * separados, nada no TYPE nem no runtime impedia `runRollback` de aplicar os
+ * `dnsOps` antes do `detachOp` — trocar a ordem das duas seções dentro de
+ * `runRollback` passava nos 32 testes da PR sem nenhuma detecção, mesmo essa
+ * ordem sendo a invariante mais citada no código e no doc
+ * (`docs/apex-cutover-rollback.md` §3.1: "enquanto o binding existir, a
+ * Cloudflare mantém o roteamento pro Worker e o PATCH de A/AAAA não tem
+ * efeito visível"). Com um ÚNICO array ordenado, produzido só por
+ * `buildRollbackPlan`, a ordem é uma propriedade do PLANO — testável
+ * diretamente ("o passo de detach, quando existe, é sempre `steps[0]`") em
+ * vez de uma convenção imperativa dentro do executor. */
+export type RollbackStep =
+  | { readonly kind: "detach"; readonly detach: WorkerDomainDetachOp }
+  | { readonly kind: "dns"; readonly dns: DnsOp };
+
+export type RollbackPlan = readonly RollbackStep[];
+
 /**
  * Plano completo de `--rollback`: detach do Custom Domain PRIMEIRO (se
  * existir), depois restauração de DNS — mesma ordem de
- * `docs/apex-cutover-rollback.md` §3.1/§3.2 ("enquanto o binding existir, a
- * Cloudflare mantém o roteamento pro Worker e o PATCH de A/AAAA não tem
- * efeito visível").
+ * `docs/apex-cutover-rollback.md` §3.1/§3.2. A ordem nasce da ordem de
+ * `push` abaixo — não existe jeito de o executor (`runRollback`) aplicar os
+ * passos fora de ordem sem iterar o array ao contrário, o que seria óbvio em
+ * qualquer diff/review.
  *
  * @param existingCustomDomainId  id do binding Custom Domain pro apex, se
  *   encontrado em `GET /accounts/{account}/workers/domains` (`null` se não
- *   apareceu — nesse caso não há o que soltar, pula direto pro DNS).
- * @param actualDnsRecords        registros A/AAAA lidos da zona AGORA.
+ *   apareceu — nesse caso não há passo de detach, o plano começa direto no
+ *   DNS).
+ * @param actualDnsRecords        registros A/AAAA lidos da zona AGORA. Lança
+ *   se houver mais de 1 registro do mesmo tipo (ver `buildRollbackDnsPlan`).
  */
 export function buildRollbackPlan(
   existingCustomDomainId: string | null,
   actualDnsRecords: readonly Pick<DnsRecordSnapshot, "id" | "type">[],
-): { detachOp: WorkerDomainDetachOp | null; dnsOps: DnsOp[] } {
-  const detachOp: WorkerDomainDetachOp | null = existingCustomDomainId
-    ? { op: "detach", hostname: APEX_HOSTNAME, domainId: existingCustomDomainId }
-    : null;
+): RollbackPlan {
+  const steps: RollbackStep[] = [];
 
-  return { detachOp, dnsOps: buildRollbackDnsPlan(actualDnsRecords) };
+  if (existingCustomDomainId) {
+    steps.push({
+      kind: "detach",
+      detach: { op: "detach", hostname: APEX_HOSTNAME, domainId: existingCustomDomainId },
+    });
+  }
+
+  for (const dns of buildRollbackDnsPlan(actualDnsRecords)) {
+    steps.push({ kind: "dns", dns });
+  }
+
+  return steps;
+}
+
+/** Extrai só as operações de DNS de um `RollbackPlan`, na ordem em que
+ * aparecem — usado pelo assert de allowlist (`assertPlanTouchesOnlyAllowedRecordTypes`
+ * não entende `RollbackStep`, só `{type: string}`) e por qualquer caller que
+ * precise só do lado DNS sem se importar com o detach. */
+export function extractRollbackDnsOps(plan: RollbackPlan): DnsOp[] {
+  return plan.filter((s): s is { kind: "dns"; dns: DnsOp } => s.kind === "dns").map((s) => s.dns);
 }
 
 /**
@@ -386,6 +500,16 @@ export function assertPlanTouchesOnlyAllowedRecordTypes(
  * registro recriado pelo Custom Domain e depois restaurado por CREATE ganha
  * id novo); o que importa pro rollback é `content`/`proxied`/`ttl`
  * baterem, não a identidade do registro.
+ *
+ * **Duplicata vira `mismatches`, nunca `restored: true` cego** (achado do
+ * silent-failure-hunter na PR #6364, P1 — o cenário exato de "sucesso
+ * reportado sem ter acontecido", e num ROLLBACK, quando já se está
+ * consertando outra coisa). Antes desta versão, com 2 registros A na zona
+ * (1 restaurado certo + 1 stale apontando pro Worker), esta função olhava só
+ * o primeiro `.find()`, achava correto, e o caller imprimia "restaurado e
+ * verificado" com o stale causando resolução DNS em round-robin. Agora
+ * qualquer tipo com mais de 1 registro na zona reprova explicitamente, sem
+ * tentar adivinhar qual dos N é o válido.
  */
 export function verifyDnsRestored(
   actualRecords: readonly Pick<DnsRecordSnapshot, "type" | "content" | "proxied" | "ttl">[],
@@ -393,7 +517,15 @@ export function verifyDnsRestored(
   const mismatches: string[] = [];
 
   for (const expected of PRE_CUTOVER_DNS_RECORDS) {
-    const actual = actualRecords.find((r) => r.type === expected.type);
+    const matches = actualRecords.filter((r) => r.type === expected.type);
+    if (matches.length > 1) {
+      mismatches.push(
+        `${expected.type}: ${matches.length} registros encontrados na zona (esperado 1) — ` +
+          `duplicata não resolvida, DNS pode estar em round-robin com um registro stale. Revisão manual necessária.`,
+      );
+      continue;
+    }
+    const actual = matches[0];
     if (!actual) {
       mismatches.push(`${expected.type}: ausente na zona (esperado ${expected.content})`);
       continue;

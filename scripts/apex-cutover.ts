@@ -27,11 +27,15 @@
  *                mecanismo e não uma Route clássica nem
  *                `wrangler.toml`+`wrangler deploy`). GUARD DE PRÉ-CONDIÇÃO
  *                (o coração desta unidade): recusa — exit != 0, mensagem
- *                clara — se o Worker não responder 200 em `/` e `/subscribe`
- *                (hoje os dois dão 404: #6359, em implementação paralela).
- *                Pressupõe que o passo manual do editor (Beehiiv → Domains →
- *                Disconnect domain) já aconteceu — este script NUNCA toca a
- *                Beehiiv, só a Cloudflare.
+ *                clara — a menos que `/` sirva 200 com o `<title>` real
+ *                (não só "responder alguma coisa") **e** `/subscribe`
+ *                redirecione (3xx) para o perfil Kit hospedado
+ *                (`diar-ia-br.kit.com`) — ver `evaluateCutoverPrecondition`
+ *                em `scripts/lib/apex-cutover.ts` pro porquê de dois
+ *                critérios diferentes (#6359/#6363/#6365 em implementação
+ *                paralela). Pressupõe que o passo manual do editor (Beehiiv
+ *                → Domains → Disconnect domain) já aconteceu — este script
+ *                NUNCA toca a Beehiiv, só a Cloudflare.
  *
  *   --rollback   Restaura exatamente o estado pré-cutover de
  *                `docs/apex-cutover-rollback.md` §1 (A `104.16.243.55`, AAAA
@@ -81,7 +85,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule, type ParsedArgs } from "./lib/cli-args.ts";
 import {
   ZONE_ID,
   APEX_HOSTNAME,
@@ -96,6 +100,7 @@ import {
   evaluateCutoverPrecondition,
   buildCutoverPlan,
   buildRollbackPlan,
+  extractRollbackDnsOps,
   assertPlanTouchesOnlyAllowedRecordTypes,
   verifyDnsRestored,
   verifyCustomDomainDetached,
@@ -111,12 +116,12 @@ const PROBE_TIMEOUT_MS = 20000;
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-interface Config {
+export interface Config {
   token: string;
   accountId: string;
 }
 
-function loadConfig(): Config {
+export function loadConfig(): Config {
   const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
   if (!token) {
     throw new Error(
@@ -125,6 +130,17 @@ function loadConfig(): Config {
   }
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? DEFAULT_ACCOUNT_ID;
   return { token, accountId };
+}
+
+/** Formata o corpo de erro de uma resposta da Cloudflare: usa
+ * `errors` quando a API devolveu JSON parseável, cai pro corpo bruto
+ * (truncado) quando não (WAF, rate-limit, challenge — `errors` vem `[]` por
+ * default nesses casos, e `"HTTP 403 — []"` não dá pista nenhuma pro
+ * operador, exatamente quando o contexto é mais necessário). Mesmo padrão já
+ * usado pelos GETs deste arquivo (`res.raw.slice(0, 300)`); antes desta
+ * função os 4 pontos de mutação usavam só `JSON.stringify(res.errors)`. */
+export function formatCfError(res: Pick<CfResponse<unknown>, "errors" | "raw">): string {
+  return res.errors.length ? JSON.stringify(res.errors) : res.raw.slice(0, 300);
 }
 
 // ── I/O: Cloudflare REST API ─────────────────────────────────────────────────
@@ -174,7 +190,7 @@ async function cfRequest<T = unknown>(
 /** GET /zones/{zone}/dns_records?type={type}&name={name} — só A/AAAA, uma
  * chamada por tipo. NUNCA pede o endpoint sem filtro de `type` (isso
  * devolveria MX/TXT/CAA junto). */
-async function fetchDnsRecords(
+export async function fetchDnsRecords(
   zoneId: string,
   type: AllowedDnsRecordType,
   name: string,
@@ -200,7 +216,7 @@ async function fetchDnsRecords(
   }));
 }
 
-async function fetchWorkerRoutes(
+export async function fetchWorkerRoutes(
   zoneId: string,
   token: string,
   fetchFn: typeof fetch = fetch,
@@ -218,7 +234,7 @@ async function fetchWorkerRoutes(
   return res.result;
 }
 
-async function fetchWorkerCustomDomains(
+export async function fetchWorkerCustomDomains(
   accountId: string,
   token: string,
   fetchFn: typeof fetch = fetch,
@@ -236,7 +252,7 @@ async function fetchWorkerCustomDomains(
   return res.result;
 }
 
-async function attachCustomDomain(
+export async function attachCustomDomain(
   accountId: string,
   token: string,
   hostname: string,
@@ -254,7 +270,7 @@ async function attachCustomDomain(
   );
 }
 
-async function detachCustomDomain(
+export async function detachCustomDomain(
   accountId: string,
   token: string,
   domainId: string,
@@ -263,7 +279,7 @@ async function detachCustomDomain(
   return cfRequest("DELETE", `/accounts/${accountId}/workers/domains/${domainId}`, token, undefined, fetchFn);
 }
 
-async function patchDnsRecord(
+export async function patchDnsRecord(
   zoneId: string,
   token: string,
   op: { id: string; type: AllowedDnsRecordType; name: string; content: string; proxied: boolean; ttl: number },
@@ -278,7 +294,7 @@ async function patchDnsRecord(
   );
 }
 
-async function createDnsRecord(
+export async function createDnsRecord(
   zoneId: string,
   token: string,
   op: { type: AllowedDnsRecordType; name: string; content: string; proxied: boolean; ttl: number },
@@ -295,7 +311,7 @@ async function createDnsRecord(
 
 // ── I/O: probes HTTP (sempre com UA de navegador) ────────────────────────────
 
-async function httpProbeStatus(url: string, fetchFn: typeof fetch = fetch): Promise<number | null> {
+export async function httpProbeStatus(url: string, fetchFn: typeof fetch = fetch): Promise<number | null> {
   try {
     const res = await fetchFn(url, {
       method: "GET",
@@ -309,35 +325,98 @@ async function httpProbeStatus(url: string, fetchFn: typeof fetch = fetch): Prom
   }
 }
 
+export interface HttpProbeDetail {
+  status: number | null;
+  /** Corpo da resposta (texto). `null` em erro de rede/timeout, ou se o
+   * corpo não pôde ser lido como texto. */
+  body: string | null;
+  /** Header `Location`, quando presente. `null` em erro de rede, ausência
+   * do header, ou resposta não é redirect. */
+  location: string | null;
+}
+
+/** Como `httpProbeStatus`, mas também lê o corpo e o header `Location` — o
+ * guard de pré-condição do `--cutover` precisa afirmar sobre CONTEÚDO
+ * (`/`) e sobre DESTINO do redirect (`/subscribe`), não só sobre status
+ * (ver `evaluateCutoverPrecondition` em `scripts/lib/apex-cutover.ts`, F1 do
+ * fleet review da PR #6364). */
+export async function httpProbeDetailed(url: string, fetchFn: typeof fetch = fetch): Promise<HttpProbeDetail> {
+  try {
+    const res = await fetchFn(url, {
+      method: "GET",
+      headers: { "User-Agent": BROWSER_USER_AGENT },
+      redirect: "manual",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    let body: string | null;
+    try {
+      body = await res.text();
+    } catch {
+      body = null;
+    }
+    return { status: res.status, body, location: res.headers.get("location") };
+  } catch {
+    return { status: null, body: null, location: null };
+  }
+}
+
 // ── Modos ─────────────────────────────────────────────────────────────────
 
-async function runStatus(cfg: Config): Promise<number> {
+/** Roda os 2 probes que o guard de pré-condição precisa (corpo de `/`,
+ * status + `Location` de `/subscribe`) contra um host — usado tanto por
+ * `runCutover` (guard de verdade) quanto por `runStatus` (mostrar de graça
+ * se `--cutover` seria aceito hoje). Não dá pra reusar os probes genéricos
+ * de `STATUS_PROBE_PATHS` (que só guardam status) pra isso — precisam de 2
+ * chamadas HTTP dedicadas, aceitável mesmo em `--status` (comando
+ * interativo, não perf-crítico). */
+export async function probeCutoverPrecondition(
+  host: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<{
+  workerRootStatus: number | null;
+  workerRootBody: string | null;
+  workerSubscribeStatus: number | null;
+  workerSubscribeLocation: string | null;
+}> {
+  const [root, subscribe] = await Promise.all([
+    httpProbeDetailed(`https://${host}/`, fetchFn),
+    httpProbeDetailed(`https://${host}/subscribe`, fetchFn),
+  ]);
+  return {
+    workerRootStatus: root.status,
+    workerRootBody: root.body,
+    workerSubscribeStatus: subscribe.status,
+    workerSubscribeLocation: subscribe.location,
+  };
+}
+
+export async function runStatus(cfg: Config, fetchFn: typeof fetch = fetch): Promise<number> {
   console.error(`${LOG_PREFIX} --status: lendo estado atual da zona ${ZONE_ID}...`);
 
   const [aRecords, aaaaRecords, routes, customDomainsAll] = await Promise.all([
-    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token),
-    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token),
-    fetchWorkerRoutes(ZONE_ID, cfg.token),
-    fetchWorkerCustomDomains(cfg.accountId, cfg.token),
+    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
+    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
+    fetchWorkerRoutes(ZONE_ID, cfg.token, fetchFn),
+    fetchWorkerCustomDomains(cfg.accountId, cfg.token, fetchFn),
   ]);
   const apexCustomDomain = customDomainsAll.find((d) => d.hostname === APEX_HOSTNAME) ?? null;
 
   const workerProbes: Record<string, number | null> = {};
   for (const path of STATUS_PROBE_PATHS) {
-    workerProbes[path] = await httpProbeStatus(`https://${WORKER_DEV_HOST}${path}`);
+    workerProbes[path] = await httpProbeStatus(`https://${WORKER_DEV_HOST}${path}`, fetchFn);
   }
 
   const apexProbes: Record<string, number | null> = {};
   for (const path of STATUS_PROBE_PATHS) {
-    apexProbes[path] = await httpProbeStatus(`https://${APEX_HOSTNAME}${path}`);
+    apexProbes[path] = await httpProbeStatus(`https://${APEX_HOSTNAME}${path}`, fetchFn);
   }
 
-  // Reusa os probes já coletados acima (mesmos paths) pra mostrar de graça se
-  // "--cutover" seria aceito hoje — sem chamada extra.
-  const cutoverPrecondition = evaluateCutoverPrecondition({
-    workerRootStatus: workerProbes["/"] ?? null,
-    workerSubscribeStatus: workerProbes["/subscribe"] ?? null,
-  });
+  // O guard precisa de corpo de "/" e Location de "/subscribe" — não dá pra
+  // reusar os probes status-only acima; 2 chamadas extras, aceitável num
+  // comando interativo (ver docstring de probeCutoverPrecondition).
+  const cutoverPrecondition = evaluateCutoverPrecondition(
+    await probeCutoverPrecondition(WORKER_DEV_HOST, fetchFn),
+  );
 
   const summary = {
     zone_id: ZONE_ID,
@@ -362,18 +441,10 @@ async function runStatus(cfg: Config): Promise<number> {
   return 0;
 }
 
-async function runCutover(cfg: Config, apply: boolean): Promise<number> {
+export async function runCutover(cfg: Config, apply: boolean, fetchFn: typeof fetch = fetch): Promise<number> {
   console.error(`${LOG_PREFIX} --cutover: checando guard de pré-condição (${WORKER_DEV_HOST})...`);
 
-  const [rootStatus, subscribeStatus] = await Promise.all([
-    httpProbeStatus(`https://${WORKER_DEV_HOST}/`),
-    httpProbeStatus(`https://${WORKER_DEV_HOST}/subscribe`),
-  ]);
-
-  const guard = evaluateCutoverPrecondition({
-    workerRootStatus: rootStatus,
-    workerSubscribeStatus: subscribeStatus,
-  });
+  const guard = evaluateCutoverPrecondition(await probeCutoverPrecondition(WORKER_DEV_HOST, fetchFn));
 
   if (!guard.ready) {
     console.error(`\n${LOG_PREFIX} RECUSADO — o Worker ${WORKER_NAME} não está pronto:`);
@@ -385,7 +456,7 @@ async function runCutover(cfg: Config, apply: boolean): Promise<number> {
     return 1;
   }
 
-  console.error(`${LOG_PREFIX} guard OK — Worker responde 200 em "/" e "/subscribe".`);
+  console.error(`${LOG_PREFIX} guard OK — "/" serve a página certa e "/subscribe" redireciona pro destino esperado.`);
 
   const plan = buildCutoverPlan();
   console.log(JSON.stringify({ mode: "cutover", apply, plan }, null, 2));
@@ -406,17 +477,25 @@ async function runCutover(cfg: Config, apply: boolean): Promise<number> {
     plan.workerDomainOp.service,
     plan.workerDomainOp.zoneId,
     plan.workerDomainOp.zoneName,
+    fetchFn,
   );
   if (!attachRes.success) {
-    console.error(
-      `${LOG_PREFIX} PUT workers/domains falhou: HTTP ${attachRes.status} — ${JSON.stringify(attachRes.errors)}`,
-    );
+    console.error(`${LOG_PREFIX} PUT workers/domains falhou: HTTP ${attachRes.status} — ${formatCfError(attachRes)}`);
     return 2;
   }
 
   // #573 — nunca confiar na resposta do PUT. Reler.
   console.error(`${LOG_PREFIX} PUT aceito — relendo GET /accounts/${cfg.accountId}/workers/domains para verificar...`);
-  const customDomainsAfter = await fetchWorkerCustomDomains(cfg.accountId, cfg.token);
+  let customDomainsAfter: Awaited<ReturnType<typeof fetchWorkerCustomDomains>>;
+  try {
+    customDomainsAfter = await fetchWorkerCustomDomains(cfg.accountId, cfg.token, fetchFn);
+  } catch (e) {
+    console.error(
+      `\n${LOG_PREFIX} MUTAÇÃO PODE TER SIDO APLICADA — releitura falhou: ${(e as Error).message}. ` +
+        `Rode --status antes de repetir --apply.\n`,
+    );
+    return 2;
+  }
   const attached = verifyCutoverAttached(customDomainsAfter);
 
   console.log(JSON.stringify({ mode: "cutover", applied: true, verified: attached, custom_domains: customDomainsAfter }, null, 2));
@@ -437,21 +516,24 @@ async function runCutover(cfg: Config, apply: boolean): Promise<number> {
   return 0;
 }
 
-async function runRollback(cfg: Config, apply: boolean): Promise<number> {
+export async function runRollback(cfg: Config, apply: boolean, fetchFn: typeof fetch = fetch): Promise<number> {
   console.error(`${LOG_PREFIX} --rollback: lendo estado atual...`);
 
   const [customDomainsAll, aRecords, aaaaRecords] = await Promise.all([
-    fetchWorkerCustomDomains(cfg.accountId, cfg.token),
-    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token),
-    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token),
+    fetchWorkerCustomDomains(cfg.accountId, cfg.token, fetchFn),
+    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
+    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
   ]);
   const apexCustomDomain = customDomainsAll.find((d) => d.hostname === APEX_HOSTNAME) ?? null;
   const actualRecords = [...aRecords, ...aaaaRecords];
 
+  // buildRollbackPlan (via buildRollbackDnsPlan) lança se houver mais de 1
+  // registro do mesmo tipo na zona — propaga pro catch de main() como erro
+  // explícito (exit 2), nunca silenciosamente escolhe "o primeiro".
   const plan = buildRollbackPlan(apexCustomDomain?.id ?? null, actualRecords);
   // Defesa em profundidade — reafirma o guard bem antes de qualquer mutação,
   // mesmo já garantido dentro de buildRollbackPlan/buildRollbackDnsPlan.
-  assertPlanTouchesOnlyAllowedRecordTypes(plan.dnsOps);
+  assertPlanTouchesOnlyAllowedRecordTypes(extractRollbackDnsOps(plan));
 
   console.log(JSON.stringify({ mode: "rollback", apply, plan }, null, 2));
 
@@ -460,30 +542,37 @@ async function runRollback(cfg: Config, apply: boolean): Promise<number> {
     return 0;
   }
 
-  if (plan.detachOp) {
-    console.error(`${LOG_PREFIX} aplicando: DELETE /accounts/${cfg.accountId}/workers/domains/${plan.detachOp.domainId}...`);
-    const detachRes = await detachCustomDomain(cfg.accountId, cfg.token, plan.detachOp.domainId);
-    if (!detachRes.success) {
-      console.error(`${LOG_PREFIX} DELETE workers/domains falhou: HTTP ${detachRes.status} — ${JSON.stringify(detachRes.errors)}`);
-      return 2;
-    }
-  } else {
+  if (!plan.some((s) => s.kind === "detach")) {
     console.error(`${LOG_PREFIX} nenhum Custom Domain do apex encontrado — pulando detach.`);
   }
 
-  for (const op of plan.dnsOps) {
+  // Itera o PLANO em ordem — a estrutura de `plan` (union ordenada, não dois
+  // campos independentes) já garante detach-antes-de-DNS; este loop só
+  // executa o que o plano manda, na ordem em que manda.
+  for (const step of plan) {
+    if (step.kind === "detach") {
+      console.error(`${LOG_PREFIX} aplicando: DELETE /accounts/${cfg.accountId}/workers/domains/${step.detach.domainId}...`);
+      const detachRes = await detachCustomDomain(cfg.accountId, cfg.token, step.detach.domainId, fetchFn);
+      if (!detachRes.success) {
+        console.error(`${LOG_PREFIX} DELETE workers/domains falhou: HTTP ${detachRes.status} — ${formatCfError(detachRes)}`);
+        return 2;
+      }
+      continue;
+    }
+
+    const op = step.dns;
     if (op.op === "patch") {
       console.error(`${LOG_PREFIX} aplicando: PATCH dns_records/${op.id} (${op.type} → ${op.content})...`);
-      const res = await patchDnsRecord(ZONE_ID, cfg.token, op);
+      const res = await patchDnsRecord(ZONE_ID, cfg.token, op, fetchFn);
       if (!res.success) {
-        console.error(`${LOG_PREFIX} PATCH ${op.type} falhou: HTTP ${res.status} — ${JSON.stringify(res.errors)}`);
+        console.error(`${LOG_PREFIX} PATCH ${op.type} falhou: HTTP ${res.status} — ${formatCfError(res)}`);
         return 2;
       }
     } else {
       console.error(`${LOG_PREFIX} aplicando: POST dns_records (${op.type} → ${op.content}, criando)...`);
-      const res = await createDnsRecord(ZONE_ID, cfg.token, op);
+      const res = await createDnsRecord(ZONE_ID, cfg.token, op, fetchFn);
       if (!res.success) {
-        console.error(`${LOG_PREFIX} POST ${op.type} falhou: HTTP ${res.status} — ${JSON.stringify(res.errors)}`);
+        console.error(`${LOG_PREFIX} POST ${op.type} falhou: HTTP ${res.status} — ${formatCfError(res)}`);
         return 2;
       }
     }
@@ -491,11 +580,20 @@ async function runRollback(cfg: Config, apply: boolean): Promise<number> {
 
   // #573 — reler tudo, nunca confiar nas respostas acima.
   console.error(`${LOG_PREFIX} relendo estado para verificar restauração...`);
-  const [aAfter, aaaaAfter, customDomainsAfter] = await Promise.all([
-    fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token),
-    fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token),
-    fetchWorkerCustomDomains(cfg.accountId, cfg.token),
-  ]);
+  let aAfter: DnsRecordSnapshot[], aaaaAfter: DnsRecordSnapshot[], customDomainsAfter: Awaited<ReturnType<typeof fetchWorkerCustomDomains>>;
+  try {
+    [aAfter, aaaaAfter, customDomainsAfter] = await Promise.all([
+      fetchDnsRecords(ZONE_ID, "A", APEX_HOSTNAME, cfg.token, fetchFn),
+      fetchDnsRecords(ZONE_ID, "AAAA", APEX_HOSTNAME, cfg.token, fetchFn),
+      fetchWorkerCustomDomains(cfg.accountId, cfg.token, fetchFn),
+    ]);
+  } catch (e) {
+    console.error(
+      `\n${LOG_PREFIX} MUTAÇÃO PODE TER SIDO APLICADA — releitura falhou: ${(e as Error).message}. ` +
+        `Rode --status antes de repetir --apply.\n`,
+    );
+    return 2;
+  }
   const dnsCheck = verifyDnsRestored([...aAfter, ...aaaaAfter]);
   const detachCheck = verifyCustomDomainDetached(customDomainsAfter.map((d) => d.hostname));
 
@@ -538,11 +636,19 @@ function printUsage(): void {
   );
 }
 
-async function main(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  const modes = ["status", "cutover", "rollback"].filter((m) => args.flags.has(m));
+/** Resolve qual dos 3 modos mutuamente exclusivos foi pedido — `null` quando
+ * 0 ou 2+ flags de modo estão presentes (uso inválido, exit 3). Pura —
+ * testável sem tocar `process.argv`/rede/config. */
+export function resolveMode(args: ParsedArgs): "status" | "cutover" | "rollback" | null {
+  const modes = (["status", "cutover", "rollback"] as const).filter((m) => args.flags.has(m));
+  return modes.length === 1 ? modes[0] : null;
+}
 
-  if (modes.length !== 1) {
+export async function main(argv: string[] = process.argv.slice(2), fetchFn: typeof fetch = fetch): Promise<number> {
+  const args = parseArgs(argv);
+  const mode = resolveMode(args);
+
+  if (mode === null) {
     printUsage();
     return 3;
   }
@@ -557,9 +663,9 @@ async function main(): Promise<number> {
   }
 
   try {
-    if (modes[0] === "status") return await runStatus(cfg);
-    if (modes[0] === "cutover") return await runCutover(cfg, apply);
-    return await runRollback(cfg, apply);
+    if (mode === "status") return await runStatus(cfg, fetchFn);
+    if (mode === "cutover") return await runCutover(cfg, apply, fetchFn);
+    return await runRollback(cfg, apply, fetchFn);
   } catch (e) {
     process.stderr.write(`${LOG_PREFIX} erro inesperado: ${(e as Error).message}\n`);
     return 2;
@@ -574,5 +680,3 @@ if (isMainModule(import.meta.url)) {
     process.exitCode = code;
   });
 }
-
-export { loadConfig };

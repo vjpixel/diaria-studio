@@ -208,6 +208,16 @@ O que o script faz por você, e onde:
 - **§3 (procedimento):** `--rollback` faz a ordem certa sozinho — solta o
   Custom Domain (3.1) ANTES de restaurar A/AAAA (3.2), e resolve o "id
   diferente" da 3.2 automaticamente (lê o id atual e faz PATCH nele).
+  **Rode `--status` IMEDIATAMENTE antes de `--rollback --apply`** — o
+  dry-run do rollback (`--rollback` sem `--apply`) imprime o PLANO (attach a
+  soltar + patches/creates), não os registros crus da zona, então uma
+  duplicata (2 registros A, por exemplo um remanescente do Custom Domain
+  mais um manual) não fica visível ali. `--status` imprime `dns.A`/`dns.AAAA`
+  crus — é onde uma duplicata aparece antes de decidir aplicar. Desde a PR
+  #6364, uma duplicata detectada faz `--rollback` (com ou sem `--apply`)
+  **lançar** em vez de silenciosamente escolher "o primeiro registro" — mas
+  o operador só vê a mensagem de erro DEPOIS de já ter tentado; rodar
+  `--status` antes evita a surpresa.
 - **`--cutover`** mecaniza o passo que faltava documentar aqui: anexa o apex
   ao Worker `diaria-site` via **Workers Custom Domain**
   (`PUT /accounts/{account}/workers/domains`) — o mesmo mecanismo por trás de
@@ -216,13 +226,20 @@ O que o script faz por você, e onde:
   completa do porquê deste mecanismo (e não uma Workers Route clássica, já
   refutada pra este apex, nem editar `wrangler.toml` + `wrangler deploy`) no
   docstring de `scripts/lib/apex-cutover.ts`. **Guard de pré-condição
-  embutido:** recusa (exit 1) se o Worker não responder 200 em `/` e
-  `/subscribe` — mecaniza o bloqueio duro do #6359, em implementação
-  paralela a este script.
+  embutido:** recusa (exit 1) a menos que `/` sirva 200 **com o `<title>`
+  real no corpo** (não só "responder alguma coisa" — um Worker que capture
+  uma exceção e devolva 200 com página de erro passaria despercebido só com
+  status) **e** `/subscribe` **redirecione (3xx)** pro perfil Kit hospedado
+  (`diar-ia-br.kit.com`) — `/subscribe` é um redirect por design, não uma
+  página 200 (#6359/#6363/#6365, em implementação paralela a este script).
 - **Verificação pós-mutação (#573):** todo `--apply` termina relendo o
   estado da API (nunca confia na resposta do PUT/PATCH/POST/DELETE).
 - **O que o script NUNCA toca:** MX/TXT/CAA do apex, nem a Beehiiv — o
   `Disconnect domain` continua manual, no painel dela.
 
-Testes (sem rede, sem mock de `fetch` — o módulo puro não faz I/O):
-`test/apex-cutover.test.ts`.
+Testes: `test/apex-cutover.test.ts` (miolo puro — `scripts/lib/apex-cutover.ts`,
+sem rede, sem mock de `fetch`) e `test/apex-cutover-script.test.ts` (camada de
+I/O do script — `fetch` mockado com um estado de zona em memória, mesmo
+padrão de `test/worker-drift-check-script.test.ts`; cobre a sequência guard →
+mutação → verificação, contagem de chamadas de mutação com/sem `--apply`, e
+os exit codes 1/2/3).

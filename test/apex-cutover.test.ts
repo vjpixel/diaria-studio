@@ -1,14 +1,19 @@
 /**
- * apex-cutover.test.ts (#467)
+ * apex-cutover.test.ts (#467, revisado no fleet review da PR #6364)
  *
  * Testa o miolo puro de `scripts/lib/apex-cutover.ts` — sem rede, sem mock de
- * fetch (o módulo não faz I/O). Cobre os 3 requisitos não-negociáveis da
+ * fetch (o módulo não faz I/O). Cobre os requisitos não-negociáveis da
  * unidade:
- *   1. guard de pré-condição do --cutover recusando quando "/" ou "/subscribe"
- *      não dão 200;
- *   2. plano de rollback produzindo exatamente os valores da §1 do
- *      docs/apex-cutover-rollback.md;
- *   3. garantia de que nenhum plano gerado toca MX/TXT/CAA.
+ *   1. guard de pré-condição do --cutover: `/` precisa servir CONTEÚDO
+ *      conhecido (não só 200), `/subscribe` precisa REDIRECIONAR pro destino
+ *      certo (não 200 — é um redirect por design, #6359/#6363).
+ *   2. plano de rollback ORDENADO (detach sempre antes de qualquer op de
+ *      DNS, estrutural — não convenção imperativa do executor).
+ *   3. duplicata de registro DNS na zona é erro DURO (buildRollbackDnsPlan)
+ *      ou mismatch explícito (verifyDnsRestored) — nunca "primeiro encontrado,
+ *      segue em frente".
+ *   4. garantia de que nenhum plano gerado toca MX/TXT/CAA (nem qualquer
+ *      outro tipo fora de A/AAAA).
  */
 
 import { describe, it } from "node:test";
@@ -20,54 +25,130 @@ import {
   ALLOWED_DNS_RECORD_TYPES,
   FORBIDDEN_DNS_RECORD_TYPES,
   PRE_CUTOVER_DNS_RECORDS,
+  EXPECTED_ROOT_MARKER,
+  EXPECTED_SUBSCRIBE_REDIRECT_HOST,
   assertAllowedDnsRecordType,
   evaluateCutoverPrecondition,
   buildCutoverPlan,
   buildRollbackDnsPlan,
   buildRollbackPlan,
+  extractRollbackDnsOps,
   assertPlanTouchesOnlyAllowedRecordTypes,
   verifyDnsRestored,
   verifyCustomDomainDetached,
   verifyCutoverAttached,
 } from "../scripts/lib/apex-cutover.ts";
 
+const OK_ROOT_BODY = `<html><head><title>diar.ia.br</title></head><body></body></html>`;
+const OK_SUBSCRIBE_LOCATION = `https://${EXPECTED_SUBSCRIBE_REDIRECT_HOST}/`;
+
+const READY_INPUT = {
+  workerRootStatus: 200,
+  workerRootBody: OK_ROOT_BODY,
+  workerSubscribeStatus: 302,
+  workerSubscribeLocation: OK_SUBSCRIBE_LOCATION,
+};
+
 describe("evaluateCutoverPrecondition — guard de pré-condição (#467, coração desta unidade)", () => {
+  it("libera quando '/' serve o marcador certo e '/subscribe' redireciona pro destino certo", () => {
+    const r = evaluateCutoverPrecondition(READY_INPUT);
+    assert.equal(r.ready, true);
+    assert.deepEqual(r.blockers, []);
+  });
+
   it("recusa quando '/' não dá 200", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: 404, workerSubscribeStatus: 200 });
+    const r = evaluateCutoverPrecondition({ ...READY_INPUT, workerRootStatus: 404, workerRootBody: null });
     assert.equal(r.ready, false);
     assert.equal(r.blockers.length, 1);
     assert.match(r.blockers[0], /"\/"/);
     assert.match(r.blockers[0], /404/);
   });
 
-  it("recusa quando '/subscribe' não dá 200", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: 200, workerSubscribeStatus: 404 });
+  it("F1 (PR #6364) — recusa '/' com 200 mas corpo de ERRO (página capturada, não a real)", () => {
+    const r = evaluateCutoverPrecondition({
+      ...READY_INPUT,
+      workerRootStatus: 200,
+      workerRootBody: "<html><body>Internal Server Error</body></html>",
+    });
+    assert.equal(r.ready, false);
+    assert.equal(r.blockers.length, 1);
+    assert.match(r.blockers[0], /marcador esperado/);
+  });
+
+  it("recusa '/' com 200 e corpo nulo (erro de rede na leitura do corpo) — fail closed", () => {
+    const r = evaluateCutoverPrecondition({ ...READY_INPUT, workerRootStatus: 200, workerRootBody: null });
+    assert.equal(r.ready, false);
+  });
+
+  it("recusa quando '/subscribe' não é um redirect (200 estrito não é mais o critério — é redirect por design)", () => {
+    const r = evaluateCutoverPrecondition({
+      ...READY_INPUT,
+      workerSubscribeStatus: 200,
+      workerSubscribeLocation: null,
+    });
     assert.equal(r.ready, false);
     assert.equal(r.blockers.length, 1);
     assert.match(r.blockers[0], /"\/subscribe"/);
   });
 
-  it("recusa com os DOIS blockers quando ambos falham — estado real de hoje (26/08/2026, #6359)", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: 404, workerSubscribeStatus: 404 });
+  it("recusa quando '/subscribe' responde 404 (estado real ANTES do #6363 mergear)", () => {
+    const r = evaluateCutoverPrecondition({
+      ...READY_INPUT,
+      workerSubscribeStatus: 404,
+      workerSubscribeLocation: null,
+    });
+    assert.equal(r.ready, false);
+    assert.match(r.blockers[0], /"\/subscribe"/);
+    assert.match(r.blockers[0], /404/);
+  });
+
+  it("recusa quando '/subscribe' redireciona (3xx) mas para o HOST ERRADO", () => {
+    const r = evaluateCutoverPrecondition({
+      ...READY_INPUT,
+      workerSubscribeStatus: 302,
+      workerSubscribeLocation: "https://outro-host.exemplo/",
+    });
+    assert.equal(r.ready, false);
+    assert.match(r.blockers[0], /outro-host.exemplo/);
+  });
+
+  it("recusa quando '/subscribe' é 3xx mas sem header Location", () => {
+    const r = evaluateCutoverPrecondition({
+      ...READY_INPUT,
+      workerSubscribeStatus: 302,
+      workerSubscribeLocation: null,
+    });
+    assert.equal(r.ready, false);
+    assert.match(r.blockers[0], /sem header Location/);
+  });
+
+  it("aceita qualquer código 3xx (301, 302, 307, 308) pro redirect de '/subscribe', não só 302", () => {
+    for (const status of [301, 302, 307, 308]) {
+      const r = evaluateCutoverPrecondition({ ...READY_INPUT, workerSubscribeStatus: status });
+      assert.equal(r.ready, true, `esperava ready=true para status ${status}`);
+    }
+  });
+
+  it("recusa com os DOIS blockers quando ambos os paths falham", () => {
+    const r = evaluateCutoverPrecondition({
+      workerRootStatus: 404,
+      workerRootBody: null,
+      workerSubscribeStatus: 404,
+      workerSubscribeLocation: null,
+    });
     assert.equal(r.ready, false);
     assert.equal(r.blockers.length, 2);
   });
 
-  it("recusa em erro de rede (null), não só em status HTTP explícito", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: null, workerSubscribeStatus: null });
+  it("recusa em erro de rede (null) nos dois paths, não só em status HTTP explícito", () => {
+    const r = evaluateCutoverPrecondition({
+      workerRootStatus: null,
+      workerRootBody: null,
+      workerSubscribeStatus: null,
+      workerSubscribeLocation: null,
+    });
     assert.equal(r.ready, false);
     assert.equal(r.blockers.length, 2);
-  });
-
-  it("recusa um redirect (3xx) — a promessa é 200 exato, não 'responde alguma coisa'", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: 307, workerSubscribeStatus: 200 });
-    assert.equal(r.ready, false);
-  });
-
-  it("libera só quando os DOIS dão 200 exato", () => {
-    const r = evaluateCutoverPrecondition({ workerRootStatus: 200, workerSubscribeStatus: 200 });
-    assert.equal(r.ready, true);
-    assert.deepEqual(r.blockers, []);
   });
 });
 
@@ -138,25 +219,96 @@ describe("buildRollbackDnsPlan — produz exatamente os valores da §1 do doc de
     assert.equal(a.op, "patch");
     assert.equal(aaaa.op, "create");
   });
+
+  it("F(P1, silent-failure-hunter) — 2 registros A na zona: lança, não escolhe 'o primeiro' silenciosamente", () => {
+    assert.throws(
+      () =>
+        buildRollbackDnsPlan([
+          { id: "a-1", type: "A" },
+          { id: "a-2", type: "A" },
+        ]),
+      /2 registros A encontrados/,
+    );
+  });
+
+  it("duplicata em AAAA também lança, não só A", () => {
+    assert.throws(
+      () =>
+        buildRollbackDnsPlan([
+          { id: "aaaa-1", type: "AAAA" },
+          { id: "aaaa-2", type: "AAAA" },
+        ]),
+      /2 registros AAAA encontrados/,
+    );
+  });
+
+  it("3+ registros do mesmo tipo: a mensagem cita a contagem real, não trava em '2'", () => {
+    assert.throws(
+      () =>
+        buildRollbackDnsPlan([
+          { id: "a-1", type: "A" },
+          { id: "a-2", type: "A" },
+          { id: "a-3", type: "A" },
+        ]),
+      /3 registros A encontrados/,
+    );
+  });
 });
 
-describe("buildRollbackPlan — ordem detach-antes-de-DNS (docs/apex-cutover-rollback.md §3.1)", () => {
-  it("com Custom Domain do apex presente: inclui detachOp", () => {
+describe("buildRollbackPlan — plano ORDENADO detach-antes-de-DNS (docs/apex-cutover-rollback.md §3.1)", () => {
+  it("com Custom Domain do apex presente: o PRIMEIRO passo é sempre o detach", () => {
     const plan = buildRollbackPlan("domain-id-123", []);
-    assert.ok(plan.detachOp);
-    assert.equal(plan.detachOp!.op, "detach");
-    assert.equal(plan.detachOp!.domainId, "domain-id-123");
-    assert.equal(plan.detachOp!.hostname, APEX_HOSTNAME);
+    assert.equal(plan[0].kind, "detach");
+    assert.equal((plan[0] as { kind: "detach"; detach: { domainId: string } }).detach.domainId, "domain-id-123");
+    assert.equal((plan[0] as { kind: "detach"; detach: { hostname: string } }).detach.hostname, APEX_HOSTNAME);
   });
 
-  it("sem Custom Domain do apex: detachOp é null (nada a soltar)", () => {
-    const plan = buildRollbackPlan(null, []);
-    assert.equal(plan.detachOp, null);
+  it("F2 (PR #6364) — nenhum passo 'dns' aparece ANTES do passo 'detach' quando ambos existem", () => {
+    const plan = buildRollbackPlan("domain-id-123", []);
+    const detachIndex = plan.findIndex((s) => s.kind === "detach");
+    const firstDnsIndex = plan.findIndex((s) => s.kind === "dns");
+    assert.ok(detachIndex !== -1, "esperava um passo de detach no plano");
+    assert.ok(firstDnsIndex !== -1, "esperava pelo menos um passo de dns no plano");
+    assert.ok(
+      detachIndex < firstDnsIndex,
+      `detach (index ${detachIndex}) deveria vir antes do primeiro dns (index ${firstDnsIndex})`,
+    );
   });
 
-  it("sempre inclui os 2 dnsOps (A + AAAA), independente do custom domain", () => {
+  it("sem Custom Domain do apex: nenhum passo 'detach' no plano — começa direto no DNS", () => {
     const plan = buildRollbackPlan(null, []);
-    assert.equal(plan.dnsOps.length, 2);
+    assert.equal(plan.some((s) => s.kind === "detach"), false);
+    assert.equal(plan[0].kind, "dns");
+  });
+
+  it("sempre inclui os 2 passos de dns (A + AAAA), independente do custom domain", () => {
+    const plan = buildRollbackPlan(null, []);
+    assert.equal(plan.filter((s) => s.kind === "dns").length, 2);
+  });
+
+  it("propaga o erro de duplicata de buildRollbackDnsPlan (não engole silenciosamente)", () => {
+    assert.throws(
+      () =>
+        buildRollbackPlan("domain-id-123", [
+          { id: "a-1", type: "A" },
+          { id: "a-2", type: "A" },
+        ]),
+      /2 registros A encontrados/,
+    );
+  });
+});
+
+describe("extractRollbackDnsOps — extrai só o lado DNS do plano, na ordem", () => {
+  it("com detach presente: extrai só os 2 dns ops, sem o detach", () => {
+    const plan = buildRollbackPlan("domain-id-123", []);
+    const dnsOps = extractRollbackDnsOps(plan);
+    assert.equal(dnsOps.length, 2);
+    assert.ok(dnsOps.every((op) => op.type === "A" || op.type === "AAAA"));
+  });
+
+  it("sem detach: mesmo resultado (não depende do detach existir)", () => {
+    const plan = buildRollbackPlan(null, []);
+    assert.equal(extractRollbackDnsOps(plan).length, 2);
   });
 });
 
@@ -177,6 +329,12 @@ describe("Guard MX/TXT/CAA — nenhum plano gerado toca esses tipos (requisito n
     }
   });
 
+  it("F4 (P2, PR #6364) — assertAllowedDnsRecordType lança pra um tipo FORA da allowlist e fora de FORBIDDEN_DNS_RECORD_TYPES (CNAME) — não é só MX/TXT/CAA hardcoded", () => {
+    assert.throws(() => assertAllowedDnsRecordType("CNAME"), /fora do escopo permitido/);
+    assert.throws(() => assertAllowedDnsRecordType("NS"), /fora do escopo permitido/);
+    assert.throws(() => assertAllowedDnsRecordType("SRV"), /fora do escopo permitido/);
+  });
+
   it("assertAllowedDnsRecordType NÃO lança para A/AAAA", () => {
     assert.doesNotThrow(() => assertAllowedDnsRecordType("A"));
     assert.doesNotThrow(() => assertAllowedDnsRecordType("AAAA"));
@@ -185,6 +343,13 @@ describe("Guard MX/TXT/CAA — nenhum plano gerado toca esses tipos (requisito n
   it("assertPlanTouchesOnlyAllowedRecordTypes lança se um plano (hipotético, malicioso/bugado) incluir MX", () => {
     assert.throws(
       () => assertPlanTouchesOnlyAllowedRecordTypes([{ type: "A" }, { type: "MX" }]),
+      /fora do escopo permitido/,
+    );
+  });
+
+  it("assertPlanTouchesOnlyAllowedRecordTypes lança pra CNAME também (não só os 3 tipos citados no docstring)", () => {
+    assert.throws(
+      () => assertPlanTouchesOnlyAllowedRecordTypes([{ type: "A" }, { type: "CNAME" }]),
       /fora do escopo permitido/,
     );
   });
@@ -241,10 +406,54 @@ describe("verifyDnsRestored — verificação pós-mutação (#573), nunca confi
     assert.match(r.mismatches[0], /proxied/);
   });
 
+  it("F5 (P3, PR #6364) — detecta ttl divergente ISOLADO (content e proxied corretos)", () => {
+    const r = verifyDnsRestored([
+      { type: "A", content: "104.16.243.55", proxied: true, ttl: 300 },
+      { type: "AAAA", content: "2001:12ff:0:2::95", proxied: true, ttl: 1 },
+    ]);
+    assert.equal(r.restored, false);
+    assert.equal(r.mismatches.length, 1);
+    assert.match(r.mismatches[0], /ttl/);
+  });
+
+  it("F5 (P3, PR #6364) — detecta mismatch SIMULTÂNEO em A e AAAA (2 entradas em mismatches, não só a primeira)", () => {
+    const r = verifyDnsRestored([
+      { type: "A", content: "1.2.3.4", proxied: true, ttl: 1 },
+      { type: "AAAA", content: "dead:beef::1", proxied: true, ttl: 1 },
+    ]);
+    assert.equal(r.restored, false);
+    assert.equal(r.mismatches.length, 2);
+    assert.ok(r.mismatches.some((m) => m.startsWith("A:")));
+    assert.ok(r.mismatches.some((m) => m.startsWith("AAAA:")));
+  });
+
   it("detecta registro ausente", () => {
     const r = verifyDnsRestored([{ type: "A", content: "104.16.243.55", proxied: true, ttl: 1 }]);
     assert.equal(r.restored, false);
     assert.match(r.mismatches[0], /ausente/);
+  });
+
+  it("P1 (silent-failure-hunter, PR #6364) — 2 registros A na zona (1 certo + 1 stale): mismatch explícito, NUNCA restored:true cego", () => {
+    const r = verifyDnsRestored([
+      { type: "A", content: "104.16.243.55", proxied: true, ttl: 1 }, // o "certo"
+      { type: "A", content: "1.2.3.4", proxied: true, ttl: 1 }, // stale, ainda na zona
+      { type: "AAAA", content: "2001:12ff:0:2::95", proxied: true, ttl: 1 },
+    ]);
+    assert.equal(r.restored, false);
+    assert.equal(r.mismatches.length, 1);
+    assert.match(r.mismatches[0], /2 registros encontrados/);
+    assert.match(r.mismatches[0], /^A:/);
+  });
+
+  it("duplicata em AAAA também vira mismatch, não só A", () => {
+    const r = verifyDnsRestored([
+      { type: "A", content: "104.16.243.55", proxied: true, ttl: 1 },
+      { type: "AAAA", content: "2001:12ff:0:2::95", proxied: true, ttl: 1 },
+      { type: "AAAA", content: "dead:beef::stale", proxied: true, ttl: 1 },
+    ]);
+    assert.equal(r.restored, false);
+    assert.match(r.mismatches[0], /^AAAA:/);
+    assert.match(r.mismatches[0], /2 registros encontrados/);
   });
 });
 
@@ -274,5 +483,16 @@ describe("verifyCustomDomainDetached / verifyCutoverAttached", () => {
 
   it("attached=false com lista vazia", () => {
     assert.equal(verifyCutoverAttached([]), false);
+  });
+});
+
+describe("Constantes de conteúdo esperado (#6364, item 1) — sanidade", () => {
+  it("EXPECTED_ROOT_MARKER é um marcador de conteúdo real, não um status", () => {
+    assert.match(EXPECTED_ROOT_MARKER, /<title>/);
+  });
+
+  it("EXPECTED_SUBSCRIBE_REDIRECT_HOST é um host, sem protocolo/path", () => {
+    assert.equal(EXPECTED_SUBSCRIBE_REDIRECT_HOST.includes("://"), false);
+    assert.equal(EXPECTED_SUBSCRIBE_REDIRECT_HOST.includes("/"), false);
   });
 });
