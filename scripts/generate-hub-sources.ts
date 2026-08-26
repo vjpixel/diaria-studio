@@ -749,7 +749,6 @@ function main(): void {
 
   // `--all` (#5125): regenera TODOS os hubs numa invocação, carregando o
   // corpus UMA vez só (`loadPosts` lê ~250 arquivos JSON do junction `data/`;
-  // 7 invocações separadas pagavam essa leitura 7×). É o modo que a task
   // 7 invocações separadas pagavam essa leitura 7×). Invocação MANUAL — não
   // está ligado a nenhuma task agendada, ver a nota do módulo sobre
   // `UPDATED_DATE`/#6267. Incompatível com `--backfill-titles`, que é um
