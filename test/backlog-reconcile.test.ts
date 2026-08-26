@@ -177,6 +177,43 @@ describe("detectMarkerDeferralConflict — restrição inegociável (nunca corri
     assert.equal(detectMarkerDeferralConflict(closed, NOW), null);
   });
 
+  it("wontfix + marcador → ALARME, nunca fix (veredito 'nunca' vence data 'ainda não')", () => {
+    // `wontfix` foi incluído no conjunto auto-corrigível "por simetria" com
+    // `on-hold`, sem fixture. A simetria não se sustenta: `on-hold`/
+    // `not-this-week`/`next-month` dizem "agora não", e o marcador de data os
+    // contradiz de forma resolvível. `wontfix` diz "nunca" — num conflito, o
+    // candidato a obsoleto é o MARCADOR, e remover a label ressuscitaria
+    // trabalho descartado de propósito. Self-review do #6198, rodada 260826.
+    const wontfixed = issue({
+      number: 90010,
+      title: "fixture sintética — wontfix com marcador",
+      labels: ["wontfix"],
+      body: "<!-- aguardando-ate: 2026-09-01 -->",
+    });
+    const finding = detectMarkerDeferralConflict(wontfixed, NOW);
+    assert.ok(finding);
+    assert.equal(finding.action, "alarm", "wontfix NUNCA pode virar correção automática");
+    if (finding.action !== "alarm") return;
+    assert.equal(finding.patternId, "marker-wontfix-conflict");
+    assert.deepEqual(finding.conflictingLabels, ["wontfix"]);
+  });
+
+  it("wontfix junto de outra label de deferimento continua alarme (wontfix domina)", () => {
+    // Sem esta guarda, `on-hold` cairia no caminho de fix e a remoção levaria
+    // `wontfix` junto no mesmo `routeIssue`.
+    const both = issue({
+      number: 90011,
+      title: "fixture sintética — wontfix + on-hold",
+      labels: ["wontfix", "on-hold"],
+      body: "<!-- aguardando-ate: 2026-09-01 -->",
+    });
+    const finding = detectMarkerDeferralConflict(both, NOW);
+    assert.ok(finding);
+    assert.equal(finding.action, "alarm");
+    if (finding.action !== "alarm") return;
+    assert.equal(finding.patternId, "marker-wontfix-conflict");
+  });
+
   it("idempotência: rodar contra o estado JÁ CORRIGIDO (label removida, marcador só) não acha nada de novo", () => {
     const alreadyFixed = issue({ number: 5734, title: "já corrigida", labels: ["enhancement", "P2", "growth"], body: "<!-- aguardando-ate: 2026-08-28 -->" });
     assert.equal(detectMarkerDeferralConflict(alreadyFixed, NOW), null);

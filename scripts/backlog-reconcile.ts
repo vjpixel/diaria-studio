@@ -182,6 +182,10 @@ function printReport(findings: readonly ReconcileFinding[], applied: Map<number,
       console.log(
         `#${a.issue} — ${a.title} — padrão ${a.patternId}: marcador ${a.markerDate} + [${a.conflictingLabels.join(", ")}], MAS outras labels roteáveis coexistem [${a.otherRoutableLabels.join(", ")}] — não corrigido automaticamente.`,
       );
+    } else if (a.patternId === "marker-wontfix-conflict") {
+      console.log(
+        `#${a.issue} — ${a.title} — padrão ${a.patternId}: marcador ${a.markerDate} + \`wontfix\` — contradição real, mas NUNCA auto-corrigida: \`wontfix\` ("nunca") é veredito mais forte que a data ("ainda não"), então o candidato a obsoleto é o marcador. Resolver à mão.`,
+      );
     } else if (a.patternId === "inherited-block-label") {
       console.log(
         `#${a.issue} — ${a.title} — padrão ${a.patternId}: herda [${a.sharedLabels.join(", ")}] da mãe #${a.parentNumber}.`,

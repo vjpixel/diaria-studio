@@ -78,13 +78,30 @@ export interface BacklogIssueInput {
 
 /** Labels que, coexistindo com um marcador `aguardando-ate:` válido, são
  * uma contradição pura resolvível sem julgamento — o marcador é o sinal
- * mais específico e vence. União de `OUT_OF_ROUND_LABELS` (padrão #2:
- * `on-hold`, mais `wontfix` por simetria) e `DEFERRED_LABELS` (padrão #1:
- * `not-this-week`, `next-month`) de `issue-exec-track.ts` — não importadas
- * de lá porque não são exportadas individualmente (só a união via
- * `EXEC_TRACK_UI`); os 4 literais são citados na docstring de
- * `classifyExecTrack` como o vocabulário estável desses dois Sets. */
-export const DEFERRAL_CONFLICT_LABELS: readonly string[] = ["on-hold", "wontfix", "not-this-week", "next-month"];
+ * mais específico e vence. Subconjunto de `OUT_OF_ROUND_LABELS` (padrão #2:
+ * `on-hold`) e `DEFERRED_LABELS` (padrão #1: `not-this-week`, `next-month`)
+ * de `issue-exec-track.ts` — não importadas de lá porque não são exportadas
+ * individualmente (só a união via `EXEC_TRACK_UI`); os literais são citados
+ * na docstring de `classifyExecTrack` como o vocabulário estável desses Sets.
+ *
+ * **`wontfix` NÃO entra aqui** (self-review do #6198, decidido na revisão da
+ * rodada overnight 260826). A simetria com `on-hold` é aparente: as três
+ * labels desta lista dizem *"agora não"*, e um marcador de data futura
+ * genuinamente as contradiz — a data é a informação mais nova e mais
+ * específica. `wontfix` diz *"nunca"*, que é um veredito de outra ordem.
+ * Num conflito entre `wontfix` e um marcador, o candidato a obsoleto é o
+ * MARCADOR (deferimento antigo que o editor depois decidiu não fazer), não
+ * o `wontfix` — então remover a label seria justamente ressuscitar trabalho
+ * descartado de propósito, o oposto da restrição inegociável da #6198.
+ *
+ * `wontfix` continua sendo detectado: cai em `WONTFIX_LABEL` abaixo e vira
+ * ALARME, nunca correção. */
+export const DEFERRAL_CONFLICT_LABELS: readonly string[] = ["on-hold", "not-this-week", "next-month"];
+
+/** `wontfix` + marcador de data é contradição real, mas NÃO auto-corrigível
+ * — ver nota em `DEFERRAL_CONFLICT_LABELS`. Detectado como alarme pra que o
+ * conflito não fique invisível. */
+export const WONTFIX_LABEL = "wontfix";
 
 export interface MarkerDeferralConflictFix {
   action: "fix";
@@ -117,7 +134,28 @@ export interface MarkerDeferralConflictAlarm {
   markerDate: string;
 }
 
-export type MarkerDeferralFinding = MarkerDeferralConflictFix | MarkerDeferralConflictAlarm;
+/** `wontfix` + marcador `aguardando-ate:` — contradição real, mas NUNCA
+ * auto-corrigível. Interface própria (em vez de alargar o `patternId` de
+ * `MarkerDeferralConflictAlarm`) pra preservar o narrowing por discriminante
+ * nos consumidores: o CLI ramifica em `patternId` e um union de 2 literais
+ * num mesmo membro colapsaria os campos específicos de cada alarme.
+ * Ver nota em `DEFERRAL_CONFLICT_LABELS`. */
+export interface MarkerWontfixConflictAlarm {
+  action: "alarm";
+  patternId: "marker-wontfix-conflict";
+  issue: number;
+  title: string;
+  url: string;
+  /** Sempre `["wontfix"]` — mantido como lista pra uniformidade com os
+   * demais alarmes, que reportam conjuntos. */
+  conflictingLabels: string[];
+  markerDate: string;
+}
+
+export type MarkerDeferralFinding =
+  | MarkerDeferralConflictFix
+  | MarkerDeferralConflictAlarm
+  | MarkerWontfixConflictAlarm;
 
 /**
  * Detecta o padrão 1/2 numa issue OPEN. `null` se não há marcador válido, ou
@@ -135,6 +173,22 @@ export function detectMarkerDeferralConflict(issue: BacklogIssueInput, now: Date
   if (!markerDate) return null;
 
   const conflictingLabels = issue.labels.filter((l) => DEFERRAL_CONFLICT_LABELS.includes(l));
+
+  // `wontfix` + marcador: contradição real, veredito forte demais pra ser
+  // desfeito por heurística. Alarma e sai — nunca chega ao caminho de fix.
+  // Ver nota em `DEFERRAL_CONFLICT_LABELS`.
+  if (issue.labels.includes(WONTFIX_LABEL)) {
+    return {
+      action: "alarm",
+      patternId: "marker-wontfix-conflict",
+      issue: issue.number,
+      title: issue.title,
+      url: issue.url,
+      conflictingLabels: [WONTFIX_LABEL],
+      markerDate: markerDate.toISOString().slice(0, 10),
+    };
+  }
+
   if (conflictingLabels.length === 0) return null;
 
   const otherRoutableLabels = issue.labels.filter(
@@ -314,6 +368,7 @@ export function detectOpenChecklistInTerminalIssue(
 
 export type ReconcileFinding =
   | MarkerDeferralFinding
+  | MarkerWontfixConflictAlarm
   | InheritedBlockLabelAlarm
   | OpenChecklistInTerminalIssueAlarm;
 
@@ -323,10 +378,10 @@ export type ReconcileFinding =
  * misturando os dois. */
 export function splitFindingsByAction(findings: readonly ReconcileFinding[]): {
   fixes: MarkerDeferralConflictFix[];
-  alarms: Array<MarkerDeferralConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm>;
+  alarms: Array<MarkerDeferralConflictAlarm | MarkerWontfixConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm>;
 } {
   const fixes: MarkerDeferralConflictFix[] = [];
-  const alarms: Array<MarkerDeferralConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm> = [];
+  const alarms: Array<MarkerDeferralConflictAlarm | MarkerWontfixConflictAlarm | InheritedBlockLabelAlarm | OpenChecklistInTerminalIssueAlarm> = [];
   for (const f of findings) {
     if (f.action === "fix") fixes.push(f);
     else alarms.push(f);
