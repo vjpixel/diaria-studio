@@ -1219,6 +1219,31 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // não muda nada em produção; cabe ao editor (ou a uma rodada
     // overnight/develop que veja o diff) revisar e deployar manualmente.
     steps: [{ key: "build", script: "scripts/build-hub-page.ts", args: ["--all", "--check-facts"] }],
+    // **`enabled: false` DE PROPÓSITO (#6267, decisão do editor 26/08/2026)
+    // — não é "ainda não armada".** Mesmo estado deliberado de
+    // `Diaria-Sunset-Weekly` acima. Como declarada, esta task NÃO PODE ter
+    // sucesso: `--check-facts` sem `--skip-fact-check` exige
+    // `data/hub-fact-check/{slug}-report.json`, e esse arquivo NUNCA existiu
+    // pra nenhum hub — `.claude/agents/fact-checker.md` §"Modo hub" registra
+    // que o dispatch do agente nunca foi ligado ("sem alguém rodar você
+    // manualmente sobre o manifesto, `{slug}-report.json` nunca existe").
+    // Armada hoje, ela abortaria (`exit 2`) no 1º hub, todo domingo, sem
+    // gerar um único `.generated.ts`.
+    //
+    // Um 2º bloqueador, independente, mata também a variante "só regenerar
+    // as fontes": `UPDATED_DATE` é hand-written em cada
+    // `scripts/lib/hubs/{slug}.ts` e `validateHubContent` exige
+    // `updatedDate >= sourceEditions[0].date` (guard do #5124, correto).
+    // Fonte regenerada sempre avança à frente dele — medido em 26/08: com as
+    // fontes regeneradas, 5 testes de render quebram —, então um passo
+    // desassistido deixaria a checkout compartilhada suja toda semana.
+    //
+    // Decisão registrada no #6267: o regen fica MANUAL (barato e seguro
+    // desde o #6270 — `--all` + `manual: true`), rastreado por issue quando
+    // a defasagem acumula (#6274). Religar exige antes resolver os dois
+    // bloqueadores; `UPDATED_DATE` derivado só com um campo hand-written
+    // NOVO pra data de revisão da prosa, nunca colapsando os dois sentidos.
+    enabled: false,
     logPath: "hubs/.build-all.log",
     // Domingo 08:05 BRT (a sugestão original da issue era 08:00 em ponto —
     // 5min de folga porque `minute:0` bateria em toda batida de interval que
