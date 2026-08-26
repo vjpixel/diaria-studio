@@ -136,6 +136,43 @@ export async function markIdentifyLinked(bEnv: Env, email: string, anonEmail: st
 }
 
 /**
+ * #6293: marcador de POSSE PROVADA de um e-mail — chave própria, sem TTL
+ * (posse não caduca, ao contrário do token de merge em si, que é one-time-use
+ * com TTL de 24h). Gravado por `handleConfirmMerge` (único ponto do worker
+ * que sabe que uma pessoa de fato clicou num link enviado àquele endereço) e
+ * lido por `handleJogarGateVerify` (web-gate.ts) pra decidir `confirmed` vs
+ * `pending` no cookie de sessão do gate `/jogar`.
+ *
+ * Por que server-side (KV) e não um cookie emitido aqui: o link é
+ * tipicamente clicado num dispositivo DIFERENTE do que está jogando
+ * (cross-device é a própria razão do #3996 existir) — um cookie sairia no
+ * aparelho errado. O marcador no KV é por e-mail, não por sessão/dispositivo:
+ * clicar no celular libera o desktop na próxima chamada a `/jogar/gate/verify`.
+ *
+ * Key SEM hash e sem prefixo de escopo cruzado com `identify-linked:` —
+ * mesma convenção já usada por essa família de chaves neste worker (plain
+ * `{namespace}:{email}[...]`, e-mail já normalizado/lowercased pelos
+ * callers antes de chegar aqui).
+ */
+function emailPossessionVerifiedKey(email: string): string {
+  return `gate-email-verified:${email}`;
+}
+
+/** true quando `email` já provou posse via magic link em algum momento —
+ * único critério pra `handleJogarGateVerify` emitir sessão `confirmed`. */
+export async function hasProvenEmailPossession(bEnv: Env, email: string): Promise<boolean> {
+  return !!(await bEnv.POLL.get(emailPossessionVerifiedKey(email)));
+}
+
+/** Grava o marcador de posse provada pra `email` — chamado por
+ * `handleConfirmMerge` assim que o token do magic link é validado e
+ * consumido (a prova é o clique em si, independente do merge de score
+ * subsequente ter sucesso). */
+export async function markEmailPossessionVerified(bEnv: Env, email: string): Promise<void> {
+  await bEnv.POLL.put(emailPossessionVerifiedKey(email), "1");
+}
+
+/**
  * #3996: detecta "score histórico órfão" — `score:{email}` já existe no KV
  * (histórico identificado prévio, de QUALQUER origem) E o par (email,
  * anonEmail-da-sessão-atual) nunca foi confirmado. Quando `true`,
@@ -420,6 +457,11 @@ export async function handleConfirmMerge(
   if (!pending) {
     return confirmMergeHtmlResponse(false, "Link inválido, expirado ou já usado.");
   }
+  // #6293: o clique em si É a prova de posse (só quem recebeu o e-mail
+  // consegue consumir o token) — grava o marcador ANTES do merge de score,
+  // que é uma preocupação separada (e pode falhar/ser no-op sem invalidar
+  // a posse já provada).
+  await markEmailPossessionVerified(bEnv, pending.email);
   const mergeInput: IdentifyMergeInput = {
     email: pending.email,
     anonEmail: pending.anonEmail,
