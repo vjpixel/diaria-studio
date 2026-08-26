@@ -30,6 +30,7 @@ import {
   buildArchivePageHtml,
   buildSitemapXml,
   sitemapEntriesForPosts,
+  UnresolvedMergeTagError,
 } from "../scripts/lib/site-archive-pages.ts";
 import { generateArchivePages, loadPosts } from "../scripts/gen-archive-pages.ts";
 
@@ -292,6 +293,77 @@ describe("generateArchivePages (integração, tmpdir)", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // #6256 — regressão: antes desta unidade, UM post com merge tag desconhecida
+  // (não coberta pela whitelist de 2 sanitizes) abortava buildArchivePageHtml
+  // pro lote INTEIRO — nenhum outro post saía, mesmo íntegro. Este teste prova
+  // que um post "envenenado" NO MEIO do lote (não o 1º, não o último) não
+  // impede os demais de serem gerados.
+  it("post envenenado (merge tag desconhecida) NO MEIO do lote não derruba os demais", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-poisoned-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      const posts = [
+        makePost({ slug: "antes-1", publish_date: 4000 }),
+        makePost({ slug: "antes-2", publish_date: 3000 }),
+        makePost({
+          slug: "envenenado",
+          publish_date: 2000,
+          content: {
+            free: {
+              web: '<!DOCTYPE html><html><head></head><body><p>Olá {{first_name}}</p></body></html>',
+            },
+          },
+        }),
+        makePost({ slug: "depois-1", publish_date: 1000 }),
+        makePost({ slug: "depois-2", publish_date: 500 }),
+      ];
+
+      const result = generateArchivePages(posts, outDir, sitemapPath);
+
+      // Os 4 posts íntegros saem normalmente — o envenenado não derruba o lote.
+      assert.equal(result.written, 4);
+      assert.deepEqual(readdirSync(outDir).sort(), ["antes-1", "antes-2", "depois-1", "depois-2"]);
+
+      // O relatório nomeia o post E a tag — não é preciso re-rodar pra descobrir qual.
+      assert.equal(result.unresolvedMergeTags.length, 1);
+      assert.equal(result.unresolvedMergeTags[0].slug, "envenenado");
+      assert.deepEqual(result.unresolvedMergeTags[0].tags, ["{{first_name}}"]);
+
+      // skipped genérico também reflete o motivo, pro caller que só olha essa lista.
+      const skip = result.skipped.find((s) => s.slug === "envenenado");
+      assert.ok(skip, "post envenenado deve aparecer em skipped");
+      assert.match(skip!.reason, /merge tag não resolvida.*first_name/);
+
+      // Sitemap segue listando só o que ganhou página — sem o envenenado.
+      const sitemap = readFileSync(sitemapPath, "utf8");
+      assert.doesNotMatch(sitemap, /\/p\/envenenado</);
+      assert.equal((sitemap.match(/<loc>/g) ?? []).length, 4);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("erro DIFERENTE de merge tag (ex: sem <html>) continua abortando o lote inteiro", () => {
+    // Distinção deliberada do #6256: só merge tag desconhecida degrada por
+    // post. Qualquer outra falha de buildArchivePageHtml é sinal estrutural
+    // (mesma classe de decisão do JSON corrompido em loadPosts) e segue
+    // abortando — não uniformizar os dois.
+    const tmp = mkdtempSync(join(tmpdir(), "archive-pages-other-error-"));
+    try {
+      const outDir = join(tmp, "p");
+      const sitemapPath = join(tmp, "sitemap.xml");
+      const posts = [
+        makePost({ slug: "ok-1" }),
+        makePost({ slug: "sem-html-tag", content: { free: { web: "<body>sem html/head nenhum</body>" } } }),
+      ];
+
+      assert.throws(() => generateArchivePages(posts, outDir, sitemapPath), /não tem tag <html>/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("loadPosts (integração, tmpdir)", () => {
@@ -363,6 +435,29 @@ describe("buildArchivePageHtml — link de voto com merge tag padrão (#6210 × 
       () => buildArchivePageHtml(comVoto('<!DOCTYPE html><html><head></head><body><p>seu e-mail: {{email}}</p></body></html>')),
       /merge tag não resolvida/,
     );
+  });
+});
+
+// #6256 — a whitelist de sanitizes SÓ trata {{email}}/{{email_address_id}};
+// qualquer OUTRA merge tag desconhecida precisa lançar um tipo DISTINGUÍVEL
+// (não só um Error genérico) pra generateArchivePages poder degradar por
+// post em vez de abortar o lote inteiro.
+describe("verifyNoUnresolvedMergeTags — tipo do erro (#6256)", () => {
+  it("lança UnresolvedMergeTagError (não Error genérico) com slug + tags únicas", () => {
+    const post = makePost({
+      content: {
+        free: {
+          web: '<!DOCTYPE html><html><head></head><body><p>Olá {{first_name}}, {{first_name}} de novo, e {{last_name}}</p></body></html>',
+        },
+      },
+    });
+    assert.throws(() => buildArchivePageHtml(post), (err: unknown) => {
+      assert.ok(err instanceof UnresolvedMergeTagError, "deve ser UnresolvedMergeTagError");
+      assert.equal((err as UnresolvedMergeTagError).slug, "exemplo-de-edicao");
+      // {{first_name}} repetido, {{last_name}} 1x — tags deduplicadas.
+      assert.deepEqual((err as UnresolvedMergeTagError).tags, ["{{first_name}}", "{{last_name}}"]);
+      return true;
+    });
   });
 });
 

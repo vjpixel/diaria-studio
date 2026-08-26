@@ -241,16 +241,49 @@ export function buildSitemapXml(entries: SitemapEntry[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
 }
 
+/**
+ * Erro DEDICADO pra "merge tag desconhecida", separado de qualquer outro
+ * jeito de `buildArchivePageHtml` falhar (post não publicado, sem
+ * content.free.web, sem tag `<html>`) — #6256. É essa distinção de TIPO
+ * (não de mensagem) que permite ao caller (`generateArchivePages`) degradar
+ * SÓ este caso por post, sem abrir mão de abortar o lote pros demais, que
+ * continuam sinal de problema estrutural (ver comentário em `loadPosts`,
+ * `scripts/gen-archive-pages.ts`, sobre por que aquele caso é diferente
+ * deste).
+ *
+ * `tags` já vem deduplicado (ordem de 1ª aparição) — é o que o relatório
+ * agregado de fim de lote precisa pra listar "quais tags" sem repetição.
+ */
+export class UnresolvedMergeTagError extends Error {
+  readonly slug: string;
+  /** Todas as ocorrências cruas casadas no HTML, COM repetição. */
+  readonly matches: string[];
+  /** Ocorrências únicas, ordem de 1ª aparição — pro relatório. */
+  readonly tags: string[];
+
+  constructor(slug: string, matches: string[]) {
+    super(
+      `post "${slug}" contém merge tag não resolvida no HTML (${matches[0]} ... ${matches.length} ocorrências) — guard #6210 rejeitou`,
+    );
+    this.name = "UnresolvedMergeTagError";
+    this.slug = slug;
+    this.matches = matches;
+    this.tags = [...new Set(matches)];
+  }
+}
+
 /** Guard (#6210): rejeita HTML com merge tag não resolvida (ex: `{{email}}` literal).
  * O vazamento das 87 páginas do acervo vem do `content.free.web` da Beehiiv —
  * a tag chega crua, e sem esta verificação a página publica o template como texto.
+ *
+ * Lança `UnresolvedMergeTagError` (não `Error` genérico) — #6256 depende
+ * desse tipo pra separar "tag desconhecida, degrada por post" de qualquer
+ * outra falha de `buildArchivePageHtml`, que segue abortando o lote.
  */
 export function verifyNoUnresolvedMergeTags(html: string, slug: string): void {
   // Qualquer `{{...}}` que não seja uma substituição já feita pelo gerador indica vazamento.
   const unresolved = html.match(/\{\{[^}]+\}\}/g);
   if (unresolved && unresolved.length > 0) {
-    throw new Error(
-      `post "${slug}" contém merge tag não resolvida no HTML (${unresolved[0]} ... ${unresolved.length} ocorrências) — guard #6210 rejeitou`,
-    );
+    throw new UnresolvedMergeTagError(slug, unresolved);
   }
 }
