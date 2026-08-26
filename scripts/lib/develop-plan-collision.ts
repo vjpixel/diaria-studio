@@ -80,6 +80,34 @@
  * NÃO foi verificado neste PR (fora de escopo, ver corpo da issue) — se
  * `continuo` também colide, é follow-up.
  *
+ * ## Edge case conhecido e aceito: resume pós-crash com `session_id` NOVO
+ * (#6259/#6265 self-review)
+ *
+ * O harness não garante `session_id` estável entre invocações — uma sessão
+ * que trava e é retomada pelo editor pode receber um `session_id` diferente
+ * na invocação seguinte. Quando isso acontece, `resolveDevelopPlanPath` não
+ * reconhece o plano existente como "nosso" (regra 2 do contrato acima não
+ * bate) e o trata como colisão — a sessão retomada bifurca pra um sufixo
+ * novo (`b`) em vez de continuar o `plan.json` original. **Sem perda de
+ * dado** (o plano original permanece intacto em disco, íntegro), mas o
+ * trabalho registrado nele (issues já processadas, `goal.reached`) fica
+ * invisível pra sessão retomada, que recomeça do zero num arquivo separado
+ * — duplicando esforço já feito, não corrompendo estado.
+ *
+ * Decisão consciente: **não** reconciliar automaticamente por conteúdo/mtime
+ * ao retomar. O sinal disponível (dois arquivos de plano, `session_id`
+ * diferentes, mesma data) é indistinguível entre "isto é a mesma sessão
+ * lógica retomada após crash" e "duas sessões `/diaria-develop` genuinamente
+ * diferentes coincidiram no mesmo dia" — exatamente o cenário que este
+ * módulo existe pra proteger. Uma heurística de reconciliação arriscaria
+ * fundir silenciosamente o trabalho de duas sessões DISTINTAS quando o
+ * palpite errar, o que é estritamente pior do que o fork atual (sem perda,
+ * só duplicação visível e auditável). Se isto se mostrar recorrente na
+ * prática, o caminho mais seguro é o editor/painel `/rodada` oferecer
+ * "continuar {AAMMDD}b em vez de {AAMMDD}" como escolha explícita — não
+ * inferência automática. Sem issue própria aberta; registrar aqui é o
+ * suficiente até que o custo justifique o mecanismo.
+ *
  * @see scripts/resolve-develop-plan-path.ts (CLI/entrypoint)
  * @see scripts/overnight-statusline.ts (`isForeignDevelopPlan`, já lê `session_id`)
  * @see scripts/lib/session-registry.ts (`data/sessions/*.json`, fonte de `session_id` real)
