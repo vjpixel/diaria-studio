@@ -154,6 +154,15 @@ Idem — confirmado no playbook §6: "Por que o playbook para no draft": 5 mecan
 testados, todos silenciosamente rejeitados. Schedule e sempre manual, independente
 do MCP. Com MCP Write isso nao muda.
 
+> ⚠️ **DESATUALIZADO neste ponto desde #6098 (26/08/2026).** O Schedule passou
+> a ser automatizado (`computer.left_click`, 3 cliques, com fallback manual) —
+> o reteste de 260825 funcionou onde o #1198 falhou em maio. Isto aqui e um
+> estudo de custo/beneficio DATADO; a fonte operacional e
+> `context/publishers/beehiiv-playbook.md`. A conclusao sobre o MCP Write nao
+> muda por causa disso (o Schedule nunca dependeu dele), mas a premissa "esse
+> passo e manual de qualquer jeito" nao vale mais.
+
+
 **Implication:** o Stage 5 passa de "~12 passos Chrome" para "1 chamada API + 2
 passos Chrome", com eliminacao dos 8 pontos de falha listados acima. A sessao do
 Chrome ainda precisa abrir, mas so para os 2 passos finais — muito menor footprint.

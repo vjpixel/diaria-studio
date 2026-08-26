@@ -849,11 +849,29 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 ### 6. Salvar como rascunho
 
-- **NÃO clicar em Schedule, Publish, ou Send.**
+- **NÃO clicar em Publish ou Send.** (Schedule passou a ser automatizado — ver nota abaixo.)
 - Clicar em "Save draft" / "Save as draft".
 - Capturar `draft_url` da barra de endereço (deve conter `/posts/{id}/edit`).
 
-**Por que o playbook para no draft (não tenta Schedule via automação)** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão: **Schedule é sempre manual**, mesmo se o resto do flow rodar 100% automático — não vale gastar mais ciclos tentando contornar.
+**Schedule automatizado desde #6098 (26/08/2026), com fallback manual.**
+
+Medido ao vivo na edição 260825: a sequência de TRÊS cliques funciona.
+
+1. `computer.left_click` no botão **Schedule** (página Review) → abre o modal *"When should this publish?"*
+2. clique na **opção de horário** desejada
+3. clique no **Schedule do modal** → toast *"Your post is scheduled!"*, URL vira `?scheduled=true`
+
+Confirmado no backend (`get_post` + `verify-scheduled-post.ts`): `status: "scheduled"`, `scheduled_at` batendo. Não foi falso-positivo de UI.
+
+⚠️ **O passo 2 é o perigoso.** A opção *"Next usual send time"* pode não ser o alvo da edição. Com clique manual o editor lê a data no modal; automatizado, ninguém lê — por isso `verify-scheduled-post.ts --expect-scheduled-at` é **obrigatório** no caminho automatizado (exit 3 = agendado no horário ERRADO). Sem essa flag, um agendamento no dia errado passa como sucesso.
+
+**Fallback nunca opcional:** se qualquer um dos 3 cliques falhar, ou a verificação não confirmar, cair pro fluxo manual — pedir o clique ao editor. Falha de clique nunca vira falha de edição.
+
+---
+
+**Nota histórica — por que o playbook dizia o oposto por 3 meses** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão registrada à época: *"Schedule é sempre manual, não vale gastar mais ciclos tentando contornar"*.
+
+**O que mudou, e a hipótese que sobra.** O #6098 refez o teste 3 meses depois e funcionou. Duas explicações possíveis, nenhuma investigada a fundo: (a) a Beehiiv relaxou o guard de user-activation; (b) o guard nunca cobriu o clique DENTRO do modal — só o botão que o abre —, e o #1198 pode não ter testado exatamente a sequência de 3 cliques acima. A nota fica porque a conclusão anterior era razoável com a evidência de então: o valor dela não é estar certa, é registrar que "testamos 5 mecanismos e nenhum funcionou" foi verdade em maio.
 
 ### 6.1. Gravar 05-edition-url.txt (#2454)
 
@@ -1076,7 +1094,7 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 ### 9. Verificar slug pós-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570
 
-**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
+**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule é automatizado desde #6098 (fallback manual) — depois que o clique confirmar, verificar e corrigir o slug. O mangling independe de quem clicou.
 
 **#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
 
@@ -1141,6 +1159,25 @@ npx tsx scripts/verify-scheduled-post.ts \
 | `0` | `scheduled` — agendado corretamente | Confirmar horário: "Agendado para {scheduled_at} ✓ — {data_alvo} 06:00 BRT" |
 | `1` | `published` — envio imediato detectado | Ver sequência de reconciliação abaixo |
 | `2` | `unknown` / `draft` / erro de API / config ausente | Alertar editor; verificar manualmente no dashboard Beehiiv (`get_post` via MCP + inspecionar `publish_date` vs agora) |
+| `3` | `scheduled` **no horário ERRADO** (#6098) — ou `--expect-scheduled-at` inválido/não substituído | Opção errada no modal, ou substituição quebrada. O post **NÃO está no ar**. Ver sequência abaixo |
+
+**Sequência de recuperação (exit 3 — agendado no horário errado):**
+
+Diferente do exit 1, aqui **nada foi enviado** — dá pra corrigir sem reconciliar nada.
+
+1. **Não re-tentar o clique automatizado.** Se ele escolheu a opção errada uma vez, escolherá de novo — o modal não mudou.
+2. Abrir `draft_url` e corrigir o agendamento **à mão**, escolhendo a data/hora que o gate aprovou.
+3. Re-rodar a verificação com o mesmo `--expect-scheduled-at`, até exit `0`.
+4. Só então seguir pro §6e.
+
+Relatar ao editor:
+
+```
+⚠️ AGENDADO NO HORÁRIO ERRADO — o clique automatizado escolheu {scheduled_at},
+e o aprovado no gate foi {esperado}.
+Nada foi enviado. Corrija no painel Beehiiv e eu re-verifico.
+```
+
 
 **Banner pré-Schedule (exibir ANTES de pedir confirmação ao editor):**
 

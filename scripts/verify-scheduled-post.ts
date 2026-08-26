@@ -34,6 +34,21 @@
  *   2 = config inválida, args inválidos ou erro de API
  *
  * Stdout: JSON com shape { state, post_id, scheduled_at, published_at,
+ *
+ * Flags:
+ *   --post-id ID              (obrigatória)
+ *   --edition-dir DIR         (obrigatória)
+ *   --expect-scheduled-at ISO (#6098) — OBRIGATÓRIA no caminho de clique
+ *     AUTOMATIZADO. Sem ela o script só confere `state`, e um agendamento no
+ *     dia ERRADO passa como sucesso: o passo que escolhe a opção de horário
+ *     no modal não é lido por ninguém quando o clique é automático.
+ *
+ * Exit codes:
+ *   0 = scheduled (e, com --expect-scheduled-at, no horário certo)
+ *   1 = published — envio imediato detectado
+ *   2 = unknown / draft / erro
+ *   3 = scheduled no horário ERRADO, ou --expect-scheduled-at inválido/não
+ *       substituído (#6098). Nada foi enviado — dá pra corrigir no painel.
  *   immediate_send_detected, published_json_updated }
  */
 
@@ -212,6 +227,49 @@ export function verifyScheduledPost(
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
+/**
+ * O agendamento confirmado está num INSTANTE diferente do pedido?
+ *
+ * Exportada de propósito (#6098): o teste importa ESTA função, não uma cópia
+ * da regra. Um teste que reimplementa a lógica passa mesmo quando o script
+ * quebra — foi o que aconteceu na 1ª versão, e a sabotagem provou.
+ *
+ * `undefined` (sem `--expect-scheduled-at`) ⇒ nunca diverge: o caminho
+ * manual mantém o comportamento anterior ao #6098.
+ *
+ * Data impossível de parsear ⇒ nunca diverge. Falhar aqui trocaria um
+ * agendamento bom por alarme falso; ausência de comparação possível é
+ * silêncio, não acusação.
+ */
+export type ComparacaoHorario =
+  | { veredicto: "sem-checagem" }
+  | { veredicto: "confere" }
+  | { veredicto: "diverge" }
+  | { veredicto: "esperado-invalido"; valor: string };
+
+export function compararHorario(esperado: string | undefined, recebido: string | null): ComparacaoHorario {
+  // Ausente DE VERDADE (`undefined`) = caminho manual, sem checagem. Único
+  // caso legítimo de silêncio.
+  if (esperado === undefined) return { veredicto: "sem-checagem" };
+
+  const p = Date.parse(esperado);
+  if (!Number.isFinite(p)) {
+    // Presente e impossível de parsear = a substituição do orchestrator
+    // quebrou (ex.: `{scheduled_at_iso}` literal). NÃO pode virar
+    // "sem checagem" — seria o modo de falha que o guard existe pra impedir,
+    // com exit 0 dizendo que deu tudo certo.
+    return { veredicto: "esperado-invalido", valor: esperado };
+  }
+
+  const r = recebido ? Date.parse(recebido) : Number.NaN;
+  // `scheduled` com `scheduled_at` inválido não ocorre hoje (mesmo guard de
+  // `publish_date > 0` nos dois lados), mas inventar divergência aqui
+  // trocaria um agendamento bom por alarme falso.
+  if (!Number.isFinite(r)) return { veredicto: "sem-checagem" };
+
+  return p === r ? { veredicto: "confere" } : { veredicto: "diverge" };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const postId = args.values["post-id"];
@@ -252,6 +310,17 @@ async function main(): Promise<void> {
   }
 
   const now = new Date();
+  // #6098 — opcional por back-compat: sem ele, o comportamento é o de
+  // sempre (só confere `state`). Quem automatiza o clique DEVE passar.
+  // `args.values[...]` e NÃO `getArg` (achado P1 do review): `getArg` está
+  // `@deprecated` desde o #4573 justamente porque colapsa "flag ausente" e
+  // "flag presente mas vazia" no mesmo `""` — a nota de depreciação registra
+  // 3 incidentes de produção nascidos disso. Com `getArg`, o guard deste
+  // arquivo NUNCA dispararia: ausente vira `""`, `Date.parse("")` é NaN, e o
+  // caminho de NaN devolvia "não diverge". O guard existiria no código e não
+  // no comportamento.
+  const expectScheduledAt = args.values["expect-scheduled-at"];
+
   const result = verifyScheduledPost(post, editionDir, now);
 
   // Emitir diagnóstico pra stderr (visível ao top-level e ao editor).
@@ -264,6 +333,36 @@ async function main(): Promise<void> {
         `   (regra "publicação manual requer refresh-dedup" do CLAUDE.md)\n\n`,
     );
   } else if (result.state === "scheduled") {
+    // #6098 — quando o clique em Schedule passa a ser AUTOMATIZADO, ninguém
+    // lê a data no modal. `state === "scheduled"` deixa de ser suficiente:
+    // clicar a opção errada ("Next usual send time" quando o alvo era outro
+    // dia/horário) produz um agendado perfeitamente válido, no dia errado.
+    //
+    // Mesma correção que o #6162 fez no canal Kit: comparar INSTANTES, não
+    // só existência. Com clique manual o editor via a data; automatizado,
+    // este é o único ponto que vê.
+    const cmp = compararHorario(expectScheduledAt, result.scheduled_at);
+    if (cmp.veredicto === "esperado-invalido") {
+      process.stderr.write(
+        `\n⚠️  --expect-scheduled-at INVÁLIDO (${JSON.stringify(cmp.valor)}) — não dá pra comparar.\n` +
+          `   Provável substituição quebrada no orchestrator (placeholder literal?).\n` +
+          `   O post pode estar agendado no dia errado e isto NÃO foi verificado.\n\n`,
+      );
+      process.stdout.write(JSON.stringify({ ...result, expected_scheduled_at: cmp.valor }, null, 2) + "\n");
+      process.exitCode = 3;
+      return;
+    }
+    if (cmp.veredicto === "diverge") {
+        process.stderr.write(
+          `\n⚠️  HORÁRIO DIVERGENTE — o post está agendado, mas para ${result.scheduled_at},\n` +
+            `   e o esperado era ${expectScheduledAt}.\n` +
+            `   Provável opção errada escolhida no modal de Schedule.\n` +
+            `   O post NÃO está no ar ainda — corrigir o agendamento no painel Beehiiv.\n\n`,
+        );
+        process.stdout.write(JSON.stringify({ ...result, expected_scheduled_at: expectScheduledAt }, null, 2) + "\n");
+      process.exitCode = 3;
+      return;
+    }
     process.stderr.write(
       `[verify-scheduled-post] OK — post agendado para ${result.scheduled_at} ✓\n`,
     );
@@ -279,6 +378,8 @@ async function main(): Promise<void> {
   //   0 = scheduled (agendado corretamente)
   //   1 = published (envio imediato — requer ação)
   //   2 = unknown/draft ou erro (já tratado acima)
+  //   3 = scheduled, mas em horário DIFERENTE do esperado (#6098) — só
+  //       possível com --expect-scheduled-at
   if (result.state === "scheduled") {
     process.exitCode = 0;
     return;
