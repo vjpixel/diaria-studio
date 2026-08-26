@@ -65,8 +65,8 @@ loadProjectEnv();
 
 export { linkTitlesKvKey };
 
-async function pushCycle(cycle: string, dryRun: boolean): Promise<void> {
-  const map: Record<string, string> | null = loadLinkTitleMapForCycle(cycle);
+async function pushCycle(cycle: string, dryRun: boolean, monthlyDirOverride?: string): Promise<void> {
+  const map: Record<string, string> | null = loadLinkTitleMapForCycle(cycle, monthlyDirOverride);
   if (!map) {
     console.warn(`[push-link-titles-kv] ${cycle}: sem prioritized.md (ou data/ inacessível) — pulando.`);
     return;
@@ -91,6 +91,12 @@ async function main(): Promise<void> {
   const dryRun = hasFlag(process.argv, "dry-run");
   const cycleArg = getArg(process.argv, "cycle");
   const all = hasFlag(process.argv, "all");
+  // #6222: override de teste — sem `--monthly-dir`, cai em `data/monthly/`
+  // real (comportamento de produção inalterado). Permite testar `--all`
+  // fim-a-fim contra uma fixture isolada em vez de escanear `data/` real,
+  // que faz o resultado depender da forma do ambiente (quantos ciclos
+  // existem na máquina que roda o teste) em vez do código.
+  const monthlyDirOverride = getArg(process.argv, "monthly-dir");
 
   if (!cycleArg && !all) {
     console.error(
@@ -102,7 +108,9 @@ async function main(): Promise<void> {
   }
 
   if (all) {
-    const cycles = discoverCyclesWithPrioritized();
+    const cycles = monthlyDirOverride
+      ? discoverCyclesWithPrioritized(monthlyDirOverride)
+      : discoverCyclesWithPrioritized();
     if (cycles.length === 0) {
       console.error("[push-link-titles-kv] nenhum ciclo com prioritized.md encontrado em data/monthly/.");
       process.exit(1);
@@ -110,7 +118,7 @@ async function main(): Promise<void> {
     }
     console.log(`[push-link-titles-kv] --all: ${cycles.length} ciclo(s) encontrado(s): ${cycles.join(", ")}`);
     for (const cycle of cycles) {
-      await pushCycle(cycle, dryRun);
+      await pushCycle(cycle, dryRun, monthlyDirOverride);
     }
     return;
   }
@@ -120,7 +128,7 @@ async function main(): Promise<void> {
     process.exit(1);
     return;
   }
-  await pushCycle(cycleArg, dryRun);
+  await pushCycle(cycleArg, dryRun, monthlyDirOverride);
 }
 
 if (isMainModule(import.meta.url)) {

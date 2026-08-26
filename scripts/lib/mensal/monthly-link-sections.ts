@@ -439,10 +439,18 @@ export function buildLinkTitleMap(
  * OneDrive, #2643) retorna `null`, nunca lança. Consumida pelo wiring
  * KV/Studio (`scripts/push-link-titles-kv.ts`, `workers/brevo-dashboard/src/brevo-api.ts::readLinkTitlesByCycle`,
  * `scripts/studio-ui/dashboard-clarice.ts::buildLinkTitlesByCycleLocal`).
+ *
+ * `baseDir` (#6222) — override de teste: quando fornecido, resolve
+ * `{baseDir}/{cycle}/prioritized.md` diretamente em vez de `monthlyDir()`
+ * (que sempre aponta pra `data/monthly/` real). Sem isto, testar o caminho
+ * "existe prioritized.md com título real" exigiria escrever em `data/`
+ * real — arriscado em paralelo com outra sessão, e impossível num worktree
+ * sem o junction OneDrive. Default `undefined` preserva o comportamento de
+ * produção (nenhum call site existente passa este argumento).
  */
-export function loadLinkTitleMapForCycle(cycle: string): Record<string, string> | null {
+export function loadLinkTitleMapForCycle(cycle: string, baseDir?: string): Record<string, string> | null {
   try {
-    const dir = monthlyDir(cycle, { allowLegacyFallback: false });
+    const dir = baseDir !== undefined ? resolve(baseDir, cycle) : monthlyDir(cycle, { allowLegacyFallback: false });
     const path = join(dir, "prioritized.md");
     if (!existsSync(path)) return null;
     const markdown = readFileSync(path, "utf-8");

@@ -20,6 +20,17 @@
  *     resolvida pelo destaque/edição de origem do item), semana
  *     materialmente incompleta (`--force-incomplete-week`), horário
  *     inválido, retry do Worker queue.
+ *
+ * #6222: `MockAgent.disableNetConnect()` cobre `fetch`/undici (todos os
+ * publishers deste script usam `fetch`), mas NÃO cobre `node:https`/
+ * `node:http` — o caminho que `uploadTextToWorkerKV`/`uploadImageToWorkerKV`
+ * (scripts/lib/cloudflare-kv-upload.ts) usam. `installNetworkRequestGuard`
+ * (file-wide, abaixo) fecha essa lacuna pra este arquivo inteiro, inclusive
+ * os describes ANTES de "main(): dispatch mockado" que não tinham nenhuma
+ * proteção de rede. O teste de integração que spawna o CLI real como
+ * SUBPROCESSO (linha ~419) fica FORA do alcance desse guard (processo
+ * separado) — isolado à parte, limpando explicitamente as env vars de
+ * credencial antes do spawn (ver comentário no teste).
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -30,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
+import { installNetworkRequestGuard } from "./_helpers/network-guard.ts";
 import {
   computeWeeklyScheduledAt,
   resolveDestaqueImageUrl,
@@ -46,6 +58,15 @@ import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
 import type { NewsCardGenerator } from "../scripts/lib/weekly-carousel-news-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// #6222: guard de rede file-wide — ver docstring do topo do arquivo.
+let __restoreNetworkGuard6222: () => void;
+before(() => {
+  __restoreNetworkGuard6222 = installNetworkRequestGuard();
+});
+after(() => {
+  __restoreNetworkGuard6222();
+});
 
 /**
  * Fake do gerador de card capa/CTA (#5330) — nunca chama sharp/font/upload
@@ -435,7 +456,24 @@ describe("integração: semana sem candidatos válidos — nenhum publisher é c
         {
           cwd: __ROOT,
           encoding: "utf8",
-          env: { ...process.env, DIARIA_LINKEDIN_CRON_TOKEN: "" },
+          // #6222: subprocesso separado — o `MockAgent`/network-guard do
+          // processo PAI não alcança aqui. Numa máquina com `.env` real
+          // (editor, `helios`), `loadProjectEnv()` (chamado dentro do
+          // script) populava credenciais REAIS de Worker/Facebook/Cloudflare
+          // em `process.env` — herdadas por este spawn via `...process.env`
+          // — que, se algum código sob teste chegasse a tentar publicar
+          // (mesmo que a asserção espere "nada publicado"), abriria conexão
+          // de rede real com credencial real. Zera TODAS explicitamente,
+          // não só a que o teste original cobria (`DIARIA_LINKEDIN_CRON_TOKEN`).
+          env: {
+            ...process.env,
+            DIARIA_LINKEDIN_CRON_URL: "",
+            DIARIA_LINKEDIN_CRON_TOKEN: "",
+            FACEBOOK_PAGE_ID: "",
+            FACEBOOK_PAGE_ACCESS_TOKEN: "",
+            CLOUDFLARE_ACCOUNT_ID: "",
+            CLOUDFLARE_WORKERS_TOKEN: "",
+          },
           shell: process.platform === "win32",
         },
       );

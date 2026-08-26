@@ -791,6 +791,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const refetchWindowDays = getIntArg(argv, "refetch-window-days") ?? DEFAULT_REFETCH_WINDOW_DAYS;
   const includeAdminOptOuts = !hasFlag(argv, "no-admin-optouts");
   const push = hasFlag(argv, "push"); // #5015
+  // #6222: injeção de teste — sem `--db-path`, cai no DEFAULT_DB_PATH real
+  // (comportamento de produção inalterado). Existe pra permitir testar
+  // `main()` fim-a-fim contra um store isolado (mkdtempSync) em vez do
+  // `data/` real do checkout — sem isto, `fetchAdminOptOutEmails` (chamada
+  // dentro de `buildCohortsV2`) sempre lê o store de produção quando ele
+  // existe, mesmo com o cliente de campanhas mockado, e opt-outs
+  // administrativos reais infestam `cohorts.universe` além de 0 mesmo com
+  // `listSentCampaigns` mockado pra devolver `[]` — o guard anti-clobber
+  // (linha ~755) nunca dispara e `--push` segue até `uploadTextToWorkerKV`
+  // com credenciais fake.
+  const dbPath = getArg(argv, "db-path");
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
@@ -831,6 +842,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     limit,
     refetchWindowDays,
     includeAdminOptOuts,
+    dbPath,
   });
 
   console.error(
