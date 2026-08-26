@@ -112,8 +112,10 @@ const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
 // #6317: `unclaim-issue` entra pelo mesmo motivo que `claim-issue` — precisa
 // da flag pra saber DE QUEM remover (`requireSessionId`, mesma disciplina de
 // falha alta e cedo do subcomando irmão).
+// #6334: `merge-lock-renew` entra pelo mesmo motivo que `merge-lock-acquire`/
+// `merge-lock-release` — precisa da flag pra saber de quem é o hold a renovar.
 const INJECTABLE_SUBCOMMANDS =
-  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release)\b/;
+  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release|merge-lock-renew)\b/;
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.

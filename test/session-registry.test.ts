@@ -31,6 +31,7 @@ import {
   checkSessionsScanHealth,
   acquireMergeLock,
   releaseMergeLock,
+  renewMergeLock,
   requireKind,
   listSafeBackupFiles,
   mergeSessionRecords,
@@ -1104,10 +1105,68 @@ describe("acquireMergeLock / releaseMergeLock (item 4 do #5156)", () => {
     assert.equal(acquireMergeLock(root, "sess-b", NOW + 30_000), false);
   });
 
-  it("a MESMA sessão pode readquirir seu próprio lock (reentrante/idempotente)", () => {
+  it("#6334 — 2ª aquisição CONCORRENTE da MESMA sessão, sem release entre elas, é NEGADA (não é mais reentrante)", () => {
+    // Regressão do #6334: com o fan-out em onda do #6299, a mesma sessão
+    // overnight pode ter 2-3 unidades chegando em "pronto pra mergear" ao
+    // mesmo tempo. Antes desta correção, a 2ª chamada de acquireMergeLock
+    // pela mesma sessionId — mesmo sem nenhum release entre as duas —
+    // renovava o TTL e retornava `true` na hora, deixando 2 merges do MESMO
+    // turno passarem sem serialização real. Agora a 2ª chamada é tratada
+    // como qualquer outra aquisição concorrente: nega enquanto o hold da 1ª
+    // ainda está dentro do TTL, mesmo sendo a mesma sessão.
+    const root = freshRoot();
+    assert.equal(acquireMergeLock(root, "sess-a", NOW), true, "1ª aquisição sucede");
+    assert.equal(
+      acquireMergeLock(root, "sess-a", NOW + 30_000),
+      false,
+      "2ª aquisição da MESMA sessão, sem release entre elas, precisa ser negada",
+    );
+    const content = JSON.parse(readFileSync(mergeLockPath(root), "utf8"));
+    assert.equal(content.heldBy, "sess-a", "o lock continua sendo o da 1ª aquisição — a 2ª não o sobrescreveu");
+    assert.equal(content.acquiredAt, new Date(NOW).toISOString(), "acquiredAt NÃO foi renovado pela 2ª chamada negada");
+  });
+
+  it("#6334 — depois de releaseMergeLock, a MESMA sessão pode adquirir de novo normalmente (fluxo sequencial não regride)", () => {
+    // O caso que a reentrância antiga existia pra servir de fato: uma
+    // sessão que faz acquire → merge → release → (próxima unidade) acquire
+    // de novo. Sem release entre as duas chamadas, isso é o cenário do
+    // teste acima (negado); COM release, continua funcionando como sempre.
+    const root = freshRoot();
+    assert.equal(acquireMergeLock(root, "sess-a", NOW), true);
+    assert.equal(releaseMergeLock(root, "sess-a"), true);
+    assert.equal(acquireMergeLock(root, "sess-a", NOW + 30_000), true, "após release, a mesma sessão readquire normalmente");
+  });
+
+  it("#6334 — renewMergeLock estende o TTL de um hold que a PRÓPRIA sessão já detém (renovação legítima ✅)", () => {
+    // Caminho correto pra "operação mais longa que o TTL, mesmo hold, nunca
+    // liberado" — o cenário que a reentrância de acquireMergeLock cobria
+    // incorretamente antes do #6334 (ver teste acima). renewMergeLock só
+    // renova o que a sessão chamadora já segura; nunca concede um hold novo.
+    const root = freshRoot();
+    assert.equal(acquireMergeLock(root, "sess-a", NOW), true);
+    const nearExpiry = NOW + MERGE_LOCK_TTL_MS - 1_000; // quase expirando, ainda não expirou
+    assert.equal(renewMergeLock(root, "sess-a", nearExpiry), true);
+    const content = JSON.parse(readFileSync(mergeLockPath(root), "utf8"));
+    assert.equal(content.heldBy, "sess-a");
+    assert.equal(content.acquiredAt, new Date(nearExpiry).toISOString(), "acquiredAt foi de fato renovado");
+
+    // Prova que a renovação teve efeito real: sem ela, o lock teria expirado
+    // e outra sessão conseguiria adquirir; com a renovação, o TTL reconta a
+    // partir de `nearExpiry`, então outra sessão ainda é negada logo depois.
+    assert.equal(acquireMergeLock(root, "sess-b", nearExpiry + 1_000), false, "renovado — ainda dentro do novo TTL");
+  });
+
+  it("#6334 — renewMergeLock nega renovar lock de OUTRA sessão (nunca rouba hold alheio)", () => {
     const root = freshRoot();
     acquireMergeLock(root, "sess-a", NOW);
-    assert.equal(acquireMergeLock(root, "sess-a", NOW + 30_000), true);
+    assert.equal(renewMergeLock(root, "sess-b", NOW + 30_000), false);
+    const content = JSON.parse(readFileSync(mergeLockPath(root), "utf8"));
+    assert.equal(content.heldBy, "sess-a", "renovação negada de outra sessão não altera o lock");
+  });
+
+  it("#6334 — renewMergeLock nega renovar quando não há lock nenhum", () => {
+    const root = freshRoot();
+    assert.equal(renewMergeLock(root, "sess-a", NOW), false);
   });
 
   it("lock mais velho que o TTL é tratado como abandonado — outra sessão pode adquirir", () => {
