@@ -24,6 +24,7 @@ import {
   labelsForNewIssue,
   MOTIVO_LABEL,
   parseRouteIssueMarker,
+  parseRouteIssueMarkerAtStart,
   planRouteLabels,
   PROVENIENCE_LABELS,
   ROUTABLE_LABELS,
@@ -762,5 +763,48 @@ describe("formatRouteIssueMarker / parseRouteIssueMarker — round-trip", () => 
 
   it("marcador sem sufixo de fechamento devolve null (tolerante, não lança)", () => {
     assert.equal(parseRouteIssueMarker("<!-- route-issue: track=develop sem fechar"), null);
+  });
+});
+
+// ─── parseRouteIssueMarkerAtStart (#6301 finding 2) ─────────────────────────
+
+describe("parseRouteIssueMarkerAtStart — só reconhece o marcador na abertura do corpo", () => {
+  it("marcador na abertura (sem nada antes) é reconhecido, igual ao genérico", () => {
+    for (const track of ROUTE_TRACKS) {
+      const marker = formatRouteIssueMarker(track);
+      assert.equal(parseRouteIssueMarkerAtStart(marker), track);
+    }
+  });
+
+  it("marcador citado no MEIO da prosa (não gravado por buildCommentBody) devolve null", () => {
+    const marker = formatRouteIssueMarker("develop");
+    assert.equal(parseRouteIssueMarkerAtStart(`texto antes\n${marker}\ntexto depois`), null);
+    // O genérico, ao contrário, reconhece em qualquer posição — é a
+    // distinção que motiva a variante AtStart existir.
+    assert.equal(parseRouteIssueMarker(`texto antes\n${marker}\ntexto depois`), "develop");
+  });
+
+  it("espaço em branco antes do marcador é tolerado (ainda conta como abertura)", () => {
+    const marker = formatRouteIssueMarker("bloqueada");
+    assert.equal(parseRouteIssueMarkerAtStart(`  \n${marker}`), "bloqueada");
+  });
+
+  it("buildCommentBody real de routeIssue produz um marcador que AtStart reconhece", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({ issue: 2, track: "develop", reason: "teste", cwd: "/tmp", ghRun: gh.run });
+    const posted = gh.state.comments[0];
+    assert.ok(posted, "esperava um comentário postado");
+    assert.equal(parseRouteIssueMarkerAtStart(posted), "develop");
+  });
+
+  it("body sem marcador devolve null", () => {
+    assert.equal(parseRouteIssueMarkerAtStart("comentário comum, sem marcador nenhum"), null);
+  });
+
+  it("marcador com track desconhecido devolve null, mesmo na abertura", () => {
+    assert.equal(
+      parseRouteIssueMarkerAtStart("<!-- route-issue: track=track-que-nao-existe -->"),
+      null,
+    );
   });
 });

@@ -363,3 +363,31 @@ export function parseRouteIssueMarker(body: string): RouteTrack | null {
   const track = body.slice(trackStart, end).trim();
   return (ROUTE_TRACKS as readonly string[]).includes(track) ? (track as RouteTrack) : null;
 }
+
+/**
+ * Como `parseRouteIssueMarker`, mas só reconhece o marcador quando ele
+ * ABRE o corpo do comentário (espaço em branco antes é tolerado) — não em
+ * qualquer posição (#6301 finding 2 do fleet review da PR que introduziu
+ * `decision-label-drift.ts` consumindo este marcador).
+ *
+ * Por quê: `buildCommentBody` (`scripts/route-issue.ts`) sempre grava o
+ * marcador como a PRIMEIRA linha do comentário que `routeIssue` posta — é
+ * invariante do formato real, não suposição (ver `buildCommentBody`: a
+ * primeira entrada do array `lines` é sempre `formatRouteIssueMarker(track)`).
+ * Um comentário humano ou de outra sessão que apenas CITE o literal em
+ * prosa como exemplo ("o marcador `<!-- route-issue: track=develop -->`
+ * já...") — coisa comum neste repo, que cita literais de código em prosa o
+ * tempo todo — faz isso no MEIO do texto, nunca na abertura. A posição
+ * estrutural distingue os dois casos sem heurística de conteúdo nenhuma.
+ *
+ * `parseRouteIssueMarker` genérico (usado só por este arquivo — nenhum
+ * outro consumidor real hoje) continua tolerante a qualquer posição; esta
+ * variante é a que `decision-label-drift.ts` usa pra decidir supressão, que
+ * é o único lugar onde a posição importa pra corretude.
+ */
+export function parseRouteIssueMarkerAtStart(body: string): RouteTrack | null {
+  const track = parseRouteIssueMarker(body);
+  if (track === null) return null;
+  const prefixIndex = body.indexOf(ROUTE_ISSUE_MARKER_PREFIX);
+  return body.slice(0, prefixIndex).trim() === "" ? track : null;
+}

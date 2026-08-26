@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   detectLabelDrift,
+  detectLabelDriftDetailed,
   stripHtmlComments,
   DRIFT_PATTERNS,
 } from "../scripts/lib/decision-label-drift.ts";
@@ -741,5 +742,137 @@ describe("detectLabelDrift — route-issue posterior vence (#6283)", () => {
     });
     assert.equal(findings.length, 1);
     assert.equal(findings[0].source, "plan");
+  });
+
+  it("marcador CITADO no meio da prosa (não na abertura) não suprime — Finding 2 do fleet review da #6301", () => {
+    // Antes do Finding 2, `parseRouteIssueMarker` genérico casava o marcador
+    // em qualquer posição — um comentário que apenas MENCIONA o mecanismo
+    // ("...o marcador `<!-- route-issue: track=develop -->` já resolveu
+    // isso...") seria indistinguível do comentário genuíno de `routeIssue` e
+    // suprimiria o achado antigo por engano. `parseRouteIssueMarkerAtStart`
+    // exige que o marcador ABRA o corpo (como `buildCommentBody` sempre
+    // grava), então uma citação no meio do texto não conta.
+    const findings = detectLabelDrift({
+      issueNumber: 6041,
+      labels: ["P1"],
+      commentBodies: [
+        "Aguardando autorização do IP antes de seguir.",
+        `Nota: o mecanismo funciona assim — ${formatRouteIssueMarker("overnight")} — e resolve o caso.`,
+      ],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "deferred-vague");
+  });
+});
+
+/**
+ * #6301 finding 4 — o comentário do PRÓPRIO `route-issue` não pode gerar
+ * drift contra si mesmo. `hasRouteIssueAfter` original só olhava `j > i`
+ * (estritamente posterior), então o comentário mais recente da issue (que é
+ * sempre o do `routeIssue`, logo após ele rodar) nunca tinha nada "depois"
+ * dele — e seu próprio `--reason` (que costuma repetir a frase-gatilho do
+ * veredito que está revogando) virava achado. Especialmente grave em
+ * `agendada`, que nunca tem label satisfatória por desenho.
+ */
+describe("detectLabelDrift — comentário do route-issue não dispara drift contra si mesmo (#6301 finding 4)", () => {
+  it("repro: --track agendada --reason 'aguardando resposta da Beehiiv' não gera achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 9999,
+      labels: [],
+      commentBodies: [
+        `${formatRouteIssueMarker("agendada")}\n\nRoteado para **agendada** — aguardando resposta da Beehiiv.`,
+      ],
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it("mesmo repro, mas com um comentário de bloqueio ANTES: os dois são suprimidos (o antigo pelo #6283, o próprio route-issue por si mesmo)", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 9998,
+      labels: [],
+      commentBodies: [
+        "Aguardando autorização do IP antes de seguir.",
+        `${formatRouteIssueMarker("overnight")}\n\nRoteado para **overnight** — trade-off-real resolvido.`,
+      ],
+    });
+    // O comentário antigo é suprimido pelo route-issue posterior (regra
+    // original do #6283, já coberta em outro describe); o próprio
+    // comentário do route-issue, mesmo citando "trade-off-real" no seu
+    // `--reason`, não gera um achado contra si mesmo (Finding 4). Nenhum
+    // dos dois aparece em `findings` — ambos foram pra `suppressedByRoute`
+    // (ver describe de `detectLabelDriftDetailed` abaixo).
+    assert.deepEqual(findings, []);
+  });
+
+  it("um comentário que só CITA o marcador em prosa (meio do corpo) ainda gera achado se casar um padrão — a auto-supressão exige abertura de corpo (Finding 2 protege Finding 4)", () => {
+    const marker = formatRouteIssueMarker("agendada");
+    const findings = detectLabelDrift({
+      issueNumber: 9997,
+      labels: [],
+      commentBodies: [
+        `Aguardando resposta — nota: o marcador real seria ${marker} se roteado.`,
+      ],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "deferred-vague");
+  });
+});
+
+/**
+ * #6301 finding 1 — `detectLabelDriftDetailed` expõe `suppressedByRoute`
+ * (achados que teriam sido reportados, mas um `route-issue` posterior
+ * apagou), pra que a supressão fique auditável em vez de indistinguível de
+ * "não havia drift nenhum". `detectLabelDrift` continua devolvendo só o
+ * array de achados reais (retrocompat).
+ */
+describe("detectLabelDriftDetailed — suppressedByRoute (#6301 finding 1)", () => {
+  it("achado suprimido por route-issue posterior aparece em suppressedByRoute, não em findings", () => {
+    const result = detectLabelDriftDetailed({
+      issueNumber: 6035,
+      labels: ["P1"],
+      commentBodies: [
+        "Rodada anterior: aguardando autorização do IP.",
+        formatRouteIssueMarker("overnight") + "\n\nRoteado para **overnight** — reconciliação do #6191.",
+      ],
+    });
+    assert.deepEqual(result.findings, []);
+    assert.equal(result.suppressedByRoute.length, 1);
+    assert.equal(result.suppressedByRoute[0].issueNumber, 6035);
+    assert.equal(result.suppressedByRoute[0].patternId, "deferred-vague");
+  });
+
+  it("sem route-issue nenhum, suppressedByRoute vem vazio e findings tem o achado normal", () => {
+    const result = detectLabelDriftDetailed({
+      issueNumber: 6037,
+      labels: ["P1"],
+      commentBodies: ["Aguardando autorização do IP antes de seguir."],
+    });
+    assert.equal(result.findings.length, 1);
+    assert.deepEqual(result.suppressedByRoute, []);
+  });
+
+  it("label já aplicada não conta nem como achado nem como suprimido (já está resolvido)", () => {
+    const result = detectLabelDriftDetailed({
+      issueNumber: 1,
+      labels: ["not-this-week"],
+      commentBodies: [
+        "Aguardando pré-requisito.",
+        formatRouteIssueMarker("overnight") + "\n\nRoteado para **overnight**.",
+      ],
+    });
+    assert.deepEqual(result.findings, []);
+    assert.deepEqual(result.suppressedByRoute, []);
+  });
+
+  it("detectLabelDrift (wrapper) continua devolvendo só o array de findings, idêntico a antes", () => {
+    const input = {
+      issueNumber: 6035,
+      labels: ["P1"],
+      commentBodies: [
+        "Rodada anterior: aguardando autorização do IP.",
+        formatRouteIssueMarker("overnight") + "\n\nRoteado para **overnight** — reconciliação do #6191.",
+      ],
+    };
+    assert.deepEqual(detectLabelDrift(input), detectLabelDriftDetailed(input).findings);
   });
 });

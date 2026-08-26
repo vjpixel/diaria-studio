@@ -27,7 +27,11 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { fetchCommentBodies } from "./lib/issue-decisions.ts";
-import { detectLabelDrift, type DriftFinding } from "./lib/decision-label-drift.ts";
+import {
+  detectLabelDriftDetailed,
+  type DriftFinding,
+  type SuppressedFinding,
+} from "./lib/decision-label-drift.ts";
 
 interface GhIssueListItem {
   number: number;
@@ -105,6 +109,19 @@ function printFindings(findings: DriftFinding[]): void {
   );
 }
 
+/** Imprime (stderr) os achados suprimidos por `route-issue` posterior
+ * (#6301 finding 1) — sem isso, "nenhum drift" e "havia drift, mas um
+ * route-issue mais recente apagou" são indistinguíveis no output. */
+function printSuppressed(suppressed: SuppressedFinding[]): void {
+  if (suppressed.length === 0) return;
+  console.error(
+    `\ncheck-decision-label-drift: ${suppressed.length} achado(s) SUPRIMIDO(S) por route-issue posterior (não contam no total acima — ver docstring de scripts/lib/decision-label-drift.ts, seção "route-issue posterior vence"):`,
+  );
+  for (const s of suppressed) {
+    console.error(`  #${s.issueNumber}\t${s.patternId}\t${s.commentExcerpt}`);
+  }
+}
+
 /** Resolve um flag numérico posicional (`--limit`, `--comments-per-issue`)
  * pro default quando ausente, inválido (NaN, typo) ou não-positivo (`0`,
  * negativo) — avisando via `console.error` sempre que o valor passado NÃO
@@ -158,6 +175,7 @@ function main(): void {
   }
 
   const allFindings: DriftFinding[] = [];
+  const allSuppressed: SuppressedFinding[] = [];
   for (const issue of issues) {
     const labels = normalizeLabels(issue);
     const comments = fetchCommentBodies(issue.number, cwd);
@@ -165,12 +183,17 @@ function main(): void {
     // issue; comentário antigo (pré-sessões de backlog) não é o alvo deste
     // guard e só infla ruído.
     const recentComments = comments.slice(-commentsPerIssue);
-    allFindings.push(
-      ...detectLabelDrift({ issueNumber: issue.number, labels, commentBodies: recentComments }),
-    );
+    const detailed = detectLabelDriftDetailed({
+      issueNumber: issue.number,
+      labels,
+      commentBodies: recentComments,
+    });
+    allFindings.push(...detailed.findings);
+    allSuppressed.push(...detailed.suppressedByRoute);
   }
 
   printFindings(allFindings);
+  printSuppressed(allSuppressed);
   process.exitCode = 0; // sempre 0 — ferramenta de auditoria, não gate
 }
 
