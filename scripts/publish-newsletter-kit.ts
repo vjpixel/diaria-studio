@@ -129,6 +129,7 @@ import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newslette
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import {
   aplicarCreditoKit,
+  contemResiduoBeehiiv,
   type CreditoOptions,
 } from "./lib/shared/sending-platform-credit.ts"; // #6195
 import {
@@ -185,12 +186,18 @@ export function buildKitHtml(
   unresolvedImages: string[];
   renderWarnings: RenderWarningEvent[];
   /**
-   * `false` quando o crédito da Beehiiv não foi achado no bloco "Para
-   * encerrar" — a copy mudou e a troca virou no-op. O caller loga; não
-   * aborta, porque crédito impreciso não justifica derrubar a edição.
-   * `undefined` quando a edição não tem bloco "Para encerrar".
+   * `false` quando nenhum crédito da Beehiiv foi achado no bloco "Para
+   * encerrar". Diagnóstico, não guard. `undefined` quando a edição não tem
+   * bloco "Para encerrar".
    */
   creditoSubstituido: boolean | undefined;
+  /**
+   * **O guard (achado P0 do review #6207).** `true` = sobrou menção à
+   * concorrente no HTML que vai pelo Kit. Checa o INVARIANTE, não se a
+   * substituição achou o padrão — é o que sobrevive à reescrita da
+   * Clarice/humanizador sobre o parágrafo (precedente #1982).
+   */
+  residuoBeehiiv: boolean;
 } {
   // #6195 — o markdown stitchado credita a Beehiiv (com link de afiliado
   // dela). Numa edição enviada pelo Kit isso é falso, e o link é da
@@ -210,7 +217,13 @@ export function buildKitHtml(
   });
   const filenameMap = buildFilenameMap(publicImages.images ?? {});
   const { html: substituted, unresolved } = substituteImagePlaceholders(rendered, filenameMap);
-  return { html: substituted, unresolvedImages: unresolved, renderWarnings: warnings, creditoSubstituido };
+  return {
+    html: substituted,
+    unresolvedImages: unresolved,
+    renderWarnings: warnings,
+    creditoSubstituido,
+    residuoBeehiiv: contemResiduoBeehiiv(substituted),
+  };
 }
 
 // ── estado de publicação (idempotência, mesmo padrão de #5677) ──────────
@@ -306,15 +319,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};
 
-  const { html, unresolvedImages, renderWarnings, creditoSubstituido } = buildKitHtml(content, publicImages, {
-    kitAffiliateUrl: platformConfig.kit?.affiliate_url,
-    kitOfferText: platformConfig.kit?.affiliate_offer_text,
-  });
+  const { html, unresolvedImages, renderWarnings, creditoSubstituido, residuoBeehiiv } = buildKitHtml(
+    content,
+    publicImages,
+    { kitAffiliateUrl: platformConfig.kit?.affiliate_url, kitOfferText: platformConfig.kit?.affiliate_offer_text },
+  );
   if (creditoSubstituido === false) {
-    console.warn(
-      "  [#6195] aviso: o crédito da Beehiiv não foi encontrado no bloco 'Para encerrar' — " +
-        "a copy mudou e a troca por canal virou no-op. A edição segue; conferir o texto.",
+    log("[#6195] aviso: nenhum crédito da Beehiiv achado no 'Para encerrar' — nada a trocar.");
+  }
+  if (residuoBeehiiv) {
+    log(
+      "[#6195] ERRO: o HTML do Kit ainda menciona a Beehiiv. A copy do rodapé provavelmente " +
+        "foi reescrita (Clarice/humanizador, precedente #1982) e a âncora não casou. " +
+        "Recusando publicar o link da concorrente numa edição do Kit.",
     );
+    process.exitCode = 8;
+    return;
   }
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);

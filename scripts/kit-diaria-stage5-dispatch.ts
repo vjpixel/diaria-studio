@@ -75,6 +75,9 @@ export type Stage5KitResult =
        *  só logado é warning que o editor nunca vê num `status: "ok"`. */
       unresolvedImages: string[];
       renderWarnings: string[];
+      /** #6195 — mesma lição do #6138 finding 4 aplicada ao crédito por canal. */
+      creditoSubstituido?: boolean;
+      residuoBeehiiv?: boolean;
     };
 
 export function resolveKitDiariaStatePath(editionDir: string): string {
@@ -135,6 +138,8 @@ export interface Stage5KitDeps {
   readPlatformConfig(): {
     kit_diaria?: KitDiariaChannelConfig;
     publishing?: { newsletter?: { backend?: string } };
+    /** #6195 — link de afiliado do Kit; vazio ⇒ crédito neutro. */
+    kit?: { affiliate_url?: string; affiliate_offer_text?: string };
   };
   readState(editionDir: string): KitDiariaPublished | null;
   writeState(editionDir: string, state: KitDiariaPublished): void;
@@ -154,6 +159,14 @@ export interface Stage5KitDeps {
     previewText: string;
     unresolvedImages: string[];
     renderWarnings: string[];
+    /** #6195 — diagnóstico: achou crédito da Beehiiv pra trocar? */
+    creditoSubstituido?: boolean;
+    /**
+     * #6195 — **o guard**: sobrou menção à concorrente no HTML do Kit?
+     * Precisa chegar ao JSON de stdout, não só ao stderr — mesma lição do
+     * #6138 finding 4: warning só logado é warning que o editor nunca vê.
+     */
+    residuoBeehiiv?: boolean;
   };
   createBroadcast(input: {
     subject: string;
@@ -169,11 +182,14 @@ export interface Stage5KitDeps {
 
 export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
   const log = (line: string) => process.stderr.write(`[kit-diaria stage5] ${line}\n`);
+  // Hoisted: `buildPayload` também consome (crédito por canal, #6195) — como
+  // propriedade do literal não estaria em escopo lá dentro.
+  const readPlatformConfig: Stage5KitDeps["readPlatformConfig"] = () =>
+    JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as ReturnType<
+      Stage5KitDeps["readPlatformConfig"]
+    >;
   return {
-    readPlatformConfig: () =>
-      JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
-        kit_diaria?: KitDiariaChannelConfig;
-      },
+    readPlatformConfig,
     readState: readKitDiariaState,
     writeState: writeKitDiariaState,
     findTagId: (name) => findTagIdByName(name),
@@ -185,17 +201,17 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
         : {};
       // #6195 — o crédito do rodapé precisa refletir o Kit, não a Beehiiv.
       // Config vazia ⇒ texto neutro (sem link), nunca o crédito errado.
-      const kitCfg = (
-        JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
-          kit?: { affiliate_url?: string; affiliate_offer_text?: string };
-        }
-      ).kit;
-      const { html, unresolvedImages, renderWarnings, creditoSubstituido } = buildKitHtml(content, publicImages, {
-        kitAffiliateUrl: kitCfg?.affiliate_url,
-        kitOfferText: kitCfg?.affiliate_offer_text,
-      });
+      // Reusa `readPlatformConfig` (injetada) em vez de um readFileSync
+      // próprio — achado P2 do review #6207: ler cru aqui contraria o motivo
+      // documentado da injeção e impedia testar sem tocar disco.
+      const kitCfg = readPlatformConfig().kit;
+      const { html, unresolvedImages, renderWarnings, creditoSubstituido, residuoBeehiiv } = buildKitHtml(
+        content,
+        publicImages,
+        { kitAffiliateUrl: kitCfg?.affiliate_url, kitOfferText: kitCfg?.affiliate_offer_text },
+      );
       if (creditoSubstituido === false) {
-        log("warn: [#6195] crédito da Beehiiv não achado no 'Para encerrar' — troca por canal virou no-op.");
+        log("warn: [#6195] nenhum crédito da Beehiiv achado no 'Para encerrar' — nada a trocar.");
       }
       if (unresolvedImages.length > 0) {
         log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
@@ -205,6 +221,8 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
       }
       return {
         html,
+        creditoSubstituido,
+        residuoBeehiiv,
         subject: buildKitSubject(content),
         previewText: buildKitPreviewText(content),
         unresolvedImages,
@@ -274,10 +292,26 @@ export async function runStage5KitDispatch(
   let previewText: string;
   let unresolvedImages: string[];
   let renderWarnings: string[];
+  let creditoSubstituido: boolean | undefined;
+  let residuoBeehiiv: boolean | undefined;
   try {
-    ({ html, subject, previewText, unresolvedImages, renderWarnings } = deps.buildPayload(editionDir));
+    ({ html, subject, previewText, unresolvedImages, renderWarnings, creditoSubstituido, residuoBeehiiv } = deps.buildPayload(editionDir));
   } catch (e) {
     return { status: "failed", step: "buildPayload", reason: (e as Error).message };
+  }
+  // #6195 (achado P0 do review #6207) — guard de saída. Recusa criar o
+  // broadcast se o HTML do Kit ainda mencionar a concorrente: significa que a
+  // copy do rodapé foi reescrita (Clarice/humanizador, precedente #1982) e a
+  // âncora não casou. `failed` mantém o fail-soft do canal — não derruba os
+  // demais publicadores — mas nunca publica o link da Beehiiv numa edição Kit.
+  if (residuoBeehiiv) {
+    return {
+      status: "failed",
+      step: "creditoCanal",
+      reason:
+        "o HTML do Kit ainda menciona a Beehiiv — a copy do 'Para encerrar' provavelmente mudou " +
+        "e a troca de crédito (#6195) não casou. Recusando publicar o link da concorrente.",
+    };
   }
   const subjectCheck = checkSubjectNotEmpty(subject);
   if (!subjectCheck.ok) {
@@ -317,6 +351,8 @@ export async function runStage5KitDispatch(
       audienceTagId: tagCheck.tagId,
       unresolvedImages,
       renderWarnings,
+      creditoSubstituido,
+      residuoBeehiiv,
     };
   }
 
@@ -359,6 +395,8 @@ export async function runStage5KitDispatch(
     audienceTagId: tagCheck.tagId,
     unresolvedImages,
     renderWarnings,
+    creditoSubstituido,
+    residuoBeehiiv,
   };
 }
 
