@@ -34,6 +34,7 @@ import {
   type AlarmAllowlist,
   type GhRunFn,
 } from "../scripts/lib/alarm-issues.ts";
+import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
 
 const CWD = "/repo";
 
@@ -231,6 +232,36 @@ describe("ensureAlarmIssue (#5112)", () => {
     const labels = labelArg!.split(",");
     assert.ok(labels.includes("alarm"), "issue de evento continua achável por 'gh issue list --label alarm'");
     assert.ok(labels.includes("alarm-evento"));
+  });
+
+  it("#6205: labels da criação já classificam o track certo em classifyExecTrack, sem passo extra — família estado → fora-de-rodada (auto-resolve)", () => {
+    let labelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        labelArg = args[args.indexOf("--label") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    ensureAlarmIssue({ ...FINDING_A, family: "estado" }, undefined, CWD, run);
+    const track = classifyExecTrack({ labels: labelArg!.split(","), body: "", state: "OPEN" });
+    assert.equal(track, "fora-de-rodada", "família estado nasce já classificável — nenhum route-issue extra na criação");
+  });
+
+  it("#6205: labels da criação já classificam o track certo em classifyExecTrack — família evento → overnight", () => {
+    let labelArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        labelArg = args[args.indexOf("--label") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    ensureAlarmIssue({ ...FINDING_A, family: "evento" }, undefined, CWD, run);
+    const track = classifyExecTrack({ labels: labelArg!.split(","), body: "", state: "OPEN" });
+    assert.equal(track, "overnight", "família evento nasce já classificável — alarm-evento vence alarm na precedência");
   });
 
   it("corpo da issue criada carrega o marcador de dedup", () => {

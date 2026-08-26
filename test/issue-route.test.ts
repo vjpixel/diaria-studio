@@ -20,6 +20,7 @@ import {
   applyRouteLabelPlan,
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
   ROUTABLE_LABELS,
@@ -28,7 +29,7 @@ import {
   type RouteTrack,
 } from "../scripts/lib/issue-route.ts";
 import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
-import { routeIssue, type GhRunFn } from "../scripts/route-issue.ts";
+import { routeIssue, routeIssueForCreate, type GhRunFn } from "../scripts/route-issue.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 
 // ─── planRouteLabels / applyRouteLabelPlan — mapeamento puro ────────────────
@@ -596,5 +597,71 @@ describe("planRouteLabels — 5 labels #6197 (3a) em ROUTABLE_LABELS", () => {
     const plan = planRouteLabels("develop");
     const next = applyRouteLabelPlan(newLabels, plan);
     assert.deepEqual(next, ["develop-track"]);
+  });
+});
+
+describe("labelsForNewIssue / routeIssueForCreate — declarar track na criação (#6205)", () => {
+  it("labelsForNewIssue é o mesmo .add de planRouteLabels, sem I/O", () => {
+    for (const track of ROUTE_TRACKS) {
+      assert.deepEqual(labelsForNewIssue(track), planRouteLabels(track).add);
+    }
+  });
+
+  it("labelsForNewIssue com --motivo aplica a label específica", () => {
+    assert.deepEqual(labelsForNewIssue("bloqueada", "conta-de-terceiro"), ["external-blocker"]);
+  });
+
+  it("routeIssueForCreate: track sem label especial (overnight) → labels vazio, body intocado", () => {
+    const result = routeIssueForCreate({ track: "overnight", body: "corpo original" });
+    assert.deepEqual(result, { ok: true, labels: [], body: "corpo original" });
+  });
+
+  it("routeIssueForCreate: bloqueada + motivo → external-blocker, body vazio quando omitido", () => {
+    const result = routeIssueForCreate({ track: "bloqueada", motivo: "conta-de-terceiro" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.labels, ["external-blocker"]);
+    assert.equal(result.body, "");
+  });
+
+  it("routeIssueForCreate: agendada sem --until falha (mesmo contrato de routeIssue)", () => {
+    const result = routeIssueForCreate({ track: "agendada" });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /exige --until/);
+  });
+
+  it("routeIssueForCreate: track != agendada COM --until falha", () => {
+    const result = routeIssueForCreate({ track: "develop", until: "2026-09-01" });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /só é aceito com --track agendada/);
+  });
+
+  it("routeIssueForCreate: agendada + --until insere o marcador no topo do corpo", () => {
+    const result = routeIssueForCreate({ track: "agendada", until: "2026-09-01", body: "corpo original" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.labels, []);
+    assert.equal(result.body, "<!-- aguardando-ate: 2026-09-01 -->\n\ncorpo original");
+  });
+
+  it("routeIssueForCreate: agendada sem body → marcador sozinho", () => {
+    const result = routeIssueForCreate({ track: "agendada", until: "2026-09-01" });
+    assert.equal(result.ok, true);
+    assert.equal(result.body, "<!-- aguardando-ate: 2026-09-01 -->\n");
+  });
+
+  it("round-trip: labels de routeIssueForCreate produzem o track pedido em classifyExecTrack (não-agendada)", () => {
+    for (const track of ROUTE_TRACKS) {
+      if (track === "agendada") continue; // agendada depende do marcador no body, coberto abaixo
+      const result = routeIssueForCreate({ track });
+      assert.equal(result.ok, true);
+      const resolved = classifyExecTrack({ labels: result.labels as string[], body: result.body, state: "OPEN" });
+      assert.equal(resolved, track, `--for-create --track ${track} produziu labels que classificam "${resolved}"`);
+    }
+  });
+
+  it("round-trip: agendada com marcador futuro classifica agendada", () => {
+    const result = routeIssueForCreate({ track: "agendada", until: "2099-01-01" });
+    assert.equal(result.ok, true);
+    const resolved = classifyExecTrack({ labels: result.labels as string[], body: result.body, state: "OPEN" });
+    assert.equal(resolved, "agendada");
   });
 });

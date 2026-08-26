@@ -63,12 +63,34 @@
  * Roteando pra `bloqueada` sem `--motivo`, se a issue já carrega uma label
  * de `BLOCKED_LABELS` (ex: `external-blocker`), ela é PRESERVADA em vez
  * de ser substituída por `bloqueio-execucao`.
+ *
+ * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
+ *
+ * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
+ * há estado anterior pra ler/diffar/validar. Devolve só `{ labels, body }`
+ * — o CALLER usa em `gh issue create --label {labels} --body {body} ...`
+ * (título e o resto do corpo continuam por conta do caller; `body` aqui só
+ * carrega o marcador `aguardando-ate:` quando `--track agendada`).
+ *
+ *   npx tsx scripts/route-issue.ts --for-create --track develop \
+ *     --motivo conta-de-terceiro
+ *   # { "ok": true, "labels": ["external-blocker"], "body": "" }
+ *
+ *   npx tsx scripts/route-issue.ts --for-create --track agendada \
+ *     --until 2026-09-01 --body "corpo original da issue"
+ *   # { "ok": true, "labels": [], "body": "<!-- aguardando-ate: 2026-09-01 -->\n\ncorpo original da issue" }
+ *
+ * Sem sinal conhecido do track na criação, não chamar `--for-create` —
+ * a issue nasce sem nenhuma label de track (default `overnight` implícito
+ * de `classifyExecTrack`), e o SKILL.md que criou a issue deve deixar isso
+ * "·sem sinal" explícito no comentário/corpo em vez de fingir que sabia.
  */
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
   ROUTE_TRACKS,
@@ -76,7 +98,12 @@ import {
   type RouteTrack,
 } from "./lib/issue-route.ts";
 import { classifyExecTrack } from "./lib/issue-exec-track.ts";
-import { clearWaitUntilMarkerOnIssue, syncWaitUntilMarkerOnIssue } from "./lib/wait-until-sync.ts";
+import {
+  clearWaitUntilMarkerOnIssue,
+  computeWaitUntilMarkerDate,
+  syncWaitUntilMarkerOnIssue,
+  upsertWaitUntilMarker,
+} from "./lib/wait-until-sync.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -305,23 +332,96 @@ function failResult(error: string): RouteIssueResult {
   };
 }
 
+// ─── `--for-create` (#6205) ─────────────────────────────────────────────
+
+export interface ForCreateOptions {
+  track: RouteTrack;
+  motivo?: RouteMotivo;
+  /** Só válido (e obrigatório) com `track === "agendada"` — mesmo contrato
+   * de `RouteIssueOptions.until`. */
+  until?: string;
+  /** Corpo pretendido da issue nova — só usado (e só relevante) quando
+   * `track === "agendada"`, pra inserir o marcador `aguardando-ate:` no
+   * lugar certo. Omitido/vazio → marcador sozinho vira o corpo inteiro. */
+  body?: string;
+}
+
+export interface ForCreateResult {
+  ok: boolean;
+  /** Labels a passar em `gh issue create --label {labels.join(",")}` —
+   * vazio é um resultado válido (ex: `--track overnight`, o default sem
+   * nenhuma label especial). */
+  labels: readonly string[];
+  /** Corpo com o marcador `aguardando-ate:` já inserido, quando
+   * `track === "agendada"`; senão o `body` recebido sem alteração (`""` se
+   * omitido). */
+  body: string;
+  error?: string;
+}
+
+/**
+ * Versão "declarar na criação" de `routeIssue` (#6205) — nenhuma chamada
+ * `gh`, porque a issue ainda não existe: não há o que ler/validar
+ * pós-escrita (o passo 4 de `routeIssue` não se aplica). Devolve só o que
+ * o CALLER precisa passar pra `gh issue create` (`labels` via `--label`,
+ * `body` já com o marcador inserido se aplicável) — o CALLER ainda monta
+ * `--title`/`--body` normalmente, isto não invoca `gh issue create` por
+ * conta própria (mesmo motivo de `ensureAlarmIssue`/
+ * `createAlarmIssueWithLabelRetry` não estarem aqui: retry de label ausente
+ * no repo é um problema de "criar issue via gh", ortogonal a "que labels
+ * este veredito implica" — caller que precisar do self-heal de label
+ * ausente compõe com `scripts/lib/alarm-issues.ts` separadamente).
+ */
+export function routeIssueForCreate(options: ForCreateOptions): ForCreateResult {
+  if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
+    return { ok: false, labels: [], body: options.body ?? "", error: `--motivo desconhecido: "${options.motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}` };
+  }
+  if (options.track === "agendada" && !options.until) {
+    return { ok: false, labels: [], body: options.body ?? "", error: `--track agendada exige --until AAAA-MM-DD.` };
+  }
+  if (options.track !== "agendada" && options.until) {
+    return { ok: false, labels: [], body: options.body ?? "", error: `--until só é aceito com --track agendada (recebido --track ${options.track}).` };
+  }
+  const labels = labelsForNewIssue(options.track, options.motivo);
+  if (options.track !== "agendada") {
+    return { ok: true, labels, body: options.body ?? "" };
+  }
+  const ymd = computeWaitUntilMarkerDate(options.until as string);
+  return { ok: true, labels, body: upsertWaitUntilMarker(options.body, ymd) };
+}
+
 // ─── CLI ─────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
-  let issue: number | undefined;
-  let track: string | undefined;
-  let reason: string | undefined;
-  let motivo: string | undefined;
-  let until: string | undefined;
+interface ParsedArgs {
+  forCreate: boolean;
+  issue?: number;
+  track?: string;
+  reason?: string;
+  motivo?: string;
+  until?: string;
+  body?: string;
+}
+
+function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
+  const out: ParsedArgs = { forCreate: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--issue") issue = Number(argv[++i]);
-    else if (a === "--track") track = argv[++i];
-    else if (a === "--reason") reason = argv[++i];
-    else if (a === "--motivo") motivo = argv[++i];
-    else if (a === "--until") until = argv[++i];
+    if (a === "--for-create") out.forCreate = true;
+    else if (a === "--issue") out.issue = Number(argv[++i]);
+    else if (a === "--track") out.track = argv[++i];
+    else if (a === "--reason") out.reason = argv[++i];
+    else if (a === "--motivo") out.motivo = argv[++i];
+    else if (a === "--until") out.until = argv[++i];
+    else if (a === "--body") out.body = argv[++i];
     else return { error: `argumento desconhecido: ${a}` };
   }
+  return out;
+}
+
+function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
+  const raw = parseRawArgs(argv);
+  if ("error" in raw) return raw;
+  const { issue, track, reason, motivo } = raw;
   if (!issue || !Number.isInteger(issue) || issue <= 0) {
     return { error: `--issue N (inteiro positivo) é obrigatório` };
   }
@@ -331,11 +431,38 @@ function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   if (motivo && !(motivo in MOTIVO_LABEL)) {
     return { error: `--motivo desconhecido: "${motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}` };
   }
-  return { issue, track: track as RouteTrack, reason, motivo: motivo as RouteMotivo | undefined, until, cwd: process.cwd() };
+  return { issue, track: track as RouteTrack, reason, motivo: motivo as RouteMotivo | undefined, until: raw.until, cwd: process.cwd() };
+}
+
+function parseForCreateArgs(argv: string[]): ForCreateOptions | { error: string } {
+  const raw = parseRawArgs(argv);
+  if ("error" in raw) return raw;
+  const { track, motivo, until, body } = raw;
+  if (!track || !(ROUTE_TRACKS as string[]).includes(track)) {
+    return { error: `--track é obrigatório, um de: ${ROUTE_TRACKS.join(", ")}` };
+  }
+  return { track: track as RouteTrack, motivo: motivo as RouteMotivo | undefined, until, body };
 }
 
 async function main() {
-  const parsed = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv.includes("--for-create")) {
+    const parsed = parseForCreateArgs(argv);
+    if ("error" in parsed) {
+      console.error(`[route-issue] ${parsed.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const result = routeIssueForCreate(parsed);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`[route-issue] ${result.error ?? "falhou sem mensagem de erro"}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const parsed = parseArgs(argv);
   if ("error" in parsed) {
     console.error(`[route-issue] ${parsed.error}`);
     process.exitCode = 1;
