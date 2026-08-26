@@ -22,6 +22,12 @@
  *   2 = falha de config/rede — não foi possível medir (credencial ausente,
  *       API indisponível, paginação truncada) — NUNCA confundir com "diverge"
  *
+ * `--json` emite JSON em TODOS os exit codes, inclusive 2 (#6311) — nunca
+ * stdout vazio quando a flag está presente. Exit 0/1 emitem
+ * `{ result, decision }` (ver `maskResultForJson`/`decideGuardExitCode`);
+ * exit 2 emite `{ error: { code: "config" | "network", message }, decision:
+ * { exitCode: 2 } }` — envelope distinto, mas sempre JSON parseável.
+ *
  * Env: BEEHIIV_API_KEY, BEEHIIV_PUBLICATION_ID (ou platform.config.json),
  * KIT_API_KEY — mesmos nomes já usados pelos scripts vizinhos (ver
  * `scripts/lib/beehiiv-config.ts`, `scripts/lib/kit-config.ts`).
@@ -34,6 +40,7 @@ import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import type { KitConfig } from "./lib/kit-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
+import { parseRetryAfterSecs } from "./lib/brevo-client.ts";
 import {
   reconcileEmailSets,
   decideGuardExitCode,
@@ -59,6 +66,21 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Pure: quanto esperar (ms) antes de retentar um 429, a partir do header
+ * `Retry-After` real da resposta — extraído do loop de paginação só pra ser
+ * testável sem mockar `fetch`/dormir de verdade (#6311, testes de
+ * regressão). `parseRetryAfterSecs` (reusado, não reimplementado — ver
+ * comentário no call site) devolve `null` tanto pra header ausente quanto
+ * pra forma não-numérica (data HTTP RFC 7231 incluída); os dois caem no
+ * mesmo default seguro de 60s. Header numérico é respeitado, com piso de
+ * 30s (nunca menos, mesmo se a API mandar `Retry-After: 1`).
+ */
+export function computeRetryWaitMs(headers: Headers): number {
+  const retryAfterSecs = parseRetryAfterSecs(headers);
+  return retryAfterSecs != null ? Math.max(retryAfterSecs * 1000, 30_000) : 60_000;
+}
+
+/**
  * I/O: pagina `GET /subscriptions?status=active`, drenando por
  * `total_results` (não `total_pages` — #1897, mesma disciplina de
  * `sync-apoio-nivel-beehiiv.ts`/`backup-beehiiv.ts`). Falha loud em
@@ -76,8 +98,11 @@ async function fetchActiveBeehiivEmails(apiKey: string, publicationId: string): 
       { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
     );
     if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
-      await sleep(Math.max(retryAfter * 1000, 30_000));
+      // #6311: reusa `parseRetryAfterSecs` (já validado contra NaN/negativo
+      // pelo #6284, mesma rodada) via `computeRetryWaitMs`, em vez de um 3º
+      // parser duplicado — nunca mais o `NaN` que fazia `setTimeout` disparar
+      // imediatamente quando o header vinha em forma de data HTTP.
+      await sleep(computeRetryWaitMs(res.headers));
       continue;
     }
     if (!res.ok) {
@@ -112,20 +137,41 @@ async function fetchActiveKitEmails(config: KitConfig): Promise<string[]> {
   return subs.filter((s) => s.state === "active").map((s) => s.email_address);
 }
 
+/**
+ * #6311 item (b): antes deste helper, os `return` antecipados de erro de
+ * config só escreviam em stderr — com `--json`, stdout saía vazio mesmo
+ * assim, quebrando um consumidor programático (o pipeline do #6114, razão
+ * de existir deste guard) que sempre espera JSON parseável em stdout quando
+ * a flag está presente. Escolha explícita: emitir JSON em TODOS os
+ * caminhos de saída, nunca deixar stdout vazio sob `--json` — em vez de só
+ * documentar que exit 2 não produz JSON (a alternativa also-defensável
+ * citada na issue). Motivo: o contrato já documentado no topo do arquivo
+ * ("2 = falha de config/rede") não distingue exit 2 de exit 0/1 quanto a
+ * `--json`; um consumidor que já faz `JSON.parse(stdout)` incondicionalmente
+ * quando passa a flag não precisa de um 2º branch só pra esse exit code.
+ */
+export function emitError(asJson: boolean, humanMessage: string, code: "config" | "network"): void {
+  process.stderr.write(`${humanMessage}\n`);
+  if (asJson) {
+    process.stdout.write(
+      JSON.stringify({ error: { code, message: humanMessage }, decision: { exitCode: 2 } }, null, 2) + "\n",
+    );
+  }
+  process.exitCode = 2;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv();
   const asJson = hasFlag(process.argv.slice(2), "json");
 
   const beehiivConfig = resolveBeehiivConfig();
   if (!beehiivConfig.ok) {
-    process.stderr.write(`${LOG_PREFIX} config Beehiiv inválida — não foi possível medir: ${beehiivConfig.reason}\n`);
-    process.exitCode = 2;
+    emitError(asJson, `${LOG_PREFIX} config Beehiiv inválida — não foi possível medir: ${beehiivConfig.reason}`, "config");
     return;
   }
   const kitConfig = resolveKitConfig();
   if (!kitConfig.ok) {
-    process.stderr.write(`${LOG_PREFIX} config Kit inválida — não foi possível medir: ${kitConfig.reason}\n`);
-    process.exitCode = 2;
+    emitError(asJson, `${LOG_PREFIX} config Kit inválida — não foi possível medir: ${kitConfig.reason}`, "config");
     return;
   }
 
@@ -138,8 +184,7 @@ async function main(): Promise<void> {
     kitEmails = await fetchActiveKitEmails(kitConfig.config);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`${LOG_PREFIX} falha de rede/API — não foi possível medir: ${msg}\n`);
-    process.exitCode = 2;
+    emitError(asJson, `${LOG_PREFIX} falha de rede/API — não foi possível medir: ${msg}`, "network");
     return;
   }
 
@@ -161,7 +206,10 @@ async function main(): Promise<void> {
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
-    process.stderr.write(`${LOG_PREFIX} erro fatal — não foi possível medir: ${(e as Error).message}\n`);
-    process.exitCode = 2;
+    emitError(
+      hasFlag(process.argv.slice(2), "json"),
+      `${LOG_PREFIX} erro fatal — não foi possível medir: ${(e as Error).message}`,
+      "network",
+    );
   });
 }
