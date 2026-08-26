@@ -114,6 +114,45 @@ test("3 sessões concorrentes no mesmo dia derivam 3 paths distintos, em ordem",
   assert.deepEqual(bAgain, { path: b.path, suffix: "b", mode: "resume" });
 });
 
+// --- reprodução do #6309: Sessão B entra pelo PASSO 0, nunca pelo 9 -----
+
+test("#6309: Sessão B chamando o resolver no passo 0 (antes de qualquer write) nunca lê mode 'resume' do plano alheio", () => {
+  const disk = fakeDisk();
+
+  // Sessão A processa a manhã inteira e já escreveu seu plan.json (passo 9
+  // dela, há muito no passado) — é o estado que a Sessão B encontra ao
+  // iniciar.
+  const resolvedA = resolveDevelopPlanPath("data/develop", "260826", "session-A", disk.probe);
+  disk.write(resolvedA.path, "session-A");
+
+  // Sessão B inicia. ANTES do #6309, a prosa do passo 0 só olhava
+  // `existsSync(plan.json)` e concluía "é resume" sem nunca chamar o
+  // resolver — o cenário que este teste teria deixado passar. Com o fix, o
+  // passo 0 chama resolveDevelopPlanPath já na ENTRADA da sessão, antes de
+  // decidir se é retomada.
+  const stepZero = resolveDevelopPlanPath("data/develop", "260826", "session-B", disk.probe);
+
+  // A Sessão B NUNCA pode ler "resume" aqui — não é ela quem escreveu
+  // aquele plano. É exatamente esta distinção que faltava na prosa antiga.
+  assert.notEqual(stepZero.mode, "resume");
+  assert.equal(stepZero.mode, "derived-after-collision");
+  assert.notEqual(stepZero.path, resolvedA.path);
+
+  // O passo 0 não escreve nada (é só leitura) — a Sessão B segue para o
+  // passo 9, que resolve de novo antes do 1º write real. Chamado sobre o
+  // MESMO estado de disco (nada mudou entre os dois passos), o resultado é
+  // idêntico — confirma que rodar a checagem duas vezes (passo 0 e passo 9)
+  // é seguro e determinístico, nunca alterna de resposta entre as duas.
+  const stepNine = resolveDevelopPlanPath("data/develop", "260826", "session-B", disk.probe);
+  assert.deepEqual(stepNine, stepZero);
+
+  disk.write(stepNine.path, "session-B");
+
+  // O plano da Sessão A permanece intacto — em nenhum momento a Sessão B
+  // (nem no passo 0, nem no passo 9) escreveu nele.
+  assert.deepEqual(disk.probe(resolvedA.path), { exists: true, sessionId: "session-A" });
+});
+
 test("session_id com espaços em branco é normalizado antes de comparar", () => {
   const disk = fakeDisk({ "data/develop/260826/plan.json": "  session-A  " });
   const resolved = resolveDevelopPlanPath("data/develop", "260826", "session-A", disk.probe);
