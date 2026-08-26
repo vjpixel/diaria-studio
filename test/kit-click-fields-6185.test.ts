@@ -15,6 +15,7 @@ import {
   interpretClicksResponse,
   renderVeredicto,
   CAMPOS_DECLARADOS,
+  AMOSTRAS_INSPECIONADAS,
 } from "../scripts/lib/kit-click-fields.ts";
 import { verifyClickFields, type VerifyDeps } from "../scripts/kit-verify-click-fields.ts";
 
@@ -85,6 +86,70 @@ describe("#6185 interpretClicksResponse — com clique real, compara tipo vs rea
     const item = { url: "https://x.com", total_clicks: 9 };
     const v = interpretClicksResponse({ clicks: [item] });
     if (v.status === "confirmado") assert.deepEqual(v.amostra, item);
+  });
+});
+
+describe("#6192 review — verificar VALOR, não só nome de chave", () => {
+  it("REGRESSÃO P2: os 4 campos com tipo errado ⇒ NÃO pode dizer 'tipo confere'", () => {
+    // O caso mais grave: todas as chaves certas, todos os valores errados.
+    // Antes do fix, `ausentes` vinha vazio e o render afirmava
+    // "tipo confere com a realidade" — o oposto do que aconteceu, num script
+    // cuja única razão de existir é conferir esse tipo.
+    const item = {
+      url: "https://x.com",
+      unique_clicks: "3",
+      click_to_delivery_rate: "0.6",
+      click_to_open_rate: null,
+    };
+    const v = interpretClicksResponse({ clicks: [item] });
+    assert.equal(v.status, "confirmado");
+    if (v.status === "confirmado") {
+      assert.equal(v.presentes.length, 1, "só `url` está de fato correto");
+      assert.equal(v.tipoDivergente.length, 3);
+      const uc = v.tipoDivergente.find((d) => d.campo === "unique_clicks");
+      assert.deepEqual(uc, { campo: "unique_clicks", esperado: "number", recebido: "string" });
+      assert.ok(v.tipoDivergente.some((d) => d.recebido === "null"), "null precisa ser nomeado, não virar 'object'");
+    }
+    const out = renderVeredicto(v, 1);
+    assert.match(out, /DIVERGE/);
+    assert.doesNotMatch(out, /tipo confere com a realidade/);
+  });
+
+  it("REGRESSÃO P2: item que não é objeto ⇒ inconclusivo, não 'confirmado com tudo ausente'", () => {
+    for (const lixo of [42, "texto", true, [1, 2]]) {
+      const v = interpretClicksResponse({ clicks: [lixo] });
+      assert.equal(v.status, "inconclusivo", `item ${JSON.stringify(lixo)} devia ser inconclusivo`);
+      if (v.status === "inconclusivo") assert.match(v.motivo, /não é objeto/);
+    }
+  });
+
+  it("REGRESSÃO P2: clicks: [null] NÃO lança — antes estourava em Object.keys", () => {
+    const v = interpretClicksResponse({ clicks: [null] });
+    assert.equal(v.status, "inconclusivo");
+  });
+
+  it("REGRESSÃO P3: item divergente FORA do índice 0 é pego", () => {
+    // Antes só `clicks[0]` era olhado — o veredicto dependia da sorte.
+    const bom = { url: "u", unique_clicks: 1, click_to_delivery_rate: 0.1, click_to_open_rate: 0.2 };
+    const v = interpretClicksResponse({ clicks: [bom, { ...bom, unique_clicks: "2" }] });
+    assert.equal(v.status, "confirmado");
+    if (v.status === "confirmado") {
+      assert.equal(v.itensInspecionados, 2);
+      assert.ok(v.tipoDivergente.some((d) => d.campo === "unique_clicks"), "divergência no item 1 tem de aparecer");
+    }
+  });
+
+  it("campo ausente só no 2º item também conta como ausente", () => {
+    const bom = { url: "u", unique_clicks: 1, click_to_delivery_rate: 0.1, click_to_open_rate: 0.2 };
+    const { url, ...semUrl } = bom;
+    const v = interpretClicksResponse({ clicks: [bom, semUrl] });
+    if (v.status === "confirmado") assert.ok(v.ausentes.includes("url"));
+  });
+
+  it("inspeciona no máximo AMOSTRAS_INSPECIONADAS itens", () => {
+    const bom = { url: "u", unique_clicks: 1, click_to_delivery_rate: 0.1, click_to_open_rate: 0.2 };
+    const v = interpretClicksResponse({ clicks: Array.from({ length: 50 }, () => bom) });
+    if (v.status === "confirmado") assert.equal(v.itensInspecionados, AMOSTRAS_INSPECIONADAS);
   });
 });
 

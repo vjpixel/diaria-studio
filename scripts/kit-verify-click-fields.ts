@@ -26,7 +26,7 @@
  * (#6162), onde o 2 virava 0.
  */
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { getBroadcastClicks, getBroadcastStats } from "./lib/kit-client.ts";
 import { interpretClicksResponse, renderVeredicto, type VeredictoClicks } from "./lib/kit-click-fields.ts";
 
@@ -80,9 +80,20 @@ export async function verifyClickFields(broadcastId: number, deps: VerifyDeps): 
 
 export async function main(): Promise<void> {
   loadProjectEnv();
-  const raw = getArg(process.argv.slice(2), "broadcast");
-  const id = Number(raw);
-  if (!raw || !Number.isInteger(id) || id <= 0) {
+  // `getIntArg` e não `getArg` + `Number()`: além de já validar, o par
+  // desacoplado é rejeitado pelo guard estrutural do #4573 (achado P1 do
+  // review — o guard é mecânico, não faz análise de fluxo, então "o `!raw`
+  // logo abaixo cobre" não o satisfaz e o CI quebraria).
+  let id: number | undefined;
+  try {
+    id = getIntArg(process.argv.slice(2), "broadcast", { min: 1 });
+  } catch (e) {
+    console.error(`  ${(e as Error).message}`);
+    console.error("uso: npx tsx scripts/kit-verify-click-fields.ts --broadcast <id>");
+    process.exitCode = 1;
+    return;
+  }
+  if (id === undefined) {
     console.error("uso: npx tsx scripts/kit-verify-click-fields.ts --broadcast <id>");
     process.exitCode = 1;
     return;
