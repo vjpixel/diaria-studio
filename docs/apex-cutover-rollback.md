@@ -134,6 +134,7 @@ Registrado para a decisão de reverter ser informada, não otimista:
 ```bash
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
 for u in "https://diar.ia.br/" "https://diar.ia.br/robots.txt" \
+         "https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia" \
          "https://arquivo.diar.ia.br/" "https://especial.diar.ia.br/2026/o-agente/"; do
   printf "%-50s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' -A "$UA" --max-time 20 "$u")"
 done
@@ -148,8 +149,21 @@ Sinais de que o cutover **funcionou** (não só "respondeu"):
 - `GET /robots.txt` **não** contém `# beehiiv default robots.txt` no topo
 - `GET /p/{slug}` de uma edição traz `<html lang="pt-BR">`, não `lang="en"`
 - a meta description da página descreve **aquela** edição, não outras (#5101)
+- `GET /p/{slug}` (sem barra — forma indexada pelo Google e referenciada no
+  repo) dá **200 direto**, não 307. Um 307 aí significa que o
+  `html_handling` do Worker voltou a canonicalizar pra COM barra
+  (`workers/site/wrangler.toml`), contradizendo o `<link rel="canonical">`
+  sem barra que a própria página serve — o cenário de "cópia, canônica
+  divergente" do `docs/seo-notes.md` Fato 2, desta vez causado pelo lado do
+  Worker. **Diferença do Fato 2:** lá os três sinais estavam CORRETOS e a
+  causa era crawl desatualizado do Google — resolveu-se sozinho, sem mexer
+  em código. Aqui é config de servidor (`html_handling`) que não muda
+  sozinha — exige o fix de 1 linha no `wrangler.toml`, não esperar. **E não
+  é gatilho de rollback de DNS** (seção 2): um 307 aqui significa "o Worker
+  ainda não está pronto" (bug de config, fix rápido), não "reverter" — o
+  gatilho 2 da seção 2 pressupõe `/p/{slug}` fora do ar, não redirecionando.
 
-Os três são exatamente o que o cutover existe para consertar; se qualquer um
+Os quatro são exatamente o que o cutover existe para consertar; se qualquer um
 continuar como antes, o apex ainda não é nosso, independentemente do 200.
 
 ## 6. Antes de abrir a janela

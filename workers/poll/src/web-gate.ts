@@ -67,6 +67,7 @@ import {
 } from "./session-cookie";
 import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeToBeehiiv, subscribeToKit, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe"; // #6048: subscribeToKit — ramificação por env.SUBSCRIBE_BACKEND
+import { hasProvenEmailPossession } from "./magic-link"; // #6293: só quem provou posse (magic link) vira "confirmed"
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
 // puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
@@ -95,9 +96,29 @@ export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 /**
  * #4121: estado da sessão embutido no PAYLOAD assinado (não um cookie
  * separado — decisão do editor, "pra não multiplicar superfície"). `pending`
- * = cadastro feito, Beehiiv ainda não confirmou (double opt-in); `confirmed`
- * = verificado de verdade (via `checkWebSubscriber` retornando "active", seja
- * no `/verify` original, seja numa revisita pós-confirmação).
+ * = existe cadastro pra este e-mail (Beehiiv/KV), mas ninguém provou posse
+ * dele; `confirmed` = posse PROVADA — único critério, desde o #6293, é o
+ * marcador de `hasProvenEmailPossession` (magic-link.ts), gravado quando a
+ * pessoa clica no link mágico enviado àquele endereço (`handleConfirmMerge`).
+ *
+ * #6293 (correção de vulnerabilidade): até aqui, `handleJogarGateVerify`
+ * promovia a `confirmed` qualquer e-mail que `checkWebSubscriber` visse como
+ * "active" — o que soava como verificação real antes do #5095, mas deixou de
+ * ser: `subscribeToBeehiiv` manda `double_opt_override: "off"` desde então
+ * (subscribe.ts), então "existe e está active" hoje só prova que ALGUÉM
+ * digitou aquele e-mail e marcou a caixinha de opt-in (consentimento LGPD),
+ * nunca que essa pessoa é a dona dele. Herdar `confirmed` daí permitia
+ * assumir a identidade de voto de qualquer e-mail alheio em duas chamadas
+ * públicas ao gate, sem nunca provar posse — exatamente a vulnerabilidade
+ * que o #4121 achou que tinha fechado. Ver docstring de `handleJogarGateVerify`.
+ *
+ * Isto NÃO é uma regressão específica da Beehiiv, nem algo que reverter o
+ * #5095 resolveria: `checkWebSubscriber`/`checkWebSubscriberDetailed` (#6048)
+ * unem 3 fontes (KV, Beehiiv, Kit) e a fonte Kit (`verifySubscriberViaKitByEmail`,
+ * subscriber-verify.ts) nunca teve conceito de opt-in ou posse — estar no Kit
+ * já basta pra "active" lá, com ou sem #5095. O problema é estrutural:
+ * NENHUMA fonte de "active" prova posse, então o marcador de posse (magic
+ * link) tinha que existir de qualquer forma.
  *
  * Mecanismo: `pending` prefixa o e-mail com `PENDING_PREFIX` ANTES de assinar
  * (`pending:{email}`) — `:` nunca aparece num e-mail válido
@@ -116,7 +137,7 @@ const PENDING_PREFIX = "pending:";
 export async function issueWebSessionCookie(
   secret: string,
   email: string,
-  state: WebSessionState = "confirmed",
+  state: WebSessionState,
 ): Promise<string> {
   const payload = state === "pending" ? `${PENDING_PREFIX}${email}` : email;
   const value = await signSessionCookie(secret, payload, WEB_SESSION_TTL_SEC);
@@ -125,9 +146,12 @@ export async function issueWebSessionCookie(
 
 export interface WebSession {
   email: string;
-  /** true = cadastro feito, Beehiiv ainda não confirmou o opt-in — a
-   * identidade NÃO deve sobrepor o token anônimo em `handleVote` (vote.ts),
-   * mas AINDA libera o jogo no gate (`handleJogarPage`, jogar.ts). */
+  /** true = e-mail sem posse provada — a identidade NÃO deve sobrepor o
+   * token anônimo em `handleVote` (vote.ts), mas AINDA libera o jogo no gate
+   * (`handleJogarPage`, jogar.ts). Vira `false` (`confirmed`) só quando
+   * `hasProvenEmailPossession` (magic-link.ts, #6293) achar o marcador —
+   * NUNCA por a Beehiiv/KV/Kit reportarem "active" (nenhuma dessas fontes
+   * prova posse, ver docstring de `WebSessionState` acima). */
   pending: boolean;
 }
 
@@ -304,6 +328,15 @@ export const isValidEmailFormat = isValidVoteEmailFormat;
  * Handler `POST /jogar/gate/verify` — só verificação (sem criar assinante).
  * Honeypot silencioso (mesmo padrão de `subscribe.ts` #3580): campo `website`
  * preenchido devolve `not_active` fake, sem sinalizar detecção ao bot.
+ *
+ * #6293: `checkWebSubscriber` retornando "active" só prova que o e-mail EXISTE
+ * como contato ativo (Beehiiv/KV) — desde o #5095 (`double_opt_override: "off"`
+ * em `subscribeToBeehiiv`), isso não exige nenhuma confirmação de posse, então
+ * não é mais base pra `confirmed`. `confirmed` agora exige o marcador de
+ * `hasProvenEmailPossession` (magic-link.ts), gravado só quando a pessoa
+ * clicou num link mágico enviado àquele endereço. Sem o marcador, o gate
+ * ainda libera o jogo normalmente (`pending` já libera — `handleJogarPage`),
+ * só não sobrepõe a identidade de voto em `vote.ts`.
  */
 export async function handleJogarGateVerify(request: Request, env: Env): Promise<Response> {
   const ip = clientIpFromRequest(request);
@@ -332,9 +365,25 @@ export async function handleJogarGateVerify(request: Request, env: Env): Promise
   if (result !== "active") return json({ ok: false, error: "not_active" }, 200, env);
 
   if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
-  // #4121: verificação REAL confirmada pela Beehiiv/KV — estado "confirmed"
-  // (default), sobrepõe identidade em handleVote imediatamente.
-  const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email);
+  // #6293: "active" na Beehiiv/KV deixou de provar posse (#5095) — só a
+  // sessão CONFIRMED quando o marcador de posse (magic link, #3996) já
+  // existe pra este e-mail; caso contrário `pending`, que já libera o gate
+  // (handleJogarPage) mas nunca sobrepõe identidade em vote.ts.
+  //
+  // Achado do review: `checkWebSubscriber` (acima) é documentado como
+  // "nunca lança" — `hasProvenEmailPossession` não tinha essa garantia, e um
+  // KV.get que lançasse derrubava o endpoint inteiro com 500, inclusive o
+  // caminho que só emitiria `pending` (que é o que deixa a pessoa continuar
+  // jogando). Falha aqui sempre degrada pro lado seguro: nunca emite
+  // `confirmed` sem prova, só perde a promoção nesta chamada (a próxima
+  // visita ao gate tenta de novo).
+  let possessionProven = false;
+  try {
+    possessionProven = await hasProvenEmailPossession(env, email);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "gate_possession_check_failed", error: String(e) }));
+  }
+  const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, possessionProven ? "confirmed" : "pending");
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }
 
@@ -366,9 +415,12 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * emite sessão `pending` (NUNCA `confirmed` — achado do review consolidado:
  * `confirmed` é o marcador que `handleVote`/vote.ts usa pra SOBREPOR a
  * identidade do voto pelo e-mail da sessão, sem exigir o token anônimo de
- * novo — reservado pra quando o e-mail foi VERIFICADO de verdade, seja
- * `checkWebSubscriber` achando "active", seja a Beehiiv confirmando o double
- * opt-in. Sem `optin` não existe verificação NENHUMA — nenhum contato foi
+ * novo — reservado, desde o #6293, pra quando o e-mail PROVOU posse de
+ * verdade via magic link (`hasProvenEmailPossession`, magic-link.ts).
+ * `checkWebSubscriber` achando "active"/a Beehiiv aceitar o cadastro NÃO
+ * conta mais — desde o #5095 (`double_opt_override: "off"`) isso só prova
+ * que existe um contato com aquele endereço, nunca que quem cadastrou é o
+ * dono dele. Sem `optin` não existe verificação NENHUMA — nenhum contato foi
  * criado, nenhum e-mail foi enviado, é só um e-mail digitado. Emitir
  * `confirmed` aqui reabriria a vulnerabilidade que o #4121 fechou: qualquer
  * um digitando o e-mail de outra pessoa herdaria a identidade de voto dela
@@ -376,8 +428,10 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * `handleJogarPage`/#4121, que já trata pending e confirmed igual pra esse
  * fim — a identidade de RANKING de verdade vem do merge via
  * `POST /jogar/identify` (`identifyAfterGate`, #4253 item 6), que não
- * depende do estado desta sessão). Com `optin`: comportamento INALTERADO
- * (tenta Beehiiv, sessão `pending` até a confirmação).
+ * depende do estado desta sessão). Com `optin`: tenta a Beehiiv; a sessão
+ * sai `pending` e FICA `pending` mesmo depois da Beehiiv aceitar o cadastro
+ * — a única promoção pending→confirmed é via magic link (#6293, ver bloco
+ * abaixo e a docstring de `WebSessionState`).
  */
 export async function handleJogarGateSubscribe(
   request: Request,
@@ -461,16 +515,16 @@ export async function handleJogarGateSubscribe(
     return json({ ok: true, sessionUnavailable: true }, 200, env);
   }
   // #4121: `subscribeToBeehiiv` só confirma sucesso HTTP da CRIAÇÃO — o
-  // status real ainda pode não ser `active`. #5095: este fluxo passou a mandar
-  // `double_opt_override: "off"`, então a Beehiiv não exige mais confirmação
-  // AQUI — mas o caminho pending abaixo NÃO virou código morto: a Beehiiv
-  // devolve `validating` enquanto processa, e nesse intervalo ninguém provou
-  // posse do e-mail. Então o cookie sai
-  // "pending": libera continuar jogando (o gate só quer saber "existe
-  // sessão"), mas NÃO sobrepõe a identidade em `/vote` (vote.ts) até a
-  // Beehiiv confirmar — a promoção pending→confirmed acontece na próxima
-  // visita ao gate, quando `checkWebSubscriber` já retornar "active"
-  // (handleJogarGateVerify acima), sem precisar de webhook nenhum.
+  // status real ainda pode não ser `active`. #5095: este fluxo manda
+  // `double_opt_override: "off"`, então a Beehiiv não exige confirmação por
+  // e-mail pra ativar o contato — mas isso deixou de ser prova de posse
+  // (#6293): o cookie sai "pending" e FICA pending mesmo depois da Beehiiv
+  // confirmar "active" — libera continuar jogando (o gate só quer saber
+  // "existe sessão"), mas nunca sobrepõe a identidade em `/vote` (vote.ts)
+  // sozinho. A única promoção pending→confirmed é via magic link (#3996):
+  // a pessoa clica no link de `/jogar/identify` (`handleConfirmMerge`,
+  // magic-link.ts) e, numa revisita a `/jogar/gate/verify`, o marcador de
+  // posse (`hasProvenEmailPossession`) já existe pra este e-mail.
   const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "pending");
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }
