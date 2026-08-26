@@ -69,6 +69,7 @@ function makeDeps(over: {
         return { id: 555 };
       }),
     log: (l) => void spy.logs.push(l),
+    now: () => 1_700_000_000_000,
   };
   // Envolve o createBroadcast customizado pra também espionar.
   if (over.createBroadcast) {
@@ -315,5 +316,49 @@ describe("#6126 runStage5KitDispatch — findings do review da PR #6138", () => 
       assert.deepEqual(r.unresolvedImages, ["04-d1-2x1.jpg"]);
       assert.deepEqual(r.renderWarnings, ["bloco_perdido"]);
     }
+  });
+});
+
+describe("#6181 --send-test — testar o HTML antes de agendar", () => {
+  it("troca a audiência pra tag de teste, NÃO a de produção", async () => {
+    // Sem isto não havia forma suportada de testar este canal:
+    // `publish-newsletter-kit.ts --send-test` é gated por
+    // `checkKitBackendEnabled` (exige backend "kit"), o oposto daqui.
+    const vistos: string[] = [];
+    const { deps, spy } = makeDeps({
+      config: { enabled: true, audience_tag: "audiencia-de-producao" },
+      findTagId: async (nome) => {
+        vistos.push(nome);
+        return 999;
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps, { sendTest: true });
+    assert.equal(r.status, "ok");
+    assert.deepEqual(vistos, ["diaria-test-email"], "jamais resolver a audiência de produção num test-send");
+    assert.equal(spy.createCalls.length, 1);
+  });
+
+  it("NÃO grava estado — senão o dispatch real veria already_done e nunca criaria o broadcast da edição", async () => {
+    const { deps, spy } = makeDeps();
+    await runStage5KitDispatch(EDITION, deps, { sendTest: true });
+    assert.equal(spy.writeCalls.length, 0);
+  });
+
+  it("test-send dispara sozinho (send_at futuro); produção nasce rascunho (null)", async () => {
+    const t0 = 1_700_000_000_000;
+    const a = makeDeps();
+    await runStage5KitDispatch(EDITION, a.deps, { sendTest: true });
+    assert.equal(a.spy.createCalls[0].send_at, new Date(t0 + 60_000).toISOString());
+
+    const b = makeDeps();
+    await runStage5KitDispatch(EDITION, b.deps);
+    assert.equal(b.spy.createCalls[0].send_at, null, "produção nunca auto-dispara — Etapa 6 agenda");
+  });
+
+  it("dry-run + send-test não cria nada", async () => {
+    const { deps, spy } = makeDeps();
+    const r = await runStage5KitDispatch(EDITION, deps, { sendTest: true, dryRun: true });
+    assert.equal(r.status, "skipped");
+    assert.equal(spy.createCalls.length, 0);
   });
 });
