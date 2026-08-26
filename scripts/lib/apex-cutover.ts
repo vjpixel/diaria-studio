@@ -295,8 +295,6 @@ export interface WorkerDomainDetachOp {
   domainId: string;
 }
 
-export type WorkerDomainOp = WorkerDomainAttachOp | WorkerDomainDetachOp;
-
 /**
  * Plano do `--cutover`: um único attach de Workers Custom Domain (ver
  * docstring do módulo pro porquê deste mecanismo). Não gera NENHUMA operação
