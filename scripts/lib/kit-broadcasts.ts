@@ -90,11 +90,14 @@ export const KIT_TEST_SEND_TAG_NAME = "diaria-test-email";
  * campo de MAIOR blast radius do módulo (decide QUEM recebe um envio real e
  * irreversível), tipado antes como `unknown[]` — zero proteção do compilador
  * bem no ponto onde `buildTestSendFilter`/`buildAllSubscribersFilter` existem
- * justamente pra evitar a troca dos dois por engano. Cobre só as 2 variantes
- * que os builders deste módulo produzem hoje — não uma enumeração completa
- * do que a API do Kit aceita (não documentado publicamente).
+ * justamente pra evitar a troca dos dois por engano. Cobre a única variante
+ * que `buildTestSendFilter` produz hoje (`tag`) — não uma enumeração completa
+ * do que a API do Kit aceita (não documentado publicamente). `all_subscribers`
+ * NÃO é um `type` reconhecido pela API real (achado ao vivo #6323, 1º dispatch
+ * via Kit: 422 "Only `segment` or `tag` filters allowed") — removido da união;
+ * "todo mundo" é `subscriber_filter: []`, ver `buildAllSubscribersFilter`.
  */
-export type KitFilterCondition = { type: "tag"; ids: number[] } | { type: "all_subscribers" };
+export type KitFilterCondition = { type: "tag"; ids: number[] };
 export type KitSubscriberFilter = { all: KitFilterCondition[] }[];
 
 export interface CreateBroadcastInput {
@@ -296,7 +299,14 @@ export async function findTagIdByName(name: string, config?: KitConfig): Promise
 }
 
 /** `subscriber_filter` pra audiência completa — equivalente ao "enviar pra
- *  todo mundo" da Beehiiv. */
+ *  todo mundo" da Beehiiv. Array vazio, não um filtro com `type:
+ *  "all_subscribers"` — a API do Kit não reconhece esse tipo (só aceita
+ *  `segment`/`tag`, achado ao vivo #6323 no 1º dispatch real via Kit: 422
+ *  "Only `segment` or `tag` filters allowed"). Confirmado na doc oficial
+ *  (developers.kit.com/api-reference/broadcasts/create-a-broadcast): "If
+ *  nothing is provided, will default to all of your subscribers" — e o
+ *  próprio #6126 já documentava esse entendimento em `kit-diaria-channel.ts`,
+ *  só o builder aqui divergia. */
 export function buildAllSubscribersFilter(): KitSubscriberFilter {
-  return [{ all: [{ type: "all_subscribers" }] }];
+  return [];
 }

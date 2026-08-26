@@ -214,7 +214,7 @@ describe("filters", () => {
     assert.deepEqual(buildTestSendFilter(42), [{ all: [{ type: "tag", ids: [42] }] }]);
   });
 
-  it("buildAllSubscribersFilter é o equivalente a 'enviar pra todo mundo'", () => {
-    assert.deepEqual(buildAllSubscribersFilter(), [{ all: [{ type: "all_subscribers" }] }]);
+  it("buildAllSubscribersFilter é o equivalente a 'enviar pra todo mundo' (array vazio — #6323)", () => {
+    assert.deepEqual(buildAllSubscribersFilter(), []);
   });
 });
