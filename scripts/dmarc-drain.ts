@@ -94,7 +94,7 @@ const LOG_PREFIX = "[dmarc-drain]";
  * cobre com folga a janela de 2-4 semanas que a decisão de enforcement da
  * #6111 precisa acumular, sem crescer sem limite a cada execução. */
 const DEFAULT_GMAIL_QUERY =
-  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR subject:"Report Domain: diar.ia.br" OR subject:"Report domain: diar.ia.br" OR from:noreply-dmarc-support@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
+  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR subject:"Report Domain: diar.ia.br" OR subject:"Report domain: diar.ia.br" OR from:dmarcreport@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
 
 /** #5339: 2 execuções limpas consecutivas antes de fechar a issue de alarme
  * automaticamente — mesmo valor dos demais alarmes diários deste repo. */
