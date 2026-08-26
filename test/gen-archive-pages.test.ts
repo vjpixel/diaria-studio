@@ -327,3 +327,63 @@ describe("loadPosts (integração, tmpdir)", () => {
     }
   });
 });
+
+// Hotfix da rodada overnight 260826 — achado no review consolidado (alta
+// confiança, P1). O guard do #6210 rodava ANTES do sanitize do link de voto,
+// então `{{email}}` — que é a merge tag PADRÃO desde o #4581, presente em 91
+// dos 259 posts do cache real — fazia buildArchivePageHtml LANÇAR, quebrando
+// o acervo público inteiro e o publish-edition-site-page (#6202).
+describe("buildArchivePageHtml — link de voto com merge tag padrão (#6210 × #4581)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("post com `email={{email}}` NÃO lança — é o caso padrão, não uma anomalia", () => {
+    const html = buildArchivePageHtml(
+      comVoto('<!DOCTYPE html><html><head></head><body><a href="https://x/v?email={{email}}&e=1">Vote</a></body></html>'),
+    );
+    assert.ok(html.includes("email=&e=1"), "merge tag do voto deve virar valor vazio");
+    assert.ok(!/\{\{email\}\}/.test(html), "não pode sobrar merge tag crua na página publicada");
+  });
+
+  it("o guard continua pegando merge tag que o sanitize NÃO cobre", () => {
+    // O ponto de inverter a ordem era destravar o caso tratado, não desligar
+    // o guard: uma merge tag diferente segue rejeitada.
+    assert.throws(
+      () =>
+        buildArchivePageHtml(
+          comVoto('<!DOCTYPE html><html><head></head><body><p>Olá {{first_name}}</p></body></html>'),
+        ),
+      /merge tag não resolvida/,
+    );
+  });
+
+  it("`{{email}}` FORA do link de voto continua rejeitado", () => {
+    // O sanitize é cirúrgico (`email={{email}}`), não um replace global de
+    // `{{email}}` — então a mesma tag solta no corpo segue sendo erro.
+    assert.throws(
+      () => buildArchivePageHtml(comVoto('<!DOCTYPE html><html><head></head><body><p>seu e-mail: {{email}}</p></body></html>')),
+      /merge tag não resolvida/,
+    );
+  });
+});
+
+describe("buildArchivePageHtml — {{email_address_id}}, o identificador DOMINANTE", () => {
+  const comTag = (web: string) => makePost({ content: { free: { web } } });
+
+  it("some da página — mesma classe de vazamento do #6210", () => {
+    // Medido no cache real: 421 ocorrências de {{email_address_id}} contra 186
+    // de {{email}}. Aparece embutido em URL de rastreio
+    // (`..._SUBSCRIBER_ID_{{email_address_id}}`), não em `chave={{tag}}`.
+    const html = buildArchivePageHtml(
+      comTag('<!DOCTYPE html><html><head></head><body><a href="https://x/l/abc_SUBSCRIBER_ID_{{email_address_id}}">l</a></body></html>'),
+    );
+    assert.ok(!/\{\{email_address_id\}\}/.test(html));
+    assert.ok(html.includes("abc_SUBSCRIBER_ID_"), "o resto da URL permanece");
+  });
+
+  it("as duas tags juntas no mesmo post — o caso real", () => {
+    const html = buildArchivePageHtml(
+      comTag('<!DOCTYPE html><html><head></head><body><a href="https://x/v?email={{email}}">v</a><a href="https://x/l/z_SUBSCRIBER_ID_{{email_address_id}}">l</a></body></html>'),
+    );
+    assert.ok(!/\{\{[a-z_]+\}\}/i.test(html), "nenhuma merge tag pode sobrar");
+  });
+});

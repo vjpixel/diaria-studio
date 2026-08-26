@@ -149,12 +149,35 @@ export function buildArchivePageHtml(post: ArchivePost): string {
     html = html.replace(/<html[^>]*>/i, (full) => `${full}<head>${headInject}</head>`);
   }
 
-  // Guard (#6210): rejeita qualquer merge tag não resolvida antes de publicar.
-  verifyNoUnresolvedMergeTags(html, post.slug);
-
-  // Sanitiza links de voto com merge tag crua — substitui por valor vazio
-  // até a decisão editorial sobre o voto na superfície web (#6210).
+  // ORDEM IMPORTA, e ela estava invertida (hotfix da rodada overnight 260826).
+  //
+  // Sanitiza PRIMEIRO: `content.free.web` da Beehiiv contém `{{email}}` cru no
+  // link de voto — é a merge tag PADRÃO desde o #4581, não um caso raro. Foi
+  // medido: 91 dos 259 posts do cache real a contêm.
+  //
+  // Com o guard rodando antes deste replace, `buildArchivePageHtml` lançava
+  // para esses 91 posts, quebrando `gen-archive-pages.ts` (acervo público
+  // inteiro) e `publish-edition-site-page.ts` (#6202). O replace existia
+  // justamente para tratar o caso que o guard rejeitava antes de ele agir.
   html = html.replace(/email=\{\{email\}\}/gi, "email=");
+
+  // `{{email_address_id}}` é o OUTRO identificador de assinante que a Beehiiv
+  // deixa cru no HTML — e é o DOMINANTE: medido no cache real, 421 ocorrências
+  // contra 186 de `{{email}}`. Aparece embutido em URL de rastreio, no formato
+  // `..._SUBSCRIBER_ID_{{email_address_id}}`, e não em `chave={{tag}}` — por
+  // isso não é coberto pelo replace acima.
+  //
+  // Vaza a mesma classe de dado que motivou o #6210 (identificador de
+  // assinante numa página PÚBLICA), então recebe o mesmo tratamento: some.
+  // Sem isto, o guard abaixo rejeita 74 dos 259 posts, e como
+  // `generateArchivePages` não tem try/catch por post, o primeiro deles aborta
+  // o lote inteiro — quebrando o deploy do acervo (.github/workflows/deploy-site.yml).
+  html = html.replace(/\{\{email_address_id\}\}/gi, "");
+
+  // Guard (#6210) DEPOIS: agora ele valida o HTML que de fato vai ser
+  // publicado, e segue pegando toda merge tag não resolvida que o sanitize
+  // acima NÃO cobre — que é exatamente o que o #6210 pediu.
+  verifyNoUnresolvedMergeTags(html, post.slug);
 
   return html;
 }
