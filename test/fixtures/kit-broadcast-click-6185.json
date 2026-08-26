@@ -1,0 +1,9 @@
+{
+  "_origem": "GET /v4/broadcasts/25609304/clicks — piloto Patronos, 26/08/2026 09:57Z",
+  "_por_que": "Amostra REAL, não sintética. O fleet review do #6202 mostrou o custo de fixture inventada: um HTML sintético escondeu que toda edição real carrega merge tag crua. Aqui a fixture é o que a API devolveu.",
+  "id": 1881132950,
+  "url": "https://www.beehiiv.com?via=Diaria",
+  "unique_clicks": 1,
+  "click_to_delivery_rate": 0.2,
+  "click_to_open_rate": 0.5
+}

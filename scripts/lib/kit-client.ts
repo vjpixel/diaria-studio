@@ -258,12 +258,29 @@ export async function getBroadcast(id: number, config?: KitConfig): Promise<KitB
 // Cliques por link — o achado que destrava o #463 (ver docstring do módulo)
 // ---------------------------------------------------------------------------
 
-/** Campo `url`/`unique_clicks`/`click_to_delivery_rate`/`click_to_open_rate`
- *  ainda não verificados com um clique real (a conta não tem nenhum
- *  broadcast enviado — só o shape do envelope `{broadcast: {id, clicks}}`
- *  foi confirmado ao vivo em 260824, com `clicks: []`). Reverificar os
- *  nomes de campo do item quando o 1º clique real existir. */
+/**
+ * **Confirmado com clique real em 26/08/2026** (#6185) — nome E tipo dos 4
+ * campos, contra o broadcast `25609304` (piloto Patronos, 5 destinatários).
+ * A ressalva que vivia aqui desde 24/08 ("nunca verificados, a conta não tem
+ * envio") caiu: `scripts/kit-verify-click-fields.ts` devolveu exit 0 com os 4
+ * presentes e bem tipados. Amostra travada em
+ * `test/fixtures/kit-broadcast-click-6185.json`.
+ *
+ * O que isto destrava vai além do tipo: na Beehiiv, cliques por link só
+ * existem via MCP (`list_post_clicks`) — é a razão de o agente
+ * `beehiiv-clicks-enricher` existir. No Kit é REST comum. **O agente
+ * continua necessário para o caminho Beehiiv** (decisão do editor, 26/08:
+ * "por enquanto, a gente quer Beehiiv e Kit funcionando"), mas deixa de ser
+ * o único caminho possível.
+ */
 export interface KitBroadcastClick {
+  /**
+   * Identificador do link no Kit. Devolvido ao vivo e NÃO declarado até o
+   * #6185 — descoberto pela sonda, que reporta campos inesperados justamente
+   * pra tipo e realidade não divergirem em silêncio. Sem consumidor hoje;
+   * é chave estável se um dia for preciso casar cliques entre execuções.
+   */
+  id: number;
   url: string;
   unique_clicks: number;
   click_to_delivery_rate: number;
