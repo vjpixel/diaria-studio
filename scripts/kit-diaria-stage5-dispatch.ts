@@ -183,7 +183,20 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
       const publicImages: PublicImagesFile = existsSync(imagesPath)
         ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
         : {};
-      const { html, unresolvedImages, renderWarnings } = buildKitHtml(content, publicImages);
+      // #6195 — o crédito do rodapé precisa refletir o Kit, não a Beehiiv.
+      // Config vazia ⇒ texto neutro (sem link), nunca o crédito errado.
+      const kitCfg = (
+        JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
+          kit?: { affiliate_url?: string; affiliate_offer_text?: string };
+        }
+      ).kit;
+      const { html, unresolvedImages, renderWarnings, creditoSubstituido } = buildKitHtml(content, publicImages, {
+        kitAffiliateUrl: kitCfg?.affiliate_url,
+        kitOfferText: kitCfg?.affiliate_offer_text,
+      });
+      if (creditoSubstituido === false) {
+        log("warn: [#6195] crédito da Beehiiv não achado no 'Para encerrar' — troca por canal virou no-op.");
+      }
       if (unresolvedImages.length > 0) {
         log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
       }

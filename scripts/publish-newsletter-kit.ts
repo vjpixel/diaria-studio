@@ -128,6 +128,10 @@ import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.t
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts";
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import {
+  aplicarCreditoKit,
+  type CreditoOptions,
+} from "./lib/shared/sending-platform-credit.ts"; // #6195
+import {
   createBroadcast,
   updateBroadcast,
   resolveTestSendTagId,
@@ -175,11 +179,38 @@ export function checkSubjectNotEmpty(subject: string): SubjectPresenceCheck {
 export function buildKitHtml(
   content: NewsletterContent,
   publicImages: PublicImagesFile,
-): { html: string; unresolvedImages: string[]; renderWarnings: RenderWarningEvent[] } {
-  const { html: rendered, warnings } = renderHTMLWithWarnings(content, { esp: "kit", fullDocument: false });
+  opts: CreditoOptions = {},
+): {
+  html: string;
+  unresolvedImages: string[];
+  renderWarnings: RenderWarningEvent[];
+  /**
+   * `false` quando o crédito da Beehiiv não foi achado no bloco "Para
+   * encerrar" — a copy mudou e a troca virou no-op. O caller loga; não
+   * aborta, porque crédito impreciso não justifica derrubar a edição.
+   * `undefined` quando a edição não tem bloco "Para encerrar".
+   */
+  creditoSubstituido: boolean | undefined;
+} {
+  // #6195 — o markdown stitchado credita a Beehiiv (com link de afiliado
+  // dela). Numa edição enviada pelo Kit isso é falso, e o link é da
+  // concorrente. Trocamos AQUI porque o stitch não sabe o canal e este é o
+  // ponto onde `esp: "kit"` já existe.
+  let creditoSubstituido: boolean | undefined;
+  let contentParaRender = content;
+  if (typeof content.encerrar === "string" && content.encerrar.length > 0) {
+    const r = aplicarCreditoKit(content.encerrar, opts);
+    creditoSubstituido = r.substituido;
+    if (r.substituido) contentParaRender = { ...content, encerrar: r.markdown };
+  }
+
+  const { html: rendered, warnings } = renderHTMLWithWarnings(contentParaRender, {
+    esp: "kit",
+    fullDocument: false,
+  });
   const filenameMap = buildFilenameMap(publicImages.images ?? {});
   const { html: substituted, unresolved } = substituteImagePlaceholders(rendered, filenameMap);
-  return { html: substituted, unresolvedImages: unresolved, renderWarnings: warnings };
+  return { html: substituted, unresolvedImages: unresolved, renderWarnings: warnings, creditoSubstituido };
 }
 
 // ── estado de publicação (idempotência, mesmo padrão de #5677) ──────────
@@ -211,12 +242,20 @@ export function writePublishedState(editionDir: string, state: KitNewsletterPubl
 
 // ── platform.config.json (leitura mínima) ─────────────────────────────
 
+export interface KitAffiliateConfig {
+  /** #6195 — vazio ⇒ crédito neutro nas edições Kit. Ver `sending-platform-credit.ts`. */
+  affiliate_url?: string;
+  affiliate_offer_text?: string;
+}
+
 interface PlatformConfig {
   publishing?: {
     newsletter?: {
       backend?: string;
     };
   };
+  /** #6195 — crédito de plataforma no rodapé das edições Kit. */
+  kit?: KitAffiliateConfig;
 }
 
 export type BackendCheck = { ok: true } | { ok: false; reason: string };
@@ -267,7 +306,16 @@ export async function main(rootDirOverride?: string): Promise<void> {
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};
 
-  const { html, unresolvedImages, renderWarnings } = buildKitHtml(content, publicImages);
+  const { html, unresolvedImages, renderWarnings, creditoSubstituido } = buildKitHtml(content, publicImages, {
+    kitAffiliateUrl: platformConfig.kit?.affiliate_url,
+    kitOfferText: platformConfig.kit?.affiliate_offer_text,
+  });
+  if (creditoSubstituido === false) {
+    console.warn(
+      "  [#6195] aviso: o crédito da Beehiiv não foi encontrado no bloco 'Para encerrar' — " +
+        "a copy mudou e a troca por canal virou no-op. A edição segue; conferir o texto.",
+    );
+  }
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
   }

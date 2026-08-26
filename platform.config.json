@@ -16,7 +16,10 @@
   },
   "kit": {
     "tallyFormId": "xX5JJy",
-    "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit"
+    "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit",
+    "affiliate_url": "",
+    "affiliate_url_note": "#6195 (26/08/2026) — link de afiliado do Kit (PartnerStack). VAZIO = o crédito do rodapé nas edições Kit sai NEUTRO (\"enviei por e-mail\"), sem link. Preencher quando o editor se cadastrar em partnerstack.com: 50% recorrente nos 12 primeiros meses, cookie 90 dias, paga no Brasil via PayPal/Stripe/AirWallex (verificado 26/08). Preencher aqui basta — não exige mudança de código.",
+    "affiliate_offer_text": "ganhe 50% de desconto"
   },
   "newsletter_monthly": "brevo",
   "brevo_monthly": {
