@@ -74,16 +74,32 @@ describe("isMainModule (#6191)", () => {
     }
   });
 
-  it("a forma ingênua que este teste existe pra banir de fato falha no Windows", () => {
-    // Reproduz o bug em vez de só afirmar que ele existia: com um argv[1] no
-    // formato do Windows, o template cru diverge e `isMainModule` não.
+  it("a forma ingênua diverge no formato de caminho do Windows (comparação de strings, roda em qualquer SO)", () => {
+    // Reproduz o bug em vez de só afirmar que ele existia — mas no nível de
+    // STRING, que é onde ele vive. Nada de `pathToFileURL` aqui: num host
+    // POSIX ele trataria "C:\..." como caminho RELATIVO (barra invertida é
+    // caractere de nome válido no POSIX) e prefixaria o cwd, medindo outra
+    // coisa. Os dois literais abaixo são o que cada lado produz numa máquina
+    // Windows de verdade.
     const windowsArgv1 = "C:\\Users\\ed\\Projects\\diaria-studio\\scripts\\route-issue.ts";
-    const metaUrl = pathToFileURL(windowsArgv1).href; // file:///C:/Users/...
-    assert.notEqual(metaUrl, `file://${windowsArgv1}`);
+    const realMetaUrl = "file:///C:/Users/ed/Projects/diaria-studio/scripts/route-issue.ts";
+    assert.notEqual(
+      realMetaUrl,
+      `file://${windowsArgv1}`,
+      "no Windows o template cru nunca casa com import.meta.url — é o bug inteiro",
+    );
+  });
 
+  it("isMainModule casa o par (import.meta.url, argv[1]) que o SO atual produz", () => {
+    // Complemento nativo do teste acima: em vez de fingir um SO, usa o par que
+    // ESTA máquina produz de verdade. No Windows é o caso que a forma ingênua
+    // quebrava; no Linux do CI é o caso que ela acertava por acidente — os
+    // dois passam por `isMainModule`, que é o ponto.
+    const nativePath = fileURLToPath(import.meta.url);
+    const metaUrl = pathToFileURL(nativePath).href;
     const original = process.argv[1];
     try {
-      process.argv[1] = windowsArgv1;
+      process.argv[1] = nativePath;
       assert.equal(isMainModule(metaUrl), true);
     } finally {
       process.argv[1] = original;
