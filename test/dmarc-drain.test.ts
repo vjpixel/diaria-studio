@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { fetchReports, alarmFindingsFor } from "../scripts/dmarc-drain.ts";
+import { fetchReports, alarmFindingsFor, DEFAULT_GMAIL_QUERY } from "../scripts/dmarc-drain.ts";
 import { aggregateDmarcReports } from "../scripts/lib/dmarc-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,4 +81,26 @@ test("alarmFindingsFor dispara 1 achado por domínio com volume não-alinhado > 
   assert.equal(findings[0].family, "estado");
   assert.match(findings[0].body, /198\.51\.100\.7/);
   assert.match(findings[0].body, /6 mensagem/); // 5 + 1 não alinhadas
+});
+
+// #6229 — o remetente do Google na query não tinha NENHUM teste, e foi assim
+// que uma regressão passou: o commit `cbf58581` trocou
+// `noreply-dmarc-support@google.com` (medido ao vivo, 1 resultado na caixa)
+// por `dmarcreport@google.com` (0 resultados), e nada acusou — o relatório
+// continuava sendo encontrado pela cláusula `subject:`, por outro caminho.
+test("query default mantém o remetente do Google MEDIDO ao vivo", () => {
+  assert.match(
+    DEFAULT_GMAIL_QUERY,
+    /from:noreply-dmarc-support@google\.com/,
+    "remetente medido na caixa real (1 resultado em 120d) — não remover sem repetir a medição",
+  );
+});
+
+test("query default não depende só de `subject:` pra achar relatório do Google", () => {
+  // O modo de falha do cbf58581 não foi a busca parar de funcionar — foi ela
+  // passar a depender inteiramente de uma cláusula que casa por acaso. Se um
+  // dia o assunto mudar de formato, ou chegar relatório de domínio fora da
+  // lista, sem `from:` correto não se acha nada.
+  const semSubject = DEFAULT_GMAIL_QUERY.replace(/subject:"[^"]*"( OR )?/g, "");
+  assert.match(semSubject, /from:noreply-dmarc-support@google\.com/);
 });
