@@ -72,12 +72,41 @@
  * buscados. O CLI (`scripts/check-decision-label-drift.ts`) é o wrapper fino
  * que busca via `gh` e imprime.
  *
+ * ## Roteamento explícito posterior vence (#6283)
+ *
+ * A entrada em produção de `scripts/route-issue.ts` (#6191/#6196) criou uma
+ * 2ª fonte de comentário que casa os mesmos padrões de prosa — o corpo do
+ * comentário de `routeIssue` é `Roteado para **{track}** — {reason}`, e
+ * `reason` frequentemente CITA a mesma frase-gatilho do comentário antigo
+ * que está sendo revogado ("Removendo trade-off-real", "aguardando
+ * autorização do IP"). Sem tratamento, um veredito antigo já revogado por um
+ * `route-issue` mais recente continuava produzindo achado pra sempre — e a
+ * "correção" sugerida (`gh issue edit --add-label`) desfazia uma decisão do
+ * editor tomada horas antes (medição ao vivo, rodada 260826c: 14 de 19
+ * achados eram este falso positivo).
+ *
+ * `detectLabelDrift` ignora um match de comentário se existir, em QUALQUER
+ * comentário POSTERIOR (índice maior em `commentBodies`, que chega em ordem
+ * cronológica ascendente), um marcador `<!-- route-issue: track=X -->`
+ * (`parseRouteIssueMarker`, `issue-route.ts`) — não importa qual track foi
+ * pedido: a existência de um roteamento explícito mais recente já é, por si
+ * só, o veredito atual que supera a prosa antiga. Mesma disciplina de
+ * `issue-decisions.ts` (#5373) comparando `decided_at`: julgamento
+ * registrado por quem tem contexto vence heurística de regex. Um
+ * `route-issue` ANTERIOR ao comentário candidato não protege — prosa nova
+ * depois de um roteamento antigo é informação nova, não revogada por nada.
+ * Aplica-se só à fonte `"comment"` — `planTexts` (fonte `"plan"`) não tem
+ * ordem cronológica conhecida em relação aos comentários do GitHub, então
+ * fica fora deste tratamento.
+ *
  * @see scripts/lib/issue-decisions.ts (marcador estruturado que este módulo complementa)
  * @see scripts/lib/issue-exec-track.ts (o classificador que fica desatualizado sem este guard)
+ * @see scripts/lib/issue-route.ts (parseRouteIssueMarker — marcador que este módulo consome)
  * @see scripts/check-decision-label-drift.ts (CLI)
  */
 
 import type { ExecTrack } from "./issue-exec-track.ts";
+import { parseRouteIssueMarker } from "./issue-route.ts";
 
 /** Um grupo de padrões de deferimento/decisão em prosa, e as labels
  * estruturais que QUALQUER UMA (relação any-of) satisfaz — presente
@@ -479,17 +508,39 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
   // já que `commentBodies` chega em ordem cronológica ascendente.
   const byPattern = new Map<string, DriftFinding>();
 
+  // Roteamento explícito posterior vence (#6283, ver docstring do módulo):
+  // `hasRouteIssueAfter[i]` é true se algum `commentBodies[j]`, j > i,
+  // contém um marcador `<!-- route-issue: track=X -->`. Calculado de trás
+  // pra frente pra custar O(n) em vez de O(n²).
+  const hasRouteIssueAfter: boolean[] = new Array(commentBodies.length).fill(false);
+  {
+    let sawRouteLater = false;
+    for (let i = commentBodies.length - 1; i >= 0; i--) {
+      hasRouteIssueAfter[i] = sawRouteLater;
+      const body = commentBodies[i];
+      if (typeof body === "string" && parseRouteIssueMarker(body) !== null) {
+        sawRouteLater = true;
+      }
+    }
+  }
+
   // Comentários primeiro, textos do plano depois: o `set` por patternId faz o
   // ÚLTIMO match vencer, e entre as duas fontes o plano é a melhor evidência
   // (veredito estruturado do coordenador, não prosa livre). Dentro dos
   // comentários a ordem cronológica ascendente preserva "mais recente vence".
-  const sources: Array<{ text: unknown; source: DriftSource }> = [
-    ...commentBodies.map((text) => ({ text, source: "comment" as const })),
+  const sources: Array<{ text: unknown; source: DriftSource; commentIndex?: number }> = [
+    ...commentBodies.map((text, commentIndex) => ({ text, source: "comment" as const, commentIndex })),
     ...planTexts.map((text) => ({ text, source: "plan" as const })),
   ];
 
-  for (const { text: raw, source } of sources) {
+  for (const { text: raw, source, commentIndex } of sources) {
     if (typeof raw !== "string") continue;
+    // Ver "Roteamento explícito posterior vence (#6283)" na docstring do
+    // módulo — só se aplica a comentários (`planTexts` não tem posição
+    // cronológica conhecida em relação aos comentários do GitHub).
+    if (source === "comment" && commentIndex !== undefined && hasRouteIssueAfter[commentIndex]) {
+      continue;
+    }
     const prose = stripHtmlComments(raw);
     for (const pattern of DRIFT_PATTERNS) {
       let match: RegExpExecArray | null = null;

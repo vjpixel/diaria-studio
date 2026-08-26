@@ -90,6 +90,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import {
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  formatRouteIssueMarker,
   labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
@@ -180,7 +181,7 @@ function fetchIssueState(
 }
 
 function buildCommentBody(track: RouteTrack, reason: string | undefined): string {
-  const marker = `<!-- route-issue: track=${track} -->`;
+  const marker = formatRouteIssueMarker(track);
   const lines = [marker, "", `Roteado para **${track}**${reason ? ` — ${reason}` : "."}`];
   return lines.join("\n");
 }
