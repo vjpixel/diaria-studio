@@ -41,6 +41,11 @@ export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "vi
  */
 export type Bucket = "lancamento" | "radar" | "use_melhor" | "video";
 
+// #5995 — modos de falha do categorizador (medidos em 89 edições, 34% com movimentação):
+//  1) lancamento → radar: 48% (34 casos) — domínio oficial, mas não produto/feature (marco, relatório, opinião, oferta promocional).
+//  2) radar → use_melhor: 30% (21 casos) — tutorial em português não detectado ("Como <verbo>", "N prompts para...").
+// Nenhuma alteração de comportamento neste commit; apenas registro das direções para o fix.
+
 /**
  * Mapping Category → Bucket (#1629).
  * - `pesquisa` e `noticias` ambas vão pra `radar` (fundidas em #1569).
