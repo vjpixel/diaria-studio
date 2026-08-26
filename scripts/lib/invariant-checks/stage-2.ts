@@ -13,6 +13,14 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { assertHumanized } from "../assert-humanized.ts";
 import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
+import {
+  checkHumanizadorRan as checkNewsletterHumanizadorDiffPure,
+  checkClariceRan as checkClariceRanPure,
+  checkErroIntencionalRendered as checkErroIntencionalRenderedPure,
+  checkIntentionalErrorFrontmatter as checkIntentionalErrorFrontmatterPure,
+  checkRevealTemporalPrefix as checkRevealTemporalPrefixPure,
+  type CheckResult as Stage2InvariantCheckResult,
+} from "../../check-stage2-invariants.ts"; // #6337
 import { lintTrailingEditorialHook } from "../../lint-social-md.ts";
 import {
   checkUseMelhorBeginnerMinimum,
@@ -368,6 +376,91 @@ function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViola
 }
 
 /**
+ * #6337: registra em `STAGE_2_RULES` os checks de
+ * `scripts/check-stage2-invariants.ts` (#1072/#1073) que até aqui só rodavam
+ * como passo em prosa do playbook (`orchestrator-stage-2.md` ~L375-380).
+ * Mesma classe de gap que o #6305 fechou para o sentinel do humanizador
+ * social (`checkSocialHumanizerSentinelWritten` acima): `pipeline-sentinel.ts
+ * write --step 2` (#6009) não cobria nenhum destes 5 — uma sessão que
+ * pulasse a chamada em prosa passava pelo gate mecânico sem detecção. O
+ * passo em prosa continua existindo (roda mais cedo no Stage 2, dá erro com
+ * mais contexto), mas deixa de ser a ÚNICA barreira.
+ *
+ * `checkUrlsAccessible` — o 6º check de `check-stage2-invariants.ts` — fica
+ * de fora de propósito: é `async` e pode disparar rede (re-verificação de
+ * URLs `needs_reverify` via `verify-accessibility.ts`); `InvariantRule.run`
+ * é síncrono, e plugar um check de rede aqui mudaria a natureza do gate
+ * `write --step 2` (hoje local/determinístico) sem necessidade — a issue
+ * #6337 enumera 5 checks, não os 6.
+ *
+ * `toStage2InvariantViolation` traduz o `CheckResult` de
+ * `check-stage2-invariants.ts` (`{ ok, label? }`) pro formato
+ * `InvariantViolation[]` do registry — mesmo padrão de tradução usado pelos
+ * demais checks desta seção.
+ */
+function toStage2InvariantViolation(
+  result: Stage2InvariantCheckResult,
+  ruleId: string,
+  file: string,
+): InvariantViolation[] {
+  if (result.ok) return [];
+  return [
+    {
+      rule: ruleId,
+      message: result.label ?? `${ruleId}: check-stage2-invariants.ts reportou falha sem label`,
+      source_issue: "#6337",
+      severity: "error" as const,
+      file,
+    },
+  ];
+}
+
+/**
+ * #6337 (check 1/5): humanizador da newsletter rodou de fato —
+ * `_internal/02-normalized.md` vs `_internal/02-humanized.md` não são
+ * byte-idênticos. Distinto de `checkHumanizerRan`/`humanizer-ran` acima:
+ * aquele valida um sinal indireto (snapshot presente + mtime não-stale) nos
+ * arquivos FINAIS (`02-reviewed.md`); este diffa os dois intermediários
+ * diretamente. Os dois se complementam — nenhum subsume o outro.
+ */
+function checkNewsletterHumanizadorDiffRan(editionDir: string): InvariantViolation[] {
+  const internalDir = resolve(editionDir, "_internal");
+  return toStage2InvariantViolation(
+    checkNewsletterHumanizadorDiffPure(internalDir),
+    "newsletter-humanizador-diff-ran",
+    "_internal/02-humanized.md",
+  );
+}
+
+/** #6337 (check 2/5): Clarice rodou de fato sobre `02-reviewed.md` (snapshot + suggestions.json presentes). */
+function checkClariceRanInvariant(editionDir: string): InvariantViolation[] {
+  return toStage2InvariantViolation(checkClariceRanPure(editionDir), "clarice-ran", "02-reviewed.md");
+}
+
+/** #6337 (check 3/5): `render-erro-intencional.ts` rodou — sem placeholder literal remanescente em `02-reviewed.md`. */
+function checkErroIntencionalRenderedInvariant(editionDir: string): InvariantViolation[] {
+  return toStage2InvariantViolation(checkErroIntencionalRenderedPure(editionDir), "erro-intencional-rendered", "02-reviewed.md");
+}
+
+/** #6337 (check 4/5): `_internal/intentional-error.json` existe (placeholder inserido por `render-erro-intencional.ts`). */
+function checkIntentionalErrorJsonExistsInvariant(editionDir: string): InvariantViolation[] {
+  return toStage2InvariantViolation(
+    checkIntentionalErrorFrontmatterPure(editionDir),
+    "intentional-error-json-exists",
+    "_internal/intentional-error.json",
+  );
+}
+
+/** #6337 (check 5/5): quando `reveal` já está preenchido, começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6139). */
+function checkRevealTemporalPrefixInvariant(editionDir: string): InvariantViolation[] {
+  return toStage2InvariantViolation(
+    checkRevealTemporalPrefixPure(editionDir),
+    "reveal-temporal-prefix",
+    "_internal/intentional-error.json",
+  );
+}
+
+/**
  * #2658: detecta ", e [gancho editorial]" em 03-social.md.
  * WARN-ONLY: chama a função diretamente (não via subprocess) para emitir
  * violations com `severity: "warning"` — visíveis no gate sem bloquear.
@@ -478,6 +571,41 @@ export const STAGE_2_RULES: InvariantRule[] = [
     run: checkSocialHumanizerSentinelWritten,
   },
   {
+    id: "newsletter-humanizador-diff-ran",
+    description: "humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072)",
+    source_issue: "#6337",
+    stage: 2,
+    run: checkNewsletterHumanizadorDiffRan,
+  },
+  {
+    id: "clarice-ran",
+    description: "Clarice rodou de fato sobre 02-reviewed.md (snapshot + suggestions.json presentes) (#6337, #1402)",
+    source_issue: "#6337",
+    stage: 2,
+    run: checkClariceRanInvariant,
+  },
+  {
+    id: "erro-intencional-rendered",
+    description: "render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073)",
+    source_issue: "#6337",
+    stage: 2,
+    run: checkErroIntencionalRenderedInvariant,
+  },
+  {
+    id: "intentional-error-json-exists",
+    description: "_internal/intentional-error.json existe — render-erro-intencional.ts inseriu o placeholder (#6337, #2284/#3222)",
+    source_issue: "#6337",
+    stage: 2,
+    run: checkIntentionalErrorJsonExistsInvariant,
+  },
+  {
+    id: "reveal-temporal-prefix",
+    description: "intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139)",
+    source_issue: "#6337",
+    stage: 2,
+    run: checkRevealTemporalPrefixInvariant,
+  },
+  {
     id: "social-no-trailing-editorial-hook",
     description: "03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658)",
     source_issue: "#2658",
@@ -498,6 +626,11 @@ export {
   checkSocialPassesLints,
   checkPorQueIssoImportaSeparate,
   checkHumanizerRan,
+  checkNewsletterHumanizadorDiffRan,
+  checkClariceRanInvariant,
+  checkErroIntencionalRenderedInvariant,
+  checkIntentionalErrorJsonExistsInvariant,
+  checkRevealTemporalPrefixInvariant,
   checkNoTrailingEditorialHookSocial,
   checkUseMelhorHasBeginnerMinimum,
 };
