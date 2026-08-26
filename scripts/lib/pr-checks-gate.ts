@@ -75,6 +75,52 @@ export interface PrCheckNode {
   state?: string | null;
   /** Discriminante da union, quando o `gh` o inclui. */
   __typename?: string;
+  /** ISO 8601. Usado para desempatar runs SUPERSEDIDAS — ver
+   * `keepLatestPerName`. Ausente em payloads antigos/parciais. */
+  startedAt?: string | null;
+}
+
+/**
+ * Um force-push NÃO substitui a entrada do check no `statusCheckRollup`: a run
+ * antiga fica lá como `CANCELLED` e a nova entra ao lado, **com o mesmo
+ * `name`**. Medido ao vivo no PR #6239 (rodada overnight 260826), logo depois
+ * de um rebase:
+ *
+ * ```
+ * Unused code check | CANCELLED | started=11:49:01
+ * Unused code check | SUCCESS   | started=11:49:35
+ * ```
+ *
+ * Sem desduplicar, `CANCELLED` (que não está em `PASSING_CONCLUSIONS`) faz o
+ * gate reprovar um PR cuja run vigente está inteira verde. É falso-VERMELHO,
+ * então nunca deixa passar merge ruim — mas trava merge legítimo, e trava
+ * **para sempre**, porque a entrada cancelada não sai do rollup.
+ *
+ * Desduplica por `name`, mantendo a de `startedAt` mais recente. Node sem
+ * `name` não é desduplicável (não há chave) e passa inteiro; empate ou
+ * `startedAt` ausente mantém a ÚLTIMA ocorrência, que é a ordem em que o
+ * GitHub devolve a mais nova.
+ */
+export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] {
+  const byName = new Map<string, PrCheckNode>();
+  const semNome: PrCheckNode[] = [];
+  for (const node of nodes) {
+    const name = typeof node?.name === "string" && node.name.length > 0 ? node.name : null;
+    if (name === null) {
+      semNome.push(node);
+      continue;
+    }
+    const anterior = byName.get(name);
+    if (!anterior) {
+      byName.set(name, node);
+      continue;
+    }
+    const tA = typeof anterior.startedAt === "string" ? anterior.startedAt : "";
+    const tB = typeof node.startedAt === "string" ? node.startedAt : "";
+    // `>=` e não `>`: empate (ou ambos sem timestamp) mantém a última.
+    if (tB >= tA) byName.set(name, node);
+  }
+  return [...byName.values(), ...semNome];
 }
 
 export interface PrChecksGateResult {
@@ -121,7 +167,9 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
   const failingChecks: string[] = [];
   const pendingChecks: string[] = [];
 
-  for (const raw of statusCheckRollup) {
+  // Descarta runs supersedidas por force-push antes de julgar — ver
+  // `keepLatestPerName`.
+  for (const raw of keepLatestPerName(statusCheckRollup as PrCheckNode[])) {
     const node = (raw ?? {}) as PrCheckNode;
     const label = typeof node.name === "string" && node.name.length > 0 ? node.name : "(sem nome)";
 
