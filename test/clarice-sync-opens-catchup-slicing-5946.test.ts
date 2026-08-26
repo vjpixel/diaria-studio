@@ -209,11 +209,21 @@ test("runOpensCatchup: campanha que ficou de fora do teto hoje é priorizada ama
 
   const exportCalls: number[] = [];
   const client = makeFakeClient(campaigns, recipients, (id) => exportCalls.push(id));
+  // #6352: relógio determinístico e monotônico injetado via `now` — cada
+  // export grava um `exportedAt` estritamente mais recente que o anterior,
+  // independente da velocidade real da máquina/runner. Sem isto, 2 chamadas
+  // sequenciais de `runOpensCatchup` rápidas o bastante (comum em CI)
+  // colidiam no mesmo milissegundo de `Date.now()` real, reabrindo o
+  // desempate por id em vez de rotacionar (ver docstring de `now` em
+  // `OpensCatchupDeps`, `scripts/clarice-sync-brevo.ts`).
+  let clockMs = Date.parse("2026-08-01T00:00:00.000Z");
+  const now = () => new Date((clockMs += 1000)).toISOString();
   const baseDeps: OpensCatchupDeps = {
     client,
     fetchContact: async (identifier) => ({ email: identifier }),
     upsert: () => {},
     cacheDir,
+    now,
   };
 
   // Run 1: sem cache — as 2 exportam (baseline).
