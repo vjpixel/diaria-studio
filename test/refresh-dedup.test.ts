@@ -85,8 +85,7 @@ function makeMockFetch(opts: {
 }
 
 const TEST_CONFIG: RefreshConfig = {
-  apiKey: "test-key",
-  publicationId: "pub_test",
+  readConfig: { backend: "beehiiv", config: { apiKey: "test-key", publicationId: "pub_test" } },
   dedupEditionCount: 14,
 };
 

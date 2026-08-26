@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { handleJogarSubscribe, subscribeToKit } from "../workers/poll/src/subscribe.ts";
+import { handleJogarSubscribe, subscribeViaConfiguredBackend } from "../workers/poll/src/subscribe.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
@@ -71,14 +71,14 @@ function subReq(body: unknown, opts: { ip?: string } = {}): Request {
 describe("subscribeToKit (#6048)", () => {
   it("KIT_API_KEY ausente → not_configured (503), sem tocar a rede", async () => {
     const fetchMock = makeFetchMock();
-    const r = await subscribeToKit(baseEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
+    const r = await subscribeViaConfiguredBackend(baseEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
     assert.deepEqual(r, { ok: false, status: 503, reason: "not_configured" });
     assert.equal(fetchMock.calls.length, 0);
   });
 
   it("POSTa pra /subscribers com X-Kit-Api-Key + email_address + state:active", async () => {
     const fetchMock = makeFetchMock(201);
-    const r = await subscribeToKit(kitEnv(), { name: "", email: "ana@example.com" }, fetchMock);
+    const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "ana@example.com" }, fetchMock);
     assert.equal(r.ok, true);
     assert.equal(fetchMock.calls.length, 1);
     const call = fetchMock.calls[0];
@@ -93,13 +93,13 @@ describe("subscribeToKit (#6048)", () => {
 
   it("200 (upsert de e-mail já existente) também é sucesso — Kit é idempotente por e-mail (achado ao vivo #6048)", async () => {
     const fetchMock = makeFetchMock(200);
-    const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
     assert.deepEqual(r, { ok: true, status: 200 });
   });
 
   it("sem nenhum KIT_*_FIELD configurado: body não tem fields (degrada com graça)", async () => {
     const fetchMock = makeFetchMock(201);
-    await subscribeToKit(kitEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(kitEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.equal("fields" in body, false);
   });
@@ -108,7 +108,7 @@ describe("subscribeToKit (#6048)", () => {
     const fetchMock = makeFetchMock(201);
     const env = kitEnv();
     env.KIT_NAME_FIELD = "nome";
-    await subscribeToKit(env, { name: "Ana", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(env, { name: "Ana", email: "a@b.com" }, fetchMock);
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.deepEqual(body.fields, { nome: "Ana" });
   });
@@ -120,7 +120,7 @@ describe("subscribeToKit (#6048)", () => {
     env.KIT_UTM_MEDIUM_FIELD = "utm_medium";
     env.KIT_UTM_CAMPAIGN_FIELD = "utm_campaign";
     env.KIT_REFERRING_SITE_FIELD = "referring_site";
-    await subscribeToKit(
+    await subscribeViaConfiguredBackend(
       env,
       { name: "", email: "a@b.com" },
       fetchMock,
@@ -139,15 +139,15 @@ describe("subscribeToKit (#6048)", () => {
     const fetchMock = makeFetchMock(201);
     const env = kitEnv();
     env.KIT_ORIGEM_CADASTRO_FIELD = "origem_cadastro";
-    await subscribeToKit(env, { name: "", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(env, { name: "", email: "a@b.com" }, fetchMock);
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.deepEqual(body.fields, { origem_cadastro: "kit-nativo" });
   });
 
-  it("Kit responde erro → beehiiv_error com o status (SubscribeResult compartilhado, sem reason dedicado)", async () => {
+  it("Kit responde erro → subscribe_error com o status (SubscribeResult compartilhado, sem reason dedicado)", async () => {
     const fetchMock = makeFetchMock(422);
-    const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
-    assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
+    const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    assert.deepEqual(r, { ok: false, status: 422, reason: "subscribe_error" });
   });
 
   it("Kit responde erro → loga status + corpo (achado ao vivo 25/08/2026: catch mudo escondeu KIT_API_KEY inválido)", async () => {
@@ -157,7 +157,7 @@ describe("subscribeToKit (#6048)", () => {
     const original = console.error;
     console.error = (msg: string) => logged.push(msg);
     try {
-      await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+      await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
     } finally {
       console.error = original;
     }
@@ -174,8 +174,8 @@ describe("subscribeToKit (#6048)", () => {
     const original = console.error;
     console.error = (msg: string) => logged.push(msg);
     try {
-      const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, throwingFetch);
-      assert.deepEqual(r, { ok: false, status: 502, reason: "beehiiv_error" });
+      const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, throwingFetch);
+      assert.deepEqual(r, { ok: false, status: 502, reason: "subscribe_error" });
     } finally {
       console.error = original;
     }
@@ -185,13 +185,13 @@ describe("subscribeToKit (#6048)", () => {
 
   it("passa um AbortSignal de timeout pro fetch — mesma defesa contra hang de subscribeToBeehiiv", async () => {
     const fetchMock = makeFetchMock(201);
-    await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, fetchMock);
     const signal = fetchMock.calls[0].init?.signal;
     assert.ok(signal instanceof AbortSignal);
     assert.equal(signal!.aborted, false);
   });
 
-  it("fetch que trava até o signal abortar → beehiiv_error, nunca fica pendurado", async () => {
+  it("fetch que trava até o signal abortar → subscribe_error, nunca fica pendurado", async () => {
     const hangingFetch = (async (_url: string, init?: RequestInit) => {
       const signal = init?.signal;
       return new Promise<Response>((_resolve, reject) => {
@@ -199,8 +199,8 @@ describe("subscribeToKit (#6048)", () => {
         (signal as AbortSignal).dispatchEvent(new Event("abort"));
       });
     }) as typeof fetch;
-    const r = await subscribeToKit(kitEnv(), { name: "", email: "a@b.com" }, hangingFetch);
-    assert.deepEqual(r, { ok: false, status: 502, reason: "beehiiv_error" });
+    const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "a@b.com" }, hangingFetch);
+    assert.deepEqual(r, { ok: false, status: 502, reason: "subscribe_error" });
   });
 });
 

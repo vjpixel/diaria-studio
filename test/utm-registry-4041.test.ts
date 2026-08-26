@@ -285,7 +285,7 @@ describe("#4295 — social + Cursos: emissores novos derivam do registry, sem li
     // disso, valida que o MÓDULO importa do registry (fonte estática) —
     // suficiente pra travar reintrodução de literal solto, já que o valor em
     // si é coberto pelas constantes do registry acima.
-    assert.ok(typeof subscribeSrc.subscribeToBeehiiv === "function");
+    assert.ok(typeof subscribeSrc.subscribeViaConfiguredBackend === "function");
   });
 
   it("cursos-footer-nav / cursos-gate-inline: mesmo utm_source ('cursos'), medium distinto (rodapé vs. gate)", () => {
