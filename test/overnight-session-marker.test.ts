@@ -9,6 +9,7 @@ import {
   startSession,
   endSession,
   setPhase,
+  resolveSessionIdOrThrow,
 } from "../scripts/overnight-session-marker.ts";
 
 // #3322: write/remove side do marker que .claude/hooks/pr-create-review.mjs
@@ -281,5 +282,58 @@ describe("session_id (#5156)", () => {
 
     const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
     assert.equal("session_id" in content, false);
+  });
+});
+
+// #6232: --start/--phase sem session_id não passam mais despercebidos — o
+// resolvedor lança por padrão (falha alta, simétrica a requireSessionId em
+// scripts/lib/session-registry.ts) e só devolve undefined com o opt-in
+// explícito --allow-no-session-id, sempre avisando alto no stderr.
+describe("resolveSessionIdOrThrow (#6232)", () => {
+  it("sessionId presente → devolve ele, sem tocar stderr", () => {
+    const originalWrite = process.stderr.write;
+    let wrote = false;
+    process.stderr.write = (...args) => {
+      wrote = true;
+      return originalWrite.apply(process.stderr, args);
+    };
+    try {
+      const result = resolveSessionIdOrThrow("sessao-abc", false);
+      assert.equal(result, "sessao-abc");
+      assert.equal(wrote, false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+  });
+
+  it("sessionId ausente, sem --allow-no-session-id → lança", () => {
+    assert.throws(() => resolveSessionIdOrThrow(undefined, false), /--session-id ausente/);
+  });
+
+  it("sessionId ausente, com --allow-no-session-id → devolve undefined e avisa alto no stderr", () => {
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = (chunk) => {
+      captured += chunk;
+      return true;
+    };
+    try {
+      const result = resolveSessionIdOrThrow(undefined, true);
+      assert.equal(result, undefined);
+      assert.match(captured, /AVISO/);
+      assert.match(captured, /MÁQUINA INTEIRA/);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+  });
+
+  it("mensagem de erro cita a causa raiz (comando encadeado/pipado) e o opt-in", () => {
+    try {
+      resolveSessionIdOrThrow(undefined, false);
+      assert.fail("deveria ter lançado");
+    } catch (err) {
+      assert.match(err.message, /encadead|pipe/);
+      assert.match(err.message, /--allow-no-session-id/);
+    }
   });
 });
