@@ -70,13 +70,22 @@ export type BuildEditionPostResult =
  * Rejeita `new-post` — é o mesmo lixo que `isPublishedPost` já filtra no
  * acervo (achado ao vivo no cache real: um post duplicado com esse slug).
  * Deixar passar aqui criaria a página que o gerador se recusa a criar.
+ *
+ * A revalidação roda DEPOIS do `decodeURIComponent` (#6202 review, problema
+ * 5): o regex casa contra o path BRUTO, então `%2F`/`%2E%2E%2F` passam pelo
+ * filtro do `[^/?#]+` e só viram `/`/`..` depois de decodificados. Sem essa
+ * 2ª checagem, um slug assim chegaria intocado no `join(dir, slug)` de
+ * `writePage` — o `..` sai da árvore `workers/site/public/p/`. Rejeita
+ * qualquer slug decodificado que contenha `/`, `\` ou `..`.
  */
 export function extractSlugFromPostUrl(postUrl: string): string | null {
   try {
     const path = new URL(postUrl).pathname;
     const m = path.match(/\/p\/([^/?#]+)\/?$/);
-    const slug = m?.[1] ? decodeURIComponent(m[1]) : null;
+    if (!m?.[1]) return null;
+    const slug = decodeURIComponent(m[1]);
     if (!slug || slug === "new-post") return null;
+    if (slug.includes("/") || slug.includes("\\") || slug.includes("..")) return null;
     return slug;
   } catch {
     return null;
