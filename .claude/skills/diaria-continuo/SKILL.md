@@ -327,6 +327,36 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   `pr-review-toolkit:code-reviewer` via `Agent` com `model: sonnet`
   explícito, sobre o diff acumulado desde `base_sha`) — mesma cadência de
   `findings_depth` (cap 2) documentada lá.
+- **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
+  Antes de abrir a PR e de novo antes do merge, rodar `npx tsx
+  scripts/lib/sensitive-path-guard.ts --base origin/master`. `sensitive:
+  true` → deixar a PR aberta, comentar o veredito nela e encaminhar pro
+  review consolidado (Fase 1.5) ou pra sessão com o editor; seguir pra
+  próxima unidade no mesmo ciclo (encaminhar não é parar). A lista de paths
+  vive em `SENSITIVE_RULES` (`scripts/lib/sensitive-path-guard.ts`, coberta
+  por `test/sensitive-path-guard.test.ts`) — nunca decidir "isso é
+  sensível?" por julgamento do ciclo. **Motivo:** em 260826 o PR #6214
+  tocou `scripts/lib/site-archive-pages.ts`, passou pelo review por PR e
+  **quebrou a geração do acervo público inteiro** (hotfix `4b16a195`,
+  #6255); o defeito era interação entre o guard novo e um sanitize
+  pré-existente — invisível pra review que só vê o diff, e sem teste que o
+  pegasse. Nesses caminhos o custo do ponto cego é superfície pública
+  quebrada, não CI vermelho. Não confundir com a outra quebra do mesmo dia
+  (#6237 → master vermelho, fix `eac20369`/#6261): teste desatualizado, o
+  CI pega sozinho e não precisa deste guard.
+- **Não reivindica issue nova enquanto houver rodada overnight ativa**
+  (#6277). No início de cada ciclo, antes de qualquer `claim-issue`: `npx
+  tsx scripts/lib/session-registry.ts active-of-kind --kind overnight`.
+  `active: true` → o ciclo trabalha só a própria fila de PRs abertos
+  (review/merge) e reporta "overnight ativo: N sessão(ões), fila nova não
+  tocada". O check-and-set do #6236 fecha a corrida de ESCRITA no claim,
+  mas não evita duas sessões ANALISANDO a mesma fila — em 260826 o
+  overnight reivindicou a #6232 às 11:20 com subagente já implementando e o
+  contínuo tentou às 11:27; a recusa funcionou e o trabalho de análise dos
+  dois lados se perdeu assim mesmo. Sessão overnight com heartbeat morto
+  (> `SOFT_STALE_MS`, 90 min) **não** conta como ativa — o helper já
+  filtra, então overnight que morreu sem chamar `end` nunca trava o
+  contínuo.
 - **Registra-se em `session-registry.ts` com `kind: "continuo"`** (novo
   nesta unidade, #5293 item 2) — `npx tsx scripts/lib/session-registry.ts
   register --kind continuo` (session-id auto-injetado pelo hook

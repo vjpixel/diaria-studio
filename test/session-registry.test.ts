@@ -24,6 +24,9 @@ import {
   claimIssue,
   claimIssueCheckAndSet,
   isIssueClaimedByOther,
+  findActiveSessionsOfKind,
+  findStaleSessionsOfKind,
+  hasActiveSessionOfKind,
   acquireMergeLock,
   releaseMergeLock,
   requireKind,
@@ -520,6 +523,84 @@ describe("listActiveSessions / isIssueClaimedByOther — stale (#5474)", () => {
     const sessions = listActiveSessions(root, NOW);
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].stale, false);
+  });
+});
+
+// ─── findActiveSessionsOfKind / hasActiveSessionOfKind (#6277 item 3) ──────
+
+describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclusão contínuo × overnight (#6277)", () => {
+  const NOW = Date.parse("2026-08-26T11:27:00.000Z");
+  const ONE_MIN_MS = 60 * 1000;
+
+  it("cenário real do #6236: overnight ativo é visível pro contínuo ANTES de reivindicar issue nova", () => {
+    const root = freshRoot();
+    // overnight iniciado 11:20 (claim da #6232 no incidente real).
+    registerSession(root, "overnight", "sess-overnight", {
+      tag: "host-a",
+      startedAt: new Date(NOW - 7 * ONE_MIN_MS).toISOString(),
+    });
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), true);
+    const found = findActiveSessionsOfKind(root, "overnight", NOW);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].sessionId, "sess-overnight");
+  });
+
+  it("sem sessão do kind → active:false (e a própria sessão do contínuo não conta como overnight)", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
+    assert.deepEqual(findActiveSessionsOfKind(root, "overnight", NOW), []);
+  });
+
+  it("overnight STALE não bloqueia — sai de findActive e aparece em findStale", () => {
+    const root = freshRoot();
+    // 3h de heartbeat morto: dentro de MAX_SESSION_AGE_MS, além de SOFT_STALE_MS.
+    const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS).toISOString();
+    registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
+    const stale = findStaleSessionsOfKind(root, "overnight", NOW);
+    assert.equal(stale.length, 1, "sessão stale continua VISÍVEL — nunca descartada em silêncio");
+    assert.equal(stale[0].sessionId, "sess-morta");
+  });
+
+  it("excludeSessionId não se enxerga: sessão perguntando pelo próprio kind ignora a si mesma", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", {
+      tag: "host-a",
+      startedAt: new Date(NOW).toISOString(),
+    });
+
+    assert.equal(hasActiveSessionOfKind(root, "continuo", NOW), true, "sem exclude, se enxerga");
+    assert.equal(
+      hasActiveSessionOfKind(root, "continuo", NOW, "hermes-cron-5d791ef6fc2c"),
+      false,
+      "com exclude, a própria sessão não conta",
+    );
+  });
+
+  it("filtra por kind: overnight ativo não faz develop parecer ativo", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-overnight", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), true);
+    assert.equal(hasActiveSessionOfKind(root, "develop", NOW), false);
+    assert.equal(hasActiveSessionOfKind(root, "continuo", NOW), false);
+  });
+
+  it("fail-soft: data/sessions/ inexistente → active:false, nunca lança", () => {
+    const root = freshRoot();
+    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
+    assert.deepEqual(findStaleSessionsOfKind(root, "overnight", NOW), []);
   });
 });
 

@@ -652,6 +652,76 @@ export function isIssueClaimedByOther(
 }
 
 /**
+ * Sessões ATIVAS (não-stale) de um `kind` específico — a pergunta "há uma
+ * rodada `/diaria-overnight` acontecendo agora?" respondida de forma
+ * determinística, sem o consumidor precisar reimplementar o filtro de
+ * staleness sobre `listActiveSessions` (#6277 item 3).
+ *
+ * Motivação: o `hermes-diaria-continuo` roda de hora em hora e drena a MESMA
+ * fila que o overnight. O check-and-set do #6236 fecha a corrida de ESCRITA no
+ * claim, mas não evita o desperdício de duas sessões analisarem a mesma fila —
+ * caso real em 260826, a #6232 claimed às 11:20 pelo overnight e tentada às
+ * 11:27 pelo contínuo, com subagente já implementando do outro lado. Com este
+ * helper, o tick do contínuo consulta antes de reivindicar issue nova e se
+ * limita a processar a própria fila de PRs enquanto houver overnight ativo.
+ *
+ * Semântica de staleness idêntica à de `isIssueClaimedByOther` (#5474):
+ * sessão com heartbeat morto há mais de `SOFT_STALE_MS` NÃO conta como ativa —
+ * um overnight que morreu sem chamar `end` não pode bloquear o contínuo para
+ * sempre. Sessões stale saem do retorno principal, mas continuam visíveis via
+ * `findStaleSessionsOfKind` para o chamador poder reportá-las.
+ *
+ * `excludeSessionId` permite a uma sessão perguntar "há OUTRA sessão deste
+ * kind?" sem se enxergar (o contínuo consultando por `continuo`, por exemplo).
+ *
+ * Fail-soft por herança: `listActiveSessions` nunca lança (diretório ausente,
+ * JSON corrompido → lista vazia), então este helper também não.
+ */
+export function findActiveSessionsOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  now: number = Date.now(),
+  excludeSessionId?: string,
+): SessionRecord[] {
+  return listActiveSessions(repoRoot, now).filter(
+    (session) => session.kind === kind && !session.stale && session.sessionId !== excludeSessionId,
+  );
+}
+
+/**
+ * Contraparte de `findActiveSessionsOfKind` — sessões do mesmo `kind` que
+ * estão dentro do teto absoluto (`MAX_SESSION_AGE_MS`) mas com heartbeat
+ * morto (`stale: true`). Não bloqueiam ninguém; existem para o chamador poder
+ * dizer "não há overnight ativo, mas há 1 registro stale de X" em vez de
+ * silenciar o registro órfão (mesma disciplina de nunca descartar em silêncio
+ * do `warnClockSkew`).
+ */
+export function findStaleSessionsOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  now: number = Date.now(),
+  excludeSessionId?: string,
+): SessionRecord[] {
+  return listActiveSessions(repoRoot, now).filter(
+    (session) => session.kind === kind && session.stale === true && session.sessionId !== excludeSessionId,
+  );
+}
+
+/**
+ * Predicado booleano sobre `findActiveSessionsOfKind` — o formato que o
+ * caminho de decisão do contínuo consome ("há overnight ativo? então não
+ * reivindico issue nova neste tick").
+ */
+export function hasActiveSessionOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  now: number = Date.now(),
+  excludeSessionId?: string,
+): boolean {
+  return findActiveSessionsOfKind(repoRoot, kind, now, excludeSessionId).length > 0;
+}
+
+/**
  * Primitivas de I/O usadas por `acquireMergeLock` — injetáveis pra teste
  * (mesmo padrão de `execFn` em `.claude/hooks/pr-create-review.mjs`). O
  * default (`REAL_MERGE_LOCK_IO`) usa `node:fs` de verdade; testes injetam um
@@ -1195,6 +1265,19 @@ function main(): void {
         process.stdout.write(JSON.stringify(sessions, null, 2) + "\n");
         break;
       }
+      case "active-of-kind": {
+        // #6277 item 3 — "há uma rodada deste kind acontecendo agora?".
+        // Sempre exit 0 (mesmo padrão de `is-claimed`): a resposta é o JSON,
+        // não o exit code — "não há overnight ativo" é resposta válida, não erro.
+        const kind = requireKind(values.kind);
+        const excludeSessionId = values["session-id"];
+        const active = findActiveSessionsOfKind(repoRoot, kind, undefined, excludeSessionId);
+        const stale = findStaleSessionsOfKind(repoRoot, kind, undefined, excludeSessionId);
+        process.stdout.write(
+          JSON.stringify({ kind, active: active.length > 0, sessions: active, stale }, null, 2) + "\n",
+        );
+        break;
+      }
       case "merge-lock-acquire": {
         const sessionId = requireSessionId(values);
         const ok = acquireMergeLock(repoRoot, sessionId);
@@ -1231,7 +1314,9 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release|gc> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|active-of-kind|merge-lock-acquire|merge-lock-release|gc> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+            "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
+            "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
