@@ -76,7 +76,10 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (resolved.mode === "derived-after-collision") {
-    const collisionList = (resolved.collisions ?? [])
+    // `resolved.collisions` é garantido pela união discriminada de
+    // ResolvedPlanPath (#6328) — sem `?? []`: o narrowing por `mode` já
+    // assegura o campo presente e não-vazio neste branch.
+    const collisionList = resolved.collisions
       .map((c) => `${c.path} (session_id: ${c.sessionId ?? "ausente"})`)
       .join(", ");
     console.error(
