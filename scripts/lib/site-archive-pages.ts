@@ -24,6 +24,7 @@
 
 import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
+import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -89,6 +90,58 @@ export function deriveMetaDescription(post: ArchivePost): string {
 
 export function archiveUrlForSlug(slug: string): string {
   return `${ARCHIVE_BASE_URL}/p/${slug}`;
+}
+
+/**
+ * Adapta 1 broadcast Kit já normalizado (`UnifiedCachedPost`,
+ * `scripts/lib/shared/edition-cache-reader.ts`) pro shape `ArchivePost`
+ * deste módulo — fecha o resíduo do #6184 (única peça da migração
+ * Beehiiv → Kit que faltava: metadados+conteúdo do acervo).
+ *
+ * **Só usado pro lado Kit.** O lado Beehiiv continua lendo
+ * `data/beehiiv-cache/posts/*.json` direto via `loadPosts`
+ * (`gen-archive-pages.ts`), sem passar por este adaptador nem por
+ * `UnifiedCachedPost` — routear o Beehiiv por aqui PERDERIA
+ * `meta_default_title`/`meta_default_description`/`preview_text`
+ * (`UnifiedCachedPost` não carrega esses campos SEO, só o vocabulário
+ * comum às duas origens), degradando a qualidade de título/description do
+ * acervo Beehiiv existente pra ganhar nada em troca (o Kit não os tem de
+ * qualquer forma). "Caminho Beehiiv precisa continuar funcional e
+ * idêntico" é requisito explícito desta unidade.
+ *
+ * Pro lado Kit, os 4 campos ficam `null` de propósito — `derivePageTitle`/
+ * `deriveMetaDescription` já degradam pra `title`/`subtitle` sem lançar
+ * (mesmo fallback que um post Beehiiv com esses campos ausentes já
+ * exercita hoje, ver describe "#5101 item 2" no teste deste módulo), e o
+ * Kit não tem um equivalente de qualquer forma (só `subject`, já mapeado
+ * pra `title` por `normalizeKitBroadcast`).
+ *
+ * Devolve `null` quando o broadcast não tem `slug` resolvível
+ * (`public_url` ausente/inválido — ver docstring de `normalizeKitBroadcast`)
+ * — mesmo critério que `isPublishedPost` já aplica a um post Beehiiv sem
+ * slug, então o caller pode simplesmente descartar `null`s e tratar o
+ * resultado como qualquer outro `ArchivePost[]`.
+ *
+ * **Caller filtra `origin === "kit"` e `public === true` ANTES de chamar
+ * isto** (mesmo discriminador de `collectAllCompletedKitPosts` em
+ * `newsletter-read-source.ts`, #6362 item 2) — este adaptador só faz a
+ * transformação de shape, não repete o filtro de "é edição real".
+ */
+export function kitUnifiedPostToArchivePost(u: UnifiedCachedPost): ArchivePost | null {
+  if (!u.slug) return null;
+  return {
+    slug: u.slug,
+    title: u.title ?? u.slug,
+    subtitle: u.subtitle ?? null,
+    preview_text: null,
+    meta_default_title: null,
+    meta_default_description: null,
+    status: u.status ?? "unknown",
+    web_url: u.web_url ?? null,
+    displayed_date: null,
+    publish_date: u.publish_date ?? null,
+    content: u.content ?? null,
+  };
 }
 
 /**
