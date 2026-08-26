@@ -152,6 +152,16 @@ function matchesPrefix(local: string, prefixes: string[]): boolean {
   return prefixes.some(r => local === r || local.startsWith(r + ".") || local.startsWith(r + "-") || local.startsWith(r + "_"));
 }
 
+// Endereço sintético gerado por suíte de teste E2E (padrão
+// `<prefixo>-<epoch-ms>[-<rand>]`, ex: `collab-1787632203829-4ltker@clarice.ai`
+// e `regular-1787632203829@example.com` — este último já cai em
+// `test_domain` acima, mas o prefixo cobre a família inteira independente
+// de domínio, #6366). Domínio-independente de propósito: um domínio
+// catch-all legítimo do parceiro (`clarice.ai`, com 23 endereços reais no
+// store) aceita qualquer local part no SMTP, então o MillionVerifier não
+// tem como reprovar — o local part sintético é o único sinal disponível.
+const SYNTHETIC_E2E_LOCAL_PART = /^(collab|regular|test|e2e|qa)-\d{10,}(-[a-z0-9]{4,})?$/;
+
 export function isLowQualityEmail(email: string): { bad: boolean; reason: string } {
   const [local, domain] = email.toLowerCase().split("@");
   if (!local || !domain) return { bad: false, reason: "" };
@@ -174,6 +184,11 @@ export function isLowQualityEmail(email: string): { bad: boolean; reason: string
   if (!CONSUMER_EMAIL_DOMAINS.has(domain) && matchesPrefix(local, COMMERCIAL_ROLE_PREFIXES))
     return { bad: true, reason: "role_account" };
 
+  // 3c. Endereço sintético de suíte E2E — bounce garantido mesmo em domínio
+  // catch-all legítimo do parceiro (#6366).
+  if (SYNTHETIC_E2E_LOCAL_PART.test(local))
+    return { bad: true, reason: "synthetic_e2e_local_part" };
+
   // 4. Parte local muito curta (1–2 chars) — siglas de departamento
   if (local.length <= 2)
     return { bad: true, reason: "local_too_short" };
@@ -195,6 +210,16 @@ export function isLowQualityEmail(email: string): { bad: boolean; reason: string
     return { bad: true, reason: "fake_pattern" };
 
   return { bad: false, reason: "" };
+}
+
+// Segunda camada de defesa contra o mesmo incidente (#6366): identifica o
+// cliente Stripe sintético pelo rótulo que a suíte E2E da Clarice grava,
+// independente do formato do local part do email (cobre variações futuras
+// do gerador que `SYNTHETIC_E2E_LOCAL_PART` não preveja). Mais cirúrgico
+// que a regex acima, mas depende da Clarice manter o `Name` populado — por
+// isso é camada adicional, não substituto.
+export function isSyntheticE2ERecord(m: Pick<Record, "name">): boolean {
+  return (m.name || "").trim().toLowerCase() === "e2e metrics user";
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +600,10 @@ export function buildUniverse(
       excluded.push({ ...m, reason: lqCheck.reason });
       continue;
     }
+    if (isSyntheticE2ERecord(m)) {
+      excluded.push({ ...m, reason: "synthetic_e2e_name" });
+      continue;
+    }
     if (filterClrcPt && !hasClariceAudienceTag(m)) {
       excluded.push({ ...m, reason: "not_clrc_pt" });
       continue;
@@ -704,6 +733,10 @@ export function main(dataDir: string = DATA_DIR, now: Date = new Date()): void {
     const lqCheck = isLowQualityEmail(m.email);
     if (lqCheck.bad) {
       excluded.push({ ...m, reason: lqCheck.reason });
+      continue;
+    }
+    if (isSyntheticE2ERecord(m)) {
+      excluded.push({ ...m, reason: "synthetic_e2e_name" });
       continue;
     }
     if (filterClrcPt && !hasClariceAudienceTag(m)) {
