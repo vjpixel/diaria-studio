@@ -164,6 +164,41 @@ test("runOpensCatchup: maxRefreshPerRun limita quantas campanhas JÁ CACHEADAS c
   assert.equal(second.openersFound, 3, "campanhas fora do teto ainda contribuem via cache, sem gastar rede");
 });
 
+test("runOpensCatchup: campaignsSkippedRefresh reporta quantas leram do cache sem re-export", async () => {
+  // #5946 self-review finding 2: sem este contador, um streak que PERSISTA
+  // depois do fatiamento é indiagnosticável — `campaignsInWindow` conta todas
+  // as campanhas da janela (refrescadas ou não), então não distingue "o teto
+  // ainda é grande demais pra cota do momento" de "o problema não era volume
+  // de re-export".
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "opens-catchup-skipped-"));
+  const campaigns = [fakeCampaign(1, 1), fakeCampaign(2, 2), fakeCampaign(3, 3)];
+  const recipients = {
+    1: [{ email: "a@x.com", opened: true }],
+    2: [{ email: "b@x.com", opened: true }],
+    3: [{ email: "c@x.com", opened: true }],
+  };
+  const client = makeFakeClient(campaigns, recipients, () => {});
+  const baseDeps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: () => {},
+    cacheDir,
+  };
+
+  // 1ª run: nada em cache — todas são "novas", nenhuma é pulada pelo teto.
+  const first = await runOpensCatchup({ ...baseDeps, maxRefreshPerRun: 1 });
+  assert.equal(first.campaignsSkippedRefresh, 0, "1ª run: nenhuma tem cache, nenhuma é pulada");
+
+  // 2ª run, mesmo cacheDir: as 3 têm cache, o teto deixa 1 re-exportar → 2 puladas.
+  const second = await runOpensCatchup({ ...baseDeps, maxRefreshPerRun: 1 });
+  assert.equal(second.campaignsSkippedRefresh, 2, "2ª run: 3 na janela - 1 do teto = 2 lidas do cache");
+  assert.equal(second.campaignsInWindow, 3, "campaignsInWindow segue contando a janela inteira");
+
+  // Teto >= janela: ninguém é pulado.
+  const third = await runOpensCatchup({ ...baseDeps, maxRefreshPerRun: 10 });
+  assert.equal(third.campaignsSkippedRefresh, 0, "teto acima do tamanho da janela não pula ninguém");
+});
+
 test("runOpensCatchup: campanha que ficou de fora do teto hoje é priorizada amanhã (rotação durável via exportedAt em disco)", async () => {
   const cacheDir = mkdtempSync(resolve(tmpdir(), "opens-catchup-rotation-"));
   const campaigns = [fakeCampaign(1, 1), fakeCampaign(2, 2)];

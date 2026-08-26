@@ -334,6 +334,16 @@ export interface OpensCatchupDeps {
 export interface OpensCatchupResult {
   campaignsConsidered: number;
   campaignsInWindow: number;
+  /**
+   * #5946: campanhas na janela que NÃO foram re-exportadas nesta execução por
+   * causa do teto `maxRefreshPerRun` — leram do cache em disco. Sem este
+   * número, um streak que persista depois do fatiamento é indiagnosticável:
+   * `campaignsInWindow` conta todas as campanhas da janela (refrescadas ou
+   * não), então não distingue "o teto está grande demais pra cota do momento"
+   * de "o problema não era volume de re-export". É a primeira pergunta de
+   * quem for investigar o próximo streak do alarme #5339.
+   */
+  campaignsSkippedRefresh: number;
   campaignsFailed: number;
   openersFound: number;
   contactsUpdated: number;
@@ -508,6 +518,13 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   return {
     campaignsConsidered: campaigns.length,
     campaignsInWindow: recent.length,
+    // Só conta quem REALMENTE leu do cache: campanha sem `exportedAt` é
+    // sempre exportada (não há baseline em disco pra reusar), esteja ela no
+    // teto ou não — `recent.length - toForceRefresh.size` contaria essas
+    // erradamente como puladas.
+    campaignsSkippedRefresh: recent.filter(
+      (c) => exportedAtById.get(c.id) !== undefined && !toForceRefresh.has(c.id),
+    ).length,
     campaignsFailed,
     openersFound: openersFull.size,
     contactsUpdated,
@@ -729,7 +746,8 @@ export async function main(
       });
       console.error(
         `✅ catch-up: ${result.campaignsInWindow}/${result.campaignsConsidered} campanhas na janela ` +
-          `(${result.campaignsFailed} falharam) · ${result.openersFound} openers · ` +
+          `(${result.campaignsFailed} falharam, ${result.campaignsSkippedRefresh} do cache sem re-export) · ` +
+          `${result.openersFound} openers · ` +
           `${result.contactsUpdated} contatos atualizados (${result.contactsFailed} falharam)`,
       );
       opensCatchup = { ok: true, result };
