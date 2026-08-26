@@ -20,8 +20,10 @@ import {
   applyRouteLabelPlan,
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  formatRouteIssueMarker,
   labelsForNewIssue,
   MOTIVO_LABEL,
+  parseRouteIssueMarker,
   planRouteLabels,
   PROVENIENCE_LABELS,
   ROUTABLE_LABELS,
@@ -720,5 +722,45 @@ describe("labelsForNewIssue / routeIssueForCreate — declarar track na criaçã
     assert.equal(result.ok, true);
     const resolved = classifyExecTrack({ labels: result.labels as string[], body: result.body, state: "OPEN" });
     assert.equal(resolved, "agendada");
+  });
+});
+
+// ─── formatRouteIssueMarker / parseRouteIssueMarker (#6283) ────────────────
+
+describe("formatRouteIssueMarker / parseRouteIssueMarker — round-trip", () => {
+  it("round-trip para todo ROUTE_TRACKS", () => {
+    for (const track of ROUTE_TRACKS) {
+      const marker = formatRouteIssueMarker(track);
+      assert.equal(parseRouteIssueMarker(marker), track);
+      assert.equal(parseRouteIssueMarker(`texto antes\n${marker}\ntexto depois`), track);
+    }
+  });
+
+  it("buildCommentBody real de routeIssue produz um marcador parseável (regressão de duplicação de literal)", () => {
+    // routeIssue (scripts/route-issue.ts) grava o comentário via
+    // buildCommentBody, que desde #6283 reusa formatRouteIssueMarker em vez
+    // de duplicar o literal `<!-- route-issue: track=X -->` — este teste
+    // trava que os dois lados (quem grava, quem lê) continuam falando o
+    // mesmo formato.
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({ issue: 1, track: "develop", reason: "teste", cwd: "/tmp", ghRun: gh.run });
+    const posted = gh.state.comments[0];
+    assert.ok(posted, "esperava um comentário postado");
+    assert.equal(parseRouteIssueMarker(posted), "develop");
+  });
+
+  it("body sem marcador devolve null", () => {
+    assert.equal(parseRouteIssueMarker("comentário comum, sem marcador nenhum"), null);
+  });
+
+  it("marcador com track desconhecido (fora de ROUTE_TRACKS) devolve null", () => {
+    assert.equal(
+      parseRouteIssueMarker("<!-- route-issue: track=track-que-nao-existe -->"),
+      null,
+    );
+  });
+
+  it("marcador sem sufixo de fechamento devolve null (tolerante, não lança)", () => {
+    assert.equal(parseRouteIssueMarker("<!-- route-issue: track=develop sem fechar"), null);
   });
 });
