@@ -80,7 +80,14 @@
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
+ *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
+ *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
+ *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
+ *     que já é seu.)
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
+ *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
+ *     concede um hold novo. Ver `renewMergeLock`.)
  *   npx tsx scripts/lib/session-registry.ts conflicts [--paths a.ts,b.ts] [--branch X]
  *     (#6168 Parte C — CONSULTA "quem mais está mexendo nisto?", nunca
  *     adquire nada nem cria arquivo; `exit 1` = sobreposição real com peer
@@ -1520,6 +1527,28 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  * segurando o lock) e liberado automaticamente pro próximo adquirente —
  * nunca trava a máquina pra sempre.
  *
+ * **#6334 — deixou de ser reentrante para a MESMA sessão.** Até aqui, uma
+ * 2ª chamada da mesma `sessionId` enquanto o lock que ELA MESMA segurava
+ * ainda estava dentro do TTL só renovava o `acquiredAt` e retornava `true`
+ * na hora, sem esperar nada — pensado como "idempotência segura" pro caso
+ * sequencial normal (acquire → merge → release, #5156 item 4). O #6299
+ * (fan-out em onda) tornou isso perigoso: a MESMA sessão overnight passou a
+ * poder ter 2-3 unidades chegando em "pronto pra mergear" ao mesmo tempo, e
+ * a reentrância deixava um 2º `gh pr merge` da mesma sessão passar "ao
+ * mesmo tempo" que o 1º sem nenhuma serialização real entre eles — quebrando
+ * o invariante de "master recebe um squash por vez" (#636) bem no cenário
+ * que o lock existe pra proteger. Nenhum caminho de produção hoje chama
+ * `acquireMergeLock` uma 2ª vez pela mesma sessão ANTES de liberar a 1ª —
+ * `mergeSoloPr`/`mergeTrainBatch` (`scripts/lib/merge-train-live.ts`) sempre
+ * fazem acquire→merge→release num único `try/finally`, e o loop de retry por
+ * lock negado (`runMergeTrain`) só tenta de novo DEPOIS que essa `finally` já
+ * rodou — então blindar a reentrância não regride nenhum fluxo real. Quem
+ * precisa genuinamente estender o TTL de um hold que já é seu (operação
+ * longa, mesmo lock, nunca liberado) usa `renewMergeLock` — uma função
+ * separada, que só aceita renovar o que a própria sessão já detém, nunca
+ * concede um hold novo. Ver `test/session-registry.test.ts` (#6334) pros
+ * dois caminhos: renovação explícita ✅ vs. 2ª aquisição concorrente ❌.
+ *
  * **#5161 fleet review item 1 (CRÍTICO):** a versão anterior fazia
  * read→check→write sem NENHUMA primitiva atômica — duas sessões podiam ler
  * "sem lock" simultaneamente e ambas escreverem, ambas recebendo `true`,
@@ -1552,9 +1581,18 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  *      no instante de expiração do TTL), a mitigação abaixo é
  *      deliberadamente proporcional ao risco, não uma prova de CAS perfeito.
  *
- * Retorna `true` quando o lock foi adquirido (ou já era desta mesma sessão —
- * reentrante, idempotente), `false` quando outra sessão o segura e ainda
- * está dentro do TTL (ou quando perdemos a corrida de contestação acima).
+ * Retorna `true` quando o lock foi adquirido (ninguém o detinha, ou detinha
+ * mas já estava STALE — TTL expirado, tratado como abandonado), `false`
+ * quando alguém o segura e ainda está dentro do TTL — **inclusive quando
+ * esse "alguém" é a PRÓPRIA sessão chamadora** (#6334): uma 2ª chamada da
+ * mesma `sessionId` enquanto o hold dela ainda está fresco NÃO é mais
+ * reentrante — é tratada como uma tentativa concorrente de aquisição, e
+ * falha como qualquer outra. Isso é deliberado: é exatamente o caso que o
+ * #6299 tornou possível (mesma sessão com 2-3 merges "prontos" ao mesmo
+ * tempo) e que a reentrância antiga deixava passar sem serialização real.
+ * Quem precisa estender o TTL de um hold que genuinamente já é seu (nunca
+ * liberado, operação mais longa que o TTL) usa `renewMergeLock`, não uma 2ª
+ * chamada a esta função.
  */
 export function acquireMergeLock(
   repoRoot: string,
@@ -1576,10 +1614,6 @@ export function acquireMergeLock(
   }
 
   const current = io.readCurrent(path);
-  if (current && current.heldBy === sessionId) {
-    io.overwrite(path, data); // reentrante: refresca o próprio lock (estende o TTL)
-    return true;
-  }
   if (current) {
     const acquiredMs = Date.parse(current.acquiredAt);
     if (Number.isFinite(acquiredMs)) {
@@ -1591,7 +1625,10 @@ export function acquireMergeLock(
       // real entre máquinas, vale investigar); dentro da tolerância é
       // silencioso, é só o lock sendo tratado como fresco mesmo.
       if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) warnClockSkew("acquireMergeLock", `lock de ${current.heldBy}`, ageMs);
-      if (ageMs <= ttlMs) return false; // ainda dentro do TTL (com folga de tolerância) — outra sessão segura de verdade
+      // #6334: este teto vale IGUALMENTE quando `current.heldBy === sessionId`
+      // — um hold fresco da própria sessão bloqueia uma 2ª aquisição dela
+      // tanto quanto bloquearia a de outra sessão. Ver docblock da função.
+      if (ageMs <= ttlMs) return false; // ainda dentro do TTL (com folga de tolerância) — alguém (possivelmente nós mesmos) segura de verdade
     }
     // acquiredAt ilegível (campo corrompido, mas JSON válido) — cai pro
     // tratamento de "stale" abaixo, mesma política de antes.
@@ -1602,6 +1639,32 @@ export function acquireMergeLock(
   io.overwrite(path, data);
   const verify = io.readCurrent(path);
   return verify?.heldBy === sessionId;
+}
+
+/**
+ * Estende o TTL de um lock de merge que a PRÓPRIA sessão já detém (#6334) —
+ * o caminho correto pra "operação mais longa que o TTL, mesmo hold, nunca
+ * liberado", que antes era coberto (incorretamente, ver #6334) pela
+ * reentrância de `acquireMergeLock`. Só renova o que a sessão chamadora já
+ * segura: `false` se não há lock, ou se o lock pertence a OUTRA sessão —
+ * nunca cria um hold novo, nunca rouba lock alheio. Diferente de
+ * `acquireMergeLock`, não checa staleness do TTL antes de renovar — se o
+ * arquivo ainda diz `heldBy === sessionId`, ninguém mais contestou o lock
+ * ainda, então renovar é seguro independente de quanto tempo se passou desde
+ * o último `acquiredAt`.
+ */
+export function renewMergeLock(
+  repoRoot: string,
+  sessionId: string,
+  now: number = Date.now(),
+  io: MergeLockIo = REAL_MERGE_LOCK_IO,
+): boolean {
+  const path = mergeLockPath(repoRoot);
+  const current = io.readCurrent(path);
+  if (!current || current.heldBy !== sessionId) return false;
+  const data = JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
+  io.overwrite(path, data);
+  return true;
 }
 
 /**
@@ -2641,6 +2704,15 @@ function main(): void {
         if (!ok) process.exitCode = 1;
         break;
       }
+      case "merge-lock-renew": {
+        // #6334: renova o TTL de um hold que a PRÓPRIA sessão já detém —
+        // nunca concede um hold novo (ver docblock de `renewMergeLock`).
+        const sessionId = requireSessionId(values);
+        const ok = renewMergeLock(repoRoot, sessionId);
+        process.stdout.write(`session-registry: merge-lock-renew ${ok ? "ok" : "denied (not held by this session)"}\n`);
+        if (!ok) process.exitCode = 1;
+        break;
+      }
       case "conflicts": {
         // #6168 Parte C — CONSULTA, nunca aquisição: não cria arquivo nenhum.
         // exit 1 = sobreposição real com peer VIVO; exit 0 = livre (inclusive
@@ -2747,7 +2819,7 @@ function main(): void {
         process.stderr.write(
           "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
             "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
-            "merge-lock-release|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
+            "merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
             "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
             "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
             "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
