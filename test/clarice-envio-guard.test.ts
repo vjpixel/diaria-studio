@@ -475,15 +475,15 @@ describe("clarice-envio-guard (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("falha TRANSITÓRIA persiste nas 3 tentativas, capped no orçamento MENOR do guard (10min, não 35min do run) => cai no fallback", async () => {
+    it("REGRESSÃO (#6221): falha TRANSITÓRIA persiste nas 2 tentativas, capped no orçamento ENCOLHIDO do guard (2min, não 10min nem 35min do run) => cai no fallback rápido", async () => {
       const root = freshRoot();
       const sleeps: number[] = [];
       const { exec, calls } = makeFakeExec({
-        "scripts/clarice-plan-wave.ts": [transientResult(3600), transientResult(3600), transientResult(3600)], // 1h pedido, capped
+        "scripts/clarice-plan-wave.ts": [transientResult(3600), transientResult(3600)], // 1h pedido, capped
       });
       const r = await runEnvioGuard(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
-      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 3, "exatamente 3 tentativas, não mais");
-      assert.deepEqual(sleeps, [10 * 60_000, 10 * 60_000], "capped em 10min (orçamento do GUARD), nunca 35min (orçamento do run das 19:00)");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "exatamente 2 tentativas, não mais (#6221 — era 3)");
+      assert.deepEqual(sleeps, [2 * 60_000], "capped em 2min (orçamento ENCOLHIDO do guard, #6221) — só 1 espera, não 2");
       // sem group-campaigns.json => sem pendência local => code 1 (fallback não tem o que fazer, mas alarma).
       assert.equal(r.code, 1);
       assert.equal(r.reportId, "envio-260812-guard-prereq-falhou-sem-pendencia");
@@ -679,7 +679,7 @@ describe("clarice-envio-guard — fallback com override vigente (#6134)", () => 
     );
   }
 
-  it("REGRESSÃO (#6134): freio HOLD + override do editor VIGENTE => NÃO cancela; code 1 com reportId -override-vigente (escalado)", async () => {
+  it("REGRESSÃO (#6134, code atualizado no #6221): freio HOLD + override do editor VIGENTE => NÃO cancela; code 3 com reportId -override-vigente (ESCALADA DELIBERADA, não erro duro)", async () => {
     const root = freshRoot();
     writeBrakeSnapshot(root, "260811", "hold");
     writeOverride(root, "2026-08-13T12:00:00.000Z"); // futuro relativo a NOW (12/08 08:00Z)
@@ -691,15 +691,33 @@ describe("clarice-envio-guard — fallback com override vigente (#6134)", () => 
     );
     const suspendCalls: number[] = [];
     const { exec } = makeFakeExec({
-      "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1)],
     });
     const r = await runEnvioGuard(
       baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
     );
-    assert.equal(r.code, 1, r.reportMarkdown);
+    // #6221 — code 3, NÃO 1: escalada DELIBERADA (o guard fez o certo, não
+    // erro duro). `1` poria a unit systemd em `failed`, indistinguível de uma
+    // exceção real pro `Diaria-Systemd-Failed-Units-Alarm` (#5942) — é
+    // exatamente essa indistinguibilidade que a #6221 corrige.
+    assert.equal(r.code, 3, r.reportMarkdown);
     assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-override-vigente");
     assert.equal(suspendCalls.length, 0, "override vigente => NUNCA cancela por precaução");
     assert.match(r.reportMarkdown, /OVERRIDE DO EDITOR vigente/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("REGRESSÃO (#6221): escalada deliberada (code 3) permanece DISTINTA de erro duro genuíno (code 1) — lock held continua 1, nunca 3", async () => {
+    // Mesma issue que introduziu o code 3 também exige que falha REAL
+    // continue pondo a unit em `failed` (ver "Cuidado" no dispatch da
+    // #6221) — este teste cobre o caminho de erro duro mais simples (lock
+    // detido por outra rodada), que não deve ser afetado pela mudança.
+    const root = freshRoot();
+    acquireEnvioLock(root, CYCLE, "run-19h-em-curso", new Date(NOW.getTime() - 60_000));
+    const { exec } = makeFakeExec({});
+    const r = await runEnvioGuard(baseDeps(root, { exec }));
+    assert.equal(r.code, 1, r.reportMarkdown);
+    assert.notEqual(r.code, 3, "lock held é erro duro genuíno, nunca escalada deliberada");
     rmSync(root, { recursive: true, force: true });
   });
 

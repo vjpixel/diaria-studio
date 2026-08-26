@@ -743,7 +743,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // ele precisar do store, quem implementar clarice-envio-guard.ts decide
     // como tratar a ausência DENTRO do script (onde dá pra distinguir "não
     // consegui checar" de "checado, está tudo bem" — #738).
-    issue: "#5025, #5026, #5027 (decisões do editor 260811)",
+    //
+    // #6221 — exit 3 = ESCALADA DELIBERADA (pré-requisito falhou, freio HOLD
+    // com override do editor vigente sobre ele, #6134 — guard não cancela
+    // por cima da decisão do editor e escala pro humano em vez disso). Sem
+    // isto, a unit ia pra `failed` e disparava o `Diaria-Systemd-Failed-
+    // Units-Alarm` (#5942) igual a uma exceção real — já produziu leitura
+    // invertida ao vivo (#6215, #6221). Mesmo padrão do exit 4 de
+    // `Diaria-Clarice-Envio` acima (lock held ≠ falha genuína) e do exit 3
+    // de `Diaria-Clarice-Novos`/`-Tarde` — o alarme correto pra este caso
+    // é `Diaria-Clarice-Envio-Guard-Alarm` (#5220, lê o reportId, não o
+    // exit code), não o alarme genérico de unit quebrada.
+    successExitCodes: [3],
+    issue: "#5025, #5026, #5027 (decisões do editor 260811), #6221",
   },
   {
     name: "Diaria-Clarice-Envio-Guard-Alarm",

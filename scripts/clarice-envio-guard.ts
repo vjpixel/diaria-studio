@@ -40,15 +40,35 @@
  * dashboard na janela 05:00–06:00 fazia o guard abortar ANTES de reavaliar
  * o freio, e a onda já agendada disparava às 06:00 sem checagem nenhuma —
  * o guard existia mas não fazia nada. Agora: (1) retry com backoff, orçamento
- * MENOR que o par das 19:00 (`GUARD_TRANSIENT_RETRY_BUDGET` — pior caso
- * ~20min, cabe com folga na janela de 1h); (2) se o retry esgotar (ou a
- * falha for estrutural), `handlePrereqFailure` decide por FALLBACK, lendo o
- * ÚLTIMO freio conhecido (gravado por `clarice-envio-run.ts` em
- * `data/clarice-subscribers/envio-reports/envio-{aammdd}-brake.json`, NUNCA
+ * MENOR que o par das 19:00 (`GUARD_TRANSIENT_RETRY_BUDGET`); (2) se o retry
+ * esgotar (ou a falha for estrutural), `handlePrereqFailure` decide por
+ * FALLBACK, lendo o ÚLTIMO freio conhecido (gravado por `clarice-envio-run.ts`
+ * em `data/clarice-subscribers/envio-reports/envio-{aammdd}-brake.json`, NUNCA
  * reconsultando a Brevo — é justamente a fonte que já falhou): freio da
  * noite era "ok" => deixa a onda seguir + ALARMA; qualquer outra coisa
  * (`hold`/`stop`/ausente/ilegível) => suspende por precaução (fail-closed).
  * Decisão do editor, 13/08/2026.
+ *
+ * **#6221 — orçamento de retry ENCOLHIDO (pior caso ~20min → ~4min).**
+ * Achado ao vivo em 26/08: 3 tentativas × 600s de espera (capped no antigo
+ * `capMs` de 10min, honrando `retryAfterSecs` da Brevo) consumiram 22min44s
+ * de wall clock pra concluir o que a 1ª resposta 503 já indicava. O rate
+ * limit da Brevo é de conta, POR HORA (100 RPH — `docs/brevo-rate-limits.md`,
+ * #5215/#5219), não por minuto: dentro da janela de retry deste guard (bem
+ * menor que 1h), esperar mais não aumenta de forma relevante a chance de a
+ * janela horária ter virado — os 503 de uma rodada tendem a cair todos
+ * dentro da MESMA hora estourada. Contra a janela útil real do guard (roda
+ * 05:00, onda dispara 06:00 → 60min de margem total), gastar até 1/3 dela
+ * numa espera que estatisticamente não muda o resultado é o pior dos dois
+ * mundos citados na issue: nem resolve mais rápido, nem sobra tempo. Decisão
+ * (justificada contra os 60min): ENCURTAR o orçamento (`maxAttempts` 3→2,
+ * `capMs` 10min→2min) em vez de tentar prever a janela exata da Brevo — o
+ * `retryAfterSecs` continua sendo honrado (cap por baixo, nunca por cima),
+ * mas o guard desiste rápido e cai no FALLBACK (que já é seguro e testado:
+ * lê o último freio conhecido, e — desde #6134 — nunca cancela por cima de
+ * um override do editor vigente) em vez de queimar minutos numa aposta ruim.
+ * Pior caso agora: 1 espera capped em 2min por pré-requisito (2 pré-requisitos
+ * possíveis em série) ≈ 4min, deixando ~56min de margem antes do disparo.
  *
  * Uso: `npx tsx scripts/clarice-envio-guard.ts` — SEM args.
  *
@@ -64,10 +84,29 @@
  * no cenário mais perigoso (freio disse STOP, e a onda dispara mesmo assim
  * às 06:00, sem que ninguém seja alertado porque a task "rodou com
  * sucesso"). `2` nunca é confundido com `0` por quem monitora só o exit
- * code. **Exit code sozinho NÃO distingue caminho normal de fallback** — o
+ * code. **3 — ESCALADA DELIBERADA (#6221)**: pré-requisito falhou, freio da
+ * noite era HOLD e há override do editor vigente sobre esse HOLD (#6134) —
+ * o guard NÃO cancela por precaução (cancelar desfaria uma decisão explícita
+ * do editor) e escala pro humano em vez de agir sozinho. É o ÚNICO exit
+ * distinto de `1`: a distinção existe porque `1` põe a unit systemd em
+ * `failed` e dispara o `Diaria-Systemd-Failed-Units-Alarm` (#5942, alarme
+ * genérico de "quebrou") — indistinguível de uma exceção real nesse nível,
+ * o que já produziu uma leitura invertida ao vivo (ver #6215). O registro
+ * do scheduled task (`Diaria-Clarice-Envio-Guard` em
+ * `scripts/lib/scheduled-tasks.ts`) declara `successExitCodes: [3]`, que o
+ * gerador de units (`scripts/lib/systemd-units.ts`) traduz em
+ * `SuccessExitStatus=3` — a unit termina LIMPA neste caminho, e a escalada
+ * segue visível só pelo canal que já sabe descrevê-la:
+ * `Diaria-Clarice-Envio-Guard-Alarm` (#5220), que lê o `reportId` (sufixo
+ * `-prereq-fallback-override-vigente`), não o exit code. **Todo outro erro
+ * duro continua saindo `1` e pondo a unit em `failed`** — só a escalada
+ * deliberada muda de código; `2` (cancelamento incompleto) também nunca
+ * deve virar sucesso pro systemd, por isso não entra em `successExitCodes`.
+ * **Exit code sozinho NÃO distingue os demais desfechos de fallback
+ * (deixou passar / cancelou por precaução) do caminho normal** — o
  * `reportId` faz isso (sufixo `-prereq-fallback-*`), e é o que
  * `Diaria-Clarice-Envio-Guard-Alarm` (#5220, ~06:15 BRT) usa pra decidir se
- * alarma.
+ * alarma nesses outros casos.
  *
  * @see scripts/clarice-envio-run.ts (a metade das 19:00, mesmo padrão de orquestração)
  * @see scripts/clarice-reapply-scheduled-html.ts (setCampaignStatus, reusado aqui)
@@ -143,20 +182,32 @@ export function productionGuardDeps(rootDir: string = ROOT): EnvioGuardDeps {
 }
 
 // ---------------------------------------------------------------------------
-// #5220 — retry com backoff pros pré-requisitos (`clarice-plan-wave.ts`/
+// #5220/#6221 — retry com backoff pros pré-requisitos (`clarice-plan-wave.ts`/
 // `clarice-envio-risk.ts`), orçamento MENOR que o par das 19:00
 // (`clarice-envio-run.ts`, ~11h de folga até o envio do dia SEGUINTE). O
-// guard roda dentro da janela 05:00→06:00 do MESMO dia — pior caso (2
-// esperas pras 3 tentativas, ambas no teto) precisa caber com folga franca
-// antes do disparo. 3 tentativas, fallback 30s (sem retryAfterSecs), teto de
-// 10min por espera => pior caso ~20min de espera total, bem dentro da janela
-// de 1h.
+// guard roda dentro da janela 05:00→06:00 do MESMO dia — 60min de margem
+// total.
+//
+// #6221 — encolhido de (3 tentativas, teto 10min) para (2 tentativas, teto
+// 2min): achado ao vivo em 26/08, o orçamento anterior gastou 22min44s (2
+// esperas de 600s, honrando `retryAfterSecs` da Brevo capped em 10min) só
+// pra concluir o que o 1º 503 já indicava. O limite da Brevo é POR CONTA,
+// POR HORA (100 RPH — docs/brevo-rate-limits.md) — dentro de uma janela de
+// minutos, tentativas repetidas caem quase sempre na MESMA hora estourada,
+// então esperar mais não muda o resultado de forma relevante; só consome a
+// margem que o fallback (que já é seguro: lê o último freio conhecido e
+// nunca desfaz um override vigente, #6134) precisa pra decidir. 1 retry
+// curto ainda cobre o caso genuinamente transitório (blip pontual, não
+// rate-limit de hora); o que muda é desistir rápido da aposta contra a
+// janela horária. `retryAfterSecs` continua honrado, só o teto caiu.
+// Pior caso agora: 1 espera capped em 2min por pré-requisito × 2
+// pré-requisitos em série ≈ 4min, não ~20min.
 // ---------------------------------------------------------------------------
 
 const GUARD_TRANSIENT_RETRY_BUDGET = {
-  maxAttempts: 3,
+  maxAttempts: 2,
   fallbackMs: 30_000,
-  capMs: 10 * 60_000,
+  capMs: 2 * 60_000,
 };
 
 export class EnvioGuardAbort extends Error {
@@ -439,7 +490,13 @@ async function handlePrereqFailure(
     report.note(`⚠️  freio da noite era HOLD e há OVERRIDE DO EDITOR vigente (até ${overrideState.until}, motivo: ${overrideState.reason}, #${overrideState.issueRef}) — NÃO cancelando por precaução; escalando.`);
     const reportId = `envio-${aammdd}-guard-prereq-fallback-override-vigente`;
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ pré-requisito falhou, OVERRIDE vigente impede cancelamento — ESCALADO`, report.build());
-    return { code: 1, reportId, reportMarkdown: report.build() };
+    // #6221 — code 3, não 1: esta é ESCALADA DELIBERADA (guard fez o certo,
+    // não cancelou por cima do override do editor), não erro duro. `1`
+    // poria a unit systemd em `failed` e confundiria este caminho com uma
+    // exceção real no `Diaria-Systemd-Failed-Units-Alarm` (#5942) — ver
+    // "Exit codes" no header do arquivo e `successExitCodes: [3]` em
+    // `scripts/lib/scheduled-tasks.ts` (task `Diaria-Clarice-Envio-Guard`).
+    return { code: 3, reportId, reportMarkdown: report.build() };
   }
 
   const suspensionCause = lastBrake === null ? "ausente" : "nao-ok";
@@ -468,8 +525,10 @@ async function handlePrereqFailure(
 // ---------------------------------------------------------------------------
 
 export interface EnvioGuardResult {
-  /** `2` = cancelamento INCOMPLETO (ver docstring do módulo) — nunca colapsado em `0`. */
-  code: 0 | 1 | 2;
+  /** `2` = cancelamento INCOMPLETO (ver docstring do módulo) — nunca colapsado em `0`.
+   * `3` = ESCALADA DELIBERADA (#6221, override do editor vigente sobre HOLD) —
+   * distinto de `1` (erro duro) de propósito; ver "Exit codes" no header do arquivo. */
+  code: 0 | 1 | 2 | 3;
   reportId: string;
   reportMarkdown: string;
 }
