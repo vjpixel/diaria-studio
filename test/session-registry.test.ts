@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,7 @@ import {
   CLOCK_SKEW_TOLERANCE_MS,
   type MergeLockIo,
   type SessionRecord,
+  type PromotionRemoveIo,
 } from "../scripts/lib/session-registry.ts";
 
 /** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
@@ -80,7 +81,7 @@ describe("registerSession / heartbeat / endSession", () => {
     const root = freshRoot();
     assert.equal(existsSync(sessionsDir(root)), false);
 
-    const record = registerSession(root, "overnight", "sess-1", { tag: "host-a", startedAt: "2026-08-12T02:00:00.000Z" });
+    const result = registerSession(root, "overnight", "sess-1", { tag: "host-a", startedAt: "2026-08-12T02:00:00.000Z" });
 
     const path = sessionFilePath(root, "overnight", "host-a", "sess-1");
     assert.ok(existsSync(path));
@@ -91,7 +92,9 @@ describe("registerSession / heartbeat / endSession", () => {
     assert.equal(content.startedAt, "2026-08-12T02:00:00.000Z");
     assert.equal(content.lastHeartbeat, "2026-08-12T02:00:00.000Z");
     assert.deepEqual(content.claimed_issues, []);
-    assert.equal(record.sessionId, "sess-1");
+    assert.equal(result.record.sessionId, "sess-1");
+    assert.equal(result.outcome, "created", "#6326: 1º registro pra este sessionId — outcome created, sem promotedFrom");
+    assert.equal(result.promotedFrom, undefined);
   });
 
   it("registerSession grava pid quando fornecido", () => {
@@ -175,6 +178,278 @@ describe("registerSession / heartbeat / endSession", () => {
     const removedWithTag = endSession(root, "develop", "sess-cross-machine", "Neo");
     assert.equal(removedWithTag, true);
     assert.equal(existsSync(path), false);
+  });
+});
+
+// ─── registerSession — promoção de kind (#6326) ────────────────────────────
+//
+// Reproduz a ordem de eventos real: o beacon (`.claude/hooks/session-beacon.mjs`)
+// dispara no PreToolUse e cria `interactive-{tag}-{sessionId}.json` ANTES de a
+// skill chamar `register --kind overnight|develop|continuo` pro MESMO
+// sessionId. Sem a promoção, sobravam dois arquivos pra uma sessão só —
+// achado ao vivo em 26/08/2026 (`overnight-helios-{uuid}.json` +
+// `interactive-helios-{uuid}.json` simultâneos).
+
+describe("registerSession — promoção de kind quando o beacon registrou primeiro (#6326)", () => {
+  it("beacon cria interactive-X; register --kind overnight com o mesmo X deixa UM arquivo, kind overnight, campos de beacon intactos", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-a";
+    const tag = "helios";
+
+    // Simula o que o beacon já escreveu antes do `register` da skill rodar.
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+      touched_paths: ["scripts/foo.ts"],
+      dirty_paths: ["scripts/foo.ts"],
+      branch: "master",
+      last_action: { verb: "edit", at: "2026-08-26T10:04:00.000Z" },
+    });
+    const interactivePath = sessionFilePath(root, "interactive", tag, sessionId);
+    assert.ok(existsSync(interactivePath), "precondição: o beacon já criou o registro interativo");
+
+    const result = registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    // O arquivo interativo antigo desaparece — nunca sobram os dois.
+    assert.equal(existsSync(interactivePath), false, "registro interactive antigo é removido na promoção");
+    const overnightPath = sessionFilePath(root, "overnight", tag, sessionId);
+    assert.ok(existsSync(overnightPath));
+
+    // Só existe 1 arquivo .json pra este sessionId no diretório inteiro.
+    const allFiles = readdirSync(sessionsDir(root))
+      .filter((n: string) => n.endsWith(`-${sessionId}.json`));
+    assert.deepEqual(allFiles, [`overnight-${tag}-${sessionId}.json`]);
+
+    // #6326 fleet review — o desfecho é observável no retorno, não só
+    // inferível relendo o disco.
+    assert.equal(result.outcome, "promoted");
+    assert.equal(result.promotedFrom, interactivePath);
+
+    const content = JSON.parse(readFileSync(overnightPath, "utf8"));
+    assert.equal(content.kind, "overnight");
+    assert.equal(result.record.kind, "overnight");
+    // startedAt do registro ORIGINAL (interactive) é preservado, não o `now`
+    // passado a este `register`.
+    assert.equal(content.startedAt, "2026-08-26T10:00:00.000Z");
+    assert.deepEqual(content.claimed_issues, []);
+    // Campos de beacon acumulados sobrevivem à promoção.
+    assert.deepEqual(content.touched_paths, ["scripts/foo.ts"]);
+    assert.deepEqual(content.dirty_paths, ["scripts/foo.ts"]);
+    assert.equal(content.branch, "master");
+    assert.deepEqual(content.last_action, { verb: "edit", at: "2026-08-26T10:04:00.000Z" });
+  });
+
+  it("promoção preserva claimed_issues acumuladas no registro interactive antigo", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-b";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [111, 222],
+    });
+
+    registerSession(root, "develop", sessionId, { tag });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", tag, sessionId), "utf8"));
+    assert.deepEqual(content.claimed_issues, [111, 222]);
+  });
+
+  it("listActiveSessions nunca devolve dois registros pro mesmo sessionId após a promoção", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-c";
+    const tag = "helios";
+    const now = Date.parse("2026-08-26T10:10:00.000Z");
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+    });
+
+    registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    const sessions = listActiveSessions(root, now);
+    const matching = sessions.filter((s) => s.sessionId === sessionId);
+    assert.equal(matching.length, 1, "só 1 registro ativo pra este sessionId, nunca 2");
+    assert.equal(matching[0]!.kind, "overnight");
+  });
+
+  it("re-register do MESMO kind após a promoção continua idempotente e preserva claimed_issues (não regride #6294/#6303)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-d";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+    });
+    registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    // A sessão reivindica issues depois de já promovida.
+    claimIssue(root, "overnight", sessionId, 42, tag, "2026-08-26T10:06:00.000Z");
+    claimIssue(root, "overnight", sessionId, 43, tag, "2026-08-26T10:07:00.000Z");
+
+    // Um 2º `register` do MESMO kind (ex: correção de `pid`) não deve achar
+    // "outro kind" pra promover (o path já é o seu) nem apagar as claims.
+    const result = registerSession(root, "overnight", sessionId, { tag, pid: 555 });
+    assert.equal(result.outcome, "reregistered", "#6326: re-registro do MESMO kind nunca é confundido com promoção");
+    assert.equal(result.promotedFrom, undefined);
+    assert.deepEqual(result.record.claimed_issues, [42, 43]);
+    assert.equal(result.record.pid, 555);
+    assert.equal(result.record.startedAt, "2026-08-26T10:00:00.000Z", "startedAt do registro original (interactive) preservado através de promoção + re-registro");
+
+    // Continua só 1 arquivo pra este sessionId.
+    const allFiles = readdirSync(sessionsDir(root))
+      .filter((n: string) => n.endsWith(`-${sessionId}.json`));
+    assert.deepEqual(allFiles, [`overnight-${tag}-${sessionId}.json`]);
+  });
+
+  it("promoção preserva claims que só existiam num -safeBackup- do registro antigo (#6130 não regride)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-e";
+    const tag = "predator";
+
+    // Registro interactive "real" — sem o claim 999 (foi perdido/nunca
+    // sincronizado no arquivo real, típico de conflito de escrita do OneDrive).
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:02:00.000Z",
+      claimed_issues: [],
+    });
+    // Cópia de conflito do MESMO stem carrega um claim que o arquivo real não tem.
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}-${tag}-safeBackup-0001.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:03:00.000Z",
+      claimed_issues: [999],
+    });
+
+    registerSession(root, "continuo", sessionId, { tag });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "continuo", tag, sessionId), "utf8"));
+    assert.deepEqual(content.claimed_issues, [999], "claim que só existia no backup sobrevive à promoção");
+  });
+
+  it("sem registro de OUTRO kind pra este sessionId, registerSession continua criando um registro novo normalmente", () => {
+    const root = freshRoot();
+    const result = registerSession(root, "overnight", "sess-6326-f", { tag: "helios", startedAt: "2026-08-26T10:00:00.000Z" });
+    assert.equal(result.outcome, "created");
+    assert.equal(result.promotedFrom, undefined);
+    assert.equal(result.record.kind, "overnight");
+    assert.deepEqual(result.record.claimed_issues, []);
+  });
+
+  it("registro de OUTRO kind ILEGÍVEL (JSON corrompido, nem real nem backup legível) — não cria 2º registro ativo em silêncio (#6326 fleet review item 1)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-unreadable";
+    const tag = "helios";
+
+    // Arquivo de OUTRO kind existe PELO NOME, mas o conteúdo é JSON inválido
+    // — simula sync do OneDrive pegando o arquivo no meio de um write.
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), `interactive-${tag}-${sessionId}.json`), "{ isto não é JSON válido", "utf8");
+
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    let stderrOutput = "";
+    (process.stderr as unknown as { write: typeof process.stderr.write }).write = ((chunk: unknown) => {
+      stderrOutput += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    let result: ReturnType<typeof registerSession>;
+    try {
+      result = registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T11:00:00.000Z" });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    // O desfecho de falha é OBSERVÁVEL no retorno — não silencioso.
+    assert.equal(result.outcome, "promotion-failed-unreadable");
+    assert.equal(result.promotedFrom, sessionFilePath(root, "interactive", tag, sessionId));
+    assert.match(stderrOutput, /aviso/i);
+    assert.match(stderrOutput, new RegExp(sessionId));
+
+    // Um registro NOVO foi criado do zero no path do kind atual — a sessão
+    // não fica sem registro nenhum.
+    const overnightPath = sessionFilePath(root, "overnight", tag, sessionId);
+    assert.ok(existsSync(overnightPath));
+    assert.equal(result.record.kind, "overnight");
+    assert.deepEqual(result.record.claimed_issues, []);
+
+    // O arquivo ILEGÍVEL antigo continua em disco (não removido — nunca
+    // apagamos o que não conseguimos interpretar) — nunca vira um 2º
+    // registro ATIVO/legível em `listActiveSessions`, embora permaneça como
+    // lixo até o GC/uma futura leitura bem-sucedida o recolher.
+    assert.ok(existsSync(join(sessionsDir(root), `interactive-${tag}-${sessionId}.json`)));
+    const active = listActiveSessions(root, Date.parse("2026-08-26T11:00:00.000Z"));
+    const matching = active.filter((s) => s.sessionId === sessionId);
+    assert.equal(matching.length, 1, "o arquivo ilegível não conta como um 2º registro ativo");
+    assert.equal(matching[0]!.kind, "overnight");
+  });
+
+  it("rmSync do registro antigo FALHA na promoção — outcome promoted-orphan-left, nunca reportado como sucesso limpo (#6326 fleet review item 2)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-rmfail";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [7],
+    });
+    const interactivePath = sessionFilePath(root, "interactive", tag, sessionId);
+
+    // #6326 fleet review item 2: espião de I/O INJETADO (mesmo padrão de
+    // `MergeLockIo`) — monkey-patchar `require("node:fs").rmSync` NÃO
+    // intercepta o `import { rmSync } from "node:fs"` que o módulo usa de
+    // verdade (bindings distintos, confirmado experimentalmente), então a
+    // única forma determinística/portável de simular esta falha é injeção.
+    const fakeRemoveIo: PromotionRemoveIo = {
+      exists: (p) => existsSync(p),
+      remove: (p) => {
+        if (p === interactivePath) {
+          throw Object.assign(new Error("EBUSY: transitório do OneDrive (simulado)"), { code: "EBUSY" });
+        }
+        rmSync(p);
+      },
+    };
+    const result = registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" }, fakeRemoveIo);
+
+    // O NOVO registro foi gravado com sucesso — a promoção não é abortada
+    // só porque a limpeza do antigo falhou.
+    const overnightPath = sessionFilePath(root, "overnight", tag, sessionId);
+    assert.ok(existsSync(overnightPath));
+    assert.deepEqual(result.record.claimed_issues, [7]);
+
+    // Mas o desfecho reporta o estado PARCIAL — nunca "promoted" limpo.
+    assert.equal(result.outcome, "promoted-orphan-left");
+    assert.equal(result.promotedFrom, interactivePath);
+
+    // O arquivo antigo continua em disco (a remoção falhou de verdade).
+    assert.ok(existsSync(interactivePath), "o rmSync falhou de verdade — o arquivo antigo permanece");
   });
 });
 

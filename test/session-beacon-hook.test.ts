@@ -23,12 +23,14 @@ import { fileURLToPath } from "node:url";
 
 import {
   BEACON_KIND,
+  COORDINATOR_KIND_PREFIXES,
   TOUCHED_PATHS_CAP,
   MIN_WRITE_INTERVAL_MS,
   buildBeaconRecord,
   collapsePaths,
   extractTouchedPaths,
   findExistingSessionFile,
+  resolveWritePathAtWriteTime,
   normalizePath,
   readCurrentBranch,
   resolveMainRepoRootNoSpawn,
@@ -235,6 +237,99 @@ describe("#6168 Parte B — o beacon nunca destrói estado alheio", () => {
 
   it("diretório ausente → null, nunca lança", () => {
     assert.equal(findExistingSessionFile(join(tmpdir(), "nao-existe-mesmo"), "s"), null);
+  });
+
+  // ─── #6326 fleet review item 3 — desempate por KIND, não por alfabeto ──
+
+  it("COORDINATOR_KIND_PREFIXES lista os 3 kinds coordenadores, nunca interactive", () => {
+    assert.deepEqual([...COORDINATOR_KIND_PREFIXES].sort(), ["continuo", "develop", "overnight"]);
+  });
+
+  it("interactive- + overnight- presentes → escolhe overnight- (achado ao vivo #6326: 'interactive' < 'overnight' alfabeticamente, mas overnight é quem deve vencer)", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find3-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "overnight-helios-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "overnight-helios-sess-1.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("interactive- + develop- presentes → escolhe develop- (esta ordem já vinha certa por acidente alfabético — segue certa, agora por regra explícita)", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find4-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
+      writeFileSync(join(dir, "develop-helios-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "develop-helios-sess-1.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("só interactive- presente → continua achando ele normalmente (sem coordenador pra preferir)", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-find5-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "interactive-helios-sess-1.json"), "{}", "utf8");
+      assert.equal(findExistingSessionFile(dir, "sess-1"), "interactive-helios-sess-1.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ─── #6326 fleet review item 3 — re-resolução no instante do write ──────
+
+  it("resolveWritePathAtWriteTime: path resolvido AINDA existe → usa ele sem re-resolver", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-rewrite1-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
+      writeFileSync(resolvedPath, "{}", "utf8");
+      assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), resolvedPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveWritePathAtWriteTime: path resolvido SUMIU (promovido por registerSession no meio) → re-resolve pro registro coordenador que apareceu", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-rewrite2-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      // O `interactive-*` que o beacon resolveu originalmente NÃO existe mais
+      // em disco (foi promovido/removido por `registerSession` entre a
+      // resolução e este ponto) — só o `overnight-*` promovido existe agora.
+      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
+      const promotedPath = join(dir, "overnight-helios-sess-1.json");
+      writeFileSync(promotedPath, "{}", "utf8");
+      assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), promotedPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveWritePathAtWriteTime: path resolvido sumiu e NADA reapareceu → cai de volta no resolvedPath original (cria do zero, comportamento de sempre)", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-rewrite3-"));
+    const dir = join(root, "sessions");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const resolvedPath = join(dir, "interactive-helios-sess-1.json");
+      assert.equal(resolveWritePathAtWriteTime(dir, "sess-1", resolvedPath), resolvedPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveWritePathAtWriteTime nunca lança mesmo com sessionsDir ausente", () => {
+    const missingDir = join(tmpdir(), "beacon-rewrite-missing");
+    assert.doesNotThrow(() => resolveWritePathAtWriteTime(missingDir, "sess-1", join(missingDir, "x.json")));
   });
 });
 

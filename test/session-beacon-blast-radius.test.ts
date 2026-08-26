@@ -50,6 +50,7 @@ import {
   TOUCHED_PATHS_CAP as HOOK_TOUCHED_PATHS_CAP,
   normalizePath as hookNormalizePath,
   collapsePaths as hookCollapsePaths,
+  COORDINATOR_KIND_PREFIXES,
 } from "../.claude/hooks/session-beacon.mjs";
 
 function makeTempRepo(): string {
@@ -93,6 +94,16 @@ describe("#6168 blast radius 2 — COORDINATOR_KINDS não recebe o kind novo", (
     // cópia. Duas cópias sem teste cruzado é exatamente a dívida que o
     // comment-analyzer apontou noutro par deste repo — travada aqui.
     assert.deepEqual([...COORDINATOR_KINDS].sort(), [...COORDINATOR_SESSION_KINDS].sort());
+  });
+
+  it("#6326 fleet review item 3: COORDINATOR_KIND_PREFIXES (session-beacon.mjs, usado por findExistingSessionFile) também não diverge de COORDINATOR_SESSION_KINDS", () => {
+    // 3ª cópia do mesmo conjunto (a 1ª é COORDINATOR_KINDS em
+    // block-gh-pr-merge-subagent.mjs, travada acima) — sem este teste, o
+    // desempate de kind do beacon poderia divergir silenciosamente se
+    // COORDINATOR_SESSION_KINDS ganhar um kind novo e ninguém lembrar de
+    // atualizar as 2 cópias `.mjs`.
+    assert.deepEqual([...COORDINATOR_KIND_PREFIXES].sort(), [...COORDINATOR_SESSION_KINDS].sort());
+    assert.equal(COORDINATOR_KIND_PREFIXES.includes("interactive"), false);
   });
 
   it("isCoordinatorKind concorda com o conjunto", () => {

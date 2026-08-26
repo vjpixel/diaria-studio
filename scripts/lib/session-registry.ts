@@ -127,7 +127,7 @@
  * esperado quando não há sinal de processo verificável).
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
@@ -508,6 +508,196 @@ function writeJsonSafe(path: string, value: unknown): void {
 }
 
 /**
+ * Localiza, em `data/sessions/`, o arquivo de registro REAL (nunca backup)
+ * de QUALQUER kind para `sessionId` — espelha `findExistingSessionFile` do
+ * beacon (`.claude/hooks/session-beacon.mjs`), que cobre a ordem "register
+ * primeiro, beacon depois" (enriquece o arquivo já existente em vez de criar
+ * um `interactive-*` paralelo).
+ *
+ * `registerSession` usa isto pra cobrir a ordem INVERSA (#6326): o beacon
+ * dispara no `PreToolUse`, ANTES de a skill rodar `register` — cria
+ * `interactive-{tag}-{sessionId}.json` sem saber que a sessão vai virar
+ * coordenadora minutos depois. Sem esta busca, `registerSession` escreveria
+ * cego no path do kind novo (`sessionFilePath`), sem olhar se já existe um
+ * arquivo de OUTRO kind pro mesmo `sessionId` — e sobrariam dois registros
+ * pra uma sessão só, contando dobrado em `list-active` (achado ao vivo do
+ * #6326: `overnight-helios-{uuid}.json` + `interactive-helios-{uuid}.json`
+ * simultâneos, o 2º congelado a partir do momento em que o beacon passa a
+ * enriquecer só o 1º).
+ *
+ * Match por SUFIXO `-{sessionId}.json`, nunca por tag/kind explícitos —
+ * mesmo critério do irmão (cobre o caso raro de a sessão trocar de
+ * `machineTag()` entre o beacon e o `register`, ex: hostname mudou no meio).
+ * Ordena alfabeticamente e devolve o primeiro quando há mais de um
+ * candidato (não deveria acontecer em operação normal — é exatamente o bug
+ * que esta função corrige — mas nunca lança). **#6326 fleet review P3
+ * (decisão registrada, não corrigida neste PR):** casa só por SUFIXO de
+ * nome de arquivo, sem validar que o prefixo antes do sufixo é de fato um
+ * `SessionKind` conhecido (`parseSessionFileName(): {kind,tag,sessionId} |
+ * null` fecharia isso). Risco prático baixo — o `kind` usado no restante da
+ * função sempre vem do parâmetro TIPADO, nunca é lido de volta do nome do
+ * arquivo — e esta é a mesma ausência de validação de shape que já existia
+ * em `listSessionJsonFiles`/`readMergedSessionGroups` antes deste PR, não
+ * uma regressão introduzida aqui. Ver #6338 pro follow-up.
+ */
+function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): string | null {
+  const suffix = `-${sessionId}.json`;
+  const names = listSessionJsonFiles(repoRoot)
+    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-"))
+    .sort();
+  return names.length > 0 ? join(sessionsDir(repoRoot), names[0]!) : null;
+}
+
+/**
+ * Agrupa cópias de conflito `-safeBackup-` de `names` (listagem CRUA de
+ * `data/sessions/`, real+backup) por STEM do arquivo real "dono" mais
+ * ESPECÍFICO — extraído de `readMergedSessionGroups` (#6130) e reusado por
+ * `readMergedRecordForRealFile` (#6326 fleet review item 5a — a versão
+ * anterior desta 2ª função tinha sua PRÓPRIA regra, mais fraca, que só
+ * olhava pro stem-alvo isoladamente, sem competir contra outros stems reais
+ * do diretório).
+ *
+ * Desempate: quando mais de um stem real é prefixo válido do mesmo nome de
+ * backup (ex: stems `interactive-tag-X` e `interactive-tag-X-2` concorrendo
+ * pelo backup `interactive-tag-X-2-tag-safeBackup-0001.json`), o STEM MAIS
+ * LONGO (mais específico) vence — nunca o mais curto, que atribuiria o
+ * backup à sessão ERRADA. Backup sem nenhum stem real correspondente
+ * (órfão) não aparece no mapa devolvido.
+ */
+function groupBackupsByRealStem(names: readonly string[]): Map<string, string[]> {
+  const realStems = names
+    .filter((n) => !n.includes("-safeBackup-"))
+    .map((n) => n.slice(0, -".json".length))
+    .sort((a, b) => b.length - a.length);
+  const backupsByRealStem = new Map<string, string[]>();
+  for (const backup of names) {
+    if (!backup.includes("-safeBackup-")) continue;
+    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    if (!matchStem) continue; // órfão
+    const list = backupsByRealStem.get(matchStem) ?? [];
+    list.push(backup);
+    backupsByRealStem.set(matchStem, list);
+  }
+  return backupsByRealStem;
+}
+
+/**
+ * Lê o registro efetivo de um arquivo REAL de sessão já conhecido, mesclado
+ * com seus próprios `-safeBackup-` do OneDrive (`mergeSessionRecords`) — usado
+ * pela promoção de kind em `registerSession` (#6326) pra garantir que um
+ * claim que só sobreviveu num backup do registro ANTIGO não se perca na
+ * promoção. Reusa `groupBackupsByRealStem` (mesma disciplina fail-safe de
+ * `readMergedSessionGroups`, com o mesmo desempate "stem mais específico
+ * vence" — não uma versão mais fraca). `null` quando nem o arquivo real nem
+ * nenhum backup dele foi legível.
+ */
+function readMergedRecordForRealFile(repoRoot: string, realPath: string): SessionRecord | null {
+  const dir = sessionsDir(repoRoot);
+  const realName = basename(realPath);
+  const stem = realName.slice(0, -".json".length);
+  const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
+  const records = [realName, ...backupNames]
+    .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
+    .filter((r): r is SessionRecord => r !== null);
+  if (records.length === 0) return null;
+  return mergeSessionRecords(records);
+}
+
+/**
+ * Loga (stderr, nunca lança) um aviso de que `registerSession` encontrou um
+ * registro de OUTRO kind pra `sessionId` mas não conseguiu ler nem o arquivo
+ * real nem nenhum backup dele (#6326 fleet review item 1) — cenário
+ * documentado como NORMAL no OneDrive (sync no meio de um write), e mais
+ * provável justamente quando o beacon escreve durante o sync. Complementa
+ * (não substitui) o `outcome: "promotion-failed-unreadable"` do retorno de
+ * `registerSession` — este aviso é o que fica visível a quem lê stderr
+ * direto (ex: log de systemd/Task Scheduler), o `outcome` é o que fica
+ * visível ao CÓDIGO que chama `registerSession` programaticamente.
+ */
+function warnUnreadablePromotionSource(sessionId: string, otherPath: string): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso — encontrado um registro de OUTRO kind pra sessionId="${sessionId}" em ` +
+        `"${otherPath}", mas nem o arquivo real nem nenhum backup dele foi legível (JSON corrompido/ ` +
+        "parcialmente sincronizado pelo OneDrive) — a promoção NÃO pôde ler o conteúdo antigo. Um registro NOVO " +
+        `foi criado do zero; "${otherPath}" continua em disco (outcome: "promotion-failed-unreadable").\n`,
+    );
+  } catch {
+    // Nunca deixar um log de warning derrubar o caminho fail-soft principal.
+  }
+}
+
+/**
+ * Desfecho de `registerSession` (#6326 fleet review item — antes desta
+ * mudança, o retorno era `SessionRecord` puro e o CLI (`main()`, case
+ * `register`) imprimia a MESMA mensagem nos 4 caminhos genuinamente
+ * distintos que a função pode tomar — inclusive `"promoted-orphan-left"`,
+ * que é literalmente o bug que a #6326 existe pra consertar voltando em
+ * silêncio caso o `rmSync` do arquivo antigo falhe). Mesmo padrão de
+ * `ClaimIssueReason`/`claimIssueCheckAndSet` — união discriminada em vez de
+ * um booleano ou só prosa no comentário.
+ *
+ * - `"created"` — nenhum registro existia (nem no path do kind atual, nem
+ *   sob outro kind) pra este `sessionId`; registro novo do zero.
+ * - `"reregistered"` — já havia registro no path do KIND ATUAL; caminho
+ *   idempotente de sempre (#6294/#6303), sem promoção envolvida.
+ * - `"promoted"` — encontrou e leu um registro de OUTRO kind, promoveu com
+ *   sucesso (novo path gravado, antigo removido). O caso feliz do #6326.
+ * - `"promoted-orphan-left"` — encontrou e leu um registro de OUTRO kind, o
+ *   novo path foi gravado, mas a remoção do antigo FALHOU (I/O transitório
+ *   do OneDrive, ou o arquivo persistiu depois do `rmSync` "bem-sucedido").
+ *   O órfão fica em disco — `planSessionGc` recolhe depois, mas só quando
+ *   ficar legível/o `pid` gravado nele não estiver mais vivo (ver ressalva
+ *   no docblock de `registerSession`).
+ * - `"promotion-failed-unreadable"` — encontrou um arquivo de OUTRO kind
+ *   pelo NOME, mas nem ele nem nenhum backup dele foi legível — a promoção
+ *   não pôde acontecer. Registro novo criado do zero mesmo assim (decisão:
+ *   deixar a sessão sem registro nenhum seria pior — ver docblock de
+ *   `warnUnreadablePromotionSource`). O arquivo ilegível antigo fica em
+ *   disco, órfão.
+ */
+export type RegisterSessionOutcome =
+  | "created"
+  | "reregistered"
+  | "promoted"
+  | "promoted-orphan-left"
+  | "promotion-failed-unreadable";
+
+export interface RegisterSessionResult {
+  record: SessionRecord;
+  outcome: RegisterSessionOutcome;
+  /** Path do arquivo de OUTRO kind encontrado pra este `sessionId` — presente
+   * em `"promoted"`, `"promoted-orphan-left"` e `"promotion-failed-unreadable"`,
+   * ausente em `"created"`/`"reregistered"`. */
+  promotedFrom?: string;
+}
+
+/**
+ * Primitiva de I/O usada só pela remoção do arquivo ANTIGO na promoção de
+ * kind de `registerSession` (#6326 fleet review — teste obrigatório
+ * "rmSync falhando"). Injetável pra teste, mesmo padrão de `MergeLockIo`
+ * (usado por `acquireMergeLock` mais abaixo neste módulo) — sem isto não dá
+ * pra simular uma falha de remoção de forma determinística e PORTÁVEL:
+ * monkey-patchar `require("node:fs").rmSync` não intercepta o
+ * `import { rmSync } from "node:fs"` que este módulo usa de verdade (são
+ * bindings distintos — confirmado experimentalmente), e forçar uma falha
+ * REAL de sistema operacional (lock de arquivo aberto, permissão) é frágil
+ * entre plataformas — mesma classe de problema que já deixa o teste de
+ * `checkSessionsScanHealth` via `chmod` quebrado no Windows (ver nota no
+ * teste correspondente). O default (`REAL_PROMOTION_REMOVE_IO`) usa
+ * `node:fs` de verdade; testes injetam um `remove` que lança.
+ */
+export interface PromotionRemoveIo {
+  exists: (path: string) => boolean;
+  remove: (path: string) => void;
+}
+
+const REAL_PROMOTION_REMOVE_IO: PromotionRemoveIo = {
+  exists: (path) => existsSync(path),
+  remove: (path) => rmSync(path),
+};
+
+/**
  * Registra uma sessão ativa. Idempotente — chamar de novo com o mesmo
  * kind/tag/sessionId atualiza o registro (mesmo padrão de `startSession` em
  * `overnight-session-marker.ts`).
@@ -522,32 +712,137 @@ function writeJsonSafe(path: string, value: unknown): void {
  * `startedAt` e os campos de beacon do registro anterior, e só sobrescreve o
  * que foi passado explicitamente. Registro novo (nenhum arquivo anterior)
  * continua nascendo com `claimed_issues: []`, comportamento inalterado.
+ *
+ * **#6326 — PROMOVE um registro pré-existente de OUTRO kind pro kind novo,
+ * quando consegue ler o conteúdo antigo.** Se não há arquivo no path do kind
+ * sendo registrado, mas existe um registro REAL pra este `sessionId` sob
+ * outro kind (tipicamente `interactive`, criado pelo beacon antes desta
+ * chamada — ver `findExistingSessionFileAnyKind`), a sessão de fato VIROU
+ * `kind` ao rodar `register`: o registro passa a viver no path do kind novo
+ * (preservando `startedAt`/`claimed_issues`/campos de beacon já acumulados,
+ * inclusive os que só existiam num `-safeBackup-` do registro antigo).
+ *
+ * **Garantia real (#6326 fleet review item 2 — a versão anterior deste
+ * parágrafo prometia "nunca sobra um par", que o código não cumpria):** no
+ * caminho feliz (arquivo antigo legível E remoção bem-sucedida — `outcome:
+ * "promoted"`), de fato nunca sobra um par `{kind-antigo}-{tag}-{sessionId}.json`
+ * + `{kind-novo}-{tag}-{sessionId}.json` simultâneo. Mas a remoção é
+ * BEST-EFFORT (`rmSync` num `try/catch` — falha de I/O transitória do
+ * OneDrive nunca lança) e a leitura do conteúdo antigo pode falhar (JSON
+ * corrompido/parcialmente sincronizado) — os dois desfechos de falha
+ * (`"promoted-orphan-left"`, `"promotion-failed-unreadable"`, ver
+ * `RegisterSessionOutcome`) DEIXAM um arquivo órfão do kind antigo em disco,
+ * com heartbeat congelado a partir de agora. Esse órfão é recolhido depois
+ * por `planSessionGc`, mas só quando (a) ficar legível — GC nunca remove
+ * estado que não consegue interpretar — E (b) o `pid` gravado nele (herdado
+ * do registro antigo — ver #6326 fleet review item 5b) não estiver mais
+ * vivo na máquina local, OU a checagem rodar de outra máquina, onde a janela
+ * conservadora de 2h (`GC_INTERACTIVE_MAX_AGE_MS`) decide.
+ *
+ * Promover (e não só ignorar) importa porque é o que
+ * `isCoordinatorKind`/`COORDINATOR_SESSION_KINDS` leem (guard do #5716) — o
+ * kind precisa refletir que a sessão é coordenadora agora. O desfecho de
+ * CADA chamada é observável via `RegisterSessionResult.outcome` — ver ali
+ * pros 5 caminhos possíveis.
  */
 export function registerSession(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
   meta: { pid?: number; tag?: string; startedAt?: string } = {},
-): SessionRecord {
+  removeIo: PromotionRemoveIo = REAL_PROMOTION_REMOVE_IO,
+): RegisterSessionResult {
   const tag = meta.tag ?? machineTag();
   const now = meta.startedAt ?? new Date().toISOString();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const previous = readJsonSafe<SessionRecord>(path);
+  let previous = readJsonSafe<SessionRecord>(path);
+  const hadOwnFile = previous !== null;
+
+  // #6326: sem registro no path do KIND ATUAL, procurar (e promover) um
+  // registro pré-existente da MESMA sessão sob OUTRO kind — ver docstring
+  // acima. `otherPath !== path` evita o caso degenerado de um arquivo
+  // corrompido no PRÓPRIO path (readJsonSafe já devolveu null pra ele
+  // acima) ser "promovido" pra si mesmo e depois removido por engano.
+  let promotedFrom: string | null = null;
+  let unreadablePromotionSource: string | null = null;
+  if (!previous) {
+    const otherPath = findExistingSessionFileAnyKind(repoRoot, sessionId);
+    if (otherPath && otherPath !== path) {
+      const merged = readMergedRecordForRealFile(repoRoot, otherPath);
+      if (merged) {
+        previous = merged;
+        promotedFrom = otherPath;
+      } else {
+        // #6326 fleet review item 1: `otherPath` EXISTE (achado pelo NOME em
+        // `findExistingSessionFileAnyKind`), mas nem ele nem nenhum backup
+        // foi legível. Decisão (a), não (b): AVISAR alto e seguir criando o
+        // registro novo do zero, em vez de recusar e deixar a sessão SEM
+        // registro nenhum — (b) trocaria um bug de contagem dupla/órfão
+        // (recuperável: o arquivo antigo pode ficar legível numa chamada
+        // futura, ou o GC eventualmente o recolhe) por um buraco de
+        // visibilidade TOTAL, estritamente pior pros consumidores que
+        // dependem de `listActiveSessions` (claim de issue, merge lock,
+        // exclusão overnight×contínuo).
+        unreadablePromotionSource = otherPath;
+        warnUnreadablePromotionSource(sessionId, otherPath);
+      }
+    }
+  }
+
   const record: SessionRecord = {
     ...(previous ?? {}),
     kind,
     machineTag: tag,
     sessionId,
-    // `startedAt` do registro ORIGINAL é preservado — re-registrar não
-    // rejuvenesce a sessão (senão um `register` de correção zeraria a idade
-    // que `planSessionGc`/`listActiveSessions` usam pra decidir staleness).
+    // `startedAt` do registro ORIGINAL é preservado — re-registrar (ou
+    // promover de outro kind) não rejuvenesce a sessão (senão um `register`
+    // de correção zeraria a idade que `planSessionGc`/`listActiveSessions`
+    // usam pra decidir staleness).
     startedAt: previous?.startedAt ?? now,
     lastHeartbeat: now,
     claimed_issues: previous?.claimed_issues ?? [],
   };
-  if (meta.pid !== undefined) record.pid = meta.pid;
+  if (meta.pid !== undefined) {
+    record.pid = meta.pid;
+  }
+  // #6326 fleet review item 5b (decisão registrada, não "corrigida" — ambas
+  // as opções são defensáveis, esta é a escolhida): quando a promoção
+  // sucede e `--pid` NÃO foi passado a ESTA chamada, o `pid` do registro
+  // ANTIGO (herdado via `...previous` acima, tipicamente `process.ppid`
+  // gravado pelo beacon — ver #6160) é PRESERVADO, não limpo. Justificativa:
+  // é o pid da MESMA sessão Claude Code (beacon e skill compartilham
+  // `process.ppid`/o processo pai), então continua correto — e é
+  // exatamente o sinal que o branch 3 de `decideSessionGc` usa pra nunca
+  // remover um registro de sessão viva (ver docblock acima). Limpar aqui
+  // destruiria esse sinal de liveness sem necessidade.
+
   writeJsonSafe(path, record);
-  return record;
+
+  if (unreadablePromotionSource) {
+    return { record, outcome: "promotion-failed-unreadable", promotedFrom: unreadablePromotionSource };
+  }
+
+  if (promotedFrom) {
+    // Best-effort: o record novo já foi gravado com sucesso acima.
+    // `existsSync` antes do `rmSync` (mesmo padrão de
+    // `garbageCollectSessions` abaixo) evita um warning espúrio no caso
+    // benigno de o arquivo já ter sumido entre a busca e aqui (ex: um `gc`
+    // concorrente). Qualquer OUTRA falha de I/O (transitório do OneDrive) é
+    // logada, nunca lançada — e o desfecho fica visível via `outcome:
+    // "promoted-orphan-left"` (#6326 fleet review — antes disto o retorno
+    // não distinguia isso de uma promoção limpa).
+    let removed = true;
+    try {
+      if (removeIo.exists(promotedFrom)) removeIo.remove(promotedFrom);
+      if (removeIo.exists(promotedFrom)) removed = false; // remove "teve sucesso" mas o arquivo persiste (raro, ex: lock de outro processo)
+    } catch (e) {
+      removed = false;
+      warnIoError(promotedFrom, e);
+    }
+    return { record, outcome: removed ? "promoted" : "promoted-orphan-left", promotedFrom };
+  }
+
+  return { record, outcome: hadOwnFile ? "reregistered" : "created" };
 }
 
 /**
@@ -1944,8 +2239,28 @@ function main(): void {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
         const pid = values.pid ? Number(values.pid) : undefined;
-        const record = registerSession(repoRoot, kind, sessionId, { pid });
-        process.stdout.write(`session-registry: registered ${sessionFilePath(repoRoot, kind, record.machineTag, sessionId)}\n`);
+        const result = registerSession(repoRoot, kind, sessionId, { pid });
+        const path = sessionFilePath(repoRoot, kind, result.record.machineTag, sessionId);
+        // #6326 fleet review — o CLI precisa IMPRIMIR o desfecho, não só o
+        // código carregar o tipo: os 2 casos de falha parcial
+        // ("promoted-orphan-left"/"promotion-failed-unreadable") são
+        // exatamente o bug que esta issue existe pra consertar voltando em
+        // silêncio se o operador só vir "registered {path}" nos 5 casos.
+        let suffix = "";
+        if (result.outcome === "promoted") {
+          suffix = ` (promoted from ${result.promotedFrom})`;
+        } else if (result.outcome === "promoted-orphan-left") {
+          suffix =
+            ` (ATENÇÃO: promovido de ${result.promotedFrom}, mas não foi possível remover o registro antigo — ` +
+            "órfão deixado em disco, será recolhido pelo GC)";
+        } else if (result.outcome === "promotion-failed-unreadable") {
+          suffix =
+            ` (ATENÇÃO: registro de outro kind encontrado em ${result.promotedFrom} mas ILEGÍVEL — promoção ` +
+            "não aconteceu, registro novo criado do zero)";
+        } else if (result.outcome === "reregistered") {
+          suffix = " (reregistered)";
+        }
+        process.stdout.write(`session-registry: registered ${path}${suffix}\n`);
         break;
       }
       case "heartbeat": {

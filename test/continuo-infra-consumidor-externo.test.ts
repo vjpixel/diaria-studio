@@ -135,8 +135,8 @@ describe("infra do kind continuo tem consumidor externo (#6056/#6059/#6060)", ()
       registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "helios" });
       claimIssue(root, "continuo", "hermes-cron-5d791ef6fc2c", 6232, "helios");
       const again = registerSession(root, "continuo", "hermes-cron-5d791ef6fc2c", { tag: "helios", pid: 999 });
-      assert.deepEqual(again.claimed_issues, [6232], "re-registro preservou o claim em voo");
-      assert.equal(again.pid, 999, "e ainda aplicou o campo novo que motivou o re-registro");
+      assert.deepEqual(again.record.claimed_issues, [6232], "re-registro preservou o claim em voo");
+      assert.equal(again.record.pid, 999, "e ainda aplicou o campo novo que motivou o re-registro");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
