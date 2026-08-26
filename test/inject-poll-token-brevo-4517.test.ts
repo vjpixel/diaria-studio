@@ -367,9 +367,15 @@ describe("inject-poll-token-brevo.ts exit semantics (#4653, mesma classe do #463
   function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
     const source = readFileSync(SCRIPT, "utf8");
     const sourceNoComments = source.replace(/\/\/.*$/gm, "");
-    const mainMatch = sourceNoComments.match(/async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nconst _argv1/);
+    // Âncora de fim de `main()`: o guard de módulo principal, que desde #6191
+    // é `isMainModule(...)` (antes era um `const _argv1` + template `file://`
+    // montado à mão, que nunca casava no Windows — ver
+    // `test/main-module-guard.test.ts`).
+    const mainMatch = sourceNoComments.match(
+      /async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nif \(isMainModule/,
+    );
     assert.ok(mainMatch, "main() não encontrada em inject-poll-token-brevo.ts");
-    const catchMatch = sourceNoComments.match(/if \(\s*import\.meta\.url[\s\S]*?\n\}\n?$/);
+    const catchMatch = sourceNoComments.match(/if \(\s*isMainModule\([\s\S]*?\n\}\n?$/);
     assert.ok(catchMatch, "bloco isMainModule() (import.meta.url guard) não encontrado em inject-poll-token-brevo.ts");
     return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
   }

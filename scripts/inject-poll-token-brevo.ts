@@ -50,7 +50,7 @@
  * backfill manual/debug.
  */
 
-import { parseArgs } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
@@ -331,11 +331,7 @@ async function main(): Promise<void> {
   process.exitCode = result.failed > 0 ? 1 : 0;
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
+if (isMainModule(import.meta.url)) {
   // #4653: process.exitCode em vez de process.exit() — este catch roda DEPOIS
   // de `await run(...)` (chamadas fetch pra Brevo/Cloudflare KV), o cenário
   // exato da classe de bug UV_HANDLE_CLOSING no Windows (#1401/#4638/#4651):

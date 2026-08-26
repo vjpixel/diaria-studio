@@ -44,6 +44,7 @@
  * `--until` só é aceito (e exigido) com `--track agendada`.
  */
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   diffRouteLabelPlan,
   planRouteLabels,
@@ -307,6 +308,14 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `isMainModule` (e não a comparação crua `import.meta.url === "file://" +
+// process.argv[1]`) porque a forma crua NUNCA casa no Windows: `argv[1]` vem
+// como `C:\...\route-issue.ts` e `import.meta.url` como `file:///C:/...`.
+// O efeito era o pior possível pra um verbo de escrita — `main()` nunca
+// rodava, o processo saía 0 sem imprimir nada, e quem chamou lia "sucesso"
+// (medido ao vivo em 26/08/2026 na máquina do editor: nenhuma label mudou,
+// nenhum comentário postado, exit 0). `isMainModule` normaliza via
+// `fileURLToPath`, que é o caminho já usado por ~478 scripts deste repo.
+if (isMainModule(import.meta.url)) {
   main();
 }
