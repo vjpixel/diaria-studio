@@ -106,12 +106,12 @@ export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "fo
  * - `label:beehiiv`         — idem
  * - `label:bloqueio-execucao` — idem
  * - `marker:aguardando-ate` — marcador futuro → `agendada`
- * - `label:develop-track` — 2ª checagem `bloqueada` (deferimento vago)
- * - `label:not-this-week`   — idem
+ * - `label:not-this-week`   — 2ª checagem `bloqueada` (deferimento vago)
  * - `label:next-month`      — idem
  * - `label:windows`         — → `develop`
  * - `label:trade-off-real`  — → `develop`
  * - `label:credencial-escopo` — `external-blocker` + `credencial-escopo` → `develop` (cat. A)
+ * - `label:develop-track`  — bloqueio humano/dependência sem data → `develop` (#5948)
  * - `label:alarm-evento`    — → `overnight` (alarme de EVENTO PASSADO)
  * - `label:decisao-registrada` — 2ª checagem `fora-de-rodada`
  * - `label:alarm`           — idem
@@ -138,12 +138,50 @@ export type ExecTrackMatch =
   | "label:windows"
   | "label:trade-off-real"
   | "label:credencial-escopo"
+  | "label:develop-track"
   | "label:alarm-evento"
   | "label:decisao-registrada"
   | "label:alarm"
   | "label:epic-guarda-chuva"
   | "label:sem-direcao-acionavel"
   | "default";
+
+/**
+ * Catálogo COMPLETO dos valores que `classifyExecTrackWithRule` emite em
+ * `matched`. Mora aqui — e não no teste — de propósito: `tsconfig.json` inclui
+ * só `scripts/**\/*.ts`, então uma anotação de tipo escrita em `test/` NUNCA é
+ * verificada por `npx tsc --noEmit` e vira guard decorativo.
+ *
+ * Sendo `readonly ExecTrackMatch[]`, remover um membro da união quebra o
+ * literal correspondente aqui em tempo de compilação. É o que faltava quando
+ * `"label:develop-track"` ficou fora da união apesar de o runtime emiti-lo e de
+ * haver teste asserindo o valor: `ExecTrackResult.matched` é `string` (escape
+ * hatch deliberado — o valor é montado como `label:${nome}`), então nada
+ * confrontava união × runtime. `test/issue-exec-track.test.ts` fecha o outro
+ * lado, conferindo que todo `matched` emitido está neste catálogo. #6200.
+ */
+export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
+  "state:closed",
+  "label:on-hold",
+  "label:wontfix",
+  "label:external-blocker",
+  "label:kit-migration",
+  "label:beehiiv",
+  "label:bloqueio-execucao",
+  "marker:aguardando-ate",
+  "label:not-this-week",
+  "label:next-month",
+  "label:windows",
+  "label:trade-off-real",
+  "label:credencial-escopo",
+  "label:develop-track",
+  "label:alarm-evento",
+  "label:decisao-registrada",
+  "label:alarm",
+  "label:epic-guarda-chuva",
+  "label:sem-direcao-acionavel",
+  "default",
+] as const;
 
 /** Resultado estendido de `classifyExecTrack` (#6200) — inclui a regra que
  * decidiu, pra o painel distinguir `overnight` verificado de `overnight` por

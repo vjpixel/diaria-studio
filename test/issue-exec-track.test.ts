@@ -20,6 +20,7 @@ import {
   EXEC_TRACK_LABELS,
   EXEC_TRACK_UI,
   type ExecTrack,
+  EXEC_TRACK_MATCH_CATALOG,
 } from "../scripts/lib/issue-exec-track.ts";
 
 /** Data fixa — nenhum teste deste arquivo pode depender do relógio real. */
@@ -727,5 +728,64 @@ describe("classifyExecTrack — assinatura antiga preservada (#6200)", () => {
     const result = classifyExecTrack({ labels: ["trade-off-real"], body: "", now: NOW });
     assert.equal(result, "develop");
     assert.equal(typeof result, "string");
+  });
+});
+
+// #6200 — guard de CONTRATO da união `ExecTrackMatch`, verificado em tempo de
+// COMPILAÇÃO (`npx tsc --noEmit`), não em runtime.
+//
+// Por que existe: os testes de `matched` acima já asseriam cada valor que o
+// classificador produz, e mesmo assim `"label:develop-track"` ficou de fora da
+// união — porque `ExecTrackResult.matched` é tipado `string` (escape hatch
+// deliberado: o valor é montado como `label:${nome}` em runtime). Com isso, a
+// união pôde divergir do runtime sem nenhum teste quebrar, e o docstring ainda
+// classificou `develop-track` como `bloqueada` (ele roteia pra `develop`).
+//
+// O catálogo vive em `scripts/lib/issue-exec-track.ts` (EXEC_TRACK_MATCH_CATALOG),
+// não aqui: `tsconfig.json` inclui só `scripts/**/*.ts`, então anotação de tipo
+// escrita em `test/` não é verificada por `npx tsc --noEmit`. Lá o catálogo é
+// `readonly ExecTrackMatch[]` e quebra a compilação se a união encolher; aqui
+// conferimos o outro lado — que o runtime não emita nada fora dele.
+
+describe("ExecTrackMatch — união cobre todo valor que o runtime emite (#6200)", () => {
+  it("todo `matched` produzido pelo classificador está no catálogo tipado", () => {
+    // Cada entrada exercita a regra que produz aquele `matched`, fechando o
+    // loop entre runtime e união: o array acima não compila se a união
+    // encolher, e este teste falha se o runtime emitir algo fora dela.
+    const casos: Array<{ labels: string[]; body?: string; state?: "OPEN" | "CLOSED" }> = [
+      { labels: [], state: "CLOSED" },
+      { labels: ["on-hold"] },
+      { labels: ["wontfix"] },
+      { labels: ["external-blocker"] },
+      { labels: ["kit-migration"] },
+      { labels: ["beehiiv"] },
+      { labels: ["bloqueio-execucao"] },
+      { labels: [], body: "<!-- aguardando-ate: 2099-01-01 -->" },
+      { labels: ["not-this-week"] },
+      { labels: ["next-month"] },
+      { labels: ["windows"] },
+      { labels: ["trade-off-real"] },
+      { labels: ["external-blocker", "credencial-escopo"] },
+      { labels: ["develop-track"] },
+      { labels: ["alarm-evento"] },
+      { labels: ["decisao-registrada"] },
+      { labels: ["alarm"] },
+      { labels: ["epic-guarda-chuva"] },
+      { labels: ["sem-direcao-acionavel"] },
+      { labels: [] },
+    ];
+
+    for (const caso of casos) {
+      const r = classifyExecTrackWithRule({
+        labels: caso.labels,
+        body: caso.body ?? "",
+        now: NOW,
+        state: caso.state,
+      });
+      assert.ok(
+        (EXEC_TRACK_MATCH_CATALOG as readonly string[]).includes(r.matched),
+        `matched "${r.matched}" (labels: ${JSON.stringify(caso.labels)}) fora da união ExecTrackMatch`,
+      );
+    }
   });
 });
