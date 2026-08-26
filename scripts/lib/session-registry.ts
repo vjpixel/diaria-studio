@@ -293,6 +293,15 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * `is-claimed`) é o único lugar que trata `stale: true` como sinal
  * NÃO-bloqueante — uma claim de sessão com heartbeat morto há mais de
  * `SOFT_STALE_MS` não impede outra sessão de reivindicar a mesma issue.
+ *
+ * **`SOFT_STALE_MS` é rede de segurança, não o sinal primário de liveness na
+ * prática (#6327).** Desde o beacon (`.claude/hooks/session-beacon.mjs`,
+ * #6303), `lastHeartbeat` de QUALQUER sessão viva — coordenadora ou não —
+ * normalmente já vem fresco por outro caminho, a cada chamada de ferramenta,
+ * sem a skill precisar chamar nada. Este teto de 90min só é o que decide na
+ * prática quando esse caminho falha (beacon desligado, worktree vinculado,
+ * `data/` ausente) — ver a docstring de `heartbeat()` abaixo pro mecanismo
+ * completo e o que quebra em silêncio se o beacon for reduzido/desligado.
  */
 export const SOFT_STALE_MS = 90 * 60 * 1000;
 
@@ -891,10 +900,13 @@ export function registerSession(
  * heartbeat de uma coordenadora que, por algum motivo, rodasse a partir de um
  * worktree em vez do checkout principal. **Decisão: aceitável ficar stale
  * nesse caso, sem heartbeat por caminho alternativo.** Três razões: (1) por
- * convenção do repo (`context/overnight-dispatch-rules.md` item 3), worktree
- * é SEMPRE do subagente implementador — a coordenadora roda no checkout
- * principal; uma coordenadora em worktree vinculado é configuração fora do
- * padrão documentado, não o caso comum a otimizar; (2) o fallback já existe e
+ * convenção do repo (`context/overnight-dispatch-rules.md` item 11, "o
+ * coordenador precisa ver o diff FINAL... existe fora do worktree do
+ * subagente de propósito" — item 3, "Bootstrap do worktree", descreve a
+ * mesma premissa em prosa mais indireta), worktree é SEMPRE do subagente
+ * implementador — a coordenadora roda no checkout principal; uma
+ * coordenadora em worktree vinculado é configuração fora do padrão
+ * documentado, não o caso comum a otimizar; (2) o fallback já existe e
  * é seguro: `SOFT_STALE_MS` (90min) volta a valer sozinho, exatamente como
  * antes do #6303 — nenhuma claim fica presa pra sempre, só demora até 90min
  * a mais pra destravar; (3) adicionar um call site de `heartbeat` só pra esse
@@ -1244,12 +1256,41 @@ export function claimIssue(
 }
 
 /**
- * Motivo do resultado de `unclaimIssue` (#6317) — espelha `ClaimIssueReason`
- * no formato, mas o conjunto é o inverso: só dois casos, nenhum deles com
- * `blockedBy` (não existe "outra sessão bloqueando" pra soltar — só a própria
- * sessão pode `unclaim`, ver docstring de `unclaimIssue`).
+ * Loga (stderr, nunca lança) que `unclaimIssue` achou o arquivo da PRÓPRIA
+ * sessão em disco mas não conseguiu ler o conteúdo (#6337 fleet review item
+ * 2 — mesma classe de bug que `warnUnreadablePromotionSource`/
+ * `outcome: "promotion-failed-unreadable"` corrigiram em `registerSession`,
+ * #6326). `readJsonSafe` devolve `null` tanto pra "arquivo ausente" quanto
+ * pra "JSON malformado" — SEM logar o segundo caso (comentário no próprio
+ * `readJsonSafe`: "comportamento pré-existente preservado, silencioso").
+ * Colapsar os dois em `no-op-session-missing` faria o chamador (a skill)
+ * tratar uma claim que está ATIVA no disco — só momentaneamente ilegível,
+ * cenário recorrente de sync do OneDrive, ver #5161/#6130/#6326 — como se a
+ * sessão nunca tivesse existido, seguindo em frente sem soltar nada e sem
+ * nenhum sinal de que algo está errado.
  */
-export type UnclaimIssueReason = "unclaimed" | "no-op-not-claimed" | "no-op-session-missing";
+function warnUnclaimUnreadable(sessionId: string, path: string): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso — unclaim-issue achou o registro de sessionId="${sessionId}" em "${path}" mas ` +
+        "não conseguiu ler o conteúdo (JSON corrompido/parcialmente sincronizado pelo OneDrive). A claim pode " +
+        'estar ATIVA no disco — isto NÃO é "sessão inexistente" (reason: "no-op-unreadable"); investigar antes de ' +
+        "assumir que não há nada pra soltar.\n",
+    );
+  } catch {
+    // Nunca deixar um log de warning quebrar o caminho fail-soft principal.
+  }
+}
+
+/**
+ * Motivo do resultado de `unclaimIssue` (#6317) — espelha `ClaimIssueReason`
+ * no formato, mas o conjunto é o inverso: nenhum caso carrega `blockedBy`
+ * (não existe "outra sessão bloqueando" pra soltar — só a própria sessão
+ * pode `unclaim`, ver docstring de `unclaimIssue`). `no-op-unreadable`
+ * (#6337 fleet review item 2) é distinto de `no-op-session-missing` de
+ * propósito — ver `warnUnclaimUnreadable` acima pro racional.
+ */
+export type UnclaimIssueReason = "unclaimed" | "no-op-not-claimed" | "no-op-session-missing" | "no-op-unreadable";
 
 export interface UnclaimIssueResult {
   ok: boolean;
@@ -1270,11 +1311,27 @@ export interface UnclaimIssueResult {
  * parâmetro `force`/`sessionId` alheio nesta função de propósito: não existe
  * caso de uso legítimo de uma sessão soltar a claim de outra — isso é
  * responsabilidade de `end` (a sessão dona morreu) ou de staleness
- * (`SOFT_STALE_MS`) destravando sozinha.
+ * (`SOFT_STALE_MS`) destravando sozinha. **O que de fato garante "só a
+ * própria sessão"** não é o TIPO de `sessionId` (é `string` crua, igual
+ * `claimIssueCheckAndSet`/`registerSession`/`heartbeat` — deliberadamente não
+ * branded aqui pra não criar inconsistência nova só neste ponto do módulo) —
+ * é `.claude/hooks/inject-session-id.mjs` injetando o `session_id` REAL do
+ * payload do harness antes do comando rodar; um chamador que forjasse
+ * `--session-id` manualmente contornaria isso, mas nenhum call site
+ * documentado faz isso (mesma confiança que todo o resto do módulo deposita
+ * na injeção automática).
  *
- * Três desfechos, nenhum deles lança:
- * - Sessão do próprio `sessionId`/`tag` não existe (nunca registrada,
- *   encerrada, corrompida) → `{ ok: false, reason: "no-op-session-missing" }`.
+ * Quatro desfechos, nenhum deles lança:
+ * - Sessão do próprio `sessionId`/`tag` NUNCA existiu (arquivo ausente) →
+ *   `{ ok: false, reason: "no-op-session-missing" }`.
+ * - Arquivo EXISTE mas não pôde ser lido (JSON corrompido/parcial — comum
+ *   durante sync do OneDrive) → `{ ok: false, reason: "no-op-unreadable" }`,
+ *   com aviso em stderr (`warnUnclaimUnreadable`) — distinto do caso acima de
+ *   propósito (#6337 fleet review item 2): a claim pode estar ATIVA no disco,
+ *   só momentaneamente ilegível, e reportar "sessão inexistente" faria o
+ *   chamador seguir em frente sem soltar nada e sem nenhum sinal de alerta —
+ *   exatamente a classe de bug que `outcome: "promotion-failed-unreadable"`
+ *   corrigiu em `registerSession` (#6326).
  * - Issue não estava em `claimed_issues` desta sessão → **no-op honesto**,
  *   `{ ok: false, reason: "no-op-not-claimed" }` — nunca finge sucesso (mesmo
  *   padrão que `endSession` adotou no #5797: distinguir "removeu" de "não
@@ -1282,6 +1339,13 @@ export interface UnclaimIssueResult {
  *   estado em disco).
  * - Issue estava reivindicada → remove, regrava, `{ ok: true, reason:
  *   "unclaimed" }`.
+ *
+ * **Não é compare-and-swap** — herda a mesma limitação de lost-update já
+ * documentada em `writeJsonSafe` (o beacon escreve neste MESMO arquivo a
+ * cada chamada de ferramenta da sessão): entre a leitura e a escrita deste
+ * `unclaimIssue`, um write concorrente do beacon pode perder campos. Mesmo
+ * risco residual que o resto do módulo aceita nesse arquivo, não uma
+ * regressão nova introduzida aqui.
  */
 export function unclaimIssue(
   repoRoot: string,
@@ -1293,7 +1357,13 @@ export function unclaimIssue(
 ): UnclaimIssueResult {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   const current = readJsonSafe<SessionRecord>(path);
-  if (!current) return { ok: false, reason: "no-op-session-missing" };
+  if (!current) {
+    if (existsSync(path)) {
+      warnUnclaimUnreadable(sessionId, path);
+      return { ok: false, reason: "no-op-unreadable" };
+    }
+    return { ok: false, reason: "no-op-session-missing" };
+  }
 
   const claimed = current.claimed_issues ?? [];
   if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };
@@ -2472,6 +2542,15 @@ function main(): void {
             break;
           case "no-op-session-missing":
             process.stdout.write("session-registry: unclaim-issue no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+          case "no-op-unreadable":
+            process.stdout.write(
+              "session-registry: unclaim-issue no-op — registro EXISTE mas está ILEGÍVEL agora (JSON corrompido/" +
+                "parcialmente sincronizado pelo OneDrive). A claim pode estar ATIVA — isto NÃO é 'sessão " +
+                "inexistente'; investigar antes de assumir que não há nada pra soltar (aviso já emitido em " +
+                "stderr).\n",
+            );
             process.exitCode = 1;
             break;
         }

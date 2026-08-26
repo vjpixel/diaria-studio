@@ -712,6 +712,64 @@ describe("unclaimIssue — libera issue da PRÓPRIA sessão, sem encerrá-la (#6
     const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-1"), "utf8"));
     assert.equal(content.lastHeartbeat, laterIso);
   });
+
+  it(
+    "registro EXISTE mas está ILEGÍVEL (JSON corrompido) → 'no-op-unreadable', distinto de " +
+      "'no-op-session-missing' — mesma classe de bug que o #6326 corrigiu em registerSession (fleet review item 2)",
+    () => {
+      const root = freshRoot();
+      const sessionId = "sess-6337-unreadable";
+      const tag = "host-a";
+
+      // Arquivo existe PELO NOME (path exato que unclaimIssue vai procurar),
+      // mas o conteúdo é JSON inválido — simula sync do OneDrive pegando o
+      // arquivo no meio de um write, o mesmo cenário do #6326.
+      mkdirSync(sessionsDir(root), { recursive: true });
+      writeFileSync(sessionFilePath(root, "develop", tag, sessionId), "{ isto não é JSON válido", "utf8");
+
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      let stderrOutput = "";
+      (process.stderr as unknown as { write: typeof process.stderr.write }).write = ((chunk: unknown) => {
+        stderrOutput += String(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+      let result: ReturnType<typeof unclaimIssue>;
+      try {
+        result = unclaimIssue(root, "develop", sessionId, 42, tag);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+
+      // O desfecho é DISTINGUÍVEL de "sessão nunca existiu" — não colapsa os
+      // dois casos, e emite aviso em stderr (nunca silencioso).
+      assert.deepEqual(result, { ok: false, reason: "no-op-unreadable" });
+      assert.match(stderrOutput, /aviso/i);
+      assert.match(stderrOutput, new RegExp(sessionId));
+
+      // O arquivo ilegível continua em disco intocado — unclaimIssue nunca
+      // escreve por cima de um conteúdo que não conseguiu interpretar.
+      const raw = readFileSync(sessionFilePath(root, "develop", tag, sessionId), "utf8");
+      assert.equal(raw, "{ isto não é JSON válido");
+    },
+  );
+
+  it("sessão NUNCA existiu (arquivo ausente) continua reportando 'no-op-session-missing', sem aviso em stderr", () => {
+    const root = freshRoot();
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    let stderrOutput = "";
+    (process.stderr as unknown as { write: typeof process.stderr.write }).write = ((chunk: unknown) => {
+      stderrOutput += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    let result: ReturnType<typeof unclaimIssue>;
+    try {
+      result = unclaimIssue(root, "develop", "sess-nunca-existiu", 42, "host-a");
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.deepEqual(result, { ok: false, reason: "no-op-session-missing" });
+    assert.equal(stderrOutput, "", "arquivo ausente é o caso comum — não emite aviso, só o ilegível emite");
+  });
 });
 
 // ─── claimIssueCheckAndSet — check-and-set (#6236) ─────────────────────────

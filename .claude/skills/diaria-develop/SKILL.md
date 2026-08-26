@@ -128,8 +128,12 @@ adiante), soltar a claim aqui:** `npx tsx scripts/lib/session-registry.ts
 unclaim-issue --kind develop --issue {N}` (standalone, `--session-id`
 auto-injetado) — segurar uma issue que o próprio status diz "não é meu" é
 contraditório e bloqueia o `helios` por até 90min à toa (#6317). No-op
-honesto (exit 1) se não estava reivindicada — não é erro, é o caso comum
-(issue nunca chegou a ser reivindicada antes de cair no filtro).
+(exit 1) reason `no-op-not-claimed` — não é erro, é o caso comum (issue
+nunca chegou a ser reivindicada antes de cair no filtro). **`no-op-unreadable`
+é diferente e NÃO deve ser tratado como o caso comum acima:** o registro
+existe mas está momentaneamente ilegível (sync do OneDrive) — a claim pode
+estar ativa no disco; se aparecer, investigar (reler o registro, tentar de
+novo) antes de seguir como se não houvesse nada pra soltar.
 
 ## Regra permanente: narração terminal é parada indevida, mesmo sem pergunta (#5769)
 
@@ -994,4 +998,4 @@ Esta skill e `/diaria-overnight` podem rodar **ao mesmo tempo** — mesma máqui
 10. **Marker overnight por-máquina vs por-sessão** — não se aplica ao develop (esta skill nunca escreveu/lê o marker do overnight, só o `plan.json` dele — item 7). Ver `diaria-overnight/SKILL.md` pro racional completo da coexistência marker antigo + registro novo.
 11. **StatusLine mistura sessões da mesma máquina** — `isForeignDevelopPlan` (`scripts/overnight-statusline.ts`) foi estendida pra aceitar `session_id` como discriminador mais específico que `machine_id`; **wiring de `plan.session_id` fechado pelo #6265** — a Fase 0 passo 9 agora popula o campo (ver a nota `session_id (#5156 item 11)` na seção `plan.json` acima). Só `plan.json` de sessões anteriores ao #6265 continua sem o campo (fallback por `machine_id`, sem regressão).
 
-**Resumo do que ainda é risco aceito, não mecanizado (ou só parcialmente):** item 5 (corrida rara no checkout compartilhado, mitigada pelo merge lock do item 4), item 6 (o write-path `heartbeat --active-worktrees` ainda não é chamado por nenhuma skill — `active_worktrees` fica sempre ausente na prática, ver acima, #5161 fleet review item 7) e a metade não-wired do item 11 (duas sessões develop na mesma máquina ainda podem se misturar na statusLine até `plan.session_id` ser populado).
+**Resumo do que ainda é risco aceito, não mecanizado (ou só parcialmente):** item 5 (corrida rara no checkout compartilhado, mitigada pelo merge lock do item 4), item 6 (o write-path `heartbeat --active-worktrees` ainda não é chamado por ESTA skill — `/diaria-overnight` já chama desde o #6299, mas o lado `develop` segue ausente na prática, ver acima, #5161 fleet review item 7) e a metade não-wired do item 11 (duas sessões develop na mesma máquina ainda podem se misturar na statusLine até `plan.session_id` ser populado).
