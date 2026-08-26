@@ -637,12 +637,15 @@ export function registerSession(
   if (meta.pid !== undefined) record.pid = meta.pid;
   writeJsonSafe(path, record);
   if (promotedFrom) {
-    // Best-effort: o record novo já foi gravado com sucesso acima — se este
-    // rmSync falhar (I/O transitório do OneDrive), o arquivo antigo vira
-    // exatamente o tipo de órfão que `planSessionGc` já sabe recolher
-    // (heartbeat congelado a partir de agora, kind antigo). Nunca lança.
+    // Best-effort: o record novo já foi gravado com sucesso acima. `existsSync`
+    // antes do `rmSync` (mesmo padrão de `garbageCollectSessions` abaixo)
+    // evita um warning espúrio no caso benigno de o arquivo já ter sumido
+    // entre a busca e aqui (ex: um `gc` concorrente). Qualquer OUTRA falha
+    // de I/O (transitório do OneDrive) é logada, nunca lançada — o arquivo
+    // antigo vira exatamente o tipo de órfão que `planSessionGc` já sabe
+    // recolher (heartbeat congelado a partir de agora, kind antigo).
     try {
-      rmSync(promotedFrom);
+      if (existsSync(promotedFrom)) rmSync(promotedFrom);
     } catch (e) {
       warnIoError(promotedFrom, e);
     }
