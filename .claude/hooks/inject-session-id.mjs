@@ -1,14 +1,14 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
 // standalone de `scripts/overnight-session-marker.ts` (--start/--phase),
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
-// is-claimed/merge-lock-acquire/merge-lock-release),
+// unclaim-issue/is-claimed/merge-lock-acquire/merge-lock-release),
 // `scripts/resolve-develop-plan-path.ts` e `scripts/resolve-overnight-
 // plan-path.ts` (incondicional pros 2 últimos — o script inteiro exige a
 // flag, sem noção de subcomando) que ainda não trazem a flag (#5156;
 // `is-claimed` adicionado no #5161 fleet review item 4 — ver nota abaixo
 // sobre `INJECTABLE_SUBCOMMANDS`; `resolve-develop-plan-path.ts` adicionado
-// no #6259/#6265; `resolve-overnight-plan-path.ts` adicionado no #6328,
-// mesmo motivo — ver `SESSION_ID_TARGETS`).
+// no #6259/#6265; `resolve-overnight-plan-path.ts` adicionado no #6328;
+// `unclaim-issue` adicionado no #6317, mesmo motivo — ver `SESSION_ID_TARGETS`).
 //
 // Wired in .claude/settings.json under hooks.PreToolUse, matcher "Bash".
 //
@@ -102,8 +102,11 @@ const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
 //     mesmo assim vale injetar aqui, porque o erro evitável (subcomando
 //     abortando por falta da flag) é o que a injeção existe pra prevenir,
 //     não porque o resultado errado seria silencioso.
+// #6317: `unclaim-issue` entra pelo mesmo motivo que `claim-issue` — precisa
+// da flag pra saber DE QUEM remover (`requireSessionId`, mesma disciplina de
+// falha alta e cedo do subcomando irmão).
 const INJECTABLE_SUBCOMMANDS =
-  /\b(register|heartbeat|end|claim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release)\b/;
+  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release)\b/;
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.

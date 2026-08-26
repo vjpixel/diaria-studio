@@ -23,6 +23,7 @@ import {
   listActiveSessions,
   claimIssue,
   claimIssueCheckAndSet,
+  unclaimIssue,
   isIssueClaimedByOther,
   findActiveSessionsOfKind,
   findStaleSessionsOfKind,
@@ -645,6 +646,71 @@ describe("claimIssue / isIssueClaimedByOther (item 3 do #5156)", () => {
     claimIssue(root, "overnight", "sess-old", 7, "host-a");
 
     assert.equal(isIssueClaimedByOther(root, 7, "sess-b", NOW), null);
+  });
+});
+
+// ─── unclaimIssue — inverso de claimIssue (#6317) ──────────────────────────
+
+describe("unclaimIssue — libera issue da PRÓPRIA sessão, sem encerrá-la (#6317)", () => {
+  const NOW = Date.parse("2026-08-26T20:00:00.000Z");
+
+  it("remove a issue de claimed_issues e retorna { ok: true, reason: 'unclaimed' }", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-1", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    claimIssue(root, "develop", "sess-1", 6317, "host-a", new Date(NOW).toISOString());
+    claimIssue(root, "develop", "sess-1", 6327, "host-a", new Date(NOW).toISOString());
+
+    const result = unclaimIssue(root, "develop", "sess-1", 6317, "host-a", new Date(NOW + 1000).toISOString());
+    assert.deepEqual(result, { ok: true, reason: "unclaimed" });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-1"), "utf8"));
+    // #6327: só a issue liberada some — a outra claim da mesma sessão permanece intacta.
+    assert.deepEqual(content.claimed_issues, [6327]);
+  });
+
+  it("no-op honesto quando a issue não estava reivindicada — nunca finge sucesso (#5797)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-1", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const result = unclaimIssue(root, "overnight", "sess-1", 999, "host-a");
+    assert.deepEqual(result, { ok: false, reason: "no-op-not-claimed" });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "overnight", "host-a", "sess-1"), "utf8"));
+    assert.deepEqual(content.claimed_issues, []);
+  });
+
+  it("no-op honesto quando a sessão não existe (nunca registrada/já encerrada)", () => {
+    const root = freshRoot();
+    const result = unclaimIssue(root, "overnight", "sess-inexistente", 1, "host-a");
+    assert.deepEqual(result, { ok: false, reason: "no-op-session-missing" });
+  });
+
+  it("só remove da PRÓPRIA sessão — nunca mexe na claim de outra sessão (mesma disciplina de releaseMergeLock)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-a", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    registerSession(root, "develop", "sess-b", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    claimIssue(root, "overnight", "sess-a", 42, "host-a", new Date(NOW).toISOString());
+
+    // sess-b nunca reivindicou #42 — deve receber no-op-not-claimed, e a
+    // claim de sess-a deve permanecer intacta (unclaimIssue não é force-remove
+    // por número de issue, é sempre escopado à identidade kind+tag+sessionId).
+    const result = unclaimIssue(root, "develop", "sess-b", 42, "host-a");
+    assert.deepEqual(result, { ok: false, reason: "no-op-not-claimed" });
+
+    const ownerContent = JSON.parse(readFileSync(sessionFilePath(root, "overnight", "host-a", "sess-a"), "utf8"));
+    assert.deepEqual(ownerContent.claimed_issues, [42]);
+  });
+
+  it("atualiza lastHeartbeat no unclaim bem-sucedido", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-1", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    claimIssue(root, "develop", "sess-1", 100, "host-a", new Date(NOW).toISOString());
+
+    const laterIso = new Date(NOW + 5 * 60 * 1000).toISOString();
+    unclaimIssue(root, "develop", "sess-1", 100, "host-a", laterIso);
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", "host-a", "sess-1"), "utf8"));
+    assert.equal(content.lastHeartbeat, laterIso);
   });
 });
 
