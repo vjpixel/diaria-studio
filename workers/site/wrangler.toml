@@ -37,7 +37,10 @@
 #
 # Fora de escopo desta unidade e do #467 em geral:
 #   - passo de pipeline que publica a página de uma edição NOVA (já feito, #6202)
-#   - UTM/atribuição de cadastro na API própria da apex (#6318, em voo noutra sessão)
+#   - UTM/atribuição de cadastro na API própria da apex (#6318, aberta —
+#     mecanismo de custom field mergeado/verificado no #6324, 592/592 sem
+#     divergências; resta o vínculo form+double-opt-in mais rico e a
+#     checagem na UI do Kit)
 #   - o cutover de DNS em si
 name = "diaria-site"
 compatibility_date = "2024-09-23"
@@ -68,6 +71,8 @@ directory = "./public"
 # (public/index.html, #6359) herda `drop-trailing-slash` de graça, sem
 # ambiguidade (é um único arquivo, não uma família de slugs). `/subscribe`
 # não passa por `[assets]` nenhum — é resolvido por `public/_redirects`
-# ANTES da checagem de asset (ver docs do próprio Cloudflare, citadas no
-# `_redirects`), então `html_handling` não se aplica a ele.
+# ANTES da checagem de asset (docs do próprio Cloudflare, citadas em
+# test/site-worker-routes-6359.test.ts:
+# https://developers.cloudflare.com/workers/static-assets/redirects/),
+# então `html_handling` não se aplica a ele.
 html_handling = "drop-trailing-slash"

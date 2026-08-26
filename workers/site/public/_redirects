@@ -16,8 +16,13 @@
 # redirect.
 #
 # Por que redirect e não página própria postando na API: página própria
-# levanta questões de UTM/atribuição que são escopo do #6318 (aberta, em
-# voo noutra sessão) — fora do escopo desta unidade (stub mínimo, versão
+# levanta questões de UTM/atribuição que são escopo do #6318 (aberta —
+# mecanismo de custom field UTM já mergeado e verificado no #6324 (26/08),
+# backfill 592/592 assinantes sem divergências, 3 workers exercitados ao
+# vivo com valores corretos; resta fechar o vínculo form+double-opt-in —
+# Opção B, mais rica, medida ao vivo em 26/08 mas sem confirmação de que
+# já virou decisão final/implementação — e checar se a atribuição aparece
+# na UI do Kit) — fora do escopo desta unidade (stub mínimo, versão
 # definitiva vem depois via #6318/decisão do editor).
 #
 # DUAS linhas, não uma — achado do fleet review + medição ao vivo do

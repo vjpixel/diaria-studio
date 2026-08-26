@@ -31,9 +31,13 @@ apex (404 hoje) e `/sitemap.xml` já era servido certo.
 
 **STUB, não a versão definitiva** — decisão do editor (Gate B, #6359):
 "stub primeiro, migrar depois". Redirect em vez de página própria postando
-na API porque UTM/atribuição de cadastro é escopo do #6318 (aberta, em voo
-noutra sessão) — não entrar nisso aqui. Smoke test de rotas:
-`test/site-worker-routes-6359.test.ts`.
+na API porque UTM/atribuição de cadastro é escopo do #6318 (aberta —
+mecanismo de custom field UTM já mergeado e verificado no #6324, backfill
+592/592 assinantes sem divergências; resta fechar o vínculo
+form+double-opt-in — Opção B, mais rica, medida ao vivo em 26/08 mas sem
+confirmação de que já virou decisão final/implementação — e checar se a
+atribuição aparece na UI do Kit) — não entrar nisso aqui. Smoke test de
+rotas: `test/site-worker-routes-6359.test.ts`.
 
 Fora de escopo aqui:
 
