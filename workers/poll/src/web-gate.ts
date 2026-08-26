@@ -66,7 +66,7 @@ import {
   verifySessionCookie,
 } from "./session-cookie";
 import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
-import { subscribeToBeehiiv, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe";
+import { subscribeToBeehiiv, subscribeToKit, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe"; // #6048: subscribeToKit — ramificação por env.SUBSCRIBE_BACKEND
 import { hasProvenEmailPossession } from "./magic-link"; // #6293: só quem provou posse (magic link) vira "confirmed"
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
@@ -495,7 +495,13 @@ export async function handleJogarGateSubscribe(
   // rodada, comportamento pré-#4578 preservado — não manda esse campo).
   const sourceRaw = typeof parsed.source === "string" ? parsed.source.trim() : "";
   const utm = resolveSubscribeUtm(sourceRaw || "jogar-gate");
-  const result = await subscribeToBeehiiv(env, { name, email }, fetchImpl, utm);
+  // #6048: seleção de backend local a este handler — mesmo padrão de
+  // handleJogarSubscribe (subscribe.ts:585-591). env.SUBSCRIBE_BACKEND
+  // ausente/"beehiiv" mantém o caminho pré-existente.
+  const result =
+    env.SUBSCRIBE_BACKEND === "kit"
+      ? await subscribeToKit(env, { name, email }, fetchImpl, utm)
+      : await subscribeToBeehiiv(env, { name, email }, fetchImpl, utm);
   if (!result.ok) {
     if (result.reason === "not_configured") return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
     return json({ ok: false, error: "subscribe_failed" }, 502, env);
