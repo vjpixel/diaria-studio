@@ -1,0 +1,54 @@
+# workers/site/public/_redirects (#6359)
+#
+# `/subscribe` — stub do cutover (#467/#6359). O cadastro real hoje é feito
+# pelo backend Kit (platform.config.json → publishing.newsletter.backend =
+# "kit", switchover #6114) e a única superfície de cadastro HOSPEDADA que a
+# conta Kit já expõe publicamente e confirmada ao vivo (26/08/2026, `curl`
+# com User-Agent de navegador — sem UA a Cloudflare devolve challenge, ver
+# memory "curl sem UA recebe challenge") é a página de perfil padrão da Kit,
+# NÃO um form dedicado: `mcp__kit__list_forms` só lista 1 form tipo "embed"
+# (uid f6db0f603b, "Newsletter site"), cujo `embed_url`/`embed_js` devolvem
+# 404 GENUÍNO da Kit (form embed não tem página hospedada própria — só faz
+# sentido embutido via <script>, e não há landing page v2 publicada:
+# `mcp__kit__list_landing_pages` voltou vazio). A página de perfil
+# (`https://diar-ia-br.kit.com/`, alias de `/profile`) SIM responde 200 com
+# um botão "Subscribe" + campo de e-mail funcionais — é o destino deste
+# redirect.
+#
+# Por que redirect e não página própria postando na API: página própria
+# levanta questões de UTM/atribuição que são escopo do #6318 (aberta —
+# mecanismo de custom field UTM já mergeado e verificado no #6324 (26/08),
+# backfill 592/592 assinantes sem divergências, 3 workers exercitados ao
+# vivo com valores corretos; resta fechar o vínculo form+double-opt-in —
+# Opção B, mais rica, medida ao vivo em 26/08 mas sem confirmação de que
+# já virou decisão final/implementação — e checar se a atribuição aparece
+# na UI do Kit) — fora do escopo desta unidade (stub mínimo, versão
+# definitiva vem depois via #6318/decisão do editor).
+#
+# DUAS linhas, não uma — achado do fleet review + medição ao vivo do
+# coordenador (PR #6363, correção pós-review). `/subscribe` (sem barra) e
+# `/subscribe/` (com barra) são paths DIFERENTES pro `_redirects` — regra
+# aqui é exact-match, sem curinga — e `html_handling = "drop-trailing-slash"`
+# (ver wrangler.toml) NÃO cobre isto: essa diretiva só normaliza barra
+# quando existe um ASSET por trás (ex: `/p/{slug}/` -> 307 -> `/p/{slug}`,
+# porque `public/p/{slug}/index.html` existe). `/subscribe` não é asset —
+# é regra de `_redirects` — então sem a 2ª linha, `/subscribe/` cairia na
+# resolução de asset, não acharia nada, e devolveria 404 seco. Medido ao
+# vivo: `/naoexiste/` (nenhum asset por trás) dá 404 direto, sem 307 —
+# confirma que a normalização de barra é per-asset, não uma regra geral do
+# Worker.
+#
+# Isso importa porque NÃO é hipotético: o apex hoje (Beehiiv) trata as duas
+# formas — `/subscribe` responde 200, `/subscribe/` responde 301 pra
+# `/subscribe`. Sem a 2ª linha, o cutover regrediria uma URL que funciona
+# em produção — link externo, bookmark ou URL digitada à mão com barra
+# final, que é justamente o tráfego que costuma ter barra. Não há
+# ocorrência de `diar.ia.br/subscribe/` neste repo (grepado), então o
+# tráfego de risco é sempre externo, nunca um link nosso.
+#
+# `/subscribe/` aponta pro PATH `/subscribe` (301), não direto pro destino
+# Kit — mesmo comportamento da Beehiiv hoje, e mantém o destino externo
+# (Kit) declarado em UM lugar só: trocar o alvo no futuro é editar 1 linha,
+# não 2 que podem divergir.
+/subscribe https://diar-ia-br.kit.com/ 302
+/subscribe/ /subscribe 301
