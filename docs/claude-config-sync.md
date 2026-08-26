@@ -64,10 +64,12 @@ correção: 3 commits (`d28b5b6` habilitando o `pr-review-toolkit`, `d6c2fc5`
 ligando `remoteControlAtStartup`, `2c96997` gravando `outputStyle`) live no
 `helios` e ausentes no Neo e no ZenBook, sem sinal disso em lugar nenhum.
 
-**Como funciona agora:** hook `SessionStart` no `settings.json` do próprio
-repo chama `sync-check.cjs` (também no repo), que se auto-destaca e sai em
-~50 ms — a sessão nunca espera rede. Como o arquivo que carrega o hook **é** o
-arquivo sincronizado, instalar num lugar arma todas as máquinas; um cron
+**Como funciona agora:** hook `SessionStart` no `settings.json` do
+`claude-config` chama `sync-check.cjs` (também no `claude-config`), que se
+auto-destaca e sai em poucas
+dezenas de milissegundos — a garantia que importa é que a sessão nunca espera
+rede. Como o arquivo que carrega o hook **é** o arquivo sincronizado, instalar
+num lugar arma todas as máquinas; um cron
 precisaria ser armado máquina a máquina, repetindo o problema.
 
 **Contrato, deliberadamente conservador:**
@@ -86,9 +88,17 @@ conteúdo **nunca chega** a `~/.claude`. A máquina fica permanentemente
 defasada mesmo com bootstrap rodado.
 
 **Onde olhar:** `~/claude-config/.sync-state.json` (resultado do último check,
-com timestamp) e `.sync-check.log` (só o que precisa de ação — caminho feliz é
-silencioso). Ambos gitignored: sem isso a árvore ficaria permanentemente suja
-e o próprio script recusaria puxar, auto-desativando o mecanismo.
+com timestamp) e `.sync-check.log` (o que precisa de ação, mais uma linha
+quando um pull traz commits novos — silencioso só quando nada mudou). Ambos
+gitignored: sem isso a árvore ficaria permanentemente suja e o próprio script
+recusaria puxar, auto-desativando o mecanismo.
+
+**Rollout ainda não confirmado nas 3 máquinas (26/08/2026).** Há um
+chicken-and-egg: máquina que ainda não puxou até `90b537c` não tem o
+`sync-check.cjs` nem a entrada de hook, então precisa de UM `git pull`/
+`bootstrap` manual para receber o próprio mecanismo — a partir daí se propaga
+sozinha. Verificado ao vivo só no `helios`; Neo e ZenBook pendentes (o ZenBook
+é o que importa, por causa da detecção de cópia).
 
 **Ainda manual:** `memory/` (ver acima) e o `bootstrap` inicial de máquina
 nova — o sync automático mantém o repo atualizado, mas não cria symlink que
