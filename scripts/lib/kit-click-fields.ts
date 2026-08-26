@@ -44,6 +44,10 @@
  * exatamente o caso que ela existe pra pegar.
  */
 export const CAMPOS_DECLARADOS_COM_TIPO = {
+  // #6185 (26/08): `id` entrou depois — a sonda o reportou como INESPERADO
+  // no 1º clique real, que é exatamente o serviço que ela presta. Declarado
+  // aqui, passa a ser verificado como os outros.
+  id: "number",
   url: "string",
   unique_clicks: "number",
   click_to_delivery_rate: "number",

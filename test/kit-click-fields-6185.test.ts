@@ -57,6 +57,10 @@ describe("#6185 interpretClicksResponse — array vazio é INCONCLUSIVO, nunca '
 describe("#6185 interpretClicksResponse — com clique real, compara tipo vs realidade", () => {
   it("todos os campos declarados presentes ⇒ nenhum ausente", () => {
     const item = {
+      // `id` entrou em #6185 quando o 1º clique real revelou que o Kit o
+      // devolve. Este item era sintético e não o tinha — a atualização é a
+      // fixture inventada cedendo à medida.
+      id: 42,
       url: "https://exemplo.com/a",
       unique_clicks: 3,
       click_to_delivery_rate: 0.6,
