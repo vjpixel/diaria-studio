@@ -329,10 +329,16 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   `findings_depth` (cap 2) documentada lá.
 - **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
   Antes de abrir a PR e de novo antes do merge, rodar `npx tsx
-  scripts/lib/sensitive-path-guard.ts --base origin/master`. `sensitive:
-  true` → deixar a PR aberta, comentar o veredito nela e encaminhar pro
-  review consolidado (Fase 1.5) ou pra sessão com o editor; seguir pra
-  próxima unidade no mesmo ciclo (encaminhar não é parar). A lista de paths
+  scripts/lib/sensitive-path-guard.ts --base origin/master --json`.
+  `"sensitive": true` → deixar a PR aberta, comentar o veredito nela e
+  encaminhar pro review consolidado (Fase 1.5) ou pra sessão com o editor;
+  seguir pra próxima unidade no mesmo ciclo (encaminhar não é parar).
+  **Fail-closed obrigatório:** se o comando sair com exit ≠ 0, imprimir
+  nada, ou emitir JSON que não parseia, tratar como **SENSÍVEL** e não
+  mergear — "não consegui determinar" nunca vira "pode seguir". (O script já
+  falha fechado do seu lado: em erro de git ele escreve em stderr, sai 1 e
+  **não** imprime veredito nenhum; esta linha existe porque quem lê é um
+  agente seguindo prosa, não um shell checando `$?`.) A lista de paths
   vive em `SENSITIVE_RULES` (`scripts/lib/sensitive-path-guard.ts`, coberta
   por `test/sensitive-path-guard.test.ts`) — nunca decidir "isso é
   sensível?" por julgamento do ciclo. **Motivo:** em 260826 o PR #6214
@@ -349,7 +355,13 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   tsx scripts/lib/session-registry.ts active-of-kind --kind overnight`.
   `active: true` → o ciclo trabalha só a própria fila de PRs abertos
   (review/merge) e reporta "overnight ativo: N sessão(ões), fila nova não
-  tocada". O check-and-set do #6236 fecha a corrida de ESCRITA no claim,
+  tocada". **`uncertain: true` no mesmo JSON conta como `active: true`** —
+  significa que `data/sessions/` existe mas não pôde ser lido (I/O
+  transitório do OneDrive), então `active: false` ali quer dizer "não deu
+  pra saber", não "não há overnight"; fail-CLOSED. Sempre reportar também o
+  array `stale` quando não-vazio ("não há overnight ativo, mas há N registro
+  stale de X") — registro órfão nunca some em silêncio. O check-and-set do
+  #6236 fecha a corrida de ESCRITA no claim,
   mas não evita duas sessões ANALISANDO a mesma fila — em 260826 o
   overnight reivindicou a #6232 às 11:20 com subagente já implementando e o
   contínuo tentou às 11:27; a recusa funcionou e o trabalho de análise dos

@@ -52,15 +52,15 @@ import { parseArgs, isMainModule } from "./cli-args.ts";
  */
 export interface SensitiveRule {
   /** Identificador curto e estável, usado no output. */
-  id: string;
+  readonly id: string;
   /**
    * Padrão casado contra o path relativo à raiz do repo (separador `/`).
-   * Suporta apenas `*` (não cruza `/`) e `**` (cruza `/`) — subconjunto
+   * Suporta apenas `*` (não cruza `/`), `**` (cruza `/`) e `{a,b}` — subconjunto
    * deliberado de glob, para a regra ser legível numa linha e não depender de
    * dependência externa.
    */
-  pattern: string;
-  reason: string;
+  readonly pattern: string;
+  readonly reason: string;
 }
 
 /**
@@ -108,7 +108,7 @@ export const SENSITIVE_RULES: readonly SensitiveRule[] = [
   },
   {
     id: "paginas-publicas",
-    pattern: "scripts/lib/{curadoria-page,entity-page}.ts",
+    pattern: "scripts/lib/shared/{curadoria-page,entity-page}.ts",
     reason: "páginas públicas de curadoria servidas pelos Workers — quebra é visível para leitor e crawler",
   },
   {
@@ -142,15 +142,24 @@ export function matchesGlob(path: string, pattern: string): boolean {
     }
     if (char === "{") {
       const close = pattern.indexOf("}", i);
-      if (close !== -1) {
-        const alternatives = pattern
-          .slice(i + 1, close)
-          .split(",")
-          .map((alt) => alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-        source += `(?:${alternatives.join("|")})`;
-        i = close + 1;
-        continue;
+      if (close === -1) {
+        // `{` sem `}` é pattern malformado. Degradar para literal silenciosamente
+        // faria uma regra inválida virar uma regra que "existe mas nunca casa" —
+        // exatamente a falha silenciosa que este módulo existe pra evitar
+        // (achado do review do #6277). Falhar alto: o teste de higiene que casa
+        // cada regra contra arquivo real quebra o CI antes de chegar em produção.
+        throw new Error(
+          `sensitive-path-guard: pattern malformado "${pattern}" — "{" sem "}" correspondente. ` +
+            "Uma regra que não compila nunca casa com nada, e um guard que nunca casa é um guard furado.",
+        );
       }
+      const alternatives = pattern
+        .slice(i + 1, close)
+        .split(",")
+        .map((alt) => alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      source += `(?:${alternatives.join("|")})`;
+      i = close + 1;
+      continue;
     }
     source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     i += 1;
@@ -169,18 +178,37 @@ export function isSensitivePath(path: string): boolean {
   return matchingRules(path).length > 0;
 }
 
+/** Uma regra que casou com um path, com a razão colada nela. */
+export interface SensitiveMatch {
+  readonly ruleId: string;
+  readonly reason: string;
+}
+
 export interface SensitiveHit {
-  path: string;
-  ruleIds: string[];
-  reasons: string[];
+  readonly path: string;
+  /**
+   * Regras que casaram, id e razão PAREADOS no mesmo objeto — não dois arrays
+   * paralelos. O formato anterior (`ruleIds[]` + `reasons[]`) já tinha
+   * produzido perda de informação no próprio consumidor: `formatVerdict`
+   * listava todos os ids mas imprimia só `reasons[0]`, então um path que
+   * casasse com 2 regras mostrava metade do motivo (achado do review do
+   * #6277). Com o par junto, "imprimir todas as razões" é o que sai natural.
+   */
+  readonly matches: readonly SensitiveMatch[];
 }
 
 export interface SensitiveClassification {
-  /** `true` quando ao menos um path do conjunto é sensível. */
-  sensitive: boolean;
-  hits: SensitiveHit[];
+  /**
+   * DERIVADO de `hits.length > 0`, nunca uma verdade independente — existe só
+   * porque o consumidor é `jq`/agente lendo JSON, para quem `.sensitive` é
+   * mais legível que `.hits | length > 0`. Há um único produtor
+   * (`classifyChangedPaths`) e ele deriva o campo na hora de construir; nunca
+   * setar este campo à mão em outro lugar.
+   */
+  readonly sensitive: boolean;
+  readonly hits: readonly SensitiveHit[];
   /** Paths avaliados que NÃO casaram com nenhuma regra. */
-  clean: string[];
+  readonly clean: readonly string[];
 }
 
 /**
@@ -200,10 +228,10 @@ export function classifyChangedPaths(paths: readonly string[]): SensitiveClassif
     }
     hits.push({
       path,
-      ruleIds: rules.map((r) => r.id),
-      reasons: rules.map((r) => r.reason),
+      matches: rules.map((r) => ({ ruleId: r.id, reason: r.reason })),
     });
   }
+  // `sensitive` é derivado aqui, no ÚNICO produtor — ver docstring do campo.
   return { sensitive: hits.length > 0, hits, clean };
 }
 
@@ -212,7 +240,13 @@ export function formatVerdict(result: SensitiveClassification): string {
   if (!result.sensitive) {
     return `sensitive-path-guard: nenhum caminho sensível tocado (${result.clean.length} arquivo(s) avaliado(s)) — fluxo de merge normal.`;
   }
-  const lines = result.hits.map((hit) => `  - ${hit.path} [${hit.ruleIds.join(", ")}]\n      ${hit.reasons[0]}`);
+  const lines = result.hits.map((hit) => {
+    const ids = hit.matches.map((m) => m.ruleId).join(", ");
+    // TODAS as razões, não só a primeira: um path pode casar com mais de uma
+    // regra e cada razão diz uma coisa diferente sobre por que ele é sensível.
+    const reasons = hit.matches.map((m) => `      ${m.reason}`).join("\n");
+    return `  - ${hit.path} [${ids}]\n${reasons}`;
+  });
   return (
     `sensitive-path-guard: ${result.hits.length} caminho(s) SENSÍVEL(is) tocado(s):\n${lines.join("\n")}\n` +
     "\nEste PR NÃO pode ser mergeado pelo pipeline de review de diff isolado do contínuo (#6277).\n" +
@@ -228,7 +262,29 @@ function changedPathsFromGit(base: string): string[] {
 function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   try {
-    const paths = values.files !== undefined ? values.files.split(",") : changedPathsFromGit(values.base ?? "origin/master");
+    let paths: string[];
+    if (values.files !== undefined) {
+      if (values.base !== undefined) {
+        throw new Error(
+          "--files e --base são mutuamente exclusivos — passar os dois esconde qual venceu. " +
+            "Escolha um: --files para uma lista explícita, --base para derivar do git.",
+        );
+      }
+      // `--files ""` NÃO é "zero arquivos mudaram": é um pipeline que falhou e
+      // passou string vazia. Tratar como conjunto vazio faria o guard responder
+      // "sensitive: false" com confiança sobre um diff que ele nunca viu — o
+      // fail-open exato que este módulo existe pra impedir (review do #6277).
+      if (values.files.trim() === "") {
+        throw new Error(
+          '--files veio vazio. Isso quase sempre é um pipeline que falhou a montante, não "zero arquivos mudaram" — ' +
+            "e responder que nada é sensível sobre um diff não visto é pior que não responder. " +
+            "Se a intenção é mesmo avaliar zero arquivos, não chame o guard.",
+        );
+      }
+      paths = values.files.split(",");
+    } else {
+      paths = changedPathsFromGit(values.base ?? "origin/master");
+    }
     const result = classifyChangedPaths(paths);
     if (flags.has("json")) {
       process.stdout.write(JSON.stringify(result, null, 2) + "\n");

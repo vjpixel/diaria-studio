@@ -377,8 +377,53 @@ function listSessionJsonFiles(repoRoot: string): string[] {
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."));
-  } catch {
+  } catch (e) {
+    // #6277 (achado do review): este catch era VAZIO. Uma falha de I/O no
+    // diretório inteiro (EBUSY/EPERM/EACCES — os mesmos transitórios de
+    // OneDrive que `readJsonSafe` já loga por arquivo) colapsava para "nenhuma
+    // sessão existe", sem uma linha de aviso. Pior que o caso por-arquivo, que
+    // ao menos avisa. Isso virou crítico quando `findActiveSessionsOfKind`
+    // passou a decidir "há overnight rodando?" em cima disso: falha de leitura
+    // vira `active: false` e o contínuo volta a duplicar o trabalho do
+    // overnight — exatamente o desperdício que o mecanismo existe pra evitar.
+    warnIoError(dir, e);
     return [];
+  }
+}
+
+/**
+ * Resultado de `checkSessionsScanHealth` — se a varredura de `data/sessions/`
+ * conseguiu de fato ler o diretório, ou se degradou para "vazio" por falha de
+ * I/O. Existe porque o caminho fail-soft (correto para não derrubar a
+ * pipeline) é indistinguível, no retorno, de "não há sessão nenhuma" — e para
+ * uma decisão de EXCLUSÃO mútua essa ambiguidade é fail-open (#6277).
+ */
+export interface SessionsScanHealth {
+  /** `false` só quando o diretório EXISTE mas não pôde ser lido. */
+  ok: boolean;
+  /** Código/mensagem do erro de I/O — presente só quando `ok: false`. */
+  error?: string;
+}
+
+/**
+ * Responde se `data/sessions/` está legível AGORA. Diretório ausente conta
+ * como `ok: true` (é o estado normal de um clone fresco/sessão cloud — "não
+ * há sessão" é resposta honesta, não degradação). Só um erro de leitura sobre
+ * diretório existente devolve `ok: false`.
+ *
+ * O consumidor é o CLI `active-of-kind`, que expõe isso como `uncertain` no
+ * JSON para o chamador poder fail-CLOSED: com `uncertain: true`, tratar como
+ * "pode haver overnight rodando" em vez de confiar no `active: false`.
+ */
+export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
+  const dir = sessionsDir(repoRoot);
+  if (!existsSync(dir)) return { ok: true };
+  try {
+    readdirSync(dir);
+    return { ok: true };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
+    return { ok: false, error: String(code) };
   }
 }
 
@@ -680,8 +725,8 @@ export function isIssueClaimedByOther(
 export function findActiveSessionsOfKind(
   repoRoot: string,
   kind: SessionKind,
-  now: number = Date.now(),
   excludeSessionId?: string,
+  now: number = Date.now(),
 ): SessionRecord[] {
   return listActiveSessions(repoRoot, now).filter(
     (session) => session.kind === kind && !session.stale && session.sessionId !== excludeSessionId,
@@ -699,8 +744,8 @@ export function findActiveSessionsOfKind(
 export function findStaleSessionsOfKind(
   repoRoot: string,
   kind: SessionKind,
-  now: number = Date.now(),
   excludeSessionId?: string,
+  now: number = Date.now(),
 ): SessionRecord[] {
   return listActiveSessions(repoRoot, now).filter(
     (session) => session.kind === kind && session.stale === true && session.sessionId !== excludeSessionId,
@@ -715,10 +760,10 @@ export function findStaleSessionsOfKind(
 export function hasActiveSessionOfKind(
   repoRoot: string,
   kind: SessionKind,
-  now: number = Date.now(),
   excludeSessionId?: string,
+  now: number = Date.now(),
 ): boolean {
-  return findActiveSessionsOfKind(repoRoot, kind, now, excludeSessionId).length > 0;
+  return findActiveSessionsOfKind(repoRoot, kind, excludeSessionId, now).length > 0;
 }
 
 /**
@@ -1271,10 +1316,26 @@ function main(): void {
         // não o exit code — "não há overnight ativo" é resposta válida, não erro.
         const kind = requireKind(values.kind);
         const excludeSessionId = values["session-id"];
-        const active = findActiveSessionsOfKind(repoRoot, kind, undefined, excludeSessionId);
-        const stale = findStaleSessionsOfKind(repoRoot, kind, undefined, excludeSessionId);
+        // `uncertain` vem ANTES da varredura: se `data/sessions/` existe mas
+        // não pôde ser lido, `active: false` significa "não deu pra saber",
+        // não "não há sessão". O chamador deve fail-CLOSED nesse caso —
+        // tratar como se houvesse overnight rodando (#6277, achado do review).
+        const health = checkSessionsScanHealth(repoRoot);
+        const sessions = findActiveSessionsOfKind(repoRoot, kind, excludeSessionId);
+        const stale = findStaleSessionsOfKind(repoRoot, kind, excludeSessionId);
         process.stdout.write(
-          JSON.stringify({ kind, active: active.length > 0, sessions: active, stale }, null, 2) + "\n",
+          JSON.stringify(
+            {
+              kind,
+              active: hasActiveSessionOfKind(repoRoot, kind, excludeSessionId),
+              uncertain: !health.ok,
+              ...(health.ok ? {} : { ioError: health.error }),
+              sessions,
+              stale,
+            },
+            null,
+            2,
+          ) + "\n",
         );
         break;
       }

@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,7 @@ import {
   findActiveSessionsOfKind,
   findStaleSessionsOfKind,
   hasActiveSessionOfKind,
+  checkSessionsScanHealth,
   acquireMergeLock,
   releaseMergeLock,
   requireKind,
@@ -544,8 +545,8 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
       startedAt: new Date(NOW).toISOString(),
     });
 
-    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), true);
-    const found = findActiveSessionsOfKind(root, "overnight", NOW);
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), true);
+    const found = findActiveSessionsOfKind(root, "overnight", undefined, NOW);
     assert.equal(found.length, 1);
     assert.equal(found[0].sessionId, "sess-overnight");
   });
@@ -557,8 +558,8 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
       startedAt: new Date(NOW).toISOString(),
     });
 
-    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
-    assert.deepEqual(findActiveSessionsOfKind(root, "overnight", NOW), []);
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    assert.deepEqual(findActiveSessionsOfKind(root, "overnight", undefined, NOW), []);
   });
 
   it("overnight STALE não bloqueia — sai de findActive e aparece em findStale", () => {
@@ -567,8 +568,8 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
     const staleHeartbeat = new Date(NOW - 3 * 60 * ONE_MIN_MS).toISOString();
     registerSession(root, "overnight", "sess-morta", { tag: "host-a", startedAt: staleHeartbeat });
 
-    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
-    const stale = findStaleSessionsOfKind(root, "overnight", NOW);
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    const stale = findStaleSessionsOfKind(root, "overnight", undefined, NOW);
     assert.equal(stale.length, 1, "sessão stale continua VISÍVEL — nunca descartada em silêncio");
     assert.equal(stale[0].sessionId, "sess-morta");
   });
@@ -580,9 +581,9 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
       startedAt: new Date(NOW).toISOString(),
     });
 
-    assert.equal(hasActiveSessionOfKind(root, "continuo", NOW), true, "sem exclude, se enxerga");
+    assert.equal(hasActiveSessionOfKind(root, "continuo", undefined, NOW), true, "sem exclude, se enxerga");
     assert.equal(
-      hasActiveSessionOfKind(root, "continuo", NOW, "hermes-cron-5d791ef6fc2c"),
+      hasActiveSessionOfKind(root, "continuo", "hermes-cron-5d791ef6fc2c", NOW),
       false,
       "com exclude, a própria sessão não conta",
     );
@@ -592,15 +593,54 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
     const root = freshRoot();
     registerSession(root, "overnight", "sess-overnight", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
 
-    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), true);
-    assert.equal(hasActiveSessionOfKind(root, "develop", NOW), false);
-    assert.equal(hasActiveSessionOfKind(root, "continuo", NOW), false);
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), true);
+    assert.equal(hasActiveSessionOfKind(root, "develop", undefined, NOW), false);
+    assert.equal(hasActiveSessionOfKind(root, "continuo", undefined, NOW), false);
   });
 
   it("fail-soft: data/sessions/ inexistente → active:false, nunca lança", () => {
     const root = freshRoot();
-    assert.equal(hasActiveSessionOfKind(root, "overnight", NOW), false);
-    assert.deepEqual(findStaleSessionsOfKind(root, "overnight", NOW), []);
+    assert.equal(hasActiveSessionOfKind(root, "overnight", undefined, NOW), false);
+    assert.deepEqual(findStaleSessionsOfKind(root, "overnight", undefined, NOW), []);
+  });
+
+  /**
+   * #6277 (achado do review): `active: false` tinha DOIS significados
+   * indistinguíveis — "não há sessão" e "não consegui ler o diretório". Para
+   * uma decisão de exclusão mútua, confundir os dois é fail-OPEN: uma falha de
+   * I/O transitória (EACCES/EBUSY no junction do OneDrive) fazia o contínuo
+   * concluir "nenhum overnight rodando" e voltar a duplicar o trabalho dele.
+   * `checkSessionsScanHealth` separa os dois casos para o CLI expor
+   * `uncertain: true` e o chamador poder fail-CLOSED.
+   */
+  describe("checkSessionsScanHealth — separa 'não há sessão' de 'não deu pra ler'", () => {
+    it("diretório ausente é ok:true — clone fresco/sessão cloud é resposta honesta, não degradação", () => {
+      assert.deepEqual(checkSessionsScanHealth(freshRoot()), { ok: true });
+    });
+
+    it("diretório legível e vazio é ok:true", () => {
+      const root = freshRoot();
+      mkdirSync(sessionsDir(root), { recursive: true });
+      assert.deepEqual(checkSessionsScanHealth(root), { ok: true });
+    });
+
+    it("diretório existente mas ILEGÍVEL é ok:false com o código do erro", () => {
+      const root = freshRoot();
+      const dir = sessionsDir(root);
+      mkdirSync(dir, { recursive: true });
+      // Remove o bit de leitura: readdirSync passa a lançar EACCES.
+      chmodSync(dir, 0o000);
+      try {
+        // root ignora permissões de arquivo — se a suíte rodar como root o
+        // readdir sucede e não há o que asserir.
+        if (process.getuid?.() === 0) return;
+        const health = checkSessionsScanHealth(root);
+        assert.equal(health.ok, false, "diretório ilegível não pode passar por 'vazio'");
+        assert.ok(health.error, "o código do erro precisa chegar ao chamador");
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    });
   });
 });
 
