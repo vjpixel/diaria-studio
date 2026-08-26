@@ -72,6 +72,19 @@
  *
  * Stdout: JSON sumário (inclui `transient_errors` e `reconciled` — #4353); stderr:
  * progresso humano-legível.
+ *
+ * PIPELINE DO CICLO, EM ORDEM (#1961, resumido no CLAUDE.md — este é o
+ * detalhe completo): todos os passos exigem `--cycle {conteúdo}-{envio}`
+ * (validado: formato + envio = conteúdo+1, typo de mês aborta limpo).
+ *   1. verify-emails-mv.ts (este script) — escreve mv-export-{cohort}-verified.csv em {ciclo}/
+ *   2. clarice-build-db.ts — reingere o store (#4362; sem isso os recém-verificados
+ *      ficam invisíveis nesta mesma rodada)
+ *   3. clarice-build-segment.ts --cycle ... --group {nome} [--budget N] (#2885/#4759) —
+ *      lê o STORE único de contatos (não os CSVs por cohort); corte por `send_eligible`,
+ *      ordem por `priority_points`/`cohort`; escreve {grupo}.csv + {grupo}-manifest.json
+ *      em {ciclo}/segments/ (sucede clarice-build-waves-store.ts, aposentado no #4759 por
+ *      não ter o guard cycle-wide sent-or-queued.json)
+ *   4. clarice-import-waves --cycle ... --group {nome} — lê {ciclo}/segments/ via manifest
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
