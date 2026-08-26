@@ -64,6 +64,29 @@ describe("normalizeKitBroadcast", () => {
     publication_id: 1,
   };
 
+  it("popula `title` com o subject — consumidor de hub lê post.title SEM fallback", () => {
+    // Regressão do achado do self-review no PR #6228 (rodada overnight
+    // 260826): a versão original deixava `title: undefined` assumindo que os
+    // consumidores fazem `title ?? subject`. `collectHubSources` não faz —
+    // monta `[post.title, ...].filter(Boolean)`, então `undefined` some e a
+    // edição inteira fica fora do matching de hub/entidade, em silêncio.
+    const got = normalizeKitBroadcast(baseSummary);
+    assert.equal(got.title, "Assunto Kit");
+    assert.ok(got.title, "title nunca pode ser vazio/undefined pra post do Kit");
+  });
+
+  it("o par (title, subject) sobrevive ao filter(Boolean) que o consumidor aplica", () => {
+    // Reproduz literalmente a expressão de `collectHubSources`, pra que este
+    // teste quebre se o consumidor OU a normalização mudarem de forma
+    // incompatível — e não só se este campo mudar.
+    const got = normalizeKitBroadcast(baseSummary);
+    const destaques = [got.title, ...(got.subtitle ? got.subtitle.split("|").map((x) => x.trim()) : [])].filter(
+      (x): x is string => Boolean(x),
+    );
+    assert.ok(destaques.length > 0, "edição de origem Kit não pode sair com zero destaques");
+    assert.equal(destaques[0], "Assunto Kit");
+  });
+
   it("mapeia status completed -> confirmed (achado central da normalização)", () => {
     const got = normalizeKitBroadcast(baseSummary);
     assert.equal(got.status, "confirmed");

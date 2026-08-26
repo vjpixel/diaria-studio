@@ -197,11 +197,18 @@ export function normalizeKitBroadcast(
   return {
     origin: "kit",
     slug: slugFromUrl(webUrl),
-    // Kit não tem campo "title" separado de "subject" — os consumidores já
-    // fazem `title ?? subject`, então deixar `title` undefined e só popular
-    // `subject` reproduz o mesmo fallback sem inventar um campo que o Kit
-    // não tem.
-    title: undefined,
+    // Kit não tem campo "title" separado de "subject". A versão anterior
+    // deixava `title: undefined` assumindo que os consumidores fazem
+    // `title ?? subject` — **eles não fazem**. `collectHubSources`
+    // (`scripts/generate-hub-sources.ts`) monta os destaques como
+    // `[post.title, ...subtitle.split("|")].filter(...)`, direto e sem
+    // fallback: com `title` undefined, o filter descarta e TODA edição de
+    // origem Kit fica invisível pro matching de hubs/entidades — em
+    // silêncio, sem erro em lugar nenhum. Hoje o efeito é zero porque o
+    // cache Kit está vazio; a falha apareceria exatamente no cutover, que é
+    // quando menos se olha pra isso. Mapear `subject` → `title` é a
+    // aproximação correta: no Kit o `subject` É a manchete da edição.
+    title: b.subject,
     // `preview_text` é o campo mais próximo semanticamente de `subtitle`
     // (texto curto de apoio ao assunto) — usado pelos consumidores só como
     // sinal fraco de keyword match (hubs/entidades), não como verdade
