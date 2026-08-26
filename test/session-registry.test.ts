@@ -10,8 +10,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   sessionFilePath,
   sessionsDir,
@@ -615,6 +616,115 @@ describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", ()
 
     assert.equal(acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io), true);
     assert.equal(JSON.parse(disk.get(path)!).heldBy, "sess-a");
+  });
+
+  // #6182 — entre máquinas via OneDrive, cada inode vê o arquivo como
+  // ausente; ambas as sessões podem receber `true` do `tryCreateExclusive`.
+  // Este é o comportamento ADVISORY documentado no #6182 — não uma falha
+  // no mecanismo, mas uma limitação real quando o mesmo path lógico vive
+  // em dois inodes distintos (junction OneDrive, não filesystem local).
+  //
+  // HONESTIDADE SOBRE O QUE ESTE TESTE É (achado do review da PR #6190):
+  // isto é DOCUMENTAÇÃO EXECUTÁVEL, não guard de regressão. Com dois
+  // backends totalmente isolados, o fast path (`tryCreateExclusive` → true
+  // → return true) responde `true` às duas chamadas independente de
+  // qualquer lógica de `acquireMergeLock` — nenhuma mudança possível NESTE
+  // arquivo faria o teste falhar, porque a divergência mora fora do
+  // processo (dois filesystems locais que um agente externo sincroniza
+  // depois). O guard REAL contra a afirmação errada voltar é o teste de
+  // invariante de documentação logo abaixo, que lê o docblock.
+  it("advisory cross-machine (#6182, documentação executável): dois MergeLockIo independentes sobre o MESMO path lógico — cada um vê o arquivo como ausente, ambos adquirem (não é garantia de exclusão entre máquinas)", () => {
+    const root = freshRoot();
+    const path = mergeLockPath(root);
+    // Simula cada máquina com seu PRÓPRIO inode/disco: mesmo path lógico,
+    // mas o arquivo NÃO é visível entre os dois — exatamente o que acontece
+    // quando `data/` é um junction OneDrive sincronizado entre `helios` e
+    // `Neo`: cada máquina lê do inode que o OneDrive sincronizou localmente,
+    // não do inode único de um filesystem compartilhado real.
+    const diskA = new Map<string, string>();
+    const diskB = new Map<string, string>();
+    const ioA: MergeLockIo = {
+      tryCreateExclusive: (p, data) => {
+        if (!diskA.has(p)) {
+          diskA.set(p, data);
+          return true; // inode A: arquivo criado com sucesso
+        }
+        return false;
+      },
+      readCurrent: (p) => (diskA.has(p) ? (JSON.parse(diskA.get(p)!) as MergeLockRecord) : null),
+      overwrite: (p, data) => diskA.set(p, data),
+    };
+    const ioB: MergeLockIo = {
+      tryCreateExclusive: (p, data) => {
+        // Inode B: NÃO vê o arquivo criado por A — o OneDrive ainda não
+        // sincronizou, ou sincronizou numa cópia que B ainda não tem.
+        // Mesmo path lógico, inode completamente independente.
+        if (!diskB.has(p)) {
+          diskB.set(p, data);
+          return true; // B também recebe `true` — não há exclusão entre inodes
+        }
+        return false;
+      },
+      readCurrent: (p) => (diskB.has(p) ? (JSON.parse(diskB.get(p)!) as MergeLockRecord) : null),
+      overwrite: (p, data) => diskB.set(p, data),
+    };
+    const resultA = acquireMergeLock(root, "sess-helios", NOW, MERGE_LOCK_TTL_MS, ioA);
+    const resultB = acquireMergeLock(root, "sess-neo", NOW, MERGE_LOCK_TTL_MS, ioB);
+    assert.equal(resultA, true, "A (helios) vê path ausente no seu inode e recebe `true`");
+    assert.equal(resultB, true, "B (neo) vê path ausente no SEU inode e também recebe `true` — a limitação advisory do #6182");
+  });
+});
+
+// ─── #6182 — invariante de documentação do merge lock ──────────────────────
+/**
+ * O defeito do #6182 não era de comportamento: era o docblock PROMETENDO
+ * exclusão mútua cross-máquina que `O_CREAT|O_EXCL` não dá sobre um junction
+ * OneDrive. Defeito de afirmação só regride por reescrita de texto, então o
+ * guard que impede a volta também é sobre o texto — não há execução de
+ * `acquireMergeLock` capaz de detectar isso (ver comentário do teste
+ * "documentação executável" acima). Mesmo padrão de invariante-sobre-fonte já
+ * usado em `test/lib-boundary.test.ts`.
+ */
+describe("merge lock — invariante de documentação (#6182)", () => {
+  const SRC = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib", "session-registry.ts"),
+    "utf8",
+  );
+
+  it("o docblock declara explicitamente que entre máquinas o lock é advisory", () => {
+    assert.match(
+      SRC,
+      /advisory/,
+      "o docblock precisa nomear o comportamento cross-máquina como advisory (#6182)",
+    );
+    assert.match(
+      SRC,
+      /#6182/,
+      "a limitação precisa citar a issue que a documenta, senão vira folclore",
+    );
+  });
+
+  it("nenhuma afirmação de que o lock PROTEGE o cenário cross-máquina sobreviveu", () => {
+    // A frase original (#5161) dizia que a atomicidade do `wx` cobria
+    // "exatamente o cenário cross-máquina via `data/` OneDrive que o #5156
+    // existe pra proteger". Se ela voltar SEM a qualificação do #6182, o
+    // próximo mecanismo de exclusão deste repo nasce copiando uma garantia
+    // que não existe — foi literalmente o que quase aconteceu com o CAS do
+    // claim (#6168, seção "fora de escopo").
+    const claimReaparece = /cen[áa]rio cross-m[áa]quina[^.]*existe pra proteger/i.test(SRC);
+    const temQualificacao = /#6182 corrigiu essa parte/i.test(SRC);
+    assert.ok(
+      !claimReaparece || temQualificacao,
+      "a afirmação de que o mecanismo protege o cenário cross-máquina voltou sem a qualificação do #6182",
+    );
+  });
+
+  it("a garantia de atomicidade fica restrita à MESMA máquina", () => {
+    assert.match(
+      SRC,
+      /MESMA M[ÁA]QUINA|mesma m[áa]quina é atômico|MESMO kernel\/filesystem/,
+      "o texto precisa restringir a atomicidade do O_CREAT|O_EXCL a um único filesystem",
+    );
   });
 });
 
