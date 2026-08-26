@@ -96,31 +96,78 @@ export interface PrCheckNode {
  * então nunca deixa passar merge ruim — mas trava merge legítimo, e trava
  * **para sempre**, porque a entrada cancelada não sai do rollup.
  *
- * Desduplica por `name`, mantendo a de `startedAt` mais recente. Node sem
- * `name` não é desduplicável (não há chave) e passa inteiro; empate ou
- * `startedAt` ausente mantém a ÚLTIMA ocorrência, que é a ordem em que o
- * GitHub devolve a mais nova.
+ * Desduplica por `name`, mantendo a de `startedAt` mais recente — **e só
+ * quando todas as entradas do grupo têm timestamp válido**.
+ *
+ * A 1ª versão deste fix desempatava com `""` para timestamp ausente, o que
+ * fazia o lado SEM timestamp sempre perder, independente de qual run era a
+ * mais nova. Achado no review (alta confiança, P1): um `FAILURE` novo sem
+ * `startedAt` era descartado em favor de um `SUCCESS` antigo com timestamp, e
+ * o gate devolvia `pass` — **falso-verde**, exatamente o que ele existe para
+ * impedir. Sem timestamp em todas, não há como provar quem supersede quem, e
+ * desempatar por posição descarta um check real com base em palpite: agora o
+ * grupo inteiro é mantido, e o pior veredito prevalece.
+ *
+ * Node sem `name` não é desduplicável (não há chave) e passa inteiro.
  */
 export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] {
-  const byName = new Map<string, PrCheckNode>();
+  const porNome = new Map<string, PrCheckNode[]>();
+  const ordem: string[] = [];
   const semNome: PrCheckNode[] = [];
+
   for (const node of nodes) {
     const name = typeof node?.name === "string" && node.name.length > 0 ? node.name : null;
     if (name === null) {
       semNome.push(node);
       continue;
     }
-    const anterior = byName.get(name);
-    if (!anterior) {
-      byName.set(name, node);
+    if (!porNome.has(name)) {
+      porNome.set(name, []);
+      ordem.push(name);
+    }
+    porNome.get(name)!.push(node);
+  }
+
+  const out: PrCheckNode[] = [];
+  for (const name of ordem) {
+    const grupo = porNome.get(name)!;
+    if (grupo.length === 1) {
+      out.push(grupo[0]);
       continue;
     }
-    const tA = typeof anterior.startedAt === "string" ? anterior.startedAt : "";
-    const tB = typeof node.startedAt === "string" ? node.startedAt : "";
-    // `>=` e não `>`: empate (ou ambos sem timestamp) mantém a última.
-    if (tB >= tA) byName.set(name, node);
+    // Só desduplica quando TODAS as entradas do grupo têm timestamp válido —
+    // aí dá pra provar qual supersede qual. Se qualquer uma não tiver, não há
+    // como ordenar, e desempatar por posição descartaria um check real com
+    // base em palpite: mantém TODAS, e o pior veredito do grupo prevalece
+    // (falso-vermelho, nunca falso-verde).
+    const todasComTimestamp = grupo.every((n) => parseStartedAt(n.startedAt) !== null);
+    if (!todasComTimestamp) {
+      out.push(...grupo);
+      continue;
+    }
+    let maisNova = grupo[0];
+    for (const n of grupo.slice(1)) {
+      // `>=` mantém a última em caso de empate exato de timestamp.
+      if (parseStartedAt(n.startedAt)! >= parseStartedAt(maisNova.startedAt)!) maisNova = n;
+    }
+    out.push(maisNova);
   }
-  return [...byName.values(), ...semNome];
+  return [...out, ...semNome];
+}
+
+/**
+ * `startedAt` utilizável para ordenar, ou `null`.
+ *
+ * Rejeita ausente, não-string, não-parseável e o placeholder de "sem valor"
+ * que o GitHub emite (`0001-01-01T00:00:00Z`, observado em `completedAt` de
+ * run em andamento) — tratá-lo como data real o colocaria como o MAIS ANTIGO
+ * de qualquer grupo, o que é uma afirmação que o payload não fez.
+ */
+function parseStartedAt(raw: string | null | undefined): number | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  if (raw.startsWith("0001-01-01")) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : null;
 }
 
 export interface PrChecksGateResult {

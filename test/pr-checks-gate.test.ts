@@ -238,13 +238,14 @@ describe("evaluatePrChecksGate — run supersedida por force-push", () => {
 });
 
 describe("keepLatestPerName", () => {
-  it("sem startedAt, mantém a última ocorrência (ordem do GitHub = mais nova por último)", () => {
+  it("sem startedAt em TODAS, não desduplica — mantém o grupo inteiro", () => {
+    // Expectativa MUDADA após o review (achado alta/P1). A versão anterior
+    // desempatava por posição, o que descarta um check real por palpite.
     const r = keepLatestPerName([
       { name: "x", conclusion: "CANCELLED", status: "COMPLETED" },
       { name: "x", conclusion: "SUCCESS", status: "COMPLETED" },
     ]);
-    assert.equal(r.length, 1);
-    assert.equal(r[0].conclusion, "SUCCESS");
+    assert.equal(r.length, 2, "sem timestamp não há como provar quem supersede quem");
   });
 
   it("node sem name não é desduplicável e passa inteiro", () => {
@@ -258,5 +259,56 @@ describe("keepLatestPerName", () => {
       { name: "b", status: "COMPLETED", conclusion: "FAILURE" },
     ]);
     assert.equal(r.length, 2);
+  });
+});
+
+// Achado do review do PR #6240 (confiança alta, P1) — o caso MISTO, que a 1ª
+// versão do fix errava e nenhum teste cobria.
+describe("keepLatestPerName — timestamp MISTO nunca produz falso-verde", () => {
+  it("FAILURE novo SEM startedAt não é descartado por SUCCESS antigo COM startedAt", () => {
+    // Era o bug: `""` (ausente) perdia sempre na comparação de string, então o
+    // FAILURE sumia do rollup avaliado e o gate devolvia `pass`.
+    const misto = [
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
+    ];
+    const r = evaluatePrChecksGate(misto);
+    assert.notEqual(r.verdict, "pass", "check reprovado NUNCA pode sumir da avaliação");
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("a ordem inversa também reprova (não é sensível a posição)", () => {
+    const misto = [
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+    ];
+    assert.equal(evaluatePrChecksGate(misto).verdict, "fail");
+  });
+
+  it("placeholder 0001-01-01 não conta como timestamp válido", () => {
+    // Se contasse, viraria o "mais antigo" de qualquer grupo — uma afirmação
+    // que o payload não fez. O GitHub emite esse placeholder em completedAt de
+    // run em andamento; assumir que nunca aparece em startedAt seria aposta.
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "0001-01-01T00:00:00Z" },
+    ]);
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("startedAt não-parseável também não desduplica", () => {
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "ontem de manhã" },
+    ]);
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("com timestamp válido nos DOIS, a dedup legítima do force-push segue funcionando", () => {
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+    ]);
+    assert.equal(r.verdict, "pass");
   });
 });
