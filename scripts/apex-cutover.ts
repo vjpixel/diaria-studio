@@ -111,6 +111,7 @@ import {
   buildCutoverPlan,
   extractCutoverDnsDeleteOps,
   extractCutoverAttachOp,
+  assertCutoverStepsInOrder,
   buildRollbackPlan,
   extractRollbackDnsOps,
   assertPlanTouchesOnlyAllowedRecordTypes,
@@ -502,6 +503,12 @@ export async function runCutover(cfg: Config, apply: boolean, fetchFn: typeof fe
   // 1 registro do mesmo tipo na zona — propaga pro catch de main() como erro
   // explícito (exit 2), nunca silenciosamente escolhe "o primeiro".
   const plan = buildCutoverPlan([...aRecords, ...aaaaRecords]);
+  // Defesa em profundidade — reafirma o guard de allowlist e a ordem
+  // dns-delete-antes-de-attach bem antes de qualquer mutação, mesmo já
+  // garantido dentro de buildCutoverPlan/buildCutoverDnsDeletePlan (mesmo
+  // padrão de runRollback, fleet review da PR #6376 item 1/2).
+  assertPlanTouchesOnlyAllowedRecordTypes(extractCutoverDnsDeleteOps(plan));
+  assertCutoverStepsInOrder(plan);
   console.log(JSON.stringify({ mode: "cutover", apply, plan }, null, 2));
 
   if (!apply) {
@@ -519,16 +526,26 @@ export async function runCutover(cfg: Config, apply: boolean, fetchFn: typeof fe
   if (dnsDeleteSteps.length === 0) {
     console.error(`${LOG_PREFIX} nenhum A/AAAA legado na zona — nada a remover, indo direto pro attach.`);
   } else {
+    // Rastreia quais tipos já foram removidos NESTA execução — se A suceder
+    // e AAAA falhar (ou vice-versa), a mensagem de abort precisa dizer isso:
+    // a zona fica num estado MISTO (um tipo já sumiu, o outro não), e o
+    // operador que só olhar "DELETE AAAA falhou" sem essa lista pode assumir
+    // erroneamente que nada mudou (achado do fleet review da PR #6376, P3).
+    const alreadyRemoved: AllowedDnsRecordType[] = [];
     for (const op of dnsDeleteSteps) {
       console.error(`${LOG_PREFIX} aplicando: DELETE dns_records/${op.id} (${op.type}, legado)...`);
       const delRes = await deleteDnsRecord(ZONE_ID, cfg.token, op.id, fetchFn);
       if (!delRes.success) {
         console.error(
           `\n${LOG_PREFIX} DELETE ${op.type} falhou: HTTP ${delRes.status} — ${formatCfError(delRes)}. ` +
+            (alreadyRemoved.length > 0
+              ? `Já removido nesta execução: ${alreadyRemoved.join(", ")} — a zona está num estado MISTO. `
+              : "") +
             `Abortando ANTES do attach — nunca tentar o PUT com o legado ainda incerto na zona.\n`,
         );
         return 2;
       }
+      alreadyRemoved.push(op.type);
     }
 
     // #573 — nunca confiar na resposta do DELETE. Reler antes de seguir.

@@ -280,6 +280,27 @@ describe("runCutover — --apply: remoção de A/AAAA legado ANTES do attach (#6
     assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
   });
 
+  it("P3 (fleet review #6376) — 1º DELETE sucede (A), 2º falha (AAAA) — exit 2, 0 PUT, mensagem nomeia o tipo JÁ removido (estado misto)", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE, {
+      failOn: (method, url) => (method === "DELETE" && url.includes("/dns_records/") && url.includes("1e19bf3285dff54456b607f6564617f7") ? "boom" : null),
+    });
+    const { logged, restore } = captureConsoleError();
+    let code: number;
+    try {
+      code = await runCutover(CFG, true, fetchFn);
+    } finally {
+      restore();
+    }
+    assert.equal(code, 2);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+    assert.equal(zone.aRecords.length, 0, "o A deveria ter sido removido de fato antes do AAAA falhar");
+    assert.ok(
+      logged.some((l) => l.includes("Já removido nesta execução") && l.includes("A")),
+      `esperava mensagem citando A como já removido, obteve: ${JSON.stringify(logged)}`,
+    );
+  });
+
   it("releitura pós-DELETE mostra que o registro sobreviveu — aborta ANTES do attach (0 PUT), mensagem clara", async () => {
     const zone = preCutoverZone();
     const { fetchFn } = makeMockFetch(zone, READY_PROBE);

@@ -486,6 +486,48 @@ export function extractCutoverAttachOp(plan: CutoverPlan): WorkerDomainAttachOp 
   return step.attach;
 }
 
+/**
+ * Garantia ESTRUTURAL de que nenhum passo `dns-delete` aparece depois do
+ * `attach` num `CutoverPlan` — independente de como `runCutover` esteja
+ * organizado no momento (achado do fleet review da PR #6376, item 2).
+ *
+ * Diferença deliberada de `RollbackStep`/`runRollback`: lá um único `for
+ * (const step of plan)` despacha por `step.kind`, e o próprio loop já é a
+ * prova de que a ordem não inverte sem reestruturar visivelmente aquele
+ * loop. Aqui `runCutover` precisa de um passo de RELEITURA (confirmar que o
+ * DELETE pegou) interposto entre a remoção e o attach — algo que não modela
+ * bem como "aplicar este step" na mesma forma que o rollback, então o
+ * executor continua em dois blocos lineares ("remover" / "attach") em vez
+ * de um loop único. Isso significa que a ordem real das chamadas HTTP
+ * depende da ordem dos blocos no código-fonte, não só do array — um
+ * refactor que mova o bloco de attach pra cima compilaria sem erro. Esta
+ * função fecha essa lacuna com uma checagem independente da ordem dos
+ * blocos: chame-a uma vez, logo após `buildCutoverPlan` retornar, e ela
+ * lança se qualquer coisa que não seja o ÚLTIMO elemento do array for um
+ * `attach` — sinal de que `buildCutoverPlan` (ou uma chamada futura que o
+ * substitua) parou de gerar planos ordenados corretamente.
+ *
+ * **Não substitui os testes de ordem de chamada HTTP** em
+ * `test/apex-cutover-script.test.ts` (que continuam sendo a 2ª linha de
+ * defesa, exercitando o executor de verdade) — cobre uma classe de erro
+ * diferente: um bug em `buildCutoverPlan` que gere o array na ordem errada,
+ * não um bug em `runCutover` que ignore a ordem do array (esse é pego pelos
+ * testes de I/O, não por esta função).
+ */
+export function assertCutoverStepsInOrder(plan: CutoverPlan): void {
+  const attachIdx = plan.findIndex((s) => s.kind === "attach");
+  if (attachIdx === -1) {
+    throw new Error("apex-cutover: plano de cutover sem passo de attach — bug interno em buildCutoverPlan.");
+  }
+  if (attachIdx !== plan.length - 1) {
+    throw new Error(
+      `apex-cutover: passo 'attach' não é o último do plano de cutover (índice ${attachIdx} de ` +
+        `${plan.length}) — algum passo 'dns-delete' apareceria DEPOIS do attach, o que reabriria a ` +
+        `janela de outage do #6373. Bug em buildCutoverPlan, nunca esperado em runtime.`,
+    );
+  }
+}
+
 // ── Plano de rollback (--rollback) ───────────────────────────────────────────
 
 export interface DnsPatchOp {

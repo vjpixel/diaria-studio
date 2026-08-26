@@ -33,6 +33,7 @@ import {
   buildCutoverDnsDeletePlan,
   extractCutoverDnsDeleteOps,
   extractCutoverAttachOp,
+  assertCutoverStepsInOrder,
   buildRollbackDnsPlan,
   buildRollbackPlan,
   extractRollbackDnsOps,
@@ -514,6 +515,29 @@ describe("verifyDnsRestored — verificação pós-mutação (#573), nunca confi
     assert.equal(r.restored, false);
     assert.match(r.mismatches[0], /^AAAA:/);
     assert.match(r.mismatches[0], /2 registros encontrados/);
+  });
+});
+
+describe("assertCutoverStepsInOrder — garantia estrutural attach-por-último (#6376 item 2)", () => {
+  it("plano de buildCutoverPlan (zona vazia) — não lança", () => {
+    assert.doesNotThrow(() => assertCutoverStepsInOrder(buildCutoverPlan([])));
+  });
+
+  it("plano de buildCutoverPlan (com A/AAAA legado) — não lança", () => {
+    const actual = PRE_CUTOVER_DNS_RECORDS.map((r) => ({ id: r.id, type: r.type }));
+    assert.doesNotThrow(() => assertCutoverStepsInOrder(buildCutoverPlan(actual)));
+  });
+
+  it("array manualmente construído com attach ANTES de um dns-delete — lança", () => {
+    const badPlan = [
+      { kind: "attach" as const, attach: { op: "attach" as const, hostname: APEX_HOSTNAME, service: WORKER_NAME, zoneId: ZONE_ID, zoneName: APEX_HOSTNAME } },
+      { kind: "dns-delete" as const, dns: { op: "delete" as const, type: "A" as const, id: "a-1" } },
+    ];
+    assert.throws(() => assertCutoverStepsInOrder(badPlan), /não é o último/);
+  });
+
+  it("plano vazio (sem attach) — lança (bug interno, nunca esperado de buildCutoverPlan)", () => {
+    assert.throws(() => assertCutoverStepsInOrder([]), /sem passo de attach/);
   });
 });
 
