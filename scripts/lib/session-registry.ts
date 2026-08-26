@@ -1751,7 +1751,12 @@ export function resolveMergeAdmission(
 
 // ─── Concessão de janela de merge (#6296) ──────────────────────────────────
 
-export type GrantMergeReason = "granted" | "self-grant-refused" | "not-a-coordinator" | "no-op-session-missing";
+export type GrantMergeReason =
+  | "granted"
+  | "self-grant-refused"
+  | "not-a-coordinator"
+  | "grantee-is-coordinator-refused"
+  | "no-op-session-missing";
 
 export interface GrantMergeResult {
   ok: boolean;
@@ -1789,6 +1794,29 @@ export function grantMergeWindow(
 ): GrantMergeResult {
   if (!isCoordinatorKind(kind)) return { ok: false, reason: "not-a-coordinator" };
   if (grantedTo === sessionId || grantedTo.trim() === "") return { ok: false, reason: "self-grant-refused" };
+
+  // #6303 review cruzado (P1·a): recusa conceder a OUTRA COORDENADORA.
+  //
+  // Até aqui só o CONCEDENTE era validado (`isCoordinatorKind(kind)`) e só a
+  // auto-concessão era barrada. O kind de `grantedTo` nunca era olhado —
+  // então `grant-merge --granted-to {sessionId de outra coordenadora}`
+  // sucedia. Combinado com o ramo de concessão que, no guard, saía ANTES da
+  // checagem de lock, isso deixava a coordenadora beneficiada pular a
+  // serialização. Concessão cruzada (A→B, B→A) e ambas mergeavam sem lock.
+  //
+  // A concessão existe pra dar caminho a quem NÃO tem identidade de
+  // coordenadora — tipicamente uma sessão interativa. Coordenadora já tem o
+  // direito por si; o que ela precisa respeitar é o merge lock, e conceder
+  // entre pares seria justamente um jeito de contorná-lo.
+  //
+  // Defesa em profundidade, não redundância: esta recusa responde "quem pode
+  // receber"; a reordenação no guard responde "quando pode usar". Fechar só
+  // uma das duas deixaria a outra metade aberta a um `merge_grant` gravado
+  // por outro caminho.
+  const grantee = listActiveSessions(repoRoot).find((s) => s.sessionId === grantedTo);
+  if (grantee && isCoordinatorKind(grantee.kind)) {
+    return { ok: false, reason: "grantee-is-coordinator-refused" };
+  }
 
   const tag = meta.tag ?? machineTag();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
@@ -2091,6 +2119,16 @@ function main(): void {
             break;
           case "not-a-coordinator":
             process.stdout.write("session-registry: grant-merge RECUSADO — só overnight/develop/continuo concedem\n");
+            process.exitCode = 1;
+            break;
+          case "grantee-is-coordinator-refused":
+            process.stdout.write(
+              `session-registry: grant-merge RECUSADO — ${grantedTo} é uma sessão COORDENADORA ativa (#6303). ` +
+                "Coordenadora já tem direito de mergear por si; o que ela precisa respeitar é o merge lock, e " +
+                "conceder entre pares seria justamente um jeito de contorná-lo. A concessão existe pra quem NÃO " +
+                "tem identidade de coordenadora (tipicamente uma sessão interativa). Se as duas rodadas precisam " +
+                "mergear, elas se serializam pelo merge-lock-acquire, não por concessão.\n",
+            );
             process.exitCode = 1;
             break;
           case "no-op-session-missing":

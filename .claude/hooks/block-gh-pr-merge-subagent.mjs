@@ -569,8 +569,45 @@ export function extractGhPrMergeTargetPr(command) {
  *     `readActiveCoordinatorScan`, Finding B).
  */
 export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId, ctx = {}) {
-  if (!activeCoordinatorSessionIds || activeCoordinatorSessionIds.size === 0) return false;
   if (callerSessionId === undefined || callerSessionId === null || callerSessionId === "") return false;
+
+  const coordinators = activeCoordinatorSessionIds ?? new Set();
+
+  // #6303 review cruzado (P1·b): NENHUMA coordenadora identificada tem DUAS
+  // leituras opostas, e antes desta correção as duas colapsavam em "permite".
+  //
+  //   - varredura CONFIÁVEL e vazia → de fato não há rodada ativa: permite,
+  //     que é o caminho de uma sessão interativa comum (#5251);
+  //   - varredura DEGRADADA (o `readdirSync` lançou, ou TODA entrada falhou
+  //     no parse) → não dá pra saber se há rodada. É o PIOR caso de
+  //     degradação, e era justamente o que escapava: o fix do Finding B só
+  //     consultava `scanDegraded` no ramo `holder === null`, que exige
+  //     `size > 0` — inalcançável quando a varredura não identificou
+  //     ninguém. Uma rodada real, ilegível por um soluço de I/O do OneDrive
+  //     naquele instante, era tratada igual a "não há rodada".
+  //
+  // Bloquear aqui é o que o docblock deste arquivo promete ("prefere
+  // bloquear na dúvida") — o custo de um falso positivo é uma PR esperando
+  // merge manual; o de um falso negativo é o incidente do #5716.
+  if (coordinators.size === 0) return ctx.scanDegraded === true;
+
+  const holder = ctx.mergeLockHolder;
+
+  // #6303 review cruzado (P1·a): o LOCK É AVALIADO PRIMEIRO, e vale pra todo
+  // mundo — inclusive pra quem tem concessão de janela.
+  //
+  // Antes desta correção o ramo da concessão dava `return false` ANTES da
+  // checagem de lock, e `grantMergeWindow` nunca validava o kind de
+  // `grantedTo`. Somados: `grant-merge --granted-to {sessionId de OUTRA
+  // coordenadora}` sucedia, e o `gh pr merge` seguinte dela pulava a
+  // composição com o lock — reabrindo exatamente a corrida de merge duplo
+  // que o §DEFEITO 1 desta mesma unidade fecha. Com concessão cruzada
+  // (A→B e B→A), as duas mergeavam sem lock.
+  //
+  // A separação que corrige: **a concessão destrava IDENTIDADE ("quem pode
+  // mergear"), nunca TEMPO ("quando pode")**. Quem serializa continua sendo
+  // o lock, para todos.
+  if (typeof holder === "string" && holder !== callerSessionId) return true;
 
   // #6296 — DEFEITO 2: a janela concedida por conversa ganha representação
   // mecânica. Medido ao vivo em 260826: o protocolo inteiro da Parte F do
@@ -601,12 +638,14 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   // `undefined`) não bypassa — cai pro resto da lógica normal abaixo. A
   // dúvida fecha aqui, não abre: nunca honra uma concessão escopada sobre um
   // alvo que não deu pra determinar.
-  if (ctx.hasLiveGrant === true && (ctx.grantPr === undefined || ctx.grantPr === ctx.targetPr)) {
-    return false;
-  }
+  const grantCoversTarget =
+    ctx.hasLiveGrant === true && (ctx.grantPr === undefined || ctx.grantPr === ctx.targetPr);
 
-  const isCoordinator = activeCoordinatorSessionIds.has(callerSessionId);
-  if (!isCoordinator) return true; // comportamento pré-#6296, inalterado
+  const isCoordinator = coordinators.has(callerSessionId);
+  // Duas portas de identidade, e só duas. Note que isto NÃO é mais um
+  // `return false` — passar aqui só significa "tem direito de mergear"; se
+  // pode mergear AGORA é o bloco de lock abaixo que decide (P1·a).
+  if (!grantCoversTarget && !isCoordinator) return true; // comportamento pré-#6296
 
   // #6296 — DEFEITO 1: dois mecanismos governavam a mesma ação sem se
   // compor. `grep -c 'mergeLock\|merge-lock\|\.merge-lock'` neste arquivo
@@ -638,11 +677,33 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   //     PERMITE. Nunca transformar falha transitória de leitura em bloqueio
   //     de merge legítimo — distinto do conteúdo CORROMPIDO acima, que é
   //     estado CONHECIDO (arquivo existe, não parseia).
-  const holder = ctx.mergeLockHolder;
-  if (typeof holder === "string" && holder !== callerSessionId) return true;
+  // Lock AUSENTE (`null`) ou INDETERMINADO (`undefined`): só permite quando
+  // não há contenção real. O caso `undefined` entrou aqui no review cruzado
+  // do #6303 (P2): `.merge-lock.json` mora no MESMO diretório sincronizado
+  // que os arquivos de sessão, então um soluço de I/O do OneDrive degrada os
+  // dois sinais junto — permitir sobre lock ilegível E varredura degradada
+  // seria confiar em dois estados que ninguém conseguiu ler.
+  // Varredura DEGRADADA bloqueia independente do estado do lock — inclusive
+  // com o lock INDETERMINADO (P2 do review cruzado): `.merge-lock.json` mora
+  // no MESMO diretório sincronizado que os arquivos de sessão, então um
+  // soluço de I/O do OneDrive degrada os dois sinais junto, e permitir aí
+  // seria confiar em dois estados que ninguém conseguiu ler.
+  if (ctx.scanDegraded === true) return true;
+
+  // A regra de CONTENÇÃO exige saber que o lock está ausente. Ela NÃO se
+  // aplica a `undefined` (não deu pra ler): "estado indeterminado nunca
+  // bloqueia" é o fail-safe declarado desta função desde o #6296, e o que o
+  // review cruzado pediu foi cruzar `undefined` com `scanDegraded` (feito
+  // acima), não transformar toda leitura falha em bloqueio.
   if (holder === null) {
-    if (ctx.scanDegraded === true) return true;
-    if (activeCoordinatorSessionIds.size > 1) return true;
+    // Duas ou mais coordenadoras ativas e ninguém segurando o lock: pegar o
+    // lock deixou de depender de a skill lembrar.
+    if (coordinators.size > 1) return true;
+    // Uma coordenadora só, mas quem chama NÃO é ela — logo é uma sessão com
+    // concessão, e há duas sessões em jogo. Isso é contenção por definição:
+    // a beneficiada também passa pelo lock. Corolário direto de "a concessão
+    // destrava identidade, não tempo" (P1·a).
+    if (!isCoordinator) return true;
   }
   return false;
 }

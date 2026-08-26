@@ -623,3 +623,109 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
     }
   });
 });
+
+// ─── #6303 review cruzado: dois bypasses P1 ────────────────────────────────
+
+describe("#6303 P1·a — a concessão destrava IDENTIDADE, nunca TEMPO", () => {
+  const coords = new Set(["coord-a"]);
+
+  it("concessão NÃO pula o merge lock de outra sessão", () => {
+    // Era o bypass: o ramo da concessão dava `return false` ANTES da checagem
+    // de lock. Somado a `grantMergeWindow` não validar o kind de `grantedTo`,
+    // uma coordenadora podia receber concessão de outra e pular a
+    // serialização — reabrindo a corrida de merge duplo que o §DEFEITO 1
+    // desta mesma unidade fecha.
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "beneficiada", {
+        hasLiveGrant: true,
+        mergeLockHolder: "outra-sessao",
+      }),
+      true,
+    );
+  });
+
+  it("concessão + lock nas mãos da própria beneficiada → permite", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "beneficiada", {
+        hasLiveGrant: true,
+        mergeLockHolder: "beneficiada",
+      }),
+      false,
+    );
+  });
+
+  it("concessão + lock AUSENTE + 1 coordenadora → bloqueia: há 2 sessões, logo contenção", () => {
+    // A beneficiada não é a coordenadora, então existem duas sessões em jogo.
+    // Ela também precisa passar pelo lock — corolário de "identidade, não tempo".
+    assert.equal(
+      shouldBlockGhPrMerge(coords, "beneficiada", { hasLiveGrant: true, mergeLockHolder: null }),
+      true,
+    );
+  });
+
+  it("coordenadora sozinha, lock ausente → segue permitindo (rodada solo não quebrou)", () => {
+    assert.equal(shouldBlockGhPrMerge(coords, "coord-a", { mergeLockHolder: null }), false);
+  });
+
+  it("grantMergeWindow RECUSA conceder a outra coordenadora ATIVA", () => {
+    // Defesa em profundidade: esta recusa responde "quem pode RECEBER"; a
+    // reordenação no guard responde "quando pode USAR". Fechar só uma
+    // deixaria a outra metade aberta a um merge_grant gravado por outro
+    // caminho.
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: "Neo" });
+      registerSession(root, "develop", "coord-b", { tag: "Neo" });
+      const r = grantMergeWindow(root, "overnight", "coord-a", "coord-b", { pr: 1 });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, "grantee-is-coordinator-refused");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("grantMergeWindow CONCEDE normalmente a sessão não-coordenadora", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord-a", { tag: "Neo" });
+      registerSession(root, "interactive", "interativa", { tag: "Neo" });
+      assert.equal(grantMergeWindow(root, "overnight", "coord-a", "interativa", { pr: 1 }).ok, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#6303 P1·b — varredura degradada a ZERO coordenadoras não permite", () => {
+  it("size 0 + scan DEGRADADO → BLOQUEIA (pior caso de degradação)", () => {
+    // O ramo `size === 0` rodava ANTES de `scanDegraded` ser lido em lugar
+    // nenhum: `readdirSync` lançando, ou toda entrada falhando no parse,
+    // era tratado igual a "não há rodada ativa" — com rodada real ativa e
+    // apenas ilegível naquele instante.
+    assert.equal(shouldBlockGhPrMerge(new Set(), "qualquer", { scanDegraded: true }), true);
+  });
+
+  it("size 0 + scan CONFIÁVEL → permite (sessão interativa comum, #5251)", () => {
+    assert.equal(shouldBlockGhPrMerge(new Set(), "qualquer", { scanDegraded: false }), false);
+  });
+
+  it("lock INDETERMINADO + scan degradado → bloqueia (os dois sinais moram no mesmo diretório)", () => {
+    assert.equal(
+      shouldBlockGhPrMerge(new Set(["coord-a"]), "coord-a", {
+        mergeLockHolder: undefined,
+        scanDegraded: true,
+      }),
+      true,
+    );
+  });
+
+  it("lock INDETERMINADO + scan saudável → PERMITE: 'indeterminado nunca bloqueia' segue valendo", () => {
+    // O review pediu cruzar `undefined` com `scanDegraded`, não transformar
+    // toda leitura falha em bloqueio — isso quebraria o fail-safe declarado
+    // desta função desde o #6296.
+    assert.equal(
+      shouldBlockGhPrMerge(new Set(["coord-a", "coord-b"]), "coord-a", { mergeLockHolder: undefined }),
+      false,
+    );
+  });
+});

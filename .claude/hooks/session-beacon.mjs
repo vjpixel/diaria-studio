@@ -173,6 +173,30 @@ function statIsDirectory(path) {
 }
 
 /**
+ * `true` quando `startDir` é um worktree VINCULADO (`.git` é ARQUIVO com
+ * `gitdir:`), `false` quando é o checkout principal (`.git` é DIRETÓRIO) ou
+ * quando não dá pra determinar (#6303 review cruzado, P2).
+ *
+ * Usado pra não registrar subagente: todo implementador despachado via
+ * `Agent` roda com `isolation: "worktree"`, então o próprio arquivo deste
+ * hook mora num worktree vinculado. Ver o racional completo no entrypoint.
+ *
+ * Fail-open pro lado de REGISTRAR (`false` na dúvida): se não deu pra ler o
+ * `.git`, o comportamento volta a ser o de antes deste guard. Errar aqui
+ * custa um registro a mais, não um registro a menos — e um registro a menos
+ * seria justamente cegar o `conflicts` da sessão real.
+ */
+export function isLinkedWorktree(startDir) {
+  try {
+    const gitPath = join(startDir, ".git");
+    if (!existsSync(gitPath)) return false;
+    return !statIsDirectory(gitPath);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Lê a branch corrente a partir de `.git/HEAD` (do worktree, quando for um).
  * `null` em detached HEAD ou qualquer falha — nunca lança, nunca spawna.
  */
@@ -367,6 +391,40 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwdRoot = join(hookDir, "..", "..");
+
+      // #6303 review cruzado (P2): NÃO registrar subagente.
+      //
+      // A premissa está asserida no guard irmão
+      // (`block-gh-pr-merge-subagent.mjs`) e ele DEPENDE dela: subagente
+      // despachado via `Agent` roda com `session_id` PRÓPRIO, diferente do
+      // coordenador. Sem este guard, o beacon criaria um registro
+      // `interactive-*` para CADA subagente.
+      //
+      // A conta, medida e não estimada: `seed/sources.csv` tem 53 fontes, e
+      // o Stage 1 de UMA edição despacha um `source-researcher` por fonte,
+      // mais os `discovery-searcher`, mais 3 `writer-destaque`, mais os
+      // sociais. São centenas de arquivos por dia num diretório que é
+      // junction OneDrive já documentado como propenso a cópia de conflito
+      // `-safeBackup-NNNN` (#5427/#6130) — e o GC que os reaparia
+      // (`Diaria-Session-Registry-Gc`, #6130) está "DECLARADA — ainda NÃO
+      // armada" em `docs/scheduled-tasks-registry.md`. O lixo não teria
+      // quem recolhesse.
+      //
+      // Discriminador, sem custo: subagente implementador roda com
+      // `isolation: "worktree"`, então o PRÓPRIO arquivo deste hook está
+      // dentro de um worktree vinculado (`.git` é ARQUIVO com `gitdir:`, não
+      // diretório). Coordenador e sessão interativa rodam no checkout
+      // principal (`.git` é diretório). É a mesma leitura que
+      // `resolveMainRepoRootNoSpawn` já faz — nenhum subprocesso a mais.
+      //
+      // Consequência aceita e declarada: uma sessão INTERATIVA que rode a
+      // partir de um worktree também não emite beacon. É o lado seguro do
+      // trade-off (deixar de registrar alguém é degradação de visibilidade;
+      // registrar centenas de subagentes efêmeros é lixo ativo num diretório
+      // sincronizado sem GC armado), e o `conflicts` dessa sessão continua
+      // funcionando — ela só não aparece como peer para as outras.
+      if (isLinkedWorktree(cwdRoot)) return;
+
       const mainRoot = resolveMainRepoRootNoSpawn(cwdRoot) ?? cwdRoot;
       const sessionsDir = join(mainRoot, "data", "sessions");
       // `data/` é junction do OneDrive e NÃO existe num clone fresco nem num

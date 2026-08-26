@@ -33,6 +33,7 @@ import {
   readCurrentBranch,
   resolveMainRepoRootNoSpawn,
   sniffVerb,
+  isLinkedWorktree,
 } from "../.claude/hooks/session-beacon.mjs";
 
 const T0 = Date.parse("2026-08-26T12:00:00.000Z");
@@ -477,5 +478,41 @@ describe("CLI end-to-end — harness real via stdin (#6303 Finding H, mesmo padr
     assert.equal(result.status, 0);
     assert.equal(result.stderr, "");
     assert.deepEqual(readdirSync(sessionsDir), []);
+  });
+});
+
+describe("#6303 P1/P2 — o beacon NÃO registra subagente", () => {
+  it("worktree vinculado (.git é ARQUIVO) é detectado", () => {
+    // Todo subagente implementador roda com `isolation: "worktree"`, então o
+    // próprio arquivo do hook mora num worktree vinculado. Sem este
+    // discriminador, o beacon criaria um registro por subagente: o Stage 1 de
+    // UMA edição despacha ~53 `source-researcher` (uma por fonte ativa de
+    // `seed/sources.csv`), mais discovery, writers e sociais — centenas de
+    // arquivos/dia numa junction OneDrive cujo GC (`Diaria-Session-Registry-Gc`,
+    // #6130) está "DECLARADA — ainda NÃO armada".
+    const base = mkdtempSync(join(tmpdir(), "beacon-wt-guard-"));
+    try {
+      const main = join(base, "principal");
+      const wt = join(base, "wt");
+      mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
+      mkdirSync(wt, { recursive: true });
+      writeFileSync(join(wt, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`, "utf8");
+
+      assert.equal(isLinkedWorktree(wt), true, "worktree vinculado → não registra");
+      assert.equal(isLinkedWorktree(main), false, "checkout principal → registra normalmente");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("sem .git → false (fail-open pro lado de REGISTRAR)", () => {
+    // Errar aqui custa um registro a mais, não um a menos — e um a menos
+    // cegaria o `conflicts` de uma sessão real.
+    const root = mkdtempSync(join(tmpdir(), "beacon-nogit-guard-"));
+    try {
+      assert.equal(isLinkedWorktree(root), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
