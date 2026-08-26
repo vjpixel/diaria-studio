@@ -12,7 +12,7 @@
  * Roda na Fase 2 de `.claude/skills/diaria-develop/SKILL.md`, na sequência
  * dos gates pré-relatório. `exit 1` = alguma entrada de `issues[]` está sem
  * `exec_track_painel` (o 6a não rodou pra ela) ou com valor fora do enum de
- * 5 tracks (typo = classificação que nenhum consumidor reconhece).
+ * tracks (typo = classificação que nenhum consumidor reconhece).
  *
  * Remediation determinística: pra cada número listado, rodar
  * `classifyExecTrack` (`scripts/lib/issue-exec-track.ts`) e gravar o valor
@@ -58,7 +58,7 @@ if (isMainModule(import.meta.url)) {
   } else {
     const list = result.entries.map((e) => `#${e.number} (valor: "${e.value}")`).join(", ");
     console.error(
-      `[check-develop-exec-track-coverage] exec_track_painel fora do enum de 5 tracks: ${list}`,
+      `[check-develop-exec-track-coverage] exec_track_painel fora do enum de tracks: ${list}`,
     );
   }
   console.error(

@@ -9,13 +9,18 @@ import {
 import type { DevelopPlanIssueLike } from "../scripts/lib/develop-plan-motivo.ts";
 
 describe("EXEC_TRACK_VALUES", () => {
-  it("é o espelho exato do enum ExecTrack de issue-exec-track.ts (5 valores)", async () => {
-    // Import dinâmico pra comparar contra a fonte do enum sem duplicar a
-    // lista — se alguém acrescentar um track lá, este teste quebra aqui.
+  it("é o espelho exato do enum ExecTrack de issue-exec-track.ts", async () => {
+    // Compara contra `EXEC_TRACK_UI` (fonte real do enum em runtime, #6200/
+    // #6201) em vez de um array literal duplicado aqui — antes desta
+    // mudança, o comentário PROMETIA "se alguém acrescentar um track lá,
+    // este teste quebra aqui", mas o array `fonte` era outra cópia manual: a
+    // adição de `epica` (#6201) passaria batida por ESTE teste (só quebraria
+    // se `EXEC_TRACK_VALUES` em si esquecesse a entrada, não se as DUAS
+    // listas esquecessem juntas). Derivar `fonte` de `EXEC_TRACK_UI` fecha
+    // esse gap — agora é impossível as duas divergirem sem o teste acusar.
     const mod = await import("../scripts/lib/issue-exec-track.ts");
-    const fonte: readonly string[] = ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"];
+    const fonte = mod.EXEC_TRACK_UI.map((e) => e.track);
     assert.deepEqual([...EXEC_TRACK_VALUES].sort(), [...fonte].sort());
-    void mod;
   });
 });
 

@@ -68,13 +68,13 @@ import { EXEC_TRACK_UI, type ExecTrack } from "./issue-exec-track.ts";
 /** Veredito que uma invocação de `route-issue.ts` pode pedir — mesmo union de
  * `ExecTrack` (`issue-exec-track.ts`), re-exportado com o nome que o CLI usa
  * (`--track`) pra deixar claro, no ponto de uso, que os dois são o MESMO
- * conjunto de 5 valores por construção (não uma coincidência a manter
+ * conjunto de valores por construção (não uma coincidência a manter
  * sincronizada à mão — é um alias de tipo, não uma redeclaração). */
 export type RouteTrack = ExecTrack;
 
 /** Todos os valores válidos de `--track`, na mesma ordem/fonte de
  * `EXEC_TRACK_UI` — usado pelo CLI pra validar o argumento sem duplicar a
- * lista de 5 strings à mão. */
+ * lista de strings à mão. */
 export const ROUTE_TRACKS: readonly RouteTrack[] = EXEC_TRACK_UI.map((e) => e.track);
 
 /**
@@ -125,8 +125,9 @@ export const ROUTABLE_LABELS: readonly string[] = [
  * `--motivo` é um argumento opcional do verbo que seleciona a label Mais
  * específica pra um veredito, em vez de deixar o `TRACK_ADD_LABEL` escolher
  * a genérica. Ex.: `--track bloqueada --motivo conta-de-terceiro` aplica
- * `external-blocker` (não `bloqueio-execucao`); `--track fora-de-rodada
- * --motivo epica` aplica `epic-guarda-chuva` (não `on-hold`).
+ * `external-blocker` (não `bloqueio-execucao`). Pra épica, use `--track
+ * epica` diretamente (#6201) — `TRACK_ADD_LABEL.epica` já aplica
+ * `epic-guarda-chuva` sem precisar de `--motivo`.
  *
  * A escolha de cada motivo mapeia pra exatamente uma label que
  * `classifyExecTrack` reconhece — garantido pelo teste de round-trip:
@@ -145,8 +146,14 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   "plataforma": "beehiiv",
   "kit": "kit-migration",
   "execucao": "bloqueio-execucao",
-  // fora-de-rodada
+  // epica — #6201: `epic-guarda-chuva` ganhou track próprio (era motivo de
+  // `fora-de-rodada`). O motivo `epica` continua aqui por compatibilidade
+  // (`--track epica --motivo epica` é equivalente a `--track epica` sozinho,
+  // já que `TRACK_ADD_LABEL.epica` aplica a mesma label por default) —
+  // nenhum caller precisa dele, mas remover quebraria uma chamada antiga
+  // que ainda passasse `--motivo epica` explicitamente.
   "epica": "epic-guarda-chuva",
+  // fora-de-rodada
   "sem-direcao": "sem-direcao-acionavel",
   "decisao": "decisao-registrada",
   "alarme-estado": "alarm",
@@ -186,6 +193,11 @@ const BLOCKED_SPECIFIC_LABELS = new Set([
 const TRACK_ADD_LABEL: Partial<Record<RouteTrack, string>> = {
   develop: "develop-track",
   bloqueada: "bloqueio-execucao",
+  // #6201 — `epica` é o único veredito onde a label default e a única opção
+  // plausível são a mesma coisa (`epic-guarda-chuva`); diferente de
+  // `bloqueada`/`develop`, não há uma 2ª label mais específica a escolher
+  // via `--motivo` sem que ela seja, na prática, o mesmo literal.
+  epica: "epic-guarda-chuva",
   "fora-de-rodada": "on-hold",
 };
 

@@ -373,7 +373,7 @@ describe("detectLabelDrift — filtro de precisão por track (#5955)", () => {
     assert.equal(findings.length, 1);
   });
 
-  for (const track of ["bloqueada", "agendada", "develop", "fora-de-rodada"] as const) {
+  for (const track of ["bloqueada", "agendada", "develop", "epica", "fora-de-rodada"] as const) {
     it(`currentTrack ${track}: não reporta — label faltante não muda roteamento`, () => {
       const findings = detectLabelDrift({
         issueNumber: 1,

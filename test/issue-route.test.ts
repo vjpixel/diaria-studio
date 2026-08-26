@@ -69,8 +69,11 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     ["bloqueada", "plataforma"],
     ["bloqueada", "kit"],
     ["bloqueada", "execucao"],
+    // epica (#6201 — motivo "epica" pareado com o track próprio, não mais
+    // "fora-de-rodada": epic-guarda-chuva ganhou precedência acima de
+    // BLOCKED_LABELS, então classifica "epica", não "fora-de-rodada")
+    ["epica", "epica"],
     // fora-de-rodada
-    ["fora-de-rodada", "epica"],
     ["fora-de-rodada", "sem-direcao"],
     ["fora-de-rodada", "decisao"],
     ["fora-de-rodada", "alarme-estado"],
@@ -142,7 +145,14 @@ describe("planRouteLabels -- motivo seleciona label especifica (3b)", () => {
     assert.deepEqual(plan.add, ["bloqueio-execucao"]);
   });
 
-  it("fora-de-rodada --motivo epica adiciona epic-guarda-chuva, nao on-hold", () => {
+  it("--track epica (sem --motivo) adiciona epic-guarda-chuva via TRACK_ADD_LABEL default", () => {
+    const plan = planRouteLabels("epica");
+    assert.deepEqual(plan.add, ["epic-guarda-chuva"]);
+    assert.ok(!plan.remove.includes("epic-guarda-chuva"));
+    assert.ok(plan.remove.includes("on-hold"));
+  });
+
+  it("fora-de-rodada --motivo epica ainda adiciona epic-guarda-chuva (compat #6201) — mas o round-trip real e' via --track epica, ver describe acima", () => {
     const plan = planRouteLabels("fora-de-rodada", "epica");
     assert.deepEqual(plan.add, ["epic-guarda-chuva"]);
     assert.ok(!plan.remove.includes("epic-guarda-chuva"));
@@ -409,7 +419,16 @@ describe("routeIssue --motivo #6197 item 2", () => {
     assert.ok(!gh.state.labels.includes("bloqueio-execucao"));
   });
 
-  it("--track agendada --motivo epica adiciona epic-guarda-chuva", () => {
+  it("--track agendada --motivo epica agora falha na validacao (#6201: epica vence agendada na precedencia)", () => {
+    // Antes do #6201, `epic-guarda-chuva` classificava `fora-de-rodada`
+    // (checado bem depois de `agendada`), entao esta combinacao produzia
+    // "agendada" de verdade. Com `epica` promovida a track proprio e
+    // checada logo no topo da precedencia (2o passo, antes de
+    // bloqueada/agendada), a label sozinha ja classifica "epica" —
+    // routeIssue detecta a divergencia no passo 4 e falha ruidosamente em
+    // vez de reportar sucesso mentiroso. Quem quer "epica com data" usa
+    // --track epica direto (sem --until — agendada e o unico track com
+    // marcador, ver docstring do modulo).
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
       issue: 54,
@@ -421,9 +440,27 @@ describe("routeIssue --motivo #6197 item 2", () => {
       ghRun: gh.run,
       now: new Date("2026-08-23T00:00:00Z"),
     });
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.validated, false);
+    assert.equal(result.resolvedTrack, "epica");
     assert.deepEqual(result.labelsAdded, ["epic-guarda-chuva"]);
     assert.ok(gh.state.labels.includes("epic-guarda-chuva"));
+  });
+
+  it("--track epica (sem --motivo, sem --until) roteia com sucesso", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 59,
+      track: "epica",
+      reason: "issue e uma epica; sub-issues em andamento",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-23T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    assert.equal(result.resolvedTrack, "epica");
+    assert.deepEqual(result.labelsAdded, ["epic-guarda-chuva"]);
   });
 
   it("motivo invalido falha antes de qualquer I/O", () => {

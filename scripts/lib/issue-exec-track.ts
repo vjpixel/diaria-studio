@@ -89,8 +89,20 @@
  */
 
 /** Qual sessão consegue trabalhar a issue. Exclusivo — exatamente um valor
- * por issue, e a união dos cinco cobre o backlog aberto inteiro. */
-export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "fora-de-rodada";
+ * por issue, e a união dos seis cobre o backlog aberto inteiro.
+ *
+ * `epica` (#6201 item 8) é um valor à parte de `fora-de-rodada` desde
+ * 26/08/2026 — antes, `epic-guarda-chuva` caía dentro de
+ * `RESOLVED_BY_PROSE_LABELS` e virava `fora-de-rodada`, indistinguível de
+ * "o editor tirou de circulação" (`on-hold`/`wontfix`). "É uma épica" é
+ * afirmação sobre a NATUREZA da issue (nunca despachada direto, fecha
+ * quando as filhas mergearem); "o editor tirou de circulação" é uma
+ * decisão. As duas produziam o mesmo rótulo no painel — e pior, pra uma
+ * épica que TAMBÉM carregava um bloqueio real (`kit-migration` etc.) só dava
+ * pra obter a leitura "épica" removendo a label de bloqueio verdadeira (caso
+ * real: #463 perdeu `kit-migration` pra classificar certo). Ver docstring de
+ * `classifyExecTrackWithRule` pra precedência completa. */
+export type ExecTrack = "overnight" | "develop" | "agendada" | "bloqueada" | "epica" | "fora-de-rodada";
 
 /**
  * Identificador da regra que decidiu o `track`. Formato `category:detail`
@@ -203,6 +215,25 @@ export interface ExecTrackResult {
 const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
 
 /**
+ * #6201 item 8 — issue `[ÉPICA]` guarda-chuva: nunca implementada direto,
+ * fecha só quando as issues-filhas mergearem (#5968). Checada logo depois
+ * de `OUT_OF_ROUND_LABELS` e ANTES de `BLOCKED_LABELS`/`agendada`/deferimento
+ * — "é uma épica" é afirmação sobre a NATUREZA da issue, então vence sobre
+ * qualquer sinal de MOMENTO (bloqueio real, deferimento, data futura), com
+ * uma exceção: `on-hold`/`wontfix` (o editor tirando de circulação
+ * explicitamente) continua vencendo até `epica`, porque essa é uma decisão
+ * mais forte que "é uma épica" — uma épica que o editor engavetou é
+ * `fora-de-rodada`, não `epica`.
+ *
+ * Antes desta label ganhar precedência própria, uma épica com bloqueio real
+ * coexistindo (#461: `epic-guarda-chuva` + `kit-migration` + `beehiiv`)
+ * classificava `bloqueada` — para obter a leitura "é uma épica" (#463), foi
+ * preciso REMOVER a label de bloqueio verdadeira, apagando informação real
+ * pra conseguir a classificação certa. Ver `ExecTrack` pro racional
+ * completo do valor `epica` como 6º track. */
+const EPIC_LABEL = "epic-guarda-chuva";
+
+/**
  * Já resolvida sem código a escrever — motivo diferente de `OUT_OF_ROUND_LABELS`
  * acima (#5532): não é o editor tirando a issue de circulação, é a issue já
  * ter chegado ao fim por outro caminho. `decisao-registrada` = decisão
@@ -224,23 +255,26 @@ const OUT_OF_ROUND_LABELS = new Set(["on-hold", "wontfix"]);
 const RESOLVED_BY_PROSE_LABELS = new Set([
   "decisao-registrada",
   "alarm",
-  // #5968 — mesma família semântica: nenhuma das duas tem código pendente
-  // pra ESTA issue, mesmo sem ser "o editor tirou de circulação"
+  // #5968 — mesma família semântica: nenhuma tem código pendente pra ESTA
+  // issue, mesmo sem ser "o editor tirou de circulação"
   // (`OUT_OF_ROUND_LABELS`) nem "decisão registrada"/"alarme" propriamente.
-  // `epic-guarda-chuva` = issue `[ÉPICA]` deliberadamente nunca despachada
-  // direto — fecha só quando a issue-filha mergear (equivalente ao status
-  // `elegivel_especial` do overnight, ver `.claude/skills/diaria-overnight/SKILL.md`
-  // § Fase 0 passo 7). `sem-direcao-acionavel` = uma rodada overnight já
-  // concluiu explicitamente "sem ação de código clara a tomar" — não é
+  // `sem-direcao-acionavel` = uma rodada overnight já concluiu
+  // explicitamente "sem ação de código clara a tomar" — não é
   // `precisa-resposta` (não há pergunta útil pro briefing) nem
   // `trade-off-real` (não é decisão de produto/editorial); sem esta label a
   // issue reclassificaria `overnight` pra sempre e cada rodada futura
   // reconfirmaria o mesmo diagnóstico sem avançar (achado ao vivo #5968,
   // #5959: 2 rodadas em 23/08/2026 já reconfirmaram "sem ação" sem
-  // progresso). Como as demais desta família, outra label que já classifica
-  // a issue (bloqueio, `windows`, `trade-off-real`) sempre vence — ex: uma
-  // EPIC também bloqueada por `external-blocker` continua `bloqueada`.
-  "epic-guarda-chuva",
+  // progresso). Outra label que já classifica a issue (bloqueio, `windows`,
+  // `trade-off-real`) sempre vence.
+  //
+  // `epic-guarda-chuva` SAIU deste Set em #6201 (item 8) — ganhou precedência
+  // própria, mais alta, checada perto do topo de `classifyExecTrackWithRule`
+  // (ver lá). Motivo: "é uma épica" é afirmação sobre a NATUREZA da issue,
+  // não sobre um estado transitório como bloqueio/deferimento — antes,
+  // ficar aqui fazia uma épica com bloqueio real (#461: `kit-migration` +
+  // `beehiiv`) perder pra `bloqueada`, e a única forma de obter a leitura
+  // "épica" era remover a label de bloqueio verdadeira (caso real: #463).
   "sem-direcao-acionavel",
 ]);
 
@@ -415,49 +449,59 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         (caller que já filtra por `--state open` pode
  *                         omitir); ausente/não-`"CLOSED"` não classifica
  *                         aqui, cai nas regras normais abaixo.
- *   1. `fora-de-rodada` — o editor tirou de circulação; nada mais importa.
- *   2. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
+ *   1. `fora-de-rodada` — o editor tirou de circulação (`on-hold`/`wontfix`);
+ *                         nada mais importa, nem "é uma épica" (passo 2).
+ *   2. `epica`          — (#6201 item 8) `epic-guarda-chuva` — issue `[ÉPICA]`
+ *                         nunca implementada direto, delegada às
+ *                         issues-filhas. Checado ANTES de `bloqueada`/
+ *                         `agendada`/deferimento de propósito: "é uma épica"
+ *                         é afirmação sobre a NATUREZA da issue, então vence
+ *                         sobre qualquer sinal de MOMENTO — uma épica com
+ *                         bloqueio real coexistindo (`kit-migration`,
+ *                         `beehiiv`, etc.) classifica `epica`, não
+ *                         `bloqueada`, sem precisar remover a label de
+ *                         bloqueio pra obter a leitura certa (caso real:
+ *                         #461/#463).
+ *   3. `bloqueada`      — bloqueio externo (nenhuma sessão destrava sozinha).
  *                         Exceção (#5694): `external-blocker` acompanhada de
  *                         `credencial-escopo` NÃO conta aqui — vira `develop`
- *                         no passo 5. Qualquer outra label de
+ *                         no passo 6. Qualquer outra label de
  *                         `BLOCKED_LABELS` (`kit-migration`, `beehiiv`,
  *                         `bloqueio-execucao`) continua vencendo normalmente.
- *   3. `agendada`       — (#5682) marcador `aguardando-ate:` com data futura,
+ *   4. `agendada`       — (#5682) marcador `aguardando-ate:` com data futura,
  *                         e nenhum bloqueio real acima já decidiu por ela.
  *                         Bloqueio real vence sobre data: a issue é
  *                         `bloqueada`, não `agendada`, se carregar as duas.
- *   4. `bloqueada`      — (2ª checagem) deferimento vago (`not-this-week`,
+ *   5. `bloqueada`      — (2ª checagem) deferimento vago (`not-this-week`,
  *                         `next-month`) — checado DEPOIS de `agendada` de
  *                         propósito: quem escreveu uma data disse algo mais
  *                         específico que "not-this-week", então a data vence
  *                         sobre o deferimento vago quando as duas coexistem.
- *   5. `develop`        — precisa da máquina Windows, trade-off-real já
+ *   6. `develop`        — precisa da máquina Windows, trade-off-real já
  *                         julgado pelo overnight, (#5694) `external-blocker`
  *                         + `credencial-escopo` (credencial já existe, só
  *                         falta escopo — cat. A do develop), ou (#5948)
  *                         `develop-track` (bloqueio humano/dependência SEM
  *                         data específica — se tivesse data, seria o
- *                         marcador `aguardando-ate:` do passo 3, não esta
+ *                         marcador `aguardando-ate:` do passo 4, não esta
  *                         label).
- *   6. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
- *                         checado ANTES do passo 7 pra vencer a label `alarm`
+ *   7. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
+ *                         checado ANTES do passo 8 pra vencer a label `alarm`
  *                         companheira, que sozinha cairia em fora-de-rodada.
- *   7. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
+ *   8. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
  *                         (`decisao-registrada`) ou alarme de ESTADO que se
  *                         auto-resolve (`alarm`, sem `alarm-evento`), ou
- *                         (#5968) EPIC guarda-chuva (`epic-guarda-chuva` —
- *                         delegada às issues-filhas, nunca implementada
- *                         direto) ou ambígua-sem-direção
- *                         (`sem-direcao-acionavel` — overnight já concluiu
- *                         "sem ação de código clara", 3º desfecho distinto
- *                         de `precisa-resposta`/`trade-off-real`), e nenhuma
+ *                         ambígua-sem-direção (`sem-direcao-acionavel` —
+ *                         overnight já concluiu "sem ação de código clara",
+ *                         3º desfecho distinto de
+ *                         `precisa-resposta`/`trade-off-real`), e nenhuma
  *                         das labels acima já decidiu por ela — ver
  *                         docstring de `RESOLVED_BY_PROSE_LABELS` pro porquê
  *                         desta checagem vir depois de `bloqueada`/`develop`,
  *                         não junto da 1ª.
- *   8. `overnight`      — sobrou.
+ *   9. `overnight`      — sobrou.
  *
- * `bloqueada` é retornada de dois pontos (passos 2 e 4) — preço de encaixar
+ * `bloqueada` é retornada de dois pontos (passos 3 e 5) — preço de encaixar
  * `agendada` entre bloqueio-duro e deferimento-vago (#5682); os dois branches
  * seguem semanticamente distintos (bloqueio real vs. deferimento vago), só
  * compartilham o valor de saída.
@@ -474,6 +518,11 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
 
   const outOfRound = labels.find((l) => OUT_OF_ROUND_LABELS.has(l));
   if (outOfRound) return { track: "fora-de-rodada", matched: `label:${outOfRound}`  };
+
+  // #6201 item 8 — "é uma épica" vence sobre qualquer bloqueio/deferimento
+  // real. Checado logo após `OUT_OF_ROUND_LABELS` (que ainda vence — o
+  // editor engavetando uma épica é mais forte que "é uma épica").
+  if (has(EPIC_LABEL)) return { track: "epica", matched: `label:${EPIC_LABEL}` };
 
   // #5694 — `external-blocker` + `credencial-escopo` sai de `BLOCKED_LABELS`
   // (vira `develop` no passo 5 abaixo). Só essa combinação específica: outra
@@ -517,14 +566,17 @@ export function classifyExecTrack(input: ExecTrackInput): ExecTrack {
 /** Rótulo curto pra UI (badge/dropdown). Separado do tipo pra manter o valor
  * serializado estável mesmo se o texto visível mudar.
  *
- * `Record<ExecTrack, string>` não é decoração: se um 5º valor entrar no union
- * sem entrar aqui, o build quebra. Essa garantia só vale, porém, se quem
- * RENDERIZA consumir esta tabela — ver `EXEC_TRACK_UI` abaixo. */
+ * `Record<ExecTrack, string>` não é decoração: se um novo valor entrar no
+ * union sem entrar aqui, o build quebra — foi exatamente essa garantia que
+ * forçou `epica` (#6201) a entrar nas três tabelas desta seção junto com o
+ * tipo. Essa garantia só vale, porém, se quem RENDERIZA consumir esta
+ * tabela — ver `EXEC_TRACK_UI` abaixo. */
 export const EXEC_TRACK_LABELS: Record<ExecTrack, string> = {
   overnight: "Overnight",
   develop: "Develop",
   agendada: "Agendada",
   bloqueada: "Bloqueada",
+  epica: "Épica",
   "fora-de-rodada": "Fora de rodada",
 };
 
@@ -546,23 +598,29 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
     "Bloqueada — nenhuma sessão destrava sozinha: conta de terceiro, credencial, plataforma plan-gated, ou deferimento vago sem data (`not-this-week`, `next-month`). Marcador `aguardando-ate:` com data futura é Agendada, não Bloqueada — a menos que um bloqueio real coexista. Exceção (#5694): `external-blocker` + `credencial-escopo` (credencial já existe, só falta escopo) não é Bloqueada — vira Develop.",
+  epica:
+    "Épica — issue `[ÉPICA]` guarda-chuva (label `epic-guarda-chuva`, #5968), nunca implementada direto: fecha só quando as issues-filhas mergearem. Vence sobre bloqueio/deferimento real (#6201) — uma épica com `kit-migration`/`beehiiv`/etc. coexistindo continua Épica, não Bloqueada, exceto se o editor já tirou a issue de circulação (`on-hold`/`wontfix`, que vence até Épica).",
   "fora-de-rodada":
-    "Fora de rodada — cinco motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui); (#5968) é EPIC guarda-chuva (`epic-guarda-chuva` — issue `[ÉPICA]` nunca implementada direto, delegada às issues-filhas, fecha quando elas mergearem); ou (#5968) é ambígua-sem-direção (`sem-direcao-acionavel` — o overnight já concluiu explicitamente 'sem ação de código clara a tomar', diferente de `precisa-resposta`/`trade-off-real`).",
+    "Fora de rodada — quatro motivos distintos, nenhum com código pendente: o editor tirou de circulação (`on-hold`, `wontfix` — não é 'ainda não', é 'não'); já foi resolvida por registro de decisão em prosa (`decisao-registrada`, só quando nenhuma outra label já classificar a issue de outro jeito — uma decisão parcial numa issue que segue sendo trabalho real, ex: trade-off-real, não entra aqui); é alarme de ESTADO que se auto-resolve (`alarm` sem `alarm-evento`, comenta/fecha sozinho quando o achado para de reproduzir — #5553: alarme de EVENTO PASSADO, `alarm-evento`, vai pro Overnight em vez de aqui); ou é ambígua-sem-direção (`sem-direcao-acionavel` — o overnight já concluiu explicitamente 'sem ação de código clara a tomar', diferente de `precisa-resposta`/`trade-off-real`). EPIC guarda-chuva SAIU daqui em #6201 — ver Épica.",
 };
 
 /** Forma do badge por valor, na ordem de LEITURA da legenda: do que anda
  * sozinho hoje à noite até o que não anda de jeito nenhum — `agendada` entra
  * entre `develop` e `bloqueada` (#5682): anda sozinha *depois*, na data; não
- * anda de jeito nenhum é exclusividade de `bloqueada`. Não é o inverso
- * estrito da ordem de precedência do classificador (que checa `bloqueada`
- * antes de `agendada`) — de propósito: a legenda responde "o que eu consigo
- * tocar, e quando?", não "em que ordem o código testa?".
+ * anda de jeito nenhum é exclusividade de `bloqueada`. `epica` (#6201) entra
+ * por último, antes de `fora-de-rodada` — não "anda" no sentido de uma
+ * sessão pegá-la direto (é delegada às filhas), mas também não é "o editor
+ * tirou de circulação", então fica adjacente aos dois sem se confundir com
+ * nenhum. Não é o inverso estrito da ordem de precedência do classificador
+ * (que checa `epica` logo no topo, antes de `bloqueada`) — de propósito: a
+ * legenda responde "o que eu consigo tocar, e quando?", não "em que ordem o
+ * código testa?".
  *
  * É isto que `GET /api/issues` serve em `meta.execTrack`, e que o front
- * renderiza. O front NÃO redeclara os 5 valores: fazia isso antes e criava
+ * renderiza. O front NÃO redeclara os valores: fazia isso antes e criava
  * exatamente a 2ª fonte de verdade que este módulo existe pra eliminar —
- * um 6º valor quebraria o build no servidor e passaria silenciosamente no
+ * um valor novo quebraria o build no servidor e passaria silenciosamente no
  * cliente, caindo no fallback sem tradução nem tooltip (#5462, review). */
 export const EXEC_TRACK_UI: Array<{ track: ExecTrack; label: string; explain: string }> = (
-  ["overnight", "develop", "agendada", "bloqueada", "fora-de-rodada"] as const
+  ["overnight", "develop", "agendada", "bloqueada", "epica", "fora-de-rodada"] as const
 ).map((track) => ({ track, label: EXEC_TRACK_LABELS[track], explain: EXEC_TRACK_EXPLAIN[track] }));
