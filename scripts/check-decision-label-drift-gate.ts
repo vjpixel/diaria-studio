@@ -27,7 +27,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { detectLabelDrift, type DriftFinding } from "./lib/decision-label-drift.ts";
+import {
+  detectLabelDriftDetailed,
+  type DriftFinding,
+  type SuppressedFinding,
+} from "./lib/decision-label-drift.ts";
 import { buildGateEvaluations, type GatePlanIssue } from "./lib/decision-label-drift-gate.ts";
 
 interface GhIssueListItem {
@@ -152,6 +156,7 @@ if (isMainModule(import.meta.url)) {
   }
 
   const allFindings: DriftFinding[] = [];
+  const allSuppressed: SuppressedFinding[] = [];
   let ghUnavailable = false;
 
   const evaluations = buildGateEvaluations(
@@ -175,14 +180,15 @@ if (isMainModule(import.meta.url)) {
       }
     }
 
-    const findings = detectLabelDrift({
+    const detailed = detectLabelDriftDetailed({
       issueNumber: evaluation.issueNumber,
       labels: evaluation.labels,
       commentBodies,
       planTexts: evaluation.planTexts,
       currentTrack: evaluation.currentTrack,
     });
-    allFindings.push(...findings);
+    allFindings.push(...detailed.findings);
+    allSuppressed.push(...detailed.suppressedByRoute);
   }
 
   if (ghUnavailable) {
@@ -190,6 +196,20 @@ if (isMainModule(import.meta.url)) {
       "[check-decision-label-drift-gate] gh indisponível — pulando checagem de drift de label (fail-soft, #738).",
     );
     process.exit(0);
+  }
+
+  // Supressão fica visível mesmo quando o gate passa limpo (#6301 finding
+  // 1) — "ok" abaixo NÃO deve mascarar "havia drift, mas um route-issue
+  // posterior apagou". Não afeta o exit code: supressão é auditoria, não
+  // motivo pra bloquear a rodada.
+  if (allSuppressed.length > 0) {
+    console.error(
+      `[check-decision-label-drift-gate] ${allSuppressed.length} achado(s) SUPRIMIDO(S) por route-issue posterior (não bloqueiam o gate — ver docstring de scripts/lib/decision-label-drift.ts, seção "route-issue posterior vence"):`,
+    );
+    for (const s of allSuppressed) {
+      console.error(`  #${s.issueNumber}\t${s.patternId}\t${s.commentExcerpt}`);
+    }
+    console.error("");
   }
 
   if (allFindings.length === 0) {
