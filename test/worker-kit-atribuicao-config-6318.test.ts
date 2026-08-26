@@ -18,11 +18,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+// Importado, nao redigitado: uma 4a superficie de cadastro adicionada la
+// passa a ser coberta por este guard automaticamente. Uma copia local
+// silenciosamente deixaria de cobri-la — a mesma classe de omissao que este
+// arquivo existe pra impedir (achado do review da PR #6324).
+import { SIGNUP_WORKERS } from "../scripts/dump-worker-logs.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/** Workers cujo cadastro pode apontar pro Kit. */
-const SIGNUP_WORKERS = ["poll", "cursos", "reativar"] as const;
 
 /** As 4 vars que o caminho `subscribeToKit`/`activateSubscriptionKit` lê. */
 const REQUIRED_UTM_VARS = [
@@ -36,10 +38,18 @@ function readWrangler(worker: string): string {
   return readFileSync(resolve(ROOT, "workers", worker, "wrangler.toml"), "utf8");
 }
 
-/** Linha `CHAVE = "valor"` não-comentada. Comentário citando a chave (que os
- *  3 arquivos têm de sobra) não pode contar como configuração. */
+/**
+ * Linha `CHAVE = "valor"` não-comentada E com valor NÃO-VAZIO.
+ *
+ * As duas exigências importam. Comentário citando a chave (que os 3 arquivos
+ * têm de sobra) não pode contar como configuração — e `CHAVE = ""` também
+ * não: o gate em `subscribe.ts` é `if (env.KIT_UTM_SOURCE_FIELD)`, e string
+ * vazia é falsy, então um `= ""` reproduz o #6318 inteiro (campo descartado,
+ * zero erro em log) enquanto um guard mais frouxo continuaria passando.
+ * Achado do review da PR #6324.
+ */
 function declaraVar(toml: string, chave: string): boolean {
-  return toml.split("\n").some((linha) => new RegExp(`^\\s*${chave}\\s*=`).test(linha));
+  return toml.split("\n").some((linha) => new RegExp(`^\\s*${chave}\\s*=\\s*"[^"]+"`).test(linha));
 }
 
 function backendEhKit(toml: string): boolean {
@@ -73,5 +83,15 @@ describe("config de atribuicao dos workers de cadastro (#6318)", () => {
   test("comentario citando a var nao conta como declaracao", () => {
     assert.equal(declaraVar('# KIT_UTM_SOURCE_FIELD = "x"', "KIT_UTM_SOURCE_FIELD"), false);
     assert.equal(declaraVar('KIT_UTM_SOURCE_FIELD = "utm_source"', "KIT_UTM_SOURCE_FIELD"), true);
+  });
+
+  test('valor VAZIO nao conta como declaracao — reproduziria o #6318', () => {
+    assert.equal(declaraVar('KIT_UTM_SOURCE_FIELD = ""', "KIT_UTM_SOURCE_FIELD"), false);
+    assert.equal(declaraVar('KIT_UTM_SOURCE_FIELD = "  "', "KIT_UTM_SOURCE_FIELD"), true,
+      "espaco em branco e um nome de campo tecnicamente valido — nao e' o caso que este guard julga");
+  });
+
+  test("a lista de workers vem do codigo, nao de uma copia local", () => {
+    assert.deepEqual([...SIGNUP_WORKERS], ["poll", "cursos", "reativar"]);
   });
 });

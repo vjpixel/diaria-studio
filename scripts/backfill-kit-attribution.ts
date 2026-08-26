@@ -22,6 +22,7 @@
  *   npx tsx scripts/backfill-kit-attribution.ts
  *   npx tsx scripts/backfill-kit-attribution.ts --push
  *   npx tsx scripts/backfill-kit-attribution.ts --push --snapshot 2026-08-26
+ *   npx tsx scripts/backfill-kit-attribution.ts --push --limit 20
  *   npx tsx scripts/backfill-kit-attribution.ts --push --force
  *
  * Exit codes: 1 erro fatal; 2 config ausente; 3 snapshot não encontrado.
@@ -32,17 +33,17 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
-import {
-  montarPlano,
-  type BeehiivSubscriberRecord,
-  type KitSubscriberLite,
-} from "./lib/kit-attribution.ts";
+import { montarPlano, type BeehiivSubscriberRecord } from "./lib/kit-attribution.ts";
+import { listAllKitSubscribers, updateSubscriberFields } from "./lib/kit-subscribers.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
-/** Espaçamento entre PUTs. Endpoints singulares do Kit dão 429 depois de
- *  algumas dezenas de chamadas sem pausa (achado do #6047). */
+/** Espaçamento entre escritas. Endpoints singulares do Kit dão 429 depois de
+ *  algumas dezenas de chamadas sem pausa (achado do #6047). `kitFetch` já
+ *  absorve um 429 ISOLADO via backoff, mas não é mecanismo de rate limit —
+ *  um laço de centenas de chamadas precisa se auto-espaçar. */
 const REQUEST_SPACING_MS = 350;
 
 /** Pura — diretório de snapshot mais recente (nomes são `YYYY-MM-DD`). */
@@ -62,45 +63,33 @@ export function lerSnapshot(path: string): Map<string, BeehiivSubscriberRecord> 
   return porEmail;
 }
 
-async function listarBaseKit(apiKey: string): Promise<KitSubscriberLite[]> {
-  const todos: KitSubscriberLite[] = [];
-  let cursor: string | undefined;
-  do {
-    const url = new URL("https://api.kit.com/v4/subscribers");
-    url.searchParams.set("per_page", "100");
-    url.searchParams.set("status", "all");
-    // Sem `include[]=fields`: o REST v4 já devolve os custom fields por
-    // padrão e REJEITA esse include (422, "Valid fields are: attribution,
-    // tags, location, canceled_at"). O `include: ["fields"]` do MCP é forma
-    // da camada MCP, não da API — não portar de um pro outro.
-    if (cursor) url.searchParams.set("after", cursor);
-    const res = await fetch(url, { headers: { "X-Kit-Api-Key": apiKey } });
-    if (!res.ok) throw new Error(`Kit list subscribers -> ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const body: any = await res.json();
-    for (const s of body.subscribers ?? []) {
-      todos.push({ id: s.id, email_address: s.email_address, fields: s.fields });
-    }
-    cursor = body?.pagination?.has_next_page ? body.pagination.end_cursor : undefined;
-    await new Promise((r) => setTimeout(r, REQUEST_SPACING_MS));
-  } while (cursor);
-  return todos;
-}
-
 export async function main(rootDirOverride?: string): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const force = hasFlag(argv, "force");
-  const snapshotPedido = parseCliArgs(argv).values.snapshot as string | undefined;
+  const valores = parseCliArgs(argv).values;
+  const snapshotPedido = valores.snapshot as string | undefined;
   const log = (m: string) => process.stderr.write(`[backfill-kit-attribution] ${m}\n`);
-
-  const apiKey = process.env.KIT_API_KEY;
-  if (!apiKey) {
-    log("ERRO: KIT_API_KEY ausente no ambiente.");
+  // `--limit N` grava só os N primeiros. Serve pro rollout em lote pequeno
+  // (conferir na UI do Kit antes de soltar os ~586): como a idempotência é
+  // por `atribuicao_fonte`, a rodada seguinte SEM `--limit` continua de onde
+  // parou em vez de reprocessar o lote já gravado.
+  const limite = valores.limit === undefined ? undefined : Number(valores.limit);
+  if (limite !== undefined && (!Number.isInteger(limite) || limite <= 0)) {
+    log(`ERRO: --limit precisa ser inteiro positivo, recebido "${valores.limit}".`);
     process.exitCode = 2;
     return;
   }
+
+  const kitConfigResult = resolveKitConfig();
+  if (!kitConfigResult.ok) {
+    log(`ERRO: ${kitConfigResult.reason}`);
+    process.exitCode = 2;
+    return;
+  }
+  const kitConfig = kitConfigResult.config;
 
   const baseDir = resolve(rootDir, "data", "beehiiv-backup");
   if (!existsSync(baseDir)) {
@@ -124,8 +113,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const beehiiv = lerSnapshot(snapshotPath);
   log(`snapshot ${snapshot}: ${beehiiv.size} assinantes da Beehiiv`);
 
-  const kit = await listarBaseKit(apiKey);
-  log(`base Kit: ${kit.length} subscribers`);
+  // `status: "all"` inclui cancelados de propósito: a atribuição deles é o
+  // que permite analisar churn POR CANAL de aquisição depois. O default da
+  // API (só `active`) perderia essa metade da série.
+  const kitSubs = await listAllKitSubscribers(kitConfig, { status: "all" });
+  const kit = kitSubs.map((s) => ({ id: s.id, email_address: s.email_address, fields: s.fields }));
+  log(`base Kit: ${kit.length} subscribers (inclui cancelados)`);
 
   const plano = montarPlano(kit, beehiiv, { force });
   log("");
@@ -146,18 +139,25 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
+  const aGravar = limite === undefined ? plano.aplicar : plano.aplicar.slice(0, limite);
+  if (limite !== undefined) {
+    log("");
+    log(`[--limit ${limite}] gravando ${aGravar.length} de ${plano.aplicar.length}. ` +
+      `Os ${plano.aplicar.length - aGravar.length} restantes ficam pra proxima rodada.`);
+  }
+
   let ok = 0;
   const falhas: { email: string; erro: string }[] = [];
-  for (const entry of plano.aplicar) {
+  for (const entry of aGravar) {
     try {
-      const res = await fetch(`https://api.kit.com/v4/subscribers/${entry.subscriberId}`, {
-        method: "PUT",
-        headers: { "X-Kit-Api-Key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: entry.fields }),
-      });
-      if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 160)}`);
+      // `updateSubscriberFields` = PATCH /v4/subscribers/{id} via `kitFetch`
+      // (retry + 429). NÃO trocar por um PUT hand-rolled: PUT documenta
+      // `email_address` como obrigatório e tem semântica de REPLACE, então
+      // gravaria errado ou falharia nos 586 — e perderia a camada de retry.
+      // Achado P0 do review da PR #6324.
+      await updateSubscriberFields(entry.subscriberId, entry.fields, kitConfig);
       ok++;
-      if (ok % 50 === 0) log(`  ... ${ok}/${plano.aplicar.length}`);
+      if (ok % 50 === 0) log(`  ... ${ok}/${aGravar.length}`);
     } catch (e) {
       falhas.push({ email: entry.email, erro: e instanceof Error ? e.message : String(e) });
     }
@@ -165,7 +165,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   log("");
-  log(`gravados: ${ok}/${plano.aplicar.length}`);
+  log(`gravados: ${ok}/${aGravar.length}`);
   if (falhas.length > 0) {
     log(`FALHAS: ${falhas.length}`);
     for (const f of falhas.slice(0, 20)) log(`  ${f.email}: ${f.erro}`);

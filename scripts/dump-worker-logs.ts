@@ -21,9 +21,14 @@
  * Isso é mais rico que o dado que o código teria gravado (o triplo derivado
  * da superfície, `SUBSCRIBE_UTM_BY_SOURCE`): é o UTM real da visita.
  *
- * **Mas a retenção é de ~2-3 dias.** Medido em 26/08: o evento mais antigo
- * retido era de 24/08 18:58. Este script não interpreta nada — só baixa os
- * eventos crus em JSONL pra `data/worker-logs-snapshot/{data}/{worker}.jsonl`,
+ * **A retenção varia por worker e NÃO foi medida até o limite.** Na captura
+ * de 26/08 com `--days 7`: `poll` reteve desde 23/08 (3 dias), `cursos`
+ * desde 19/08 — ou seja, a janela inteira que foi pedida, sem atingir a
+ * fronteira real. Não generalizar um número de retenção a partir disso; o
+ * que vale é a disciplina de capturar cedo.
+ *
+ * Este script não interpreta nada — só baixa os eventos crus em JSONL pra
+ * `data/worker-logs-snapshot/{data}/{worker}.jsonl`,
  * pra que a reconstrução (#6318 Passo 4) possa acontecer com calma depois
  * que a janela já tiver fechado. Separar captura de interpretação é
  * deliberado: interpretação errada se refaz, dado expirado não volta.
@@ -105,6 +110,32 @@ interface QueryDeps {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Erro de FORMA da resposta (200 com envelope irreconhecível) — distinto de
+ * "zero eventos". Sem isso, uma mudança de contrato da Cloudflare viraria
+ * `[]`, indistinguível de "este worker não teve tráfego", e o operador leria
+ * "sem observability" quando na verdade a leitura quebrou.
+ */
+export class ObservabilityShapeError extends Error {
+  constructor(service: string, recebido: string) {
+    super(`resposta da observability para "${service}" em formato desconhecido: ${recebido}`);
+    this.name = "ObservabilityShapeError";
+  }
+}
+
+/** Pura — extrai os eventos do envelope, ou lança se a forma for desconhecida. */
+export function extractEvents(body: unknown, service: string): RawLogEvent[] {
+  const result = (body as { result?: unknown })?.result;
+  if (result === undefined || result === null) {
+    throw new ObservabilityShapeError(service, JSON.stringify(body ?? null).slice(0, 200));
+  }
+  const events = (result as { events?: unknown }).events;
+  if (Array.isArray(events)) return events as RawLogEvent[];
+  const aninhado = (events as { events?: unknown } | undefined)?.events;
+  if (Array.isArray(aninhado)) return aninhado as RawLogEvent[];
+  throw new ObservabilityShapeError(service, JSON.stringify(result).slice(0, 200));
+}
+
 async function queryPage(
   deps: QueryDeps,
   service: string,
@@ -132,8 +163,7 @@ async function queryPage(
   if (!res.ok) {
     throw new Error(`Cloudflare observability ${service} -> ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
-  const body: any = await res.json();
-  return body?.result?.events?.events ?? body?.result?.events ?? [];
+  return extractEvents(await res.json(), service);
 }
 
 /**
@@ -147,9 +177,10 @@ export async function fetchAllEvents(
   service: string,
   from: number,
   to: number,
-): Promise<RawLogEvent[]> {
+): Promise<{ events: RawLogEvent[]; truncado: boolean }> {
   const all: RawLogEvent[] = [];
   let cursor = to;
+  let truncado = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const batch = await queryPage(deps, service, from, cursor);
     if (batch.length === 0) break;
@@ -158,8 +189,13 @@ export async function fetchAllEvents(
     if (!Number.isFinite(oldest) || oldest <= from || oldest >= cursor) break;
     cursor = oldest - 1;
     if (batch.length < PAGE_LIMIT) break;
+    // Ainda havia página cheia e progresso possível, mas o cap acabou: o
+    // resultado é PARCIAL. Devolver isso em silêncio seria a mesma classe de
+    // bug que esta captura existe pra remediar — e pior, porque a janela
+    // expira e ninguém descobre depois. Ver achado P1 do review da PR #6324.
+    if (page === MAX_PAGES - 1) truncado = true;
   }
-  return all;
+  return { events: all, truncado };
 }
 
 export async function main(rootDirOverride?: string): Promise<void> {
@@ -183,15 +219,24 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const from = now - days * 24 * 60 * 60 * 1000;
   const outDir = resolve(rootDir, "data", "worker-logs-snapshot", snapshotDirName(new Date(now)));
   const vazios: string[] = [];
+  const anomalias: string[] = [];
 
   for (const service of SIGNUP_WORKERS) {
-    const events = await fetchAllEvents({ accountId, token }, service, from, now);
+    const { events, truncado } = await fetchAllEvents({ accountId, token }, service, from, now);
+    if (truncado) {
+      anomalias.push(`${service}: paginacao truncada em MAX_PAGES=${MAX_PAGES}`);
+      log(`${service}: ATENCAO — paginacao truncada em ${MAX_PAGES} paginas. HA eventos mais antigos NAO capturados. Reduza --days e rode de novo.`);
+    }
     const kept = includeAssets ? events : events.filter((e) => !isAssetRequest(e));
     const timestamps = kept.map((e) => e.timestamp).filter((t): t is number => typeof t === "number");
 
     if (events.length === 0) {
       vazios.push(service);
-      log(`${service}: ZERO eventos retidos — sem observability ou fora da retencao. Nada a congelar.`);
+      // `reativar` sem `[observability]` era o buraco conhecido do #6318 e foi
+      // fechado no mesmo PR. Zero eventos em QUALQUER worker agora e' anomalia,
+      // nao estado esperado — precisa de exit code, nao so de texto no stderr.
+      anomalias.push(`${service}: zero eventos`);
+      log(`${service}: ZERO eventos retidos — observability desligada, fora da retencao, ou leitura quebrada. Nada a congelar.`);
       continue;
     }
     const janela =
@@ -211,6 +256,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (dryRun) log("[dry-run] nada gravado.");
   if (vazios.length > 0) {
     log(`ATENCAO: sem dado nenhum para: ${vazios.join(", ")}. Esses funis nao tem como ser reconstruidos.`);
+  }
+  // Exit code, nao so stderr: esta captura corre contra uma janela que expira,
+  // entao um wrapper/cron precisa conseguir DETECTAR captura incompleta sem
+  // depender de um humano lendo o log na hora certa.
+  if (anomalias.length > 0) {
+    log(`CAPTURA INCOMPLETA (${anomalias.length}): ${anomalias.join("; ")}`);
+    process.exitCode = 1;
   }
 }
 

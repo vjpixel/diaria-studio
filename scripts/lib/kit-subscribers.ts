@@ -38,6 +38,15 @@ import { kitFetch } from "./kit-client.ts";
 import type { KitConfig } from "./kit-config.ts";
 import type { KitPagination } from "./kit-client.ts";
 
+/** Filtro `status` de `/v4/subscribers` (#6318). Omitir = só `active`. */
+export type KitSubscriberListStatus =
+  | "active"
+  | "cancelled"
+  | "bounced"
+  | "complained"
+  | "inactive"
+  | "all";
+
 export interface KitSubscriberSummary {
   id: number;
   email_address: string;
@@ -49,11 +58,14 @@ export interface KitSubscriberSummary {
 }
 
 export async function listKitSubscribersPage(
-  opts: { perPage?: number; after?: string; config?: KitConfig } = {},
+  opts: { perPage?: number; after?: string; status?: KitSubscriberListStatus; config?: KitConfig } = {},
 ): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
   const params = new URLSearchParams();
   if (opts.perPage) params.set("per_page", String(opts.perPage));
   if (opts.after) params.set("after", opts.after);
+  // Sem `status`, a API devolve só `active` — o default dela, preservado aqui
+  // pra não mudar o resultado dos callers que existiam antes do #6318.
+  if (opts.status) params.set("status", opts.status);
   const qs = params.toString();
   return kitFetch(`/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
 }
@@ -63,11 +75,19 @@ export async function listKitSubscribersPage(
  * ~2 mil, ver #6047) — sem checkpoint/resumo, roda do zero a cada chamada
  * (barato o bastante pra não precisar).
  */
-export async function listAllKitSubscribers(config?: KitConfig): Promise<KitSubscriberSummary[]> {
+export async function listAllKitSubscribers(
+  config?: KitConfig,
+  opts: { status?: KitSubscriberListStatus } = {},
+): Promise<KitSubscriberSummary[]> {
   const all: KitSubscriberSummary[] = [];
   let after: string | undefined;
   for (;;) {
-    const { subscribers, pagination } = await listKitSubscribersPage({ perPage: 500, after, config });
+    const { subscribers, pagination } = await listKitSubscribersPage({
+      perPage: 500,
+      after,
+      status: opts.status,
+      config,
+    });
     all.push(...subscribers);
     if (!pagination.has_next_page || !pagination.end_cursor) break;
     after = pagination.end_cursor;

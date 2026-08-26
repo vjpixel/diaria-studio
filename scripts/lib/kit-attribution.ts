@@ -15,9 +15,13 @@
  * único lugar onde essa informação fica ao lado do assinante.
  *
  * O dado de origem existe: `data/beehiiv-backup/{data}/subscribers.jsonl`
- * guarda os 7 campos que a Beehiiv mantinha por assinante. Medido em 26/08:
- * 586 dos 600 subscribers do Kit casam com o snapshot, e 100% desses têm
- * atribuição — é recuperação exata por e-mail, não inferência.
+ * guarda os 7 campos que a Beehiiv mantinha por assinante. Medido em
+ * 26/08/2026 **contra o snapshot de 23/08** (o de 26/08 ainda não tinha
+ * `subscribers.jsonl` quando esta medição rodou): 586 dos 600 subscribers do
+ * Kit casaram, e 100% desses tinham atribuição — recuperação exata por
+ * e-mail, não inferência. Reconferir contra o `--push` real antes de tratar
+ * 586 como número final; um snapshot mais novo tende a cobrir parte dos 14
+ * restantes (quase todos contas de teste).
  *
  * ## Por que 7 campos, e não os 4 que os workers escrevem
  *
@@ -53,6 +57,19 @@ export interface BeehiivSubscriberRecord {
 export const ATRIBUICAO_FONTE_BEEHIIV = "beehiiv-import";
 
 /**
+ * Campos de atribuição prontos pra gravar no Kit — sempre com
+ * `atribuicao_fonte` e ao menos 1 UTM, todos não-vazios e trimados.
+ *
+ * Existe como alias nomeado só pra que `AttributionFields | null` na
+ * assinatura de `buildAttributionFields` faça o `null` significar alguma
+ * coisa no hover: **`null` = nada a gravar**, nunca erro nem "não sei".
+ * Deixar `Record<string, string> | null` cru obrigaria todo call site futuro
+ * a abrir o docstring pra saber disso — a mesma classe de silêncio que esta
+ * PR combate em outro lugar.
+ */
+export type AttributionFields = Record<string, string>;
+
+/**
  * Os 7 campos de atribuição da Beehiiv, na ordem em que aparecem no
  * snapshot. Chave do custom field no Kit = mesmo nome (criados com esses
  * labels em 26/08).
@@ -68,7 +85,7 @@ export const ATTRIBUTION_FIELD_KEYS = [
 ] as const;
 
 /**
- * Pura — monta o objeto `fields` do PUT a partir de um registro da Beehiiv.
+ * Pura — monta o objeto `fields` do PATCH a partir de um registro da Beehiiv.
  *
  * Campo vazio na origem é OMITIDO, nunca gravado como string vazia: gravar
  * `""` tornaria "a Beehiiv não sabia" indistinguível de "ninguém
@@ -77,8 +94,8 @@ export const ATTRIBUTION_FIELD_KEYS = [
  * o caller pula o assinante em vez de fazer uma chamada que só escreveria o
  * marcador de procedência.
  */
-export function buildAttributionFields(record: BeehiivSubscriberRecord): Record<string, string> | null {
-  const fields: Record<string, string> = {};
+export function buildAttributionFields(record: BeehiivSubscriberRecord): AttributionFields | null {
+  const fields: AttributionFields = {};
   for (const key of ATTRIBUTION_FIELD_KEYS) {
     const value = record[key];
     if (typeof value === "string" && value.trim() !== "") fields[key] = value.trim();
@@ -103,19 +120,25 @@ export function jaBackfillado(kitFields: Record<string, unknown> | undefined): b
 }
 
 export interface PlanoEntry {
-  subscriberId: number;
-  email: string;
-  fields: Record<string, string>;
+  readonly subscriberId: number;
+  readonly email: string;
+  readonly fields: AttributionFields;
 }
 
+/**
+ * Resultado JÁ DECIDIDO do cruzamento — `readonly` de ponta a ponta de
+ * propósito: é uma decisão computada, não um buffer pra acumular depois.
+ * Sem isso nada impediria um caller de `plano.aplicar.push(...)` e quebrar a
+ * partição que `montarPlano` garante.
+ */
 export interface PlanoBackfill {
-  aplicar: PlanoEntry[];
+  readonly aplicar: readonly PlanoEntry[];
   /** Já tinham `atribuicao_fonte` — pulados por idempotência. */
-  jaFeitos: number;
+  readonly jaFeitos: number;
   /** Sem registro correspondente no snapshot da Beehiiv (nasceram no Kit). */
-  semOrigem: string[];
+  readonly semOrigem: readonly string[];
   /** Casaram, mas a Beehiiv também não tinha atribuição nenhuma. */
-  origemVazia: string[];
+  readonly origemVazia: readonly string[];
 }
 
 export interface KitSubscriberLite {
@@ -135,24 +158,27 @@ export function montarPlano(
   beehiivPorEmail: Map<string, BeehiivSubscriberRecord>,
   opts: { force?: boolean } = {},
 ): PlanoBackfill {
-  const plano: PlanoBackfill = { aplicar: [], jaFeitos: 0, semOrigem: [], origemVazia: [] };
+  const aplicar: PlanoEntry[] = [];
+  const semOrigem: string[] = [];
+  const origemVazia: string[] = [];
+  let jaFeitos = 0;
   for (const kit of kitSubscribers) {
     const email = kit.email_address.toLowerCase();
     if (!opts.force && jaBackfillado(kit.fields)) {
-      plano.jaFeitos++;
+      jaFeitos++;
       continue;
     }
     const origem = beehiivPorEmail.get(email);
     if (!origem) {
-      plano.semOrigem.push(email);
+      semOrigem.push(email);
       continue;
     }
     const fields = buildAttributionFields(origem);
     if (!fields) {
-      plano.origemVazia.push(email);
+      origemVazia.push(email);
       continue;
     }
-    plano.aplicar.push({ subscriberId: kit.id, email, fields });
+    aplicar.push({ subscriberId: kit.id, email, fields });
   }
-  return plano;
+  return { aplicar, jaFeitos, semOrigem, origemVazia };
 }
