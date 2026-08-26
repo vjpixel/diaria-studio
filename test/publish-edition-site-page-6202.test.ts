@@ -339,7 +339,7 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
       assert.ok(!escritas[0].html.includes("{{email}}"), "a tag crua não sobrevive na página publicada");
     });
 
-    it("erro de render que NÃO é UnresolvedMergeTagError continua caindo no code 3 genérico (sem título ⇒ falha ANTES de chegar em buildArchivePageHtml)", () => {
+    it("caso não relacionado (título vazio) continua code 4 — o novo `instanceof` não engoliu códigos existentes", () => {
       // buildEditionArchivePost já recusa título vazio (code 4) antes de
       // buildArchivePageHtml rodar — este teste existe só pra deixar
       // explícito que o guard novo (5) não engoliu nenhum dos códigos
