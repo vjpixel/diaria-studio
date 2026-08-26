@@ -46,7 +46,10 @@
  * a janela real é só `gh pr merge` + `git pull`, nunca deveria levar mais que
  * isso). Lock mais velho que o TTL é tratado como abandonado e liberado pro
  * próximo `acquireMergeLock` — nunca trava a máquina pra sempre por um
- * coordenador que crashou segurando o lock.
+ * coordenador que crashou segurando o lock. **Nota (#6182): entre máquinas,
+ * `O_CREAT|O_EXCL` sobre o mesmo junction OneDrive NÃO é garantia de exclusão
+ * mútua real — o kernel vê inodes diferentes, cada máquina pode criar o arquivo
+ * e ambas recebem `true`. O lock é **advisory** nesse cenário, não atômico.**
  *
  * **Claim de issue (item 3):** embutido no próprio registro de sessão
  * (`claimed_issues: number[]`) em vez de um arquivo `claims.jsonl` separado —
@@ -583,8 +586,8 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
 
 /**
  * Adquire o lock global de merge (item 4 do #5156) — serializa `gh pr merge` +
- * `git pull` entre sessões concorrentes (mesma máquina ou não, `data/` é
- * OneDrive compartilhado). TTL curto: um lock mais velho que
+ * `git pull` entre sessões concorrentes (mesma máquina é atômico via `O_EXCL`;
+ * entre máquinas via OneDrive o lock é **advisory** — ver docblock). TTL curto: um lock mais velho que
  * `MERGE_LOCK_TTL_MS` é tratado como abandonado (coordenador crashou
  * segurando o lock) e liberado automaticamente pro próximo adquirente —
  * nunca trava a máquina pra sempre.
@@ -595,12 +598,13 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  * quebrando a exclusão mútua que é o propósito inteiro deste mecanismo
  * (exatamente o cenário cross-máquina via `data/` OneDrive que o #5156
  * existe pra proteger). Fix em duas partes:
- *   1. **Fast path (caso comum — nenhum lock existe ainda):** criação
- *      exclusiva atômica (`writeFileSync(path, data, { flag: "wx" })`, que
- *      mapeia pra `O_CREAT | O_EXCL` no SO). Esta é a ÚNICA primitiva deste
- *      arquivo com garantia real de atomicidade sob concorrência genuína —
- *      o kernel garante que, entre N chamadas concorrentes de processos
- *      DIFERENTES contra o MESMO path ausente, no máximo UMA pode suceder.
+ *   1. **Fast path (mesma máquina — nenhuma concorrência com outro inode):**
+ *      criação exclusiva atômica (`writeFileSync(path, data, { flag: "wx" })`,
+ *      que mapeia pra `O_CREAT | O_EXCL`). Entre processos DIFERENTES no
+ *      MESMO kernel/filesystem, no máximo UMA chamada com o MESMO path
+ *      ausente pode suceder. **Entre máquinas via OneDrive, NÃO é atômica:**
+ *      cada máquina vê um inode distinto no mesmo junction, ambas podem
+ *      criar o arquivo e receber `true`. O lock é advisory nesse caso (#6182).
  *      Nenhuma coordenação em memória deste arquivo entra nessa garantia.
  *   2. **Caso raro — lock existe mas expirou (TTL, coordenador crashou):**
  *      plain `fs` não oferece um "substituir só se o conteúdo não mudou

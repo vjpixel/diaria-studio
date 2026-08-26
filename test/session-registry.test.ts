@@ -616,6 +616,52 @@ describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", ()
     assert.equal(acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io), true);
     assert.equal(JSON.parse(disk.get(path)!).heldBy, "sess-a");
   });
+
+  // #6182 — entre máquinas via OneDrive, cada inode vê o arquivo como
+  // ausente; ambas as sessões podem receber `true` do `tryCreateExclusive`.
+  // Este é o comportamento ADVISORY documentado no #6182 — não uma falha
+  // no mecanismo, mas uma limitação real quando o mesmo path lógico vive
+  // em dois inodes distintos (junction OneDrive, não filesystem local).
+  it("advisory cross-machine (#6182): dois MergeLockIo independentes sobre o MESMO path lógico — cada um vê o arquivo como ausente, ambos adquirem (não é garantia de exclusão entre máquinas)", () => {
+    const root = freshRoot();
+    const path = mergeLockPath(root);
+    // Simula cada máquina com seu PRÓPRIO inode/disco: mesmo path lógico,
+    // mas o arquivo NÃO é visível entre os dois — exatamente o que acontece
+    // quando `data/` é um junction OneDrive sincronizado entre `helios` e
+    // `Neo`: cada máquina lê do inode que o OneDrive sincronizou localmente,
+    // não do inode único de um filesystem compartilhado real.
+    const diskA = new Map<string, string>();
+    const diskB = new Map<string, string>();
+    const ioA: MergeLockIo = {
+      tryCreateExclusive: (p, data) => {
+        if (!diskA.has(p)) {
+          diskA.set(p, data);
+          return true; // inode A: arquivo criado com sucesso
+        }
+        return false;
+      },
+      readCurrent: (p) => (diskA.has(p) ? (JSON.parse(diskA.get(p)!) as MergeLockRecord) : null),
+      overwrite: (p, data) => diskA.set(p, data),
+    };
+    const ioB: MergeLockIo = {
+      tryCreateExclusive: (p, data) => {
+        // Inode B: NÃO vê o arquivo criado por A — o OneDrive ainda não
+        // sincronizou, ou sincronizou numa cópia que B ainda não tem.
+        // Mesmo path lógico, inode completamente independente.
+        if (!diskB.has(p)) {
+          diskB.set(p, data);
+          return true; // B também recebe `true` — não há exclusão entre inodes
+        }
+        return false;
+      },
+      readCurrent: (p) => (diskB.has(p) ? (JSON.parse(diskB.get(p)!) as MergeLockRecord) : null),
+      overwrite: (p, data) => diskB.set(p, data),
+    };
+    const resultA = acquireMergeLock(root, "sess-helios", NOW, MERGE_LOCK_TTL_MS, ioA);
+    const resultB = acquireMergeLock(root, "sess-neo", NOW, MERGE_LOCK_TTL_MS, ioB);
+    assert.equal(resultA, true, "A (helios) vê path ausente no seu inode e recebe `true`");
+    assert.equal(resultB, true, "B (neo) vê path ausente no SEU inode e também recebe `true` — a limitação advisory do #6182");
+  });
 });
 
 // ─── clock skew (#5161 fleet review item 2) ────────────────────────────────
