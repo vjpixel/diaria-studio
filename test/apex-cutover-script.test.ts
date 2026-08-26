@@ -120,6 +120,12 @@ function makeMockFetch(zone: MockZoneState, probe: ProbeConfig = READY_PROBE, op
       zone.customDomain = null;
       return jsonRes({ success: true, result: {} });
     }
+    if (method === "DELETE" && u.includes("/dns_records/")) {
+      const id = u.split("/dns_records/")[1];
+      zone.aRecords = zone.aRecords.filter((r) => r.id !== id);
+      zone.aaaaRecords = zone.aaaaRecords.filter((r) => r.id !== id);
+      return jsonRes({ success: true, result: {} });
+    }
     if (method === "GET" && u.includes("dns_records") && u.includes("type=AAAA")) {
       return jsonRes({ success: true, result: zone.aaaaRecords.map((r) => ({ ...r, type: "AAAA", name: APEX_HOSTNAME })) });
     }
@@ -203,9 +209,147 @@ describe("runCutover — dry-run (sem --apply): ZERO mutação mesmo com guard O
     assert.equal(code, 0);
     assert.equal(calls.filter((c) => ["PUT", "DELETE", "PATCH", "POST"].includes(c.method)).length, 0);
   });
+
+  it("#6373 — zona com A/AAAA legado, apply=false: plano impresso inclui a remoção prévia, ZERO chamada de mutação", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE);
+    const originalLog = console.log;
+    let printed = "";
+    console.log = (s: string) => {
+      printed = s;
+    };
+    let code: number;
+    try {
+      code = await runCutover(CFG, false, fetchFn);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.equal(code, 0);
+    assert.equal(calls.filter((c) => ["PUT", "DELETE", "PATCH", "POST"].includes(c.method)).length, 0);
+
+    const parsed = JSON.parse(printed);
+    const kinds = parsed.plan.map((s: { kind: string }) => s.kind);
+    assert.deepEqual(kinds, ["dns-delete", "dns-delete", "attach"]);
+  });
 });
 
-describe("runCutover — --apply: sequência guard → mutação → verificação (#6364 F3)", () => {
+describe("runCutover — --apply: remoção de A/AAAA legado ANTES do attach (#6373)", () => {
+  it("zona com A/AAAA legado (estado real 26/08): remove os 2 ANTES do PUT, verifica remoção, então anexa — DELETE×2 antes do PUT, nessa ordem", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE);
+    const code = await runCutover(CFG, true, fetchFn);
+    assert.equal(code, 0);
+
+    const deleteIdxs = calls
+      .map((c, i) => ({ ...c, i }))
+      .filter((c) => c.method === "DELETE" && c.url.includes("/dns_records/"))
+      .map((c) => c.i);
+    const putIdx = calls.findIndex((c) => c.method === "PUT");
+    assert.equal(deleteIdxs.length, 2, "esperava 2 DELETE de dns_records (A + AAAA)");
+    assert.ok(putIdx !== -1, "esperava 1 PUT (attach)");
+    for (const di of deleteIdxs) {
+      assert.ok(di < putIdx, "todo DELETE de A/AAAA deveria vir ANTES do PUT (#6373)");
+    }
+
+    // releitura pós-DELETE (confirma remoção) também vem antes do PUT.
+    const dnsGetIdxsBeforePut = calls
+      .slice(0, putIdx)
+      .filter((c) => c.method === "GET" && c.url.includes("dns_records")).length;
+    assert.ok(dnsGetIdxsBeforePut >= 2, "esperava releitura de A/AAAA antes do attach");
+
+    assert.equal(zone.aRecords.length, 0);
+    assert.equal(zone.aaaaRecords.length, 0);
+    assert.equal(zone.customDomain?.hostname, APEX_HOSTNAME);
+  });
+
+  it("zona SEM A/AAAA legado (2ª execução, ou zona limpa): nenhum DELETE de dns_records — vai direto pro attach, sem falhar por 'nada a deletar'", async () => {
+    const { fetchFn, calls } = makeMockFetch(emptyZone(), READY_PROBE);
+    const code = await runCutover(CFG, true, fetchFn);
+    assert.equal(code, 0);
+    assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.includes("/dns_records/")).length, 0);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 1);
+  });
+
+  it("DELETE de A/AAAA legado falha — exit 2, NUNCA tenta o attach (0 PUT)", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE, {
+      failOn: (method, url) => (method === "DELETE" && url.includes("/dns_records/") ? "boom" : null),
+    });
+    const code = await runCutover(CFG, true, fetchFn);
+    assert.equal(code, 2);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+  });
+
+  it("P3 (fleet review #6376) — 1º DELETE sucede (A), 2º falha (AAAA) — exit 2, 0 PUT, mensagem nomeia o tipo JÁ removido (estado misto)", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE, {
+      failOn: (method, url) => (method === "DELETE" && url.includes("/dns_records/") && url.includes("1e19bf3285dff54456b607f6564617f7") ? "boom" : null),
+    });
+    const { logged, restore } = captureConsoleError();
+    let code: number;
+    try {
+      code = await runCutover(CFG, true, fetchFn);
+    } finally {
+      restore();
+    }
+    assert.equal(code, 2);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+    assert.equal(zone.aRecords.length, 0, "o A deveria ter sido removido de fato antes do AAAA falhar");
+    assert.ok(
+      logged.some((l) => l.includes("Já removido nesta execução") && l.includes("A")),
+      `esperava mensagem citando A como já removido, obteve: ${JSON.stringify(logged)}`,
+    );
+  });
+
+  it("releitura pós-DELETE mostra que o registro sobreviveu — aborta ANTES do attach (0 PUT), mensagem clara", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn } = makeMockFetch(zone, READY_PROBE);
+    // DELETE "sucede" na resposta mas a zona não muda de verdade — simula o
+    // cenário de releitura pós-mutação (#573) detectando que o DELETE não
+    // pegou, mesmo com HTTP 200 na resposta.
+    const flakyFetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "DELETE" && u.includes("/dns_records/")) {
+        return jsonRes({ success: true, result: {} }); // responde OK, mas NÃO apaga da zona
+      }
+      return fetchFn(url, init);
+    }) as unknown as typeof fetch;
+
+    const { logged, restore } = captureConsoleError();
+    let code: number;
+    let putCalled = false;
+    try {
+      const countingFetch = (async (url: string | URL, init?: RequestInit) => {
+        if ((init?.method ?? "GET").toUpperCase() === "PUT") putCalled = true;
+        return flakyFetch(url, init);
+      }) as unknown as typeof fetch;
+      code = await runCutover(CFG, true, countingFetch);
+    } finally {
+      restore();
+    }
+    assert.equal(code, 2);
+    assert.equal(putCalled, false, "nunca deveria chegar ao attach com o legado ainda presente");
+    assert.ok(
+      logged.some((l) => l.includes("ainda existe")),
+      `esperava mensagem de registro remanescente, obteve: ${JSON.stringify(logged)}`,
+    );
+  });
+
+  it("2 registros A na zona (duplicata) — lança ANTES de qualquer mutação (0 DELETE/PUT), regressão do guard existente", async () => {
+    const zone: MockZoneState = {
+      customDomain: null,
+      aRecords: [
+        { id: "a-1", content: "1.2.3.4", proxied: true, ttl: 1 },
+        { id: "a-2", content: "5.6.7.8", proxied: true, ttl: 1 },
+      ],
+      aaaaRecords: [],
+    };
+    const { fetchFn, calls } = makeMockFetch(zone, READY_PROBE);
+    await assert.rejects(() => runCutover(CFG, true, fetchFn), /2 registros A encontrados/);
+    assert.equal(calls.filter((c) => ["DELETE", "PUT", "PATCH", "POST"].includes(c.method)).length, 0);
+  });
+
   it("PUT bem-sucedido + releitura confirma attach — exit 0, exatamente 1 PUT + 1 GET de verificação, nessa ordem", async () => {
     const { fetchFn, calls } = makeMockFetch(emptyZone(), READY_PROBE);
     const code = await runCutover(CFG, true, fetchFn);
@@ -252,6 +396,32 @@ describe("runCutover — --apply: sequência guard → mutação → verificaç�
       logged.some((l) => l.includes("MUTAÇÃO PODE TER SIDO APLICADA")),
       `esperava mensagem distinta de mutação-pode-ter-sido-aplicada, obteve: ${JSON.stringify(logged)}`,
     );
+  });
+
+  it("P2 — DELETE bem-sucedido mas releitura pós-DELETE LANÇA (rede cai no meio) — exit 2, mensagem distinta, nunca chega ao attach", async () => {
+    const zone = preCutoverZone();
+    const { fetchFn } = makeMockFetch(zone, READY_PROBE);
+    let deleteHappened = false;
+    let putCalled = false;
+    const flaky = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "DELETE" && u.includes("/dns_records/")) deleteHappened = true;
+      if (method === "PUT") putCalled = true;
+      if (deleteHappened && method === "GET" && u.includes("dns_records")) throw new Error("ECONNRESET pós-DELETE");
+      return fetchFn(url, init);
+    }) as unknown as typeof fetch;
+
+    const { logged, restore } = captureConsoleError();
+    let code: number;
+    try {
+      code = await runCutover(CFG, true, flaky);
+    } finally {
+      restore();
+    }
+    assert.equal(code, 2);
+    assert.equal(putCalled, false);
+    assert.ok(logged.some((l) => l.includes("MUTAÇÃO PODE TER SIDO APLICADA")));
   });
 });
 

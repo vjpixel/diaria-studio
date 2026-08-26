@@ -22,10 +22,15 @@ o custom hostname — **não é testável antes**: o teste é a própria janela.
 > **O passo que faltava neste documento e no script:** remover A/AAAA
 > ANTES de tentar o attach, não depois de ele falhar. Sem isso a sequência
 > "Beehiiv desconecta → script anexa" tem uma janela real de outage entre os
-> dois passos. Rastreado em **#6373** (P1) — corrigir o script pra fazer os
-> dois passos atômicos antes de rodar este playbook de novo. Até lá, quem for
-> repetir o cutover (rollback seguido de reaplicação, ex.) precisa fazer o
-> `DELETE` manual da §1 **antes** de `--cutover --apply`, não depois do 409.
+> dois passos. Rastreado em **#6373** (P1) — **corrigido**: `--cutover
+> --apply` agora lê o A/AAAA do apex, remove o que existir (com a mesma
+> disciplina de duplicata-é-erro-duro e verificação pós-mutação #573 do
+> resto do módulo), CONFIRMA a remoção, e só então tenta o `PUT` do attach —
+> tudo na mesma invocação, sem depender do operador lembrar de um `DELETE`
+> manual. Se o `DELETE` falhar ou a releitura mostrar que o registro
+> sobreviveu, o script aborta antes do attach. Quem repetir o cutover a
+> partir de agora não precisa mais fazer nada manual antes de
+> `--cutover --apply` — a própria execução cobre a §1 sozinha.
 
 Medido ao vivo via API da Cloudflare (zona `0c1a216dee80404257ce225a18fae896`).
 
@@ -241,15 +246,17 @@ O que o script faz por você, e onde:
   **lançar** em vez de silenciosamente escolher "o primeiro registro" — mas
   o operador só vê a mensagem de erro DEPOIS de já ter tentado; rodar
   `--status` antes evita a surpresa.
-- **`--cutover`** mecaniza o passo que faltava documentar aqui: anexa o apex
-  ao Worker `diaria-site` via **Workers Custom Domain**
-  (`PUT /accounts/{account}/workers/domains`) — o mesmo mecanismo por trás de
-  `custom_domain = true` em `wrangler.toml`, comprovado 3× em produção neste
-  projeto (`livros.`, `cursos.`, `especial.diar.ia.br`). Justificativa
-  completa do porquê deste mecanismo (e não uma Workers Route clássica, já
-  refutada pra este apex, nem editar `wrangler.toml` + `wrangler deploy`) no
-  docstring de `scripts/lib/apex-cutover.ts`. **Guard de pré-condição
-  embutido:** recusa (exit 1) a menos que `/` sirva 200 **com o `<title>`
+- **`--cutover`** mecaniza o passo que faltava documentar aqui: remove
+  primeiro o A/AAAA legado do apex (se existir — #6373, ver blockquote de
+  topo) e ENTÃO anexa o apex ao Worker `diaria-site` via **Workers Custom
+  Domain** (`PUT /accounts/{account}/workers/domains`) — o mesmo mecanismo
+  por trás de `custom_domain = true` em `wrangler.toml`, comprovado 3× em
+  produção neste projeto (`livros.`, `cursos.`, `especial.diar.ia.br`).
+  Justificativa completa do porquê deste mecanismo (e não uma Workers Route
+  clássica, já refutada pra este apex, nem editar `wrangler.toml` +
+  `wrangler deploy`) — e do porquê de remover A/AAAA automaticamente em vez
+  de só recusar com um guard — no docstring de `scripts/lib/apex-cutover.ts`
+  (`buildCutoverPlan`). **Guard de pré-condição embutido:** recusa (exit 1) a menos que `/` sirva 200 **com o `<title>`
   real no corpo** (não só "responder alguma coisa" — um Worker que capture
   uma exceção e devolva 200 com página de erro passaria despercebido só com
   status) **e** `/subscribe` **redirecione (3xx)** pro perfil Kit hospedado
