@@ -522,12 +522,18 @@ describe("build-link-ctr CLI — origem resolvida via camada unificada (#6185)",
     assert.ok(csv.includes("exemplo.com/beehiiv-link"), `link Beehiiv ausente do CSV: ${csv}`);
     assert.ok(csv.includes("exemplo.com/kit-link"), `link Kit ausente do CSV — origem não resolvida: ${csv}`);
 
-    const kitLine = csv.split("\n").find((l) => l.includes("kit-link"));
+    const lines = csv.split("\n");
+    const kitLine = lines.find((l) => l.includes("kit-link"));
     assert.ok(kitLine, "linha do link Kit não encontrada");
-    // unique_verified_clicks (índice 8 do header, ver `header` em build-link-ctr.ts)
-    // vem de `unique_clicks` do Kit — aproximação documentada (Kit não distingue
-    // verified/unverified).
+    // unique_verified_clicks vem de `unique_clicks` do Kit — aproximação
+    // documentada (Kit não distingue verified/unverified). Índice resolvido
+    // pelo HEADER, não fixo: com índice fixo, uma reordenação futura das
+    // colunas em build-link-ctr.ts faria este teste comparar a coluna errada
+    // em silêncio em vez de falhar (mesmo padrão do teste vizinho neste arquivo).
+    const header = lines[0]!.split(",");
+    const idx = header.indexOf("unique_verified_clicks");
+    assert.ok(idx >= 0, `coluna unique_verified_clicks ausente do header: ${lines[0]}`);
     const cells = kitLine!.split(",");
-    assert.equal(cells[8], "4", `unique_verified_clicks esperado=4 (de unique_clicks do Kit): ${kitLine}`);
+    assert.equal(cells[idx], "4", `unique_verified_clicks esperado=4 (de unique_clicks do Kit): ${kitLine}`);
   });
 });
