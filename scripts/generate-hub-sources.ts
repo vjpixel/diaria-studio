@@ -15,6 +15,36 @@
  *
  *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude
  *
+ * **`--all` (#5125) — todos os hubs numa invocação**, carregando o corpus uma
+ * vez só (`loadPosts` lê ~250 JSONs do junction `data/`; 7 invocações
+ * separadas pagavam essa leitura 7×):
+ *
+ *   npx tsx scripts/generate-hub-sources.ts --all
+ *
+ * **Por que a defasagem acontece (medido em 26/08/2026, #5125).**
+ * `build-hub-page.ts` NÃO regenera as fontes — ele lê os
+ * `{slug}-sources.generated.json` já commitados, via
+ * `scripts/lib/hubs/{slug}.ts` (import estático). Nenhuma task agendada
+ * chama ESTE script, então os JSONs só saem da defasagem quando alguém
+ * lembra do comando: em 26/08 os 7 paravam entre 11/08 e 18/08, e 13
+ * edições com match óbvio contra hub JÁ EXISTENTE (Claude, OpenAI, Gemini,
+ * TSE) apareciam como "sem tema" no relatório de cobertura do #5125. Não é
+ * a primeira vez — o commit `03066efd` (#5632) foi exatamente um regen
+ * manual da mesma defasagem.
+ *
+ * **`--all` NÃO foi ligado à task semanal `Diaria-Hub-Pages-Build` (#5754),
+ * de propósito.** Um passo de regen desassistido ANTES do build faria o
+ * build falhar toda semana: `UPDATED_DATE` é escrito à mão em cada
+ * `scripts/lib/hubs/{slug}.ts` e `validateHubContent` exige
+ * `updatedDate >= sourceEditions[0].date` (guard do #5124, correto — é o
+ * que impede um hub de declarar frescor que não tem). Fonte regenerada
+ * sempre avança à frente de uma data hand-written, então a automação
+ * precisaria ou derivar `UPDATED_DATE` das fontes, ou aceitar que cada
+ * regen exige revisão editorial da prosa (`sections`/FAQ) pra decidir se as
+ * edições novas abrem seção nova — julgamento, não mecânica. Enquanto isso
+ * não for resolvido, este script é de invocação MANUAL, e quem o roda
+ * assume o passo seguinte. Ver #6267.
+ *
  * **`--dry-run` (#5203) — preview sem gravar.** Roda a coleta normal (ainda
  * precisa do junction `data/`, ver `loadPosts` abaixo) e imprime no stderr um
  * resumo do diff contra o JSON já commitado (quantas entradas seriam
@@ -112,6 +142,24 @@ export interface HubSourceEntry {
    * antigo (só a manchete casada) quando ausente (#4918 Conserto 2, "o item
    * não diz de qual edição veio"). */
   editionTitle?: string;
+  /** Entrada CURADA À MÃO, preservada entre regens (#5125, 26/08/2026).
+   *
+   * `collectHubSources` só acha o que `HUB_KEYWORD_PATTERNS` casa contra
+   * `[title, ...subtitle]` — o texto de RADAR nunca entra nessa checagem.
+   * Edição cujo lastro no tema está só no RADAR precisa ser adicionada à
+   * mão, e até aqui `runGenerate` a APAGAVA em silêncio no regen seguinte
+   * (sobrescreve o JSON inteiro, sem merge). O comentário do pattern
+   * `brasil-regulacao` avisava disso e listava 2 entradas; a medição de
+   * 26/08 achou **3** — a 3ª (`hacker-chines-usa-deepseek-em-ataques-autonomos`,
+   * introduzida pelo próprio commit de regen do #5632) nunca chegou a ser
+   * documentada, que é precisamente o modo de falha de um aviso em prosa.
+   *
+   * Marcar `manual: true` faz `runGenerate` reinjetar a entrada depois da
+   * coleta quando o pattern não a redescobre. Sem isso, armar a task semanal
+   * `Diaria-Hub-Pages-Build` (#5754) apagaria as entradas curadas todo
+   * domingo, sem ninguém ver. NUNCA gravado por `collectHubSources` — é
+   * exclusivamente sinal humano no JSON commitado. */
+  manual?: true;
 }
 
 /** Registro de palavra-chave por hub — espelha os padrões usados na proposta
@@ -215,16 +263,27 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // Nenhum termo novo generalizado pro regex abaixo: como o gatilho é
   // RADAR (não destaque), ampliar o pattern não teria efeito — a checagem
   // acontece contra `destaques = [title, ...subtitle]`, que nunca inclui
-  // texto de RADAR. **Consequência prática: rodar
-  // `npx tsx scripts/generate-hub-sources.ts --hub brasil-regulacao` (sem
-  // `--dry-run`) SOBRESCREVE o JSON inteiro e apaga essas 2 entradas em
-  // silêncio** — não há merge com o que já está commitado (ver
-  // `runGenerate`/o `writeFileAtomic` no fim deste arquivo). Se isso
-  // acontecer, re-adicionar as 2 entradas manualmente conferindo este
-  // comentário e o PR do #5124, ou — melhor — antes de rodar o script de
-  // novo, considerar se vale estender `collectHubSources` para também
-  // varrer RADAR (mudança maior, cross-cutting nos 6 hubs, fora do escopo
-  // desta issue).
+  // texto de RADAR.
+  //
+  // **#5125 (260826) — o apagamento silencioso deixou de ser possível, e a
+  // 3ª entrada apareceu.** Até aqui este comentário avisava que rodar o
+  // script sem `--dry-run` sobrescrevia o JSON e apagava as entradas acima
+  // sem aviso, pedindo re-adição manual. Duas coisas mudaram:
+  //   1. As entradas curadas agora carregam `"manual": true` e
+  //      `runGenerate` as reinjeta depois da coleta (ver
+  //      `mergeManualHubSources`). O regen virou seguro — pré-requisito de
+  //      qualquer automação futura deste script, e já hoje evita que um
+  //      regen manual destrua curadoria por descuido.
+  //   2. O dry-run de 26/08 mostrou **3** entradas a remover, não 2 — a
+  //      terceira (`hacker-chines-usa-deepseek-em-ataques-autonomos`,
+  //      governança de IA na medicina) entrou pelo commit `03066efd`/#5632 e
+  //      nunca foi documentada aqui. É o modo de falha de um aviso em prosa:
+  //      quem adicionou a 3ª não atualizou a lista. A marcação no dado
+  //      (`manual: true`) não tem esse problema — não depende de ninguém
+  //      lembrar de editar um comentário.
+  // Continua valendo como trabalho futuro possível estender
+  // `collectHubSources` pra varrer RADAR (mudança maior, cross-cutting nos 7
+  // hubs) — aí estas entradas passariam a ser derivadas em vez de curadas.
   "brasil-regulacao":
     /\banpd\b|marco legal( da| de)? (ia\b|inteligencia artificial)|\bmarco de ia\b|\bpl[ -]?\d{3,4}\b|projeto de lei|\bstf\b|congresso nacional|\bcfm\b|\banatel\b|\btse\b|hugo motta|brasil regula|classifica sistemas de ia por risco|manipular ia do tribunal|(?=.*\bcongresso\b)(?=.*\bia\b)|(?=.*\bsenado\b)(?=.*\bia\b)|(?=.*\bcamara\b)(?=.*\bia\b)/i,
   // #4558 (6º hub, 2º TEMÁTICO transversal — brasil-regulacao foi o 1º).
@@ -548,6 +607,39 @@ export function backfillEditionTitles(
  * imprimir preview sem tocar disco. Pure: recebe os dois arrays já
  * carregados, não lê nada. Exportado pra teste isolado do cálculo do diff,
  * sem precisar de fixture de arquivo. */
+/**
+ * Reinjeta as entradas `manual: true` do JSON já commitado que a coleta
+ * fresca não redescobriu (#5125) — ver `HubSourceEntry.manual`. Pure.
+ *
+ * Merge por `editionSlug`: entrada que o pattern REDESCOBRIU fica com a
+ * versão fresca (a coleta é a fonte de verdade quando as duas existem), mas
+ * herda o `manual: true` pra não perder a marcação no round-trip. O
+ * resultado sai ordenado por `date` crescente e SÓ por `date` — exatamente o
+ * critério de `collectHubSources` (`rows.sort` acima, sem desempate). Um
+ * desempate extra (por slug, digamos) reordenaria entradas de mesma data em
+ * relação à coleta e faria todo regen produzir um diff espúrio. `Array#sort`
+ * é estável desde ES2019, então as entradas manuais reinjetadas caem depois
+ * das coletadas de mesma data, de forma determinística.
+ */
+export function mergeManualHubSources(
+  existing: readonly HubSourceEntry[],
+  collected: readonly HubSourceEntry[],
+): HubSourceEntry[] {
+  const manualBySlug = new Map(
+    existing.filter((r) => r.manual === true).map((r) => [r.editionSlug, r]),
+  );
+  if (manualBySlug.size === 0) return [...collected];
+
+  const collectedSlugs = new Set(collected.map((r) => r.editionSlug));
+  const merged: HubSourceEntry[] = collected.map((r) =>
+    manualBySlug.has(r.editionSlug) ? { ...r, manual: true as const } : r,
+  );
+  for (const [slug, row] of manualBySlug) {
+    if (!collectedSlugs.has(slug)) merged.push(row);
+  }
+  return merged.sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export function computeHubSourcesDiff(
   oldRows: readonly HubSourceEntry[],
   newRows: readonly HubSourceEntry[],
@@ -623,11 +715,24 @@ function runBackfillTitles(hub: string, opts: { dryRun: boolean }): void {
  * loga warnings, e grava (ou, em `--dry-run`, só previsualiza) o JSON do
  * hub. Extraído de `main()` pra dar nome ao que o comentário do pattern
  * `brasil-regulacao` acima já referenciava como `runGenerate`. */
-function runGenerate(hub: string, opts: { dryRun: boolean }): void {
-  const posts = loadPosts();
-  const { rows, warnings } = collectHubSources(posts, HUB_KEYWORD_PATTERNS[hub]);
+function runGenerate(hub: string, opts: { dryRun: boolean }, posts?: RawCachedPost[]): void {
+  const loaded = posts ?? loadPosts();
+  const { rows: collected, warnings } = collectHubSources(loaded, HUB_KEYWORD_PATTERNS[hub]);
   for (const w of warnings) process.stderr.write(`[generate-hub-sources] ⚠ ${w}\n`);
   const outPath = resolve(HUBS_DIR, `${hub}-sources.generated.json`);
+  // #5125: entradas `manual: true` do JSON commitado sobrevivem ao regen —
+  // sem isso a sobrescrita sem merge apaga curadoria em silêncio (era o caso
+  // de 3 entradas de `brasil-regulacao`, das quais só 2 estavam documentadas).
+  const existing: HubSourceEntry[] = existsSync(outPath)
+    ? (JSON.parse(readFileSync(outPath, "utf8")) as HubSourceEntry[])
+    : [];
+  const rows = mergeManualHubSources(existing, collected);
+  const preserved = rows.length - collected.length;
+  if (preserved > 0) {
+    process.stderr.write(
+      `[generate-hub-sources] ${hub}: ${preserved} entrada(s) manual(is) preservada(s) (campo "manual": true).\n`,
+    );
+  }
   writeGeneratedHubSources(outPath, rows, opts);
   if (!opts.dryRun) {
     process.stderr.write(`[generate-hub-sources] ${hub}: ${rows.length} edições -> ${outPath}\n`);
@@ -637,15 +742,38 @@ function runGenerate(hub: string, opts: { dryRun: boolean }): void {
 
 function main(): void {
   const argv = process.argv.slice(2);
+  const all = argv.includes("--all");
   const hubIdx = argv.indexOf("--hub");
-  const hub = hubIdx >= 0 ? argv[hubIdx + 1] : undefined;
-  if (!hub || !(hub in HUB_KEYWORD_PATTERNS)) {
+  const hubArg = hubIdx >= 0 ? argv[hubIdx + 1] : undefined;
+  const dryRun = argv.includes("--dry-run");
+
+  // `--all` (#5125): regenera TODOS os hubs numa invocação, carregando o
+  // corpus UMA vez só (`loadPosts` lê ~250 arquivos JSON do junction `data/`;
+  // 7 invocações separadas pagavam essa leitura 7×). É o modo que a task
+  // 7 invocações separadas pagavam essa leitura 7×). Invocação MANUAL — não
+  // está ligado a nenhuma task agendada, ver a nota do módulo sobre
+  // `UPDATED_DATE`/#6267. Incompatível com `--backfill-titles`, que é um
+  // modo de reparo por hub.
+  if (all) {
+    if (argv.includes("--backfill-titles")) {
+      console.error("[generate-hub-sources] --all não combina com --backfill-titles (modo por hub).");
+      process.exit(2);
+    }
+    const posts = loadPosts();
+    for (const slug of Object.keys(HUB_KEYWORD_PATTERNS)) {
+      runGenerate(slug, { dryRun }, posts);
+    }
+    return;
+  }
+
+  if (!hubArg || !(hubArg in HUB_KEYWORD_PATTERNS)) {
     console.error(
-      `[generate-hub-sources] --hub obrigatório, um de: ${Object.keys(HUB_KEYWORD_PATTERNS).join(", ")}`,
+      `[generate-hub-sources] --hub obrigatório (ou --all), um de: ${Object.keys(HUB_KEYWORD_PATTERNS).join(", ")}`,
     );
     process.exit(2);
+    return;
   }
-  const dryRun = argv.includes("--dry-run");
+  const hub: string = hubArg;
 
   // #4918 Conserto 2, "caminho barato": preenche `editionTitle` no JSON já
   // commitado a partir de `titles-cache.json` (também commitado) — NÃO
