@@ -125,8 +125,68 @@ describe("evaluatePrChecksGate — check completou falhando (o outro guard que a
 });
 
 describe("evaluatePrChecksGate — nós malformados dentro do array não quebram nem viram pass silencioso", () => {
-  it("elemento null dentro do array é tratado como check sem status => 'pending', não crash", () => {
+  it("elemento null dentro do array => 'error' (payload malformado), nunca crash e nunca pass", () => {
+    // Expectativa MUDADA na revisão da rodada overnight 260826, de 'pending'
+    // pra 'error'. Os dois são fail-safe (nenhum é `pass`), então a mudança
+    // não afrouxa nada — mas 'error' é mais preciso e mais útil: um elemento
+    // `null` é payload MALFORMADO, exatamente o que o guard do topo desta
+    // mesma função já classifica como 'error'. Tratá-lo como 'pending'
+    // deixava o gate travado em pendente para sempre sem dizer por quê, que é
+    // o modo de falha silencioso que a #6225 existe pra eliminar.
     const result = evaluatePrChecksGate([check("ci", "COMPLETED", "SUCCESS"), null]);
-    assert.equal(result.verdict, "pending");
+    assert.equal(result.verdict, "error");
+    assert.notEqual(result.verdict, "pass");
+  });
+});
+
+// Finding do self-review do PR #6231, endereçado na revisão da rodada
+// overnight 260826: `statusCheckRollup` é uma union GraphQL
+// `CheckRun | StatusContext`, e só o 1º membro tem `status`/`conclusion`.
+describe("evaluatePrChecksGate — StatusContext (commit-status legada), o 2º membro da union", () => {
+  it("state SUCCESS conta como aprovado", () => {
+    const r = evaluatePrChecksGate([{ name: "vercel", state: "SUCCESS" }]);
+    assert.equal(r.verdict, "pass");
+  });
+
+  it("state FAILURE reprova — nunca passa por não ter `conclusion`", () => {
+    const r = evaluatePrChecksGate([{ name: "vercel", state: "FAILURE" }]);
+    assert.equal(r.verdict, "fail");
+    assert.deepEqual(r.failingChecks, ["vercel"]);
+  });
+
+  it("state ERROR reprova (não está em PASSING_STATES nem em PENDING_STATES)", () => {
+    assert.equal(evaluatePrChecksGate([{ name: "ci-externo", state: "ERROR" }]).verdict, "fail");
+  });
+
+  it("state PENDING/EXPECTED viram pending, não fail", () => {
+    assert.equal(evaluatePrChecksGate([{ name: "x", state: "PENDING" }]).verdict, "pending");
+    assert.equal(evaluatePrChecksGate([{ name: "x", state: "EXPECTED" }]).verdict, "pending");
+  });
+
+  it("CheckRun e StatusContext convivem no mesmo rollup", () => {
+    const r = evaluatePrChecksGate([
+      { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "deploy", state: "FAILURE" },
+    ]);
+    assert.equal(r.verdict, "fail");
+    assert.deepEqual(r.failingChecks, ["deploy"]);
+  });
+
+  it("shape desconhecido vira ERROR, não pending — pendente-pra-sempre seria silencioso", () => {
+    // O ponto do fix: antes, um node sem `status` caía em `pending` e o gate
+    // travava para sempre sem dizer por quê. Fail-safe, mas mudo — e mudo é
+    // exatamente o modo de falha que a #6225 existe pra eliminar.
+    const r = evaluatePrChecksGate([{ name: "coisa-nova" } as never]);
+    assert.equal(r.verdict, "error");
+    assert.match(r.reason, /shape desconhecido/);
+  });
+
+  it("shape desconhecido NUNCA vira pass, mesmo com todos os outros verdes", () => {
+    const r = evaluatePrChecksGate([
+      { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "misterio" } as never,
+    ]);
+    assert.notEqual(r.verdict, "pass");
+    assert.equal(r.verdict, "error");
   });
 });

@@ -62,10 +62,19 @@ export type PrChecksGateVerdict = "pass" | "fail" | "pending" | "error";
 
 export interface PrCheckNode {
   name?: string;
-  /** Ex: `"COMPLETED"`, `"IN_PROGRESS"`, `"QUEUED"`, `"PENDING"`. */
+  /** `CheckRun` (GitHub Actions). Ex: `"COMPLETED"`, `"IN_PROGRESS"`, `"QUEUED"`, `"PENDING"`. */
   status?: string | null;
-  /** Ex: `"SUCCESS"`, `"FAILURE"`, `"NEUTRAL"`, `"SKIPPED"`, `null` (ainda rodando). */
+  /** `CheckRun`. Ex: `"SUCCESS"`, `"FAILURE"`, `"NEUTRAL"`, `"SKIPPED"`, `null` (ainda rodando). */
   conclusion?: string | null;
+  /** `StatusContext` (commit-status API legada — CI de terceiro, deploy
+   * preview, etc). `statusCheckRollup` é uma UNION `CheckRun | StatusContext`
+   * no GraphQL, e esse segundo membro não tem `status`/`conclusion`: tem
+   * `state` (`"SUCCESS"`/`"FAILURE"`/`"ERROR"`/`"PENDING"`/`"EXPECTED"`).
+   * Hoje este repo só produz `CheckRun`, mas basta alguém plugar um serviço
+   * externo pra aparecer. Ver `evaluatePrChecksGate`. */
+  state?: string | null;
+  /** Discriminante da union, quando o `gh` o inclui. */
+  __typename?: string;
 }
 
 export interface PrChecksGateResult {
@@ -79,6 +88,10 @@ export interface PrChecksGateResult {
 }
 
 const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+/** `StatusContext.state` — o vocabulário é outro e menor que o de `CheckRun`. */
+const PASSING_STATES = new Set(["SUCCESS"]);
+const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
 
 /**
  * Decide o veredito da condição 1 do gate a partir do `statusCheckRollup`
@@ -111,6 +124,36 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
   for (const raw of statusCheckRollup) {
     const node = (raw ?? {}) as PrCheckNode;
     const label = typeof node.name === "string" && node.name.length > 0 ? node.name : "(sem nome)";
+
+    // `statusCheckRollup` é uma union `CheckRun | StatusContext`. O 2º membro
+    // (commit-status API legada: CI de terceiro, deploy preview) não tem
+    // `status`/`conclusion` — tem `state`. Tratar os dois shapes.
+    const hasCheckRunShape = typeof node.status === "string";
+    const hasStatusContextShape = typeof node.state === "string";
+
+    if (!hasCheckRunShape && !hasStatusContextShape) {
+      // Shape desconhecido: nem `CheckRun` nem `StatusContext`. Classificar
+      // como `pending` faria o gate travar em pendente PARA SEMPRE, sem nada
+      // dizendo por quê — silencioso, e é justamente o que esta issue existe
+      // pra impedir. `error` é ruidoso e distinguível, e continua nunca
+      // sendo `pass`.
+      return {
+        verdict: "error",
+        failingChecks: [],
+        pendingChecks: [],
+        reason:
+          `check "${label}" tem shape desconhecido (sem \`status\` de CheckRun nem \`state\` de StatusContext) — ` +
+          "não dá pra decidir aprovado/reprovado, e pendente-para-sempre seria silencioso.",
+      };
+    }
+
+    if (hasStatusContextShape && !hasCheckRunShape) {
+      const state = node.state as string;
+      if (PENDING_STATES.has(state)) pendingChecks.push(label);
+      else if (!PASSING_STATES.has(state)) failingChecks.push(label);
+      continue;
+    }
+
     if (node.status !== "COMPLETED") {
       pendingChecks.push(label);
       continue;
