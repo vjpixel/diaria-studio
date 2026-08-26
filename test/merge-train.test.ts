@@ -72,6 +72,11 @@ describe("composeTrainBatches — critério de aceite: dois PRs colidentes nunca
     const batches = composeTrainBatches(candidates, 3);
     const batchOf = (pr: number) => batches.find((b) => b.prs.includes(pr));
     assert.notDeepEqual(batchOf(1), batchOf(3));
+    // Composição completa explícita (achado do fleet review — a asserção
+    // acima sozinha não deixava claro que PR2 (sem colisão com PR1) entra
+    // no MESMO lote de PR1 primeiro, e é a UNIÃO de arquivos do lote — não
+    // só do último PR adicionado — que barra PR3 depois).
+    assert.deepEqual(batches, [{ prs: [1, 2] }, { prs: [3] }]);
   });
 
   it("respeita o teto maxBatchSize — 4º PR sem colisão ainda assim abre novo lote se o 1º já está cheio (K=3)", () => {
@@ -109,6 +114,24 @@ describe("composeTrainBatches — critério de aceite: dois PRs colidentes nunca
 
   it("lança se maxBatchSize < 1", () => {
     assert.throws(() => composeTrainBatches([{ pr: 1, files: [] }], 0), /maxBatchSize/);
+  });
+
+  it("lança se maxBatchSize não é inteiro — NaN NÃO pode desligar o teto em silêncio (achado do fleet review)", () => {
+    // NaN < 1 é false em JS — sem o guard !Number.isInteger, um K inválido
+    // (ex: vindo de Number("abc") sem validação na CLI) desligava o teto
+    // inteiro sem lançar nada, e todo candidato caía no mesmo lote.
+    assert.throws(() => composeTrainBatches([{ pr: 1, files: [] }], NaN), /inteiro/);
+    assert.throws(() => composeTrainBatches([{ pr: 1, files: [] }], 2.5), /inteiro/);
+    assert.throws(() => composeTrainBatches([{ pr: 1, files: [] }], Infinity), /inteiro/);
+  });
+
+  it("lança se `pr` aparece duplicado em candidates (achado do fleet review — nunca listar o mesmo PR em 2 lotes)", () => {
+    const candidates: TrainCandidate[] = [
+      { pr: 1, files: ["a.ts"] },
+      { pr: 2, files: ["b.ts"] },
+      { pr: 1, files: ["c.ts"] }, // duplicata
+    ];
+    assert.throws(() => composeTrainBatches(candidates, 3), /#1.*mais de uma vez/);
   });
 
   it("determinístico — mesma entrada produz sempre a mesma composição", () => {

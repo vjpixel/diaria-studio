@@ -37,19 +37,24 @@
  */
 
 export interface TrainCandidate {
-  /** Número do PR — só usado como identidade/ordem, nunca interpretado. */
+  /** Número do PR — só usado como identidade/ordem, nunca interpretado. Único dentro de um mesmo `candidates[]` (ver guard em `composeTrainBatches`). */
   pr: number;
   /**
    * Arquivos tocados pelo PR (ex: `gh pr diff {N} --name-only`). Path
    * relativo ao repo, mesma normalização em todos os candidatos — o
    * critério de colisão é igualdade de string, não overlap de diretório.
+   * `readonly` (achado do fleet review, PR #6361): impede mutação
+   * pós-construção que invalidaria silenciosamente um lote já composto.
    */
-  files: string[];
+  readonly files: readonly string[];
 }
 
 export interface TrainBatch {
-  /** Números dos PRs deste lote, na MESMA ordem de entrada em `candidates`. */
-  prs: number[];
+  /**
+   * Números dos PRs deste lote, na MESMA ordem de entrada em `candidates`.
+   * `readonly` pelo mesmo motivo de `TrainCandidate.files` acima.
+   */
+  readonly prs: readonly number[];
 }
 
 /** Verdadeiro se os dois conjuntos de arquivos têm pelo menos 1 elemento em comum. */
@@ -80,8 +85,31 @@ export function composeTrainBatches(
   candidates: readonly TrainCandidate[],
   maxBatchSize: number,
 ): TrainBatch[] {
-  if (maxBatchSize < 1) {
-    throw new Error(`composeTrainBatches: maxBatchSize precisa ser >= 1, recebeu ${maxBatchSize}`);
+  // Defesa em profundidade (achado do fleet review, PR #6361): `maxBatchSize
+  // < 1` sozinho NÃO pega `NaN` — `NaN < 1` é `false` em JS, e um `NaN`
+  // passando batia `batch.prs.length >= NaN` (sempre `false`) e desligava o
+  // teto inteiro em silêncio, sem lançar. `!Number.isInteger` cobre `NaN`,
+  // `Infinity` e frações (K=2.5 não faz sentido, é contagem de PR). Esta é
+  // a função PURA — a CLI (`plan-merge-train.ts`) já valida antes de
+  // chegar aqui via `getIntArg`, mas quem chamar esta função direto (sem
+  // passar pela CLI) precisa da mesma garantia.
+  if (!Number.isInteger(maxBatchSize) || maxBatchSize < 1) {
+    throw new Error(`composeTrainBatches: maxBatchSize precisa ser um inteiro >= 1, recebeu ${maxBatchSize}`);
+  }
+
+  // Achado do fleet review (PR #6361): `pr` duplicado em `candidates` (ex:
+  // input malformado de quem chama) não colide por ARQUIVO consigo mesmo
+  // na estratégia atual sempre — dependendo de quando o 1º lote já
+  // atingiu o teto, o 2º candidato com o MESMO `pr` podia acabar num lote
+  // DIFERENTE, e o plano resultante listava o mesmo PR pertencendo a 2
+  // lotes simultaneamente. Falha alto em vez de deixar essa contradição
+  // passar pro chamador.
+  const seenPrs = new Set<number>();
+  for (const c of candidates) {
+    if (seenPrs.has(c.pr)) {
+      throw new Error(`composeTrainBatches: PR #${c.pr} aparece mais de uma vez em candidates`);
+    }
+    seenPrs.add(c.pr);
   }
 
   const batches: { prs: number[]; filesUnion: Set<string> }[] = [];
