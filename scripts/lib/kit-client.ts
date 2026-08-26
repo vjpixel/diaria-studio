@@ -84,9 +84,9 @@ function isRetriableStatus(status: number): boolean {
 /**
  * ## ⚠️ Armadilhas da API v4 do Kit — resposta de sucesso ≠ efeito (#6181)
  *
- * Quatro comportamentos medidos ao vivo em 25/08/2026, cada um responsável por
- * pelo menos uma conclusão errada naquela sessão. **Nenhum é bug do nosso
- * código; todos são "a API respondeu OK e não fez o que diz".**
+ * Cinco comportamentos medidos ao vivo (quatro em 25/08/2026, o quinto em
+ * 26/08), cada um responsável por pelo menos uma conclusão errada. **Nenhum é
+ * bug do nosso código; todos são "a API respondeu OK e não fez o que diz".**
  *
  * | operação | responde | efeito real |
  * |---|---|---|
@@ -94,6 +94,7 @@ function isRetriableStatus(status: number): boolean {
  * | `GET /v4/tags/{id}` | **404** sempre | **a rota não existe** na v4; 404 não prova ausência |
  * | `GET /v4/tags` logo após criar | sem a tag | **atraso de ~90s** de propagação |
  * | `PATCH /v4/broadcasts/{id}` (subject) | **200** | **ZERA o `send_at`** — desagenda em silêncio |
+ * | `GET /v4/tags/{id}/subscribers` logo após taguear | **sem o assinante**, `has_next_page: false` | **atraso de ~180s** — e mente com confiança: pagina como se a lista estivesse completa |
  *
  * ### Consequências práticas
  *
@@ -108,10 +109,27 @@ function isRetriableStatus(status: number): boolean {
  *    com `send_at` exige reagendar depois — ver `schedule-kit-diaria.ts`.
  *    Esta foi a mais cara: no piloto dos Patronos, mudar o assunto cancelou o
  *    envio do dia seguinte sem erro nenhum.
+ * 5. **Nunca verificar quem está numa tag por `GET /tags/{id}/subscribers`.**
+ *    Medido em 26/08: após taguear um assinante, essa listagem levou **180s**
+ *    para incluí-lo — e no intervalo devolveu `has_next_page: false`, ou seja,
+ *    afirmou que a lista estava completa sem estar. Uma verificação pós-mutação
+ *    honesta (releitura, como manda a regra abaixo) produz **falso negativo**.
  *
- * Regra geral que resume as quatro: **nesta API, confirme por releitura, nunca
- * pelo status da mutação.** É a mesma disciplina do #573, aqui obrigatória por
- * comportamento da plataforma, não por precaução.
+ *    Duas leituras ficaram corretas **imediatamente** e são as que valem:
+ *
+ *    - `GET /subscribers/{id}/tags` — direção inversa, sem atraso observado
+ *    - `GET /broadcasts/{id}/stats` → `recipients` — o número que o envio
+ *      realmente vai usar
+ *
+ *    O `recipients` é o mais decisivo: enquanto a listagem ainda dizia 4, ele
+ *    já dizia 5. **O envio resolve a audiência ao vivo, não pela listagem
+ *    defasada** — então uma conferência de audiência de broadcast deve olhar
+ *    `recipients`, nunca contar linha de `/tags/{id}/subscribers`.
+ *
+ * Regra geral que resume as cinco: **nesta API, confirme por releitura, nunca
+ * pelo status da mutação** — e, quando houver mais de um jeito de reler,
+ * prefira o que o próprio envio consulta. A #5 mostra que releitura pelo
+ * caminho errado é tão enganosa quanto confiar no status.
  *
  * ---
  *
