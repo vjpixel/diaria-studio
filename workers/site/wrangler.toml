@@ -23,9 +23,21 @@
 #   public/p/{slug}/index.html — as 253 edições publicadas (status
 #   "confirmed") em data/beehiiv-cache/posts/, a partir de content.free.web.
 #
-# Fora de escopo desta unidade (itens 2-6 do checklist revisado do #467):
-#   - passo de pipeline que publica a página de uma edição NOVA
-#   - `/`, `/subscribe`, `/forms/*` (formulários postando pro Kit)
+# `/` e `/subscribe` — fechados no #6359 (26/08/2026). Medição ao vivo na
+# própria issue reduziu o escopo original do #467 de 4 pra 2 rotas:
+# `/forms/*` devolve 404 no apex hoje (nunca existiu, não é buraco) e
+# `/sitemap.xml` já era servido corretamente. `/` é `public/index.html`
+# (home mínima própria, não redirect — preserva o sinal de SEO do apex,
+# ver docs/seo-notes.md). `/subscribe` é uma regra em `public/_redirects`
+# pro perfil hospedado da conta Kit (única superfície de cadastro pública
+# que a conta já expõe — ver comentário do próprio `_redirects` pro porquê
+# de não ser página própria postando na API). Ambas são STUB, não a versão
+# definitiva — decisão do editor (Gate B, #6359): "stub primeiro, migrar
+# depois". Smoke test de rotas: test/site-worker-routes-6359.test.ts.
+#
+# Fora de escopo desta unidade e do #467 em geral:
+#   - passo de pipeline que publica a página de uma edição NOVA (já feito, #6202)
+#   - UTM/atribuição de cadastro na API própria da apex (#6318, em voo noutra sessão)
 #   - o cutover de DNS em si
 name = "diaria-site"
 compatibility_date = "2024-09-23"
@@ -52,11 +64,10 @@ directory = "./public"
 # / drop-trailing-slash / none. Teste de regressão:
 # test/site-worker-html-handling-467.test.ts.
 #
-# ESCOPO: vale pro bloco [assets] INTEIRO deste Worker, não só `/p/*` — quem
-# implementar os itens 2-6 do #467 (`/`, `/subscribe`, `/forms/*`, a página
-# de edição nova) neste mesmo `public/` herda `drop-trailing-slash` global
-# de graça. Reconferir se essa é a forma canônica certa pra esses alvos
-# também (ex: um form de subscribe costuma não ter uma forma "canônica"
-# indexada do mesmo jeito que uma página de edição) antes de assumir que
-# nada precisa mudar aqui.
+# ESCOPO: vale pro bloco [assets] INTEIRO deste Worker, não só `/p/*` — `/`
+# (public/index.html, #6359) herda `drop-trailing-slash` de graça, sem
+# ambiguidade (é um único arquivo, não uma família de slugs). `/subscribe`
+# não passa por `[assets]` nenhum — é resolvido por `public/_redirects`
+# ANTES da checagem de asset (ver docs do próprio Cloudflare, citadas no
+# `_redirects`), então `html_handling` não se aplica a ele.
 html_handling = "drop-trailing-slash"
