@@ -362,10 +362,15 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   array `stale` quando não-vazio ("não há overnight ativo, mas há N registro
   stale de X") — registro órfão nunca some em silêncio. O check-and-set do
   #6236 fecha a corrida de ESCRITA no claim,
-  mas não evita duas sessões ANALISANDO a mesma fila — em 260826 o
-  overnight reivindicou a #6232 às 11:20 com subagente já implementando e o
-  contínuo tentou às 11:27; a recusa funcionou e o trabalho de análise dos
-  dois lados se perdeu assim mesmo. Sessão overnight com heartbeat morto
+  mas não evita duas sessões ANALISANDO a mesma fila. Em 260826 o overnight
+  reivindicou a #6232 às 11:20 com subagente já implementando e o contínuo
+  reivindicou às 11:27 — **os dois claims sucederam**, porque `claimIssue`
+  escrevia só no próprio arquivo de sessão sem nunca consultar os das
+  outras; foi esse achado que motivou o check-and-set (#6242). O
+  check-and-set faz a 2ª tentativa ser recusada hoje, mas a recusa chega
+  DEPOIS de a sessão já ter lido, classificado e planejado a issue: o
+  trabalho de análise se perde igual. Por isso a exclusão precisa acontecer
+  ANTES do claim, não nele. Sessão overnight com heartbeat morto
   (> `SOFT_STALE_MS`, 90 min) **não** conta como ativa — o helper já
   filtra, então overnight que morreu sem chamar `end` nunca trava o
   contínuo.

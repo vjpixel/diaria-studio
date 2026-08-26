@@ -704,11 +704,16 @@ export function isIssueClaimedByOther(
  *
  * Motivação: o `hermes-diaria-continuo` roda de hora em hora e drena a MESMA
  * fila que o overnight. O check-and-set do #6236 fecha a corrida de ESCRITA no
- * claim, mas não evita o desperdício de duas sessões analisarem a mesma fila —
- * caso real em 260826, a #6232 claimed às 11:20 pelo overnight e tentada às
- * 11:27 pelo contínuo, com subagente já implementando do outro lado. Com este
- * helper, o tick do contínuo consulta antes de reivindicar issue nova e se
- * limita a processar a própria fila de PRs enquanto houver overnight ativo.
+ * claim, mas não evita o desperdício de duas sessões analisarem a mesma fila.
+ * Caso real em 260826: a #6232 reivindicada às 11:20 pelo overnight, com
+ * subagente já implementando, e às 11:27 pelo contínuo — os DOIS claims
+ * sucederam, porque `claimIssue` escrevia só no próprio arquivo sem consultar
+ * os das outras sessões (foi esse achado que gerou o #6236/#6242). Hoje a 2ª
+ * tentativa é recusada, mas a recusa chega DEPOIS de a sessão já ter lido,
+ * classificado e planejado a issue — o trabalho de análise se perde igual. A
+ * exclusão precisa acontecer ANTES do claim, e é isso que este helper permite:
+ * o tick do contínuo consulta antes de reivindicar issue nova e se limita a
+ * processar a própria fila de PRs enquanto houver overnight ativo.
  *
  * Semântica de staleness idêntica à de `isIssueClaimedByOther` (#5474):
  * sessão com heartbeat morto há mais de `SOFT_STALE_MS` NÃO conta como ativa —
