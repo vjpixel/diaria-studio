@@ -109,6 +109,29 @@ describe("handleJogarGateSubscribe — seleção de backend via env.SUBSCRIBE_BA
     assert.equal(res.status, 503);
     assert.equal(calls.length, 0);
   });
+
+  it('SUBSCRIBE_BACKEND: "kit" e o Kit responde erro real (422) → 502 (subscribe_failed), único branch real de handleJogarGateSubscribe além de not_configured/ok', async () => {
+    const { fn, calls } = makeFakeFetch(422);
+    const env = kitEnv();
+    const res = await handleJogarGateSubscribe(gateSubscribeReq({ email: "a@b.com", optin: true }), env, { fetchImpl: fn });
+    assert.equal(res.status, 502);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.error, "subscribe_failed");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://kit.test/v4/subscribers", "sanity: a chamada foi de fato pro Kit, não pra Beehiiv");
+  });
+
+  it('SUBSCRIBE_BACKEND: "kit" e o fetch pro Kit lança exceção (rede fora do ar) → 502, mesmo tratamento do erro HTTP', async () => {
+    const throwingFetch = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    const env = kitEnv();
+    const res = await handleJogarGateSubscribe(gateSubscribeReq({ email: "a@b.com", optin: true }), env, { fetchImpl: throwingFetch });
+    assert.equal(res.status, 502);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    assert.equal(body.error, "subscribe_failed");
+  });
 });
 
 // ── 2. handleJogarIdentify (identify.ts) ────────────────────────────────────

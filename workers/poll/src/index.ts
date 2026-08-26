@@ -110,9 +110,17 @@ export interface Env {
   BEEHIIV_NAME_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
    * cadastro inline — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`.
-   * Nenhum dispatch automático fora deste worker lê esta var — é local ao
-   * `handleJogarSubscribe` (mesmo estado do #464 pro publisher da
-   * newsletter: existe o código, o switchover é manual). */
+   * Nenhum dispatch automático fora deste worker lê esta var, mas DENTRO do
+   * worker `poll` são 5 handlers, não 1 (achado do rollout incompleto do
+   * #6048 original — só `handleJogarSubscribe` ramificava): `handleJogarSubscribe`
+   * (subscribe.ts), `handleJogarGateSubscribe` (web-gate.ts),
+   * `handleJogarIdentify` (identify.ts), `handleSetName` (este arquivo,
+   * caixa clarice do `/set-name`) e `handleConfirmMerge` (magic-link.ts).
+   * Fonte de verdade sobre COMPLETUDE (não confiar só nesta lista em prosa,
+   * que já ficou defasada uma vez): `test/subscribe-backend-branching-guard-6048.test.ts`,
+   * guard estrutural que falha se algum call site novo de `subscribeToBeehiiv(`
+   * não ramificar por esta var. (Mesmo estado do #464 pro publisher da
+   * newsletter: existe o código, o switchover é manual.) */
   SUBSCRIBE_BACKEND?: string;
   /** #6048 — API key do Kit (`X-Kit-Api-Key`), só relevante quando
    * `SUBSCRIBE_BACKEND === "kit"` PRA CADASTRO. **#6048: também é consumida
@@ -1453,7 +1461,12 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
         await env.POLL.put(scoreKey, JSON.stringify(score));
       } else {
         console.error(JSON.stringify({
-          event: "set_name_beehiiv_subscribe_failed",
+          // #6048 (achado do fleet review): nome neutro — com
+          // SUBSCRIBE_BACKEND="kit" em produção, um evento nomeado
+          // "beehiiv" some de qualquer grep por "kit" durante investigação.
+          // Mesmo padrão de `identify_optin_not_subscribed` (identify.ts).
+          event: "set_name_subscribe_failed",
+          backend: env.SUBSCRIBE_BACKEND ?? "beehiiv",
           email_domain: email.split("@")[1] ?? "unknown",
           status: result.status,
           reason: result.reason,
@@ -1462,7 +1475,8 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       }
     } catch (e) {
       console.error(JSON.stringify({
-        event: "set_name_beehiiv_subscribe_exception",
+        event: "set_name_subscribe_exception",
+        backend: env.SUBSCRIBE_BACKEND ?? "beehiiv",
         email_domain: email.split("@")[1] ?? "unknown",
         error: String(e),
       }));
