@@ -17,7 +17,9 @@ import {
   reconcileEmailSets,
   decideGuardExitCode,
   maskEmail,
+  maskResultForJson,
   formatGuardReport,
+  computeNormalizationStats,
 } from "../scripts/lib/beehiiv-kit-reconcile.ts";
 
 describe("normalizeEmail (#6269)", () => {
@@ -186,6 +188,91 @@ describe("maskEmail (#6269)", () => {
 
   it("string vazia não lança", () => {
     assert.equal(maskEmail(""), "***");
+  });
+});
+
+describe("computeNormalizationStats (#6269) — duplicata real vs. entrada vazia descartada", () => {
+  it("duplicata real (mesmo e-mail normalizado 2x) conta em duplicates, não em emptyDiscarded", () => {
+    const stats = computeNormalizationStats(["a@x.com", "A@X.com", "b@x.com"]);
+    assert.equal(stats.duplicates, 1);
+    assert.equal(stats.emptyDiscarded, 0);
+  });
+
+  it("entrada vazia/whitespace conta em emptyDiscarded, não em duplicates", () => {
+    const stats = computeNormalizationStats(["a@x.com", "", "   ", "b@x.com"]);
+    assert.equal(stats.duplicates, 0);
+    assert.equal(stats.emptyDiscarded, 2);
+  });
+
+  it("as duas causas coexistem sem se misturar — soma bate com raw.length - set.size", () => {
+    const raw = ["a@x.com", "a@x.com", "", "b@x.com", "   "];
+    const stats = computeNormalizationStats(raw);
+    assert.equal(stats.duplicates, 1);
+    assert.equal(stats.emptyDiscarded, 2);
+    const set = toNormalizedEmailSet(raw);
+    assert.equal(stats.duplicates + stats.emptyDiscarded, raw.length - set.size);
+  });
+
+  it("lista sem duplicata nem entrada vazia — as duas causas zeradas", () => {
+    const stats = computeNormalizationStats(["a@x.com", "b@x.com"]);
+    assert.equal(stats.duplicates, 0);
+    assert.equal(stats.emptyDiscarded, 0);
+  });
+});
+
+describe("reconcileEmailSets — beehiivStats/kitStats discriminam duplicata de entrada vazia (#6269)", () => {
+  it("resultado expõe as duas causas separadamente por lado", () => {
+    const result = reconcileEmailSets(["a@x.com", "a@x.com", "", "b@x.com"], ["c@x.com", "   ", "c@x.com"]);
+    assert.equal(result.beehiivStats.duplicates, 1);
+    assert.equal(result.beehiivStats.emptyDiscarded, 1);
+    assert.equal(result.kitStats.duplicates, 1);
+    assert.equal(result.kitStats.emptyDiscarded, 1);
+  });
+});
+
+describe("formatGuardReport — aviso de entrada vazia é distinto do aviso de duplicata (#6269)", () => {
+  it("volume de entrada vazia aparece com texto próprio, sinalizando parsing quebrado", () => {
+    const result = reconcileEmailSets(["a@x.com", "", "   "], ["a@x.com"]);
+    const decision = decideGuardExitCode(result);
+    const report = formatGuardReport(result, decision);
+    assert.ok(report.includes("entrada(s) vazia(s) descartada(s) do lado Beehiiv"));
+    assert.ok(!report.includes("duplicata(s) colapsada(s) do lado Beehiiv"));
+  });
+});
+
+describe("maskResultForJson (#6269) — regressão do vazamento de PII crua no --json", () => {
+  it("serializa sem NENHUM e-mail cru na string final — só mascarado", () => {
+    // Cenário com divergência dos dois lados, igual ao achado real da issue —
+    // é justamente o que o bug produzia cru em onlyInBeehiiv/onlyInKit.
+    const beehiivEmails = ["joao@example.com", "compartilhado@x.com"];
+    const kitEmails = ["compartilhado@x.com", "maria@outro.com"];
+    const result = reconcileEmailSets(beehiivEmails, kitEmails);
+    const decision = decideGuardExitCode(result);
+    const serialized = JSON.stringify({ result: maskResultForJson(result), decision }, null, 2);
+
+    assert.ok(!serialized.includes("joao@example.com"), "e-mail cru só-na-Beehiiv vazou no --json");
+    assert.ok(!serialized.includes("maria@outro.com"), "e-mail cru só-no-Kit vazou no --json");
+    assert.ok(serialized.includes("j***@example.com"));
+    assert.ok(serialized.includes("m***@outro.com"));
+  });
+
+  it("preserva os demais campos do resultado intactos (contagens, hashes, interseção)", () => {
+    const result = reconcileEmailSets(["a@x.com", "b@x.com"], ["a@x.com"]);
+    const masked = maskResultForJson(result);
+    assert.equal(masked.beehiivTotal, result.beehiivTotal);
+    assert.equal(masked.kitTotal, result.kitTotal);
+    assert.equal(masked.intersectionSize, result.intersectionSize);
+    assert.equal(masked.beehiivHash, result.beehiivHash);
+    assert.equal(masked.kitHash, result.kitHash);
+    assert.equal(masked.dedupedFromBeehiiv, result.dedupedFromBeehiiv);
+    assert.equal(masked.dedupedFromKit, result.dedupedFromKit);
+  });
+
+  it("mantém o comprimento das listas (mascara, não filtra/reordena)", () => {
+    const result = reconcileEmailSets(["a@x.com", "b@x.com", "c@x.com"], []);
+    const masked = maskResultForJson(result);
+    assert.equal(masked.onlyInBeehiiv.length, result.onlyInBeehiiv.length);
+    assert.deepEqual(masked.onlyInBeehiiv, result.onlyInBeehiiv.map(maskEmail));
   });
 });
 

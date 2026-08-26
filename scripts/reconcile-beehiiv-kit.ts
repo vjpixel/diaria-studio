@@ -34,7 +34,12 @@ import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import type { KitConfig } from "./lib/kit-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
-import { reconcileEmailSets, decideGuardExitCode, formatGuardReport } from "./lib/beehiiv-kit-reconcile.ts";
+import {
+  reconcileEmailSets,
+  decideGuardExitCode,
+  formatGuardReport,
+  maskResultForJson,
+} from "./lib/beehiiv-kit-reconcile.ts";
 
 const LOG_PREFIX = "[reconcile-beehiiv-kit]";
 const PER_PAGE = 100;
@@ -142,7 +147,11 @@ async function main(): Promise<void> {
   const decision = decideGuardExitCode(result);
 
   if (asJson) {
-    process.stdout.write(JSON.stringify({ result, decision }, null, 2) + "\n");
+    // #6269 finding: e-mails de `onlyInBeehiiv`/`onlyInKit` sempre mascarados
+    // aqui — mesma disciplina "sem PII crua no stdout" que a saída humana já
+    // seguia (`formatGuardReport`). `--json` alimenta pipeline/log/CI, então
+    // é o caminho de MAIOR alcance, não o de menor risco.
+    process.stdout.write(JSON.stringify({ result: maskResultForJson(result), decision }, null, 2) + "\n");
   } else {
     process.stdout.write(formatGuardReport(result, decision) + "\n");
   }

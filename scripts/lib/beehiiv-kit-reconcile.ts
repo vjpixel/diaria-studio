@@ -47,6 +47,38 @@ export function toNormalizedEmailSet(emails: readonly string[]): Set<string> {
   return new Set(emails.map(normalizeEmail).filter((e) => e.length > 0));
 }
 
+export interface NormalizationStats {
+  /** Entradas normalizadas não-vazias que colapsaram em cima de outra já
+   *  vista — duplicata de verdade (mesmo e-mail 2×). */
+  duplicates: number;
+  /** Entradas que normalizaram pra string vazia (whitespace/vazio) e foram
+   *  descartadas — não é duplicata, é dado ausente/mal formado. Volume alto
+   *  aqui é sinal de parsing quebrado do lado da API, não de gente
+   *  cadastrada 2×. */
+  emptyDiscarded: number;
+}
+
+/** Pure: separa, do total de entradas cruas menos o tamanho do set final
+ *  (`raw.length - set.size`, o que antes o guard reportava como um único
+ *  número "deduped"), quanto veio de duplicata real vs. entrada vazia
+ *  descartada (#6269 finding — as duas causas eram conflacionadas num só
+ *  contador, escondendo justamente o sinal de parsing quebrado). */
+export function computeNormalizationStats(emails: readonly string[]): NormalizationStats {
+  const seen = new Set<string>();
+  let duplicates = 0;
+  let emptyDiscarded = 0;
+  for (const raw of emails) {
+    const normalized = normalizeEmail(raw);
+    if (normalized.length === 0) {
+      emptyDiscarded++;
+      continue;
+    }
+    if (seen.has(normalized)) duplicates++;
+    else seen.add(normalized);
+  }
+  return { duplicates, emptyDiscarded };
+}
+
 /** Pure: SHA-256 hex de um conjunto de e-mails já normalizados — ORDENA
  *  antes de hashear (ordem de chegada da API não é estável, então hashear
  *  sem ordenar produziria hashes diferentes pro MESMO conjunto lógico entre
@@ -62,10 +94,16 @@ export interface ReconcileEmailSetsResult {
    *  qualquer duplicata já colapsada, ver `dedupedFrom*`). */
   beehiivTotal: number;
   kitTotal: number;
-  /** Quantos e-mails de entrada foram colapsados por duplicata (raro —
-   *  indício de dado sujo se > 0). */
+  /** Quantos e-mails de entrada foram colapsados por duplicata OU
+   *  descartados por normalizar pra vazio — soma das duas causas em
+   *  `NormalizationStats` (mantido para não quebrar consumidores do total;
+   *  ver `beehiivStats`/`kitStats` pra causa discriminada). */
   dedupedFromBeehiiv: number;
   dedupedFromKit: number;
+  /** Causa discriminada do descarte de cada lado (#6269 finding) —
+   *  duplicata real vs. entrada vazia (sinal de parsing quebrado). */
+  beehiivStats: NormalizationStats;
+  kitStats: NormalizationStats;
   intersectionSize: number;
   /** Sorted — determinístico entre rodadas com o mesmo conjunto lógico. */
   onlyInBeehiiv: string[];
@@ -101,11 +139,16 @@ export function reconcileEmailSets(
   onlyInBeehiiv.sort();
   onlyInKit.sort();
 
+  const beehiivStats = computeNormalizationStats(beehiivEmailsRaw);
+  const kitStats = computeNormalizationStats(kitEmailsRaw);
+
   return {
     beehiivTotal: beehiivSet.size,
     kitTotal: kitSet.size,
     dedupedFromBeehiiv: beehiivEmailsRaw.length - beehiivSet.size,
     dedupedFromKit: kitEmailsRaw.length - kitSet.size,
+    beehiivStats,
+    kitStats,
     intersectionSize,
     onlyInBeehiiv,
     onlyInKit,
@@ -148,6 +191,32 @@ export function maskEmail(email: string): string {
 }
 
 /**
+ * Pure: versão de `ReconcileEmailSetsResult` segura pra `--json` — mesma
+ * disciplina "sem PII crua no stdout" da issue (#6269), que a saída humana
+ * já respeitava (`formatGuardReport`/`maskEmail`) mas `--json` não: antes
+ * deste helper, o CLI serializava `onlyInBeehiiv`/`onlyInKit` com e-mail
+ * cru, e esse é justamente o caminho de maior alcance — a saída `--json`
+ * existe pra ser consumida por pipeline/log/CI (pré-condição do #6114),
+ * não só lida por humano na hora. Reusa `maskEmail` — a MESMA máscara da
+ * saída texto, nunca uma segunda implementação divergente. */
+export interface ReconcileEmailSetsResultMasked
+  extends Omit<ReconcileEmailSetsResult, "onlyInBeehiiv" | "onlyInKit"> {
+  onlyInBeehiiv: string[];
+  onlyInKit: string[];
+}
+
+/** Pure: mascara os e-mails de `onlyInBeehiiv`/`onlyInKit` — único uso
+ *  pretendido é alimentar `JSON.stringify` no `--json` do CLI. Preserva a
+ *  ordenação já garantida por `reconcileEmailSets`. */
+export function maskResultForJson(result: ReconcileEmailSetsResult): ReconcileEmailSetsResultMasked {
+  return {
+    ...result,
+    onlyInBeehiiv: result.onlyInBeehiiv.map(maskEmail),
+    onlyInKit: result.onlyInKit.map(maskEmail),
+  };
+}
+
+/**
  * Pure: monta o relatório humano (texto) do guard — contagens, interseção,
  * hashes, e-mails mascarados só-em-um-lado, e o veredito. Sem PII crua no
  * texto (e-mails sempre mascarados) — mesma disciplina do corpo da issue
@@ -163,11 +232,21 @@ export function formatGuardReport(result: ReconcileEmailSetsResult, decision: Gu
   lines.push(`  só no Kit: ${result.onlyInKit.length}`);
   lines.push(`  SHA-256 (Beehiiv, conjunto ordenado): ${result.beehiivHash}`);
   lines.push(`  SHA-256 (Kit, conjunto ordenado): ${result.kitHash}`);
-  if (result.dedupedFromBeehiiv > 0) {
-    lines.push(`  aviso: ${result.dedupedFromBeehiiv} duplicata(s) colapsada(s) do lado Beehiiv`);
+  if (result.beehiivStats.duplicates > 0) {
+    lines.push(`  aviso: ${result.beehiivStats.duplicates} duplicata(s) colapsada(s) do lado Beehiiv`);
   }
-  if (result.dedupedFromKit > 0) {
-    lines.push(`  aviso: ${result.dedupedFromKit} duplicata(s) colapsada(s) do lado Kit`);
+  if (result.beehiivStats.emptyDiscarded > 0) {
+    lines.push(
+      `  aviso: ${result.beehiivStats.emptyDiscarded} entrada(s) vazia(s) descartada(s) do lado Beehiiv — possível parsing quebrado`,
+    );
+  }
+  if (result.kitStats.duplicates > 0) {
+    lines.push(`  aviso: ${result.kitStats.duplicates} duplicata(s) colapsada(s) do lado Kit`);
+  }
+  if (result.kitStats.emptyDiscarded > 0) {
+    lines.push(
+      `  aviso: ${result.kitStats.emptyDiscarded} entrada(s) vazia(s) descartada(s) do lado Kit — possível parsing quebrado`,
+    );
   }
   if (result.onlyInBeehiiv.length > 0) {
     lines.push(`  BLOQUEANTE — só na Beehiiv (${result.onlyInBeehiiv.length}):`);
