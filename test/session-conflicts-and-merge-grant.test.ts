@@ -35,6 +35,7 @@ import {
   findLiveMergeGrant,
   findSessionConflicts,
   grantMergeWindow,
+  machineTag,
   isMergeGrantLive,
   listActiveSessions,
   normalizeBeaconPath,
@@ -57,6 +58,17 @@ import {
 const CONSUME_HOOK_PATH = fileURLToPath(
   new URL("../.claude/hooks/consume-merge-grant-on-merge.mjs", import.meta.url),
 );
+
+/**
+ * Tag da maquina REAL, nao um literal.
+ *
+ * `grantMergeWindow`/`findLiveMergeGrant`/`consumeMergeGrant` resolvem o path
+ * do registro por `meta.tag ?? machineTag()`. Um teste que registra com um tag
+ * HARDCODED e depois chama essas funcoes sem passar tag so passa numa maquina
+ * cujo hostname seja exatamente esse literal — foi o que aconteceu: verde no
+ * Windows do editor (hostname `Neo`), vermelho no runner do CI (#6303).
+ */
+const LOCAL_TAG = machineTag();
 
 const NOW = Date.parse("2026-08-26T12:00:00.000Z");
 const isoAgo = (ms: number) => new Date(NOW - ms).toISOString();
@@ -135,7 +147,7 @@ describe("#6168 Parte C — conflicts é consulta, e nunca cria arquivo", () => 
     // pode aparecer ali. `conflicts` responde, nunca adquire.
     const root = makeTempRepo();
     try {
-      registerSession(root, "develop", "eu", { tag: "Neo" });
+      registerSession(root, "develop", "eu", { tag: LOCAL_TAG });
       const antes = readdirSync(join(root, "data", "sessions")).sort();
       findSessionConflicts(listActiveSessions(root, NOW), {
         sessionId: "eu",
@@ -326,7 +338,7 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
     // ele, "conceder a si mesma" seria relabel com outro nome.
     const root = makeTempRepo();
     try {
-      registerSession(root, "develop", "eu", { tag: "Neo" });
+      registerSession(root, "develop", "eu", { tag: LOCAL_TAG });
       const r = grantMergeWindow(root, "develop", "eu", "eu");
       assert.equal(r.ok, false);
       assert.equal(r.reason, "self-grant-refused");
@@ -338,7 +350,7 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
   it("sessão interativa NÃO concede janela a ninguém", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "interactive", "i1", { tag: "Neo" });
+      registerSession(root, "interactive", "i1", { tag: LOCAL_TAG });
       const r = grantMergeWindow(root, "interactive", "i1", "outra");
       assert.equal(r.ok, false);
       assert.equal(r.reason, "not-a-coordinator");
@@ -350,7 +362,7 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
   it("coordenadora concede, o beneficiário encontra, e é USO ÚNICO", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
       assert.equal(grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6278 }).ok, true);
 
       const found = findLiveMergeGrant(root, "interativa");
@@ -388,7 +400,7 @@ describe("#6296 — concessão de janela: só coordenadora, nunca a si mesma", (
     // ("arquivo dedicado OU campo no próprio record"): campo satisfaz os dois.
     const root = makeTempRepo();
     try {
-      registerSession(root, "develop", "coord", { tag: "Neo" });
+      registerSession(root, "develop", "coord", { tag: LOCAL_TAG });
       const antes = readdirSync(join(root, "data", "sessions")).sort();
       grantMergeWindow(root, "develop", "coord", "outra", { pr: 1 });
       assert.deepEqual(readdirSync(join(root, "data", "sessions")).sort(), antes);
@@ -479,7 +491,7 @@ describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funç�
   it("sem concessão nenhuma → null", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
       assert.equal(findLiveMergeGrantFile(root, "interativa"), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -489,7 +501,7 @@ describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funç�
   it("concessão viva → acha o arquivo, o record e o grant", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
       grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
       const found = findLiveMergeGrantFile(root, "interativa");
       assert.ok(found);
@@ -504,7 +516,7 @@ describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funç�
   it("buildConsumedRecord marca consumedAt e preserva o resto do grant/record", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
       grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
       const found = findLiveMergeGrantFile(root, "interativa");
       const nowIso = new Date(NOW).toISOString();
@@ -521,7 +533,7 @@ describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funç�
   it("concessão já consumida não é achada de novo (uso único de fato)", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      registerSession(root, "overnight", "coord", { tag: LOCAL_TAG });
       grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
       assert.equal(consumeMergeGrant(root, "interativa"), true);
       assert.equal(findLiveMergeGrantFile(root, "interativa"), null);
@@ -674,8 +686,8 @@ describe("#6303 P1·a — a concessão destrava IDENTIDADE, nunca TEMPO", () => 
     // caminho.
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord-a", { tag: "Neo" });
-      registerSession(root, "develop", "coord-b", { tag: "Neo" });
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG });
+      registerSession(root, "develop", "coord-b", { tag: LOCAL_TAG });
       const r = grantMergeWindow(root, "overnight", "coord-a", "coord-b", { pr: 1 });
       assert.equal(r.ok, false);
       assert.equal(r.reason, "grantee-is-coordinator-refused");
@@ -687,8 +699,8 @@ describe("#6303 P1·a — a concessão destrava IDENTIDADE, nunca TEMPO", () => 
   it("grantMergeWindow CONCEDE normalmente a sessão não-coordenadora", () => {
     const root = makeTempRepo();
     try {
-      registerSession(root, "overnight", "coord-a", { tag: "Neo" });
-      registerSession(root, "interactive", "interativa", { tag: "Neo" });
+      registerSession(root, "overnight", "coord-a", { tag: LOCAL_TAG });
+      registerSession(root, "interactive", "interativa", { tag: LOCAL_TAG });
       assert.equal(grantMergeWindow(root, "overnight", "coord-a", "interativa", { pr: 1 }).ok, true);
     } finally {
       rmSync(root, { recursive: true, force: true });

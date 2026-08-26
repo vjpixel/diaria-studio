@@ -1515,8 +1515,6 @@ export function beaconPathsOverlap(a: string, b: string): boolean {
 
 // ─── `conflicts`: consulta, nunca aquisição (#6168 Parte C) ────────────────
 
-export type SessionConflictKind = "branch-drift" | "branch-shared" | "path-overlap";
-
 /**
  * Union DISCRIMINADA por `kind` — a correlação entre o tipo do conflito e os
  * campos que ele carrega é garantia de compilador, não convenção:
