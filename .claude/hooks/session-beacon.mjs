@@ -84,11 +84,22 @@
 // Self-contained (nenhum import de `scripts/*.ts`): mesma razão documentada em
 // `pr-create-review.mjs` e `block-gh-pr-merge-subagent.mjs` — um import
 // estático de `.ts` quebra o hook inteiro, em silêncio, num Node sem
-// type-stripping nativo. As constantes duplicadas aqui são travadas contra a
-// fonte em `test/session-beacon-hook.test.ts`.
+// type-stripping nativo. **Precisão sobre o que é testado (#6303 Finding M —
+// a afirmação anterior aqui, "as constantes duplicadas aqui são travadas
+// contra a fonte", era imprecisa: `test/session-beacon-hook.test.ts` só
+// comparava a função/constante DESTE arquivo contra um literal, nunca
+// importava a versão irmã de `session-registry.ts` lado a lado — dois pinos
+// independentes, cada um certo por coincidência):** o cross-check DE
+// VERDADE — `TOUCHED_PATHS_CAP`, `normalizePath`/`normalizeBeaconPath`,
+// `collapsePaths`/`collapseTouchedPaths` importados dos DOIS módulos e
+// comparados — mora em `test/session-beacon-blast-radius.test.ts` (describe
+// "#6303 Findings L/M/J"). `test/session-beacon-hook.test.ts` continua
+// testando o COMPORTAMENTO das funções deste arquivo isoladamente (útil por
+// si só), mas não prova mais paridade cruzada nenhuma — nem o título dos
+// testes lá afirma isso.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 
@@ -196,6 +207,17 @@ export function normalizePath(path) {
  * raiz. Só Edit/Write/NotebookEdit têm `file_path` — para `Bash` retorna
  * vazio de propósito: parsear caminho de linha de comando é frágil, e o sinal
  * que interessa do Bash é o VERBO (ver `sniffVerb`), não os arquivos.
+ *
+ * #6303 Finding U: `path.relative()` entre DRIVES diferentes no Windows
+ * (`C:\foo` vs `D:\bar\x.txt`) não devolve uma string começando com `..` — o
+ * guard `rel.startsWith("..")` sozinho não pega esse caso, e uma string sem
+ * sentido (o path ABSOLUTO do outro drive, sem transformação nenhuma —
+ * `path.relative` não sabe cruzar drives) entraria em `touched_paths`. Hoje
+ * é latente (o repo, worktrees, scratchpad e a junction OneDrive vivem todos
+ * no mesmo drive nesta máquina) e o pior efeito é POLUIÇÃO do campo, nunca
+ * falso-negativo — mas o segundo guard (`isAbsolute(rel)`, o sinal confiável
+ * de "não há caminho relativo real entre os dois") é barato e fecha a
+ * lacuna por completo.
  */
 export function extractTouchedPaths(toolName, toolInput, repoRoot) {
   const filePath = toolInput?.file_path ?? toolInput?.notebook_path;
@@ -203,8 +225,9 @@ export function extractTouchedPaths(toolName, toolInput, repoRoot) {
   if (!["Edit", "Write", "NotebookEdit"].includes(toolName)) return [];
   try {
     const rel = relative(repoRoot, resolvePath(String(filePath)));
-    // Fora do repo (scratchpad, /tmp) não interessa a nenhum peer.
-    if (rel.startsWith("..") || rel === "") return [];
+    // Fora do repo (scratchpad, /tmp, ou outro DRIVE no Windows — #6303
+    // Finding U) não interessa a nenhum peer.
+    if (rel.startsWith("..") || rel === "" || isAbsolute(rel)) return [];
     return [normalizePath(rel)];
   } catch {
     return [];

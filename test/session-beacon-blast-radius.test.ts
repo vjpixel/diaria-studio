@@ -34,15 +34,23 @@ import {
   GC_INTERACTIVE_MAX_AGE_MS,
   INTERACTIVE_SOFT_STALE_MS,
   SOFT_STALE_MS,
+  TOUCHED_PATHS_CAP,
   isCoordinatorKind,
   isIssueClaimedByOther,
   listActiveSessions,
+  normalizeBeaconPath,
+  collapseTouchedPaths,
   planSessionGc,
   softStaleMsForKind,
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
 import { shouldSkipForSharedSession } from "../scripts/cleanup-merged-worktrees.ts";
 import { COORDINATOR_KINDS } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
+import {
+  TOUCHED_PATHS_CAP as HOOK_TOUCHED_PATHS_CAP,
+  normalizePath as hookNormalizePath,
+  collapsePaths as hookCollapsePaths,
+} from "../.claude/hooks/session-beacon.mjs";
 
 function makeTempRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "beacon-blast-"));
@@ -91,6 +99,35 @@ describe("#6168 blast radius 2 — COORDINATOR_KINDS não recebe o kind novo", (
     for (const kind of COORDINATOR_SESSION_KINDS) assert.equal(isCoordinatorKind(kind), true);
     assert.equal(isCoordinatorKind("interactive"), false);
     assert.equal(isCoordinatorKind("qualquer-outra-coisa"), false);
+  });
+});
+
+describe("#6303 Findings L/M/J — as OUTRAS constantes/funções duplicadas no beacon não divergem do módulo", () => {
+  // Achado do fleet review #6303: `test/session-beacon-hook.test.ts` tinha
+  // dois testes que PROMETIAM paridade cruzada ("TOUCHED_PATHS_CAP é 200 nos
+  // dois lados", "normalizePath do hook concorda com o do módulo") mas só
+  // comparavam a função do hook contra um LITERAL — nunca importavam a
+  // versão do `.ts`. Mudar o valor num lado só deixaria os dois testes
+  // verdes por coincidência (cada um certo por acaso). O modelo correto já
+  // existia neste MESMO arquivo, no describe acima ("o conjunto do hook e o
+  // do módulo TS não divergem") — aqui ele é aplicado às 3 duplicações que
+  // faltavam.
+  it("TOUCHED_PATHS_CAP", () => {
+    assert.equal(HOOK_TOUCHED_PATHS_CAP, TOUCHED_PATHS_CAP);
+  });
+
+  it("normalizePath (hook) === normalizeBeaconPath (módulo), amostra representativa", () => {
+    for (const input of ["scripts\\lib\\a.ts", "./a/", "scripts/lib/a.ts", "a/b/c/", ""]) {
+      assert.equal(hookNormalizePath(input), normalizeBeaconPath(input), `input: ${JSON.stringify(input)}`);
+    }
+  });
+
+  it("collapsePaths (hook) === collapseTouchedPaths (módulo), abaixo e acima do teto", () => {
+    const poucos = ["b.ts", "a.ts", "a.ts"];
+    assert.deepEqual(hookCollapsePaths(poucos, 10), collapseTouchedPaths(poucos, 10));
+
+    const muitos = Array.from({ length: 50 }, (_, i) => `scripts/lib/mod${i}.ts`);
+    assert.deepEqual(hookCollapsePaths(muitos, 5), collapseTouchedPaths(muitos, 5));
   });
 });
 
@@ -179,6 +216,22 @@ describe("#6168 — janela de staleness própria do kind interactive", () => {
     // classificar — errar pro lado de "ainda viva".
     assert.equal(softStaleMsForKind(""), SOFT_STALE_MS);
     assert.equal(softStaleMsForKind("kind-que-nao-existe"), SOFT_STALE_MS);
+  });
+
+  it("boundary exato: heartbeat == INTERACTIVE_SOFT_STALE_MS não é stale (só > é stale, #6303 Finding I)", () => {
+    // Mesma disciplina de `test/session-registry.test.ts` ("boundary exato:
+    // heartbeat == SOFT_STALE_MS não é stale") aplicada à janela CURTA do
+    // kind interactive — só testar a margem (16min/30min) não pegaria uma
+    // mutação de `>` pra `>=` no comparador de `listActiveSessions`.
+    const root = makeTempRepo();
+    try {
+      writeSession(root, session({ kind: "interactive", sessionId: "i1", lastHeartbeat: isoAgo(INTERACTIVE_SOFT_STALE_MS) }));
+      const active = listActiveSessions(root, NOW);
+      assert.equal(active.length, 1);
+      assert.equal(active[0]!.stale, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("aos 30min: interativa já é stale, overnight ainda não", () => {
@@ -288,6 +341,47 @@ describe("#6168 — GC alcança registro interativo órfão sem depender de pid"
   it("GC_INTERACTIVE_MAX_AGE_MS é bem menor que a janela conservadora dos coordenadores", () => {
     assert.equal(GC_INTERACTIVE_MAX_AGE_MS, 2 * 60 * 60 * 1000);
     assert.ok(GC_INTERACTIVE_MAX_AGE_MS < 7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("boundary exato: heartbeat == GC_INTERACTIVE_MAX_AGE_MS → MANTIDA (só > remove, #6303 Finding I)", () => {
+    // Os testes de margem acima (1h mantida, 3h removida) não pegariam uma
+    // mutação de `>` pra `>=` no comparador de `decideSessionGc` — só o
+    // valor EXATO do limite pega isso.
+    const root = makeTempRepo();
+    try {
+      writeSession(
+        root,
+        session({
+          kind: "interactive",
+          sessionId: "i1",
+          machineTag: "OutraMaquina",
+          lastHeartbeat: isoAgo(GC_INTERACTIVE_MAX_AGE_MS),
+        }),
+      );
+      const plan = planSessionGc(root, { now: NOW, localMachineTag: "Neo" });
+      assert.equal(plan[0]!.action, "kept");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("boundary exato +1ms: heartbeat == GC_INTERACTIVE_MAX_AGE_MS + 1ms → REMOVIDA", () => {
+    const root = makeTempRepo();
+    try {
+      writeSession(
+        root,
+        session({
+          kind: "interactive",
+          sessionId: "i1",
+          machineTag: "OutraMaquina",
+          lastHeartbeat: isoAgo(GC_INTERACTIVE_MAX_AGE_MS + 1),
+        }),
+      );
+      const plan = planSessionGc(root, { now: NOW, localMachineTag: "Neo" });
+      assert.equal(plan[0]!.action, "removed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

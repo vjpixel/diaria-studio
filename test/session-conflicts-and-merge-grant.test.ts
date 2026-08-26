@@ -18,12 +18,16 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  CLOCK_SKEW_TOLERANCE_MS,
   MERGE_GRANT_TTL_MS,
+  MERGE_LOCK_TTL_MS,
   beaconPathsOverlap,
   collapseTouchedPaths,
   consumeMergeGrant,
@@ -39,7 +43,20 @@ import {
   type MergeAnnouncement,
   type SessionRecord,
 } from "../scripts/lib/session-registry.ts";
-import { shouldBlockGhPrMerge } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
+import {
+  CLOCK_SKEW_TOLERANCE_MS as HOOK_CLOCK_SKEW_TOLERANCE_MS,
+  MERGE_GRANT_TTL_MS as HOOK_MERGE_GRANT_TTL_MS,
+  MERGE_LOCK_TTL_MS as HOOK_MERGE_LOCK_TTL_MS,
+  shouldBlockGhPrMerge,
+} from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
+import {
+  findLiveMergeGrantFile,
+  buildConsumedRecord,
+} from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
+
+const CONSUME_HOOK_PATH = fileURLToPath(
+  new URL("../.claude/hooks/consume-merge-grant-on-merge.mjs", import.meta.url),
+);
 
 const NOW = Date.parse("2026-08-26T12:00:00.000Z");
 const isoAgo = (ms: number) => new Date(NOW - ms).toISOString();
@@ -432,5 +449,177 @@ describe("#6296 — o guard de merge compõe com o lock e com a concessão", () 
     // `undefined`.
     const duas = new Set(["coord-a", "coord-b"]);
     assert.equal(shouldBlockGhPrMerge(duas, "coord-a", { mergeLockHolder: undefined }), false);
+  });
+});
+
+// ─── as constantes duplicadas no hook não divergem do módulo (#6303 L/M/J) ─
+
+describe("#6303 — as cópias duplicadas em block-gh-pr-merge-subagent.mjs concordam com session-registry.ts", () => {
+  // O hook é self-contained (.mjs, sem import de .ts) e mantém cópias
+  // PRÓPRIAS de 3 constantes. Duas cópias sem teste que as compare de
+  // verdade é a mesma dívida que o fleet review da #6303 (Findings L/M/J)
+  // apontou noutros pares deste repo — mudar o valor num lado sozinho
+  // deixaria os dois testes (cada um comparando só contra um literal)
+  // verdes por coincidência. Aqui os dois módulos são importados lado a
+  // lado e comparados de verdade.
+  it("CLOCK_SKEW_TOLERANCE_MS", () => {
+    assert.equal(HOOK_CLOCK_SKEW_TOLERANCE_MS, CLOCK_SKEW_TOLERANCE_MS);
+  });
+  it("MERGE_GRANT_TTL_MS", () => {
+    assert.equal(HOOK_MERGE_GRANT_TTL_MS, MERGE_GRANT_TTL_MS);
+  });
+  it("MERGE_LOCK_TTL_MS", () => {
+    assert.equal(HOOK_MERGE_LOCK_TTL_MS, MERGE_LOCK_TTL_MS);
+  });
+});
+
+// ─── #6303 Finding T: consumo automático da concessão pós-merge ───────────
+
+describe("#6303 Finding T — findLiveMergeGrantFile/buildConsumedRecord (funções puras)", () => {
+  it("sem concessão nenhuma → null", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      assert.equal(findLiveMergeGrantFile(root, "interativa"), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessão viva → acha o arquivo, o record e o grant", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
+      const found = findLiveMergeGrantFile(root, "interativa");
+      assert.ok(found);
+      assert.equal(found.grant.grantedTo, "interativa");
+      assert.equal(found.grant.pr, 6303);
+      assert.ok(found.path.includes("overnight-Neo-coord.json"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("buildConsumedRecord marca consumedAt e preserva o resto do grant/record", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
+      const found = findLiveMergeGrantFile(root, "interativa");
+      const nowIso = new Date(NOW).toISOString();
+      const updated = buildConsumedRecord(found, nowIso);
+      assert.equal(updated.merge_grant.consumedAt, nowIso);
+      assert.equal(updated.merge_grant.grantedTo, "interativa");
+      assert.equal(updated.merge_grant.pr, 6303);
+      assert.equal(updated.sessionId, "coord", "o resto do record da coordenadora sobrevive");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concessão já consumida não é achada de novo (uso único de fato)", () => {
+    const root = makeTempRepo();
+    try {
+      registerSession(root, "overnight", "coord", { tag: "Neo" });
+      grantMergeWindow(root, "overnight", "coord", "interativa", { pr: 6303 });
+      assert.equal(consumeMergeGrant(root, "interativa"), true);
+      assert.equal(findLiveMergeGrantFile(root, "interativa"), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5161 item 10)", () => {
+  function makeGitRepo(): string {
+    const root = mkdtempSync(join(tmpdir(), "consume-grant-e2e-"));
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    return root;
+  }
+
+  it("session_id com concessão viva → consumedAt é gravado no arquivo da coordenadora", () => {
+    const root = makeGitRepo();
+    try {
+      // Usa o relógio REAL (não o `NOW` fixo de 2026-08-26 usado no resto do
+      // arquivo) porque o hook, spawnado como processo separado, resolve
+      // `now = Date.now()` de verdade — misturar os dois faria a concessão
+      // parecer expirada/no-futuro dependendo de quando a suíte rodar.
+      const grantedAt = new Date().toISOString();
+      const record = {
+        kind: "overnight",
+        machineTag: "Neo",
+        sessionId: "coord",
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        lastHeartbeat: new Date(Date.now() - 1_000).toISOString(),
+        merge_grant: { grantedTo: "interativa", grantedBy: "coord", grantedAt, pr: 6303 },
+      };
+      const path = join(root, "data", "sessions", "overnight-Neo-coord.json");
+      writeFileSync(path, JSON.stringify(record), "utf8");
+
+      const payload = { session_id: "interativa", tool_name: "Bash", tool_input: { command: "gh pr merge 6303 --squash" } };
+      const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
+        cwd: root,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      assert.equal(result.stdout.trim(), "", "PostToolUse aqui nunca emite saída — side-effect puro");
+
+      const updated = JSON.parse(readFileSync(path, "utf8"));
+      assert.ok(updated.merge_grant.consumedAt, "consumedAt deveria ter sido gravado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("session_id SEM concessão viva → no-op silencioso, arquivo intocado", () => {
+    const root = makeGitRepo();
+    try {
+      const record = {
+        kind: "overnight",
+        machineTag: "Neo",
+        sessionId: "coord",
+        startedAt: isoAgo(60_000),
+        lastHeartbeat: isoAgo(1_000),
+      };
+      const path = join(root, "data", "sessions", "overnight-Neo-coord.json");
+      const before = JSON.stringify(record);
+      writeFileSync(path, before, "utf8");
+
+      const payload = { session_id: "ninguem-tem-grant", tool_name: "Bash", tool_input: { command: "gh pr merge 1 --squash" } };
+      const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
+        cwd: root,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      assert.equal(readFileSync(path, "utf8"), before, "arquivo não deveria ser tocado sem concessão viva");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("payload SEM session_id → nada é escrito, nunca lança", () => {
+    const root = makeGitRepo();
+    try {
+      const payload = { tool_name: "Bash", tool_input: { command: "gh pr merge 1" } };
+      const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
+        cwd: root,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      assert.deepEqual(readdirSync(join(root, "data", "sessions")), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

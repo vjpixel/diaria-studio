@@ -12,8 +12,11 @@ effort: medium
 > no `session-registry`, `continuo-plan-rotation.ts`,
 > `continuo-cost-summary.ts`, `check-continuo-token-instrumentation.ts`, o hook
 > `notify-continuo-askuserquestion.mjs`, `COORDINATOR_KINDS`) é consumida por
-> uma skill que **não vive neste repo**: a `hermes-diaria-continuo`, local do
-> `helios`, disparada por um cron do Claude Code a cada 60min DENTRO deste
+> uma skill que **não vive neste repo**: a `hermes-diaria-continuo` (mora em
+> `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/`, **não**
+> em `~/.claude/skills/`, onde só existe o `humanizador`), disparada por um
+> cron **do Hermes** (`~/.hermes/cron/jobs.json`, job `5d791ef6fc2c`,
+> `every 60m` — **não** é um cron do Claude Code) a cada 60min DENTRO deste
 > checkout. O #6059 deletou tudo isso junto com a skill e quebrou o loop de
 > produção dela — revertido no #6060. Guard mecânico:
 > `test/continuo-infra-consumidor-externo.test.ts`. Remover ESTE arquivo

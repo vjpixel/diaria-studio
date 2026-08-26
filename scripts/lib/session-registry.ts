@@ -2,10 +2,15 @@
 /**
  * scripts/lib/session-registry.ts (#5156)
  *
- * Registro compartilhado e leve de sessões `/diaria-overnight`/`/diaria-develop`
- * ATIVAS — mecanismo pedido pela "Direção sugerida" do #5156, que audita 11
- * colisões concretas entre as duas skills rodando em paralelo (mesma máquina ou
- * máquinas diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
+ * Registro compartilhado e leve de sessões ATIVAS — `/diaria-overnight`,
+ * `/diaria-develop`, `/diaria-continuo`, e (desde #6168) sessões INTERATIVAS
+ * comuns via o beacon automático (`.claude/hooks/session-beacon.mjs`).
+ * (#6303 Finding Q: o texto anterior aqui listava só overnight/develop —
+ * já estava impreciso antes do #6168 adicionar `continuo`, e o #6168 piorou
+ * ao acrescentar o 4º kind sem atualizar este parágrafo.) Nasceu pela
+ * "Direção sugerida" do #5156, que audita 11 colisões concretas entre as
+ * skills coordenadoras rodando em paralelo (mesma máquina ou máquinas
+ * diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
  *
  * Um arquivo por sessão viva: `data/sessions/{kind}-{machineTag}-{sessionId}.json`.
  * `sessionId` é o `session_id` que o harness do Claude Code injeta no payload de
@@ -76,6 +81,22 @@
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *   npx tsx scripts/lib/session-registry.ts conflicts [--paths a.ts,b.ts] [--branch X]
+ *     (#6168 Parte C — CONSULTA "quem mais está mexendo nisto?", nunca
+ *     adquire nada nem cria arquivo; `exit 1` = sobreposição real com peer
+ *     VIVO, `exit 0` = livre.)
+ *   npx tsx scripts/lib/session-registry.ts grant-merge --kind ... --granted-to SESSION_ID [--pr N]
+ *     (#6296 — só coordenadora concede, nunca a si mesma; TTL curto, uso
+ *     único. Ver `grantMergeWindow`.)
+ *   npx tsx scripts/lib/session-registry.ts check-merge-grant
+ *     (#6296 — confirma se existe concessão viva pra esta sessão; `exit 1`
+ *     quando não há. Ver `findLiveMergeGrant`.)
+ *   npx tsx scripts/lib/session-registry.ts consume-merge-grant
+ *     (#6296 — marca a concessão viva desta sessão como consumida, uso
+ *     único; desde #6303 também disparado automaticamente por
+ *     `.claude/hooks/consume-merge-grant-on-merge.mjs` após um `gh pr merge`
+ *     bem-sucedido, sem depender de a sessão beneficiada lembrar de chamar
+ *     isto à mão. Ver `consumeMergeGrant`.)
  *   npx tsx scripts/lib/session-registry.ts gc [--max-age-days N] [--dry-run]
  * (`--session-id X` funciona também se passado explicitamente — o hook só
  * injeta quando a flag está AUSENTE, nunca sobrescreve um valor já presente.)

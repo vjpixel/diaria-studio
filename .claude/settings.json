@@ -110,6 +110,13 @@
             "if": "Bash(gh pr create*)",
             "shell": "bash",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs\"",
+            "if": "Bash(gh pr merge*)",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }

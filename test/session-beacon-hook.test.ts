@@ -13,11 +13,13 @@
  * sem nenhuma skill chamar nada.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   BEACON_KIND,
@@ -74,6 +76,16 @@ describe("#6168 Parte B — extração de caminho tocado", () => {
     // Não interessa a peer nenhum, e vazaria caminho de fora do projeto pro
     // registro compartilhado.
     assert.deepEqual(extractTouchedPaths("Write", { file_path: "C:/tmp/scratch.md" }, root), []);
+  });
+
+  it("arquivo em OUTRO DRIVE do Windows é ignorado (#6303 Finding U)", () => {
+    // `path.relative()` entre drives distintos no Windows não devolve uma
+    // string começando com ".." (devolve o path ABSOLUTO do destino, sem
+    // transformação nenhuma) — o guard `rel.startsWith("..")` sozinho não
+    // pega esse caso. Sem o guard adicional `isAbsolute(rel)`, o path
+    // absoluto de outro drive entraria em touched_paths como se fosse
+    // relativo à raiz.
+    assert.deepEqual(extractTouchedPaths("Write", { file_path: "D:/outro/lugar.md" }, "C:/repo"), []);
   });
 
   it("sem file_path → vazio", () => {
@@ -278,8 +290,17 @@ describe("#6168 Parte B — resolução de raiz e branch sem subprocesso", () =>
   });
 });
 
-describe("#6168 Parte B — teto de caminhos no hook espelha o do módulo", () => {
-  it("TOUCHED_PATHS_CAP é 200 nos dois lados", () => {
+describe("#6168 Parte B — comportamento das funções do PRÓPRIO hook (não é cross-check)", () => {
+  // #6303 Findings L/M/J: os títulos anteriores ("TOUCHED_PATHS_CAP é 200 NOS
+  // DOIS LADOS", "normalizePath do hook CONCORDA COM O DO MÓDULO") prometiam
+  // uma paridade cruzada que estes 3 testes nunca verificaram — cada um só
+  // compara a função DESTE arquivo contra um literal/comportamento esperado,
+  // sem importar a versão irmã de `session-registry.ts`. Os testes em si
+  // continuam úteis (documentam o comportamento do hook), só o título mentia.
+  // O cross-check DE VERDADE (importa os dois módulos, compara valor a
+  // valor) mora em `test/session-beacon-blast-radius.test.ts`, describe
+  // "#6303 Findings L/M/J".
+  it("TOUCHED_PATHS_CAP deste arquivo é 200", () => {
     assert.equal(TOUCHED_PATHS_CAP, 200);
   });
 
@@ -289,7 +310,7 @@ describe("#6168 Parte B — teto de caminhos no hook espelha o do módulo", () =
     assert.ok(out.length <= 4);
   });
 
-  it("normalizePath do hook concorda com o do módulo", () => {
+  it("normalizePath deste arquivo produz o separador esperado", () => {
     assert.equal(normalizePath("scripts\\lib\\a.ts"), "scripts/lib/a.ts");
     assert.equal(normalizePath("./a/"), "a");
   });
@@ -348,5 +369,113 @@ describe("#6168 Parte B — CRITÉRIO DE ACEITE: registro nasce só de chamadas 
 
     assert.equal((record!.dirty_paths as string[]).length, 4);
     assert.equal(record!.branch, "master", "e em master, num checkout compartilhado");
+  });
+});
+
+// ─── #6303 Finding H: o ENTRYPOINT do hook nunca é exercitado ──────────────
+
+describe("CLI end-to-end — harness real via stdin (#6303 Finding H, mesmo padrão do #5161 item 10)", () => {
+  // Achado do fleet review: os 24 testes acima chamam só as funções PURAS
+  // (`buildBeaconRecord` e companhia) — ninguém spawna o ARQUIVO com um
+  // payload real no stdin. Se o shape real do payload do harness divergir
+  // (`tool_input.file_path` sob outra chave, `session_id` ausente nalguma
+  // tool call), o beacon escreveria nada — ou errado — pra sempre, com a
+  // suíte inteira verde.
+  //
+  // `resolveMainRepoRootNoSpawn` deriva a raiz a partir de ONDE O ARQUIVO DO
+  // HOOK MORA (`import.meta.url`), não do cwd do processo spawnado — spawnar
+  // o hook REAL deste worktree resolveria a raiz do checkout PRINCIPAL de
+  // verdade (a junction OneDrive real). Por isso cada teste aqui copia o
+  // hook pra um diretório temporário ISOLADO, com `.git/` e `data/sessions/`
+  // PRÓPRIOS, e spawna essa CÓPIA — nunca o arquivo original do worktree.
+  const REAL_HOOK_PATH = fileURLToPath(new URL("../.claude/hooks/session-beacon.mjs", import.meta.url));
+  const roots: string[] = [];
+
+  function makeIsolatedHookCopy(): { root: string; hookPath: string; sessionsDir: string } {
+    const root = mkdtempSync(join(tmpdir(), "beacon-e2e-"));
+    roots.push(root);
+    // `.git` como DIRETÓRIO (sem HEAD nem mais nada dentro) já basta pra
+    // `resolveMainRepoRootNoSpawn` devolver a própria `root` como raiz —
+    // `readCurrentBranch` cai em `null` de forma fail-open (sem HEAD pra
+    // ler), que é aceitável pros propósitos deste teste.
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
+    const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
+    copyFileSync(REAL_HOOK_PATH, hookPath);
+    return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
+  }
+
+  function runHook(hookPath: string, payload: Record<string, unknown>) {
+    return spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+  }
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("payload de Edit com file_path REAL → registro criado com touched_paths", () => {
+    const { root, hookPath, sessionsDir } = makeIsolatedHookCopy();
+    const payload = {
+      session_id: "sess-e2e-edit",
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "scripts", "lib", "foo.ts") },
+    };
+    const result = runHook(hookPath, payload);
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout.trim(), "", "o beacon nunca emite saída — PreToolUse aqui é side-effect puro");
+
+    const files = readdirSync(sessionsDir);
+    assert.equal(files.length, 1, `esperava exatamente 1 registro, achou: ${JSON.stringify(files)}`);
+    assert.match(files[0]!, /^interactive-.+-sess-e2e-edit\.json$/);
+    const record = JSON.parse(readFileSync(join(sessionsDir, files[0]!), "utf8"));
+    assert.equal(record.kind, "interactive");
+    assert.deepEqual(record.touched_paths, ["scripts/lib/foo.ts"]);
+    assert.deepEqual(record.dirty_paths, ["scripts/lib/foo.ts"]);
+  });
+
+  it("payload de Bash com 'git commit' → dirty_paths ZERADO (mesmo registro da sessão)", () => {
+    const { root, hookPath, sessionsDir } = makeIsolatedHookCopy();
+    // 1º: Edit suja um arquivo.
+    runHook(hookPath, {
+      session_id: "sess-e2e-commit",
+      tool_name: "Edit",
+      tool_input: { file_path: join(root, "a.ts") },
+    });
+    let files = readdirSync(sessionsDir);
+    let record = JSON.parse(readFileSync(join(sessionsDir, files[0]!), "utf8"));
+    assert.deepEqual(record.dirty_paths, ["a.ts"], "sanity check do passo 1");
+
+    // 2º: Bash com `git commit` — deve zerar dirty_paths e preservar touched_paths.
+    const result = runHook(hookPath, {
+      session_id: "sess-e2e-commit",
+      tool_name: "Bash",
+      tool_input: { command: "git commit -m 'x'" },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+
+    files = readdirSync(sessionsDir);
+    assert.equal(files.length, 1, "commit não cria um 2º registro — enriquece o mesmo");
+    record = JSON.parse(readFileSync(join(sessionsDir, files[0]!), "utf8"));
+    assert.deepEqual(record.dirty_paths, [], "commit zera o não-commitado");
+    assert.deepEqual(record.touched_paths, ["a.ts"], "mas o histórico da sessão sobrevive");
+    assert.equal(record.last_action.verb, "commit");
+  });
+
+  it("payload SEM session_id → nada é escrito, nunca lança", () => {
+    const { hookPath, sessionsDir } = makeIsolatedHookCopy();
+    const result = runHook(hookPath, {
+      tool_name: "Edit",
+      tool_input: { file_path: "/algum/lugar.ts" },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(readdirSync(sessionsDir), []);
   });
 });
