@@ -75,6 +75,99 @@ export interface PrCheckNode {
   state?: string | null;
   /** Discriminante da union, quando o `gh` o inclui. */
   __typename?: string;
+  /** ISO 8601. Usado para desempatar runs SUPERSEDIDAS — ver
+   * `keepLatestPerName`. Ausente em payloads antigos/parciais. */
+  startedAt?: string | null;
+}
+
+/**
+ * Um force-push NÃO substitui a entrada do check no `statusCheckRollup`: a run
+ * antiga fica lá como `CANCELLED` e a nova entra ao lado, **com o mesmo
+ * `name`**. Medido ao vivo no PR #6239 (rodada overnight 260826), logo depois
+ * de um rebase:
+ *
+ * ```
+ * Unused code check | CANCELLED | started=11:49:01
+ * Unused code check | SUCCESS   | started=11:49:35
+ * ```
+ *
+ * Sem desduplicar, `CANCELLED` (que não está em `PASSING_CONCLUSIONS`) faz o
+ * gate reprovar um PR cuja run vigente está inteira verde. É falso-VERMELHO,
+ * então nunca deixa passar merge ruim — mas trava merge legítimo, e trava
+ * **para sempre**, porque a entrada cancelada não sai do rollup.
+ *
+ * Desduplica por `name`, mantendo a de `startedAt` mais recente — **e só
+ * quando todas as entradas do grupo têm timestamp válido**.
+ *
+ * A 1ª versão deste fix desempatava com `""` para timestamp ausente, o que
+ * fazia o lado SEM timestamp sempre perder, independente de qual run era a
+ * mais nova. Achado no review (alta confiança, P1): um `FAILURE` novo sem
+ * `startedAt` era descartado em favor de um `SUCCESS` antigo com timestamp, e
+ * o gate devolvia `pass` — **falso-verde**, exatamente o que ele existe para
+ * impedir. Sem timestamp em todas, não há como provar quem supersede quem, e
+ * desempatar por posição descarta um check real com base em palpite: agora o
+ * grupo inteiro é mantido, e o pior veredito prevalece.
+ *
+ * Node sem `name` não é desduplicável (não há chave) e passa inteiro.
+ */
+export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] {
+  const porNome = new Map<string, PrCheckNode[]>();
+  const ordem: string[] = [];
+  const semNome: PrCheckNode[] = [];
+
+  for (const node of nodes) {
+    const name = typeof node?.name === "string" && node.name.length > 0 ? node.name : null;
+    if (name === null) {
+      semNome.push(node);
+      continue;
+    }
+    if (!porNome.has(name)) {
+      porNome.set(name, []);
+      ordem.push(name);
+    }
+    porNome.get(name)!.push(node);
+  }
+
+  const out: PrCheckNode[] = [];
+  for (const name of ordem) {
+    const grupo = porNome.get(name)!;
+    if (grupo.length === 1) {
+      out.push(grupo[0]);
+      continue;
+    }
+    // Só desduplica quando TODAS as entradas do grupo têm timestamp válido —
+    // aí dá pra provar qual supersede qual. Se qualquer uma não tiver, não há
+    // como ordenar, e desempatar por posição descartaria um check real com
+    // base em palpite: mantém TODAS, e o pior veredito do grupo prevalece
+    // (falso-vermelho, nunca falso-verde).
+    const todasComTimestamp = grupo.every((n) => parseStartedAt(n.startedAt) !== null);
+    if (!todasComTimestamp) {
+      out.push(...grupo);
+      continue;
+    }
+    let maisNova = grupo[0];
+    for (const n of grupo.slice(1)) {
+      // `>=` mantém a última em caso de empate exato de timestamp.
+      if (parseStartedAt(n.startedAt)! >= parseStartedAt(maisNova.startedAt)!) maisNova = n;
+    }
+    out.push(maisNova);
+  }
+  return [...out, ...semNome];
+}
+
+/**
+ * `startedAt` utilizável para ordenar, ou `null`.
+ *
+ * Rejeita ausente, não-string, não-parseável e o placeholder de "sem valor"
+ * que o GitHub emite (`0001-01-01T00:00:00Z`, observado em `completedAt` de
+ * run em andamento) — tratá-lo como data real o colocaria como o MAIS ANTIGO
+ * de qualquer grupo, o que é uma afirmação que o payload não fez.
+ */
+function parseStartedAt(raw: string | null | undefined): number | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  if (raw.startsWith("0001-01-01")) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t : null;
 }
 
 export interface PrChecksGateResult {
@@ -121,7 +214,11 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
   const failingChecks: string[] = [];
   const pendingChecks: string[] = [];
 
-  for (const raw of statusCheckRollup) {
+  // Descarta runs supersedidas por force-push antes de julgar — ver
+  // `keepLatestPerName`.
+  const vigentes = keepLatestPerName(statusCheckRollup as PrCheckNode[]);
+
+  for (const raw of vigentes) {
     const node = (raw ?? {}) as PrCheckNode;
     const label = typeof node.name === "string" && node.name.length > 0 ? node.name : "(sem nome)";
 
@@ -186,7 +283,15 @@ export function evaluatePrChecksGate(statusCheckRollup: unknown): PrChecksGateRe
     verdict: "pass",
     failingChecks: [],
     pendingChecks: [],
-    reason: `${statusCheckRollup.length} check(s), todos concluídos com sucesso.`,
+    // Conta as VIGENTES, não o rollup cru: com runs supersedidas por
+    // force-push, o cru inclui entradas CANCELLED, e dizer "N checks, todos
+    // com sucesso" sobre um número que inclui canceladas é afirmar algo
+    // falso. Medido no PR #6239: 11 entradas cruas, 6 vigentes, 5 canceladas.
+    reason:
+      vigentes.length === statusCheckRollup.length
+        ? `${vigentes.length} check(s), todos concluídos com sucesso.`
+        : `${vigentes.length} check(s) vigente(s), todos concluídos com sucesso ` +
+          `(${statusCheckRollup.length - vigentes.length} entrada(s) de run supersedida por force-push ignorada(s)).`,
   };
 }
 

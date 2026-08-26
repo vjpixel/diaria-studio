@@ -91,10 +91,27 @@ const LOG_PREFIX = "[dmarc-drain]";
 /** Cobre os principais provedores que emitem relatório DMARC pra este
  * domínio (Google, Yahoo, Microsoft/Outlook — vistos com mais frequência)
  * mais o padrão genérico de assunto "Report Domain: X". `newer_than:35d`
+ *
+ * **Remetente do Google — MEDIDO, não suposto (#6229, 26/08/2026).** Busca
+ * direta na caixa real, janela de 120 dias:
+ *
+ * | endereço                            | resultados |
+ * |-------------------------------------|------------|
+ * | `noreply-dmarc-support@google.com`  | 1 (o relatório real) |
+ * | `dmarcreport@google.com`            | 0 |
+ *
+ * Os dois ficam na query porque uma cláusula `OR` a mais não custa nada e o
+ * Google já usou remetentes diferentes ao longo do tempo — mas o primeiro é
+ * o que de fato entrega hoje. Não remover `noreply-dmarc-support` sem antes
+ * repetir a medição. Uma tentativa de substituir um pelo outro (branch
+ * `fix/6229-dmarc-query`, não mergeada) faria a busca depender inteiramente
+ * da cláusula `subject:` sem que nada acusasse — o relatório continuaria
+ * sendo encontrado, por outro caminho, e a query só falharia quando chegasse
+ * relatório de domínio fora da lista de assuntos.
  * cobre com folga a janela de 2-4 semanas que a decisão de enforcement da
  * #6111 precisa acumular, sem crescer sem limite a cada execução. */
-const DEFAULT_GMAIL_QUERY =
-  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR subject:"Report Domain: diar.ia.br" OR subject:"Report domain: diar.ia.br" OR from:noreply-dmarc-support@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
+export const DEFAULT_GMAIL_QUERY =
+  'newer_than:35d (subject:"Report Domain: news.diar.ia.br" OR subject:"Report domain: news.diar.ia.br" OR subject:"Report Domain: diar.ia.br" OR subject:"Report domain: diar.ia.br" OR from:noreply-dmarc-support@google.com OR from:dmarcreport@google.com OR from:dmarcreport@microsoft.com OR from:dmarchelp@yahoo-inc.com) has:attachment';
 
 /** #5339: 2 execuções limpas consecutivas antes de fechar a issue de alarme
  * automaticamente — mesmo valor dos demais alarmes diários deste repo. */

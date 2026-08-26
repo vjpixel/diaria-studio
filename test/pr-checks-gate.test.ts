@@ -15,7 +15,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evaluatePrChecksGate, isPrChecksGateGreen, type PrCheckNode } from "../scripts/lib/pr-checks-gate.ts";
+import {
+  evaluatePrChecksGate,
+  isPrChecksGateGreen,
+  keepLatestPerName,
+  type PrCheckNode,
+} from "../scripts/lib/pr-checks-gate.ts";
 
 function check(name: string, status: string, conclusion: string | null): PrCheckNode {
   return { name, status, conclusion };
@@ -188,5 +193,142 @@ describe("evaluatePrChecksGate — StatusContext (commit-status legada), o 2º m
     ]);
     assert.notEqual(r.verdict, "pass");
     assert.equal(r.verdict, "error");
+  });
+});
+
+// #6239 (rodada overnight 260826) — medido ao vivo: um force-push deixa a run
+// antiga no rollup como CANCELLED, ao lado da nova, com o MESMO name.
+describe("evaluatePrChecksGate — run supersedida por force-push", () => {
+  const supersedido = [
+    { name: "knip", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" },
+    { name: "knip", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+    { name: "test", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+  ];
+
+  it("CANCELLED antigo não reprova quando existe run mais nova com o mesmo nome", () => {
+    // Sem a dedup isto era `fail` — falso-vermelho que travava merge legítimo
+    // pra sempre, porque a entrada cancelada nunca sai do rollup.
+    assert.equal(evaluatePrChecksGate(supersedido).verdict, "pass");
+  });
+
+  it("a run VIGENTE continua mandando: se a mais nova falhou, reprova", () => {
+    const novaFalhou = [
+      { name: "knip", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "knip", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-08-26T11:49:35Z" },
+    ];
+    const r = evaluatePrChecksGate(novaFalhou);
+    assert.equal(r.verdict, "fail");
+    assert.deepEqual(r.failingChecks, ["knip"]);
+  });
+
+  it("a mais nova ainda rodando => pending, mesmo com a antiga verde", () => {
+    const novaRodando = [
+      { name: "knip", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "knip", status: "IN_PROGRESS", conclusion: null, startedAt: "2026-08-26T11:49:35Z" },
+    ];
+    assert.equal(evaluatePrChecksGate(novaRodando).verdict, "pending");
+  });
+
+  it("CANCELLED SEM run mais nova continua reprovando (cancelamento humano)", () => {
+    // A dedup não pode virar 'ignore CANCELLED': sem substituta, um check
+    // cancelado é ausência de sinal, e ausência de sinal nunca é aprovação.
+    const canceladoSozinho = [{ name: "knip", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" }];
+    assert.equal(evaluatePrChecksGate(canceladoSozinho).verdict, "fail");
+  });
+});
+
+describe("keepLatestPerName", () => {
+  it("sem startedAt em TODAS, não desduplica — mantém o grupo inteiro", () => {
+    // Expectativa MUDADA após o review (achado alta/P1). A versão anterior
+    // desempatava por posição, o que descarta um check real por palpite.
+    const r = keepLatestPerName([
+      { name: "x", conclusion: "CANCELLED", status: "COMPLETED" },
+      { name: "x", conclusion: "SUCCESS", status: "COMPLETED" },
+    ]);
+    assert.equal(r.length, 2, "sem timestamp não há como provar quem supersede quem");
+  });
+
+  it("node sem name não é desduplicável e passa inteiro", () => {
+    const r = keepLatestPerName([{ conclusion: "SUCCESS", status: "COMPLETED" }, { conclusion: "FAILURE", status: "COMPLETED" }]);
+    assert.equal(r.length, 2);
+  });
+
+  it("nomes distintos não se desduplicam entre si", () => {
+    const r = keepLatestPerName([
+      { name: "a", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "b", status: "COMPLETED", conclusion: "FAILURE" },
+    ]);
+    assert.equal(r.length, 2);
+  });
+});
+
+// Achado do review do PR #6240 (confiança alta, P1) — o caso MISTO, que a 1ª
+// versão do fix errava e nenhum teste cobria.
+describe("keepLatestPerName — timestamp MISTO nunca produz falso-verde", () => {
+  it("FAILURE novo SEM startedAt não é descartado por SUCCESS antigo COM startedAt", () => {
+    // Era o bug: `""` (ausente) perdia sempre na comparação de string, então o
+    // FAILURE sumia do rollup avaliado e o gate devolvia `pass`.
+    const misto = [
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
+    ];
+    const r = evaluatePrChecksGate(misto);
+    assert.notEqual(r.verdict, "pass", "check reprovado NUNCA pode sumir da avaliação");
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("a ordem inversa também reprova (não é sensível a posição)", () => {
+    const misto = [
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE" },
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+    ];
+    assert.equal(evaluatePrChecksGate(misto).verdict, "fail");
+  });
+
+  it("placeholder 0001-01-01 não conta como timestamp válido", () => {
+    // Se contasse, viraria o "mais antigo" de qualquer grupo — uma afirmação
+    // que o payload não fez. O GitHub emite esse placeholder em completedAt de
+    // run em andamento; assumir que nunca aparece em startedAt seria aposta.
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "0001-01-01T00:00:00Z" },
+    ]);
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("startedAt não-parseável também não desduplica", () => {
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "ontem de manhã" },
+    ]);
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("com timestamp válido nos DOIS, a dedup legítima do force-push segue funcionando", () => {
+    const r = evaluatePrChecksGate([
+      { name: "ci", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+    ]);
+    assert.equal(r.verdict, "pass");
+  });
+});
+
+describe("mensagem de pass não conta entradas supersedidas", () => {
+  it("diz quantas são VIGENTES e quantas foram ignoradas", () => {
+    // Antes dizia "11 check(s), todos concluídos com sucesso" para um rollup
+    // com 5 CANCELLED dentro — veredito certo, frase falsa.
+    const r = evaluatePrChecksGate([
+      { name: "a", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-26T11:49:01Z" },
+      { name: "a", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+      { name: "b", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
+    ]);
+    assert.equal(r.verdict, "pass");
+    assert.match(r.reason, /2 check\(s\) vigente/);
+    assert.match(r.reason, /1 entrada\(s\) de run supersedida/);
+  });
+
+  it("sem supersedidas, a frase antiga (mais curta) permanece", () => {
+    const r = evaluatePrChecksGate([{ name: "a", status: "COMPLETED", conclusion: "SUCCESS" }]);
+    assert.equal(r.reason, "1 check(s), todos concluídos com sucesso.");
   });
 });

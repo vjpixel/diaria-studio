@@ -285,6 +285,10 @@ describe("orchestrator-prompt (#634)", () => {
       // de `verify-scheduled-post.ts`. Teto 675→700. Cabe no prompt porque é
       // o passo que o orchestrator EXECUTA; virar link externo o tornaria
       // invisível justamente pra quem precisa segui-lo.
+      // #6202 (26/08): +16 linhas do §6d-site (passo que publica a página da
+      // edição no Worker `diaria-site`) — teto 700. O passo é o que
+      // destrava a janela de cutover do #467, então cabe no prompt em vez de
+      // virar link externo que o orchestrator não lê.
       "orchestrator-stage-6.md": 700,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {

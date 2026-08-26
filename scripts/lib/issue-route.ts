@@ -34,16 +34,30 @@
  * garantia mais forte disponível: se os dois módulos divergirem, o teste de
  * round-trip quebra antes de qualquer coisa chegar a produção.
  *
- * ─── Labels de fora do escopo deste roteador ────────────────────────────────
+ * ─── Labels de proveniência: preservadas, nunca removidas ───────────────────
  *
- * `ROUTABLE_LABELS` deliberadamente NÃO inclui labels donas de outro
- * mecanismo: `alarm`/`alarm-evento` (owned by `scripts/lib/alarm-issues.ts`),
- * `decisao-registrada` (owned by `scripts/lib/issue-decisions.ts`),
- * `epic-guarda-chuva`/`sem-direcao-acionavel` (fluxo dedicado da própria
- * #5968). `route-issue.ts` roteia trabalho vivo (quem pega a issue a
- * seguir), não re-implementa "essa issue já foi resolvida por outro
- * caminho" — misturar os dois faria este verbo pisar em estado que outro
- * script já gerencia com sua própria idempotência/dedup.
+ * #6223 — `alarm`/`alarm-evento`/`decisao-registrada` estão em
+ * `ROUTABLE_LABELS` (podem ser ADICIONADAS via `--motivo` — #6197), mas são
+ * PROVENIÊNCIA: registram de onde/de como a issue chegou a este veredito,
+ * não o próprio veredito. `route-issue` NUNCA as remove — são managed por
+ * outro mecanismo (`alarm-issues.ts`, `issue-decisions.ts`) com sua própria
+ * idempotência/dedup. Removi-las ao rotear (como o código fazia antes)
+ * apagava estado que identifica a issue, sem nenhum ganho de corretude na
+ * classificação (`PROVENIENCE_LABELS` é excluída do conjunto `remove`).
+ *
+ * `epic-guarda-chuva`/`sem-direcao-acionavel` seguem fora deste conjunto —
+ * são labels de fluxo dedicado (#5968) e também não são removidas por
+ * routing (não estão em `ROUTABLE_LABELS` como candidatas a `remove`).
+ *
+ * Consequência de validação (#6223): se uma issue carrega um provenance
+ * label cujo track vence o `--track` pedido, a validação pós-escrita
+ * (`classifyExecTrack`) falhará ruidosamente — correto, é um conflito de
+ * precedência. Ex.: issue com `alarm` rotreada pra `overnight`: `alarm`
+ * (RESOLVED_BY_PROSE_LABELS → `fora-de-rodada`) vence o default `overnight`
+ * na ordem de precedência, então `classifyExecTrack` devolve
+ * `fora-de-rodada` ≠ `overnight` → validação falha. Roteie pra
+ * `fora-de-rodada` nesse caso (o track que `classifyExecTrack` realmente
+ * devolve).
  *
  * ─── `agendada` é o único veredito sem label ─────────────────────────────────
  *
@@ -117,6 +131,16 @@ export const ROUTABLE_LABELS: readonly string[] = [
   "alarm",
   "alarm-evento",
   "sem-direcao-acionavel",
+];
+
+/** #6223 — Labels de PROVENIÊNCIA, nunca removidas por `route-issue`. São
+ * gerenciadas por outro mecanismo (`alarm-issues.ts`, `issue-decisions.ts`)
+ * e registram de onde/de como uma issue chegou a um veredito, não o veredito
+ * em si. Removê-las ao rotear apagava esse estado sem ganho de corretude. */
+export const PROVENIENCE_LABELS: readonly string[] = [
+  "alarm",
+  "alarm-evento",
+  "decisao-registrada",
 ];
 
 /**
@@ -229,7 +253,9 @@ export function planRouteLabels(track: RouteTrack, motivo?: RouteMotivo): RouteL
   }
   const addLabel = motivo ? MOTIVO_LABEL[motivo] : TRACK_ADD_LABEL[track];
   const addList = addLabel ? [addLabel] : [];
-  const remove = ROUTABLE_LABELS.filter((l) => !addList.includes(l));
+  const remove = ROUTABLE_LABELS.filter(
+    (l) => !addList.includes(l) && !(PROVENIENCE_LABELS as readonly string[]).includes(l),
+  );
   return { add: addList, remove };
 }
 

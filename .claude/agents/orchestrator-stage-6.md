@@ -402,6 +402,32 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
+### 6d-site. Publicar a página da edição no Worker `diaria-site` (#6202)
+
+Roda **depois** do agendamento confirmado, nos dois backends. Sem este passo o acervo do site fica congelado nos 253 posts já gerados e não cresce — e é ele que destrava a janela de cutover do #467 (greenlight do editor, 26/08).
+
+**`--slug` é obrigatório aqui, mesmo backend `"beehiiv"`.** `_internal/05-published.json`
+nunca tem `post_url` populado neste ponto do pipeline (só `refresh-dedup.ts` grava isso,
+no dia seguinte) — sem `--slug` o passo sempre cai em "nada a publicar" (`code: 4`, ver
+tabela abaixo). Passar o MESMO `{slug_atual_do_get_post}` já obtido em §6d (o valor que o
+guard do bloco WhatsApp comparou e confirmou bater):
+
+```bash
+npx tsx scripts/publish-edition-site-page.ts \
+  --edition-dir {EDITION_DIR} \
+  --slug {slug_atual_do_get_post}
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4} --message "site-page stage6 publish: exit {code}"
+```
+
+| exit | significado | ação |
+|---|---|---|
+| `0` | página escrita e publicada (`git commit` + `push` de `workers/site/public/p/{slug}`) | seguir |
+| `2` | edição sem `newsletter-final.html`/`05-published.json` — arquivo ainda não existe, nada a publicar | seguir, logar info |
+| `3` | escrita, commit ou push falhou (inclui checkout fora de `master` — o script recusa comitar/empurrar de outra branch) | **logar warn e seguir** |
+| `4` | artefato PRESENTE mas inválido (html/título vazio, slug não-extraível, `--slug` ausente e sem `post_url`, **ou backend `"kit"` sem `--slug`** — ainda sem fonte de slug própria, #464 não ligou o dispatch Kit ainda) — sintoma de bug num stage anterior (ou lacuna de wiring conhecida no caso Kit) | **logar warn e seguir** (nunca silencioso — não é o mesmo caso benigno do `2`) |
+
+**Fail-soft absoluto:** publicar no site é acessório ao envio. Nenhum exit pode bloquear §6e nem o auto-reporter. No `3`, a página costuma ficar escrita (e, se só o `push` falhou, já commitada) localmente — a próxima rodada/push manual a leva junto. **Mecanismo: `git commit` + `push`, nunca `wrangler deploy` local** — `.github/workflows/deploy-site.yml` documenta que `workers/site/public/p/**` é COMMITADO e o deploy real dispara por push a master; publicar via wrangler local deixaria o worker em produção divergente do repo, sem sinal.
+
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
 **Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção — `schedule-newsletter-kit.ts` (§6d-kit) já grava `scheduled_at`/`status: "scheduled"` em `_internal/newsletter-kit-published.json` internamente, só depois de confirmar via GET (mesma garantia que este passo busca aqui pro caminho Beehiiv).
@@ -618,12 +644,7 @@ Nao bloquear.
 
 ### 6b-8. Regenerar o report + registrar na superfície do Studio (#1510, #3457, #3714) — ULTIMO passo do pipeline
 
-Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: agora a
-linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total do relatorio
-reflete o processamento real do stage (Schedule Beehiiv, verificacao, purga de leaderboard,
-auto-reporter) em vez de ficar subcontada por excluir esse tempo (causa-raiz #3457 — o
-report antigo era gerado, e o e-mail montado a partir dele, ANTES do Stage 6 fechar o
-timer). So depois disso, o comando abaixo — a ultima acao do pipeline inteiro:
+Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: a linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total reflete o processamento real (Schedule Beehiiv, verificacao, purga de leaderboard, auto-reporter) em vez de ficar subcontada (#3457 — o report antigo era gerado ANTES do timer fechar). Ultima acao do pipeline inteiro:
 
 ```bash
 npx tsx scripts/send-edition-report.ts \
@@ -654,27 +675,22 @@ inacessível).
 
 ### 6b-9. Checagem de staleness dos hubs temáticos (#4924 item 5)
 
-Informacional, **nunca bloqueia** — roda após 6b-8: `npx tsx scripts/hub-staleness-check.ts`.
+Informacional, **nunca bloqueia** (após 6b-8): `npx tsx scripts/hub-staleness-check.ts`.
 
-Audita `data/beehiiv-cache/posts/*.json` contra `scripts/lib/hubs/*-sources.generated.json` e
-imprime, se alguma edição confirmada casar `HUB_KEYWORD_PATTERNS` sem estar no dataset do hub,
-a lista + comandos de regen sugeridos. **Fail-soft** (label `local`, #2643) — sem
-`data/beehiiv-cache/posts` (cloud), stdout vazio, exit 0.
+Audita `data/beehiiv-cache/posts/*.json` contra `scripts/lib/hubs/*-sources.generated.json`: edição confirmada que casa `HUB_KEYWORD_PATTERNS` fora do dataset → imprime lista + comandos de regen. **Fail-soft** (`local`, #2643) — sem cache (cloud): stdout vazio, exit 0.
 
-Stdout vazio → omitir do resumo. Não-vazio → colar o bloco literal sob `⚠ Hubs temáticos
-defasados` — informacional, editor decide se roda os comandos (regen nunca é automático,
-#4924 item 2). **Nunca rodar os comandos sugeridos automaticamente.**
+Stdout vazio → omitir do resumo. Não-vazio → colar o bloco literal sob `⚠ Hubs temáticos defasados` — informacional, editor decide (regen nunca é automático, #4924 item 2; **nunca rodar os comandos automaticamente**).
 
 ---
 
 ## Resumo final (apos auto-reporter + relatorio)
 
-Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as issues criadas pelo auto-reporter (#1825)** — reportar so a contagem. Se alguma parte foi pulada, incluir bloco de retomada explicito.
+Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as issues do auto-reporter (#1825)** — so a contagem. Parte pulada → bloco de retomada explicito.
 
-**#3714:** incluir a linha `Relatório: {studio_report_url}` (valor lido do summary JSON de 6b-8) — é o link primário do relatório desta edição agora que o draft de Gmail foi removido. Se `studio_report_url` vier `null` (registro falhou, fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir a linha.
+**#3714:** incluir `Relatório: {studio_report_url}` (summary JSON de 6b-8; é o link primário do relatório). Se vier `null` (fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir.
 
-**#4924:** se 6b-9 imprimiu algo, incluir `⚠ Hubs temáticos defasados` no resumo, após a linha do Relatório. Stdout vazio → omitir a seção (sem afirmar "hubs em dia").
+**#4924:** 6b-9 imprimiu algo → incluir `⚠ Hubs temáticos defasados` após a linha do Relatório. Stdout vazio → omitir (sem afirmar "hubs em dia").
 
-**#5772:** se `_internal/brevo-diaria-published.json` existia em §6a, incluir a linha `Brevo diária: agendado para {scheduled_at} ✓` (exit 0 de §6d-brevo) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5 — no caso do 5, o `reason` já diz que é cota da conta esgotada, #6146) no resumo. Se o arquivo nunca existiu (canal pulado/falhou na Etapa 5), omitir a linha por completo — não afirmar "Brevo diária: pulado" quando o canal nunca fez parte desta edição.
+**#5772:** `_internal/brevo-diaria-published.json` existia em §6a → incluir `Brevo diária: agendado para {scheduled_at} ✓` (exit 0) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5; no 5, o `reason` já indica cota esgotada, #6146). Arquivo nunca existiu (canal pulado/falhou na Etapa 5) → omitir a linha por completo — não afirmar "Brevo diária: pulado".
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e metricas finais.

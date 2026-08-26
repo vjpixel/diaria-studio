@@ -6,11 +6,17 @@
  *
  * ## Por que isto existe
  *
- * `KitBroadcastClick` (em `lib/kit-client.ts`) declara `url`,
- * `unique_clicks`, `click_to_delivery_rate` e `click_to_open_rate` — mas o
- * docstring de lá registra que **nenhum desses nomes foi verificado com um
- * clique real**. Em 24/08 a conta não tinha broadcast enviado, então só o
- * envelope `{broadcast: {id, clicks}}` foi confirmado, com `clicks: []`.
+ * **Estado atual (26/08/2026): CONFIRMADO.** O piloto Patronos saiu e o
+ * editor clicou; a sonda devolveu exit 0 com os 5 campos de
+ * `KitBroadcastClick` presentes e bem tipados — `id`, `url`,
+ * `unique_clicks`, `click_to_delivery_rate`, `click_to_open_rate`. O
+ * docstring de `kit-client.ts` é a fonte de verdade sobre o tipo.
+ *
+ * O texto abaixo descreve por que esta sonda foi escrita, quando os campos
+ * ainda eram suposição — e continua valendo como mecanismo: ela existe pra
+ * detectar o dia em que o Kit MUDAR o formato, não só pro primeiro
+ * levantamento. Até 24/08 a conta não tinha envio, então só o envelope
+ * `{broadcast: {id, clicks}}` estava confirmado, com `clicks: []`.
  *
  * Um tipo que ninguém verificou é uma suposição com sintaxe de garantia. Se
  * os nomes estiverem errados, todo consumidor lê `undefined` e a curadoria
@@ -44,6 +50,10 @@
  * exatamente o caso que ela existe pra pegar.
  */
 export const CAMPOS_DECLARADOS_COM_TIPO = {
+  // #6185 (26/08): `id` entrou depois — a sonda o reportou como INESPERADO
+  // no 1º clique real, que é exatamente o serviço que ela presta. Declarado
+  // aqui, passa a ser verificado como os outros.
+  id: "number",
   url: "string",
   unique_clicks: "number",
   click_to_delivery_rate: "number",
