@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -175,6 +175,177 @@ describe("registerSession / heartbeat / endSession", () => {
     const removedWithTag = endSession(root, "develop", "sess-cross-machine", "Neo");
     assert.equal(removedWithTag, true);
     assert.equal(existsSync(path), false);
+  });
+});
+
+// ─── registerSession — promoção de kind (#6326) ────────────────────────────
+//
+// Reproduz a ordem de eventos real: o beacon (`.claude/hooks/session-beacon.mjs`)
+// dispara no PreToolUse e cria `interactive-{tag}-{sessionId}.json` ANTES de a
+// skill chamar `register --kind overnight|develop|continuo` pro MESMO
+// sessionId. Sem a promoção, sobravam dois arquivos pra uma sessão só —
+// achado ao vivo em 26/08/2026 (`overnight-helios-{uuid}.json` +
+// `interactive-helios-{uuid}.json` simultâneos).
+
+describe("registerSession — promoção de kind quando o beacon registrou primeiro (#6326)", () => {
+  it("beacon cria interactive-X; register --kind overnight com o mesmo X deixa UM arquivo, kind overnight, campos de beacon intactos", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-a";
+    const tag = "helios";
+
+    // Simula o que o beacon já escreveu antes do `register` da skill rodar.
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+      touched_paths: ["scripts/foo.ts"],
+      dirty_paths: ["scripts/foo.ts"],
+      branch: "master",
+      last_action: { verb: "edit", at: "2026-08-26T10:04:00.000Z" },
+    });
+    const interactivePath = sessionFilePath(root, "interactive", tag, sessionId);
+    assert.ok(existsSync(interactivePath), "precondição: o beacon já criou o registro interativo");
+
+    const record = registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    // O arquivo interativo antigo desaparece — nunca sobram os dois.
+    assert.equal(existsSync(interactivePath), false, "registro interactive antigo é removido na promoção");
+    const overnightPath = sessionFilePath(root, "overnight", tag, sessionId);
+    assert.ok(existsSync(overnightPath));
+
+    // Só existe 1 arquivo .json pra este sessionId no diretório inteiro.
+    const allFiles = readdirSync(sessionsDir(root))
+      .filter((n: string) => n.endsWith(`-${sessionId}.json`));
+    assert.deepEqual(allFiles, [`overnight-${tag}-${sessionId}.json`]);
+
+    const content = JSON.parse(readFileSync(overnightPath, "utf8"));
+    assert.equal(content.kind, "overnight");
+    assert.equal(record.kind, "overnight");
+    // startedAt do registro ORIGINAL (interactive) é preservado, não o `now`
+    // passado a este `register`.
+    assert.equal(content.startedAt, "2026-08-26T10:00:00.000Z");
+    assert.deepEqual(content.claimed_issues, []);
+    // Campos de beacon acumulados sobrevivem à promoção.
+    assert.deepEqual(content.touched_paths, ["scripts/foo.ts"]);
+    assert.deepEqual(content.dirty_paths, ["scripts/foo.ts"]);
+    assert.equal(content.branch, "master");
+    assert.deepEqual(content.last_action, { verb: "edit", at: "2026-08-26T10:04:00.000Z" });
+  });
+
+  it("promoção preserva claimed_issues acumuladas no registro interactive antigo", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-b";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [111, 222],
+    });
+
+    registerSession(root, "develop", sessionId, { tag });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "develop", tag, sessionId), "utf8"));
+    assert.deepEqual(content.claimed_issues, [111, 222]);
+  });
+
+  it("listActiveSessions nunca devolve dois registros pro mesmo sessionId após a promoção", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-c";
+    const tag = "helios";
+    const now = Date.parse("2026-08-26T10:10:00.000Z");
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+    });
+
+    registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    const sessions = listActiveSessions(root, now);
+    const matching = sessions.filter((s) => s.sessionId === sessionId);
+    assert.equal(matching.length, 1, "só 1 registro ativo pra este sessionId, nunca 2");
+    assert.equal(matching[0]!.kind, "overnight");
+  });
+
+  it("re-register do MESMO kind após a promoção continua idempotente e preserva claimed_issues (não regride #6294/#6303)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-d";
+    const tag = "helios";
+
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:04:00.000Z",
+      claimed_issues: [],
+    });
+    registerSession(root, "overnight", sessionId, { tag, startedAt: "2026-08-26T10:05:00.000Z" });
+
+    // A sessão reivindica issues depois de já promovida.
+    claimIssue(root, "overnight", sessionId, 42, tag, "2026-08-26T10:06:00.000Z");
+    claimIssue(root, "overnight", sessionId, 43, tag, "2026-08-26T10:07:00.000Z");
+
+    // Um 2º `register` do MESMO kind (ex: correção de `pid`) não deve achar
+    // "outro kind" pra promover (o path já é o seu) nem apagar as claims.
+    const record = registerSession(root, "overnight", sessionId, { tag, pid: 555 });
+    assert.deepEqual(record.claimed_issues, [42, 43]);
+    assert.equal(record.pid, 555);
+    assert.equal(record.startedAt, "2026-08-26T10:00:00.000Z", "startedAt do registro original (interactive) preservado através de promoção + re-registro");
+
+    // Continua só 1 arquivo pra este sessionId.
+    const allFiles = readdirSync(sessionsDir(root))
+      .filter((n: string) => n.endsWith(`-${sessionId}.json`));
+    assert.deepEqual(allFiles, [`overnight-${tag}-${sessionId}.json`]);
+  });
+
+  it("promoção preserva claims que só existiam num -safeBackup- do registro antigo (#6130 não regride)", () => {
+    const root = freshRoot();
+    const sessionId = "sess-6326-e";
+    const tag = "predator";
+
+    // Registro interactive "real" — sem o claim 999 (foi perdido/nunca
+    // sincronizado no arquivo real, típico de conflito de escrita do OneDrive).
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:02:00.000Z",
+      claimed_issues: [],
+    });
+    // Cópia de conflito do MESMO stem carrega um claim que o arquivo real não tem.
+    writeRawSessionFile(root, `interactive-${tag}-${sessionId}-${tag}-safeBackup-0001.json`, {
+      kind: "interactive",
+      machineTag: tag,
+      sessionId,
+      startedAt: "2026-08-26T10:00:00.000Z",
+      lastHeartbeat: "2026-08-26T10:03:00.000Z",
+      claimed_issues: [999],
+    });
+
+    registerSession(root, "continuo", sessionId, { tag });
+
+    const content = JSON.parse(readFileSync(sessionFilePath(root, "continuo", tag, sessionId), "utf8"));
+    assert.deepEqual(content.claimed_issues, [999], "claim que só existia no backup sobrevive à promoção");
+  });
+
+  it("sem registro de OUTRO kind pra este sessionId, registerSession continua criando um registro novo normalmente", () => {
+    const root = freshRoot();
+    const record = registerSession(root, "overnight", "sess-6326-f", { tag: "helios", startedAt: "2026-08-26T10:00:00.000Z" });
+    assert.equal(record.kind, "overnight");
+    assert.deepEqual(record.claimed_issues, []);
   });
 });
 

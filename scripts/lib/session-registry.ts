@@ -127,7 +127,7 @@
  * esperado quando não há sinal de processo verificável).
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
@@ -508,6 +508,63 @@ function writeJsonSafe(path: string, value: unknown): void {
 }
 
 /**
+ * Localiza, em `data/sessions/`, o arquivo de registro REAL (nunca backup)
+ * de QUALQUER kind para `sessionId` — espelha `findExistingSessionFile` do
+ * beacon (`.claude/hooks/session-beacon.mjs`), que cobre a ordem "register
+ * primeiro, beacon depois" (enriquece o arquivo já existente em vez de criar
+ * um `interactive-*` paralelo).
+ *
+ * `registerSession` usa isto pra cobrir a ordem INVERSA (#6326): o beacon
+ * dispara no `PreToolUse`, ANTES de a skill rodar `register` — cria
+ * `interactive-{tag}-{sessionId}.json` sem saber que a sessão vai virar
+ * coordenadora minutos depois. Sem esta busca, `registerSession` escreveria
+ * cego no path do kind novo (`sessionFilePath`), sem olhar se já existe um
+ * arquivo de OUTRO kind pro mesmo `sessionId` — e sobrariam dois registros
+ * pra uma sessão só, contando dobrado em `list-active` (achado ao vivo do
+ * #6326: `overnight-helios-{uuid}.json` + `interactive-helios-{uuid}.json`
+ * simultâneos, o 2º congelado a partir do momento em que o beacon passa a
+ * enriquecer só o 1º).
+ *
+ * Match por SUFIXO `-{sessionId}.json`, nunca por tag/kind explícitos —
+ * mesmo critério do irmão (cobre o caso raro de a sessão trocar de
+ * `machineTag()` entre o beacon e o `register`, ex: hostname mudou no meio).
+ * Ordena alfabeticamente e devolve o primeiro quando há mais de um
+ * candidato (não deveria acontecer em operação normal — é exatamente o bug
+ * que esta função corrige — mas nunca lança).
+ */
+function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): string | null {
+  const suffix = `-${sessionId}.json`;
+  const names = listSessionJsonFiles(repoRoot)
+    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-"))
+    .sort();
+  return names.length > 0 ? join(sessionsDir(repoRoot), names[0]!) : null;
+}
+
+/**
+ * Lê o registro efetivo de um arquivo REAL de sessão já conhecido, mesclado
+ * com seus próprios `-safeBackup-` do OneDrive (`mergeSessionRecords`) — usado
+ * pela promoção de kind em `registerSession` (#6326) pra garantir que um
+ * claim que só sobreviveu num backup do registro ANTIGO não se perca na
+ * promoção (mesma disciplina fail-safe de `readMergedSessionGroups`, mas
+ * pra um único arquivo real já localizado em vez de varrer o diretório
+ * inteiro por identidade). `null` quando nem o arquivo real nem nenhum
+ * backup dele foi legível.
+ */
+function readMergedRecordForRealFile(repoRoot: string, realPath: string): SessionRecord | null {
+  const realName = basename(realPath);
+  const stem = realName.slice(0, -".json".length);
+  const backupNames = listSessionJsonFiles(repoRoot).filter(
+    (n) => n.includes("-safeBackup-") && n.startsWith(`${stem}-`),
+  );
+  const dir = sessionsDir(repoRoot);
+  const records = [realName, ...backupNames]
+    .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
+    .filter((r): r is SessionRecord => r !== null);
+  if (records.length === 0) return null;
+  return mergeSessionRecords(records);
+}
+
+/**
  * Registra uma sessão ativa. Idempotente — chamar de novo com o mesmo
  * kind/tag/sessionId atualiza o registro (mesmo padrão de `startSession` em
  * `overnight-session-marker.ts`).
@@ -522,6 +579,19 @@ function writeJsonSafe(path: string, value: unknown): void {
  * `startedAt` e os campos de beacon do registro anterior, e só sobrescreve o
  * que foi passado explicitamente. Registro novo (nenhum arquivo anterior)
  * continua nascendo com `claimed_issues: []`, comportamento inalterado.
+ *
+ * **#6326 — PROMOVE um registro pré-existente de OUTRO kind pro kind novo.**
+ * Se não há arquivo no path do kind sendo registrado, mas existe um registro
+ * REAL pra este `sessionId` sob outro kind (tipicamente `interactive`, criado
+ * pelo beacon antes desta chamada — ver `findExistingSessionFileAnyKind`), a
+ * sessão de fato VIROU `kind` ao rodar `register`: o registro passa a viver
+ * no path do kind novo (preservando `startedAt`/`claimed_issues`/campos de
+ * beacon já acumulados, inclusive os que só existiam num `-safeBackup-` do
+ * registro antigo) e o arquivo antigo é removido — nunca sobra um par
+ * `{kind-antigo}-{tag}-{sessionId}.json` + `{kind-novo}-{tag}-{sessionId}.json`
+ * simultâneo pra mesma sessão. Promover (e não só ignorar) importa porque é
+ * o que `isCoordinatorKind`/`COORDINATOR_SESSION_KINDS` leem (guard do
+ * #5716) — o kind precisa refletir que a sessão é coordenadora agora.
  */
 export function registerSession(
   repoRoot: string,
@@ -532,21 +602,51 @@ export function registerSession(
   const tag = meta.tag ?? machineTag();
   const now = meta.startedAt ?? new Date().toISOString();
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const previous = readJsonSafe<SessionRecord>(path);
+  let previous = readJsonSafe<SessionRecord>(path);
+
+  // #6326: sem registro no path do KIND ATUAL, procurar (e promover) um
+  // registro pré-existente da MESMA sessão sob OUTRO kind — ver docstring
+  // acima. `otherPath !== path` evita o caso degenerado de um arquivo
+  // corrompido no PRÓPRIO path (readJsonSafe já devolveu null pra ele
+  // acima) ser "promovido" pra si mesmo e depois removido por engano.
+  let promotedFrom: string | null = null;
+  if (!previous) {
+    const otherPath = findExistingSessionFileAnyKind(repoRoot, sessionId);
+    if (otherPath && otherPath !== path) {
+      const merged = readMergedRecordForRealFile(repoRoot, otherPath);
+      if (merged) {
+        previous = merged;
+        promotedFrom = otherPath;
+      }
+    }
+  }
+
   const record: SessionRecord = {
     ...(previous ?? {}),
     kind,
     machineTag: tag,
     sessionId,
-    // `startedAt` do registro ORIGINAL é preservado — re-registrar não
-    // rejuvenesce a sessão (senão um `register` de correção zeraria a idade
-    // que `planSessionGc`/`listActiveSessions` usam pra decidir staleness).
+    // `startedAt` do registro ORIGINAL é preservado — re-registrar (ou
+    // promover de outro kind) não rejuvenesce a sessão (senão um `register`
+    // de correção zeraria a idade que `planSessionGc`/`listActiveSessions`
+    // usam pra decidir staleness).
     startedAt: previous?.startedAt ?? now,
     lastHeartbeat: now,
     claimed_issues: previous?.claimed_issues ?? [],
   };
   if (meta.pid !== undefined) record.pid = meta.pid;
   writeJsonSafe(path, record);
+  if (promotedFrom) {
+    // Best-effort: o record novo já foi gravado com sucesso acima — se este
+    // rmSync falhar (I/O transitório do OneDrive), o arquivo antigo vira
+    // exatamente o tipo de órfão que `planSessionGc` já sabe recolher
+    // (heartbeat congelado a partir de agora, kind antigo). Nunca lança.
+    try {
+      rmSync(promotedFrom);
+    } catch (e) {
+      warnIoError(promotedFrom, e);
+    }
+  }
   return record;
 }
 
