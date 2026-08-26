@@ -969,3 +969,31 @@ describe("#6130 — Diaria-Session-Registry-SafeBackup-Alarm registrada, diária
     assert.deepEqual(collisions, []);
   });
 });
+
+describe("#6198 — Diaria-Backlog-Reconcile registrada, diária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 10:10", () => {
+    const t = getScheduledTaskByName("Diaria-Backlog-Reconcile");
+    assert.ok(t, "Diaria-Backlog-Reconcile ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/backlog-reconcile.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 10, minute: 10 });
+  });
+
+  it("horário de 10:10 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Backlog-Reconcile" && t.schedule.hour === 10 && t.schedule.minute === 10,
+    );
+    assert.deepEqual(collisions, []);
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Backlog-Reconcile").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/backlog-reconcile.ts"));
+  });
+});

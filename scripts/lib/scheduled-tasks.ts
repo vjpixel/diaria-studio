@@ -1331,6 +1331,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // é ação POSTERIOR do editor.
     issue: "#6130",
   },
+  {
+    name: "Diaria-Backlog-Reconcile",
+    description:
+      "reconciliação diária do backlog aberto — corrige mecanicamente marcador aguardando-ate: em conflito com " +
+      "label de deferimento (padrões 1/2), e alarma (sem corrigir) label de bloqueio herdada de mãe pra filha " +
+      "e checkbox aberto em issue fora-de-rodada (padrões 3/4)",
+    steps: [{ key: "reconcile", script: "scripts/backlog-reconcile.ts" }],
+    logPath: "backlog-reconcile/.reconcile.log",
+    // 10:10 BRT — logo depois do Diaria-Session-Registry-SafeBackup-Alarm
+    // (10:05, acima), fechando o cluster matinal de checks/alarmes
+    // 09:00-10:20 (ver grep de `kind: "daily"` neste arquivo) sem colidir
+    // com nenhuma outra entrada já registrada.
+    schedule: { kind: "daily", hour: 10, minute: 10 },
+    // Sem guard — `fetchOpenBacklog` já é fail-soft (falha do `gh` devolve
+    // `null`, o CLI aborta com exit 1 sem escrever nada; nunca trata "gh
+    // falhou" como "backlog limpo").
+    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do #5845/#5908/#5754/#6130 acima) — armar via
+    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (`helios`)
+    // é ação POSTERIOR do editor.
+    issue: "#6198",
+  },
 ];
 
 /**
