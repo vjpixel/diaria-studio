@@ -23,6 +23,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -33,6 +34,24 @@ import { checkStageInvariantsForWrite } from "../scripts/pipeline-sentinel.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sentinelCli = join(repoRoot, "scripts", "pipeline-sentinel.ts");
+
+/**
+ * #6194 — Cria um diretório temporário isolado com `node_modules` linkado do
+ * repo raiz, para que `--import tsx` resolva sem nunca tocar o `data/` real
+ * (junction OneDrive) do checkout principal.
+ *
+ * Antes deste helper, `runWrite` usava `cwd: repoRoot` fixo — em um worktree
+ * novo (sem `data/` junction) isso era "seguro", mas no checkout principal
+ * (onde `data/` É o OneDrive) o teste gravava edições sintéticas em disco
+ * real e disparava e-mails de gate falsos (edição 919011, #6194).
+ */
+function setupIsolatedCwd(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sentinel-cli-"));
+  // Symlink node_modules pra que --import tsx resolva (Node sobe a árvore de
+  // node_modules do cwd; sem o link, falha com "Cannot find package 'tsx'").
+  symlinkSync(join(repoRoot, "node_modules"), join(dir, "node_modules"));
+  return dir;
+}
 
 describe("checkStageInvariantsForWrite (#6009) — unit", () => {
   it("Stage 2 com 02-reviewed.md/03-social.md mas sem snapshot pré-humanizador → falha (humanizer-ran)", () => {
@@ -124,16 +143,13 @@ describe("checkStageInvariantsForWrite (#6009) — unit", () => {
 
 /**
  * Roda `pipeline-sentinel.ts write` como subprocesso real (exercita o CLI,
- * não só a lib). `cwd` fica fixo em `repoRoot` (não num tmpdir isolado) —
- * `--import tsx` precisa resolver o pacote `tsx` a partir de um `cwd` com
- * `node_modules`, e este worktree não tem `data/` real (junction OneDrive
- * ausente em worktree novo — ver CLAUDE.md), então escrever sob
- * `repoRoot/data/editions/{aamm}/{aammdd}` com um AAMMDD exclusivo do teste
- * é seguro e não risca dado de produção.
+ * não só a lib). Usa um `cwd` isolado (temp dir com `node_modules` linkado
+ * do repo) — #6194: `cwd: repoRoot` fixo escrevia em `data/editions/9190/`
+ * no checkout principal, onde `data/` é a junction OneDrive real.
  */
-function runWrite(args: string[]): { status: number | null; stderr: string; stdout: string } {
+function runWrite(args: string[], cwd: string): { status: number | null; stderr: string; stdout: string } {
   const result = spawnSync(process.execPath, ["--import", "tsx", sentinelCli, "write", ...args], {
-    cwd: repoRoot,
+    cwd,
     encoding: "utf8",
   });
   return { status: result.status, stderr: result.stderr, stdout: result.stdout };
@@ -142,7 +158,8 @@ function runWrite(args: string[]): { status: number | null; stderr: string; stdo
 describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — CLI", () => {
   it("Stage 2 com invariantes falhando (humanizer não rodou) → write recusado, sentinel NÃO gravado", () => {
     const aammdd = "919011";
-    const editionDir = join(repoRoot, "data", "editions", aammdd.slice(0, 4), aammdd);
+    const isolatedCwd = setupIsolatedCwd();
+    const editionDir = join(isolatedCwd, "data", "editions", aammdd.slice(0, 4), aammdd);
     try {
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       // Simula a edição real: 02-reviewed.md e 03-social.md existem mas o
@@ -151,14 +168,10 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
       writeFileSync(join(editionDir, "02-reviewed.md"), "conteúdo qualquer\n");
       writeFileSync(join(editionDir, "03-social.md"), "# Social\n## d1\ntexto\n");
 
-      const { status, stderr } = runWrite([
-        "--edition",
-        aammdd,
-        "--step",
-        "2",
-        "--outputs",
-        "02-reviewed.md,03-social.md",
-      ]);
+      const { status, stderr } = runWrite(
+        ["--edition", aammdd, "--step", "2", "--outputs", "02-reviewed.md,03-social.md"],
+        isolatedCwd,
+      );
 
       assert.equal(status, 1);
       assert.match(stderr, /check-invariants --stage 2/);
@@ -169,28 +182,29 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
         "sentinel não deve ser gravado quando invariantes falham",
       );
     } finally {
-      rmSync(editionDir, { recursive: true, force: true });
+      // #6194: cleanup do diretório inteiro, garantindo que nada vaze pro
+      // checkout principal (temp dir, não repoRoot/data/).
+      rmSync(isolatedCwd, { recursive: true, force: true });
     }
   });
 
   it("Stage 2 com --bypass-reason → grava o sentinel mesmo com invariantes falhando (warn, não bloqueia)", () => {
     const aammdd = "919012";
-    const editionDir = join(repoRoot, "data", "editions", aammdd.slice(0, 4), aammdd);
+    const isolatedCwd = setupIsolatedCwd();
+    const editionDir = join(isolatedCwd, "data", "editions", aammdd.slice(0, 4), aammdd);
     try {
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       writeFileSync(join(editionDir, "02-reviewed.md"), "conteúdo qualquer\n");
       writeFileSync(join(editionDir, "03-social.md"), "# Social\n## d1\ntexto\n");
 
-      const { status, stderr } = runWrite([
-        "--edition",
-        aammdd,
-        "--step",
-        "2",
-        "--outputs",
-        "02-reviewed.md,03-social.md",
-        "--bypass-reason",
-        "teste de regressão #6009",
-      ]);
+      const { status, stderr } = runWrite(
+        [
+          "--edition", aammdd, "--step", "2",
+          "--outputs", "02-reviewed.md,03-social.md",
+          "--bypass-reason", "teste de regressão #6009",
+        ],
+        isolatedCwd,
+      );
 
       assert.equal(status, 0);
       assert.match(stderr, /bypass-reason/);
@@ -200,7 +214,7 @@ describe("pipeline-sentinel write — gate mecânico de invariantes (#6009) — 
         "--bypass-reason deve permitir o write mesmo com invariantes falhando",
       );
     } finally {
-      rmSync(editionDir, { recursive: true, force: true });
+      rmSync(isolatedCwd, { recursive: true, force: true });
     }
   });
 
