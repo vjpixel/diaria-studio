@@ -80,11 +80,18 @@ describe("checkConsentBinding (#1575)", () => {
     }
   });
 
+  // #6114 (switchover, 26/08/2026): os 3 casos `newsletter: "auto"` abaixo
+  // exercitam o caminho BEEHIIV (05-published.json, draft_url do app.beehiiv).
+  // Eles chamavam `checkConsentBinding(dir)` sem override e herdavam
+  // `platform.config.json` REAL — verdes só enquanto o default do repo fosse
+  // "beehiiv". Virar a chave pro Kit os quebrou sem que nada em
+  // `checkConsentBinding` mudasse: teste acoplado à forma do ambiente (#6222).
+  // Agora injetam o backend, como o caso "kit" deste mesmo arquivo já fazia.
   it("consent.newsletter=auto + 05-published.json ausente → violation", () => {
     const dir = makeEditionDir();
     try {
       writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      const violations = checkConsentBinding(dir);
+      const violations = checkConsentBinding(dir, "beehiiv");
       assert.ok(violations.length > 0);
       const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
       assert.ok(nl);
@@ -99,7 +106,7 @@ describe("checkConsentBinding (#1575)", () => {
     try {
       writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
       writePublished(dir, { status: "pending_manual" });
-      const violations = checkConsentBinding(dir);
+      const violations = checkConsentBinding(dir, "beehiiv");
       assert.ok(violations.length > 0);
       const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
       assert.ok(nl);
@@ -117,7 +124,7 @@ describe("checkConsentBinding (#1575)", () => {
         status: "draft",
         draft_url: "https://app.beehiiv.com/posts/abc/edit",
       });
-      const violations = checkConsentBinding(dir);
+      const violations = checkConsentBinding(dir, "beehiiv");
       assert.equal(violations.length, 0);
     } finally {
       rmSync(dir, { recursive: true });
