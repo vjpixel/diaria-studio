@@ -118,6 +118,54 @@ export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string 
  * a falha de um `aammdd` específico é um fato histórico, não uma condição
  * que "volta a ficar ok". */
 export function toAlarmFinding(evaluation: EnvioGuardAlarmEvaluation, aammdd: string): AlarmFinding {
+  // #6221 — `fingerprint` inclui `verdict` (já incluía antes desta issue), então
+  // um `aammdd`/`reportId` cujo verdict MUDOU de código pra código (aqui:
+  // `-prereq-fallback-override-vigente` deixou de contar como `alarm-failure`
+  // e passou a ser `alarm-escalated`) gera um fingerprint NOVO — se o dia de
+  // HOJE já tiver uma issue aberta/fechada sob o fingerprint ANTIGO (o
+  // deploy aconteceu no mesmo dia em que o alarme já rodou), esta rodada cria
+  // uma 2ª issue pro MESMO evento, sob o fingerprint novo. Aceito
+  // deliberadamente: a task roda 1×/dia (06:15 BRT) em produção, então a
+  // janela de colisão é só "esta task rodar de novo hoje, no mesmo dia do
+  // deploy" — e o título/corpo já deixam claro que é o MESMO evento,
+  // reclassificado. Documentado aqui e no PR #6262/#6221 em vez de escondido.
+  if (evaluation.verdict === "alarm-escalated") {
+    return {
+      check: "clarice-envio-guard",
+      fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,
+      family: "evento",
+      title: `[diar.ia.br] Diaria-Clarice-Envio-Guard escalou em ${aammdd}: override do editor vigente impediu cancelamento`,
+      body: [
+        "Achado automático do alarme `Diaria-Clarice-Envio-Guard-Alarm`",
+        "(`scripts/clarice-envio-guard-alarm.ts`).",
+        "",
+        `aammdd: ${aammdd}`,
+        `verdict: ${evaluation.verdict}`,
+        evaluation.reportId ? `reportId: ${evaluation.reportId}` : "Nenhum relatório encontrado — a rodada nem chegou a rodar.",
+        "",
+        "ISTO NÃO É UMA FALHA. Os pré-requisitos do guard (clarice-plan-wave/",
+        "clarice-envio-risk) falharam mesmo após retry, o freio da noite era",
+        "HOLD, e havia um override SEU vigente sobre esse HOLD (#6134) — o guard",
+        "leu isso corretamente e NÃO cancelou a onda por precaução, porque",
+        "cancelar teria desfeito a sua própria decisão. NENHUMA ação automática",
+        "foi tomada. Este é o comportamento DESEJADO sempre que há override",
+        "vigente sobre um freio não-fresco.",
+        "",
+        "Ação esperada de você: confirmar que o override ainda vale (o guard",
+        "não tem como saber isso sozinho — só sabe que ele existe e está",
+        "dentro do prazo). Se sim, nada a fazer. Se não, revogue/deixe expirar",
+        "o override e a próxima rodada volta a decidir sozinha pelo fallback",
+        "normal.",
+        "",
+        "Esta issue é criada automaticamente pelo alarme (#5339) — achado de EVENTO",
+        "PASSADO (#5553): o evento é do dia acima, não se auto-fecha quando a",
+        "checagem seguinte avaliar outro dia. Fica aberta até um humano",
+        "confirmar/fechar (rota Overnight na Triagem).",
+      ].join("\n"),
+      labels: ["question"],
+      priority: "P2",
+    };
+  }
   return {
     check: "clarice-envio-guard",
     fingerprint: `${aammdd}:${evaluation.verdict}:${evaluation.reportId ?? "no-report"}`,
