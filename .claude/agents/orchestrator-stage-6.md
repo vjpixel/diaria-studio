@@ -392,6 +392,22 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
+### 6d-site. Publicar a página da edição no Worker `diaria-site` (#6202)
+
+Roda **depois** do agendamento confirmado, nos dois backends. Sem este passo o acervo do site fica congelado nos 253 posts já gerados e não cresce — e é ele que destrava a janela de cutover do #467 (greenlight do editor, 26/08).
+
+```bash
+npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR}
+```
+
+| exit | significado | ação |
+|---|---|---|
+| `0` | página escrita e deployada | seguir |
+| `2` | edição sem `newsletter-final.html`/`post_url` — nada a publicar | seguir, logar info |
+| `3` | escrita ou deploy falhou | **logar warn e seguir** |
+
+**Fail-soft absoluto:** publicar no site é acessório ao envio. Nenhum exit pode bloquear §6e nem o auto-reporter. No `3`, a página costuma ficar escrita localmente (a mensagem diz) — a próxima regeneração a leva junto.
+
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
 **Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção — `schedule-newsletter-kit.ts` (§6d-kit) já grava `scheduled_at`/`status: "scheduled"` em `_internal/newsletter-kit-published.json` internamente, só depois de confirmar via GET (mesma garantia que este passo busca aqui pro caminho Beehiiv).
