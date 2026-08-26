@@ -112,6 +112,14 @@ export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
  * públicas ao gate, sem nunca provar posse — exatamente a vulnerabilidade
  * que o #4121 achou que tinha fechado. Ver docstring de `handleJogarGateVerify`.
  *
+ * Isto NÃO é uma regressão específica da Beehiiv, nem algo que reverter o
+ * #5095 resolveria: `checkWebSubscriber`/`checkWebSubscriberDetailed` (#6048)
+ * unem 3 fontes (KV, Beehiiv, Kit) e a fonte Kit (`verifySubscriberViaKitByEmail`,
+ * subscriber-verify.ts) nunca teve conceito de opt-in ou posse — estar no Kit
+ * já basta pra "active" lá, com ou sem #5095. O problema é estrutural:
+ * NENHUMA fonte de "active" prova posse, então o marcador de posse (magic
+ * link) tinha que existir de qualquer forma.
+ *
  * Mecanismo: `pending` prefixa o e-mail com `PENDING_PREFIX` ANTES de assinar
  * (`pending:{email}`) — `:` nunca aparece num e-mail válido
  * (`isValidVoteEmailFormat`, lib.ts, rejeita `:` nos dois lados do `@`), então
@@ -129,7 +137,7 @@ const PENDING_PREFIX = "pending:";
 export async function issueWebSessionCookie(
   secret: string,
   email: string,
-  state: WebSessionState = "confirmed",
+  state: WebSessionState,
 ): Promise<string> {
   const payload = state === "pending" ? `${PENDING_PREFIX}${email}` : email;
   const value = await signSessionCookie(secret, payload, WEB_SESSION_TTL_SEC);
@@ -138,9 +146,12 @@ export async function issueWebSessionCookie(
 
 export interface WebSession {
   email: string;
-  /** true = cadastro feito, Beehiiv ainda não confirmou o opt-in — a
-   * identidade NÃO deve sobrepor o token anônimo em `handleVote` (vote.ts),
-   * mas AINDA libera o jogo no gate (`handleJogarPage`, jogar.ts). */
+  /** true = e-mail sem posse provada — a identidade NÃO deve sobrepor o
+   * token anônimo em `handleVote` (vote.ts), mas AINDA libera o jogo no gate
+   * (`handleJogarPage`, jogar.ts). Vira `false` (`confirmed`) só quando
+   * `hasProvenEmailPossession` (magic-link.ts, #6293) achar o marcador —
+   * NUNCA por a Beehiiv/KV/Kit reportarem "active" (nenhuma dessas fontes
+   * prova posse, ver docstring de `WebSessionState` acima). */
   pending: boolean;
 }
 
@@ -358,7 +369,20 @@ export async function handleJogarGateVerify(request: Request, env: Env): Promise
   // sessão CONFIRMED quando o marcador de posse (magic link, #3996) já
   // existe pra este e-mail; caso contrário `pending`, que já libera o gate
   // (handleJogarPage) mas nunca sobrepõe identidade em vote.ts.
-  const possessionProven = await hasProvenEmailPossession(env, email);
+  //
+  // Achado do review: `checkWebSubscriber` (acima) é documentado como
+  // "nunca lança" — `hasProvenEmailPossession` não tinha essa garantia, e um
+  // KV.get que lançasse derrubava o endpoint inteiro com 500, inclusive o
+  // caminho que só emitiria `pending` (que é o que deixa a pessoa continuar
+  // jogando). Falha aqui sempre degrada pro lado seguro: nunca emite
+  // `confirmed` sem prova, só perde a promoção nesta chamada (a próxima
+  // visita ao gate tenta de novo).
+  let possessionProven = false;
+  try {
+    possessionProven = await hasProvenEmailPossession(env, email);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "gate_possession_check_failed", error: String(e) }));
+  }
   const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, possessionProven ? "confirmed" : "pending");
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }
@@ -404,8 +428,10 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * `handleJogarPage`/#4121, que já trata pending e confirmed igual pra esse
  * fim — a identidade de RANKING de verdade vem do merge via
  * `POST /jogar/identify` (`identifyAfterGate`, #4253 item 6), que não
- * depende do estado desta sessão). Com `optin`: comportamento INALTERADO
- * (tenta Beehiiv, sessão `pending` até a confirmação).
+ * depende do estado desta sessão). Com `optin`: tenta a Beehiiv; a sessão
+ * sai `pending` e FICA `pending` mesmo depois da Beehiiv aceitar o cadastro
+ * — a única promoção pending→confirmed é via magic link (#6293, ver bloco
+ * abaixo e a docstring de `WebSessionState`).
  */
 export async function handleJogarGateSubscribe(
   request: Request,

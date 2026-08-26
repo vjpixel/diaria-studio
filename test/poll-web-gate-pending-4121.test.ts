@@ -91,13 +91,6 @@ const VALID_TOKEN = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
 const VALID_EMAIL = `${VALID_TOKEN}@web.eia.diaria.local`;
 
 describe("#4121: readWebSession — marcador pending/confirmed embutido no payload assinado", () => {
-  it("issueWebSessionCookie sem state (default) → confirmed", async () => {
-    const setCookie = await issueWebSessionCookie("s", "a@b.com");
-    const raw = setCookie.split(";")[0].split("=")[1];
-    const session = await readWebSession("s", `${WEB_SESSION_COOKIE}=${raw}`);
-    assert.deepEqual(session, { email: "a@b.com", pending: false });
-  });
-
   it('issueWebSessionCookie com state="pending" → pending:true, email correto (sem o prefixo)', async () => {
     const setCookie = await issueWebSessionCookie("s", "a@b.com", "pending");
     const raw = setCookie.split(";")[0].split("=")[1];
@@ -125,7 +118,7 @@ describe("#4121: readWebSession — marcador pending/confirmed embutido no paylo
     const rawPending = pendingCookie.split(";")[0].split("=")[1];
     assert.equal(await readWebSessionEmail("s", `${WEB_SESSION_COOKIE}=${rawPending}`), "pend@b.com");
 
-    const confirmedCookie = await issueWebSessionCookie("s", "conf@b.com");
+    const confirmedCookie = await issueWebSessionCookie("s", "conf@b.com", "confirmed");
     const rawConfirmed = confirmedCookie.split(";")[0].split("=")[1];
     assert.equal(await readWebSessionEmail("s", `${WEB_SESSION_COOKIE}=${rawConfirmed}`), "conf@b.com");
   });
@@ -197,7 +190,7 @@ describe("#4121: GET /vote?brand=web — override de identidade só com sessão 
 
   it("sessão CONFIRMED → sobrepõe identidade normalmente (comportamento pré-#4121 preservado)", async () => {
     const env = makeEnv();
-    const confirmedCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com")).split(";")[0];
+    const confirmedCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent(VALID_EMAIL)}&edition=260701&choice=A&brand=web`, {
         headers: { Cookie: confirmedCookie },

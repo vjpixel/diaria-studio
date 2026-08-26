@@ -273,7 +273,7 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
 
   it("cookie de rodada livre usada + sessão válida → jogo normal, sem gate", async () => {
     const env = makeEnv();
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },
@@ -287,7 +287,7 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
 
   it("sessão com secret ERRADO (forjada) → gate continua ativo (cookie inválido = sem sessão)", async () => {
     const env = makeEnv();
-    const forged = (await issueWebSessionCookie("secret-errado", "leitor@example.com")).split(";")[0];
+    const forged = (await issueWebSessionCookie("secret-errado", "leitor@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${forged}` },
@@ -365,7 +365,7 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
 describe("GET /vote?brand=web — identidade pós-gate (#4054)", () => {
   it("cookie de sessão válido → voto é gravado sob o E-MAIL REAL, não o token anônimo", async () => {
     const env = makeEnv();
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent(VALID_EMAIL)}&edition=260701&choice=A&brand=web`, {
         headers: { Cookie: sessionCookie },
@@ -389,7 +389,7 @@ describe("GET /vote?brand=web — identidade pós-gate (#4054)", () => {
 
   it("REGRESSÃO #3976/#4011: cookie de sessão válido NÃO abre uma exceção ao guard — token continua obrigatório no parâmetro", async () => {
     const env = makeEnv();
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com", "confirmed")).split(";")[0];
     const bogusEmail = "verify1840428@web.eia.diaria.local";
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent(bogusEmail)}&edition=260701&choice=A&brand=web`, {
@@ -403,7 +403,7 @@ describe("GET /vote?brand=web — identidade pós-gate (#4054)", () => {
 
   it("REGRESSÃO #3976/#4011: ?email= cru no brand=web continua rejeitado mesmo com cookie válido presente", async () => {
     const env = makeEnv();
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "real@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent("qualquer@example.com")}&edition=260701&choice=A&brand=web`, {
         headers: { Cookie: sessionCookie },
@@ -415,7 +415,7 @@ describe("GET /vote?brand=web — identidade pós-gate (#4054)", () => {
 
   it("REGRESSÃO: brand=diaria (newsletter, Path A) é 100% intocado pela identidade pós-gate", async () => {
     const env = makeEnv();
-    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "outro@example.com")).split(";")[0];
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "outro@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/vote?email=leitor@example.com&edition=260701&choice=A", {
         headers: { Cookie: sessionCookie },
@@ -431,7 +431,7 @@ describe("GET /vote?brand=web — identidade pós-gate (#4054)", () => {
 
   it("cookie FORJADO (secret errado) → nenhum override, cai no comportamento pré-#4054 (token válido continua votando normalmente)", async () => {
     const env = makeEnv();
-    const forged = (await issueWebSessionCookie("secret-errado", "impostor@example.com")).split(";")[0];
+    const forged = (await issueWebSessionCookie("secret-errado", "impostor@example.com", "confirmed")).split(";")[0];
     const res = await worker.fetch(
       new Request(`https://poll.test/vote?email=${encodeURIComponent(VALID_EMAIL)}&edition=260701&choice=A&brand=web`, {
         headers: { Cookie: forged },

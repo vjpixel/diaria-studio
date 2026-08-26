@@ -79,21 +79,29 @@ describe("#6293: invariante estrutural — só web-gate.ts emite sessão, e só 
   });
 
   it("o único call site de issueWebSessionCookie que pode virar 'confirmed' está condicionado a hasProvenEmailPossession", () => {
+    // #6293 (review): `issueWebSessionCookie` NÃO tem mais default pro 3º
+    // argumento — um call site que o omitisse hoje é ERRO DE COMPILAÇÃO
+    // (`npx tsc`), não algo que este teste em runtime precise checar. O que
+    // sobra pra checar aqui, e que o compilador não garante, é semântico:
+    // QUAL valor o 3º argumento resolve, não SE ele foi passado.
+    //
+    // HONESTIDADE SOBRE O QUE ESTA REGEX GARANTE (review, achado de
+    // comment-analyzer): isto é casamento de padrão sobre NOMES DE VARIÁVEL
+    // (`hasProvenEmailPossession`/`possessionProven`), não uma prova
+    // semântica de que o valor realmente veio do KV. Renomear a variável
+    // (refactor correto) QUEBRA este teste — falso positivo. Um
+    // `const possessionProven = true;` hardcoded PASSA este teste — falso
+    // negativo. É defesa em profundidade sobre o teste comportamental
+    // fim-a-fim abaixo (que exercita o caminho real), não substituto dele —
+    // exatamente o tipo de comentário que promete mais do que entrega que a
+    // #6293 existe pra corrigir; não empreste a este guard mais confiança
+    // do que ele tem.
     const src = readFileSync(WEB_GATE_PATH, "utf8");
     const callSites = [...src.matchAll(/issueWebSessionCookie\([^;]*?\);/gs)];
     assert.ok(callSites.length >= 3, "esperado >=3 call sites conhecidos (verify, subscribe sem optin, subscribe com optin)");
 
     for (const match of callSites) {
       const call = match[0];
-      // Todo call site precisa passar o 3º argumento explicitamente — a
-      // função ainda tem default "confirmed" (retrocompat de testes antigos
-      // que emitem cookie confirmado direto pra montar fixtures), mas nenhum
-      // PRODUCTION call site pode depender desse default silenciosamente.
-      const argsMatch = call.match(/issueWebSessionCookie\(([\s\S]*)\);/);
-      assert.ok(argsMatch, `não consegui parsear os argumentos de: ${call}`);
-      const argCount = argsMatch![1].split(",").length;
-      assert.ok(argCount >= 3, `call site sem 3º argumento explícito (usaria o default "confirmed" silenciosamente): ${call}`);
-
       const resolvesToConfirmedLiteral = /"confirmed"/.test(call);
       const resolvesViaTernary = /possessionProven/.test(call);
       if (resolvesToConfirmedLiteral || resolvesViaTernary) {

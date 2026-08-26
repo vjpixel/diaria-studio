@@ -460,15 +460,35 @@ export async function handleConfirmMerge(
   // #6293: o clique em si É a prova de posse (só quem recebeu o e-mail
   // consegue consumir o token) — grava o marcador ANTES do merge de score,
   // que é uma preocupação separada (e pode falhar/ser no-op sem invalidar
-  // a posse já provada).
-  await markEmailPossessionVerified(bEnv, pending.email);
+  // a posse já provada). NÃO reordenar: a prova é o clique, independente do
+  // merge ter sucesso.
+  //
+  // Achado do review (#6293): o token já foi consumido acima (one-time-use)
+  // quando chegamos aqui — se qualquer uma das duas escritas abaixo lançar,
+  // não existe replay possível pra pessoa tentar de novo. Sem try/catch, a
+  // exceção subia crua (erro genérico em vez de `confirmMergeHtmlResponse`)
+  // e um erro de KV no marcador ficava indistinguível de "token inválido"
+  // no log. Cobrimos as duas escritas com o MESMO tratamento do bloco de
+  // opt-in logo abaixo: log estruturado (`stage` diferencia qual escrita
+  // falhou) + resposta de erro explícita — nunca deixar a exceção propagar.
   const mergeInput: IdentifyMergeInput = {
     email: pending.email,
     anonEmail: pending.anonEmail,
     name: pending.name,
     edition: pending.edition || null,
   };
-  await performIdentifyMerge(bEnv, mergeInput);
+  try {
+    await markEmailPossessionVerified(bEnv, pending.email);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "mark_possession", error: String(e) }));
+    return confirmMergeHtmlResponse(false, "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.");
+  }
+  try {
+    await performIdentifyMerge(bEnv, mergeInput);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "identify_merge_confirm_failed", stage: "score_merge", error: String(e) }));
+    return confirmMergeHtmlResponse(false, "Não foi possível confirmar seu link agora. Tente novamente em alguns minutos.");
+  }
 
   if (pending.optin) {
     const fetchImpl = deps.fetchImpl ?? fetch;
