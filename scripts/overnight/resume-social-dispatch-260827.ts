@@ -61,11 +61,18 @@ async function main(): Promise<number> {
 
   let publicUrl: string | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const b = await getBroadcast(BROADCAST_ID, r.config);
-    log(`tentativa ${attempt}/${MAX_ATTEMPTS}: status=${b.status} public_url=${b.public_url ?? "(vazio)"}`);
-    if (b.status === "completed" && b.public_url && !b.public_url.endsWith("/posts/")) {
-      publicUrl = b.public_url;
-      break;
+    try {
+      const b = await getBroadcast(BROADCAST_ID, r.config);
+      log(`tentativa ${attempt}/${MAX_ATTEMPTS}: status=${b.status} public_url=${b.public_url ?? "(vazio)"}`);
+      if (b.status === "completed" && b.public_url && !b.public_url.endsWith("/posts/")) {
+        publicUrl = b.public_url;
+        break;
+      }
+    } catch (e) {
+      // #6348 review (P2 alta): rede/5xx transiente não pode matar o loop
+      // inteiro — o retry embutido no kitFetch cobre só ~13s, bem menos que
+      // a janela de 30min que este loop existe pra oferecer.
+      log(`tentativa ${attempt}/${MAX_ATTEMPTS}: erro transiente, seguindo pro próximo retry — ${e instanceof Error ? e.message : String(e)}`);
     }
     if (attempt < MAX_ATTEMPTS) await sleep(RETRY_DELAY_MS);
   }
@@ -78,25 +85,41 @@ async function main(): Promise<number> {
   log(`URL real obtida: ${publicUrl}`);
   writeFileSync(resolve(EDITION_DIR, "_internal/05-edition-url.txt"), publicUrl);
 
-  const run = (args: string[]) => {
+  // #6348 review (P2 média): cada passo isolado — uma falha num canal não
+  // pode impedir os demais nem o spawn final do claude (que é quem fecha
+  // Stage 5/6 e avisa o editor se algo ficou pra trás). publish-*.ts são
+  // idempotentes (--skip-existing default), então retry é seguro.
+  const failed: string[] = [];
+  const run = (label: string, args: string[]) => {
     log(`$ npx tsx ${args.join(" ")}`);
-    execFileSync("npx", ["tsx", ...args], { stdio: "inherit", cwd: process.cwd() });
+    try {
+      execFileSync("npx", ["tsx", ...args], { stdio: "inherit", cwd: process.cwd() });
+    } catch (e) {
+      log(`FALHOU (${label}): ${e instanceof Error ? e.message : String(e)}`);
+      failed.push(label);
+    }
   };
 
-  run(["scripts/resolve-edition-url.ts", "--edition-dir", `${EDITION_DIR}/`, "--edition-url", publicUrl, "--validate-social"]);
-  run(["scripts/upload-images-public.ts", "--edition-dir", `${EDITION_DIR}/`, "--mode", "social"]);
-  run(["scripts/publish-facebook.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
-  run(["scripts/publish-linkedin.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
-  run(["scripts/publish-instagram.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
-  run(["scripts/publish-threads.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
+  run("resolve-edition-url", ["scripts/resolve-edition-url.ts", "--edition-dir", `${EDITION_DIR}/`, "--edition-url", publicUrl, "--validate-social"]);
+  run("upload-images-public", ["scripts/upload-images-public.ts", "--edition-dir", `${EDITION_DIR}/`, "--mode", "social"]);
+  run("facebook", ["scripts/publish-facebook.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
+  run("linkedin", ["scripts/publish-linkedin.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
+  run("instagram", ["scripts/publish-instagram.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
+  run("threads", ["scripts/publish-threads.ts", "--edition-dir", `${EDITION_DIR}/`, "--schedule"]);
 
-  log("Canais via script dispatchados. Spawnando claude --print pra Twitter (Buffer MCP) + fechar Stage 5/6.");
+  if (failed.length) {
+    log(`AVISO: ${failed.length} passo(s) falharam (${failed.join(", ")}) — a sessão claude spawnada abaixo precisa saber disso e decidir se retenta.`);
+  }
+  log("Canais via script dispatchados (ou tentados). Spawnando claude --print pra Twitter (Buffer MCP) + fechar Stage 5/6.");
 
   const pendingPath = resolve(EDITION_DIR, "_internal/pending-kit-social-dispatch.json");
   const pendingExists = existsSync(pendingPath);
   const prompt = [
     `Retome a edição ${EDITION} do diar.ia.br studio — dispatch social acabou de ser feito por script`,
-    `(Facebook/LinkedIn/Instagram/Threads já dispatchados via publish-*.ts --schedule, edition_url real = ${publicUrl}).`,
+    `(Facebook/LinkedIn/Instagram/Threads via publish-*.ts --schedule, edition_url real = ${publicUrl}).`,
+    failed.length
+      ? `ATENÇÃO: os passos [${failed.join(", ")}] falharam no script — releia data/task-scheduler-resume-social-260827.log, diagnostique e retente antes de prosseguir (os scripts publish-*.ts são idempotentes).`
+      : "Todos os passos do script terminaram sem erro.",
     pendingExists ? `Contexto completo em ${pendingPath}.` : "",
     `Faltam: (1) Twitter/X via Buffer MCP — Passo 5c-3b de .claude/agents/orchestrator-stage-5.md;`,
     `(2) resto do Stage 5 (5f-bis verify dispatch, 5h sentinel — newsletter Kit já foi agendada, não repetir 5c-1-kit);`,
