@@ -61,11 +61,18 @@
 // gravado, `decideSessionGc` nunca alcança o branch "processo vivo protege
 // incondicionalmente" pra essas sessões, caindo direto na janela
 // conservadora de 7 dias por tempo (ver docblock de `decideSessionGc` em
-// `scripts/lib/session-registry.ts`). O hook roda como processo filho
-// direto do processo da sessão Claude Code corrente (spawnado pelo harness
-// a cada PreToolUse) — `process.ppid`, portanto, É o PID dessa sessão, o
-// mesmo processo que `defaultIsPidAlive`/`process.kill(pid, 0)` precisa
-// checar depois pra decidir se o registro ainda está "vivo". Mesma
+// `scripts/lib/session-registry.ts`). A premissa original era que o hook
+// roda como processo filho direto do processo da sessão Claude Code
+// corrente (spawnado pelo harness a cada PreToolUse), logo `process.ppid`
+// seria o pid dessa sessão. **#6294 mediu essa premissa como FALSA pelo
+// menos uma vez ao vivo**: numa sessão `overnight` demonstravelmente ativa,
+// o `pid` gravado por esta linha já não correspondia a processo nenhum —
+// `process.ppid`, neste harness, aponta pra um processo efêmero que morre
+// quase imediatamente, não pro processo persistente da sessão. Não dá pra
+// confirmar a partir deste repo se isso é sempre assim ou específico de
+// uma topologia do harness (camada opaca, não verificável daqui) — por
+// isso `decideSessionGc` não trata mais "pid morto" como sinal de remoção
+// (só "pid vivo" continua protegendo, erra sempre pro lado seguro). Mesma
 // disciplina fail-open do `--session-id`: `--pid` já presente no comando
 // nunca é sobrescrito.
 

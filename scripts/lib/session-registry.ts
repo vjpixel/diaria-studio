@@ -1524,14 +1524,38 @@ export interface SessionGcResult {
  *   2. Heartbeat "no futuro" (clock skew) → mantém — nunca trata como
  *      abandonado.
  *   3. Além de `SOFT_STALE_MS`: se ALGUM registro do grupo foi escrito pela
- *      MÁQUINA LOCAL e carrega `pid`, a liveness do PROCESSO decide —
- *      `pid` vivo → mantém, INDEPENDENTE de quão velho o heartbeat esteja
- *      (é exatamente o cenário da ressalva: sessão viva que parou de bater
- *      heartbeat); `pid` confirmado morto → remove.
- *   4. Sem sinal de processo verificável (máquina diferente, ou nenhum
- *      registro do grupo tem `pid`) → só remove além da janela conservadora
- *      `conservativeMaxAgeMs` (default 7 dias) — chute deliberadamente caro
- *      de errar pro lado seguro.
+ *      MÁQUINA LOCAL e carrega `pid`, `pid` CONFIRMADO VIVO mantém —
+ *      INDEPENDENTE de quão velho o heartbeat esteja (é exatamente o
+ *      cenário da ressalva: sessão viva que parou de bater heartbeat).
+ *      **`pid` "morto" NÃO remove mais na hora (#6294)** — ver nota abaixo;
+ *      cai pro branch 4 junto com "sem pid".
+ *   4. Sem sinal de VIVO verificável (máquina diferente, nenhum registro do
+ *      grupo tem `pid`, ou `pid` reportado morto) → só remove além da
+ *      janela conservadora `conservativeMaxAgeMs` (default 7 dias) — chute
+ *      deliberadamente caro de errar pro lado seguro.
+ *
+ * **#6294 — "`pid` morto → remove na hora" foi RETIRADO do branch 3.**
+ * `--pid` é sempre preenchido a partir de `process.ppid` (hook
+ * `inject-session-id.mjs` e beacon `session-beacon.mjs`), sob a premissa de
+ * que esse é o pid do processo da sessão Claude Code corrente porque o
+ * harness spawna o hook/beacon como filho direto dela a cada `PreToolUse`.
+ * Medição ao vivo (#6294) CONTRADISSE essa premissa: numa sessão
+ * `overnight` demonstravelmente viva (heartbeat fresco, gates de PR
+ * rodando), o `pid` gravado já não correspondia a processo nenhum —
+ * `process.ppid`, neste harness, aponta pra um processo efêmero que morre
+ * quase imediatamente após gravar o registro, não pro processo persistente
+ * da sessão. Não há como este módulo (nem o hook/beacon) confirmar a partir
+ * do repo se isso é sempre assim ou só numa topologia específica do
+ * harness — camada opaca, não verificável daqui. Enquanto essa incerteza
+ * não for resolvida, tratar "`pid` morto" como sinal positivo de remoção é
+ * a mesma classe de risco que motivou a ressalva do #6130 em primeiro
+ * lugar: erra pro lado caro (perde `claimed_issues`/registro de uma sessão
+ * genuinamente viva) só pra economizar dias de espera na janela
+ * conservadora. `pid` VIVO continua um sinal ÚTIL de manter (falso-positivo
+ * de "vivo" — outro processo reaproveitando o mesmo pid — só estende
+ * proteção, nunca causa remoção indevida); `pid` morto deixou de ser um
+ * sinal confiável de remoção e por isso não empurra mais o veredito sozinho
+ * — some no branch 4, exatamente como "sem pid".
  *
  * **Limitação do #6130 fechada pelo #6160:** o branch 3 (PID vivo protege
  * incondicionalmente) era alcançável só pro kind `continuo` — `overnight`/
@@ -1540,13 +1564,12 @@ export interface SessionGcResult {
  * 4 pra eles. Fechado sem exigir mudança nas skills: `.claude/hooks/
  * inject-session-id.mjs` (o mesmo hook que já injeta `--session-id`
  * automaticamente, #5156) agora também injeta `--pid {process.ppid}` em
- * toda chamada standalone de `register` sem a flag — `process.ppid` do
- * hook É o PID da sessão Claude Code corrente, porque o harness spawna o
- * hook como filho direto dela a cada `PreToolUse`. `overnight`/`develop`
+ * toda chamada standalone de `register` sem a flag. `overnight`/`develop`
  * ainda nunca chamam `heartbeat` (só `continuo` o faz), então
  * `lastHeartbeat === startedAt` continua verdadeiro a sessão inteira pra
  * eles — mas isso não impede mais o branch 3: a checagem de `pid` roda
- * independente de quão stale o heartbeat esteja.
+ * independente de quão stale o heartbeat esteja (só que, desde #6294, só o
+ * lado VIVO desse branch pesa na decisão).
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
@@ -1588,19 +1611,19 @@ function decideSessionGc(
     };
   }
 
+  // #6294: só o lado VIVO deste branch decide sozinho. `pid` reportado
+  // MORTO não é mais tratado como sinal positivo de remoção — a fonte do
+  // pid (`process.ppid`, ver docstring acima) foi medida ao vivo gravando
+  // o pid de um processo efêmero, não o da sessão real, então "morto" aqui
+  // pode só significar "a fonte estava errada", nunca "a sessão acabou".
+  // Cai pro branch 4 (janela conservadora), igual a "sem pid".
   for (const r of records) {
-    if (r.machineTag === localTag && typeof r.pid === "number") {
-      if (isPidAlive(r.pid)) {
-        return {
-          action: "kept",
-          reason:
-            `heartbeat stale (${Math.round(ageMs / 60000)}min) mas processo pid=${r.pid} confirmado VIVO na máquina ` +
-            `local (${localTag}) — nunca remove registro de sessão viva (ressalva #6130)`,
-        };
-      }
+    if (r.machineTag === localTag && typeof r.pid === "number" && isPidAlive(r.pid)) {
       return {
-        action: "removed",
-        reason: `heartbeat stale (${Math.round(ageMs / 60000)}min) e processo pid=${r.pid} confirmado MORTO na máquina local (${localTag})`,
+        action: "kept",
+        reason:
+          `heartbeat stale (${Math.round(ageMs / 60000)}min) mas processo pid=${r.pid} confirmado VIVO na máquina ` +
+          `local (${localTag}) — nunca remove registro de sessão viva (ressalva #6130)`,
       };
     }
   }
@@ -1609,16 +1632,17 @@ function decideSessionGc(
     return {
       action: "removed",
       reason:
-        `heartbeat stale há ${Math.round(ageMs / 60_000)}min, sem sinal de processo verificável ` +
-        `(máquina diferente ou sem pid registrado) — além da janela conservadora de ` +
+        `heartbeat stale há ${Math.round(ageMs / 60_000)}min, sem sinal de processo VIVO verificável ` +
+        `(máquina diferente, sem pid registrado, ou pid reportado morto — #6294: um pid "morto" não é mais ` +
+        `tratado como sinal de remoção, a fonte não é confiável o suficiente) — além da janela conservadora de ` +
         `${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind "${groupKind || "desconhecido"}"`,
     };
   }
   return {
     action: "kept",
     reason:
-      `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo verificável e ainda dentro da ` +
-      "janela conservadora — GC não arrisca remover sessão que pode estar viva",
+      `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
+      "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
   };
 }
 

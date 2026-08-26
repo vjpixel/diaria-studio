@@ -517,8 +517,13 @@ if (import.meta.url === `file://${_argv1}` || import.meta.url === `file:///${_ar
         newPaths: extractTouchedPaths(payload.tool_name, payload.tool_input, cwdRoot),
         verb: sniffVerb(payload.tool_input?.command),
         nowIso: new Date().toISOString(),
-        // process.ppid é o PID da sessão Claude Code corrente (o harness
-        // spawna o hook como filho direto dela) — mesmo racional do #6160.
+        // process.ppid — mesmo racional do #6160 (premissa: harness spawna
+        // este hook como filho direto da sessão, então ppid seria o pid
+        // dela). #6294 mediu essa premissa como FALSA pelo menos uma vez ao
+        // vivo (ver docblock de inject-session-id.mjs e de decideSessionGc
+        // em scripts/lib/session-registry.ts) — `pid` continua gravado
+        // (não há fonte melhor disponível daqui), mas `decideSessionGc` não
+        // trata mais "pid morto" como sinal de remoção por causa disso.
         pid: process.ppid,
       });
       if (record) {
