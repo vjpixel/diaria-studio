@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { assertHumanized } from "../assert-humanized.ts";
+import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #6305
 import { lintTrailingEditorialHook } from "../../lint-social-md.ts";
 import {
   checkUseMelhorBeginnerMinimum,
@@ -312,6 +313,61 @@ function checkHumanizerRan(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * #6305: confirma que `check-humanizer-social.ts --write` de fato rodou no
+ * fim do Stage 2, gravando `_internal/.humanizer-social-done.json` com o
+ * sha256 de `03-social.md` atual.
+ *
+ * Gap distinto de `checkHumanizerRan` acima: aquele verifica um SINAL
+ * indireto (snapshot pré-humanizador presente + mtime não-stale), que prova
+ * que a skill `humanizador` foi invocada, mas NÃO prova que o passo final em
+ * prosa do playbook (§2c, "Gravar sentinel de humanizador social") rodou —
+ * são dois passos sequenciais e independentes na sessão LLM. Caso real
+ * (#6305, edição 260827): o snapshot `03-social-pre-humanizador.md` existia
+ * e o diff confirmava que o humanizador reescreveu o texto — `humanizer-ran`
+ * passava — mas a chamada `--write` nunca aconteceu, e o Stage 2 seguiu pra
+ * Etapa 3 sem o sentinel. O gate do Stage 4 (`check-humanizer-social.ts
+ * --check`) só descobriu isso depois, exit 1, já tarde pra ser um erro de
+ * "conteúdo ainda não pronto" barato de corrigir.
+ *
+ * Roda via `checkSentinel` (mesma função usada pelo Stage 4) direto no
+ * processo — sem sentinel gravado (ou hash divergente do `03-social.md`
+ * atual), `severity: error` bloqueia `pipeline-sentinel.ts write --step 2`
+ * (#6009) antes que o Stage 2 possa se declarar concluído.
+ */
+function checkSocialHumanizerSentinelWritten(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return []; // Stage 2 ainda não produziu — outro check captura isso
+
+  const result = checkSocialHumanizerSentinel(editionDir);
+  if (result.ok) return [];
+
+  // Ação concreta nomeada explicitamente em ambos os ramos (#6305 finding 1 do self-review) —
+  // uma mensagem que só diz "diverge"/"ausente" sem dizer o que rodar custa
+  // uma sessão inteira de investigação. O ramo hash_mismatch é o caso comum
+  // do fluxo legítimo pós-gate humano de §2d (editor edita 03-social.md no
+  // gate; nada re-hashava até o orchestrator-stage-2.md ganhar o passo
+  // dedicado) — por isso nomeia a causa (texto mudou) e a ação (re-rodar
+  // --write) juntas, sem depender só do sufixo genérico abaixo.
+  const action = `rode \`npx tsx scripts/check-humanizer-social.ts --write --edition-dir ${editionDir}/\``;
+  const detail =
+    result.reason === "sentinel_missing"
+      ? `_internal/.humanizer-social-done.json ausente — check-humanizer-social.ts --write não rodou no fim do Stage 2 (#6305). ${action} (o sentinel nunca foi registrado)`
+      : `_internal/.humanizer-social-done.json hash diverge (stored=${result.stored.slice(0, 12)}… ` +
+        `current=${result.current.slice(0, 12)}…) — 03-social.md mudou após o último registro do sentinel. ` +
+        `${action} (o texto de 03-social.md mudou depois do último registro do sentinel)`;
+
+  return [
+    {
+      rule: "social-humanizer-sentinel-written",
+      message: `03-social.md: ${detail}.`,
+      source_issue: "#6305",
+      severity: "error" as const,
+      file: "03-social.md",
+    },
+  ];
+}
+
+/**
  * #2658: detecta ", e [gancho editorial]" em 03-social.md.
  * WARN-ONLY: chama a função diretamente (não via subprocess) para emitir
  * violations com `severity: "warning"` — visíveis no gate sem bloquear.
@@ -413,6 +469,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#1385",
     stage: 2,
     run: checkHumanizerRan,
+  },
+  {
+    id: "social-humanizer-sentinel-written",
+    description: "check-humanizer-social.ts --write rodou de fato no fim do Stage 2 — sentinel .humanizer-social-done.json existe e bate com 03-social.md atual (#6305)",
+    source_issue: "#6305",
+    stage: 2,
+    run: checkSocialHumanizerSentinelWritten,
   },
   {
     id: "social-no-trailing-editorial-hook",
