@@ -288,7 +288,11 @@ export function aggregateCampaignCaches(caches: CampaignCache[]): Map<string, Co
   return agg;
 }
 
-function loadCampaignCache(campaignId: number, cacheDir: string): CampaignCache | null {
+// #5946: exportado (era privado) — `clarice-sync-brevo.ts` precisa ler o
+// `exportedAt` do cache já em disco pra decidir QUAIS campanhas forçar
+// refresh nesta execução (rotação por staleness, ver `pickCampaignsToRefresh`
+// lá), sem duplicar a lógica de leitura/parse de cache aqui.
+export function loadCampaignCache(campaignId: number, cacheDir: string): CampaignCache | null {
   try {
     const path = campaignCachePath(campaignId, cacheDir);
     if (!existsSync(path)) return null;
