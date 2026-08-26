@@ -57,7 +57,7 @@ import { promisify } from "node:util";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,7 +88,7 @@ const READY_TIMEOUT_MS = 5_000;
 function counterRacerScript(): string {
   return `
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { acquireLock, releaseLock } from ${JSON.stringify(resolve(ROOT, "scripts/lib/file-lock.ts"))};
+import { acquireLock, releaseLock } from ${JSON.stringify(pathToFileURL(resolve(ROOT, "scripts/lib/file-lock.ts")).href)};
 
 const args = process.argv.slice(2);
 const counterPath = args[0];
@@ -165,7 +165,11 @@ async function runRace(n: number, useLock: boolean): Promise<number> {
       const args = useLock
         ? [scriptPath, counterPath, readyPath, selfReadyPath, "30", "--use-lock"]
         : [scriptPath, counterPath, readyPath, selfReadyPath, "30"];
-      return execFileAsync("npx", ["tsx", ...args], { cwd: ROOT, shell: true });
+      // `process.execPath` + `--import tsx` e não `npx ... shell: true` (#6206):
+      // no Windows `npx` é `npx.cmd` e a resolução via shell ainda mudava o
+      // quoting dos caminhos absolutos passados como argumento. Spawnar o
+      // próprio node dispensa shell e camada de resolução.
+      return execFileAsync(process.execPath, ["--import", "tsx", ...args], { cwd: ROOT });
     }),
   );
 

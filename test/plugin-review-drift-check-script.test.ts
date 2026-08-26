@@ -21,10 +21,16 @@ import { emptyPluginReviewDriftState, type PluginReviewDriftState } from "../scr
 
 describe("pluginAgentsDir (#5311)", () => {
   it("monta o path esperado sob ~/.claude/plugins/marketplaces/...", () => {
+    // Esperado montado com `join` (#6206): a função usa `path.join`, então no
+    // Windows devolve `\home\fulano\.claude\...`. Comparar contra o literal
+    // POSIX media o separador do SO, não o path que a função compõe.
     const dir = pluginAgentsDir("/home/fulano");
     assert.equal(
       dir,
-      "/home/fulano/.claude/plugins/marketplaces/claude-plugins-official/plugins/pr-review-toolkit/agents",
+      join(
+        "/home/fulano",
+        ".claude/plugins/marketplaces/claude-plugins-official/plugins/pr-review-toolkit/agents",
+      ),
     );
   });
 });

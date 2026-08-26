@@ -6,72 +6,117 @@
  * o runner invocava o binário pelo NOME e o PATH do systemd user manager não
  * inclui `~/.npm-global/bin`. O teste central aqui é
  * "PATH mínimo do systemd + claude em ~/.npm-global/bin ainda resolve".
+ *
+ * ## Portabilidade do teste (#6206)
+ *
+ * O cenário sob teste é POSIX (systemd no `helios`), mas o TESTE roda também
+ * na máquina Windows do editor — e antes do #6206 falhava lá inteiro (26 das
+ * 52 falhas locais), por duas premissas do próprio teste, nunca da função:
+ *
+ *   1. **Caminho esperado escrito à mão em formato POSIX.** `resolveClaudeBin`
+ *      devolve o que `path.resolve` produz; no Windows isso é
+ *      `C:\home\vjpixel\...\claude`, que nunca é `=== "/home/vjpixel/.../claude"`.
+ *      Corrigido derivando o esperado com o MESMO `resolve` que a função usa
+ *      (`homePath`/`pathEntry` abaixo) — o cenário continua sendo o do systemd,
+ *      só deixa de assumir o separador do SO onde o teste roda.
+ *   2. **PATH montado com `:` literal.** `resolveClaudeBin` divide por
+ *      `path.delimiter`, que é `;` no Windows — a string inteira virava UMA
+ *      entrada e a varredura de PATH nunca encontrava nada. Corrigido montando
+ *      o PATH com `delimiter`.
+ *
+ * Nenhuma das duas é comportamento de produção: a função já era correta nas
+ * duas plataformas. O que muda aqui é só o teste parar de codificar o SO.
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { resolveClaudeBin, isExecutableFile, CLAUDE_BIN_HOME_CANDIDATES } from "../scripts/lib/resolve-claude-bin.ts";
 
-/** PATH real do `systemctl --user show-environment` no helios (260817). */
-const SYSTEMD_USER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin";
+/**
+ * PATH real do `systemctl --user show-environment` no helios (260817), montado
+ * com o `delimiter` da plataforma — a função divide por ele, não por `:` fixo.
+ */
+const SYSTEMD_USER_PATH = [
+  "/usr/local/sbin",
+  "/usr/local/bin",
+  "/usr/sbin",
+  "/usr/bin",
+  "/sbin",
+  "/bin",
+  "/usr/games",
+  "/usr/local/games",
+  "/snap/bin",
+].join(delimiter);
+
+const HOME = "/home/vjpixel";
+
+/** Caminho como `resolveClaudeBin` o produz a partir de `$HOME` + candidato. */
+const homePath = (home: string, relative: string) => resolvePath(home, relative);
+
+/** Caminho como `resolveClaudeBin` o produz a partir de uma entrada do PATH. */
+const pathEntry = (dir: string, name = "claude") => resolvePath(dir, name);
 
 /** `fileExists` de mentira: só os caminhos listados existem. */
 const only = (...paths: string[]) => (p: string) => paths.includes(p);
 
 describe("resolveClaudeBin (#5549)", () => {
   it("REGRESSÃO: PATH mínimo do systemd + claude em ~/.npm-global/bin -> resolve o caminho absoluto", () => {
+    const expected = homePath(HOME, ".npm-global/bin/claude");
     const resolved = resolveClaudeBin({
-      env: { PATH: SYSTEMD_USER_PATH, HOME: "/home/vjpixel" },
-      fileExists: only("/home/vjpixel/.npm-global/bin/claude"),
+      env: { PATH: SYSTEMD_USER_PATH, HOME },
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/home/vjpixel/.npm-global/bin/claude");
+    assert.equal(resolved, expected);
   });
 
   it("REGRESSÃO: nunca devolve o literal 'claude' — o nome cru é exatamente o que dava ENOENT", () => {
     const resolved = resolveClaudeBin({
-      env: { PATH: SYSTEMD_USER_PATH, HOME: "/home/vjpixel" },
-      fileExists: only("/home/vjpixel/.npm-global/bin/claude"),
+      env: { PATH: SYSTEMD_USER_PATH, HOME },
+      fileExists: only(homePath(HOME, ".npm-global/bin/claude")),
     });
 
     assert.notEqual(resolved, "claude");
-    assert.ok(resolved.startsWith("/"), `esperava caminho absoluto, veio ${resolved}`);
+    assert.ok(isAbsolute(resolved), `esperava caminho absoluto, veio ${resolved}`);
   });
 
   it("CLAUDE_BIN explícito vence o PATH", () => {
+    const explicit = resolvePath("/opt/claude/bin/claude");
     const resolved = resolveClaudeBin({
-      env: { CLAUDE_BIN: "/opt/claude/bin/claude", PATH: "/usr/bin", HOME: "/home/vjpixel" },
-      fileExists: only("/opt/claude/bin/claude", "/usr/bin/claude"),
+      env: { CLAUDE_BIN: "/opt/claude/bin/claude", PATH: "/usr/bin", HOME },
+      fileExists: only(explicit, pathEntry("/usr/bin")),
     });
 
-    assert.equal(resolved, "/opt/claude/bin/claude");
+    assert.equal(resolved, explicit);
   });
 
   it("CLAUDE_BIN apontando pra caminho inexistente cai pro PATH em vez de falhar", () => {
+    const expected = pathEntry("/usr/bin");
     const resolved = resolveClaudeBin({
-      env: { CLAUDE_BIN: "/opt/nao-existe/claude", PATH: "/usr/bin", HOME: "/home/vjpixel" },
-      fileExists: only("/usr/bin/claude"),
+      env: { CLAUDE_BIN: "/opt/nao-existe/claude", PATH: "/usr/bin", HOME },
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/usr/bin/claude");
+    assert.equal(resolved, expected);
   });
 
   it("shell do editor (claude no PATH) continua resolvendo pelo PATH", () => {
+    const expected = pathEntry("/home/vjpixel/.npm-global/bin");
     const resolved = resolveClaudeBin({
-      env: { PATH: `/home/vjpixel/.npm-global/bin:${SYSTEMD_USER_PATH}`, HOME: "/home/vjpixel" },
-      fileExists: only("/home/vjpixel/.npm-global/bin/claude"),
+      env: { PATH: `/home/vjpixel/.npm-global/bin${delimiter}${SYSTEMD_USER_PATH}`, HOME },
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/home/vjpixel/.npm-global/bin/claude");
+    assert.equal(resolved, expected);
   });
 
   it("todos os candidatos de $HOME são tentados", () => {
     for (const relative of CLAUDE_BIN_HOME_CANDIDATES) {
-      const expected = `/home/vjpixel/${relative}`;
+      const expected = homePath(HOME, relative);
       const resolved = resolveClaudeBin({
-        env: { PATH: SYSTEMD_USER_PATH, HOME: "/home/vjpixel" },
+        env: { PATH: SYSTEMD_USER_PATH, HOME },
         fileExists: only(expected),
       });
       assert.equal(resolved, expected);
@@ -82,7 +127,7 @@ describe("resolveClaudeBin (#5549)", () => {
     assert.throws(
       () =>
         resolveClaudeBin({
-          env: { PATH: SYSTEMD_USER_PATH, HOME: "/home/vjpixel" },
+          env: { PATH: SYSTEMD_USER_PATH, HOME },
           fileExists: () => false,
         }),
       (err: Error) => {
@@ -95,12 +140,13 @@ describe("resolveClaudeBin (#5549)", () => {
   });
 
   it("PATH ausente/vazio não quebra a varredura — cai nos candidatos de $HOME", () => {
+    const expected = homePath(HOME, ".local/bin/claude");
     const resolved = resolveClaudeBin({
-      env: { HOME: "/home/vjpixel" },
-      fileExists: only("/home/vjpixel/.local/bin/claude"),
+      env: { HOME },
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/home/vjpixel/.local/bin/claude");
+    assert.equal(resolved, expected);
   });
 
   it("HOME e PATH ausentes, sem CLAUDE_BIN -> lança limpo, sem TypeError", () => {
@@ -115,32 +161,34 @@ describe("resolveClaudeBin (#5549)", () => {
   });
 
   it("REGRESSÃO #5790: só claude.exe existe no PATH (sem claude sem sufixo) -> resolve o .exe", () => {
+    const expected = pathEntry("/home/vjpix/.local/bin", "claude.exe");
     const resolved = resolveClaudeBin({
       env: { PATH: "/home/vjpix/.local/bin", HOME: "/home/vjpix" },
-      fileExists: only("/home/vjpix/.local/bin/claude.exe"),
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/home/vjpix/.local/bin/claude.exe");
+    assert.equal(resolved, expected);
   });
 
   it("REGRESSÃO #5790: só claude.exe existe em CLAUDE_BIN_HOME_CANDIDATES (caso real da issue: C:\\Users\\vjpix\\.local\\bin\\claude.exe) -> resolve o .exe", () => {
+    const expected = homePath("/home/vjpix", ".local/bin/claude.exe");
     const resolved = resolveClaudeBin({
       env: { PATH: "", HOME: "/home/vjpix" },
-      fileExists: only("/home/vjpix/.local/bin/claude.exe"),
+      fileExists: only(expected),
     });
 
-    assert.equal(resolved, "/home/vjpix/.local/bin/claude.exe");
+    assert.equal(resolved, expected);
   });
 
   it("entrada RELATIVA no PATH ainda produz caminho absoluto", () => {
     const relativeCandidate = join(process.cwd(), "bin", "claude");
     const resolved = resolveClaudeBin({
-      env: { PATH: "bin", HOME: "/home/vjpixel" },
+      env: { PATH: "bin", HOME },
       fileExists: only(relativeCandidate),
     });
 
     assert.equal(resolved, relativeCandidate);
-    assert.ok(resolved.startsWith("/"), `esperava absoluto, veio ${resolved}`);
+    assert.ok(isAbsolute(resolved), `esperava absoluto, veio ${resolved}`);
   });
 });
 
@@ -156,7 +204,13 @@ describe("isExecutableFile — predicado default (#5549)", () => {
     assert.equal(isExecutableFile(p), true);
   });
 
-  it("arquivo SEM bit de execução -> false (existsSync diria true e explodiria com EACCES)", () => {
+  // POSIX-only de verdade (#6206): o Windows não tem bit de execução. `chmod`
+  // 0o644 lá só mexe no atributo somente-leitura, e `accessSync(p, X_OK)`
+  // responde OK pra qualquer arquivo legível — não existe o estado que este
+  // teste verifica, então declará-lo `skipped` com o motivo é mais honesto que
+  // deixá-lo falhar como se fosse defeito. O comportamento sob POSIX (onde o
+  // caso real acontece: `claude` sem `+x` no PATH do systemd) segue coberto.
+  it("arquivo SEM bit de execução -> false (existsSync diria true e explodiria com EACCES)", { skip: process.platform === "win32" ? "sem bit de execução no Windows" : false }, () => {
     const p = join(tmp, "sem-exec");
     writeFileSync(p, "nao sou executavel\n");
     chmodSync(p, 0o644);

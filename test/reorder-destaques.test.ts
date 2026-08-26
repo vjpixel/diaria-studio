@@ -1437,7 +1437,13 @@ describe("reorder-destaques CLI (#5087): imagens renomeadas ANTES do texto — a
       ]);
 
       assert.notEqual(result.status, 0, "CLI deveria sair com erro (EISDIR propagado)");
-      assert.match(result.stderr, /EISDIR|illegal operation on a directory/);
+      // O errno de "copiar um DIRETÓRIO como se fosse arquivo" é do SO, não
+      // nosso (#6206): POSIX responde `EISDIR`, Windows responde
+      // `EPERM: operation not permitted, copyfile`. A condição sob teste é a
+      // mesma — o que importa é o abort ANTES de qualquer escrita, verificado
+      // logo abaixo; o errno só corrobora que a falha veio do filesystem e não
+      // de uma validação nossa.
+      assert.match(result.stderr, /EISDIR|illegal operation on a directory|EPERM.*copyfile/);
 
       // #5087: o abort de imagem aconteceu ANTES de qualquer escrita de
       // texto — 02-reviewed.md, 03-social.md e os JSONs canônicos devem

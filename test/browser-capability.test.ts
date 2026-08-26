@@ -18,7 +18,20 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { detectBrowserCapability } from "../scripts/lib/browser-capability.ts";
 
-const PATH_ENV = ["/usr/bin", "/usr/local/bin"].join(process.platform === "win32" ? ";" : ":");
+/**
+ * PATH do cenário LINUX — sempre com `:` (#6206).
+ *
+ * Antes o separador vinha de `process.platform`, o SO REAL de quem roda o
+ * teste. Mas `detectBrowserCapability` decide o separador pelo `platform`
+ * INJETADO (`pathModuleFor`, `scripts/lib/browser-capability.ts`) — e todos os
+ * casos abaixo injetam `"linux"`. Rodando no Windows, o teste montava
+ * `"/usr/bin;/usr/local/bin"` enquanto a função, corretamente tratando o
+ * cenário como POSIX, fatiava por `:` e via UMA entrada só — nenhum binário
+ * era encontrado e as 3 asserções de `'available'` falhavam, acusando defeito
+ * na função quando o desencontro era do próprio teste. O separador aqui é
+ * parte do CENÁRIO, não do ambiente de execução.
+ */
+const PATH_ENV = ["/usr/bin", "/usr/local/bin"].join(":");
 
 describe("detectBrowserCapability — Linux (helios)", () => {
   it("retorna 'available' quando DISPLAY e um binário de browser estão presentes", () => {
