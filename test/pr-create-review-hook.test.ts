@@ -13,6 +13,9 @@ import {
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
   EFFORT_DIFF_LINE_THRESHOLD,
+  extractCreatedPrUrl,
+  isGhPrCreateCommand,
+  shouldEmitReviewInstruction,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -971,5 +974,112 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
       assert.equal(result.effort, "max");
       assert.equal(result.reason, "diff_grande");
     });
+  });
+});
+
+// #6298: o hook disparou o fleet completo de review para um `gh pr comment`
+// isolado — a saída dele (`.../pull/6282#issuecomment-5427611867`) casava o
+// regex antigo, que só olhava até o número da PR e ignorava o fragmento
+// depois. Estes testes travam os dois fixes: (1) `extractCreatedPrUrl`
+// rejeita URL de comentário/review pelo sufixo de fragmento; (2)
+// `isGhPrCreateCommand` reconfere que o comando é de fato `gh pr create`,
+// espelhando `isGhPrMergeCommand` do hook irmão `block-gh-pr-merge-subagent.mjs`.
+describe("extractCreatedPrUrl (#6298 fix 1)", () => {
+  it("URL limpa de PR recém-criada → extrai normalmente", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(extractCreatedPrUrl(resp), "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("URL de gh pr comment (#issuecomment-N) → null, nunca extrai (regressão direta do #6298)", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("URL de comentário inline de review (#discussion_r<id>) → null", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#discussion_r1234567890";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("URL de review (#pullrequestreview-<id>) → null", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#pullrequestreview-9876543210";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("não produz match truncado (ex: .../pull/628) quando o número completo tem sufixo de comentário", () => {
+    const resp = "criei em https://github.com/o/r/pull/6282#issuecomment-1 — revisar depois";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("tool_response não-string (objeto serializado) → null sem lançar", () => {
+    assert.equal(extractCreatedPrUrl(undefined), null);
+    assert.equal(extractCreatedPrUrl(null), null);
+  });
+
+  it("saída sem nenhuma URL de PR (ex: --help) → null", () => {
+    assert.equal(extractCreatedPrUrl("Usage: gh pr create [flags]"), null);
+  });
+});
+
+describe("isGhPrCreateCommand (#6298 fix 2, espelha isGhPrMergeCommand)", () => {
+  it("comando standalone gh pr create → true", () => {
+    assert.equal(isGhPrCreateCommand("gh pr create --title x --body y"), true);
+  });
+
+  it("gh pr create depois de separador (&&) → true", () => {
+    assert.equal(isGhPrCreateCommand("git push && gh pr create --title x"), true);
+  });
+
+  it("gh pr comment → false (o comando real do incidente #6298)", () => {
+    assert.equal(isGhPrCreateCommand("gh pr comment 6282 --body-file /tmp/body.md"), false);
+  });
+
+  it("gh pr create citado dentro de --body de OUTRO comando → false", () => {
+    const cmd = `gh pr comment 6282 --body "rode gh pr create depois disso"`;
+    assert.equal(isGhPrCreateCommand(cmd), false);
+  });
+
+  it("gh pr create citado dentro de --body com newline LITERAL dentro das aspas → false (#5805-style)", () => {
+    // Mesmo caso que a docstring de isGhPrMergeCommand descreve: um --body com
+    // newline literal DENTRO das aspas duplas — stripQuotedSpans varre char a
+    // char (não linha a linha), então o span aberto pelo `"` só fecha no `"`
+    // seguinte, mesmo atravessando quebras de linha.
+    const cmd = 'gh pr comment 6282 --body "medi X e Y\ngh pr create nao deveria disparar aqui\nfim"';
+    assert.equal(isGhPrCreateCommand(cmd), false);
+  });
+
+  it("command não-string → false", () => {
+    assert.equal(isGhPrCreateCommand(undefined), false);
+    assert.equal(isGhPrCreateCommand(null), false);
+  });
+});
+
+describe("shouldEmitReviewInstruction (#6298 — combina os dois fixes)", () => {
+  it("(a) URL de comentário → null, nenhuma instrução, mesmo com comando ausente", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    assert.equal(shouldEmitReviewInstruction(resp, undefined), null);
+  });
+
+  it("(b) URL de PR limpa + comando gh pr create → instrução emitida (URL retornada) como hoje", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const prUrl = shouldEmitReviewInstruction(resp, "gh pr create --title x --body y");
+    assert.equal(prUrl, "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("(c) gh pr create citado dentro de --body de outro comando → não dispara, mesmo com URL de PR limpa no tool_response", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const cmd = `gh pr comment 6282 --body "gh pr create nao deveria disparar aqui"`;
+    assert.equal(shouldEmitReviewInstruction(resp, cmd), null);
+  });
+
+  it("(d) payload sem command (undefined) → dispara (fail-safe permissivo, decide só pela URL)", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(shouldEmitReviewInstruction(resp, undefined), "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("comando real gh pr comment (payload verdadeiro do incidente #6298) → null mesmo se a URL não tivesse fragmento", () => {
+    // Defesa em profundidade: mesmo que fix 1 falhasse (URL sem fragmento por
+    // algum motivo), fix 2 sozinho já barra pelo comando.
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(shouldEmitReviewInstruction(resp, "gh pr comment 6282 --body-file /tmp/body.md"), null);
   });
 });

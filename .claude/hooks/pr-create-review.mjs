@@ -11,9 +11,25 @@
 //      (which also print /pull/ URLs) never run it. It is a START-ANCHORED
 //      prefix, so it only matches a STANDALONE `gh pr create …` call — NOT a
 //      chained `git push && gh pr create …`. Create PRs with a standalone
-//      `gh pr create` call so the hook fires.
-//   3. This script then extracts the created PR's URL from the tool output and
-//      only emits the instruction when one is present (skips `--help`, etc.).
+//      `gh pr create` call so the hook fires. **#6298: this filter alone was
+//      observed firing for a standalone `gh pr comment …` call — cause not
+//      confirmed at the harness layer — so this script no longer trusts it
+//      exclusively; see point 3 below.**
+//   3. `shouldEmitReviewInstruction` decides whether to actually emit, combining
+//      two checks (#6298): (a) `extractCreatedPrUrl` rejects a `tool_response`
+//      URL that carries a `#issuecomment-\d+`/`#discussion_r\d+`/
+//      `#pullrequestreview-\d+` fragment — the shape of a COMMENT/REVIEW URL,
+//      never a freshly-created PR's own URL (the bug in #6298: `gh pr
+//      comment`'s stdout is such a URL, and the old regex matched it because
+//      it only looked as far as the PR number, ignoring the fragment after);
+//      (b) when `payload.tool_input.command` is available, it must actually be
+//      a `gh pr create` invocation (`isGhPrCreateCommand`, mirroring
+//      `isGhPrMergeCommand` in the sibling hook `block-gh-pr-merge-subagent.mjs`)
+//      — not `gh pr comment`, and not a citation of the string "gh pr create"
+//      inside a quoted `--body`/`--title` of some OTHER command. `command`
+//      ABSENT from the payload degrades to permissive (decide from the URL
+//      alone, same as pre-#6298) — never to silent: this hook's failure
+//      direction is "an extra review" over "no review at all".
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
@@ -576,6 +592,119 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   );
 }
 
+/**
+ * #6298 fix 1: extrai a URL de uma PR REALMENTE CRIADA do `tool_response`,
+ * rejeitando falsos-positivos de outros subcomandos `gh` cujo output TAMBÉM
+ * contém uma URL `/pull/N` — o caso medido ao vivo é `gh pr comment`, cuja
+ * saída é `https://github.com/.../pull/N#issuecomment-<id>` e casava o regex
+ * antigo (que só olhava até o número da PR, ignorando o que vem depois). O
+ * mesmo formato de sufixo existe para comentário inline de review
+ * (`#discussion_r<id>`) e para a review em si (`#pullrequestreview-<id>`) —
+ * nenhuma PR recém-criada tem fragmento na própria URL, então qualquer um dos
+ * três é prova de que a URL pertence a um COMENTÁRIO/REVIEW, não à criação.
+ *
+ * Backtracking do regex é bloqueado deliberadamente: sem o `(?!\d)` logo após
+ * `\d+`, um motor de regex tentaria encolher o número casado (6282 → 628 →
+ * 62 → ...) até achar uma posição onde o `(?!#(?:issuecomment|...))` de
+ * negative lookahead passasse — produzindo um match TRUNCADO (`.../pull/628`)
+ * em vez de simplesmente falhar. `(?!\d)` garante que só o número COMPLETO é
+ * aceito como candidato antes de checar o sufixo; se o sufixo malicioso
+ * estiver lá, a tentativa nessa posição falha inteira, sem produzir match
+ * parcial.
+ */
+export function extractCreatedPrUrl(text) {
+  if (typeof text !== "string") return null;
+  const match = text.match(
+    // discussion_r's fragment has NO dash before the digits (`#discussion_r123...`),
+    // unlike issuecomment/pullrequestreview (`#issuecomment-123...`) — kept as a
+    // separate alternative, not folded into the shared `-\d+` suffix.
+    /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+(?!\d)(?!#(?:issuecomment-\d+|discussion_r\d+|pullrequestreview-\d+))/,
+  );
+  return match ? match[0] : null;
+}
+
+/**
+ * #6298 fix 2: reconfere se o comando que gerou este `PostToolUse` é de fato
+ * um `gh pr create` — o `if: "Bash(gh pr create*)"` de `.claude/settings.json`
+ * é o filtro documentado (ver cabeçalho do arquivo), mas a issue #6298
+ * observou o hook disparar mesmo assim para um `gh pr comment` isolado, sem
+ * confirmar a causa raiz na camada do harness. Em vez de confiar só nesse
+ * `if`, o hook reconfere o próprio `payload.tool_input.command`.
+ *
+ * `stripQuotedSpans`/o regex de âncora são DUPLICADOS (não importados) de
+ * `.claude/hooks/block-gh-pr-merge-subagent.mjs` (`stripQuotedSpans` +
+ * `isGhPrMergeCommand`), que resolve exatamente a mesma classe de problema
+ * pra `gh pr merge`: distinguir um comando REAL (início da string, ou depois
+ * de separador `&&`/`;`/`|`/`||`/newline) de uma MENÇÃO à mesma string dentro
+ * de aspas (ex: um `--body`/`--title` citando "gh pr create" como texto,
+ * inclusive o PRÓPRIO corpo desta issue #6298, que cita o comando exato).
+ * Duplicar em vez de importar é o padrão já estabelecido entre os dois hooks
+ * — ambos são self-contained por design (nenhum import de `scripts/*.ts`,
+ * ver docblock do topo deste arquivo: um import estático de `.ts` quebraria o
+ * hook inteiro, silenciosamente, num Node sem type-stripping nativo). Manter
+ * os dois em sincronia à mão; cada lado tem seu próprio arquivo de teste.
+ */
+export function stripQuotedSpans(command) {
+  let result = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      let j = i + 1;
+      while (j < n && command[j] !== "'") j++;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\") j++;
+        j++;
+      }
+      i = j + 1;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
+/**
+ * `true` se `command` contém `gh pr create` como um comando REAL — só no
+ * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
+ * newline). Mesma lógica de `isGhPrMergeCommand` (ver docstring de
+ * `stripQuotedSpans` acima para o porquê da duplicação).
+ */
+export function isGhPrCreateCommand(command) {
+  if (typeof command !== "string") return false;
+  const stripped = stripQuotedSpans(command);
+  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped);
+}
+
+/**
+ * Decisão pura combinando os dois fixes do #6298: existe uma URL de PR
+ * genuinamente criada (fix 1) E, quando o comando está disponível no payload,
+ * ele de fato é um `gh pr create` (fix 2)? Retorna a URL a usar, ou `null`
+ * quando não deve disparar.
+ *
+ * **Direção do fail-safe, deliberada:** este hook é `PostToolUse` e nunca
+ * pode bloquear nada — só ADICIONA contexto. Errar para "não disparou" custa
+ * uma PR sem review, o que é PIOR que um review a mais (o custo que motivou
+ * a #6298). Por isso `command` ausente do payload (campo não populado —
+ * formato de payload mais antigo, ou falha de extração) degrada para
+ * PERMISSIVO: decide só pela URL, exatamente como o comportamento pré-#6298.
+ * Só quando `command` está presente E não é um `gh pr create` real é que o
+ * fix 2 nega o disparo — nunca por ausência do campo.
+ */
+export function shouldEmitReviewInstruction(toolResponseText, command) {
+  const prUrl = extractCreatedPrUrl(toolResponseText);
+  if (!prUrl) return null;
+  if (typeof command === "string" && !isGhPrCreateCommand(command)) return null;
+  return prUrl;
+}
+
 // #2019: CLI guard — só roda o corpo do hook quando este arquivo é o entrypoint
 // (nunca ao ser importado por test/pr-create-review-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -593,19 +722,19 @@ if (
         typeof payload.tool_response === "string"
           ? payload.tool_response
           : JSON.stringify(payload.tool_response ?? "");
-      const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
-      if (match) {
+      const prUrl = shouldEmitReviewInstruction(resp, payload.tool_input?.command);
+      if (prUrl) {
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
         // session_id ignora o argumento).
-        const { effort, warning, reason } = resolveEffort(match[0], undefined, undefined, payload.session_id);
-        logEffortDecision({ prUrl: match[0], effort, reason }); // #4252
+        const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id);
+        logEffortDecision({ prUrl, effort, reason }); // #4252
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PostToolUse",
-              additionalContext: buildReviewInstruction(match[0], effort, warning),
+              additionalContext: buildReviewInstruction(prUrl, effort, warning),
             },
           }),
         );
