@@ -1567,7 +1567,14 @@ describe("main(): dispatch mockado", () => {
       const saturdayStr = aammddOf(saturday);
       const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
       addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
-      // Sem FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN — env limpo pelo afterEach da suite.
+      // #6206: apagar explicitamente, não confiar no afterEach da suite — ele só
+      // reverte chaves ausentes do originalEnv (diff-based), então numa máquina
+      // com .env real (credenciais reais carregadas antes dos testes) essas 2
+      // variáveis nunca são zeradas e o teste vaza pra uma tentativa de fetch de
+      // verdade (barrada por disableNetConnect(), reason genérico "fetch failed"
+      // em vez de "facebook_not_configured").
+      delete process.env.FACEBOOK_PAGE_ID;
+      delete process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
 
       mockAgent
         .get("https://worker.test")
