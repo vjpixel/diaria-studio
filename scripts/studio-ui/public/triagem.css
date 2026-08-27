@@ -224,8 +224,16 @@
    "isto não é uma classificação fechada/verificada" — reaproveita o
    vocabulário visual já estabelecido em vez de inventar um 2º idioma
    (hachura, ícone) só pra este caso. Empilha por cima de `.dispatch-overnight`
-   (cor do texto/borda vem de lá; aqui só o estilo da borda muda). */
-.dispatch-default { border-style: dashed; }
+   (cor do texto vem de lá; aqui só o estilo da borda muda).
+   `border-color: currentColor` é EXIGIDO por `test/studio-css-badge-border.test.ts`
+   (#5484: toda variante `.dispatch-*` precisa casar borda↔texto DENTRO da
+   própria regra — herdar de `.dispatch-overnight` por empilhamento de classe
+   não conta pro teste, que lê cada seletor isoladamente) — mesma técnica de
+   `.dispatch-epica`/`.dispatch-fora-de-rodada` acima: a cor de texto real
+   vem da classe base empilhada (`.dispatch-overnight` etc.), `currentColor`
+   aqui só garante que a borda SEMPRE acompanha qualquer que seja essa cor,
+   sem precisar declarar a cor de novo (e sem risco de divergir dela). */
+.dispatch-default { border-style: dashed; border-color: currentColor; }
 
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·
