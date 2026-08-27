@@ -1075,12 +1075,14 @@ export interface RunEvaluationParams {
   log: (msg: string) => void;
   /**
    * Backend real de ENVIO da diária (#6339, ver `promoteKitSubscription`) —
-   * decide se a promoção por score/auto-confirmação escreve na Beehiiv ou
-   * no Kit. Default `"beehiiv"` preserva o comportamento de todo chamador
-   * que não passa este campo (inclusive a suíte de testes pré-#6339) —
-   * `main()` sempre passa o valor lido de `platform.config.json` →
-   * `publishing.newsletter.backend`, que em produção é `"kit"` desde o
-   * switchover do #6114.
+   * decide se a promoção por SCORE escreve na Beehiiv ou no Kit. **Não**
+   * afeta a auto-confirmação (Passo 1, `applySelfConfirmed`) — esse
+   * caminho continua escrevendo só na Beehiiv, ver o comentário
+   * `#6339, ESCOPO NÃO COBERTO` logo acima dele. Default `"beehiiv"`
+   * preserva o comportamento de todo chamador que não passa este campo
+   * (inclusive a suíte de testes pré-#6339) — `main()` sempre passa o
+   * valor lido de `platform.config.json` → `publishing.newsletter.backend`,
+   * que em produção é `"kit"` desde o switchover do #6114.
    */
   newsletterBackend?: "beehiiv" | "kit";
   /** Obrigatória quando `newsletterBackend === "kit"` E `push === true`. */
