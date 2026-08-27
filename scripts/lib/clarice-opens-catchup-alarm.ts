@@ -45,16 +45,34 @@ export interface OpensCatchupAlarmState {
   lastAlarmedAt: string | null;
   /** ISO da última checagem — só informativo ("desde X"), fora da idempotência. */
   lastCheckedAt: string | null;
+  /** `checked_at` do último `OpensCatchupStatus` efetivamente PROCESSADO
+   * (#5946, achado ao vivo 24-27/08/2026) — não confundir com `lastCheckedAt`
+   * acima, que é quando o ALARME rodou, não quando o SYNC escreveu o status.
+   * Existe pra detectar releitura do mesmo arquivo (ver `advanceState`). */
+  lastStatusCheckedAt: string | null;
 }
 
 export function emptyOpensCatchupAlarmState(): OpensCatchupAlarmState {
-  return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt: null };
+  return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt: null, lastStatusCheckedAt: null };
 }
 
 /**
  * Pure: computa o próximo estado dado o status mais recente extraído do log.
  * `not_run` não altera o streak (nem soma nem zera) — só atualiza
  * `lastCheckedAt`.
+ *
+ * #5946 (achado ao vivo 24-27/08/2026): a task do alarme (09:00 BRT) roda só
+ * 30min depois da task do sync (08:30 BRT, `Diaria-Clarice-Sync`) começar —
+ * mas o sync, incluindo o catch-up, pode facilmente passar de 1h (medido:
+ * 11:30-12:44 UTC em 27/08). Quando isso acontece, o alarme lê
+ * `last-opens-catchup-status.json` ANTES do sync do próprio dia escrever o
+ * resultado — ou seja, relê o status de ONTEM, já processado, incrementando
+ * o streak sobre um resultado que já tinha sido contado (ou reportando
+ * `error` de ontem mesmo quando o catch-up de hoje já rodou limpo). O mesmo
+ * arquivo sendo lido 2x é detectável comparando `status.checked_at` contra
+ * o último `checked_at` já processado (`lastStatusCheckedAt`) — se forem
+ * iguais, o sync ainda não escreveu um resultado novo desde a última
+ * checagem: trata como neutro, igual a `not_run`, nunca reconta o mesmo dia.
  */
 export function advanceState(
   state: OpensCatchupAlarmState,
@@ -62,14 +80,23 @@ export function advanceState(
   now: Date,
 ): OpensCatchupAlarmState {
   const lastCheckedAt = now.toISOString();
-  if (status.status === "not_run") {
+
+  if (status.checked_at && status.checked_at === state.lastStatusCheckedAt) {
+    // Mesmo status já processado na checagem anterior — sync ainda não
+    // rodou de novo desde então. Neutro: streak/lastAlarmedAt preservados.
     return { ...state, lastCheckedAt };
+  }
+
+  const lastStatusCheckedAt = status.checked_at || state.lastStatusCheckedAt;
+
+  if (status.status === "not_run") {
+    return { ...state, lastCheckedAt, lastStatusCheckedAt };
   }
   if (status.status === "ok") {
     // Recuperou — zera o streak e re-arma o alarme pra próxima ocorrência.
-    return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt };
+    return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt, lastStatusCheckedAt };
   }
-  return { ...state, consecutiveFailures: state.consecutiveFailures + 1, lastCheckedAt };
+  return { ...state, consecutiveFailures: state.consecutiveFailures + 1, lastCheckedAt, lastStatusCheckedAt };
 }
 
 /**
