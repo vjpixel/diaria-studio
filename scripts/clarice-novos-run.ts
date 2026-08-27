@@ -555,7 +555,34 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       report,
       "clarice-schedule-group --create",
       "scripts/clarice-schedule-group.ts",
-      ["--cycle", cicloEnvio, ...contentCycleArgs, "--group", "novos", "--key", key, "--subject", assunto, "--create"],
+      [
+        "--cycle",
+        cicloEnvio,
+        ...contentCycleArgs,
+        "--group",
+        "novos",
+        "--key",
+        key,
+        "--subject",
+        assunto,
+        "--create",
+        // #5615/#5653: o teste de HORÁRIO do #5140 é escopado à onda
+        // `ramp-warm` (2 células estratificadas, mesmo assunto, 06h×10h BRT)
+        // — a issue de origem diz explicitamente que mudar o horário do
+        // `novos` é "decisão separada e independente" dessa issue. O guard
+        // `checkKeyAgainstHourTest` (#6307) não sabe disso: ele dispara pra
+        // QUALQUER `--group` sem sufixo `-H{HH}` enquanto o teste está
+        // `ativo`, sem olhar pro nome do grupo — e a key gerada por
+        // `resolveNovosKey` (`novos-{AAMMDD}`) nunca carrega esse sufixo.
+        // `novos` dispara em horário fixo (09:00/18:00 BRT, 2x/dia) fora do
+        // desenho do teste, então o escape hatch documentado no próprio
+        // guard ("--ignore-hour-test se esta campanha genuinamente não faz
+        // parte do teste de horário... outro grupo, ex: reativacao,
+        // engajados") é a leitura correta aqui — não construir um sufixo
+        // -H{HH} artificial que faria o `novos` aparecer, incorretamente,
+        // como um braço do teste `ramp-warm` no dashboard.
+        "--ignore-hour-test",
+      ],
     );
 
     // --- Passo 6: test email condicional (D12) + envio imediato ---

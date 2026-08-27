@@ -342,6 +342,29 @@ describe("clarice-novos-run (#4941)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("#5615/#5653: --create sempre passa --ignore-hour-test (grupo 'novos' é fora do escopo do teste de HORÁRIO #5140/#6307) — --send-test/--send-now NÃO recebem a flag", async () => {
+      root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers({ cicloMensal: "2607-08" }));
+      const deps = baseDeps(root, { exec, resolveEnvioCycle: () => "2607-08" });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 0, result.reportMarkdown);
+
+      const scheduleCalls = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts");
+      const createCall = scheduleCalls.find((c) => c.args.includes("--create"));
+      assert.ok(createCall, "esperava uma chamada --create a clarice-schedule-group.ts");
+      assert.ok(
+        createCall!.args.includes("--ignore-hour-test"),
+        `--create precisa passar --ignore-hour-test (guard #6307 do teste de horário #5140 não se aplica ao grupo 'novos'): ${createCall!.args.join(" ")}`,
+      );
+
+      const sendTestCall = scheduleCalls.find((c) => c.args.includes("--send-test"));
+      const sendNowCall = scheduleCalls.find((c) => c.args.includes("--send-now"));
+      assert.ok(sendTestCall && !sendTestCall.args.includes("--ignore-hour-test"), "--send-test não deve carregar --ignore-hour-test (guard só se aplica a --create)");
+      assert.ok(sendNowCall && !sendNowCall.args.includes("--ignore-hour-test"), "--send-now não deve carregar --ignore-hour-test (guard só se aplica a --create)");
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("sem divergência de ciclo (cicloEnvio === cicloMensal) -> NUNCA passa --content-cycle", async () => {
       root = freshRoot();
       const { exec, calls } = makeFakeExec(goldenHandlers({ cicloMensal: "2607-08" }));
