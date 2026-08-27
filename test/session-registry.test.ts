@@ -1173,9 +1173,21 @@ describe("findActiveSessionsOfKind / hasActiveSessionOfKind — janela de exclus
       // Remove o bit de leitura: readdirSync passa a lançar EACCES.
       chmodSync(dir, 0o000);
       try {
-        // root ignora permissões de arquivo — se a suíte rodar como root o
-        // readdir sucede e não há o que asserir.
-        if (process.getuid?.() === 0) return;
+        // O chmod POSIX só morde de fato em filesystems que o respeitam. Em
+        // vez de enumerar plataformas (root ignora permissão de arquivo; o
+        // NTFS do Windows não mapeia bits POSIX pra ACL e chmod 000 vira
+        // no-op pra diretórios, #6306), sonda o EFEITO: se o próprio
+        // readdirSync ainda suceder depois do chmod, a precondição do teste
+        // (diretório de fato ilegível) nunca se estabeleceu — não há o que
+        // asserir, então retorna. Cobre root, Windows/NTFS, e qualquer
+        // filesystem montado sem permissões (ex: alguns casos de WSL/rede)
+        // sem precisar prever cada ambiente.
+        try {
+          readdirSync(dir);
+          return;
+        } catch {
+          // readdir lançou como esperado — chmod mordeu, segue pro assert.
+        }
         const health = checkSessionsScanHealth(root);
         assert.equal(health.ok, false, "diretório ilegível não pode passar por 'vazio'");
         assert.ok(health.error, "o código do erro precisa chegar ao chamador");
