@@ -103,6 +103,13 @@ export interface BrevoDiariaContact {
    * tirada antes do desfecho. Ver `applySuppressionReconciliation`. */
   resolution_reason?:
     | "score_threshold"
+    /** #6339 — mesma decisão de `score_threshold` (openRate acima do piso),
+     * mas a escrita de ativação foi pro Kit (`promoteKitSubscription`), não
+     * pra Beehiiv — distinção de auditoria: qual backend recebeu de fato o
+     * assinante promovido, já que o `status` continua `promoted_beehiiv`
+     * pros dois casos (nome do status não foi trocado, ver docstring de
+     * `promoteKitSubscription` em `evaluate-brevo-diaria.ts`). */
+    | "score_threshold_kit"
     | "self_confirmed_beehiiv"
     | "native_unsubscribe"
     | "native_unsubscribe_beehiiv_404"
@@ -188,7 +195,17 @@ export function upsertIngested(
 export function applyEvaluation(
   store: BrevoDiariaStore,
   email: string,
-  update: { opens_count: number; sends_count: number; open_rate: number; action: BrevoDiariaAction },
+  update: {
+    opens_count: number;
+    sends_count: number;
+    open_rate: number;
+    action: BrevoDiariaAction;
+    /** #6339 — override do `resolution_reason` gravado quando
+     *  `action === "promote_to_beehiiv"` (ex: `"score_threshold_kit"` quando
+     *  a promoção escreveu no Kit, não na Beehiiv). Default `"score_threshold"`
+     *  preserva o comportamento de todo chamador anterior a esta mudança. */
+    resolutionReason?: BrevoDiariaContact["resolution_reason"];
+  },
   now: string = new Date().toISOString(),
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
@@ -203,7 +220,12 @@ export function applyEvaluation(
         last_evaluated_at: now,
       };
       if (update.action === "promote_to_beehiiv") {
-        return { ...base, status: "promoted_beehiiv", promoted_at: now, resolution_reason: "score_threshold" };
+        return {
+          ...base,
+          status: "promoted_beehiiv",
+          promoted_at: now,
+          resolution_reason: update.resolutionReason ?? "score_threshold",
+        };
       }
       if (update.action === "suppress") {
         return { ...base, status: "suppressed", suppressed_at: now, resolution_reason: "score_threshold" };
