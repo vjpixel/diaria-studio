@@ -258,7 +258,8 @@ export function discoverWorkers(workersDir: string = WORKERS_DIR): DiscoveredWor
  * produção). NUNCA a branch checked out no momento — o checkout deste repo
  * é compartilhado entre sessões concorrentes (overnight, develop,
  * interativas) e pode estar em qualquer branch de feature a qualquer
- * momento (ver `context/checkout-compartilhado-*` na memória do editor).
+ * momento — achado ao vivo #6413 (checkout numa branch de outra sessão,
+ * trabalhando outra issue, gerou drift falso pro worker `poll`).
  * `git rev-parse --verify --quiet` não faz I/O de rede (não dá fetch) —
  * só confere se a ref já existe no repo local; se nem `origin/master` nem
  * `master` existirem (clone atípico), cai pro `master` mesmo e deixa o
