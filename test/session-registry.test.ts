@@ -34,6 +34,9 @@ import {
   releaseMergeLock,
   renewMergeLock,
   requireKind,
+  requireCoordinatorKind,
+  parseSessionFileName,
+  ALL_SESSION_KINDS,
   listSafeBackupFiles,
   mergeSessionRecords,
   planSessionGc,
@@ -1932,5 +1935,134 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
 
   it("GC_CONSERVATIVE_MAX_AGE_MS é o default quando conservativeMaxAgeMs não é passado (7 dias)", () => {
     assert.equal(GC_CONSERVATIVE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+// ─── parseSessionFileName (#6338) ──────────────────────────────────────────
+
+describe("parseSessionFileName valida o prefixo contra os 4 SessionKind conhecidos (#6338)", () => {
+  it("parseia os 4 kinds válidos com tag/sessionId simples (sem hífen)", () => {
+    for (const kind of ALL_SESSION_KINDS) {
+      assert.deepEqual(parseSessionFileName(`${kind}-hostA-sess1.json`), {
+        kind,
+        tag: "hostA",
+        sessionId: "sess1",
+      });
+    }
+  });
+
+  it("aceita sessionId com hífens (UUID) — o corte fica logo após a tag", () => {
+    assert.deepEqual(parseSessionFileName("overnight-helios-abc-123-def-456.json"), {
+      kind: "overnight",
+      tag: "helios",
+      sessionId: "abc-123-def-456",
+    });
+  });
+
+  it("retorna null quando o prefixo não é um SessionKind conhecido (achado #6326/#6338)", () => {
+    // Este é o defeito concreto que a issue documenta: antes desta função,
+    // `findExistingSessionFileAnyKind` casava isto só pelo SUFIXO
+    // `-sess1.json`, sem checar o prefixo "bogus".
+    assert.equal(parseSessionFileName("bogus-hostA-sess1.json"), null);
+  });
+
+  it("retorna null para prefixo vazio, sem extensão .json, ou sem tag/sessionId separáveis", () => {
+    assert.equal(parseSessionFileName("overnight.json"), null);
+    assert.equal(parseSessionFileName("overnight-hostA-sess1.txt"), null);
+    assert.equal(parseSessionFileName("overnight-hostA.json"), null); // falta o sessionId
+    assert.equal(parseSessionFileName("overnight-.json"), null);
+  });
+
+  it("não confunde kind por substring (ex: nome começando por outro prefixo)", () => {
+    // "continuo" não é prefixo de nenhum outro kind e vice-versa — mas o
+    // guard de shape ainda precisa recusar um nome que não bate com NENHUM
+    // dos 4, mesmo que "pareça" um kind truncado.
+    assert.equal(parseSessionFileName("overnigh-hostA-sess1.json"), null);
+  });
+
+  it(".merge-lock.json (arquivo de sistema, não registro de sessão) não é um SessionKind válido", () => {
+    assert.equal(parseSessionFileName(".merge-lock.json"), null);
+  });
+});
+
+describe("findExistingSessionFileAnyKind ignora arquivo com prefixo de kind desconhecido (#6338)", () => {
+  it("um arquivo `bogus-{tag}-{sessionId}.json` não é encontrado por registerSession/heartbeat", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    // Arquivo com o MESMO sufixo -{sessionId}.json que um registro real
+    // usaria, mas prefixo de kind inválido — simula corrupção/nome externo.
+    writeFileSync(
+      join(sessionsDir(root), "bogus-hostA-sess-shared.json"),
+      JSON.stringify({ kind: "bogus", sessionId: "sess-shared" }),
+      "utf8",
+    );
+
+    // registerSession chama findExistingSessionFileAnyKind internamente
+    // (via a busca de "promoção" #6326) — com o arquivo bogus ignorado, ele
+    // registra um registro NOVO em vez de tentar promover/enriquecer o
+    // arquivo de prefixo desconhecido.
+    const result = registerSession(root, "interactive", "sess-shared");
+    assert.equal(result.outcome, "created");
+    assert.equal(
+      existsSync(sessionFilePath(root, "interactive", result.record.machineTag, "sess-shared")),
+      true,
+    );
+  });
+});
+
+// ─── grant-merge: --kind obrigatório, mensagem nomeia o referente (#6331) ──
+
+describe("requireCoordinatorKind (#6331 caminho de erro)", () => {
+  it("aceita as 3 coordenadoras", () => {
+    assert.equal(requireCoordinatorKind("overnight"), "overnight");
+    assert.equal(requireCoordinatorKind("develop"), "develop");
+    assert.equal(requireCoordinatorKind("continuo"), "continuo");
+  });
+
+  it("recusa \"interactive\" — só coordenadora concede janela de merge", () => {
+    assert.throws(() => requireCoordinatorKind("interactive"), /não é uma sessão coordenadora/);
+  });
+});
+
+describe("CLI grant-merge: --kind ausente dá erro nomeando o referente (#6331)", () => {
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lib", "session-registry.ts");
+
+  function runGrantMergeCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT, "grant-merge", ...args], {
+      cwd: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("sem --kind: erro diz que é o kind da CONCEDENTE, nunca da beneficiária, e cita --granted-to", () => {
+    const res = runGrantMergeCli(["--session-id", "s1", "--granted-to", "s2"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /--kind ausente/);
+    assert.match(res.stderr, /CONCEDENTE/);
+    assert.match(res.stderr, /nunca da beneficiária/);
+    assert.match(res.stderr, /--granted-to/);
+  });
+
+  it("--kind inválido (não-coordenadora) continua recusado por requireCoordinatorKind", () => {
+    const res = runGrantMergeCli(["--kind", "interactive", "--session-id", "s1", "--granted-to", "s2"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /não é uma sessão coordenadora/);
+  });
+
+  it("--help (comando desconhecido) documenta --kind como parte da invocação real do grant-merge (#6331)", () => {
+    const res = runGrantMergeCli(["--this-flag-does-not-exist"]);
+    // A invocação acima ainda entra no case "grant-merge" (falha antes, no
+    // --kind ausente) — para ver o texto de ajuda completo, rodamos o CLI
+    // sem nenhum subcomando reconhecido.
+    const helpRes = spawnSync(
+      process.execPath,
+      ["--import", "tsx", SCRIPT, "--this-command-does-not-exist"],
+      { cwd: resolve(dirname(fileURLToPath(import.meta.url)), ".."), encoding: "utf8", timeout: 30_000 },
+    );
+    assert.match(helpRes.stderr, /grant-merge --kind \{overnight\|develop\|continuo\} --granted-to X/);
+    assert.match(helpRes.stderr, /CONCEDENTE \(a sua, obrigatório, #6331\)/);
+    void res;
   });
 });
