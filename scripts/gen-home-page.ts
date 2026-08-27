@@ -34,7 +34,17 @@ function main() {
   const sitemapPath = values["sitemap"] ? resolve(ROOT, values["sitemap"]) : DEFAULT_SITEMAP_PATH;
   const pagesDir = values["pages-dir"] ? resolve(ROOT, values["pages-dir"]) : DEFAULT_PAGES_DIR;
   const outPath = values["out"] ? resolve(ROOT, values["out"]) : DEFAULT_OUT_PATH;
-  const archiveLimit = values["archive-limit"] ? Number(values["archive-limit"]) : DEFAULT_ARCHIVE_LIMIT;
+
+  // Validação explícita — achado do fleet review desta PR (#6375,
+  // silent-failure-hunter): `Number("lixo")` é `NaN`, e `feed.length >= NaN`
+  // é sempre `false` dentro de `buildHomeFeed`, então um --archive-limit mal
+  // digitado silenciosamente virava "sem limite" (o sitemap inteiro) em vez
+  // de um erro claro.
+  const archiveLimitRaw = values["archive-limit"];
+  const archiveLimit = archiveLimitRaw !== undefined ? Number(archiveLimitRaw) : DEFAULT_ARCHIVE_LIMIT;
+  if (!Number.isFinite(archiveLimit) || archiveLimit < 0) {
+    throw new Error(`gen-home-page: --archive-limit inválido: "${archiveLimitRaw}" (esperado inteiro >= 0)`);
+  }
 
   const sitemapXml = readFileSync(sitemapPath, "utf8");
   const readPageHtml = (slug: string): string | null => {

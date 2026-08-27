@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,6 +35,12 @@ describe("slugFromCanonicalUrl", () => {
 
   it("devolve null pra URL fora do shape /p/{slug}", () => {
     assert.equal(slugFromCanonicalUrl("https://diar.ia.br/"), null);
+  });
+
+  it("extrai o slug mesmo com barra final, query string ou fragment (regex suporta, mas não era testado)", () => {
+    assert.equal(slugFromCanonicalUrl("https://diar.ia.br/p/exemplo-de-slug/"), "exemplo-de-slug");
+    assert.equal(slugFromCanonicalUrl("https://diar.ia.br/p/exemplo-de-slug?utm_source=x"), "exemplo-de-slug");
+    assert.equal(slugFromCanonicalUrl("https://diar.ia.br/p/exemplo-de-slug#secao"), "exemplo-de-slug");
   });
 });
 
@@ -69,6 +75,17 @@ describe("buildHomeFeed", () => {
   it("pula slug sem página gerada em vez de quebrar o lote", () => {
     const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null);
     assert.ok(!feed.some((e) => e.slug === "sem-pagina-gerada"));
+  });
+
+  it("pula página sem <title> extraível (não só página ausente)", () => {
+    const sitemap = buildSitemapXml([{ loc: "https://diar.ia.br/p/sem-titulo", lastmod: "2026-08-26" }]);
+    const feed = buildHomeFeed(sitemap, () => `<!DOCTYPE html><html><head></head><body></body></html>`);
+    assert.equal(feed.length, 0);
+  });
+
+  it("limit 0 devolve feed vazio", () => {
+    const feed = buildHomeFeed(sitemapXml, (slug) => pages[slug] ?? null, 0);
+    assert.equal(feed.length, 0);
   });
 
   it("respeita o limit", () => {
@@ -119,6 +136,62 @@ describe("buildIndexHtml", () => {
   it("degrada sem quebrar quando não há feature (acervo vazio)", () => {
     const empty = buildIndexHtml({ feature: null, archive: [] });
     assert.match(empty, /<html lang="pt-BR">/);
+  });
+
+  it("escapa HTML no título/description da feature e do arquivo (nunca injeta markup cru)", () => {
+    const dirty = buildIndexHtml({
+      feature: {
+        slug: "destaque-perigoso",
+        title: `<script>alert(1)</script> & "aspas"`,
+        description: `<img src=x onerror=alert(1)>`,
+        url: "https://diar.ia.br/p/destaque-perigoso",
+        date: "2026-08-27",
+      },
+      archive: [
+        {
+          slug: "arquivo-perigoso",
+          title: `</h3><script>alert(2)</script>`,
+          description: "ok",
+          url: "https://diar.ia.br/p/arquivo-perigoso",
+          date: "2026-08-26",
+        },
+      ],
+    });
+    assert.ok(!dirty.includes("<script>"), "tag <script> crua vazou pro HTML renderizado");
+    assert.ok(!dirty.includes("<img src=x"), "tag <img> crua vazou pro HTML renderizado (escapada, viraria texto inerte)");
+    assert.match(dirty, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.match(dirty, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.match(dirty, /&lt;\/h3&gt;&lt;script&gt;alert\(2\)&lt;\/script&gt;/);
+  });
+
+  it("exclui do arquivo qualquer entrada com o mesmo slug da feature (defensivo, mesmo se o caller passar sobreposição)", () => {
+    const overlapping = buildIndexHtml({
+      feature,
+      archive: [feature, ...archive],
+    });
+    // A URL da feature deve aparecer só 1x no bloco #feature — nunca duplicada dentro de #archive.
+    const archiveSection = overlapping.match(/<section class="archive" id="archive">[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.ok(
+      !archiveSection.includes(feature.url),
+      "a feature apareceu duplicada dentro do bloco #archive",
+    );
+    assert.match(archiveSection, /edicao-anterior/);
+  });
+
+  it("data fora de faixa (mês inválido) degrada pra string vazia em vez de vazar 'undefined'", () => {
+    const badDate = buildIndexHtml({
+      feature,
+      archive: [
+        {
+          slug: "data-invalida",
+          title: "Edição com data ruim",
+          description: "ok",
+          url: "https://diar.ia.br/p/data-invalida",
+          date: "2026-13-40",
+        },
+      ],
+    });
+    assert.ok(!badDate.includes("undefined"), "mês/dia fora de faixa vazou 'undefined' pro HTML");
   });
 });
 

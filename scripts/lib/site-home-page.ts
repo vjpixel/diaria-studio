@@ -37,9 +37,21 @@ export interface HomeFeedEntry {
   date: string | null;
 }
 
-/** Extrai o slug de uma URL canônica `https://diar.ia.br/p/{slug}` — `null` se não casar o shape. */
+/**
+ * Extrai o slug de uma URL canônica `https://diar.ia.br/p/{slug}` — `null`
+ * se não casar o shape. `sitemap.xml` nunca carrega query string/fragment em
+ * produção, mas parseia via `URL` (não regex sobre a string crua) pra ser
+ * correto mesmo assim — achado do fleet review desta PR (#6375): o teste
+ * original assumia (errado) que a regex ingênua já suportava isso.
+ */
 export function slugFromCanonicalUrl(url: string): string | null {
-  const m = url.match(/\/p\/([^/?#]+)\/?$/);
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    pathname = url;
+  }
+  const m = pathname.match(/\/p\/([^/]+)\/?$/);
   return m ? m[1] : null;
 }
 
@@ -68,11 +80,16 @@ export const HOME_FEATURE_URL_PREFIX = "https://diar.ia.br/p/";
  * memória — mesmo padrão de dependency injection que o resto do repo usa
  * pra manter miolo puro testável sem tocar disco, ex: `beehiiv-publish-date.ts`).
  *
- * Entradas cujo slug não resolve (shape de URL inesperado) ou cuja página
- * o reader não encontra (`null`) são puladas — nunca quebram o lote (mesmo
+ * Entradas cujo slug não resolve (shape de URL inesperado), cuja página o
+ * reader não encontra (`null`), ou cujo `<title>` não é extraível
+ * (`extractPageMeta` devolve `""`) são puladas — nunca quebram o lote (mesmo
  * espírito de "degradar por post" de `generateArchivePages`, mas aqui é
  * sempre seguro pular: a home não é o acervo, uma edição a menos na grade
- * não é uma falha estrutural).
+ * não é uma falha estrutural). Cada skip emite um `console.warn` — achado do
+ * fleet review desta PR (#6375, silent-failure-hunter): sem log, um
+ * `sitemap.xml`/`public/p/` desalinhado (ex: `slugFromCanonicalUrl` deixando
+ * de casar um shape novo de URL) encolheria a home em silêncio, indistinguível
+ * de "esta edição legitimamente não tem página ainda".
  */
 export function buildHomeFeed(
   sitemapXml: string,
@@ -84,21 +101,40 @@ export function buildHomeFeed(
   for (const entry of entries) {
     if (feed.length >= limit) break;
     const slug = slugFromCanonicalUrl(entry.loc);
-    if (!slug) continue;
+    if (!slug) {
+      console.warn(`site-home-page: sitemap entry sem slug reconhecível: ${entry.loc}`);
+      continue;
+    }
     const html = readPageHtml(slug);
-    if (!html) continue;
+    if (!html) {
+      console.warn(`site-home-page: página ausente pra slug "${slug}" — pulando do feed da home`);
+      continue;
+    }
     const { title, description } = extractPageMeta(html);
-    if (!title) continue;
+    if (!title) {
+      console.warn(`site-home-page: <title> vazio/ilegível pra slug "${slug}" — pulando do feed da home`);
+      continue;
+    }
     feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod });
   }
   return feed;
 }
 
-/** Formata `YYYY-MM-DD` pra `dd mmm aaaa` em pt-BR minúsculo (mesmo estilo do design de referência). */
+/**
+ * Formata `YYYY-MM-DD` pra `dd mmm aaaa` em pt-BR minúsculo (mesmo estilo do
+ * design de referência). Valida a FAIXA de `m`/`d`, não só a truthiness —
+ * achado do fleet review desta PR (#6375, pr-test-analyzer): `m=13` é
+ * truthy e indexava `months[12]` (`undefined`), renderizando literalmente
+ * "01 undefined 2026" no card do arquivo. `sitemap.xml`/`lastmod` vêm de
+ * `gen-archive-pages.ts` (sempre bem-formado hoje), mas esta função não
+ * deve confiar nisso silenciosamente — degrada pra `""` em vez de vazar
+ * `undefined` pro HTML.
+ */
 function formatDateLong(iso: string | null): string {
   if (!iso) return "";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return "";
+  if (m < 1 || m > 12 || d < 1 || d > 31) return "";
   const months = [
     "jan", "fev", "mar", "abr", "mai", "jun",
     "jul", "ago", "set", "out", "nov", "dez",
@@ -155,9 +191,22 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
   </a>`;
 }
 
-/** Renderiza `workers/site/public/index.html` completo — Nav → Masthead → Feature → Specials → Archive → Faqs → Footer. */
+/**
+ * Renderiza `workers/site/public/index.html` completo — Nav → Masthead →
+ * Feature → Specials → Archive → Faqs → Footer.
+ *
+ * Filtra `archive` pra excluir qualquer entrada com o mesmo `slug` de
+ * `feature` — defensivo, não redundante: achado do fleet review desta PR
+ * (#6375, type-design-analyzer), a invariante "`archive` já vem sem a
+ * feature" hoje só é verdade porque o único caller (`gen-home-page.ts`) faz
+ * `feed[0]`/`feed.slice(1)` corretamente; nada no TYPE impedia um 2º caller
+ * (preview script, teste) de passar `archive` incluindo `feature` e duplicar
+ * a mesma edição visivelmente na home pública. Filtrar aqui torna a função
+ * correta independente do que um chamador futuro passar.
+ */
 export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
-  const { feature, archive } = opts;
+  const { feature } = opts;
+  const archive = feature ? opts.archive.filter((entry) => entry.slug !== feature.slug) : opts.archive;
 
   const featureHtml = feature
     ? `<a class="feature-title-link" href="${escHtml(feature.url)}">
