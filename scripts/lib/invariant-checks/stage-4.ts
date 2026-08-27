@@ -6,7 +6,9 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
@@ -70,6 +72,10 @@ import {
 } from "../../render-erro-intencional.ts";
 import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
+
+// #6336: usado só por checkKitFixtureAudit, pra localizar
+// scripts/audit-kit-fixtures.ts a partir de scripts/lib/invariant-checks/.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 interface PublicImageEntry {
   url?: string;
@@ -1881,6 +1887,79 @@ export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[
   ];
 }
 
+/**
+ * #6336: audita a base Kit de produção por assinante ATIVO cujo e-mail bate
+ * padrão de fixture de teste (`ana@example.com` e vizinhos — ver docstring
+ * de `scripts/lib/kit-fixture-patterns.ts`). Achado ao vivo 26/08/2026: uma
+ * verificação manual de funil (poll/cursos/reativar) deixou 13 resíduos
+ * desse tipo, 2 deles `active` — receberiam a próxima edição pelo Kit, e
+ * `example.com` é domínio reservado (RFC 2606): hard bounce garantido.
+ *
+ * O trabalho de rede (paginar `/v4/subscribers`, comparar padrões) mora em
+ * `scripts/audit-kit-fixtures.ts` — este check só invoca esse script via
+ * `spawnSync` (mesmo padrão de `runCheck` em `stage-2.ts`, necessário porque
+ * `InvariantRule.run` é síncrono e a chamada à API do Kit é assíncrona) e
+ * traduz o exit code em violation:
+ *
+ *   - `0` → limpo, `[]`.
+ *   - `1` → fixture(s) ATIVO(s) na base real — `error` (gate-blocking:
+ *     publicar sem agir manda a próxima edição pro fixture, hard bounce
+ *     certo).
+ *   - `2` (`KIT_API_KEY` ausente, ou API do Kit indisponível) → `warning`,
+ *     não `error`. O Kit ainda não é o backend principal de newsletter
+ *     (`platform.config.json.newsletter` = `"beehiiv"`) — exigir a
+ *     credencial em toda edição bloquearia Stage 4 pra qualquer ambiente
+ *     sem Kit configurado (CI, clone fresco, sessão cloud) por causa de uma
+ *     verificação sobre um sistema secundário ainda em migração. Mesma
+ *     disciplina fail-soft de integração opcional já usada no repo (ex:
+ *     `data/` ausente em `studio-boxes.ts`).
+ *   - qualquer outro exit code (script crashou) → `error`, mesma severidade
+ *     de "achei o problema" — um crash inesperado não deveria degradar pra
+ *     silêncio.
+ */
+function checkKitFixtureAudit(_editionDir: string): InvariantViolation[] {
+  const scriptPath = resolve(ROOT, "scripts", "audit-kit-fixtures.ts");
+  const result = spawnSync(process.execPath, ["--import", "tsx", scriptPath], { encoding: "utf8" });
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+
+  if (result.status === 0) return [];
+
+  if (result.status === 2) {
+    return [
+      {
+        rule: "kit-fixture-audit-unavailable",
+        message:
+          `audit-kit-fixtures.ts não pôde rodar (KIT_API_KEY ausente ou API do Kit ` +
+          `indisponível): ${(stderr || stdout).slice(0, 400)}. Verificação de fixture ` +
+          `ativo na base Kit pulada nesta edição — reconfigurar a credencial e rodar ` +
+          `manualmente (npx tsx scripts/audit-kit-fixtures.ts) quando possível.`,
+        source_issue: "#6336",
+        severity: "warning",
+        file: scriptPath,
+      },
+    ];
+  }
+
+  return [
+    {
+      rule: "kit-fixture-audit",
+      message:
+        `Assinante(s) de fixture de teste ATIVO(s) na base Kit de PRODUÇÃO — ` +
+        `receberia(m) a próxima edição real (domínios como example.com são reservados ` +
+        `RFC 2606, hard bounce garantido). ${(stdout || stderr).slice(0, 800)} ` +
+        `Fix: cancelar o(s) assinante(s) via API/dashboard Kit antes de publicar. ` +
+        `Prevenção: verificação ao vivo de funil (poll/cursos/reativar) usa sempre ` +
+        `vjpixel+probe-{issue}-{data}@gmail.com, nunca um fixture de test/*.test.ts — ` +
+        `e cancelar o probe ao fim da verificação é parte do rollout, não um passo ` +
+        `opcional (ver docstring de scripts/audit-kit-fixtures.ts, #6336).`,
+      source_issue: "#6336",
+      severity: "error",
+      file: scriptPath,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -2057,6 +2136,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkNewsletterHtmlSize,
   },
+  {
+    id: "kit-fixture-audit",
+    description: "assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336)",
+    source_issue: "#6336",
+    stage: 4,
+    run: checkKitFixtureAudit,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -2091,4 +2177,5 @@ export {
   checkCarouselTextOverflow,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
+  checkKitFixtureAudit,
 };
