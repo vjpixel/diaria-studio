@@ -24,6 +24,7 @@ import {
   listActiveSessions,
   claimIssue,
   claimIssueCheckAndSet,
+  claimIssueAutoRegistering,
   unclaimIssue,
   isIssueClaimedByOther,
   findActiveSessionsOfKind,
@@ -951,6 +952,64 @@ describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236
     assert.equal(result.ok, false);
     assert.equal(result.reason, "no-op-session-missing");
     assert.equal(result.blockedBy, undefined);
+  });
+});
+
+// ─── claimIssueAutoRegistering — fecha o no-op silencioso do #6369 ────────
+
+describe("claimIssueAutoRegistering — sessão sem registro prévio nunca vira no-op silencioso (#6369)", () => {
+  const NOW = Date.parse("2026-08-26T11:00:00.000Z");
+
+  it(
+    "cenário real da issue: ciclo continuo chama claim-issue sem ter chamado register antes — " +
+      "auto-registra e o claim COLA, em vez de virar no-op que o chamador precisa contornar",
+    () => {
+      const root = freshRoot();
+      // Nenhum registerSession chamado — é exatamente o estado do cron
+      // Hermes sem sessão `continuo` registrada, achado ao vivo na issue.
+      const result = claimIssueAutoRegistering(root, "continuo", "sess-hermes", 6352, "host-a", new Date(NOW).toISOString());
+
+      assert.equal(result.ok, true);
+      assert.equal(result.reason, "claimed");
+      assert.equal(result.autoRegistered, true);
+
+      // A sessão agora EXISTE de fato em disco, com a issue reivindicada —
+      // não é mais um `.md` órfão que nada consulta.
+      const content = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "host-a", "sess-hermes"), "utf8"));
+      assert.deepEqual(content.claimed_issues, [6352]);
+
+      // Uma 2ª sessão consultando is-claimed agora VÊ a reivindicação —
+      // fechando o buraco de coordenação relatado na issue.
+      const other = isIssueClaimedByOther(root, 6352, "sess-outra", NOW);
+      assert.ok(other, "outra sessão deveria ver a claim auto-registrada");
+      assert.equal(other?.sessionId, "sess-hermes");
+    },
+  );
+
+  it("sessão JÁ registrada não é tocada por registerSession de novo — autoRegistered: false, comportamento normal", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-viva", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const result = claimIssueAutoRegistering(root, "overnight", "sess-viva", 100, "host-a", new Date(NOW).toISOString());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, "claimed");
+    assert.equal(result.autoRegistered, false);
+  });
+
+  it("colisão com outra sessão ATIVA continua recusando mesmo com auto-registro (não força o claim)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-dona", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    claimIssueCheckAndSet(root, "overnight", "sess-dona", 42, "host-a", new Date(NOW).toISOString());
+
+    // sess-nova nunca foi registrada — auto-registro acontece, mas a issue
+    // já pertence a outra sessão ATIVA, então o claim é recusado do mesmo jeito.
+    const result = claimIssueAutoRegistering(root, "develop", "sess-nova", 42, "host-a", new Date(NOW).toISOString());
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "blocked-by-other");
+    assert.equal(result.autoRegistered, true);
+    assert.equal(result.blockedBy?.sessionId, "sess-dona");
   });
 });
 
