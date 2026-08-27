@@ -552,6 +552,21 @@ export async function brevoGet(
       });
     }
     if (r.status === 429 || r.status >= 500) {
+      // #6288 (espelha #6035/#5942 em withBrevo429Retry): Retry-After real
+      // excede o orçamento que este loop está disposto a dormir por
+      // tentativa (MAX_WAIT_MS, mesmo teto de withBrevo429Retry) — dormir o
+      // teto e retentar é aritmeticamente garantido a falhar de novo (rate
+      // limit é por CONTA/HORA, não se resolve em segundos). Desiste JÁ, sem
+      // dormir nem queimar as tentativas restantes.
+      const retryAfterSecs = parseRetryAfterSecs(r.headers);
+      if (retryAfterSecs != null && retryAfterSecs * 1000 > BREVO_RETRY_GIVE_UP_MS) {
+        await r.body?.cancel().catch(() => {});
+        throw new Error(
+          `Brevo GET ${path} HTTP ${r.status} — Retry-After ${retryAfterSecs}s excede o orçamento de ` +
+          `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
+          `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
+        );
+      }
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
       // Fallback: RETRY_MS[attempt] quando headers ausentes — mantém comportamento anterior.
       const waitMs = attempt < RETRY_MS.length
