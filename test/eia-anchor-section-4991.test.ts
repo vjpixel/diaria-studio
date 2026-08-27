@@ -144,10 +144,10 @@ describe("renderHTML — anchor de É IA? deriva do mirror (#4991), fallback #34
     }
   });
 
-  it("fallback (#633 regressão zero): mirror AUSENTE do reviewed.md → É IA? renderiza após USE MELHOR (comportamento antigo #3476)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ed-4991-fallback-um-"));
+  it("fallback (#6323): mirror AUSENTE do reviewed.md → É IA? renderiza após LANÇAMENTOS (novo default, substitui o fallback #3476 'após USE MELHOR')", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ed-4991-fallback-lanc-"));
     try {
-      // Sem o mirror **É IA?** no reviewed.md — só USE MELHOR + LANÇAMENTOS.
+      // Sem o mirror **É IA?** no reviewed.md — USE MELHOR + LANÇAMENTOS + RADAR.
       // 01-eia.md continua existindo (é a fonte real do render).
       writeEdition(dir, [USE_MELHOR, LANCAMENTOS, RADAR].join("\n\n---\n\n"));
       const content = extractContent(dir);
@@ -156,31 +156,55 @@ describe("renderHTML — anchor de É IA? deriva do mirror (#4991), fallback #34
       const umIdx = html.indexOf("<!-- USE MELHOR -->");
       const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
       const lancIdx = html.indexOf("<!-- LANÇAMENTOS -->");
-      assert.ok(umIdx !== -1 && eiaIdx !== -1 && lancIdx !== -1);
+      const radarIdx = html.indexOf("<!-- RADAR -->");
+      assert.ok(umIdx !== -1 && eiaIdx !== -1 && lancIdx !== -1 && radarIdx !== -1);
       assert.ok(
-        umIdx < eiaIdx && eiaIdx < lancIdx,
-        `fallback #3476 quebrado: UM(${umIdx}) < EIA(${eiaIdx}) < LANC(${lancIdx})`,
+        umIdx < lancIdx && lancIdx < eiaIdx && eiaIdx < radarIdx,
+        `fallback #6323 quebrado: UM(${umIdx}) < LANC(${lancIdx}) < EIA(${eiaIdx}) < RADAR(${radarIdx})`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("fallback sem USE MELHOR (#1085 preservado): mirror ausente e sem USE MELHOR → É IA? renderiza ANTES das seções secundárias", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ed-4991-fallback-no-um-"));
+  it("fallback sem LANÇAMENTOS (comportamento #3476 preservado): mirror ausente, com USE MELHOR mas sem LANÇAMENTOS → É IA? renderiza após USE MELHOR", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ed-4991-fallback-um-sem-lanc-"));
     try {
-      // Sem USE MELHOR, sem mirror — só LANÇAMENTOS + RADAR.
-      writeEdition(dir, [LANCAMENTOS, RADAR].join("\n\n---\n\n"));
+      // Sem o mirror **É IA?** no reviewed.md e sem LANÇAMENTOS — só USE MELHOR + RADAR.
+      writeEdition(dir, [USE_MELHOR, RADAR].join("\n\n---\n\n"));
+      const content = extractContent(dir);
+      assert.equal(content.eiaAnchorSectionIdx, null, "sem mirror no md, anchor deve ser null");
+      assert.equal(content.sections.findIndex((s) => s.name === "LANÇAMENTOS"), -1);
+      const html = renderHTML(content);
+      const umIdx = html.indexOf("<!-- USE MELHOR -->");
+      const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
+      const radarIdx = html.indexOf("<!-- RADAR -->");
+      assert.ok(umIdx !== -1 && eiaIdx !== -1 && radarIdx !== -1);
+      assert.ok(
+        umIdx < eiaIdx && eiaIdx < radarIdx,
+        `fallback #3476 (sem LANÇAMENTOS) quebrado: UM(${umIdx}) < EIA(${eiaIdx}) < RADAR(${radarIdx})`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback sem USE MELHOR nem LANÇAMENTOS (#1085 preservado): mirror ausente → É IA? renderiza ANTES das seções secundárias", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ed-4991-fallback-no-um-no-lanc-"));
+    try {
+      // Sem USE MELHOR, sem LANÇAMENTOS, sem mirror — só RADAR.
+      writeEdition(dir, [RADAR].join("\n\n---\n\n"));
       const content = extractContent(dir);
       assert.equal(content.eiaAnchorSectionIdx, null);
       assert.equal(content.sections.findIndex((s) => s.name === "USE MELHOR"), -1);
+      assert.equal(content.sections.findIndex((s) => s.name === "LANÇAMENTOS"), -1);
       const html = renderHTML(content);
       const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
-      const lancIdx = html.indexOf("<!-- LANÇAMENTOS -->");
-      assert.ok(eiaIdx !== -1 && lancIdx !== -1);
+      const radarIdx = html.indexOf("<!-- RADAR -->");
+      assert.ok(eiaIdx !== -1 && radarIdx !== -1);
       assert.ok(
-        eiaIdx < lancIdx,
-        `#1085 quebrado: É IA? deveria vir ANTES das seções secundárias — EIA(${eiaIdx}) < LANC(${lancIdx})`,
+        eiaIdx < radarIdx,
+        `#1085 quebrado: É IA? deveria vir ANTES das seções secundárias — EIA(${eiaIdx}) < RADAR(${radarIdx})`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

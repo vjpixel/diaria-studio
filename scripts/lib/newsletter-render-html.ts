@@ -2578,19 +2578,22 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     }
   }
 
-  // #3476: fallback histórico — É IA? renderiza DEPOIS da seção USE MELHOR
-  // (pedido do editor 260716). Se a edição não tiver USE MELHOR, É IA? cai
-  // ANTES das demais seções secundárias — mesma posição relativa (logo após
-  // destaques/box3), preservando o fallback "nunca desaparece" (#1085).
+  // #6323: fallback histórico — É IA? renderiza DEPOIS da seção LANÇAMENTOS
+  // (pedido do editor 260827, substitui o fallback #3476 "depois de USE
+  // MELHOR"). Se a edição não tiver LANÇAMENTOS, cai no fallback anterior
+  // (depois de USE MELHOR); sem nenhuma das duas, É IA? cai ANTES das demais
+  // seções secundárias — mesma posição relativa (logo após destaques/box3),
+  // preservando o fallback "nunca desaparece" (#1085).
   //
   // #4991: esse hardcode agora é só o FALLBACK. Quando o mirror `**É IA?**`
   // aparece explicitamente posicionado no reviewed.md (ex: editor pediu
   // depois de VÍDEO na edição 260811), `findEiaAnchorSection` já derivou
   // esse anchor em `content.eiaAnchorSectionIdx` (ver newsletter-parse.ts) —
-  // `??` só cai no fallback #3476 quando o campo é `null`/`undefined`
+  // `??` só cai no fallback abaixo quando o campo é `null`/`undefined`
   // (mirror ausente), nunca quando é `-1` (mirror presente sem seção antes).
+  const lancamentosIdx = content.sections.findIndex((s) => s.name === "LANÇAMENTOS");
   const useMelhorIdx = content.sections.findIndex((s) => s.name === "USE MELHOR");
-  const eiaAnchorIdx = content.eiaAnchorSectionIdx ?? useMelhorIdx;
+  const eiaAnchorIdx = content.eiaAnchorSectionIdx ?? (lancamentosIdx !== -1 ? lancamentosIdx : useMelhorIdx);
   if (includeEia && eiaAnchorIdx === -1) {
     parts.push(renderEIA(content.eia, opts.esp));
     eiaInserted = true;

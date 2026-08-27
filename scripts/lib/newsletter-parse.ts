@@ -1173,13 +1173,13 @@ export function parseEiaMirrorBlock(block: string, editionDir: string): EIA {
  *
  * Retorno:
  *   - `null`  → mirror ausente (comportamento antigo, maioria das edições
- *     históricas). O chamador (`renderHTML`) deve cair no fallback #3476
- *     (após USE MELHOR, ou antes das seções secundárias se não houver
- *     USE MELHOR) — regressão zero pra qualquer edição que nunca reordenou
- *     nada.
+ *     históricas). O chamador (`renderHTML`) deve cair no fallback #6323
+ *     (após LANÇAMENTOS, ou após USE MELHOR se não houver LANÇAMENTOS, ou
+ *     antes das seções secundárias se não houver nenhuma das duas) —
+ *     regressão zero pra qualquer edição que nunca reordenou nada.
  *   - `-1`    → mirror presente, mas nenhuma seção secundária vem antes
- *     dele no md (mesma posição relativa do fallback "sem USE MELHOR",
- *     #1085: É IA? nunca desaparece, renderiza antes das seções).
+ *     dele no md (mesma posição relativa do fallback "sem LANÇAMENTOS/USE
+ *     MELHOR", #1085: É IA? nunca desaparece, renderiza antes das seções).
  *   - `i` (≥0) → mirror presente e deve renderizar logo APÓS
  *     `sections[i]` (índice no array retornado por `parseSections`, MESMO
  *     critério de filtragem — nome bate `SECTION_HEADER_RE` E tem ≥1 item).

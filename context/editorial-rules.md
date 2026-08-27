@@ -142,7 +142,7 @@ Quem propõe candidatos de erro intencional (orchestrator, no chat com o editor)
 
 ## Seção "Vídeos" (#359)
 
-Seção opcional. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho). **Ordem das seções secundárias (#3820, decisão editorial 260722): USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR** — VÍDEOS vem sempre antes de LANÇAMENTOS (histórico: #3100 já tinha subido VÍDEOS pra antes de RADAR; #3820 sobe mais um degrau, antes de LANÇAMENTOS também).
+Seção opcional. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho). **Ordem das seções secundárias (#6323, decisão editorial 260827, substitui a ordem #3820): USE MELHOR → LANÇAMENTOS → É IA? → VÍDEOS → RADAR** — posição de VÍDEOS relativa a É IA?/RADAR não foi revista pelo #6323 (segue logo após É IA?, antes de RADAR; histórico: #3100 já tinha subido VÍDEOS pra antes de RADAR).
 
 **Itens da seção VÍDEO usam link do YouTube. Nunca linkar página que apenas embeda o vídeo (#3202).** Toda URL da seção deve ser `youtube.com/watch?v=...` ou `youtu.be/...` — nunca a página de blog/site oficial que hospeda o player (ex: página de anúncio da própria empresa com o vídeo embedado). Se o editor indicar um vídeo fora do YouTube, o pipeline busca automaticamente o vídeo equivalente no YouTube (Stage 1, `scripts/resolve-video-youtube.ts`, scoped a `site:youtube.com`) e substitui a URL antes do gate. Sem correspondência confiável, o item NUNCA cai de volta pra URL não-YouTube — fica flagado no gate ("vídeo sem URL de YouTube verificável — cole o link") para o editor colar o link manualmente. Validação: `npx tsx scripts/lint-newsletter-md.ts --check video-links-are-youtube --md <md>` (exit ≠0, GATE-BLOCKING, se houver URL não-YouTube na seção). Caso real (260709): "Introducing GPT-Live" só existia acessível na página oficial da OpenAI (bloqueava o bot, 403) — sem resolução automática, a URL oficial acabou reusada, duplicando o link de outro destaque.
 
@@ -226,7 +226,7 @@ Técnica de encadear chamadas de LLM com exemplo em Python (15 min).
 
 ### Posição na newsletter
 
-**Antes de LANÇAMENTOS (#1633).** É a primeira seção secundária após os destaques + É IA?. Nova ordem: (destaques + É IA?) → **USE MELHOR** → LANÇAMENTOS → RADAR → VÍDEOS → SORTEIO → PARA ENCERRAR. Montada automaticamente pelo `stitch-newsletter.ts` a partir do bucket `use_melhor` (#1752); só some quando o pool não tem 2 tutoriais (#1855).
+**Antes de LANÇAMENTOS (#1633).** É a primeira seção secundária após os destaques. Ordem (#6323): (destaques) → **USE MELHOR** → LANÇAMENTOS → É IA? → VÍDEOS → RADAR → SORTEIO → PARA ENCERRAR. Montada automaticamente pelo `stitch-newsletter.ts` a partir do bucket `use_melhor` (#1752); só some quando o pool não tem 2 tutoriais (#1855).
 
 **Links com parênteses (#1634):** se a URL do item contém `(` ou `)` (ex: PDF com `(1)` no nome), o render já tolera parênteses balanceados (`processInlineLinks`). Mesmo assim, prefira URL-encode (`%28`/`%29`) na fonte quando houver parênteses desbalanceados.
 
