@@ -317,6 +317,12 @@ describe("clarice-novos-run (#4941)", () => {
         assert.equal(c.args[c.args.indexOf("--cycle") + 1], "2606-07");
       }
 
+      // #6414: --create sempre carrega --ignore-hour-test — 'novos' é disparo
+      // imediato, nunca braço do teste de HORÁRIO da rampa (#5140), e sua key
+      // nunca termina em -H{HH} (não passa por clarice-split-group-cells.ts).
+      const createCall = scheduleCalls.find((c) => c.args.includes("--create"))!;
+      assert.ok(createCall.args.includes("--ignore-hour-test"), createCall.args.join(" "));
+
       // clarice-novos-html-state NUNCA recebe --content-cycle (#4365).
       const htmlStateCalls = calls.filter((c) => c.script === "scripts/clarice-novos-html-state.ts");
       assert.equal(htmlStateCalls.length, 2);
