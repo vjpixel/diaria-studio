@@ -23,14 +23,16 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { execFileSync } from "node:child_process";
 import {
   discoverWorkers,
   getLastCommitAt,
+  resolveProductionRef,
   fetchAllWorkerScriptsMetadata,
   resolveLastDeployedAt,
   loadState,
@@ -82,6 +84,88 @@ describe("getLastCommitAt (#4723) — git log real", () => {
 
   it("path sem NENHUM commit -> null, nunca lança", () => {
     assert.equal(getLastCommitAt("worker-que-nunca-existiu-4723", ROOT), null);
+  });
+});
+
+describe("getLastCommitAt (#6413) — ignora commit de branch não-mergeada no checkout compartilhado", () => {
+  // Reproduz o incidente relatado na issue #6413: o alarme rodou com o
+  // checkout compartilhado numa branch de feature (de OUTRA sessão,
+  // trabalhando outra issue) que tinha um commit tocando workers/{dir}
+  // ainda não mergeado em master. `git log -1 -- path` (sem ref explícita)
+  // segue HEAD e enxergava esse commit não-mergeado como "o último commit",
+  // gerando um drift que não existia em produção. Repositório git real
+  // temporário (não é viável mockar `spawnSync("git", ...)` aqui sem
+  // reimplementar o parsing de `git log` — mesma disciplina do describe
+  // acima, que já usa o repo real deste checkout).
+  let tmpRepo: string;
+
+  function git(args: string[], cwd: string = tmpRepo, env?: Record<string, string>): string {
+    return execFileSync("git", args, { cwd, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env }).trim();
+  }
+
+  beforeEach(() => {
+    tmpRepo = mkdtempSync(join(tmpdir(), "worker-drift-6413-"));
+    git(["init", "-q", "-b", "master"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "Test"]);
+
+    // Commit 1 em master: cria o worker (equivalente ao "estado real de
+    // produção"). Data de autor fixada (não "agora") pra garantir um
+    // timestamp DISTINTO do commit 2 abaixo — sem isso os dois commits
+    // podem cair no mesmo segundo e o teste não provaria nada.
+    const workerDir = join(tmpRepo, "workers", "poll");
+    mkdirSync(workerDir, { recursive: true });
+    writeFileSync(join(workerDir, "index.ts"), "// v1\n");
+    git(["add", "."]);
+    git(["commit", "-q", "-m", "cria worker poll"], tmpRepo, {
+      GIT_AUTHOR_DATE: "2026-08-01T10:00:00Z",
+      GIT_COMMITTER_DATE: "2026-08-01T10:00:00Z",
+    });
+
+    // Simula `origin/master` apontando pro mesmo commit (equivalente a um
+    // fetch já ter rodado antes) — sem precisar de um remote de verdade.
+    git(["update-ref", "refs/remotes/origin/master", "master"]);
+
+    // Commit 2 numa branch de FEATURE não-mergeada, tocando o mesmo worker
+    // — o cenário exato do #6413 (issue #6340 tocando workers/poll numa
+    // branch paralela), com data de autor POSTERIOR ao commit de master
+    // (mesmo padrão do incidente real: o alarme comparou um commit mais
+    // recente-mas-não-mergeado contra o deploy real).
+    git(["checkout", "-q", "-b", "feature/outra-sessao"]);
+    writeFileSync(join(workerDir, "index.ts"), "// v2 nao mergeado\n");
+    git(["add", "."]);
+    git(["commit", "-q", "-m", "feature flag ainda nao mergeada (#6340)"], tmpRepo, {
+      GIT_AUTHOR_DATE: "2026-08-27T13:59:10Z",
+      GIT_COMMITTER_DATE: "2026-08-27T13:59:10Z",
+    });
+    // Checkout compartilhado FICA nessa branch — é o estado no momento em
+    // que o alarme roda, exatamente como no incidente relatado.
+  });
+
+  afterEach(() => {
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it("resolveProductionRef escolhe origin/master quando a ref existe localmente", () => {
+    assert.equal(resolveProductionRef(tmpRepo), "origin/master");
+  });
+
+  it("getLastCommitAt reporta o commit de origin/master, não o da branch checked out", () => {
+    const masterCommitAt = git(["log", "-1", "--format=%aI", "origin/master"], tmpRepo);
+    const featureCommitAt = git(["log", "-1", "--format=%aI", "feature/outra-sessao"], tmpRepo);
+
+    const reported = getLastCommitAt("poll", tmpRepo);
+    assert.equal(reported, masterCommitAt);
+    assert.notEqual(reported, featureCommitAt);
+  });
+
+  it("sem origin/master (clone atípico) cai pro master local, ainda ignorando a branch checked out", () => {
+    git(["update-ref", "-d", "refs/remotes/origin/master"]);
+    assert.equal(resolveProductionRef(tmpRepo), "master");
+
+    const masterCommitAt = git(["log", "-1", "--format=%aI", "master"], tmpRepo);
+    const reported = getLastCommitAt("poll", tmpRepo);
+    assert.equal(reported, masterCommitAt);
   });
 });
 

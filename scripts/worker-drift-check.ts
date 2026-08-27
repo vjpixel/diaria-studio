@@ -251,15 +251,45 @@ export function discoverWorkers(workersDir: string = WORKERS_DIR): DiscoveredWor
 // ─── Git: timestamp do último commit por worker (I/O) ──────────────────────
 
 /**
- * `git log -1 --format=%aI -- workers/{dir}` — `%aI` é a data do autor em
+ * Resolve a ref de PRODUÇÃO a comparar (#6413): sempre `origin/master`
+ * quando o remote tem essa ref localmente conhecida (o caso normal — fetch
+ * já rodou antes em algum momento), com fallback pra `master` local (mesmo
+ * padrão de `scripts/lib/git-sync.ts`, que trata `master` como a branch de
+ * produção). NUNCA a branch checked out no momento — o checkout deste repo
+ * é compartilhado entre sessões concorrentes (overnight, develop,
+ * interativas) e pode estar em qualquer branch de feature a qualquer
+ * momento (ver `context/checkout-compartilhado-*` na memória do editor).
+ * `git rev-parse --verify --quiet` não faz I/O de rede (não dá fetch) —
+ * só confere se a ref já existe no repo local; se nem `origin/master` nem
+ * `master` existirem (clone atípico), cai pro `master` mesmo e deixa o
+ * `git log` seguinte reportar `null` como já fazia antes deste fix.
+ */
+export function resolveProductionRef(root: string = ROOT): string {
+  const check = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/master"], {
+    encoding: "utf8",
+    cwd: root,
+    timeout: 30_000,
+  });
+  return check.status === 0 ? "origin/master" : "master";
+}
+
+/**
+ * `git log -1 --format=%aI {ref} -- workers/{dir}` — `%aI` é a data do autor em
  * ISO 8601 estrito (com offset), a mesma disciplina de timestamp usada em
  * outros comparadores de tempo do repo (ver docstring de `sentDate` em
- * `brevo-client.ts`). Retorna `null` se não há nenhum commit tocando esse
- * path (não deveria acontecer na prática — o diretório existe versionado —
- * mas tratado como edge case, não uma exceção).
+ * `brevo-client.ts`). `ref` vem de `resolveProductionRef` — sempre
+ * `origin/master`/`master`, nunca a branch atualmente checked out (#6413:
+ * sem isso, um commit de feature branch não-mergeada em outro worktree do
+ * mesmo repo compartilhado gera falso positivo de drift, porque o alarme
+ * lia o commit "alcançável a partir do HEAD" de quem quer que estivesse
+ * checked out no momento da execução). Retorna `null` se não há nenhum
+ * commit tocando esse path na ref de produção (não deveria acontecer na
+ * prática — o diretório existe versionado em master — mas tratado como edge
+ * case, não uma exceção).
  */
 export function getLastCommitAt(workerDir: string, root: string = ROOT): string | null {
-  const res = spawnSync("git", ["log", "-1", "--format=%aI", "--", join("workers", workerDir)], {
+  const ref = resolveProductionRef(root);
+  const res = spawnSync("git", ["log", "-1", "--format=%aI", ref, "--", join("workers", workerDir)], {
     encoding: "utf8",
     cwd: root,
     timeout: 30_000,
