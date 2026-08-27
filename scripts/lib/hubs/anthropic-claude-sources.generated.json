@@ -870,5 +870,65 @@
       "https://www.anthropic.com/research/riemann-zeta"
     ],
     "editionTitle": "Amodei previu colapso do emprego. Não veio"
+  },
+  {
+    "date": "2026-08-14",
+    "editionSlug": "claude-cowork-chega-ao-painel-do-chrome",
+    "url": "https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome",
+    "matchedHeadlines": [
+      "Claude Cowork chega ao painel do Chrome"
+    ],
+    "primarySourceUrls": [
+      "https://claude.com/blog/cowork-chrome-side-panel"
+    ],
+    "editionTitle": "Claude Cowork chega ao painel do Chrome"
+  },
+  {
+    "date": "2026-08-17",
+    "editionSlug": "reglab-estima-r-986-bi-extra-no-pib-ate-2030",
+    "url": "https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030",
+    "matchedHeadlines": [
+      "ChatGPT, Claude e Gemini vazavam raciocínio"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/pesquisadores-descobrem-como-roubar-pensamentos-secretos-do-chatgpt-claude-e-gemini/"
+    ],
+    "editionTitle": "Reglab estima R$986 bi extra no PIB até 2030"
+  },
+  {
+    "date": "2026-08-18",
+    "editionSlug": "anthropic-so-curar-cancer-convence-publico",
+    "url": "https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico",
+    "matchedHeadlines": [
+      "Anthropic: só curar câncer convence público"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/para-criador-do-claude-unico-jeito-de-a-ia-convencer-o-publico-e-curar-o-cancer/"
+    ],
+    "editionTitle": "Anthropic: só curar câncer convence público"
+  },
+  {
+    "date": "2026-08-19",
+    "editionSlug": "tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "url": "https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "matchedHeadlines": [
+      "Grupo hacker usou Claude em 8 invasões"
+    ],
+    "primarySourceUrls": [
+      "https://cybersecuritynews.com/claude-code-helps-ransomware-operator/"
+    ],
+    "editionTitle": "TSE exige aviso em propaganda eleitoral com IA"
+  },
+  {
+    "date": "2026-08-21",
+    "editionSlug": "marca-d-agua-do-claude-cai-em-horas",
+    "url": "https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas",
+    "matchedHeadlines": [
+      "Marca d'água do Claude cai em horas"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/devs-conseguem-burlar-marca-dagua-do-claude-para-textos-em-poucas-horas/"
+    ],
+    "editionTitle": "Marca d'água do Claude cai em horas"
   }
 ]

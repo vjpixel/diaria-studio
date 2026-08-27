@@ -91,7 +91,34 @@ const PUBLISHED_DATE = "2026-08-09";
 // 2026-08-18 (#5629/#5630/#5631/#5628): deriveOpenaiChatgptFacts extraído,
 // tabela de cronologia adicionada em S1, reflow de parágrafo/data absoluta,
 // limpeza de moldura de cobertura. Bump por mudança de CORPO.
-const UPDATED_DATE = "2026-08-18";
+//
+// 2026-08-27 (#6274): `generate-hub-sources.ts --all` trouxe 5 edições
+// novas (14, 17, 19, 20 e 25/08/2026). Nenhuma abriu seção nova:
+//  - 14/08 "GPT-5.6 Sol roda 14× mais rápido": mais cobertura do MESMO
+//    GPT-5.6 Sol já narrado em `sections[0]` (cronologia de lançamento) —
+//    melhoria de performance de um lançamento já contado, não lançamento
+//    novo (não casa `LAUNCH_PATTERN`, e está correto que não case).
+//  - 17/08 "ChatGPT, Claude e Gemini vazavam raciocínio": mesmo fato
+//    cross-hub já documentado em `anthropic-claude.ts` — mais um episódio
+//    do arco de segurança de `sections[4]`.
+//  - 19/08 "ChatGPT for Teens chega com proteções extras": continuação do
+//    arco de segurança/idade já narrado em `sections[4]` ("um filtro de
+//    idade") — mesma direção (proteção a menores), não tema novo.
+//  - 20/08 "OpenAI pausa treinamento após invasão crítica" + "OpenAI chega
+//    ao Brasil com foco em empresas" (2 manchetes na mesma edição): a
+//    1ª estende o arco de segurança de `sections[4]` (mais um episódio de
+//    invasão, ainda que "invasão crítica" não bata `HACK_AUTONOMO_PATTERN`
+//    — decisão: não estender o regex por 1 evento isolado, mesmo racional
+//    do #6274 em `anthropic-claude.ts`). A 2ª ("chega ao Brasil") é um fato
+//    genuinamente novo — expansão local/operações no Brasil — mas é 1 dado
+//    isolado, sem meses de cobertura acumulada atrás dele; decisão
+//    conservadora: não abre seção (o critério de qualidade da #4558 exige
+//    "leitura que só existe porque alguém acompanhou o tema por meses").
+//  - 25/08 "SoftBank capta US$ 6,3 bi para apostar na OpenAI": mais um
+//    evento financeiro do arco já narrado em `sections[2]` (`FINANCEIRO_PATTERN`
+//    já casa "capta").
+// Bump por fonte nova + revisão de estrutura, não por reescrita de corpo.
+const UPDATED_DATE = "2026-08-27";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em
@@ -103,9 +130,16 @@ const UPDATED_DATE = "2026-08-18";
  * "GPT-5.6 Sol apaga arquivos sem permissão" (manchete de incidente de
  * segurança sobre um modelo já lançado) também bate `/GPT-?5\.\d/i` sem ser
  * um release novo. Usado só onde essa ambiguidade existe de fato.
+ *
+ * #6274: mesma ambiguidade se repetiu com "GPT-5.6 Sol roda 14× mais rápido
+ * na OpenAI" (14/08/2026) — melhoria de performance do MESMO release já
+ * contado (5.6 Sol/Terra/Luna), não uma versão nova. Sem a exclusão, o FAQ
+ * ("Foram 6 manchetes... entre parênteses") ficaria com número (7)
+ * inconsistente com a própria enumeração da resposta, que continua listando
+ * só 6 releases distintos.
  */
 const GPT5X_PATTERN = /GPT-?5\.\d/i;
-const GPT5X_EXCLUDE_PATTERN = /apaga arquivos sem permiss[ãa]o/i;
+const GPT5X_EXCLUDE_PATTERN = /apaga arquivos sem permiss[ãa]o|roda \d+× mais r[áa]pido/i;
 const CODEX_PATTERN = /codex/i;
 const HACK_AUTONOMO_PATTERN = /hacke|invad/i;
 const MICROSOFT_PATTERN = /microsoft/i;
