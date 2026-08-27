@@ -515,6 +515,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5311",
   },
   {
+    name: "Diaria-Subscribe-Redirect-Drift-Check",
+    description:
+      "smoke-test do destino do redirect /subscribe (perfil hospedado Kit) + / e /p/{slug} do Worker diaria-site — 200 sozinho não basta, exige os marcadores esperados no corpo (página de erro pode vir 200)",
+    steps: [{ key: "check", script: "scripts/subscribe-redirect-drift-check.ts" }],
+    logPath: "subscribe-redirect-drift-check/.drift-check.log",
+    // Diária 10:30 — logo depois de Diaria-Plugin-Review-Drift-Check (10:20,
+    // acima) e Diaria-Dmarc-Drain (10:25, abaixo), fechando o cluster
+    // matinal de checks/alarmes; sem colisão com nenhuma outra daily já
+    // registrada (ver grep de `kind: "daily"` neste arquivo). Mesmo
+    // raciocínio de Diaria-Hub-Drift-Check/Diaria-Robots-Txt-Drift-Check
+    // acima: o conserto (atualizar `_redirects`, redeployar o Worker) é
+    // ação manual do editor de manhã — latência de detecção abaixo da
+    // latência de resposta é desperdiçada.
+    schedule: { kind: "daily", hour: 10, minute: 30 },
+    issue: "#6365",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
