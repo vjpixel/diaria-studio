@@ -9,8 +9,35 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractPlanCredits, fetchPlanCredits, PLAN_CREDITS_KV_KEY } from "../workers/brevo-dashboard/src/index.ts";
+import {
+  extractPlanCredits,
+  fetchPlanCredits,
+  resolvePlanTotal,
+  PLAN_CREDITS_KV_KEY,
+  LASTGOOD_CAMPAIGNS_KEY,
+  billingCycleWindow,
+} from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+
+/** Campanha Clarice mínima, sentDate dentro da janela de cobrança ATUAL
+ * (`billingCycleWindow()`, sem argumento — "agora") — usada só pra alimentar
+ * `estimateCumulativeSentFromLastGood` (via `LASTGOOD_CAMPAIGNS_KEY`) nos
+ * testes de `resolvePlanTotal`. */
+function makePlanCreditsCampaign(id: number, sent: number) {
+  const window = billingCycleWindow();
+  const sentDate = new Date(window.start.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 1 dia após o início
+  return {
+    id,
+    name: "Clarice News 2606-07 — A: assunto teste",
+    subject: "Test",
+    status: "sent",
+    sentDate,
+    scheduledAt: null,
+    createdAt: sentDate,
+    recipients: { lists: [id + 100] },
+    statistics: { globalStats: { sent, delivered: sent, hardBounces: 0, softBounces: 0, uniqueViews: 0, viewed: 0, trackableViews: 0, uniqueClicks: 0, clickers: 0, unsubscriptions: 0, complaints: 0, appleMppOpens: 0 } },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // extractPlanCredits — pura, sem I/O
@@ -247,5 +274,108 @@ describe("fetchPlanCredits (#2910)", () => {
       assert.equal(result, null);
       assert.deepEqual(calls, []);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePlanTotal (#6394) — substituto de fetchPlanCredits pra quem alimenta
+// renderVolumeSection: entrega o TOTAL do ciclo já snapshot-consistente (par
+// {credits, sentAtFetch, planTotal} gravado no MESMO instante), nunca mais o
+// restante cru recombinado com um cumulativeSent de outro instante.
+// ---------------------------------------------------------------------------
+
+describe("resolvePlanTotal (#6394)", () => {
+  // Teste de regressão OBRIGATÓRIO, especificado no corpo da issue #6394:
+  // dado um planCredits de snapshot ANTIGO + um cumulativeSent ATUAL maior, o
+  // denominador exibido NÃO pode crescer — precisa continuar servindo o
+  // planTotal congelado do snapshot, não recombinar.
+  it("#6394 regressão: snapshot antigo + cumulativeSent atual maior → denominador NÃO cresce", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeKv();
+      // Snapshot ANTIGO consistente: 150.000 é o total real do plano (batia
+      // exatamente com o caso ao vivo relatado na issue).
+      await kv.put(
+        PLAN_CREDITS_KV_KEY,
+        JSON.stringify({ credits: 38119, sentAtFetch: 111881, planTotal: 150000, fetchedAt: "2026-08-25T10:00:00Z" }),
+      );
+      // `cumulativeSent` ATUAL (via LASTGOOD_CAMPAIGNS_KEY) é MAIOR que o
+      // `sentAtFetch` gravado no snapshot — simula os envios de 26/08 que
+      // infladavam o denominador pra 162.010 no bug original.
+      await kv.put(
+        LASTGOOD_CAMPAIGNS_KEY,
+        JSON.stringify({ campaigns: [makePlanCreditsCampaign(1, 123891)] }),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 150000, "denominador deve ficar CONGELADO no planTotal do snapshot, nunca recombinar com o cumulativeSent atual");
+      assert.deepEqual(calls, [], "KV HIT nunca deve chamar a Brevo");
+    });
+  });
+
+  it("mode=cached com KV HIT (formato novo) → serve planTotal direto, sem fetch", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeKv();
+      await kv.put(
+        PLAN_CREDITS_KV_KEY,
+        JSON.stringify({ credits: 20000, sentAtFetch: 20000, planTotal: 40000, fetchedAt: "2026-08-01T00:00:00Z" }),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 40000);
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it("mode=kv-only → serve planTotal do snapshot direto, nunca chama fetch", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeKv();
+      await kv.put(
+        PLAN_CREDITS_KV_KEY,
+        JSON.stringify({ credits: 5000, sentAtFetch: 45000, planTotal: 50000, fetchedAt: "2026-08-01T00:00:00Z" }),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "kv-only");
+      assert.equal(result, 50000);
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it("KV MISS + fetch ao vivo com sucesso → grava o par consistente e retorna credits+estimativa", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ plan: [{ credits: 10000, creditsType: "sendLimit" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    try {
+      const kv = makeKv();
+      await kv.put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify({ campaigns: [makePlanCreditsCampaign(1, 5000)] }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 15000, "credits (10000) + estimativa de cumulativeSent (5000)");
+      const cached = JSON.parse(kv._store.get(PLAN_CREDITS_KV_KEY)!);
+      assert.equal(cached.credits, 10000);
+      assert.equal(cached.sentAtFetch, 5000);
+      assert.equal(cached.planTotal, 15000, "grava o par JÁ consistente, não só credits");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("entrada legada sem planTotal ({credits, fetchedAt}) → degrada pro cálculo antigo (nunca pior que antes)", async () => {
+    await withFetchSpy(async (calls) => {
+      const kv = makeKv({ credits: 30000 }); // formato pré-#6394, escrito por fetchPlanCredits
+      await kv.put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify({ campaigns: [makePlanCreditsCampaign(1, 10000)] }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: kv as any }, "cached");
+      assert.equal(result, 40000, "sem planTotal gravado, cai pro credits+estimativa (mesmo comportamento de antes da correção)");
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it("sem cache e sem fetch (STATS_CACHE ausente) → null, nunca lança", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await resolvePlanTotal({ BREVO_API_KEY: "k", STATS_CACHE: undefined as any }, "kv-only");
+    assert.equal(result, null);
   });
 });

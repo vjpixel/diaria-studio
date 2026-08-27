@@ -74,7 +74,8 @@ import { computeStoreSummary } from "../clarice-db-summary.ts";
 import {
   fetchRecentCampaigns,
   fetchScheduledCampaigns,
-  fetchPlanCredits,
+  resolvePlanTotal, // #6394: substitui fetchPlanCredits no caminho kv-only — entrega o total já snapshot-consistente
+  fetchPlanCredits, // #6394: mantido pro caminho AO VIVO (skipKvCache=true) — combinado com cumulativeSent AO VIVO logo abaixo, nunca via KV
   readKvTabs,
   CAMPAIGNS_FETCH_LIMIT,
   BrevoRateLimitError,
@@ -90,7 +91,8 @@ import {
   BrevoCampaignQuotaLowError,
   recordCampaignQuotaRemaining,
 } from "../lib/brevo-rate-state.ts";
-import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "../../workers/brevo-dashboard/src/sections-core.ts";
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "../../workers/brevo-dashboard/src/sections-core.ts"; // #6394: calcCumulativeSentInBillingWindow
+import { billingCycleWindow } from "../../workers/brevo-dashboard/src/billing-cycle.ts"; // #6394: pareia credits+cumulativeSent no caminho AO VIVO
 import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
 import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
@@ -350,7 +352,13 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
 
     const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "kv-only"); // #5189
     const contactsSummary = buildContactsSummaryLocal();
-    const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+    // #6394: `resolvePlanTotal` serve o `planTotal` já snapshot-consistente do
+    // KV direto — antes, `fetchPlanCredits(env, "kv-only")` devolvia o
+    // restante cru (podendo ter até 24h de idade) e o render abaixo o
+    // recombinava com o `cumulativeSent` das campanhas frescas do KV
+    // (`LASTGOOD_CAMPAIGNS_KEY`), inflando o denominador (162.010 vs 150.000
+    // real — ver corpo da issue #6394).
+    const planCredits = await resolvePlanTotal(env, "kv-only").catch(() => null);
 
     const rawCampaigns = staleCampaignsRaw?.campaigns;
     const rawScheduled = staleCampaignsRaw?.scheduled;
@@ -471,12 +479,22 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     // existem em index.ts) -- contribuiu pro incidente de rate-limit
     // registrado no #4187. `readKvTabs` abaixo continua usando o KV real
     // normalmente -- isso NÃO muda (é o que #4165/#4173 pediram).
-    planCredits = await fetchPlanCredits(env, "cached", true).catch(() => null);
+    // #6394: `fetchPlanCredits` (restante cru), não `resolvePlanTotal` — este
+    // caminho é sempre AO VIVO (skipKvCache=true desliga toda leitura/escrita
+    // de KV, então `resolvePlanTotal` não teria como parear um snapshot).
+    // Combinado abaixo com o `cumulativeSent` das campanhas buscadas NESTA
+    // MESMA chamada (também ao vivo) — os dois operandos são do mesmo
+    // instante, então recombinar aqui não reintroduz o bug do #6394.
+    const liveCredits = await fetchPlanCredits(env, "cached", true).catch(() => null);
     const scheduled = await fetchScheduledCampaigns(env, 50, false, undefined, true).catch((e) => {
       console.error("[dashboard-clarice] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
       return [];
     });
     const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false, undefined, true);
+    planCredits =
+      liveCredits === null
+        ? null
+        : liveCredits + calcCumulativeSentInBillingWindow(campaigns, billingCycleWindow());
 
     // #4165/#4173: cohorts/couponUsage/eiaEngagement agora vêm do namespace KV
     // REAL (ver `buildEnv()`/docstring do módulo) — só ficam `null` quando as

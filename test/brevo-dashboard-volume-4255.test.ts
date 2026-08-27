@@ -137,15 +137,17 @@ describe("calcCumulativeSentInBillingWindow (#4255) — campanhas 'grupo:' dentr
   });
 });
 
-// ─── denominador (renderVolumeSection): deriva de cumulativeSent — a fórmula
-// planCredits + cumulativeSent auto-corrige junto, sem mudança nenhuma nela ──
+// ─── denominador (renderVolumeSection): #6394 — a função só EXIBE o planTotal
+// já resolvido pelo call site (resolvePlanTotal, brevo-api.ts); deixou de
+// somar planCredits + cumulativeSent aqui dentro, então os testes passam o
+// total JÁ somado como 3º arg, não mais o restante isolado ──────────────────
 
 describe("renderVolumeSection (#4255) — denominador reconcilia com o cumulativeSent corrigido", () => {
   const window = billingCycleWindow(new Date("2026-07-20T12:00:00Z"));
 
-  test("com cumulativeSent corrigido (112.268) + planCredits real (37.732) → total 150.000, não 135.191", () => {
-    const html = renderVolumeSection(112268, window, 37732);
-    assert.ok(html.includes("150.000"), "planTotal = planCredits + cumulativeSent deve fechar em 150.000");
+  test("com cumulativeSent corrigido (112.268) + planTotal já resolvido (150.000) → não 135.191", () => {
+    const html = renderVolumeSection(112268, window, 150000);
+    assert.ok(html.includes("150.000"), "planTotal recebido direto fecha em 150.000");
     assert.ok(html.includes("112.268"), "numerador mostra o valor corrigido");
     assert.ok(!html.includes("135.191"), "denominador antigo (que escondia os 14.809 perdidos) não aparece mais");
     // 112268 / 150000 = 74.845...%
@@ -154,13 +156,15 @@ describe("renderVolumeSection (#4255) — denominador reconcilia com o cumulativ
 
   test("regressão do bug antigo: SEM o fix, cumulativeSent=97.459 produzia planTotal=135.191 (documentado, não o comportamento atual)", () => {
     // Este teste documenta a ARITMÉTICA do bug antigo (não chama nenhum código
-    // afetado pelo fix — cumulativeSent aqui é passado manualmente como o valor
-    // subcontado que o classificador antigo produzia) — serve de ancoragem pra
-    // não perder de vista POR QUE o fix em classifyClariceAudience é suficiente
-    // sozinho: o denominador nunca precisou de correção própria.
+    // afetado pelo fix — o planTotal aqui é passado manualmente como o valor
+    // subcontado que o classificador antigo produzia, já somado — desde
+    // #6394 quem soma é o call site, não `renderVolumeSection`) — serve de
+    // ancoragem pra não perder de vista POR QUE o fix em
+    // classifyClariceAudience é suficiente sozinho: o denominador nunca
+    // precisou de correção própria.
     const buggyCumulativeSent = 97459;
-    const planCreditsRemaining = 37732;
-    const html = renderVolumeSection(buggyCumulativeSent, window, planCreditsRemaining);
+    const buggyPlanTotal = 97459 + 37732; // 135.191 — restante+enviado do classificador antigo
+    const html = renderVolumeSection(buggyCumulativeSent, window, buggyPlanTotal);
     assert.ok(html.includes("135.191"), "reproduz o denominador errado relatado na issue, a partir do numerador subcontado");
   });
 });
