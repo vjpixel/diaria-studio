@@ -37,6 +37,30 @@ describe("auditKitFixtures (#6336)", () => {
     assert.equal(result.all.length, 0);
     assert.equal(result.active.length, 0);
   });
+
+  it("registro malformado (email_address ausente/não-string) não lança — pula e reporta em skipped (#6383 F3)", () => {
+    const result = auditKitFixtures([
+      { id: 1, email_address: "ana@example.com", state: "active" },
+      // Simula shape inesperado da API do Kit (#6181) — sem type-cast forçado
+      // pra provar que o guard é em runtime, não só em compile-time.
+      { id: 2, email_address: undefined, state: "active" } as unknown as {
+        id: number;
+        email_address: string;
+        state: string;
+      },
+      { id: 3, state: "active" } as unknown as {
+        id: number;
+        email_address: string;
+        state: string;
+      },
+    ]);
+    assert.equal(result.active.length, 1);
+    assert.equal(result.skipped?.length, 2);
+    assert.deepEqual(
+      result.skipped?.map((s) => s.id),
+      [2, 3],
+    );
+  });
 });
 
 describe("renderKitFixtureAuditReport (#6336)", () => {
