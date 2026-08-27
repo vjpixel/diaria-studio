@@ -26,13 +26,24 @@
  * convenção de `matchClick` em `build-link-ctr.ts`) pra identificar QUAL
  * snippet foi usado naquela edição, independente do que o config diz hoje.
  *
- * **Como o post Beehiiv de cada edição é encontrado:** não há um campo
- * `post_id` gravado por edição — o join é feito por DATA: o `publish_date`
- * (unix, UTC) de cada post cacheado em `data/beehiiv-cache/posts/*.json` é
- * convertido pra AAMMDD e casado contra o AAMMDD da pasta da edição. A
- * newsletter é enviada ~06:00 BRT (~09:00 UTC), longe da virada de dia UTC —
- * a data UTC do envio coincide com o AAMMDD da edição na esmagadora maioria
- * dos casos.
+ * **Como o post da edição é encontrado:** não há um campo `post_id` gravado
+ * por edição — o join é feito por DATA: o `publish_date` (unix, UTC) de cada
+ * post/broadcast cacheado é convertido pra AAMMDD e casado contra o AAMMDD da
+ * pasta da edição. A newsletter é enviada ~06:00 BRT (~09:00 UTC), longe da
+ * virada de dia UTC — a data UTC do envio coincide com o AAMMDD da edição na
+ * esmagadora maioria dos casos.
+ *
+ * **Origem Beehiiv/Kit (#6185):** o cache é lido dos DOIS backends via
+ * `loadUnifiedEditionCache`/`loadBeehiivCache`/`loadKitCache`
+ * (`scripts/lib/shared/edition-cache-reader.ts`) — mesmo desenho de união
+ * que a #6048 aplicou pra verificação de assinante. `loadUnifiedPostsCache` abaixo
+ * é fail-soft nos dois lados (diretório ausente vira `[]`, nunca lança) —
+ * decisão explícita: este script é só apoio informativo (nunca bloqueia o
+ * gate, ver docstring "Output" acima), diferente de `loadUnifiedEditionCache`
+ * cru, que lança se `data/beehiiv-cache/posts` estiver ausente (é fonte
+ * primária pra a maioria dos consumidores). Kit ainda não tem escritor de
+ * cache (`data/kit-cache/broadcasts/` fica vazio na prática) — `loadKitCache`
+ * já devolve `[]` sozinho nesse caso, sem precisar de guard extra aqui.
  *
  * **Fora de escopo (#4354):** boxes sem link próprio (algumas boxes antigas
  * eram só texto) não têm como ser medidas — aparecem na lista de "sem dado
@@ -64,12 +75,19 @@ import {
 } from "./lib/newsletter-parse.ts";
 import { parseBoxHeaderField, stripHeaderBlock, readSeasonalFlag } from "./lib/shared/snippet-header.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
-import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
+import { resolveEnrichmentState } from "./lib/shared/enrichment-state.ts";
+import {
+  DEFAULT_BEEHIIV_POSTS_DIR,
+  DEFAULT_KIT_BROADCASTS_DIR,
+  loadBeehiivCache,
+  loadKitCache,
+  mergeEditionsByDate,
+} from "./lib/shared/edition-cache-reader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SNIPPETS_DIR = resolve(ROOT, "data/snippets"); // #5227: migrado de context/snippets/
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
-const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
+const POSTS_DIR = DEFAULT_BEEHIIV_POSTS_DIR;
 
 export const DEFAULT_LAST_N = 20;
 
@@ -205,10 +223,16 @@ export function sumClicksForUrl(url: string, clicks: ClickLike[]): ClickSum {
   return { verified_clicks: verified, unique_verified_clicks: uniqueVerified };
 }
 
+/** `enrichment_state` é `string` (não `EnrichmentState`) de propósito — a
+ * origem Kit (#6185) nunca escreve um `EnrichmentState` propriamente dito
+ * (`normalizeKitBroadcast` não popula esse campo, `edition-cache-reader.ts`),
+ * e `resolveEnrichmentState` abaixo já aceita `unknown` e normaliza qualquer
+ * valor pra um dos 3 estados válidos — apertar o tipo aqui não pega nenhum
+ * bug a mais, só forçaria um cast em quem lê cache normalizado. */
 export interface PostCacheLike {
   id?: string;
   publish_date?: number | null;
-  stats?: { clicks?: ClickLike[]; enrichment_state?: EnrichmentState };
+  stats?: { clicks?: ClickLike[]; enrichment_state?: string };
 }
 
 /**
@@ -492,18 +516,21 @@ export function renderMarkdownTable(rows: RankingRow[]): string {
 
 // ── CLI ─────────────────────────────────────────────────────────────────
 
-function loadPostsCache(postsDir: string = POSTS_DIR): PostCacheLike[] {
-  if (!existsSync(postsDir)) return [];
-  return readdirSync(postsDir)
-    .filter((f) => f.endsWith(".json") && f !== "index.json")
-    .map((f) => {
-      try {
-        return JSON.parse(readFileSync(join(postsDir, f), "utf8")) as PostCacheLike;
-      } catch {
-        return null;
-      }
-    })
-    .filter((p): p is PostCacheLike => p !== null);
+/**
+ * Lê o cache Beehiiv + Kit combinado (#6185), fail-soft nos dois lados — ver
+ * nota "Origem Beehiiv/Kit" na docstring do módulo. Diretório Beehiiv
+ * ausente vira `[]` (não lança, ao contrário de `loadUnifiedEditionCache`
+ * cru — este script é só apoio informativo, nunca deve travar por dado
+ * ausente). Compartilhado por este script e por `select-boxes-by-clicks.ts`
+ * (mesmo par de origens, mesma exigência de fail-soft).
+ */
+export function loadUnifiedPostsCache(
+  beehiivDir: string = POSTS_DIR,
+  kitDir: string = DEFAULT_KIT_BROADCASTS_DIR,
+): PostCacheLike[] {
+  const beehiiv = existsSync(beehiivDir) ? loadBeehiivCache(beehiivDir) : [];
+  const kit = loadKitCache(kitDir); // já fail-soft — diretório ausente vira []
+  return mergeEditionsByDate(beehiiv, kit);
 }
 
 function main(): void {
@@ -525,7 +552,7 @@ function main(): void {
   const dirsByAammdd = enumerateEditionDirs(EDITIONS_DIR);
   const aammddList = listEditions(EDITIONS_DIR).slice(0, lastN);
   const snippets = loadSnippets();
-  const posts = loadPostsCache();
+  const posts = loadUnifiedPostsCache();
 
   const readReviewedMd = (aammdd: string): string | null => {
     const dir = dirsByAammdd.get(aammdd);

@@ -61,9 +61,17 @@
  *
  * Exit codes: 0 = sucesso (mesmo com 0 candidatos elegíveis — informativo,
  * nunca bloqueia), 1 = `data/editions` ausente, 2 = args inválidos.
+ *
+ * **Origem Beehiiv/Kit (#6185):** o cache de cliques por post vem de
+ * `loadUnifiedPostsCache` (`box-click-report.ts`, que por sua vez usa
+ * `scripts/lib/shared/edition-cache-reader.ts`) — lê os dois backends,
+ * fail-soft nos dois lados. Sem candidato Kit hoje na prática (nenhum
+ * escritor de cache Kit existe ainda, ver docstring de
+ * `edition-cache-reader.ts`), mas o caminho já está pronto pra quando
+ * existir, sem exigir mudança neste módulo.
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -75,11 +83,13 @@ import {
   findPostForEdition,
   isPostNeverEnriched, // #5153
   loadSnippets,
+  loadUnifiedPostsCache, // #6185 — cache Beehiiv + Kit, fail-soft nos dois lados
   sumClicksForUrl,
   type BoxSlot,
   type PostCacheLike,
   type SnippetInfo,
 } from "./box-click-report.ts";
+import { DEFAULT_KIT_BROADCASTS_DIR } from "./lib/shared/edition-cache-reader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
@@ -421,26 +431,15 @@ export interface ResolveBoxesOpts {
   autoCfg?: BoxesDivulgacaoAutoConfig;
   editionsDir?: string;
   postsDir?: string;
+  /** #6185 — dir do cache Kit (`data/kit-cache/broadcasts/`), fail-soft
+   * (ausente vira `[]`). Só usado quando a automação está `enabled`. */
+  kitBroadcastsDir?: string;
   snippetsDir?: string;
 }
 
 export interface ResolveBoxesResult {
   effective: ResolvedBoxes;
   selection: SlotSelectionRecord[];
-}
-
-function loadPostsCache(postsDir: string): PostCacheLike[] {
-  if (!existsSync(postsDir)) return [];
-  return readdirSync(postsDir)
-    .filter((f) => f.endsWith(".json") && f !== "index.json")
-    .map((f) => {
-      try {
-        return JSON.parse(readFileSync(join(postsDir, f), "utf8")) as PostCacheLike;
-      } catch {
-        return null;
-      }
-    })
-    .filter((p): p is PostCacheLike => p !== null);
 }
 
 const SLOT_KEY: Record<SlotNumber, "slot1" | "slot2" | "slot3"> = { 1: "slot1", 2: "slot2", 3: "slot3" };
@@ -489,7 +488,8 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   const editionsDir = opts.editionsDir ?? EDITIONS_DIR;
   const postsDir = opts.postsDir ?? POSTS_DIR;
-  const posts = loadPostsCache(postsDir);
+  const kitDir = opts.kitBroadcastsDir ?? DEFAULT_KIT_BROADCASTS_DIR;
+  const posts = loadUnifiedPostsCache(postsDir, kitDir);
   const dirsByAammdd = enumerateEditionDirs(editionsDir);
   const aammddList = listEditions(editionsDir).slice(0, autoCfg.lastN);
 
