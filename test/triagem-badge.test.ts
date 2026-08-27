@@ -63,6 +63,13 @@ for (const key of ["document", "window", "fetch"]) {
   json: async () => ({ generatedAt: new Date(0).toISOString(), issues: [], prs: [], execTrackUi: [], error: null, cached: false }),
 });
 
+// TS7016 — `triagem.js` é módulo `.js` puro sem `.d.ts` (mesmo padrão de
+// `triagem-module-loads.test.ts`, `studio-triagem-filters.test.ts` e todo
+// outro teste que importa direto de `scripts/studio-ui/public/*.js`; ver
+// `test/tsc-baseline.json`/`scripts/typecheck-ratchet.ts` — a baseline é
+// chaveada por arquivo+código, então um arquivo de teste NOVO precisa
+// suprimir localmente em vez de herdar a entrada já aceita de outro arquivo).
+// @ts-expect-error TS7016
 const { dispatchBadge } = await import("../scripts/studio-ui/public/triagem.js");
 
 after(() => {
