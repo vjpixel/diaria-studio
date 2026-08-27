@@ -46,4 +46,14 @@ nimbalyst-local/
 # que também não são commitados enquanto ARMADOS na máquina). Regenerável a
 # qualquer momento a partir de scripts/lib/scheduled-tasks.ts.
 .systemd-units/
+
+# #6347: diretórios temporários criados EM RUNTIME por vários testes
+# (test/backup-beehiiv.test.ts, test/normalize-newsletter.test.ts,
+# test/lint-newsletter-md.test.ts) via mkdirSync/writeFileSync, sempre
+# limpos no fim do caso via rmSync — nunca destinados a ir pro git. Sem esta
+# entrada, um crash de suíte no meio de um caso deixa resíduo no working
+# tree que um `git add -A` de sessão paralela pode commitar por engano
+# (foi o que aconteceu com test/_tmp_intentional_error/orphan_box_ok/
+# 02-reviewed.md, removido do rastreamento nesta mesma mudança — vazava
+# como deleção em qualquer PR alheia que rodasse a suíte localmente).
 test/_tmp_*/
