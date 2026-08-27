@@ -738,6 +738,38 @@ export const BLOCK_REASON =
   "{seu session_id}`), confirmar com `session-registry.ts check-merge-grant`, e só então tentar `gh pr " +
   "merge` de novo dentro do TTL da concessão.";
 
+/**
+ * Complemento ao `BLOCK_REASON` explicando POR QUE uma concessão de merge
+ * ESCOPADA (`--pr N`) não cobriu esta chamada (#6322 achado 2).
+ *
+ * Cenário que motivou: a coordenadora concede `grant-merge --granted-to X
+ * --pr 105`; a sessão `X` roda `gh pr merge` SEM número explícito (uso
+ * normal — o `gh` infere pela branch corrente). `extractGhPrMergeTargetPr`
+ * devolve `undefined`, `grantCoversTarget` fica `false` (a dúvida fecha, não
+ * abre — ver `shouldBlockGhPrMerge`), e o merge é bloqueado mesmo com
+ * concessão válida em mãos, sem que `BLOCK_REASON` mencionasse essa exigência
+ * em nenhum lugar — a sessão beneficiada via um bloqueio inexplicável.
+ */
+export const SCOPED_GRANT_HINT =
+  "Você tem uma concessão de merge ATIVA, mas ela é ESCOPADA a um PR específico (--pr N) e este `gh pr " +
+  "merge` não informou o número do PR explicitamente (o `gh` estava inferindo pela branch corrente) — ou " +
+  "informou um número diferente do PR concedido. Concessão escopada só cobre o PR exato dela: rode `gh pr " +
+  "merge <número-do-PR-concedido> ...` com o número explícito e tente de novo.";
+
+/**
+ * Monta a mensagem de bloqueio final. Quando existe concessão ESCOPADA para
+ * quem está chamando (`ctx.hasLiveGrant && ctx.grantPr !== undefined`) mas
+ * ela não cobriu esta chamada (`ctx.grantPr !== ctx.targetPr` — inclusive
+ * `targetPr` indeterminado), acrescenta `SCOPED_GRANT_HINT` ao final do
+ * `BLOCK_REASON` genérico, nomeando a exigência real em vez de deixar a
+ * sessão beneficiada sem explicação.
+ */
+export function buildBlockReason(ctx = {}) {
+  const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
+  const grantMissedTarget = hasScopedGrant && ctx.grantPr !== ctx.targetPr;
+  return grantMissedTarget ? `${BLOCK_REASON} ${SCOPED_GRANT_HINT}` : BLOCK_REASON;
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-gh-pr-merge-subagent-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -779,7 +811,7 @@ if (
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
-              permissionDecisionReason: BLOCK_REASON,
+              permissionDecisionReason: buildBlockReason(ctx),
             },
           }),
         );

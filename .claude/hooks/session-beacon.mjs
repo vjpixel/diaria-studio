@@ -98,7 +98,7 @@
 // si só), mas não prova mais paridade cruzada nenhuma — nem o título dos
 // testes lá afirma isso.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
@@ -169,14 +169,13 @@ export function resolveMainRepoRootNoSpawn(startDir, fs = { existsSync, readFile
   }
 }
 
-/** Helper injetável — `statSync(...).isDirectory()` sem importar statSync no contrato público. */
+/** Helper injetável — `statSync(...).isDirectory()` via import ESM real (`node:fs`). */
 function statIsDirectory(path) {
   try {
-    // eslint-disable-next-line no-undef
-    return require("node:fs").statSync(path).isDirectory();
+    return statSync(path).isDirectory();
   } catch {
     try {
-      // ESM: readdirSync lança ENOTDIR em arquivo, o que responde a mesma pergunta.
+      // Fallback: readdirSync lança ENOTDIR em arquivo, o que responde a mesma pergunta.
       readdirSync(path);
       return true;
     } catch {
