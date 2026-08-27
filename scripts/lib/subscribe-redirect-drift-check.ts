@@ -89,8 +89,11 @@ export interface DriftTarget {
   markerDescription: string;
 }
 
-/** Host `workers.dev` do Worker `diaria-site`, pré-cutover — mesma constante
- * usada pelo guard de pré-condição do `--cutover` (`scripts/lib/apex-cutover.ts`). */
+/** Destino do redirect `/subscribe` — perfil hospedado padrão da conta Kit
+ * (`workers/site/public/_redirects`). Não confundir com `WORKER_DEV_HOST`
+ * (host `workers.dev` do Worker `diaria-site`, importado abaixo de
+ * `scripts/lib/apex-cutover.ts`) — são hosts DIFERENTES: este é de
+ * terceiro (Kit), aquele é o nosso próprio Worker. */
 export const KIT_SUBSCRIBE_URL = "https://diar-ia-br.kit.com/";
 
 /**

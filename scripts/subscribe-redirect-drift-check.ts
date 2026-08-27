@@ -195,7 +195,16 @@ export async function checkTarget(
     let body: string | null = null;
     try {
       body = await res.text();
-    } catch {
+    } catch (bodyErr) {
+      // Não propaga (contrato "nunca lança" de checkTarget), mas loga a causa
+      // real — sem isso, uma falha de LEITURA do corpo (conexão truncada,
+      // encoding malformado) vira indistinguível de "página de erro
+      // genuína" no e-mail/issue de alarme (achado do fleet review da PR
+      // #6401, silent-failure-hunter, confiança alta): evaluateSubscribeDrift
+      // trata body=null como marcador ausente e o texto do alarme manda o
+      // editor conferir o Kit/redeploy do Worker — motivo errado se a causa
+      // real foi este read falhando localmente.
+      console.error(`${LOG_PREFIX} corpo ilegível em ${url} (status ${res.status}): ${(bodyErr as Error).message}`);
       body = null;
     }
     return { httpStatus: res.status, fetchError: null, body };
