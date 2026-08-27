@@ -111,7 +111,9 @@ export function loadState(statePath: string = STATE_PATH): OpensCatchupAlarmStat
     const consecutiveFailures = typeof raw.consecutiveFailures === "number" ? raw.consecutiveFailures : 0;
     const lastAlarmedAt = typeof raw.lastAlarmedAt === "string" || raw.lastAlarmedAt === null ? raw.lastAlarmedAt ?? null : null;
     const lastCheckedAt = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt ?? null : null;
-    return { consecutiveFailures, lastAlarmedAt, lastCheckedAt };
+    const lastStatusCheckedAt =
+      typeof raw.lastStatusCheckedAt === "string" || raw.lastStatusCheckedAt === null ? raw.lastStatusCheckedAt ?? null : null;
+    return { consecutiveFailures, lastAlarmedAt, lastCheckedAt, lastStatusCheckedAt };
   } catch {
     return emptyOpensCatchupAlarmState();
   }
