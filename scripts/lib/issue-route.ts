@@ -163,6 +163,14 @@ export const PROVENIENCE_LABELS: readonly string[] = [
  * Pra aplicar o par, use `--motivo conta-de-terceiro` (que adiciona
  * `external-blocker`): o `credencial-escopo` sobrevive no plano só se já
  * estiver na issue.
+ *
+ * `not-this-week`/`next-month` (#6272) — motivo = label (nome idêntico, ao
+ * contrário dos demais): são as duas únicas entradas cujo veredito
+ * (`bloqueada`) `routeIssue` (`scripts/route-issue.ts`) PAREIA
+ * automaticamente com um marcador `aguardando-ate:` auto-computado (ver
+ * `VAGUE_DEFERRAL_AUTO_DEFER_DAYS` abaixo) — o gap que a #6272 fechou: antes,
+ * a única forma de aplicar estas duas labels era `gh issue edit` manual, sem
+ * nenhum mecanismo de expiração.
  */
 export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   // bloqueada
@@ -170,6 +178,8 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   "plataforma": "beehiiv",
   "kit": "kit-migration",
   "execucao": "bloqueio-execucao",
+  "not-this-week": "not-this-week",
+  "next-month": "next-month",
   // epica — #6201: `epic-guarda-chuva` ganhou track próprio (era motivo de
   // `fora-de-rodada`). O motivo `epica` continua aqui por compatibilidade
   // (`--track epica --motivo epica` é equivalente a `--track epica` sozinho,
@@ -183,6 +193,35 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   "alarme-estado": "alarm",
   // overnight
   "alarme-evento": "alarm-evento",
+};
+
+/**
+ * #6272 — "not-this-week"/"next-month" são deferimento VAGO (sem data): a
+ * #6272 identificou que essas duas labels não tinham mecanismo de retorno —
+ * uma vez aplicadas, a issue ficava `bloqueada` pra sempre até o editor
+ * lembrar de remover a label à mão (achado: 10 issues, todas aplicadas
+ * manualmente em 48h, #6191). `routeIssue` (`scripts/route-issue.ts`) usa
+ * este mapa pra parear a label com um marcador `aguardando-ate:`
+ * auto-computado (`now + N dias`) sempre que `--track bloqueada --motivo`
+ * for uma destas duas chaves — o marcador **desarma sozinho** (mecanismo já
+ * existente e testado de `wait-until-sync.ts`), e o padrão 1 de
+ * `backlog-reconcile.ts` (#6198, marcador × label de deferimento em
+ * conflito) já sabe resolver a coexistência: enquanto o marcador for futuro,
+ * ele vence na precedência de `classifyExecTrack` (`agendada` antes de
+ * `bloqueada`, passo 4 < passo 5) e a reconciliação diária remove a label
+ * vaga como sinal obsoleto; expirado o marcador, a issue volta sozinha ao
+ * fluxo normal (`overnight`) sem ninguém precisar lembrar. Nenhuma lógica
+ * NOVA de expiração foi necessária em `backlog-reconcile.ts` — só garantir
+ * que o marcador exista desde a escrita, que é o que faltava.
+ *
+ * `next-month` usa 30 dias (não um cálculo de calendário exato — "~1 mês" é
+ * granularidade suficiente pro propósito de "reaparecer na fila", igual ao
+ * resto do mecanismo, que já trabalha em dias corridos, não em meses de
+ * calendário).
+ */
+export const VAGUE_DEFERRAL_AUTO_DEFER_DAYS: Readonly<Record<string, number>> = {
+  "not-this-week": 7,
+  "next-month": 30,
 };
 
 /** Labels de bloqueio específicas que `route-issue.ts` preserva ao rotear

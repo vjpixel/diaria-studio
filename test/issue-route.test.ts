@@ -74,6 +74,13 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     ["bloqueada", "plataforma"],
     ["bloqueada", "kit"],
     ["bloqueada", "execucao"],
+    // #6272 — deferimento vago; o round-trip PURO aqui (planRouteLabels +
+    // classifyExecTrack sem body/marcador) ainda classifica "bloqueada" —
+    // o pareamento com o marcador aguardando-ate: é responsabilidade de
+    // routeIssue (I/O), coberto em describe("routeIssue — deferimento vago
+    // #6272") mais abaixo, não deste round-trip puro.
+    ["bloqueada", "not-this-week"],
+    ["bloqueada", "next-month"],
     // epica (#6201 — motivo "epica" pareado com o track próprio, não mais
     // "fora-de-rodada": epic-guarda-chuva ganhou precedência acima de
     // BLOCKED_LABELS, então classifica "epica", não "fora-de-rodada")
@@ -497,6 +504,92 @@ describe("routeIssue --motivo #6197 item 2", () => {
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /motivo desconhecido/);
     assert.equal(gh.calls.length, 0);
+  });
+});
+
+describe("routeIssue — deferimento vago #6272 (not-this-week/next-month grava marcador auto-computado)", () => {
+  it("--track bloqueada --motivo not-this-week grava aguardando-ate D+7 e valida como agendada", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6272,
+      track: "bloqueada",
+      motivo: "not-this-week",
+      reason: "revisar a estrategia de rampa antes de decidir",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    // O resolvido pos-escrita e "agendada" (marcador futuro vence deferimento
+    // vago na precedencia de classifyExecTrack) — comportamento esperado,
+    // nao um bug de validacao (ver comentario em routeIssue, passo 4).
+    assert.equal(result.resolvedTrack, "agendada");
+    assert.deepEqual(result.labelsAdded, ["not-this-week"]);
+    assert.ok(gh.state.labels.includes("not-this-week"));
+    assert.match(gh.state.body, /<!-- aguardando-ate: 2026-09-02 -->/);
+    assert.ok(gh.state.comments[0].includes("aguardando-ate: 2026-09-02"));
+  });
+
+  it("--track bloqueada --motivo next-month grava aguardando-ate D+30", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6273,
+      track: "bloqueada",
+      motivo: "next-month",
+      reason: "aguardando fechamento do ciclo Clarice atual",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    assert.equal(result.resolvedTrack, "agendada");
+    assert.deepEqual(result.labelsAdded, ["next-month"]);
+    assert.match(gh.state.body, /<!-- aguardando-ate: 2026-09-25 -->/);
+  });
+
+  it("marcador auto-computado + label sobrevivem ate a data expirar (round-trip com classifyExecTrack)", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({
+      issue: 6274,
+      track: "bloqueada",
+      motivo: "not-this-week",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    // Enquanto o marcador for futuro, a issue le "agendada" — visivel na
+    // fila como deferimento com data, nao mais um bloqueio sem retorno.
+    assert.equal(
+      classifyExecTrack({ labels: gh.state.labels, body: gh.state.body, state: "OPEN", now: new Date("2026-08-30T00:00:00Z") }),
+      "agendada",
+    );
+    // Expirado o marcador, SE a label not-this-week ainda estiver presente
+    // (backlog-reconcile.ts padrao 1, #6198, e quem normalmente a remove
+    // antes disso), a issue volta a "bloqueada" — nunca "overnight" so por
+    // ter o marcador expirado com o deferimento vago intacto. E exatamente
+    // o gap que motivou a reconciliacao diaria remover a label assim que
+    // detecta o marcador coexistindo (nao esperar a expiracao) — ver padrao
+    // 1 de backlog-reconcile.ts.
+    assert.equal(
+      classifyExecTrack({ labels: gh.state.labels, body: gh.state.body, state: "OPEN", now: new Date("2026-09-10T00:00:00Z") }),
+      "bloqueada",
+    );
+  });
+
+  it("bloqueada sem motivo de deferimento vago (ex: conta-de-terceiro) nao grava marcador", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6275,
+      track: "bloqueada",
+      motivo: "conta-de-terceiro",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.resolvedTrack, "bloqueada");
+    assert.equal(gh.state.body, "");
   });
 });
 
