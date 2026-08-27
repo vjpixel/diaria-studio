@@ -46,3 +46,4 @@ nimbalyst-local/
 # que também não são commitados enquanto ARMADOS na máquina). Regenerável a
 # qualquer momento a partir de scripts/lib/scheduled-tasks.ts.
 .systemd-units/
+test/_tmp_*/
