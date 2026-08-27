@@ -118,6 +118,27 @@
  * nunca AUMENTA o backfill além do que já era possível (slots livres e
  * circuit breaker de campanha continuam valendo como teto) — só reduz.
  *
+ * ## Pool Pending é FINITO pós-switchover (#6339, medido ao vivo 26/08/2026)
+ *
+ * Este script lê `status=pending` da Beehiiv — assinantes que se
+ * cadastraram mas nunca confirmaram o double opt-in. Até o switchover do
+ * #6114 (`platform.config.json` → `publishing.newsletter.backend = "kit"`),
+ * todo cadastro novo passava pela Beehiiv primeiro, então esse pool crescia
+ * organicamente. Desde que os 3 workers de assinatura passaram a
+ * `SUBSCRIBE_BACKEND=kit` (achado da issue #6339), cadastro novo NUNCA MAIS
+ * vira `pending` na Beehiiv — o pool parou de crescer e é, a partir de
+ * agora, um conjunto FIXO (636 scored, medido 26/08/2026, ver
+ * `data/pending-reativacao/pending-scored-computed.csv`).
+ *
+ * **Isto NÃO é um bug nem uma regressão a investigar** — é a consequência
+ * esperada do switchover. Cada rodada de `evaluate-brevo-diaria.ts` que
+ * promove/suprime/detecta descadastro nativo de um contato reduz o pool
+ * elegível (nunca aumenta), então o esvaziamento gradual da fila
+ * `in_brevo` até zero é o desfecho NORMAL deste canal, não um sinal de
+ * falha de ingestão. Se `computeContactsToIngest` devolver cada vez menos
+ * candidatos ao longo das semanas, a leitura correta é "o pool está
+ * secando, como esperado" — nunca "algo parou de funcionar aqui".
+ *
  * ## Uso
  *
  *   npx tsx scripts/sync-pending-to-brevo.ts              # dry-run (default)
