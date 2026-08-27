@@ -71,8 +71,6 @@ export function extractPageMeta(html: string): { title: string; description: str
   };
 }
 
-export const HOME_FEATURE_URL_PREFIX = "https://diar.ia.br/p/";
-
 /**
  * Monta a lista de edições reais (mais recente primeiro) a partir do
  * `sitemap.xml` já commitado + um reader de página injetado (produção lê
