@@ -529,4 +529,66 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
       cleanup();
     }
   });
+
+  it("#6185: edição de origem Kit (kitBroadcastsDir) entra no ranking ao lado de edições Beehiiv", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    const kitDir = join(postsDir, "..", "kit-broadcasts");
+    mkdirSync(kitDir, { recursive: true });
+    try {
+      writeSnippet(snippetsDir, "kit-winner.md", "Kit Winner", "https://x.com/kit-winner");
+      writeSnippet(snippetsDir, "beehiiv-loser.md", "Beehiiv Loser", "https://x.com/beehiiv-loser");
+
+      // Edição de origem Kit, NÃO imediatamente anterior à atual (260820, vs.
+      // atual 260827) — de propósito, pra não disparar a anti-repetição do
+      // critério 3 (#4626), que bane só a box da edição IMEDIATAMENTE
+      // anterior. Sem escritor real de cache Kit hoje, mas o contrato de
+      // leitura (`clicks` anexado ao raw broadcast) já está pronto, ver
+      // docstring de edition-cache-reader.ts.
+      writeEdition(
+        editionsDir,
+        "260820",
+        `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**📚 Kit Winner**\n\n[Link](https://x.com/kit-winner)\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`,
+      );
+      writeFileSync(
+        join(kitDir, "broadcast_1.json"),
+        JSON.stringify({
+          id: 1,
+          subject: "Edição Kit",
+          status: "completed",
+          published_at: "2026-08-20T09:00:00Z",
+          clicks: [
+            { id: 1, url: "https://x.com/kit-winner", unique_clicks: 9, click_to_delivery_rate: 0.2, click_to_open_rate: 0.4 },
+          ],
+        }),
+      );
+
+      // Edição Beehiiv IMEDIATAMENTE anterior à atual, com clique bem menor
+      // — cobre anti-repetição (banida por ser a edição anterior) E ranking
+      // (perderia pra kit-winner mesmo sem a anti-repetição, já que 1 < 9).
+      writeEdition(
+        editionsDir,
+        "260826",
+        `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**📚 Beehiiv Loser**\n\n[Link](https://x.com/beehiiv-loser)\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`,
+      );
+      writePost(postsDir, "p826", "2026-08-26", "https://x.com/beehiiv-loser", 1);
+
+      const { effective, selection } = resolveBoxesForEdition({
+        aammdd: "260827",
+        boxesCfg: { slot0: null, slot1: "current1.md", slot2: null, slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        kitBroadcastsDir: kitDir,
+        snippetsDir,
+      });
+
+      // kit-winner.md tem o score mais alto (9 cliques do Kit, via
+      // unique_clicks — #6185 aproximação documentada) — sem isso ser lido,
+      // o slot1 cederia pro valor já configurado (current1.md).
+      assert.equal(effective.slot1, "kit-winner.md");
+      assert.equal(selection.find((s) => s.slot === 1)!.mode, "auto");
+    } finally {
+      cleanup();
+    }
+  });
 });
