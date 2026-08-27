@@ -247,8 +247,9 @@ describe("stitchNewsletter (#1463)", () => {
         sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100, VÍDEO subiu pra
-      // antes de LANÇAMENTOS em #3820): coverage > D1 > D2 > D3 >
-      // É IA? > USE MELHOR > VÍDEO > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
+      // antes de LANÇAMENTOS em #3820, USE MELHOR > LANÇAMENTOS > É IA? em
+      // #6323): coverage > D1 > D2 > D3 >
+      // USE MELHOR > LANÇAMENTOS > É IA? > VÍDEO > RADAR > ERRO > SORTEIO > PARA ENCERRAR
       // RADAR mergea radar + radar em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
       const d2Pos = result.indexOf("DESTAQUE 2");
@@ -830,7 +831,7 @@ describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 2607
   });
 });
 
-describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, decisão editorial 260722)", () => {
+describe("#6323 — LANÇAMENTOS antes de VÍDEOS (substitui a ordem #3820 VÍDEOS-antes-de-LANÇAMENTOS — É IA? agora entra entre as duas)", () => {
   function setupEdition() {
     const dir = mkdtempSync(join(tmpdir(), "stitch-video-lancamentos-"));
     const internalDir = join(dir, "_internal");
@@ -841,7 +842,7 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
     return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
 
-  it("com LANÇAMENTOS e VÍDEO presentes, VÍDEO aparece antes de LANÇAMENTOS no MD final", () => {
+  it("com LANÇAMENTOS e VÍDEO presentes, LANÇAMENTOS aparece antes de É IA?, que aparece antes de VÍDEO, no MD final", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       writeFileSync(
@@ -860,11 +861,16 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
         editionDir: dir,
         sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
-      const videoPos = result.indexOf("📺 VÍDEO");
       const lancPos = result.indexOf("🚀 LANÇAMENTO");
-      assert.ok(videoPos > 0, "seção VÍDEO deve aparecer");
+      const eiaPos = result.indexOf("É IA?");
+      const videoPos = result.indexOf("📺 VÍDEO");
       assert.ok(lancPos > 0, "seção LANÇAMENTOS deve aparecer");
-      assert.ok(videoPos < lancPos, `VÍDEO deve vir antes de LANÇAMENTOS (video=${videoPos} lanc=${lancPos})`);
+      assert.ok(eiaPos > 0, "bloco É IA? deve aparecer");
+      assert.ok(videoPos > 0, "seção VÍDEO deve aparecer");
+      assert.ok(
+        lancPos < eiaPos && eiaPos < videoPos,
+        `LANÇAMENTOS < É IA? < VÍDEO (lanc=${lancPos} eia=${eiaPos} video=${videoPos})`,
+      );
     } finally {
       cleanup();
     }

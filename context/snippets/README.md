@@ -63,10 +63,12 @@ Se a chave `boxes_divulgacao` estiver ausente do config inteiro,
 `stitchNewsletter` cai no default legado pré-#2978 (livros no slot 1, nada
 nos slots 2/3 — back-compat).
 
-**#3476: É IA? muda de posição** — passa a renderizar DEPOIS da seção USE
-MELHOR (antes ficava fixo logo após o último destaque, #2546). Se a edição
-não tiver USE MELHOR, É IA? cai logo após o slot 3 (nunca desaparece,
-#1085) — ver `renderHTML` em `scripts/lib/newsletter-render-html.ts`.
+**#6323: É IA? renderiza DEPOIS da seção LANÇAMENTOS** (substitui a posição
+#3476 "depois de USE MELHOR"; antes disso ficava fixo logo após o último
+destaque, #2546). Se a edição não tiver LANÇAMENTOS, cai no fallback
+anterior (depois de USE MELHOR); sem nenhuma das duas, É IA? cai logo após
+o slot 3 (nunca desaparece, #1085) — ver `renderHTML` em
+`scripts/lib/newsletter-render-html.ts`.
 
 **Idempotência:** se a lacuna/região do slot já tiver um box colado
 manualmente pelo editor (`boxAlreadyPresentInGap`/
