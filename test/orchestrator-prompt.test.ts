@@ -246,7 +246,12 @@ describe("orchestrator-prompt (#634)", () => {
       // objetivo é sobreviver a corte de contexto DENTRO do próprio stage,
       // não só entre stages. Arquivo foi a 791 linhas. Teto bumped de
       // 780→800 com headroom pequeno.
-      "orchestrator-stage-4.md": 800,
+      // #6171: +10 linhas líquidas — "Fluxo pós-gate" reescrita para PARAR
+      // sempre (mesmo vindo de `/diaria-edicao`) em vez de encadear pra
+      // `orchestrator-stage-5.md` na mesma sessão: fecha a fronteira de
+      // contexto pós-gate-4 que sobrava depois do #5744 cobrir Stages 1-4.
+      // Arquivo foi a 810 linhas. Teto bumped de 800→820 com headroom pequeno.
+      "orchestrator-stage-4.md": 820,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser

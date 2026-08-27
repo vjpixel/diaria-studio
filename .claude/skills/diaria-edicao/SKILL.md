@@ -1,11 +1,11 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da diar.ia.br (5 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
+description: Roda as Etapas 1-4 da diar.ia.br (Pesquisa → Revisão). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`. Etapas 5-6 rodam em sessão separada — ver "Fronteira de contexto pós-gate 4" (#6171).
 ---
 
 # /diaria-edicao
 
-Executa a pipeline completa da diar.ia.br. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o gate humano principal é no Stage 4 (Revisão) antes do dispatch dos publishers. Editor revisa HTML preview + social; aprovado → Stage 5 (Publicação) dispara.
+Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revisão). **Modo default: pre-gate** (#1523) — Stages 1-3 rodam auto-approve, o gate humano é no Stage 4 (Revisão); editor revisa HTML preview + social. Aprovado o gate, a sessão termina e instrui os comandos `/diaria-5-publicacao`/`/diaria-6-agendamento` numa sessão nova (#6171, ver "Fronteira de contexto pós-gate 4" no Passo 2b) — este comando não dispatcha publishers sozinho.
 
 ## Argumentos
 
@@ -13,7 +13,7 @@ Executa a pipeline completa da diar.ia.br. **Modo default: pre-gate** (#1523) �
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
 - `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
 - `--no-gates` (opcional) = pular TODOS os gates, inclusive o gate de revisão do Stage 4 e a confirmação interativa do Stage 5. Auto-aprova tudo. Social scheduling e demais comportamentos permanecem normais.
-- `--skip {canal[,canal...]}` (opcional, CSV) = encaminha lista de canais ao Stage 5 como `skip_channels`. Canais suportados: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo` (#5772 — canal Brevo diária, segmento Pending/reativação). Canais listados ficam `pending_manual` no consent (`build-publish-consent.ts --skip "{lista}"`, path 1 de §5b); o Stage 5 executa pré-render completo mas NÃO dispatcha esses canais. Sem `--skip`, o comportamento default do Stage 5 (#1326) se aplica — se editor não responder ao gate interativo, tudo é automático. Use `--skip newsletter,linkedin,facebook` em runs headless/automáticas (Task Scheduler) para impedir dispatch sem supervisão (#2068).
+- `--skip {canal[,canal...]}` (opcional, CSV) = **desde #6171, `/diaria-5-publicacao` roda numa sessão separada (ver "Fronteira de contexto pós-gate 4") — este comando não repassa `--skip` automaticamente.** Se passado aqui, a mensagem de próximo passo pós-gate 4 já inclui `--skip {lista}` no comando `/diaria-5-publicacao` sugerido (não precisa lembrar de repetir manualmente, só confirmar o comando impresso antes de rodar). Canais suportados: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo` (#5772 — canal Brevo diária, segmento Pending/reativação). Sem `--skip`, o comportamento default do Stage 5 (#1326) se aplica — tudo automático. Ver `--skip` também documentado direto em `/diaria-5-publicacao` (mesma flag, mesmo efeito).
 
 ## Pré-requisitos
 
@@ -134,8 +134,8 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
 - `window_days = {valor confirmado no Passo 1}`
 - `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523). **Desde o #5744 os Stages 1-3 nem rodam aqui** (ver Passo 2): eles são spawnados por `run-edition-stages.ts`, que já passa `--no-gates` a cada um. Esta linha só continua valendo para uma execução manual do playbook inteiro no top-level, fora do fluxo normal.
-- `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate de revisão; Stage 5 apresenta confirmação de canais)
-- `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 5 §5b; se não-vazio, Stage 5 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
+- `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate de revisão)
+- `skip_channels = {csv passado em --skip, ou vazio}` — **não encaminhado internamente a nenhum stage** (Stage 5 nunca roda nesta sessão, ver "Fronteira de contexto pós-gate 4"). Serve só pra compor o comando `/diaria-5-publicacao {AAMMDD} --skip "{skip_channels}"` impresso na mensagem de próximo passo, quando não-vazio.
 
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde o #5744, entrar direto na § 4** — as três primeiras já rodaram nos processos spawnados no Passo 2, e a § 0 junto com elas:
@@ -148,19 +148,27 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde 
   1. Pré-render técnico (HTML + imagens + upload Worker + close-poll)
   2. **GATE HUMANO** — apresenta resumo consolidado: destaques, títulos, links, lints, preview HTML + social ao editor
   3. Aprovado → grava sentinel `.step-4-done.json`
-  → aguarda Stage 5
-- **§ 5 Etapa 5 — Publicação** (prereq: sentinel Stage 4 aprovado):
-  1. Confirmação de canais (interativa ou via `--skip`)
-  2. Dispatch publishers paralelos (Beehiiv + Facebook + LinkedIn)
-  3. Test email + review loop
-  4. Auto-reporter + relatório por email
-  → fim
+  → **PARE** (ver "Fronteira de contexto pós-gate 4" abaixo). `/diaria-edicao` termina aqui — Etapas 5 e 6 rodam como comandos separados.
 
-**Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 gate de revisão é o único ponto de interação antes do dispatch. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor no gate de revisão; Stage 5 executa em sequência após aprovação.
+**Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 gate de revisão é o único ponto de interação antes do fim deste comando. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor no gate de revisão.
 
-**Se `--no-gates`:** auto-aprovar TUDO, inclusive o gate do Stage 4 e a confirmação interativa do Stage 5. Pipeline roda fim-a-fim sem interação.
+**Se `--no-gates`:** auto-aprovar Stages 1-3 e a confirmação do gate do Stage 4. `/diaria-edicao --no-gates` ainda termina no fim do Stage 4 — `--no-gates` pula CONFIRMAÇÕES, não a fronteira de sessão (ver abaixo). Etapa 5 (que teria dispatchado publishers automaticamente) só roda ao rodar `/diaria-5-publicacao {AAMMDD}` explicitamente.
 
-Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
+### Fronteira de contexto pós-gate 4 (#6171)
+
+`/diaria-edicao` **não** encadeia para a Etapa 5 no fim do Stage 4, mesmo tendo rodado as Etapas 1-4 na mesma invocação. Medição do #6171 (edição 260826, sessão de 989 turnos): o gate do Stage 4 sozinho — 433 turnos, 1h49 de revisão humana — inflou o contexto residente a ponto das Etapas 5 e 6 relerem esse histórico a cada tool call, ~268M tokens de `cache_read` evitáveis (a maior fatia dos ~US$115 da edição). Diferente dos Stages 1-3 (§Passo 2, #5744), que já rodam num processo `claude` isolado porque não têm gate, a Etapa 4 PRECISA da sessão do editor — não dá pra spawná-la headless. A fronteira segura fica então DEPOIS do gate: ao aprovar (ou auto-aprovar com `--no-gates`), o orchestrator escreve o sentinel do Stage 4, imprime as instruções de próximo passo, e a sessão termina — sem ler `orchestrator-stage-5.md`.
+
+O editor (ou a automação que estiver conduzindo a sessão) abre uma sessão NOVA e roda:
+```
+/diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
+```
+seguido, quando esse comando terminar, de:
+```
+/diaria-6-agendamento {AAMMDD}
+```
+Cada uma dessas skills já é resumível via arquivo (#5578) — lê o estado da edição em `data/editions/{AAMMDD}/` e `_internal/`, não depende de nada que só existisse na conversa do Stage 4. O comportamento de publicação em si (dispatch automático dos canais, gates de Stage 5/6) **não muda** — só o ponto onde a sessão para de acumular contexto muda. Ver detalhe completo em `orchestrator-stage-4.md` §"Fluxo pós-gate — fronteira de contexto (#6171)".
+
+Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup — **com o teto do Stage 4 aplicado por cima**: se o § 0b determinar que o próximo stage acionável é 5 ou 6 (ex: sentinel `.step-4-done.json` já existe de uma run anterior), `/diaria-edicao` não lê `orchestrator-stage-5.md`/`orchestrator-stage-6.md` mesmo assim — imprime a mesma mensagem de "Fronteira de contexto pós-gate 4" acima e termina. O § 0b continua sendo a fonte de verdade sobre QUAL stage é o próximo; só quem decide SE esta sessão o executa é o teto do `/diaria-edicao`.
 
 ## Execução stage-a-stage com contexto limpo (#5414) — recomendado, custo bem menor
 
@@ -168,7 +176,7 @@ Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular p
 
 Rodar stage a stage já era suportado antes desta issue (as skills isoladas `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`, `/diaria-6-agendamento` sempre existiram, e o resume via sentinelas em disco já era o mecanismo padrão). O que faltava era **descartar o contexto entre stages com segurança**: os playbooks tinham 17 pontos que mandavam "setar em sessão" / "capturar como" — sinais de saúde de MCP/REST apurados no Stage 0 (`CHROME_MCP`, `GMAIL_MCP`, `BEEHIIV_MCP`, `CLARICE_REST`, `CLOUDFLARE_TOKEN_OK`), o dispatch do É IA? em background (Stage 1 → Stage 3), e 2 valores computados no meio do Stage 4 (`whatsapp_url`, `meta_description_suggestion`) — cujo único lugar de existência era a conversa. Fechado pelo #5414: esses 9 valores agora são persistidos em `{EDITION_DIR}/_internal/` (`preflight-state.json`, `eia-dispatch-state.json`, `stage4-capture-state.json` — ver `scripts/lib/preflight-state.ts`, `scripts/lib/eia-dispatch-state.ts`, `scripts/lib/stage4-capture-state.ts`) e cada stage que precisa deles lê do disco no próprio início, em vez de depender de "lembrar" da conversa.
 
-**Na prática:** abrir uma sessão nova por stage é seguro e é o jeito recomendado de economizar token numa edição — encerrar a sessão depois de `/diaria-1-pesquisa`, abrir outra pra `/diaria-2-escrita {AAMMDD}`, e assim por diante, cada uma com contexto limpo (só o system prompt + CLAUDE.md + o playbook do próprio stage). O resume via sentinelas em disco (§0b do Stage 0, e o preflight de sentinel no início de cada stage isolado) garante que a sessão nova retome exatamente de onde a anterior parou. `/diaria-edicao` numa sessão única continua funcionando igual — nada neste ponto mudou o comportamento dela, só passou a ser opcional manter tudo numa conversa só.
+**Na prática:** abrir uma sessão nova por stage é seguro e é o jeito recomendado de economizar token numa edição — encerrar a sessão depois de `/diaria-1-pesquisa`, abrir outra pra `/diaria-2-escrita {AAMMDD}`, e assim por diante, cada uma com contexto limpo (só o system prompt + CLAUDE.md + o playbook do próprio stage). O resume via sentinelas em disco (§0b do Stage 0, e o preflight de sentinel no início de cada stage isolado) garante que a sessão nova retome exatamente de onde a anterior parou. `/diaria-edicao` já aplica essa mesma receita automaticamente para as Etapas 1-3 (Passo 2, subprocessos via `run-edition-stages.ts`, #5744) e para a fronteira pós-Etapa-4 (acima, #6171) — o que resta opcional é só quebrar as Etapas 1-4 em sessões manuais adicionais, se o editor quiser medir custo por stage individualmente.
 
 **O que isso não cobre:** só os 9 valores acima foram auditados e persistidos. Se uma sessão nova de algum stage notar um comportamento diferente do que rodar tudo numa conversa só (algo que só existia "na cabeça" do stage anterior e não em nenhum arquivo), é sinal de mais um ponto não identificado — reportar em issue nova (o #5419 cobre rodar uma edição de controle formal comparando os dois modos; até lá, tratar qualquer divergência como achado a investigar, não como esperado).
 

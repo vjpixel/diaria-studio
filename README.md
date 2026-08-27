@@ -18,7 +18,7 @@ cd diaria-studio
 npm ci
 claude                              # abre Claude Code neste diretório
 /mcp                                # confirma MCPs conectados
-/diaria-edicao 260425               # roda pipeline completa da edição
+/diaria-edicao 260425               # roda Etapas 1-4 (pesquisa até revisão/gate)
 ```
 
 Setup completo (tokens, MCPs, extensões) está documentado em [`CLAUDE.md`](./CLAUDE.md).
@@ -29,7 +29,7 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 | Skill | O que faz |
 |---|---|
-| `/diaria-edicao AAMMDD [--no-gates]` | Pipeline completa (5 etapas). Retoma do ponto que parou se interrompido. |
+| `/diaria-edicao AAMMDD [--no-gates]` | Etapas 1-4 (pesquisa → revisão/gate). Retoma do ponto que parou se interrompido; após o gate, instrui `/diaria-5-publicacao`/`/diaria-6-agendamento` numa sessão nova (#6171). |
 | `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
 | `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
 | `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
