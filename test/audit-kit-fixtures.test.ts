@@ -28,7 +28,7 @@ describe("runAudit (#6336)", () => {
     try {
       const deps: AuditDeps = {
         fetchSubscribers: async () => [
-          { id: 1, email_address: "leitor.real@empresa.com.br", state: "active" },
+          { id: 1, email_address: "leitor.real@empresa.com.br", state: "active", created_at: "2026-08-24T00:00:00Z" },
         ],
         log: silentLog(),
       };
@@ -46,7 +46,7 @@ describe("runAudit (#6336)", () => {
     try {
       const deps: AuditDeps = {
         fetchSubscribers: async () => [
-          { id: 1, email_address: "ana@example.com", state: "active" },
+          { id: 1, email_address: "ana@example.com", state: "active", created_at: "2026-08-24T00:00:00Z" },
         ],
         log: silentLog(),
       };
@@ -65,7 +65,7 @@ describe("runAudit (#6336)", () => {
     try {
       const deps: AuditDeps = {
         fetchSubscribers: async () => [
-          { id: 1, email_address: "ana@example.com", state: "cancelled" },
+          { id: 1, email_address: "ana@example.com", state: "cancelled", created_at: "2026-08-24T00:00:00Z" },
         ],
         log: silentLog(),
       };
