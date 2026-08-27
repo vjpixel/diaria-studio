@@ -85,7 +85,7 @@ describe("isPublishedPost / selectPublishedPosts", () => {
   });
 });
 
-describe("derivePageTitle / deriveMetaDescription (#5101 item 2)", () => {
+describe("derivePageTitle / deriveMetaDescription (#5101 item 2, #6281)", () => {
   it("usa meta_default_title quando presente", () => {
     assert.equal(derivePageTitle(makePost({ meta_default_title: "Título SEO" })), "Título SEO");
   });
@@ -94,29 +94,71 @@ describe("derivePageTitle / deriveMetaDescription (#5101 item 2)", () => {
     assert.equal(derivePageTitle(makePost()), "Exemplo de edição");
   });
 
-  it("usa meta_default_description quando presente", () => {
+  // #6281: meta_default_description NÃO tem mais prioridade sobre a
+  // própria edição — medido ao vivo no cache real, ~42% dos posts têm esse
+  // campo POPULADO com o MESMO bug (subtitle disfarçado, descreve só os
+  // outros destaques). Só é usado quando `ownEditionDescription` não dá pra
+  // montar (title vazio).
+  it("ignora meta_default_description quando title (própria edição) está disponível — evita reproduzir o bug do #6281 nesse campo", () => {
     assert.equal(
-      deriveMetaDescription(makePost({ meta_default_description: "Description SEO" })),
+      deriveMetaDescription(makePost({ meta_default_description: "Description SEO de outro destaque" })),
+      "Exemplo de edição. Subtítulo da edição",
+    );
+  });
+
+  it("cai pra meta_default_description só quando a própria edição não é derivável (title vazio)", () => {
+    assert.equal(
+      deriveMetaDescription(
+        makePost({ title: "", subtitle: null, preview_text: null, meta_default_description: "Description SEO" }),
+      ),
       "Description SEO",
     );
   });
 
-  it("cai pra subtitle quando meta_default_description é null", () => {
-    assert.equal(deriveMetaDescription(makePost()), "Subtítulo da edição");
-  });
-
-  it("cai pra preview_text quando subtitle e meta_default_description faltam", () => {
+  // #6281: subtitle/preview_text NUNCA descrevem a PRÓPRIA página sozinhos —
+  // na diária, por construção editorial, são o teaser dos OUTROS destaques
+  // (D2/D3) da mesma edição, não da página cujo <title> é o destaque D1
+  // (post.title). A description agora começa pelo D1 (bate com <title>) e
+  // só complementa com subtitle/preview_text.
+  it("combina title (D1, bate com <title> da página) + subtitle (D2/D3), ignorando meta_default_description", () => {
     assert.equal(
-      deriveMetaDescription(makePost({ subtitle: null })),
-      "Preview text da edição",
+      deriveMetaDescription(makePost()),
+      "Exemplo de edição. Subtítulo da edição",
     );
   });
 
-  it("nunca fica vazio — cai pro título e depois pro fallback genérico", () => {
+  it("cai pra title + preview_text quando só subtitle falta", () => {
+    assert.equal(
+      deriveMetaDescription(makePost({ subtitle: null })),
+      "Exemplo de edição. Preview text da edição",
+    );
+  });
+
+  it("cai só pro title quando subtitle e preview_text faltam — nunca description de outros destaques sem o próprio", () => {
+    assert.equal(deriveMetaDescription(makePost({ subtitle: null, preview_text: null })), "Exemplo de edição");
+  });
+
+  it("nunca fica vazio — cai pro fallback genérico quando nem title sobra", () => {
     const desc = deriveMetaDescription(
       makePost({ subtitle: null, preview_text: null, title: "" }),
     );
     assert.ok(desc.length > 0);
+  });
+
+  it("trunca em ~155 chars sem cortar no meio de palavra, com reticências", () => {
+    const post = makePost({
+      title: "Título bem longo da edição que já ocupa boa parte do orçamento de caracteres disponível",
+      subtitle:
+        "E aqui vem um teaser dos outros destaques que também é bem comprido, o suficiente pra estourar o limite de 155 caracteres da meta description padrão de SEO",
+    });
+    const desc = deriveMetaDescription(post);
+    assert.ok(desc.length <= 156, `esperado <=156 chars, veio ${desc.length}`);
+    assert.ok(desc.endsWith("…"));
+    assert.ok(!/\s…$/.test(desc), "não deve sobrar espaço colado nas reticências");
+  });
+
+  it("não trunca description curta — passa intacta", () => {
+    assert.equal(deriveMetaDescription(makePost()), "Exemplo de edição. Subtítulo da edição");
   });
 });
 
@@ -139,17 +181,23 @@ describe("buildArchivePageHtml", () => {
     assert.equal((html.match(/lang=/g) ?? []).length, 1);
   });
 
-  it("injeta title, meta description e canonical no <head>", () => {
+  it("injeta title, meta description (própria edição, #6281) e canonical no <head>", () => {
     const html = buildArchivePageHtml(makePost());
     assert.match(html, /<title>Exemplo de edição<\/title>/);
-    assert.match(html, /<meta name="description" content="Subtítulo da edição">/);
+    assert.match(html, /<meta name="description" content="Exemplo de edição\. Subtítulo da edição">/);
     assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/p\/exemplo-de-edicao">/);
   });
 
-  it("escapa HTML na description pra não quebrar o atributo (aspas/&)", () => {
-    const post = makePost({ subtitle: 'Preço "especial" & imposto' });
+  // #6281: escaping deve acontecer EXATAMENTE 1x — content="..." usa &quot;
+  // pra representar a aspa literal (correto por spec de HTML: navegador e
+  // crawler decodificam de volta pra `"` ao ler o atributo); &amp;quot;
+  // (dupla-escapada) seria o bug real, nunca visto no código atual — este
+  // teste trava essa distinção pra não regredir.
+  it("escapa HTML na description pra não quebrar o atributo (aspas/&), exatamente 1x — não double-escaping", () => {
+    const post = makePost({ title: 'Preço "especial"', subtitle: "& imposto" });
     const html = buildArchivePageHtml(post);
-    assert.match(html, /content="Preço &quot;especial&quot; &amp; imposto"/);
+    assert.match(html, /content="Preço &quot;especial&quot;\. &amp; imposto"/);
+    assert.doesNotMatch(html, /&amp;quot;|&amp;amp;|&amp;#39;/);
   });
 
   it("escapa HTML no título — dado externo (API Beehiiv), sem isso vira XSS refletido em <title>", () => {
