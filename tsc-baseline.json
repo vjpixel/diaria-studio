@@ -216,7 +216,6 @@
   "test/pr-create-review-hook.test.ts::TS2339": 1,
   "test/pr-create-review-hook.test.ts::TS2353": 8,
   "test/pr-create-review-hook.test.ts::TS7005": 3,
-  "test/pr-create-review-hook.test.ts::TS7006": 31,
   "test/pr-create-review-hook.test.ts::TS7016": 1,
   "test/pr-create-review-hook.test.ts::TS7034": 3,
   "test/publish-consent.test.ts::TS2345": 7,
