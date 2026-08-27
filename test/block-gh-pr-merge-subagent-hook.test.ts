@@ -15,6 +15,8 @@ import {
   sessionsDir,
   machineTag,
   BLOCK_REASON,
+  SCOPED_GRANT_HINT,
+  buildBlockReason,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
 // #5716: guard MECÂNICO contra subagente implementador mergeando o próprio
@@ -299,6 +301,39 @@ describe("BLOCK_REASON (#5716, reescrito no #6303 Finding K)", () => {
     assert.match(BLOCK_REASON, /NUNCA rode `register`/);
     assert.match(BLOCK_REASON, /grant-merge/);
     assert.match(BLOCK_REASON, /check-merge-grant/);
+  });
+});
+
+describe("buildBlockReason (#6322 achado 2 — concessão escopada bloqueia sem explicar por quê)", () => {
+  it("sem concessão nenhuma → só o BLOCK_REASON genérico, sem o hint", () => {
+    assert.equal(buildBlockReason({}), BLOCK_REASON);
+  });
+
+  it("concessão GENÉRICA (sem --pr) → sem o hint, cobre qualquer alvo por definição", () => {
+    assert.equal(
+      buildBlockReason({ hasLiveGrant: true, grantPr: undefined, targetPr: 200 }),
+      BLOCK_REASON,
+    );
+  });
+
+  it("concessão ESCOPADA que BATE com o alvo → sem o hint (não é o caso de bloqueio confuso)", () => {
+    assert.equal(
+      buildBlockReason({ hasLiveGrant: true, grantPr: 100, targetPr: 100 }),
+      BLOCK_REASON,
+    );
+  });
+
+  it("concessão ESCOPADA + alvo INDETERMINADO (gh pr merge sem número) → acrescenta o hint", () => {
+    const reason = buildBlockReason({ hasLiveGrant: true, grantPr: 100, targetPr: undefined });
+    assert.ok(reason.startsWith(BLOCK_REASON));
+    assert.match(reason, /concessão de merge ATIVA/);
+    assert.match(reason, /ESCOPADA a um PR específico/);
+    assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT}`);
+  });
+
+  it("concessão ESCOPADA + alvo DIFERENTE (número explícito, mas de outro PR) → acrescenta o hint", () => {
+    const reason = buildBlockReason({ hasLiveGrant: true, grantPr: 100, targetPr: 200 });
+    assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT}`);
   });
 });
 

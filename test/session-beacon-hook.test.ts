@@ -38,6 +38,26 @@ import {
   isLinkedWorktree,
 } from "../.claude/hooks/session-beacon.mjs";
 
+describe("statIsDirectory não usa require() morto em .mjs puro ESM (#6322 achado 1)", () => {
+  it("o hook não chama require() no caminho quente de statIsDirectory", () => {
+    // `.claude/hooks/session-beacon.mjs` é ESM puro (import/export, sem
+    // "type": "commonjs" nem transpile) — `require` não existe nesse escopo,
+    // então toda chamada a `require("node:fs")` lançava `ReferenceError`,
+    // caindo sempre no catch/fallback silenciosamente (#6322). A correção
+    // troca isso por `import { statSync } from "node:fs"` real. Este teste
+    // guarda contra reintrodução: nenhum `require(` sobrevive no arquivo, e
+    // `statSync` chega via import ESM no topo.
+    const hookPath = fileURLToPath(new URL("../.claude/hooks/session-beacon.mjs", import.meta.url));
+    const source = readFileSync(hookPath, "utf8");
+    assert.doesNotMatch(source, /\brequire\s*\(/, "require() não deve mais aparecer no hook ESM");
+    assert.match(
+      source,
+      /import\s*\{[^}]*\bstatSync\b[^}]*\}\s*from\s*"node:fs"/,
+      "statSync precisa ser importado via ESM real de node:fs",
+    );
+  });
+});
+
 const T0 = Date.parse("2026-08-26T12:00:00.000Z");
 const iso = (offsetMs: number) => new Date(T0 + offsetMs).toISOString();
 
