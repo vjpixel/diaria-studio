@@ -82,4 +82,3 @@ export function renderKitFixtureAuditReport(result: KitFixtureAuditResult): stri
   }
   return lines.join("\n");
 }
-
