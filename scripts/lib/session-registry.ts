@@ -76,7 +76,10 @@
  *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
  *     mesmo assim — escape hatch pra retomar issue de sessão morta sem
  *     esperar a staleness de 24h. Reivindicar o que a própria sessão já tem
- *     é sempre no-op de sucesso, nunca recusa.)
+ *     é sempre no-op de sucesso, nunca recusa. #6369: sessão sem registro
+ *     prévio não vira mais no-op silencioso — o CLI auto-registra uma sessão
+ *     mínima e tenta o claim de novo (ver `claimIssueAutoRegistering`),
+ *     avisando na própria mensagem de sucesso quando isso acontece.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
@@ -1282,6 +1285,61 @@ export function claimIssueCheckAndSet(
     lastHeartbeat: now,
   });
   return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };
+}
+
+/**
+ * Resultado de `claimIssueAutoRegistering` — mesmo shape de `ClaimIssueResult`
+ * mais o sinal de que a sessão precisou ser auto-registrada antes do claim.
+ */
+export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
+  /** `true` quando não havia registro de sessão pra `kind`/`sessionId` e este
+   * helper criou um (via `registerSession`) antes de tentar o claim de novo. */
+  autoRegistered: boolean;
+}
+
+/**
+ * Wrapper de `claimIssueCheckAndSet` que fecha o buraco do #6369: um
+ * `no-op-session-missing` (sessão nunca registrada) deixava de ser tratado
+ * como falha real por quem chama o CLI e virava um workaround em prosa (ex:
+ * o ciclo `continuo` do cron Hermes registrou a reivindicação num `.md` que
+ * nenhuma outra sessão lê — achado ao vivo 26/08/2026, quase causou trabalho
+ * duplicado entre duas sessões na mesma issue).
+ *
+ * A issue propôs duas direções equivalentes: "ou o comando aborta o ciclo,
+ * ou registra a sessão primeiro". Esta função implementa a 2ª — a única das
+ * duas que fecha o buraco inteiramente DENTRO deste repo, sem depender de
+ * uma skill externa (`hermes-diaria-continuo`, fora deste checkout — ver
+ * CLAUDE.md "A infra do kind `continuo` tem um consumidor EXTERNO") tratar
+ * corretamente um `exit 1`. Quando `claimIssueCheckAndSet` devolve
+ * `no-op-session-missing`, registra uma sessão mínima (`registerSession`,
+ * mesmos `kind`/`sessionId`/`tag` — idempotente, não pisa em registro
+ * existente) e tenta o claim de novo. **Nunca finge que não aconteceu nada**:
+ * o retorno sinaliza `autoRegistered: true` pra quem chama poder avisar alto
+ * (o CLI abaixo imprime isso explicitamente na mensagem de sucesso) — a
+ * intervenção fica visível, não é um passe silencioso.
+ *
+ * `claimIssueCheckAndSet` em si **não muda** — continua podendo devolver
+ * `no-op-session-missing` pra quem quiser esse comportamento explícito (é o
+ * que os testes existentes de `claimIssueCheckAndSet`/`unclaimIssue`
+ * documentam, incluindo o caso "sessão nunca existiu"). Este wrapper é
+ * aditivo, usado pelo CLI (`claim-issue`), não substitui a primitiva.
+ */
+export function claimIssueAutoRegistering(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issueNumber: number,
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
+): ClaimIssueAutoRegisterResult {
+  const first = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+  if (first.reason !== "no-op-session-missing") {
+    return { ...first, autoRegistered: false };
+  }
+  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
+  const retried = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+  return { ...retried, autoRegistered: true };
 }
 
 /**
@@ -2680,24 +2738,41 @@ function main(): void {
         const issue = Number(values.issue);
         if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
         const force = flags.has("force");
-        const result = claimIssueCheckAndSet(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
+        // #6369: sessão sem registro prévio (ex: ciclo `continuo` do cron
+        // Hermes chamando `claim-issue` antes de qualquer `register`) não
+        // vira mais no-op silencioso — `claimIssueAutoRegistering` registra
+        // uma sessão mínima e tenta de novo, sinalizando isso na mensagem.
+        const result = claimIssueAutoRegistering(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
+        const autoRegisterSuffix = result.autoRegistered
+          ? " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]"
+          : "";
         switch (result.reason) {
           case "claimed":
-            process.stdout.write(`session-registry: claim-issue ok (claimed) [repoRoot=${repoRoot}]\n`);
+            process.stdout.write(
+              `session-registry: claim-issue ok (claimed)${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
+            );
             break;
           case "already-own":
-            process.stdout.write(`session-registry: claim-issue ok (already-own, no-op) [repoRoot=${repoRoot}]\n`);
+            process.stdout.write(
+              `session-registry: claim-issue ok (already-own, no-op)${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
+            );
             break;
           case "forced-override": {
             const owner = result.blockedBy;
             process.stdout.write(
               `session-registry: claim-issue ok (FORCED — tomado de ${owner?.kind}-${owner?.sessionId} ` +
-                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat}) [repoRoot=${repoRoot}]\n`,
+                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
             );
             break;
           }
           case "no-op-session-missing":
-            process.stdout.write("session-registry: claim-issue no-op (sessão inexistente)\n");
+            // Não deveria mais acontecer depois do auto-registro acima — só
+            // sobra se o próprio `registerSession` falhar em silêncio (não
+            // deveria: `writeJsonSafe` lança em erro de I/O real). Mantido
+            // como rede de segurança — nunca finge sucesso.
+            process.stdout.write(
+              "session-registry: claim-issue no-op (sessão inexistente mesmo após tentativa de auto-registro)\n",
+            );
             process.exitCode = 1;
             break;
           case "blocked-by-other": {
