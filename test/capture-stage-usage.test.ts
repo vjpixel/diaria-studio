@@ -456,7 +456,7 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
       }
     });
 
-    it("sessão desconhecida cai em all_sessions com motivo — não devolve vazio", () => {
+    it("#6170 item 3 — sessão desconhecida (session_file_not_found) sem --all-sessions vira unavailable, nunca grava custo alheio", () => {
       const { editionRoot, editionDir, transcriptsDir } = setupEdition();
       try {
         writeTwoSessions(transcriptsDir);
@@ -466,9 +466,49 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
         );
         assert.equal(r.status, 0, r.stderr);
         const out = JSON.parse(r.stdout);
-        assert.equal(out.source, "session_transcript", "nunca vira 'unavailable' por causa do filtro");
+        // Achado ao vivo (edições 260826/260827): `session_file_not_found`
+        // prova que a sessão da edição NUNCA escreveu transcript nenhum —
+        // 100% das entradas somadas em all_sessions são de sessões
+        // concorrentes. Diferente do comportamento pré-#6170 (linha comentada
+        // abaixo), isso agora nunca vira "sucesso" com custo alheio.
+        assert.equal(out.source, "unavailable");
+        assert.equal(out.reason, "session_filter_fallback_session_file_not_found");
         assert.equal(out.session_filter, "all_sessions");
         assert.equal(out.session_filter_reason, "session_file_not_found");
+        assert.equal(out.tokens_in, undefined, "nunca grava tokens de sessão alheia");
+        assert.equal(out.cost_usd, undefined);
+
+        const doc = loadDoc(editionDir, "260508");
+        const row = doc.rows.find((row) => row.stage === 1)!;
+        assert.equal(row.cost_usd, undefined, "unavailable nunca persiste em stage-status.json");
+      } finally {
+        rmSync(editionRoot, { recursive: true, force: true });
+        rmSync(transcriptsDir, { recursive: true, force: true });
+      }
+    });
+
+    it("#6170 item 3 — --all-sessions explícito preserva a soma mesmo com session_file_not_found (--session-id de outra sessão)", () => {
+      const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+      try {
+        writeTwoSessions(transcriptsDir);
+        // `--all-sessions` já força sessionId=null (reason vira sempre
+        // no_session_id, ver session-transcript.ts) — este teste cobre o
+        // caso em que o pedido explícito é feito via `--session-id` de uma
+        // sessão que não existe, mas isso não passa por `--all-sessions`.
+        // O guard do item 3 só se aplica ao caminho AUTOMÁTICO (sem
+        // `--all-sessions`); aqui confirmamos que o próprio flag
+        // `--all-sessions` (independente de qual sessionId seria resolvido)
+        // sempre preserva o agregado — é o comportamento coberto no teste
+        // anterior ("--all-sessions reproduz o comportamento pré-#5413").
+        const r = runCli(
+          ["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir, "--all-sessions"],
+          "sessao-de-outra-maquina",
+        );
+        assert.equal(r.status, 0, r.stderr);
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.source, "session_transcript");
+        assert.equal(out.session_filter, "all_sessions");
+        assert.equal(out.session_filter_reason, "no_session_id");
         assert.equal(out.tokens_in, 6_000_000);
       } finally {
         rmSync(editionRoot, { recursive: true, force: true });
@@ -595,5 +635,74 @@ describe("captureUsageForWindow — mapeamento dos campos do #5413", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe("#6170 item 3 — session_file_not_found nunca grava custo alheio", () => {
+    it("sessionId que não casa com nenhum arquivo vira unavailable (não session_transcript com all_sessions)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "capture-map-sfnf-"));
+      try {
+        writeFileSync(join(dir, "a.jsonl"), usageLine(), "utf8");
+        writeFileSync(
+          join(dir, "b.jsonl"),
+          usageLine({ message: { model: "claude-opus-4-8", usage: { input_tokens: 5_000_000, output_tokens: 0 } } }),
+          "utf8",
+        );
+        const r = captureUsageForWindow(
+          dir,
+          "2026-05-08T08:30:00.000Z",
+          "2026-05-08T08:48:00.000Z",
+          "260508",
+          { sessionId: "sessao-que-nao-existe" },
+        );
+        assert.equal(r.source, "unavailable");
+        assert.equal(r.reason, "session_filter_fallback_session_file_not_found");
+        assert.equal(r.session_filter, "all_sessions");
+        assert.equal(r.session_filter_reason, "session_file_not_found");
+        assert.equal(r.tokens_in, undefined, "nunca grava a soma contaminada");
+        assert.equal(r.cost_usd, undefined);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("explicitAllSessions:true preserva o agregado mesmo com session_file_not_found", () => {
+      const dir = mkdtempSync(join(tmpdir(), "capture-map-sfnf-explicit-"));
+      try {
+        writeFileSync(join(dir, "a.jsonl"), usageLine(), "utf8");
+        const r = captureUsageForWindow(
+          dir,
+          "2026-05-08T08:30:00.000Z",
+          "2026-05-08T08:48:00.000Z",
+          "260508",
+          { sessionId: "sessao-que-nao-existe", explicitAllSessions: true },
+        );
+        assert.equal(r.source, "session_transcript");
+        assert.equal(r.session_filter, "all_sessions");
+        assert.equal(r.session_filter_reason, "session_file_not_found");
+        assert.equal(r.tokens_in, 1_000_000);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("no_session_id (sessionId null, sem explicitAllSessions) NÃO é afetado pelo guard — best-effort de sempre preservado", () => {
+      const dir = mkdtempSync(join(tmpdir(), "capture-map-nsid-"));
+      try {
+        writeFileSync(join(dir, "a.jsonl"), usageLine(), "utf8");
+        const r = captureUsageForWindow(
+          dir,
+          "2026-05-08T08:30:00.000Z",
+          "2026-05-08T08:48:00.000Z",
+          "260508",
+          { sessionId: null },
+        );
+        assert.equal(r.source, "session_transcript");
+        assert.equal(r.session_filter, "all_sessions");
+        assert.equal(r.session_filter_reason, "no_session_id");
+        assert.equal(r.tokens_in, 1_000_000);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

@@ -34,9 +34,23 @@
  *
  * Fail-soft (#738-adjacent, mesma disciplina de `update-stage-status.ts`):
  * qualquer condição impeditiva (sem timestamps, sem diretório de transcripts
- * local, sem entradas de usage na janela) imprime `source: "unavailable"` +
- * `reason` e sai com status 0 — NUNCA escreve zero/null como se fosse dado
- * real, e nunca bloqueia o pipeline.
+ * local, sem entradas de usage na janela, fallback `all_sessions` por
+ * `session_file_not_found` sem `--all-sessions` explícito — #6170 item 3)
+ * imprime `source: "unavailable"` + `reason` e sai com status 0 — NUNCA
+ * escreve zero/null nem custo de sessão alheia como se fosse dado real do
+ * stage, e nunca bloqueia o pipeline.
+ *
+ * #6170 — `session_filter_reason` (`no_session_id` | `session_file_not_found`)
+ * agora sobrevive ao persist em `stage-status.json` (item 1) e, quando o
+ * motivo é `session_file_not_found` (a sessão tem id mas NUNCA escreveu
+ * transcript — comprovado ao vivo nas edições 260826/260827, causado por
+ * `claude --print --no-session-persistence` no runner agendado, ver
+ * `scripts/overnight/run-scheduled-edicao.ts`), o script não grava mais o
+ * agregado contaminado — degrada pra `source: "unavailable"` (item 3), a
+ * menos que `--all-sessions` tenha sido pedido explicitamente. `no_session_id`
+ * (env var ausente, sem sinal de qual sessão é a nossa) continua com o
+ * best-effort de sempre — mais ambíguo, sem confirmação ao vivo de que é
+ * sempre 100% alheio.
  *
  * Requer sessão LOCAL — `~/.claude/projects/` não existe (ou não reflete a
  * sessão corrente) em ambiente cloud/worktree efêmero. Ver
@@ -142,7 +156,17 @@ export function captureUsageForWindow(
   start: string | undefined,
   end: string | undefined,
   editionId: string,
-  opts: CollectUsageOptions = {},
+  opts: CollectUsageOptions & {
+    /**
+     * `true` só quando o chamador pediu `--all-sessions` explicitamente
+     * (análise pós-hoc deliberada) — nesse caso o fallback pra `all_sessions`
+     * é o comportamento PEDIDO, não um acidente de sessão não-identificável,
+     * e o guard de `session_file_not_found` abaixo (#6170) não se aplica.
+     * `false`/omitido (default, caminho automático do pipeline) é onde o
+     * guard vale.
+     */
+    explicitAllSessions?: boolean;
+  } = {},
 ): CaptureResult {
   if (!start || !end) {
     return { source: "unavailable", reason: "missing_stage_timestamps" };
@@ -151,6 +175,41 @@ export function captureUsageForWindow(
     return { source: "unavailable", reason: "no_local_transcripts_dir" };
   }
   const window = collectUsageInWindow(transcriptsDir, start, end, opts);
+
+  // #6170 item 3 — `session_file_not_found` prova que a sessão-alvo (via
+  // `CLAUDE_CODE_SESSION_ID` ou `--session-id`) NUNCA escreveu transcript
+  // nenhum: o arquivo procurado simplesmente não existe no diretório. Isso
+  // significa que 0% das entradas somadas em `all_sessions` podem ser dela —
+  // sempre 100% de sessões concorrentes, nunca uma mistura. Diferente de
+  // `no_session_id` (variável de ambiente ausente — mais ambíguo, ocorre em
+  // invocação manual/CLI standalone; preserva o best-effort de sempre) e
+  // diferente de `--all-sessions` explícito (`opts.explicitAllSessions`,
+  // pedido deliberado de análise agregada pós-hoc — o chamador SABE que está
+  // pedindo a soma de tudo), aqui há certeza de contaminação total. Gravar
+  // esse número seria "pior que zero" — mesma disciplina do #5475
+  // (`no_usage_records_in_window` abaixo já trata isso pro caso de sessão
+  // corretamente identificada mas sem turnos na janela).
+  //
+  // Achado ao vivo que motivou este guard: edições 260826 e 260827 — Stage 0
+  // e Stage 1 rodados via `claude --print --no-session-persistence`
+  // (`scripts/overnight/run-scheduled-edicao.ts`, um spawn novo por stage
+  // pra contexto limpo) nunca persistem transcript em `~/.claude/projects/`.
+  // `session_filter_reason` bateu `session_file_not_found` nas duas edições
+  // (não `no_session_id` — a hipótese original da issue); o Stage 1 de
+  // 260826 atribuiu 14,08M de tokens de duas sessões alheias antes deste fix.
+  if (
+    !opts.explicitAllSessions &&
+    window.sessionFilter === "all_sessions" &&
+    window.filterReason === "session_file_not_found"
+  ) {
+    return {
+      source: "unavailable",
+      reason: "session_filter_fallback_session_file_not_found",
+      sessions_scanned: window.sessionsScanned,
+      ...describeWindowFilter(window),
+    };
+  }
+
   if (window.entries.length === 0) {
     // `sessions_excluded` importa MAIS aqui do que no caminho de sucesso: a
     // sessão corrente sem turno na janela + uma concorrente COM turnos é
@@ -245,7 +304,10 @@ async function main(): Promise<void> {
     ? null
     : (values["session-id"] ?? currentSessionId());
 
-  const result = captureUsageForWindow(transcriptsDir, start, end, editionId, { sessionId });
+  const result = captureUsageForWindow(transcriptsDir, start, end, editionId, {
+    sessionId,
+    explicitAllSessions: flags.has("all-sessions"),
+  });
   result.stage = stage;
 
   if (result.source === "unavailable") {
