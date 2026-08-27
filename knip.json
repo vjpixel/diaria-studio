@@ -11,6 +11,13 @@
     "workers/**/*.ts"
   ],
   "ignoreExportsUsedInFile": true,
+  // #6340: definição da flag de rollout do double opt-in (workers/poll) —
+  // issue-fatia intencionalmente pequena, "REFS #6340, NÃO CLOSES", que só
+  // declara a flag antes do rollout real (bloqueado por #6339/#6318). Arquivo
+  // ainda não é importado de propósito. Remover desta lista quando
+  // workers/poll/src/index.ts (ou subscribeToKit) passar a importar
+  // DOUBLE_OPT_IN_FLAG.
+  "ignore": ["workers/poll/src/optin-flag-6340.ts"],
   // #3164: ci.yml passou a rodar `npx tsc -p tsconfig.json --noEmit` dentro de
   // workers/brevo-dashboard/ — o plugin de GitHub Actions do knip lê esse `run:`,
   // resolve workers/brevo-dashboard/tsconfig.json e checa a dependência declarada
