@@ -1,20 +1,21 @@
 # Cobertura dos índices por mês e por tema (#5125)
 
-Gerado em 2026-08-17 por `npx tsx scripts/corpus-index-coverage-report.ts`.
+Gerado em 2026-08-27 por `npx tsx scripts/corpus-index-coverage-report.ts`.
 Re-executar para reconfirmar antes de citar estes números (mesma disciplina do #1172 — nunca confiar em número escrito num doc sem re-derivar).
 
 ## Resultado
 
-**Índice por mês** (`https://arquivo.diar.ia.br/`, #4105): 247/247 edições confirmadas têm slug+data resolvíveis — a condição que `render-archive.ts` exige pra incluir a edição no agrupamento por `YYYY-MM`. Página já em produção, server-renderizada por request a partir do sitemap oficial.
+**Índice por mês** (`https://arquivo.diar.ia.br/`, #4105): 254/254 edições confirmadas têm slug+data resolvíveis — a condição que `render-archive.ts` exige pra incluir a edição no agrupamento por `YYYY-MM`. Página já em produção, server-renderizada por request a partir do sitemap oficial.
 
-**Índice por tema** (`https://arquivo.diar.ia.br/temas/`, #4558 Parte A): 202/247 edições (81.8%) são cobertas por pelo menos 1 dos 6 hubs temáticos já publicados. Por tema:
+**Índice por tema** (`https://arquivo.diar.ia.br/temas/`, #4558 Parte A): 213/254 edições (83.9%) são cobertas por pelo menos 1 dos 6 hubs temáticos já publicados. Por tema:
 
-- **Anthropic e Claude** (`anthropic-claude`): 78 edição(ões)
-- **OpenAI e ChatGPT** (`openai-chatgpt`): 97 edição(ões)
-- **Google e Gemini** (`google-gemini`): 61 edição(ões)
+- **Anthropic e Claude** (`anthropic-claude`): 83 edição(ões)
+- **OpenAI e ChatGPT** (`openai-chatgpt`): 102 edição(ões)
+- **Google e Gemini** (`google-gemini`): 65 edição(ões)
 - **Meta e Meta AI** (`meta-ai`): 22 edição(ões)
-- **Regulação de IA no Brasil** (`brasil-regulacao`): 13 edição(ões)
-- **Mercado de trabalho e IA** (`mercado-trabalho`): 49 edição(ões)
+- **Regulação de IA no Brasil** (`brasil-regulacao`): 15 edição(ões)
+- **Mercado de trabalho e IA** (`mercado-trabalho`): 52 edição(ões)
+- **Medicina e saúde** (`medicina-saude`): 21 edição(ões)
 
 Edições confirmadas sem nenhum tema (candidatas a tema futuro, ou legitimamente sem cobertura transversal — ver `scripts/lib/corpus-index-coverage.ts` docstring):
 
@@ -29,7 +30,6 @@ Edições confirmadas sem nenhum tema (candidatas a tema futuro, ou legitimament
   - `avalanche-de-desenhos-de-ia-para-bebe-s`
   - `bancos-soam-alerta-para-investimentos-excessivos-em-ia`
   - `brasil-fortalece-parceria-com-a-mala-sia-em-semicondutores-e-ia`
-  - `claude-cowork-chega-ao-painel-do-chrome`
   - `como-os-brasileiros-veem-a-ia`
   - `especial-cursos-gratuitos-de-ia`
   - `especial-moltbook-a-rede-social-so-de-ias`
@@ -38,7 +38,8 @@ Edições confirmadas sem nenhum tema (candidatas a tema futuro, ou legitimament
   - `estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-7c1465a99a9d1198`
   - `estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-e4e1098e9d559782`
   - `estudos-revelam-influe-ncia-de-ia-na-poli-tica`
-  - … e mais 25
+  - `falha-na-lovable-atinge-spotify-uber-e-outros`
+  - … e mais 21
 
 ## Por que nenhuma página nova foi publicada nesta unidade
 

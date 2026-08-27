@@ -1045,5 +1045,67 @@
       "https://techcrunch.com/2026/08/07/openai-says-it-slowed-astra-model-development-over-security-concerns/"
     ],
     "editionTitle": "Medicina teme formar médicos sem raciocínio"
+  },
+  {
+    "date": "2026-08-14",
+    "editionSlug": "claude-cowork-chega-ao-painel-do-chrome",
+    "url": "https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome",
+    "matchedHeadlines": [
+      "GPT-5.6 Sol roda 14× mais rápido na OpenAI"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/previewing-ultrafast"
+    ],
+    "editionTitle": "Claude Cowork chega ao painel do Chrome"
+  },
+  {
+    "date": "2026-08-17",
+    "editionSlug": "reglab-estima-r-986-bi-extra-no-pib-ate-2030",
+    "url": "https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030",
+    "matchedHeadlines": [
+      "ChatGPT, Claude e Gemini vazavam raciocínio"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/pesquisadores-descobrem-como-roubar-pensamentos-secretos-do-chatgpt-claude-e-gemini/"
+    ],
+    "editionTitle": "Reglab estima R$986 bi extra no PIB até 2030"
+  },
+  {
+    "date": "2026-08-19",
+    "editionSlug": "tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "url": "https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "matchedHeadlines": [
+      "ChatGPT for Teens chega com proteções extras"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/chatgpt-for-teens"
+    ],
+    "editionTitle": "TSE exige aviso em propaganda eleitoral com IA"
+  },
+  {
+    "date": "2026-08-20",
+    "editionSlug": "openai-pausa-treinamento-apos-invasao-critica",
+    "url": "https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica",
+    "matchedHeadlines": [
+      "OpenAI pausa treinamento após invasão crítica",
+      "OpenAI chega ao Brasil com foco em empresas"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/pacing-model-development-cyber-capabilities",
+      "https://www.cnnbrasil.com.br/economia/money/negocios/openai-inaugura-operacoes-no-brasil-e-vp-fala-em-otimismo-ao-cnn-money/"
+    ],
+    "editionTitle": "OpenAI pausa treinamento após invasão crítica"
+  },
+  {
+    "date": "2026-08-25",
+    "editionSlug": "brasil-investe-r-2-3-bi-em-infraestrutura-de-ia",
+    "url": "https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia",
+    "matchedHeadlines": [
+      "SoftBank capta US$ 6,3 bi para apostar na OpenAI"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/por-que-o-softbank-vai-captar-us-63-bilhoes-para-investir-em-inteligencia-artificial/"
+    ],
+    "editionTitle": "Brasil investe R$ 2,3 bi em infraestrutura de IA"
   }
 ]
