@@ -1,4 +1,198 @@
-<!DOCTYPE html>
+/**
+ * site-home-page.ts (#6375)
+ *
+ * Miolo puro do gerador da home (`/`) — porta a estrutura visual de
+ * `V1Landing` (repo `diaria-design`, `v1-daily.jsx`, "Direção A · Edição
+ * diária", já escolhida — ver corpo da issue #6375) de React/JSX pra HTML
+ * estático servido por `workers/site/public/index.html`.
+ *
+ * ## Fonte de dado real (V1Feature + V1Archive)
+ *
+ * A issue pede que o destaque do dia e as edições anteriores usem a MESMA
+ * fonte de dado real que já popula `/p/{slug}` — mas em vez de reler
+ * `data/beehiiv-cache/posts/*.json` diretamente (que exige `data/` presente,
+ * ausente em clone fresco/worktree isolado, ver CLAUDE.md item 2b), este
+ * módulo lê o OUTPUT já commitado de `gen-archive-pages.ts`:
+ * `workers/site/public/sitemap.xml` (ordem mais-recente-primeiro, mesma
+ * ordenação de `selectPublishedPosts`/`sitemapEntriesForPosts` em
+ * `site-archive-pages.ts`) + `workers/site/public/p/{slug}/index.html`
+ * (título e description já resolvidos por `buildArchivePageHtml`). É a
+ * MESMA edição confirmada mais recente e as mesmas anteriores que o acervo
+ * público já serve — nunca mock — só a leitura é indireta (via artefato já
+ * gerado, sempre presente no repo, em vez do cache bruto). Reduz o
+ * acoplamento: quando `gen-archive-pages.ts` rodar de novo (cache
+ * atualizado), basta rerodar `gen-home-page.ts` em seguida — mesma
+ * disciplina "idempotente, regenera do zero" do gerador do acervo.
+ */
+
+import { stripHtmlBasic } from "./strip-html.ts";
+import { escHtml } from "./html-escape.ts";
+import { parseSitemap } from "./fetch-sitemap.ts";
+
+export interface HomeFeedEntry {
+  slug: string;
+  title: string;
+  description: string;
+  url: string;
+  date: string | null;
+}
+
+/** Extrai o slug de uma URL canônica `https://diar.ia.br/p/{slug}` — `null` se não casar o shape. */
+export function slugFromCanonicalUrl(url: string): string | null {
+  const m = url.match(/\/p\/([^/?#]+)\/?$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Lê `<title>` e `<meta name="description">` do HTML de uma página de
+ * edição já gerada (`buildArchivePageHtml` sempre os injeta — ver
+ * `site-archive-pages.ts`). Decodifica entidades (o HTML fonte usa
+ * `escHtml`, que escapa `&<>"'`) pra devolver texto plano reutilizável em
+ * outro contexto HTML (o template deste módulo escapa de novo na saída).
+ */
+export function extractPageMeta(html: string): { title: string; description: string } {
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+  return {
+    title: titleMatch ? stripHtmlBasic(titleMatch[1]) : "",
+    description: descMatch ? stripHtmlBasic(descMatch[1]) : "",
+  };
+}
+
+export const HOME_FEATURE_URL_PREFIX = "https://diar.ia.br/p/";
+
+/**
+ * Monta a lista de edições reais (mais recente primeiro) a partir do
+ * `sitemap.xml` já commitado + um reader de página injetado (produção lê
+ * `workers/site/public/p/{slug}/index.html`; teste injeta fixtures em
+ * memória — mesmo padrão de dependency injection que o resto do repo usa
+ * pra manter miolo puro testável sem tocar disco, ex: `beehiiv-publish-date.ts`).
+ *
+ * Entradas cujo slug não resolve (shape de URL inesperado) ou cuja página
+ * o reader não encontra (`null`) são puladas — nunca quebram o lote (mesmo
+ * espírito de "degradar por post" de `generateArchivePages`, mas aqui é
+ * sempre seguro pular: a home não é o acervo, uma edição a menos na grade
+ * não é uma falha estrutural).
+ */
+export function buildHomeFeed(
+  sitemapXml: string,
+  readPageHtml: (slug: string) => string | null,
+  limit = 10,
+): HomeFeedEntry[] {
+  const entries = parseSitemap(sitemapXml);
+  const feed: HomeFeedEntry[] = [];
+  for (const entry of entries) {
+    if (feed.length >= limit) break;
+    const slug = slugFromCanonicalUrl(entry.loc);
+    if (!slug) continue;
+    const html = readPageHtml(slug);
+    if (!html) continue;
+    const { title, description } = extractPageMeta(html);
+    if (!title) continue;
+    feed.push({ slug, title, description, url: entry.loc, date: entry.lastmod });
+  }
+  return feed;
+}
+
+/** Formata `YYYY-MM-DD` pra `dd mmm aaaa` em pt-BR minúsculo (mesmo estilo do design de referência). */
+function formatDateLong(iso: string | null): string {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const months = [
+    "jan", "fev", "mar", "abr", "mai", "jun",
+    "jul", "ago", "set", "out", "nov", "dez",
+  ];
+  return `${String(d).padStart(2, "0")} ${months[m - 1]} ${y}`;
+}
+
+export interface BuildIndexHtmlOptions {
+  /** Destaque do dia (V1Feature) — edição confirmada mais recente. `null` quando o acervo está vazio (nunca visto em produção, mas o template não deve quebrar). */
+  feature: HomeFeedEntry | null;
+  /** Edições anteriores (V1Archive) — já sem a `feature`, ordem mais-recente-primeiro. */
+  archive: HomeFeedEntry[];
+}
+
+const FAQS: Array<{ q: string; a: string }> = [
+  {
+    q: "O que é a diar.ia.br?",
+    a: "Uma newsletter diária e gratuita, em português, com notícias e tutoriais de inteligência artificial resumidos pra ler em 5 minutos — sem jargão, sem hype.",
+  },
+  {
+    q: "Com que frequência ela chega?",
+    a: "De segunda a sexta, direto no seu e-mail. Sem edição nos fins de semana.",
+  },
+  {
+    q: "É realmente gratuita?",
+    a: "Sim, sem custo e sem limite de tempo. Quem quiser apoiar o projeto pode se tornar apoiador — mas a edição diária nunca fica atrás de paywall.",
+  },
+  {
+    q: "Posso cancelar quando quiser?",
+    a: "Sim, com 1 clique, a qualquer momento, direto no rodapé de qualquer edição.",
+  },
+];
+
+/**
+ * Widget de inscrição — pill visual (input decorativo + botão), inteiro
+ * ENVOLVIDO por um único `<a href="/subscribe">` (decisão documentada no PR
+ * desta unidade, #6375: a issue original pedia POST direto na API do Kit,
+ * mas isso depende do #6318, aberta — UTM/atribuição de cadastro não está
+ * fechada, e `CLAUDE.md`/README deste Worker são explícitos que esta PR NÃO
+ * deve implementar esse POST). Um `<input>` que aceitasse digitação sem um
+ * endpoint real por trás seria pior que o link simples: o `_redirects` de
+ * `/subscribe` é um 302 estático sem captura de query string, então
+ * qualquer e-mail digitado seria silenciosamente descartado — a versão
+ * honesta do "form visual que ainda não posta de verdade" é fazer a pill
+ * inteira navegável, não fingir que o campo funciona.
+ */
+function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
+  const dark = opts.onDark ?? false;
+  return `<a class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
+    <span class="signup-pill">
+      <span class="signup-input" aria-hidden="true">seu@email.com</span>
+      <span class="signup-btn">Assinar grátis</span>
+    </span>
+  </a>`;
+}
+
+/** Renderiza `workers/site/public/index.html` completo — Nav → Masthead → Feature → Specials → Archive → Faqs → Footer. */
+export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
+  const { feature, archive } = opts;
+
+  const featureHtml = feature
+    ? `<a class="feature-title-link" href="${escHtml(feature.url)}">
+        <h2 class="feature-title">${escHtml(feature.title)}</h2>
+      </a>
+      <p class="feature-dek">${escHtml(feature.description)}</p>
+      <div class="feature-actions">
+        <a class="btn btn-ink" href="${escHtml(feature.url)}">Ler edição</a>
+        <span class="feature-hint">ou pelo email →</span>
+      </div>`
+    : `<p class="feature-dek">Nenhuma edição publicada ainda.</p>`;
+
+  const archiveCards = archive
+    .map(
+      (entry) => `<article class="archive-card">
+        <div class="archive-meta">
+          <span>${escHtml(formatDateLong(entry.date))}</span>
+        </div>
+        <h3 class="archive-title"><a href="${escHtml(entry.url)}">${escHtml(entry.title)}</a></h3>
+        <p class="archive-dek">${escHtml(entry.description)}</p>
+      </article>`,
+    )
+    .join("\n");
+
+  const faqItems = FAQS.map(
+    (f, i) => `<div class="faq-item">
+      <div class="faq-num">0${i + 1}</div>
+      <div>
+        <h3 class="faq-q">${escHtml(f.q)}</h3>
+        <p class="faq-a">${escHtml(f.a)}</p>
+      </div>
+    </div>`,
+  ).join("\n");
+
+  return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -172,12 +366,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="lede">Um resumo diário das principais pesquisas, notícias, tendências e insights — para ler em 5 minutos, se manter atualizado e usar IA <span class="accent">melhor</span>.</p>
         <div>
           <span class="kicker kicker--teal">Comece a receber hoje</span>
-          <a class="signup" id="masthead-form" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
-    <span class="signup-pill">
-      <span class="signup-input" aria-hidden="true">seu@email.com</span>
-      <span class="signup-btn">Assinar grátis</span>
-    </span>
-  </a>
+          ${renderSignupForm({ id: "masthead-form" })}
           <div class="signup-reassure">
             <span>✓ Seg–Sex</span><span>✓ 5 min</span><span>✓ Cancelar quando quiser</span>
           </div>
@@ -191,14 +380,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       <div class="feature-head">
         <span class="kicker kicker--teal">● Edição de hoje</span>
       </div>
-      <a class="feature-title-link" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia">
-        <h2 class="feature-title">Empresas recontratam quem demitiu por IA</h2>
-      </a>
-      <p class="feature-dek">Empresas recontratam quem demitiu por IA. Infraestrutura trava 1 em cada 3 startups de IA | Google mira escritórios de advocacia com Gemini</p>
-      <div class="feature-actions">
-        <a class="btn btn-ink" href="https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia">Ler edição</a>
-        <span class="feature-hint">ou pelo email →</span>
-      </div>
+      ${featureHtml}
     </div>
   </section>
 
@@ -233,69 +415,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       </div>
       <hr class="rule">
       <div class="archive-grid">
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>25 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/brasil-investe-r-2-3-bi-em-infraestrutura-de-ia">Brasil investe R$ 2,3 bi em infraestrutura de IA</a></h3>
-        <p class="archive-dek">Brasil investe R$ 2,3 bi em infraestrutura de IA. Grátis, poderoso e sem dono: o mistério Ox Alpha | SoftBank capta US$ 6,3 bi para apostar na OpenAI</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>24 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui">Roteiristas pagos para treinar quem os substitui</a></h3>
-        <p class="archive-dek">Roteiristas pagos para treinar quem os substitui. O estudo que fura o hype do uso no trabalho | Google lança simulado do Enem no Gemini</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>21 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/marca-d-agua-do-claude-cai-em-horas">Marca d&#39;água do Claude cai em horas</a></h3>
-        <p class="archive-dek">Marca d&#39;água do Claude cai em horas. Sua empresa é dado de treino alheio | ATS: o filtro que decide seu currículo</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>20 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica">OpenAI pausa treinamento após invasão crítica</a></h3>
-        <p class="archive-dek">OpenAI pausa treinamento após invasão crítica. OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>19 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia">TSE exige aviso em propaganda eleitoral com IA</a></h3>
-        <p class="archive-dek">TSE exige aviso em propaganda eleitoral com IA. Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>18 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico">Anthropic: só curar câncer convence público</a></h3>
-        <p class="archive-dek">Anthropic: só curar câncer convence público. Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>17 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030">Reglab estima R$986 bi extra no PIB até 2030</a></h3>
-        <p class="archive-dek">Reglab estima R$986 bi extra no PIB até 2030. ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>14 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome">Claude Cowork chega ao painel do Chrome</a></h3>
-        <p class="archive-dek">Claude Cowork chega ao painel do Chrome. Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</p>
-      </article>
-<article class="archive-card">
-        <div class="archive-meta">
-          <span>13 ago 2026</span>
-        </div>
-        <h3 class="archive-title"><a href="https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio">Amodei previu colapso do emprego. Não veio</a></h3>
-        <p class="archive-dek">Amodei previu colapso do emprego. Não veio. Marca d&#39;água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann</p>
-      </article>
+${archiveCards}
       </div>
     </div>
   </section>
@@ -307,34 +427,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <h2>Perguntas<br>frequentes.</h2>
       </div>
       <div>
-<div class="faq-item">
-      <div class="faq-num">01</div>
-      <div>
-        <h3 class="faq-q">O que é a diar.ia.br?</h3>
-        <p class="faq-a">Uma newsletter diária e gratuita, em português, com notícias e tutoriais de inteligência artificial resumidos pra ler em 5 minutos — sem jargão, sem hype.</p>
-      </div>
-    </div>
-<div class="faq-item">
-      <div class="faq-num">02</div>
-      <div>
-        <h3 class="faq-q">Com que frequência ela chega?</h3>
-        <p class="faq-a">De segunda a sexta, direto no seu e-mail. Sem edição nos fins de semana.</p>
-      </div>
-    </div>
-<div class="faq-item">
-      <div class="faq-num">03</div>
-      <div>
-        <h3 class="faq-q">É realmente gratuita?</h3>
-        <p class="faq-a">Sim, sem custo e sem limite de tempo. Quem quiser apoiar o projeto pode se tornar apoiador — mas a edição diária nunca fica atrás de paywall.</p>
-      </div>
-    </div>
-<div class="faq-item">
-      <div class="faq-num">04</div>
-      <div>
-        <h3 class="faq-q">Posso cancelar quando quiser?</h3>
-        <p class="faq-a">Sim, com 1 clique, a qualquer momento, direto no rodapé de qualquer edição.</p>
-      </div>
-    </div>
+${faqItems}
         <hr class="rule">
       </div>
     </div>
@@ -346,12 +439,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
-          <a class="signup signup--dark" id="footer-form" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
-    <span class="signup-pill">
-      <span class="signup-input" aria-hidden="true">seu@email.com</span>
-      <span class="signup-btn">Assinar grátis</span>
-    </span>
-  </a>
+          ${renderSignupForm({ id: "footer-form", onDark: true })}
           <div class="signup-reassure">
             <span>Seg–Sex · 8h</span><span>Sem spam</span><span>Cancele quando quiser</span>
           </div>
@@ -359,10 +447,12 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       </div>
       <hr class="rule">
       <div class="footer-bottom">
-        <span>&copy; 2026 diar.ia.br · São Paulo, Brasil</span>
+        <span>&copy; ${new Date().getUTCFullYear()} diar.ia.br · São Paulo, Brasil</span>
         <span><a href="https://eia.diar.ia.br/leaderboard">É IA?</a><a href="https://arquivo.diar.ia.br/">Arquivo</a><a href="https://especial.diar.ia.br/">Especial</a></span>
       </div>
     </div>
   </footer>
 </body>
 </html>
+`;
+}
