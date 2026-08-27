@@ -1916,10 +1916,28 @@ export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[
  *   - qualquer outro exit code (script crashou) → `error`, mesma severidade
  *     de "achei o problema" — um crash inesperado não deveria degradar pra
  *     silêncio.
+ *
+ * `env` é explícito no `spawnSync` (mesmo padrão de `checkGeminiModelValid`
+ * em `stage-0.ts`) e injetável — default `process.env` em produção. Existe
+ * pra permitir que o teste (`test/stage-4-kit-fixture-audit-invariant.test.ts`)
+ * force o cenário "sem KIT_API_KEY" de forma hermética: apagar a var só do
+ * `process.env` do processo PAI não bastava (achado #6387) porque
+ * `audit-kit-fixtures.ts` chama `loadProjectEnv()`, que recarrega `.env` do
+ * disco e populava a var de novo no filho a partir da máquina real — o teste
+ * ficava fazendo fetch de verdade contra a base Kit de produção sempre que
+ * `KIT_API_KEY` estivesse setada no `.env` local. A correção passa um objeto
+ * `env` explícito com `KIT_API_KEY: ""` (presente, vazio) — `dotenv`
+ * (`override:false`, `hasOwnProperty`) só preenche uma var AUSENTE do
+ * target; uma var presente mas vazia não é sobrescrita, então
+ * `resolveKitConfig` a trata como ausente (string vazia é falsy) sem o
+ * subprocesso jamais reidratar a credencial real.
  */
-function checkKitFixtureAudit(_editionDir: string): InvariantViolation[] {
+function checkKitFixtureAudit(
+  _editionDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): InvariantViolation[] {
   const scriptPath = resolve(ROOT, "scripts", "audit-kit-fixtures.ts");
-  const result = spawnSync(process.execPath, ["--import", "tsx", scriptPath], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, ["--import", "tsx", scriptPath], { encoding: "utf8", env });
   const stdout = (result.stdout || "").trim();
   const stderr = (result.stderr || "").trim();
 

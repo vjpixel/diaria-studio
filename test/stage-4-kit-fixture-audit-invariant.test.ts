@@ -10,6 +10,21 @@
  * injetadas). Os caminhos 0/1 (limpo / fixture ativo) já são cobertos sem
  * subprocesso em `test/audit-kit-fixtures.test.ts` — não duplicados aqui via
  * spawn real, que exigiria mockar fetch através da fronteira do processo.
+ *
+ * **#6387 — apagar `KIT_API_KEY` só do `process.env` do processo PAI não
+ * garante offline.** `checkKitFixtureAudit` faz `spawnSync`; o subprocesso
+ * roda `audit-kit-fixtures.ts`, que chama `loadProjectEnv()` e recarrega
+ * `.env` do DISCO. Se a máquina tiver `KIT_API_KEY` real no `.env` (variável
+ * documentada em `.env.example`, sincronizada via Doppler), o filho a
+ * repopula sozinho e o teste dispara uma leitura real contra a base Kit de
+ * produção. A correção passa um `env` explícito pro `spawnSync` (2º
+ * argumento, injetável, default `process.env` em produção — ver docstring
+ * de `checkKitFixtureAudit`) com `KIT_API_KEY: ""` — presente mas vazia, não
+ * ausente. `dotenv` (`override:false`) só popula uma var que não existe no
+ * `target` (`hasOwnProperty`); uma var já presente, mesmo vazia, nunca é
+ * sobrescrita — então o subprocesso nunca reidrata a credencial real, e
+ * `resolveKitConfig` trata string vazia como ausente (falsy) de qualquer
+ * forma, preservando o exit code 2 determinístico.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -25,17 +40,14 @@ describe("kit-fixture-audit invariant registration (#6336)", () => {
   });
 
   it("KIT_API_KEY ausente → warning, não error (fail-soft, nunca bloqueia sem credencial)", () => {
-    const prev = process.env.KIT_API_KEY;
-    delete process.env.KIT_API_KEY;
-    try {
-      const violations = checkKitFixtureAudit("/tmp/irrelevante-nao-usado-6336");
-      assert.equal(violations.length, 1);
-      assert.equal(violations[0].rule, "kit-fixture-audit-unavailable");
-      assert.equal(violations[0].severity, "warning");
-      assert.equal(violations[0].source_issue, "#6336");
-    } finally {
-      if (prev === undefined) delete process.env.KIT_API_KEY;
-      else process.env.KIT_API_KEY = prev;
-    }
+    // #6387: env explícito com KIT_API_KEY presente-mas-vazia, nunca deletada
+    // do process.env do pai — deletar não impede o subprocesso de recarregar
+    // a chave real do .env via loadProjectEnv() (ver docstring do arquivo).
+    const envSemKitKey: NodeJS.ProcessEnv = { ...process.env, KIT_API_KEY: "" };
+    const violations = checkKitFixtureAudit("/tmp/irrelevante-nao-usado-6336", envSemKitKey);
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].rule, "kit-fixture-audit-unavailable");
+    assert.equal(violations[0].severity, "warning");
+    assert.equal(violations[0].source_issue, "#6336");
   });
 });
