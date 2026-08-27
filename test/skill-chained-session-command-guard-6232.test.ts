@@ -6,10 +6,13 @@
  * sem executar nada) contra o padrão que causou o incidente da issue: um
  * comando de exemplo/instrução dentro de um `SKILL.md` que invoca
  * `scripts/overnight-session-marker.ts --start`/`--phase` ou
- * `scripts/lib/session-registry.ts register|heartbeat|end|claim-issue|
- * unclaim-issue|is-claimed|merge-lock-acquire|merge-lock-release` **encadeado ou pipado**
- * (`&&`/`;`/`|`/multi-linha) dentro do MESMO trecho de código (bloco cercado
- * ```...``` ou span inline `...`).
+ * `scripts/lib/session-registry.ts {subcomando injetável}` **encadeado ou
+ * pipado** (`&&`/`;`/`|`/multi-linha) dentro do MESMO trecho de código
+ * (bloco cercado ```...``` ou span inline `...`). O conjunto exato de
+ * subcomandos injetáveis não é mais listado aqui em prosa (#6351 — a lista
+ * hardcoded anterior já tinha divergido da real, ver
+ * `loadInjectableSubcommandsFromHook` abaixo, que a deriva do hook real em
+ * vez de repeti-la).
  *
  * Por que importa: `.claude/hooks/inject-session-id.mjs` (`isChainedCommand`)
  * recusa injetar `--session-id` automaticamente exatamente nesse formato, de
