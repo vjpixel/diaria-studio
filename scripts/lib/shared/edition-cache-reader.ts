@@ -58,10 +58,10 @@
  *   aqui.
  * - **Não há escritor do cache Kit ainda** (mesma ressalva de
  *   `loadKitCache` abaixo) — `normalizeKitBroadcast` já sabe ler `clicks`
- *   se o raw file carregar esse campo (contrato pronto pro futuro
- *   `kit-sync.ts`/`apply-kit-clicks.ts`), mas hoje nenhum arquivo real
- *   tem isso — `stats` fica `undefined` pra todo broadcast Kit até esse
- *   escritor existir.
+ *   E `stats` (abertura, #6344) se o raw file carregar esses campos
+ *   (contrato pronto pro futuro `kit-sync.ts`/`apply-kit-clicks.ts`), mas
+ *   hoje nenhum arquivo real tem isso — `stats` fica `undefined` pra todo
+ *   broadcast Kit até esse escritor existir.
  *
  * ## Shape normalizado
  *
@@ -100,7 +100,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { KitBroadcastClick, KitBroadcastDetail, KitBroadcastSummary } from "../kit-client.ts";
+import type { KitBroadcastClick, KitBroadcastDetail, KitBroadcastStats, KitBroadcastSummary } from "../kit-client.ts";
 
 const MODULE_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 const ROOT = resolve(MODULE_DIR, "..", "..", "..");
@@ -184,10 +184,10 @@ export interface NormalizedLinkClick {
   web?: { total_clicked?: number; total_unique_clicked?: number };
 }
 
-/** Shape de `stats` no cache normalizado — unique_opens é passthrough do
- *  Beehiiv; o Kit não tem hoje um equivalente lido por este módulo (ver
- *  docstring). `enrichment_state` é passthrough de
- *  `scripts/lib/shared/enrichment-state.ts`. */
+/** Shape de `stats` no cache normalizado — `email.unique_opens` é
+ *  passthrough do Beehiiv OU derivado de `KitBroadcastStats.emails_opened`
+ *  do lado Kit (#6344 — ver `normalizeKitBroadcast`). `enrichment_state` é
+ *  passthrough de `scripts/lib/shared/enrichment-state.ts`. */
 export interface UnifiedClickStats {
   email?: { unique_opens?: number };
   clicks?: NormalizedLinkClick[];
@@ -212,14 +212,17 @@ interface RawBeehiivPostFile {
   stats?: UnifiedClickStats;
 }
 
-/** Shape de 1 broadcast Kit em cache, estendido com um campo `clicks`
- * FUTURO (ver docstring do módulo — nenhum escritor grava isto ainda).
- * `KitBroadcastSummary`/`KitBroadcastDetail` (`kit-client.ts`) não têm
- * campo de cliques; este é o contrato que um `apply-kit-clicks.ts` futuro
- * seguiria pra anexar cliques ao arquivo de cache do broadcast. */
+/** Shape de 1 broadcast Kit em cache, estendido com campos `clicks` e
+ * `stats` FUTUROS (ver docstring do módulo — nenhum escritor grava isto
+ * ainda). `KitBroadcastSummary`/`KitBroadcastDetail` (`kit-client.ts`) não
+ * têm campo de cliques nem de stats de abertura; este é o contrato que um
+ * `apply-kit-clicks.ts`/`kit-sync.ts` futuro seguiria pra anexar essa
+ * informação ao arquivo de cache do broadcast — `stats` é exatamente o
+ * retorno de `getBroadcastStats` (`kit-client.ts`), sem transformação. */
 type RawKitBroadcastFile = KitBroadcastSummary &
   Partial<Pick<KitBroadcastDetail, "content" | "public_url">> & {
     clicks?: KitBroadcastClick[];
+    stats?: KitBroadcastStats;
   };
 
 /**
@@ -309,9 +312,29 @@ export function normalizeBeehiivPost(raw: RawBeehiivPostFile): UnifiedCachedPost
  * `clicks` (ver `RawKitBroadcastFile`) — hoje isso nunca acontece na
  * prática (sem escritor, ver docstring do módulo), mas o mapeamento já
  * fica pronto.
+ *
+ * `stats.email.unique_opens` (#6344): derivado de `b.stats.emails_opened`
+ * — `KitBroadcastStats.emails_opened` (`getBroadcastStats`, `kit-client.ts`)
+ * é a contagem de destinatários únicos que abriram, o mesmo conceito que
+ * `unique_opens` representa do lado Beehiiv (denominador do CTR, ver
+ * `build-link-ctr.ts`). Sem `stats` no raw file (nenhum escritor grava isto
+ * ainda — mesma ressalva de `clicks`), `email` fica `undefined`; com
+ * `stats` mas sem `clicks`, `stats.clicks` fica omitido (nunca `[]`
+ * inventado) mas `stats.email.unique_opens` já sai populado — os dois
+ * campos são escritos por escritores independentes e não dependem um do
+ * outro pra existir.
  */
 export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost {
   const webUrl = b.public_url; // pode ser undefined — não assumir presença (#6096)
+  const hasClicks = b.clicks !== undefined;
+  const hasOpens = b.stats?.emails_opened !== undefined;
+  const stats: UnifiedClickStats | undefined =
+    hasClicks || hasOpens
+      ? {
+          ...(hasOpens ? { email: { unique_opens: b.stats!.emails_opened } } : {}),
+          ...(hasClicks ? { clicks: b.clicks!.map(normalizeKitClick) } : {}),
+        }
+      : undefined;
   return {
     origin: "kit",
     slug: slugFromUrl(webUrl),
@@ -338,7 +361,7 @@ export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost
     status: KIT_STATUS_TO_BEEHIIV_STATUS[b.status] ?? b.status,
     thumbnail_url: b.thumbnail_url ?? undefined,
     content: b.content ? { free: { web: b.content } } : undefined,
-    stats: b.clicks ? { clicks: b.clicks.map(normalizeKitClick) } : undefined,
+    stats,
     public: b.public,
   };
 }

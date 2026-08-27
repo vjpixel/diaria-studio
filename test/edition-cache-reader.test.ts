@@ -178,6 +178,86 @@ describe("normalizeKitBroadcast", () => {
     assert.equal(normalizeKitBroadcast({ ...baseSummary, public: false }).public, false);
   });
 
+  it("com `stats.emails_opened` no raw file, stats.email.unique_opens é populado (#6344)", () => {
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      stats: {
+        recipients: 100,
+        open_rate: 40,
+        emails_opened: 40,
+        click_rate: 10,
+        unsubscribe_rate: 0,
+        unsubscribes: 0,
+        total_clicks: 12,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+    });
+    assert.deepEqual(got.stats, { email: { unique_opens: 40 } });
+  });
+
+  it("com `stats` E `clicks` no raw file, os dois convivem no mesmo objeto stats (#6344)", () => {
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      stats: {
+        recipients: 100,
+        open_rate: 40,
+        emails_opened: 40,
+        click_rate: 10,
+        unsubscribe_rate: 0,
+        unsubscribes: 0,
+        total_clicks: 12,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+      clicks: [
+        { id: 1, url: "https://exemplo.com/a", unique_clicks: 5, click_to_delivery_rate: 0.1, click_to_open_rate: 0.4 },
+      ],
+    });
+    assert.deepEqual(got.stats, {
+      email: { unique_opens: 40 },
+      clicks: [
+        {
+          url: "https://exemplo.com/a",
+          email: {
+            unique_clicks: 5,
+            unique_verified_clicks: 5,
+            verified_clicks: 5,
+            click_rate: 0.4,
+            click_rate_verified: 0.4,
+          },
+        },
+      ],
+    });
+  });
+
+  it("emails_opened=0 (broadcast sem nenhuma abertura) ainda populate unique_opens=0, não omite o campo", () => {
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      stats: {
+        recipients: 5,
+        open_rate: 0,
+        emails_opened: 0,
+        click_rate: 0,
+        unsubscribe_rate: 0,
+        unsubscribes: 0,
+        total_clicks: 0,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+    });
+    assert.deepEqual(got.stats, { email: { unique_opens: 0 } });
+  });
+
   it("com `clicks` no raw file, stats.clicks normaliza cada item (#6185)", () => {
     const got = normalizeKitBroadcast({
       ...baseSummary,

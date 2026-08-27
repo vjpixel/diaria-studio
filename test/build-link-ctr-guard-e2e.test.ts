@@ -180,3 +180,79 @@ describe("build-link-ctr — guarda de reescrita destrutiva (fim-a-fim)", () => 
     assert.ok(fs.existsSync(path.join(cwd, "data", "link-ctr-table.csv")));
   });
 });
+
+/**
+ * #6344 — edição de origem Kit com abertura (`stats.emails_opened`) e clique
+ * real produz `ctr_pct` calculado, fim-a-fim via o CLI real. Antes do fix,
+ * `normalizeKitBroadcast` nunca populava `stats.email.unique_opens` do lado
+ * Kit — `uniqueOpens` ficava sempre 0 e todo link dessa edição saía com
+ * `ctr_pct` vazio, mesmo com clique real presente (o bug relatado na issue).
+ */
+describe("build-link-ctr — CTR de edição de origem Kit (#6344)", () => {
+  it("edição Kit com emails_opened>0 e clique real produz ctr_pct preenchido, não vazio", () => {
+    const dir = path.join(tmpRoot, "kit-ctr");
+    fs.mkdirSync(path.join(dir, "data", "beehiiv-cache", "posts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "data", "kit-cache", "broadcasts"), { recursive: true });
+
+    const kitBroadcast = {
+      id: 1,
+      subject: "Edição Kit com CTR",
+      send_at: null,
+      status: "completed",
+      public: true,
+      published_at: "2026-05-01T09:00:00Z",
+      created_at: "2026-05-01T08:00:00Z",
+      preview_text: null,
+      description: null,
+      thumbnail_alt: null,
+      thumbnail_url: null,
+      publication_id: 1,
+      public_url: "https://diar.ia.br/kit/edicao-kit-ctr",
+      content: '<a href="https://exemplo.com/kit-link">Matéria Kit</a>',
+      stats: {
+        recipients: 100,
+        open_rate: 40,
+        emails_opened: 40,
+        click_rate: 10,
+        unsubscribe_rate: 0,
+        unsubscribes: 0,
+        total_clicks: 4,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+      clicks: [
+        {
+          id: 1,
+          url: "https://exemplo.com/kit-link",
+          unique_clicks: 4,
+          click_to_delivery_rate: 0.04,
+          click_to_open_rate: 0.1,
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(dir, "data", "kit-cache", "broadcasts", "broadcast_1.json"),
+      JSON.stringify(kitBroadcast),
+      "utf8",
+    );
+
+    const r = rodar(dir);
+    assert.equal(r.status, 0, `esperado exit 0, veio ${r.status}. stderr: ${r.stderr}`);
+
+    const csv = fs.readFileSync(path.join(dir, "data", "link-ctr-table.csv"), "utf8");
+    const lines = csv.trim().split("\n");
+    const header = lines[0].split(",");
+    const row = lines.find((l) => l.includes("exemplo.com/kit-link"));
+    assert.ok(row, `esperava 1 linha pro link Kit no CSV. csv completo:\n${csv}`);
+    const cells = row!.split(",");
+    const idx = (col: string) => header.indexOf(col);
+
+    assert.equal(cells[idx("unique_opens")], "40", "unique_opens tem que vir de stats.emails_opened do Kit");
+    assert.notEqual(cells[idx("ctr_pct")], "", "ctr_pct não pode ficar vazio com abertura+clique reais (achado #6344)");
+    // unique_verified_clicks aproxima unique_clicks do Kit (normalizeKitClick) / unique_opens
+    assert.equal(cells[idx("ctr_pct")], ((4 / 40) * 100).toFixed(2));
+  });
+});
