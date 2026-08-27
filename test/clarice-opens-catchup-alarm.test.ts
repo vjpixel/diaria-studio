@@ -100,6 +100,27 @@ describe("advanceState — dedup de status já processado (#5946)", () => {
     assert.equal(afterStaleReread.consecutiveFailures, 0);
   });
 
+  it("status congelado (mesmo checked_at) por mais de 36h escala de volta — sync provavelmente parou de rodar (self-review finding 1)", () => {
+    const frozenCheckedAt = "2026-08-20T12:00:00.000Z";
+    const afterFirst = advanceState(emptyOpensCatchupAlarmState(), errorStatus("429", frozenCheckedAt), new Date(frozenCheckedAt));
+    assert.equal(afterFirst.consecutiveFailures, 1);
+
+    // +23h: dentro da janela normal de corrida diária -> ainda neutro.
+    const stillFresh = advanceState(afterFirst, errorStatus("429", frozenCheckedAt), new Date("2026-08-21T11:00:00.000Z"));
+    assert.equal(stillFresh.consecutiveFailures, 1, "23h de idade ainda é a corrida normal, não uma falha total");
+
+    // +48h com o MESMO checked_at (nunca escreveu de novo) -> o sync
+    // provavelmente parou de vez; volta a processar (não fica preso em
+    // 'neutro' pra sempre, o que apagaria o alarme de uma falha real).
+    const escalated = advanceState(stillFresh, errorStatus("429", frozenCheckedAt), new Date("2026-08-22T12:00:00.000Z"));
+    assert.equal(escalated.consecutiveFailures, 2, "status congelado há >36h volta a incrementar o streak");
+
+    // Continua incrementando em checagens subsequentes (mesmo checked_at
+    // continua > 36h de idade a cada vez).
+    const escalatedAgain = advanceState(escalated, errorStatus("429", frozenCheckedAt), new Date("2026-08-23T12:00:00.000Z"));
+    assert.equal(escalatedAgain.consecutiveFailures, 3, "continua escalando enquanto o sync não voltar a escrever");
+  });
+
   it("checked_at vazio (fixtures/testes legados) nunca casa como stale — comportamento pré-#5946 preservado", () => {
     let state = emptyOpensCatchupAlarmState();
     for (let i = 0; i < CONSECUTIVE_FAILURE_THRESHOLD; i++) {
