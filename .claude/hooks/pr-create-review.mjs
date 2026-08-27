@@ -57,11 +57,16 @@
 // valor vigente aqui: este cabeçalho já ficou mentindo uma vez, entre o #4234 e
 // a correção em #4242 — e não sozinho (o mesmo PR achou outras duas cópias do
 // valor espalhadas pelo arquivo). O que é estável e vale documentar neste nível:
-//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) resolvem
-//     `low` explicitamente, independente do default — é o caminho
-//     token-sensível, e o guard existe porque naming é convenção frágil
-//     (incidente #3321, 260710: ~50 PRs, zero com o prefixo, gating nunca
-//     disparou a noite inteira);
+//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) continuam
+//     o caminho token-sensível, independente do default — mas desde #6393
+//     (260827) deixaram de resolver `low` incondicional: cada um passa por
+//     `resolveOvernightDiffEffort`, que compara o tamanho do diff contra
+//     `OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD` (1000, maior que o limiar geral
+//     de propósito — overnight continua mais barato que develop no mesmo
+//     tamanho de diff, só deixou de ser barato incondicional). O guard de
+//     sessão ativa existe porque naming é convenção frágil (incidente #3321,
+//     260710: ~50 PRs, zero com o prefixo, gating nunca disparou a noite
+//     inteira);
 //   - #4813 (260810): pra QUALQUER PR sem sinal de overnight, o effort passou a
 //     ser resolvido por tamanho de diff (ver `EFFORT_DIFF_LINE_THRESHOLD`) — não
 //     mais direto pelo `DEFAULT_EFFORT`. `DEFAULT_EFFORT` virou o fallback de
@@ -291,6 +296,36 @@ export const DEFAULT_EFFORT = "max";
 export const EFFORT_DIFF_LINE_THRESHOLD = 500;
 
 /**
+ * #6393 (260827): limiar de tamanho de diff PRÓPRIO do caminho overnight —
+ * antes desta issue, `branch_overnight`/`sessao_overnight_ativa` resolviam
+ * `low` INCONDICIONAL, sem olhar o tamanho do diff, enquanto o caminho geral
+ * (develop/sessão comum) já resolvia por `EFFORT_DIFF_LINE_THRESHOLD` desde o
+ * #4813. A assimetria estava invertida em relação ao risco: overnight é
+ * justamente o fluxo DESASSISTIDO (PR nasce, CI verde, auto-merge, sem editor
+ * olhando) — e era ele quem recebia o review mais fraco sempre, mesmo num PR
+ * de milhares de linhas.
+ *
+ * A correção NÃO iguala os dois limiares — decisão explícita do editor
+ * (discussão registrada no corpo da #6393): overnight continua mais barato
+ * que develop no mesmo tamanho de diff, então este limiar é maior que
+ * `EFFORT_DIFF_LINE_THRESHOLD` (500), não igual. 1000 linhas é o valor
+ * proposto na issue — o dobro do limiar geral, cobrindo a esmagadora maioria
+ * dos PRs overnight reais (tipicamente pequenos: 1 issue, 1-2 arquivos) sem
+ * abrir mão do gate pro PR grande mergeado sozinho de madrugada, que é
+ * exatamente o buraco que a issue fecha.
+ *
+ * Fail-direction do caminho overnight continua deliberadamente mais barata
+ * que a do caminho geral: tamanho de diff DESCONHECIDO (gh indisponível, JSON
+ * malformado) resolve `low` aqui — não `DEFAULT_EFFORT`/`max` como no
+ * caminho geral (ver `resolveOvernightDiffEffort`). Overnight já tratava "não
+ * sei o tamanho" como "confia no desconto" antes desta issue (curto-
+ * circuitava sem nem chamar `getDiffLineCount`); preservar esse viés pro caso
+ * desconhecido é exatamente o que os critérios de aceite da issue pedem — só
+ * o caso CONHECIDO grande é que precisava deixar de ser sempre `low`.
+ */
+export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
+
+/**
  * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.
  * Retorna `null` em QUALQUER falha (gh indisponível, JSON malformado, campos
  * não-numéricos) — o caller trata `null` como "não dá pra saber o tamanho do
@@ -312,14 +347,40 @@ function getDiffLineCount(num, execFn) {
 }
 
 /**
+ * #6393: decide low/max para um caminho COM sinal de overnight (branch
+ * `overnight/*` ou sessão ativa), agora que esse caminho também olha o
+ * tamanho do diff em vez de curto-circuitar sempre em `low`. Limiar PRÓPRIO
+ * (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`, ver docblock da constante) — maior
+ * que o do caminho geral, de propósito. Diff CONHECIDO e ≥ limiar → `max`
+ * (`reason` recebe o sufixo `_diff_grande`); diff pequeno OU tamanho
+ * DESCONHECIDO (`getDiffLineCount` retornou `null`) → `low`, com o `reason`
+ * BASE inalterado — overnight preserva o viés histórico de "não sei o
+ * tamanho, confia no desconto" que já tinha antes desta issue (diferente do
+ * caminho geral, que cai no `DEFAULT_EFFORT`/`max` quando o tamanho é
+ * desconhecido).
+ */
+function resolveOvernightDiffEffort(num, execFn, baseReason) {
+  const diffLineCount = getDiffLineCount(num, execFn);
+  if (diffLineCount !== null && diffLineCount >= OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD) {
+    return { effort: "max", reason: `${baseReason}_diff_grande` };
+  }
+  return { effort: "low", reason: baseReason };
+}
+
+/**
  * Resolve o headRefName de um PR e decide o effort de /code-review.
  * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
  * testável sem tocar `data/overnight/` no disco real.
  *
  * Caminhos com sinal de overnight — prefixo `overnight/*` (#2754) ou sessão
- * ativa nesta máquina (#3322) — continuam resolvendo `low` explicitamente,
- * independente de tamanho de diff ou do `DEFAULT_EFFORT`.
+ * ativa nesta máquina (#3322) — continuam token-sensíveis por padrão, mas
+ * deixaram de ser `low` INCONDICIONAL desde o #6393: cada um resolve por
+ * tamanho de diff via `resolveOvernightDiffEffort`, com um limiar PRÓPRIO
+ * (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`, maior que o do caminho geral) —
+ * ver o docblock da constante pro porquê da assimetria estar invertida em
+ * relação ao risco antes desta issue (overnight é o fluxo DESASSISTIDO, e
+ * era ele quem recebia sempre o review mais fraco).
  *
  * #4813 (260810, generaliza #4243): quando NENHUM sinal de overnight se
  * aplica, effort passa a ser resolvido por TAMANHO DE DIFF — critério
@@ -352,15 +413,21 @@ function getDiffLineCount(num, execFn) {
  * tornou visível ao coordenador, em vez de passar em silêncio (era justamente
  * esse silêncio que atrasou a detecção do #3321).
  *
- * `reason` (#4252, ramos de tamanho reformulados em #4813): código curto e
- * estável identificando QUAL ramo decidiu — `pr_sem_numero` |
- * `branch_overnight` | `sessao_overnight_ativa` | `diff_pequeno` |
- * `diff_grande` | `default` | `estado_indeterminado`. `diff_pequeno` e
- * `diff_grande` (tamanho CONHECIDO, dos dois lados do limiar) substituem o
- * antigo `diff_trivial`; `default` agora significa especificamente "tamanho
- * DESCONHECIDO, caiu no fallback" — distinção que existe pra instrumentação
- * (`logEffortDecision`) conseguir separar "grande de propósito" de
- * "desconhecido, caiu no fallback". Campo aditivo: nenhum teste existente
+ * `reason` (#4252, ramos de tamanho reformulados em #4813; ramos de overnight
+ * reformulados em #6393): código curto e estável identificando QUAL ramo
+ * decidiu — `pr_sem_numero` | `branch_overnight` | `branch_overnight_diff_grande` |
+ * `sessao_overnight_ativa` | `sessao_overnight_ativa_diff_grande` |
+ * `diff_pequeno` | `diff_grande` | `default` | `estado_indeterminado`.
+ * `diff_pequeno` e `diff_grande` (tamanho CONHECIDO, dos dois lados do
+ * limiar) substituem o antigo `diff_trivial`; `default` agora significa
+ * especificamente "tamanho DESCONHECIDO, caiu no fallback" — distinção que
+ * existe pra instrumentação (`logEffortDecision`) conseguir separar "grande
+ * de propósito" de "desconhecido, caiu no fallback". Os dois sufixos
+ * `_diff_grande` (#6393) preservam o `reason` BASE do ramo overnight que
+ * decidiu (naming, ver `resolveOvernightDiffEffort`) em vez de reusar
+ * `diff_grande` do caminho geral — a instrumentação continua distinguindo
+ * "PR overnight grande" de "PR geral grande" sem precisar cruzar com o
+ * branch/marker separadamente. Campo aditivo: nenhum teste existente
  * inspeciona o objeto inteiro (só `.effort`/`.warning`), então adicioná-lo não
  * quebra nada. Existe só pra alimentar o log de instrumentação
  * (`logEffortDecision`, chamado no entrypoint CLI abaixo — nunca aqui dentro,
@@ -392,7 +459,12 @@ export function resolveEffort(
       ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
       { encoding: "utf8", timeout: 10_000 },
     ).trim();
-    if (branch.startsWith("overnight/")) return { effort: "low", warning: null, reason: "branch_overnight" };
+    // #6393: branch overnight/* deixou de ser `low` incondicional — resolve
+    // por tamanho de diff, com o limiar PRÓPRIO (maior) do caminho overnight.
+    if (branch.startsWith("overnight/")) {
+      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "branch_overnight");
+      return { effort, warning: null, reason };
+    }
     // #5156: `sessionId` (o session_id da chamada gh pr create que criou esta
     // PR, extraído do payload do hook no entrypoint CLI abaixo) é repassado a
     // checkRoundActive — quando o default real (isOvernightRoundActive) lê um
@@ -401,8 +473,12 @@ export function resolveEffort(
     // comportamento pré-#5156. Mocks de teste (`noActiveRound`/`activeRound`)
     // ignoram o argumento livremente — não quebra nenhum teste existente.
     if (checkRoundActive(sessionId)) {
+      // #6393: mesmo tratamento de tamanho de diff do ramo `overnight/*`
+      // acima — o warning de naming (#3321) é ortogonal ao tamanho, então
+      // sai igual independente de o diff ter resolvido `low` ou `max`.
+      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "sessao_overnight_ativa");
       return {
-        effort: "low",
+        effort,
         warning:
           `branch "${branch}" não usa o prefixo overnight/ apesar de uma sessão ` +
           "overnight ativa nesta máquina (data/overnight/.active-session-*.json) — " +
@@ -410,7 +486,7 @@ export function resolveEffort(
           "prefixo no dispatch do subagente implementador (#3321). O desconto de " +
           "effort foi aplicado pelo guard de sessão ativa, não pelo naming — este " +
           "warning é só sobre o naming divergente.",
-        reason: "sessao_overnight_ativa",
+        reason,
       };
     }
     // Sem sinal de overnight/rodada-ativa: effort resolve por tamanho de diff

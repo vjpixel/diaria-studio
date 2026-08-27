@@ -14,6 +14,7 @@ import {
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
   EFFORT_DIFF_LINE_THRESHOLD,
+  OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD,
   extractCreatedPrUrl,
   isGhPrCreateCommand,
   shouldEmitReviewInstruction,
@@ -298,18 +299,158 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
     assert.equal(result.reason, "default");
   });
 
-  it("branch overnight/* já resolve low sem sequer checar o tamanho do diff", () => {
+  // #6393 (260827): substitui o antigo "branch overnight/* já resolve low sem
+  // sequer checar o tamanho do diff" — a issue removeu exatamente esse
+  // curto-circuito incondicional. Overnight agora TAMBÉM checa o diff, só que
+  // contra um limiar PRÓPRIO e maior (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`,
+  // 1000) — overnight segue mais barato que develop no mesmo tamanho, mas
+  // deixa de ser barato incondicional. Estes 4 casos travam a matriz completa
+  // pedida pelo aceite da issue.
+  it("#6393: branch overnight/* com diff PEQUENO (< limiar overnight) → low, reason branch_overnight (checando o diff)", () => {
     let diffChecked = false;
     const execFn = (_cmd, args) => {
       if (args.includes("additions,deletions")) {
         diffChecked = true;
-        return JSON.stringify({ additions: 500, deletions: 500 });
+        return JSON.stringify({ additions: 500, deletions: 400 }); // 900 < 1000
       }
       return "overnight/fix-1234\n";
     };
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, "low");
-    assert.equal(diffChecked, false, "não deveria checar o diff quando o branch overnight/* já resolveu low");
+    assert.equal(result.reason, "branch_overnight");
+    assert.equal(diffChecked, true, "#6393: overnight passou a checar o diff, diferente do comportamento pré-#6393");
+  });
+
+  it("#6393: branch overnight/* com diff GRANDE (>= limiar overnight) → max, reason branch_overnight_diff_grande", () => {
+    const execFn = (_cmd, args) => {
+      if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 }); // 1100 >= 1000
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "branch_overnight_diff_grande");
+  });
+
+  it("#6393: branch overnight/* com diff exatamente no limiar overnight (1000) → max (limiar é exclusivo, mesma semântica do geral)", () => {
+    const execFn = (_cmd, args) => {
+      if (args.includes("additions,deletions")) {
+        return JSON.stringify({ additions: OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 });
+      }
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "branch_overnight_diff_grande");
+  });
+
+  it("#6393: branch overnight/* com diff DESCONHECIDO (gh falha) → low, reason branch_overnight (fail-direction barata preservada, nunca DEFAULT_EFFORT)", () => {
+    const execFn = (_cmd, args) => {
+      if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "branch_overnight");
+    assert.notEqual(result.reason, "default"); // nunca cai no fallback do caminho geral
+  });
+
+  // #6393: mesma matriz para o guard de sessão ativa (#3322) — o warning de
+  // naming é ortogonal ao tamanho do diff, então sai igual nos dois lados.
+  describe("sessao_overnight_ativa com limiar próprio (#6393)", () => {
+    it("diff pequeno (< limiar overnight) → low, reason sessao_overnight_ativa, COM warning", () => {
+      const execFn = (_cmd, args) => {
+        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 100, deletions: 50 });
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "low");
+      assert.equal(result.reason, "sessao_overnight_ativa");
+      assert.match(result.warning, /não usa o prefixo overnight\//);
+    });
+
+    it("diff grande (>= limiar overnight) → max, reason sessao_overnight_ativa_diff_grande, COM warning", () => {
+      const execFn = (_cmd, args) => {
+        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 });
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "max");
+      assert.equal(result.reason, "sessao_overnight_ativa_diff_grande");
+      assert.match(result.warning, /não usa o prefixo overnight\//);
+    });
+
+    it("diff desconhecido (gh falha) → low, reason sessao_overnight_ativa (fail-direction barata preservada)", () => {
+      const execFn = (_cmd, args) => {
+        if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "low");
+      assert.equal(result.reason, "sessao_overnight_ativa");
+    });
+  });
+
+  // #6393 aceite: as 4 combinações — overnight pequeno → low, overnight
+  // grande → max, geral pequeno → low, geral grande → max — travadas juntas
+  // num único bloco, pros dois limiares distintos (500 geral / 1000 overnight)
+  // nunca serem confundidos um pelo outro numa futura mudança.
+  describe("#6393 — matriz dos dois limiares (overnight 1000 vs. geral 500)", () => {
+    function execFnFor(branch, diff) {
+      return (_cmd, args) => (args.includes("additions,deletions") ? JSON.stringify(diff) : branch);
+    }
+
+    it("overnight pequeno (900 < 1000) → low", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", { additions: 900, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "low");
+    });
+
+    it("overnight grande (1100 >= 1000) → max", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", { additions: 1100, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "max");
+    });
+
+    it("geral pequeno (400 < 500) → low", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("develop/fix-1\n", { additions: 400, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "low");
+    });
+
+    it("geral grande (700 >= 500) → max", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("develop/fix-1\n", { additions: 700, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "max");
+    });
+
+    // O ponto do #6393: um diff de 900 linhas passava batido como `low` no
+    // caminho overnight ANTES desta issue (curto-circuito incondicional) e
+    // CONTINUA `low` agora — só porque 900 < 1000 (limiar overnight), não
+    // porque overnight ainda ignora o tamanho. Um diff nessa mesma faixa no
+    // caminho geral já seria `max` (900 >= 500).
+    it("900 linhas: overnight → low, geral → max (a mesma assimetria de limiar, não mais uma isenção total)", () => {
+      const diff = { additions: 900, deletions: 0 };
+      const overnight = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", diff),
+        noActiveRound,
+      );
+      const geral = resolveEffort("https://github.com/o/r/pull/1", execFnFor("develop/fix-1\n", diff), noActiveRound);
+      assert.equal(overnight.effort, "low");
+      assert.equal(geral.effort, "max");
+    });
   });
 });
 
