@@ -158,6 +158,9 @@ import { writeFileAtomic } from "./atomic-write.ts";
  */
 export type SessionKind = "overnight" | "develop" | "continuo" | "interactive";
 
+/** Os 4 valores de `SessionKind`, para validação/enumeração em runtime (#6338). */
+export const ALL_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo", "interactive"];
+
 /**
  * Os 3 kinds que rodam uma RODADA coordenada (`/diaria-overnight`,
  * `/diaria-develop`, `/diaria-continuo`) — despacham subagentes
@@ -555,14 +558,51 @@ function writeJsonSafe(path: string, value: unknown): void {
  * função sempre vem do parâmetro TIPADO, nunca é lido de volta do nome do
  * arquivo — e esta é a mesma ausência de validação de shape que já existia
  * em `listSessionJsonFiles`/`readMergedSessionGroups` antes deste PR, não
- * uma regressão introduzida aqui. Ver #6338 pro follow-up.
+ * uma regressão introduzida aqui. **Fechado em #6338** — ver
+ * `parseSessionFileName` abaixo, agora usada como filtro aqui.
  */
 function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): string | null {
   const suffix = `-${sessionId}.json`;
   const names = listSessionJsonFiles(repoRoot)
-    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-"))
+    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-") && parseSessionFileName(n) !== null)
     .sort();
   return names.length > 0 ? join(sessionsDir(repoRoot), names[0]!) : null;
+}
+
+/**
+ * Parseia um nome de arquivo de registro de sessão (`{kind}-{tag}-{sessionId}.json`)
+ * validando que o PREFIXO é um `SessionKind` conhecido (#6338) — fecha a
+ * lacuna documentada em `findExistingSessionFileAnyKind` acima, onde o
+ * casamento por sufixo `-{sessionId}.json` nunca checava o que vinha antes.
+ *
+ * **Ambiguidade estrutural, documentada, não escondida:** tanto `tag`
+ * (`machineTag()` — alfanumérico/`_`/`-`, hostname pode ter hífen) quanto
+ * `sessionId` (tipicamente um UUID, também com hífens) podem conter `-`, então
+ * o corte entre os dois a partir só da string é inerentemente ambíguo — não
+ * há como este parser "adivinhar" onde a tag termina e o sessionId começa
+ * quando ambos usam o mesmo separador do nome de arquivo. Por isso o campo
+ * `tag`/`sessionId` retornados usam o corte ingênuo "primeiro `-` depois do
+ * kind" e só devem ser tratados como confiáveis quando o chamador não precisa
+ * distinguir os dois com certeza (o caso concreto que motivou a issue — só
+ * validar que o `kind` é conhecido). Quem precisa casar um `sessionId`
+ * ESPECÍFICO (como `findExistingSessionFileAnyKind`) deve continuar casando
+ * pelo sufixo `-{sessionId}.json` conhecido, e usar este parser só pra validar
+ * o prefixo — nunca para redescobrir o sessionId a partir do nome.
+ *
+ * `null` quando: não termina em `.json`, ou o prefixo não bate com nenhum dos
+ * `ALL_SESSION_KINDS`, ou não sobra `tag-sessionId` suficiente depois do kind.
+ */
+export function parseSessionFileName(
+  name: string,
+): { kind: SessionKind; tag: string; sessionId: string } | null {
+  if (!name.endsWith(".json")) return null;
+  const stem = name.slice(0, -".json".length);
+  const kind = ALL_SESSION_KINDS.find((k) => stem.startsWith(`${k}-`));
+  if (!kind) return null;
+  const rest = stem.slice(kind.length + 1);
+  const sepIndex = rest.indexOf("-");
+  if (sepIndex <= 0 || sepIndex >= rest.length - 1) return null; // sem tag/sessionId não-vazios dos dois lados
+  return { kind, tag: rest.slice(0, sepIndex), sessionId: rest.slice(sepIndex + 1) };
 }
 
 /**
@@ -2476,12 +2516,12 @@ export function consumeMergeGrant(repoRoot: string, sessionId: string, now: numb
  * chamador em produção.
  */
 export function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop" && value !== "continuo" && value !== "interactive") {
+  if (value === undefined || !(ALL_SESSION_KINDS as readonly string[]).includes(value)) {
     throw new Error(
       `--kind deve ser "overnight", "develop", "continuo" ou "interactive", recebido "${value}"`,
     );
   }
-  return value;
+  return value as SessionKind;
 }
 
 /**
@@ -2794,6 +2834,17 @@ function main(): void {
       }
       case "grant-merge": {
         // #6296 — só coordenadora concede, e nunca a si mesma.
+        // #6331: `--kind` é da sessão CONCEDENTE (a própria, coordenadora),
+        // nunca da beneficiária em `--granted-to` — mensagem dedicada aqui
+        // porque este é o único subcomando com dois sujeitos de sessão, e a
+        // leitura errada ("--kind é da beneficiária") sucede em silêncio.
+        if (values.kind === undefined) {
+          throw new Error(
+            '--kind ausente — é o kind da sessão CONCEDENTE (a SUA, a coordenadora que está chamando grant-merge), ' +
+              'nunca da beneficiária em --granted-to. Deve ser "overnight", "develop" ou "continuo". ' +
+              "Ex: grant-merge --kind develop --granted-to <sessionId-do-beneficiario> [--pr N].",
+          );
+        }
         const kind = requireCoordinatorKind(values.kind);
         const sessionId = requireSessionId(values);
         const grantedTo = values["granted-to"];
@@ -2887,9 +2938,10 @@ function main(): void {
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
             "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
             "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
-            "  grant-merge --granted-to X [--pr N]: concede janela de merge a OUTRA sessão (#6296) — só " +
-            "coordenadora concede, nunca a si mesma; TTL curto, uso único. check-merge-grant/consume-merge-grant " +
-            "são o lado de quem recebeu.\n" +
+            "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +
+            "OUTRA sessão (#6296) — --kind é da sessão CONCEDENTE (a sua, obrigatório, #6331), nunca da " +
+            "beneficiária em --granted-to; só coordenadora concede, nunca a si mesma; TTL curto, uso único. " +
+            "check-merge-grant/consume-merge-grant são o lado de quem recebeu.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );
