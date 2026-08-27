@@ -6,10 +6,13 @@
  * sem executar nada) contra o padrão que causou o incidente da issue: um
  * comando de exemplo/instrução dentro de um `SKILL.md` que invoca
  * `scripts/overnight-session-marker.ts --start`/`--phase` ou
- * `scripts/lib/session-registry.ts register|heartbeat|end|claim-issue|
- * unclaim-issue|is-claimed|merge-lock-acquire|merge-lock-release` **encadeado ou pipado**
- * (`&&`/`;`/`|`/multi-linha) dentro do MESMO trecho de código (bloco cercado
- * ```...``` ou span inline `...`).
+ * `scripts/lib/session-registry.ts {subcomando injetável}` **encadeado ou
+ * pipado** (`&&`/`;`/`|`/multi-linha) dentro do MESMO trecho de código
+ * (bloco cercado ```...``` ou span inline `...`). O conjunto exato de
+ * subcomandos injetáveis não é mais listado aqui em prosa (#6351 — a lista
+ * hardcoded anterior já tinha divergido da real, ver
+ * `loadInjectableSubcommandsFromHook` abaixo, que a deriva do hook real em
+ * vez de repeti-la).
  *
  * Por que importa: `.claude/hooks/inject-session-id.mjs` (`isChainedCommand`)
  * recusa injetar `--session-id` automaticamente exatamente nesse formato, de
@@ -40,14 +43,44 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILLS_DIR = join(ROOT, ".claude", "skills");
+const INJECT_SESSION_ID_HOOK = join(ROOT, ".claude", "hooks", "inject-session-id.mjs");
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
-// Mesmo conjunto de .claude/hooks/inject-session-id.mjs (INJECTABLE_SUBCOMMANDS)
-// — duplicado aqui de propósito, mesmo espírito "self-contained" dos hooks
-// (este é um teste estático, não deve importar um .mjs de hook pra isto).
-const INJECTABLE_SUBCOMMANDS =
-  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+
+/**
+ * Extrai a lista de subcomandos injetáveis DIRETO do texto-fonte de
+ * `.claude/hooks/inject-session-id.mjs` (regex sobre a declaração
+ * `const INJECTABLE_SUBCOMMANDS = /\b(...)\b/;`), em vez de manter uma
+ * cópia estática hardcoded aqui (#6351 — a cópia anterior já tinha
+ * divergido em silêncio do hook real: `conflicts`, `grant-merge`,
+ * `check-merge-grant`, `consume-merge-grant` e `merge-lock-renew` foram
+ * adicionados ao hook nos #6168/#6296/#6303 sem nunca entrar aqui, e nada
+ * acusava — este teste continuava verde testando um regex incompleto).
+ * Ler o texto via `readFileSync` + regex (sem `import` do `.mjs` como
+ * módulo) preserva a restrição registrada de "teste estático,
+ * self-contained" — não é o teste chamando o hook, é o teste lendo o
+ * literal que o hook declara, a mesma fonte única. Se o hook mudar de
+ * forma (nome da const, formato da regex) a ponto de a extração falhar,
+ * o teste "guard das SKILLs" abaixo falha alto (a asserção de não-vazio
+ * logo adiante) em vez de voltar a divergir em silêncio.
+ */
+export function loadInjectableSubcommandsFromHook(hookPath: string): RegExp {
+  const source = readFileSync(hookPath, "utf8");
+  const match = source.match(
+    /const\s+INJECTABLE_SUBCOMMANDS\s*=\s*\/\\b\(([^)]+)\)\\b\//,
+  );
+  if (!match) {
+    throw new Error(
+      `Não foi possível extrair INJECTABLE_SUBCOMMANDS de ${hookPath} — ` +
+        "o formato da declaração no hook mudou; atualize o regex de extração " +
+        "em loadInjectableSubcommandsFromHook (test/skill-chained-session-command-guard-6232.test.ts).",
+    );
+  }
+  return new RegExp(`\\b(${match[1]})\\b`);
+}
+
+const INJECTABLE_SUBCOMMANDS = loadInjectableSubcommandsFromHook(INJECT_SESSION_ID_HOOK);
 // Mesma heurística de encadeamento de .claude/hooks/inject-session-id.mjs
 // (isChainedCommand) — inclusive o `\r?\n`: um bloco cercado multi-linha
 // conta como "encadeado" porque a injeção automática do hook real também o
@@ -149,6 +182,40 @@ describe("findChainedSessionCommandsInSkills — unidades isoladas", () => {
   it("bloco cercado MULTI-LINHA com o alvo → flagra (mesma definição conservadora do hook real)", () => {
     const span = "npx tsx scripts/overnight-session-marker.ts --start\nnpx tsx scripts/lib/session-registry.ts register --kind overnight";
     assert.ok(referencesInjectableCommand(span) && CHAIN_RE.test(span));
+  });
+});
+
+describe("loadInjectableSubcommandsFromHook — extração a partir do hook real (#6351)", () => {
+  it(".claude/hooks/inject-session-id.mjs existe neste checkout (senão a extração não testa nada)", () => {
+    assert.ok(existsSync(INJECT_SESSION_ID_HOOK), `esperado existir: ${INJECT_SESSION_ID_HOOK}`);
+  });
+
+  it("extrai um regex não-vazio que reconhece subcomandos conhecidos, incluindo os que já divergiram no #6351", () => {
+    // register/claim-issue eram os únicos cobertos pela cópia estática antiga;
+    // grant-merge/conflicts/merge-lock-renew são os que já tinham divergido em
+    // silêncio (#6351) — todos precisam bater agora que a lista vem do hook.
+    for (const subcommand of [
+      "register",
+      "claim-issue",
+      "unclaim-issue",
+      "is-claimed",
+      "conflicts",
+      "grant-merge",
+      "check-merge-grant",
+      "consume-merge-grant",
+      "merge-lock-acquire",
+      "merge-lock-release",
+      "merge-lock-renew",
+    ]) {
+      assert.ok(
+        INJECTABLE_SUBCOMMANDS.test(subcommand),
+        `esperado que o regex extraído do hook reconhecesse "${subcommand}"`,
+      );
+    }
+  });
+
+  it("não reconhece list-active (leitura pura, nunca deve entrar na lista injetável)", () => {
+    assert.equal(INJECTABLE_SUBCOMMANDS.test("list-active"), false);
   });
 });
 
