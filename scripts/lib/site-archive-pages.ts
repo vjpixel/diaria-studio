@@ -74,18 +74,70 @@ export function derivePageTitle(post: ArchivePost): string {
 }
 
 /**
- * `meta_default_description` costuma ser `null` (#5101 item 2) — cai pra
- * `subtitle`, depois `preview_text`, nunca deixa a página sem description.
- * Último fallback (título) só dispara se os 3 campos de conteúdo faltarem.
+ * Tamanho-alvo de uma meta description pra SEO (~150-160 chars é o padrão —
+ * acima disso o Google trunca o snippet de busca de qualquer forma).
+ */
+const META_DESCRIPTION_MAX_LENGTH = 155;
+
+/**
+ * Trunca em ~155 chars sem cortar no meio de palavra — corta no último
+ * espaço antes do limite e acrescenta reticências. Só age quando o texto
+ * já excede o limite; texto curto passa intacto.
+ */
+function truncateDescription(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= META_DESCRIPTION_MAX_LENGTH) return trimmed;
+  const cut = trimmed.slice(0, META_DESCRIPTION_MAX_LENGTH);
+  const lastSpace = cut.lastIndexOf(" ");
+  const safe = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  return `${safe}…`;
+}
+
+/**
+ * Descreve a PRÓPRIA edição, não outras (#6281). `post.title` é sempre o
+ * destaque D1 da edição; `post.subtitle`/`post.preview_text` são, por
+ * construção editorial da diária, o teaser dos destaques D2/D3 da MESMA
+ * edição (formato "D2 title | D3 title" — ver `stitch-newsletter.ts`) — não
+ * o resumo de OUTRAS edições. Concatenar os dois dá os títulos dos até 3
+ * destaques desta página, sempre começando pelo D1 (que é também o
+ * `<title>` da página via `derivePageTitle` — description e title deixam de
+ * divergir). Fallback de "os títulos dos destaques da própria edição
+ * concatenados" (opção 2 do #6281), preferido sobre "D1 + 1ª frase do Por
+ * que isso importa" porque não depende de parsear `content.free.web`
+ * (estrutura já mudou de shape 3x nos últimos ~2 meses — ver comentários de
+ * `buildArchivePageHtml` sobre o link de voto — regex sobre o corpo da
+ * newsletter seria mais um ponto de fragilidade).
+ */
+function ownEditionDescription(post: ArchivePost): string | undefined {
+  const title = post.title?.trim();
+  if (!title) return undefined;
+  const others = post.subtitle?.trim() || post.preview_text?.trim();
+  return others ? `${title}. ${others}` : title;
+}
+
+/**
+ * `meta_default_description` NÃO é priorizado (mudança do #6281, ver
+ * histórico da issue original) — a premissa de que era sempre `null`
+ * (#5101 item 2) só valia pro subconjunto amostrado ali. Medido ao vivo no
+ * cache real completo (259 posts, #6281): 109 têm o campo POPULADO, e a
+ * imensa maioria carrega o MESMO padrão de bug que motivou esta issue — o
+ * teaser dos destaques D2/D3, sem nunca mencionar D1 (o assunto real da
+ * página, e o `<title>` dela). Alguém/algum processo passado preencheu
+ * `meta_default_description` copiando `subtitle`, então confiar nesse campo
+ * reproduziria o bug pra quase metade do acervo mesmo depois desta correção.
+ * `ownEditionDescription` é determinístico e sempre correto (deriva de
+ * `title`, que é sempre o D1 real) — por isso vem primeiro. Se um dia a
+ * Beehiiv passar a ter um campo de SEO genuinamente curado à mão que não
+ * seja subtitle disfarçado, essa prioridade pode reabrir — não há sinal
+ * disso nos dados de hoje.
  */
 export function deriveMetaDescription(post: ArchivePost): string {
-  return (
+  const raw =
+    ownEditionDescription(post) ||
     post.meta_default_description ||
-    post.subtitle ||
-    post.preview_text ||
     post.title ||
-    "diar.ia.br — 5 minutos diários sobre inteligência artificial."
-  );
+    "diar.ia.br — 5 minutos diários sobre inteligência artificial.";
+  return truncateDescription(raw);
 }
 
 export function archiveUrlForSlug(slug: string): string {
