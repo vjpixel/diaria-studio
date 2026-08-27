@@ -109,6 +109,17 @@
  * futuro, não implementado especulativamente sem um consumidor real pra
  * validar contra.
  *
+ * ## Backend: inerentemente Beehiiv-only, não um caso de migração (#6051)
+ *
+ * "Segmento dinâmico" é um conceito da API da Beehiiv sem equivalente no
+ * Kit hoje — `scripts/lib/kit-client.ts` só expõe operações de
+ * broadcast/leitura de post (ver docstring do módulo), nenhuma de
+ * segmento/audiência dinâmica. Este script não é candidato à leitura
+ * unificada `edition-cache-reader.ts` (isso cobre posts/broadcasts, não
+ * segmentos de assinante) nem a um gate por `platform.config.json` —
+ * continua escrevendo só na Beehiiv até (e se) o Kit ganhar um conceito
+ * equivalente de segmento dinâmico.
+ *
  * Uso:
  *   npx tsx scripts/sync-sparkloop-exclusion-segment-beehiiv.ts [--push]
  */

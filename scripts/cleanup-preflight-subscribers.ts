@@ -45,6 +45,21 @@
  * criou), mas nenhuma sessão overnight/develop roda `--push` sozinha —
  * roteiro (`docs/preflight-utm-cookie-roteiro.md`) instrui o editor a rodar
  * isso manualmente como último passo da passada.
+ *
+ * ## Backend: sempre Beehiiv, sem checar `platform.config.json` (#6051)
+ *
+ * Este script nunca lê `publishing.newsletter.backend`/`read_backend` — o
+ * `PUT .../subscriptions/by_email` é hardcoded pra Beehiiv
+ * (`beehiivApiBase()`). Isso é correto hoje: o cadastro de teste do
+ * preflight (`preflight-utm-arms.ts`) ainda entra pela Beehiiv, e os 3
+ * workers de assinatura (#6339, `SUBSCRIBE_BACKEND=kit`) migraram só o
+ * cadastro real de assinante, não o fluxo de preflight/atribuição. **Se o
+ * preflight um dia migrar para o Kit**, este script silenciosamente para
+ * de limpar os cadastros de teste certos (Beehiiv 404/not_found nunca vira
+ * erro — é tratado como já-limpo, ver `CleanupOutcome`) sem avisar que o
+ * cadastro real está em outro lugar — reavaliar quando isso acontecer, não
+ * antes (issue #6051 pede só documentar o risco, não mudar comportamento
+ * de escrita sem entender o lado que ainda não migrou).
  */
 import "dotenv/config";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
