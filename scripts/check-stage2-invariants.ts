@@ -44,7 +44,7 @@ interface VerifyCacheShape {
   entries: Record<string, VerifyCacheEntry>;
 }
 
-interface CheckResult {
+export interface CheckResult {
   ok: boolean;
   label?: string;
 }

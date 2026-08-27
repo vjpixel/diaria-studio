@@ -371,3 +371,169 @@ describe("social-humanizer-sentinel-written (#6305)", () => {
     }
   });
 });
+
+/**
+ * #6337 — Regressão: `check-stage2-invariants.ts` (#1072/#1073) implementa 5
+ * checks (humanizador newsletter, Clarice, render-erro-intencional,
+ * intentional-error.json exists, reveal com prefixo temporal), mas até aqui
+ * eles só rodavam como PASSO EM PROSA no playbook (`orchestrator-stage-2.md`
+ * ~L375-380) — nenhum estava registrado em `STAGE_2_RULES`, então
+ * `pipeline-sentinel.ts write --step 2` (#6009) não os cobria. Mesma classe
+ * de gap que o #6305 fechou para o sentinel do humanizador social: uma
+ * sessão que pulasse o passo em prosa passava pelo gate mecânico sem
+ * detecção. Cada teste abaixo prova que o registry agora recusa `write
+ * --step 2` quando o check correspondente falha, e para de recusar quando o
+ * estado em disco é corrigido — ou seja, remover a regra do registry faria
+ * este teste falhar.
+ */
+describe("5 checks de check-stage2-invariants.ts entram em STAGE_2_RULES (#6337)", () => {
+  function mkEditionDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-6337-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("newsletter-humanizador-diff-ran: 02-normalized.md byte-idêntico a 02-humanized.md → violação; diverge → some", () => {
+    const dir = mkEditionDir();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "texto cru do writer\n");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "texto cru do writer\n"); // idêntico = humanizer no-op/pulado
+
+      let result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        result.errors.some((v) => v.rule === "newsletter-humanizador-diff-ran"),
+        "esperava violação newsletter-humanizador-diff-ran quando os 2 arquivos são byte-idênticos",
+      );
+
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "texto humanizado, sem gerúndio em cascata\n");
+      result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "newsletter-humanizador-diff-ran"),
+        "diferindo do normalized, o check deveria passar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("clarice-ran: 02-reviewed.md sem _internal/02-pre-clarice.md → violação; com snapshot + suggestions.json → some", () => {
+    const dir = mkEditionDir();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "# Newsletter\ntexto\n");
+
+      let result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        result.errors.some((v) => v.rule === "clarice-ran"),
+        "esperava violação clarice-ran sem o snapshot pré-Clarice",
+      );
+
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "# Newsletter\ntexto\n");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "clarice-ran"),
+        "com snapshot + suggestions.json (mesmo array vazio, #1402) o check deveria passar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("erro-intencional-rendered: placeholder literal remanescente em 02-reviewed.md → violação; renderizado → some", () => {
+    const dir = mkEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "# Newsletter\n{placeholder, script render-erro-intencional.ts substitui pós-Clarice}\n",
+      );
+
+      let result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        result.errors.some((v) => v.rule === "erro-intencional-rendered"),
+        "esperava violação erro-intencional-rendered com o placeholder literal ainda no MD",
+      );
+
+      writeFileSync(join(dir, "02-reviewed.md"), "# Newsletter\nNa última edição, escrevi X onde o correto é Y.\n");
+      result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "erro-intencional-rendered"),
+        "sem o placeholder literal, o check deveria passar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("intentional-error-json-exists: 02-reviewed.md presente sem _internal/intentional-error.json → violação; arquivo presente → some", () => {
+    const dir = mkEditionDir();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "# Newsletter\ntexto\n");
+
+      let result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        result.errors.some((v) => v.rule === "intentional-error-json-exists"),
+        "esperava violação intentional-error-json-exists sem o arquivo",
+      );
+
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ description: "{PREENCHER}" }, null, 2),
+      );
+      result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "intentional-error-json-exists"),
+        "com o arquivo presente (mesmo com placeholder {PREENCHER}) o check deveria passar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reveal-temporal-prefix: reveal sem prefixo temporal (#6139) → violação; com 'Na última edição' → some", () => {
+    const dir = mkEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify(
+          {
+            description: "teste",
+            location: "DESTAQUE 1",
+            category: "factual",
+            correct_value: "valor correto",
+            reveal: "Nesta edição, escrevi X onde o correto é Y.", // #6139: prefixo da declaração CORRENTE, não do reveal
+          },
+          null,
+          2,
+        ),
+      );
+
+      let result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        result.errors.some((v) => v.rule === "reveal-temporal-prefix"),
+        "esperava violação reveal-temporal-prefix quando reveal começa com 'Nesta edição'",
+      );
+
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify(
+          {
+            description: "teste",
+            location: "DESTAQUE 1",
+            category: "factual",
+            correct_value: "valor correto",
+            reveal: "Na última edição, escrevi X onde o correto é Y.",
+          },
+          null,
+          2,
+        ),
+      );
+      result = checkStageInvariantsForWrite(dir, 2);
+      assert.ok(
+        !result.errors.some((v) => v.rule === "reveal-temporal-prefix"),
+        "com o prefixo temporal correto, o check deveria passar",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
