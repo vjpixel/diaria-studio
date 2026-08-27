@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 /**
-// retrigger-ci-note
  * scripts/audit-kit-fixtures.ts (#6336)
  *
  * Varre a base Kit inteira por padrão de e-mail de FIXTURE de teste
