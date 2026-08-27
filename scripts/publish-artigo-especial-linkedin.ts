@@ -114,19 +114,27 @@ const TARGET_TO_CHANNEL: Record<LinkedinTarget, ArtigoEspecialChannel> = {
 /**
  * Pura: o `destaque` que vai NO PAYLOAD DO WORKER (não o do nosso store).
  *
- * O Worker LinkedIn valida `destaque` contra `/^(d[123]|weekly(-[a-z]+)?)$/`
+ * O Worker LinkedIn valida `destaque` contra `WORKER_DESTAQUE_RE` abaixo
  * (`workers/linkedin-cron/src/index.ts`) e rejeita "pagina"/"perfil" com HTTP
  * 400 — incidente da 1ª execução ao vivo, 23/08/2026, ver o comentário longo
- * no call site de `dispatchEntry`. `weekly-{target}` casa com o regex e é
- * puro carimbo de auditoria do lado do Worker.
+ * no call site de `dispatchEntry`. Naquela execução (antes do #6123) o Worker
+ * só aceitava `d[123]`/`weekly[-mode]`, e este script pegava carona no
+ * namespace do carrossel semanal (`weekly-{target}`) por falta de valor
+ * válido — o post de artigo especial mentia como carrossel semanal na fila e
+ * nos logs (dívida registrada em #6016). **`especial-{target}` é o valor
+ * honesto, em produção desde #6123/#6016** — o Worker publicado (deploy
+ * `32854524401`, 25/08/2026) já aceita `especial[-mode]`.
  *
  * **Este valor VAZA pro nosso store**, e é assim de propósito:
  * `dispatchEntry` (`publish-linkedin.ts`, reusado sem modificação) grava
  * `destaque` verbatim na `PostEntry`, então `linkedin-published.json` guarda
- * `"weekly-pagina"`, não `"pagina"`. Normalizar o retorno de `dispatchEntry`
+ * `"especial-pagina"`, não `"pagina"`. Normalizar o retorno de `dispatchEntry`
  * não resolveria: ele persiste por dentro, ANTES de devolver o objeto.
  * Quem absorve a diferença é a LEITURA — `channelForStoredDestaque` aceita
- * as duas grafias. Não assuma `"pagina"/"perfil"` cru ao ler este store.
+ * as três grafias (`"pagina"/"perfil"` cru de entries pré-incidente,
+ * `"weekly-{target}"` das entries do incidente 23/08–25/08, e
+ * `"especial-{target}"` daqui em diante). Não assuma uma grafia única ao ler
+ * este store.
  */
 export function dispatchDestaqueFor(target: LinkedinTarget): string {
   return `especial-${target}`;
@@ -167,11 +175,11 @@ export function assertDispatchDestaquesValid(targets: readonly LinkedinTarget[])
 /**
  * Pura: resolve o canal a partir do `destaque` COMO ESTÁ GRAVADO no store.
  *
- * Aceita as duas grafias de propósito. `dispatchEntry` persiste a entry por
- * dentro, com o `destaque` que foi enviado ao Worker (`weekly-pagina`), então
- * é esse o valor que aparece em `linkedin-published.json` a partir de
- * 23/08/2026 — mas o arquivo também guarda entries ANTERIORES ao incidente,
- * gravadas como "pagina"/"perfil" cru. Ler só uma das grafias faria a
+ * Aceita as TRÊS grafias de propósito. `dispatchEntry` persiste a entry por
+ * dentro, com o `destaque` que foi enviado ao Worker naquele dispatch —
+ * `"pagina"/"perfil"` cru pré-incidente, `"weekly-{target}"` durante o
+ * incidente de 23/08/2026 (antes do #6123 corrigir o namespace, #6016), e
+ * `"especial-{target}"` daqui em diante. Ler só uma grafia faria a
  * reconciliação pular entries silenciosamente (canal `undefined` → `continue`),
  * que é justamente o modo de falha invisível que este arquivo tenta evitar.
  */
