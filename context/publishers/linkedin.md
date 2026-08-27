@@ -523,10 +523,12 @@ de 3 dias entrega o gabarito pra ninguém.
 
 ### Verificação pós-dispatch
 
-Não existe verificador dedicado pro estado `eia-*` — `verify-scheduled-post.ts`
-e `verify-social-worker-dispatch.ts` foram desenhados pro fluxo padrão da
-Etapa 5 (`06-social-published.json`), não pro `eia-social-published.json`
-avulso. Pra conferir se um canal realmente saiu: X via
+Não existe verificador dedicado pro estado `eia-*` — `verify-social-worker-dispatch.ts`
+foi desenhado pro fluxo padrão da Etapa 5 (`06-social-published.json`), não
+pro `eia-social-published.json` avulso (`verify-scheduled-post.ts` é caso à
+parte: verifica só o post da newsletter no Beehiiv, `05-published.json` —
+nunca teve relação com canais sociais). Pra conferir se um canal realmente
+saiu: X via
 `mcp__claude_ai_Buffer__get_post` (status `sent`/`error` + `sentAt`);
 LinkedIn/Instagram/Threads exigem `DIARIA_LINKEDIN_CRON_URL`/`_TOKEN` pra
 consultar o Worker; Facebook exige o token de página (Graph API). Sem essas
