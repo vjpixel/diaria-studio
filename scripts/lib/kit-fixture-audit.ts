@@ -30,18 +30,28 @@ export interface KitFixtureAuditResult {
   /** Subconjunto de `all` com `state === "active"` — o caso que importa:
    *  receberia a próxima campanha/broadcast real. */
   active: KitFixtureFinding[];
+  /** Registros malformados (sem `email_address` string) que a API do Kit
+   *  devolveu — tratados como "não-fixture" e pulados, nunca lançam (#6383
+   *  F3: a docstring de `kit-client.ts`, #6181, documenta que essa API tem
+   *  armadilhas reais de shape). Vazio no caminho feliz. */
+  skipped?: Array<{ id: unknown; reason: string }>;
 }
 
 export function auditKitFixtures(subscribers: KitFixtureAuditInput[]): KitFixtureAuditResult {
   const all: KitFixtureFinding[] = [];
+  const skipped: KitFixtureAuditResult["skipped"] = [];
   for (const s of subscribers) {
+    if (typeof s?.email_address !== "string") {
+      skipped.push({ id: s?.id, reason: `email_address ausente/não-string (${typeof s?.email_address})` });
+      continue;
+    }
     const reason = matchFixtureEmail(s.email_address);
     if (reason) {
       all.push({ id: s.id, email: s.email_address, state: s.state, reason });
     }
   }
   const active = all.filter((f) => f.state === "active");
-  return { all, active };
+  return { all, active, skipped };
 }
 
 /**
@@ -50,15 +60,25 @@ export function auditKitFixtures(subscribers: KitFixtureAuditInput[]): KitFixtur
  * violation do invariant check (Stage 4), que embute o stdout do CLI.
  */
 export function renderKitFixtureAuditReport(result: KitFixtureAuditResult): string {
+  const lines: string[] = [];
   if (result.all.length === 0) {
-    return "Nenhum assinante de fixture encontrado na base Kit.";
+    lines.push("Nenhum assinante de fixture encontrado na base Kit.");
+  } else {
+    lines.push(
+      `${result.all.length} assinante(s) de fixture encontrado(s) (${result.active.length} ATIVO(s)):`,
+    );
+    for (const f of result.all) {
+      const flag = f.state === "active" ? "ATIVO" : f.state;
+      lines.push(`  - [${flag}] ${f.email} (id=${f.id}) — ${f.reason}`);
+    }
   }
-  const lines: string[] = [
-    `${result.all.length} assinante(s) de fixture encontrado(s) (${result.active.length} ATIVO(s)):`,
-  ];
-  for (const f of result.all) {
-    const flag = f.state === "active" ? "ATIVO" : f.state;
-    lines.push(`  - [${flag}] ${f.email} (id=${f.id}) — ${f.reason}`);
+  if (result.skipped?.length) {
+    lines.push(
+      `${result.skipped.length} registro(s) malformado(s) pulado(s) (sem email_address válido):`,
+    );
+    for (const sk of result.skipped) {
+      lines.push(`  - id=${String(sk.id)} — ${sk.reason}`);
+    }
   }
   return lines.join("\n");
 }
