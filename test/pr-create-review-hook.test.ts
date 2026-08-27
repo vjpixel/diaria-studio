@@ -198,7 +198,7 @@ describe("resolveEffort (#2754)", () => {
 // duas chamadas de `gh` quando não há sinal de overnight.
 describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243; limiar 500 desde #5420)", () => {
   function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
-    return (_cmd, args) => {
+    return (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) {
         if (diff === undefined) throw new Error("gh pr view --json additions,deletions failed");
         return diff;
@@ -286,7 +286,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, reason default, nunca 'skip'", () => {
-    const execFn = (_cmd, args) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
+    const execFn = (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.reason, "default");
@@ -308,7 +308,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   // pedida pelo aceite da issue.
   it("#6393: branch overnight/* com diff PEQUENO (< limiar overnight) → low, reason branch_overnight (checando o diff)", () => {
     let diffChecked = false;
-    const execFn = (_cmd, args) => {
+    const execFn = (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) {
         diffChecked = true;
         return JSON.stringify({ additions: 500, deletions: 400 }); // 900 < 1000
@@ -322,7 +322,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("#6393: branch overnight/* com diff GRANDE (>= limiar overnight) → max, reason branch_overnight_diff_grande", () => {
-    const execFn = (_cmd, args) => {
+    const execFn = (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 }); // 1100 >= 1000
       return "overnight/fix-1234\n";
     };
@@ -332,7 +332,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("#6393: branch overnight/* com diff exatamente no limiar overnight (1000) → max (limiar é exclusivo, mesma semântica do geral)", () => {
-    const execFn = (_cmd, args) => {
+    const execFn = (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) {
         return JSON.stringify({ additions: OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 });
       }
@@ -344,7 +344,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("#6393: branch overnight/* com diff DESCONHECIDO (gh falha) → low, reason branch_overnight (fail-direction barata preservada, nunca DEFAULT_EFFORT)", () => {
-    const execFn = (_cmd, args) => {
+    const execFn = (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
       return "overnight/fix-1234\n";
     };
@@ -358,7 +358,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   // naming é ortogonal ao tamanho do diff, então sai igual nos dois lados.
   describe("sessao_overnight_ativa com limiar próprio (#6393)", () => {
     it("diff pequeno (< limiar overnight) → low, reason sessao_overnight_ativa, COM warning", () => {
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args.includes("additions,deletions")) return JSON.stringify({ additions: 100, deletions: 50 });
         return "fix-3321-branch-naming\n";
       };
@@ -369,7 +369,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
     });
 
     it("diff grande (>= limiar overnight) → max, reason sessao_overnight_ativa_diff_grande, COM warning", () => {
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 });
         return "fix-3321-branch-naming\n";
       };
@@ -380,7 +380,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
     });
 
     it("diff desconhecido (gh falha) → low, reason sessao_overnight_ativa (fail-direction barata preservada)", () => {
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
         return "fix-3321-branch-naming\n";
       };
@@ -395,8 +395,8 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   // num único bloco, pros dois limiares distintos (500 geral / 1000 overnight)
   // nunca serem confundidos um pelo outro numa futura mudança.
   describe("#6393 — matriz dos dois limiares (overnight 1000 vs. geral 500)", () => {
-    function execFnFor(branch, diff) {
-      return (_cmd, args) => (args.includes("additions,deletions") ? JSON.stringify(diff) : branch);
+    function execFnFor(branch: string, diff: Record<string, unknown>) {
+      return (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? JSON.stringify(diff) : branch);
     }
 
     it("overnight pequeno (900 < 1000) → low", () => {
@@ -462,7 +462,7 @@ describe("resolveEffort — repassa sessionId pro checkRoundActive (#5156)", () 
   it("checkRoundActive injetado recebe o sessionId passado a resolveEffort", () => {
     const execFn = () => "fix-something\n";
     let receivedSessionId;
-    const checkRoundActive = (sid) => {
+    const checkRoundActive = (sid: string | undefined) => {
       receivedSessionId = sid;
       return true;
     };
@@ -473,8 +473,8 @@ describe("resolveEffort — repassa sessionId pro checkRoundActive (#5156)", () 
 
   it("sessionId omitido → checkRoundActive recebe undefined (não quebra mocks que ignoram o argumento)", () => {
     const execFn = () => "fix-something\n";
-    let receivedSessionId = "not-called";
-    const checkRoundActive = (sid) => {
+    let receivedSessionId: string | undefined = "not-called";
+    const checkRoundActive = (sid: string | undefined) => {
       receivedSessionId = sid;
       return false;
     };
@@ -654,7 +654,7 @@ describe("isOvernightRoundActive (#3322)", () => {
     return root;
   }
 
-  function writeMarker(root, tag, marker) {
+  function writeMarker(root: string, tag: string, marker: Record<string, unknown>) {
     const dir = join(root, "data", "overnight");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `.active-session-${tag}.json`), JSON.stringify(marker), "utf8");
@@ -813,7 +813,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
   });
 
   it("diff pequeno (< limiar) → low, reason diff_pequeno", () => {
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 1, deletions: 0 })
         : "develop/fix-4813\n";
@@ -823,7 +823,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
   });
 
   it("branch normal, sem rodada ativa, diff grande CONHECIDO (≥ limiar) → max, reason diff_grande", () => {
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "develop/fix-4813\n";
@@ -866,7 +866,7 @@ describe("logEffortDecision (#4252)", () => {
     return root;
   }
 
-  function readLoggedEvents(root) {
+  function readLoggedEvents(root: string) {
     const logPath = join(root, "data", "run-log.jsonl");
     return readFileSync(logPath, "utf8")
       .trim()
@@ -982,12 +982,17 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     return root;
   }
 
-  function readLoggedEvent(root) {
+  function readLoggedEvent(root: string) {
     const logPath = join(root, "data", "run-log.jsonl");
     return JSON.parse(readFileSync(logPath, "utf8").trim().split("\n")[0]);
   }
 
-  function runAndLog(prUrl, execFn, checkRoundActive, root) {
+  function runAndLog(
+    prUrl: string,
+    execFn: (cmd: string, args: string[]) => string,
+    checkRoundActive: () => boolean,
+    root: string,
+  ) {
     const { effort, reason } = resolveEffort(prUrl, execFn, checkRoundActive);
     logEffortDecision({ prUrl, effort, reason }, { repoRoot: root });
     return effort;
@@ -1004,7 +1009,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
 
   it("diff pequeno (< limiar, #4813/#5420) → low, evento loga motivo=diff_pequeno agentes=1", () => {
     const root = freshRoot();
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 10, deletions: 5 })
         : "develop/fix-4252\n";
@@ -1016,7 +1021,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
 
   it("branch normal com diff grande CONHECIDO (≥ limiar, #4813/#5420), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
     const root = freshRoot();
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "fix-something-manual\n";
@@ -1069,7 +1074,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
     }
   }
 
-  function withIsolatedGitCwd(run) {
+  function withIsolatedGitCwd(run: (tmpRoot: string) => void) {
     const tmpRoot = mkdtempSync(join(tmpdir(), "pr-create-review-default-checkround-"));
     const originalCwd = process.cwd();
     try {
@@ -1093,7 +1098,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
         "utf8",
       );
 
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
         throw new Error(`execFn inesperado neste teste: ${args.join(" ")}`);
       };
@@ -1107,7 +1112,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
 
   it("nenhum marker em disco → resolveEffort(prUrl, execFn) SÓ com 2 args não confunde 'ausente' com 'ativo'", () => {
     withIsolatedGitCwd(() => {
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
         if (args[0] === "pr" && args[1] === "view" && args.includes("additions,deletions")) {
           return JSON.stringify({ additions: 700, deletions: 300 }); // diff grande, evita cair em diff_pequeno
