@@ -38,9 +38,10 @@ export const BREVO_RATE_LIMIT_CONTACTS_RPH = 36000; // /v3/contacts/*
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles; #6394: calcCumulativeSentInBillingWindow
 import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
 import { fmtTimeBRT, fmtClockBRT } from "./render-links.ts"; // #4251: timestamp "defasado desde X"; #5218: horário-alvo do banner de rate-limit
+import { billingCycleWindow } from "./billing-cycle.ts"; // #6394: janela do ciclo de cobrança pra estimar cumulativeSent no snapshot
 
 /**
  * #5218: monta o horário-de-relógio (BRT) em que o freio de rate-limit
@@ -484,6 +485,148 @@ export async function fetchPlanCredits(
   }
   if (!kv) return null;
   return checkedCache ? cached : readPlanCreditsKv(kv);
+}
+
+/**
+ * #6394: shape completo gravado em `PLAN_CREDITS_KV_KEY` a partir desta
+ * correção — o par `credits`/`sentAtFetch` do MESMO instante (a escrita
+ * abaixo estima `sentAtFetch` a partir de `LASTGOOD_CAMPAIGNS_KEY`, a
+ * contagem de envios mais recente disponível sem chamada extra à Brevo) mais
+ * o `planTotal` JÁ derivado — o valor que os leitores devem servir direto,
+ * nunca recombinar com um `cumulativeSent` de outro instante (era o bug:
+ * `162.010` = `planCredits` de um snapshot velho + `cumulativeSent` ao vivo,
+ * ver corpo da issue #6394).
+ */
+interface PlanCreditsSnapshot {
+  credits: number;
+  sentAtFetch: number;
+  planTotal: number;
+  fetchedAt: string;
+}
+
+/** #6394: lê o snapshot completo do KV (não só `credits`, como `readPlanCreditsKv`
+ * acima) — entradas gravadas ANTES desta correção têm o formato legado
+ * `{credits, fetchedAt}` (sem `sentAtFetch`/`planTotal`); `planTotalFromSnapshot`
+ * trata os dois formatos. */
+async function readPlanCreditsSnapshotKv(kv: KVNamespace): Promise<Partial<PlanCreditsSnapshot> | null> {
+  return (await kv.get(PLAN_CREDITS_KV_KEY, "json").catch(() => null)) as Partial<PlanCreditsSnapshot> | null;
+}
+
+/**
+ * #6394: deriva o total do ciclo (denominador de "Volume enviado no ciclo") a
+ * partir de um snapshot do KV. Prefere `snap.planTotal` — já derivado NO
+ * MOMENTO da escrita, snapshot-consistente — e o serve DIRETO, sem tocar em
+ * `cumulativeSent`. Isso é a correção em si: antes, todo leitor recombinava
+ * `snap.credits` (podendo ter até 24h de idade, TTL do cache) com o
+ * `cumulativeSent` AO VIVO do render atual, inflando o denominador pelo
+ * volume enviado depois da escrita do snapshot.
+ *
+ * `legacyCumulativeSentFallback` só entra em jogo pra uma entrada gravada
+ * ANTES desta correção (formato `{credits, fetchedAt}`, sem `planTotal`) —
+ * degrada pro cálculo antigo (mesmo comportamento de antes, nunca pior) só
+ * até o próximo `resolvePlanTotal` bem-sucedido regravar no formato novo.
+ */
+function planTotalFromSnapshot(
+  snap: Partial<PlanCreditsSnapshot>,
+  legacyCumulativeSentFallback: number,
+): number | null {
+  if (typeof snap.planTotal === "number") return snap.planTotal;
+  if (typeof snap.credits === "number") return snap.credits + legacyCumulativeSentFallback;
+  return null;
+}
+
+/**
+ * #6394: estimativa de `cumulativeSent` sem chamada extra à Brevo — lê
+ * `LASTGOOD_CAMPAIGNS_KEY` (campanhas do último render bem-sucedido,
+ * regravado a cada request no caminho ao vivo do Worker, #3553) e agrega
+ * pela mesma janela de cobrança (`calcCumulativeSentInBillingWindow`,
+ * sections-core.ts) usada pelo render em si. `null` quando o KV está vazio
+ * ou corrompido (nunca lança) — o caller trata como "não dá pra parear o
+ * snapshot agora".
+ */
+async function estimateCumulativeSentFromLastGood(kv: KVNamespace): Promise<number | null> {
+  const raw = (await kv.get(LASTGOOD_CAMPAIGNS_KEY, "json").catch(() => null)) as
+    | { campaigns?: unknown[] }
+    | null;
+  if (!raw || !Array.isArray(raw.campaigns)) return null;
+  return calcCumulativeSentInBillingWindow(
+    raw.campaigns as Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+    billingCycleWindow(),
+  );
+}
+
+/**
+ * #6394: substituto de `fetchPlanCredits` para quem alimenta
+ * `renderVolumeSection` (via `planCredits`/agora "planTotal" em
+ * `renderDashboardHtml`) — resolve e retorna o TOTAL do ciclo já
+ * snapshot-consistente, em vez do restante cru (`fetchPlanCredits`), que
+ * exigia o CALLER recombinar com `cumulativeSent` e é onde o bug do #6394
+ * vivia. Mesma assinatura posicional de `fetchPlanCredits` (`env`, `mode`,
+ * `skipKvCache`) — drop-in nos mesmos call sites.
+ *
+ * Comportamento por modo:
+ * - `mode="cached"` com KV HIT: serve `planTotal` do snapshot DIRETO — nunca
+ *   busca ao vivo, nunca recombina com nada (a correção em si).
+ * - `mode!=="kv-only"` sem HIT (ou `mode="fresh"`): busca `/v3/account` ao
+ *   vivo; com sucesso, pareia com uma estimativa de `cumulativeSent` (via
+ *   `estimateCumulativeSentFromLastGood`, sem 2ª chamada à Brevo) e GRAVA o
+ *   par consistente `{credits, sentAtFetch, planTotal, fetchedAt}` no KV
+ *   antes de retornar `planTotal`.
+ * - `mode="kv-only"`, ou fetch ao vivo falhou: lê o snapshot do KV (mesmo
+ *   `planTotalFromSnapshot`, mesma garantia de nunca recombinar).
+ * - Sem KV disponível (`skipKvCache`) e sem fetch ao vivo bem-sucedido: `null`.
+ */
+export async function resolvePlanTotal(
+  env: Pick<Env, "BREVO_API_KEY" | "STATS_CACHE">,
+  mode: CouponUsageMode = "cached",
+  skipKvCache = false,
+): Promise<number | null> {
+  const kv = skipKvCache ? undefined : env.STATS_CACHE;
+  let cached: Partial<PlanCreditsSnapshot> | null = null;
+  let checkedCache = false;
+
+  if (mode === "cached" && kv) {
+    cached = await readPlanCreditsSnapshotKv(kv);
+    checkedCache = true;
+    if (cached) {
+      const estimate = await estimateCumulativeSentFromLastGood(kv);
+      return planTotalFromSnapshot(cached, estimate ?? 0);
+    }
+  }
+
+  if (mode !== "kv-only") {
+    try {
+      const account = await brevoFetch<BrevoAccountResponse>("/v3/account", env as Env);
+      const credits = extractPlanCredits(account);
+      if (credits !== null) {
+        const sentAtFetch = kv ? await estimateCumulativeSentFromLastGood(kv) : null;
+        if (sentAtFetch !== null) {
+          const planTotal = credits + sentAtFetch;
+          if (kv) {
+            await kv
+              .put(
+                PLAN_CREDITS_KV_KEY,
+                JSON.stringify({ credits, sentAtFetch, planTotal, fetchedAt: new Date().toISOString() } satisfies PlanCreditsSnapshot),
+                { expirationTtl: PLAN_CREDITS_TTL_SECS },
+              )
+              .catch(() => { /* KV write nunca bloqueia o render */ });
+          }
+          return planTotal;
+        }
+        // Sem estimativa de cumulativeSent disponível (LASTGOOD_CAMPAIGNS_KEY
+        // vazio/corrompido, ou sem KV): não dá pra parear o snapshot agora —
+        // cai pro fallback abaixo (KV, se houver) em vez de inventar um total.
+      }
+    } catch (e) {
+      console.error("[#6394] resolvePlanTotal: fetch ao vivo falhou, caindo pro KV:", e instanceof Error ? e.message : e);
+    }
+  }
+
+  if (!kv) return null;
+  const finalCached = checkedCache ? cached : await readPlanCreditsSnapshotKv(kv);
+  if (!finalCached) return null;
+  const estimate = await estimateCumulativeSentFromLastGood(kv);
+  return planTotalFromSnapshot(finalCached, estimate ?? 0);
 }
 
 // #2733: chave KV com as campanhas Brevo cruas do último render saudável
@@ -1434,7 +1577,7 @@ export async function buildRateLimitFallback(
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
-      : await fetchPlanCredits(env, "kv-only").catch(() => null);
+      : await resolvePlanTotal(env, "kv-only").catch(() => null);
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   const rawScheduled = staleCampaignsRaw?.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -1514,7 +1657,7 @@ export async function buildUpstreamErrorFallback(
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
-      : await fetchPlanCredits(env, "kv-only").catch(() => null);
+      : await resolvePlanTotal(env, "kv-only").catch(() => null);
   const rawCampaigns = staleCampaignsRaw.campaigns;
   const rawScheduled = staleCampaignsRaw.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -1678,7 +1821,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
       typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
     const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } =
       await readKvTabs(env, "kv-only");
-    const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+    const planCredits = await resolvePlanTotal(env, "kv-only").catch(() => null);
     const rawCampaigns = staleCampaignsRaw.campaigns;
     const rawScheduled = staleCampaignsRaw.scheduled;
     const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
@@ -1771,7 +1914,7 @@ export async function buildInflightCoalescedFallback(
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
-      : await fetchPlanCredits(env, "kv-only").catch(() => null);
+      : await resolvePlanTotal(env, "kv-only").catch(() => null);
   const rawCampaigns = staleCampaignsRaw.campaigns;
   const rawScheduled = staleCampaignsRaw.scheduled;
   const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<

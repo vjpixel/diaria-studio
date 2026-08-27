@@ -304,7 +304,7 @@ export function renderDashboardHtml(
   contactsSummary: ContactsSummary | null = null, // #2653: sumário do store
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
-  planCredits: number | null = null, // #2910: créditos/limite do plano Brevo (denominador dinâmico da seção Volume) — fetch ao vivo feito no call site (index.ts), nunca aqui (função continua pura/sync)
+  planCredits: number | null = null, // #2910: TOTAL do ciclo Brevo (denominador dinâmico da seção Volume), já resolvido pelo call site via `resolvePlanTotal` (brevo-api.ts) — #6394: deixou de ser "créditos restantes" (exigia somar `cumulativeSent` aqui) porque o valor combinado num instante diferente do snapshot inflava o total; agora chega pronto, snapshot-consistente. Fetch/resolução acontece no call site (index.ts), nunca aqui (função continua pura/sync)
   // #3079/#3553: ISO de quando `campaigns`/`scheduled` foram DE FATO buscados
   // na Brevo — sempre "agora" desde que #3553 (parte B) removeu o Cron
   // Trigger (toda leitura é fetch ao vivo em request-time, exceto o fallback

@@ -2061,24 +2061,25 @@ describe("aggregateByWeekday (#2134)", () => {
 describe("renderVolumeSection (#2910 — ciclo de cobrança + denominador dinâmico)", () => {
   const window = billingCycleWindow(new Date("2026-06-15T12:00:00Z")); // dentro do ciclo 04/jun→04/jul
 
-  test("denominador = RESTANTE + enviado (o total do ciclo), não o restante direto", () => {
-    // planCredits (arg) é o RESTANTE da Brevo (2000); enviado = 900.
-    // Total do ciclo = 2000 + 900 = 2900. pct = 900/2900 = 31.0%.
-    const html = renderVolumeSection(900, window, 2000);
+  test("denominador = planTotal JÁ resolvido pelo call site (#6394: não soma mais nada aqui)", () => {
+    // #6394: `renderVolumeSection` deixou de derivar `planTotal` como
+    // `planCredits + cumulativeSent` — quem soma (restante + enviado, no
+    // MESMO instante) é `resolvePlanTotal` (brevo-api.ts), antes do render.
+    // O 3º arg aqui já é o TOTAL (2900), não o restante (2000).
+    const html = renderVolumeSection(900, window, 2900);
     assert.match(html, /900/, "deve mostrar 900 enviados");
-    assert.match(html, /2\.900/, "denominador = restante (2000) + enviado (900) = 2900, NÃO o restante 2000");
-    assert.doesNotMatch(html, /de 2\.000 cr[ée]ditos/, "NUNCA usa o restante direto como denominador (bug 260705)");
-    assert.match(html, /31[,.]0%/, "900/(2000 restante + 900 enviado) = 900/2900 = 31.0%");
+    assert.match(html, /2\.900/, "denominador = planTotal recebido direto, sem recombinar com cumulativeSent");
+    assert.match(html, /31[,.]0%/, "900/2900 = 31.0%");
     assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
     assert.match(html, /Volume enviado no ciclo/);
   });
 
-  test("cenário real do editor (260705): 5.292 enviado + 34.708 restante = 40.000 do plano", () => {
-    // A Brevo /v3/account retorna credits=34708 (RESTANTE do ciclo). O plano é 40.000.
-    // 5.292 + 34.708 = 40.000 exato. O denominador tem que ser o TOTAL, não o restante.
-    const html = renderVolumeSection(5292, window, 34708);
+  test("cenário real do editor (260705): planTotal já resolvido em 40.000 (5.292 enviado + 34.708 restante, somados pelo call site)", () => {
+    // A Brevo /v3/account retornava credits=34708 (RESTANTE do ciclo); o plano
+    // real é 40.000. Quem soma restante+enviado agora é `resolvePlanTotal`,
+    // ANTES do render — aqui o 3º arg já chega como 40.000.
+    const html = renderVolumeSection(5292, window, 40000);
     assert.match(html, /de 40\.000 cr[ée]ditos do plano/, "denominador = total do plano (40.000)");
-    assert.doesNotMatch(html, /34\.708 cr[ée]ditos do plano/, "NUNCA o restante (34.708) como denominador");
     assert.match(html, /13[,.]2%/, "5292/40000 = 13.2%");
   });
 

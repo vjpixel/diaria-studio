@@ -78,7 +78,7 @@ import {
   LASTGOOD_CAMPAIGNS_HASH_KEY, // #5216
   djb2Hash, // #5216
   CAMPAIGNS_FETCH_LIMIT,
-  fetchPlanCredits,
+  resolvePlanTotal, // #6394: substitui fetchPlanCredits — entrega o total já snapshot-consistente
   tryAcquireRefreshLock,
   releaseRefreshLock,
   buildInflightCoalescedFallback,
@@ -414,6 +414,9 @@ async function buildDashboardResponse(
   // (janela de rate-limit fresca) e reusados pelo fallback de 429 em memória.
   // Sem isso o fallback lia "kv-only" e o KV nunca era populado (o fetch que o
   // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
+  // #6394: `planCredits` guarda o TOTAL do ciclo já resolvido (`resolvePlanTotal`),
+  // não mais o restante cru — nome mantido pra não mexer nos 2 call sites de
+  // fallback abaixo, que só repassam o valor adiante.
   let planCredits: number | null = null;
   try {
     // #3644: lock de coalescing cross-isolate (2ª linha de defesa) — antes de
@@ -459,8 +462,12 @@ async function buildDashboardResponse(
     // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a
     // /v3/account com a janela de rate-limit fresca, antes do fetch
     // pesado de campanhas (~100 GETs). Fail-soft: cai pro KV/null se
-    // falhar, nunca lança.
-    planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+    // falhar, nunca lança. #6394: `resolvePlanTotal` (não mais
+    // `fetchPlanCredits`) — grava/serve o par consistente
+    // `{credits, sentAtFetch, planTotal}` em vez do restante cru, que este
+    // caller (e os outros 3 abaixo) tinha que recombinar com um
+    // `cumulativeSent` de outro instante — a causa do denominador inflado.
+    planCredits = await resolvePlanTotal(env, isFresh ? "fresh" : "cached").catch(() => null);
     // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
     // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
     // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
