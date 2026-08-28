@@ -595,11 +595,20 @@ async function subscribeToBeehiiv(
  * ## Double opt-in (#6340, decisão do editor 26/08/2026)
  *
  * `resolveKitCreateState` decide `state: "inactive"` em vez de `"active"`
- * quando este worker está em `DOUBLE_OPT_IN_FLAG.enabledForWorkers`
- * (`optin-flag-6340.ts` — rollout worker-a-worker, `poll` primeiro por ter
- * o menor volume, mesmo padrão do #6048). **Base já importada (589 `active`)
- * NÃO é afetada** — isto só muda o `state` na CRIAÇÃO de um subscriber novo
- * por este endpoint; nenhum subscriber existente é re-escrito aqui.
+ * quando este worker está em `DOUBLE_OPT_IN_FLAG.enabledForWorkers` **E**
+ * `env.KIT_DOI_FORM_ID` está configurado (`optin-flag-6340.ts` — rollout
+ * worker-a-worker, `poll` primeiro por ter o menor volume, mesmo padrão do
+ * #6048). **Base já importada (589 `active`) NÃO é afetada** — isto só muda
+ * o `state` na CRIAÇÃO de um subscriber novo por este endpoint; nenhum
+ * subscriber existente é re-escrito aqui.
+ *
+ * #6565: sem `KIT_DOI_FORM_ID` configurado, `vincularKitDoiForm` é no-op —
+ * nenhum e-mail de confirmação sai, e um subscriber criado `inactive` nesse
+ * cenário ficaria preso para sempre (nada no Kit promove `inactive→active`
+ * sozinho). Por isso o guard cai de volta em `"active"` (comportamento
+ * anterior ao #6340) enquanto o form não estiver configurado — o flag por
+ * worker liga o ROLLOUT, mas só cria `inactive` quando o caminho de
+ * confirmação (o form) de fato existe pra desafogar esse estado.
  *
  * Quando o double opt-in está ativo E `KIT_DOI_FORM_ID` está configurado
  * (nome enganoso à parte — é um ID de FORM, não um nome de campo, mesmo
@@ -614,10 +623,11 @@ async function subscribeToBeehiiv(
  * dispara o e-mail "Important: confirm your subscription" quando o form
  * tem "Send confirmation email" ligado no dashboard do Kit — configuração
  * OPERACIONAL fora do alcance deste repo (ver #6318, mesmo form). Sem
- * `KIT_DOI_FORM_ID` configurado, o subscriber É criado `inactive`, mas
- * NENHUM e-mail de confirmação é disparado por este caminho — cadastro
- * "preso" em inactive até o editor configurar o form. Documentado, não
- * resolvido aqui (é ação de dashboard, não de código).
+ * `KIT_DOI_FORM_ID` configurado, o subscriber É criado `inactive`, e
+ * `vincularKitDoiForm` dispara o e-mail de confirmação. Sem `KIT_DOI_FORM_ID`
+ * configurado, `resolveKitCreateState` já devolve `"active"` (ver #6565
+ * acima) — o cenário "preso em inactive sem e-mail" descrito aqui até
+ * 27/08/2026 não é mais alcançável por este caminho.
  *
  * RISCO CONHECIDO, não resolvido nesta unidade (mesma classe do item 5 da
  * issue #6340, "guard de envio duplicado... herdada, não nova"): a criação
@@ -631,7 +641,12 @@ async function subscribeToBeehiiv(
  * Registrar, não resolver aqui — reverificar antes do 1º `--push` real
  * deste fluxo em produção.
  */
-function resolveKitCreateState(): "active" | "inactive" {
+function resolveKitCreateState(env: Env): "active" | "inactive" {
+  // #6565: sem o form de confirmação configurado, criar `inactive` prende o
+  // subscriber para sempre (nenhum e-mail de confirmação sai, nada promove
+  // inactive→active sozinho) — o rollout do flag por worker só se aplica
+  // quando o caminho de confirmação de fato existe.
+  if (!env.KIT_DOI_FORM_ID) return "active";
   return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
     ? DOUBLE_OPT_IN_FLAG.createState
     : "active";
@@ -696,10 +711,11 @@ async function subscribeToKit(
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
   applyKitSignupOriginField(fields, env);
 
-  // #6340: "active" preservado pra todo worker fora de
-  // DOUBLE_OPT_IN_FLAG.enabledForWorkers (ver resolveKitCreateState acima) —
-  // era o literal fixo "active" antes desta mudança.
-  const createState = resolveKitCreateState();
+  // #6340/#6565: "active" preservado pra todo worker fora de
+  // DOUBLE_OPT_IN_FLAG.enabledForWorkers OU sem KIT_DOI_FORM_ID configurado
+  // (ver resolveKitCreateState acima) — era o literal fixo "active" antes
+  // do #6340.
+  const createState = resolveKitCreateState(env);
   const body: Record<string, unknown> = {
     email_address: input.email,
     state: createState,
