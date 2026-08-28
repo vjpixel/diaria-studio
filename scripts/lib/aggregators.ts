@@ -52,6 +52,31 @@ export const AGGREGATOR_HOSTS = new Set<string>([
 export const AGGREGATOR_PATTERNS: RegExp[] = [/^tldr\.tech\/ai(\/|$)/i];
 
 /**
+ * #6440: nosso próprio host legado na Beehiiv (`diaria.beehiiv.com`, mais o
+ * subdomínio de tracking `link.diaria.beehiiv.com`) — a única exceção ao
+ * bloqueio blanket de `*.beehiiv.com` abaixo. `diar.ia.br` (custom domain,
+ * host de marca) não é um `*.beehiiv.com` e não precisa de exceção aqui.
+ */
+const OUR_OWN_BEEHIIV_HOST = "diaria.beehiiv.com";
+
+/**
+ * #6440: newsletter de terceiro hospedada na Beehiiv (ex: `therundownai.
+ * beehiiv.com/p/...`) é agregador — cobertura roundup de conteúdo alheio,
+ * mesma classe editorial de `therundown.ai`/`bensbites.co`/etc já listados
+ * acima. Antes só entradas individuais cadastradas manualmente pegavam isso
+ * (`theaipulse.beehiiv.com` etc.) — qualquer subdomínio novo de terceiro
+ * escapava até alguém adicionar à mão. Caso real 260828 (#6440):
+ * `therundownai.beehiiv.com` chegou ao USE MELHOR sem bater nenhuma entrada
+ * de `AGGREGATOR_HOSTS`. Bloqueio blanket: todo `*.beehiiv.com` é agregador,
+ * exceto o nosso próprio host (`OUR_OWN_BEEHIIV_HOST`, acima).
+ */
+function isThirdPartyBeehiivHost(host: string): boolean {
+  const isBeehiivHost = host === "beehiiv.com" || host.endsWith(".beehiiv.com");
+  if (!isBeehiivHost) return false;
+  return host !== OUR_OWN_BEEHIIV_HOST && !host.endsWith("." + OUR_OWN_BEEHIIV_HOST);
+}
+
+/**
  * Retorna `true` se a URL deve ser tratada como agregador/roundup.
  */
 export function isAggregator(url: string): boolean {
@@ -59,6 +84,7 @@ export function isAggregator(url: string): boolean {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, "").toLowerCase();
     if (AGGREGATOR_HOSTS.has(host)) return true;
+    if (isThirdPartyBeehiivHost(host)) return true;
     const full = host + u.pathname;
     return AGGREGATOR_PATTERNS.some((p) => p.test(full));
   } catch {

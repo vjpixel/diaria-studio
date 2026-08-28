@@ -17,9 +17,27 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { isPlaceholderHighlightTitle } from "../placeholder-title-guard.ts"; // #4102
+// #6440: backstop — mesma verificação POSITIVA de produto (#1968) usada no
+// gate do Stage 2 (`validate-lancamentos.ts --approved`), rodada aqui como
+// invariante do Stage 1 (bloqueia ANTES do gate). `categorize.ts` já ganhou
+// heurísticas mais específicas pro caso concreto do #6440 (programa/piloto
+// sem sinal de produto), mas esta é defesa-em-profundidade: qualquer item
+// `not_a_tool` que escape a essas heurísticas ainda é pego aqui, antes de
+// o editor sequer ver o gate — não só no Stage 2, onde o achado original
+// (edição 260828) só apareceu no gate do Stage 4, tarde demais pra evitar
+// a edição manual do JSON.
+import {
+  validateLancamentosFromApproved,
+  loadToolAllowlist,
+} from "../../validate-lancamentos.ts";
+
+// scripts/lib/invariant-checks/stage-1.ts -> scripts/lib/invariant-checks
+// -> scripts/lib -> scripts -> ROOT do repo (3 níveis acima).
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 interface HighlightLike {
   bucket?: string;
@@ -32,10 +50,19 @@ interface HighlightLike {
 interface ApprovedJson {
   highlights?: HighlightLike[];
   runners_up?: HighlightLike[];
-  lancamento?: unknown[];
+  // #6440: lancamento[]/radar[] tipados como HighlightLike[] (não unknown[])
+  // pra bater com `ApprovedShape` de `validate-lancamentos.ts` (mesmo shape
+  // {url?, title?, [k: string]: unknown} — checkLancamentoHasProductSignal
+  // passa `data` direto pra `validateLancamentosFromApproved`).
+  lancamento?: HighlightLike[];
+  radar?: HighlightLike[];
   pesquisa?: unknown[];
   noticias?: unknown[];
   coverage?: { line?: string };
+  // #6440: index signature pra bater com `ApprovedShape` de
+  // validate-lancamentos.ts (permissivo — mesmo objeto JSON, campos extras
+  // não usados pelos outros checks deste arquivo).
+  [key: string]: unknown;
 }
 
 /**
@@ -451,6 +478,45 @@ function checkUrlMatchesArticleUrl(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/**
+ * #6440: backstop — todo item de `lancamento[]` precisa de sinal POSITIVO de
+ * produto (#1968). `categorize.ts` já filtra a maioria antes de chegar aqui,
+ * mas essa invariante é a rede de segurança: qualquer item `not_a_tool` que
+ * escape as heurísticas de categorização trava o gate do Stage 1 em vez de
+ * só aparecer no gate do Stage 4 (achado ao vivo #6440, edição 260828 — dois
+ * itens sem link oficial de produto chegaram a LANÇAMENTOS e só foram
+ * pegos tarde, com o `url-bucket` (#165) e `validate-lancamentos.ts` (#1968)
+ * em contradição no gate final).
+ */
+function checkLancamentoHasProductSignal(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // coberto por approved-exists
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // coberto por approved-parseable
+  }
+  const allowlist = loadToolAllowlist(REPO_ROOT);
+  const summary = validateLancamentosFromApproved(data, allowlist);
+  if (summary.not_a_tool.length === 0) return [];
+  const details = summary.not_a_tool
+    .map((u) => (u.title ? `${u.url} ("${u.title.slice(0, 60)}")` : u.url))
+    .join("; ");
+  return [
+    {
+      rule: "lancamento-has-product-signal",
+      message:
+        `${summary.not_a_tool.length} item(ns) em lancamento[] sem sinal POSITIVO de produto ` +
+        `(#1968) — ${details}. Mova para radar/notícias, ou — se for ferramenta legítima de ` +
+        `slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.`,
+      source_issue: "#6440",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
@@ -508,6 +574,13 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkNoMissingSummaryHighlights,
   },
+  {
+    id: "lancamento-has-product-signal",
+    description: "lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440)",
+    source_issue: "#6440",
+    stage: 1,
+    run: checkLancamentoHasProductSignal,
+  },
 ];
 
 export {
@@ -524,4 +597,5 @@ export {
   isUrlArticleUrlMismatch,
   checkNoMissingSummaryHighlights,
   isMissingSummaryHighlight,
+  checkLancamentoHasProductSignal,
 };

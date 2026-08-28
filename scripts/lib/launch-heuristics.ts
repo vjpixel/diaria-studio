@@ -1426,13 +1426,20 @@ export function isOfficialLancamentoUrl(url: string): boolean {
  */
 /**
  * #5995 item 3 (modo de falha 1): título de post NÃO-produto em domínio
- * oficial → true (caller rebaixa para `noticias`). Cinco classes medidas no
- * corpus (34 casos lancamento→radar):
+ * oficial → true (caller rebaixa para `noticias`). Sete classes medidas no
+ * corpus (34 casos lancamento→radar do #5995 + 2 do #6440):
  *   1. Marco/celebração      — "Celebrating one billion Gemma downloads"
  *   2. Relatório/estado-arte — "State of Open Models: Summer 2026 Observations"
  *   3. Opinião/thought-lead. — "...Is Becoming an Investable Asset Class"
  *   4. Roundup de porta-vozes— "Omni experts share what excites them most"
  *   5. Oferta promocional    — "Start the semester with one year of Gemini, on us"
+ *   6. Expansão de programa  — "Bringing ChatGPT for Teachers to more US school
+ *      districts" (#6440, 260828) — expandir alcance de um programa já
+ *      existente pra mais entidades (distritos/regiões/países), não lançar
+ *      produto novo.
+ *   7. Piloto/programa-piloto— "Piloting the world's first double-blind AI
+ *      evaluations" (#6440, 260828) — testar um PROCESSO/programa (avaliação,
+ *      metodologia), não disponibilizar um produto.
  *
  * Guard anti-falso-positivo: título com verbo de anúncio explícito
  * (introducing/announcing/launching/unveils/...) NUNCA é demovido por aqui —
@@ -1450,6 +1457,11 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   /\bwhat excites\b/i,
   /\bon us\b/i,
   /\boffering\b/i,
+  // #6440: "Bringing X to more {districts/regions/countries/...}" — expansão
+  // de alcance de programa existente, não lançamento de produto.
+  /\bbringing\b[^\n]{0,60}\bto more\b/i,
+  // #6440: "Piloting X" — piloto de processo/programa/avaliação.
+  /\bpiloting\b/i,
 ];
 
 const LAUNCH_VERB_TITLE_RE =
