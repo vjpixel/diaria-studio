@@ -328,3 +328,62 @@ export async function findTagIdByName(name: string, config?: KitConfig): Promise
 export function buildAllSubscribersFilter(): KitSubscriberFilter {
   return [];
 }
+
+/**
+ * `GET /v4/tags/{id}/subscribers` — lista quem tem uma tag (#6582).
+ *
+ * ⚠️ Ver "Armadilhas da API v4" no topo de `kit-client.ts`: esta listagem
+ * mediu **180s de atraso de propagação** logo após um `tagSubscriber`, e no
+ * intervalo devolveu `has_next_page: false` como se a lista já estivesse
+ * completa — um falso negativo silencioso. A ressalva documentada lá é
+ * específica de checar a tag **logo depois** de aplicá-la; usar esta rota
+ * pra contar membros de uma tag **horas** depois da mutação (o caso de
+ * `countKitTagMembers` abaixo, chamado no Stage 4/5, tipicamente bem depois
+ * de qualquer `tagSubscriber`) não bateu nessa janela nas medições feitas —
+ * mas não há confirmação ao vivo específica pra esse uso mais tardio. Não é
+ * a rota recomendada pra confirmar *quem entrou* logo após taguear (use
+ * `listSubscriberTags`, direção inversa, sem atraso observado); é a única
+ * rota que existe pra "quantos membros esta tag tem HOJE", que é a pergunta
+ * do guard de #6582.
+ */
+export async function listTagSubscribersPage(
+  tagId: number,
+  opts: { perPage?: number; after?: string; config?: KitConfig } = {},
+): Promise<{ subscribers: { id: number; email_address: string }[]; pagination: KitPagination }> {
+  const params = new URLSearchParams();
+  if (opts.perPage) params.set("per_page", String(opts.perPage));
+  if (opts.after) params.set("after", opts.after);
+  const qs = params.toString();
+  const data = await kitFetch<
+    { subscribers: { id: number; email_address: string }[]; pagination: KitPagination } | undefined
+  >(`/tags/${tagId}/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
+  return { subscribers: data?.subscribers ?? [], pagination: data?.pagination ?? {
+    has_previous_page: false,
+    has_next_page: false,
+    start_cursor: null,
+    end_cursor: null,
+    per_page: opts.perPage ?? 500,
+  } };
+}
+
+/**
+ * Conta membros de uma tag, paginando até o fim. Usado pelo guard de
+ * invariante do #6582 (`checkAudienceTagHasMembers`): tag resolvida (id
+ * válido) mas com 0 membros deixou de ser normal desde a migração das ondas
+ * 0/1 (#6504) — ver a docstring daquela função pro porquê.
+ *
+ * Volume esperado é pequeno (dezenas a poucas centenas, ver
+ * `platform.config.json` → `kit_diaria.audience_tag_note`) — sem checkpoint,
+ * paginação simples é suficiente.
+ */
+export async function countKitTagMembers(tagId: number, config?: KitConfig): Promise<number> {
+  let count = 0;
+  let after: string | undefined;
+  for (;;) {
+    const page = await listTagSubscribersPage(tagId, { perPage: 500, after, config });
+    count += page.subscribers.length;
+    if (!page.pagination.has_next_page || !page.pagination.end_cursor) break;
+    after = page.pagination.end_cursor;
+  }
+  return count;
+}

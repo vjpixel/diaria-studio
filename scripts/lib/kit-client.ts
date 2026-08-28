@@ -244,6 +244,15 @@ export interface KitBroadcastDetail extends KitBroadcastSummary {
   public_url: string | undefined;
   email_address: string;
   email_template: { id: number; name: string };
+  // #6582 — usado pela verificação pós-dispatch do canal Kit paralelo
+  // (`kit-diaria-stage5-dispatch.ts`): confirma que o `subscriber_filter`
+  // enviado em `POST /broadcasts` "pegou" de verdade, mesma disciplina do
+  // #573 (2xx não implica efeito) já aplicada ao resto deste módulo. **NÃO
+  // confirmado ao vivo se `GET /broadcasts/{id}` ecoa este campo de volta**
+  // — a doc pública não documenta o shape de leitura pra `subscriber_filter`,
+  // só o de escrita. Por isso opcional e por isso o caller trata ausência
+  // como "não confirmável ainda" (warning), não como divergência.
+  subscriber_filter?: unknown;
 }
 
 export async function getBroadcast(id: number, config?: KitConfig): Promise<KitBroadcastDetail> {

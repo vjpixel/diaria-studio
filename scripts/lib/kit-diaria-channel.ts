@@ -173,3 +173,47 @@ export function resolveAudienceTagId(tagName: string, tagId: number | null): Tag
   }
   return { ok: true, tagId };
 }
+
+export type AudienceMembershipCheck =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * Guard de invariante (#6582) — tag RESOLVIDA (id válido) mas com ZERO
+ * membros deixou de ser um estado normal em 28/08/2026.
+ *
+ * Antes da migração das ondas 0/1 (#6504), a tag `rampa-kit` era um canal
+ * ADITIVO: quem estava nela também estava ativo na Beehiiv, então um
+ * broadcast com 0 destinatários no Kit não custava nada — a pessoa recebia
+ * pelo outro canal do mesmo jeito. Depois da migração, as 92 pessoas da
+ * tag (11 da onda 0, nunca ativas na Beehiiv; 81 da onda 1, desativadas na
+ * Beehiiv na mesma sessão que ganharam a tag) passaram a ter o Kit como
+ * ÚNICO canal — ver `platform.config.json` → `kit_diaria.audience_tag_note`.
+ *
+ * `resolveAudienceTagId` acima só protege contra tag NÃO resolvida (id
+ * `null`/inválido) — um id válido que resolve para uma tag VAZIA passava
+ * batido, e o dispatch seguia normalmente criando um broadcast com filtro
+ * válido e zero destinatários: `status: "ok"` no JSON de saída, ninguém
+ * recebe, nada acusa. Esta função fecha essa lacuna — chamada DEPOIS de
+ * `resolveAudienceTagId` ter aceitado o id, ANTES de montar o payload.
+ */
+export function checkAudienceTagHasMembers(tagName: string, memberCount: number): AudienceMembershipCheck {
+  if (!Number.isInteger(memberCount) || memberCount < 0) {
+    return {
+      ok: false,
+      reason: `contagem de membros inválida para a tag "${tagName}": ${String(memberCount)}.`,
+    };
+  }
+  if (memberCount === 0) {
+    return {
+      ok: false,
+      reason:
+        `tag "${tagName}" resolveu (id válido) mas está VAZIA — 0 membros. Isto NÃO é o estado ` +
+        `normal (#6582): desde a migração das ondas 0/1 (#6504), quem está nesta tag pode não ` +
+        `estar ativo na Beehiiv, e o Kit é o ÚNICO canal alcançável. Uma tag vazia aqui indica ` +
+        `nome errado, tag esvaziada por engano, ou config apontando pro lugar errado — recusando ` +
+        `criar um broadcast com 0 destinatários que reportaria "ok" sem entregar a ninguém.`,
+    };
+  }
+  return { ok: true };
+}

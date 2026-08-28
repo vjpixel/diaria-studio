@@ -50,11 +50,19 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractContent } from "./lib/newsletter-parse.ts";
 import { buildKitHtml, buildKitSubject, buildKitPreviewText, checkSubjectNotEmpty } from "./publish-newsletter-kit.ts";
 import type { PublicImagesFile } from "./substitute-image-urls.ts";
-import { createBroadcast, findTagIdByName, buildTagFilter, KIT_TEST_SEND_TAG_NAME } from "./lib/kit-broadcasts.ts";
+import {
+  createBroadcast,
+  findTagIdByName,
+  buildTagFilter,
+  countKitTagMembers,
+  KIT_TEST_SEND_TAG_NAME,
+} from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
 import { KIT_NATIVE_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts";
 import {
   decideKitChannelDispatch,
   resolveAudienceTagId,
+  checkAudienceTagHasMembers,
   type KitDiariaChannelConfig,
   type KitDiariaPublished,
 } from "./lib/kit-diaria-channel.ts";
@@ -78,6 +86,16 @@ export type Stage5KitResult =
       /** #6195 — mesma lição do #6138 finding 4 aplicada ao crédito por canal. */
       creditoSubstituido?: boolean;
       residuoBeehiiv?: boolean;
+      /**
+       * #6582 — a verificação pós-dispatch NÃO confirmou o `subscriber_filter`
+       * pela releitura do broadcast (campo ausente na resposta, ou API não
+       * confirmada ao vivo pra ecoar esse campo — ver docstring de
+       * `KitBroadcastDetail.subscriber_filter`). `true` = releitura confirmou
+       * o filtro esperado batendo; `false`/ausente = não confirmável — não é
+       * uma falha (por isso `status` continua `"ok"`), mas quem lê o resumo
+       * deve saber que esta camada de verificação não pôde confirmar.
+       */
+      audienceFilterVerified?: boolean;
     };
 
 export function resolveKitDiariaStatePath(editionDir: string): string {
@@ -145,6 +163,20 @@ export interface Stage5KitDeps {
   writeState(editionDir: string, state: KitDiariaPublished): void;
   findTagId(name: string): Promise<number | null>;
   /**
+   * #6582 — conta membros da tag JÁ resolvida (id válido). Chamada depois de
+   * `resolveAudienceTagId` aceitar o id, antes de montar o payload — é o
+   * guard que fecha a lacuna de `checkAudienceTagHasMembers` (tag resolvida
+   * mas vazia deixou de ser normal desde a migração das ondas 0/1, #6504).
+   */
+  countTagMembers(tagId: number): Promise<number>;
+  /**
+   * #6582 — releitura pós-`createBroadcast` (mesma disciplina do #573: 2xx
+   * não implica efeito). Verifica que o `subscriber_filter` de fato pegou —
+   * ver a ressalva de "não confirmado ao vivo" em
+   * `KitBroadcastDetail.subscriber_filter`.
+   */
+  getBroadcast(id: number): Promise<{ subscriber_filter?: unknown }>;
+  /**
    * Monta o payload da edição (HTML + subject + preview).
    *
    * É dependência injetada, e não chamada direta, por um motivo específico
@@ -193,6 +225,8 @@ export function productionDeps(rootDir: string = ROOT): Stage5KitDeps {
     readState: readKitDiariaState,
     writeState: writeKitDiariaState,
     findTagId: (name) => findTagIdByName(name),
+    countTagMembers: (tagId) => countKitTagMembers(tagId),
+    getBroadcast: (id) => getBroadcast(id),
     buildPayload: (editionDir) => {
       const content = extractContent(editionDir);
       const imagesPath = resolve(editionDir, "06-public-images.json");
@@ -287,6 +321,22 @@ export async function runStage5KitDispatch(
     return { status: "skipped", reason: tagCheck.reason };
   }
 
+  // #6582 — guard de invariante: tag RESOLVIDA (id válido) mas VAZIA (0
+  // membros) deixou de ser normal desde a migração das ondas 0/1 (#6504).
+  // `failed`, não `skipped` — a severidade precisa ser alta o bastante pra
+  // não ser lida como "estado normal" (era exatamente essa leitura, aplicada
+  // a `skipped` genérico, que causou o incidente descrito na issue).
+  let memberCount: number;
+  try {
+    memberCount = await deps.countTagMembers(tagCheck.tagId);
+  } catch (e) {
+    return { status: "failed", step: "countTagMembers", reason: (e as Error).message };
+  }
+  const membershipCheck = checkAudienceTagHasMembers(audienceTag, memberCount);
+  if (!membershipCheck.ok) {
+    return { status: "failed", step: "audienceTagEmpty", reason: membershipCheck.reason };
+  }
+
   let html: string;
   let subject: string;
   let previewText: string;
@@ -340,6 +390,52 @@ export async function runStage5KitDispatch(
     return { status: "failed", step: "createBroadcast", reason: (e as Error).message };
   }
 
+  // #6582 (item 2 da issue) — verificação pós-dispatch: o broadcast JÁ EXISTE
+  // no Kit a partir daqui (mesma disciplina de "2xx não implica efeito" do
+  // #573/#6181). Releitura confirma que o `subscriber_filter` que a API
+  // aceitou é de fato o da tag esperada, não algo diferente aplicado em
+  // silêncio. `subscriber_filter` ausente na releitura não é tratado como
+  // divergência — não há confirmação ao vivo de que `GET /broadcasts/{id}`
+  // ecoa esse campo (ver docstring de `KitBroadcastDetail.subscriber_filter`)
+  // — só como "não confirmável", registrado no resultado pra quem lê o
+  // resumo saber que esta camada não pôde atestar a audiência.
+  let audienceFilterVerified: boolean | undefined;
+  try {
+    const reread = await deps.getBroadcast(created.id);
+    if (reread.subscriber_filter !== undefined) {
+      const expected = buildTagFilter(tagCheck.tagId);
+      const matches = JSON.stringify(reread.subscriber_filter) === JSON.stringify(expected);
+      if (!matches) {
+        return {
+          status: "failed",
+          step: "verifyBroadcastAudience",
+          reason:
+            `broadcast_id=${created.id} JÁ FOI CRIADO no Kit, mas a releitura mostra subscriber_filter ` +
+            `divergente do esperado (tag "${audienceTag}" id ${tagCheck.tagId}) — a API aceitou 2xx sem ` +
+            `aplicar o filtro certo. NÃO re-rodar sem conferir/corrigir no Kit — risco de broadcast já ` +
+            `existente com audiência errada.`,
+        };
+      }
+      audienceFilterVerified = true;
+    } else {
+      deps.log(
+        `aviso: releitura de broadcast_id=${created.id} não trouxe 'subscriber_filter' — verificação ` +
+          `pós-dispatch não pôde confirmar a audiência (campo não confirmado ao vivo na API do Kit).`,
+      );
+      audienceFilterVerified = false;
+    }
+  } catch (e) {
+    // Fail-soft: a releitura é uma camada de verificação ADICIONAL — o
+    // broadcast já existe independente dela. Falha de rede aqui não deve
+    // reportar o dispatch inteiro como `failed`, só que a audiência não foi
+    // confirmada.
+    deps.log(
+      `aviso: releitura pós-dispatch de broadcast_id=${created.id} falhou: ${(e as Error).message} — ` +
+        `audiência não confirmada.`,
+    );
+    audienceFilterVerified = false;
+  }
+
   if (opts.sendTest) {
     // Descartável: NÃO grava estado — senão o dispatch de produção veria
     // `already_done` e nunca criaria o broadcast real desta edição.
@@ -353,6 +449,7 @@ export async function runStage5KitDispatch(
       renderWarnings,
       creditoSubstituido,
       residuoBeehiiv,
+      audienceFilterVerified,
     };
   }
 
@@ -397,6 +494,7 @@ export async function runStage5KitDispatch(
     renderWarnings,
     creditoSubstituido,
     residuoBeehiiv,
+    audienceFilterVerified,
   };
 }
 
