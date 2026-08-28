@@ -1939,13 +1939,17 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
 }
 
 // #6447 Fatia 3: `overrideReviewedText` permite renderizar o preview a partir
-// de texto AINDA NÃO SALVO em disco (o painel de split view do Studio, split
-// view do editor) sem duplicar todo o parsing acima — só a fonte do MD de
-// destaques muda; `01-eia.md`, boxes, leaderboard etc. continuam lidos de
-// `editionDir` normalmente (o preview-draft é só do texto que o editor está
-// digitando, nunca dos outros artefatos). `undefined` (todo caller pré-#6447)
-// preserva o comportamento original: ler `02-reviewed.md` do disco e lançar
-// se ausente.
+// de texto AINDA NÃO SALVO em disco (o painel de split view do Studio) sem
+// duplicar todo o parsing acima — só a FONTE do MD de destaques muda; tudo
+// que este código deriva de `reviewedText` (destaques, seções, TEXTO dos
+// boxes de divulgação via `extractBoxDivulgacao{0,1,2,3}`, coverage line
+// etc.) passa a refletir o draft. `01-eia.md`, leaderboard e os METADADOS de
+// box (imagem/categoria/alt, lidos à parte via `readBoxDivulgacao*Image`/
+// `readBoxDivulgacaoCategoriaForSlot`/`readBoxDivulgacaoAltForSlot` — sempre
+// do `platform.config.json`/disco, nunca do texto do destaque) continuam
+// lidos de `editionDir` normalmente, sem relação com o draft. `undefined`
+// (todo caller pré-#6447) preserva o comportamento original: ler
+// `02-reviewed.md` do disco e lançar se ausente.
 export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");

@@ -266,6 +266,27 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(res.status, 400);
   });
 
+  it("POST .../preview-draft com AAMMDD inválido -> 400 (code-reviewer F1: mesmo guard que handleGateSummary/handleReviewHighlightsGet, #6449)", async () => {
+    const res = await fetch(new URL("/api/editions/nope/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com content:'' (aba recém-aberta, nada digitado ainda) -> ok:true, fail-soft (pr-test-analyzer achado 2)", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "" }),
+    });
+    assert.equal(res.status, 422); // 0 destaques -> fail-soft, mesmo tratamento de Markdown malformado
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.html, /Erro ao renderizar preview/);
+  });
+
   it("POST .../preview-draft sem campo 'content' -> 400", async () => {
     const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
       method: "POST",

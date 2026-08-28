@@ -180,7 +180,7 @@ const PREVIEW_HINTS = {
   // digitação disparar o debounce).
   social:
     "<strong>Ao vivo</strong> enquanto você digita (re-render ~700ms após parar, texto " +
-    "ainda não salvo) — mesmo renderer da Etapa 4 (#1800) que gera " +
+    "ainda não salvo) — mesmo renderer da Etapa 4 (#1800) que gera o preview a partir de " +
     "<code>03-social.md</code>: posts de LinkedIn/Facebook/Instagram lado a lado, com " +
     "quebras de linha e hashtags como aparecem publicados.",
   // #3806 (Opção B spike): só a aba "reviewed" tem os títulos de destaque
@@ -737,7 +737,14 @@ async function runDraftPreview() {
       el.previewDraftStatus.textContent = body.ok ? "" : "Preview indisponível temporariamente — corrija o Markdown para continuar editando.";
     }
   } else {
-    showPreviewError(new Error("resposta inesperada do preview-draft"));
+    // #6447 review (silent-failure-hunter, achado 1): um 500/400 de verdade
+    // (ex: exceção não tratada em handleReviewPreviewDraft) responde
+    // `{error: "..."}`, sem campo `html` — o caminho genérico anterior
+    // descartava esse `body.error` real e mostrava sempre a mesma mensagem
+    // opaca. Repassa o texto do servidor quando existe; só cai no genérico
+    // quando nem isso está disponível (corpo vazio/não-JSON).
+    const detail = body && typeof body.error === "string" ? body.error : "resposta inesperada do preview-draft";
+    showPreviewError(new Error(detail));
   }
 }
 
@@ -939,6 +946,15 @@ function bindEvents() {
   });
   bindTablistArrowKeys(el.tabs, (btn) => loadFile(btn.dataset.slug));
   bindTablistArrowKeys(el.sideTabs, (btn) => activateSidePane(btn.dataset.pane));
+  // #6447 review (code-reviewer F2): #rv-split-toggle é `role="tablist"`
+  // como os outros 2 — precisa da mesma navegação por seta (WAI-ARIA APG,
+  // #3874) pra não regredir a convenção que este arquivo já estabelece.
+  if (el.splitToggle) {
+    bindTablistArrowKeys(el.splitToggle, (btn) => {
+      setMobileView(btn.dataset.view);
+      if (btn.dataset.view === "preview") activateSidePane("preview");
+    });
+  }
   el.editor.addEventListener("input", () => {
     dirty = true;
     el.saveStatus.textContent = "Não salvo";

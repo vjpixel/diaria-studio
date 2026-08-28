@@ -1185,6 +1185,14 @@ async function handleReviewPreviewDraft(
   aammdd: string,
   slug: string,
 ): Promise<void> {
+  // #6447 review (code-reviewer F1): mesmo guard de formato que
+  // handleGateSummary/handleReviewHighlightsGet já usam (#6449) — sem isso,
+  // um `aammdd` malformado (`..`/separador de path) chegaria direto em
+  // `resolveEditionDir` antes dessa rede de segurança.
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
   if (!isReviewSlug(slug)) {
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
     return;
