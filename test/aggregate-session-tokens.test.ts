@@ -20,6 +20,8 @@ import {
   buildSessionTokensSummary,
   formatSessionTokensSummary,
   defaultSinceAammdd,
+  roundDayFromEdition,
+  mergeKindDayTotals,
   type KindDayTotals,
 } from "../scripts/aggregate-session-tokens.ts";
 
@@ -139,8 +141,8 @@ describe("editionCostsToKindDayTotals (#6445)", () => {
 describe("computeAlarms (#6445 item 3)", () => {
   it("sinaliza kind que excede alarmPct% do total do dia", () => {
     const rows: KindDayTotals[] = [
-      { kind: "overnight", day: "260827", totalTokens: 900000, categories: {} },
-      { kind: "edicao", day: "260827", totalTokens: 100000, categories: {} },
+      { kind: "overnight", day: "260827", rounds: ["260827"], totalTokens: 900000, categories: {} },
+      { kind: "edicao", day: "260827", rounds: ["260827"], totalTokens: 100000, categories: {} },
     ];
     const alarms = computeAlarms(rows, 50);
     assert.equal(alarms.length, 1);
@@ -150,21 +152,21 @@ describe("computeAlarms (#6445 item 3)", () => {
 
   it("não sinaliza nada quando a distribuição é equilibrada", () => {
     const rows: KindDayTotals[] = [
-      { kind: "overnight", day: "260827", totalTokens: 50000, categories: {} },
-      { kind: "edicao", day: "260827", totalTokens: 50000, categories: {} },
+      { kind: "overnight", day: "260827", rounds: ["260827"], totalTokens: 50000, categories: {} },
+      { kind: "edicao", day: "260827", rounds: ["260827"], totalTokens: 50000, categories: {} },
     ];
     const alarms = computeAlarms(rows, 50);
     assert.equal(alarms.length, 0);
   });
 
   it("dia com total 0 não gera divisão por zero nem alarme", () => {
-    const rows: KindDayTotals[] = [{ kind: "overnight", day: "260827", totalTokens: 0, categories: {} }];
+    const rows: KindDayTotals[] = [{ kind: "overnight", day: "260827", rounds: ["260827"], totalTokens: 0, categories: {} }];
     const alarms = computeAlarms(rows, 50);
     assert.equal(alarms.length, 0);
   });
 
   it("único kind no dia nunca alarma (100% de si mesmo não é desequilíbrio, é a única sessão do dia)", () => {
-    const rows: KindDayTotals[] = [{ kind: "overnight", day: "260827", totalTokens: 500000, categories: {} }];
+    const rows: KindDayTotals[] = [{ kind: "overnight", day: "260827", rounds: ["260827"], totalTokens: 500000, categories: {} }];
     const alarms = computeAlarms(rows, 50);
     assert.equal(alarms.length, 0);
   });
@@ -262,5 +264,163 @@ describe("defaultSinceAammdd (#6445 — janela default do painel /painel/tokens)
   it("days=0 retorna a própria data de now", () => {
     const now = new Date("2026-08-28T12:00:00Z");
     assert.equal(defaultSinceAammdd(now, 0), "260828");
+  });
+});
+
+describe("roundDayFromEdition (#6638 — dia civil vs id de rodada)", () => {
+  it("remove o sufixo de rotação da N-ésima rodada do dia", () => {
+    assert.equal(roundDayFromEdition("260814b"), "260814");
+    assert.equal(roundDayFromEdition("260814c"), "260814");
+    assert.equal(roundDayFromEdition("260828g"), "260828");
+  });
+
+  it("AAMMDD sem sufixo passa intacto", () => {
+    assert.equal(roundDayFromEdition("260814"), "260814");
+  });
+
+  it("id fora do formato passa INTACTO — nunca colapsa num dia inventado", () => {
+    // Diretórios que convivem em data/editions/ e não são rodadas.
+    assert.equal(roundDayFromEdition("replay-scorer-a"), "replay-scorer-a");
+    assert.equal(roundDayFromEdition("2604"), "2604");
+    assert.equal(roundDayFromEdition(""), "");
+  });
+});
+
+describe("aggregateRunLogByKindAndDay — dia civil (#6638, regressão #633)", () => {
+  it("rodadas do mesmo dia (260814, 260814b, 260814c) somam numa linha só, com rounds preservado", () => {
+    const lines = [
+      JSON.stringify({ agent: "overnight", edition: "260814", message: "subagent_metrics", details: { subagent_tokens: 100 } }),
+      JSON.stringify({ agent: "overnight", edition: "260814c", message: "subagent_metrics", details: { subagent_tokens: 20 } }),
+      JSON.stringify({ agent: "overnight", edition: "260814b", message: "review_metrics", details: { review_tokens: 3 } }),
+    ];
+    const rows = aggregateRunLogByKindAndDay(lines);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].day, "260814");
+    assert.equal(rows[0].totalTokens, 123);
+    assert.deepEqual(rows[0].rounds, ["260814", "260814b", "260814c"]);
+    assert.equal(rows[0].categories.implementation?.tokens, 120);
+    assert.equal(rows[0].categories.review?.tokens, 3);
+  });
+
+  it("kinds diferentes no mesmo dia continuam em linhas separadas", () => {
+    const lines = [
+      JSON.stringify({ agent: "overnight", edition: "260814b", message: "subagent_metrics", details: { subagent_tokens: 10 } }),
+      JSON.stringify({ agent: "develop", edition: "260814", message: "subagent_metrics", details: { subagent_tokens: 20 } }),
+    ];
+    const rows = aggregateRunLogByKindAndDay(lines);
+    assert.equal(rows.length, 2);
+    assert.deepEqual([...new Set(rows.map((r) => r.day))], ["260814"]);
+  });
+
+  it("--until AAMMDD inclui as rodadas sufixadas do PRÓPRIO dia (antes do #6638 a comparação de string as descartava)", () => {
+    const lines = [
+      JSON.stringify({ agent: "overnight", edition: "260814", message: "subagent_metrics", details: { subagent_tokens: 100 } }),
+      JSON.stringify({ agent: "overnight", edition: "260814c", message: "subagent_metrics", details: { subagent_tokens: 50 } }),
+    ];
+    const rows = aggregateRunLogByKindAndDay(lines, { until: "260814" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].totalTokens, 150);
+  });
+
+  it("--since AAMMDD não perde a 1ª rodada do dia de corte por causa do sufixo", () => {
+    const lines = [
+      JSON.stringify({ agent: "develop", edition: "260813b", message: "subagent_metrics", details: { subagent_tokens: 999 } }),
+      JSON.stringify({ agent: "develop", edition: "260814b", message: "subagent_metrics", details: { subagent_tokens: 7 } }),
+    ];
+    const rows = aggregateRunLogByKindAndDay(lines, { since: "260814" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].totalTokens, 7);
+  });
+});
+
+describe("mergeKindDayTotals (#6638)", () => {
+  it("funde linhas de mesmo (kind, dia) somando tokens, custo, categorias e unindo rounds", () => {
+    const merged = mergeKindDayTotals([
+      {
+        kind: "overnight",
+        day: "260814",
+        rounds: ["260814"],
+        totalTokens: 100,
+        costUsd: 1.5,
+        categories: { implementation: { tokens: 100, eventCount: 1, unavailableCount: 0 } },
+      },
+      {
+        kind: "overnight",
+        day: "260814",
+        rounds: ["260814b"],
+        totalTokens: 50,
+        costUsd: 0.5,
+        costEstimated: true,
+        categories: { implementation: { tokens: 50, eventCount: 1, unavailableCount: 2 } },
+      },
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].totalTokens, 150);
+    assert.equal(merged[0].costUsd, 2);
+    // Estimado se QUALQUER parcela for — nunca apresentar como medido.
+    assert.equal(merged[0].costEstimated, true);
+    assert.deepEqual(merged[0].rounds, ["260814", "260814b"]);
+    assert.equal(merged[0].categories.implementation?.tokens, 150);
+    assert.equal(merged[0].categories.implementation?.eventCount, 2);
+    assert.equal(merged[0].categories.implementation?.unavailableCount, 2);
+  });
+
+  it("não muta as CATEGORIAS da entrada ao fundir (aliasing: cópia rasa deixaria CategoryTotals compartilhado)", () => {
+    const first: KindDayTotals = {
+      kind: "overnight",
+      day: "260814",
+      rounds: ["260814"],
+      totalTokens: 100,
+      categories: { implementation: { tokens: 100, eventCount: 1, unavailableCount: 0 } },
+    };
+    const input: KindDayTotals[] = [
+      first,
+      {
+        kind: "overnight",
+        day: "260814",
+        rounds: ["260814b"],
+        totalTokens: 50,
+        categories: { implementation: { tokens: 50, eventCount: 1, unavailableCount: 0 } },
+      },
+    ];
+    const merged = mergeKindDayTotals(input);
+    assert.equal(merged[0].categories.implementation?.tokens, 150);
+    // A linha de entrada continua valendo 100 — senão uma 2ª chamada de merge
+    // (ou qualquer leitura posterior de logRows) contaria em dobro.
+    assert.equal(first.categories.implementation?.tokens, 100);
+    assert.equal(first.categories.implementation?.eventCount, 1);
+    // Idempotência: re-fundir o resultado não muda nada.
+    assert.equal(mergeKindDayTotals(merged)[0].categories.implementation?.tokens, 150);
+  });
+
+  it("não funde kinds diferentes nem dias diferentes, e não muta a entrada", () => {
+    const input: KindDayTotals[] = [
+      { kind: "overnight", day: "260814", rounds: ["260814"], totalTokens: 10, categories: {} },
+      { kind: "develop", day: "260814", rounds: ["260814"], totalTokens: 20, categories: {} },
+      { kind: "overnight", day: "260815", rounds: ["260815"], totalTokens: 30, categories: {} },
+    ];
+    const merged = mergeKindDayTotals(input);
+    assert.equal(merged.length, 3);
+    assert.equal(input[0].totalTokens, 10);
+    assert.deepEqual(input[0].rounds, ["260814"]);
+  });
+});
+
+describe("formatSessionTokensSummary — marcação de rodadas fundidas (#6638)", () => {
+  it("dia com N rodadas do mesmo kind mostra ×N; dia com 1 rodada não mostra sufixo", () => {
+    const md = formatSessionTokensSummary({
+      generatedAt: "2026-08-28T00:00:00.000Z",
+      since: null,
+      until: null,
+      alarmPct: 50,
+      rows: [
+        { kind: "overnight", day: "260814", rounds: ["260814", "260814b", "260814c"], totalTokens: 3_000_000, categories: {} },
+        { kind: "develop", day: "260815", rounds: ["260815"], totalTokens: 1_000_000, categories: {} },
+      ],
+      alarms: [],
+    });
+    assert.match(md, /\| 260814 \| Overnight ×3 \|/);
+    assert.match(md, /\| 260815 \| Develop \|/);
+    assert.doesNotMatch(md, /Develop ×/);
   });
 });
