@@ -12,15 +12,21 @@
  * órfã pra qualquer varredura de higiene — foi exatamente essa leitura que
  * quebrou o loop de produção no #6059.
  *
- * **Duas correções de fato, do #6168** — este cabeçalho errava as duas, e
- * errar isso manda quem for verificar o consumidor externo pro lugar errado,
- * que é o caminho mais curto pra concluir "não existe" e remover a infra de
- * novo:
- *   - a skill mora em `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/`,
- *     **não** em `~/.claude/skills/` (lá só existe o `humanizador`);
+ * **Correções de fato (#6168, atualizado pelo PR #6446 em 28/08/2026)** —
+ * este cabeçalho já errou esses fatos antes, e errar isso manda quem for
+ * verificar o consumidor externo pro lugar errado, que é o caminho mais curto
+ * pra concluir "não existe" e remover a infra de novo:
+ *   - **desde o PR #6446 a fonte canônica da skill é ESTE repo**:
+ *     `hermes/skills/hermes-diaria-continuo/SKILL.md`. O path
+ *     `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/` no
+ *     `helios` é um SYMLINK pra cá (bootstrap em `hermes/README.md`) — não é
+ *     mais "fora do repo", mas o CONSUMIDOR (o cron do Hermes) continua
+ *     externo. Nada disso mora em `~/.claude/skills/` (lá só existe o
+ *     `humanizador`);
  *   - quem a agenda é o cron do **Hermes**, **não** um "cron do Claude Code";
  *   - o job id mudou de `7089586af6cb` para `5d791ef6fc2c` quando o runtime foi
- *     religado em 26/08/2026 (`hermes cron create` gera id novo).
+ *     religado em 26/08/2026 (`hermes cron create` gera id novo); o review
+ *     diário consolidado é o job `645d5debb7f0` (28/08/2026).
  *
  * Por que um teste e não só a linha no `CLAUDE.md` (que também existe, seção
  * "Princípios operacionais invariáveis"): o `knip` é estruturalmente cego a
