@@ -69,16 +69,30 @@
  *
  * A auditoria "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então
  * publicados nunca foram rastreados pelo Google — nenhuma página com
- * autoridade linkava pra eles. O item C do #5097/#5257 (adicionar um bloco
- * "Temas" na home linkando `/temas/{slug}` de cada hub de `HUB_META`) é ação
- * manual do editor no Website Builder da Beehiiv, fora de escopo aqui — este
- * 6º eixo (`hub-link-missing`) é o GUARD que já existe pros outros 5: cruza
- * os slugs de `HUB_META` (fonte única de verdade dos hubs publicados, ver
- * `workers/arquivo/src/hubs/meta.ts`) contra os `href="…/temas/{slug}"`
- * efetivamente presentes no HTML da home, e alarma qualquer hub sem link —
- * hoje (o bloco ainda não existe, então o alarme começa ACESO de propósito,
- * é o estado real) e, mais importante, pra QUALQUER hub futuro que entre em
- * `HUB_META` sem o link correspondente ser adicionado ao bloco.
+ * autoridade linkava pra eles. Este 6º eixo (`hub-link-missing`) é o GUARD
+ * que já existe pros outros 5: cruza os slugs de `HUB_META` (fonte única de
+ * verdade dos hubs publicados, ver `workers/arquivo/src/hubs/meta.ts`)
+ * contra os `href="…/temas/{slug}"` efetivamente presentes no HTML da home,
+ * e alarma qualquer hub sem link.
+ *
+ * **O que este eixo significa mudou em 28/08/2026 (#6411).** O item C do
+ * #5097/#5257 (o bloco "Temas" em si) era ação manual do editor no Website
+ * Builder da Beehiiv, então o alarme nasceu ACESO de propósito e ficou aceso
+ * ~2 semanas, recriando a mesma issue todo dia sem que nenhuma sessão
+ * pudesse agir (a issue caía em `fora-de-rodada` por carregar `alarm`, e o
+ * corpo dizia "não é código deste repo"). Duas coisas mudaram: o apex saiu
+ * da Beehiiv (hoje é `workers/site`, código deste repo — apesar do nome
+ * deste arquivo, a home que ele audita não é mais um tema Beehiiv) e o
+ * bloco passou a ser DERIVADO de `HUB_META` (`renderTopicLinks` em
+ * `scripts/lib/site-home-page.ts`), travado por
+ * `test/site-home-hub-links-6411.test.ts`. O eixo deixou de cobrar um passo
+ * manual e virou guard de regressão do gerador: dispara se a home for ao ar
+ * sem regenerar depois de um hub novo entrar em `HUB_META`.
+ *
+ * Nota de escopo pros outros eixos: `english-labels` (rótulos residuais do
+ * tema Beehiiv) perdeu a razão de ser NA HOME pelo mesmo motivo, mas segue
+ * válido — `port-in-url` avalia a página da edição mais recente, e o
+ * conteúdo de `/p/{slug}` ainda vem do render Beehiiv em cache.
  */
 
 import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";
