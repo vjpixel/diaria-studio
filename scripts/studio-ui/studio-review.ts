@@ -576,9 +576,14 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
       const r = validateLancamentos(md, allowlist);
       return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
     }),
-    // #6447 Fatia 1: `intentional-error-flagged` hoje só roda no Stage 5
-    // (`beehiiv-playbook.md`) — trazido aqui pro Studio como leitura
-    // antecipada (não muda o gate real, só dá visibilidade cedo). Lê
+    // #6447 Fatia 1: `intentional-error-flagged` roda oficialmente no
+    // Stage 5 (`beehiiv-playbook.md`) E, como BACKSTOP GATE-BLOCKING, já no
+    // Stage 4 real (orchestrator-stage-4.md §4c.2 — "Nenhum dos dois deveria
+    // sobreviver sem resolução até o Stage 4... rodar os dois aqui também,
+    // GATE-BLOCKING"). No fluxo normal o editor já declarou o erro no
+    // Stage 2 (§2b), então por padrão isto já vem `ok:true` quando o editor
+    // abre o painel — não é uma barra nova que o Studio inventa, é o mesmo
+    // backstop do gate real, só espelhado aqui. Lê
     // `_internal/intentional-error.json` direto de `editionDir` — ignora
     // `md`/conteúdo ainda não salvo do editor de propósito (o JSON é um
     // arquivo irmão independente, sempre lido do disco).

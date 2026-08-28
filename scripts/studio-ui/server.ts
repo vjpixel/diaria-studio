@@ -1083,6 +1083,14 @@ function editionDirFor(rootDir: string, aammdd: string): string {
 // #6447 Fatia 1: painel "Gate" — mesmo padrão fail-soft dos demais handlers
 // de revisão (nunca lança; `buildGateSummary` já degrada campo a campo).
 function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse): void {
+  // Mesmo guard de formato que handleApiEdition/resolveReviewFile já usam —
+  // sem isso, um `aammdd` malformado (ex: contendo `\`, tratado como
+  // separador de path no Windows) chegaria direto em `resolveEditionDir`
+  // sem essa rede de segurança (#6449 review).
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
   const summary = buildGateSummary(rootDir, aammdd);
   sendJson(res, summary.editionExists ? 200 : 404, summary);
 }

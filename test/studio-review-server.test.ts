@@ -281,6 +281,33 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(res.status, 405);
   });
 
+  // #6449 review (pr-test-analyzer): rota nova do painel Gate (#6447 Fatia 1)
+  // não tinha nenhum teste no nível HTTP, ao contrário de toda rota irmã
+  // desta suíte — fecha esse gap com o mesmo padrão fetch()-level acima.
+  describe("GET .../gate (#6447 Fatia 1)", () => {
+    it("edição existente: 200, editionExists:true, shape básico do resumo", async () => {
+      const res = await fetch(new URL("/api/editions/260716/gate", server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.editionExists, true);
+      assert.equal(body.aammdd, "260716");
+      assert.ok(Array.isArray(body.checklist));
+      assert.ok(Array.isArray(body.highlights));
+    });
+
+    it("edição inexistente: 404", async () => {
+      const res = await fetch(new URL("/api/editions/999999/gate", server.url));
+      assert.equal(res.status, 404);
+      const body = await res.json();
+      assert.equal(body.editionExists, false);
+    });
+
+    it("AAMMDD malformado: 400, nunca chega a resolver diretório (#6449 review)", async () => {
+      const res = await fetch(new URL("/api/editions/nao-e-data/gate", server.url));
+      assert.equal(res.status, 400);
+    });
+  });
+
   // #3806 (Opção B spike) — edição visual de UM campo (título de destaque) na
   // visão renderizada. Edição PRÓPRIA (260719, isolada de 260716/260718) —
   // mesmo cuidado documentado acima pro bloco de conflito do #3729.

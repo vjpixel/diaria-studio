@@ -6,7 +6,19 @@
 //
 // Módulo independente de revisao.js (import isolado, mesma convenção do
 // #3559 pros arquivos próprios de cada fatia) — só depende do DOM estático
-// declarado em revisao.html e do próprio AAMMDD da URL.
+// declarado em revisao.html e do próprio AAMMDD da URL. Toda formatação
+// SEM DOM mora em rv-gate-format.js (testável direto, ver
+// test/rv-gate-format.test.ts) — este arquivo só monta os nós.
+
+import {
+  formatMetaDescription,
+  formatWhatsappUrl,
+  formatFactCheckSummary,
+  formatAutofixSummary,
+  formatBoxSlotLine,
+  lintFailureRows,
+  formatRenderWarningRow,
+} from "./rv-gate-format.js";
 
 function getAammddFromPath() {
   const m = location.pathname.match(/^\/revisao\/([^/]+)\/?$/);
@@ -84,72 +96,45 @@ function renderMeta(summary) {
   clear(el.meta);
   const whatsapp = el_("p", { className: "rv-gate-kv" });
   whatsapp.appendChild(document.createTextNode("URL do WhatsApp (D1): "));
-  if (summary.whatsappUrl) {
-    const code = el_("code", { text: summary.whatsappUrl });
-    whatsapp.appendChild(code);
+  const wa = formatWhatsappUrl(summary.whatsappUrl);
+  if (wa.available) {
+    whatsapp.appendChild(el_("code", { text: wa.text }));
   } else {
-    whatsapp.appendChild(el_("span", { text: "⚠️ indisponível — ainda não computada nesta edição." }));
+    whatsapp.appendChild(el_("span", { text: wa.text }));
   }
   el.meta.appendChild(whatsapp);
 
   const metaDesc = el_("p", { className: "rv-gate-kv" });
   metaDesc.appendChild(document.createTextNode("Meta description sugerida (D1): "));
-  if (summary.metaDescriptionSuggestion) {
-    metaDesc.appendChild(document.createTextNode(summary.metaDescriptionSuggestion));
-  } else {
-    metaDesc.appendChild(el_("span", { text: "⚠️ sugestão indisponível." }));
-  }
+  const md = formatMetaDescription(summary.metaDescriptionSuggestion);
+  metaDesc.appendChild(md.available ? document.createTextNode(md.text) : el_("span", { text: md.text }));
   el.meta.appendChild(metaDesc);
 }
 
 function renderFactCheck(summary) {
   clear(el.factcheck);
   const fc = summary.factCheck;
-  if (!fc.available) {
-    el.factcheck.appendChild(el_("p", { className: "rv-gate-empty", text: fc.note || "fact-check indisponível." }));
-  } else {
-    const s = fc.summary;
-    el.factcheck.appendChild(el_("p", {
-      className: "rv-gate-kv",
-      text: `${s.total} claim(s) verificado(s) — ${s.sustained} confirmado(s), ${s.divergent} divergente(s), ` +
-        `${s.not_found_in_source} não encontrado(s) na fonte, ${s.attention_items} pedindo atenção.`,
-    }));
-  }
-  const autofix = summary.factCheckAutofix;
-  if (autofix.available) {
-    el.factcheck.appendChild(el_("p", {
-      className: "rv-gate-kv",
-      text: `Autofix: ${autofix.summary.applied} correção(ões) aplicada(s) automaticamente` +
-        (autofix.socialModified ? " (inclui 03-social.md)." : "."),
-    }));
-  } else if (autofix.note) {
-    el.factcheck.appendChild(el_("p", { className: "rv-gate-empty", text: autofix.note }));
+  const className = fc.available ? "rv-gate-kv" : "rv-gate-empty";
+  el.factcheck.appendChild(el_("p", { className, text: formatFactCheckSummary(fc) }));
+
+  const autofixLine = formatAutofixSummary(summary.factCheckAutofix);
+  if (autofixLine) {
+    el.factcheck.appendChild(el_("p", { className: "rv-gate-kv", text: autofixLine }));
+  } else if (!summary.factCheckAutofix.available && summary.factCheckAutofix.note) {
+    el.factcheck.appendChild(el_("p", { className: "rv-gate-empty", text: summary.factCheckAutofix.note }));
   }
 }
 
 function renderBoxes(summary) {
   clear(el.boxes);
   const boxes = summary.boxSelection;
-  if (!boxes.available || !boxes.slots || boxes.slots.length === 0) {
-    el.boxes.appendChild(el_("p", { className: "rv-gate-empty", text: boxes.note || "nenhuma seleção registrada." }));
+  if (!boxes.available || boxes.slots.length === 0) {
+    el.boxes.appendChild(el_("p", { className: "rv-gate-empty", text: boxes.available ? "nenhuma seleção registrada." : boxes.note }));
     return;
   }
   for (const slot of boxes.slots) {
-    const line = slot.file
-      ? `Slot ${slot.slot}: ${slot.nome || slot.file} (${slot.mode})`
-      : `Slot ${slot.slot}: vazio (${slot.mode})`;
-    el.boxes.appendChild(el_("p", { className: "rv-gate-kv", text: line }));
+    el.boxes.appendChild(el_("p", { className: "rv-gate-kv", text: formatBoxSlotLine(slot) }));
   }
-}
-
-function lintFailureRows(report, sourceLabel) {
-  if (!report) return [];
-  return report.checks
-    .filter((c) => !c.ok || c.crashed)
-    .map((c) => ({
-      severity: c.blocking ? "fail" : "warn",
-      text: `[${sourceLabel}] ${c.blocking ? "❌" : "⚠️"} ${c.label}${c.crashed ? ` (erro: ${c.error})` : ""}`,
-    }));
 }
 
 function renderViolations(summary) {
@@ -161,7 +146,7 @@ function renderViolations(summary) {
   const rw = summary.renderWarnings;
   if (rw.available) {
     for (const ev of rw.events) {
-      rows.push({ severity: "warn", text: `[render] ⚠️ ${ev.event}${ev.slot !== undefined ? ` (slot ${ev.slot})` : ""}` });
+      rows.push({ severity: "warn", text: formatRenderWarningRow(ev) });
     }
   }
   if (rows.length === 0) {
@@ -201,7 +186,17 @@ async function loadGate() {
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const summary = await res.json();
-    renderGate(summary);
+    try {
+      renderGate(summary);
+    } catch (renderErr) {
+      // Distingue "não deu pra buscar" (rede) de "buscou, mas não deu pra
+      // desenhar" (resposta com shape inesperado) — a 1ª mensagem genérica
+      // mandava o editor checar a conexão mesmo quando o problema era outro
+      // (#6449 review).
+      console.error("rv-gate: renderGate() falhou com a resposta recebida:", renderErr, summary);
+      el.status.className = "gate-fail";
+      el.status.textContent = "Painel Gate recebeu uma resposta que não conseguiu desenhar — veja o console.";
+    }
   } catch (err) {
     console.error("rv-gate: falha ao carregar resumo do gate:", err);
     el.status.className = "gate-fail";
@@ -215,6 +210,7 @@ if (el.refreshBtn) {
 
 loadGate();
 
-// Exportado só para eventuais testes de integração client-side futuros —
-// nenhum outro módulo desta fatia importa isto (rv-gate.js é standalone).
+// Exportado pro suite de testes de contrato do server (ver
+// test/studio-review-server.test.ts, mesmo padrão já usado por revisao.js —
+// asserts sobre o SOURCE servido, não um harness de DOM).
 export { loadGate, renderGate };
