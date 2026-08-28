@@ -157,21 +157,25 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    mesmo com draft correto) — merge tag literal nesse cenário é artefato do
 >    modo de envio, não defeito do conteúdo; reenviar com "Simulate as" antes de
 >    marcar `issues_unfixable`.
->    **ATUALIZAÇÃO #6608 (260828, NÃO FECHA a causa raiz — só o fallback):** o
->    picker de busca de assinante do "Simulate as" (`input[placeholder="Search
->    for a specific subscriber"]`) parou de responder a qualquer técnica de
->    automação testada (clique real + type, backspace+retype, native React
->    setter) — o dropdown de resultados nunca renderiza. Enquanto isso não for
->    resolvido (investigação da causa raiz é FORA de escopo deste agente —
->    nenhuma ferramenta de Chrome/browser disponível aqui), toda edição
->    enviada pelo playbook automatizado sai no modo genérico. Nesse caso —
->    **e só nesse caso, confirmado, não por suposição** — passe
->    `--send-mode generic` no passo 17 abaixo. O script então trata
->    `{{email}}`/`{{poll_token}}` literal (e o sinal indireto do redirect pro
->    `/jogar?...&from=post-web`) como `skipped[]` (reason
->    `generic_send_merge_tag`), **não** `issues[]`/blocker. Se o envio foi
->    confirmadamente via "Simulate as" (ou produção), **não** passe a flag —
->    default (`simulate-as`) preserva o comportamento normal (blocker).
+>    **ATUALIZAÇÃO #6608 (260828, CAUSA RAIZ RESOLVIDA):** o picker de busca de
+>    assinante do "Simulate as" (`input[placeholder="Search for a specific
+>    subscriber"]`) não está quebrado — o debounce é só bem mais longo do que
+>    as tentativas originais esperaram (~2-4s), e varia com o tamanho da
+>    query (query curta ~8s, mais longa/específica ~15s). Reproduzido ao
+>    vivo: clique real + `type`, seguido de **espera de pelo menos 10s antes
+>    da 1ª checagem**, insistindo até ~20s se ainda vazio, faz a lista
+>    renderizar normalmente (ver `beehiiv-playbook.md` §7 pro procedimento
+>    completo). Só depois de ~20s sem nenhum resultado é sinal de regressão
+>    nova — reabrir #6608 com essa evidência (query usada + tempo esperado).
+>    `--send-mode generic` continua existindo como fallback só pra quando não
+>    há Chrome/browser disponível na sessão (ex: este agente, que não tem essa
+>    ferramenta) — nesse caso, **e só nesse caso**, passe `--send-mode generic`
+>    no passo 17 abaixo. O script então trata `{{email}}`/`{{poll_token}}`
+>    literal (e o sinal indireto do redirect pro `/jogar?...&from=post-web`)
+>    como `skipped[]` (reason `generic_send_merge_tag`), **não**
+>    `issues[]`/blocker. Se o envio foi confirmadamente via "Simulate as" (ou
+>    produção), **não** passe a flag — default (`simulate-as`) preserva o
+>    comportamento normal (blocker).
 >    Você não precisa decidir a categoria sozinho antes de rodar o passo 17:
 >    o check determinístico (`lint-test-email-link-tracking.ts`) já faz a
 >    classificação — sua única decisão é qual `--send-mode` corresponde ao
