@@ -2190,11 +2190,20 @@ function decideSessionGc(
   // kind × margem, não a janela conservadora de 7 dias — ver docstring de
   // `GC_ORPHAN_LIVENESS_MARGIN`. Sessão ancorada num arquivo real
   // (`isOrphan === false`) preserva o comportamento anterior sem alteração.
-  const effectiveMaxAgeMs = isOrphan
-    ? softStaleMs * GC_ORPHAN_LIVENESS_MARGIN
-    : groupKind === "interactive"
-      ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS)
-      : conservativeMaxAgeMs;
+  // Restrito a `kind` CONHECIDO (`ALL_SESSION_KINDS`) — igual ao comentário
+  // acima sobre kind ausente/desconhecido: um `kind` que este módulo não
+  // reconhece não pode se beneficiar da janela mais curta (achado do review
+  // do #6595 — sem essa guarda, um registro corrompido/futuro com `kind`
+  // vazio cairia em `softStaleMsForKind("") = SOFT_STALE_MS` × margem em vez
+  // da janela conservadora, o oposto do "nunca remove mais cedo sobre um
+  // registro que não se conseguiu classificar").
+  const isKnownKind = (ALL_SESSION_KINDS as readonly string[]).includes(groupKind);
+  const effectiveMaxAgeMs =
+    isOrphan && isKnownKind
+      ? softStaleMs * GC_ORPHAN_LIVENESS_MARGIN
+      : groupKind === "interactive"
+        ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS)
+        : conservativeMaxAgeMs;
 
   const ageMs = now - maxHeartbeatMs;
   if (ageMs < 0) {
@@ -2226,13 +2235,21 @@ function decideSessionGc(
     }
   }
 
+  const orphanWindowApplies = isOrphan && isKnownKind;
+
   if (ageMs > effectiveMaxAgeMs) {
-    if (isOrphan) {
+    if (orphanWindowApplies) {
+      // #6595: `claimed_issues` deste órfão nunca chegam a fazer parte da
+      // união que `isIssueClaimedByOther`/`listActiveSessions`/Triagem leem
+      // (`readMergedSessionGroups` já pula todo backup sem arquivo real
+      // correspondente — ver o comentário "// órfão" lá) — não é isso que a
+      // remoção "libera". O que muda é só a existência EM DISCO destes
+      // números: se algum consumidor futuro passar a ler `data/sessions/`
+      // diretamente (sem passar pela união), essa leitura deixa de os ver.
       const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
       const claimsNote =
         claimedIssues.length > 0
-          ? ` — libera ${claimedIssues.length} claim(s) que só existiam na união fail-safe por causa deste órfão: ` +
-            `#${claimedIssues.join(", #")}`
+          ? ` — leva junto ${claimedIssues.length} claim(s) que estavam registrados neste arquivo órfão: #${claimedIssues.join(", #")}`
           : " — sem claimed_issues";
       return {
         action: "removed",
@@ -2255,12 +2272,15 @@ function decideSessionGc(
   }
   return {
     action: "kept",
-    reason: isOrphan
+    reason: orphanWindowApplies
       ? `#6595: backup ÓRFÃO com heartbeat stale (${Math.round(ageMs / 60000)}min) mas ainda dentro da janela de ` +
         `liveness do kind × ${GC_ORPHAN_LIVENESS_MARGIN} (${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind ` +
         `"${groupKind || "desconhecido"}") — GC não arrisca remover cedo demais`
-      : `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
-        "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
+      : isOrphan
+        ? `backup ÓRFÃO de kind não reconhecido ("${groupKind || "desconhecido"}") — cai na janela conservadora ` +
+          "por segurança de interpretação, mesmo sendo órfão (#6595: só kind conhecido usa a janela mais curta)"
+        : `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
+          "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
   };
 }
 

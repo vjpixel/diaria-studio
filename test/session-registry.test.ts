@@ -2316,6 +2316,32 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     assert.match(plan[0].reason, /ilegível/);
   });
 
+  it("#6595 (fleet review): órfão com `kind` AUSENTE/desconhecido cai na janela CONSERVADORA de 7 dias, nunca na janela curta do órfão", () => {
+    // Achado do review do #6595: sem esta guarda, `softStaleMsForKind(\"\")`
+    // resolve pro default de 90min e a janela do órfão (4×90min=6h) seria
+    // aplicada a um registro que este módulo não conseguiu classificar —
+    // o oposto do "kind ausente/desconhecido cai nos valores conservadores"
+    // que a mesma função já garante pra sessão ancorada em arquivo real.
+    const root = freshRoot();
+    const ageMs = 10 * 60 * 60 * 1000; // 10h — além das 6h do órfão overnight, mas bem aquém dos 7 dias
+    writeRawSessionFile(root, "overnight-helios-s-kind-vazio-helios-safeBackup-0001.json", {
+      // `kind` omitido de propósito — simula registro corrompido/legado.
+      machineTag: "helios",
+      sessionId: "s-kind-vazio",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [],
+    } as Partial<SessionRecord>);
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(
+      plan[0].action,
+      "kept",
+      "10h > 4×90min=6h (janela do órfão) mas < 7 dias (janela conservadora) — kind desconhecido usa a conservadora",
+    );
+  });
+
   it("#6595: sessão COM arquivo real e heartbeat de 3 dias segue mantida — os 7 dias NÃO regrediram", () => {
     const root = freshRoot();
     registerSession(root, "overnight", "s-real-3d", {
