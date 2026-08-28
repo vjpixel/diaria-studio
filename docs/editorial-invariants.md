@@ -36,6 +36,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only) | #3916 |
+| `lancamento-has-product-signal` | lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440) | #6440 |
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
