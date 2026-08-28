@@ -448,6 +448,13 @@ const HOST = "127.0.0.1";
 // em uso no repo (oauth-setup.ts usa 8765; serve-preview.ts usa porta
 // efêmera 0). Sempre sobrescrevível via --port ou STUDIO_PORT.
 const DEFAULT_PORT = 4174;
+// #6452: quanto o watcher de código server-rendered espera sem NENHUMA
+// mudança nova antes de reiniciar o processo — coalesce um burst de writes
+// (`git pull` tocando vários arquivos em sequência, às vezes espalhado por
+// vários polls) numa única reinicialização, em vez de uma por arquivo
+// tocado. Ver `watchStudioSource` (`studio-source-watch.ts`) para o
+// mecanismo de debounce.
+const DEFAULT_SOURCE_WATCH_DEBOUNCE_MS = 3_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "public");
@@ -524,6 +531,12 @@ export interface StudioServerOptions {
   enableSourceWatch?: boolean;
   /** Intervalo do watcher de mtime do código server-rendered. */
   sourceWatchPollIntervalMs?: number;
+  /** Debounce (ms) do watcher de mtime (#6452) — só dispara `onSourceChange`
+   * depois de `sourceWatchDebounceMs` sem NENHUMA mudança nova, coalescendo
+   * um burst de writes (`git pull`/checkout tocando vários arquivos em
+   * sequência) numa única notificação. Default 0 (síncrono, comportamento
+   * pré-#6452) — `main()` abaixo liga um valor real pro uso em produção. */
+  sourceWatchDebounceMs?: number;
   /** Callback injetável para observar uma mudança sem matar o processo (testes). */
   onSourceChange?: (change: StudioSourceChange) => void;
 }
@@ -2014,7 +2027,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         (change) => {
           opts.onSourceChange?.(change);
         },
-        { pollIntervalMs: opts.sourceWatchPollIntervalMs },
+        { pollIntervalMs: opts.sourceWatchPollIntervalMs, debounceMs: opts.sourceWatchDebounceMs },
       )
     : null;
 
@@ -2034,6 +2047,18 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         snapshotWatch?.close();
         sourceWatch?.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
+        // #6452: `server.close()` só resolve depois que TODA conexão aberta
+        // termina — mas o painel mantém handles de longa duração de
+        // propósito (SSE de `/api/events`, `/api/chat` streaming, keep-
+        // alive), então sem isso `close()` fica pendurado até o timeout de
+        // `shutdownWithTimeout` (10s) forçar `process.exit`. Derrubar os
+        // sockets explicitamente aqui faz `close()` resolver quase na hora
+        // — o cliente (EventSource/fetch) trata isso como uma desconexão
+        // normal e reconecta sozinho quando o processo novo sobe, então não
+        // há conexão "legítima" que isto quebre de fato: a alternativa era
+        // sempre o mesmo socket morrer, só que ~10s mais tarde e via SIGKILL
+        // do systemd em vez de um FIN limpo.
+        server.closeAllConnections?.();
       }),
   };
 }
@@ -2059,6 +2084,7 @@ async function main(): Promise<void> {
     rootDir,
     enableSnapshotPush,
     enableSourceWatch: true,
+    sourceWatchDebounceMs: DEFAULT_SOURCE_WATCH_DEBOUNCE_MS,
     onSourceChange: (change) => {
       console.warn(`[studio-server] código server-rendered mudou em ${change.path}; reiniciando`);
       process.kill(process.pid, "SIGTERM");

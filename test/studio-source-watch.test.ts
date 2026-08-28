@@ -72,4 +72,41 @@ describe("Studio server-rendered source watcher (#5674)", () => {
     assert.equal(changes[0]?.path, "scripts/studio-ui/rendered.ts");
     await server.close();
   });
+
+  it("#6452: debounces a burst of rapid mtime changes into a single onChange call", async () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-source-watch-debounce-"));
+    const dir = join(root, "scripts", "studio-ui");
+    mkdirSync(dir, { recursive: true });
+    const fileA = join(dir, "a.ts");
+    const fileB = join(dir, "b.ts");
+    writeFileSync(fileA, "export const a = 1;\n");
+    writeFileSync(fileB, "export const b = 1;\n");
+
+    const changes: StudioSourceChange[] = [];
+    const handle = watchStudioSource(root, (change) => changes.push(change), {
+      pollIntervalMs: 10,
+      debounceMs: 100,
+    });
+
+    // Simula um `git pull` tocando o mesmo (ou vários) arquivo(s) várias
+    // vezes em rápida sucessão — exatamente o padrão do incidente #6452
+    // (5 restarts em ~4min citando a mesma mudança). Cada `utimesSync` cai
+    // dentro da janela de debounce da anterior.
+    for (let i = 0; i < 5; i += 1) {
+      utimesSync(fileA, new Date(), new Date(Date.now() + i * 10 + 100));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    utimesSync(fileB, new Date(), new Date(Date.now() + 500));
+
+    // Ainda dentro da janela de debounce: nenhum onChange disparou ainda.
+    assert.deepEqual(changes, []);
+
+    // Espera o debounce estabilizar (bem além de debounceMs) e confirma que
+    // só 1 restart foi sinalizado, não 1 por mudança de mtime observada.
+    for (let i = 0; i < 40 && changes.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(changes.length, 1);
+    handle.close();
+  });
 });

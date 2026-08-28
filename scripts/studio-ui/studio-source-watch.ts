@@ -61,11 +61,33 @@ function relativePath(rootDir: string, path: string): string {
 export function watchStudioSource(
   rootDir: string,
   onChange: (change: StudioSourceChange) => void,
-  opts: { pollIntervalMs?: number } = {},
+  opts: { pollIntervalMs?: number; debounceMs?: number } = {},
 ): StudioSourceWatchHandle {
   const resolvedRoot = resolve(rootDir);
   let previous = snapshotTree(resolvedRoot);
   let closed = false;
+  const debounceMs = opts.debounceMs ?? 0;
+
+  // #6452: um `git pull`/checkout toca vários arquivos em sequência rápida
+  // (às vezes espalhado por vários polls, não um único ciclo) — sem
+  // debounce, cada poll que pega uma mtime nova dispara `onChange` de
+  // imediato, e o caller (main() abaixo) mata o processo a cada chamada.
+  // Isso produziu 5 restarts em ~4min citando a MESMA mudança (#6452).
+  // Em vez de disparar na primeira detecção, guardamos a última mudança
+  // vista e só a repassamos depois de `debounceMs` sem NENHUMA mudança nova
+  // — um burst inteiro de writes vira 1 única notificação. `debounceMs: 0`
+  // (default) preserva o comportamento síncrono anterior, usado pelos
+  // testes existentes e por qualquer chamador que prefira reagir na hora.
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingChange: StudioSourceChange | null = null;
+
+  const flushPending = (): void => {
+    debounceTimer = null;
+    if (closed || !pendingChange) return;
+    const change = pendingChange;
+    pendingChange = null;
+    onChange(change);
+  };
 
   const poll = (): void => {
     if (closed) return;
@@ -75,7 +97,15 @@ export function watchStudioSource(
       const before = previous.get(path) ?? null;
       const after = current.get(path) ?? null;
       if (before === after) continue;
-      onChange({ path: relativePath(resolvedRoot, path), previousMtimeMs: before, mtimeMs: after });
+      const change: StudioSourceChange = { path: relativePath(resolvedRoot, path), previousMtimeMs: before, mtimeMs: after };
+      if (debounceMs <= 0) {
+        onChange(change);
+      } else {
+        pendingChange = change;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(flushPending, debounceMs);
+        debounceTimer.unref?.();
+      }
       break;
     }
     previous = current;
@@ -87,6 +117,9 @@ export function watchStudioSource(
       if (closed) return;
       closed = true;
       clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = null;
+      pendingChange = null;
     },
   };
 }
