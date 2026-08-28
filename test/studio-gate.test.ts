@@ -12,7 +12,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildGateSummary } from "../scripts/studio-ui/studio-gate.ts";
+import { buildGateSummary, buildChecklist } from "../scripts/studio-ui/studio-gate.ts";
+import type { LintReport } from "../scripts/studio-ui/studio-review.ts";
 
 const ONE_TITLE_PER_DESTAQUE_MD = [
   "**DESTAQUE 1 | LANÇAMENTO**",
@@ -120,6 +121,23 @@ describe("buildGateSummary (#6447 Fatia 1)", () => {
     assert.equal(d1.resolved, true);
   });
 
+  it("títulos: originalTitle cai pro fallback aninhado approved.highlights[n].article.title quando .title falta (#6449 achado do pr-test-analyzer)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), ONE_TITLE_PER_DESTAQUE_MD, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { url: "https://example.com/1", article: { title: "Fábricas usam robôs com IA (aninhado)" } },
+          { url: "https://example.com/2", title: "LLM diagnostica doenças (fonte original)" },
+        ],
+      }),
+      "utf8",
+    );
+    const summary = buildGateSummary(root, aammdd);
+    const d1 = summary.highlights.find((h) => h.n === 1)!;
+    assert.equal(d1.originalTitle, "Fábricas usam robôs com IA (aninhado)");
+  });
+
   it("checklist titles-per-highlight: falha quando um destaque ainda tem >1 título (poda pendente)", () => {
     writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_TITLES_ON_D1_MD, "utf8");
     const summary = buildGateSummary(root, aammdd);
@@ -164,26 +182,56 @@ describe("buildGateSummary (#6447 Fatia 1)", () => {
     );
     const summary = buildGateSummary(root, aammdd);
     assert.equal(summary.factCheck.available, true);
+    if (summary.factCheck.available) assert.equal(summary.factCheck.blockingCount, 0);
     const item = summary.checklist.find((c) => c.id === "fact-check")!;
     assert.equal(item.ok, true);
   });
 
-  it("checklist fact-check: attention_items>0 -> falha com contagem no detail", () => {
+  it("checklist fact-check: claim NOT_FOUND_IN_SOURCE não-superlativo -> falha com blockingCount no detail", () => {
     writeFileSync(resolve(editionDir, "02-reviewed.md"), ONE_TITLE_PER_DESTAQUE_MD, "utf8");
     writeFileSync(
       resolve(editionDir, "_internal", "fact-check.json"),
       JSON.stringify({
         edition: aammdd,
         checked_at: new Date().toISOString(),
-        claims: [],
-        summary: { total: 3, sustained: 1, divergent: 2, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 2 },
+        claims: [
+          { destaque: 1, claim_type: "number", text: "R$ 500 milhões", context: "x", sources: ["newsletter"], verdict: "NOT_FOUND_IN_SOURCE" },
+        ],
+        summary: { total: 3, sustained: 2, divergent: 0, not_found_in_source: 1, source_unreachable: 0, inferred: 0, attention_items: 1 },
       }),
       "utf8",
     );
     const summary = buildGateSummary(root, aammdd);
+    assert.equal(summary.factCheck.available, true);
+    if (summary.factCheck.available) assert.equal(summary.factCheck.blockingCount, 1);
     const item = summary.checklist.find((c) => c.id === "fact-check")!;
     assert.equal(item.ok, false);
-    assert.match(item.detail, /2/);
+    assert.match(item.detail, /1/);
+  });
+
+  it("checklist fact-check: attention_items>0 mas SÓ claims não-bloqueantes (DIVERGENT/superlative) -> ok=true, sem falso-negativo (#6449 achado do code-reviewer)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), ONE_TITLE_PER_DESTAQUE_MD, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "fact-check.json"),
+      JSON.stringify({
+        edition: aammdd,
+        checked_at: new Date().toISOString(),
+        claims: [
+          { destaque: 1, claim_type: "number", text: "GPT-4o", context: "x", sources: ["newsletter"], verdict: "DIVERGENT" },
+          { destaque: 2, claim_type: "superlative", text: "primeira vez", context: "x", sources: ["newsletter"], verdict: "NOT_FOUND_IN_SOURCE" },
+        ],
+        summary: { total: 3, sustained: 1, divergent: 1, not_found_in_source: 1, source_unreachable: 0, inferred: 0, attention_items: 2 },
+      }),
+      "utf8",
+    );
+    const summary = buildGateSummary(root, aammdd);
+    assert.equal(summary.factCheck.available, true);
+    if (summary.factCheck.available) {
+      assert.equal(summary.factCheck.summary.attention_items, 2, "attention_items continua exposto pra exibição informativa completa");
+      assert.equal(summary.factCheck.blockingCount, 0, "nem DIVERGENT nem superlative bloqueiam o gate real (getBlockingClaims)");
+    }
+    const item = summary.checklist.find((c) => c.id === "fact-check")!;
+    assert.equal(item.ok, true, "checklist não deve mostrar pendência quando nenhuma claim bloqueia de verdade");
   });
 
   it("checklist lint-violations: conta falhas bloqueantes agregadas de reviewed + social", () => {
@@ -195,6 +243,38 @@ describe("buildGateSummary (#6447 Fatia 1)", () => {
     const item = summary.checklist.find((c) => c.id === "lint-violations")!;
     assert.equal(item.ok, false);
     assert.match(item.detail, /\d+ violation/);
+  });
+
+  it("checklist lint-violations: crash do lint runner (checks:[], ok:false) NUNCA mostra 'sem violations' verde (#6449 achado do code-reviewer)", () => {
+    const crashedReport: LintReport = { ok: false, checks: [], skipped: [], note: "Lints indisponíveis (erro inesperado ao rodar): boom" };
+    const okReport: LintReport = { ok: true, checks: [{ id: "x", label: "x", blocking: true, ok: true, crashed: false }], skipped: [] };
+    const items = buildChecklist([], crashedReport, okReport, { available: false, note: "sem fact-check" });
+    const item = items.find((c) => c.id === "lint-violations")!;
+    assert.equal(item.ok, false, "checks:[] não pode ser confundido com '0 violations' quando ok:false diz que o runner crashou");
+    assert.match(item.detail, /boom/, "detail expõe o motivo do crash, não '0 violation(ões)'");
+  });
+
+  it("fact-check-autofix: lê fact-check-autofix.json real do disco e mapeia social_modified -> socialModified (#6449 achado do pr-test-analyzer)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), ONE_TITLE_PER_DESTAQUE_MD, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "fact-check-autofix.json"),
+      JSON.stringify({
+        edition: aammdd,
+        applied_at: new Date().toISOString(),
+        dry_run: false,
+        intentional_error_destaque: null,
+        entries: [],
+        summary: { total_divergent: 2, applied: 1, skipped: 1 },
+        social_modified: true,
+      }),
+      "utf8",
+    );
+    const summary = buildGateSummary(root, aammdd);
+    assert.equal(summary.factCheckAutofix.available, true);
+    if (summary.factCheckAutofix.available) {
+      assert.deepEqual(summary.factCheckAutofix.summary, { total_divergent: 2, applied: 1, skipped: 1 });
+      assert.equal(summary.factCheckAutofix.socialModified, true);
+    }
   });
 
   it("box-selection: expõe os slots quando o arquivo existe", () => {

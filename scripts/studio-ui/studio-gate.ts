@@ -55,7 +55,7 @@ import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { readStage4CaptureState, type Stage4CaptureState } from "../lib/stage4-capture-state.ts";
 import { countTitlesPerHighlight } from "../lint-newsletter-md.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
-import type { FactCheckResult } from "../run-fact-checker.ts";
+import { getBlockingClaims, type FactCheckResult } from "../run-fact-checker.ts";
 import type { AutofixResult } from "../apply-factcheck-autofix.ts";
 import type { SlotSelectionRecord } from "../select-boxes-by-clicks.ts";
 import type { RenderWarningEvent } from "../lib/newsletter-render-html.ts";
@@ -122,7 +122,19 @@ export interface GateHighlightTitle {
 // true com payload undefined, e um `?? 0` em algum lugar lê isso como '0
 // problemas'".
 export type GateFactCheckState =
-  | { available: true; summary: FactCheckResult["summary"] }
+  | {
+      available: true;
+      summary: FactCheckResult["summary"];
+      /** #6449 review (code-reviewer): quantidade de claims que de fato
+       * BLOQUEIAM o gate real (`getBlockingClaims` — só
+       * NOT_FOUND_IN_SOURCE não-superlativo), distinto de
+       * `summary.attention_items` (mais amplo — inclui DIVERGENT já
+       * corrigidas via autofix e superlativos não sustidos, que são
+       * informativos e nunca bloqueiam de verdade). Usar este campo pro
+       * checklist; `attention_items` continua exposto pra exibição
+       * informativa completa. */
+      blockingCount: number;
+    }
   | { available: false; note: string };
 
 export type GateFactCheckAutofixState =
@@ -162,14 +174,29 @@ export interface GateSummary {
   checklist: GateChecklistItem[];
 }
 
+/** Lê um `.md` fail-soft — mesma disciplina de `readJsonFile` acima (#6449
+ * review): ausência (ENOENT, arquivo do stage seguinte ainda não rodou) é
+ * silenciosa por design, mas um erro de FS REAL (EACCES/EPERM, lock do
+ * OneDrive — classe recorrente neste repo) é logado em vez de se propagar
+ * sem contexto até o catch genérico do server. */
+function readMdFailSoft(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      console.error(`studio-gate: falha ao ler ${path}: ${(err as Error).message} — tratando como ausente`);
+    }
+    return "";
+  }
+}
+
 function readReviewedMd(editionDir: string): string {
-  const p = resolve(editionDir, "02-reviewed.md");
-  return existsSync(p) ? readFileSync(p, "utf8") : "";
+  return readMdFailSoft(resolve(editionDir, "02-reviewed.md"));
 }
 
 function readSocialMd(editionDir: string): string {
-  const p = resolve(editionDir, "03-social.md");
-  return existsSync(p) ? readFileSync(p, "utf8") : "";
+  return readMdFailSoft(resolve(editionDir, "03-social.md"));
 }
 
 /** `countTitlesPerHighlight` é usado sem guard em todo outro call site
@@ -220,7 +247,7 @@ function buildFactCheck(editionDir: string): GateFactCheckState {
   if (!result || typeof result.summary !== "object" || result.summary === null) {
     return { available: false, note: "fact-check.json indisponível — rode o fact-checker (§4c.6) antes de aprovar." };
   }
-  return { available: true, summary: result.summary };
+  return { available: true, summary: result.summary, blockingCount: getBlockingClaims(result.claims ?? []).length };
 }
 
 function buildFactCheckAutofix(editionDir: string): GateFactCheckAutofixState {
@@ -283,7 +310,23 @@ function countBlockingFailures(report: LintReport): number {
   return report.checks.filter((c) => c.blocking && !c.ok).length;
 }
 
-function buildChecklist(
+/** #6449 review (code-reviewer, retry): `countBlockingFailures` sozinho não
+ * cobre o crash de `safeRunReviewLints` — nesse caminho `checks: []` (nada
+ * pra filtrar) mas `report.ok === false` (o próprio agregador sabe que
+ * falhou). Sem este guard, o checklist mostraria "Sem violations
+ * bloqueantes" (verde) durante um crash real do runner de lints — a mesma
+ * classe de bug que os discriminated unions do módulo existem pra fechar,
+ * só que aqui via `checks` vazio em vez de `available: true` com payload
+ * ausente. `report.ok` já é a fonte de verdade agregada — nunca reconstruir
+ * "crashou" a partir de checks vazio quando ok já diz isso. */
+function reportCrashed(report: LintReport): boolean {
+  return !report.ok && report.checks.length === 0;
+}
+
+/** Exportada pra teste direto (#6449 review) — o cenário de crash do lint
+ * runner (`checks: []` + `ok: false`) é mais fácil de exercitar direto aqui
+ * do que forçando `runReviewLints` de verdade a lançar via `buildGateSummary`. */
+export function buildChecklist(
   highlights: GateHighlightTitle[],
   lintReviewed: LintReport,
   lintSocial: LintReport,
@@ -298,14 +341,19 @@ function buildChecklist(
         .join("; ");
 
   const violations = countBlockingFailures(lintReviewed) + countBlockingFailures(lintSocial);
-  const violationsOk = violations === 0;
+  const lintCrashed = reportCrashed(lintReviewed) || reportCrashed(lintSocial);
+  const violationsOk = violations === 0 && !lintCrashed;
 
-  const factCheckOk = factCheck.available && factCheck.summary.attention_items === 0;
+  // #6449 review (code-reviewer): usa blockingCount (mesmo critério do gate
+  // real, getBlockingClaims), não attention_items — este último é mais
+  // amplo (inclui DIVERGENT já corrigida por autofix e superlativos, que
+  // nunca bloqueiam de verdade) e gerava falso-negativo no checklist.
+  const factCheckOk = factCheck.available && factCheck.blockingCount === 0;
   const factCheckDetail = !factCheck.available
     ? factCheck.note
     : factCheckOk
     ? ""
-    : `${factCheck.summary.attention_items} claim(s) pedindo atenção`;
+    : `${factCheck.blockingCount} claim(s) bloqueante(s)`;
 
   return [
     {
@@ -318,7 +366,11 @@ function buildChecklist(
       id: "lint-violations",
       label: "Sem violations bloqueantes",
       ok: violationsOk,
-      detail: violationsOk ? "" : `${violations} violation(ões) bloqueante(s) aberta(s)`,
+      detail: violationsOk
+        ? ""
+        : lintCrashed
+        ? [lintReviewed.note, lintSocial.note].filter(Boolean).join(" | ") || "lints indisponíveis (erro inesperado ao rodar)"
+        : `${violations} violation(ões) bloqueante(s) aberta(s)`,
     },
     {
       id: "fact-check",
