@@ -285,7 +285,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],
     logPath: "clarice-subscribers/.guardrail-alarm.log",
     schedule: { kind: "interval", hours: 4 },
-    issue: "#4064, #4131 finding 1",
+    // #6563: 75 = EX_TEMPFAIL (`scripts/clarice-guardrail-alarm.ts`,
+    // `shouldSkipForLowQuota`) — skip deliberado (cota Brevo baixa, #6034)
+    // é resultado esperado, não falha; sem isto, `Diaria-Systemd-Unit-Rate-
+    // Alarm` contava cada skip como falha na taxa (achado ao vivo #6455).
+    successExitCodes: [75],
+    issue: "#4064, #4131 finding 1, #6563",
   },
   {
     name: "Diaria-Clarice-Opens-Catchup-Alarm",
