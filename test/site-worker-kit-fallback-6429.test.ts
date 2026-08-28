@@ -88,6 +88,19 @@ describe("workers/site fetch handler — fallback pro Kit (#6429)", () => {
     assert.equal(res.headers.get("Location"), "https://diar-ia-br.kit.com/posts/edicao-nova");
   });
 
+  it("preserva a query string (UTM do link de compartilhamento) no redirect", async () => {
+    const { env } = fakeEnv(404);
+    const res = await worker.fetch(
+      new Request("https://diar.ia.br/p/seu-chatbot-pode-ter-lido-propaganda-israelense?utm_source=whatsapp&utm_medium=share&utm_campaign=260827"),
+      env,
+    );
+    assert.equal(res.status, 302);
+    assert.equal(
+      res.headers.get("Location"),
+      "https://diar-ia-br.kit.com/posts/seu-chatbot-pode-ter-lido-propaganda-israelense?utm_source=whatsapp&utm_medium=share&utm_campaign=260827",
+    );
+  });
+
   it("404 fora de /p/ (ex: rota inexistente qualquer) — NUNCA redireciona, devolve o 404 original", async () => {
     const { env, calls } = fakeEnv(404);
     const res = await worker.fetch(new Request("https://diar.ia.br/nao-existe"), env);

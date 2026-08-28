@@ -260,6 +260,7 @@
   "test/session-conflicts-and-merge-grant.test.ts::TS7016": 2,
   "test/session-transcript.test.ts::TS2339": 1,
   "test/singularize-md-sections.test.ts::TS18048": 6,
+  "test/site-worker-kit-fallback-6429.test.ts::TS2578": 1,
   "test/statusline-cross-machine-3033.test.ts::TS2459": 1,
   "test/studio-apoios.test.ts::TS2739": 14,
   "test/studio-chat.test.ts::TS2339": 17,
@@ -315,5 +316,6 @@
   "workers/poll/src/vote-dedup.ts::TS2304": 2,
   "workers/poll/src/vote.ts::TS18047": 2,
   "workers/poll/src/vote.ts::TS2304": 4,
-  "workers/reativar/src/index.ts::TS2304": 2
+  "workers/reativar/src/index.ts::TS2304": 2,
+  "workers/site/src/index.ts::TS2304": 1
 }

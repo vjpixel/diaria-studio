@@ -56,6 +56,12 @@ export default {
     const slug = matchArchiveSlug(url.pathname);
     if (!slug) return response;
 
-    return Response.redirect(`https://${EXPECTED_SUBSCRIBE_REDIRECT_HOST}/posts/${slug}`, 302);
+    // #6429 achado do fleet review: preservar a query string (UTM do link de
+    // compartilhamento) e re-encodar o slug antes de montar a URL de destino
+    // — `matchArchiveSlug` só valida "sem barra", nunca sanitiza pra uso em
+    // path de URL.
+    const target = new URL(`https://${EXPECTED_SUBSCRIBE_REDIRECT_HOST}/posts/${encodeURIComponent(slug)}`);
+    target.search = url.search;
+    return Response.redirect(target.toString(), 302);
   },
 };
