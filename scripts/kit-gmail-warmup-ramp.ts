@@ -284,7 +284,11 @@ async function main(): Promise<void> {
     );
   }
 
-  const result = await runWarmupRamp({ referenceBroadcastId, gateBroadcastId, push, reset });
+  // Absolutiza contra a raiz do repo, não o CWD do processo (pode não ser a
+  // raiz — ex: task agendada) — mesmo padrão de `resolve(ROOT, editionDir(...))`
+  // em `eia-compose.ts` e vizinhos.
+  const statePath = resolve(ROOT, DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH);
+  const result = await runWarmupRamp({ referenceBroadcastId, gateBroadcastId, push, reset, statePath });
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));

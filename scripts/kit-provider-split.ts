@@ -63,6 +63,7 @@
  */
 import { readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { kitFetch, getBroadcastStats, type KitBroadcastStats } from "./lib/kit-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -78,6 +79,12 @@ import {
   type IntegridadeAviso,
   type RampaVeredito,
 } from "./lib/provider-split.ts";
+
+/** Raiz do repo — `editionDir()` devolve path RELATIVO; `--edition` precisa
+ *  absolutizar contra a raiz, não o CWD do processo (que pode não ser a raiz
+ *  do repo, ex: task agendada) — mesmo padrão de `resolve(ROOT, editionDir(...))`
+ *  usado em `eia-compose.ts`/`collect-edition-signals.ts` e outros consumidores. */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Página de `POST /v4/subscribers/filter`. Campos opcionais porque é a API que decide. */
 export interface KitEngagedPage {
@@ -437,7 +444,7 @@ async function main(): Promise<void> {
   loadProjectEnv();
   const argv = process.argv.slice(2);
   const edition = resolveEditionArg(argv);
-  const editionDirPath = edition ? editionDir(edition) : undefined;
+  const editionDirPath = edition ? resolve(ROOT, editionDir(edition)) : undefined;
   const broadcastId = editionDirPath ? readEditionKitBroadcastId(editionDirPath) : resolveBroadcastId(argv);
   const json = hasFlag(argv, "json");
 
@@ -477,8 +484,9 @@ async function main(): Promise<void> {
   if (edition && editionDirPath) {
     const record = buildKitDeliveryRecord(edition, broadcastId, stats, split, avisos, veredito);
     const snapshotPath = persistKitDeliverySplit(editionDirPath, record);
-    appendKitDeliveryHistory([record]);
-    console.error(`\nPersistido: ${snapshotPath} + ${DEFAULT_KIT_DELIVERY_HISTORY_PATH}`);
+    const historyPath = resolve(ROOT, DEFAULT_KIT_DELIVERY_HISTORY_PATH);
+    appendKitDeliveryHistory([record], historyPath);
+    console.error(`\nPersistido: ${snapshotPath} + ${historyPath}`);
   }
 
   if (json) {
