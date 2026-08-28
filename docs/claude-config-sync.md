@@ -17,7 +17,9 @@ explicitamente.
 
 O que sincroniza: `settings.json`, `agents/`, `CLAUDE.md` (global, distinto
 do `CLAUDE.md` de cada repo), `statusline-wrapper.cjs` (script real que o
-`statusLine.command` do `settings.json` invoca). O que fica **fora** de
+`statusLine.command` do `settings.json` invoca), `output-styles/` (vazio
+no repo até hoje — ver "Seed inicial" no README do `claude-config`). O que
+fica **fora** de
 propósito: `.credentials.json` (vazaria credencial pro repo),
 `~/.claude.json` (misto preferência+estado+paths locais), e tudo que é
 estado/cache por máquina (`projects/`, `file-history/`, `mcp/`, `plugins/`,
@@ -183,8 +185,8 @@ irmão `.sync-check.log`. Nunca escreve no repo — só lê e puxa.
 - **`helios`** — symlinks reais, mecanismo roda como projetado.
   `.sync-state.json` com `result: "ok"`, `copies: []`.
 - **Neo** — puxado e testado manualmente (drift local de `modelSettings`,
-  achado nesta rodada, commitado em `b58e779` e decidido como
-  propagar-às-3-máquinas). Segue precisando de logoff/logon pra ativar
+  achado nesta rodada, commitado em `b58e779` e decidido como propagar às
+  3 máquinas). Segue precisando de logoff/logon pra ativar
   `SeCreateSymbolicLinkPrivilege` antes de rerodar `bootstrap.ps1` com
   symlink real — probe mais recente confirma conteúdo idêntico ao repo,
   não confirma que já é symlink (não checado nesta issue).
