@@ -159,6 +159,17 @@ export interface Env {
    *  produção (`origem_cadastro`, 25/08/2026) — falta só setar a var pra
    *  ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /** #6340 — ID do form do Kit usado pro double opt-in (`vincularKitDoiForm`,
+   * `subscribe.ts`): vincular o subscriber recém-criado a este form dispara
+   * o e-mail de confirmação "Important: confirm your subscription" quando o
+   * form tem "Send confirmation email" ligado no dashboard do Kit (ação
+   * OPERACIONAL, fora do alcance deste repo — mesmo form usado pela
+   * atribuição do #6318, ver rationale completo na docstring de
+   * `subscribeToKit`). Só consultado quando `DOUBLE_OPT_IN_FLAG` está
+   * ativo pra este worker (`optin-flag-6340.ts`). Ausente → subscriber
+   * ainda é criado `inactive`, mas nenhum e-mail de confirmação é
+   * disparado por este caminho — fail-soft, nunca bloqueia a criação. */
+  KIT_DOI_FORM_ID?: string;
   /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
    * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado
    * pelo e-mail de confirmação de merge cross-device do jogo `web`.
