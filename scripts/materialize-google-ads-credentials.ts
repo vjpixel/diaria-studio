@@ -16,9 +16,22 @@
  * (setup incompleto), não um erro. Só falha (exit 1) se a var EXISTE mas o
  * conteúdo é JSON malformado — isso sim é config quebrada.
  *
+ * **Achado ao vivo (#6450, 28/08/2026) — round-trip Doppler→`.env`→dotenv
+ * corrompe este secret especificamente.** `doppler secrets download` grava
+ * o JSON multi-linha no `.env` com aspas internas escapadas; `dotenv@16.6.1`
+ * (`env-loader.ts`) desescapa `\n`/`\r` em TODO o valor entre aspas duplas —
+ * inclusive os `\n` que fazem parte da `private_key` (o bloco PEM tem
+ * newlines escapados como parte da própria string JSON). O resultado é um
+ * JSON estruturalmente quebrado que nenhum unescape posterior conserta. Por
+ * isso, se `process.env.GOOGLE_ADS_SERVICE_ACCOUNT_JSON` (via `.env`) falhar
+ * o parse, este script tenta buscar o valor direto do Doppler CLI
+ * (`fetchFromDopplerDirectly`, sem passar pelo `.env`) antes de desistir —
+ * esse caminho não sofre o round-trip e devolve o JSON íntegro.
+ *
  * Miolo puro (validação, path, transformação de texto) em
  * `scripts/lib/google-ads-credentials.ts` — este arquivo só faz I/O.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -28,10 +41,34 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   defaultCredentialsPath,
   InvalidServiceAccountJsonError,
-  parseServiceAccountJson,
+  parseServiceAccountJsonWithFallback,
   upsertEnvVar,
 } from "./lib/google-ads-credentials.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+
+/** Busca o secret direto do Doppler CLI, sem passar pelo `.env`/dotenv
+ * (achado ao vivo, #6450, 28/08/2026): `doppler secrets download` grava o
+ * JSON multi-linha no `.env` com as aspas internas escapadas (`\"`), mas
+ * `dotenv@16.6.1` faz `value.replace(/\\n/g, '\n')` em TODO o valor entre
+ * aspas duplas — não só nas quebras de linha "de fora" do JSON, mas também
+ * nos `\n` que fazem parte da `private_key` (o bloco PEM tem newlines
+ * escapados como parte da string JSON). O round-trip Doppler→`.env`→dotenv
+ * corrompe a estrutura do JSON de um jeito que nenhum unescape posterior
+ * conserta (não é só `\"` faltando — os `\n` internos da private_key viram
+ * quebras de linha REAIS antes do JSON.parse rodar). `doppler secrets get
+ * --plain` devolve o valor puro, sem esse round-trip — confirmado ao vivo
+ * que resolve. Fail-soft: qualquer erro (Doppler CLI ausente, não
+ * logado, offline) retorna `null`, e o chamador segue com o erro original
+ * do `.env` — nunca lança daqui. */
+function fetchFromDopplerDirectly(): string | null {
+  try {
+    return execFileSync("doppler", ["secrets", "get", "GOOGLE_ADS_SERVICE_ACCOUNT_JSON", "--plain"], {
+      encoding: "utf8",
+    }).replace(/\r?\n$/, ""); // remove só o newline final que o CLI acrescenta, preserva os internos do PEM
+  } catch {
+    return null;
+  }
+}
 
 /** Escreve `content` em `path` atomicamente (tmp + rename) — mesmo padrão de
  * `scripts/sync-env.ts`, nunca deixa o destino truncado numa falha parcial.
@@ -60,7 +97,13 @@ export function main(): number {
 
   let parsed;
   try {
-    parsed = parseServiceAccountJson(raw);
+    const result = parseServiceAccountJsonWithFallback(raw, fetchFromDopplerDirectly);
+    parsed = result.parsed;
+    if (result.source === "fallback") {
+      console.log(
+        "[materialize-google-ads-credentials] valor de .env estava corrompido (round-trip dotenv) — usado o valor direto do Doppler CLI.",
+      );
+    }
   } catch (err) {
     if (err instanceof InvalidServiceAccountJsonError) {
       console.error(`[materialize-google-ads-credentials] ${err.message}`);

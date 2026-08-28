@@ -14,6 +14,7 @@ import {
   defaultCredentialsPath,
   InvalidServiceAccountJsonError,
   parseServiceAccountJson,
+  parseServiceAccountJsonWithFallback,
   upsertEnvVar,
 } from "../scripts/lib/google-ads-credentials.ts";
 
@@ -55,6 +56,48 @@ describe("parseServiceAccountJson (#6450)", () => {
     const obj = JSON.parse(VALID_SA);
     obj.client_email = "";
     assert.throws(() => parseServiceAccountJson(JSON.stringify(obj)), InvalidServiceAccountJsonError);
+  });
+});
+
+describe("parseServiceAccountJsonWithFallback (#6450, achado ao vivo 28/08/2026)", () => {
+  it("raw válido direto => usa raw, nunca chama o fallback", () => {
+    let fallbackCalled = false;
+    const result = parseServiceAccountJsonWithFallback(VALID_SA, () => {
+      fallbackCalled = true;
+      return VALID_SA;
+    });
+    assert.equal(result.source, "env");
+    assert.equal(fallbackCalled, false, "fallback não deve rodar quando o raw já parseia");
+    assert.equal(result.parsed.client_email, "google-ads-mcp@velvety-tube-505505-d1.iam.gserviceaccount.com");
+  });
+
+  it("raw corrompido (round-trip dotenv) mas fallback devolve JSON íntegro => usa o fallback", () => {
+    // Reproduz o achado ao vivo: dotenv desescapa \n em TODO o valor,
+    // inclusive dentro da private_key — o "raw" fica com uma quebra de
+    // linha real no meio de uma string JSON, o que quebra o parse de forma
+    // que nenhum unescape simples de aspas conserta.
+    const corrupted = '{\n  "client_email": "a@b.com",\n  "private_key": "-----BEGIN\nBROKEN-----"\n}';
+    const result = parseServiceAccountJsonWithFallback(corrupted, () => VALID_SA);
+    assert.equal(result.source, "fallback");
+    assert.equal(result.parsed.client_email, "google-ads-mcp@velvety-tube-505505-d1.iam.gserviceaccount.com");
+  });
+
+  it("raw corrompido e fetchFallback retorna null (Doppler CLI indisponível) => relança o erro ORIGINAL do raw", () => {
+    assert.throws(
+      () => parseServiceAccountJsonWithFallback("não é json", () => null),
+      (err: unknown) => {
+        assert.ok(err instanceof InvalidServiceAccountJsonError);
+        assert.match((err as Error).message, /não é JSON válido/);
+        return true;
+      },
+    );
+  });
+
+  it("raw corrompido e o fallback TAMBÉM está quebrado => lança o erro do fallback (mais informativo)", () => {
+    assert.throws(
+      () => parseServiceAccountJsonWithFallback("não é json", () => "também não é json"),
+      InvalidServiceAccountJsonError,
+    );
   });
 });
 

@@ -66,6 +66,51 @@ export function parseServiceAccountJson(raw: string): ServiceAccountShape {
   return obj as ServiceAccountShape;
 }
 
+/** Resultado de `parseServiceAccountJsonWithFallback`: além do objeto
+ * parseado, diz de ONDE ele veio — o chamador usa isso só pra logar (nunca
+ * pra mudar comportamento). */
+export interface ParsedWithSource {
+  parsed: ServiceAccountShape;
+  source: "env" | "fallback";
+}
+
+/**
+ * `parseServiceAccountJson(raw)` com um fallback: se `raw` (tipicamente
+ * `process.env.GOOGLE_ADS_SERVICE_ACCOUNT_JSON` via `.env`/dotenv) não
+ * parsear, chama `fetchFallback()` e tenta de novo com o resultado — achado
+ * ao vivo (#6450, 28/08/2026): `dotenv@16.6.1` desescapa `\n`/`\r` em TODO o
+ * valor de um secret JSON multi-linha entre aspas duplas, inclusive os `\n`
+ * que fazem parte da `private_key` (o bloco PEM tem newlines escapados como
+ * parte da própria string JSON) — o round-trip Doppler→`.env`→dotenv
+ * corrompe a estrutura de um jeito que nenhum unescape posterior conserta.
+ * `fetchFallback` tipicamente busca o valor direto do Doppler CLI, que não
+ * sofre esse round-trip. Pura/testável: `fetchFallback` é injetado, nunca
+ * chama `execFileSync` diretamente aqui — só a orquestração de qual erro
+ * relatar mora nesta função; o I/O de buscar o fallback fica no chamador
+ * (`scripts/materialize-google-ads-credentials.ts`).
+ *
+ * `fetchFallback` retornando `null` (não disponível/falhou) é tratado como
+ * "sem fallback" — relança o erro ORIGINAL do parse de `raw`, nunca um erro
+ * sintético sobre o fallback em si.
+ */
+export function parseServiceAccountJsonWithFallback(
+  raw: string,
+  fetchFallback: () => string | null,
+): ParsedWithSource {
+  try {
+    return { parsed: parseServiceAccountJson(raw), source: "env" };
+  } catch (err) {
+    if (!(err instanceof InvalidServiceAccountJsonError)) throw err;
+    const fallbackRaw = fetchFallback();
+    if (fallbackRaw === null) throw err; // sem fallback disponível — erro original é o que importa
+    // Erro do fallback (se houver) NÃO é capturado aqui de propósito — se o
+    // fallback também falhar o parse, o SyntaxError/InvalidServiceAccountJsonError
+    // dele é mais informativo (secret genuinamente quebrado no Doppler) do
+    // que o erro do `.env` corrompido, que o chamador já não usaria mesmo.
+    return { parsed: parseServiceAccountJson(fallbackRaw), source: "fallback" };
+  }
+}
+
 /** Path fixo por máquina onde a credencial materializada vive — fora do
  * repo, nunca versionado (equivalente a `~/.config/diaria/google-ads-sa.json`
  * sugerido na issue). Recebe `homeDir` explícito (nunca lê `os.homedir()`
