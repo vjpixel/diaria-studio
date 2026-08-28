@@ -5,14 +5,19 @@
  * `subscribeToKit` (novo) e a seleção de backend (`env.SUBSCRIBE_BACKEND`)
  * em `handleJogarSubscribe`. Mesmo padrão de mock de fetch (sem rede real).
  *
- * #6340 (26/08/2026): o caso "POSTa pra /subscribers..." abaixo esperava
- * `state:"active"` — comportamento correto ANTES da decisão do editor de
- * double opt-in. Com `DOUBLE_OPT_IN_FLAG.enabledForWorkers` incluindo
- * `"poll"` (`optin-flag-6340.ts`), este mesmo funil ("jogar") passa a criar
- * `state:"inactive"` — não há exceção documentada em #6340 (nem nos
- * comentários) pro funil "jogar" especificamente; a flag é por WORKER, não
- * por source. Assertion atualizada; ver docstring do teste pro raciocínio
- * completo.
+ * #6340 (26/08/2026): o caso "POSTa pra /subscribers..." abaixo passou a
+ * esperar `state:"inactive"` — double opt-in ligado pro worker `poll` via
+ * `DOUBLE_OPT_IN_FLAG.enabledForWorkers` (`optin-flag-6340.ts`), mecanismo
+ * que segue vivo (o mecanismo de double opt-in em si não mudou).
+ *
+ * #6565 (28/08/2026): `resolveKitCreateState()` só devolve `"inactive"`
+ * quando `env.KIT_DOI_FORM_ID` também está configurado — sem form ID
+ * vinculado, marcar o cadastro como inactive prendia o assinante sem
+ * nenhum e-mail de confirmação em trânsito (o form é quem dispara esse
+ * e-mail). Este teste não configura `KIT_DOI_FORM_ID` em `kitEnv()`, então
+ * o comportamento correto pós-#6565 é `state:"active"` — assertion
+ * atualizada; ver `test/poll-subscribe-double-optin-6340.test.ts` para os
+ * casos que exercitam `state:"inactive"` COM `KIT_DOI_FORM_ID` configurado.
  */
 
 import { describe, it } from "node:test";
@@ -85,7 +90,7 @@ describe("subscribeToKit (#6048)", () => {
     assert.equal(fetchMock.calls.length, 0);
   });
 
-  it("POSTa pra /subscribers com X-Kit-Api-Key + email_address + state:inactive (#6340)", async () => {
+  it("POSTa pra /subscribers com X-Kit-Api-Key + email_address + state:active quando KIT_DOI_FORM_ID não está configurado (#6565)", async () => {
     // #6340 (26/08/2026, decisão do editor): "cadastro novo pelos funis passa
     // a ter double opt-in no Kit" — sem carve-out por source. O funil "jogar"
     // bate no MESMO endpoint (`/jogar/subscribe` → `subscribeToKit`) que
@@ -93,9 +98,14 @@ describe("subscribeToKit (#6048)", () => {
     // (checkbox on-page, #5095) — não há base textual na issue #6340 (nem
     // nos comentários) pra tratar "jogar" como exceção. A flag
     // (`DOUBLE_OPT_IN_FLAG.enabledForWorkers`, `optin-flag-6340.ts`) é
-    // deliberadamente por WORKER, não por source — este teste cobria
-    // `state:active`, o comportamento ANTERIOR à decisão do editor; agora
-    // cobre o novo default esperado pra todo cadastro via `poll`.
+    // deliberadamente por WORKER, não por source.
+    //
+    // #6565 (28/08/2026): `resolveKitCreateState()` só cria `inactive`
+    // quando `env.KIT_DOI_FORM_ID` também está presente — sem form
+    // vinculado não há e-mail de confirmação disparando, então marcar
+    // inactive prenderia o assinante sem saída. `kitEnv()` (helper deste
+    // arquivo) não seta `KIT_DOI_FORM_ID`, então o resultado correto aqui é
+    // `state:active` — não `inactive`.
     const fetchMock = makeFetchMock(201);
     const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "ana@example.com" }, fetchMock);
     assert.equal(r.ok, true);
@@ -107,7 +117,7 @@ describe("subscribeToKit (#6048)", () => {
     assert.equal(headers["X-Kit-Api-Key"], "test-kit-key");
     const body = JSON.parse(String(call.init?.body));
     assert.equal(body.email_address, "ana@example.com");
-    assert.equal(body.state, "inactive", "#6340: double opt-in ativo pro worker poll — state:inactive até confirmação, Brevo entrega enquanto isso (ver PR do #6340)");
+    assert.equal(body.state, "active", "#6565: sem KIT_DOI_FORM_ID configurado, resolveKitCreateState() nunca devolve inactive — evita cadastro preso sem confirmação em trânsito");
   });
 
   it("200 (upsert de e-mail já existente) também é sucesso — Kit é idempotente por e-mail (achado ao vivo #6048)", async () => {
