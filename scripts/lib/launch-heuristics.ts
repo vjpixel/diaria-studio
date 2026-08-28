@@ -1409,8 +1409,10 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     // #5995 (260828): "Try these N X to Y" — listicle acionável em inglês,
     // mesma classe de "N prompts para"/"N formas de" mas sem o número logo
     // após o substantivo. Caso real: "Try these 3 Google AI tools to help
-    // find your next job."
-    "|\\btry\\s+these\\s+\\d+\\b" +
+    // find your next job." Exige "to" até 60 chars depois (achado do review
+    // independente do PR #6556: sem essa exigência, "Try these N X" batia em
+    // qualquer contagem, mais permissivo do que o próprio comentário sugere).
+    "|\\btry\\s+these\\s+\\d+\\b[^.\\n]{0,60}\\bto\\b" +
     // #5995: "N aplicações práticas de/do/da <produto>" — listicle de casos de
     // uso acionáveis ("9 aplicações práticas do ChatGPT Work").
     "|\\b\\d+\\s+aplica[çc][õoe]es\\s+pr[áa]ticas?\\s+(de|do|da)\\b" +

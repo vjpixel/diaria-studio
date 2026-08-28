@@ -305,6 +305,24 @@ describe("#5995 (260828) — resíduo real: lancamento→radar (título não-pro
     };
     assert.equal(categorize(f as any), "noticias", f.title);
   });
+
+  // #5995 (achado do review independente do PR #6556, confidence média/P3):
+  // "Now Run(s) on"/"Working with...on"/"Major Updates" rodam DEPOIS do
+  // short-circuit type_hint==="lancamento" em categorize() (posição correta
+  // — mesma de isBusinessDeal/isCustomerStory/isUpdate) — mas isso só
+  // protege lançamento confirmado pelo agent se o teste de fato exercitar
+  // esse caminho. Sem type_hint, os testes acima já provam que os 3 padrões
+  // disparam; estes travam que type_hint=lancamento continua vencendo.
+  it("guard de precedência: type_hint=lancamento vence 'Now Run(s) on'/'Working with...on'/'Major Updates'", () => {
+    const fixtures = [
+      { title: "Anthropic's Models Now Run on NVIDIA GB300", url: "https://blogs.nvidia.com/blog/anthropic-nvidia-gb300/" },
+      { title: "Working with Figma on a New Design Plugin for Claude", url: "https://www.anthropic.com/news/figma-design-plugin" },
+      { title: "Llama 5: Major Updates to Vision and Reasoning", url: "https://huggingface.co/blog/llama-5-major-updates" },
+    ];
+    for (const f of fixtures) {
+      assert.equal(categorize({ ...f, type_hint: "lancamento" } as any), "lancamento", `type_hint=lancamento vence: ${f.title}`);
+    }
+  });
 });
 
 describe("#5995 (260828) — resíduo real: radar→use_melhor (tutorial pt-BR, classes novas)", () => {
@@ -314,6 +332,19 @@ describe("#5995 (260828) — resíduo real: radar→use_melhor (tutorial pt-BR, 
       url: "https://www.administradores.com.br/noticias/7-formas-inteligentes-de-usar-ia-na-lideranca-sem-ser-especialista-em-tecnologia",
     };
     assert.equal(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
+  });
+
+  // #5995 (achado do review independente do PR #6556, confidence média/P3):
+  // o alargamento de "0 palavras" pra "até 2 palavras" entre o substantivo e
+  // "de" só tinha 1 fixture positiva, sem guard negativo travando o LIMITE do
+  // alargamento. Título jornalístico com 4+ palavras entre "formas" e "de"
+  // (fora do {0,2}) NÃO deve virar tutorial — trava o limite superior.
+  it("guard de limite: 4+ palavras entre 'formas/maneiras' e 'de' NÃO dispara o alargamento", () => {
+    const f = {
+      title: "Pesquisadores descobrem 5 novas formas completamente diferentes e preocupantes de IA enganar usuários",
+      url: "https://g1.globo.com/tecnologia/noticia/pesquisadores-formas-ia-enganar.ghtml",
+    };
+    assert.notEqual(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
   });
 
   it("'Try these N X to Y' — listicle acionável em inglês sem 'N' logo após o substantivo", () => {
