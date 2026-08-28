@@ -19,12 +19,23 @@ import assert from "node:assert/strict";
 import {
   drainPages,
   resolveBroadcastId,
+  resolveEditionArg,
+  kitDiariaPublishedPath,
+  readEditionKitBroadcastId,
+  kitDeliverySplitPath,
+  buildKitDeliveryRecord,
+  persistKitDeliverySplit,
+  appendKitDeliveryHistory,
+  DEFAULT_KIT_DELIVERY_HISTORY_PATH,
   formatTable,
   buildAudienceFilterBody,
   todasOuNenhuma,
   MAX_PAGES,
   type KitEngagedPage,
 } from "../scripts/kit-provider-split.ts";
+import { computeProviderSplit } from "../scripts/lib/provider-split.ts";
+import type { KitBroadcastStats } from "../scripts/lib/kit-client.ts";
+import { resolve as resolvePath } from "node:path";
 
 /** Fake de `fetchPage`: devolve as páginas na ordem, seguindo o cursor. */
 function pager(paginas: KitEngagedPage[]): (after: string | undefined) => Promise<KitEngagedPage> {
@@ -268,5 +279,151 @@ describe("todasOuNenhuma", () => {
 
   it("rejeição não-Error também é reportada legivelmente", async () => {
     await assert.rejects(() => todasOuNenhuma([Promise.reject("string crua")]), /string crua/);
+  });
+});
+
+// #6504 item 1: --edition + persistência ------------------------------------
+
+describe("resolveEditionArg", () => {
+  it("ausente → undefined (fica no caminho --broadcast de sempre)", () => {
+    assert.equal(resolveEditionArg([]), undefined);
+  });
+
+  it("aceita AAMMDD de 6 dígitos", () => {
+    assert.equal(resolveEditionArg(["--edition", "260828"]), "260828");
+  });
+
+  it("LANÇA em formato inválido (não 6 dígitos)", () => {
+    assert.throws(() => resolveEditionArg(["--edition", "2608"]), /--edition inválido/);
+    assert.throws(() => resolveEditionArg(["--edition", "26082899"]), /--edition inválido/);
+    assert.throws(() => resolveEditionArg(["--edition", "abc"]), /--edition inválido/);
+  });
+});
+
+describe("kitDiariaPublishedPath / readEditionKitBroadcastId", () => {
+  it("monta o path dentro de _internal/", () => {
+    assert.equal(
+      kitDiariaPublishedPath("data/editions/2608/260828"),
+      resolvePath("data/editions/2608/260828", "_internal", "kit-diaria-published.json"),
+    );
+  });
+
+  it("lê broadcast_id de um kit-diaria-published.json válido", () => {
+    const fakeRead = () => JSON.stringify({ broadcast_id: 25622689, status: "scheduled" });
+    assert.equal(readEditionKitBroadcastId("data/editions/2608/260828", fakeRead), 25622689);
+  });
+
+  it("LANÇA (mensagem acionável) quando o arquivo não existe — nunca degrada pra 'nada a medir'", () => {
+    const fakeRead = (): string => {
+      throw new Error("ENOENT");
+    };
+    assert.throws(
+      () => readEditionKitBroadcastId("data/editions/2608/260828", fakeRead),
+      /não encontrado.*kit-diaria-stage5-dispatch/,
+    );
+  });
+
+  it("LANÇA em JSON malformado", () => {
+    const fakeRead = () => "{ isto não é json";
+    assert.throws(() => readEditionKitBroadcastId("d", fakeRead), /não é JSON válido/);
+  });
+
+  it("LANÇA quando broadcast_id não é numérico/está ausente", () => {
+    assert.throws(
+      () => readEditionKitBroadcastId("d", () => JSON.stringify({ status: "draft" })),
+      /não tem "broadcast_id" numérico/,
+    );
+    assert.throws(
+      () => readEditionKitBroadcastId("d", () => JSON.stringify({ broadcast_id: "25622689" })),
+      /não tem "broadcast_id" numérico/,
+    );
+  });
+});
+
+function fakeStats(overrides: Partial<KitBroadcastStats> = {}): KitBroadcastStats {
+  return { recipients: 594, open_rate: 13.97, click_rate: 4.04, ...overrides } as KitBroadcastStats;
+}
+
+describe("buildKitDeliveryRecord", () => {
+  it("monta o registro persistido a partir do split + veredito já computados", () => {
+    const split = computeProviderSplit({
+      sent: ["a@gmail.com", "b@gmail.com", "c@outlook.com"],
+      delivered: ["a@gmail.com", "c@outlook.com"],
+      openers: ["a@gmail.com"],
+      clickers: [],
+    });
+    const now = new Date("2026-08-28T12:00:00.000Z");
+    const record = buildKitDeliveryRecord("260828", 25622689, fakeStats(), split, [], { podeCrescer: false, motivo: "SEGURAR — teste", avisos: [] }, now);
+
+    assert.equal(record.edition, "260828");
+    assert.equal(record.broadcastId, 25622689);
+    assert.equal(record.measuredAt, "2026-08-28T12:00:00.000Z");
+    assert.equal(record.kitStats.recipients, 594);
+    assert.equal(record.split.total.sent, 3);
+    assert.equal(record.split.gmail.sent, 2);
+    assert.equal(record.integridade.ok, true);
+    assert.equal(record.rampa.podeCrescer, false);
+  });
+
+  it("integridade.ok reflete os avisos passados", () => {
+    const split = computeProviderSplit({ sent: [], delivered: [], openers: [], clickers: [] });
+    const record = buildKitDeliveryRecord(
+      "260828",
+      1,
+      fakeStats(),
+      split,
+      [{ codigo: "total-nao-bate", mensagem: "x" }],
+      { podeCrescer: false, motivo: "x", avisos: [] },
+    );
+    assert.equal(record.integridade.ok, false);
+    assert.equal(record.integridade.avisos.length, 1);
+  });
+});
+
+describe("persistKitDeliverySplit / appendKitDeliveryHistory — I/O injetado, sem tocar disco", () => {
+  it("persistKitDeliverySplit escreve em _internal/kit-delivery-split.json via write injetado", () => {
+    const writes: Array<{ path: string; content: string }> = [];
+    const mkdirs: string[] = [];
+    const split = computeProviderSplit({ sent: [], delivered: [], openers: [], clickers: [] });
+    const record = buildKitDeliveryRecord("260828", 1, fakeStats(), split, [], { podeCrescer: false, motivo: "x", avisos: [] });
+
+    const path = persistKitDeliverySplit("data/editions/2608/260828", record, {
+      mkdirSync: (p) => mkdirs.push(p),
+      writeFile: (p, c) => writes.push({ path: p, content: c }),
+    });
+
+    assert.equal(path, kitDeliverySplitPath("data/editions/2608/260828"));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].path, path);
+    assert.deepEqual(JSON.parse(writes[0].content), record);
+    assert.equal(mkdirs.length, 1);
+  });
+
+  it("appendKitDeliveryHistory anexa 1 linha JSONL por registro, no path default", () => {
+    const appended: Array<{ path: string; data: string }> = [];
+    const split = computeProviderSplit({ sent: [], delivered: [], openers: [], clickers: [] });
+    const record = buildKitDeliveryRecord("260828", 1, fakeStats(), split, [], { podeCrescer: false, motivo: "x", avisos: [] });
+
+    appendKitDeliveryHistory([record], DEFAULT_KIT_DELIVERY_HISTORY_PATH, {
+      mkdirSync: () => {},
+      appendFileSync: (p, d) => appended.push({ path: p, data: d }),
+    });
+
+    assert.equal(appended.length, 1);
+    assert.equal(appended[0].path, DEFAULT_KIT_DELIVERY_HISTORY_PATH);
+    assert.equal(appended[0].data, JSON.stringify(record) + "\n");
+  });
+
+  it("appendKitDeliveryHistory é no-op (não chama I/O) com lista vazia", () => {
+    let called = false;
+    appendKitDeliveryHistory([], DEFAULT_KIT_DELIVERY_HISTORY_PATH, {
+      mkdirSync: () => {
+        called = true;
+      },
+      appendFileSync: () => {
+        called = true;
+      },
+    });
+    assert.equal(called, false);
   });
 });

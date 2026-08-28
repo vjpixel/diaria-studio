@@ -15,6 +15,7 @@ import {
   listTags,
   createTag,
   tagSubscriber,
+  listSubscriberTags,
   resolveTestSendTagId,
   buildTestSendFilter,
   buildAllSubscribersFilter,
@@ -150,6 +151,29 @@ describe("tags", () => {
       () => tagSubscriber(5, 10, TEST_CONFIG),
     );
     assert.match(capturedUrl, /\/tags\/5\/subscribers\/10$/);
+  });
+});
+
+describe("listSubscriberTags (#6504 item 2)", () => {
+  it("GET /subscribers/:id/tags, devolve o array desembrulhado", async () => {
+    let capturedUrl = "";
+    const tags = await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, { tags: [{ id: 5, name: "rampa-kit", created_at: "2026-08-28" }] });
+      }) as typeof fetch,
+      () => listSubscriberTags(10, TEST_CONFIG),
+    );
+    assert.match(capturedUrl, /\/subscribers\/10\/tags$/);
+    assert.deepEqual(tags, [{ id: 5, name: "rampa-kit", created_at: "2026-08-28" }]);
+  });
+
+  it("resposta 2xx sem envelope 'tags' devolve [] em vez de lançar — chamador trata como 'não confirmado', nunca crasha o push", async () => {
+    const tags = await withMockFetch(
+      (async () => jsonResponse(200, {})) as typeof fetch,
+      () => listSubscriberTags(10, TEST_CONFIG),
+    );
+    assert.deepEqual(tags, []);
   });
 });
 

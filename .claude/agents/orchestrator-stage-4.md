@@ -517,6 +517,12 @@ Capturar os dois e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate 
 
 ### 4d. Gate humano (#1694)
 
+**#6444 — consumir decisão já tomada via painel do Studio (`/revisao`) antes de montar o resumo.** Desde #6447 o painel cobre a revisão item-a-item (destaques, títulos, lints, preview, fact-check) com botão "Aprovar gate". Checar antes de montar o resumo:
+```bash
+npx tsx scripts/lib/stage4-decision.ts --edition-dir {EDITION_DIR} --read --content-files "02-reviewed.md,03-social.md"
+```
+Parsear `{usable, reason?, decision}` do stdout. `usable: true` (na checagem atual, nenhum `02-reviewed.md`/`03-social.md` foi tocado depois de `decided_at` — se um `editar`/re-render tivesse acontecido depois da aprovação, cairia no branch `stale` abaixo, não neste) = tratar como resposta `sim` já dada: pular o resumo completo e o loop `sim/editar/ajustar/abortar` abaixo, logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message "gate revisao response: sim (via painel Studio, decided_at={decided_at})"`, apresentar só `✅ Gate aprovado via painel do Studio (/revisao) em {decided_at} — seguindo para Publicação (Etapa 5).` e ir direto pro teardown do branch `sim` + §4e. `usable: false, reason: "absent"` (caso normal, painel não usado) = seguir o fluxo abaixo normalmente. `usable: false, reason: "stale"` (painel aprovou uma versão anterior — ex: `editar` reabriu o gate e o conteúdo mudou sem reaprovação) = **nunca consumir**; logar warn `gate_painel_decision_stale` e seguir o fluxo abaixo normalmente. Falha do comando acima (script indisponível/exception) é fail-soft — tratar como `usable: false`, nunca bloquear o gate por isso.
+
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
 
 **Ler `{whatsapp_url}`/`{meta_description_suggestion}` do disco antes de montar o resumo (#5414)** — não confiar em variável de sessão, um corte de contexto entre §4c e aqui não pode fazer esses dois valores desaparecerem do gate:

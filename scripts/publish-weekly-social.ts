@@ -94,6 +94,19 @@
  * itens. Rode `--manifest-only` + `beehiiv-clicks-enricher` (Passo 1 do
  * SKILL.md) antes de recorrer à flag.
  *
+ * **Origem Beehiiv/Kit (#6185):** a SELEÇÃO por clique (ranking dos
+ * candidatos, `windowPostsUnified` abaixo) lê o cache unificado Beehiiv+Kit
+ * via `loadUnifiedPostsForRanking` (mesmo padrão que `select-linkedin-weekly.ts`
+ * já aplica desde o mesmo PR) — a mesma partição por origem que o #6048
+ * aplicou à verificação de assinante. O manifest de enriquecimento via MCP
+ * (`--manifest-only`, `identifyInstagramPostsNeedingClicks`) continua
+ * Beehiiv-only DE PROPÓSITO — "precisa de enriquecimento via MCP
+ * `list_post_clicks`" só existe do lado Beehiiv (Kit é REST comum, sem
+ * enriquecimento assíncrono a esperar). Sem `kit-sync.ts`/escritor do cache
+ * Kit ainda, `data/kit-cache/broadcasts/` fica vazio na prática — o
+ * comportamento observável não muda até esse escritor existir, mas a
+ * camada já fica pronta.
+ *
  * Output: appends em `data/weekly/{saturday}/06-weekly-published.json`.
  */
 
@@ -120,6 +133,11 @@ import {
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
+import {
+  loadBeehiivCache as loadUnifiedBeehiivCache,
+  loadKitCache,
+  mergeEditionsByDate,
+} from "./lib/shared/edition-cache-reader.ts";
 import {
   resolveOrGenerateSectionCardUrl,
   defaultSectionCardGenerator,
@@ -381,7 +399,23 @@ export async function resolveWeeklyImageUrls(
   return { ok: true, urls };
 }
 
-/** Lê `data/beehiiv-cache/posts/*.json` (cache local, populado por `scripts/beehiiv-sync.ts` + MCP `list_post_clicks`). */
+/**
+ * Wrapper fail-soft de leitura unificada Beehiiv+Kit (#6185, mesma função
+ * de `select-linkedin-weekly.ts::loadUnifiedPostsForRanking`) — diretório
+ * Beehiiv ausente vira `[]` em vez de lançar (`loadUnifiedEditionCache` cru
+ * trata Beehiiv como fonte PRIMÁRIA obrigatória; este script roda em
+ * qualquer semana, inclusive em tmpdir de teste sem `data/beehiiv-cache/`).
+ * `loadKitCache` já é fail-soft. Usada só pra SELEÇÃO por clique (ranking)
+ * — o manifest de enriquecimento via MCP (`identifyInstagramPostsNeedingClicks`)
+ * continua Beehiiv-only de propósito e usa `loadBeehiivCache` (abaixo).
+ */
+function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
+  const beehiiv = existsSync(beehiivPostsDir) ? loadUnifiedBeehiivCache(beehiivPostsDir) : [];
+  const kit = loadKitCache(kitBroadcastsDir);
+  return mergeEditionsByDate(beehiiv, kit);
+}
+
+/** Lê `data/beehiiv-cache/posts/*.json` (cache local, populado por `scripts/beehiiv-sync.ts` + MCP `list_post_clicks`). Beehiiv-only de propósito — ver docstring de `loadUnifiedPostsForRanking` acima. */
 function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
   if (!existsSync(beehiivPostsDir)) return [];
   const out: BeehiivCachePost[] = [];
@@ -529,6 +563,10 @@ async function runOneMode(
 ): Promise<boolean> {
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
   const beehiivPostsDir = resolve(dataRoot, "beehiiv-cache/posts");
+  // #6185: dir Kit relativo ao MESMO dataRoot injetável de teste (nunca o
+  // repo real) — mesmo padrão de `beehiivPostsDir` acima (equivale a
+  // `DEFAULT_KIT_BROADCASTS_DIR` quando `dataRoot` é o default).
+  const kitBroadcastsDir = resolve(dataRoot, "kit-cache/broadcasts");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
   let dayOffset = DEFAULT_MODE_DAY_OFFSET[mode];
   if (values["day-offset"] != null) {
@@ -556,8 +594,20 @@ async function runOneMode(
   const missingEditions = weekCandidates.filter((c) => !c.exists);
   const existingCandidates = weekCandidates.filter((c) => c.exists);
 
+  // Manifest de enriquecimento via MCP — Beehiiv-only de propósito (ver
+  // docstring de `loadUnifiedPostsForRanking`/`loadBeehiivCache` acima).
   const cachePosts = loadBeehiivCache(beehiivPostsDir);
   const windowPosts = matchPostsToWindow(cachePosts, contentWindow);
+
+  // #6185: seleção por clique lê Beehiiv+Kit unificado — mesma partição por
+  // origem que o #6048 aplicou à verificação de assinante e que
+  // `select-linkedin-weekly.ts` já aplica desde o mesmo PR. Hoje
+  // `loadKitCache` devolve `[]` (sem `kit-sync.ts` ainda), então o
+  // comportamento observável não muda até esse escritor existir.
+  const windowPostsUnified = matchPostsToWindow(
+    loadUnifiedPostsForRanking(beehiivPostsDir, kitBroadcastsDir),
+    contentWindow,
+  );
 
   // #4456-style manifest mode (mesmo padrão de `select-linkedin-weekly.ts
   // --manifest-only`): resolvido ANTES de qualquer console.log narrativo,
@@ -603,10 +653,10 @@ async function runOneMode(
   }
 
   const ranked: InstagramRankedCandidate[] = rawCandidates.map((c) => {
-    const post = windowPosts.get(c.editionDate);
+    const post = windowPostsUnified.get(c.editionDate);
     const clicks = clickCountsForUrl(c.url, post?.stats?.clicks);
     const opens = uniqueOpensOf(post);
-    return toRankedCandidate(c, clicks, opens, windowPosts.has(c.editionDate));
+    return toRankedCandidate(c, clicks, opens, windowPostsUnified.has(c.editionDate));
   });
 
   // #5330: "highlights" pega os 5 D1 em ordem cronológica, sem ranking por
@@ -679,11 +729,11 @@ async function runOneMode(
   }
 
   const editionsMissingClickData =
-    mode === "clicked" ? existingCandidates.filter((c) => !windowPosts.has(c.date)).map((c) => c.date) : [];
+    mode === "clicked" ? existingCandidates.filter((c) => !windowPostsUnified.has(c.date)).map((c) => c.date) : [];
   const warnings = [...selectionWarnings];
   for (const date of editionsMissingClickData) {
     warnings.push(
-      `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv; candidatos dessa edição não competiram por clique real.`,
+      `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv/Kit; candidatos dessa edição não competiram por clique real.`,
     );
   }
   const manifest = mode === "clicked" ? identifyInstagramPostsNeedingClicks(windowPosts) : [];
@@ -702,8 +752,8 @@ async function runOneMode(
   // #4511 fleet review ALTO (silent-failure-hunter): dado de clique
   // NÃO-enriquecido é indistinguível de "genuinamente zero cliques" —
   // `toRankedCandidate` marca `hasClickData:true` baseado em "o post existe
-  // no cache local" (`windowPosts.has(...)`), não em "o clique POR LINK foi
-  // de fato enriquecido" (`stats.clicks` preenchido). Um post presente mas
+  // no cache local" (`windowPostsUnified.has(...)`, #6185), não em "o clique
+  // POR LINK foi de fato enriquecido" (`stats.clicks` preenchido). Um post presente mas
   // não-enriquecido entra no ranking com `ratePct: 0` E `hasClickData: true`
   // — igual a um post que genuinamente teve zero cliques. Os warnings acima
   // (`editionsMissingClickData`/`manifest`) documentavam isso mas nunca
@@ -717,7 +767,7 @@ async function runOneMode(
       "=".repeat(72),
       `ATENÇÃO: dado de clique INCOMPLETO para o post semanal de ${saturday}.`,
       ...(editionsMissingClickData.length > 0
-        ? [`${editionsMissingClickData.length} edição(ões) sem post confirmado no cache Beehiiv: ${editionsMissingClickData.join(", ")}.`]
+        ? [`${editionsMissingClickData.length} edição(ões) sem post confirmado no cache Beehiiv/Kit: ${editionsMissingClickData.join(", ")}.`]
         : []),
       ...(manifest.length > 0
         ? [
