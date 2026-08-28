@@ -1945,14 +1945,20 @@ export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[
 export const KIT_HTML_SIZE_ERROR_BYTES = 102 * 1024;
 
 function readKitBackendActive(rootDir: string): boolean {
-  try {
-    const raw = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
-      publishing?: { newsletter?: { backend?: string } };
-    };
-    return raw.publishing?.newsletter?.backend === "kit";
-  } catch {
-    return false; // config ausente/malformado → nunca trata como "kit ativo" (fail-soft pro lado que NUNCA bloqueia a pipeline atual à toa)
-  }
+  // Ausência é o caso normal (fixture de teste sem platform.config.json,
+  // clone fresco) — fail-soft pro lado que NUNCA bloqueia a pipeline atual
+  // à toa. Malformado é OUTRA coisa (fleet review, #6506): um
+  // platform.config.json corrompido no exato momento em que o backend real
+  // é "kit" E o e-mail está grande faria este catch rebaixar `error` →
+  // `warning` em silêncio, sem nenhum rastro de por quê — justo no pior
+  // momento pra essa checagem falhar sem ruído. JSON malformado agora
+  // PROPAGA (nunca vira "kit não ativo" por engano).
+  const path = resolve(rootDir, "platform.config.json");
+  if (!existsSync(path)) return false;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as {
+    publishing?: { newsletter?: { backend?: string } };
+  };
+  return raw.publishing?.newsletter?.backend === "kit";
 }
 
 export function checkKitHtmlSize(editionDir: string, rootDir: string = ROOT): InvariantViolation[] {

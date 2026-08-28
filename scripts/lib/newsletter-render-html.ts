@@ -64,7 +64,7 @@ const FONT_LABEL = FONTS.sans;
 
 // #6506: valores dos 2 style="" repetidos com MAIS frequência no fragmento —
 // o botão pill CTA (5 call sites: renderBarePillButton, renderIntroCallout ×2,
-// renderSectionItem, renderWhatsappShare) e o link inline de corpo
+// renderMidCallout, renderWhatsappShare) e o link inline de corpo
 // (inlineLinkHtml, 1 por link markdown em texto de destaque/box). Extraídos
 // pra constante só por FONTE ÚNICA (nenhum call site monta o literal à mão
 // mais — elimina drift entre os 5 lugares) — o BYTE do HTML renderizado não
@@ -347,7 +347,7 @@ export const KIT_FOOTER_STYLE_BLOCK = `
  * remove-nosso-style`, memória do projeto) — um link/botão só com `class=`
  * sem o `style=""` correspondente sairia SEM estilo nenhum nesses 2 canais.
  * Por isso `renderHTML` só chama `extractRepeatedInlineStyles` quando
- * `opts.esp === "kit"` (ver o branco `!opts.fullDocument` abaixo).
+ * `opts.esp === "kit"` (ver o bloco `!opts.fullDocument` abaixo).
  *
  * Cobre os 2 `style=""` de MAIOR frequência no fragmento (ver
  * `CTA_BUTTON_STYLE`/`CTA_BUTTON_STYLE_MULTI`/`INLINE_LINK_STYLE`, definidos
