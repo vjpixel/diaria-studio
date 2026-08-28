@@ -88,7 +88,19 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // `sessionId` distingue (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
 // #5236: "cac" — relatório de custo por leitor por canal (`scripts/cac-report.ts`),
 // `sessionId` = data do snapshot Beehiiv usado (`YYYY-MM-DD`).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac";
+// #6445: "token-usage" — monitoramento consolidado de tokens por tipo de
+// sessão (edição/overnight/develop/continuo/interativa avulsa),
+// `scripts/token-usage-summary.ts`, `sessionId` = data de geração
+// (`YYYY-MM-DD`, upsert em re-runs do mesmo dia).
+export type ReportKind =
+  | "edicao"
+  | "overnight"
+  | "develop"
+  | "mensal"
+  | "clarice-novos"
+  | "clarice-envio"
+  | "cac"
+  | "token-usage";
 
 const VALID_KINDS: ReportKind[] = [
   "edicao",
@@ -98,6 +110,7 @@ const VALID_KINDS: ReportKind[] = [
   "clarice-novos",
   "clarice-envio",
   "cac",
+  "token-usage",
 ];
 
 export function isReportKind(value: string): value is ReportKind {
