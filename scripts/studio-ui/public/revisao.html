@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/revisao.css" />
   <link rel="stylesheet" href="/rv-gate.css" />
   <link rel="stylesheet" href="/rv-highlights.css" />
+  <link rel="stylesheet" href="/rv-images.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
@@ -78,6 +79,13 @@
           <summary>Violations / avisos de render</summary>
           <div id="rv-gate-violations"></div>
         </details>
+        <!-- #6447 Fatia 4 (achado 7): grava a decisão em
+             _internal/.step-4-decision.json — escopo intencionalmente
+             parcial (só a escrita, ver docstring de stage4-decision.ts). -->
+        <div class="rv-gate-approve-row">
+          <button type="button" id="rv-gate-approve-btn">Aprovar gate</button>
+          <span class="rv-gate-approve-status" id="rv-gate-approve-status"></span>
+        </div>
       </div>
     </section>
 
@@ -95,6 +103,23 @@
       </div>
       <p class="hint" id="rv-hl-status">Carregando…</p>
       <div id="rv-hl-cards" class="rv-hl-cards"></div>
+    </section>
+
+    <!-- #6447 Fatia 4 (achado 9): galeria de imagens por destaque (2:1, 1:1,
+         card 4:5, carrossel) + É IA? (A/B), cada uma com botão "Regenerar"
+         que dispara a mesma cadeia de scripts do Stage 3 real (achado 6) em
+         background — ver rv-images.js / studio-images.ts. -->
+    <section class="panel rv-img-panel" id="rv-images-panel">
+      <div class="rv-img-header">
+        <h2>Imagens</h2>
+        <button type="button" id="rv-img-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-img-status">Carregando…</p>
+      <div id="rv-img-destaques" class="rv-img-destaques"></div>
+      <details class="rv-gate-section" id="rv-img-eia-section">
+        <summary>É IA?</summary>
+        <div id="rv-img-eia" class="rv-img-group"></div>
+      </details>
     </section>
 
     <section class="panel">
@@ -199,6 +224,7 @@
   <script src="/nav.js" type="module"></script>
   <script src="/rv-gate.js" type="module"></script>
   <script src="/rv-highlights.js" type="module"></script>
+  <script src="/rv-images.js" type="module"></script>
   <script src="/revisao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

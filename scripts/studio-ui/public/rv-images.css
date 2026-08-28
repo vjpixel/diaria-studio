@@ -1,0 +1,82 @@
+/* rv-images.css (#6447 Fatia 4, achados 6 + 9) — painel "Imagens" na
+   Revisão. Mesma fonte de tokens de revisao.css (/tokens.generated.css) e
+   mesma linguagem visual de rv-gate.css/rv-highlights.css. */
+
+.rv-img-panel { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.rv-img-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.rv-img-header h2 { margin: 0; font-size: 1rem; }
+.rv-img-header button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-img-header button:hover { border-color: var(--ink); }
+
+.rv-img-destaques { display: flex; flex-direction: column; gap: 0.4rem; }
+
+.rv-img-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  padding: 0.3rem 0;
+}
+
+.rv-img-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 160px;
+  font-size: 0.78rem;
+}
+.rv-img-entry-label { margin: 0; opacity: 0.85; }
+.rv-img-thumb {
+  display: block;
+  width: 160px;
+  height: 110px;
+  object-fit: cover;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+}
+.rv-img-empty {
+  width: 160px;
+  height: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  opacity: 0.65;
+  margin: 0;
+  padding: 0.3rem;
+  box-sizing: border-box;
+}
+.rv-img-regen-btn {
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-img-regen-btn:hover { border-color: var(--ink); }
+.rv-img-regen-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .rv-img-header button,
+  .rv-img-regen-btn { min-height: 44px; }
+}

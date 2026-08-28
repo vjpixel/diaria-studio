@@ -45,14 +45,20 @@
  * corrompido (logado, degrada). Nenhuma dessas 3 classes lança.
  *
  * Fora de escopo desta fatia (ver corpo do PR): editor por destaque (fatia
- * 2), seleção de título por clique (fatia 2), split view reativo (fatia 3),
- * ações rápidas/aprovar-pelo-painel/galeria de imagens (fatia 4).
+ * 2), seleção de título por clique (fatia 2), split view reativo (fatia 3).
+ *
+ * #6447 Fatia 4 (achado 7): `decision` (abaixo) foi acrescentado a este
+ * módulo — leitura de `.step-4-decision.json` via `stage4-decision.ts` — pra
+ * o painel refletir se o botão "Aprovar gate" (rv-gate.js) já foi clicado
+ * nesta edição. A escrita (`POST /api/editions/:aammdd/gate/approve`) vive
+ * em `server.ts`, não aqui — este módulo continua só leitura.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { readStage4CaptureState, type Stage4CaptureState } from "../lib/stage4-capture-state.ts";
+import { readStage4Decision, type Stage4DecisionState } from "../lib/stage4-decision.ts";
 import { countTitlesPerHighlight } from "../lint-newsletter-md.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
 import { getBlockingClaims, type FactCheckResult } from "../run-fact-checker.ts";
@@ -172,6 +178,12 @@ export interface GateSummary {
   lintReviewed: LintReport;
   lintSocial: LintReport;
   checklist: GateChecklistItem[];
+  /** #6447 Fatia 4 (achado 7): decisão "aprovado pelo painel" gravada por
+   * `POST /api/editions/:aammdd/gate/approve` — `null` = nunca aprovado por
+   * este canal (não significa "gate real ainda pendente": a leitura desse
+   * arquivo pelo orchestrator real está fora de escopo, ver docstring de
+   * `stage4-decision.ts`). */
+  decision: Stage4DecisionState | null;
 }
 
 /** Lê um `.md` fail-soft — mesma disciplina de `readJsonFile` acima (#6449
@@ -416,6 +428,7 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
       lintReviewed: { ok: true, checks: [], skipped: [] },
       lintSocial: { ok: true, checks: [], skipped: [] },
       checklist: [],
+      decision: null,
     };
   }
 
@@ -443,5 +456,6 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
     lintReviewed,
     lintSocial,
     checklist,
+    decision: readStage4Decision(editionDir),
   };
 }

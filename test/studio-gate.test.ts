@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildGateSummary, buildChecklist } from "../scripts/studio-ui/studio-gate.ts";
 import type { LintReport } from "../scripts/studio-ui/studio-review.ts";
+import { writeStage4ApprovedDecision } from "../scripts/lib/stage4-decision.ts";
 
 const ONE_TITLE_PER_DESTAQUE_MD = [
   "**DESTAQUE 1 | LANÇAMENTO**",
@@ -85,6 +86,7 @@ describe("buildGateSummary (#6447 Fatia 1)", () => {
     assert.equal(summary.ok, false);
     assert.deepEqual(summary.highlights, []);
     assert.deepEqual(summary.checklist, []);
+    assert.equal(summary.decision, null);
   });
 
   it("edição vazia (nenhum arquivo de stage ainda): degrada tudo com note, nunca lança", () => {
@@ -98,6 +100,15 @@ describe("buildGateSummary (#6447 Fatia 1)", () => {
     assert.equal(summary.factCheckAutofix.available, false);
     assert.equal(summary.boxSelection.available, false);
     assert.equal(summary.renderWarnings.available, false);
+    assert.equal(summary.decision, null);
+  });
+
+  it("#6447 Fatia 4 (achado 7): decision reflete .step-4-decision.json quando gravado pelo painel", () => {
+    writeStage4ApprovedDecision(editionDir, { now: () => new Date("2026-08-28T12:00:00.000Z") });
+    const summary = buildGateSummary(root, aammdd);
+    assert.equal(summary.decision?.decision, "approved");
+    assert.equal(summary.decision?.decided_at, "2026-08-28T12:00:00.000Z");
+    assert.equal(summary.decision?.decided_via, "studio");
   });
 
   it("títulos: cruza 01-approved.json (original) com countTitlesPerHighlight de 02-reviewed.md (final) — resolvido quando title_count===1", () => {

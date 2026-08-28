@@ -302,7 +302,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "../lib/env-loader.ts";
@@ -386,6 +386,10 @@ import {
 // original/final, checklist, lints estendidos) lido só de disco. Arquivo
 // próprio (`studio-gate.ts`), mesma convenção de import isolado do #3559.
 import { buildGateSummary } from "./studio-gate.ts";
+// #6447 Fatia 4: galeria de imagens por destaque + regeneração assíncrona
+// (achados 6 + 9), e escrita da decisão "aprovado pelo painel" (achado 7).
+import { buildImagesGallery, startRegenerateJob } from "./studio-images.ts";
+import { decideGateApproveAction, readStage4Decision, writeStage4ApprovedDecision } from "../lib/stage4-decision.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
@@ -1114,6 +1118,72 @@ function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse)
   sendJson(res, summary.editionExists ? 200 : 404, summary);
 }
 
+/** #6447 Fatia 4 (achado 7): `POST /api/editions/:aammdd/gate/approve` —
+ * grava a decisão "aprovado pelo painel" (`_internal/.step-4-decision.json`,
+ * ver `stage4-decision.ts` pro escopo intencionalmente parcial — só a
+ * escrita, o consumo pelo orchestrator real é prosa fora deste repo de
+ * código). Corpo opcional `{force?: boolean}` — sem `force`, um 2º clique
+ * sobre uma decisão já `approved` responde 409 (nunca sobrescreve em
+ * silêncio); com `force: true` (o editor já confirmou um dialog no client),
+ * sobrescreve com novo timestamp. */
+async function handleGateApprove(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+): Promise<void> {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const editionDir = editionDirFor(rootDir, aammdd);
+  if (!existsSync(editionDir)) {
+    sendJson(res, 404, { error: "edição não encontrada" });
+    return;
+  }
+  let body: unknown;
+  try {
+    const raw = await readRequestBody(req, REVIEW_MAX_BODY_BYTES);
+    body = raw.trim() === "" ? {} : JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const force = (body as { force?: unknown } | null)?.force === true;
+  const existing = readStage4Decision(editionDir);
+  const action = decideGateApproveAction(existing, force);
+  if (action.kind === "conflict") {
+    sendJson(res, 409, { ok: false, conflict: true, decision: action.existing });
+    return;
+  }
+  const decision = writeStage4ApprovedDecision(editionDir);
+  sendJson(res, 200, { ok: true, decision });
+}
+
+/** #6447 Fatia 4 (achado 9): `GET /api/editions/:aammdd/images` — galeria de
+ * imagens por destaque + É IA?, leitura pura de disco (nunca lança, ver
+ * `buildImagesGallery`). */
+function handleImagesGallery(rootDir: string, aammdd: string, res: ServerResponse): void {
+  const gallery = buildImagesGallery(rootDir, aammdd);
+  sendJson(res, gallery.available ? 200 : 404, gallery);
+}
+
+/** #6447 Fatia 4 (achados 6 + 9): `POST /api/editions/:aammdd/images/:target/regenerate`
+ * — dispara a cadeia de regeneração de imagem pra `target` (d1/d2/d3/eia) em
+ * BACKGROUND (ver docstring de `startRegenerateJob` — chamada de API paga,
+ * pode levar dezenas de segundos; a resposta HTTP retorna assim que o job é
+ * disparado, o client faz polling em `GET .../images` pro campo
+ * `regenerating`). Duplo-clique enquanto já `running` responde 200 com
+ * `alreadyRunning: true` sem disparar um 2º processo. */
+function handleImagesRegenerate(rootDir: string, aammdd: string, target: string, res: ServerResponse): void {
+  const result = startRegenerateJob(rootDir, aammdd, target);
+  if (!result.ok) {
+    sendJson(res, 400, { ok: false, error: result.error });
+    return;
+  }
+  sendJson(res, 200, { ok: true, alreadyRunning: result.alreadyRunning, job: result.job });
+}
+
 function handleReviewGet(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
   if (!isReviewSlug(slug)) {
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
@@ -1775,6 +1845,23 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #6447 Fatia 4 (achado 7): grava a decisão "aprovado pelo painel" —
+      // exceção estreita ao invariante read-only, mesma vizinhança das
+      // demais rotas de escrita de revisão acima.
+      const gateApproveMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate\/approve$/);
+      if (req.method === "POST" && gateApproveMatch) {
+        handleGateApprove(rootDir, req, res, gateApproveMatch[1]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #6447 Fatia 4 (achados 6 + 9): dispara a cadeia de regeneração de
+      // imagem em background — ver docstring de `handleImagesRegenerate`.
+      const imagesRegenerateMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/images\/([^/]+)\/regenerate$/);
+      if (req.method === "POST" && imagesRegenerateMatch) {
+        handleImagesRegenerate(rootDir, imagesRegenerateMatch[1], decodeURIComponent(imagesRegenerateMatch[2]), res);
+        return;
+      }
       // #3602: exceção estreita ao invariante read-only, mesmo padrão do
       // #3559 acima — CRUD do CRM de apoios. Checada ANTES do guard
       // genérico de método. (#3862: a rota de criação manual,
@@ -2022,6 +2109,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const gateMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate$/);
       if (gateMatch) {
         handleGateSummary(rootDir, gateMatch[1], res);
+        return;
+      }
+      // #6447 Fatia 4 (achado 9): galeria de imagens por destaque + É IA? —
+      // mesma disciplina de leitura por seção do `gateMatch` acima.
+      const imagesGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/images$/);
+      if (imagesGetMatch) {
+        handleImagesGallery(rootDir, imagesGetMatch[1], res);
         return;
       }
       const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);

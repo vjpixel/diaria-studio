@@ -18,7 +18,15 @@ import {
   formatBoxSlotLine,
   lintFailureRows,
   formatRenderWarningRow,
+  formatGateDecision,
 } from "./rv-gate-format.js";
+
+// #6447 Fatia 4 (achado 7): mesmo padrão de SAVE_CONFLICT_CONFIRM_MESSAGE
+// (revisao-guards.js) — confirmação explícita antes de sobrescrever uma
+// decisão "aprovado" já gravada, nunca um duplo-approve silencioso.
+const GATE_APPROVE_CONFLICT_CONFIRM_MESSAGE =
+  "Este gate já foi aprovado pelo painel antes. Aprovar de novo grava um novo timestamp " +
+  "por cima da decisão anterior — confirma?";
 
 function getAammddFromPath() {
   const m = location.pathname.match(/^\/revisao\/([^/]+)\/?$/);
@@ -37,6 +45,8 @@ const el = {
   boxes: document.getElementById("rv-gate-boxes"),
   violations: document.getElementById("rv-gate-violations"),
   refreshBtn: document.getElementById("rv-gate-refresh-btn"),
+  approveBtn: document.getElementById("rv-gate-approve-btn"),
+  approveStatus: document.getElementById("rv-gate-approve-status"),
 };
 
 function clear(node) {
@@ -158,6 +168,18 @@ function renderViolations(summary) {
   }
 }
 
+/** #6447 Fatia 4 (achado 7): reflete `summary.decision` no botão "Aprovar
+ * gate" — nunca desabilita de fato (o editor pode legitimamente querer
+ * re-aprovar depois de um ajuste pós-approve), mas troca o texto e exige
+ * confirmação explícita (ver `approveGate`) quando já existe uma decisão. */
+function renderApproveButton(summary) {
+  if (!el.approveBtn) return;
+  const decisionInfo = formatGateDecision(summary.decision);
+  el.approveBtn.textContent = decisionInfo.approved ? "Aprovar gate de novo" : "Aprovar gate";
+  el.approveStatus.textContent = decisionInfo.text;
+  el.approveStatus.className = decisionInfo.approved ? "rv-gate-approve-status approved" : "rv-gate-approve-status";
+}
+
 function renderGate(summary) {
   el.body.hidden = false;
   renderChecklist(summary.checklist);
@@ -170,6 +192,7 @@ function renderGate(summary) {
   renderFactCheck(summary);
   renderBoxes(summary);
   renderViolations(summary);
+  renderApproveButton(summary);
 }
 
 async function loadGate() {
@@ -208,6 +231,54 @@ if (el.refreshBtn) {
   el.refreshBtn.addEventListener("click", () => { loadGate(); });
 }
 
+/** #6447 Fatia 4 (achado 7): `POST /api/editions/:aammdd/gate/approve`.
+ * 409 (já aprovado antes, sem `force`) pede confirmação explícita — mesmo
+ * padrão de conflito de save já usado em `rv-highlights.js`/`revisao.js`
+ * (`SAVE_CONFLICT_CONFIRM_MESSAGE`), só que a AÇÃO já aconteceu no servidor
+ * (decisão anterior existe) em vez de "conteúdo divergente em disco". */
+async function approveGate(force) {
+  if (!aammdd || !el.approveBtn) return;
+  el.approveBtn.disabled = true;
+  el.approveStatus.textContent = "Aprovando…";
+  let res;
+  try {
+    res = await fetch(`/api/editions/${encodeURIComponent(aammdd)}/gate/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: !!force }),
+    });
+  } catch (err) {
+    el.approveBtn.disabled = false;
+    el.approveStatus.textContent = `Erro de rede ao aprovar: ${(err && err.message) || err}`;
+    return;
+  }
+  if (res.status === 409) {
+    el.approveBtn.disabled = false;
+    if (window.confirm(GATE_APPROVE_CONFLICT_CONFIRM_MESSAGE)) {
+      await approveGate(true);
+    } else {
+      await loadGate();
+    }
+    return;
+  }
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  el.approveBtn.disabled = false;
+  if (res.ok && body && body.ok) {
+    await loadGate();
+    return;
+  }
+  el.approveStatus.textContent = `Erro ao aprovar: ${(body && body.error) || "falha desconhecida"}`;
+}
+
+if (el.approveBtn) {
+  el.approveBtn.addEventListener("click", () => { approveGate(false); });
+}
+
 // #6447 Fatia 2: o Editor por destaque (rv-highlights.js) dispara este
 // evento após salvar `02-reviewed.md` — o resumo do Gate (títulos,
 // checklist) precisa refletir a edição sem esperar o próximo clique manual
@@ -219,4 +290,4 @@ loadGate();
 // Exportado pro suite de testes de contrato do server (ver
 // test/studio-review-server.test.ts, mesmo padrão já usado por revisao.js —
 // asserts sobre o SOURCE servido, não um harness de DOM).
-export { loadGate, renderGate };
+export { loadGate, renderGate, approveGate };

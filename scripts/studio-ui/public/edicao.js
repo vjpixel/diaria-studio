@@ -296,12 +296,16 @@ function renderGate4(detail) {
   if (bridge.pending && bridge.hasCard) {
     // #3870: a ação real mora no card do chat drawer desta mesma página —
     // o botão abaixo (appendGateChatBridgeRow) leva até ele em 1 clique.
-    status.textContent = "Gate pendente — responda pelo card no chat desta página (botão abaixo) ou aprove no terminal (/diaria-4-revisao).";
+    // #6447 Fatia 4 (achado 7): "Aprovar gate" no painel de Revisão grava
+    // a decisão em disco (_internal/.step-4-decision.json) — a sessão do
+    // terminal ainda precisa ver o resultado e prosseguir manualmente
+    // (escopo intencionalmente parcial, ver stage4-decision.ts).
+    status.textContent = "Gate pendente — responda pelo card no chat desta página (botão abaixo), clique \"Aprovar gate\" no painel de Revisão, ou aprove no terminal (/diaria-4-revisao).";
   } else if (bridge.pending) {
     // #3870 proposta item 2: sem card no chat = sessão rodando no
     // terminal — explícito que a UI só observa (nada escondido, sem botão
     // pra clicar aqui).
-    status.textContent = "Gate pendente — esta sessão está rodando no terminal (não no chat desta página); a UI só observa. Aprove no terminal com /diaria-4-revisao.";
+    status.textContent = "Gate pendente — esta sessão está rodando no terminal (não no chat desta página); a UI só observa. Aprove no terminal com /diaria-4-revisao, ou clique \"Aprovar gate\" no painel de Revisão (grava a decisão em disco; a sessão do terminal ainda precisa prosseguir manualmente).";
   } else if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 4)) {
     status.textContent = "Ainda não chegou no Stage 4.";
   } else {
