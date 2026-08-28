@@ -9,14 +9,17 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
   sessionsDir,
   sessionFilePath,
   registerSession,
   claimIssueCheckAndSet,
+  unclaimIssue,
   planClaimReconciliation,
   reconcileClaims,
   decideClaimReconciliation,
@@ -285,5 +288,226 @@ describe("planClaimReconciliation / reconcileClaims (#6581)", () => {
 
   it("diretório ausente → plano vazio, nunca lança", () => {
     assert.deepEqual(planClaimReconciliation(freshRoot()), []);
+  });
+
+  it("preserva claimed_issues_at PRÉ-EXISTENTE do real — só acrescenta entradas novas, nunca sobrescreve (#6583 fleet review)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s6", { tag: "Neo" });
+    claimIssueCheckAndSet(root, "develop", "s6", 100, "Neo", "2026-08-01T00:00:00.000Z");
+    const realPath = sessionFilePath(root, "develop", "Neo", "s6");
+
+    writeRawSessionFile(root, "develop-Neo-s6-Neo-safeBackup-0001.json", {
+      kind: "develop",
+      machineTag: "Neo",
+      sessionId: "s6",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [100, 200],
+      // timestamp DIFERENTE do que o real já tem pra 100 — não deveria vencer.
+      claimed_issues_at: { "100": "2026-08-05T00:00:00.000Z", "200": "2026-08-02T00:00:00.000Z" },
+    });
+
+    const before = readRealRecord(root, realPath);
+    const originalAt100 = before.claimed_issues_at!["100"];
+
+    reconcileClaims(root);
+    const after = readRealRecord(root, realPath);
+    assert.deepEqual(after.claimed_issues, [100, 200]);
+    assert.equal(after.claimed_issues_at!["100"], originalAt100, "timestamp da claim 100 (já existente no real) não muda");
+    assert.equal(after.claimed_issues_at!["200"], "2026-08-02T00:00:00.000Z", "timestamp da claim 200 (nova) vem do backup");
+  });
+
+  it("nunca ressuscita uma claim legitimamente removida via unclaimIssue entre o plano e a escrita (#6583 fleet review — 3 revisores independentes)", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "s7", { tag: "predator" });
+    claimIssueCheckAndSet(root, "continuo", "s7", 10, "predator");
+    const realPath = sessionFilePath(root, "continuo", "predator", "s7");
+
+    // Backup mostra 10, 20 e 30 — 20 e 30 são "novidade" do ponto de vista do
+    // plano (real só tem 10 até aqui).
+    writeRawSessionFile(root, "continuo-predator-s7-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s7",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [10, 20, 30],
+    });
+
+    // Plano "congela" addedIssues=[20,30] — é exatamente esse array que uma
+    // implementação ingênua reaplicaria cegamente na escrita.
+    const plan = planClaimReconciliation(root);
+    const group = plan.find((e) => e.realPath === realPath)!;
+    assert.deepEqual(group.addedIssues, [20, 30]);
+
+    // Simula a corrida: entre o "plano" e a "escrita" real, a issue 20 é
+    // LEGITIMAMENTE liberada. unclaimIssue funciona mesmo a claim só
+    // existindo num backup (merge-antes-de-checar, #6481) e propaga a
+    // remoção a TODO backup do grupo (#6567) — com isso, o PRÓPRIO backup
+    // deixa de listar 20 (e ganha 30 como efeito colateral da escrita
+    // mesclada de unclaimIssue): passa a valer [10, 30] nos dois arquivos.
+    const unclaimResult = unclaimIssue(root, "continuo", "s7", 20, "predator");
+    assert.equal(unclaimResult.ok, true);
+    assert.deepEqual(readRealRecord(root, realPath).claimed_issues, [10, 30]);
+
+    // reconcileClaims RECOMPUTA contra o estado fresco em vez de reaplicar
+    // o addedIssues=[20,30] congelado do plano — 20 não deve reaparecer.
+    const applied = reconcileClaims(root);
+    const appliedGroup = applied.find((e) => e.realPath === realPath)!;
+    assert.equal(appliedGroup.action, "no-change", "nada de novo contra o estado fresco — já convergido pelo próprio unclaimIssue");
+    assert.deepEqual(appliedGroup.addedIssues, [], "20 não reaparece — foi legitimamente removida");
+    assert.deepEqual(readRealRecord(root, realPath).claimed_issues, [10, 30], "20 permanece fora, nada além do que unclaimIssue já tinha convergido");
+  });
+
+  it("action write-failed é distinta de no-change quando a escrita falha (não colapsa as duas semânticas)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s8", { tag: "Neo" });
+    writeRawSessionFile(root, "develop-Neo-s8-Neo-safeBackup-0001.json", {
+      kind: "develop",
+      machineTag: "Neo",
+      sessionId: "s8",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [999],
+    });
+
+    // Tira a permissão de ESCRITA do diretório (mantém leitura+execução) —
+    // `writeFileAtomic` cria um tmp file novo no mesmo dir antes do rename,
+    // então essa escrita falha (EACCES) sem afetar a LEITURA do real/backup
+    // já existentes (mesmo padrão de sondar o efeito do chmod usado em
+    // `test/session-registry.test.ts` "checkSessionsScanHealth" — root e o
+    // NTFS do Windows não respeitam bits POSIX, então pula sem assert se o
+    // chmod não morder de fato neste ambiente).
+    const dir = sessionsDir(root);
+    chmodSync(dir, 0o555);
+    try {
+      let bites = true;
+      try {
+        writeFileSync(join(dir, "__write_probe__"), "x");
+        rmSync(join(dir, "__write_probe__"));
+        bites = false;
+      } catch {
+        // escrita bloqueada como esperado — chmod mordeu, segue pro teste real.
+      }
+      if (!bites) return;
+
+      const applied = reconcileClaims(root);
+      const group = applied.find((e) => e.identity === "develop-Neo-s8")!;
+      assert.equal(group.action, "write-failed");
+      assert.match(group.reason, /escrita falhou/);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  it("aggrega unreadableBackupCount por grupo — backup corrompido não vira issue silenciosamente perdida sem sinal", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "s9", { tag: "Neo" });
+    const realPath = sessionFilePath(root, "develop", "Neo", "s9");
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "develop-Neo-s9-Neo-safeBackup-0001.json"), "{not valid json", "utf8");
+    writeRawSessionFile(root, "develop-Neo-s9-Neo-safeBackup-0002.json", {
+      kind: "develop",
+      machineTag: "Neo",
+      sessionId: "s9",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [55],
+    });
+
+    const plan = planClaimReconciliation(root);
+    const group = plan.find((e) => e.realPath === realPath)!;
+    assert.equal(group.unreadableBackupCount, 1);
+    assert.equal(group.addedIssues.length, 1, "backup legível continua contribuindo mesmo com um irmão corrompido");
+  });
+});
+
+// ─── CLI (scripts/session-registry-reconcile-claims.ts) ────────────────────
+
+describe("CLI session-registry-reconcile-claims (#6583 fleet review — cobertura ausente apontada por 2 revisores)", () => {
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "session-registry-reconcile-claims.ts");
+
+  function runCli(root: string, extraArgs: string[] = []): { status: number | null; stdout: string; stderr: string } {
+    const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT, "--root", root, ...extraArgs], {
+      cwd: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("dry-run (default, sem --push) nunca escreve no disco", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "cli-s1", { tag: "predator" });
+    claimIssueCheckAndSet(root, "continuo", "cli-s1", 1, "predator");
+    const realPath = sessionFilePath(root, "continuo", "predator", "cli-s1");
+    writeRawSessionFile(root, "continuo-predator-cli-s1-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "cli-s1",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [1, 2],
+    });
+
+    const before = readRealRecord(root, realPath);
+    const res = runCli(root);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /would-reconcile/);
+    const after = readRealRecord(root, realPath);
+    assert.deepEqual(after, before, "CLI sem --push não grava nada");
+  });
+
+  it("--push grava de verdade a união no arquivo real", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "cli-s2", { tag: "predator" });
+    claimIssueCheckAndSet(root, "continuo", "cli-s2", 1, "predator");
+    const realPath = sessionFilePath(root, "continuo", "predator", "cli-s2");
+    writeRawSessionFile(root, "continuo-predator-cli-s2-predator-safeBackup-0001.json", {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "cli-s2",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [1, 2],
+    });
+
+    const res = runCli(root, ["--push"]);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /reconciled/);
+    assert.doesNotMatch(res.stdout, /would-reconcile/);
+    assert.deepEqual(readRealRecord(root, realPath).claimed_issues, [1, 2]);
+  });
+
+  it("exit code 1 quando algum grupo termina skipped-unreadable-real", () => {
+    const root = freshRoot();
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(join(sessionsDir(root), "develop-Neo-cli-corrompido.json"), "{not valid json", "utf8");
+    writeRawSessionFile(root, "develop-Neo-cli-corrompido-Neo-safeBackup-0001.json", {
+      kind: "develop",
+      machineTag: "Neo",
+      sessionId: "cli-corrompido",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [7],
+    });
+
+    const res = runCli(root, ["--push"]);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stdout, /skipped-unreadable-real/);
+  });
+
+  it("exit code 0 quando só há grupos saudáveis (sem backup ilegível, sem falha de escrita)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "cli-s3", { tag: "Neo" });
+    const res = runCli(root, ["--push"]);
+    assert.equal(res.status, 0);
+  });
+
+  it("data/ ausente: exit 0, mensagem clara, nunca lança", () => {
+    const root = freshRoot();
+    const res = runCli(root);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /data\/ ausente/);
   });
 });
