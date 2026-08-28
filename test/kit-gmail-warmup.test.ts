@@ -69,6 +69,20 @@ describe("computeNextWaveSize", () => {
   it("remaining negativo (defensivo) também dá zero", () => {
     assert.equal(computeNextWaveSize(-5, 40), 0);
   });
+
+  it("#6566: lastWaveSize 0 (onda anterior fechou com safeToTag vazio) NUNCA trava em zero — reinicia a progressão como se fosse a 1ª onda", () => {
+    assert.equal(computeNextWaveSize(1000, 0), WARMUP_INITIAL_WAVE_SIZE);
+    assert.notEqual(computeNextWaveSize(1000, 0), 0);
+    // Estado absorvente pré-fix seria permanente: uma 2ª chamada encadeada
+    // com o resultado da 1ª (simulando rodadas sucessivas) continuaria
+    // crescendo normalmente, nunca voltando a travar em 0.
+    const first = computeNextWaveSize(1000, 0);
+    assert.equal(computeNextWaveSize(1000, first), first * WARMUP_GROWTH_FACTOR);
+  });
+
+  it("#6566: lastWaveSize negativo (defensivo) também é tratado como null", () => {
+    assert.equal(computeNextWaveSize(1000, -5), WARMUP_INITIAL_WAVE_SIZE);
+  });
 });
 
 describe("planNextWave", () => {
