@@ -324,6 +324,14 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     domains: ["institucional.ifood.com.br"],
     detection_keywords: /\bifood\b/i,
   },
+  {
+    // 260828: adicionado no gate da edição 260828 (GLM-5.3-Flash flagado
+    // como invalid_url apesar de vir do blog oficial da Z.ai — mesma
+    // empresa da série de modelos GLM, ex-Zhipu AI).
+    company: "Z.ai",
+    domains: ["z.ai"],
+    detection_keywords: /\b(z\.ai|glm-?[0-9])\b/i,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -166,6 +166,18 @@ describe("official-domains registry (#566)", () => {
       assert.equal(find("Mistral unveils Codestral")?.domain, "mistral.ai");
     });
 
+    it("Z.ai: a serie GLM casa o dominio oficial (#6613)", () => {
+      // Regressao do gate da edicao 260828: o lancamento do GLM-5.3-Flash
+      // vinha do blog oficial da Z.ai (ex-Zhipu AI) e era marcado como
+      // invalid_url, porque o registro nao conhecia nem a empresa nem a
+      // familia de modelos. `validate-lancamentos.ts` le daqui, entao
+      // LANCAMENTO oficial da Z.ai era rebaixado pra NOTICIAS na mao.
+      const find = (text: string) => c2d.find(({ keyword }) => keyword.test(text));
+      assert.equal(find("Z.ai lanca novo modelo")?.domain, "z.ai");
+      assert.equal(find("GLM-5.3-Flash chega perto do Opus")?.domain, "z.ai");
+      assert.equal(find("glm-4.6 disponivel")?.domain, "z.ai");
+    });
+
     it("sem duplicatas por keyword.source", () => {
       const seen = new Set<string>();
       for (const { keyword } of c2d) {
