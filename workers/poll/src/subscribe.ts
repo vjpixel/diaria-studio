@@ -115,8 +115,20 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * SUPERFÍCIE (não por hub individual) — granularidade suficiente pra medir
  * "arquivo" vs "hub" separado do resto sem multiplicar entradas de UTM por
  * slug de hub.
+ *
+ * #6427: `"apex"` — página própria de cadastro do apex (`diar.ia.br/assinar`,
+ * `workers/site/public/assinar/`), que POSTa aqui CROSS-ORIGIN (mesmo
+ * mecanismo de `livros-hero`/`livros-footer`). Único `source` que aceita
+ * `utm_source`/`utm_medium`/`utm_campaign` DINÂMICOS vindos do cliente — ver
+ * `isAllowedClientUtmSource`/`resolveSubscribeUtm` abaixo pro porquê e a
+ * exceção estreita ao design "nunca aceita utm_* do cliente" descrito 2
+ * parágrafos acima. Motivo: o cadastro Clarice (`withClariceUtm`,
+ * `scripts/lib/mensal/monthly-render.ts`) injeta um `utm_campaign` que MUDA a
+ * cada ciclo/posição (`clarice-{ciclo}-{posicao}`) — um `SubscribeSource`
+ * fixo por campanha, como os demais deste enum, exigiria adicionar 1 entrada
+ * nova aqui a cada envio, o que não escala.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb" | "arquivo" | "hub";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb" | "arquivo" | "hub" | "apex";
 
 /**
  * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
@@ -212,7 +224,54 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     campaign: HUB_INLINE_UTM.campaign,
     referringSite: "hub-inline",
   },
+  // #6427: triplo DEFAULT do cadastro do apex — usado sempre que o cliente
+  // não mandar utm_source/utm_medium/utm_campaign, ou mandar um utm_source
+  // que não casa a allowlist de `isAllowedClientUtmSource` abaixo. Nunca
+  // confundir com o triplo Clarice em si (esse é dinâmico, resolvido em
+  // runtime — ver `resolveSubscribeUtm`).
+  apex: {
+    source: "diaria-apex",
+    medium: "web",
+    campaign: "cadastro-apex",
+    referringSite: "apex-subscribe-page",
+  },
 };
+
+/**
+ * #6427: prefixos de `utm_source` cliente que a página de cadastro do apex
+ * (`source: "apex"`) tem permissão de repassar CRU pro triplo final — a
+ * exceção estreita e validada ao design de `resolveSubscribeUtm`/
+ * `SUBSCRIBE_UTM_BY_SOURCE` acima ("o servidor resolve o triplo UTM daqui —
+ * NUNCA aceita utm_* vindo do cliente diretamente"). `"clarice"` cobre o
+ * `utm_source=clarice` fixo que `withClariceUtm` grava em todo link de
+ * marca da Clarice News (`scripts/lib/mensal/monthly-render.ts`); `"ads"`
+ * cobre campanhas pagas futuras (Google/Meta Ads, `utm_source=ads-*`) — ver
+ * corpo da issue #6427, opção A recomendada pelo autor e decisão do editor
+ * (27/08/2026). Qualquer `utm_source` fora desta allowlist cai no triplo
+ * `SUBSCRIBE_UTM_BY_SOURCE.apex` acima, igual a não ter mandado nada —
+ * fechar essa allowlist é o que impede um visitante mal-intencionado de
+ * forjar `utm_source=organic-fake` (ou qualquer string arbitrária) e poluir
+ * a atribuição — o resto do enumerável (SubscribeSource) continua imune a
+ * isso por completo, porque só `"apex"` sequer consulta esta lista.
+ */
+export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = ["clarice", "ads"] as const;
+
+/**
+ * Pure (#6427): `true` só quando `rawSource` é uma string não-vazia que é
+ * IGUAL a um prefixo da allowlist, ou começa com `"{prefixo}-"`. `"clarice"`
+ * bate no primeiro caso (utm_source fixo, sem sufixo); `"clarice-260901-d1"`
+ * (hipotético — não é o formato real, que fica no utm_campaign, não no
+ * utm_source) e `"ads-google"` bateriam no segundo. Exige o traço como
+ * fronteira de palavra pra `"adsense"` NÃO colar em `"ads"` por acidente —
+ * comparação por substring pura (`startsWith` sem o traço) aceitaria
+ * qualquer string que começasse com as letras do prefixo, inclusive as não
+ * intencionais.
+ */
+export function isAllowedClientUtmSource(rawSource: unknown): boolean {
+  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
+  if (!s) return false;
+  return CLIENT_UTM_SOURCE_ALLOWED_PREFIXES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+}
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -226,11 +285,41 @@ export const JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE = "jogar-identify-magic-li
  * explícito na chamada. */
 export const VOTE_CLARICE_SET_NAME_REFERRING_SITE = "vote-clarice-set-name";
 
-/** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
- * (default `jogar` pra valor ausente/desconhecido — nunca lança). */
-export function resolveSubscribeUtm(raw: unknown): SubscribeUtm {
+/** #6427: triplo UTM cru mandado pelo cliente — só consultado quando
+ * `source === "apex"` (ver `resolveSubscribeUtm`). Campos individuais, não a
+ * struct `SubscribeUtm` inteira, porque o cliente nunca manda
+ * `referringSite` (esse é sempre o fixo `SUBSCRIBE_UTM_BY_SOURCE.apex.referringSite`,
+ * nunca variável por campanha). */
+export interface ClientUtmOverride {
+  source?: unknown;
+  medium?: unknown;
+  campaign?: unknown;
+}
+
+/**
+ * Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
+ * (default `jogar` pra valor ausente/desconhecido — nunca lança).
+ *
+ * #6427: quando `raw === "apex"` E `clientUtm.source` casa a allowlist de
+ * `isAllowedClientUtmSource`, o triplo final vem do CLIENTE (source/medium/
+ * campaign, com `medium`/`campaign` ausentes/vazios caindo no default do
+ * apex individualmente — só `source` é obrigatório pra sequer tentar este
+ * caminho). `referringSite` nunca vem do cliente. Fora desse caso (source
+ * diferente de `"apex"`, ou `utm_source` fora da allowlist), comportamento
+ * idêntico ao pré-#6427: cai no triplo fixo do `source` resolvido.
+ */
+export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride): SubscribeUtm {
   const key = typeof raw === "string" ? raw : "";
-  return SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
+  const base = SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
+  if (key === "apex" && clientUtm && isAllowedClientUtmSource(clientUtm.source)) {
+    const source = String(clientUtm.source).trim();
+    const medium =
+      typeof clientUtm.medium === "string" && clientUtm.medium.trim() ? clientUtm.medium.trim() : base.medium;
+    const campaign =
+      typeof clientUtm.campaign === "string" && clientUtm.campaign.trim() ? clientUtm.campaign.trim() : base.campaign;
+    return { source, medium, campaign, referringSite: base.referringSite };
+  }
+  return base;
 }
 
 /** Teto de tamanho do nome capturado — evita payload abusivo (o campo é
@@ -243,6 +332,12 @@ export const SUBSCRIBE_NAME_MAX = 100;
 export const SUBSCRIBE_RATE_LIMIT = 5;
 export const SUBSCRIBE_RATE_WINDOW_SEC = 3600; // 1h
 
+/** #6427: teto de tamanho dos campos utm_* crus do cliente — mesmo racional
+ * de `SUBSCRIBE_NAME_MAX` (payload abusivo), aplicado ANTES de qualquer
+ * validação de allowlist (`isAllowedClientUtmSource` já rejeita a maioria,
+ * mas o corte de tamanho é defesa em profundidade, barato de aplicar). */
+export const SUBSCRIBE_CLIENT_UTM_MAX = 100;
+
 export interface ParsedSubscribe {
   name: string;
   email: string;
@@ -252,6 +347,13 @@ export interface ParsedSubscribe {
   /** #4051 — chave de call site (ver `SubscribeSource`); string crua, resolvida
    * só depois via `resolveSubscribeUtm` (nunca usada diretamente como UTM). */
   source: string;
+  /** #6427: utm_source/medium/campaign CRUS do cliente — só têm efeito
+   * quando `source === "apex"` e `utm_source` casa `isAllowedClientUtmSource`
+   * (ver `resolveSubscribeUtm`); em qualquer outro `source`, são lidos mas
+   * nunca consultados. Vazio (não `undefined`) quando ausente do body. */
+  utmSource: string;
+  utmMedium: string;
+  utmCampaign: string;
 }
 
 function asStr(v: unknown): string {
@@ -281,9 +383,12 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         optin: truthyFlag(o.optin),
         honeypot: asStr(o.website),
         source: asStr(o.source),
+        utmSource: asStr(o.utm_source),
+        utmMedium: asStr(o.utm_medium),
+        utmCampaign: asStr(o.utm_campaign),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "", source: "" };
+      return { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -293,11 +398,14 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     optin: truthyFlag(params.get("optin")),
     honeypot: params.get("website") ?? "",
     source: params.get("source") ?? "",
+    utmSource: params.get("utm_source") ?? "",
+    utmMedium: params.get("utm_medium") ?? "",
+    utmCampaign: params.get("utm_campaign") ?? "",
   };
 }
 
 export type SubscribeValidation =
-  | { ok: true; name: string; email: string; source: string }
+  | { ok: true; name: string; email: string; source: string; utmSource: string; utmMedium: string; utmCampaign: string }
   | { ok: false; status: number; error: string };
 
 /**
@@ -323,7 +431,12 @@ export function validateSubscribeInput(p: ParsedSubscribe): SubscribeValidation 
     return { ok: false, status: 400, error: "invalid_email" };
   }
   const name = (p.name || "").trim().slice(0, SUBSCRIBE_NAME_MAX);
-  return { ok: true, name, email, source: p.source };
+  // #6427: repassados crus (allowlist/uso condicional acontece só em
+  // `resolveSubscribeUtm`) — aqui só o corte de tamanho, defesa em profundidade.
+  const utmSource = (p.utmSource || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  const utmMedium = (p.utmMedium || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  const utmCampaign = (p.utmCampaign || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign };
 }
 
 export interface RateLimitResult {
@@ -623,7 +736,10 @@ export async function handleJogarSubscribe(
   const rl = await checkSubscribeRateLimit(env.POLL, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
-  const utm = resolveSubscribeUtm(v.source);
+  // #6427: `v.source === "apex"` é o único caminho onde estes 3 campos têm
+  // efeito (ver docstring de `resolveSubscribeUtm`) — passá-los sempre é
+  // inofensivo pros demais `source`, que os ignoram.
+  const utm = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
   // desguardado deixou de ser possível.

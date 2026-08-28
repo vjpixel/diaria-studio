@@ -168,20 +168,24 @@ const FAQS: Array<{ q: string; a: string }> = [
 
 /**
  * Widget de inscrição — pill visual (input decorativo + botão), inteiro
- * ENVOLVIDO por um único `<a href="/subscribe">` (decisão documentada no PR
+ * ENVOLVIDO por um único `<a href="/assinar">` (decisão documentada no PR
  * desta unidade, #6375: a issue original pedia POST direto na API do Kit,
- * mas isso depende do #6318, aberta — UTM/atribuição de cadastro não está
- * fechada, e `CLAUDE.md`/README deste Worker são explícitos que esta PR NÃO
- * deve implementar esse POST). Um `<input>` que aceitasse digitação sem um
- * endpoint real por trás seria pior que o link simples: o `_redirects` de
- * `/subscribe` é um 302 estático sem captura de query string, então
- * qualquer e-mail digitado seria silenciosamente descartado — a versão
- * honesta do "form visual que ainda não posta de verdade" é fazer a pill
- * inteira navegável, não fingir que o campo funciona.
+ * mas isso dependia do #6318, aberta na época — UTM/atribuição de cadastro
+ * não estava fechada, e `CLAUDE.md`/README deste Worker eram explícitos que
+ * aquela PR NÃO devia implementar esse POST). Um `<input>` que aceitasse
+ * digitação sem um endpoint real por trás seria pior que o link simples —
+ * por isso a pill inteira é navegável, não um form fingindo funcionar.
+ *
+ * #6427: o alvo migrou de `/subscribe` (302 estático pro perfil hospedado da
+ * Kit, sem UTM) pra `/assinar` (`workers/site/public/assinar/`, form real
+ * que POSTa em `POST /jogar/subscribe`, `source: "apex"` — ver
+ * `workers/poll/src/subscribe.ts`). `/subscribe` continua existindo como
+ * fallback externo (não removido), mas deixou de ser o alvo dos 2 CTAs
+ * principais da home.
  */
 function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
   const dark = opts.onDark ?? false;
-  return `<a class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
+  return `<a class="signup${dark ? " signup--dark" : ""}" id="${opts.id}" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
     <span class="signup-pill">
       <span class="signup-input" aria-hidden="true">seu@email.com</span>
       <span class="signup-btn">Assinar grátis</span>
@@ -393,7 +397,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a href="https://eia.diar.ia.br/leaderboard">É IA?</a>
       </div>
       <div class="nav-cta">
-        <a class="btn btn-ink" href="/subscribe">Assinar</a>
+        <a class="btn btn-ink" href="/assinar">Assinar</a>
       </div>
     </div>
   </nav>
@@ -499,6 +503,25 @@ ${faqItems}
       </div>
     </div>
   </footer>
+  <script>
+  // #6427: repassa a query string ATUAL (UTM da Clarice News, tráfego pago,
+  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pros
+  // 3 CTAs de assinatura desta home antes de o visitante clicar. Um anchor
+  // href="/assinar" estático NUNCA carrega o utm_source=... da URL atual
+  // sozinho (resolução de URL relativa não herda query de referência
+  // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
+  // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
+  // Escopo mínimo: só os 3 anchors que de fato apontam pra /assinar — nunca
+  // toca outros hrefs da página (ex: "Ler edição", que usam a mesma classe
+  // .btn-ink com destino diferente).
+  (function () {
+    if (!window.location.search) return;
+    var ctas = document.querySelectorAll('a[href="/assinar"]');
+    for (var i = 0; i < ctas.length; i++) {
+      ctas[i].setAttribute("href", "/assinar" + window.location.search);
+    }
+  })();
+  </script>
 </body>
 </html>
 `;
