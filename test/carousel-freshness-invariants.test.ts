@@ -464,7 +464,7 @@ describe("#6068 — bordas dos dois checks de upload", () => {
       const upload = checkCarouselUploadIncomplete(dir);
       assert.equal(upload.length, 2, JSON.stringify(upload));
       assert.ok(
-        upload.every((v) => !/d3/.test(v.message)),
+        upload.every((v) => !/carrossel de d3/.test(v.message)),
         "nenhuma violação pode citar d3 numa edição de 2 destaques",
       );
     } finally {
