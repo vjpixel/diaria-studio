@@ -234,8 +234,9 @@ export interface CohortEmailResult {
   beehiivAction: BeehiivDeactivateAction;
   /** `true` só se esta execução (`--push`) de fato chamou a mutação Beehiiv. */
   beehiivApplied: boolean;
-  /** `true` quando não havia mutação a confirmar (ação != "deactivate") OU
-   *  quando a mutação foi aplicada e a releitura confirmou. */
+  /** `true` quando não havia mutação a confirmar (ação != "deactivate"), OU
+   *  quando é dry-run (nada foi tentado ainda — não é falha), OU quando a
+   *  mutação foi de fato aplicada (`--push`) e a releitura confirmou. */
   beehiivConfirmed: boolean;
   beehiivError?: string;
 }
@@ -433,16 +434,23 @@ export async function deactivateAndVerify(
   email: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: boolean; error?: string }> {
+  // A releitura de confirmação fica DENTRO do mesmo try que o PUT — não só
+  // ele — pra que uma falha aqui (rede, 5xx, JSON malformado) resolva pra
+  // {ok:false}, nunca lance (fleet review, #6507): sem isso, o loop da Fase
+  // B em applyCohortWave (sem try/catch próprio) deixava a exceção
+  // propagar, abortando a rodada inteira sem nunca chegar em
+  // formatCohortReport — perdendo o relatório de todo mundo já processado,
+  // inclusive de e-mails cujo PUT de desativação já tinha sido aceito.
   try {
     await unsubscribeFromBeehiiv(publicationId, apiKey, email, fetchImpl);
+    const status = await fetchBeehiivStatus(publicationId, apiKey, email, fetchImpl);
+    if (status === "active") {
+      return { ok: false, error: `releitura pós-escrita NÃO confirma: status ainda "active" para ${email}.` };
+    }
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-  const status = await fetchBeehiivStatus(publicationId, apiKey, email, fetchImpl);
-  if (status === "active") {
-    return { ok: false, error: `releitura pós-escrita NÃO confirma: status ainda "active" para ${email}.` };
-  }
-  return { ok: true };
 }
 
 // ── aplicação da coorte (I/O — wiring das duas fases) ───────────────────
@@ -523,7 +531,13 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
     const action = decideBeehiivDeactivateAction({ kitTagConfirmed: ko.confirmed, beehiivActive: beehiivWasActive });
 
     let beehiivApplied = false;
-    let beehiivConfirmed = action !== "deactivate";
+    // dry-run (!push) nunca tenta a mutação — nada foi tentado, então não é
+    // uma FALHA a reportar (bug do fleet review, #6507): sem o `!push ||`,
+    // uma coorte já tagueada no Kit mas ainda ativa na Beehiiv, rodando em
+    // dry-run, aparecia como "FALHOU" no relatório (deveria ser "seria
+    // desativado") e disparava o AVISO de invariante violado por engano —
+    // nada foi tentado, muito menos violado.
+    let beehiivConfirmed = !push || action !== "deactivate";
     let beehiivError: string | undefined;
 
     if (push && action === "deactivate") {

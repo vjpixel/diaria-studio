@@ -399,4 +399,92 @@ describe("applyCohortWave", () => {
     assert.equal(results[0].beehiivAction, "skip_not_active_beehiiv");
     assert.deepEqual(beehiivCalls, []);
   });
+
+  it("--push: PUT de desativação sucede, mas a RELEITURA de confirmação lança (rede) → nunca propaga, resolve ok:false (fleet review #6507, achado 1)", async () => {
+    const beehiivFetchImpl = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "PUT") return jsonResponse(200, { data: { status: "inactive" } });
+      // a releitura (GET pós-write) lança — simula erro de rede/5xx real, não
+      // um "status ainda active" (esse é outro caminho já coberto acima).
+      throw new Error("ECONNRESET: releitura pós-escrita falhou");
+    }) as typeof fetch;
+
+    const results = await withMockFetch(
+      (async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        if (url.includes("/subscribers?email_address=")) {
+          return jsonResponse(200, { subscribers: [{ id: 1, email_address: "a@x.com", state: "active" }] });
+        }
+        if (url.endsWith("/subscribers/1/tags") && method === "GET") {
+          return jsonResponse(200, { tags: [{ id: TAG_ID, name: "rampa-kit", created_at: "x" }] }); // já tagueado
+        }
+        throw new Error(`chamada Kit inesperada: ${method} ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["a@x.com"],
+          push: true,
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(["a@x.com"]),
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: beehiivFetchImpl,
+        }),
+    );
+
+    // A prova central: applyCohortWave NUNCA lança, mesmo com erro de rede na
+    // releitura — resolve um results[] completo com o e-mail marcado como
+    // falha capturada, não perde a rodada inteira.
+    assert.equal(results.length, 1);
+    assert.equal(results[0].beehiivApplied, true);
+    assert.equal(results[0].beehiivConfirmed, false);
+    assert.match(results[0].beehiivError ?? "", /ECONNRESET/);
+  });
+
+  it("dry-run: e-mail já tagueado no Kit e ainda ativo na Beehiiv → 'seria desativado', NUNCA 'FALHOU' (fleet review #6507, achado 2)", async () => {
+    const beehiivCalls: string[] = [];
+    const beehiivFetchImpl = (async (url: string, init?: RequestInit) => {
+      beehiivCalls.push(`${init?.method ?? "GET"} ${url}`);
+      return jsonResponse(200, { data: { status: "active" } });
+    }) as typeof fetch;
+
+    const results = await withMockFetch(
+      (async (url: string) => {
+        if (url.includes("/subscribers?email_address=")) {
+          return jsonResponse(200, { subscribers: [{ id: 1, email_address: "a@x.com", state: "active" }] });
+        }
+        if (url.endsWith("/subscribers/1/tags")) {
+          return jsonResponse(200, { tags: [{ id: TAG_ID, name: "rampa-kit", created_at: "x" }] }); // já tagueado
+        }
+        throw new Error(`chamada Kit inesperada em dry-run: ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["a@x.com"],
+          push: false, // dry-run
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(["a@x.com"]), // ainda ativo — seria desativado num --push real
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: beehiivFetchImpl,
+        }),
+    );
+
+    assert.equal(results[0].beehiivAction, "deactivate");
+    assert.equal(results[0].beehiivApplied, false, "dry-run nunca aplica de verdade");
+    // O bug: sem o fix, beehiivConfirmed ficava false aqui (nada tentado ≠
+    // falha), fazendo o relatório mostrar FALHOU em vez de "seria desativado".
+    assert.equal(results[0].beehiivConfirmed, true);
+    assert.deepEqual(beehiivCalls, [], "dry-run nunca toca a Beehiiv de verdade");
+
+    const summary = summarizeCohortResults(results);
+    // Não é uma falha de desativação nem uma divergência residual — é só
+    // preview. Nenhum AVISO de invariante violado deve disparar aqui.
+    assert.equal(summary.beehiivDeactivateFailed, 0);
+    assert.equal(summary.residualDivergence, 0);
+
+    const report = formatCohortReport(results, summary, false);
+    assert.match(report, /seria desativado/);
+    assert.doesNotMatch(report, /FALHOU/);
+  });
 });
