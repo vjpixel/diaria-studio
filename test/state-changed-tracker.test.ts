@@ -539,6 +539,29 @@ describe("filterIssuesByRoundScope — filtro --bugs/--priority", () => {
     const openIssues: ConvergenceScanIssue[] = [{ number: 1, labels: [] }];
     assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), openIssues);
   });
+
+  // #6616-adjacente: mesmo gap já fechado pra bugs_only/priority_filter,
+  // achado numa sessão develop real invocada com --issues=6616,6594,6623 —
+  // o backlog aberto inteiro (16 issues) foi reportado como "novo" porque
+  // nada filtrava pela lista explícita da invocação.
+  it("issues_filter: [N,M] remove issue fora da lista explícita", () => {
+    const plan: PlanWithGoal = { issues_filter: [6616, 6594] };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 6616, labels: [] },
+      { number: 6594, labels: [] },
+      { number: 9999, labels: ["enhancement"] },
+    ];
+    assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), [
+      { number: 6616, labels: [] },
+      { number: 6594, labels: [] },
+    ]);
+  });
+
+  it("issues_filter shape errado (array de string) é ignorado, fail-open", () => {
+    const plan: PlanWithGoal = { issues_filter: ["6616"] };
+    const openIssues: ConvergenceScanIssue[] = [{ number: 1, labels: [] }];
+    assert.deepEqual(filterIssuesByRoundScope(openIssues, plan), openIssues);
+  });
 });
 
 describe("checkConvergenceScan — veredito puro combinando os dois", () => {
@@ -635,6 +658,26 @@ describe("checkConvergenceScan — veredito puro combinando os dois", () => {
       status: "missing",
       issues: [950],
       novas_encontradas: 1,
+    });
+  });
+
+  // #6616-adjacente — mesmo achado do #5713 (bugs_only/priority_filter),
+  // agora pra --issues: sessão invocada com uma lista fechada não deve ver
+  // o resto do backlog aberto como "novo".
+  it("--issues N,M (issues_filter): issue fora da lista explícita NÃO é ruído", () => {
+    const plan: PlanWithGoal = {
+      goal: { target_set: [6616, 6594] },
+      issues_filter: [6616, 6594, 6623],
+    };
+    const openIssues: ConvergenceScanIssue[] = [
+      { number: 6616, labels: ["bug"] },
+      { number: 6594, labels: ["bug"] },
+      { number: 6623, labels: ["not-this-week"] },
+      { number: 9999, labels: ["enhancement"] }, // backlog aberto, fora da lista --issues
+    ];
+    assert.deepEqual(checkConvergenceScan(plan, openIssues), {
+      status: "ok",
+      novas_encontradas: 0,
     });
   });
 });
