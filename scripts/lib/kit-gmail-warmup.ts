@@ -42,6 +42,19 @@
 
 import { classifyProvider } from "./provider-split.ts";
 import type { RampaVeredito } from "./provider-split.ts";
+import type { ApoioNivel } from "../sync-apoio-nivel-beehiiv.ts";
+
+/** Ordem de prioridade dos níveis de apoio na rampa (#6504, pedido do editor
+ *  28/08: "pegue os apoiadores" — apoiadores recusados pelo Gmail furam a
+ *  fila alfabética em vez de esperar a vez normal). Menor = prioridade maior.
+ *  Mesmos 4 níveis de `ApoioNivel` (`sync-apoio-nivel-beehiiv.ts`), fonte
+ *  única — não redeclarar a union aqui. */
+const APOIO_NIVEL_PRIORITY_RANK: Record<ApoioNivel, number> = {
+  patrono: 0,
+  mantenedor: 1,
+  apoiador: 2,
+  amigo: 3,
+};
 
 /** Tamanho da 1ª onda quando ainda não houve nenhuma onda PUSHADA. Decisão
  *  editorial deliberadamente modesta — mesma ordem de grandeza da onda 1 real
@@ -56,13 +69,22 @@ export const WARMUP_GROWTH_FACTOR = 2;
 /**
  * Endereços Gmail que foram ENVIADOS mas não ENTREGUES num broadcast —
  * exatamente o conjunto que #6504 chama de "recusados na porta". Pura,
- * normaliza (trim + caixa baixa) e deduplica; ordena alfabeticamente pra
- * seleção determinística de onda em onda (2 rodadas com o mesmo input
- * escolhem os mesmos primeiros N endereços).
+ * normaliza (trim + caixa baixa) e deduplica.
+ *
+ * Ordem determinística onda a onda (2 rodadas com o mesmo input escolhem os
+ * mesmos primeiros N endereços): apoiadores (`apoioNivelByEmail`, quando
+ * passado) primeiro — patrono > mantenedor > apoiador > amigo, empate
+ * alfabético —, depois o resto alfabético. `apoioNivelByEmail` é opcional
+ * (comportamento pré-#6504-apoiadores preservado quando omitido — puramente
+ * alfabético) porque descobrir nível de apoio exige uma chamada de rede
+ * (`listAllKitSubscribers`) que este módulo, deliberadamente puro, não faz —
+ * é responsabilidade do caller (`kit-gmail-warmup-ramp.ts`) resolver o mapa
+ * e passar aqui.
  */
 export function computeGmailRejectedEmails(
   sent: readonly string[],
   delivered: readonly string[],
+  apoioNivelByEmail?: ReadonlyMap<string, ApoioNivel>,
 ): string[] {
   const deliveredSet = new Set(delivered.map((e) => e.trim().toLowerCase()));
   const seen = new Set<string>();
@@ -75,7 +97,14 @@ export function computeGmailRejectedEmails(
     if (deliveredSet.has(email)) continue;
     out.push(email);
   }
-  out.sort();
+  out.sort((a, b) => {
+    const rankA = apoioNivelByEmail?.get(a);
+    const rankB = apoioNivelByEmail?.get(b);
+    const priorityA = rankA ? APOIO_NIVEL_PRIORITY_RANK[rankA] : Number.POSITIVE_INFINITY;
+    const priorityB = rankB ? APOIO_NIVEL_PRIORITY_RANK[rankB] : Number.POSITIVE_INFINITY;
+    if (priorityA !== priorityB) return priorityA - priorityB;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
   return out;
 }
 
