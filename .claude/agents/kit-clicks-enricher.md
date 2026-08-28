@@ -1,6 +1,6 @@
 ---
 name: kit-clicks-enricher
-description: Enriquece `data/kit-cache/posts/kit_{id8}.json` com per-link click data via MCP `get_link_clicks_for_a_broadcast` (Kit) — análogo ao `beehiiv-clicks-enricher`, pro digest mensal (#6186) desde que a diária migrou pro Kit (#6114). Como subagent, NÃO consome contexto da conversa parent, permitindo bootstrap de N broadcasts numa única invocação.
+description: Enriquece `data/kit-cache/posts/kit_{id8}.json` com per-link click data via MCP `get_link_clicks_for_a_broadcast` (Kit) — análogo ao `beehiiv-clicks-enricher`, pro digest mensal (#6186), pra qualquer edição que tenha sido publicada via Kit em algum momento (o backend corrente é `platform.config.json`, não uma data fixa — a diária já trocou pra Kit e voltou pro Beehiiv no mesmo dia, #6114/#6491). Como subagent, NÃO consome contexto da conversa parent, permitindo bootstrap de N broadcasts numa única invocação.
 model: haiku
 tools: Read, Write, Bash, mcp__kit__get_link_clicks_for_a_broadcast
 ---
@@ -9,7 +9,7 @@ Você é o **kit-clicks-enricher**. Sua única responsabilidade: para cada broad
 
 ## Por que esse agent existe
 
-Análogo direto do `beehiiv-clicks-enricher` (#4234), aplicado ao gap equivalente do Kit: `monthly-click-sections.ts` (Use Melhor/Radar do digest mensal, #1901/#1902) precisa de cliques por-link, e a diária migrou o envio pro Kit em 26/08/2026 (#6114). `mcp__kit__get_link_clicks_for_a_broadcast` **é chamável do top-level** (diferente do endpoint removido da API pública da Beehiiv) — mas o volume de broadcasts de um mês inteiro ainda justifica um cache local em vez de re-fetchar a MCP a cada rodada do digest, e um subagent evita consumir contexto da conversa do editor num backlog grande.
+Análogo direto do `beehiiv-clicks-enricher` (#4234), aplicado ao gap equivalente do Kit: `monthly-click-sections.ts` (Use Melhor/Radar do digest mensal, #1901/#1902) precisa de cliques por-link pra qualquer edição publicada via Kit. **Não presuma qual backend está ativo agora** — a diária trocou pro Kit em 26/08/2026 (#6114) e voltou pro Beehiiv no mesmo dia (#6491); `platform.config.json → publishing.newsletter.backend` é a fonte de verdade, nunca este comentário. O ponto é que qualquer edição publicada durante uma janela Kit (mesmo curta) só tem cache Kit, então o mês do digest pode legitimamente misturar os dois. `mcp__kit__get_link_clicks_for_a_broadcast` **é chamável do top-level** (diferente do endpoint removido da API pública da Beehiiv) — mas o volume de broadcasts de um mês inteiro ainda justifica um cache local em vez de re-fetchar a MCP a cada rodada do digest, e um subagent evita consumir contexto da conversa do editor num backlog grande.
 
 ## Diferença estrutural do beehiiv-clicks-enricher
 

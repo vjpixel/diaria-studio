@@ -18,8 +18,12 @@
  *    `unique_clicks` direto por URL — via mcp__kit__get_link_clicks_for_a_broadcast
  *    + scripts/apply-mcp-kit-clicks.ts, agent .claude/agents/kit-clicks-enricher.md).
  *    `loadClicks` tenta o cache Beehiiv primeiro; se o arquivo não existir, cai
- *    pro cache Kit com o MESMO prefixo — a diária migrou pro Kit em 26/08/2026
- *    (#6114), então edições depois dessa data não têm cache Beehiiv nenhum.
+ *    pro cache Kit com o MESMO prefixo. **Não presumir qual backend está ativo
+ *    "hoje"** (a diária trocou pro Kit em 26/08/2026 #6114 e voltou pro Beehiiv
+ *    no mesmo dia, #6491 — `platform.config.json` é a fonte de verdade do
+ *    backend corrente, nunca este comentário): o fallback existe porque
+ *    qualquer edição publicada durante uma janela Kit (mesmo curta) só tem
+ *    cache Kit, e o mês pode legitimamente misturar os dois backends.
  *  - Seção + título de cada link: data/editions/{AAMMDD}/02-reviewed.md
  *    (texto final publicado).
  *  - Exclusão de Destaques: URLs de suporte dos 3 temas em
@@ -248,10 +252,27 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
 }
 
 // ── Cliques por post ────────────────────────────────────────────────
+//
+// Nota de arquitetura (#6642 review): existe um leitor unificado
+// Beehiiv+Kit em `scripts/lib/shared/edition-cache-reader.ts` (#6187 item
+// 3), com `normalizeKitClick` fazendo mapeamento equivalente. Este arquivo
+// NÃO o reusa de propósito — aquele módulo lê `data/kit-cache/broadcasts/`
+// (todo o corpus de edições, metadata completa via um `kit-sync.ts` que
+// ainda não existe) para consumidores de varredura tipo hub/dedup/arquivo;
+// este script só precisa de um lookup pontual de cliques por prefixo pra
+// ranquear o digest mensal, sem depender daquele escritor futuro. A
+// duplicação de mapeamento (Beehiiv `email.unique_clicks`+`web` / Kit
+// `unique_clicks` direto) é reconhecida como dívida — candidata a
+// consolidação quando `kit-sync.ts` existir, não bloqueio deste PR.
+
+export const DEFAULT_BEEHIIV_POSTS_DIR = join(ROOT, "data/beehiiv-cache/posts");
+export const DEFAULT_KIT_POSTS_DIR = join(ROOT, "data/kit-cache/posts");
+
 /** Cache Beehiiv: `data/beehiiv-cache/posts/post_{uuid}.json`, shape
- * `stats.clicks[].{email.unique_clicks, web.total_unique_clicked}`. */
-function loadBeehiivClicks(prefix: string): Map<string, number> | null {
-  const dir = join(ROOT, "data/beehiiv-cache/posts");
+ * `stats.clicks[].{email.unique_clicks, web.total_unique_clicked}`.
+ * Exportada com `dir` injetável pra teste (#6642 review — antes só existia
+ * a versão hardcoded em `ROOT`, sem cobertura direta). */
+export function loadBeehiivClicks(prefix: string, dir: string = DEFAULT_BEEHIIV_POSTS_DIR): Map<string, number> | null {
   if (!existsSync(dir)) return null;
   // O prefixo é o 1º segmento do UUID (8 hex), sempre seguido de `-` no nome do
   // cache `post_{uuid}.json`. Exigir a fronteira `-` evita casar o post errado
@@ -276,9 +297,10 @@ function loadBeehiivClicks(prefix: string): Map<string, number> | null {
 
 /** Cache Kit (#6186): `data/kit-cache/posts/kit_{id8}.json`, shape
  * `stats.clicks[].unique_clicks` — já vem sem split email/web. `prefix` aqui
- * é o MESMO valor extraído do nome do raw-post (ver header do arquivo). */
-function loadKitClicks(prefix: string): Map<string, number> | null {
-  const file = join(ROOT, "data/kit-cache/posts", `kit_${prefix}.json`);
+ * é o MESMO valor extraído do nome do raw-post (ver header do arquivo).
+ * `dir` injetável pra teste, mesmo padrão de `loadBeehiivClicks`. */
+export function loadKitClicks(prefix: string, dir: string = DEFAULT_KIT_POSTS_DIR): Map<string, number> | null {
+  const file = join(dir, `kit_${prefix}.json`);
   if (!existsSync(file)) return null;
   const d = JSON.parse(readFileSync(file, "utf8"));
   const clicks = d?.stats?.clicks;
@@ -292,11 +314,60 @@ function loadKitClicks(prefix: string): Map<string, number> | null {
   return map;
 }
 
-/** Tenta o cache Beehiiv primeiro (comportamento histórico, edições
- * anteriores a 26/08/2026 só têm esse); se o arquivo não existir, cai pro
- * cache Kit com o mesmo prefixo (#6186 — a diária migrou pro Kit em 26/08). */
-function loadClicks(prefix: string): Map<string, number> {
-  return loadBeehiivClicks(prefix) ?? loadKitClicks(prefix) ?? new Map<string, number>();
+export type ClickSource = "beehiiv" | "kit" | "none";
+
+export interface LoadClicksResult {
+  clicks: Map<string, number>;
+  /** Qual cache respondeu — "none" quando nenhum arquivo existe pro
+   * prefixo (não confundir com "arquivo existe mas array vazio", que
+   * retorna o source correto com um Map vazio). Usado só pra reportar a
+   * proveniência real da métrica no digest (#6642 review — o campo
+   * `metric` do retorno de `compute()` não pode presumir Beehiiv-only). */
+  source: ClickSource;
+}
+
+/** Tenta o cache Beehiiv primeiro (comportamento histórico); se o ARQUIVO
+ * não existir (não o conteúdo — um cache Beehiiv presente com
+ * `stats.clicks` vazio/ausente ainda conta como "respondeu Beehiiv", não
+ * cai pro Kit), cai pro cache Kit com o mesmo prefixo. Necessário porque
+ * qualquer edição publicada durante uma janela em que o backend era Kit
+ * (a diária trocou pro Kit em 26/08/2026 #6114 e reverteu pro Beehiiv no
+ * mesmo dia, #6491 — não presumir qual backend está ativo "hoje" a partir
+ * deste comentário) só tem cache Kit; o mês pode legitimamente misturar
+ * os dois backends. */
+export function loadClicksWithSource(
+  prefix: string,
+  beehiivDir: string = DEFAULT_BEEHIIV_POSTS_DIR,
+  kitDir: string = DEFAULT_KIT_POSTS_DIR,
+): LoadClicksResult {
+  const beehiiv = loadBeehiivClicks(prefix, beehiivDir);
+  if (beehiiv !== null) return { clicks: beehiiv, source: "beehiiv" };
+  const kit = loadKitClicks(prefix, kitDir);
+  if (kit !== null) return { clicks: kit, source: "kit" };
+  return { clicks: new Map<string, number>(), source: "none" };
+}
+
+/** Wrapper compat — só o Map, sem a proveniência (usado onde a fonte não
+ * importa pro chamador). */
+export function loadClicks(prefix: string): Map<string, number> {
+  return loadClicksWithSource(prefix).clicks;
+}
+
+/** Descreve a métrica de cliques no retorno de `compute()` de acordo com
+ * QUAIS backends realmente contribuíram neste mês (#6642 review — a string
+ * fixa antiga presumia sempre Beehiiv, o que fica incorreto/enganoso pro
+ * editor num mês só-Kit ou misto). `"none"` sozinho no set (nenhuma edição
+ * teve cache de nenhum backend) cai no texto genérico, sem mencionar
+ * origem nenhuma — não há o que descrever. */
+function describeClickMetric(sources: ReadonlySet<ClickSource>): string {
+  const hasBeehiiv = sources.has("beehiiv");
+  const hasKit = sources.has("kit");
+  if (hasBeehiiv && hasKit) {
+    return "Beehiiv: email.unique_clicks (+ web unique); Kit: unique_clicks — somados por URL, mês com edições dos dois backends";
+  }
+  if (hasKit) return "Kit: unique_clicks somados por URL";
+  if (hasBeehiiv) return "Beehiiv: email.unique_clicks (+ web unique) somados por URL";
+  return "cliques somados por URL (nenhuma edição do mês tinha cache de clique)";
 }
 
 // ── Edições do mês (a partir dos raw-posts) ─────────────────────────
@@ -399,6 +470,10 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
   const themes = themeUrls(yymm);
   const clicksByUrl = new Map<string, number>();
   const warnings: string[] = [];
+  // Proveniência real dos cliques usados neste mês (#6642 review — o campo
+  // `metric` do retorno não pode presumir Beehiiv-only; um mês pode
+  // legitimamente misturar os dois backends).
+  const clickSourcesUsed = new Set<ClickSource>();
 
   // Coleta itens editoriais (com seção + edição) das edições do mês.
   const monthItems: LinkItem[] = [];
@@ -414,7 +489,8 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
       continue;
     }
     monthItems.push(...parseEdition(edition, readFileSync(revPath, "utf8")));
-    const clicks = loadClicks(prefix);
+    const { clicks, source } = loadClicksWithSource(prefix);
+    clickSourcesUsed.add(source);
     if (clicks.size === 0) warnings.push(`${edition}: sem per-link clicks no cache (contribui 0)`);
     for (const [b, n] of clicks) clicksByUrl.set(b, (clicksByUrl.get(b) ?? 0) + n);
   }
@@ -433,7 +509,8 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
     sourceItems.push(
       ...parseEdition(edition, readFileSync(revPath, "utf8")).filter((it) => it.section === "use_melhor"),
     );
-    const clicks = loadClicks(prefix);
+    const { clicks, source } = loadClicksWithSource(prefix);
+    clickSourcesUsed.add(source);
     if (clicks.size === 0)
       warnings.push(`use-melhor-source ${edition}: sem per-link clicks no cache (contribui 0)`);
     for (const [b, n] of clicks) clicksByUrl.set(b, (clicksByUrl.get(b) ?? 0) + n);
@@ -456,7 +533,7 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
   return {
     yymm,
     editions_count: editions.length,
-    metric: "email.unique_clicks (+ web unique) somados por URL",
+    metric: describeClickMetric(clickSourcesUsed),
     use_melhor_borrowed_from: useMelhorBorrowedFrom,
     use_melhor: selected.use_melhor,
     use_melhor_candidates: selected.use_melhor_candidates,

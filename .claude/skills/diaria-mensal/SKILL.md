@@ -116,7 +116,7 @@ Após o analista, rodar o ranking determinístico por cliques, que substitui o b
 npx tsx scripts/monthly-click-sections.ts --cycle $CYCLE
 ```
 
-Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (enriquecido via `beehiiv-clicks-enricher`) ou, pra edições publicadas pelo Kit (#6186 — a diária migrou pro Kit em 26/08/2026, #6114), `data/kit-cache/posts/kit_*.json` (enriquecido via `kit-clicks-enricher`) — `monthly-click-sections.ts` detecta qual dos dois caches tem o arquivo pra cada edição, sem flag manual. Além disso, seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
+Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (enriquecido via `beehiiv-clicks-enricher`) ou, pra edições publicadas via Kit (#6186 — a diária trocou pro Kit em 26/08/2026 #6114 e voltou pro Beehiiv no mesmo dia #6491; não presumir qual backend está ativo agora, `platform.config.json` é quem decide), `data/kit-cache/posts/kit_*.json` (enriquecido via `kit-clicks-enricher`) — `monthly-click-sections.ts` detecta qual dos dois caches tem o arquivo pra cada edição, sem flag manual, e um mês pode legitimamente misturar os dois backends. Além disso, seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
 
 **Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Garantir que essas edições estejam enriquecidas com clicks antes (rodar `beehiiv-clicks-enricher` nelas). Ex. para o digest de maio (ciclo 2605-06):
 ```bash

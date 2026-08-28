@@ -55,6 +55,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import type { EnrichmentState } from "./lib/shared/enrichment-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/kit-cache/posts");
@@ -103,6 +104,25 @@ export function extractKitClicksArray(raw: unknown): McpKitClick[] {
   return [];
 }
 
+/** Um raw shape "legitimamente vazio" — array nu vazio, ou um dos 3
+ * envelopes reconhecidos com `clicks: []` explícito. Usado só pra decidir
+ * se vale avisar em stderr quando `extractKitClicksArray` devolveu []
+ * (ver #6642 review, silent-failure-hunter) — distingue "MCP confirmou 0
+ * cliques" de "shape não reconhecido, [] por omissão". */
+export function isRecognizedEmptyKitShape(raw: unknown): boolean {
+  if (Array.isArray(raw)) return true; // array nu, vazio ou não — sempre reconhecido
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (obj.broadcast && typeof obj.broadcast === "object") {
+      const b = obj.broadcast as Record<string, unknown>;
+      if (Array.isArray(b.clicks)) return true;
+    }
+    if (Array.isArray(obj.clicks)) return true;
+    if (Array.isArray(obj.data)) return true;
+  }
+  return false;
+}
+
 /** Flag de override do guard de replace-vazio. Fonte única — CLI e testes referenciam esta constante. */
 export const ALLOW_EMPTY_REPLACE_FLAG = "--allow-empty-replace";
 
@@ -133,9 +153,27 @@ export interface ApplyKitResult {
   after_count: number;
   mapped: number;
   appended: boolean;
+  /** #4836 (portado do lado Beehiiv) — distingue `enriched_zero` (tentativa
+   * real confirmou 0 cliques) de `never_enriched` (nunca tentou), pra
+   * consumidores futuros de médias/CTR sobre o cache Kit não confundirem
+   * ausência de tentativa com resultado zero genuíno. */
+  enrichment_state: EnrichmentState;
+}
+
+/** `id8` vira segmento de nome de arquivo sem sanitização — validar que é
+ * só dígitos (formato real dos broadcast IDs do Kit, ver docstring do
+ * módulo) evita que um valor tipo `../../etc` escreva fora de `postsDir`
+ * (#6642 review — o script cria o arquivo do zero, diferente do
+ * apply-mcp-clicks.ts, que exige cache pré-existente; sem essa validação a
+ * superfície de risco de um id8 malformado é maior aqui). */
+export function isValidId8(id8: string): boolean {
+  return /^\d+$/.test(id8);
 }
 
 export function applyKitClicks(stdinJson: string, opts: ApplyKitOpts): ApplyKitResult {
+  if (!isValidId8(opts.id8)) {
+    throw new Error(`--id8 inválido (esperado só dígitos, formato do broadcast ID do Kit): ${JSON.stringify(opts.id8)}`);
+  }
   const postsDir = opts.postsDir ?? POSTS_DIR;
   const cachePath = resolve(postsDir, `kit_${opts.id8}.json`);
 
@@ -147,6 +185,18 @@ export function applyKitClicks(stdinJson: string, opts: ApplyKitOpts): ApplyKitR
 
   const raw = JSON.parse(stdinJson) as unknown;
   const incoming = extractKitClicksArray(raw);
+  // #6642 review (silent-failure-hunter): extractKitClicksArray retorna []
+  // pra QUALQUER shape não reconhecido, indistinguível de "MCP confirmou 0
+  // cliques reais" — sem log, um erro de shape (campo renomeado, resposta
+  // parcial da API disfarçada de objeto) fica permanentemente registrado
+  // como "0 cliques verificados". Aviso barato em stderr quando o array
+  // veio vazio E o raw não era um envelope reconhecidamente-vazio (ex.:
+  // `{"clicks":[]}` é legítimo; `{"error":"..."}` ou `{}` não é).
+  if (incoming.length === 0 && !isRecognizedEmptyKitShape(raw)) {
+    console.error(
+      `[apply-mcp-kit-clicks] aviso: shape não reconhecido pra kit_${opts.id8}, tratando como 0 clicks: ${JSON.stringify(raw).slice(0, 200)}`,
+    );
+  }
   const mapped = incoming.map(mapKitClick);
 
   const existing = (cache.stats?.clicks ?? []) as LegacyKitClick[];
@@ -165,8 +215,12 @@ export function applyKitClicks(stdinJson: string, opts: ApplyKitOpts): ApplyKitR
     finalClicks = mapped;
   }
 
+  // #4836 (mesmo raciocínio do apply-mcp-clicks.ts): toda invocação é uma
+  // tentativa REAL via MCP — o campo é sempre recalculado a partir do array
+  // final, nunca herdado do que já estava no cache.
+  const enrichmentState: EnrichmentState = finalClicks.length > 0 ? "enriched_n" : "enriched_zero";
   cache.id8 = opts.id8;
-  cache.stats = { ...(cache.stats ?? {}), clicks: finalClicks };
+  cache.stats = { ...(cache.stats ?? {}), clicks: finalClicks, enrichment_state: enrichmentState };
 
   mkdirSync(postsDir, { recursive: true });
   const tmp = `${cachePath}.tmp`;
@@ -179,6 +233,7 @@ export function applyKitClicks(stdinJson: string, opts: ApplyKitOpts): ApplyKitR
     after_count: finalClicks.length,
     mapped: mapped.length,
     appended: opts.append,
+    enrichment_state: enrichmentState,
   };
 }
 

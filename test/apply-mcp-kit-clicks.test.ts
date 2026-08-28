@@ -16,6 +16,8 @@ import {
   mapKitClick,
   extractKitClicksArray,
   applyKitClicks,
+  isValidId8,
+  isRecognizedEmptyKitShape,
   EmptyReplaceGuardError,
 } from "../scripts/apply-mcp-kit-clicks.ts";
 
@@ -191,5 +193,56 @@ describe("applyKitClicks — guard REPLACE-vazio (#4836, mesmo padrão do apply-
 
     const result = applyKitClicks('{"clicks":[]}', { id8, append: true, postsDir });
     assert.equal(result.after_count, 1, "clique existente preservado, nada novo pra somar");
+  });
+});
+
+describe("isValidId8 (#6642 review — guard contra path injection via --id8)", () => {
+  it("aceita string só de dígitos", () => {
+    assert.equal(isValidId8("25654292"), true);
+    assert.equal(isValidId8("1"), true);
+  });
+  it("rejeita valores com caracteres não-numéricos, inclusive tentativa de path traversal", () => {
+    assert.equal(isValidId8("../../etc/passwd"), false);
+    assert.equal(isValidId8("25654292.json"), false);
+    assert.equal(isValidId8("abc"), false);
+    assert.equal(isValidId8(""), false);
+    assert.equal(isValidId8("25654292 "), false, "espaço à direita não conta como dígito");
+  });
+});
+
+describe("applyKitClicks — rejeita id8 inválido antes de tocar o filesystem", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "apply-mcp-kit-clicks-id8guard-"));
+    const postsDir = resolve(dir, "posts");
+    mkdirSync(postsDir, { recursive: true });
+    return { postsDir };
+  }
+
+  it("lança erro claro pra id8 com path traversal, sem escrever nada", () => {
+    const { postsDir } = setup();
+    assert.throws(
+      () => applyKitClicks('{"clicks":[]}', { id8: "../escape", append: false, postsDir }),
+      /--id8 inválido/,
+    );
+    assert.equal(existsSync(resolve(postsDir, "..", "escape.json")), false);
+  });
+});
+
+describe("isRecognizedEmptyKitShape (#6642 review — distingue '0 cliques reais' de 'shape não reconhecido')", () => {
+  it("reconhece array nu (vazio ou não)", () => {
+    assert.equal(isRecognizedEmptyKitShape([]), true);
+    assert.equal(isRecognizedEmptyKitShape([{ url: "a" }]), true);
+  });
+  it("reconhece os 3 envelopes com clicks: []", () => {
+    assert.equal(isRecognizedEmptyKitShape({ clicks: [] }), true);
+    assert.equal(isRecognizedEmptyKitShape({ data: [] }), true);
+    assert.equal(isRecognizedEmptyKitShape({ broadcast: { clicks: [] } }), true);
+  });
+  it("NÃO reconhece shape sem clicks/data em nenhum lugar — sinal de erro real da API", () => {
+    assert.equal(isRecognizedEmptyKitShape({ error: "rate limited" }), false);
+    assert.equal(isRecognizedEmptyKitShape({}), false);
+    assert.equal(isRecognizedEmptyKitShape({ broadcast: { id: 1 } }), false);
+    assert.equal(isRecognizedEmptyKitShape(null), false);
+    assert.equal(isRecognizedEmptyKitShape(42), false);
   });
 });
