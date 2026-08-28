@@ -1517,15 +1517,29 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   // science" (openai.com/index). Conservador: exige a frase completa "the
   // next era of" — não pega "a new era" nem "next generation" isolados.
   /\bthe\s+next\s+era\s+of\b/i,
-  // #5995 (260828): "How {sujeito coletivo} {verbo}..." — manchete de
-  // relatório/análise sobre adoção de IA em larga escala, não anúncio de
-  // produto. Distinto de "how to X" (tutorial, já coberto em
-  // TUTORIAL_KEYWORDS_RE) porque o sujeito é um coletivo impessoal, não
-  // "you"/instrução direta. Casos reais: "How Nations Are Deploying AI for
-  // Strategic Priorities" (blogs.nvidia.com), "How enterprises put AI to
-  // work" / "How the world is putting ChatGPT to work" (openai.com/index).
-  /\bhow\s+(nations|enterprises|businesses|companies|organizations|governments|countries|the\s+world|society|industries)\b/i,
 ];
+
+// #5995 (260828, achado do review independente do PR #6556): "How {sujeito
+// coletivo} {verbo}..." — manchete de relatório/análise sobre adoção de IA em
+// larga escala, não anúncio de produto. Casos reais: "How Nations Are
+// Deploying AI for Strategic Priorities" (blogs.nvidia.com), "How enterprises
+// put AI to work" / "How the world is putting ChatGPT to work"
+// (openai.com/index). Deliberadamente FORA de NON_PRODUCT_OFFICIAL_PATTERNS —
+// aquele array roda ANTES do short-circuit `type_hint === "lancamento"` em
+// categorize() (as classes existentes ali são de alta especificidade lexical,
+// então o risco de vencer um lançamento confirmado pelo agent é baixo). Este
+// padrão é mais genérico (qualquer manchete "How {coletivo} ...") e o review
+// encontrou um caso plausível de falso-positivo: "How Enterprises Are Already
+// Using the New Gemini 4" com type_hint="lancamento" confirmado pelo agent
+// seria demovido incorretamente se estivesse no array pre-short-circuit. Por
+// isso mora numa função separada, checada DEPOIS do short-circuit de
+// type_hint (mesma posição de isBusinessDeal/isNonProductAnnouncement/
+// isCustomerStory/isUpdate/isReport) — confirmação do agent sempre vence.
+const HOW_COLLECTIVE_REPORT_RE =
+  /\bhow\s+(nations|enterprises|businesses|companies|organizations|governments|countries|the\s+world|society|industries)\b/i;
+export function isHowCollectiveReportTitle(article: Article): boolean {
+  return HOW_COLLECTIVE_REPORT_RE.test(article.title ?? "");
+}
 
 const LAUNCH_VERB_TITLE_RE =
   /\b(introducing|announcing|launch(?:ing|es)?|unveil(?:ing|s)?|now available|general[ -]availability)\b/i;
@@ -1717,6 +1731,11 @@ export function categorize(article: Article): Category {
     // Agent leu o conteúdo, é o sinal mais autoritativo. Caso: agent confirma
     // launch mesmo que título tenha "delivers" ou path tenha customer-name.
     if (article.type_hint === "lancamento") return "lancamento";
+
+    // #5995 (260828): "How {coletivo} ..." — ver isHowCollectiveReportTitle
+    // acima pro porquê de rodar aqui (pós-short-circuit type_hint) e não
+    // dentro de isNonProductOfficialPost.
+    if (isHowCollectiveReportTitle(article)) return "noticias";
 
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";

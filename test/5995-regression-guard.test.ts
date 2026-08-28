@@ -34,6 +34,7 @@ import assert from "node:assert/strict";
 import {
   categorize,
   isNonProductOfficialPost,
+  isHowCollectiveReportTitle,
   categoryToBucket,
 } from "../scripts/lib/launch-heuristics.ts";
 
@@ -238,14 +239,42 @@ describe("#5995 (260828) — resíduo real: lancamento→radar (título não-pro
       // "the next era of X" — framing de visão/relatório
       { title: "Advancing the next era of national science", url: "https://openai.com/index/advancing-the-next-era-of-national-science" },
       // "How {coletivo} ..." — relatório/análise, distinto de "how to" tutorial
-      { title: "How Nations Are Deploying AI for Strategic Priorities", url: "https://blogs.nvidia.com/blog/nations-deploy-ai-strategic-priorities/" },
-      { title: "From assistance to execution: How enterprises put AI to work", url: "https://openai.com/index/how-enterprises-put-ai-to-work" },
-      { title: "From asking to doing: How the world is putting ChatGPT to work", url: "https://openai.com/index/how-the-world-is-putting-chatgpt-to-work" },
     ];
     for (const f of fixtures) {
       assert.equal(isNonProductOfficialPost({ url: f.url, title: f.title } as any), true, `nao-produto: ${f.title}`);
       assert.equal(categorize({ url: f.url, title: f.title } as any), "noticias", `categorize: ${f.title}`);
     }
+  });
+
+  it("'How {coletivo} ...' cai em noticias via isHowCollectiveReportTitle (função dedicada, roda pós type_hint)", () => {
+    const fixtures = [
+      { title: "How Nations Are Deploying AI for Strategic Priorities", url: "https://blogs.nvidia.com/blog/nations-deploy-ai-strategic-priorities/" },
+      { title: "From assistance to execution: How enterprises put AI to work", url: "https://openai.com/index/how-enterprises-put-ai-to-work" },
+      { title: "From asking to doing: How the world is putting ChatGPT to work", url: "https://openai.com/index/how-the-world-is-putting-chatgpt-to-work" },
+    ];
+    for (const f of fixtures) {
+      assert.equal(isHowCollectiveReportTitle({ url: f.url, title: f.title } as any), true, `how-collective: ${f.title}`);
+      assert.equal(categorize({ url: f.url, title: f.title } as any), "noticias", `categorize: ${f.title}`);
+    }
+  });
+
+  // #5995 (achado do review independente do PR #6556): "How {coletivo}"
+  // roda DEPOIS do short-circuit type_hint==="lancamento" — diferente das
+  // outras classes de isNonProductOfficialPost, que rodam ANTES por serem
+  // de alta especificidade lexical. Sem essa precedência, um lançamento
+  // CONFIRMADO pelo agent (type_hint="lancamento") seria demovido
+  // indevidamente por uma manchete genérica "How Enterprises Are Already
+  // Using the New Gemini 4" — trava a precedência correta.
+  it("guard de precedência: type_hint=lancamento vence 'How {coletivo}...' mesmo sem verbo de anúncio", () => {
+    const f = {
+      title: "How Enterprises Are Already Using the New GPT-6",
+      url: "https://openai.com/index/how-enterprises-use-gpt-6",
+      type_hint: "lancamento",
+    };
+    // O padrão lexical em si dispara (é genérico o bastante)...
+    assert.equal(isHowCollectiveReportTitle(f as any), true, "o padrão lexical dispara nesta manchete");
+    // ...mas categorize() preserva o lançamento confirmado pelo agent.
+    assert.equal(categorize(f as any), "lancamento", "type_hint=lancamento vence o padrão genérico 'how collective'");
   });
 
   it("'X: Major Updates' cai em noticias via isUpdate, não lancamento", () => {
