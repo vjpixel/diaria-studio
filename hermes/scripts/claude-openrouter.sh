@@ -45,10 +45,15 @@ TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
 BUDGET="0.25"
 TIMEOUT="1800"
-# z-ai/glm-5.2:free saiu do catálogo do OpenRouter (confirmado ao vivo em
-# /api/v1/models, 28/08/2026 — #6617) e foi substituído por poolside/laguna-
-# s-2.1:free, já validado em produção (job 5d791ef6fc2c do Hermes contínuo).
-MODELS_DEFAULT=("poolside/laguna-s-2.1:free" "dots-studio/dots-3-note-preview:free" "z-ai/glm-5.3-flash")
+# Ordem pesquisada em #6663 (28/08/2026): dots-3 primeiro, laguna em segundo.
+# Decisivo é o contexto — dots-3 tem 512k na variante :free vs 262k do
+# laguna, e este wrapper roda `claude -p` DENTRO do checkout com CLAUDE.md
+# inteiro carregado, então contexto maior importa mais que o resto do
+# benchmark (dots-3 também vence Terminal-Bench 2.1, o mais próximo deste
+# caso de uso). laguna segue em segundo — livre de #6617 (z-ai/glm-5.2:free
+# saiu do catálogo do OpenRouter, confirmado ao vivo em /api/v1/models,
+# 28/08/2026). glm-5.3-flash (pago) continua por último, é o fallback.
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash")
 MODEL_FORCED=""
 
 while [ $# -gt 0 ]; do
