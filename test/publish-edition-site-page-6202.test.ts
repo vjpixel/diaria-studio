@@ -46,6 +46,7 @@ import {
   readEditionInputs,
   commitAndPushSitePage,
   productionDeps,
+  createExecFileSyncLockRunner,
   EditionInputsInvalid,
   type PublishPageDeps,
   type GitRunner,
@@ -894,6 +895,42 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     const git: GitRunner = (args) => (args[0] === "rev-parse" ? "outra-branch\n" : "");
     const deps = productionDeps("/repo", git);
     assert.throws(() => deps.publish("meu-slug"), /outra-branch/);
+  });
+});
+
+describe("#6630 defaultLockRunner nunca trava indefinidamente", () => {
+  it("passa timeout: 60_000 pro execFileSync — mesmo valor de merge-train-live.ts:107", () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const fakeExec = (
+      _cmd: string,
+      _args: string[],
+      options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number },
+    ) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      return Buffer.from("ok");
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec);
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.ok(capturedOptions, "o exec injetado foi de fato chamado");
+    assert.equal(capturedOptions?.timeout, 60_000, "timeout precisa bater com merge-train-live.ts (60s)");
+    assert.equal(result.ok, true);
+  });
+
+  it("timeout do subprocesso cai no branch catch — vira { ok: false }, não lança", () => {
+    const timeoutError = Object.assign(new Error("ETIMEDOUT"), {
+      status: null,
+      stdout: Buffer.from(""),
+      stderr: Buffer.from("spawnSync npx ETIMEDOUT"),
+    });
+    const fakeExec = () => {
+      throw timeoutError;
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec);
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /ETIMEDOUT/);
   });
 });
 
