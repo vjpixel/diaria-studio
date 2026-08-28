@@ -127,6 +127,19 @@ import { checkIntentionalError } from "../lib/lint-checks/intentional-error.ts";
 // #3806 (Opção B spike): mapeamento determinístico campo -> região do MD
 // pro título de destaque, editável na visão renderizada.
 import { replaceDestaqueTitleInMd } from "../extract-destaques.ts";
+// #6447 Fatia 2: editor estruturado por destaque (título por opção + corpo +
+// "por que isso importa" + URL) — parser/serializer puros, mesmo princípio
+// de reuso de `replaceDestaqueTitleInMd` acima (edição cirúrgica, só o bloco
+// do destaque tocado).
+import {
+  parseHighlightBlocks,
+  applyHighlightEdit,
+  type HighlightEdit,
+} from "../lib/lint-checks/highlight-block-edit.ts";
+// #6447 Fatia 2: limite de chars por opção de título, mesma constante que
+// `checkTitleLengths` (lint bloqueante) já usa — o painel client-side lê o
+// valor da resposta HTTP em vez de repetir o número (ver rv-highlights.js).
+import { MAX_TITLE_LENGTH } from "../lib/lint-checks/title-length.ts";
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -443,6 +456,92 @@ export function applyDestaqueTitleEdit(
   const saveResult = saveReviewFile(rootDir, aammdd, "reviewed", replaced.md, opts);
   if (!saveResult.ok) return saveResult;
   return { ...saveResult, lint: runReviewLints(rootDir, resolved.editionDir, "reviewed", replaced.md) };
+}
+
+// ── Editor estruturado por destaque (#6447 Fatia 2) ────────────────────────
+
+export interface HighlightsSummary {
+  available: boolean;
+  /** Ausente quando `available` é `false`. */
+  highlights?: ReturnType<typeof parseHighlightBlocks>["blocks"];
+  /** mtime (ISO) de `02-reviewed.md` — mesmo campo/mecanismo de
+   * `GET .../review/:slug`, reusado pra alimentar o MESMO guard de conflito
+   * 409 (`expectedModifiedAt`) que `saveReviewFile` já implementa (#3729),
+   * sem duplicar o mecanismo pro editor estruturado. */
+  modifiedAt?: string | null;
+  /** Presente quando `available` é `false` — motivo (arquivo ainda não
+   * existe nesta edição, ou AAMMDD inválido). */
+  note?: string;
+  /** #6447 Fatia 2: limite de chars por opção de título (`MAX_TITLE_LENGTH`,
+   * mesma constante do lint `title-length` bloqueante) — sempre presente
+   * (independe de `available`), pro client nunca precisar hardcodar o número. */
+  maxTitleLength: number;
+}
+
+/** Lê `02-reviewed.md` e devolve os blocos DESTAQUE já estruturados —
+ * fail-soft, mesmo padrão de `studio-gate.ts` (arquivo ausente nunca lança,
+ * vira `{ available: false, note }`). */
+export function readHighlightsSummary(rootDir: string, aammdd: string): HighlightsSummary {
+  const state = readReviewFile(rootDir, aammdd, "reviewed");
+  if (!state.ok) {
+    return { available: false, note: state.error ?? "AAMMDD ou arquivo inválido", maxTitleLength: MAX_TITLE_LENGTH };
+  }
+  if (!state.exists) {
+    return {
+      available: false,
+      note: "02-reviewed.md ainda não existe nesta edição",
+      maxTitleLength: MAX_TITLE_LENGTH,
+    };
+  }
+  const { blocks } = parseHighlightBlocks(state.content);
+  return { available: true, highlights: blocks, modifiedAt: state.modifiedAt, maxTitleLength: MAX_TITLE_LENGTH };
+}
+
+export interface ApplyHighlightBlockEditResult extends SaveReviewResult {
+  /** Lint do conteúdo NOVO (pós-edição) — mesmo padrão de
+   * `ApplyDestaqueTitleEditResult.lint` (#3806): ausente quando o save falhou
+   * ou teve conflito (nada foi escrito). */
+  lint?: LintReport;
+}
+
+/**
+ * Aplica a edição estruturada do destaque `n` em `02-reviewed.md`: lê o
+ * conteúdo atual, reescreve SÓ o bloco daquele destaque via
+ * `applyHighlightEdit` (preserva o resto do arquivo byte a byte), roda os
+ * lints de sempre sobre o resultado, e salva via `saveReviewFile` — reusando
+ * o MESMO guard de conflito mtime (`expectedModifiedAt`/`force`, #3729) que
+ * `applyDestaqueTitleEdit` já reusa, sem duplicá-lo (ver docstring de lá).
+ */
+export function applyHighlightBlockEdit(
+  rootDir: string,
+  aammdd: string,
+  n: number,
+  edit: HighlightEdit,
+  opts: SaveReviewOptions = {},
+): ApplyHighlightBlockEditResult {
+  const resolved = resolveReviewFile(rootDir, aammdd, "reviewed");
+  if (!resolved) return { ok: false, error: "AAMMDD inválido", filename: "", modifiedAt: null };
+  if (!existsSync(resolved.filePath)) {
+    return {
+      ok: false,
+      error: "02-reviewed.md ainda não existe nesta edição",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const current = readFileSync(resolved.filePath, "utf8");
+  const applied = applyHighlightEdit(current, n, edit);
+  if (!applied.ok || applied.md === undefined) {
+    return {
+      ok: false,
+      error: applied.error ?? "falha ao aplicar edição do destaque",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const saveResult = saveReviewFile(rootDir, aammdd, "reviewed", applied.md, opts);
+  if (!saveResult.ok) return saveResult;
+  return { ...saveResult, lint: runReviewLints(rootDir, resolved.editionDir, "reviewed", applied.md) };
 }
 
 /** Reseta o baseline pro conteúdo atual (editor decide "isto agora é a nova
