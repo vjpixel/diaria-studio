@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.1
+version: 0.5.2
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -237,16 +237,15 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Pitfalls herdados (ver references/)
 
-- `pr-batch-review.md` — lote de PRs, superseded-check, conflito no worktree.
-- `overnight-claim-collision.md` — colisão de claim ≠ exclusão total.
-- `continuo-review-pipeline.md` — guard sensível fail-closed.
+- `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465, epic #6464): lote 5-10 (#6496), anti-fabricação (verificar `.jsonl` + manifest, NÃO confiar só em EXIT=0), dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`) devido a duplicados em fronteiras de página, fonte única Helios/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente), claim hygiene (`--kind continuo`).
+- `tick-20260828-claim-collision-and-subagent.md` (references/) — aprendizados operacionais do tick 21:05 BRT 28/08: claim colisão `continuo` vs `develop` (sessão stale não bloqueia claim ativo) + delegação de drain a subagente + detecção de claim obsoleto.
 - Rotação de modelo do Hermes (v0.4 §rotação): OBSOLETA para implementação —
   o fallback de modelo agora vive no wrapper. Mantida só para o modelo que o
   próprio Hermes usa para orquestrar/relatar.
 
 ## Changelog
 
-- 0.5.1 (28/08/2026): session-id do cron por TICK, não por JOB (#6443,
+- 0.5.2 (28/08/2026): session-id do cron por TICK, não por JOB (#6443,
   raiz da issue — itens 2/3 da decisão do editor já tinham sido resolvidos
   via #6436). `$SESSION_ID` agora inclui timestamp UTC do início do tick
   (`hermes-cron-{job}-{YYYYMMDDTHHMMSSZ}`), gerado uma vez no passo 1.3 e
@@ -255,6 +254,7 @@ MESMO ciclo enquanto houver orçamento.
   registro indefinidamente — a sessão nunca ficava `stale`, e um claim
   órfão de um tick sem PR nunca expirava sozinho (medido em 28/08: 7 issues
   em `claimed_issues`, 6 sem PR aberto). Passos 1.3 e 4.1 atualizados.
+- 0.5.1 (28/08/2026): subagent MCP drain (#6465, epic #6464) — lote 5 posts (`claude -p` + MCP Beehiiv, `proc_...` EXIT=0). Padrões: (a) limite #6496 (5-10, nunca 20+); (b) anti-fabricação (`.jsonl` + manifest, não só EXIT=0); (c) dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`); (d) fonte única Helios/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente); (e) claim hygiene (`--kind continuo`, unclaim só sem worktree ativo). Ver `references/subagent-mcp-drain-20260828.md`. Corrigido erro de assumir que `worktree` era fonte sincronizada; fonte real é `.jsonl` + manifest.
 - 0.5.0 (28/08/2026): arquitetura delegada — classificação via código real
   (`classifyExecTrackWithRule`, 6 categorias), implementação via
   `claude-openrouter.sh` (harness Claude Code + OpenRouter), review diário
