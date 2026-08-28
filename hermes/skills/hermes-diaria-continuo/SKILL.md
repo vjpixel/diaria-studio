@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.1
+version: 0.5.2
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -237,10 +237,8 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Pitfalls herdados (ver references/)
 
-- `pr-batch-review.md` — lote de PRs, superseded-check, conflito no worktree.
-- `overnight-claim-collision.md` — colisão de claim ≠ exclusão total.
-- `continuo-review-pipeline.md` — guard sensível fail-closed.
 - `subagent-mcp-drain-20260828.md` (references/) — drain subagente MCP (#6465, epic #6464): lote 5-10 (#6496), anti-fabricação (verificar `.jsonl` + manifest, NÃO confiar só em EXIT=0), dedup obrigatório (`subscriber_id` + `(sub, url_hash, clicked_at)`) devido a duplicados em fronteiras de página, fonte única Helios/Neo (`data/beehiiv-backup/subscriber-engagement/` — `.worktrees/agent-*` NÃO sincronizam automaticamente), claim hygiene (`--kind continuo`).
+- `tick-20260828-claim-collision-and-subagent.md` (references/) — aprendizados operacionais do tick 21:05 BRT 28/08: claim colisão `continuo` vs `develop` (sessão stale não bloqueia claim ativo) + delegação de drain a subagente + detecção de claim obsoleto.
 - Rotação de modelo do Hermes (v0.4 §rotação): OBSOLETA para implementação —
   o fallback de modelo agora vive no wrapper. Mantida só para o modelo que o
   próprio Hermes usa para orquestrar/relatar.
