@@ -8,7 +8,10 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { checkSecondaryItemCoherence } from "../secondary-item-coherence.ts";
+import {
+  checkSecondaryItemCoherence,
+  secondaryItemCoherenceSeverity, // #6441
+} from "../secondary-item-coherence.ts";
 import { type ApprovedJson } from "../url-bucket.ts";
 
 // Modo --check secondary-item-coherence (#5663) — backstop estrutural
@@ -34,13 +37,24 @@ export function runCli(args: Record<string, string>, root: string): void {
   );
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
+    // #6441: exit code segue a mesma severidade dinâmica do agregador
+    // `--stage 4 --json` (secondaryItemCoherenceSeverity) — sem isso, rodar
+    // este check isolado dava um veredito mais estrito (sempre exit 1) do
+    // que o mesmo conteúdo recebe dentro de `--stage 4` (warn-only para
+    // fabricated-ellipsis recuperável), divergência que passou despercebida
+    // no review original (nada no repo chama este modo standalone hoje, mas
+    // não deveria ficar inconsistente por isso).
+    const severity = secondaryItemCoherenceSeverity(result);
     console.error(
-      `\n❌ secondary-item-coherence: ${result.errors.length} item(ns) secundário(s) com saída incoerente:`,
+      `\n${severity === "gate-blocking" ? "❌" : "⚠️"} secondary-item-coherence (${severity}): ` +
+        `${result.errors.length} item(ns) secundário(s) com saída incoerente:`,
     );
     for (const e of result.errors) {
       console.error(`  ${e.kind} — ${e.section} linha ${e.line}: "${e.titleExcerpt}"`);
     }
-    process.exit(1);
+    if (severity === "gate-blocking") {
+      process.exit(1);
+    }
   }
   return;
 }

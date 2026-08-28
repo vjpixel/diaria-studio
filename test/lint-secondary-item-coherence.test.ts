@@ -114,7 +114,10 @@ describe("secondaryItemCoherenceSeverity (#6441)", () => {
     // new logic added by #6441 and the piece responsible for "gate-blocking
     // maintained" once an irrecoverable case IS present in a report.
     assert.equal(
-      isFabricatedEllipsisRecoverable("...e… O post Título apareceu primeiro em Fonte..."),
+      isFabricatedEllipsisRecoverable(
+        "...e o post apareceu…",
+        "...e… O post Título apareceu primeiro em Fonte...",
+      ),
       false,
     );
     const syntheticReport: SecondaryItemCoherenceReport = {
@@ -133,5 +136,42 @@ describe("secondaryItemCoherenceSeverity (#6441)", () => {
       ],
     };
     assert.equal(secondaryItemCoherenceSeverity(syntheticReport), "gate-blocking");
+  });
+
+  it("stays gate-blocking for a MID-SENTENCE fabricated ellipsis, even with an intact summary (code-review finding: the autofix only ever attempts TRAILING ellipsis, so a mid-sentence one must never downgrade)", () => {
+    // Summary has zero ellipsis anywhere → checkSecondaryItemCoherence's
+    // broad ELLIPSIS_RE.test(description) fires (mid-sentence included),
+    // but `apply-secondary-item-ellipsis-autofix.ts` only ever scans for a
+    // TRAILING ellipsis in the description — it would never even attempt
+    // this item. `recoverable` (and therefore severity) must reflect that:
+    // downgrading it to warn-only would ship a fabricated claim nobody
+    // fixed.
+    const midSentenceApproved = {
+      radar: [
+        {
+          url: "https://example.com/mid-sentence",
+          article: {
+            summary: "O uso excessivo pode comprometer a reputação profissional da empresa.",
+          },
+        },
+      ],
+    };
+    const result = checkSecondaryItemCoherence(
+      radar(
+        "O uso excessivo pode… comprometer a reputação profissional da empresa.",
+        "https://example.com/mid-sentence",
+      ),
+      midSentenceApproved,
+    );
+    assert.equal(result.errors[0].kind, "fabricated-ellipsis");
+    assert.equal(result.errors[0].recoverable, false);
+    assert.equal(secondaryItemCoherenceSeverity(result), "gate-blocking");
+    assert.equal(
+      isFabricatedEllipsisRecoverable(
+        "O uso excessivo pode… comprometer a reputação profissional da empresa.",
+        "O uso excessivo pode comprometer a reputação profissional da empresa.",
+      ),
+      false,
+    );
   });
 });

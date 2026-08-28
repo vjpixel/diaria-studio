@@ -59,10 +59,12 @@ export interface SecondaryItemCoherenceError {
   url: string;
   /**
    * (#6441) Only meaningful for `kind === "fabricated-ellipsis"`: true when
-   * the raw summary does not end in a trailing ellipsis, meaning the
-   * autofix can mechanically restore the missing tail. Always `true` for
-   * `unbalanced-quote` (n/a — quote balance has no autofix; Stage 4 gates
-   * on that kind unconditionally regardless of this field).
+   * `isFabricatedEllipsisRecoverable` confirms the autofix can mechanically
+   * restore the missing tail (see that function's docstring for the full
+   * two-part condition). Always `false` for `unbalanced-quote` — no autofix
+   * exists for it, so it is never "recoverable" in the sense this field
+   * means; `secondaryItemCoherenceSeverity` gates on that kind
+   * unconditionally regardless of this field's value either way.
    */
   recoverable: boolean;
 }
@@ -82,14 +84,29 @@ function normalizeWhitespace(text: string): string {
 }
 
 /**
- * (#6441) True when `summary` does not end in a trailing ellipsis — the
- * signal `apply-secondary-item-ellipsis-autofix.ts` uses to decide whether a
- * truncated description can be mechanically restored from it. Exported so
- * the autofix module and this check share one definition instead of two
- * regexes drifting apart.
+ * (#6441) True when the autofix (`secondary-item-ellipsis-autofix.ts`) could
+ * plausibly restore `description` from `summary` — i.e. the FULL scope the
+ * autofix actually attempts, not just "summary looks intact". Two
+ * conditions, both required:
+ *   1. `description` itself ends in a TRAILING ellipsis — the autofix only
+ *      ever scans for trailing ellipsis (`TRAILING_ELLIPSIS_RE.test(item.description)`
+ *      in `applySecondaryItemEllipsisAutofix`); a MID-SENTENCE fabricated
+ *      ellipsis (which `checkSecondaryItemCoherence`'s broader `ELLIPSIS_RE`
+ *      below DOES flag) is never attempted by the autofix at all, so it must
+ *      stay `recoverable: false` — downgrading it to warn-only would ship a
+ *      fabricated claim the autofix never touched (code-review finding on
+ *      #6441: severity was initially keyed only on the summary's state,
+ *      silently widening the warn-only net to a case the autofix can't fix).
+ *   2. `summary` does not end in a trailing ellipsis — the signal the
+ *      autofix uses to know there's something to paste back.
+ * Exported so the autofix module and this check share one definition
+ * instead of two regexes drifting apart.
  */
-export function isFabricatedEllipsisRecoverable(summary: string): boolean {
-  return !TRAILING_ELLIPSIS_RE.test(normalizeWhitespace(summary));
+export function isFabricatedEllipsisRecoverable(description: string, summary: string): boolean {
+  return (
+    TRAILING_ELLIPSIS_RE.test(description) &&
+    !TRAILING_ELLIPSIS_RE.test(normalizeWhitespace(summary))
+  );
 }
 
 /**
@@ -177,12 +194,12 @@ export function checkSecondaryItemCoherence(
         url: item.url,
       };
       if (isUnbalancedQuote(description)) {
-        errors.push({ kind: "unbalanced-quote", recoverable: true, ...base });
+        errors.push({ kind: "unbalanced-quote", recoverable: false, ...base });
       }
       if (ELLIPSIS_RE.test(description) && !ELLIPSIS_RE.test(summary)) {
         errors.push({
           kind: "fabricated-ellipsis",
-          recoverable: isFabricatedEllipsisRecoverable(summary),
+          recoverable: isFabricatedEllipsisRecoverable(item.description, summary),
           ...base,
         });
       }
