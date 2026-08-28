@@ -44,23 +44,22 @@ def _load(path):
 
 
 def _pool_state(entries, now_ts):
-    """Retorna (algum_utilizavel, algum_exausto_com_reset_futuro)."""
-    usable = any(e.get("last_status") != "exhausted" for e in entries)
-    blocked = any(
+    """Retorna True se algum crendencial está exausta com reset futuro."""
+    return any(
         e.get("last_status") == "exhausted"
         and (e.get("last_error_reset_at") or 0) > now_ts
         for e in entries
     )
-    return usable, blocked
 
 
 def _job_uses_free_openrouter_pool(job):
     """True só se o job está configurado pra rodar num modelo `:free` do
     OpenRouter (#6594) — a exaustão do pool free só é relevante nesse caso.
     Um override manual pra modelo pago (provider != "openrouter", ou model
-    sem sufixo ":free") não depende do pool e não deve ser pausado por ele."""
+    sem sufixo ":free") não depende do pool: não deve ser pausado por ela
+    nem ficar preso esperando o reset dela pra retomar."""
     provider = (job.get("provider") or "").strip().lower()
-    model = (job.get("model") or "").strip()
+    model = (job.get("model") or "").strip().lower()
     return provider == "openrouter" and model.endswith(":free")
 
 
@@ -74,7 +73,7 @@ def main():
         return  # sem pool openrouter — fora do escopo
 
     now_ts = datetime.datetime.now().timestamp()
-    _, blocked = _pool_state(entries, now_ts)
+    blocked = _pool_state(entries, now_ts)
 
     try:
         jobs_raw = _load(JOBS_PATH)
@@ -93,16 +92,24 @@ def main():
             # alguém (editor ou reset manual) já reativou; só limpa o marcador
             os.remove(MARKER_PATH)
             return
-        if not blocked:
+        # #6594: se o editor reconfigurou o job pra modelo pago ENQUANTO
+        # pausado, ele não depende mais do pool free — não faz sentido
+        # esperar o reset dele pra retomar.
+        if not blocked or not _job_uses_free_openrouter_pool(job):
             r = subprocess.run(
                 ["hermes", "cron", "resume", JOB_ID],
                 capture_output=True, text=True, timeout=90,
             )
             if r.returncode == 0:
                 os.remove(MARKER_PATH)
+                reason = (
+                    "modelo do job não depende mais do pool free"
+                    if blocked
+                    else "a cota do OpenRouter renovou (reset natural)"
+                )
                 print(
-                    f"▶️ **Diária Contínuo retomado** pelo watchdog: a cota do "
-                    f"OpenRouter renovou (reset natural). Próximo wake volta ao normal."
+                    f"▶️ **Diária Contínuo retomado** pelo watchdog: {reason}. "
+                    f"Próximo wake volta ao normal."
                 )
             else:
                 print(

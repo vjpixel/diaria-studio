@@ -46,7 +46,10 @@ def consecutive_delegation_failures(max_check: int = 5) -> int:
     a falha porque o tick em si roda até o fim com exit 0."""
     out_dir = CRON_OUTPUT_DIR.format(JOB_ID)
     try:
-        files = sorted(f for f in os.listdir(out_dir) if f.endswith(".md"))
+        names = [f for f in os.listdir(out_dir) if f.endswith(".md")]
+        # Ordena por mtime, não pelo nome — o nome do arquivo é convenção do
+        # Hermes, não garantia; mtime é o sinal de "mais recente" real.
+        files = sorted(names, key=lambda f: os.path.getmtime(os.path.join(out_dir, f)))
     except Exception:
         return 0
     count = 0
@@ -57,7 +60,10 @@ def consecutive_delegation_failures(max_check: int = 5) -> int:
             ) as f:
                 content = f.read()
         except Exception:
-            break
+            # Arquivo ilegível não conta como falha nem interrompe a
+            # contagem — pula pro próximo tick mais antigo em vez de
+            # subestimar o streak por um problema de leitura pontual.
+            continue
         if any(marker in content for marker in DELEGATION_FAILURE_MARKERS):
             count += 1
         else:
