@@ -1518,9 +1518,19 @@ export function unclaimIssue(
   const claimed = current.claimed_issues ?? [];
   if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };
 
+  // #6453 — limpa a entrada correspondente de `claimed_issues_at` junto com a
+  // remoção de `claimed_issues`. Sem isto, uma re-reivindicação futura da
+  // MESMA issue herda o timestamp da claim ANTERIOR (`claimIssueCheckAndSet`
+  // nunca sobrescreve uma chave já presente, #6436) e nasce artificialmente
+  // "envelhecida" para `findAgedClaims`/`check-block-staleness.ts` — o falso
+  // positivo exato que o gate de staleness existe para evitar.
+  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+  delete claimedAt[String(issueNumber)];
+
   writeJsonSafe(path, {
     ...current,
     claimed_issues: claimed.filter((n) => n !== issueNumber),
+    claimed_issues_at: claimedAt,
     lastHeartbeat: now,
   });
   return { ok: true, reason: "unclaimed" };
