@@ -100,7 +100,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { KitBroadcastClick, KitBroadcastDetail, KitBroadcastStats, KitBroadcastSummary } from "../kit-client.ts";
+import {
+  kitBroadcastCtrPct,
+  type KitBroadcastClick,
+  type KitBroadcastDetail,
+  type KitBroadcastStats,
+  type KitBroadcastSummary,
+} from "../kit-client.ts";
 
 const MODULE_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 const ROOT = resolve(MODULE_DIR, "..", "..", "..");
@@ -187,9 +193,20 @@ export interface NormalizedLinkClick {
 /** Shape de `stats` no cache normalizado — `email.unique_opens` é
  *  passthrough do Beehiiv OU derivado de `KitBroadcastStats.emails_opened`
  *  do lado Kit (#6344 — ver `normalizeKitBroadcast`). `enrichment_state` é
- *  passthrough de `scripts/lib/shared/enrichment-state.ts`. */
+ *  passthrough de `scripts/lib/shared/enrichment-state.ts`.
+ *
+ *  `recipients`, `ctr_pct` e `unsubscribes` (#6186) só saem populados do
+ *  lado Kit hoje — `RawBeehiivPostFile`/o cache real de
+ *  `data/beehiiv-cache/posts/*.json` não tem esses 3 campos no nível
+ *  `stats.email` (o post cache Beehiiv nunca guardou stats agregados de
+ *  entrega/CTR/descadastro, só abertura+cliques — ver
+ *  `click-cache-completeness.ts`), então o lado Beehiiv sempre deixa os 3
+ *  como `undefined` via passthrough (nunca inventa um valor). `ctr_pct` usa
+ *  `kitBroadcastCtrPct` (`unique_clicked / delivered`, semântica confirmada
+ *  #6186) — **nunca** o equivalente à armadilha `click_rate` da Beehiiv
+ *  (`scripts/lib/leitor.ts`), que é click-to-open. */
 export interface UnifiedClickStats {
-  email?: { unique_opens?: number };
+  email?: { unique_opens?: number; recipients?: number; ctr_pct?: number; unsubscribes?: number };
   clicks?: NormalizedLinkClick[];
   enrichment_state?: string;
 }
@@ -323,6 +340,15 @@ export function normalizeBeehiivPost(raw: RawBeehiivPostFile): UnifiedCachedPost
  * inventado) mas `stats.email.unique_opens` já sai populado — os dois
  * campos são escritos por escritores independentes e não dependem um do
  * outro pra existir.
+ *
+ * `stats.email.recipients`/`ctr_pct`/`unsubscribes` (#6186): mesmo raw
+ * `b.stats` que alimenta `unique_opens` acima já carrega `recipients` e
+ * `unsubscribes` (passthrough direto) e `click_rate` — `ctr_pct` usa
+ * `kitBroadcastCtrPct(b.stats)`, NUNCA lê `click_rate` cru neste módulo
+ * (mesma disciplina de nomear a função em vez de inline, ver docstring de
+ * `kitBroadcastCtrPct`). Os 3 saem junto de `unique_opens` (mesmo gate
+ * `hasOpens` — todos vêm do mesmo objeto `b.stats`, não têm motivo pra
+ * divergir em presença).
  */
 export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost {
   const webUrl = b.public_url; // pode ser undefined — não assumir presença (#6096)
@@ -331,7 +357,16 @@ export function normalizeKitBroadcast(b: RawKitBroadcastFile): UnifiedCachedPost
   const stats: UnifiedClickStats | undefined =
     hasClicks || hasOpens
       ? {
-          ...(hasOpens ? { email: { unique_opens: b.stats!.emails_opened } } : {}),
+          ...(hasOpens
+            ? {
+                email: {
+                  unique_opens: b.stats!.emails_opened,
+                  recipients: b.stats!.recipients,
+                  ctr_pct: kitBroadcastCtrPct(b.stats!),
+                  unsubscribes: b.stats!.unsubscribes,
+                },
+              }
+            : {}),
           ...(hasClicks ? { clicks: b.clicks!.map(normalizeKitClick) } : {}),
         }
       : undefined;
