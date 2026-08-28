@@ -341,6 +341,7 @@ import { buildRoundPayload, isRoundKind, listRoundSummaries } from "./studio-rou
 import { listReports, getReportById, resolveReportHtml } from "./studio-reports.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
+import { handlePainelTokens } from "./dashboard-tokens.ts";
 import {
   parseChatRequestBody,
   parseChatAnswerRequestBody,
@@ -2151,6 +2152,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/painel/clarice") {
         handlePainelClarice(req, res);
+        return;
+      }
+      // #6445: painel consolidado de uso de tokens por tipo de sessão
+      // (edição/overnight/develop/continuo) — ver dashboard-tokens.ts.
+      if (urlPath === "/painel/tokens") {
+        handlePainelTokens(req, res);
         return;
       }
       if (urlPath.startsWith("/api/")) {

@@ -19,6 +19,7 @@ import {
   computeAlarms,
   buildSessionTokensSummary,
   formatSessionTokensSummary,
+  defaultSinceAammdd,
   type KindDayTotals,
 } from "../scripts/aggregate-session-tokens.ts";
 
@@ -244,5 +245,22 @@ describe("buildSessionTokensSummary — integração fim-a-fim com fixtures em t
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("defaultSinceAammdd (#6445 — janela default do painel /painel/tokens)", () => {
+  it("subtrai N dias e formata como AAMMDD", () => {
+    const now = new Date("2026-08-28T12:00:00Z");
+    assert.equal(defaultSinceAammdd(now, 14), "260814");
+  });
+
+  it("cruza virada de mês/ano corretamente", () => {
+    const now = new Date("2026-01-05T12:00:00Z");
+    assert.equal(defaultSinceAammdd(now, 14), "251222");
+  });
+
+  it("days=0 retorna a própria data de now", () => {
+    const now = new Date("2026-08-28T12:00:00Z");
+    assert.equal(defaultSinceAammdd(now, 0), "260828");
   });
 });

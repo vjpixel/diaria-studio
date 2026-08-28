@@ -245,6 +245,27 @@ export function computeAlarms(rows: KindDayTotals[], alarmPct: number): { day: s
 }
 
 // ---------------------------------------------------------------------------
+// Janela default (#6445 item 2 — "últimos 14 dias" no painel do Studio)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pura: `AAMMDD` de `days` dias atrás de `now`, no calendário civil UTC (não
+ * BRT — a mesma imprecisão de fuso de ±3h que já existe em todo o resto
+ * deste script, que agrega por `edition`/`day` como string, nunca timestamp
+ * exato; irrelevante para uma janela de 14 dias). Usada como default do
+ * `since` do painel `/painel/tokens` do Studio (#6445) quando nenhum
+ * `--since` explícito é passado — o CLI standalone (`main()` abaixo)
+ * continua sem limitar por padrão, comportamento inalterado.
+ */
+export function defaultSinceAammdd(now: Date, days: number): string {
+  const past = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const yy = String(past.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(past.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(past.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+// ---------------------------------------------------------------------------
 // Orquestração
 // ---------------------------------------------------------------------------
 
