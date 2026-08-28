@@ -10,6 +10,9 @@
  *   - tree suja, já atualizado → stash → pull → pop → "already_up_to_date"
  *   - dirty tree, stash pop falhou → "stash_pop_failed" (stash preservado)
  *   - dirty tree, stash falhou → "stash_failed" (tree não tocada)
+ *   - #6668: dirty tree, stash pop deixa arquivo UU (marcador de conflito
+ *     literal no disco) → "stash_pop_conflict" — distinto de "stash_pop_failed",
+ *     mensagem ERROR, independente do exit code do pop
  *   - fetch falhou (offline) → "fetch_failed", proceed=true (fail-soft)
  *   - pull --ff-only falhou (divergência) → "ff_failed", proceed=true
  *   - branch != master → checkout master primeiro
@@ -296,6 +299,116 @@ describe("git-sync — dirty tree edge cases", () => {
     const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "synced", "outcome deve ser 'synced' (não 'synced_stashed') quando nada foi de fato stashado");
+    assert.equal(r.proceed, true);
+  });
+});
+
+describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco", () => {
+  /**
+   * Reprodução real (#6668, checkout compartilhado 28/08 ~23:00): `SKILL.md`
+   * ficou em `UU` com marcadores `<<<<<<< Updated upstream` / `>>>>>>>
+   * Stashed changes` literais, SEM merge/rebase em curso — assinatura de um
+   * `git stash pop` que conflitou. O fail-soft genérico ("pop falhou, warn,
+   * segue") não distinguia esse caso de qualquer outro warning — outra
+   * sessão lendo o arquivo o trataria como íntegro.
+   *
+   * `makeSpawn()` usa um mapa estático por chave "cmd args" — não dá pra
+   * responder diferente pra 2 chamadas com a MESMA chave (aqui,
+   * "git status --porcelain" é chamado 2×: o dirty check ANTES do stash, e a
+   * checagem nova de unmerged DEPOIS do pop). Os testes abaixo usam um
+   * spawn customizado com contador pra diferenciar as 2 chamadas.
+   */
+  it("stash pop falha (conflito) E deixa arquivo UU → 'stash_pop_conflict' (NÃO 'stash_pop_failed')", () => {
+    let statusCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git status --porcelain") {
+        statusCalls++;
+        // 1ª chamada = dirty check (antes do stash); 2ª = pós-pop (unmerged).
+        return statusCalls === 1 ? ok(" M hermes/skills/hermes-diaria-continuo/SKILL.md") : ok("UU hermes/skills/hermes-diaria-continuo/SKILL.md");
+      }
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+        "git stash pop": fail("CONFLICT (content): Merge conflict in hermes/skills/hermes-diaria-continuo/SKILL.md"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "stash_pop_conflict");
+    assert.equal(r.proceed, true, "ainda fail-soft — nunca bloqueia a edição");
+    assert.match(r.message, /ERROR/, "mensagem deve ser ERROR, mais forte que o WARN genérico");
+    assert.match(r.message, /SKILL\.md/, "mensagem deve nomear o arquivo em conflito");
+    assert.ok(r.warnings.some((w) => /stash_pop_conflict|UU|unmerged|conflito n[aã]o/i.test(w) || /ERROR/.test(w)));
+  });
+
+  it("stash pop retorna exit 0 MAS deixa arquivo UU (defensivo) → ainda 'stash_pop_conflict'", () => {
+    // Não deveria acontecer na prática (um pop limpo não deixa unmerged),
+    // mas o guard não confia só no exit code — é exatamente esse tipo de
+    // suposição que o incidente #6668 expôs como furo.
+    let statusCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git status --porcelain") {
+        statusCalls++;
+        return statusCalls === 1 ? ok(" M arquivo.txt") : ok("UU arquivo.txt");
+      }
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+        "git stash pop": ok("On branch master..."), // exit 0, apesar disso
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "stash_pop_conflict");
+    assert.equal(r.proceed, true);
+  });
+
+  it("ff também falhou (divergência) E pop deixou UU → 'stash_pop_conflict' (não 'ff_failed')", () => {
+    // O outcome mais específico (arquivo corrompido no disco) tem prioridade
+    // sobre "ff_failed" — a divergência sozinha não corrompe nada; o arquivo
+    // com marcador literal é o problema mais urgente dos dois.
+    let statusCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git status --porcelain") {
+        statusCalls++;
+        return statusCalls === 1 ? ok(" M arquivo.txt") : ok("UU arquivo.txt");
+      }
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
+        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "stash_pop_conflict");
+    assert.match(r.message, /ff.*falhou|divergência/i);
+  });
+
+  it("stash pop sem UU (caso comum, já coberto acima) não regride — 'synced_stashed' continua saindo", () => {
+    // git status --porcelain responde a MESMA coisa (sem UU) nas 2 chamadas
+    // (dirty check + pós-pop) — confirma que a checagem nova não interfere
+    // no caminho feliz já coberto no describe "cenários de sucesso".
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(" M .claude/settings.json"),
+      "git stash --include-untracked": ok("Saved working directory..."),
+      "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+      "git stash pop": ok("On branch master..."),
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "synced_stashed");
     assert.equal(r.proceed, true);
   });
 });

@@ -25,6 +25,27 @@
  *      (reversível). Se stash falhar E nenhum stash tiver sido criado → warn +
  *      retorna sem tocar o tree ("stash_failed"). Se stash pop falhar (conflito
  *      de merge) → warn + stash preservado.
+ *   3d. #6668: um `stash pop` que CONFLITA pode deixar marcadores de conflito
+ *      literais (`<<<<<<<`/`=======`/`>>>>>>>`) dentro de um arquivo VERSIONADO
+ *      — diferente do caso comum de "pop falhou" (3 acima), que é tratado como
+ *      fail-soft porque o pior caso é "stash preservado, tree como antes do
+ *      stash". Aqui o arquivo em disco fica sintaticamente quebrado E ainda
+ *      referenciado por `refs/stash`, e outra sessão lendo esse arquivo o
+ *      trataria como íntegro (incidente #6668: checkout compartilhado com
+ *      `SKILL.md` em `UU`, sem merge/rebase em curso — assinatura de
+ *      `stash pop` conflitante). Detectado via `findUnmergedPaths()` — checa
+ *      `git status --porcelain` por linhas com código de conflito (`UU`,
+ *      `AA`, `AU`, `UA`, `DU`, `UD`, `DD`) logo após o pop, INDEPENDENTE do
+ *      exit code do pop (defensivo — um pop com exit 0 mas unmerged não
+ *      deveria acontecer, mas o guard não confia só no exit code). Outcome
+ *      distinto `"stash_pop_conflict"` (não `"stash_pop_failed"`) — ainda
+ *      fail-soft (`proceed: true`, nunca bloqueia a edição — CLAUDE.md
+ *      "Sync de código no início de cada edição" continua valendo), mas com
+ *      mensagem ERROR (não WARN) para que o consumidor (CLI, task-runner,
+ *      orchestrator) saiba que este warning é mais sério que um "pop falhou"
+ *      comum e decida se quer agir (ex: halt banner) no nível apropriado —
+ *      este módulo em si nunca chama `render-halt-banner.ts` (isso é decisão
+ *      de stage/orchestrator, fora do escopo fail-soft deste helper).
  *   3a. #3411: `git stash --include-untracked` não é atômico — cria o(s) commit(s)
  *      de stash e SÓ DEPOIS remove os arquivos não-rastreados (clean-equivalente).
  *      Se essa remoção falhar parcialmente (ex: Permission denied), o comando sai
@@ -64,9 +85,11 @@
  *            `resolveSharedLockPath()`.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
- *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_partial_failure
- *      (ou sua variante _unrecovered) OU sync_in_progress NÃO bloqueiam a
- *      edição — retornam status de warn e a skill continua.
+ *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_pop_conflict
+ *      (#6668 — ver 3d acima) OU stash_partial_failure (ou sua variante
+ *      _unrecovered) OU sync_in_progress NÃO bloqueiam a edição — retornam
+ *      status de warn (ou ERROR, no caso de stash_pop_conflict) e a skill
+ *      continua.
  *
  * Nota: usa `git merge --ff-only origin/master` (não `git pull`) após o fetch
  * explícito do passo 2 — evita um segundo fetch implícito (rede = única
@@ -124,6 +147,10 @@ export type GitSyncOutcome =
   | "stash_partial_failure"             // stash saiu não-zero MAS criou um stash (#3411); recuperado via pop automático — warn, segue
   | "stash_partial_failure_unrecovered" // idem, mas o pop automático TAMBÉM falhou — stash preservado p/ investigação manual — warn, segue
   | "stash_pop_failed"    // pull OK mas stash pop teve conflito — warn, stash preservado
+  | "stash_pop_conflict"  // #6668: stash pop deixou arquivo(s) VERSIONADO(S) com marcador de conflito
+                           // literal no disco (unmerged, ver findUnmergedPaths()) — mais sério que
+                           // stash_pop_failed (arquivo sintaticamente quebrado, não só "pop não terminou"),
+                           // mas AINDA fail-soft (proceed: true) — warn ERROR, segue
   | "checkout_failed"     // não estava em master e checkout master falhou — warn, segue
   | "sync_in_progress";   // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
 
@@ -255,8 +282,16 @@ export interface LockFs {
  * `git rev-list --count HEAD..origin/master` DEPOIS da tentativa inteira,
  * mas AINDA sob o lock (o spread acontece antes do `finally { release() }`),
  * então entra na contagem que dimensiona `LOCK_STALE_MS`.
+ *
+ * #6668: o pior caso ganhou o 10º spawn — `findUnmergedPaths()` roda
+ * `git status --porcelain` logo após `git stash pop` (dentro do ramo
+ * `stashedSomething`), pra detectar conflito deixado no disco. A fórmula de
+ * `LOCK_STALE_MS` abaixo já é derivada de `MAX_SEQUENTIAL_GIT_SPAWNS` (não
+ * um número solto redundante), então vira automaticamente 9 ×
+ * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS` — o novo spawn é rápido por
+ * natureza (`git status`), mesma categoria dos outros 8 não-fetch.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 9;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 10;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -648,6 +683,36 @@ export function defaultSpawn(cmd: string, args: string[], timeoutMs: number = GI
   };
 }
 
+/**
+ * Códigos do `git status --porcelain` (`git help status`, seção "Unmerged")
+ * que sinalizam um caminho com conflito de merge NÃO resolvido — os 2
+ * caracteres de status são ambos de "lado" (não um espaço), o formato que a
+ * porcelain reserva especificamente para unmerged. #6668: usado para
+ * detectar quando um `git stash pop` deixou marcador de conflito literal
+ * (`<<<<<<<`/`=======`/`>>>>>>>`) dentro de um arquivo VERSIONADO — ver
+ * `findUnmergedPaths()` abaixo e o item 3d do docstring no topo do arquivo.
+ */
+const UNMERGED_STATUS_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+
+/**
+ * Lista os caminhos (relativos ao repo) que `git status --porcelain` reporta
+ * como unmerged agora mesmo — usado depois de um `git stash pop` para
+ * detectar conflito deixado no disco (#6668), independente do exit code do
+ * `stash pop` em si (defensivo — ver comentário no ponto de uso).
+ *
+ * Fail-soft: se o próprio `git status` falhar, retorna `[]` (não assume
+ * conflito por ausência de sinal — o resto do módulo já trata falha de
+ * `git status` como "tratar como dirty", que não se aplica aqui).
+ */
+function findUnmergedPaths(spawn: SpawnFn): string[] {
+  const res = spawn("git", ["status", "--porcelain"]);
+  if (res.status !== 0) return [];
+  return res.stdout
+    .split("\n")
+    .filter((line) => line.length > 3 && UNMERGED_STATUS_CODES.has(line.slice(0, 2)))
+    .map((line) => line.slice(3).trim());
+}
+
 function isAlreadyUpToDate(stdout: string): boolean {
   // git merge/pull imprime "Already up to date." (EN) ou "Já está atualizado." (PT).
   // Espaços literais (não wildcards) — evita falso-positivo em strings inesperadas.
@@ -882,6 +947,35 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
     // ── restaurar stash sempre (mesmo se o merge falhou) ──────────────────
     if (stashedSomething) {
       const popRes = spawn("git", ["stash", "pop"]);
+
+      // #6668: checar ANTES de decidir o outcome, e INDEPENDENTE do exit code
+      // do pop (defensivo — um pop com exit 0 mas unmerged não deveria
+      // acontecer, mas este guard não confia só no exit code, que é
+      // exatamente o furo que o incidente #6668 expôs). Um pop que deixa
+      // arquivo(s) VERSIONADO(S) em estado unmerged é mais sério que "pop
+      // falhou" genérico: o arquivo fica sintaticamente quebrado no disco
+      // (marcadores <<<<<<</=======/>>>>>>> literais) E ainda referenciado
+      // por refs/stash — outra sessão lendo esse arquivo o trataria como
+      // íntegro. Outcome distinto ("stash_pop_conflict"), mensagem ERROR (não
+      // WARN) — ainda fail-soft (proceed: true), nunca bloqueia a edição.
+      const unmergedPaths = findUnmergedPaths(spawn);
+      if (unmergedPaths.length > 0) {
+        const ffFailed = pullRes.status !== 0;
+        const msg =
+          `[git-sync] ERROR: git stash pop deixou ${unmergedPaths.length} arquivo(s) VERSIONADO(S) ` +
+          `com conflito NÃO-RESOLVIDO (marcadores <<<<<<</=======/>>>>>>> literais no disco): ` +
+          `${unmergedPaths.join(", ")}. Diferente de um 'pop falhou' comum — o(s) arquivo(s) ficaram ` +
+          `sintaticamente quebrados e ainda referenciados por 'refs/stash'; outra sessão lendo esse(s) ` +
+          `arquivo(s) pode tratá-los como íntegros (#6668). Stash preservado (NÃO fazer 'git stash drop') ` +
+          `— resolva manualmente ('git status', 'git diff') antes de descartar.` +
+          (ffFailed
+            ? ` ff (merge --ff-only) também falhou (divergência) — stderr: ${pullRes.stderr.trim() || "(vazio)"}.`
+            : "") +
+          ` Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`;
+        warnings.push(msg);
+        return { outcome: "stash_pop_conflict", message: msg, branch_before: branchBefore, warnings, proceed: true };
+      }
+
       if (popRes.status !== 0) {
         // merge pode ter trazido mudanças conflitantes com o stash.
         // Se o merge TAMBÉM falhou, incluir o stderr dele — senão a mensagem
