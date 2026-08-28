@@ -251,9 +251,8 @@ describe("shouldBlockBranchCheckout (#6509)", () => {
   });
 
   it("(d) fail-open: activeCoordinatorSessionIds ausente (undefined/null)", () => {
-    // @ts-expect-error — exercita o fallback `?? new Set()` do próprio guard
+    // sem tipos declarados pro .mjs (TS7016 aceito), o parâmetro é any — sem erro de tipo esperado aqui
     assert.equal(shouldBlockBranchCheckout(undefined, "sess-x"), false);
-    // @ts-expect-error
     assert.equal(shouldBlockBranchCheckout(null, "sess-x"), false);
   });
 });
