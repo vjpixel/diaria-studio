@@ -64,6 +64,7 @@ describe("reschedule-worker-queue-post main()", () => {
   let origFetch: typeof fetch;
   let origLog: typeof console.log;
   let origError: typeof console.error;
+  let origEnv: Record<string, string | undefined>;
   let logs: string[];
   let errors: string[];
 
@@ -73,6 +74,10 @@ describe("reschedule-worker-queue-post main()", () => {
     origFetch = globalThis.fetch;
     origLog = console.log;
     origError = console.error;
+    origEnv = {
+      DIARIA_LINKEDIN_CRON_URL: process.env.DIARIA_LINKEDIN_CRON_URL,
+      DIARIA_LINKEDIN_CRON_TOKEN: process.env.DIARIA_LINKEDIN_CRON_TOKEN,
+    };
     console.log = (...a: unknown[]) => {
       logs.push(a.map(String).join(" "));
     };
@@ -85,6 +90,10 @@ describe("reschedule-worker-queue-post main()", () => {
     globalThis.fetch = origFetch;
     console.log = origLog;
     console.error = origError;
+    for (const [k, v] of Object.entries(origEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   });
 
   const baseArgs = [
