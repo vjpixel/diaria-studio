@@ -138,7 +138,9 @@ Para cada issue elegível (após claim):
 
 ```bash
 printf '%s' "Implemente a issue #N do repo atual (leia com gh issue view N).
-Siga o CLAUDE.md. Crie branch, implemente com edições cirúrgicas, adicione
+Siga o CLAUDE.md. Crie branch com o prefixo continuo/ (convenção
+continuo/fix-N-slug — é o que faz o PR aparecer como CONTINUO na Triagem
+do Studio, #6446), implemente com edições cirúrgicas, adicione
 teste de regressão se for bugfix (#633), rode os testes afetados, abra PR
 com gh pr create referenciando a issue. NÃO mergeie — o merge é do
 coordenador. Se a issue for inviável/ambígua além do trivial, comente nela

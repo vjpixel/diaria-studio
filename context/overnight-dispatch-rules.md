@@ -35,7 +35,7 @@ recém-colado, cat. A.)
 ## 2. Convenção de branch (#3321 — instrução literal, não implícita)
 
 - Overnight: `overnight/fix-{issue}-{slug}` (solo) ou `overnight/batch-{slug}` (lote).
-- Develop: `develop/fix-NNNN` (solo) ou `develop/blast-NNNN` (cat. D, sempre solo).
+- Develop: `develop/fix-NNNN` (solo) ou `develop/blast-NNNN` (cat. D, sempre solo). A sessão CONTINUO usa `continuo/fix-NNNN-{slug}` (#6446 v0.5.0) — é o prefixo que a Triagem do Studio (`deriveTrackFromBranch`) usa pra rotular o PR como `continuo`; sem ele o PR cai em `other`.
 
 O prefixo é o sinal que `.claude/hooks/pr-create-review.mjs` (`resolveEffort`)
 usa pra dar `low` effort no `/code-review` pós-`gh pr create`, e é o que o

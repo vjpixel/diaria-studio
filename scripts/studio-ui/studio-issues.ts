@@ -83,7 +83,7 @@ export interface GhPrRaw {
   reviewDecision?: string | null;
 }
 
-export type TrackLabel = "overnight" | "develop" | "other";
+export type TrackLabel = "overnight" | "develop" | "continuo" | "other";
 
 export interface TriageIssue {
   number: number;
@@ -245,10 +245,13 @@ export function derivePriority(labels: string[]): string | null {
 }
 
 /**
- * Deriva a trilha (overnight/develop/other) do nome do branch — convenção
- * literal documentada em `context/overnight-dispatch-rules.md` §2:
+ * Deriva a trilha (overnight/develop/continuo/other) do nome do branch —
+ * convenção literal documentada em `context/overnight-dispatch-rules.md` §2:
  *   - `overnight/fix-{issue}-{slug}` ou `overnight/batch-{slug}` → "overnight"
  *   - `develop/fix-NNNN` ou `develop/blast-NNNN` → "develop"
+ *   - `continuo/fix-NNNN-{slug}` → "continuo" (#6446 v0.5.0 — PRs do
+ *     hermes-diaria-continuo; antes saíam sem prefixo e caíam em "other",
+ *     invisíveis na Triagem como pedido do editor em 28/08)
  *   - qualquer outro prefixo (branch manual do editor, dependabot, etc.) → "other"
  *
  * Determinístico — não é um chute de label, é o mesmo sinal que
@@ -259,6 +262,7 @@ export function deriveTrackFromBranch(headRefName: string | undefined | null): T
   const branch = (headRefName ?? "").trim();
   if (branch.startsWith("overnight/")) return "overnight";
   if (branch.startsWith("develop/")) return "develop";
+  if (branch.startsWith("continuo/")) return "continuo";
   return "other";
 }
 
