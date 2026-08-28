@@ -193,6 +193,22 @@ export function shouldSkipForLowQuota(assertQuota: () => void = assertCampaignQu
   }
 }
 
+/**
+ * Exit code DEDICADO (#6563) pro skip deliberado de `shouldSkipForLowQuota`
+ * — distinto de exit 0 (rodou e não tinha nada a avaliar/enviar) e de
+ * qualquer exit de falha real. `75` é `EX_TEMPFAIL` (`man sysexits.3` —
+ * "temporary failure, indicating something that is not really an error");
+ * escolhido por já ser um dos exit codes de "recuo temporário deliberado"
+ * consolidados no repo, e por não colidir com nenhum `successExitCodes`
+ * já em uso em `scripts/lib/scheduled-tasks.ts` (que hoje só usa 3/4 —
+ * ver `NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE`). Declarado em
+ * `successExitCodes: [EX_TEMPFAIL]` no registro dessa task pra que
+ * `Diaria-Systemd-Unit-Rate-Alarm` (`scripts/systemd-unit-rate-alarm.ts`)
+ * pare de contar este skip como falha na taxa (achado #6563 — o mecanismo
+ * `successExitCodes` já existe e cobre exatamente este caso).
+ */
+export const EX_TEMPFAIL = 75 as const;
+
 interface BrevoCampaignListItem {
   id: number;
   name: string;
@@ -254,6 +270,7 @@ async function main(): Promise<void> {
   const skipReason = shouldSkipForLowQuota();
   if (skipReason) {
     console.log(`[clarice-guardrail-alarm] pulando esta execução — ${skipReason}`);
+    process.exitCode = EX_TEMPFAIL;
     return;
   }
 

@@ -35,7 +35,10 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { listSafeBackupFiles } from "./lib/session-registry.ts";
-import { buildSafeBackupFindings } from "./lib/session-registry-safebackup-alarm.ts";
+import {
+  resolveSafeBackupFindings,
+  SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD,
+} from "./lib/session-registry-safebackup-alarm.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -87,8 +90,15 @@ async function main(): Promise<void> {
       (backupFiles.length ? ` (${backupFiles.join(", ")})` : ""),
   );
 
-  const findings = buildSafeBackupFindings(backupFiles);
   const state = loadAlarmIssuesState();
+  const stateIsEmpty = Object.keys(state).length === 0;
+  const findings = resolveSafeBackupFindings(backupFiles, stateIsEmpty);
+  if (stateIsEmpty && backupFiles.length > SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD) {
+    console.log(
+      `${LOG_PREFIX} modo de estreia (#6562): ${backupFiles.length} backups agregados numa única issue ` +
+        `(state local vazio + acima do teto de ${SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD}).`,
+    );
+  }
 
   if (isDryRun) {
     const actions = planAlarmReconciliation(findings, state, CLOSE_ALARM_ISSUE_AFTER_RUNS);
