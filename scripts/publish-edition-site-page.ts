@@ -337,22 +337,47 @@ function sitePublishBranch(slug: string): string {
  */
 export type LockRunner = (args: string[], cwd: string) => { ok: boolean; stdout: string; stderr: string };
 
-const defaultLockRunner: LockRunner = (args, cwd) => {
-  try {
-    const stdout = execFileSync("npx", ["tsx", "scripts/lib/session-registry.ts", ...args], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).toString("utf8");
-    return { ok: true, stdout, stderr: "" };
-  } catch (e) {
-    const err = e as { status?: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
-    return {
-      ok: false,
-      stdout: err.stdout ? err.stdout.toString() : "",
-      stderr: err.stderr ? err.stderr.toString() : "",
-    };
-  }
-};
+/** Mesmo timeout individual por chamada que `merge-train-live.ts:107` usa
+ * pro runner real (`spawnSync(..., { timeout: 60_000 })`) — sem isso, o
+ * retry loop bounded (3 tentativas) de `acquireSitePublishLock` não é de
+ * fato bounded: uma única chamada travada (`npx`/`tsx` pendurado) bloqueia
+ * pra sempre (#6630). */
+const LOCK_RUNNER_TIMEOUT_MS = 60_000;
+
+/** Assinatura mínima de `execFileSync` usada por `createExecFileSyncLockRunner` —
+ * injetável pra teste de regressão do #6630 sem tocar o subprocesso real. */
+type ExecFileSyncFn = (
+  cmd: string,
+  args: string[],
+  options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number },
+) => Buffer | string;
+
+/** Fábrica do `LockRunner` real, parametrizada pela função de exec (default
+ * `execFileSync` de `node:child_process`) só pra permitir o teste de
+ * regressão do #6630 inspecionar as opções passadas sem invocar processo
+ * de verdade. `defaultLockRunner` abaixo é `createExecFileSyncLockRunner()`
+ * — nenhum comportamento de produção muda. */
+export function createExecFileSyncLockRunner(exec: ExecFileSyncFn = execFileSync): LockRunner {
+  return (args, cwd) => {
+    try {
+      const stdout = exec("npx", ["tsx", "scripts/lib/session-registry.ts", ...args], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: LOCK_RUNNER_TIMEOUT_MS,
+      }).toString("utf8");
+      return { ok: true, stdout, stderr: "" };
+    } catch (e) {
+      const err = e as { status?: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+      return {
+        ok: false,
+        stdout: err.stdout ? err.stdout.toString() : "",
+        stderr: err.stderr ? err.stderr.toString() : "",
+      };
+    }
+  };
+}
+
+const defaultLockRunner: LockRunner = createExecFileSyncLockRunner();
 
 /**
  * Pausa síncrona real (`Atomics.wait` sobre um `SharedArrayBuffer` — não
