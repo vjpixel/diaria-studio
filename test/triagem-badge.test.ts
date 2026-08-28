@@ -115,9 +115,17 @@ describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
 
   it("claim da sessão continuo (cron 60min, nunca stale por si só) → 'em andamento — continuo-helios'", () => {
     const html = claimBadge({ kind: "continuo", machineTag: "helios", sessionId: "5d791ef6", claimedAt: "2026-08-20T00:00:00Z" });
-    assert.match(html, /class="claim-badge"/);
+    // 28/08 (pedido do editor): kind vira classe própria — continuo ganha cor
+    // destacada em vez de sumir no badge neutro. A classe base permanece.
+    assert.match(html, /class="claim-badge claim-kind-continuo"/);
     assert.match(html, />em andamento — continuo-helios</);
     assert.match(html, /2026-08-20T00:00:00Z/, "tooltip carrega a data da 1ª reivindicação");
+  });
+
+  it("kind com caractere fora de [a-z-] NÃO vira classe (nunca injeta HTML/CSS via kind)", () => {
+    const html = claimBadge({ kind: 'x"onmouseover', machineTag: "m", sessionId: "s", claimedAt: null });
+    assert.match(html, /class="claim-badge"/);
+    assert.ok(!html.includes("claim-kind-"), "kind malformado cai na classe base");
   });
 
   it("claim sem claimedAt conhecido (sessão pré-#6436) ainda renderiza, sem citar data", () => {

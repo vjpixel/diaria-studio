@@ -62,6 +62,9 @@ describe("deriveTrackFromBranch (#3562)", () => {
   it("develop/blast-NNNN -> develop", () => {
     assert.equal(deriveTrackFromBranch("develop/blast-1234"), "develop");
   });
+  it("continuo/fix-NNNN-slug -> continuo (#6446 v0.5.0 — pedido do editor 28/08)", () => {
+    assert.equal(deriveTrackFromBranch("continuo/fix-6431-sync-code-scheduled"), "continuo");
+  });
   it("branch manual do editor -> other", () => {
     assert.equal(deriveTrackFromBranch("editor/hotfix-urgente"), "other");
   });

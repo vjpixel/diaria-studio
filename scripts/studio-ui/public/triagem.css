@@ -147,6 +147,7 @@
 }
 .track-overnight { border-color: var(--brand); color: var(--brand); }
 .track-develop { border-color: var(--status-info); color: var(--status-info); }
+.track-continuo { border-color: var(--status-warn); color: var(--status-warn); }
 .track-other { opacity: 0.6; }
 /* #3714: kinds da superfície de Relatórios (relatorios.js reusa .track-badge) */
 .track-edicao { border-color: var(--status-ok); color: var(--status-ok); }
@@ -233,6 +234,15 @@
   opacity: 0.7;
   white-space: nowrap;
 }
+
+/* 28/08 (pedido do editor): kind da sessão dona do claim com cor própria —
+   o caso que motivou é o CONTINUO, cujo trabalho aparecia como "overnight"
+   porque o execTrack da issue é overnight (taxonomia) e este badge era o
+   único lugar onde o kind real aparecia. Opacidade cheia pro continuo se
+   destacar; demais kinds mantêm o rebaixamento visual de propósito. */
+.claim-kind-continuo { border-color: var(--status-warn); color: var(--status-warn); opacity: 1; border-style: solid; }
+.claim-kind-develop { border-color: var(--status-info); color: var(--status-info); }
+.claim-kind-overnight { border-color: var(--brand); color: var(--brand); }
 
 /* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
    de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de

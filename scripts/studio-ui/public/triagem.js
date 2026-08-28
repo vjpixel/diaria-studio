@@ -173,7 +173,13 @@ export function claimBadge(claim) {
   const title = claim.claimedAt
     ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt}`
     : `Reivindicada por ${who} (sessão ${claim.sessionId})`;
-  return `<span class="claim-badge" title="${escapeHtml(title)}">em andamento — ${escapeHtml(who)}</span>`;
+  // Classe por kind (28/08, pedido do editor): o trabalho do CONTINUO era
+  // invisível — a issue classifica `overnight` (taxonomia certa: continuo
+  // drena a fila overnight) e o kind real só existia neste badge, neutro
+  // demais pra ser notado. `claim-kind-*` dá cor própria por kind; kind
+  // desconhecido cai na classe base (nunca quebra).
+  const kindCls = /^[a-z-]+$/.test(claim.kind) ? ` claim-kind-${claim.kind}` : "";
+  return `<span class="claim-badge${kindCls}" title="${escapeHtml(title)}">em andamento — ${escapeHtml(who)}</span>`;
 }
 
 // #3874: o significado de cada valor de Classificação só existia como
