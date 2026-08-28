@@ -49,6 +49,41 @@ describe("computeGmailRejectedEmails", () => {
     assert.deepEqual(computeGmailRejectedEmails(["a@gmail.com"], ["a@gmail.com"]), []);
     assert.deepEqual(computeGmailRejectedEmails(["a@outlook.com"], []), []);
   });
+
+  it("#6504 apoiadores: patrono/mantenedor/apoiador/amigo furam a ordem alfabética, nessa ordem de prioridade", () => {
+    const apoioNivelByEmail = new Map<string, "amigo" | "apoiador" | "mantenedor" | "patrono">([
+      ["z@gmail.com", "patrono"],
+      ["y@gmail.com", "mantenedor"],
+      ["x@gmail.com", "apoiador"],
+      ["w@gmail.com", "amigo"],
+    ]);
+    const rejected = computeGmailRejectedEmails(
+      ["a@gmail.com", "z@gmail.com", "m@gmail.com", "y@gmail.com", "x@gmail.com", "w@gmail.com"],
+      [],
+      apoioNivelByEmail,
+    );
+    assert.deepEqual(rejected, ["z@gmail.com", "y@gmail.com", "x@gmail.com", "w@gmail.com", "a@gmail.com", "m@gmail.com"]);
+  });
+
+  it("#6504 apoiadores: empate de nível desempata alfabético", () => {
+    const apoioNivelByEmail = new Map<string, "patrono">([
+      ["z@gmail.com", "patrono"],
+      ["a@gmail.com", "patrono"],
+    ]);
+    const rejected = computeGmailRejectedEmails(["z@gmail.com", "m@gmail.com", "a@gmail.com"], [], apoioNivelByEmail);
+    assert.deepEqual(rejected, ["a@gmail.com", "z@gmail.com", "m@gmail.com"]);
+  });
+
+  it("#6504 apoiadores: mapa ausente preserva o comportamento puramente alfabético de sempre", () => {
+    const rejected = computeGmailRejectedEmails(["z@gmail.com", "a@gmail.com", "m@gmail.com"], []);
+    assert.deepEqual(rejected, ["a@gmail.com", "m@gmail.com", "z@gmail.com"]);
+  });
+
+  it("#6504 apoiadores: e-mail sem entrada no mapa cai pro grupo sem prioridade (fim da lista)", () => {
+    const apoioNivelByEmail = new Map<string, "apoiador">([["m@gmail.com", "apoiador"]]);
+    const rejected = computeGmailRejectedEmails(["z@gmail.com", "a@gmail.com", "m@gmail.com"], [], apoioNivelByEmail);
+    assert.deepEqual(rejected, ["m@gmail.com", "a@gmail.com", "z@gmail.com"]);
+  });
 });
 
 describe("computeNextWaveSize", () => {

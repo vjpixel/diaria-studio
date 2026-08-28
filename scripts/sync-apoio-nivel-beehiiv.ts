@@ -178,7 +178,10 @@ const LEVEL_VALUES: readonly ApoioNivel[] = ["amigo", "apoiador", "mantenedor", 
  * `null` (sem apoio) é sempre o mínimo. */
 const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
 
-function isApoioNivel(v: string): v is ApoioNivel {
+/** Exportada desde #6504 (rampa Gmail — validar `fields.apoio_nivel` do Kit,
+ *  string livre no envelope da API, contra a union real antes de confiar
+ *  nela) — antes só uso interno deste módulo. */
+export function isApoioNivel(v: string): v is ApoioNivel {
   return (LEVEL_VALUES as readonly string[]).includes(v);
 }
 

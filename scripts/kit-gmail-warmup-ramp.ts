@@ -55,7 +55,8 @@ import { fetchAudience, todasOuNenhuma } from "./kit-provider-split.ts";
 import { computeProviderSplit, verificarIntegridade, avaliarRampa, type RampaVeredito } from "./lib/provider-split.ts";
 import { getBroadcastStats } from "./lib/kit-client.ts";
 import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
-import { createOrUpdateSubscriber } from "./lib/kit-subscribers.ts";
+import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
+import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
 import {
@@ -92,6 +93,32 @@ export function loadState(path: string = DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH): K
 export function saveState(state: KitGmailWarmupState, path: string = DEFAULT_KIT_GMAIL_WARMUP_STATE_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileAtomic(path, JSON.stringify(state, null, 2) + "\n");
+}
+
+/**
+ * Mapa e-mail→nível de apoio, pra priorizar apoiadores na ordem de captura
+ * do cohort recusado (#6504, pedido do editor 28/08: "pegue os apoiadores").
+ * Fail-soft: qualquer erro de rede vira `Map` vazio (a rampa cai de volta
+ * pra ordem puramente alfabética — nunca aborta a captura do cohort por
+ * causa disto, que é só priorização, não correção). `status: "all"` porque
+ * um apoiador pode estar `cancelled`/`inactive` no Kit e ainda assim valer
+ * priorizar (é sinal de relação, não de assinatura ativa).
+ */
+async function resolveApoioNivelByEmail(): Promise<Map<string, ApoioNivel>> {
+  const out = new Map<string, ApoioNivel>();
+  try {
+    const subs = await listAllKitSubscribers(undefined, { status: "all" });
+    for (const sub of subs) {
+      const raw = sub.fields?.apoio_nivel;
+      if (raw && isApoioNivel(raw)) out.set(sub.email_address.trim().toLowerCase(), raw);
+    }
+  } catch (e) {
+    process.stderr.write(
+      `[kit-gmail-warmup-ramp] aviso: não consegui resolver apoio_nivel dos assinantes (${e instanceof Error ? e.message : String(e)}) — ` +
+        "seguindo sem priorização de apoiadores nesta captura.\n",
+    );
+  }
+  return out;
 }
 
 /** Mede o gate (entrega+abertura Gmail) de um broadcast — mesmo cálculo de `kit-provider-split.ts`. */
@@ -178,10 +205,14 @@ export async function runWarmupRamp(opts: {
           "o cohort recusado.",
       );
     }
-    const [sent, delivered] = await todasOuNenhuma<
-      [Awaited<ReturnType<typeof fetchAudience>>, Awaited<ReturnType<typeof fetchAudience>>]
-    >([fetchAudience(opts.referenceBroadcastId, "sent"), fetchAudience(opts.referenceBroadcastId, "delivered")]);
-    const rejected = computeGmailRejectedEmails(sent.emails, delivered.emails);
+    const [sent, delivered, apoioNivelByEmail] = await todasOuNenhuma<
+      [Awaited<ReturnType<typeof fetchAudience>>, Awaited<ReturnType<typeof fetchAudience>>, Map<string, ApoioNivel>]
+    >([
+      fetchAudience(opts.referenceBroadcastId, "sent"),
+      fetchAudience(opts.referenceBroadcastId, "delivered"),
+      resolveApoioNivelByEmail(),
+    ]);
+    const rejected = computeGmailRejectedEmails(sent.emails, delivered.emails, apoioNivelByEmail);
     state = buildInitialState(opts.referenceBroadcastId, rejected);
     if (opts.push) saveState(state, statePath);
   }
