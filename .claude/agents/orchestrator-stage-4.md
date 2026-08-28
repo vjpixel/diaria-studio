@@ -103,6 +103,12 @@ npx tsx scripts/render-halt-banner.ts \
 
    > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
 
+2a-kit. **Render de MEDIÇÃO do canal Kit (#6506) — sempre roda, mesmo com `publishing.newsletter.backend` ainda `"beehiiv"`.** Gera `_internal/newsletter-final-kit.html` — sem isso, `checkKitHtmlSize` (invariant abaixo) nunca teria artefato pra medir, e o e-mail Kit só seria visto passando de 102 KB (limite de clipping do Gmail) DEPOIS do cutover real. Zero chamada de rede (mesmo `06-public-images.json` já escrito pelo Stage 3):
+    ```bash
+    npx tsx scripts/render-kit-html-preview.ts {EDITION_DIR}/
+    ```
+    Exit 1 = uso/erro fatal (edition-dir ausente) — não deveria acontecer aqui, `{EDITION_DIR}` já foi resolvido acima; se acontecer, logar warn e continuar (o invariant `kit-html-too-large` degrada pra `[]` sem o arquivo — não bloqueia por AUSÊNCIA, só por TAMANHO).
+
 2b. **Servir preview LOCALMENTE via `serve-preview.ts` (#3546 — substitui o Worker Cloudflare no caminho de REVISÃO).** #3420 tinha revertido pra Worker-hosted (`upload-html-public.ts`) porque #3214/Claude Artifacts quebrava por CSP (bloqueia imagem remota, só `data:` URI). #3546 resolve isso sem depender nem do Worker (cota Workers KV, rede) nem do Artifact (CSP): serve o HTML LOCALMENTE (loopback, `http://127.0.0.1:{porta}/...`) com imagens embutidas em `data:` URI via `embed-images-base64.ts` — não há CSP num servidor local próprio, e não há requisição de rede pra imagem nenhuma. **Nunca chamar `upload-html-public.ts` neste passo** — esse script fica reservado ao upload REAL que a Etapa 5 refaz independentemente no dispatch (`context/publishers/beehiiv-playbook.md` §5.2 Fase 3, sobre `newsletter-final.html` intacto, sem a variante embedded).
 
     Gerar a variante embedded (`newsletter-final.html` fica intacto, com a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` — preservada pro paste real da Etapa 5):
@@ -356,6 +362,11 @@ npx tsx scripts/substitute-image-urls.ts \
 ```
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
+
+**Re-render também o preview de MEDIÇÃO do Kit (#6506)** — mesmo motivo do `newsletter-final.html` acima: `_internal/newsletter-final-kit.html` (§4b step 2a-kit) foi gerado ANTES do autofix, então `checkKitHtmlSize` mediria o texto PRÉ-correção se este passo for pulado:
+```bash
+npx tsx scripts/render-kit-html-preview.ts {EDITION_DIR}/
+```
 
 **⚠️ Atualizar `{newsletter_url}` após o re-render:** o conteúdo mudou → o preview local servido em §4b step 2b fica STALE. Re-servir ANTES de montar o gate (§4c.7) — senão o editor abre o preview antigo (texto PRÉ-correção) e aprova conteúdo que não revisou. **Re-servir localmente (#3546 — mesmo padrão do §4b step 2b: encerrar o servidor antigo, re-gerar a variante embedded, subir um novo):**
 ```bash
