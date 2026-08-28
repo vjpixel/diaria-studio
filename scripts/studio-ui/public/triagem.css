@@ -147,7 +147,9 @@
 }
 .track-overnight { border-color: var(--brand); color: var(--brand); }
 .track-develop { border-color: var(--status-info); color: var(--status-info); }
-.track-continuo { border-color: var(--status-warn); color: var(--status-warn); }
+/* texto em warn-ink, nunca warn cru (2,73:1 sobre --paper — mesmo finding
+   do review #6461; warn cru fica só na borda) */
+.track-continuo { border-color: var(--status-warn); color: var(--status-warn-ink); }
 .track-other { opacity: 0.6; }
 /* #3714: kinds da superfície de Relatórios (relatorios.js reusa .track-badge) */
 .track-edicao { border-color: var(--status-ok); color: var(--status-ok); }
@@ -238,11 +240,19 @@
 /* 28/08 (pedido do editor): kind da sessão dona do claim com cor própria —
    o caso que motivou é o CONTINUO, cujo trabalho aparecia como "overnight"
    porque o execTrack da issue é overnight (taxonomia) e este badge era o
-   único lugar onde o kind real aparecia. Opacidade cheia pro continuo se
-   destacar; demais kinds mantêm o rebaixamento visual de propósito. */
-.claim-kind-continuo { border-color: var(--status-warn); color: var(--status-warn); opacity: 1; border-style: solid; }
-.claim-kind-develop { border-color: var(--status-info); color: var(--status-info); }
-.claim-kind-overnight { border-color: var(--brand); color: var(--brand); }
+   único lugar onde o kind real aparecia.
+   Contraste (finding P2 do review do PR #6461): colorir o TEXTO com
+   --status-warn/--brand falha WCAG AA em qualquer opacidade (warn 2,73:1,
+   brand 3,08:1 cheios sobre --paper) — então a cor vai SÓ NA BORDA
+   (requisito não-textual, 3:1) e o texto fica em tinta de alto contraste,
+   no padrão R7 do guia: o kind já está escrito no texto do badge, cor é
+   reforço. Continuo: opacidade cheia + borda sólida warn + texto
+   --status-warn-ink (12,8:1 — o token que design-tokens.ts documenta como
+   obrigatório pra texto em badge warn). Overnight/develop: só a borda
+   colorida, texto herdado (--ink a 0.7 = 6,68:1, o baseline pré-PR). */
+.claim-kind-continuo { border-color: var(--status-warn); color: var(--status-warn-ink); opacity: 1; border-style: solid; }
+.claim-kind-develop { border-color: var(--status-info); }
+.claim-kind-overnight { border-color: var(--brand); }
 
 /* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
    de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de
