@@ -568,8 +568,39 @@ export function extractGhPrMergeTargetPr(command) {
  *     `activeCoordinatorSessionIds` não é confiável (ver
  *     `readActiveCoordinatorScan`, Finding B).
  */
-export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId, ctx = {}) {
-  if (callerSessionId === undefined || callerSessionId === null || callerSessionId === "") return false;
+/**
+ * Classifica a CAUSA de um bloqueio (#6497) — mesma lógica de
+ * `shouldBlockGhPrMerge` (que só precisa saber SE bloqueia), mas devolvendo
+ * o MOTIVO em vez de um booleano. Existe pra que `buildBlockReason` consiga
+ * emitir a instrução PRECISA em vez de sempre o mesmo texto genérico —
+ * achado do #6497: a sessão bloqueada por CONTENÇÃO (lock preso/ausente com
+ * outra coordenadora ativa) via o mesmo texto de quem simplesmente não tinha
+ * identidade nenhuma, e o texto nunca mencionava "merge lock" — a sessão
+ * confirmava a concessão, tentava de novo, era bloqueada de novo, num loop.
+ *
+ * `null` = não bloqueia. Retornos possíveis quando bloqueia:
+ *   - `"scan-degraded"` — varredura de sessões não é confiável (não dá pra
+ *     saber se há rodada ativa, ou se há mais de uma coordenadora).
+ *   - `"not-authorized"` — quem chama não é coordenadora registrada nem tem
+ *     concessão viva que cubra o PR alvo.
+ *   - `"lock-held-other"` — outra sessão segura o merge lock agora (inclusive
+ *     o sentinela `LOCK_HOLDER_CORRUPTED` — conteúdo ilegível é posse
+ *     desconhecida, não "livre").
+ *   - `"contention-multi-coordinator"` — 2+ coordenadoras ativas, lock livre:
+ *     é preciso adquirir o lock antes de mergear (não é mais questão de
+ *     identidade — quem chama já tem direito, falta só a vez).
+ *   - `"contention-grantee"` — 1 coordenadora ativa, mas quem chama é a
+ *     BENEFICIADA de uma concessão (não a própria coordenadora): mesma
+ *     exigência de lock, porque há duas sessões em jogo mesmo com só uma
+ *     coordenadora — corolário de "a concessão destrava identidade, nunca
+ *     tempo" (#6303 P1·a).
+ *
+ * Implementação preservada 1:1 da versão anterior de `shouldBlockGhPrMerge`
+ * (mesma ordem de checagem, mesmas condições) — só a forma do retorno mudou,
+ * de booleano para motivo nomeado.
+ */
+export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessionId, ctx = {}) {
+  if (callerSessionId === undefined || callerSessionId === null || callerSessionId === "") return null;
 
   const coordinators = activeCoordinatorSessionIds ?? new Set();
 
@@ -589,7 +620,7 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   // Bloquear aqui é o que o docblock deste arquivo promete ("prefere
   // bloquear na dúvida") — o custo de um falso positivo é uma PR esperando
   // merge manual; o de um falso negativo é o incidente do #5716.
-  if (coordinators.size === 0) return ctx.scanDegraded === true;
+  if (coordinators.size === 0) return ctx.scanDegraded === true ? "scan-degraded" : null;
 
   const holder = ctx.mergeLockHolder;
 
@@ -607,7 +638,7 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   // A separação que corrige: **a concessão destrava IDENTIDADE ("quem pode
   // mergear"), nunca TEMPO ("quando pode")**. Quem serializa continua sendo
   // o lock, para todos.
-  if (typeof holder === "string" && holder !== callerSessionId) return true;
+  if (typeof holder === "string" && holder !== callerSessionId) return "lock-held-other";
 
   // #6296 — DEFEITO 2: a janela concedida por conversa ganha representação
   // mecânica. Medido ao vivo em 260826: o protocolo inteiro da Parte F do
@@ -643,9 +674,9 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
 
   const isCoordinator = coordinators.has(callerSessionId);
   // Duas portas de identidade, e só duas. Note que isto NÃO é mais um
-  // `return false` — passar aqui só significa "tem direito de mergear"; se
+  // retorno terminal — passar aqui só significa "tem direito de mergear"; se
   // pode mergear AGORA é o bloco de lock abaixo que decide (P1·a).
-  if (!grantCoversTarget && !isCoordinator) return true; // comportamento pré-#6296
+  if (!grantCoversTarget && !isCoordinator) return "not-authorized"; // comportamento pré-#6296
 
   // #6296 — DEFEITO 1: dois mecanismos governavam a mesma ação sem se
   // compor. `grep -c 'mergeLock\|merge-lock\|\.merge-lock'` neste arquivo
@@ -688,7 +719,7 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   // no MESMO diretório sincronizado que os arquivos de sessão, então um
   // soluço de I/O do OneDrive degrada os dois sinais junto, e permitir aí
   // seria confiar em dois estados que ninguém conseguiu ler.
-  if (ctx.scanDegraded === true) return true;
+  if (ctx.scanDegraded === true) return "scan-degraded";
 
   // A regra de CONTENÇÃO exige saber que o lock está ausente. Ela NÃO se
   // aplica a `undefined` (não deu pra ler): "estado indeterminado nunca
@@ -698,19 +729,23 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
   if (holder === null) {
     // Duas ou mais coordenadoras ativas e ninguém segurando o lock: pegar o
     // lock deixou de depender de a skill lembrar.
-    if (coordinators.size > 1) return true;
+    if (coordinators.size > 1) return "contention-multi-coordinator";
     // Uma coordenadora só, mas quem chama NÃO é ela — logo é uma sessão com
     // concessão, e há duas sessões em jogo. Isso é contenção por definição:
     // a beneficiada também passa pelo lock. Corolário direto de "a concessão
     // destrava identidade, não tempo" (P1·a).
-    if (!isCoordinator) return true;
+    if (!isCoordinator) return "contention-grantee";
   }
-  return false;
+  return null;
+}
+
+export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionId, ctx = {}) {
+  return classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessionId, ctx) !== null;
 }
 
 /**
  * Mensagem mostrada ao subagente/sessão quando a chamada é negada (#5716,
- * reescrita no #6303 Finding K).
+ * reescrita no #6303 Finding K, revisada de novo no #6497).
  *
  * Achado do fleet review da #6303: a versão anterior deste texto era o que a
  * sessão bloqueada de fato LÊ em produção, e terminava recomendando
@@ -720,23 +755,53 @@ export function shouldBlockGhPrMerge(activeCoordinatorSessionIds, callerSessionI
  * `register` ali fabrica identidade de coordenadora e FURA o guard — o
  * antipadrão exato que este hook existe pra fechar. Agora o texto distingue
  * os dois casos reais pós-#6296.
+ *
+ * Três defeitos corrigidos no #6497 (achado ao vivo: sessão interativa no
+ * `helios` tentou mergear com uma rodada `/diaria-develop` ativa no `Neo`):
+ *
+ *   1. **Não mencionava o merge lock.** O texto terminava em "confirmar com
+ *      `check-merge-grant`, e só então tentar `gh pr merge` de novo" — mas
+ *      com `holder === null && coordinators.size > 1` a BENEFICIADA da
+ *      concessão também cai em bloqueio (`classifyMergeBlockCause` acima,
+ *      `"contention-grantee"`/`"contention-multi-coordinator"` — a
+ *      concessão destrava IDENTIDADE, nunca TEMPO, #6303 P1·a). Sem o passo
+ *      do lock no texto, a sessão reconfirmava o grant e tentava de novo em
+ *      loop. Agora o texto genérico já cita `merge-lock-acquire`/
+ *      `merge-lock-release` explicitamente, e `buildBlockReason` (abaixo)
+ *      ainda acrescenta `LOCK_CONTENTION_HINT` quando a causa REAL do
+ *      bloqueio é de fato o lock — texto preciso em vez de só genérico.
+ *   2. **"nesta máquina" era falso.** `data/sessions/*.json` é sincronizado
+ *      via OneDrive entre as máquinas do projeto — uma sessão no `helios`
+ *      pode estar bloqueada por uma coordenadora rodando no `Neo`. O texto
+ *      agora fala em registro COMPARTILHADO entre máquinas, nunca "nesta
+ *      máquina".
+ *   3. **`--kind` de `grant-merge` sem dono explícito.** O parágrafo anterior
+ *      fala em `register --kind {overnight|develop|continuo}` (o kind da
+ *      PRÓPRIA sessão); o exemplo de `grant-merge` que vinha logo depois,
+ *      sem nomear de quem é o `--kind`, induzia a mesma leitura errada
+ *      (#6331: é o kind da CONCEDENTE, nunca da beneficiária). O texto agora
+ *      nomeia explicitamente "da concedente" no exemplo.
  */
 export const BLOCK_REASON =
   "gh pr merge bloqueado pelo guard mecânico do overnight/develop (#5716): há uma rodada " +
-  "/diaria-overnight, /diaria-develop ou /diaria-continuo ativa nesta máquina (data/sessions/*.json) " +
-  "e esta chamada não pertence à sessão coordenadora registrada. Regra 11 de " +
-  "context/overnight-dispatch-rules.md: nenhum subagente implementador espera CI, roda fleet review, " +
-  "ou mergeia o próprio PR — isso é trabalho exclusivo do coordenador top-level, depois do fleet review " +
-  "pré-merge e do Gate 2. Se você é o subagente implementador: pare aqui, faça o self-review (regra 7), " +
-  "e retorne o número do PR + \"self-review: N findings\" ao coordenador — nunca chame gh pr merge você " +
-  "mesmo. Se você É a coordenadora e está vendo este bloqueio por engano (ex: seu próprio registro " +
-  "expirou por staleness), rode `npx tsx scripts/lib/session-registry.ts register --kind " +
-  "{overnight|develop|continuo}` pra RENOVAR o registro que já era seu, e tente de novo — isto nunca " +
-  "cria uma identidade nova. Se você NÃO é coordenadora (ex: sessão interativa, #6296): NUNCA rode " +
-  "`register` — isso fabrica identidade de coordenadora e fura este guard. O caminho correto é pedir a " +
-  "janela de merge à coordenadora ativa (ela concede via `session-registry.ts grant-merge --granted-to " +
-  "{seu session_id}`), confirmar com `session-registry.ts check-merge-grant`, e só então tentar `gh pr " +
-  "merge` de novo dentro do TTL da concessão.";
+  "/diaria-overnight, /diaria-develop ou /diaria-continuo ativa (registro COMPARTILHADO entre máquinas via " +
+  "OneDrive, data/sessions/*.json — não é necessariamente desta máquina) e esta chamada não pertence à " +
+  "sessão coordenadora registrada. Regra 11 de context/overnight-dispatch-rules.md: nenhum subagente " +
+  "implementador espera CI, roda fleet review, ou mergeia o próprio PR — isso é trabalho exclusivo do " +
+  "coordenador top-level, depois do fleet review pré-merge e do Gate 2. Se você é o subagente " +
+  "implementador: pare aqui, faça o self-review (regra 7), e retorne o número do PR + \"self-review: N " +
+  "findings\" ao coordenador — nunca chame gh pr merge você mesmo. Se você É a coordenadora e está vendo " +
+  "este bloqueio por engano (ex: seu próprio registro expirou por staleness), rode `npx tsx " +
+  "scripts/lib/session-registry.ts register --kind {overnight|develop|continuo}` (o SEU kind, o da sessão " +
+  "que está chamando) pra RENOVAR o registro que já era seu, e tente de novo — isto nunca cria uma " +
+  "identidade nova. Se você NÃO é coordenadora (ex: sessão interativa, #6296): NUNCA rode `register` — isso " +
+  "fabrica identidade de coordenadora e fura este guard. O caminho correto é pedir a janela de merge à " +
+  "coordenadora ativa (ela concede via `session-registry.ts grant-merge --kind {kind DELA, a concedente} " +
+  "--granted-to {seu session_id} [--pr N]`), confirmar com `session-registry.ts check-merge-grant`, e SÓ " +
+  "ENTÃO — antes de tentar `gh pr merge` de novo — adquirir o merge lock com `session-registry.ts " +
+  "merge-lock-acquire --pr N` (a concessão destrava IDENTIDADE, nunca TEMPO: havendo outra coordenadora " +
+  "ativa, é o lock que ainda serializa quem mergeia agora), liberando com `merge-lock-release --pr N` " +
+  "depois do merge (ou se desistir). Reconfirmar a concessão sem adquirir o lock repete o mesmo bloqueio.";
 
 /**
  * Complemento ao `BLOCK_REASON` explicando POR QUE uma concessão de merge
@@ -757,17 +822,47 @@ export const SCOPED_GRANT_HINT =
   "merge <número-do-PR-concedido> ...` com o número explícito e tente de novo.";
 
 /**
- * Monta a mensagem de bloqueio final. Quando existe concessão ESCOPADA para
- * quem está chamando (`ctx.hasLiveGrant && ctx.grantPr !== undefined`) mas
- * ela não cobriu esta chamada (`ctx.grantPr !== ctx.targetPr` — inclusive
- * `targetPr` indeterminado), acrescenta `SCOPED_GRANT_HINT` ao final do
- * `BLOCK_REASON` genérico, nomeando a exigência real em vez de deixar a
- * sessão beneficiada sem explicação.
+ * Complemento ao `BLOCK_REASON` quando a causa REAL do bloqueio é o MERGE
+ * LOCK, não a ausência de identidade/concessão (#6497). `BLOCK_REASON` já
+ * cita `merge-lock-acquire`/`merge-lock-release` de forma genérica; este
+ * hint entra só quando `classifyMergeBlockCause` confirma que é exatamente
+ * esse o motivo (`"lock-held-other"`, `"contention-multi-coordinator"` ou
+ * `"contention-grantee"` — ver `buildBlockReason`), nomeando a causa em vez
+ * de deixar a sessão bloqueada reconfirmar o grant achando que ele não
+ * "pegou".
+ */
+export const LOCK_CONTENTION_HINT =
+  "O motivo REAL deste bloqueio agora é o MERGE LOCK (data/sessions/.merge-lock.json), não a falta de " +
+  "identidade — se você já confirmou `check-merge-grant: granted: true` (ou já é a coordenadora " +
+  "registrada) e caiu aqui de novo mesmo assim, é porque a concessão destrava IDENTIDADE, nunca TEMPO " +
+  "(#6303 P1·a): havendo outra coordenadora ativa (ou o lock preso com outra sessão), é o lock quem " +
+  "serializa quem mergeia AGORA. Passo certo: `npx tsx scripts/lib/session-registry.ts merge-lock-acquire " +
+  "--pr N` ANTES de rodar `gh pr merge` de novo, e `merge-lock-release --pr N` depois (sucesso ou " +
+  "desistência). Reconfirmar a concessão de novo sem adquirir o lock só repete este mesmo bloqueio.";
+
+/**
+ * Monta a mensagem de bloqueio final. Dois hints aditivos, independentes:
+ *   - `SCOPED_GRANT_HINT` quando existe concessão ESCOPADA para quem está
+ *     chamando (`ctx.hasLiveGrant && ctx.grantPr !== undefined`) mas ela não
+ *     cobriu esta chamada (`ctx.grantPr !== ctx.targetPr` — inclusive
+ *     `targetPr` indeterminado);
+ *   - `LOCK_CONTENTION_HINT` (#6497) quando `ctx.blockCause` (produzido por
+ *     `classifyMergeBlockCause`) indica que a causa real é o merge lock, não
+ *     a identidade — nomeia a exigência real em vez de deixar a sessão
+ *     bloqueada reconfirmar um grant que já é válido.
  */
 export function buildBlockReason(ctx = {}) {
   const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
   const grantMissedTarget = hasScopedGrant && ctx.grantPr !== ctx.targetPr;
-  return grantMissedTarget ? `${BLOCK_REASON} ${SCOPED_GRANT_HINT}` : BLOCK_REASON;
+  let reason = grantMissedTarget ? `${BLOCK_REASON} ${SCOPED_GRANT_HINT}` : BLOCK_REASON;
+  if (
+    ctx.blockCause === "lock-held-other" ||
+    ctx.blockCause === "contention-multi-coordinator" ||
+    ctx.blockCause === "contention-grantee"
+  ) {
+    reason = `${reason} ${LOCK_CONTENTION_HINT}`;
+  }
+  return reason;
 }
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
@@ -805,13 +900,17 @@ if (
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
       };
-      if (shouldBlockGhPrMerge(scan.ids, payload.session_id, ctx)) {
+      // #6497: classifica a causa UMA vez e reusa — `shouldBlockGhPrMerge`
+      // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo
+      // pra emitir o hint de merge lock só quando ele é de fato a causa real.
+      const blockCause = classifyMergeBlockCause(scan.ids, payload.session_id, ctx);
+      if (blockCause !== null) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
-              permissionDecisionReason: buildBlockReason(ctx),
+              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause }),
             },
           }),
         );
