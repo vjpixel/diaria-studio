@@ -17,7 +17,9 @@ explicitamente.
 
 O que sincroniza: `settings.json`, `agents/`, `CLAUDE.md` (global, distinto
 do `CLAUDE.md` de cada repo), `statusline-wrapper.cjs` (script real que o
-`statusLine.command` do `settings.json` invoca). O que fica **fora** de
+`statusLine.command` do `settings.json` invoca), `output-styles/` (vazio
+no repo até hoje — ver "Seed inicial" no README do `claude-config`). O que
+fica **fora** de
 propósito: `.credentials.json` (vazaria credencial pro repo),
 `~/.claude.json` (misto preferência+estado+paths locais), e tudo que é
 estado/cache por máquina (`projects/`, `file-history/`, `mcp/`, `plugins/`,
@@ -263,3 +265,44 @@ bootstrap reais contra o `claude-config` de verdade, em nenhuma das 3
 máquinas (helios/Neo/ZenBook) — isso é efeito de rede/IO fora do alcance de
 um worktree isolado de subagente; fica para confirmação ao vivo do editor
 (mesmo padrão dos demais itens desta issue marcados "verificado ao vivo").
+
+## Confirmação ao vivo, ZenBook (260828, sessão interativa)
+
+A confirmação que faltava na seção anterior — feita à mão nesta sessão,
+não pelo hook `session-start-claude-config-sync.mjs` acima (esta sessão
+tinha começado antes de puxar os commits que o trazem; o smoke test real
+do próprio hook, rodando de dentro de uma sessão nova no ZenBook, ainda
+não aconteceu).
+
+`~/claude-config` nunca tinha sido clonado nesta máquina. Clonado
+manualmente (HEAD já em `b58e779`) e `bootstrap.ps1` rodado: Modo
+Desenvolvedor **desligado** e sessão sem privilégio admin (não dá pra
+ligar dali) → `settings.json` e `statusline-wrapper.cjs` caíram no
+fallback de cópia (backup automático do que já havia em
+`.bak-20260828-172455`); `agents/` linkou como junction normalmente
+(junction de diretório não exige Modo Desenvolvedor). `sync-check.cjs`
+testado manualmente (síncrono e destacado): exit 0, detecta as duas
+cópias corretamente, `.sync-state.json` e `.sync-check.log` gravados com
+timestamp.
+
+**Drift local do ZenBook achado no backup, ainda não reconciliado**
+(decisão do editor pendente — diferente do `modelSettings` de Neo, que já
+foi resolvido e commitado em `b58e779`): a cópia antiga tinha
+`permissions.defaultMode: "auto"`,
+`enabledPlugins["frontend-design@claude-plugins-official"]`,
+`theme: "dark"` e `skipAutoPermissionPrompt: true`, nenhum presente no
+`claude-config` committed. Preservados no `.bak-*`, não aplicados por cima
+do que o repo já define — decidir se algum vira config compartilhada
+(commit) ou fica descartado é do editor.
+
+Pendente pra ZenBook virar symlink de verdade (mesma sequência do Neo):
+Modo Desenvolvedor (Configurações > Atualização e Segurança > Para
+desenvolvedores, exige admin) → logoff/logon → `bootstrap.ps1` de novo →
+confirmar `copies: []` no `.sync-state.json`. Plugin `pr-review-toolkit`
+também não estava instalado nesta máquina — pendente rodar
+`/plugin install pr-review-toolkit@claude-plugins-official` +
+`/reload-plugins` dentro de uma sessão do Claude Code (não roda por
+script/hook). Enquanto isso não acontecer, a propagação automática cobre
+**puxar o repo**, não necessariamente **entregar o conteúdo em
+`~/.claude`** no ZenBook — a distinção que motivou o item "Detecta
+cópia-em-vez-de-symlink" nos critérios de aceite da #6310.
