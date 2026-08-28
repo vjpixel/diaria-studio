@@ -141,11 +141,12 @@ Para cada issue elegível (após claim):
      `develop`/`epica`/`agendada` NUNCA — mesmo que pareçam fáceis.
    - **Fim de tick = higiene obrigatória**: para cada issue em
      `claimed_issues` SEM PR aberto referenciando-a e sem worktree ativo,
-     rodar `session-registry.ts unclaim-issue --kind continuo --issue N`
-     ANTES do relatório (`--kind` é obrigatório no CLI — `requireKind`
-     lança sem ele; sempre `continuo`, nunca `overnight`, mesmo motivo do
-     passo 1.3). Claim que sobrevive ao tick precisa de evidência de
-     trabalho em curso.
+     rodar `session-registry.ts unclaim-issue --kind continuo --issue N
+     --session-id hermes-cron-5d791ef6fc2c` ANTES do relatório (`--kind` e
+     `--session-id` são ambos obrigatórios no CLI — `requireKind`/
+     `requireSessionId` lançam sem eles; `--kind` sempre `continuo`, nunca
+     `overnight`, mesmo motivo do passo 1.3). Claim que sobrevive ao
+     tick precisa de evidência de trabalho em curso.
    - `claim-issue` com `exit 1` = outra sessão segura a issue → pular só ela.
      Sessões stale (heartbeat > 90min) não bloqueiam.
 2. **Delegar a implementação ao harness**:
