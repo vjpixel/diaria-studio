@@ -14,8 +14,8 @@
  *    `coordinator_tokens_estimate` (coordenador) e `review_metrics`/
  *    `fleet_review_metrics` (review pós-rodada/pré-merge) em
  *    `data/run-log.jsonl`, `agent: "overnight" | "develop"` (#3453/#4815).
- *    Só total de tokens (sem split in/out) — o harness não expõe isso por
- *    invocação de subagente, só um total quando expõe (#5413).
+ *    Só total de tokens: o harness reporta um total por invocação de
+ *    `Agent()`, sem split in/out.
  * 3. **Continuo** — os MESMOS 2 eventos que overnight/develop (coordenador +
  *    implementação; sem review — `/diaria-continuo` não tem Fase 1.5 própria),
  *    `agent: "continuo"`, um dia por rotação (`data/continuo/{AAMMDD}/`).
@@ -25,6 +25,16 @@
  * edição editorial publicada nesse dia) — mesma convenção que
  * `continuo-cost-summary.ts` já assume; este script segue o padrão em vez
  * de reabrir a distinção.
+ *
+ * **A coluna "Dia" é um DIA DE CALENDÁRIO, não um id de rodada (#6638).**
+ * Várias rodadas do mesmo dia recebem sufixo de rotação (`260814`, `260814b`,
+ * `260814c` — até `260828g` observado ao vivo), e até o #6638 cada sufixo
+ * virava uma LINHA própria da tabela: o painel dizia "dia" e mostrava
+ * rodada. `roundDayFromEdition` normaliza o sufixo antes de agregar, de modo
+ * que 1 linha = 1 (kind, dia civil), com a contagem de rodadas preservada em
+ * `rounds`. Isso também conserta a janela `--since/--until`, que comparava
+ * strings: `"260814c" > "260814"` fazia `--until 260814` DESCARTAR as rodadas
+ * b e c daquele mesmo dia.
  *
  * `source: "unavailable"` (harness não expôs tokens por invocação, ou
  * coordenador esqueceu o checkpoint) NUNCA é somado como zero — os eventos
@@ -103,7 +113,20 @@ function emptyCategoryTotals(): CategoryTotals {
 
 export interface KindDayTotals {
   kind: SessionKind;
-  day: string; // AAMMDD
+  /** Dia CIVIL `AAMMDD` — sufixo de rodada já normalizado (#6638). */
+  day: string;
+  /**
+   * Ids de origem que caíram neste dia, ordenados (`["260814", "260814b"]`).
+   * A normalização do dia funde rodadas; sem isto a informação "foram 3
+   * rodadas de overnight nesse dia" sumiria da tabela. 1 elemento é o caso
+   * normal (inclusive toda linha de `edicao`).
+   *
+   * **São as rodadas que CONTRIBUÍRAM dado, não as que rodaram**: rodada que
+   * não emitiu nenhum dos 4 eventos de custo não aparece aqui (é justamente
+   * o buraco do #6634 — instrumentação que depende do coordenador lembrar).
+   * Ler `×3` como "3 rodadas naquele dia" subestima quando alguma ficou muda.
+   */
+  rounds: string[];
   totalTokens: number;
   /** Split in/out — só populado para `kind: "edicao"` (única fonte com dado real). */
   tokensIn?: number;
@@ -126,13 +149,37 @@ export interface SessionTokensSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Dia civil vs id de rodada (#6638)
+// ---------------------------------------------------------------------------
+
+/** `AAMMDD` seguido do sufixo de rotação da N-ésima rodada do dia (`b`, `c`, ...). */
+const ROUND_ID_RE = /^(\d{6})[a-z]+$/;
+
+/**
+ * Pura: dia civil `AAMMDD` de um id de rodada/edição.
+ *
+ * `"260814c"` → `"260814"`; `"260814"` → `"260814"`.
+ *
+ * **Devolve a entrada intacta quando ela não casa com o formato** — vale para
+ * ids que não são rodadas (`"replay-scorer-a"`, `"2604"` e outros diretórios
+ * que convivem em `data/editions/`), que devem continuar sendo sua própria
+ * linha em vez de colapsar em algo que não são. Silenciosamente inventar um
+ * dia para eles seria pior que mostrá-los como estão.
+ */
+export function roundDayFromEdition(edition: string): string {
+  const m = ROUND_ID_RE.exec(edition);
+  return m ? m[1] : edition;
+}
+
+// ---------------------------------------------------------------------------
 // Extração de run-log.jsonl (overnight/develop/continuo)
 // ---------------------------------------------------------------------------
 
 /**
  * Pure: agrega as linhas já lidas de `run-log.jsonl` em `KindDayTotals[]`,
- * uma entrada por (kind, day). Linhas malformadas ou de agent/message fora
- * do escopo são ignoradas silenciosamente (mesmo padrão de
+ * uma entrada por (kind, dia civil) — rodadas do mesmo dia somam na mesma
+ * entrada (#6638). Linhas malformadas ou de agent/message fora do escopo são
+ * ignoradas silenciosamente (mesmo padrão de
  * `countTokenInstrumentationEvents`/`sumContinuoTokenEstimates`).
  */
 export function aggregateRunLogByKindAndDay(
@@ -152,8 +199,11 @@ export function aggregateRunLogByKindAndDay(
     }
     const kind = event.agent as SessionKind | undefined;
     if (!kind || !(SESSION_LOG_KINDS as readonly string[]).includes(kind)) continue;
-    const day = event.edition;
-    if (!day) continue;
+    const roundId = event.edition;
+    if (!roundId) continue;
+    // Filtra pelo dia CIVIL, nunca pelo id bruto: com `260814c` a comparação
+    // de string excluía a rodada de um `--until 260814` (#6638).
+    const day = roundDayFromEdition(roundId);
     if (opts.since && day < opts.since) continue;
     if (opts.until && day > opts.until) continue;
     const mapping = event.message ? MESSAGE_TO_CATEGORY[event.message] : undefined;
@@ -162,8 +212,12 @@ export function aggregateRunLogByKindAndDay(
     const key = `${kind}|${day}`;
     let row = byKey.get(key);
     if (!row) {
-      row = { kind, day, totalTokens: 0, categories: {} };
+      row = { kind, day, rounds: [], totalTokens: 0, categories: {} };
       byKey.set(key, row);
+    }
+    if (!row.rounds.includes(roundId)) {
+      row.rounds.push(roundId);
+      row.rounds.sort();
     }
     let cat = row.categories[mapping.category];
     if (!cat) {
@@ -202,7 +256,8 @@ export function editionCostsToKindDayTotals(
 ): KindDayTotals[] {
   return editions.map((e) => ({
     kind: "edicao" as const,
-    day: e.edition,
+    day: roundDayFromEdition(e.edition),
+    rounds: [e.edition],
     totalTokens: e.totals.tokensIn + e.totals.tokensOut,
     tokensIn: e.totals.tokensIn,
     tokensOut: e.totals.tokensOut,
@@ -210,6 +265,48 @@ export function editionCostsToKindDayTotals(
     costEstimated: e.totals.costEstimated,
     categories: {},
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Fusão por (kind, dia civil) (#6638)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pura: garante o invariante "1 linha = 1 (kind, dia civil)" sobre a UNIÃO das
+ * duas fontes, somando o que colidir.
+ *
+ * `aggregateRunLogByKindAndDay` já funde dentro do run-log pela chave do seu
+ * `Map`; esta função existe para que o invariante valha por construção sobre
+ * o conjunto final — hoje só alcança edições (nenhum diretório
+ * `data/editions/` usa sufixo de rodada, então na prática é no-op ali), e
+ * passa a valer sozinha no dia em que uma passar a usar.
+ */
+export function mergeKindDayTotals(rows: KindDayTotals[]): KindDayTotals[] {
+  const byKey = new Map<string, KindDayTotals>();
+  for (const row of rows) {
+    const key = `${row.kind}|${row.day}`;
+    const acc = byKey.get(key);
+    if (!acc) {
+      byKey.set(key, { ...row, rounds: [...row.rounds], categories: { ...row.categories } });
+      continue;
+    }
+    acc.totalTokens += row.totalTokens;
+    for (const id of row.rounds) if (!acc.rounds.includes(id)) acc.rounds.push(id);
+    acc.rounds.sort();
+    if (row.tokensIn !== undefined) acc.tokensIn = (acc.tokensIn ?? 0) + row.tokensIn;
+    if (row.tokensOut !== undefined) acc.tokensOut = (acc.tokensOut ?? 0) + row.tokensOut;
+    if (row.costUsd !== undefined) acc.costUsd = (acc.costUsd ?? 0) + row.costUsd;
+    // Custo do dia é estimado se QUALQUER parcela dele for — nunca apresentar
+    // como medido um total que carrega estimativa dentro.
+    if (row.costEstimated) acc.costEstimated = true;
+    for (const [name, cat] of Object.entries(row.categories) as [TokenCategory, CategoryTotals][]) {
+      const target = acc.categories[name] ?? (acc.categories[name] = emptyCategoryTotals());
+      target.tokens += cat.tokens;
+      target.eventCount += cat.eventCount;
+      target.unavailableCount += cat.unavailableCount;
+    }
+  }
+  return [...byKey.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +384,7 @@ export function buildSessionTokensSummary(opts: BuildSummaryOptions, now: Date =
   const editions = aggregateCosts({ editionsDir, since, until });
   const editionRows = editionCostsToKindDayTotals(editions);
 
-  const rows = [...editionRows, ...logRows].sort(
+  const rows = mergeKindDayTotals([...editionRows, ...logRows]).sort(
     (a, b) => a.day.localeCompare(b.day) || a.kind.localeCompare(b.kind),
   );
 
@@ -342,8 +439,11 @@ function formatByDayTable(rows: KindDayTotals[]): string {
       const coordStr = coord ? `${fmtTokens(coord.tokens)}${coord.unavailableCount ? ` (${coord.unavailableCount} n/d)` : ""}` : "-";
       const implStr = impl ? `${fmtTokens(impl.tokens)}${impl.unavailableCount ? ` (${impl.unavailableCount} n/d)` : ""}` : "-";
       const reviewStr = review ? `${fmtTokens(review.tokens)}${review.unavailableCount ? ` (${review.unavailableCount} n/d)` : ""}` : "-";
+      // `×N` = N rodadas do mesmo dia somadas nesta linha (#6638). Sem isso a
+      // fusão apagaria a diferença entre um dia de 1 rodada e um de 7.
+      const kindStr = row.rounds.length > 1 ? `${KIND_LABEL[row.kind]} ×${row.rounds.length}` : KIND_LABEL[row.kind];
       lines.push(
-        `| ${day} | ${KIND_LABEL[row.kind]} | ${fmtTokens(row.totalTokens)} | ${fmtCost(row.costUsd, row.costEstimated)} | ${coordStr} | ${implStr} | ${reviewStr} |`,
+        `| ${day} | ${kindStr} | ${fmtTokens(row.totalTokens)} | ${fmtCost(row.costUsd, row.costEstimated)} | ${coordStr} | ${implStr} | ${reviewStr} |`,
       );
     }
   }
@@ -396,7 +496,9 @@ ${formatByDayTable(summary.rows)}
 ---
 _Fontes: \`_internal/stage-status.json\` por edição (kind "Edição", via \`aggregate-costs.ts\`) + \`data/run-log.jsonl\` eventos \`subagent_metrics\`/\`coordinator_tokens_estimate\`/\`review_metrics\`/\`fleet_review_metrics\` filtrados por \`agent ∈ {overnight, develop, continuo}\` (#3453/#4815)._
 _"n/d" ao lado de uma categoria = eventos com \`source: "unavailable"\` (harness não expôs tokens, ou coordenador esqueceu o checkpoint) — NUNCA contados como zero, só reportados à parte para não subestimar o consumo em silêncio._
-_"Edição" tem split real \`tokens_in\`/\`tokens_out\` e \`$\` por modelo (via transcript local); overnight/develop/continuo só têm total estimado — o harness não expõe usage por invocação de subagente hoje (#5413)._
+_"Dia" é dia CIVIL: rodadas do mesmo dia (\`260814\`, \`260814b\`, \`260814c\`) somam numa linha só, e \`×N\` ao lado do kind diz quantas foram (#6638)._
+_"Edição" tem split real \`tokens_in\`/\`tokens_out\` e \`$\` por modelo (via transcript local); overnight/develop/continuo só têm o total por invocação, sem split in/out._
+_**Não compare os percentuais entre kinds:** as duas fontes medem bases diferentes — "Edição" soma \`input + cache_creation + cache_read\` do transcript e NÃO inclui subagentes (#5413), overnight/develop/continuo somam o total por subagente e não incluem o coordenador (#6634). Ver #6633._
 `;
 }
 
