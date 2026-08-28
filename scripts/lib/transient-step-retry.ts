@@ -82,6 +82,18 @@ export async function stepWithTransientRetry<T = unknown>(
     }
     if (result.code === transientExitCode) {
       const signal = parseJson<TransientStepSignal>(result.stdout);
+      // #6288 (uniformiza com withBrevo429Retry/brevoGet, decisão do editor):
+      // um retryAfterSecs que já excede o teto do orçamento (capMs) nunca vai
+      // caber, em nenhuma tentativa restante — dormir o teto e retentar é
+      // aritmeticamente garantido a falhar de novo. Desiste JÁ, sem consumir
+      // as tentativas restantes nem dormir o capMs à toa.
+      if (signal?.retryAfterSecs != null && signal.retryAfterSecs * 1000 > capMs) {
+        throw makeAbort(
+          `❌ ${label}: retryAfterSecs ${signal.retryAfterSecs}s excede o orçamento de ` +
+            `${Math.round(capMs / 1000)}s por tentativa — desistindo agora em vez de dormir o teto ` +
+            `e falhar igual (${signal?.reason ?? "rate limit do dashboard"}).`,
+        );
+      }
       if (attempt < maxAttempts) {
         const waitMs = Math.min(
           signal?.retryAfterSecs != null && signal.retryAfterSecs >= 0 ? signal.retryAfterSecs * 1000 : fallbackMs,

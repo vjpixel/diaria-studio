@@ -475,15 +475,15 @@ describe("clarice-envio-guard (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("REGRESSÃO (#6221): falha TRANSITÓRIA persiste nas 2 tentativas, capped no orçamento ENCOLHIDO do guard (2min, não 10min nem 35min do run) => cai no fallback rápido", async () => {
+    it("#6288 (decisão do editor, uniformiza com brevoGet/withBrevo429Retry): retryAfterSecs de 1h excede o orçamento ENCOLHIDO do guard (2min, #6221) => desiste JÁ na 1ª tentativa, cai no fallback rápido", async () => {
       const root = freshRoot();
       const sleeps: number[] = [];
       const { exec, calls } = makeFakeExec({
-        "scripts/clarice-plan-wave.ts": [transientResult(3600), transientResult(3600)], // 1h pedido, capped
+        "scripts/clarice-plan-wave.ts": [transientResult(3600), transientResult(3600)], // 1h pedido, excede o cap de 2min
       });
       const r = await runEnvioGuard(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
-      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "exatamente 2 tentativas, não mais (#6221 — era 3)");
-      assert.deepEqual(sleeps, [2 * 60_000], "capped em 2min (orçamento ENCOLHIDO do guard, #6221) — só 1 espera, não 2");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "desiste na 1ª tentativa — dormir o teto e retentar com 1h pedido falharia igual");
+      assert.deepEqual(sleeps, [], "nunca dorme quando retryAfterSecs já excede o orçamento");
       // sem group-campaigns.json => sem pendência local => code 1 (fallback não tem o que fazer, mas alarma).
       assert.equal(r.code, 1);
       assert.equal(r.reportId, "envio-260812-guard-prereq-falhou-sem-pendencia");
