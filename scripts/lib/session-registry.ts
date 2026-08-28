@@ -2324,6 +2324,260 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
   return plan;
 }
 
+// ─── Reconciliação de claims presos em backup (#6581) ──────────────────────
+//
+// O #6567 (PR #6571) consertou o WRITE-path de `unclaimIssue`: a remoção de
+// uma issue passou a propagar para todos os `-safeBackup-*` do grupo, não só
+// o arquivo real. Isso impede o problema de CRESCER dali pra frente, mas não
+// tocou o ESTOQUE anterior — um claim que só sobrevive num backup porque o
+// arquivo REAL ainda existe mas divergiu (escrita pré-#6567 que só tocou o
+// real, deixando um `-safeBackup-*` mais antigo/bifurcado com issues que o
+// real nunca chegou a carregar) fica preso: o read-path
+// (`readMergedSessionGroups`/`mergeSessionRecords`) continua reportando a
+// issue como reivindicada via união fail-safe, mesmo sem nenhuma escrita
+// pendente que a resolva. **Isto é distinto do caso "sessão encerrou e o
+// arquivo real foi removido"** (`endSession`/GC) — aí o backup fica ÓRFÃO,
+// não faz parte de grupo nenhum, e este reconciliador explicitamente não o
+// toca (ver "Por que backup órfão... nunca vira arquivo real novo" no CLI).
+// `planClaimReconciliation`/`reconcileClaims` fecham o caso do real ainda
+// vivo: para cada grupo (arquivo real + seus `-safeBackup-*`), a união de
+// `claimed_issues` é calculada e gravada de volta no arquivo REAL. Isso não
+// muda quando o GC pode remover os backups — `planSessionGc`/`decideSessionGc`
+// decidem por liveness do GRUPO (heartbeat/pid), nunca por `claimed_issues`,
+// e removem real+backups sempre juntos, atomicamente; o benefício real desta
+// reconciliação é o arquivo real virar a fonte de verdade AUTOSSUFICIENTE da
+// claim (não depende mais de nenhum backup sobreviver) — não "destravar" o GC.
+
+export type ClaimReconciliationAction =
+  | "reconciled"
+  | "no-change"
+  | "skipped-unreadable-real"
+  | "orphan-backups-only"
+  | "write-failed";
+
+export interface ClaimReconciliationResult {
+  /** `{kind}-{tag}-{sessionId}` (stem do arquivo real) pro grupo ancorado num
+   * real, ou `orphan-backup:{arquivo}` pra um backup sem real correspondente. */
+  identity: string;
+  /** Path absoluto do arquivo real do grupo — `null` só pra `orphan-backups-only`. */
+  realPath: string | null;
+  /** Paths absolutos de todo `-safeBackup-*` do grupo (ou o próprio arquivo,
+   * pra um órfão). */
+  backupPaths: string[];
+  /** Issues presentes em algum backup do grupo mas ausentes do real —
+   * ADICIONADAS ao real quando `action === "reconciled"`. Nunca uma remoção. */
+  addedIssues: number[];
+  /** Entradas NOVAS de `claimed_issues_at` a mesclar (só para `addedIssues`) —
+   * usado por `reconcileClaims` na escrita; nunca sobrescreve uma entrada já
+   * existente no real. Vazio quando `addedIssues` é vazio. */
+  addedClaimedIssuesAt: Record<string, string>;
+  /** Quantos `-safeBackup-*` do grupo estavam ilegíveis/corrompidos e por isso
+   * ficaram de fora da união — as claims deles, se houver, ficam
+   * irrecuperáveis por esta reconciliação (não é erro nem bloqueia o resto do
+   * grupo, mas é informação que o CLI agrega no resumo final). */
+  unreadableBackupCount: number;
+  action: ClaimReconciliationAction;
+  /** Explicação legível — sempre populada, inclusive pra `"no-change"`
+   * (auditabilidade, mesmo padrão de `SessionGcResult.reason`). */
+  reason: string;
+}
+
+export interface ClaimReconciliationDecision {
+  /** Issues presentes em algum backup mas ausentes do real — a acrescentar
+   * (união fail-safe, nunca remoção — mesma direção do read-path #6130 e do
+   * write-path de `unclaimIssue` #6567). Ordenadas. */
+  addedIssues: number[];
+  /** Entradas NOVAS de `claimed_issues_at` (só para `addedIssues`) — nunca
+   * sobrescreve uma entrada já existente no real. */
+  addedClaimedIssuesAt: Record<string, string>;
+}
+
+/**
+ * Decisão PURA (sem I/O) de reconciliação de um único grupo: dado o registro
+ * REAL e os registros LEGÍVEIS de seus `-safeBackup-*` (backup ilegível já
+ * deve ter sido filtrado pelo chamador — não participa da união, mas também
+ * não bloqueia o resto do grupo), calcula o que FALTA no real via a mesma
+ * primitiva de união do read-path (`mergeSessionRecords`).
+ */
+export function decideClaimReconciliation(
+  realRecord: SessionRecord,
+  backupRecords: readonly SessionRecord[],
+): ClaimReconciliationDecision {
+  if (backupRecords.length === 0) return { addedIssues: [], addedClaimedIssuesAt: {} };
+  const merged = mergeSessionRecords([realRecord, ...backupRecords]);
+  const currentClaimed = new Set(realRecord.claimed_issues ?? []);
+  const addedIssues = (merged.claimed_issues ?? [])
+    .filter((n) => !currentClaimed.has(n))
+    .sort((a, b) => a - b);
+  const addedClaimedIssuesAt: Record<string, string> = {};
+  for (const issue of addedIssues) {
+    const at = merged.claimed_issues_at?.[String(issue)];
+    if (at) addedClaimedIssuesAt[String(issue)] = at;
+  }
+  return { addedIssues, addedClaimedIssuesAt };
+}
+
+/**
+ * Plano PURO (não escreve nada — só lê) de reconciliação de `data/sessions/`
+ * (#6581): agrupa real+backups via `groupBackupsByRealStem` (mesma primitiva
+ * do read-path, reusada aqui em vez de reimplementada) e roda
+ * `decideClaimReconciliation` por grupo. Backup ÓRFÃO (sem arquivo real
+ * correspondente) nunca vira arquivo real novo — só é reportado com action
+ * `"orphan-backups-only"`; quem decide o destino dele é o GC, com os
+ * critérios de liveness dele (`planSessionGc`), não este reconciliador.
+ * Arquivo real ilegível/corrompido nunca é sobrescrito (`"skipped-unreadable-real"`)
+ * — fail-soft, mesma disciplina de `planSessionGc` sobre registro ilegível.
+ */
+export function planClaimReconciliation(repoRoot: string): ClaimReconciliationResult[] {
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const backupsByRealStem = groupBackupsByRealStem(names);
+  const claimedBackupNames = new Set<string>();
+  const results: ClaimReconciliationResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const backupNames = (backupsByRealStem.get(stem) ?? []).sort();
+    for (const b of backupNames) claimedBackupNames.add(b);
+    const realPath = join(dir, realName);
+    const backupPaths = backupNames.map((n) => join(dir, n));
+
+    const realRecord = readJsonSafe<SessionRecord>(realPath);
+    if (!realRecord) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        addedIssues: [],
+        addedClaimedIssuesAt: {},
+        unreadableBackupCount: 0,
+        action: "skipped-unreadable-real",
+        reason: "arquivo real ilegível/corrompido — grupo pulado (fail-soft: nunca escreve por cima do que não conseguiu entender)",
+      });
+      continue;
+    }
+
+    const backupRecords: SessionRecord[] = [];
+    let unreadableCount = 0;
+    for (const b of backupNames) {
+      const r = readJsonSafe<SessionRecord>(join(dir, b));
+      if (r) backupRecords.push(r);
+      else unreadableCount++;
+    }
+
+    const { addedIssues, addedClaimedIssuesAt } = decideClaimReconciliation(realRecord, backupRecords);
+    const unreadableNote = unreadableCount > 0 ? ` (${unreadableCount} backup(s) ilegível(is) do grupo ignorado(s))` : "";
+    results.push({
+      identity: stem,
+      realPath,
+      backupPaths,
+      addedIssues,
+      addedClaimedIssuesAt,
+      unreadableBackupCount: unreadableCount,
+      action: addedIssues.length > 0 ? "reconciled" : "no-change",
+      reason:
+        addedIssues.length > 0
+          ? `${addedIssues.length} claim(s) presos em backup — issue(s) [${addedIssues.join(", ")}]${unreadableNote}`
+          : `nenhum claim exclusivo de backup${unreadableNote}`,
+    });
+  }
+
+  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  for (const orphan of orphanBackups) {
+    results.push({
+      identity: `orphan-backup:${orphan}`,
+      realPath: null,
+      backupPaths: [join(dir, orphan)],
+      addedIssues: [],
+      addedClaimedIssuesAt: {},
+      unreadableBackupCount: 0,
+      action: "orphan-backups-only",
+      reason:
+        "backup sem arquivo real correspondente — nunca cria arquivo real do zero pra reconciliar (decisão #6581); " +
+        "o GC (`planSessionGc`) decide o destino dele com os critérios de liveness dele",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planClaimReconciliation` de fato: para cada grupo com
+ * `action === "reconciled"`, RELÊ tanto o arquivo real quanto cada backup do
+ * grupo (podem ter mudado entre o plano e a escrita — mesma corrida que
+ * `writeJsonSafe` já aceita em todo o resto do módulo) e RECOMPUTA
+ * `decideClaimReconciliation` contra esse estado FRESCO, em vez de reaplicar
+ * o `addedIssues` congelado no plano.
+ *
+ * **Por que recomputar em vez de reusar o plano (achado do fleet review do
+ * #6583, confirmado por 3 revisores independentes):** se `entry.addedIssues`
+ * do plano fosse aplicado cegamente sobre o `current` relido, uma issue que
+ * foi LEGITIMAMENTE removida via `unclaimIssue` no intervalo entre o plano e
+ * esta escrita (unclaim já propaga pra backups desde #6567, mas isso não
+ * ajuda aqui — o `addedIssues` já tinha sido calculado ANTES da remoção)
+ * seria silenciosamente re-adicionada — o próprio script de limpeza
+ * ressuscitando uma claim que acabara de ser corretamente encerrada.
+ * Recomputar contra o par (real, backups) lido NESTE instante fecha essa
+ * janela: se a issue já não aparece em nenhum backup (ou já está no real),
+ * `decideClaimReconciliation` simplesmente não a inclui em `addedIssues` de
+ * novo, e o grupo vira `"no-change"` sem nenhuma escrita.
+ *
+ * Escreve só `claimed_issues`/`claimed_issues_at` sobre o `current` ATUAL —
+ * nunca sobrescreve com o registro MESCLADO inteiro (que poderia introduzir
+ * campos de um backup que o real nunca teve, mesma disciplina cirúrgica de
+ * `unclaimIssue` #6567). Escrita atômica (`writeJsonSafe` → `writeFileAtomic`).
+ * Nunca remove nenhum backup — quem remove é o GC. Falha de escrita (I/O
+ * transitório do OneDrive) rebaixa a entry pra `"write-failed"` — DISTINTO de
+ * `"no-change"` (que significa "nada a fazer", não "tentou e não conseguiu")
+ * — com o motivo anexado; mesmo espírito de `garbageCollectSessions`
+ * rebaixar pra `"kept"` em falha, mas com uma action própria em vez de
+ * reusar o valor do caminho feliz — a próxima execução retenta.
+ */
+export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
+  const plan = planClaimReconciliation(repoRoot);
+  for (const entry of plan) {
+    if (entry.action !== "reconciled" || !entry.realPath) continue;
+
+    const current = readJsonSafe<SessionRecord>(entry.realPath);
+    if (!current) {
+      entry.action = "skipped-unreadable-real";
+      entry.reason = `${entry.reason} [ficou ilegível entre o plano e a escrita — pulado, próxima execução retenta]`;
+      continue;
+    }
+
+    const freshBackupRecords: SessionRecord[] = [];
+    for (const backupPath of entry.backupPaths) {
+      const r = readJsonSafe<SessionRecord>(backupPath);
+      if (r) freshBackupRecords.push(r);
+    }
+    const fresh = decideClaimReconciliation(current, freshBackupRecords);
+    entry.addedIssues = fresh.addedIssues;
+    entry.addedClaimedIssuesAt = fresh.addedClaimedIssuesAt;
+
+    if (fresh.addedIssues.length === 0) {
+      entry.action = "no-change";
+      entry.reason = `${entry.reason} [nada a adicionar contra o estado relido no momento da escrita — provavelmente já reconciliado, ou a claim foi legitimamente removida entre o plano e a escrita]`;
+      continue;
+    }
+
+    const claimedSet = new Set(current.claimed_issues ?? []);
+    for (const issue of fresh.addedIssues) claimedSet.add(issue);
+    const claimedIssuesAt = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
+    try {
+      writeJsonSafe(entry.realPath, {
+        ...current,
+        claimed_issues: [...claimedSet].sort((a, b) => a - b),
+        claimed_issues_at: claimedIssuesAt,
+      });
+    } catch (e) {
+      entry.action = "write-failed";
+      entry.reason = `${entry.reason} [escrita falhou: ${(e as Error)?.message ?? String(e)} — próxima execução retenta]`;
+    }
+  }
+  return plan;
+}
+
 // ─── Beacon: caminhos tocados (#6168 Parte A) ──────────────────────────────
 
 /**
