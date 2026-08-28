@@ -9,8 +9,8 @@
  * do editor e, se ele não agir na hora, o guard de idempotência garante que
  * NUNCA MAIS chega outro e-mail sobre o MESMO drift.
  *
- * Escopo desta unidade: implementar só pra `beehiiv-home-meta-check.ts`
- * (ver wiring em `scripts/beehiiv-home-meta-check.ts`). Os outros 8 alarmes
+ * Escopo desta unidade: implementar só pra `home-meta-check.ts`
+ * (ver wiring em `scripts/home-meta-check.ts`). Os outros 8 alarmes
  * do projeto (`hub-drift-check.ts`, `robots-txt-drift-check.ts`,
  * `worker-drift-check.ts`, `apoios-diff-alarm.ts`, `clarice-envio-alarm.ts`,
  * `clarice-guardrail-alarm.ts`, `clarice-opens-catchup-alarm.ts`,
@@ -80,7 +80,7 @@
  *
  * Match é sempre EXATO (`check` + `fingerprint` iguais, nunca prefixo/regex)
  * — fail-safe: se o texto do achado mudar (o `message` que compõe o
- * fingerprint em checks como `beehiiv-home-meta-check.ts` muda), o
+ * fingerprint em checks como `home-meta-check.ts` muda), o
  * fingerprint muda, e a entry da allowlist para de casar automaticamente.
  * Silenciar por acidente um achado NOVO/diferente por causa de um match
  * frouxo seria pior que o problema que este mecanismo resolve.

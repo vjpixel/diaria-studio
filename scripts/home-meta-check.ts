@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/beehiiv-home-meta-check.ts (#4557, #5099, #5106, #5112)
+ * scripts/home-meta-check.ts (#4557, #5099, #5106, #5112)
  *
  * **Nome do arquivo/task é herdado da era em que a home era um tema Beehiiv
  * — desatualizado desde o cutover do apex (#467, confirmado ao vivo em
@@ -11,7 +11,7 @@
  * que também decide o destino do eixo `english-labels` (só faz sentido
  * numa home-tema-Beehiiv; numa home HTML nossa não detecta mais o que foi
  * criado pra detectar — ver nota de escopo no topo de
- * `scripts/lib/beehiiv-home-meta-check.ts`). Os demais eixos continuam
+ * `scripts/lib/home-meta-check.ts`). Os demais eixos continuam
  * válidos: `port-in-url` avalia a página de edição (`/p/{slug}`, ainda
  * render Beehiiv em cache); `og-title-brand`/`http-self-link`/
  * `legacy-host-link` são checáveis em qualquer home; `hub-link-missing`
@@ -20,7 +20,7 @@
  * Smoke-test de runtime: bate `GET https://diar.ia.br/` (home pública — GET
  * simples, sem autenticação, sem API do Beehiiv, sem MCP — qualquer visitante
  * vê o mesmo HTML, isso NÃO é uma ação de publish/schedule/send) e verifica
- * os eixos de drift documentados em `scripts/lib/beehiiv-home-meta-check.ts`:
+ * os eixos de drift documentados em `scripts/lib/home-meta-check.ts`:
  * `og:title` sem a marca oficial (ou com a grafia legada "Diar.ia"),
  * self-links `href="http://diar.ia.br..."` (deveria ser https), rótulos
  * residuais em inglês na UI do tema Beehiiv ("Sign Up", "Login", "N min
@@ -41,15 +41,15 @@
  * perceber o efeito colateral) fica invisível — ninguém olha a home pública
  * todo dia.
  *
- * Ver `scripts/lib/beehiiv-home-meta-check.ts` pra decisão pura
+ * Ver `scripts/lib/home-meta-check.ts` pra decisão pura
  * (`evaluateHomeMetaDrift`/`evaluatePostPageDrift`) + extração de metadata +
  * fingerprint/idempotência do alarme, e `scripts/lib/alarm-issues.ts` (#5112)
  * pro helper genérico de criação/dedup/reconciliação de issue por achado.
  *
  * Uso:
- *   npx tsx scripts/beehiiv-home-meta-check.ts               # avalia + persiste + alarma se NOVO drift + reconcilia issues
- *   npx tsx scripts/beehiiv-home-meta-check.ts --dry-run      # avalia + imprime, NÃO persiste/alarma/toca gh
- *   npx tsx scripts/beehiiv-home-meta-check.ts --to email@x   # override do destinatário do alarme
+ *   npx tsx scripts/home-meta-check.ts               # avalia + persiste + alarma se NOVO drift + reconcilia issues
+ *   npx tsx scripts/home-meta-check.ts --dry-run      # avalia + imprime, NÃO persiste/alarma/toca gh
+ *   npx tsx scripts/home-meta-check.ts --to email@x   # override do destinatário do alarme
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` (mesmo requisito
  * dos outros alarmes locais deste repo) — só necessário quando há drift pra
@@ -59,7 +59,7 @@
  * fail-soft (o e-mail sai assim mesmo, com o motivo — nunca perde o alarme
  * por falta de `gh`). Não precisa do junction `data/` pra rodar a checagem
  * em si — só pra persistir o estado de idempotência
- * (`data/beehiiv-home-meta-check/state.json` + `alarm-issues.json`).
+ * (`data/home-meta-check/state.json` + `alarm-issues.json`).
  *
  * Como os outros alarmes locais deste repo (#4320/#4382/#4490/#4534/#4723/
  * #4740/#4750), o registro da task no Task Scheduler e a 1ª execução ao vivo
@@ -93,7 +93,7 @@ import {
   type HomeMetaAlarmState,
   type HomeMetaDriftFinding,
   type HomeMetaFindingIssueRef,
-} from "./lib/beehiiv-home-meta-check.ts";
+} from "./lib/home-meta-check.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -106,10 +106,10 @@ import {
 } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const STATE_PATH = resolve(ROOT, "data", "beehiiv-home-meta-check", "state.json");
-const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "beehiiv-home-meta-check", "alarm-issues.json");
+const STATE_PATH = resolve(ROOT, "data", "home-meta-check", "state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "home-meta-check", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
-const LOG_PREFIX = "[beehiiv-home-meta-check]";
+const LOG_PREFIX = "[home-meta-check]";
 const FETCH_TIMEOUT_MS = 15_000;
 const HOME_URL = `${BEEHIIV_BASE_URL}/`;
 /** #5112/#5113: a task virou diária (#5113) — 2 execuções consecutivas sem
@@ -127,7 +127,7 @@ const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
  * chega perto do que motivou os outros dois consumidores — mas o opt-in é
  * de graça (findings sem `group` nunca agregam, e abaixo do teto o
  * comportamento é idêntico ao pré-#6572: 1 issue por eixo). */
-const HOME_META_GROUP = "beehiiv-home-meta-check";
+const HOME_META_GROUP = "home-meta-check";
 /** Teto (exclusivo) — na prática nunca deve disparar (só 6 eixos possíveis
  * no total), mas mantém o check simetricamente pronto se um eixo novo
  * passar a emitir múltiplos findings por execução. */
@@ -210,7 +210,17 @@ function priorityForCheck(check: HomeMetaDriftFinding["check"]): AlarmPriority {
  * mensagem (`homeMetaFindingIssueKey` — `${check}:${message}`); se o texto
  * do achado mudar (ex: outro rótulo em inglês aparecer junto de "N min
  * read"), o fingerprint muda e este item PARA de casar — não silencia um
- * achado novo por acidente. */
+ * achado novo por acidente.
+ *
+ * **Nota #6498 (28/08/2026):** esta entry nasceu quando `english-labels`
+ * era o guard do TEMA Beehiiv da home. Desde o cutover do apex (#467) a
+ * home é `workers/site/public/index.html` (HTML nosso) e o eixo virou guard
+ * genérico (ver nota no topo de `scripts/lib/home-meta-check.ts`) — o merge
+ * tag "Read time" do tema Beehiiv não existe mais na home, então este
+ * fingerprint exato provavelmente nunca mais casa. Mantido como registro
+ * histórico da limitação de plataforma (não fazia mal remover, mas também
+ * não é preciso — o item só passa a operar de novo se o texto exato
+ * reaparecer, o que exigiria a home voltar a ser um tema Beehiiv). */
 export const ALARM_ALLOWLIST: AlarmAllowlist = [
   {
     check: "english-labels",
@@ -239,8 +249,8 @@ export function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
     family: "estado",
     title: `[diar.ia.br] drift na home: ${f.check}`,
     body: [
-      "Achado automático do smoke-test `Diaria-Beehiiv-Home-Meta-Check`",
-      "(`scripts/beehiiv-home-meta-check.ts`).",
+      "Achado automático do smoke-test `Diaria-Home-Meta-Check`",
+      "(`scripts/home-meta-check.ts`).",
       "",
       `Eixo: \`${f.check}\``,
       `Detalhe: ${f.message}`,
@@ -268,12 +278,12 @@ export function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
 export function buildAggregatedHomeMetaFinding(findings: readonly AlarmFinding[]): AlarmFinding {
   const sorted = [...findings].sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
   return {
-    check: "beehiiv-home-meta-check",
+    check: "home-meta-check",
     fingerprint: HOME_META_ESTREIA_AGGREGATE_FINGERPRINT,
     title: `[diar.ia.br] ${sorted.length} eixos de drift na home na estreia do alarme`,
     body: [
-      "Achado automático do smoke-test `Diaria-Beehiiv-Home-Meta-Check`",
-      "(`scripts/beehiiv-home-meta-check.ts`), agregado por ser a 1ª execução (modo de estreia, #6572).",
+      "Achado automático do smoke-test `Diaria-Home-Meta-Check`",
+      "(`scripts/home-meta-check.ts`), agregado por ser a 1ª execução (modo de estreia, #6572).",
       "",
       `${sorted.length} eixos com drift encontrados na 1ª execução deste alarme nesta máquina/checkout — acima do ` +
         `teto de ${HOME_META_ESTREIA_AGGREGATE_THRESHOLD}, agregados nesta issue única em vez de 1 issue por eixo:`,

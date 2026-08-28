@@ -302,13 +302,13 @@ describe("#5408 — enumeração programática (listScheduledTaskRows / --list /
   });
 });
 
-describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only", () => {
+describe("#5005 — Diaria-Home-Meta-Check registrada, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto", () => {
-    const t = getScheduledTaskByName("Diaria-Beehiiv-Home-Meta-Check");
-    assert.ok(t, "Diaria-Beehiiv-Home-Meta-Check ausente de SCHEDULED_TASKS");
+    const t = getScheduledTaskByName("Diaria-Home-Meta-Check");
+    assert.ok(t, "Diaria-Home-Meta-Check ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
-      ["scripts/beehiiv-home-meta-check.ts"],
+      ["scripts/home-meta-check.ts"],
     );
     // #5113: diária 09:35 (mudou de "a cada 6h"; 09:35 e não 09:30 porque
     // 09:30 colide com Diaria-Hub-Staleness-Check, #5123).

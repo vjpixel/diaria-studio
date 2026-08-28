@@ -87,7 +87,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const USER_AGENT = "DiariaBot/1.0 (+https://diar.ia.br)";
 /** #5339: task roda diária (10:15) — 2 execuções limpas consecutivas = 48h
  * sem o achado antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`beehiiv-home-meta-check.ts` pra cadência diária. */
+ * `hub-drift-check.ts`/`home-meta-check.ts` pra cadência diária. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 // ─── Estado (idempotência) — mesmo padrão I/O de hub-drift-check.ts ───────
@@ -114,7 +114,7 @@ export function saveState(state: RobotsDriftAlarmState, statePath: string = STAT
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// hub-drift-check.ts/beehiiv-home-meta-check.ts: idempotência do E-MAIL
+// hub-drift-check.ts/home-meta-check.ts: idempotência do E-MAIL
 // (acima) e tracking de ISSUE por achado são preocupações independentes.
 
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
 
   // #5339 — reconcilia issue por host com drift ANTES de montar o e-mail (o
   // e-mail cita a issue de cada achado pendente), mesmo padrão de
-  // hub-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
+  // hub-drift-check.ts/home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "error");
   const alarmFindings = driftedResults.map(toAlarmFinding);

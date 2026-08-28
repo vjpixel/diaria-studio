@@ -24,7 +24,7 @@
  * mínima) em vez de um grep estático do código-fonte: várias partes legítimas
  * do código (`newsletter-parse.ts` normalizeKnownUrl, `FOOTER_DOMAINS` em
  * canonical-urls.ts, testes de back-compat, `ALLOWED_BEEHIIV_PLATFORM_HOSTS`
- * em `beehiiv-home-meta-check.ts`) precisam continuar CITANDO os hosts
+ * em `home-meta-check.ts`) precisam continuar CITANDO os hosts
  * legados — pra reconhecer/aceitar/allowlistar links legados, não pra
  * emiti-los. Um grep bruto por substring geraria falso-positivo nesses
  * pontos legítimos. Este teste cobre as 5 superfícies reader-facing hoje

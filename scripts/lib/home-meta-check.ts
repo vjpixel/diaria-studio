@@ -1,12 +1,14 @@
 /**
- * scripts/lib/beehiiv-home-meta-check.ts (#4557)
+ * scripts/lib/home-meta-check.ts (#4557)
  *
  * Lógica PURA (sem I/O) do drift-check da home pública (`https://diar.ia.br/`)
- * contra o `og:title` esperado + rótulos residuais em inglês do tema Beehiiv.
+ * contra o `og:title` esperado + rótulos residuais de UI em inglês (ver
+ * nota `english-labels` abaixo pro histórico do que esse eixo procurava
+ * originalmente e por que virou genérico, #6498).
  * Mesmo molde de `scripts/lib/hub-drift-check.ts`/`scripts/lib/worker-drift-check.ts`:
  * uma função de decisão testável (`evaluateHomeMetaDrift`) que recebe o HTML
  * já buscado (nunca faz a chamada de rede em si), mais fingerprint/estado de
- * idempotência pro alarme por e-mail. O script `scripts/beehiiv-home-meta-check.ts`
+ * idempotência pro alarme por e-mail. O script `scripts/home-meta-check.ts`
  * é quem faz o `fetch` (GET simples, sem auth, sem API/MCP Beehiiv — é a home
  * pública, qualquer visitante vê o mesmo HTML) e usa este módulo pra decidir
  * SE/O-QUE alarmar.
@@ -89,15 +91,29 @@
  * manual e virou guard de regressão do gerador: dispara se a home for ao ar
  * sem regenerar depois de um hub novo entrar em `HUB_META`.
  *
- * Nota de escopo pros outros eixos: `english-labels` (rótulos residuais do
- * tema Beehiiv) perdeu a razão de ser NA HOME pelo mesmo motivo — `port-in-url`
- * é quem segue válido nesse sentido, avaliando a página da edição mais
- * recente, cujo conteúdo de `/p/{slug}` ainda vem do render Beehiiv em cache.
- * O destino de `english-labels` (virar guard de outra coisa — rótulo em
- * inglês residual em página NOSSA, o que ainda faria sentido — ou sair) e o
- * naming do arquivo/task (`beehiiv-home-meta-check`/`Diaria-Beehiiv-Home-Meta-Check`,
- * ambos herdados da era Beehiiv) são decisão pendente, rastreada em #6498 —
- * não atacada aqui por ter blast radius próprio (task agendada no `helios`).
+ * ─── `english-labels` virou guard GENÉRICO (#6498, 28/08/2026) ────────────
+ *
+ * O eixo nasceu (#4557) procurando 3 strings específicas do tema padrão da
+ * Beehiiv ("Sign Up", "Login", "N min read") — vocabulário que perdeu a
+ * razão de ser depois do cutover do apex (#467): a home hoje é
+ * `workers/site/public/index.html`, HTML nosso, não mais um tema Beehiiv, e
+ * o eixo tinha parado de conseguir detectar o que foi criado pra detectar.
+ * Decisão do editor (#6498, via `/diaria-desbloqueia`): em vez de sair, o
+ * eixo é REDEFINIDO — de "detecta tema Beehiiv vazando" pra "detecta
+ * qualquer rótulo comum de UI em inglês vazando numa página nossa"
+ * (`ENGLISH_LABEL_PATTERNS` abaixo), preservando o sinal útil (uma
+ * regressão de i18n na home própria) a baixo custo de manutenção. As 3
+ * strings originais continuam na lista (ainda são rótulos de UI comuns em
+ * inglês, só não mais amarrados à origem "tema Beehiiv"), ampliada com
+ * outros rótulos genéricos de UI (subscribe, read more, log in, etc.) que
+ * vazariam igualmente numa página nossa por engano de cópia/template.
+ * `port-in-url` segue sendo o eixo que avalia a página da edição mais
+ * recente (`/p/{slug}`, ainda render Beehiiv em cache) — `english-labels`
+ * hoje só avalia a HOME (HTML nosso), nunca a página de post.
+ *
+ * Naming do arquivo/task (`home-meta-check`/`Diaria-Home-Meta-Check`,
+ * ambos renomeados nesta mesma unidade — herdavam o prefixo `beehiiv-` da
+ * era em que a home era um tema Beehiiv, #6498).
  */
 
 import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";
@@ -196,26 +212,55 @@ export function extractVisibleText(html: string): string {
     .replace(/<[^>]*>/g, " ");
 }
 
-/** Rótulos em inglês residuais que a UI do tema Beehiiv não deveria mais
- * mostrar (issue #4557, item 3). Casados contra `extractVisibleText` (#5137),
- * não contra o HTML cru — por isso não precisam mais dos delimitadores
- * `>…<` (o texto já vem sem tags). "N min read" cobre qualquer inteiro
- * ("5 min read", "12 min read", etc.), case-insensitive. */
+/** Rótulos comuns de UI em inglês que não deveriam aparecer numa página
+ * NOSSA em português (#4557 item 3, generalizado no #6498 — ver nota
+ * "english-labels virou guard GENÉRICO" no topo do arquivo). Casados contra
+ * `extractVisibleText` (#5137), não contra o HTML cru — por isso não
+ * precisam dos delimitadores `>…<` (o texto já vem sem tags). "N min read"
+ * cobre qualquer inteiro ("5 min read", "12 min read", etc.),
+ * case-insensitive. Lista deliberadamente enxuta (rótulos de ação/navegação
+ * de UI que vazariam por engano de cópia/template, não qualquer palavra
+ * inglesa isolada) — não precisa ser exaustiva, só útil a baixo custo de
+ * manutenção; um rótulo novo entra aqui quando aparecer um caso real. */
 const ENGLISH_LABEL_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
   { label: '"Sign Up"', re: /\bSign Up\b/ },
-  { label: '"Login"', re: /\bLogin\b/ },
+  // #6672 (fleet review, verificado ao vivo): case-insensitive casava "login"
+  // minúsculo, empréstimo lexical corrente em PT-BR presente em conteúdo
+  // editorial real publicado ("Exige login com conta Meta",
+  // workers/site/public/p/50-dos-empregos-mudam-em-3-anos-diz-estudo/).
+  // Case-sensitive de propósito: o eixo busca RÓTULO de UI (padrão
+  // capitalizado de botão/menu — "Login", "Log in"), não a palavra em
+  // prosa — mesmo raciocínio que já valia pra "Sign Up" antes desta
+  // generalização (#6498).
+  { label: '"Login"/"Log in"', re: /\bLog\s?in\b/ },
+  { label: '"Sign in"', re: /\bSign in\b/ },
   { label: '"N min read"', re: /\b\d+\s*min read\b/i },
+  { label: '"Subscribe"', re: /\bSubscribe\b/ },
+  { label: '"Read more"', re: /\bRead more\b/ },
+  { label: '"Learn more"', re: /\bLearn more\b/ },
+  // #6672 (fleet review, pr-test-analyzer, verificado ao vivo): "Get
+  // Started"/"Get started" REMOVIDO da lista — mesmo capitalizado (rótulo de
+  // botão), casa prosa editorial legítima citando a UI de OUTRO produto
+  // ("Clique em Get Started",
+  // workers/site/public/p/estudos-revelam-influe-ncia-de-ia-na-poli-tica/),
+  // que não é vazamento nosso. Diferente de "Login" (fixo acima só trocando
+  // case-sensitivity), aqui a forma real do falso-positivo já vem
+  // capitalizada — não tinha correção de case que resolvesse sem heurística
+  // de contexto frágil. Valor marginal do padrão não justificava o custo:
+  // fora da lista até aparecer um caso real que precise dele.
+  { label: '"Click here"', re: /\bClick here\b/ },
+  { label: '"Loading..."', re: /\bLoading\.\.\./ },
+  { label: '"Page not found"', re: /\bPage not found\b/ },
+  { label: '"Privacy Policy"', re: /\bPrivacy Policy\b/ },
+  { label: '"Terms of Service"', re: /\bTerms of Service\b/ },
 ];
 
 /**
  * Pura — retorna a lista de rótulos em inglês encontrados no HTML (vazio se
  * nenhum). #5137: casa contra `extractVisibleText(html)`, não contra o HTML
- * cru — uma página Beehiiv embute o JSON de configuração do builder inteiro
- * (ex: `"label":"Sign Up"` no payload da navbar), e qualquer string em
- * inglês que exista só como DADO de configuração casava igual a texto
- * visível antes desta correção. "Sign Up" em botão de ação padrão
- * (`action:"sign_up"`) é ignorado pela Beehiiv e renderizado traduzido
- * ("Assinar") pelo locale da publicação — o leitor nunca vê a string EN.
+ * cru — uma página que embuta JSON de configuração de algum builder/widget
+ * de terceiro no HTML (ex: `"label":"Sign Up"` num payload de navbar) não
+ * deveria contar como texto visível — só o que o leitor de fato vê.
  */
 export function detectEnglishLabels(html: string): string[] {
   const text = extractVisibleText(html);

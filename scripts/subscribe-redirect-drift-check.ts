@@ -84,7 +84,7 @@ const LOG_PREFIX = "[subscribe-redirect-drift-check]";
 const FETCH_TIMEOUT_MS = 15_000;
 /** Task roda diária — 2 execuções limpas consecutivas = ~48h sem o achado
  * antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`worker-drift-check.ts`/`beehiiv-home-meta-check.ts`
+ * `hub-drift-check.ts`/`worker-drift-check.ts`/`home-meta-check.ts`
  * pra cadência diária. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 

@@ -51,7 +51,7 @@ const DATA_DIR = resolve(ROOT, "data");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".session-registry-safebackup-alarm-issues.json");
 const LOG_PREFIX = "[session-registry-safebackup-alarm]";
 /** Mesma ordem de grandeza dos demais alarmes diários do repo
- * (`onedrive-sync-alarm.ts`, `beehiiv-home-meta-check.ts`). */
+ * (`onedrive-sync-alarm.ts`, `home-meta-check.ts`). */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 function loadAlarmIssuesState(): AlarmIssuesState {

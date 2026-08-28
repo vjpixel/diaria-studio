@@ -93,7 +93,7 @@ const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[apoios-diff-alarm]";
 /** #5339: task roda diária (09:45) — 2 execuções limpas consecutivas = 48h
  * sem diff pendente antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`robots-txt-drift-check.ts`/`beehiiv-home-meta-check.ts`
+ * `hub-drift-check.ts`/`robots-txt-drift-check.ts`/`home-meta-check.ts`
  * pra cadência diária. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 

@@ -36,8 +36,8 @@
  * array (`renderTopicLinks` em `scripts/lib/site-home-page.ts`). Hub que
  * entra aqui ganha link na home na próxima regeneração — nada a fazer à mão.
  *
- * O eixo `hub-link-missing` de `scripts/lib/beehiiv-home-meta-check.ts`
- * (task `Diaria-Beehiiv-Home-Meta-Check`, diária) continua vigiando, agora
+ * O eixo `hub-link-missing` de `scripts/lib/home-meta-check.ts`
+ * (task `Diaria-Home-Meta-Check`, diária) continua vigiando, agora
  * como guard de regressão do gerador em vez de cobrança de passo manual:
  * `test/site-home-hub-links-6411.test.ts` roda o mesmo detector em CI, então
  * o alarme só volta a disparar se a home for ao ar sem regenerar.

@@ -244,8 +244,8 @@ pra grafo de link e cópia de host:
   `cursos.diaria.workers.dev` e `diaria.beehiiv.com/archive` em vez dos hosts
   de marca. Ação de PAINEL (editor, Beehiiv UI) — código não alcança a home
   publicada. Guard fechado em código (#5099 item 2): 4º eixo
-  `legacy-host-link` em `scripts/lib/beehiiv-home-meta-check.ts`
-  (`detectLegacyHostLinks`), na task já armada `Diaria-Beehiiv-Home-Meta-Check`
+  `legacy-host-link` em `scripts/lib/home-meta-check.ts`
+  (`detectLegacyHostLinks`), na task já armada `Diaria-Home-Meta-Check`
   (6h) — mesmo mecanismo do `og:title`/self-link http/rótulos EN do #4557.
 - **Achado 2 — a home não linkava nenhum `/temas/*`.** Cluster de hubs só
   recebia link do corpo das edições (#4907) e do root do arquivo/entre hubs —
