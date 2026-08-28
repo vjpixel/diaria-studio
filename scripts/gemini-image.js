@@ -21,6 +21,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import sharp from 'sharp';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Monta o prompt final enviado ao Gemini a partir do JSON de prompt (`sd`).
@@ -61,7 +62,20 @@ export function buildResizeOptions() {
   return { fit: 'cover', position: sharp.strategy.attention };
 }
 
-const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+// #6486: a comparação manual `file://${process.argv[1]}` quebra no Windows —
+// process.argv[1] vem com backslash sem URL-encoding (`C:\Users\...`),
+// enquanto import.meta.url é uma URL real (`file:///C:/Users/...`, barras
+// normais). `fileURLToPath` (node:url nativo) normaliza os dois lados antes
+// de comparar — mesma técnica de `isMainModule` em `scripts/lib/cli-args.ts`,
+// mas implementada inline em vez de importada: este arquivo é invocado via
+// `node` puro (não `tsx` — ver `execFileSync(process.execPath, ...)` em
+// `image-generate.ts`), e importar um `.ts` a partir de um `.js` rodado por
+// `node` puro quebraria em qualquer versão de Node abaixo da que suporta
+// type-stripping nativo sem flag (o floor declarado do repo, `engines.node
+// >=22.5.0`, é anterior a isso) — precedente documentado em
+// `backfill-score-by-month.ts` pro caso inverso (`.ts` importando `.ts`,
+// seguro só porque o runner ali é sempre `tsx`).
+const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 
 if (isMainModule) {
   main().catch(e => { console.error(e.stack || e.message); process.exit(1); });
