@@ -49,6 +49,7 @@ import {
   EditionInputsInvalid,
   type PublishPageDeps,
   type GitRunner,
+  type GhRunner,
 } from "../scripts/publish-edition-site-page.ts";
 import type { EditionPageInputs } from "../scripts/lib/edition-site-page.ts";
 
@@ -149,7 +150,7 @@ function makeDeps(over: Partial<PublishPageDeps> = {}): Harness {
     writePage: (slug, html) => void escritas.push({ slug, html }),
     publish: () => {
       publishes++;
-      return { pushed: true };
+      return { pushed: true, prUrl: "https://github.com/vjpixel/diaria-studio/pull/1", prNumber: 1, prCreated: true };
     },
     log: () => {},
     ...over,
@@ -224,7 +225,7 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
       },
       publish: () => {
         publishChamado = true;
-        return { pushed: true };
+        return { pushed: true, prCreated: true };
       },
     });
     const r = publishEditionSitePage("/x", deps);
@@ -282,7 +283,7 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
   });
 
   it("REGRESSÃO P1-B: publish() não lança mas não confirma push ⇒ code 0, published:false (nunca inferido de ausência de exceção)", () => {
-    const { deps } = makeDeps({ publish: () => ({ pushed: false }) });
+    const { deps } = makeDeps({ publish: () => ({ pushed: false, prCreated: false }) });
     const r = publishEditionSitePage("/x", deps);
     assert.equal(r.code, 0);
     if (r.code === 0) assert.equal(r.published, false, "published só é true quando publish() confirma o push");
@@ -421,7 +422,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       const deps: PublishPageDeps = {
         readEditionInputs,
         writePage: (slug, html) => void escritas.push({ slug, html }),
-        publish: () => ({ pushed: true }),
+        publish: () => ({ pushed: true, prCreated: true, prUrl: "https://github.com/vjpixel/diaria-studio/pull/2" }),
         log: () => {},
       };
       const r = publishEditionSitePage(dir, deps, { slug: "titulo-real-da-fixture" });
@@ -525,7 +526,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
   });
 });
 
-describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wrangler deploy", () => {
+describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push direto em master", () => {
   /** git de teste com defaults sãos (branch master, sem staged alheio, status limpo). */
   function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
     const calls: string[][] = [];
@@ -541,18 +542,53 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
     return { git, calls };
   }
 
-  it("caminho feliz: add, status, diff, commit e push, nesta ordem", () => {
+  /** gh de teste com defaults sãos: nenhum PR aberto ainda, `pr create` devolve uma URL. */
+  function makeGh(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
+    const calls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      calls.push(args);
+      const cmd = args.slice(0, 2).join(" ");
+      if (overrides[cmd]) return overrides[cmd]!(args);
+      if (cmd === "pr list") return "[]";
+      if (cmd === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/9999\n";
+      return "";
+    };
+    return { gh, calls };
+  }
+
+  it("caminho feliz: checkout -B, add, status, diff, commit, push, checkout de volta — nesta ordem", () => {
     const { git, calls } = makeGit({
       status: () => " M workers/site/public/p/abc/index.html\n",
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
-    const r = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
     assert.equal(r.committed, true);
     assert.equal(r.pushed, true);
+    assert.equal(r.prCreated, true);
+    assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/9999");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "add", "status", "diff", "commit", "push"],
+      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
+    const revParseCall = calls[0];
+    const checkoutBack = calls[calls.length - 1];
+    assert.deepEqual(revParseCall, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.deepEqual(checkoutBack, ["checkout", "master"]);
+  });
+
+  it("checkout -B usa a branch determinística site-publish/{slug} — nunca toca master diretamente", () => {
+    const { git, calls } = makeGit({
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const checkoutB = calls.find((c) => c[0] === "checkout" && c[1] === "-B")!;
+    assert.deepEqual(checkoutB, ["checkout", "-B", "site-publish/abc"]);
+    const push = calls.find((c) => c[0] === "push")!;
+    assert.deepEqual(push, ["push", "--force-with-lease", "-u", "origin", "site-publish/abc"]);
+    assert.ok(!calls.some((c) => c[0] === "push" && c.includes("master")), "nunca empurra pra master");
   });
 
   it("commit é escopado ao pathspec da página, nunca o índice inteiro (#6202 review P1-A)", () => {
@@ -560,7 +596,8 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       status: () => " M workers/site/public/p/abc/index.html\n",
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
-    commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
     const commitCall = calls.find((c) => c[0] === "commit")!;
     assert.deepEqual(commitCall.slice(-2), ["--", "workers/site/public/p/abc"]);
   });
@@ -572,9 +609,11 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       // do nosso — cenário real de `git add` alheio no mesmo checkout.
       diff: () => "workers/site/public/p/abc/index.html\nscripts/algum-arquivo-de-outra-sessao.ts\n",
     });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /algum-arquivo-de-outra-sessao\.ts/);
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /algum-arquivo-de-outra-sessao\.ts/);
     assert.ok(!calls.some((c) => c[0] === "commit"), "nunca commita quando há staged alheio");
     assert.ok(!calls.some((c) => c[0] === "push"), "nunca empurra quando o commit foi abortado");
+    assert.deepEqual(calls[calls.length - 1], ["checkout", "master"], "volta pro branch original mesmo em erro");
   });
 
   it("2ª chamada sem mudança pula o commit, MAS ainda tenta o push (idempotente, sem commit vazio)", () => {
@@ -590,8 +629,9 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       if (args[0] === "diff") return "workers/site/public/p/abc/index.html\n";
       return "";
     };
-    const r1 = commitAndPushSitePage("/repo", "abc", git);
-    const r2 = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r1 = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const r2 = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
     assert.equal(r1.committed, true);
     assert.equal(r2.committed, false, "sem diff no path, não há o que comitar");
     assert.equal(r2.pushed, true, "push ainda roda mesmo sem commit novo nesta chamada");
@@ -617,33 +657,60 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       }
       return "";
     };
-    const r = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
     assert.equal(r.committed, false, "nada novo a commitar");
     assert.equal(r.pushed, true, "mas o push roda mesmo assim");
     assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
   });
 
-  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem add/commit/push (#6202 review)", () => {
+  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem checkout/add/commit/push (#6202 review)", () => {
     const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /overnight\/algo/);
-    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index");
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /overnight\/algo/);
+    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index/branch");
   });
 
-  it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage)", () => {
-    const { git } = makeGit({
+  it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage) — e volta pro master mesmo assim", () => {
+    const { git, calls } = makeGit({
       status: () => " M x\n",
       diff: () => "workers/site/public/p/abc\n",
       push: () => {
         throw new Error("non-fast-forward");
       },
     });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /non-fast-forward/);
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /non-fast-forward/);
+    assert.deepEqual(
+      calls[calls.length - 1],
+      ["checkout", "master"],
+      "finally sempre volta pro branch original, mesmo quando o push lança",
+    );
   });
 
-  it("nunca chama wrangler — mecanismo é só git", () => {
+  it("PR já aberto pra essa branch ⇒ reusa, não cria um 2º (nunca duplica)", () => {
+    const { git } = makeGit({
+      status: () => " M x\n",
+      diff: () => "workers/site/public/p/abc\n",
+    });
+    const { gh, calls: ghCalls } = makeGh({
+      "pr list": () => JSON.stringify([{ number: 42, url: "https://github.com/vjpixel/diaria-studio/pull/42" }]),
+    });
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    assert.equal(r.prCreated, false, "PR existente reusado, não criado de novo");
+    assert.equal(r.prNumber, 42);
+    assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/42");
+    assert.ok(!ghCalls.some((c) => c[0] === "pr" && c[1] === "create"), "nunca chama pr create quando já existe um aberto");
+  });
+
+  it("nunca chama wrangler nem git push origin master — mecanismo é branch + PR", () => {
     const { git, calls } = makeGit({ status: () => " M x\n", diff: () => "workers/site/public/p/abc\n" });
-    commitAndPushSitePage("/repo", "abc", git);
-    for (const c of calls) assert.notEqual(c[0], "wrangler");
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    for (const c of calls) {
+      assert.notEqual(c[0], "wrangler");
+      if (c[0] === "push") assert.ok(!c.includes("master"), "push nunca referencia master diretamente");
+    }
   });
 });
 
@@ -660,7 +727,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     }
   });
 
-  it("publish() amarra corretamente com um GitRunner injetado (commit+push reais simulados)", () => {
+  it("publish() amarra corretamente com um GitRunner + GhRunner injetados (branch+PR reais simulados)", () => {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
@@ -669,12 +736,25 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
       if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
       return "";
     };
-    const deps = productionDeps("/repo", git);
+    const ghCalls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      ghCalls.push(args);
+      if (args.slice(0, 2).join(" ") === "pr list") return "[]";
+      if (args.slice(0, 2).join(" ") === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/1\n";
+      return "";
+    };
+    const deps = productionDeps("/repo", git, gh);
     const result = deps.publish("meu-slug");
     assert.equal(result.pushed, true);
+    assert.equal(result.prCreated, true);
+    assert.equal(result.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "add", "status", "diff", "commit", "push"],
+      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+    );
+    assert.ok(
+      ghCalls.some((c) => c[0] === "pr" && c[1] === "create"),
+      "productionDeps amarra o GhRunner até gh pr create",
     );
   });
 
