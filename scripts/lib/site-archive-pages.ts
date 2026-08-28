@@ -370,6 +370,29 @@ export function sitemapEntriesForPosts(posts: ArchivePost[]): SitemapEntry[] {
 }
 
 /**
+ * #6454: monta a entrada de sitemap para uma única página — usada ao adicionar
+ * uma edição nova sem regenerar o sitemap inteiro a partir do cache.
+ */
+export function sitemapEntryFromPost(post: ArchivePost): SitemapEntry {
+  return { loc: archiveUrlForSlug(post.slug), lastmod: publishDateToIso(post) };
+}
+
+/**
+ * #6454: adiciona uma entrada ao sitemap XML existente, sem duplicar.
+ *
+ * Idempotente: se a URL já estiver presente, retorna o XML inalterado.
+ * Usa inclusão de string (não parseia o XML inteiro, que pode ter formato
+ * levemente diferente do `buildSitemapXml` padrão). Se o XML for malformado,
+ * a inclusão ainda funciona — é só uma string dentro de `</urlset>`.
+ */
+export function addSitemapEntry(existingXml: string, entry: SitemapEntry): string {
+  if (existingXml.includes(entry.loc)) return existingXml;
+  const lastmodLine = entry.lastmod ? `\n    <lastmod>${escXml(entry.lastmod)}</lastmod>` : '';
+  const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}\n  </url>\n`;
+  return existingXml.replace('</urlset>', insertion + '</urlset>');
+}
+
+/**
  * Data de publicação "canônica" em ms — consulta o override por slug
  * (`beehiiv-publish-date-overrides.json`, #4796) primeiro, porque
  * `publish_date` bruto MENTE pras 6 primeiras edições publicadas (aponta
