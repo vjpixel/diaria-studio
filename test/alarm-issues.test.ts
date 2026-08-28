@@ -19,7 +19,9 @@ import assert from "node:assert/strict";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 import {
   alarmFindingMarker,
+  alarmGroupMarker,
   alarmIssueStateKey,
+  collapseGroupedFindings,
   emptyAlarmIssuesState,
   findExistingAlarmIssue,
   ensureAlarmIssue,
@@ -1186,4 +1188,314 @@ describe("applyAlarmReconciliation com allowlist (#5364) — I/O injetado", () =
     assert.equal(findingOutcomes[0].action, "created");
     assert.equal(findingOutcomes[0].issueNumber, 8001);
   });
+});
+
+// ─── #6562: agrupamento de achados relacionados numa única issue ──────────
+
+describe("alarmGroupMarker (#6562 — puro)", () => {
+  it("marcador de grupo é determinístico e distinto do marcador de fingerprint", () => {
+    assert.equal(alarmGroupMarker("session-registry-safebackup", "session-registry-safebackup"), "<!-- alarm-group: session-registry-safebackup:session-registry-safebackup -->");
+    assert.notEqual(
+      alarmGroupMarker("a", "b"),
+      alarmFindingMarker("a", "b"),
+      "marcador de grupo nunca deve colidir textualmente com o de fingerprint individual",
+    );
+  });
+});
+
+function makeGroupedFinding(fingerprint: string, overrides: Partial<AlarmFinding> = {}): AlarmFinding {
+  return {
+    check: "some-check",
+    fingerprint,
+    group: "some-check-group",
+    title: "Achado agrupado",
+    body: `corpo do achado ${fingerprint}`,
+    family: "estado",
+    labels: ["bug"],
+    priority: "P3",
+    ...overrides,
+  };
+}
+
+describe("collapseGroupedFindings (#6562 — puro)", () => {
+  it("achado SEM `group` passa direto, sem alteração nenhuma (não-regressão)", () => {
+    const collapsed = collapseGroupedFindings([FINDING_A]);
+    assert.deepEqual(collapsed, [FINDING_A]);
+  });
+
+  it("múltiplos achados sem `group` continuam 1:1, sem fusão", () => {
+    const OTHER: AlarmFinding = { ...FINDING_A, fingerprint: "english-labels:outro" };
+    const collapsed = collapseGroupedFindings([FINDING_A, OTHER]);
+    assert.deepEqual(collapsed, [FINDING_A, OTHER]);
+  });
+
+  it("N achados do MESMO grupo -> 1 único finding efetivo, nunca N", () => {
+    const findings = [makeGroupedFinding("a"), makeGroupedFinding("b"), makeGroupedFinding("c")];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed.length, 1, "3 achados do mesmo grupo deveriam colapsar pra 1 finding efetivo");
+    assert.equal(collapsed[0]!.fingerprint, "some-check-group", "fingerprint efetivo = id do grupo");
+    assert.equal(collapsed[0]!.group, "some-check-group");
+  });
+
+  it("corpo do finding fundido lista as instâncias (fingerprints) atuais do grupo", () => {
+    const findings = [makeGroupedFinding("arquivo-1.json"), makeGroupedFinding("arquivo-2.json")];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.match(collapsed[0]!.body, /arquivo-1\.json/);
+    assert.match(collapsed[0]!.body, /arquivo-2\.json/);
+  });
+
+  it("achados de grupos DIFERENTES não se misturam — 1 finding efetivo por grupo", () => {
+    const groupA = [makeGroupedFinding("a1", { group: "grupo-a" }), makeGroupedFinding("a2", { group: "grupo-a" })];
+    const groupB = [makeGroupedFinding("b1", { group: "grupo-b" })];
+    const collapsed = collapseGroupedFindings([...groupA, ...groupB]);
+    assert.equal(collapsed.length, 2);
+    const fingerprints = collapsed.map((f) => f.fingerprint).sort();
+    assert.deepEqual(fingerprints, ["grupo-a", "grupo-b"]);
+  });
+
+  it("achados de mesmo `group` mas `check` DIFERENTE não se misturam (grupo é escopado por check)", () => {
+    const findings = [
+      makeGroupedFinding("a", { check: "check-1" }),
+      makeGroupedFinding("b", { check: "check-2" }),
+    ];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed.length, 2, "mesmo `group` em checks diferentes é uma issue por check, não fundida");
+  });
+
+  it("`family` do finding fundido é 'evento' se QUALQUER instância for 'evento' (conservador — nunca auto-fecha)", () => {
+    const findings = [makeGroupedFinding("a", { family: "estado" }), makeGroupedFinding("b", { family: "evento" })];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed[0]!.family, "evento");
+  });
+
+  it("`family` do finding fundido é 'estado' quando TODAS as instâncias são 'estado'", () => {
+    const findings = [makeGroupedFinding("a", { family: "estado" }), makeGroupedFinding("b", { family: "estado" })];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed[0]!.family, "estado");
+  });
+
+  it("`labels` do finding fundido é a união (dedup) das labels de toda instância", () => {
+    const findings = [
+      makeGroupedFinding("a", { labels: ["bug"] }),
+      makeGroupedFinding("b", { labels: ["bug", "enhancement"] }),
+    ];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.deepEqual([...collapsed[0]!.labels!].sort(), ["bug", "enhancement"]);
+  });
+
+  it("`priority` do finding fundido é a mais SEVERA entre as instâncias (P0 vence P3)", () => {
+    const findings = [
+      makeGroupedFinding("a", { priority: "P3" }),
+      makeGroupedFinding("b", { priority: "P0" }),
+      makeGroupedFinding("c", { priority: "P2" }),
+    ];
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed[0]!.priority, "P0");
+  });
+});
+
+describe("ensureAlarmIssue com `group` (#6562 — I/O injetado)", () => {
+  it("finding com `group` cria issue com marcador de GRUPO (não o de fingerprint)", () => {
+    let bodyArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        bodyArg = args[args.indexOf("--body") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    const grouped = makeGroupedFinding("some-check-group");
+    ensureAlarmIssue(grouped, undefined, CWD, run);
+    assert.ok(bodyArg!.includes(alarmGroupMarker(grouped.check, grouped.group!)));
+    assert.ok(!bodyArg!.includes(alarmFindingMarker(grouped.check, grouped.fingerprint)) || grouped.fingerprint === grouped.group);
+  });
+
+  it("finding SEM `group` continua usando o marcador de fingerprint (não-regressão)", () => {
+    let bodyArg: string | null = null;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        bodyArg = args[args.indexOf("--body") + 1];
+        return ok("https://github.com/x/y/issues/1\n");
+      }
+      throw new Error("unexpected");
+    };
+    ensureAlarmIssue(FINDING_A, undefined, CWD, run);
+    assert.ok(bodyArg!.includes(alarmFindingMarker(FINDING_A.check, FINDING_A.fingerprint)));
+  });
+});
+
+describe("planAlarmReconciliation com `group` (#6562 — puro)", () => {
+  it("N achados do mesmo grupo pendentes -> 1 única action 'ensure' (nunca N)", () => {
+    const findings = [makeGroupedFinding("a"), makeGroupedFinding("b"), makeGroupedFinding("c")];
+    const actions = planAlarmReconciliation(findings, emptyAlarmIssuesState(), 2);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0]!.kind, "ensure");
+  });
+
+  it("grupo só fecha quando a ÚLTIMA instância some — 2 de 3 sumidas ainda mantém o grupo pendente (ensure)", () => {
+    const findings = [makeGroupedFinding("c")]; // "a" e "b" sumiram, "c" continua
+    const key = alarmIssueStateKey("some-check", "some-check-group");
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null, family: "estado" },
+    };
+    const actions = planAlarmReconciliation(findings, state, 2);
+    assert.deepEqual(actions, [{ kind: "ensure", finding: collapseGroupedFindings(findings)[0] }]);
+  });
+
+  it("grupo inteiro some do pending -> comment_resolved (streak avança), mesmo mecanismo de auto-close de sempre", () => {
+    const key = alarmIssueStateKey("some-check", "some-check-group");
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null, family: "estado" },
+    };
+    const actions = planAlarmReconciliation([], state, 2);
+    assert.deepEqual(actions, [{ kind: "comment_resolved", key, issueNumber: 1 }]);
+  });
+
+  it("grupo inteiro ausente 2 execuções consecutivas (closeAfterRuns=2) -> close", () => {
+    const key = alarmIssueStateKey("some-check", "some-check-group");
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 1, closedAt: null, family: "estado" },
+    };
+    const actions = planAlarmReconciliation([], state, 2);
+    assert.deepEqual(actions, [{ kind: "close", key, issueNumber: 1 }]);
+  });
+
+  it("allowlist do id do GRUPO congela o grupo inteiro, mesmo achado reproduzindo", () => {
+    const findings = [makeGroupedFinding("a"), makeGroupedFinding("b")];
+    const allowlist: AlarmAllowlist = [
+      {
+        check: "some-check",
+        fingerprint: "some-check-group",
+        reason: "limitação conhecida",
+        accepted_at: "2026-08-28",
+        ref_issue: "#6562",
+      },
+    ];
+    const actions = planAlarmReconciliation(findings, emptyAlarmIssuesState(), 2, allowlist);
+    assert.deepEqual(actions, []);
+  });
+
+  it("`family: 'evento'` em qualquer instância congela o grupo inteiro (nunca comment_resolved/close)", () => {
+    const key = alarmIssueStateKey("some-check", "some-check-group");
+    // entry de estado gravada como 'evento' (já fundida numa execução anterior).
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null, family: "evento" },
+    };
+    const actions = planAlarmReconciliation([], state, 2);
+    assert.deepEqual(actions, [], "grupo de evento nunca gera comment_resolved/close, mesmo sumindo de pending");
+  });
+});
+
+describe("applyAlarmReconciliation com `group` (#6562) — fim-a-fim: 1 issue pro grupo inteiro", () => {
+  it("N findings do mesmo grupo em 1 execução -> 1 única 'gh issue create' (nunca N)", () => {
+    let createCount = 0;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        createCount++;
+        return ok("https://github.com/x/y/issues/7001\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const findings = [makeGroupedFinding("a"), makeGroupedFinding("b"), makeGroupedFinding("c")];
+    const { findingOutcomes } = applyAlarmReconciliation(findings, emptyAlarmIssuesState(), {
+      cwd: CWD,
+      closeAfterRuns: 2,
+      run,
+    });
+    assert.equal(createCount, 1, "3 achados do mesmo grupo deveriam gerar 1 única issue, não 3");
+    assert.equal(findingOutcomes.length, 1);
+    assert.equal(findingOutcomes[0]!.action, "created");
+  });
+
+  it("execução seguinte com o mesmo grupo (via state persistido) -> reusa a MESMA issue, sem criar outra", () => {
+    let createCount = 0;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "issue" && args[1] === "create") {
+        createCount++;
+        return ok("https://github.com/x/y/issues/7002\n");
+      }
+      if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const findings = [makeGroupedFinding("a"), makeGroupedFinding("b")];
+    const first = applyAlarmReconciliation(findings, emptyAlarmIssuesState(), { cwd: CWD, closeAfterRuns: 2, run });
+    const second = applyAlarmReconciliation(findings, first.nextState, { cwd: CWD, closeAfterRuns: 2, run });
+    assert.equal(createCount, 1);
+    assert.equal(second.findingOutcomes[0]!.action, "reused");
+    assert.equal(second.findingOutcomes[0]!.issueNumber, 7002);
+  });
+
+  it(
+    "#6562 REGRESSÃO ALVO: entries de estado ANTIGAS por fingerprint individual avançam missingStreak quando " +
+      "o achado migra pra pending-por-grupo — é o mecanismo que fecha as 33 issues #6518-#6550 sozinho",
+    () => {
+      // Estado de ANTES do #6562: 1 entry de tracking POR ARQUIVO (fingerprint
+      // individual), como o mecanismo produzia antes desta mudança.
+      const oldKeyA = alarmIssueStateKey("session-registry-safebackup", "arquivo-a.json");
+      const oldKeyB = alarmIssueStateKey("session-registry-safebackup", "arquivo-b.json");
+      const oldState: AlarmIssuesState = {
+        [oldKeyA]: { issueNumber: 6518, url: "https://x/6518", missingStreak: 0, closedAt: null, family: "estado" },
+        [oldKeyB]: { issueNumber: 6519, url: "https://x/6519", missingStreak: 0, closedAt: null, family: "estado" },
+      };
+      // Depois do #6562, `buildSafeBackupFindings` emite findings com `group`
+      // — mesmos arquivos ainda presentes, mas agora fundidos num finding só.
+      const pendingAfterMigration: AlarmFinding[] = [
+        {
+          check: "session-registry-safebackup",
+          fingerprint: "arquivo-a.json",
+          group: "session-registry-safebackup",
+          title: "t",
+          body: "b",
+          family: "estado",
+        },
+        {
+          check: "session-registry-safebackup",
+          fingerprint: "arquivo-b.json",
+          group: "session-registry-safebackup",
+          title: "t",
+          body: "b",
+          family: "estado",
+        },
+      ];
+      let commentCount = 0;
+      let createCount = 0;
+      const run: GhRunFn = (args) => {
+        if (args[0] === "issue" && args[1] === "comment") {
+          commentCount++;
+          return ok("");
+        }
+        if (args[0] === "issue" && args[1] === "close") return ok("");
+        if (args[0] === "issue" && args[1] === "list") return ok("[]");
+        if (args[0] === "issue" && args[1] === "create") {
+          createCount++;
+          return ok("https://github.com/x/y/issues/9999\n");
+        }
+        if (args[0] === "issue" && args[1] === "view") return ok(JSON.stringify({ state: "OPEN" }));
+        throw new Error(`unexpected: ${args.join(" ")}`);
+      };
+      // Execução 1 pós-migração: as chaves antigas (por fingerprint) não
+      // batem mais com `pending` (que agora só produz a chave do grupo) —
+      // cada uma deveria ter o streak avançado (comment_resolved).
+      const first = applyAlarmReconciliation(pendingAfterMigration, oldState, { cwd: CWD, closeAfterRuns: 2, run });
+      assert.equal(commentCount, 2, "as 2 entries antigas (por fingerprint) deveriam comentar 'não reproduz mais'");
+      assert.equal(first.nextState[oldKeyA]!.missingStreak, 1);
+      assert.equal(first.nextState[oldKeyB]!.missingStreak, 1);
+      assert.equal(createCount, 1, "a nova entry de GRUPO é criada nesta mesma execução");
+
+      // Execução 2: as entries antigas seguem ausentes -> streak 1 -> 2 ->
+      // fecha (closeAfterRuns=2). É isso que fecha as 33 issues sozinho.
+      const second = applyAlarmReconciliation(pendingAfterMigration, first.nextState, {
+        cwd: CWD,
+        closeAfterRuns: 2,
+        run,
+      });
+      assert.equal(second.nextState[oldKeyA]!.closedAt !== null, true, "issue antiga #6518 deveria fechar sozinha");
+      assert.equal(second.nextState[oldKeyB]!.closedAt !== null, true, "issue antiga #6519 deveria fechar sozinha");
+      assert.equal(createCount, 1, "a issue de grupo nunca é recriada — segue sendo reusada/cache-hit");
+    },
+  );
 });

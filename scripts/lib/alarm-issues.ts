@@ -204,6 +204,22 @@ export interface AlarmFinding {
   labels?: string[];
   /** Default `"P2"` (CLAUDE.md: toda issue nasce com label de prioridade). */
   priority?: AlarmPriority;
+  /**
+   * #6562 — quando presente, agrupa este achado com todo outro achado do
+   * MESMO `check`+`group` numa ÚNICA issue, em vez de 1 issue por
+   * fingerprint. `collapseGroupedFindings` (chamada no topo de
+   * `planAlarmReconciliation`) funde toda entrada `pending` que compartilha
+   * `check`+`group` num único finding EFETIVO antes de qualquer decisão de
+   * issue/allowlist/streak — o corpo do finding fundido lista as instâncias
+   * (fingerprints) atuais do grupo, e a chave de estado/marcador passa a ser
+   * do grupo (`alarmGroupMarker`), não do fingerprint individual.
+   *
+   * **Opcional por design (não-regressão):** achado sem `group` segue
+   * exatamente o comportamento pré-#6562 — 1 issue por fingerprint, marcador
+   * `alarmFindingMarker` — byte a byte, porque `collapseGroupedFindings`
+   * repassa achados sem `group` sem tocar neles.
+   */
+  group?: string;
 }
 
 export interface AlarmIssueResult {
@@ -249,6 +265,85 @@ export function isAllowlisted(check: string, fingerprint: string, allowlist: Ala
 /** Pura — marcador de dedup embutido no corpo da issue (#5112 item 2). */
 export function alarmFindingMarker(check: string, fingerprint: string): string {
   return `<!-- alarm-finding: ${check}:${fingerprint} -->`;
+}
+
+/** Pura — marcador de dedup de GRUPO (#6562), análogo a `alarmFindingMarker`
+ * mas anexado quando o achado carrega `group` — 1 issue passa a cobrir todo
+ * achado do mesmo `check`+`group`. */
+export function alarmGroupMarker(check: string, group: string): string {
+  return `<!-- alarm-group: ${check}:${group} -->`;
+}
+
+/** Pura (#6562) — funde toda entrada de `pending` que compartilha
+ * `check`+`group` num único `AlarmFinding` EFETIVO: 1 issue por grupo em vez
+ * de 1 por fingerprint. O finding fundido usa `fingerprint: group` (então
+ * toda a maquinaria de chave de estado/allowlist — que já opera só sobre
+ * `check`+`fingerprint` — funciona sem nenhuma mudança adicional) e um corpo
+ * que lista as instâncias (fingerprints) atuais do grupo, cada uma com o
+ * corpo original daquele achado. `family` do finding fundido é `"evento"` se
+ * QUALQUER instância do grupo for `"evento"` — conservador de propósito:
+ * nunca auto-fecha um grupo que contém um achado que não deveria se
+ * auto-resolver. `labels` é a união (dedup) de toda instância; `priority` é
+ * a mais severa (`P0` > `P1` > `P2` > `P3`) entre as instâncias.
+ *
+ * Achados SEM `group` passam direto, sem alteração (não-regressão — ver
+ * docstring de `AlarmFinding.group`).
+ */
+export function collapseGroupedFindings(pending: readonly AlarmFinding[]): AlarmFinding[] {
+  const ungrouped: AlarmFinding[] = [];
+  const groups = new Map<string, AlarmFinding[]>();
+  for (const finding of pending) {
+    if (!finding.group) {
+      ungrouped.push(finding);
+      continue;
+    }
+    const key = `${finding.check} ${finding.group}`;
+    const list = groups.get(key);
+    if (list) list.push(finding);
+    else groups.set(key, [finding]);
+  }
+  const collapsed = [...ungrouped];
+  for (const findings of groups.values()) {
+    collapsed.push(buildGroupedFinding(findings));
+  }
+  return collapsed;
+}
+
+const PRIORITY_SEVERITY: Record<AlarmPriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+/** Pura — a `AlarmPriority` mais severa entre `priorities` (P0 é a mais
+ * severa); `undefined` se `priorities` só tem entries `undefined`. */
+function mostSeverePriority(priorities: readonly (AlarmPriority | undefined)[]): AlarmPriority | undefined {
+  let best: AlarmPriority | undefined;
+  for (const p of priorities) {
+    if (!p) continue;
+    if (!best || PRIORITY_SEVERITY[p] < PRIORITY_SEVERITY[best]) best = p;
+  }
+  return best;
+}
+
+function buildGroupedFinding(findings: readonly AlarmFinding[]): AlarmFinding {
+  const first = findings[0]!;
+  const instances = findings
+    .map((f) => `### \`${f.fingerprint}\`\n\n${f.body}`)
+    .join("\n\n---\n\n");
+  const body =
+    `${findings.length} instância(s) ativa(s) neste grupo (\`${first.group}\`):\n\n` +
+    findings.map((f) => `- \`${f.fingerprint}\``).join("\n") +
+    `\n\n---\n\n${instances}`;
+  const labels = [...new Set(findings.flatMap((f) => f.labels ?? []))];
+  const family: AlarmFamily = findings.some((f) => f.family === "evento") ? "evento" : "estado";
+  const priority = mostSeverePriority(findings.map((f) => f.priority));
+  return {
+    check: first.check,
+    fingerprint: first.group!,
+    group: first.group,
+    title: first.title,
+    body,
+    family,
+    labels: labels.length > 0 ? labels : undefined,
+    priority,
+  };
 }
 
 // ─── Estado local (cache, NÃO autoritativo — #5112 item 2) ─────────────────
@@ -315,8 +410,9 @@ export function findExistingAlarmIssue(
   fingerprint: string,
   cwd: string,
   run: GhRunFn = defaultAlarmGhRun,
+  markerFn: (check: string, id: string) => string = alarmFindingMarker,
 ): { issueNumber: number; url: string; state: "OPEN" | "CLOSED" } | null {
-  const marker = alarmFindingMarker(check, fingerprint);
+  const marker = markerFn(check, fingerprint);
   const res = run(
     [
       "issue",
@@ -500,8 +596,12 @@ function reopenAlarmIssue(
   cwd: string,
   run: GhRunFn,
 ): AlarmIssueResult {
+  // #6562 — achado fundido de grupo carrega `fingerprint === group`
+  // (`collapseGroupedFindings`); a mensagem referencia "grupo" nesse caso
+  // pra não confundir com um fingerprint individual.
+  const identifier = finding.group ? `grupo \`${finding.group}\`` : `fingerprint \`${finding.fingerprint}\``;
   const comment =
-    `Achado voltou a reproduzir (fingerprint \`${finding.fingerprint}\`) — ` +
+    `Achado voltou a reproduzir (${identifier}) — ` +
     "reabrindo automaticamente em vez de tratar como registrado (#5978).";
   const res = run(["issue", "reopen", String(issueNumber), "--comment", comment], cwd);
   if (res.status !== 0) {
@@ -580,7 +680,12 @@ export function ensureAlarmIssue(
     return { issueNumber: cachedEntry.issueNumber, url: cachedEntry.url, action: "reused" };
   }
 
-  const existing = findExistingAlarmIssue(finding.check, finding.fingerprint, cwd, run);
+  // #6562 — achado fundido de grupo (`finding.group` presente, sempre igual
+  // a `finding.fingerprint` após `collapseGroupedFindings`) usa o marcador
+  // de GRUPO em vez do de fingerprint individual — o resto da resolução
+  // (cache-hit acima, criação abaixo) é idêntico.
+  const markerFn = finding.group ? alarmGroupMarker : alarmFindingMarker;
+  const existing = findExistingAlarmIssue(finding.check, finding.fingerprint, cwd, run, markerFn);
   if (existing) {
     if (existing.state === "CLOSED") {
       return reopenAlarmIssue(existing.issueNumber, existing.url, finding, cwd, run);
@@ -595,7 +700,7 @@ export function ensureAlarmIssue(
   // "se auto-resolve" (ver docstring de `RESOLVED_BY_PROSE_LABELS` lá).
   const familyLabels = finding.family === "evento" ? [ALARM_EVENT_LABEL] : [];
   const labels = [...new Set([...(finding.labels ?? []), ALARM_LABEL, ...familyLabels, priority])];
-  const marker = alarmFindingMarker(finding.check, finding.fingerprint);
+  const marker = markerFn(finding.check, finding.fingerprint);
   const body = `${finding.body}\n\n${marker}\n`;
 
   return createAlarmIssueWithLabelRetry(finding.title, body, labels, cwd, run);
@@ -673,11 +778,17 @@ export type AlarmReconcileAction =
  * humano fechar a issue manualmente — nunca por streak.
  */
 export function planAlarmReconciliation(
-  pending: readonly AlarmFinding[],
+  pendingRaw: readonly AlarmFinding[],
   state: AlarmIssuesState,
   closeAfterRuns: number,
   allowlist: AlarmAllowlist = [],
 ): AlarmReconcileAction[] {
+  // #6562 — funde achados do mesmo `check`+`group` num único finding
+  // efetivo ANTES de qualquer decisão (allowlist, chave de estado, streak):
+  // acontece primeiro pra que todo o resto desta função (que só enxerga
+  // `check`+`fingerprint`) trate 1 grupo exatamente como 1 achado normal,
+  // sem nenhuma outra mudança. Achados sem `group` passam intocados.
+  const pending = collapseGroupedFindings(pendingRaw);
   const actions: AlarmReconcileAction[] = [];
   const activePending = pending.filter((f) => !isAllowlisted(f.check, f.fingerprint, allowlist));
   const pendingKeys = new Set(activePending.map((f) => alarmIssueStateKey(f.check, f.fingerprint)));

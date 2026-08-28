@@ -8,6 +8,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildSafeBackupFindings } from "../scripts/lib/session-registry-safebackup-alarm.ts";
+import { collapseGroupedFindings } from "../scripts/lib/alarm-issues.ts";
 
 describe("buildSafeBackupFindings (#6130)", () => {
   it("lista vazia de backups → nenhum finding", () => {
@@ -32,6 +33,24 @@ describe("buildSafeBackupFindings (#6130)", () => {
       assert.deepEqual(f.labels, ["bug"]);
       assert.match(f.title, /#|session-registry/i);
       assert.match(f.body, new RegExp(f.fingerprint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+  });
+
+  it("#6562: todos os findings compartilham o mesmo `group` GLOBAL do check", () => {
+    const files = ["a-safeBackup-0001.json", "b-safeBackup-0001.json", "c-safeBackup-0001.json"];
+    const findings = buildSafeBackupFindings(files);
+    const groups = new Set(findings.map((f) => f.group));
+    assert.equal(groups.size, 1, "todo arquivo cai no mesmo grupo — é o que colapsa N arquivos em 1 issue");
+    assert.ok(findings[0]!.group, "group precisa estar setado (não undefined)");
+  });
+
+  it("#6562: N findings do check → 1 único finding efetivo após collapseGroupedFindings, corpo lista os N fingerprints", () => {
+    const files = ["a-safeBackup-0001.json", "b-safeBackup-0001.json", "c-safeBackup-0001.json"];
+    const findings = buildSafeBackupFindings(files);
+    const collapsed = collapseGroupedFindings(findings);
+    assert.equal(collapsed.length, 1, "37 arquivos (ou 3, ou N) sempre colapsam pra 1 finding efetivo — 1 issue");
+    for (const file of files) {
+      assert.match(collapsed[0]!.body, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   });
 });
