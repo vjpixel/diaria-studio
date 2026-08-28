@@ -494,6 +494,69 @@ describe("runReviewLints (#3559)", () => {
     assert.equal(check!.ok, true);
   });
 
+  it("#6447 achado 4: reviewed inclui domain-diversity — acusa >2 URLs do mesmo domínio registrável", () => {
+    const md = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "**[Item 1](https://techcrunch.com/1)**",
+      "",
+      "**[Item 2](https://techcrunch.com/2)**",
+      "",
+      "**[Item 3](https://techcrunch.com/3)**",
+      "",
+    ].join("\n");
+    const report = runReviewLints(root, editionDir, "reviewed", md);
+    const check = report.checks.find((c) => c.id === "domain-diversity");
+    assert.ok(check, "check domain-diversity deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.blocking, true);
+    assert.equal(check!.ok, false);
+    assert.equal(report.ok, false);
+  });
+
+  it("#6447 achado 4: reviewed inclui lancamentos-oficiais (antes só rodava em categorized)", () => {
+    const md = [
+      "## Lançamentos",
+      "",
+      "**[Cobertura de um lançamento](https://techcrunch.com/algo)**",
+      "",
+    ].join("\n");
+    const report = runReviewLints(root, editionDir, "reviewed", md);
+    const check = report.checks.find((c) => c.id === "lancamentos-oficiais");
+    assert.ok(check, "check lancamentos-oficiais deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.ok, false);
+    assert.equal(report.ok, false);
+  });
+
+  it("#6447 achado 4: reviewed inclui intentional-error-flagged — falha sem _internal/intentional-error.json", () => {
+    const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
+    const check = report.checks.find((c) => c.id === "intentional-error-flagged");
+    assert.ok(check, "check intentional-error-flagged deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.blocking, true);
+    assert.equal(check!.ok, false);
+  });
+
+  it("#6447 achado 4: intentional-error-flagged passa com intentional-error.json completo", () => {
+    // checkIntentionalError lê `02-reviewed.md` do DISCO (deriva o path do
+    // json a partir dele) — precisa existir de verdade, não só o `md` em
+    // memória passado pro runReviewLints.
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "intentional-error.json"),
+      JSON.stringify({
+        description: "erro de teste",
+        location: "D1",
+        category: "ortografico",
+        correct_value: "valor certo",
+        reveal: "revelação",
+      }),
+      "utf8",
+    );
+    const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
+    const check = report.checks.find((c) => c.id === "intentional-error-flagged");
+    assert.ok(check);
+    assert.equal(check!.ok, true);
+  });
+
   it("reviewed: check crashado (approved malformado não deveria crashar, mas simulamos md vazio) não derruba o batch", () => {
     // md vazio: countTitlesPerHighlight etc. devem lidar gracefully (podem
     // reportar ok:false, mas não devem lançar) — o próprio runCheck garante

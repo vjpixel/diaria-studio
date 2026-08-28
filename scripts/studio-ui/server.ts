@@ -376,6 +376,10 @@ import {
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
 } from "./studio-review.ts";
+// #6447 Fatia 1: painel "Gate" — resumo consolidado do Stage 4 (títulos
+// original/final, checklist, lints estendidos) lido só de disco. Arquivo
+// próprio (`studio-gate.ts`), mesma convenção de import isolado do #3559.
+import { buildGateSummary } from "./studio-gate.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
@@ -1074,6 +1078,21 @@ const REVIEW_MAX_BODY_BYTES = 2_000_000;
 
 function editionDirFor(rootDir: string, aammdd: string): string {
   return resolveEditionDir(resolve(rootDir, "data", "editions"), aammdd);
+}
+
+// #6447 Fatia 1: painel "Gate" — mesmo padrão fail-soft dos demais handlers
+// de revisão (nunca lança; `buildGateSummary` já degrada campo a campo).
+function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse): void {
+  // Mesmo guard de formato que handleApiEdition/resolveReviewFile já usam —
+  // sem isso, um `aammdd` malformado (ex: contendo `\`, tratado como
+  // separador de path no Windows) chegaria direto em `resolveEditionDir`
+  // sem essa rede de segurança (#6449 review).
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const summary = buildGateSummary(rootDir, aammdd);
+  sendJson(res, summary.editionExists ? 200 : 404, summary);
 }
 
 function handleReviewGet(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
@@ -1795,6 +1814,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const reviewGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)$/);
       if (reviewGetMatch) {
         handleReviewGet(rootDir, reviewGetMatch[1], reviewGetMatch[2], res);
+        return;
+      }
+      // #6447 Fatia 1: painel "Gate" — checado ANTES do preview genérico
+      // abaixo (regex distinto, não colide, mas mantém a leitura por seção).
+      const gateMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate$/);
+      if (gateMatch) {
+        handleGateSummary(rootDir, gateMatch[1], res);
         return;
       }
       const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);
