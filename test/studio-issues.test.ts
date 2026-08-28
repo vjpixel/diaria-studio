@@ -15,8 +15,12 @@
  * cluster/composição de onda que também vivia lá foi removida, não
  * relocada). `test/studio-waves.test.ts` foi deletado.
  */
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerSession, claimIssueCheckAndSet } from "../scripts/lib/session-registry.ts";
 import {
   derivePriority,
   deriveTrackFromBranch,
@@ -372,6 +376,38 @@ describe("fetchTriageData (#3562)", () => {
     nowMs += 2000; // passou do TTL
     fetchTriageData("/tmp/root-c", { run, cacheTtlMs: 1000, now: () => nowMs });
     assert.ok(calls > callsAfterFirst);
+  });
+
+  describe("fetchTriageData + claim de data/sessions/ real (#6436)", () => {
+    let root: string | null = null;
+    afterEach(() => {
+      if (root) {
+        rmSync(root, { recursive: true, force: true });
+        root = null;
+      }
+    });
+
+    it("claim de sessão ATIVA aparece na issue", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-"));
+      registerSession(root, "continuo", "5d791ef6", { tag: "helios" });
+      claimIssueCheckAndSet(root, "continuo", "5d791ef6", 6051, "helios");
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim?.kind, "continuo");
+      assert.equal(data.issues[0]?.claim?.sessionId, "5d791ef6");
+    });
+
+    it("claim de sessão STALE NÃO aparece — não deveria ler 'em andamento' pra uma sessão morta", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-stale-"));
+      const staleStart = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h > SOFT_STALE_MS (90min)
+      registerSession(root, "continuo", "sess-morta", { tag: "helios", startedAt: staleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-morta", 6051, "helios", staleStart);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim, null);
+    });
   });
 
   it("gh falhando (status != 0) sem cache anterior: arrays vazios + error preenchido, nunca lança", () => {

@@ -513,8 +513,15 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
     const prsRaw = fetchGhPrs(rootDir, run, opts.prLimit);
     // #6436 — `listActiveSessions` é fail-soft (nunca lança; `data/sessions/`
     // ausente ou ilegível vira array vazio), então nunca degrada este `try`
-    // pro caminho de erro do `gh`.
-    const sessions = listActiveSessions(rootDir);
+    // pro caminho de erro do `gh`. Filtra `stale` ANTES de repassar pra
+    // `attachClaims` — mesmo critério de `isIssueClaimedByOther` (#5474): uma
+    // sessão stale (heartbeat morto além de `SOFT_STALE_MS`) não deveria
+    // aparecer como "em andamento" pro editor, mesmo ainda listada por
+    // `listActiveSessions` (que preserva sessões stale de propósito, pra
+    // outros consumidores como o watchdog). Achado do self-review — sem
+    // este filtro, uma claim ABANDONADA continuaria mostrando "em
+    // andamento" no painel indefinidamente (até `MAX_SESSION_AGE_MS`, 24h).
+    const sessions = listActiveSessions(rootDir).filter((s) => !s.stale);
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
       issues: attachClaims(parseIssues(issuesRaw), sessions),
