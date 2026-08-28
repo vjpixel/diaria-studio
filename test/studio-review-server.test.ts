@@ -2,8 +2,9 @@
  * test/studio-review-server.test.ts (#3559)
  *
  * Contrato HTTP das rotas de revisão de conteúdo rica registradas em
- * `server.ts` — leitura (GET), salvar (PUT), diff, lint, reset-baseline e
- * preview do e-mail, mais o guard de método preservado nas rotas
+ * `server.ts` — leitura (GET), salvar (PUT), diff, lint, reset-baseline,
+ * preview do e-mail e preview-draft (#6447 Fatia 3 — split view reativo,
+ * NUNCA escreve em disco), mais o guard de método preservado nas rotas
  * pré-existentes read-only (#3555).
  */
 import { describe, it, before, after } from "node:test";
@@ -204,6 +205,112 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const diff = await fetch(new URL("/api/editions/260716/review/reviewed/diff", server.url));
     const body = await diff.json();
     assert.equal(body.isEmpty, true);
+  });
+
+  // #6447 Fatia 3: split view com preview reativo — draft NUNCA vai pro
+  // disco (rota puramente leitura+render), diferente de PUT .../review/:slug
+  // acima.
+  it("POST .../review/reviewed/preview-draft renderiza o TEXTO DO CORPO, sem tocar 02-reviewed.md em disco", async () => {
+    const draft = TWO_DESTAQUES_MD.replace(
+      "IA chega às fábricas brasileiras",
+      "Rascunho ainda não salvo no painel",
+    );
+    const onDiskBefore = readFileSync(join(editionDir, "02-reviewed.md"), "utf8");
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: draft }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.match(body.html, /Rascunho ainda não salvo no painel/);
+    assert.doesNotMatch(body.html, /IA chega às fábricas brasileiras/);
+    // Nada foi persistido — o disco continua exatamente como estava.
+    assert.equal(readFileSync(join(editionDir, "02-reviewed.md"), "utf8"), onDiskBefore);
+  });
+
+  it("POST .../review/social/preview-draft renderiza o TEXTO DO CORPO, sem tocar 03-social.md em disco", async () => {
+    const onDiskBefore = readFileSync(join(editionDir, "03-social.md"), "utf8");
+    const draft = "# LinkedIn\n\n## d1\n\nrascunho social ainda não salvo\n";
+    const res = await fetch(new URL("/api/editions/260716/review/social/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: draft }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.match(body.html, /rascunho social ainda não salvo/);
+    assert.equal(readFileSync(join(editionDir, "03-social.md"), "utf8"), onDiskBefore);
+  });
+
+  it("POST .../review/categorized/preview-draft (slug sem preview reativo) -> 422 com erro explícito", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/categorized/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "qualquer texto" }),
+    });
+    assert.equal(res.status, 422);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /categorized/);
+  });
+
+  it("POST .../preview-draft com slug desconhecido -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/nope/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com AAMMDD inválido -> 400 (code-reviewer F1: mesmo guard que handleGateSummary/handleReviewHighlightsGet, #6449)", async () => {
+    const res = await fetch(new URL("/api/editions/nope/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com content:'' (aba recém-aberta, nada digitado ainda) -> ok:true, fail-soft (pr-test-analyzer achado 2)", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "" }),
+    });
+    assert.equal(res.status, 422); // 0 destaques -> fail-soft, mesmo tratamento de Markdown malformado
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.html, /Erro ao renderizar preview/);
+  });
+
+  it("POST .../preview-draft sem campo 'content' -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com corpo não-JSON -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "não é json",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("GET .../preview-draft (método errado) -> não casa a rota de escrita — cai no GET genérico de slug", async () => {
+    // A rota nova é só POST — um GET no mesmo path não deveria acidentalmente
+    // ser tratado como o slug "reviewed/preview-draft" (o regex genérico de
+    // GET .../review/:slug não deveria capturar a barra extra).
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url));
+    assert.notEqual(res.status, 200);
   });
 
   it("GET .../lint roda os checks estruturais do newsletter", async () => {
@@ -716,14 +823,17 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(body.note ?? "", /última milha/);
   });
 
-  it("(#3874) os 2 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
+  it("(#3874, +#6447 Fatia 3) os 3 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
     const res = await fetch(new URL("/revisao/260716", server.url));
     const body = await res.text();
     assert.ok(body.includes('id="rv-tabs" role="tablist" aria-label="Arquivo"'));
     assert.ok(body.includes('id="rv-side-tabs" role="tablist" aria-label="Painel"'));
+    // #6447 Fatia 3: toggle mobile Editor/Preview do split view — mesma
+    // convenção WAI-ARIA (role=tablist no container, role=tab nos botões).
+    assert.ok(body.includes('id="rv-split-toggle" role="tablist"'));
     // 5 abas de arquivo (#4275: +html-final-patronos) + 3 abas de painel
-    // lateral = 8 role="tab" no total.
-    assert.equal((body.match(/role="tab"/g) ?? []).length, 8);
+    // lateral + 2 do toggle mobile (#6447 Fatia 3) = 10 role="tab" no total.
+    assert.equal((body.match(/role="tab"/g) ?? []).length, 10);
     assert.ok(body.includes('id="rv-not-found" class="panel alert-banner" role="alert"'));
     assert.ok(body.includes('id="rv-divergence-banner" role="alert"'));
     // `#rv-side-tabs` tem painéis distintos de verdade (lint/diff/preview) —
