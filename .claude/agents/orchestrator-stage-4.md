@@ -780,20 +780,30 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 4
 
 - Falha do sentinel → logar warn. Não bloquear.
 - Ler o JSON de stdout do `capture-stage-usage.ts` acima: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
-- O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou e pula direto para a Etapa 5.
+- O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou — ver "Fluxo pós-gate — fronteira de contexto (#6171)" abaixo para o que acontece depois (a sessão PARA, nunca segue direto para a Etapa 5).
 
 ---
 
-## Fluxo pós-gate
+## Fluxo pós-gate — fronteira de contexto (#6171)
 
-**Isto só se aplica quando este playbook foi lido como parte de `/diaria-edicao` (via `orchestrator.md`).** Se foi lido a partir da skill standalone `/diaria-4-revisao`, PARE aqui: escreva o sentinel, apresente o resumo, e sugira `/diaria-5-publicacao {AAMMDD}` como próximo comando — não leia `orchestrator-stage-5.md`.
+**PARE aqui SEMPRE, independente de como este playbook foi lido** (`/diaria-4-revisao` standalone OU `/diaria-edicao`/`orchestrator.md`). Escreva o sentinel, apresente o resumo, e instrua o próximo comando — **nunca leia `orchestrator-stage-5.md` nesta mesma sessão**, nem mesmo vindo de `/diaria-edicao`.
 
-Quando lido via `/diaria-edicao`: após aprovação do gate (ou auto-approve com `--no-gates`), o orchestrator prossegue imediatamente para a **Etapa 5 — Publicação** (leia `orchestrator-stage-5.md`).
+**Por quê (#6171, mediu #5744 confirma o padrão).** O gate do Stage 4 é o mais longo do pipeline por natureza (433 turnos/1h49 numa edição real, #5414) — é o editor iterando, e isso é legítimo e não deve ser encurtado. O problema é o que vem DEPOIS: numa sessão `/diaria-edicao` contínua, as Etapas 5 e 6 herdavam esses 433 turnos de contexto e o releem a cada chamada de tool — 268M tokens de `cache_read` medidos numa edição só (260826), a maior fatia do custo total. O #5744 já cortou esse problema para os Stages 1→4 (cada um roda num processo `claude` próprio, spawnado por `run-edition-stages.ts`); o Stage 4 não entra nesse laço porque o gate humano precisa da sessão do editor. Esta seção fecha a lacuna que sobra: a fronteira DEPOIS do gate, que nenhum laço automático pode cruzar (Stage 5 nunca é spawnado headless — é o guard estrutural de `STAGE_PLAN`, que exclui os Stages 5/6 de propósito, ver `scripts/lib/edition-stage-runner.ts`). A saída é a mesma receita já em uso pelo #5578 para as demais transições: sessão nova = contexto limpo, e o editor digitando o próximo comando **é** a ação explícita que Stage 5 sempre exigiu.
 
-O pré-render do Stage 4 já populou todos os artefatos que o Stage 5 precisa:
-- `_internal/newsletter-final.html` (HTML pronto)
-- `_internal/05-social-preview.json` (URL do preview social)
-- `06-public-images.json` (URLs públicas das imagens)
-- `_internal/.close-poll-done.json` (gabarito setado)
+**O que apresentar ao editor**, após o sentinel escrito:
 
-O Stage 5 **não repete** pré-render — vai direto para o dispatch.
+```
+Stage 4 aprovado — edição {AAMMDD}.
+
+O pré-render já deixou tudo pronto para a Etapa 5 (HTML final, preview social,
+imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
+
+Próximo passo → abra uma sessão NOVA e rode:
+  /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
+
+Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) —
+`/diaria-5-publicacao` e, na sequência, `/diaria-6-agendamento {AAMMDD}` retomam
+sozinhos a partir dos arquivos em disco (mesmo mecanismo do #5578).
+```
+
+Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate.

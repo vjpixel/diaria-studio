@@ -189,9 +189,9 @@ systemctl --user daemon-reload
 
 ### Por que `--skip` em vez de deixar o pre-gate expirar? (histórico — superado pelo #5738)
 
-**Desde #5738 esta seção descreve o mecanismo ANTIGO.** O runner não invoca mais `/diaria-edicao`, e portanto não passa mais `--skip`: os Stages 5 e 6 não estão em `STAGE_PLAN` e nunca chegam a ser invocados. A garantia deixou de depender de uma flag ser respeitada pipeline adentro. O raciocínio abaixo continua válido para quem invocar `/diaria-edicao` à mão em modo headless.
+**Desde #5738 esta seção descreve o mecanismo ANTIGO.** O runner não invoca mais `/diaria-edicao`, e portanto não passa mais `--skip`: os Stages 5 e 6 não estão em `STAGE_PLAN` e nunca chegam a ser invocados. A garantia deixou de depender de uma flag ser respeitada pipeline adentro. **Também histórico, desde #6171:** mesmo invocando `/diaria-edicao` à mão, o `--skip` já não é mais encaminhado pipeline adentro em nenhum caso — a sessão termina no fim do Stage 4 (ver "Fronteira de contexto pós-gate 4" no `SKILL.md`), e quem quiser pular canais passa `--skip` direto pro `/diaria-5-publicacao` numa sessão nova.
 
-`--skip newsletter,linkedin,facebook` é o mecanismo correto. Sem ele, o Stage 5 (Publicação) chega ao gate interativo e, como não há resposta em modo headless, o default do invariante #1326 é **tudo automático** — disparando os 3 canais sem supervisão. Com `--skip`, o consent é gravado deterministicamente como `pending_manual` em todos os canais, e a run termina limpa. (#1694: o `--skip` é encaminhado pelo orchestrator ao Stage 5; o Stage 4 tem seu próprio gate de revisão que no scheduled run é auto-aprovado por `auto_approve = true` para stages 1-4.)
+`--skip newsletter,linkedin,facebook` era o mecanismo correto no runner antigo. Sem ele, o Stage 5 (Publicação) chegava ao gate interativo e, como não havia resposta em modo headless, o default do invariante #1326 era **tudo automático** — disparando os 3 canais sem supervisão. Com `--skip`, o consent era gravado deterministicamente como `pending_manual` em todos os canais, e a run terminava limpa.
 
 ### Por que `--max-turns 120`?
 
