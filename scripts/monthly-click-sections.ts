@@ -11,18 +11,30 @@
  * bucket use_melhor das edições diárias).
  *
  * Fontes:
- *  - Cliques: data/beehiiv-cache/posts/post_{prefix}*.json (stats.clicks[]).
+ *  - Cliques (Beehiiv): data/beehiiv-cache/posts/post_{prefix}*.json (stats.clicks[]).
  *    Só links com ≥1 clique aparecem (dados esparsos) — o que não tiver clique
  *    registrado entra com 0.
+ *  - Cliques (Kit, #6186): data/kit-cache/posts/kit_{prefix}.json (stats.clicks[],
+ *    `unique_clicks` direto por URL — via mcp__kit__get_link_clicks_for_a_broadcast
+ *    + scripts/apply-mcp-kit-clicks.ts, agent .claude/agents/kit-clicks-enricher.md).
+ *    `loadClicks` tenta o cache Beehiiv primeiro; se o arquivo não existir, cai
+ *    pro cache Kit com o MESMO prefixo — a diária migrou pro Kit em 26/08/2026
+ *    (#6114), então edições depois dessa data não têm cache Beehiiv nenhum.
  *  - Seção + título de cada link: data/editions/{AAMMDD}/02-reviewed.md
  *    (texto final publicado).
  *  - Exclusão de Destaques: URLs de suporte dos 3 temas em
  *    data/monthly/{yymm}/prioritized.md.
- *  - Mapeamento edição→prefixo Beehiiv: nomes dos arquivos em
- *    data/monthly/{yymm}/raw-posts/post_{prefix}_{AAMMDD}.txt.
+ *  - Mapeamento edição→prefixo: nomes dos arquivos em
+ *    data/monthly/{yymm}/raw-posts/post_{prefix}_{AAMMDD}.txt — o nome do
+ *    arquivo NÃO distingue backend (#6184 já unificou a nomenclatura antes
+ *    deste script existir: `prefix` é o UUID-8 do Beehiiv OU o ID numérico
+ *    completo do Kit, dependendo de qual backend publicou aquela edição).
+ *    A distinção de backend acontece só na hora de carregar cliques, por
+ *    qual dos dois caches tem o arquivo.
  *
- * Métrica: cliques únicos somados por URL (de-dup por baseUrl) =
+ * Métrica: cliques únicos somados por URL (de-dup por baseUrl). Beehiiv:
  * `email.unique_clicks` + `web.total_unique_clicked` (web é resíduo, mas conta).
+ * Kit: `unique_clicks` direto (o shape do Kit já vem sem split email/web).
  * Decisão de produto (#1901/#1902): "mais clicados" = cliques únicos absolutos.
  * CTR exigiria aberturas por edição e favoreceria/penalizaria por tamanho de
  * lista variável.
@@ -236,17 +248,20 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
 }
 
 // ── Cliques por post ────────────────────────────────────────────────
-function loadClicks(prefix: string): Map<string, number> {
+/** Cache Beehiiv: `data/beehiiv-cache/posts/post_{uuid}.json`, shape
+ * `stats.clicks[].{email.unique_clicks, web.total_unique_clicked}`. */
+function loadBeehiivClicks(prefix: string): Map<string, number> | null {
   const dir = join(ROOT, "data/beehiiv-cache/posts");
+  if (!existsSync(dir)) return null;
   // O prefixo é o 1º segmento do UUID (8 hex), sempre seguido de `-` no nome do
   // cache `post_{uuid}.json`. Exigir a fronteira `-` evita casar o post errado
   // quando um prefixo é prefixo-string de outro (`startsWith` cru é ambíguo).
   const matches = readdirSync(dir).filter((f) => f.startsWith(`post_${prefix}-`));
   const file = matches[0];
-  const map = new Map<string, number>();
-  if (!file) return map;
+  if (!file) return null;
   const d = JSON.parse(readFileSync(join(dir, file), "utf8"));
   const clicks = d?.stats?.clicks;
+  const map = new Map<string, number>();
   if (!Array.isArray(clicks)) return map;
   for (const c of clicks) {
     if (!c?.url) continue;
@@ -257,6 +272,31 @@ function loadClicks(prefix: string): Map<string, number> {
     map.set(b, (map.get(b) ?? 0) + total);
   }
   return map;
+}
+
+/** Cache Kit (#6186): `data/kit-cache/posts/kit_{id8}.json`, shape
+ * `stats.clicks[].unique_clicks` — já vem sem split email/web. `prefix` aqui
+ * é o MESMO valor extraído do nome do raw-post (ver header do arquivo). */
+function loadKitClicks(prefix: string): Map<string, number> | null {
+  const file = join(ROOT, "data/kit-cache/posts", `kit_${prefix}.json`);
+  if (!existsSync(file)) return null;
+  const d = JSON.parse(readFileSync(file, "utf8"));
+  const clicks = d?.stats?.clicks;
+  const map = new Map<string, number>();
+  if (!Array.isArray(clicks)) return map;
+  for (const c of clicks) {
+    if (!c?.url) continue;
+    const b = baseUrl(c.url);
+    map.set(b, (map.get(b) ?? 0) + (c?.unique_clicks ?? 0));
+  }
+  return map;
+}
+
+/** Tenta o cache Beehiiv primeiro (comportamento histórico, edições
+ * anteriores a 26/08/2026 só têm esse); se o arquivo não existir, cai pro
+ * cache Kit com o mesmo prefixo (#6186 — a diária migrou pro Kit em 26/08). */
+function loadClicks(prefix: string): Map<string, number> {
+  return loadBeehiivClicks(prefix) ?? loadKitClicks(prefix) ?? new Map<string, number>();
 }
 
 // ── Edições do mês (a partir dos raw-posts) ─────────────────────────
