@@ -21,6 +21,7 @@
   "test/block-askuserquestion-overnight-autonomous.test.ts::TS7034": 1,
   "test/block-gh-pr-merge-subagent-hook.test.ts::TS7005": 4,
   "test/block-gh-pr-merge-subagent-hook.test.ts::TS7006": 7,
+  "test/block-branch-checkout-main-hook.test.ts::TS7016": 1,
   "test/block-gh-pr-merge-subagent-hook.test.ts::TS7016": 1,
   "test/block-gh-pr-merge-subagent-hook.test.ts::TS7034": 4,
   "test/box-click-report.test.ts::TS2741": 6,
