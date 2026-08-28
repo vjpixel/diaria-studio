@@ -160,11 +160,13 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    **ATUALIZAÇÃO #6608 (260828, CAUSA RAIZ RESOLVIDA):** o picker de busca de
 >    assinante do "Simulate as" (`input[placeholder="Search for a specific
 >    subscriber"]`) não está quebrado — o debounce é só bem mais longo do que
->    as tentativas originais esperaram (~2-4s). Reproduzido ao vivo: clique
->    real + `type`, seguido de **espera de 8-10s antes de checar o dropdown**,
->    faz a lista renderizar normalmente (ver `beehiiv-playbook.md` §7 pro
->    procedimento completo). Se, mesmo esperando 10s, o dropdown continuar
->    vazio, isso é sinal de regressão nova — reabrir #6608 com essa evidência.
+>    as tentativas originais esperaram (~2-4s), e varia com o tamanho da
+>    query (query curta ~8s, mais longa/específica ~15s). Reproduzido ao
+>    vivo: clique real + `type`, seguido de **espera de pelo menos 10s antes
+>    da 1ª checagem**, insistindo até ~20s se ainda vazio, faz a lista
+>    renderizar normalmente (ver `beehiiv-playbook.md` §7 pro procedimento
+>    completo). Só depois de ~20s sem nenhum resultado é sinal de regressão
+>    nova — reabrir #6608 com essa evidência (query usada + tempo esperado).
 >    `--send-mode generic` continua existindo como fallback só pra quando não
 >    há Chrome/browser disponível na sessão (ex: este agente, que não tem essa
 >    ferramenta) — nesse caso, **e só nesse caso**, passe `--send-mode generic`

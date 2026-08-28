@@ -213,14 +213,16 @@ export type LinkTrackingStage = "draft" | "delivered";
  * `"generic"`: o test email foi enviado via "Send test email" genérico
  * (checkbox de destinatário, sem contexto de assinante) — modo que a
  * Beehiiv **nunca** resolve merge tags de sistema nele, mesmo com o draft
- * 100% correto (#6011). A partir do #6608, o picker de busca de assinante
- * do "Simulate as" parou de responder a qualquer técnica de automação
- * testada (issue não fechada, causa raiz não investigada) — até que isso
- * seja resolvido (ou reproduzido manualmente pelo editor), toda edição
- * enviada pelo playbook automatizado sai no modo genérico. Tratar
- * `{{email}}`/`{{poll_token}}` literal como `link_dead` nesse cenário é
- * falso-positivo mecânico, não defeito de conteúdo — vira `skipped[]` com
- * reason `generic_send_merge_tag`, nunca `issues[]`.
+ * 100% correto (#6011). **#6608 (260828, causa raiz resolvida):** o picker
+ * de busca de assinante do "Simulate as" não estava quebrado — o debounce
+ * é só mais longo do que as tentativas originais esperaram (ver
+ * `beehiiv-playbook.md` §7 pro procedimento de espera correto). Este modo
+ * `"generic"` continua existindo como fallback pra quando não há Chrome
+ * disponível na sessão que envia o test email (ex: este próprio agente),
+ * não porque o picker esteja quebrado. Tratar `{{email}}`/`{{poll_token}}`
+ * literal como `link_dead` nesse cenário é falso-positivo mecânico, não
+ * defeito de conteúdo — vira `skipped[]` com reason
+ * `generic_send_merge_tag`, nunca `issues[]`.
  */
 export type LinkTrackingSendMode = "generic" | "simulate-as";
 
