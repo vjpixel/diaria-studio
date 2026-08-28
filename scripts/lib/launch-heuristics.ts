@@ -234,6 +234,13 @@ const DEAL_PATTERNS: RegExp[] = [
   /\b\d+\s*(gigawatt|megawatt|GW|MW)s?\b.*\bcompute\b/i,
   // Acordos genéricos gigantes
   /\b(strategic agreement|multi[- ]year (deal|agreement|contract)|acordo estrat[ée]gico)\b/i,
+  // #5995 (achado ao vivo 260827): "X and Y Build an AI Factory" — parceria de
+  // infraestrutura entre duas empresas nomeadas no título, não lançamento de
+  // produto. Caso real: "NVIDIA and LG Group Build an AI Factory to Advance
+  // Physical AI, Mobility and AI Infrastructure". Escopo estreito (exige "X
+  // and Y" + verbo de construção + "AI Factory") pra não pegar o produto de
+  // referência "NVIDIA AI Factory" quando citado sozinho, sem 2ª empresa.
+  /\b\w+\s+and\s+\w+(\s+\w+)?\s+(build|builds|building)\b[^.\n]{0,60}\bAI\s+Factor(?:y|ies)\b/i,
 ];
 
 /**
@@ -372,9 +379,18 @@ export function isTutorialByDomainExtra(url: string): boolean {
  * so single-word company names no longer match this branch. These items now fall
  * through to noticias/RADAR (correct). Genuine how-to tutorials are captured by
  * `isTutorialByKeyword` (TUTORIAL_KEYWORDS_RE) before reaching this path.
+ *
+ * #5995 (achado ao vivo 260827, modo de falha 2 — radar→use_melhor): anúncio
+ * de curso/capacitação em domínio oficial ou de terceiro não batia nenhum
+ * padrão existente. Casos reais: "New OpenAI Academy courses for the next
+ * era of work" (openai.com, domínio oficial) e "...Google, Sebrae, Itaú e
+ * Tera oferecem capacitação gratuita para empreendedores" (veículo de
+ * notícia cobrindo o programa de treinamento). `academy\s+courses?` e
+ * `capacita[çc][ãa]o\s+gratuita` são específicos o bastante pra não pegar
+ * cobertura genérica sobre "a academia de IA está crescendo" ou similar.
  */
 const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
+  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b|academy\s+courses?\b|capacita[çc][ãa]o\s+gratuita\b)\b/i;
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
@@ -1467,9 +1483,24 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
 const LAUNCH_VERB_TITLE_RE =
   /\b(introducing|announcing|launch(?:ing|es)?|unveil(?:ing|s)?|now available|general[ -]availability)\b/i;
 
+// #5995 (achado ao vivo 260827, medição em janela pós-item-3): "Introducing"
+// vence o guard acima mesmo quando o objeto anunciado é um PROGRAMA de
+// parceria/negócio, não um produto — caso real "Introducing the OpenAI
+// Partner Network" (editor moveu lancamento→radar apesar do verbo de
+// anúncio). Diferente de NON_PRODUCT_OFFICIAL_PATTERNS (que o verbo de
+// lançamento sempre vence), estes padrões são de ALTA especificidade
+// (substantivo composto "partner network/program") — o risco de falso
+// positivo em lançamento de produto genuíno é baixo o bastante para vencer
+// mesmo o verbo de anúncio.
+const BUSINESS_PROGRAM_OVERRIDE_PATTERNS: RegExp[] = [
+  /\bpartner\s+network\b/i,
+  /\bpartner\s+program\b/i,
+];
+
 export function isNonProductOfficialPost(article: Article): boolean {
   const title = article.title ?? "";
   if (!title) return false;
+  if (BUSINESS_PROGRAM_OVERRIDE_PATTERNS.some((p) => p.test(title))) return true;
   if (LAUNCH_VERB_TITLE_RE.test(title)) return false;
   return NON_PRODUCT_OFFICIAL_PATTERNS.some((p) => p.test(title));
 }
