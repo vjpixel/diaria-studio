@@ -953,6 +953,31 @@ describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236
     assert.equal(result.reason, "no-op-session-missing");
     assert.equal(result.blockedBy, undefined);
   });
+
+  it("#6436: grava claimed_issues_at na 1ª reivindicação, NUNCA sobrescreve numa re-reivindicação (cenário `continuo`)", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "sess-continuo", { tag: "helios", startedAt: new Date(NOW).toISOString() });
+
+    const firstClaimAt = new Date(NOW).toISOString();
+    claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "helios", firstClaimAt);
+
+    const contentAfterFirst = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "helios", "sess-continuo"), "utf8"));
+    assert.equal(contentAfterFirst.claimed_issues_at["6051"], firstClaimAt);
+
+    // re-reivindicação 7h depois (o ciclo de 60min da `continuo` repetido várias vezes) — MESMO timestamp preservado.
+    const reClaimAt = new Date(NOW + 7 * 60 * 60 * 1000).toISOString();
+    const reResult = claimIssueCheckAndSet(root, "continuo", "sess-continuo", 6051, "helios", reClaimAt);
+    assert.equal(reResult.reason, "already-own");
+
+    const contentAfterReclaim = JSON.parse(readFileSync(sessionFilePath(root, "continuo", "helios", "sess-continuo"), "utf8"));
+    assert.equal(
+      contentAfterReclaim.claimed_issues_at["6051"],
+      firstClaimAt,
+      "re-reivindicação NUNCA deve refrescar claimed_issues_at — senão a claim nunca envelhece (#6436)",
+    );
+    // heartbeat, por outro lado, SEGUE avançando normalmente.
+    assert.equal(contentAfterReclaim.lastHeartbeat, reClaimAt);
+  });
 });
 
 // ─── claimIssueAutoRegistering — fecha o no-op silencioso do #6369 ────────
@@ -1692,6 +1717,32 @@ describe("mergeSessionRecords (#6130)", () => {
     assert.deepEqual(merged.claimed_issues, [1, 2, 3]);
     assert.equal(merged.lastHeartbeat, "2026-08-18T15:32:00.000Z", "campos não-claim vêm do registro mais recente");
     assert.equal(merged.phase, "pausado-edicao");
+  });
+
+  it("#6436: une claimed_issues_at mantendo o timestamp MAIS ANTIGO por issue entre cópias", () => {
+    const older: SessionRecord = {
+      kind: "continuo",
+      machineTag: "helios",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T14:26:00.000Z",
+      claimed_issues: [6051],
+      claimed_issues_at: { "6051": "2026-08-18T04:00:00.000Z" },
+    };
+    const newer: SessionRecord = {
+      kind: "continuo",
+      machineTag: "helios",
+      sessionId: "s1",
+      startedAt: "2026-08-18T04:00:00.000Z",
+      lastHeartbeat: "2026-08-18T15:32:00.000Z",
+      claimed_issues: [6051],
+      // cópia de conflito com timestamp mais recente (ex: escrita numa
+      // reivindicação subsequente ainda não deduplicada) — a claim de
+      // verdade começou na cópia MAIS ANTIGA.
+      claimed_issues_at: { "6051": "2026-08-18T10:00:00.000Z" },
+    };
+    const merged = mergeSessionRecords([older, newer]);
+    assert.deepEqual(merged.claimed_issues_at, { "6051": "2026-08-18T04:00:00.000Z" });
   });
 
   it("une um claim que existe SÓ no registro mais antigo (o cenário real do #6130 — claim desaparece do 'atual')", () => {

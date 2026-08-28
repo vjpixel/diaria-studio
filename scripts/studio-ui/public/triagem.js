@@ -160,6 +160,22 @@ export function dispatchBadge(track, matched, execTrackUiOverride) {
   return `<span class="${cls}" title="${escapeHtml(fullTitle)}">${label}</span>`;
 }
 
+// #6436 — issue reivindicada por uma sessão coordenadora ATIVA (`data/sessions/`,
+// via `claim` no payload) mostra "em andamento — {kind} {machine}" em vez de
+// ficar indistinguível de uma issue genuinamente livre. Mais crítico pra
+// claim da sessão `continuo` (cron de 60min, nunca fica stale por si só) —
+// era exatamente essa combinação que fazia a issue parecer "Overnight sem
+// sinal" pra sempre no painel, mesmo já tendo dono. `claim` ausente/null →
+// string vazia (nenhum badge extra), nunca lança.
+export function claimBadge(claim) {
+  if (!claim) return "";
+  const who = `${claim.kind}-${claim.machineTag}`;
+  const title = claim.claimedAt
+    ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt}`
+    : `Reivindicada por ${who} (sessão ${claim.sessionId})`;
+  return `<span class="claim-badge" title="${escapeHtml(title)}">em andamento — ${escapeHtml(who)}</span>`;
+}
+
 // #3874: o significado de cada valor de Classificação só existia como
 // `title=` (tooltip) em cada badge da tabela — tooltip não existe em touch
 // (R7 de docs/studio-ui-ux-guidelines.md). Renderiza o MESMO vocabulário
@@ -276,7 +292,7 @@ function renderIssuesTable() {
     tr.innerHTML = `
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
-      <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}</td>
+      <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
       <td>${labelsBadges(i.labels)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>

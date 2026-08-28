@@ -70,7 +70,7 @@ for (const key of ["document", "window", "fetch"]) {
 // chaveada por arquivo+código, então um arquivo de teste NOVO precisa
 // suprimir localmente em vez de herdar a entrada já aceita de outro arquivo).
 // @ts-expect-error TS7016
-const { dispatchBadge } = await import("../scripts/studio-ui/public/triagem.js");
+const { dispatchBadge, claimBadge } = await import("../scripts/studio-ui/public/triagem.js");
 
 after(() => {
   for (const [key, value] of Object.entries(originals)) {
@@ -104,5 +104,25 @@ describe("triagem.js dispatchBadge — #6200 badge de 'sem sinal'", () => {
     const html = dispatchBadge("develop", undefined, EXEC_TRACK_UI);
     assert.doesNotMatch(html, /dispatch-default/);
     assert.doesNotMatch(html, /sem sinal/);
+  });
+});
+
+describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
+  it("claim null/ausente → string vazia, nenhum badge extra", () => {
+    assert.equal(claimBadge(null), "");
+    assert.equal(claimBadge(undefined), "");
+  });
+
+  it("claim da sessão continuo (cron 60min, nunca stale por si só) → 'em andamento — continuo-helios'", () => {
+    const html = claimBadge({ kind: "continuo", machineTag: "helios", sessionId: "5d791ef6", claimedAt: "2026-08-20T00:00:00Z" });
+    assert.match(html, /class="claim-badge"/);
+    assert.match(html, />em andamento — continuo-helios</);
+    assert.match(html, /2026-08-20T00:00:00Z/, "tooltip carrega a data da 1ª reivindicação");
+  });
+
+  it("claim sem claimedAt conhecido (sessão pré-#6436) ainda renderiza, sem citar data", () => {
+    const html = claimBadge({ kind: "overnight", machineTag: "neo", sessionId: "x", claimedAt: null });
+    assert.match(html, />em andamento — overnight-neo</);
+    assert.doesNotMatch(html, /desde/);
   });
 });
