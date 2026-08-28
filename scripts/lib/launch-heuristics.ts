@@ -241,6 +241,11 @@ const DEAL_PATTERNS: RegExp[] = [
   // and Y" + verbo de construção + "AI Factory") pra não pegar o produto de
   // referência "NVIDIA AI Factory" quando citado sozinho, sem 2ª empresa.
   /\b\w+\s+and\s+\w+(\s+\w+)?\s+(build|builds|building)\b[^.\n]{0,60}\bAI\s+Factor(?:y|ies)\b/i,
+  // #5995 (260828): "X's models/products Now Run on Y" — parceria de infra
+  // cross-empresa anunciada como acordo, não lançamento de produto próprio.
+  // Caso real: "Claude Meets Blackwell Ultra: Anthropic's Models Now Run on
+  // NVIDIA GB300 in Azure" (blogs.nvidia.com).
+  /\bnow\s+run(?:s)?\s+on\b/i,
 ];
 
 /**
@@ -282,6 +287,11 @@ const CUSTOMER_STORY_PATTERNS: RegExp[] = [
   // Ex: "Databricks adota GPT-5.5 em workflows empresariais" (caso 260518)
   /\b(integra(m|r|mos)?|adota(m|r|mos)?|incorpora(m|r|mos)?|integrate[sd]?|adopt[sed]?|incorporate[sd]?)\s+.{0,40}\bem\s+(workflow|produto|sistema|plataforma|stack)/i,
   /\b(integrates?|adopts?|incorporates?)\s+.{0,40}\bin(to)?\s+(workflow|product|platform|system|stack)/i,
+  // #5995 (260828): "Working with {entidade} on {tema}" — parceria/programa
+  // com organização externa, não lançamento de produto. Caso real: "Working
+  // with the American Psychological Association on youth mental health and
+  // AI" (openai.com/index).
+  /\bworking\s+with\s+\w+(\s+\w+){0,4}\s+on\b/i,
 ];
 
 /**
@@ -329,6 +339,9 @@ const UPDATE_PATTERNS: RegExp[] = [
   // intelligence" + "frontier efficiency" co-ocorrendo — não bloqueia "the
   // frontier of AI" isolado (comum em copy de lançamento real).
   /\bprice[- ]performance\s+frontier\b|\bfrontier\s+intelligence\b[^.\n]{0,60}\bfrontier\s+efficiency\b|\bfrontier\s+efficiency\b[^.\n]{0,60}\bfrontier\s+intelligence\b/i,
+  // #5995 (260828): "X: Major Updates" — changelog-style, não lançamento
+  // novo. Caso real: "🤗 Kernels: Major Updates" (huggingface.co/blog).
+  /\bmajor\s+updates?\b/i,
 ];
 
 export function isUpdate(article: Article): boolean {
@@ -927,6 +940,11 @@ const RESEARCH_RESULT_PATTERNS: RegExp[] = [
   /\b(refuta(m|r|ram|ria)?|resolv(eu|e|emos|eram|ido)|comprova(m|r|ram)?)\s+(?:a|o|uma|um)\s+(conjectur|problem|teorema|hip[oó]tese)/i,
   // URL path com slug acadêmico explícito
   /\/(disprov|refut|solv|prov)(e|es|ed)?-(a|the|an|model)?-?(conjectur|theorem|problem|geometry|math)/i,
+  // #5995 (260828): "Reaches N% on {benchmark}" — resultado de avaliação/
+  // benchmark, não anúncio de produto. Caso real: "NVIDIA AVO Reaches 100%
+  // on ARC-AGI-3, Demonstrating a Frontier-Level General-Purpose
+  // Architecture..." (developer.nvidia.com/blog).
+  /\breach(?:es|ed)?\s+\d+(?:\.\d+)?%\s+on\b/i,
 ];
 export function isLikelyResearchResult(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
@@ -1351,7 +1369,7 @@ const DISCOVERY_LISTICLE_RE = new RegExp(
 // após "como"/"aprenda a" — não casa em "Como a IA está mudando X" (informativo,
 // não instrutivo) porque "a" não está na lista.
 const TUTORIAL_ACTION_VERBS_PT =
-  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar";
+  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar";
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1362,7 +1380,11 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     "|\\btechniques?\\s+for\\b" +
     "|\\bpatterns?\\s+for\\b" +
     "|\\b(run|deploy|install)\\s+\\S[^.\\n]{0,60}\\b(in one|with one|in a single|with a single)\\s+(command|step|line)\\b" +
-    "|\\b(?:veja|saiba|descubra)\\s+como\\b(?=\\s*(?:$|\\n|[.!?]))" +
+    // #5995 (260828): lookahead ampliado para tolerar sufixo de veículo
+    // scrapado ("...; veja como - Canaltech") — antes só reconhecia
+    // fim-de-string/quebra/pontuação final, deixando escapar títulos com
+    // " - Fonte" anexado após "veja como".
+    "|\\b(?:veja|saiba|descubra)\\s+como\\b(?=\\s*(?:$|\\n|[.!?]|[-–—|]))" +
     "|\\bveja\\s+o\\s+prompt\\b" +
     `|\\baprenda\\s+a\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b` +
     // #5995: "Como <verbo acionável>" — imperativo direto no início da
@@ -1380,7 +1402,15 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     // #5995: "N formas/maneiras/jeitos de <verbo>" sem o prefixo "o que é X e"
     // exigido pelo padrão acima — cobre listicle solto ("6 formas de assinar
     // o Claude mais barato e pagar menos pelo Pro").
-    "|\\b\\d+\\s+(formas|maneiras|jeitos)\\s+de\\b" +
+    // #5995 (260828): admite até 2 palavras (tipicamente adjetivo) entre o
+    // substantivo e "de" — "7 formas inteligentes de usar IA na liderança"
+    // não batia porque "inteligentes" ficava entre "formas" e "de".
+    "|\\b\\d+\\s+(formas|maneiras|jeitos)(?:\\s+\\w+){0,2}\\s+de\\b" +
+    // #5995 (260828): "Try these N X to Y" — listicle acionável em inglês,
+    // mesma classe de "N prompts para"/"N formas de" mas sem o número logo
+    // após o substantivo. Caso real: "Try these 3 Google AI tools to help
+    // find your next job."
+    "|\\btry\\s+these\\s+\\d+\\b" +
     // #5995: "N aplicações práticas de/do/da <produto>" — listicle de casos de
     // uso acionáveis ("9 aplicações práticas do ChatGPT Work").
     "|\\b\\d+\\s+aplica[çc][õoe]es\\s+pr[áa]ticas?\\s+(de|do|da)\\b" +
@@ -1478,6 +1508,23 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   /\bbringing\b[^\n]{0,60}\bto more\b/i,
   // #6440: "Piloting X" — piloto de processo/programa/avaliação.
   /\bpiloting\b/i,
+  // #5995 (rodada 260828, resíduo real medido no corpus): "Ask an AI expert:
+  // X" — série editorial de Q&A explicativo do blog.google, não anúncio.
+  // Caso real: "Ask an AI expert: What exactly is the full stack?".
+  /\bask\s+an?\s+(ai\s+)?expert\b/i,
+  // #5995 (260828): "the next era of X" — framing de visão/relatório, não
+  // produto específico. Caso real: "Advancing the next era of national
+  // science" (openai.com/index). Conservador: exige a frase completa "the
+  // next era of" — não pega "a new era" nem "next generation" isolados.
+  /\bthe\s+next\s+era\s+of\b/i,
+  // #5995 (260828): "How {sujeito coletivo} {verbo}..." — manchete de
+  // relatório/análise sobre adoção de IA em larga escala, não anúncio de
+  // produto. Distinto de "how to X" (tutorial, já coberto em
+  // TUTORIAL_KEYWORDS_RE) porque o sujeito é um coletivo impessoal, não
+  // "you"/instrução direta. Casos reais: "How Nations Are Deploying AI for
+  // Strategic Priorities" (blogs.nvidia.com), "How enterprises put AI to
+  // work" / "How the world is putting ChatGPT to work" (openai.com/index).
+  /\bhow\s+(nations|enterprises|businesses|companies|organizations|governments|countries|the\s+world|society|industries)\b/i,
 ];
 
 const LAUNCH_VERB_TITLE_RE =

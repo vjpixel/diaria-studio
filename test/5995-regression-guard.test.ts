@@ -34,6 +34,7 @@ import assert from "node:assert/strict";
 import {
   categorize,
   isNonProductOfficialPost,
+  categoryToBucket,
 } from "../scripts/lib/launch-heuristics.ts";
 
 describe("#5995 anti-regress guard — fixtures do corpus real", () => {
@@ -203,5 +204,135 @@ describe("#5995 item 5 — taxa em janela (critério de fechamento)", () => {
     assert.equal(depois.movesPerEdition, antes.movesPerEdition);
     // Enquanto isso, o TOTAL cumulativo quase dobra — é exatamente ele que nunca fecharia.
     assert.ok(depois.totalMoves < 40, "janela permanece pequena mesmo com corpus grande");
+  });
+});
+
+// -----------------------------------------------------------------------
+// #5995 (rodada 260828) — resíduo real medido ao vivo contra o corpus de
+// 96 edições em `data/editions/` (`--live` recompute: reaplica `categorize()`
+// ATUAL sobre os artigos de `01-categorized.json` e diffa contra o bucket que
+// o editor de fato aprovou em `01-approved.json` — diferente da medição
+// oficial de `analyze-bucket-overrides.ts`, que compara contra o bucket
+// GRAVADO no momento em que a edição rodou, e por isso não reflete regras
+// mergeadas depois). Achado ao vivo: 38 de 77 exemplos reais das 5 direções
+// (extraídos dos comentários da issue) ainda divergiam do veredito do editor
+// com o código de antes desta rodada; 6 classes de padrão generalizável
+// (não singleton) cobrem 14 desses casos sem piorar nenhuma direção — medido
+// como: baseline 140 divergências / 2306 pares comparáveis (93.93% de
+// acordo) → 130 divergências (94.36%) após as regras abaixo, ZERO URLs que
+// concordavam antes passaram a divergir (checado por diff de URL antes/
+// depois sobre o corpus inteiro, não só as fixtures aqui).
+//
+// Duas classes tentadas e REVERTIDAS por regredir casos reais (guard
+// anti-overfit em ação, não só descrito): "guia (para|de)" no
+// TUTORIAL_KEYWORDS_RE parecia cobrir "Lovable na prática: o guia para
+// profissionais..." mas capturava falso-positivo em "Guia de conformidade"
+// (artigo sobre PL 2338, não tutorial de IA) e em "guia para empresas" de um
+// artigo de SEO/visibilidade (não tutorial de uso de IA) — os dois últimos
+// testes negativos abaixo travam essa reversão.
+describe("#5995 (260828) — resíduo real: lancamento→radar (título não-produto, classes novas)", () => {
+  it("cada fixture real bate em noticias via isNonProductOfficialPost", () => {
+    const fixtures = [
+      // "Ask an AI expert: X" — série Q&A explicativa
+      { title: "Ask an AI expert: What exactly is the full stack?", url: "https://blog.google/innovation-and-ai/technology/ai/full-stack-ai-explainer/" },
+      // "the next era of X" — framing de visão/relatório
+      { title: "Advancing the next era of national science", url: "https://openai.com/index/advancing-the-next-era-of-national-science" },
+      // "How {coletivo} ..." — relatório/análise, distinto de "how to" tutorial
+      { title: "How Nations Are Deploying AI for Strategic Priorities", url: "https://blogs.nvidia.com/blog/nations-deploy-ai-strategic-priorities/" },
+      { title: "From assistance to execution: How enterprises put AI to work", url: "https://openai.com/index/how-enterprises-put-ai-to-work" },
+      { title: "From asking to doing: How the world is putting ChatGPT to work", url: "https://openai.com/index/how-the-world-is-putting-chatgpt-to-work" },
+    ];
+    for (const f of fixtures) {
+      assert.equal(isNonProductOfficialPost({ url: f.url, title: f.title } as any), true, `nao-produto: ${f.title}`);
+      assert.equal(categorize({ url: f.url, title: f.title } as any), "noticias", `categorize: ${f.title}`);
+    }
+  });
+
+  it("'X: Major Updates' cai em noticias via isUpdate, não lancamento", () => {
+    const f = { title: "🤗 Kernels: Major Updates", url: "https://huggingface.co/blog/revamped-kernels" };
+    assert.equal(categorize(f as any), "noticias", f.title);
+  });
+
+  it("'Now Run(s) on' (parceria de infra cross-empresa) cai em noticias via isBusinessDeal", () => {
+    const f = {
+      title: "Claude Meets Blackwell Ultra: Anthropic's Models Now Run on NVIDIA GB300 in Azure",
+      url: "https://blogs.nvidia.com/blog/anthropic-nvidia-gb300-blackwell-ultra-microsoft-azure/",
+    };
+    assert.equal(categorize(f as any), "noticias", f.title);
+  });
+
+  it("'Reaches N% on {benchmark}' cai em pesquisa via isLikelyResearchResult", () => {
+    const f = {
+      title: "NVIDIA AVO Reaches 100% on ARC-AGI-3, Demonstrating a Frontier-Level General-Purpose Architecture",
+      url: "https://developer.nvidia.com/blog/nvidia-avo-reaches-100-on-arc-agi-3-demonstrating-a-frontier-level-general-purpose-architecture-for-long-horizon-autonomous-agents/",
+    };
+    assert.equal(categorize(f as any), "pesquisa", f.title);
+  });
+
+  it("'Working with {entidade} on {tema}' cai em noticias via isCustomerStory", () => {
+    const f = {
+      title: "Working with the American Psychological Association on youth mental health and AI",
+      url: "https://openai.com/index/openai-and-apa-partner-to-advance-responsible-ai",
+    };
+    assert.equal(categorize(f as any), "noticias", f.title);
+  });
+});
+
+describe("#5995 (260828) — resíduo real: radar→use_melhor (tutorial pt-BR, classes novas)", () => {
+  it("'N formas/maneiras/jeitos ADJETIVO de <verbo>' — adjetivo entre o número e 'de'", () => {
+    const f = {
+      title: "7 formas inteligentes de usar IA na liderança sem ser especialista em tecnologia",
+      url: "https://www.administradores.com.br/noticias/7-formas-inteligentes-de-usar-ia-na-lideranca-sem-ser-especialista-em-tecnologia",
+    };
+    assert.equal(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
+  });
+
+  it("'Try these N X to Y' — listicle acionável em inglês sem 'N' logo após o substantivo", () => {
+    const f = {
+      title: "Try these 3 Google AI tools to help find your next job.",
+      url: "https://blog.google/products-and-platforms/products/gemini/find-job-with-google-ai-tools",
+    };
+    assert.equal(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
+  });
+
+  it("'veja como' com sufixo de veículo ('...; veja como - Canaltech') ainda dispara", () => {
+    const f = {
+      title: "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como - Canaltech",
+      url: "https://canaltech.com.br/inteligencia-artificial/chatgpt-consegue-fazer-check-up-do-seu-pc-sem-abrir-nenhum-arquivo-veja-como",
+    };
+    assert.equal(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
+  });
+
+  it("'Como explorar' — verbo 'explorar' adicionado à lista de ações do tutorial pt-BR", () => {
+    const f = {
+      title: "Como explorar o máximo potencial do Gemini no trabalho, nos estudos e no dia a dia",
+      url: "https://exame.com/inteligencia-artificial/como-explorar-o-maximo-potencial-do-gemini-no-trabalho-nos-estudos-e-no-dia-a-dia",
+    };
+    assert.equal(categoryToBucket(categorize({ ...f, summary: "" } as any)), "use_melhor", f.title);
+  });
+});
+
+describe("#5995 (260828) — guard anti-overfit: regra tentada e REVERTIDA por regredir casos reais", () => {
+  // "guia (para|de)" no TUTORIAL_KEYWORDS_RE foi tentado pra cobrir "Lovable
+  // na prática: o guia para profissionais criarem apps com IA" (1 caso), mas
+  // capturava 2 falso-positivos reais medidos no corpus — revertido. Estes
+  // dois testes travam a reversão: se "guia (para|de)" reaparecer no
+  // TUTORIAL_KEYWORDS_RE, os dois passam a falhar.
+  it("'Guia de conformidade' num artigo de regulação NÃO vira tutorial", () => {
+    const f = {
+      title: "Brazil AI Act 2026: What Foreign Brands Should Say Before PL 2338 Passes",
+      url: "https://sherlockcomms.com/brazil-ai-act-2026-communications-compliance",
+      summary: "Guia de conformidade de comunicação para marcas estrangeiras em face da lei de IA brasileira pendente (PL 2338/2023).",
+    };
+    assert.notEqual(categoryToBucket(categorize(f as any)), "use_melhor", f.title);
+  });
+
+  it("'o guia para empresas' num artigo de SEO/visibilidade NÃO vira tutorial", () => {
+    const f = {
+      title: "Como aparecer no ChatGPT: o guia para empresas",
+      url: "https://www.cloudmarket.com.br/marketing-digital/blog/como-aparecer-no-chatgpt/",
+      summary: "Aprenda como aparecer no ChatGPT: robôs para liberar, autoridade de tópico, fontes que a IA consulta e como medir se sua empresa já é citada nas respostas.",
+    };
+    assert.notEqual(categoryToBucket(categorize(f as any)), "use_melhor", f.title);
   });
 });
