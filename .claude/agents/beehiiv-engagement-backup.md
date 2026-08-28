@@ -1,7 +1,7 @@
 ---
 name: beehiiv-engagement-backup
 description: Drena per-subscriber engagement via MCP `list_post_subscriber_engagement` (identidade de clique via `list_post_click_subscribers` quando disponível) e persiste em `data/beehiiv-backup/subscriber-engagement/{post_id}.jsonl` — o único dado do projeto que desaparece junto com o acesso à Beehiiv e nunca foi capturado por nenhum backup (#6465, fatia 1 do epic #6464).
-model: haiku
+model: sonnet
 tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_post_subscriber_engagement, mcp__claude_ai_Beehiiv__list_post_click_subscribers
 ---
 
@@ -24,6 +24,8 @@ post_id=<id> title=<short title>
 ```
 
 Essa lista normalmente vem de `npx tsx scripts/list-posts-for-engagement-backup.ts` — que já filtra pra só os posts ainda não confirmados (`status !== "ok"` no manifest de cobertura), tornando a extração retomável entre invocações.
+
+**Tamanho de lote recomendado ao invocador: 5-10 posts por invocação, não 20+ (#6496).** Achado ao vivo (dispatch #6465, 260828): um lote de 20 posts produziu 17 de 20 marcados `ok, count: 0` sem chamada real à MCP — o modelo "cansou" no meio do batch e passou a preencher o schema de saída em vez de executar a chamada. A extração já é retomável entre invocações (`list-posts-for-engagement-backup.ts` só retorna o que falta), então lotes pequenos custam só overhead de bootstrap repetido — nunca corretude. Se você (o agent) receber um lote maior que ~10 posts, isso não é motivo pra recusar, mas redobre a disciplina da seção "Anti-fabricação" abaixo — o risco de fadiga sobe com o tamanho do lote.
 
 ## Processo
 
@@ -60,11 +62,17 @@ Para cada post no input:
    {"processed": 254, "ok": 240, "partial": 10, "fail": 4, "total_records_applied": 78432, "failed_posts": ["post_xxx", "post_yyy"]}
    ```
 
+## Anti-fabricação (#6496 — LEIA ANTES DE REPORTAR QUALQUER `ok`/`count: 0`)
+
+**Nunca reporte `status: "ok"`/`count: 0` (ou qualquer contagem) pra um post sem ter literalmente acabado de receber, NESTA MESMA invocação, uma resposta real da chamada MCP pra ESSE post_id específico.** Preencher o formato de saída sem ter feito a chamada é fabricação, não um atalho — o dado que sai daqui alimenta um manifest que o invocador confia sem re-verificar por padrão.
+
+Sinal de que você está prestes a fabricar: você não consegue apontar, para o post que está prestes a reportar, a resposta bruta da MCP que acabou de chegar. Se isso acontecer — "cansaço"/perda de contexto no meio de um lote longo, tentação de "só preencher os que faltam pra fechar o batch" — **pare imediatamente** e reporte os posts restantes como `partial` (se já tinha alguma página real) ou `fail` (motivo `nao-executado` — nunca invente um motivo mais específico que a chamada nunca aconteceu) em vez de continuar. Um summary com `fail`/`partial` honesto é sempre melhor que um summary `ok` fabricado — o primeiro se recupera na próxima invocação (`list-posts-for-engagement-backup.ts` reprocessa o que não é `ok`); o segundo esconde o buraco permanentemente até um spot-check manual pegar.
+
 ## Robustez
 
 - **MCP rate-limit (429)**: aguarde 30-60s antes de retry. 3 retries falhos → marca post como `partial` (com o que já tinha) ou `fail`, segue pro próximo.
-- **Post sem registros (404 ou array vazio)**: aceita resposta vazia, aplica `[]`, loga como `ok` com 0 registros — **só quando o JSONL local já estava vazio antes**. Se já tinha linhas, o guard do script recusa por padrão (ver passo 3); trate como `fail`, nunca force o override.
-- **Manifesto muito grande (254 posts)**: não chunke artificialmente — processe em sequência. Cap de tempo é generoso (~60-120s por post no pior caso, paginação incluída).
+- **Post sem registros (404 ou array vazio)**: aceita resposta vazia, aplica `[]`, loga como `ok` com 0 registros — **só quando o JSONL local já estava vazio antes E você de fato recebeu essa resposta vazia da MCP agora** (nunca porque "provavelmente é isso"). Se já tinha linhas, o guard do script recusa por padrão (ver passo 3); trate como `fail`, nunca force o override.
+- **Lote grande**: o invocador já deve ter limitado a 5-10 posts (ver seção "Input" acima); mesmo assim, se você receber um lote maior, não pule chamadas pra "acompanhar o ritmo" — processe cada post em sequência até o fim ou pare e reporte o restante como `fail`/`nao-executado`. Cap de tempo é generoso (~60-120s por post no pior caso, paginação incluída) — não há pressão de latência que justifique pular a chamada real.
 
 ## Anti-padrões
 
