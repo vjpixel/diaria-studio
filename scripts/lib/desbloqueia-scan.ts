@@ -16,7 +16,7 @@
  * `scripts/lib/issue-decisions.ts`, #5373, existe pra evitar — mas só se
  * alguém consultar os marcadores ANTES de perguntar).
  *
- * ## As 3 saídas
+ * ## As 4 saídas
  *
  *   - `ja-destravada`      — existe `decisao-editor` cujo `decided_at` é
  *     posterior (ou igual) ao `updatedAt` da issue. A decisão que resolve o
@@ -29,6 +29,17 @@
  *     comenta lembrando o estado e segue sem pergunta.
  *   - `precisa-pergunta`   — nem decisão nem bloqueio recentes cobrem o
  *     estado atual da issue. Candidata real à bateria de `AskUserQuestion`.
+ *   - `erro-leitura`       — o caller não conseguiu ler a thread completa
+ *     (`commentsFetchError` preenchido, ex: `gh issue view` falhou, JSON
+ *     malformado). **Nunca** vira `precisa-pergunta` mesmo que `comments`
+ *     esteja vazio — um `[]` por falha de leitura é indistinguível de um
+ *     `[]` genuíno pra quem só olha o array, e tratar os dois igual
+ *     perguntaria de novo algo que a thread pode já ter respondido (achado
+ *     do fleet review do PR #6632: a garantia central desta skill —
+ *     "nunca pergunta o que a thread já resolve" — dependia de `comments`
+ *     estar completo, e nada distinguia "0 porque vazio" de "0 porque a
+ *     leitura falhou"). O chamador NUNCA pergunta pra esta issue — reporta
+ *     o erro e sugere retry.
  *
  * Mesmo critério de comparação `decided_at`/`recorded_at` vs `updatedAt` já
  * usado em prosa por `.claude/skills/diaria-develop/SKILL.md` ("Antes de
@@ -47,7 +58,7 @@ import {
   type IssueDecision,
 } from "./issue-decisions.ts";
 
-export type DesbloqueioStatus = "ja-destravada" | "bloqueio-confirmado" | "precisa-pergunta";
+export type DesbloqueioStatus = "ja-destravada" | "bloqueio-confirmado" | "precisa-pergunta" | "erro-leitura";
 
 export interface DesbloqueioIssueInput {
   number: number;
@@ -57,8 +68,15 @@ export interface DesbloqueioIssueInput {
   state: string;
   /** ISO 8601 — `updatedAt` de `gh issue view --json updatedAt`. */
   updatedAt: string;
-  /** Bodies de TODOS os comentários da issue, na ordem — não um subconjunto. */
+  /** Bodies de TODOS os comentários da issue, na ordem — não um subconjunto.
+   * Se a leitura falhou, o caller passa `[]` aqui E preenche
+   * `commentsFetchError` — nunca finge que a thread está vazia. */
   comments: string[];
+  /** Motivo pelo qual `comments` pode não representar a thread real (ex:
+   * `gh issue view` retornou status != 0, JSON malformado). `null`/ausente
+   * = leitura OK. Presente = `classifyDesbloqueioCandidate` força
+   * `erro-leitura`, nunca deixa cair em `precisa-pergunta` por engano. */
+  commentsFetchError?: string | null;
   /** Injetável pra teste; default `new Date()`. */
   now?: Date;
 }
@@ -70,10 +88,15 @@ export interface DesbloqueioCandidate {
   status: DesbloqueioStatus;
   decision: IssueDecision | null;
   executionBlock: ExecutionBlock | null;
-  /** Quantos comentários foram de fato lidos pra chegar nesse veredito —
-   * existe pra o relatório final provar que a leitura completa aconteceu
-   * (critério de aceite do #6628), não só afirmar em prosa. */
+  /** Quantos comentários o classificador recebeu como input — prova que
+   * ele não amostrou um subconjunto do que foi passado. NÃO prova, por si
+   * só, que a busca capturou 100% dos comentários reais da issue (essa
+   * garantia depende do caller nunca mascarar falha de leitura como lista
+   * vazia — ver `commentsFetchError`). */
   commentsRead: number;
+  /** Espelha `DesbloqueioIssueInput.commentsFetchError` — `null` quando a
+   * leitura foi OK. */
+  commentsFetchError: string | null;
 }
 
 /**
@@ -90,6 +113,19 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
   };
   const track = classifyExecTrack(trackInput);
   if (track !== "bloqueada" && track !== "develop") return null;
+
+  if (input.commentsFetchError) {
+    return {
+      number: input.number,
+      title: input.title,
+      track,
+      status: "erro-leitura",
+      decision: null,
+      executionBlock: null,
+      commentsRead: input.comments.length,
+      commentsFetchError: input.commentsFetchError,
+    };
+  }
 
   const decision = latestDecisionFor(input.comments);
   const executionBlock = latestExecutionBlockFor(input.comments);
@@ -111,6 +147,7 @@ export function classifyDesbloqueioCandidate(input: DesbloqueioIssueInput): Desb
     decision,
     executionBlock,
     commentsRead: input.comments.length,
+    commentsFetchError: null,
   };
 }
 
@@ -118,6 +155,9 @@ export interface DesbloqueioScanReport {
   jaDestravadas: DesbloqueioCandidate[];
   bloqueioConfirmado: DesbloqueioCandidate[];
   precisaPergunta: DesbloqueioCandidate[];
+  /** Leitura da thread falhou — NUNCA entra na bateria de perguntas (ver
+   * docstring de `erro-leitura` acima). O chamador reporta e sugere retry. */
+  erroLeitura: DesbloqueioCandidate[];
   /** Issues varridas que `classifyExecTrack` não considerou candidatas
    * (fora do escopo desta skill) — só o número, pra auditoria de cobertura. */
   foraDoEscopo: number[];
@@ -125,14 +165,15 @@ export interface DesbloqueioScanReport {
 
 /**
  * Agrupa um lote de issues já buscadas (corpo + labels + TODOS os
- * comentários) nos 3 destinos + fora-de-escopo. Ordem de entrada preservada
- * dentro de cada grupo.
+ * comentários, ou o erro de por que não deu pra buscar) nos 4 destinos +
+ * fora-de-escopo. Ordem de entrada preservada dentro de cada grupo.
  */
 export function scanDesbloqueioCandidates(inputs: readonly DesbloqueioIssueInput[]): DesbloqueioScanReport {
   const report: DesbloqueioScanReport = {
     jaDestravadas: [],
     bloqueioConfirmado: [],
     precisaPergunta: [],
+    erroLeitura: [],
     foraDoEscopo: [],
   };
   for (const input of inputs) {
@@ -143,6 +184,7 @@ export function scanDesbloqueioCandidates(inputs: readonly DesbloqueioIssueInput
     }
     if (candidate.status === "ja-destravada") report.jaDestravadas.push(candidate);
     else if (candidate.status === "bloqueio-confirmado") report.bloqueioConfirmado.push(candidate);
+    else if (candidate.status === "erro-leitura") report.erroLeitura.push(candidate);
     else report.precisaPergunta.push(candidate);
   }
   return report;

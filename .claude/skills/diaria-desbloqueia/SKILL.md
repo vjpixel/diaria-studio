@@ -34,7 +34,7 @@ pule direto pra `gh issue view` improvisado. Ele:
    direto em `foraDoEscopo`, sem leitura de comentário — não há nada aqui
    pra desbloquear).
 2. Pra cada candidata real, busca **corpo + TODOS os comentários** (não uma
-   amostra, não os últimos N) e classifica em 3 grupos —
+   amostra, não os últimos N) e classifica em 4 grupos —
    `scripts/lib/desbloqueia-scan.ts`, testado em `test/desbloqueia-scan.test.ts`:
    - **`jaDestravadas`** — existe `decisao-editor` mais recente que o
      `updatedAt` da issue. A resposta já está na thread.
@@ -43,16 +43,26 @@ pule direto pra `gh issue view` improvisado. Ele:
      que não chegou, conta que não existe).
    - **`precisaPergunta`** — nem um nem outro cobre o estado atual. É a
      ÚNICA lista que vira pergunta.
+   - **`erroLeitura`** — a busca de comentário FALHOU pra essa issue (`gh`
+     deu erro, JSON malformado). Nunca vira `precisaPergunta` mesmo que a
+     lista de comentários tenha vindo vazia — `[]` por falha de leitura é
+     indistinguível de `[]` genuíno se não fosse por esse grupo separado, e
+     tratar os dois igual furaria a garantia central da skill. **Nunca
+     perguntar sobre issue neste grupo** — reportar o erro (`commentsFetchError`)
+     no relatório final e sugerir rodar o scan de novo.
 
 Rodar:
 
 ```bash
 npx tsx scripts/desbloqueia-scan.ts                    # backlog aberto inteiro
 npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
+npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # só issues bloqueada (ou develop)
 ```
 
 **Nenhuma pergunta é feita antes deste comando rodar e seu output ser lido
-por completo.**
+por completo.** Se `erroLeitura` não estiver vazio, rodar o scan de novo
+pras issues afetadas (`--issues`) antes de seguir — não é seguro perguntar
+sobre elas até a leitura funcionar.
 
 ## Passo 2 — resolver `jaDestravadas` e `bloqueioConfirmado` sem perguntar
 
@@ -135,6 +145,7 @@ Varridas: N issues candidatas (bloqueada/develop)
   {B} bloqueio confirmado — sem mudança, comentário de revisão
   {C} perguntadas — {D} respondidas e destravadas, {E} seguem bloqueadas
        (editor não tinha a resposta agora / cat. B sem conta ainda)
+  {F} erro de leitura — não foi possível ler a thread, ninguém foi perguntado (rodar de novo: #...)
 
 Pronto pro helios na próxima rodada: #X, #Y, #Z
 Seguem bloqueadas: #W (motivo: ...)

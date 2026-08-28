@@ -3,7 +3,8 @@
  *
  * Regressão pura pra `scripts/lib/desbloqueia-scan.ts` — nenhuma chamada
  * `gh` real (as funções recebem body/labels/comentários já buscados).
- * Cobre a lista pedida pelo critério de aceite da issue:
+ * Cobre a lista pedida pelo critério de aceite da issue + os gaps
+ * apontados pelo fleet review do PR #6632:
  *
  *   - issue com decisão registrada em comentário posterior ao `updatedAt`
  *     → `ja-destravada`, ZERO pergunta necessária (o teste central do
@@ -12,10 +13,18 @@
  *   - issue sem nenhum marcador recente → `precisa-pergunta`
  *   - decisão MAIS ANTIGA que `updatedAt` (issue mudou depois da decisão)
  *     → não conta como resolvida, volta a `precisa-pergunta`
- *   - issue fora do escopo (`elegível`, `agendada`, `epica`, `fora-de-rodada`)
- *     → `null` / entra em `foraDoEscopo`, nunca nos 3 grupos de ação
+ *   - issue fora do escopo (`elegível`, `agendada`, `epica`, `fora-de-rodada`,
+ *     `CLOSED`) → `null` / entra em `foraDoEscopo`, nunca nos grupos de ação
  *   - `commentsRead` reflete o número real de comentários passados (prova
  *     de leitura completa, não amostra)
+ *   - track `develop` (não só `bloqueada`) passa pelo mesmo pipeline (#6632)
+ *   - limite inclusivo `>=` — timestamp IGUAL a `updatedAt` conta como
+ *     fresco (#6632)
+ *   - decisão E bloqueio presentes ao mesmo tempo — decisão sempre vence,
+ *     na ordem certa (#6632)
+ *   - `commentsFetchError` força `erro-leitura`, NUNCA `precisa-pergunta`
+ *     mesmo com `comments: []` (#6632 — falha de leitura não pode virar
+ *     "sem comentário" silenciosamente)
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -55,6 +64,7 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result?.status, "ja-destravada");
     assert.equal(result?.decision?.resposta, "Trocar por Y");
     assert.equal(result?.commentsRead, 1);
+    assert.equal(result?.commentsFetchError, null);
   });
 
   it("decisão registrada ANTES de updatedAt (issue mudou depois) → precisa-pergunta", () => {
@@ -105,15 +115,126 @@ describe("classifyDesbloqueioCandidate", () => {
     assert.equal(result, null);
   });
 
+  it("issue CLOSED → fora do escopo mesmo com label de bloqueio (#6632)", () => {
+    const input = baseInput({ state: "CLOSED" });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result, null);
+  });
+
   it("commentsRead reflete o total de comentários passados, não uma amostra", () => {
     const input = baseInput({ comments: ["a", "b", "c", "d", "e"] });
     const result = classifyDesbloqueioCandidate(input);
     assert.equal(result?.commentsRead, 5);
   });
+
+  it("track develop (label windows) passa pelo mesmo pipeline de classificação (#6632)", () => {
+    const marker = formatDecisionMarker({
+      decided_at: "2026-08-15T00:00:00Z",
+      pergunta: "?",
+      resposta: "sim",
+      sessao: "develop",
+    });
+    const input = baseInput({
+      labels: ["windows"],
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [marker],
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.track, "develop");
+    assert.equal(result?.status, "ja-destravada");
+  });
+
+  it("decided_at === updatedAt (limite inclusivo >=) → ja-destravada (#6632)", () => {
+    const marker = formatDecisionMarker({
+      decided_at: "2026-08-01T00:00:00Z",
+      pergunta: "?",
+      resposta: "sim",
+      sessao: "develop",
+    });
+    const input = baseInput({ updatedAt: "2026-08-01T00:00:00Z", comments: [marker] });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "ja-destravada");
+  });
+
+  it("recorded_at === updatedAt (limite inclusivo >=) → bloqueio-confirmado (#6632)", () => {
+    const marker = formatExecutionBlockMarker({
+      recorded_at: "2026-08-01T00:00:00Z",
+      motivo: "falta token",
+      sessao: "overnight",
+    });
+    const input = baseInput({ updatedAt: "2026-08-01T00:00:00Z", comments: [marker] });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "bloqueio-confirmado");
+  });
+
+  it("decisão E bloqueio presentes, decisão mais recente → ja-destravada vence (#6632)", () => {
+    const oldBlock = formatExecutionBlockMarker({
+      recorded_at: "2026-08-10T00:00:00Z",
+      motivo: "faltava token",
+      sessao: "overnight",
+    });
+    const newDecision = formatDecisionMarker({
+      decided_at: "2026-08-20T00:00:00Z",
+      pergunta: "?",
+      resposta: "resolvido",
+      sessao: "develop",
+    });
+    const input = baseInput({
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [oldBlock, newDecision],
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "ja-destravada");
+  });
+
+  it("decisão E bloqueio presentes, bloqueio mais recente (decisão velha) → bloqueio-confirmado (#6632)", () => {
+    const oldDecision = formatDecisionMarker({
+      decided_at: "2026-07-01T00:00:00Z",
+      pergunta: "?",
+      resposta: "resolvido antes",
+      sessao: "develop",
+    });
+    const newBlock = formatExecutionBlockMarker({
+      recorded_at: "2026-08-20T00:00:00Z",
+      motivo: "voltou a faltar token depois da decisão",
+      sessao: "overnight",
+    });
+    const input = baseInput({
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [oldDecision, newBlock],
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "bloqueio-confirmado");
+  });
+
+  it("commentsFetchError força erro-leitura, NUNCA precisa-pergunta, mesmo com comments vazio (#6632)", () => {
+    const input = baseInput({ comments: [], commentsFetchError: "gh issue view #1234 falhou (status 1)" });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "erro-leitura");
+    assert.equal(result?.commentsFetchError, "gh issue view #1234 falhou (status 1)");
+    assert.equal(result?.decision, null);
+    assert.equal(result?.executionBlock, null);
+  });
+
+  it("commentsFetchError vence mesmo se, por algum motivo, comments tiver conteúdo parcial (#6632)", () => {
+    const marker = formatDecisionMarker({
+      decided_at: "2026-08-15T00:00:00Z",
+      pergunta: "?",
+      resposta: "sim",
+      sessao: "develop",
+    });
+    const input = baseInput({
+      updatedAt: "2026-08-01T00:00:00Z",
+      comments: [marker],
+      commentsFetchError: "timeout no meio da paginação",
+    });
+    const result = classifyDesbloqueioCandidate(input);
+    assert.equal(result?.status, "erro-leitura");
+  });
 });
 
 describe("scanDesbloqueioCandidates", () => {
-  it("agrupa múltiplas issues nos 3 destinos + fora do escopo", () => {
+  it("agrupa múltiplas issues nos 4 destinos + fora do escopo", () => {
     const decided = formatDecisionMarker({
       decided_at: "2026-08-15T00:00:00Z",
       pergunta: "?",
@@ -130,6 +251,7 @@ describe("scanDesbloqueioCandidates", () => {
       baseInput({ number: 2, updatedAt: "2026-08-01T00:00:00Z", comments: [blocked] }),
       baseInput({ number: 3, comments: [] }),
       baseInput({ number: 4, labels: [] }),
+      baseInput({ number: 5, comments: [], commentsFetchError: "gh falhou" }),
     ]);
     assert.deepEqual(
       report.jaDestravadas.map((c) => c.number),
@@ -143,15 +265,20 @@ describe("scanDesbloqueioCandidates", () => {
       report.precisaPergunta.map((c) => c.number),
       [3],
     );
+    assert.deepEqual(
+      report.erroLeitura.map((c) => c.number),
+      [5],
+    );
     assert.deepEqual(report.foraDoEscopo, [4]);
   });
 
-  it("lista vazia devolve os 4 grupos vazios", () => {
+  it("lista vazia devolve os 5 grupos vazios", () => {
     const report = scanDesbloqueioCandidates([]);
     assert.deepEqual(report, {
       jaDestravadas: [],
       bloqueioConfirmado: [],
       precisaPergunta: [],
+      erroLeitura: [],
       foraDoEscopo: [],
     });
   });
