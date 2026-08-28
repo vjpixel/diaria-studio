@@ -43,9 +43,14 @@
  *      "Sync de código no início de cada edição" continua valendo), mas com
  *      mensagem ERROR (não WARN) para que o consumidor (CLI, task-runner,
  *      orchestrator) saiba que este warning é mais sério que um "pop falhou"
- *      comum e decida se quer agir (ex: halt banner) no nível apropriado —
- *      este módulo em si nunca chama `render-halt-banner.ts` (isso é decisão
- *      de stage/orchestrator, fora do escopo fail-soft deste helper).
+ *      comum. **Hoje isso é só uma distinção de TEXTO** — nenhum consumidor
+ *      ramifica comportamento nela ainda: `scripts/sync-code.ts` imprime um
+ *      2º banner no stderr pra este outcome específico, mas segue com
+ *      `process.exit(0)` incondicional igual a qualquer outro outcome
+ *      fail-soft; este módulo em si nunca chama `render-halt-banner.ts`.
+ *      Endurecer esse caminho (ex: halt banner de verdade, retry bloqueante)
+ *      fica para quem quiser mudar esse comportamento fail-soft depois, com
+ *      decisão explícita — não é o que este outcome faz por si só hoje.
  *   3a. #3411: `git stash --include-untracked` não é atômico — cria o(s) commit(s)
  *      de stash e SÓ DEPOIS remove os arquivos não-rastreados (clean-equivalente).
  *      Se essa remoção falhar parcialmente (ex: Permission denied), o comando sai
@@ -685,10 +690,14 @@ export function defaultSpawn(cmd: string, args: string[], timeoutMs: number = GI
 
 /**
  * Códigos do `git status --porcelain` (`git help status`, seção "Unmerged")
- * que sinalizam um caminho com conflito de merge NÃO resolvido — os 2
- * caracteres de status são ambos de "lado" (não um espaço), o formato que a
- * porcelain reserva especificamente para unmerged. #6668: usado para
- * detectar quando um `git stash pop` deixou marcador de conflito literal
+ * que sinalizam um caminho com conflito de merge NÃO resolvido. Não é
+ * "os 2 caracteres são ambos non-space" (isso também casaria `MM`/`AM`/`RM`,
+ * que NÃO são conflito) — é a lista EXPLÍCITA e fechada dos 7 pares que o
+ * git reserva pra estado unmerged (`git help status`, seção "Unmerged"):
+ * ambos os lados do índice apontam pra um blob de conflito (`UU`), ou o
+ * caminho foi tocado por AMBOS os lados de um add/delete divergente
+ * (`AA`/`DD`/`AU`/`UA`/`DU`/`UD`). #6668: usado para detectar quando um
+ * `git stash pop` deixou marcador de conflito literal
  * (`<<<<<<<`/`=======`/`>>>>>>>`) dentro de um arquivo VERSIONADO — ver
  * `findUnmergedPaths()` abaixo e o item 3d do docstring no topo do arquivo.
  */
@@ -702,11 +711,23 @@ const UNMERGED_STATUS_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]
  *
  * Fail-soft: se o próprio `git status` falhar, retorna `[]` (não assume
  * conflito por ausência de sinal — o resto do módulo já trata falha de
- * `git status` como "tratar como dirty", que não se aplica aqui).
+ * `git status` como "tratar como dirty", que não se aplica aqui). Review
+ * consolidado do #6668 apontou que esse fail-soft era SILENCIOSO — a checagem
+ * de unmerged falhando de novo cai de volta a confiar só no exit code do
+ * pop, exatamente o furo que esta issue existe pra fechar. `warnings` agora é
+ * injetável (opcional) pra registrar esse caso específico sem propagar
+ * exceção nem mudar o tipo de retorno.
  */
-function findUnmergedPaths(spawn: SpawnFn): string[] {
+function findUnmergedPaths(spawn: SpawnFn, warnings?: string[]): string[] {
   const res = spawn("git", ["status", "--porcelain"]);
-  if (res.status !== 0) return [];
+  if (res.status !== 0) {
+    warnings?.push(
+      `[git-sync] WARN: git status --porcelain (checagem de unmerged pós-stash-pop, #6668) falhou ` +
+        `(exit ${res.status}) — não foi possível confirmar se o stash pop deixou arquivo em conflito no ` +
+        `disco. Caindo de volta a confiar só no exit code do pop. Stderr: ${res.stderr.trim() || "(vazio)"}`,
+    );
+    return [];
+  }
   return res.stdout
     .split("\n")
     .filter((line) => line.length > 3 && UNMERGED_STATUS_CODES.has(line.slice(0, 2)))
@@ -958,16 +979,32 @@ function syncCodeLocked(spawn: SpawnFn): Omit<GitSyncResult, "up_to_date" | "com
       // por refs/stash — outra sessão lendo esse arquivo o trataria como
       // íntegro. Outcome distinto ("stash_pop_conflict"), mensagem ERROR (não
       // WARN) — ainda fail-soft (proceed: true), nunca bloqueia a edição.
-      const unmergedPaths = findUnmergedPaths(spawn);
+      //
+      // #6668 review consolidado: a distinção ERROR/WARN aqui é só de TEXTO —
+      // nenhum consumidor (`sync-code.ts`, orchestrator) ramifica comportamento
+      // por ela hoje; ambos seguem com `process.exit(0)`/fail-soft incondicional
+      // (ver `scripts/sync-code.ts`, que hoje só imprime um banner extra no
+      // stderr pra este outcome). Endurecer isso (ex: halt banner de verdade)
+      // seria mudar o comportamento fail-soft documentado no CLAUDE.md — fica
+      // para quem for endurecer esse caminho depois, com decisão explícita.
+      const unmergedPaths = findUnmergedPaths(spawn, warnings);
       if (unmergedPaths.length > 0) {
         const ffFailed = pullRes.status !== 0;
+        // #6668 review consolidado: só afirmar "stash preservado" quando o pop
+        // de fato falhou — um pop com exit 0 (o ramo defensivo, não observado
+        // na prática) já teria dropado o stash normalmente por semântica padrão
+        // do git, então a orientação "não fazer stash drop" seria enganosa
+        // nesse sub-caso.
+        const stashStateNote =
+          popRes.status !== 0
+            ? " Stash preservado (NÃO fazer 'git stash drop') — resolva manualmente ('git status', 'git diff') antes de descartar."
+            : " Pop retornou exit 0 (caso defensivo, não deveria deixar unmerged) — estado do stash em refs/stash não confirmado por este guard; cheque 'git stash list' antes de qualquer ação.";
         const msg =
           `[git-sync] ERROR: git stash pop deixou ${unmergedPaths.length} arquivo(s) VERSIONADO(S) ` +
           `com conflito NÃO-RESOLVIDO (marcadores <<<<<<</=======/>>>>>>> literais no disco): ` +
           `${unmergedPaths.join(", ")}. Diferente de um 'pop falhou' comum — o(s) arquivo(s) ficaram ` +
-          `sintaticamente quebrados e ainda referenciados por 'refs/stash'; outra sessão lendo esse(s) ` +
-          `arquivo(s) pode tratá-los como íntegros (#6668). Stash preservado (NÃO fazer 'git stash drop') ` +
-          `— resolva manualmente ('git status', 'git diff') antes de descartar.` +
+          `sintaticamente quebrados; outra sessão lendo esse(s) arquivo(s) pode tratá-los como íntegros ` +
+          `(#6668).${stashStateNote}` +
           (ffFailed
             ? ` ff (merge --ff-only) também falhou (divergência) — stderr: ${pullRes.stderr.trim() || "(vazio)"}.`
             : "") +

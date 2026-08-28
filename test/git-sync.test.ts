@@ -367,6 +367,10 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
     const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_pop_conflict");
     assert.equal(r.proceed, true);
+    // #6668 review consolidado: no ramo defensivo (pop exit 0), NÃO afirmar
+    // "stash preservado" — um pop bem-sucedido já teria dropado o stash por
+    // semântica padrão do git; a mensagem antiga estaria errada aqui.
+    assert.doesNotMatch(r.message, /Stash preservado \(N[ÃA]O fazer/);
   });
 
   it("ff também falhou (divergência) E pop deixou UU → 'stash_pop_conflict' (não 'ff_failed')", () => {
@@ -392,6 +396,39 @@ describe("git-sync — #6668: stash pop deixa marcador de conflito (UU) no disco
     const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_pop_conflict");
     assert.match(r.message, /ff.*falhou|divergência/i);
+  });
+
+  it("review consolidado #6668: git status --porcelain pós-pop FALHA → warning explícito (não silêncio), cai de volta pro exit code do pop", () => {
+    // A checagem de unmerged em si pode falhar (índice corrompido, permissão).
+    // Antes desta correção, `findUnmergedPaths` engolia isso em silêncio —
+    // exatamente o furo que o #6668 original expôs (confiar só no exit code
+    // sem trilha nenhuma de warning quando a checagem não roda).
+    let statusCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git status --porcelain") {
+        statusCalls++;
+        // 1ª chamada (dirty check) OK; 2ª chamada (pós-pop, #6668) falha.
+        return statusCalls === 1 ? ok(" M arquivo.txt") : fail("fatal: unable to read index file", 1);
+      }
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    // Sem conseguir confirmar unmerged, cai de volta pro outcome derivado do
+    // exit code do pop (comportamento pré-#6668, preservado como fallback).
+    assert.equal(r.outcome, "stash_pop_failed");
+    assert.ok(
+      r.warnings.some((w) => /status --porcelain.*falhou|não foi possível confirmar/i.test(w)),
+      "deve haver um warning explícito avisando que a checagem de unmerged não pôde rodar — " +
+        `warnings recebidos: ${JSON.stringify(r.warnings)}`,
+    );
   });
 
   it("stash pop sem UU (caso comum, já coberto acima) não regride — 'synced_stashed' continua saindo", () => {

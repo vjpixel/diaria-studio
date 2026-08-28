@@ -94,8 +94,13 @@ describe("#6668 varredura repo-wide: nenhum .md rastreado pelo git contém marca
       let content: string;
       try {
         content = readFileSync(absPath, "utf8");
-      } catch {
-        continue; // arquivo removido no working tree (D no index) ou ilegível — fora do escopo deste teste
+      } catch (err) {
+        // Só ENOENT é esperado aqui (arquivo removido no working tree, `D` no
+        // index de `git ls-files` — fora do escopo deste teste). Qualquer
+        // outro erro (permissão, I/O) é sinal de que a varredura não rodou
+        // completa — não deve ser engolido em silêncio.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw err;
       }
       const markers: string[] = [];
       if (CONFLICT_START_RE.test(content)) markers.push("<<<<<<< ");

@@ -70,7 +70,7 @@ if (result.outcome === "stash_pop_conflict") {
       `   quebrado e OUTRA SESSÃO pode ler esse arquivo como se estivesse íntegro.\n` +
       `   A edição vai continuar (fail-soft), mas isto NÃO é um "pop falhou" comum —\n` +
       `   resolva manualmente antes que outra sessão leia o arquivo quebrado:\n` +
-      `   git status --porcelain | grep '^UU' ; git diff ; resolva os marcadores ; git add.\n\n`,
+      `   git status --porcelain | grep -E '^(DD|AU|UD|UA|DU|AA|UU)' ; git diff ; resolva os marcadores ; git add.\n\n`,
   );
 }
 
