@@ -31,8 +31,38 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
 const SKILL_PATH = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
 
+/**
+ * Remove comentários shell (`# ...`) linha a linha, respeitando aspas — sem
+ * isso, um `)` dentro de um comentário inline (comum neste repo: referências
+ * a issue tipo `# primário (#6663)`) trunca o parse de MODELS_DEFAULT antes
+ * do fechamento real do array, caso a declaração algum dia vire multi-linha
+ * com comentário por item (achado do fleet review da PR #6671).
+ */
+function stripShellComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => {
+      let quote: string | null = null;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) {
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === "#") return line.slice(0, i);
+      }
+      return line;
+    })
+    .join("\n");
+}
+
 function parseModelsDefault(wrapperSource: string): string[] {
-  const match = wrapperSource.match(/MODELS_DEFAULT=\(([^)]*)\)/);
+  const cleaned = stripShellComments(wrapperSource);
+  const match = cleaned.match(/MODELS_DEFAULT=\(([^)]*)\)/);
   assert.ok(
     match,
     "MODELS_DEFAULT=(...) não encontrado em hermes/scripts/claude-openrouter.sh — " +
@@ -68,6 +98,10 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
 
   it("MODELS_DEFAULT tem pelo menos 1 modelo :free e o fallback pago glm-5.3-flash por último", () => {
     assert.ok(models.length >= 2, "cadeia degenerada a 1 único modelo — sem fallback.");
+    assert.ok(
+      models.slice(0, -1).some((m) => m.endsWith(":free")),
+      "nenhum dos modelos antes do fallback termina em :free — a cadeia deveria priorizar free tier.",
+    );
     assert.equal(
       models[models.length - 1],
       "z-ai/glm-5.3-flash",
@@ -87,6 +121,27 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       );
     });
   }
+
+  it("a ORDEM dos slugs na tabela do SKILL.md corresponde à ordem em MODELS_DEFAULT", () => {
+    // Não basta cada slug aparecer (checagem acima) — a mudança REAL que o
+    // #6663 faz no wrapper é justamente uma REORDENAÇÃO primário/fallback, e
+    // uma checagem só de presença (substring) fica verde mesmo se a tabela
+    // listar os mesmos 3 slugs fora de ordem. Confirmado ao vivo pelo fleet
+    // review da PR: trocar a ordem na tabela (sem tocar o wrapper) mantinha
+    // as assertions de presença passando.
+    const positions = models.map((slug) => tableRow.indexOf(slug));
+    for (const pos of positions) {
+      assert.notEqual(pos, -1, "slug ausente da tabela — já coberto pela checagem de presença acima.");
+    }
+    for (let i = 1; i < positions.length; i++) {
+      assert.ok(
+        positions[i] > positions[i - 1],
+        `ordem da tabela do SKILL.md diverge de MODELS_DEFAULT: "${models[i - 1]}" (pos ${positions[i - 1]}) ` +
+          `deveria vir ANTES de "${models[i]}" (pos ${positions[i]}) na linha da tabela, mas não vem. ` +
+          `Linha atual: "${tableRow.trim()}"`,
+      );
+    }
+  });
 
   it("a tabela do SKILL.md não lista nenhum slug abreviado (ex: 'glm-5.2:free' sem o prefixo 'z-ai/')", () => {
     // Regra do #6663: slugs abreviados dificultam casar doc com código —
