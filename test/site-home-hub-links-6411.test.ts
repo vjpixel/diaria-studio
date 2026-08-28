@@ -2,7 +2,7 @@
  * test/site-home-hub-links-6411.test.ts (#6411)
  *
  * Trava o bloco "Por tema" da home contra o eixo `hub-link-missing` do
- * alarme `Diaria-Beehiiv-Home-Meta-Check`.
+ * alarme `Diaria-Home-Meta-Check`.
  *
  * O teste central aqui NÃO conta links nem casa strings: ele roda o PRÓPRIO
  * detector do alarme (`detectMissingHubLinks`) sobre o HTML que o gerador
@@ -28,7 +28,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildIndexHtml } from "../scripts/lib/site-home-page.ts";
-import { detectMissingHubLinks } from "../scripts/lib/beehiiv-home-meta-check.ts";
+import { detectMissingHubLinks } from "../scripts/lib/home-meta-check.ts";
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

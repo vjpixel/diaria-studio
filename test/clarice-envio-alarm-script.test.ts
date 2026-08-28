@@ -9,7 +9,7 @@
  *   - `listTodayEnvioReports` — glob + mtime, sobre um diretório temporário
  *     com arquivos `envio-{aammdd}*.md` reais (não mockado — é só fs local).
  *   - `loadState`/`saveState` — roundtrip de idempotência, mesmo molde de
- *     `test/beehiiv-home-meta-check-script.test.ts`.
+ *     `test/home-meta-check-script.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

@@ -117,7 +117,7 @@ const LOG_PREFIX = "[hub-staleness-check]";
 const DEFAULT_THRESHOLD_DAYS = 3;
 /** #6151: task roda diária (09:30) — 2 execuções limpas consecutivas = 48h
  * sem o achado antes de fechar a issue automaticamente, mesmo valor de
- * `hub-drift-check.ts`/`beehiiv-home-meta-check.ts` pra cadência diária. */
+ * `hub-drift-check.ts`/`home-meta-check.ts` pra cadência diária. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 /** Lê os `{slug}-sources.generated.json` commitados dos hubs registrados em
@@ -184,7 +184,7 @@ export function saveState(state: PersistedState, statePath: string = STATE_PATH)
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado, #6151) ──────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// hub-drift-check.ts/beehiiv-home-meta-check.ts: idempotência do E-MAIL
+// hub-drift-check.ts/home-meta-check.ts: idempotência do E-MAIL
 // (acima) e tracking de ISSUE por achado são preocupações independentes.
 
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
 
   // #6151 — reconcilia issue por entrada vencida ANTES de montar o e-mail (o
   // e-mail cita a issue de cada achado pendente), mesmo padrão de
-  // hub-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
+  // hub-drift-check.ts/home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   // #6254 — 1 finding POR HUB (agrupado via groupOverdueByHub), não 1 por
   // entrada — a versão anterior gerava 1 issue por (hub × edição).

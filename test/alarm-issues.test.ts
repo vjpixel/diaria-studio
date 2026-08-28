@@ -3,7 +3,7 @@
  *
  * Regressão pura + I/O injetado pra `scripts/lib/alarm-issues.ts` — nenhum
  * teste aqui chama `gh` de verdade (mock via `GhRunFn` injetável, mesmo
- * padrão de `test/beehiiv-home-meta-check-script.test.ts`). Cobre a lista
+ * padrão de `test/home-meta-check-script.test.ts`). Cobre a lista
  * de testes pedida pela issue #5112:
  *
  *   - mesmo fingerprint em 2 execuções -> 1 issue só (2ª reusa)
@@ -12,7 +12,7 @@
  *   - achado some 2 execuções -> fecha
  *   - falha na criação -> e-mail teria o motivo, cursor não avança
  *   - corpo do e-mail contém a URL da issue (via wiring de
- *     beehiiv-home-meta-check, testado em test/beehiiv-home-meta-check.test.ts)
+ *     home-meta-check, testado em test/home-meta-check.test.ts)
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

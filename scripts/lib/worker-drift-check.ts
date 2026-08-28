@@ -388,7 +388,7 @@ export function formatDuration(ms: number): string {
 /** Pura — fingerprint estável do achado de UM worker (#5339: chave usada
  * tanto pelo `AlarmFinding.fingerprint` quanto pelo `Map` de `issueRefs`
  * repassado a `buildWorkerDriftAlarmEmail` — mesmo padrão de
- * `homeMetaFindingIssueKey` em `beehiiv-home-meta-check.ts`, "check:message").
+ * `homeMetaFindingIssueKey` em `home-meta-check.ts`, "check:message").
  * Estável até o `message` mudar (novo commit ou novo deploy) — não inclui
  * `driftMs`, que muda a cada execução mesmo sem nada de novo acontecer. */
 export function workerDriftFindingKey(r: Pick<WorkerDriftResult, "workerName" | "message">): string {

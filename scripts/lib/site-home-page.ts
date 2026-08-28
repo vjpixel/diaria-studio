@@ -210,7 +210,7 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
 /**
  * Bloco "Por tema" da home (#6411) — um link por hub publicado, derivado de
  * `HUB_META` (a MESMA fonte que o eixo `hub-link-missing` de
- * `scripts/lib/beehiiv-home-meta-check.ts` cruza contra o HTML da home).
+ * `scripts/lib/home-meta-check.ts` cruza contra o HTML da home).
  *
  * Derivar da fonte, em vez de listar os 7 slugs à mão aqui, é o ponto: o
  * "4º passo ao publicar um hub novo" (ver a docstring de

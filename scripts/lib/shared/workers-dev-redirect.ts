@@ -13,7 +13,7 @@
  * cross-host já aponta certo (mitiga duplicata no índice), mas não evita o
  * CRAWL nem impede que alguém copie/compartilhe o link errado — é justamente
  * pra esse host que a home da publicação estava mandando o leitor até o
- * #5099 corrigir (ver `scripts/lib/beehiiv-home-meta-check.ts`).
+ * #5099 corrigir (ver `scripts/lib/home-meta-check.ts`).
  *
  * Cada Worker público sem passivo de link-legado (`arquivo`/`cursos`/
  * `livros`/`artigo-mensal` — ver `workers/{arquivo,cursos,livros,artigo-mensal}/src/index.ts`)

@@ -21,7 +21,7 @@
  *   npx tsx scripts/probe-beehiiv-subscribe-widget.ts --json
  *
  * GET público simples, sem autenticação, sem API/MCP Beehiiv — mesmo padrão
- * de `scripts/beehiiv-home-meta-check.ts`.
+ * de `scripts/home-meta-check.ts`.
  */
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { DEFAULT_HOME_URL } from "./lib/preflight-utm-arms.ts";

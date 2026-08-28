@@ -1,7 +1,7 @@
 /**
- * test/beehiiv-home-meta-check.test.ts (#4557, #5099, #5257)
+ * test/home-meta-check.test.ts (#4557, #5099, #5257)
  *
- * Regressão pura pra `scripts/lib/beehiiv-home-meta-check.ts` — extração de
+ * Regressão pura pra `scripts/lib/home-meta-check.ts` — extração de
  * og:title/og:description/meta description + os 3 eixos de drift da issue
  * #4557 (og:title sem a marca oficial / grafia legada, self-links
  * `http://diar.ia.br`, rótulos residuais em inglês) + o 4º eixo do #5099
@@ -31,7 +31,7 @@ import {
   shouldAlarmHomeMetaDrift,
   buildHomeMetaDriftAlarmEmail,
   type HomeMetaDriftFinding,
-} from "../scripts/lib/beehiiv-home-meta-check.ts";
+} from "../scripts/lib/home-meta-check.ts";
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -209,7 +209,21 @@ describe("detectEnglishLabels (#4557, #5137)", () => {
 
   it("detecta 'Sign Up', 'Login' e 'N min read' juntos", () => {
     const found = detectEnglishLabels(ENGLISH_LABELS_HTML);
-    assert.deepEqual(found.sort(), ['"Sign Up"', '"N min read"', '"Login"'].sort());
+    assert.deepEqual(found.sort(), ['"Sign Up"', '"N min read"', '"Login"/"Log in"'].sort());
+  });
+
+  it("#6498: eixo virou guard genérico — detecta rótulos de UI em inglês além dos 3 originais do tema Beehiiv", () => {
+    assert.deepEqual(detectEnglishLabels("<button>Subscribe</button>"), ['"Subscribe"']);
+    assert.deepEqual(detectEnglishLabels("<a>Read more</a>"), ['"Read more"']);
+    assert.deepEqual(detectEnglishLabels("<a>Learn more</a>"), ['"Learn more"']);
+    assert.deepEqual(detectEnglishLabels("<button>Get started</button>"), ['"Get started"']);
+    assert.deepEqual(detectEnglishLabels("<a>Click here</a>"), ['"Click here"']);
+    assert.deepEqual(detectEnglishLabels("<p>Loading...</p>"), ['"Loading..."']);
+    assert.deepEqual(detectEnglishLabels("<h1>Page not found</h1>"), ['"Page not found"']);
+    assert.deepEqual(detectEnglishLabels("<a>Privacy Policy</a>"), ['"Privacy Policy"']);
+    assert.deepEqual(detectEnglishLabels("<a>Terms of Service</a>"), ['"Terms of Service"']);
+    assert.deepEqual(detectEnglishLabels("<a>Sign in</a>"), ['"Sign in"']);
+    assert.deepEqual(detectEnglishLabels("<a>Log in</a>"), ['"Login"/"Log in"']);
   });
 
   it("'N min read' casa qualquer inteiro, case-insensitive", () => {

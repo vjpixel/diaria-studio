@@ -55,6 +55,6 @@ systemctl --user enable --now diaria-clarice-envio-alarm.timer
 
 Isso registra a task `Diaria-Clarice-Envio-Alarm` (diária, 20:30 BRT). Idempotente — re-rodar o `setup-systemd-timers.ts` regenera os units sem duplicar.
 
-**Por que nunca teve `.ps1` de setup:** mesmo padrão de `Diaria-Beehiiv-Home-Meta-Check` (#5005, 1ª task registrada depois do cutover pra systemd, épica #4798) — nasceu sem contraparte Windows/Task Scheduler, por decisão explícita de não criar mais `.ps1` como via de execução real. Os `.ps1` das demais tasks (que tinham nascido antes do cutover) foram removidos no #5115.
+**Por que nunca teve `.ps1` de setup:** mesmo padrão de `Diaria-Home-Meta-Check` (#5005, 1ª task registrada depois do cutover pra systemd, épica #4798) — nasceu sem contraparte Windows/Task Scheduler, por decisão explícita de não criar mais `.ps1` como via de execução real. Os `.ps1` das demais tasks (que tinham nascido antes do cutover) foram removidos no #5115.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem `data/.credentials.json` real; e a regra de dispatch overnight #738/#3453 proíbe qualquer chamada de rede real nesta sessão) — validado só via testes com a lógica pura + I/O de arquivo local em diretório temporário (`test/clarice-envio-alarm.test.ts`, `test/clarice-envio-alarm-script.test.ts`) e via `test/scheduled-tasks.test.ts` (estrutura do registro), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4750/#4910/#5005.

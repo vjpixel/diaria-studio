@@ -1,7 +1,7 @@
 /**
- * test/beehiiv-home-meta-check-script.test.ts (#4557)
+ * test/home-meta-check-script.test.ts (#4557)
  *
- * Cobre as partes de I/O de `scripts/beehiiv-home-meta-check.ts` que não
+ * Cobre as partes de I/O de `scripts/home-meta-check.ts` que não
  * exigem rede real nem `data/.credentials.json` (guard de #573/CLAUDE.md —
  * sem credencial Gmail real neste worktree; a regra de dispatch overnight
  * também proíbe qualquer chamada de rede real nesta sessão, mesmo sendo GET
@@ -26,14 +26,14 @@ import {
   checkLatestPostPage,
   ALARM_ALLOWLIST,
   toAlarmFinding,
-} from "../scripts/beehiiv-home-meta-check.ts";
+} from "../scripts/home-meta-check.ts";
 import {
   emptyHomeMetaAlarmState,
   advanceHomeMetaAlarmState,
   extractHomeMeta,
   evaluateHomeMetaDrift,
   homeMetaFindingIssueKey,
-} from "../scripts/lib/beehiiv-home-meta-check.ts";
+} from "../scripts/lib/home-meta-check.ts";
 import { emptyAlarmIssuesState, planAlarmReconciliation, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 describe("fetchHomeHtml (#4557) — fetch mockado, sem rede real", () => {
@@ -80,7 +80,7 @@ describe("fetchHomeHtml (#4557) — fetch mockado, sem rede real", () => {
 describe("loadState / saveState (#4557, I/O)", () => {
   let tmpDir: string;
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "beehiiv-home-meta-check-state-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "home-meta-check-state-"));
   });
   afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
 
@@ -113,7 +113,7 @@ describe("loadState / saveState (#4557, I/O)", () => {
 describe("loadAlarmIssuesState / saveAlarmIssuesState (#5112, I/O)", () => {
   let tmpDir: string;
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "beehiiv-home-meta-check-alarm-issues-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "home-meta-check-alarm-issues-"));
   });
   afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
 
@@ -241,8 +241,8 @@ describe("toAlarmFinding — family (#5558)", () => {
     assert.equal(finding.family, "estado");
   });
 
-  it("declara group 'beehiiv-home-meta-check' (#6572) — opt-in no mecanismo genérico de agrupamento na estreia", () => {
+  it("declara group 'home-meta-check' (#6572) — opt-in no mecanismo genérico de agrupamento na estreia", () => {
     const finding = toAlarmFinding({ check: "og-title-brand", message: "og:title diverge do H1" });
-    assert.equal(finding.group, "beehiiv-home-meta-check");
+    assert.equal(finding.group, "home-meta-check");
   });
 });

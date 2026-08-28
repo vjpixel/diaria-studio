@@ -50,7 +50,7 @@ export type WeekDay = "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday"
  * Cadência declarativa de uma task. Espelha os 3 padrões usados pelos
  * `setup-*-schedule.ps1` legados do repo (removidos no #5115), mais `monthly`
  * (#5128/#5130 — 1ª task deste registro sem contraparte Windows de
- * propósito, mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` #5005: nasceu
+ * propósito, mesmo caso de `Diaria-Home-Meta-Check` #5005: nasceu
  * depois do cutover systemd, então não precisou de tradução PowerShell):
  *   - `daily`   → `OnCalendar=*-*-* HH:MM:00` (systemd)
  *   - `weekly`  → `OnCalendar=D *-*-* HH:MM:00` (systemd)
@@ -177,10 +177,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4485 item 2",
   },
   {
-    name: "Diaria-Beehiiv-Home-Meta-Check",
-    description: "smoke-test dos eixos de drift da home Beehiiv (og:title, self-links http, rotulos EN, host legado, porta na URL)",
-    steps: [{ key: "check", script: "scripts/beehiiv-home-meta-check.ts" }],
-    logPath: "beehiiv-home-meta-check/.meta-check.log",
+    name: "Diaria-Home-Meta-Check",
+    description: "smoke-test dos eixos de drift da home diar.ia.br (og:title, self-links http, rotulos EN, host legado, porta na URL)",
+    steps: [{ key: "check", script: "scripts/home-meta-check.ts" }],
+    logPath: "home-meta-check/.meta-check.log",
     // Diária 09:35 (#5113, decisão do editor 260812 — mudou de "a cada 6h").
     // O argumento não é custo (4 GETs numa home pública é irrelevante) — é
     // que latência de detecção ABAIXO da latência de resposta é
@@ -252,7 +252,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // decisao 2026-06-19), sem colisao com nenhuma outra daily do registro
     // (todas as outras dailies ficam entre 05:30 e 17:00).
     schedule: { kind: "daily", hour: 21, minute: 0 },
-    // Mesmo padrao de Diaria-Beehiiv-Home-Meta-Check (#5005): task
+    // Mesmo padrao de Diaria-Home-Meta-Check (#5005): task
     // registrada depois do cutover systemd (epica #4798) -- o antigo
     // `DiariaCohortsCrawl` do Windows nunca foi migrado pra este registro --
     // era via `docs/cohorts-schedule.md` diretamente, apontando pro v1, e
@@ -472,7 +472,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (Diaria-Geo-Citation-Monitor 07:00, Diaria-Geo-Citation-Staleness-Alarm
     // 10:30) — sem colisão de horário com nenhum dos dois.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 22, minute: 0 },
-    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm`
+    // Mesmo caso de `Diaria-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm`
     // (#5005/#5058): task registrada depois do cutover systemd (épica #4798), sem
     // contraparte Windows/.ps1 — e nenhuma tarefa `Diaria-*` deve rodar no
     // Windows de qualquer forma (decisão do editor 260811, #5074).
@@ -484,7 +484,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],
     logPath: "hub-drift-check/.drift-check.log",
     // Diária 10:00 (#5113, decisão do editor 260812 — mudou de "a cada 6h").
-    // Mesmo raciocínio de Diaria-Beehiiv-Home-Meta-Check acima: o conserto
+    // Mesmo raciocínio de Diaria-Home-Meta-Check acima: o conserto
     // (deploy do Worker/config do hub) é ação manual do editor de manhã —
     // latência de detecção abaixo da latência de resposta é desperdiçada. O
     // 6h nunca foi escolhido pra este check em particular, foi herdado por
@@ -547,7 +547,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e Diaria-Apoios-Diff-Alarm (09:45) — sem colisão com nenhuma outra
     // daily do registro.
     schedule: { kind: "daily", hour: 9, minute: 30 },
-    // Mesmo caso de Diaria-Beehiiv-Home-Meta-Check/Diaria-Clarice-Envio-Alarm
+    // Mesmo caso de Diaria-Home-Meta-Check/Diaria-Clarice-Envio-Alarm
     // (#5005/#5058): 1ª execução registrada depois do cutover systemd (épica #4798).
     issue: "#5123, #4924",
   },
@@ -560,7 +560,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Diária basta — mesmo racional de Diaria-Hub-Staleness-Check (custo é
     // só ler corpus local + regen determinística; só o e-mail de alarme, se
     // houver pendência vencida, faz I/O de rede). Horário: 09:40, entre
-    // Diaria-Beehiiv-Home-Meta-Check (09:35) e Diaria-Apoios-Diff-Alarm
+    // Diaria-Home-Meta-Check (09:35) e Diaria-Apoios-Diff-Alarm
     // (09:45) — sem colisão com nenhuma outra daily do registro.
     schedule: { kind: "daily", hour: 9, minute: 40 },
     // #5125: condição inegociável do editor pra publicar a 1ª página de
@@ -828,7 +828,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; sem sentido checar relatorio de uma rodada que nunca roda nesta maquina.",
     },
-    // Mesmo padrao de Diaria-Beehiiv-Home-Meta-Check (#5005, 1a task
+    // Mesmo padrao de Diaria-Home-Meta-Check (#5005, 1a task
     // registrada depois do cutover systemd/epica #4798). Via de execucao
     // real: par `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
     issue: "#5058",
@@ -974,7 +974,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // ecoá-los num custom field do CREATE. Está registrado como follow-up na
     // #5229; este snapshot é a rede de proteção enquanto isso não existe.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 },
-    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
+    // Mesmo caso de `Diaria-Home-Meta-Check` (#5005): task registrada
     // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
     // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
     issue: "#5229",
@@ -1032,7 +1032,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // pra "1x por mês" e cai dentro do intervalo 1-28 válido pra `monthly`
     // (ver docstring de `ScheduledTaskSchedule`).
     schedule: { kind: "monthly", day: 1, hour: 9, minute: 0 },
-    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task
+    // Mesmo caso de `Diaria-Home-Meta-Check` (#5005): task
     // registrada depois do cutover systemd (épica #4798). Não roda no
     // Windows por princípio (nenhuma tarefa `Diaria-*` deve, #5074) — mesmo
     // que rodasse, `data/` (OneDrive) é onde o output
@@ -1052,7 +1052,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // declarados é de semanas — weekly basta (#5317, sugestão da própria
     // issue).
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 11, minute: 0 },
-    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
+    // Mesmo caso de `Diaria-Home-Meta-Check` (#5005): task registrada
     // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
     // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
     issue: "#5317",
@@ -1183,7 +1183,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // passado havia horas, evitando a borda descrita naquele docstring.
     // Horario dentro do cluster matinal de checks/syncs (09:00-09:45 ja
     // ocupados por Clarice-Novos/Opens-Catchup-Alarm/Hub-Staleness-Check/
-    // Beehiiv-Home-Meta-Check/Entity-Pages-Regen/Apoios-Diff-Alarm -- ver
+    // Home-Meta-Check/Entity-Pages-Regen/Apoios-Diff-Alarm -- ver
     // grep de `kind: "daily"` neste arquivo), sem colidir com nenhum:
     // 09:50 fica livre, e retoma o horario ja proposto (nao armado) pro
     // #5502 Parte C mais acima neste arquivo -- mesma janela, escopo

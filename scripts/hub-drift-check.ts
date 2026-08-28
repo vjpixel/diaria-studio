@@ -83,7 +83,7 @@ const LOG_PREFIX = "[hub-drift-check]";
 const FETCH_TIMEOUT_MS = 15_000;
 /** #5339: task roda diária (10:00) — 2 execuções limpas consecutivas = 48h
  * sem o achado antes de fechar a issue automaticamente, mesmo valor de
- * `beehiiv-home-meta-check.ts`/`on-hold-vencimento-alarm.ts`/
+ * `home-meta-check.ts`/`on-hold-vencimento-alarm.ts`/
  * `worker-drift-check.ts` pra cadência diária. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
@@ -111,7 +111,7 @@ export function saveState(state: HubDriftAlarmState, statePath: string = STATE_P
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// beehiiv-home-meta-check.ts/worker-drift-check.ts: idempotência do E-MAIL
+// home-meta-check.ts/worker-drift-check.ts: idempotência do E-MAIL
 // (acima) e tracking de ISSUE por achado são preocupações independentes.
 
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
 
   // #5339 — reconcilia issue por hub quebrado ANTES de montar o e-mail (o
   // e-mail cita a issue de cada achado pendente), mesmo padrão de
-  // worker-drift-check.ts/beehiiv-home-meta-check.ts. Roda toda execução
+  // worker-drift-check.ts/home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const brokenResults = results.filter((r) => r.status === "broken" || r.status === "error");
   const alarmFindings = brokenResults.map(toAlarmFinding);

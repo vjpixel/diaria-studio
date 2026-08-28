@@ -111,7 +111,7 @@ const STATE_PATH = resolve(ROOT, "data", "worker-drift-check", "state.json");
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "worker-drift-check", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[worker-drift-check]";
-/** #5339: mesmo valor de CLOSE_ALARM_ISSUE_AFTER_RUNS de beehiiv-home-meta-check.ts
+/** #5339: mesmo valor de CLOSE_ALARM_ISSUE_AFTER_RUNS de home-meta-check.ts
  * (task roda a cada 6h — 2 execuções limpas consecutivas = 12h sem o achado
  * antes de fechar a issue automaticamente). */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
@@ -153,7 +153,7 @@ export function saveState(state: WorkerDriftAlarmState, statePath: string = STAT
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
 // Arquivo separado de STATE_PATH de propósito — mesmo racional de
-// beehiiv-home-meta-check.ts: idempotência do E-MAIL (acima) e tracking de
+// home-meta-check.ts: idempotência do E-MAIL (acima) e tracking de
 // ISSUE por achado são preocupações independentes.
 
 export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
@@ -462,7 +462,7 @@ async function main(): Promise<void> {
 
   // #5339 — reconcilia issue por worker defasado ANTES de montar o e-mail
   // (o e-mail cita a issue de cada achado pendente), mesmo padrão de
-  // beehiiv-home-meta-check.ts. Roda toda execução não-dry-run, independente
+  // home-meta-check.ts. Roda toda execução não-dry-run, independente
   // de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "never_deployed");
   const alarmFindings = driftedResults.map(toAlarmFinding);
