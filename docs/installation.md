@@ -291,6 +291,7 @@ Acompanhar cada gate e validar que funciona. Se falhar em algum stage, ver `/dia
 
 ### `npm test` falha em CI mas passa local
 - Provável bug em `test/**/*.test.ts` ou script importado. Abrir issue com output de `npm test -- --reporter=spec`.
+- **`ERR_MODULE_NOT_FOUND` apontando pra um `.test.ts` que existe no commit (#6495):** `npm test` roda via `scripts/run-tests.ts` (não `node --import tsx --test` cru) — enumera os arquivos de forma síncrona e determinística e passa como lista explícita em batches, eliminando dependência da descoberta assíncrona embutida do runner nativo (a causa raiz exata de #6495 não foi confirmada com certeza — ver docstring do módulo). Se esse erro reaparecer mesmo assim, é sinal de que a mitigação não cobriu a causa real; reabrir a issue com o log completo.
 
 ---
 

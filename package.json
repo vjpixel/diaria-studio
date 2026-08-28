@@ -34,7 +34,7 @@
     "typecheck-ratchet": "tsx scripts/typecheck-ratchet.ts",
     "generate-worker-tokens": "tsx scripts/generate-worker-tokens.ts",
     "pretest": "tsx scripts/generate-worker-tokens.ts && tsx scripts/assert-test-discovery.ts",
-    "test": "node --import tsx --test",
+    "test": "tsx scripts/run-tests.ts",
     "check-cursos-links": "tsx scripts/check-cursos-links.ts",
     "studio": "tsx scripts/studio-ui/server.ts",
     "sync-env": "tsx scripts/sync-env.ts"
