@@ -86,13 +86,24 @@ export function computeGmailRejectedEmails(
  * proposta — uma proposta recusada pelo gate, ou nunca empurrada porque a
  * invocação foi `--dry-run`, não faz a rampa crescer). `null` = nenhuma onda
  * pushada ainda → usa `WARMUP_INITIAL_WAVE_SIZE`.
+ *
+ * `lastWaveSize <= 0` é tratado como equivalente a `null` (#6566) — uma onda
+ * histórica com `size: 0` (ex: `safeToTag` saiu vazio porque os endereços
+ * ainda estavam ativos na Beehiiv, ou a config da Beehiiv estava
+ * indisponível) NUNCA deve travar a progressão geométrica: `0 *
+ * WARMUP_GROWTH_FACTOR = 0` é um estado absorvente — toda rodada seguinte
+ * recalcularia 0 pra sempre, silenciosamente, sem parecer um deadlock.
+ * Reiniciar em `WARMUP_INITIAL_WAVE_SIZE` é seguro porque `size: 0` nunca
+ * significa "onda pequena de verdade" — significa "nada foi de fato
+ * taggeado nessa rodada".
  */
 export function computeNextWaveSize(
   remaining: number,
   lastWaveSize: number | null,
 ): number {
   if (remaining <= 0) return 0;
-  const base = lastWaveSize == null ? WARMUP_INITIAL_WAVE_SIZE : lastWaveSize * WARMUP_GROWTH_FACTOR;
+  const effectiveLastWaveSize = lastWaveSize != null && lastWaveSize > 0 ? lastWaveSize : null;
+  const base = effectiveLastWaveSize == null ? WARMUP_INITIAL_WAVE_SIZE : effectiveLastWaveSize * WARMUP_GROWTH_FACTOR;
   return Math.min(base, remaining);
 }
 
