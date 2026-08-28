@@ -88,6 +88,16 @@
  * envio de produção completo — ver docstring de `P_PAD_BY_ESP`/
  * `P_MARGIN_FACTOR_BY_ESP` em `newsletter-render-html.ts`.
  *
+ * **#6506 — o HTML Kit passava de 102 KB (limite de clipping do Gmail), com
+ * ~50,3% do corpo em `style=""` inline.** O mecanismo de juice acima é
+ * exatamente por que `extractRepeatedInlineStyles` (`newsletter-render-html.ts`)
+ * pode trocar os 2 `style=""` mais repetidos (botão pill CTA, link inline de
+ * corpo) por `class="cb"`/`class="dl"` só neste fragmento (`esp: "kit"`) sem
+ * mudar o resultado entregue — o Kit reinlina a classe de volta, igual já
+ * fazia com `.built-with`. Redução parcial (2 padrões, não uma reescrita
+ * completa do renderer) — ver `checkKitHtmlSize` (stage-4.ts) pro guard
+ * mecânico que bloqueia o gate se ainda assim passar de 102 KB.
+ *
  * ## Merge tag do voto do É IA?
  *
  * `esp: "kit"` usa `{{ subscriber.email_address }}` (Liquid, cru — mesmo

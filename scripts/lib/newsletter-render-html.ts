@@ -61,6 +61,21 @@ const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção 
 const FONT_HEADING = FONTS.serif;
 const FONT_BODY = FONTS.sans;
 const FONT_LABEL = FONTS.sans;
+
+// #6506: valores dos 2 style="" repetidos com MAIS frequência no fragmento —
+// o botão pill CTA (5 call sites: renderBarePillButton, renderIntroCallout ×2,
+// renderMidCallout, renderWhatsappShare) e o link inline de corpo
+// (inlineLinkHtml, 1 por link markdown em texto de destaque/box). Extraídos
+// pra constante só por FONTE ÚNICA (nenhum call site monta o literal à mão
+// mais — elimina drift entre os 5 lugares) — o BYTE do HTML renderizado não
+// muda por si só (cada `<a>` ainda carrega o style="" completo). A redução
+// real de bytes vem de `extractRepeatedInlineStyles` abaixo, que troca essas
+// strings EXATAS por `class="cb"`/`class="dl"` SÓ no fragmento `esp:"kit"`
+// (nunca no Beehiiv/Brevo — ver docstring da função).
+const CTA_BUTTON_STYLE = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
+const CTA_BUTTON_STYLE_MULTI = `${CTA_BUTTON_STYLE}margin:0 4px 8px;`; // #6506: variante com margem lateral (múltiplos CTAs pill lado a lado, renderIntroCallout)
+const INLINE_LINK_STYLE = `color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};`;
+
 // #1186: URL montada inline com edition literal + merge tag Beehiiv `{{email}}`
 // (reserved field). Modo merge-tag — sem sig HMAC por subscriber.
 // inject-poll-sig.ts foi removido. Sintaxe Beehiiv: SEM espaços, SEM prefix.
@@ -317,6 +332,91 @@ export const KIT_FOOTER_STYLE_BLOCK = `
 <style>
 .built-with a, .built-with img { margin-left: auto !important; margin-right: auto !important; }
 </style>`;
+
+/**
+ * #6506 — HTML do Kit passa de 102 KB (limite de clipping do Gmail), e ~50,3%
+ * do corpo são atributos `style=""` inline. Redução SÓ pro esp `"kit"`: o
+ * Kit re-inlina (juice) o `<style>` do documento de volta em cada elemento
+ * que casa o seletor, ANTES de remover a tag — confirmado ao vivo (docstring
+ * de `KIT_FOOTER_STYLE_BLOCK` acima, achado #6181). Ou seja, uma classe
+ * definida aqui produz o MESMO resultado entregue que o inline direto — só
+ * o HTML que ENVIAMOS pro Kit fica menor.
+ *
+ * **NUNCA usar este mecanismo no fragmento Beehiiv/Brevo.** A Beehiiv REMOVE
+ * o `<style>` inteiro do e-mail entregue (`beehiiv-css-injeta-padding-e-
+ * remove-nosso-style`, memória do projeto) — um link/botão só com `class=`
+ * sem o `style=""` correspondente sairia SEM estilo nenhum nesses 2 canais.
+ * Por isso `renderHTML` só chama `extractRepeatedInlineStyles` quando
+ * `opts.esp === "kit"` (ver o bloco `!opts.fullDocument` abaixo).
+ *
+ * Cobre os 2 `style=""` de MAIOR frequência no fragmento (ver
+ * `CTA_BUTTON_STYLE`/`CTA_BUTTON_STYLE_MULTI`/`INLINE_LINK_STYLE`, definidos
+ * no topo do módulo): o botão pill CTA (5 call sites) e o link inline de
+ * corpo (1 por link markdown em texto de destaque/box — potencialmente
+ * dezenas por edição). Escopo deliberadamente pequeno — ver `docs/` do PR
+ * #6506 pra follow-up de uma extração mais ampla (`bodyP` etc.), que exigiria
+ * calibração ao vivo contra um envio real do Kit antes de mexer (mesmo
+ * cuidado já documentado em `P_PAD_BY_ESP` acima).
+ */
+export function buildKitInlineClassStyleBlock(usedClassNames: readonly string[]): string {
+  if (usedClassNames.length === 0) return ""; // #6506: 0 uso → 0 bytes de <style> gasto à toa
+  const rules = usedClassNames.map((name) => `.${name}{${KIT_INLINE_STYLE_CLASS_MAP[name]}}`).join("\n");
+  return `
+<style>
+${rules}
+</style>`;
+}
+
+/** #6506 — mapa nome-de-classe → valor exato de `style=""`, consumido tanto
+ *  por `renderHTML` (fragmento `esp:"kit"`) quanto pelos testes. */
+export const KIT_INLINE_STYLE_CLASS_MAP: Record<string, string> = {
+  cb: CTA_BUTTON_STYLE,
+  cbm: CTA_BUTTON_STYLE_MULTI,
+  dl: INLINE_LINK_STYLE,
+};
+
+/**
+ * #6506 — substitui `style="<valor exato>"` por `class="<nome>"`, usando o
+ * mapa `{ nome: valor }`. Match por VALOR EXATO do atributo inteiro (nunca
+ * substring parcial) — mais simples e mais seguro que parsear/reescrever CSS:
+ * zero risco de casar dentro de conteúdo escapado (esc() sempre transforma
+ * `"` em `&quot;`, então texto editorial nunca contém uma aspa crua que
+ * pudesse formar um `style="..."` falso-positivo) e zero risco de colidir
+ * com outro atributo `style=""` que só COINCIDENTEMENTE comece igual (o
+ * match exige a aspa de fechamento no mesmo lugar).
+ *
+ * **`minOccurrences` (default 2) — nunca piora o tamanho do fragmento.** A
+ * classe só é trocada quando aparece pelo menos `minOccurrences` vezes: 1
+ * ocorrência isolada substituída ainda pagaria o custo fixo do `<style>` que
+ * `buildKitInlineClassStyleBlock` emite pra ela sem necessariamente cobrir
+ * esse custo com a economia de UMA troca só (a regra CSS de `.dl`, o mais
+ * curto dos 3 alvos, já é maior que o `style=""` que substituiria em 1 única
+ * ocorrência). Com 2+, a economia por ocorrência (60-190 bytes, ver
+ * `CTA_BUTTON_STYLE`/`INLINE_LINK_STYLE`) sempre cobre o custo fixo com folga.
+ *
+ * Só substitui elementos que hoje NÃO têm `class=""` própria (nenhum dos 2
+ * call sites-alvo — `<a>` de CTA pill / link inline — declara `class` hoje,
+ * conferido no #6506; se um ganhar `class` no futuro, o `split/join` abaixo
+ * ainda funciona — só o `class="X"` fica isolado, quem for compor MÚLTIPLAS
+ * classes no mesmo elemento precisa de uma versão mais esperta, fora do
+ * escopo desta issue).
+ */
+export function extractRepeatedInlineStyles(
+  html: string,
+  classToStyle: Record<string, string>,
+  opts: { minOccurrences?: number } = {},
+): string {
+  const minOccurrences = opts.minOccurrences ?? 2;
+  let out = html;
+  for (const [className, styleValue] of Object.entries(classToStyle)) {
+    const needle = `style="${styleValue}"`;
+    const parts = out.split(needle);
+    if (parts.length - 1 < minOccurrences) continue; // #6506: abaixo do piso, deixa inline (nunca piora)
+    out = parts.join(`class="${className}"`);
+  }
+  return out;
+}
+
 // #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
 // uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
 const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
@@ -663,7 +763,7 @@ export function renderBarePillButton(url: string, label: string): string {
   const safeHref = esc(url);
   const safeLabel = esc(label);
   return `<tr><td class="pad" style="padding:16px ${LAYOUT.sidePad}px 0;text-align:center;">` +
-    `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
+    `<a href="${safeHref}" style="${CTA_BUTTON_STYLE}">${safeLabel}</a>` +
     `</td></tr>`;
 }
 
@@ -864,7 +964,7 @@ export function renderIntroCallout(
           const pills = links
             .map(
               (l) =>
-                `<a href="${esc(l.url)}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;margin:0 4px 8px;">${esc(l.label)}</a>`,
+                `<a href="${esc(l.url)}" style="${CTA_BUTTON_STYLE_MULTI}">${esc(l.label)}</a>`,
             )
             .join("");
           ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">${pills}</td></tr>`;
@@ -875,7 +975,7 @@ export function renderIntroCallout(
           const safeLabel = esc(firstLink.label);
           const safeHref = esc(firstLink.url);
           ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">` +
-            `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
+            `<a href="${safeHref}" style="${CTA_BUTTON_STYLE}">${safeLabel}</a>` +
             `</td></tr>`;
         }
         afterCtaParas = bodyParas.slice(idx + 1).map((p) => p.replace(/^→\s*/u, ""));
@@ -1159,7 +1259,7 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
     ? `<div style="padding:20px 20px 4px;text-align:center;">${imgLinked}</div>`
     : imgLinked;
   const cta = safeLink
-    ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${ctaLabel}</a>`
+    ? `<a href="${safeLink}" style="${CTA_BUTTON_STYLE}">${ctaLabel}</a>`
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
   // título serif + demais peso normal, igual ao caminho sem imagem (#1938).
@@ -1884,13 +1984,11 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   const block = buildWhatsappShareBlock(d1.title, editionUrl);
   const shareLink = buildWhatsappShareLink(block);
 
-  // Mesmo pill dos demais CTAs (ver linhas 446/647/658/930).
-  const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
-
+  // Mesmo pill dos demais CTAs (CTA_BUTTON_STYLE, #6506 — era literal local).
   return `<!-- Compartilhe no WhatsApp -->
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
     <div style="text-align:center;">
-      <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
+      <a href="${esc(shareLink)}" style="${CTA_BUTTON_STYLE}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
     </div>
   </td></tr></table>`;
 }
@@ -2672,11 +2770,22 @@ ${innerTable}
   if (!opts.fullDocument) {
     // Fragmento pro Beehiiv: container + style (progressive enhancement).
     // #1945: wrapper externo branco (PAGE_BG) — sem faixas bege nas laterais.
-    return `<!-- diar.ia.br newsletter body — auto-generated by render-newsletter-html.ts -->
-${DS_STYLE_BLOCK}${opts.esp === "kit" ? KIT_FOOTER_STYLE_BLOCK : ""}
+    const body = `
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>`;
+    if (opts.esp !== "kit") {
+      return `<!-- diar.ia.br newsletter body — auto-generated by render-newsletter-html.ts -->
+${DS_STYLE_BLOCK}${body}`;
+    }
+    // #6506: SÓ pro Kit — troca style="" repetido (≥2 ocorrências, nunca
+    // piora bytes) por class=. Beehiiv/Brevo (ramo acima) saem intocados —
+    // a Beehiiv remove o <style> inteiro do e-mail entregue, um `class=` sem
+    // `style=""` correspondente sairia sem estilo nenhum nesses 2 canais.
+    const kitBody = extractRepeatedInlineStyles(body, KIT_INLINE_STYLE_CLASS_MAP);
+    const usedClasses = Object.keys(KIT_INLINE_STYLE_CLASS_MAP).filter((name) => kitBody.includes(`class="${name}"`));
+    return `<!-- diar.ia.br newsletter body — auto-generated by render-newsletter-html.ts -->
+${DS_STYLE_BLOCK}${KIT_FOOTER_STYLE_BLOCK}${buildKitInlineClassStyleBlock(usedClasses)}${kitBody}`;
   }
 
   // Documento completo (preview / email Worker-hosted): shell branco (#1945) + preheader.
@@ -3094,7 +3203,7 @@ function tokenizeInline(
 // `[**título**](url)`), o negrito é aplicado dentro do link. Links sem `**` no
 // rótulo continuam sem negrito (comportamento #2004 preservado).
 function inlineLinkHtml(label: string, url: string): string {
-  return `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${applyInlineBold(esc(label))}</a>`;
+  return `<a href="${esc(url)}" style="${INLINE_LINK_STYLE}" target="_blank" rel="noopener noreferrer nofollow">${applyInlineBold(esc(label))}</a>`;
 }
 
 export function processInlineLinks(s: string): string {

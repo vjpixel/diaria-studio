@@ -1888,6 +1888,109 @@ export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[
 }
 
 /**
+ * #6506 — o e-mail renderizado pelo Kit passa de 102 KB (limite de clipping
+ * do Gmail: acima disso o Gmail corta a mensagem e mostra "[Mensagem
+ * cortada]"). O pixel de abertura do Kit fica no FIM do corpo (abaixo do
+ * corte), então uma edição que estoure 102 KB tem abertura Gmail
+ * SUBCONTADA — o número vira um piso, não a taxa real, e essa taxa alimenta
+ * a decisão de rampa (#6505).
+ *
+ * **Severity CONDICIONAL ao backend ativo (achado do self-review, #6506) —
+ * NÃO é `error` incondicional.** `render-kit-html-preview.ts` roda em TODA
+ * edição no pré-render do Stage 4, mesmo com `publishing.newsletter.backend`
+ * ainda `"beehiiv"` (é assim que este check tem o que medir ANTES do
+ * cutover — ver docstring do script). Se a severity fosse `error`
+ * incondicional, este invariant travaria o gate da pipeline ATUAL (Beehiiv,
+ * já em produção) por causa de um limite de um canal que ainda nem está
+ * enviando — dano real e imediato, não é o que a issue pede. Por isso:
+ *   - backend `"kit"` (Kit é o canal REAL de envio): `error` — bloqueia o
+ *     gate, porque a consequência (abertura subcontada) só aparece semanas
+ *     depois numa análise de rampa, não no e-mail em si.
+ *   - qualquer outro backend (Beehiiv/Brevo hoje; Kit ainda em migração):
+ *     `warning` — visível pro editor (item 1 da issue, "medir e registrar"),
+ *     nunca bloqueia uma pipeline que não depende do Kit pra sair no ar.
+ *
+ * Mede `_internal/newsletter-final-kit.html` — o fragmento REAL que
+ * `scripts/render-kit-html-preview.ts` grava (mesmo `buildKitHtml` puro que
+ * `publish-newsletter-kit.ts` usaria pra publicar de verdade, sem nenhuma
+ * chamada de rede) — e não `newsletter-final.html` (que é o fragmento
+ * Beehiiv, calibrado por `BEEHIIV_WRAPPER_OVERHEAD_KB` em
+ * `lint-newsletter-html.ts`; os dois canais têm wrappers/overhead
+ * DIFERENTES no e-mail entregue, então um limiar único não serve aos dois).
+ *
+ * **Threshold SEM ajuste de overhead — ao contrário do Beehiiv.** A Beehiiv
+ * teve seu overhead medido ao vivo uma vez (#5176, ~44 KB) contra um envio
+ * real; o Kit ainda não teve — não existe hoje um e-mail Kit publicado pra
+ * medir a diferença fragmento→entregue. Usar o limiar bruto de 102 KB
+ * direto sobre o fragmento é a leitura mais próxima do que a issue #6506
+ * mediu (a mesma medição de 28/08/2026 que achou os 50,3% de `style=""`
+ * rodou sobre este artefato, não sobre um e-mail entregue) — mas é uma
+ * leitura OTIMISTA: o Kit injeta baseline inline em todo `<p>` + o próprio
+ * rodapé "Built with Kit" por cima disso (ver docstring de `buildKitHtml`),
+ * então o e-mail de fato entregue tende a ser MAIOR que este fragmento.
+ * Recalibrar (mesmo método do #5176: 1º envio de teste real, medir a
+ * diferença) antes de confiar neste threshold como preciso — até lá, ele já
+ * é uma barreira real contra o pior caso óbvio (fragmento sozinho já
+ * estourado).
+ *
+ * Arquivo ausente (pré-render Kit ainda não rodou, ou skill não chamou
+ * `render-kit-html-preview.ts` nesta retomada) → `[]`, mesmo padrão de
+ * `checkNewsletterHtmlSize` acima — nunca bloqueia por AUSÊNCIA do artefato,
+ * só pelo TAMANHO quando ele existe.
+ *
+ * `rootDir` (opcional, 2º parâmetro): override pra fixture de teste isolada
+ * de `platform.config.json` — mesmo padrão de `checkBoxDivulgacaoRuntimeExcluded`
+ * acima. `STAGE_4_RULES` nunca passa override (usa o `ROOT` real do módulo).
+ */
+export const KIT_HTML_SIZE_ERROR_BYTES = 102 * 1024;
+
+function readKitBackendActive(rootDir: string): boolean {
+  // Ausência é o caso normal (fixture de teste sem platform.config.json,
+  // clone fresco) — fail-soft pro lado que NUNCA bloqueia a pipeline atual
+  // à toa. Malformado é OUTRA coisa (fleet review, #6506): um
+  // platform.config.json corrompido no exato momento em que o backend real
+  // é "kit" E o e-mail está grande faria este catch rebaixar `error` →
+  // `warning` em silêncio, sem nenhum rastro de por quê — justo no pior
+  // momento pra essa checagem falhar sem ruído. JSON malformado agora
+  // PROPAGA (nunca vira "kit não ativo" por engano).
+  const path = resolve(rootDir, "platform.config.json");
+  if (!existsSync(path)) return false;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as {
+    publishing?: { newsletter?: { backend?: string } };
+  };
+  return raw.publishing?.newsletter?.backend === "kit";
+}
+
+export function checkKitHtmlSize(editionDir: string, rootDir: string = ROOT): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "newsletter-final-kit.html");
+  if (!existsSync(path)) return [];
+  const bytes = statSync(path).size;
+  if (bytes <= KIT_HTML_SIZE_ERROR_BYTES) return [];
+  const kb = (bytes / 1024).toFixed(1);
+  const kitIsActiveBackend = readKitBackendActive(rootDir);
+  return [
+    {
+      rule: "kit-html-too-large",
+      message:
+        `_internal/newsletter-final-kit.html tem ${bytes} bytes (${kb} KB), acima do ` +
+        `limite de clipping do Gmail (102 KB, #6506). O pixel de abertura do Kit fica ` +
+        `no FIM do corpo — abaixo do corte — então a abertura Gmail desta edição sairia ` +
+        `SUBCONTADA se publicada pelo Kit assim, e essa taxa alimenta a decisão de rampa ` +
+        `(#6505). Cortar conteúdo (boxes de divulgação, texto de destaque) é decisão ` +
+        `editorial.` +
+        (kitIsActiveBackend
+          ? ` Backend ativo é "kit" — este check BLOQUEIA o gate até isso acontecer.`
+          : ` Backend ativo ainda não é "kit" (publishing.newsletter.backend em ` +
+            `platform.config.json) — aviso não-bloqueante enquanto o Kit não for o ` +
+            `canal real de envio; vira bloqueante no dia do cutover.`),
+      source_issue: "#6506",
+      severity: kitIsActiveBackend ? "error" : "warning",
+      file: path,
+    },
+  ];
+}
+
+/**
  * #6336: audita a base Kit de produção por assinante ATIVO cujo e-mail bate
  * padrão de fixture de teste (`ana@example.com` e vizinhos — ver docstring
  * de `scripts/lib/kit-fixture-patterns.ts`). Achado ao vivo 26/08/2026: uma
@@ -2153,6 +2256,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#5232",
     stage: 4,
     run: checkNewsletterHtmlSize,
+  },
+  {
+    id: "kit-html-too-large",
+    description: `_internal/newsletter-final-kit.html acima de ${KIT_HTML_SIZE_ERROR_BYTES} bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá)`,
+    source_issue: "#6506",
+    stage: 4,
+    run: checkKitHtmlSize,
   },
   {
     id: "kit-fixture-audit",
