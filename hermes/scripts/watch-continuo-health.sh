@@ -25,18 +25,29 @@ REPO="/home/vjpixel/diaria-studio"
 cd "$REPO" || { echo "ERRO: repo ausente"; exit 1; }
 FAILS=0
 
-# Dedup: existe issue ABERTA com este marcador no título?
+# Dedup: existe issue ABERTA cujo título CONTÉM o marcador?
+# Filtro LOCAL de propósito (bug achado no teste ao vivo do PR #6469: a busca
+# do GitHub tokeniza/ignora colchetes, então `"[watch-continuo] ..." in:title`
+# retornava 0 SEMPRE e o dedup nunca deduplicou — 2 issues idênticas em 10min).
+# Falha do gh aqui retorna 2 (indeterminado): quem chama trata como "não sei"
+# e NÃO cria (na dúvida, não spammar; a próxima rodada tenta de novo).
 have_issue() {
   local marker="$1"
-  local n
-  n=$(gh issue list --state open --search "\"$marker\" in:title" --json number --jq 'length' 2>/dev/null || echo "")
-  [ -n "$n" ] && [ "$n" -gt 0 ]
+  local titles
+  titles=$(gh issue list --state open --limit 100 --json title --jq '.[].title' 2>/dev/null) || return 2
+  printf '%s' "$titles" | grep -qF "$marker"
 }
 
 file_issue() {
   local marker="$1" title="$2" label="$3" body="$4"
-  if have_issue "$marker"; then
+  have_issue "$marker"
+  local rc=$?
+  if [ $rc -eq 0 ]; then
     echo "[watch] $marker: issue aberta já existe — sem duplicar"
+    return 0
+  elif [ $rc -eq 2 ]; then
+    echo "[watch] $marker: dedup INDETERMINADO (gh falhou) — não criando pra não duplicar" >&2
+    FAILS=$((FAILS + 1))
     return 0
   fi
   if gh issue create --title "$title" --label "$label" --body "$body" >/dev/null 2>&1; then
@@ -50,9 +61,15 @@ file_issue() {
 # ── 1. Review Opus diário rodou? ─────────────────────────────────────────────
 MARCO="$REPO/data/continuo/last-daily-review-sha"
 if [ -f "$MARCO" ]; then
-  AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$MARCO") ) / 3600 ))
-  if [ "$AGE_H" -gt 26 ]; then
-    file_issue "[watch-continuo] review diário parado" \
+  MTIME=$(stat -c %Y "$MARCO" 2>/dev/null || echo "")
+  if [ -z "$MTIME" ]; then
+    # arquivo sumiu entre o -f e o stat (sync OneDrive) — indeterminado, nunca "ok"
+    echo "[watch] review diário: INDETERMINADO (stat falhou)" >&2; FAILS=$((FAILS+1)); MTIME=0
+  fi
+  AGE_H=$(( ( $(date +%s) - MTIME ) / 3600 ))
+  if [ "$MTIME" -eq 0 ]; then AGE_H=-1; fi
+  if [ "$AGE_H" -ge 0 ] && [ "$AGE_H" -gt 26 ]; then
+    file_issue "[watch-continuo] review Opus diário não roda" \
       "[watch-continuo] review Opus diário não roda há ${AGE_H}h — marco estagnado" \
       "bug,P2" \
       "Detectado por hermes/scripts/watch-continuo-health.sh: \`data/continuo/last-daily-review-sha\` sem escrita há ${AGE_H}h (esperado: avanço diário ~12:00 UTC, cron 645d5debb7f0). Checar: \`hermes cron list\`, transcript em \`data/continuo/last-daily-review-output.txt\`, e se o gate RESUMO-DAILY-REVIEW segurou o marco de propósito (nesse caso o problema é o review incompleto, não o cron). P2: a auditoria Opus é a rede de qualidade dos merges autônomos."
@@ -64,14 +81,21 @@ else
 fi
 
 # ── 2. failure_streak do contínuo ────────────────────────────────────────────
+# Sentinela __ERR__ (finding P1 do review #6469): "não consegui checar" tem
+# de ser distinguível de "ok" — a versão anterior colapsava os dois em string
+# vazia e um jobs.json corrompido viraria "streak ok" pra sempre.
 STREAK=$(python3 -c "
-import json
 try:
+    import json
+    found='__ERR__'
     for x in json.load(open('/home/vjpixel/.hermes/cron/jobs.json'))['jobs']:
-        if x['id']=='5d791ef6fc2c': print(x.get('failure_streak',0)); break
-except Exception: print('')" 2>/dev/null)
-if [ -n "$STREAK" ] && [ "$STREAK" -ge 2 ] 2>/dev/null; then
-  file_issue "[watch-continuo] cron em falha" \
+        if x['id']=='5d791ef6fc2c': found=x.get('failure_streak',0); break
+    print(found)
+except Exception: print('__ERR__')" 2>/dev/null || echo "__ERR__")
+if [ "$STREAK" = "__ERR__" ] || [ -z "$STREAK" ]; then
+  echo "[watch] streak: INDETERMINADO (jobs.json ilegível ou job ausente)" >&2; FAILS=$((FAILS+1))
+elif [ "$STREAK" -ge 2 ] 2>/dev/null; then
+  file_issue "[watch-continuo] Diária Contínuo com failure_streak" \
     "[watch-continuo] Diária Contínuo com failure_streak=$STREAK" \
     "bug,P1" \
     "Detectado por watch-continuo-health.sh: job 5d791ef6fc2c com failure_streak=$STREAK. Ver \`~/.hermes/logs/agent.log\` e \`last_error\` no jobs.json. P1: fila de produção parada sem workaround automático (o watchdog de rotação só troca o modelo do ORQUESTRADOR)."
@@ -84,18 +108,21 @@ LEAK=$(npx tsx scripts/lib/session-registry.ts active-of-kind --kind continuo 2>
 import sys, json, datetime as dt
 try:
     d = json.load(sys.stdin)
+    now = dt.datetime.now(dt.timezone.utc)
+    for s in d.get('sessions', []):
+        claims = s.get('claimed_issues') or []
+        hb = s.get('lastHeartbeat')
+        if not claims or not hb: continue
+        age_min = (now - dt.datetime.fromisoformat(hb.replace('Z', '+00:00'))).total_seconds() / 60
+        if age_min > 45:
+            print(f\"{s['sessionId']}: claims={claims} heartbeat parado há {age_min:.0f}min\")
 except Exception:
-    print(''); raise SystemExit
-now = dt.datetime.now(dt.timezone.utc)
-for s in d.get('sessions', []):
-    claims = s.get('claimed_issues') or []
-    hb = s.get('lastHeartbeat')
-    if not claims or not hb: continue
-    age_min = (now - dt.datetime.fromisoformat(hb.replace('Z', '+00:00'))).total_seconds() / 60
-    if age_min > 45:
-        print(f\"{s['sessionId']}: claims={claims} heartbeat parado há {age_min:.0f}min\")" 2>/dev/null)
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+if [ "$LEAK" = "__ERR__" ]; then
+  echo "[watch] claims: INDETERMINADO (registry/parse falhou)" >&2; FAILS=$((FAILS+1)); LEAK=""
+fi
 if [ -n "$LEAK" ]; then
-  file_issue "[watch-continuo] claims presos" \
+  file_issue "[watch-continuo] claims do contínuo presos" \
     "[watch-continuo] claims do contínuo presos de novo (higiene de fim de tick falhou)" \
     "bug,P2" \
     "Detectado por watch-continuo-health.sh — sessão continuo com claims e heartbeat parado > 45min (tick é de 30min; a higiene da SKILL.md v0.5.0 deveria limpar):
@@ -114,13 +141,16 @@ VAZ=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --days 1
 import sys, json
 try:
     rows = json.load(sys.stdin)
+    for r in rows:
+        if isinstance(r, dict) and r.get('vazamento_pago'):
+            print(f\"{r['dia']} {r['modelo']} (pedido: {r['pedido']}) est=\${r['custo_estimado']}\")
 except Exception:
-    print(''); raise SystemExit
-bad = [r for r in rows if r.get('vazamento_pago')]
-for r in bad:
-    print(f\"{r['dia']} {r['modelo']} (pedido: {r['pedido']}) est=\${r['custo_estimado']}\")" 2>/dev/null)
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+if [ "$VAZ" = "__ERR__" ]; then
+  echo "[watch] custo: INDETERMINADO (cost-report falhou)" >&2; FAILS=$((FAILS+1)); VAZ=""
+fi
 if [ -n "$VAZ" ]; then
-  file_issue "[watch-continuo] vazamento pago" \
+  file_issue "[watch-continuo] cobrança em modelo pago" \
     "[watch-continuo] cobrança em modelo pago fora da allowlist nas últimas 24h" \
     "bug,P1" \
     "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py:
@@ -135,14 +165,16 @@ else
 fi
 
 # ── 5. adoção da convenção de branch (informational) ─────────────────────────
-NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author --jq '
+if ! NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author --jq '
   [.[] | select(.createdAt > (now - 86400 | todate))
        | select(.author.login == "vjpixel")
        | .headRefName
        | select((startswith("continuo/") or startswith("overnight/") or startswith("develop/") or startswith("dependabot/")) | not)
-  ] | join(", ")' 2>/dev/null)
+  ] | join(", ")' 2>/dev/null); then
+  echo "[watch] convenção de branch: INDETERMINADO (gh pr list falhou)" >&2; FAILS=$((FAILS+1)); NOPREFIX=""
+fi
 if [ -n "$NOPREFIX" ]; then
-  file_issue "[watch-continuo] branch sem prefixo" \
+  file_issue "[watch-continuo] PRs autônomos" \
     "[watch-continuo] PRs autônomos das últimas 24h sem prefixo de trilha" \
     "enhancement,P3" \
     "Detectado por watch-continuo-health.sh — branches sem \`continuo/\`/\`overnight/\`/\`develop/\` criados nas últimas 24h: \`$NOPREFIX\`. Se forem do contínuo, a skill v0.5.0 não está seguindo a convenção do #6461 e os PRs aparecem como \`other\` na Triagem. Se forem PRs manuais do editor, fechar como esperado. P3: cosmético/observabilidade, sem impacto funcional."
@@ -150,5 +182,9 @@ else
   echo "[watch] convenção de branch ok"
 fi
 
-echo "[watch] varredura concluída (falhas de infra: $FAILS)"
+echo "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS)"
+# Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
+# garantir a varredura — o cron do Hermes registra a falha e o failure_streak
+# do próprio job de watch vira o alarme de quem vigia o vigilante.
+[ "$FAILS" -eq 0 ] || exit 1
 exit 0
