@@ -329,8 +329,17 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // como invalid_url apesar de vir do blog oficial da Z.ai — mesma
     // empresa da série de modelos GLM, ex-Zhipu AI).
     company: "Z.ai",
-    domains: ["z.ai"],
-    detection_keywords: /\b(z\.ai|glm-?[0-9])\b/i,
+    // `zhipuai.cn` é a marca antiga (Zhipu AI). Incluído junto porque o
+    // registro paralelo de `link-ctr-categorize.ts` já lista os dois, e
+    // conteúdo histórico republicado sob o domínio velho cairia no MESMO
+    // `invalid_url` que esta entry existe pra consertar (achado do review).
+    domains: ["z.ai", "zhipuai.cn"],
+    // Casa empresa E série de modelos: a manchete costuma citar o modelo,
+    // não a empresa (a da 260828 era "GLM-5.3-Flash: modelo aberto chega
+    // perto do Opus", sem "Z.ai" em lugar nenhum). O sufixo opcional
+    // espelha o padrão do OpenAI acima (`gpt-?[0-9]+(\.[0-9]+)?o?`) pra
+    // cobrir `GLM-45` e um eventual `GLM-4o` sem precisar de outra edição.
+    detection_keywords: /\b(z\.ai|glm-?[0-9]+(\.[0-9]+)?[a-z]?)\b/i,
   },
 ];
 

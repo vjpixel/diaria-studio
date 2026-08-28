@@ -6,6 +6,7 @@ import {
   lancamentoPatterns,
   companyToDomain,
 } from "../scripts/lib/official-domains.ts";
+import { isOfficialLancamentoUrl } from "../scripts/lib/launch-heuristics.ts";
 
 describe("official-domains registry (#566)", () => {
   it("cada entry tem company não-vazia", () => {
@@ -166,16 +167,17 @@ describe("official-domains registry (#566)", () => {
       assert.equal(find("Mistral unveils Codestral")?.domain, "mistral.ai");
     });
 
-    it("Z.ai: a serie GLM casa o dominio oficial (#6613)", () => {
-      // Regressao do gate da edicao 260828: o lancamento do GLM-5.3-Flash
-      // vinha do blog oficial da Z.ai (ex-Zhipu AI) e era marcado como
-      // invalid_url, porque o registro nao conhecia nem a empresa nem a
-      // familia de modelos. `validate-lancamentos.ts` le daqui, entao
-      // LANCAMENTO oficial da Z.ai era rebaixado pra NOTICIAS na mao.
+    it("Z.ai: a serie GLM sugere o dominio oficial a partir do TEXTO (#6613)", () => {
+      // Este bloco cobre `companyToDomain()` — sugerir a fonte primaria a
+      // partir de uma manchete de cobertura. NAO e o caminho que produziu o
+      // bug da 260828; esse esta no `describe` proprio abaixo.
       const find = (text: string) => c2d.find(({ keyword }) => keyword.test(text));
       assert.equal(find("Z.ai lanca novo modelo")?.domain, "z.ai");
       assert.equal(find("GLM-5.3-Flash chega perto do Opus")?.domain, "z.ai");
       assert.equal(find("glm-4.6 disponivel")?.domain, "z.ai");
+      // Formatos que o regex antigo (`glm-?[0-9]`) nao pegava.
+      assert.equal(find("GLM-45 chega ao mercado")?.domain, "z.ai");
+      assert.equal(find("GLM-4o anunciado")?.domain, "z.ai");
     });
 
     it("sem duplicatas por keyword.source", () => {
@@ -185,5 +187,45 @@ describe("official-domains registry (#566)", () => {
         seen.add(keyword.source);
       }
     });
+  });
+});
+
+/**
+ * Regressão do gate da edição 260828 (#6613).
+ *
+ * O bloco `companyToDomain()` acima NÃO cobre este caminho — achado do
+ * review da PR #6614 (P2, confiança alta). São dois consumidores distintos
+ * do MESMO registro:
+ *
+ * - `companyToDomain()` lê `detection_keywords` e serve pra SUGERIR a fonte
+ *   primária a partir do texto de uma cobertura (`launch-detect.ts`).
+ * - `lancamentoDomains()` lê `domains` e alimenta `isOfficialLancamentoUrl`,
+ *   que é o gate de verdade: é ele que `validate-lancamentos.ts` consulta
+ *   pra decidir se um LANÇAMENTO tem link oficial (#160).
+ *
+ * Foi o SEGUNDO que falhou na 260828. Um teste só sobre o primeiro passa
+ * mesmo que alguém remova `domains: ["z.ai"]` — ou seja, o bug original
+ * volta em silêncio com a suíte verde. Por isso este bloco existe à parte,
+ * batendo direto na função que o gate chama.
+ */
+describe("Z.ai no gate de LANÇAMENTOS (#6613)", () => {
+  it("z.ai está entre os domínios oficiais de lançamento", () => {
+    assert.ok(lancamentoDomains().has("z.ai"));
+  });
+
+  it("zhipuai.cn (marca antiga) também — conteúdo histórico não pode regredir", () => {
+    assert.ok(lancamentoDomains().has("zhipuai.cn"));
+  });
+
+  it("isOfficialLancamentoUrl aceita uma URL real do blog da Z.ai", () => {
+    assert.equal(isOfficialLancamentoUrl("https://z.ai/blog/glm-5.3-flash"), true);
+    assert.equal(isOfficialLancamentoUrl("https://zhipuai.cn/news/glm"), true);
+  });
+
+  it("não vira allowlist ampla demais: cobertura de imprensa segue NÃO-oficial", () => {
+    // O ponto do #160 é que só o link OFICIAL vira LANÇAMENTO. Um domínio
+    // parecido não pode passar de carona.
+    assert.equal(isOfficialLancamentoUrl("https://techcrunch.com/glm-5-3-flash"), false);
+    assert.equal(isOfficialLancamentoUrl("https://not-z.ai/blog/glm"), false);
   });
 });
