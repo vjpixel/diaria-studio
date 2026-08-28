@@ -104,6 +104,33 @@
 .rv-gate-violation-row.warn { color: var(--status-warn); }
 .rv-gate-violation-row.fail { color: var(--status-danger); }
 
+/* #6447 Fatia 4 (achado 7): botão "Aprovar gate" — mesmo visual dos demais
+   botões do painel, com destaque de cor pra ação de gate. */
+.rv-gate-approve-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-top: 0.4rem;
+  margin-top: 0.2rem;
+  border-top: 1px solid var(--rule);
+}
+#rv-gate-approve-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--status-ok);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--status-ok) 12%, transparent);
+  color: inherit;
+  cursor: pointer;
+  font-weight: 600;
+}
+#rv-gate-approve-btn:hover { border-color: var(--ink); }
+#rv-gate-approve-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.rv-gate-approve-status { font-size: 0.8rem; opacity: 0.8; }
+.rv-gate-approve-status.approved { color: var(--status-ok); font-weight: 600; opacity: 1; }
+
 @media (max-width: 640px) {
   .rv-gate-header button { min-height: 44px; }
+  #rv-gate-approve-btn { min-height: 44px; }
 }

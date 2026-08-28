@@ -81,3 +81,22 @@ export function formatRenderWarningRow(ev) {
   if (!ev) return "";
   return `[render] ⚠️ ${ev.event}${ev.slot !== undefined ? ` (slot ${ev.slot})` : ""}`;
 }
+
+/** #6447 Fatia 4 (achado 7): estado do botão "Aprovar gate" a partir de
+ * `summary.decision` (`Stage4DecisionState | null`, `studio-gate.ts`).
+ * `null` = nunca aprovado pelo painel — botão ativo, texto de ação.
+ * `approved` = já aprovado — botão mostra "já aprovado" (o caller decide se
+ * desabilita ou exige confirmação antes de reenviar com `force`, ver
+ * `rv-gate.js`). Pura — sem `Date.now()` embutido, `nowMs` é injetável pra
+ * teste determinístico (mesmo padrão de `formatWaitingSince` em
+ * `gate-chat-bridge.js`). */
+export function formatGateDecision(decision, nowMs = Date.now()) {
+  if (!decision || decision.decision !== "approved") {
+    return { approved: false, text: "Ainda não aprovado pelo painel." };
+  }
+  const decidedAtMs = Date.parse(decision.decided_at);
+  const relative = Number.isNaN(decidedAtMs)
+    ? ""
+    : ` (${Math.max(0, Math.round((nowMs - decidedAtMs) / 60000))}min atrás)`;
+  return { approved: true, text: `Já aprovado pelo painel${relative}.` };
+}

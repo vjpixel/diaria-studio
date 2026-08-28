@@ -22,6 +22,7 @@ import {
   formatBoxSlotLine,
   lintFailureRows,
   formatRenderWarningRow,
+  formatGateDecision,
 } from "../scripts/studio-ui/public/rv-gate-format.js";
 
 describe("formatMetaDescription (#6449 — bug real: null vs '' conflados)", () => {
@@ -140,5 +141,33 @@ describe("formatRenderWarningRow", () => {
   it("evento sem slot -> não menciona slot nenhum", () => {
     const text = formatRenderWarningRow({ event: "whatsapp_share_no_d1", edition: "260716" });
     assert.doesNotMatch(text, /slot/);
+  });
+});
+
+describe("formatGateDecision (#6447 Fatia 4, achado 7)", () => {
+  it("decision null -> approved:false", () => {
+    const r = formatGateDecision(null);
+    assert.equal(r.approved, false);
+    assert.match(r.text, /Ainda não aprovado/);
+  });
+
+  it("decision com shape inesperado (decision !== 'approved') -> approved:false", () => {
+    const r = formatGateDecision({ decision: "rejected", decided_at: "2026-08-28T10:00:00.000Z" });
+    assert.equal(r.approved, false);
+  });
+
+  it("approved -> approved:true, texto com minutos decorridos a partir de nowMs injetado", () => {
+    const decidedAt = new Date("2026-08-28T10:00:00.000Z").getTime();
+    const nowMs = decidedAt + 5 * 60_000;
+    const r = formatGateDecision({ decision: "approved", decided_at: new Date(decidedAt).toISOString(), decided_via: "studio" }, nowMs);
+    assert.equal(r.approved, true);
+    assert.match(r.text, /Já aprovado/);
+    assert.match(r.text, /5min atrás/);
+  });
+
+  it("decided_at malformado -> approved:true mas sem sufixo de tempo relativo (nunca lança)", () => {
+    const r = formatGateDecision({ decision: "approved", decided_at: "não-é-uma-data" });
+    assert.equal(r.approved, true);
+    assert.doesNotMatch(r.text, /atrás/);
   });
 });
