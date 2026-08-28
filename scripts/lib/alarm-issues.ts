@@ -204,6 +204,14 @@ export interface AlarmFinding {
   labels?: string[];
   /** Default `"P2"` (CLAUDE.md: toda issue nasce com label de prioridade). */
   priority?: AlarmPriority;
+  /** #6572 — chave de agrupamento OPCIONAL pro modo de estreia (ver
+   * `aggregateFindingsOnDebut` abaixo). Findings sem `group` nunca são
+   * candidatos a agregação, independente do volume — comportamento
+   * pré-#6572, inalterado. Generaliza o cap de estreia introduzido no #6564
+   * só pra `session-registry-safebackup` (#6562): qualquer check pode optar
+   * declarando `group` (tipicamente igual a `check`, mas não precisa ser —
+   * fica a critério do emissor). */
+  group?: string;
 }
 
 export interface AlarmIssueResult {
@@ -242,6 +250,83 @@ export type AlarmAllowlist = readonly AlarmAllowlistEntry[];
  * prefixo/regex) com alguma entry da allowlist. */
 export function isAllowlisted(check: string, fingerprint: string, allowlist: AlarmAllowlist): boolean {
   return allowlist.some((e) => e.check === check && e.fingerprint === fingerprint);
+}
+
+// ─── Agrupamento genérico de achados na ESTREIA (#6572) ────────────────────
+// Generaliza o cap de estreia introduzido no #6564 exclusivamente pra
+// `session-registry-safebackup` (#6562) — qualquer check opta declarando
+// `AlarmFinding.group`. Ver docstring de `AlarmFinding.group` acima.
+
+/**
+ * Opções de `aggregateFindingsOnDebut` — o script chamador injeta
+ * `stateIsEmpty` (o MESMO sinal usado pelo `session-registry-safebackup`
+ * original: `Object.keys(alarmIssuesState).length === 0`, ou seja "esta é a
+ * 1ª execução deste alarme nesta máquina/checkout") e `threshold` (teto por
+ * GRUPO acima do qual agrega). `buildAggregate` é injetado pelo chamador
+ * porque o título/corpo agregado é sempre texto de domínio específico do
+ * check — não dá pra generalizar sem perder a qualidade da mensagem (mesmo
+ * trade-off já aceito por `buildAggregatedSafeBackupFinding`).
+ */
+export interface AggregateOnDebutOptions {
+  /** Teto (exclusivo) por grupo — acima disto, agrega quando `stateIsEmpty`.
+   * Um grupo com `threshold` ou menos findings NUNCA agrega, mesmo em
+   * estreia — 1 issue por finding continua o padrão pra volume baixo. */
+  threshold: number;
+  /** `true` só na 1ª execução (estado local de dedup vazio) — mesmo
+   * gatilho do #6562/#6564: a partir da 2ª execução (já existe pelo menos
+   * 1 entry no estado), a agregação nunca dispara de novo, mesmo que o
+   * volume continue acima do teto (o modo granular 1-por-finding volta a
+   * valer, e a issue agregada se auto-fecha por não reaparecer mais). */
+  stateIsEmpty: boolean;
+  /** Constrói o `AlarmFinding` agregado a partir do nome do grupo e da
+   * lista de findings originais que caíram nele (já ordenados por
+   * fingerprint) — cada check decide seu próprio título/corpo/fingerprint
+   * agregado. O `check` retornado deve corresponder ao(s) `check` dos
+   * findings originais pra `alarm-issues.ts` conseguir rastrear/fechar a
+   * MESMA issue entre execuções (mesmo padrão de
+   * `buildAggregatedSafeBackupFinding`). */
+  buildAggregate: (group: string, findings: readonly AlarmFinding[]) => AlarmFinding;
+}
+
+/**
+ * Pura — agrupa `findings` por `AlarmFinding.group` e substitui cada grupo
+ * cujo tamanho excede `opts.threshold` por 1 único achado agregado (via
+ * `opts.buildAggregate`), quando `opts.stateIsEmpty`. Findings sem `group`
+ * (`undefined`) NUNCA são candidatos a agregação — passam direto,
+ * preservando o comportamento 1-por-finding de todo check que ainda não
+ * declarou `group` (retrocompatível por padrão: nenhum check existente
+ * muda de comportamento sem opt-in explícito). Fora de `stateIsEmpty`
+ * (regime estacionário) ou com o grupo dentro do teto, também passa direto.
+ *
+ * Ordem do output não é preservada entre grupos diferentes — o chamador
+ * (`planAlarmReconciliation`) trata `pending` como um conjunto, não uma
+ * lista ordenada relevante.
+ */
+export function aggregateFindingsOnDebut(
+  findings: readonly AlarmFinding[],
+  opts: AggregateOnDebutOptions,
+): AlarmFinding[] {
+  const ungrouped = findings.filter((f) => !f.group);
+  if (!opts.stateIsEmpty) return findings.slice();
+
+  const byGroup = new Map<string, AlarmFinding[]>();
+  for (const f of findings) {
+    if (!f.group) continue;
+    const list = byGroup.get(f.group) ?? [];
+    list.push(f);
+    byGroup.set(f.group, list);
+  }
+
+  const out: AlarmFinding[] = [...ungrouped];
+  for (const [group, groupFindings] of byGroup) {
+    if (groupFindings.length > opts.threshold) {
+      const sorted = [...groupFindings].sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
+      out.push(opts.buildAggregate(group, sorted));
+    } else {
+      out.push(...groupFindings);
+    }
+  }
+  return out;
 }
 
 // ─── Marcador de dedup (puro) ───────────────────────────────────────────────

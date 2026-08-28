@@ -35,7 +35,7 @@
  * fixo, nunca reaparece nos findings per-file) depois de
  * `CLOSE_ALARM_ISSUE_AFTER_RUNS` execuções sem reaparecer.
  */
-import type { AlarmFinding } from "./alarm-issues.ts";
+import { aggregateFindingsOnDebut, type AlarmFinding } from "./alarm-issues.ts";
 
 /** Teto (#6562): acima disto, na 1ª execução (state vazio), agrega numa
  * issue só em vez de 1 por arquivo. A issue #6562 sugeriu 5-10; 10 escolhido
@@ -84,27 +84,38 @@ export function buildAggregatedSafeBackupFinding(backupFiles: readonly string[])
   };
 }
 
+/** Grupo declarado em cada finding pra `aggregateFindingsOnDebut` (#6572) —
+ * igual ao `check`, mas é um campo distinto de propósito (nem todo `group`
+ * precisa ser o `check`, ver docstring de `AlarmFinding.group`). */
+const GROUP = "session-registry-safebackup";
+
 /**
- * Ponto de decisão do alarme (#6562): 1 finding por arquivo em regime
- * normal; 1 finding agregado só na 1ª execução (`stateIsEmpty`) quando o
- * volume excede `SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD`. Ver docstring do
- * módulo, seção "Modo de estreia".
+ * Ponto de decisão do alarme (#6562, generalizado no #6572): 1 finding por
+ * arquivo em regime normal; 1 finding agregado só na 1ª execução
+ * (`stateIsEmpty`) quando o volume excede
+ * `SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD`. A DECISÃO (quando agregar) é
+ * delegada ao mecanismo genérico `aggregateFindingsOnDebut`
+ * (`alarm-issues.ts`) — só o TEXTO do achado agregado
+ * (`buildAggregatedSafeBackupFinding`) continua específico deste check. Ver
+ * docstring do módulo, seção "Modo de estreia".
  */
 export function resolveSafeBackupFindings(
   backupFiles: readonly string[],
   stateIsEmpty: boolean,
 ): AlarmFinding[] {
   if (backupFiles.length === 0) return [];
-  if (stateIsEmpty && backupFiles.length > SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD) {
-    return [buildAggregatedSafeBackupFinding(backupFiles)];
-  }
-  return buildSafeBackupFindings(backupFiles);
+  return aggregateFindingsOnDebut(buildSafeBackupFindings(backupFiles), {
+    threshold: SAFE_BACKUP_ESTREIA_AGGREGATE_THRESHOLD,
+    stateIsEmpty,
+    buildAggregate: (_group, groupFindings) => buildAggregatedSafeBackupFinding(groupFindings.map((f) => f.fingerprint)),
+  });
 }
 
 export function buildSafeBackupFindings(backupFiles: readonly string[]): AlarmFinding[] {
   return backupFiles.map((file) => ({
     check: "session-registry-safebackup",
     fingerprint: file,
+    group: GROUP,
     title: `[diar.ia.br] session-registry: cópia de conflito do OneDrive presente (${file})`,
     body: [
       "Achado automático do alarme `Diaria-Session-Registry-SafeBackup-Alarm`",

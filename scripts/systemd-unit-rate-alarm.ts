@@ -56,6 +56,7 @@ import {
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
+  aggregateFindingsOnDebut,
   emptyAlarmIssuesState,
   type AlarmFinding,
   type AlarmIssuesState,
@@ -75,6 +76,20 @@ const LOG_PREFIX = "[systemd-unit-rate-alarm]";
  * reconciliação padrão de `alarm-issues.ts` já implementa "taxa se
  * recuperou ao longo da janela" sem precisar de lógica extra. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
+
+/** #6572 — grupo declarado em cada finding pra `aggregateFindingsOnDebut`
+ * (`alarm-issues.ts`), generalização do cap de estreia do #6562/#6564
+ * (antes exclusivo de `session-registry-safebackup`). Várias units
+ * alarmando na MESMA 1ª execução deste alarme (state local ainda vazio)
+ * costuma ser sintoma de UMA causa raiz compartilhada (ex: outage de rede,
+ * `systemd --user` reiniciado, `data/` indisponível) — não N problemas
+ * independentes; 4 issues P1 saindo de 2 problemas reais foi o caso
+ * concreto citado no #6572. */
+const UNIT_RATE_GROUP = "systemd-unit-rate";
+/** Teto (exclusivo) — acima disto, na 1ª execução, agrega numa issue só em
+ * vez de 1 por unit. */
+export const SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD = 3;
+const UNIT_RATE_ESTREIA_AGGREGATE_FINGERPRINT = "estreia-aggregate";
 
 export interface UnitToCheck {
   taskName: string;
@@ -151,6 +166,45 @@ export function toAlarmFinding({ unit, evaluation }: UnitRateFinding): AlarmFind
     ]
       .filter(Boolean)
       .join("\n"),
+    labels: ["bug"],
+    priority: "P1",
+    family: "estado",
+    group: UNIT_RATE_GROUP,
+  };
+}
+
+/**
+ * #6572 — achado agregado da estreia (`aggregateFindingsOnDebut`
+ * `buildAggregate`, injetado). Mesmo formato de
+ * `buildAggregatedSafeBackupFinding` (`scripts/lib/session-registry-safebackup-alarm.ts`,
+ * #6562): lista cada finding individual (já convertido — reusa `title`, que
+ * já carrega a taxa de falha formatada) em vez de reconstruir a partir do
+ * `UnitRateFinding` original, que não chega até aqui.
+ */
+export function buildAggregatedUnitRateFinding(findings: readonly AlarmFinding[]): AlarmFinding {
+  const sorted = [...findings].sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
+  return {
+    check: "systemd-unit-rate",
+    fingerprint: UNIT_RATE_ESTREIA_AGGREGATE_FINGERPRINT,
+    title: `[diar.ia.br] taxa de falha alta em ${sorted.length} units systemd na estreia do alarme`,
+    body: [
+      "Achado automático do alarme `Diaria-Systemd-Unit-Rate-Alarm`",
+      "(`scripts/systemd-unit-rate-alarm.ts`, #5765), agregado por ser a 1ª execução (modo de estreia, #6572).",
+      "",
+      `${sorted.length} units com taxa de falha acima do limiar encontradas na 1ª execução deste alarme nesta ` +
+        `máquina/checkout — acima do teto de ${SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD}, agregadas nesta issue ` +
+        "única em vez de 1 issue por unit (volume alto na estreia costuma ser sintoma de UMA causa raiz " +
+        "compartilhada, não N problemas independentes):",
+      "",
+      ...sorted.map((f) => `- \`${f.fingerprint}\`: ${f.title}`),
+      "",
+      "Investigar cada unit com `journalctl --user -u <unit> -n 50` e `systemctl --user status <unit>`. Consertar " +
+        "é ação manual do editor (este alarme nunca muta o serviço, nem religa/reinicia nada).",
+      "",
+      "Esta issue agregada é exclusiva da 1ª execução do alarme — a partir da execução seguinte o alarme volta ao " +
+        "modo normal (1 issue por unit, ver #5765) e esta issue se fecha sozinha, independente de as units ainda " +
+        "estarem acima do limiar ou não.",
+    ].join("\n"),
     labels: ["bug"],
     priority: "P1",
     family: "estado",
@@ -247,8 +301,16 @@ async function main(): Promise<void> {
       `[${findings.map((f) => f.unit.unitName).join(", ")}]`,
   );
 
-  const alarmFindings: AlarmFinding[] = findings.map(toAlarmFinding);
   const alarmState = loadAlarmIssuesState();
+  const stateIsEmpty = Object.keys(alarmState).length === 0;
+  // #6572 — modo de estreia: várias units alarmando na 1ª execução (state
+  // vazio) agregam numa issue só acima do teto, mesmo mecanismo genérico
+  // usado por `session-registry-safebackup-alarm.ts` (#6562/#6564).
+  const alarmFindings: AlarmFinding[] = aggregateFindingsOnDebut(findings.map(toAlarmFinding), {
+    threshold: SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
+    stateIsEmpty,
+    buildAggregate: (_group, groupFindings) => buildAggregatedUnitRateFinding(groupFindings),
+  });
   const issueRefs: AlarmIssueResult[] = [];
 
   if (isDryRun) {

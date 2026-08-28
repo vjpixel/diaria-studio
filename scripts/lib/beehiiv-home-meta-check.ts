@@ -90,9 +90,14 @@
  * sem regenerar depois de um hub novo entrar em `HUB_META`.
  *
  * Nota de escopo pros outros eixos: `english-labels` (rótulos residuais do
- * tema Beehiiv) perdeu a razão de ser NA HOME pelo mesmo motivo, mas segue
- * válido — `port-in-url` avalia a página da edição mais recente, e o
- * conteúdo de `/p/{slug}` ainda vem do render Beehiiv em cache.
+ * tema Beehiiv) perdeu a razão de ser NA HOME pelo mesmo motivo — `port-in-url`
+ * é quem segue válido nesse sentido, avaliando a página da edição mais
+ * recente, cujo conteúdo de `/p/{slug}` ainda vem do render Beehiiv em cache.
+ * O destino de `english-labels` (virar guard de outra coisa — rótulo em
+ * inglês residual em página NOSSA, o que ainda faria sentido — ou sair) e o
+ * naming do arquivo/task (`beehiiv-home-meta-check`/`Diaria-Beehiiv-Home-Meta-Check`,
+ * ambos herdados da era Beehiiv) são decisão pendente, rastreada em #6498 —
+ * não atacada aqui por ter blast radius próprio (task agendada no `helios`).
  */
 
 import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";

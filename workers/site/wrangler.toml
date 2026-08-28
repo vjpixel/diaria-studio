@@ -1,4 +1,4 @@
-# workers/site — futuro hosting do apex diar.ia.br (#467, decisão do editor
+# workers/site — hosting do apex diar.ia.br (#467, decisão do editor
 # 25/08/2026: "o apex aponta pro NOSSO Worker, não pro Kit — o Kit fica só
 # com o e-mail").
 #
@@ -8,16 +8,20 @@
 # path da raiz NÃO funcionou nesse cenário (causa raiz NÃO diagnosticada —
 # algo na config da zona, fora deste repo, impediu a Route de assumir
 # precedência; hipótese não confirmada é que a Beehiiv, dona do custom
-# hostname do apex, responde antes — ver a nota completa em
-# workers/artigos/wrangler.toml) e por que `custom_domain = true` é o único
-# caminho que funcionou na prática.
+# hostname do apex ANTES do cutover, respondia antes — ver a nota completa
+# em workers/artigos/wrangler.toml) e por que `custom_domain = true` é o
+# único caminho que funcionou na prática.
 #
-# ESTE Worker, especificamente, NÃO tem `custom_domain`/`routes` apontando
-# pro apex ainda — só `workers_dev = true`. Ligar o apex aqui é o CUTOVER em
-# si (soltar o custom hostname na Beehiiv → apontar o apex pra este Worker),
-# blast-radius real, fora do escopo desta unidade (1º item do checklist
-# revisado do #467 — só "Worker que serve /p/{slug} a partir dos 258 posts
-# em cache"). Plano de rollback documentado em docs/apex-cutover-rollback.md.
+# CUTOVER JÁ ACONTECEU (#467, confirmado ao vivo em 28/08/2026 — #6498):
+# `https://diar.ia.br/` serve hoje o `public/index.html` DESTE Worker (HTML
+# público byte a byte igual ao arquivo commitado; `server: cloudflare`, não
+# mais Beehiiv). A ligação do custom hostname do apex a este Worker foi
+# feita FORA deste arquivo (não aparece como `custom_domain`/`[[routes]]`
+# aqui, ao contrário do padrão de `workers/artigos/wrangler.toml` — a
+# configuração de zona que faz a amarração não é rastreada neste repo).
+# Blast-radius do cutover em si (1º item do checklist revisado do #467 —
+# só "Worker que serve /p/{slug} a partir dos 258 posts em cache") já
+# absorvido. Plano de rollback documentado em docs/apex-cutover-rollback.md.
 #
 # Escopo ATUAL (gerado por scripts/gen-archive-pages.ts):
 #   public/p/{slug}/index.html — as 253 edições publicadas (status

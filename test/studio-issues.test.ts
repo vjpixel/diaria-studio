@@ -32,6 +32,8 @@ import {
   clearTriageCache,
   defaultGhRun,
   attachClaims,
+  isPanelDisplayStale,
+  PANEL_DISPLAY_STALE_MS,
   type GhRunFn,
   type GhIssueRaw,
   type GhPrRaw,
@@ -411,6 +413,30 @@ describe("fetchTriageData (#3562)", () => {
       const data = fetchTriageData(root, { run, now: () => Date.now() });
       assert.equal(data.issues[0]?.claim, null);
     });
+
+    it("#6592 — claim com heartbeat > PANEL_DISPLAY_STALE_MS (20min) NÃO aparece no painel, mesmo dentro de SOFT_STALE_MS (90min)", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-panel-stale-"));
+      // 25min: > PANEL_DISPLAY_STALE_MS (20min), mas < SOFT_STALE_MS (90min) —
+      // `listActiveSessions` ainda considera esta sessão `stale: false`.
+      const heartbeat = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+      registerSession(root, "continuo", "sess-heartbeat-velho", { tag: "helios", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-heartbeat-velho", 6051, "helios", heartbeat);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim, null);
+    });
+
+    it("#6592 — claim com heartbeat < PANEL_DISPLAY_STALE_MS (20min) continua aparecendo (não regride #6436)", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-panel-fresh-"));
+      const heartbeat = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      registerSession(root, "continuo", "sess-fresca", { tag: "helios", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-fresca", 6051, "helios", heartbeat);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim?.sessionId, "sess-fresca");
+    });
   });
 
   it("gh falhando (status != 0) sem cache anterior: arrays vazios + error preenchido, nunca lança", () => {
@@ -487,6 +513,44 @@ describe("defaultGhRun timeout (#3783 — regressão)", () => {
     // `status` vem `null`, o mesmo shape que `runGhJson` já trata como falha
     // (`status !== 0`), então este cenário nunca vira sucesso silencioso.
     assert.equal(result.status, null, "processo morto por timeout reporta status null, não 0");
+  });
+});
+
+describe("isPanelDisplayStale (#6592, puro)", () => {
+  it("heartbeat dentro do limiar → não stale", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 5 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), false);
+  });
+
+  it("heartbeat > PANEL_DISPLAY_STALE_MS (20min) → stale de exibição", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 25 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), true);
+  });
+
+  it("exatamente no limiar (não excede) → não stale (comparação é estrita '>')", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - PANEL_DISPLAY_STALE_MS).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), false);
+  });
+
+  it("fallback pra startedAt quando lastHeartbeat ausente", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const startedAt = new Date(nowMs - 25 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat: undefined as unknown as string, startedAt }, nowMs), true);
+  });
+
+  it("data inválida nunca lança e nunca marca stale (fail-soft — idade desconhecida não esconde claim ativo)", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    assert.equal(isPanelDisplayStale({ lastHeartbeat: "not-a-date", startedAt: "not-a-date" }, nowMs), false);
+  });
+
+  it("aceita maxAgeMs custom (override do default)", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 10 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs, 5 * 60 * 1000), true);
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs, 15 * 60 * 1000), false);
   });
 });
 
