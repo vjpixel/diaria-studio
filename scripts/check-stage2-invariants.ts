@@ -21,6 +21,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runSecondaryItemEllipsisAutofix } from "./apply-secondary-item-coherence-autofix.ts"; // #6441
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
 import { intentionalErrorJsonPath, loadIntentionalErrorJson } from "./lib/intentional-errors.ts"; // #3222 / #6139
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #4263
@@ -501,6 +502,17 @@ async function main(): Promise<void> {
   if (!existsSync(editionDir)) {
     console.error(`[check-stage2-invariants] dir não existe: ${editionDir}`);
     process.exit(1);
+  }
+  // #6441: autofix mecânico de fabricated-ellipsis ANTES dos checks abaixo —
+  // pós-humanizador/Clarice, dado ainda "quente". Best-effort/não-bloqueante
+  // (retorna null quando 02-reviewed.md ou 01-approved.json ainda não
+  // existem — outro check aqui já cobre essa ausência).
+  const ellipsisAutofix = runSecondaryItemEllipsisAutofix(editionDir);
+  if (ellipsisAutofix) {
+    console.log(
+      `[check-stage2-invariants] secondary-item-ellipsis-autofix: ` +
+        `${ellipsisAutofix.entries.length} item(ns) avaliado(s), changed=${ellipsisAutofix.changed}`,
+    );
   }
   const result = await checkStage2Invariants(editionDir);
   console.log(JSON.stringify(result, null, 2));

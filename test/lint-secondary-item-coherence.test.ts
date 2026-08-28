@@ -1,7 +1,12 @@
 /** Regression coverage for issue #5663 secondary-item coherence guards. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { checkSecondaryItemCoherence } from "../scripts/lib/lint-checks/secondary-item-coherence.ts";
+import {
+  checkSecondaryItemCoherence,
+  secondaryItemCoherenceSeverity, // #6441
+  isFabricatedEllipsisRecoverable, // #6441
+  type SecondaryItemCoherenceReport,
+} from "../scripts/lib/lint-checks/secondary-item-coherence.ts";
 
 const approved = {
   radar: [
@@ -74,5 +79,59 @@ describe("checkSecondaryItemCoherence (#5663)", () => {
       ).ok,
       true,
     );
+  });
+});
+
+describe("secondaryItemCoherenceSeverity (#6441)", () => {
+  it("marks a fabricated-ellipsis error as recoverable (summary intact — the only shape this check raises today)", () => {
+    const result = checkSecondaryItemCoherence(
+      radar('O uso pode comprometer a reputação…', "https://example.com/ellipsis"),
+      approved,
+    );
+    assert.equal(result.errors[0].kind, "fabricated-ellipsis");
+    assert.equal(result.errors[0].recoverable, true);
+    // (a) autofix already had a chance to fix this at Stage 2 — Stage 4
+    // downgrades to warn-only instead of blocking the gate.
+    assert.equal(secondaryItemCoherenceSeverity(result), "warn-only");
+  });
+
+  it("keeps unbalanced-quote gate-blocking regardless of recoverability", () => {
+    const result = checkSecondaryItemCoherence(
+      radar('"Não são super tecnologias.'),
+      approved,
+    );
+    assert.equal(result.errors[0].kind, "unbalanced-quote");
+    assert.equal(secondaryItemCoherenceSeverity(result), "gate-blocking");
+  });
+
+  it("returns gate-blocking for a synthetic irrecoverable fabricated-ellipsis (summary also truncated — the saudedigitalnews RSS-garbage shape from #6441)", () => {
+    // (b) checkSecondaryItemCoherence itself never raises this exact
+    // combination — a summary that ALSO ends in ellipsis satisfies
+    // `!ELLIPSIS_RE.test(summary) === false`, so no error fires at all
+    // (correctly: this check can't tell a legit source ellipsis from RSS
+    // garbage, see the module docstring). That's why this is a synthetic
+    // report: it exercises the SEVERITY resolver directly, which is the
+    // new logic added by #6441 and the piece responsible for "gate-blocking
+    // maintained" once an irrecoverable case IS present in a report.
+    assert.equal(
+      isFabricatedEllipsisRecoverable("...e… O post Título apareceu primeiro em Fonte..."),
+      false,
+    );
+    const syntheticReport: SecondaryItemCoherenceReport = {
+      ok: false,
+      skipped: 0,
+      errors: [
+        {
+          kind: "fabricated-ellipsis",
+          recoverable: false,
+          section: "RADAR",
+          line: 3,
+          titleExcerpt: "saudedigitalnews",
+          descriptionExcerpt: "...e… O post Título apareceu primeiro em Fonte...",
+          url: "https://example.com/saudedigitalnews",
+        },
+      ],
+    };
+    assert.equal(secondaryItemCoherenceSeverity(syntheticReport), "gate-blocking");
   });
 });
