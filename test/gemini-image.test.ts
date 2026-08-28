@@ -29,8 +29,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 import sharp from "sharp";
-import { isMainModule } from "../scripts/lib/cli-args.ts";
 import { buildPrompt, buildResizeOptions } from "../scripts/gemini-image.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,28 +44,56 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * `import.meta.url` é `file:///C:/Users/.../gemini-image.js` (barras normais,
  * triplo-slash). A comparação nunca batia, `isMainModule` era sempre
  * `false`, `main()` nunca rodava, e o processo saía com exit 0 sem gerar a
- * imagem nem imprimir nada — falha silenciosa. O fix trocou o guard inline
- * pelo helper `isMainModule` de `scripts/lib/cli-args.ts`, que normaliza os
- * dois lados via `fileURLToPath` antes de comparar.
+ * imagem nem imprimir nada — falha silenciosa. O fix troca o guard inline
+ * por uma comparação via `fileURLToPath` (node:url nativo), que normaliza
+ * os dois lados antes de comparar.
+ *
+ * Revisão (#6492): a 1ª versão do fix importava `isMainModule` de
+ * `scripts/lib/cli-args.ts` (extensão `.ts`) dentro deste `.js` — mas
+ * `gemini-image.js` é invocado em produção via `node` PURO, não `tsx`
+ * (`image-generate.ts` chama `execFileSync(process.execPath, [imageScript,
+ * ...])`, sem loader). Importar `.ts` a partir de um `.js` rodado por `node`
+ * puro só funciona em Node com type-stripping nativo sem flag (23.6+) — o
+ * floor declarado do repo (`engines.node >=22.5.0`) é anterior a isso, e o
+ * repo já documenta esse exato cuidado em `backfill-score-by-month.ts` pro
+ * caso inverso (import `.ts`→`.ts`, seguro só porque o runner ali é sempre
+ * `tsx`). O fix final usa `fileURLToPath` inline, sem cruzar a fronteira de
+ * extensão.
  */
-describe("gemini-image.js usa isMainModule (#6486)", () => {
-  it("importa isMainModule de lib/cli-args e não monta o guard `file://` à mão", () => {
+describe("gemini-image.js usa fileURLToPath (#6486)", () => {
+  it("compara fileURLToPath(import.meta.url) inline, sem importar .ts nem montar o guard `file://` à mão", () => {
     const source = readFileSync(resolve(ROOT, "scripts/gemini-image.js"), "utf8");
-    assert.match(
+    assert.doesNotMatch(
       source,
-      /from ['"]\.\/lib\/cli-args\.ts['"]/,
-      "gemini-image.js deve importar isMainModule de ./lib/cli-args.ts",
+      /from ['"]\.\/lib\/cli-args(\.ts)?['"]/,
+      "gemini-image.js não deve importar de ./lib/cli-args — é um .js invocado via `node` puro (execFileSync em image-generate.ts), não via tsx; importar um .ts quebraria em Node <23.6 (floor do repo é 22.5)",
     );
     assert.match(
       source,
-      /if\s*\(\s*isMainModule\(import\.meta\.url\)\s*\)/,
-      "gemini-image.js deve usar isMainModule(import.meta.url) como guard de CLI",
+      /fileURLToPath\(import\.meta\.url\)\s*===\s*process\.argv\[1\]/,
+      "gemini-image.js deve comparar fileURLToPath(import.meta.url) com process.argv[1]",
     );
     assert.doesNotMatch(
       source,
       /import\.meta\.url\s*===\s*`file:\/\//,
       "gemini-image.js não deve mais comparar import.meta.url com um template `file://` cru (bug do #6486)",
     );
+  });
+
+  it("rodando via `node` puro (não tsx) — o mesmo jeito que image-generate.ts invoca de verdade — carrega e executa main()", () => {
+    // Regressão da revisão do #6492: a 1ª versão do fix (import de .ts em
+    // um .js rodado por node puro) não seria pega pela suíte de testes, que
+    // roda tudo via `node --import tsx --test` (package.json) — o loader
+    // tsx mascara justamente o problema. Este teste spawna o processo real,
+    // sem loader nenhum, exatamente como `execFileSync(process.execPath, ...)`
+    // em image-generate.ts — provando que o arquivo carrega de verdade e que
+    // main() roda (chega no "Usage:" + exit 2, sem custo de API).
+    const result = spawnSync(process.execPath, [resolve(ROOT, "scripts/gemini-image.js")], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 2, `esperava exit 2 (uso incorreto); stderr: ${result.stderr}`);
+    assert.match(result.stderr ?? "", /Usage: node scripts\/gemini-image\.js/);
   });
 
   it("reproduz o par (argv[1], import.meta.url) real do Windows — o guard cru nunca bateria", () => {
@@ -92,7 +120,7 @@ describe("gemini-image.js usa isMainModule (#6486)", () => {
     );
   });
 
-  it("isMainModule casa o par (import.meta.url, argv[1]) que este SO produz de verdade, pro path de gemini-image.js", () => {
+  it("fileURLToPath casa o par (import.meta.url, argv[1]) que este SO produz de verdade, pro path de gemini-image.js", () => {
     // Complemento do teste acima, na técnica correta pra qualquer SO: usa o
     // par que a PRÓPRIA máquina rodando o teste produz para este arquivo
     // (fileURLToPath/pathToFileURL fazem o round-trip nativo do Node,
@@ -101,32 +129,15 @@ describe("gemini-image.js usa isMainModule (#6486)", () => {
     // exatamente o caso que o guard antigo quebrava e o novo conserta.
     const scriptPath = resolve(ROOT, "scripts/gemini-image.js");
     const metaUrl = pathToFileURL(scriptPath).href;
-    const original = process.argv[1];
-    try {
-      process.argv[1] = scriptPath;
-      assert.equal(isMainModule(metaUrl), true);
-
-      process.argv[1] = resolve(ROOT, "scripts/outro-script.ts");
-      assert.equal(isMainModule(metaUrl), false);
-    } finally {
-      process.argv[1] = original;
-    }
+    assert.equal(fileURLToPath(metaUrl), scriptPath);
+    assert.notEqual(fileURLToPath(metaUrl), resolve(ROOT, "scripts/outro-script.ts"));
   });
 
-  it("isMainModule continua correto no formato Unix/Linux (caminho que já funcionava)", () => {
+  it("fileURLToPath continua correto no formato Unix/Linux (caminho que já funcionava)", () => {
     const unixArgv1 = "/home/ed/diaria-studio/scripts/gemini-image.js";
     const unixMetaUrl = "file:///home/ed/diaria-studio/scripts/gemini-image.js";
-
-    const original = process.argv[1];
-    try {
-      process.argv[1] = unixArgv1;
-      assert.equal(isMainModule(unixMetaUrl), true);
-
-      process.argv[1] = "/home/ed/diaria-studio/scripts/outro-script.ts";
-      assert.equal(isMainModule(unixMetaUrl), false);
-    } finally {
-      process.argv[1] = original;
-    }
+    assert.equal(fileURLToPath(unixMetaUrl), unixArgv1);
+    assert.notEqual(fileURLToPath(unixMetaUrl), "/home/ed/diaria-studio/scripts/outro-script.ts");
   });
 });
 
