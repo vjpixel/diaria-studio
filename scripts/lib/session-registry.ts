@@ -2010,6 +2010,33 @@ export const GC_CONSERVATIVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const GC_INTERACTIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 /**
+ * Margem de segurança aplicada à janela de liveness do KIND (`SOFT_STALE_MS`/
+ * `INTERACTIVE_SOFT_STALE_MS`, via `softStaleMsForKind`) pra decidir remoção
+ * de um BACKUP ÓRFÃO — sem arquivo real correspondente (#6595).
+ *
+ * Por que um limiar distinto da janela conservadora de 7 dias
+ * (`GC_CONSERVATIVE_MAX_AGE_MS`): os 7 dias existem pra cobrir a
+ * possibilidade de uma sessão estar viva em OUTRA máquina, sem arquivo local
+ * pra provar liveness (ver docstring de `GC_CONSERVATIVE_MAX_AGE_MS`). Um
+ * backup órfão não tem essa ambiguidade — por construção, uma sessão viva
+ * bate heartbeat no arquivo REAL, nunca só no backup (ver `heartbeat` e
+ * `readMergedSessionGroups`). Ausência de arquivo real + heartbeat do backup
+ * além da janela de liveness do próprio kind significa que a sessão que o
+ * gerou não existe mais — em NENHUMA máquina. Não é limiar novo/arbitrário:
+ * é a mesma janela que `decideSessionGc` já usa pra "claramente ativa"
+ * (branch 1), só deixando de ser sobreposta pela janela conservadora no caso
+ * em que o conservadorismo não protege nada real.
+ *
+ * 4× foi escolhido porque ainda deixa folga generosa sobre falhas
+ * transitórias de heartbeat (ex: rate limit, hiccup de I/O do OneDrive) sem
+ * se aproximar da ordem de grandeza de `GC_CONSERVATIVE_MAX_AGE_MS` — pro
+ * kind `overnight` (`SOFT_STALE_MS` = 90min) dá 6h; medição ao vivo do #6595
+ * encontrou 27 órfãos `overnight`, o mais novo já 6,5× além dos 90min, então
+ * 4× segue conservador mesmo frente ao caso real que motivou a issue.
+ */
+export const GC_ORPHAN_LIVENESS_MARGIN = 4;
+
+/**
  * Checa se `pid` corresponde a um processo vivo — padrão "kill -0"
  * (`process.kill(pid, 0)` nunca envia sinal de verdade, só testa
  * existência; funciona em POSIX e Windows). `ESRCH` (processo não existe)
@@ -2124,6 +2151,15 @@ export interface SessionGcResult {
  * quão stale o heartbeat esteja (só que, desde #6294, só o lado VIVO desse
  * branch pesa sozinho na decisão — "pid morto" não é mais sinal positivo de
  * remoção, ver docstring de `decideSessionGc` abaixo).
+ *
+ * **`isOrphan` (#6595)** — quando `true` (backup sem arquivo real
+ * correspondente), a janela final do branch 4 deixa de ser
+ * `conservativeMaxAgeMs` (7 dias, pensada pra "pode estar viva em outra
+ * máquina") e passa a ser `softStaleMsForKind(kind) * GC_ORPHAN_LIVENESS_MARGIN`
+ * — ver docstring de `GC_ORPHAN_LIVENESS_MARGIN` pro porquê. Sessão COM
+ * arquivo real (`isOrphan` ausente/`false`) não muda: os 7 dias continuam
+ * valendo integralmente, inclusive pro branch 3 (PID vivo), que nenhum dos
+ * dois casos altera.
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
@@ -2131,6 +2167,7 @@ function decideSessionGc(
   conservativeMaxAgeMs: number,
   isPidAlive: (pid: number) => boolean,
   localTag: string,
+  isOrphan = false,
 ): { action: SessionGcAction; reason: string } {
   let maxHeartbeatMs = -Infinity;
   for (const r of records) {
@@ -2149,8 +2186,15 @@ function decideSessionGc(
   // sobre um registro que não se conseguiu classificar.
   const groupKind = records[0]?.kind ?? "";
   const softStaleMs = softStaleMsForKind(groupKind);
-  const effectiveMaxAgeMs =
-    groupKind === "interactive" ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS) : conservativeMaxAgeMs;
+  // #6595: órfão (sem arquivo real) usa a janela de liveness do próprio
+  // kind × margem, não a janela conservadora de 7 dias — ver docstring de
+  // `GC_ORPHAN_LIVENESS_MARGIN`. Sessão ancorada num arquivo real
+  // (`isOrphan === false`) preserva o comportamento anterior sem alteração.
+  const effectiveMaxAgeMs = isOrphan
+    ? softStaleMs * GC_ORPHAN_LIVENESS_MARGIN
+    : groupKind === "interactive"
+      ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS)
+      : conservativeMaxAgeMs;
 
   const ageMs = now - maxHeartbeatMs;
   if (ageMs < 0) {
@@ -2183,6 +2227,23 @@ function decideSessionGc(
   }
 
   if (ageMs > effectiveMaxAgeMs) {
+    if (isOrphan) {
+      const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
+      const claimsNote =
+        claimedIssues.length > 0
+          ? ` — libera ${claimedIssues.length} claim(s) que só existiam na união fail-safe por causa deste órfão: ` +
+            `#${claimedIssues.join(", #")}`
+          : " — sem claimed_issues";
+      return {
+        action: "removed",
+        reason:
+          `#6595: backup ÓRFÃO (sem arquivo real correspondente) — heartbeat stale há ${Math.round(ageMs / 60_000)}min, ` +
+          `além de ${GC_ORPHAN_LIVENESS_MARGIN}× a janela de liveness do kind "${groupKind || "desconhecido"}" ` +
+          `(${Math.round(softStaleMs / 60_000)}min × ${GC_ORPHAN_LIVENESS_MARGIN} = ${Math.round(effectiveMaxAgeMs / 60_000)}min). ` +
+          "Sem arquivo real, não há sessão viva por trás (uma sessão viva bate heartbeat no arquivo real, nunca só " +
+          `no backup) — removível sem o conservadorismo de 7 dias que só se justifica quando o real pode existir noutra máquina${claimsNote}`,
+      };
+    }
     return {
       action: "removed",
       reason:
@@ -2194,9 +2255,12 @@ function decideSessionGc(
   }
   return {
     action: "kept",
-    reason:
-      `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
-      "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
+    reason: isOrphan
+      ? `#6595: backup ÓRFÃO com heartbeat stale (${Math.round(ageMs / 60000)}min) mas ainda dentro da janela de ` +
+        `liveness do kind × ${GC_ORPHAN_LIVENESS_MARGIN} (${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind ` +
+        `"${groupKind || "desconhecido"}") — GC não arrisca remover cedo demais`
+      : `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
+        "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
   };
 }
 
@@ -2282,7 +2346,7 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       });
       continue;
     }
-    const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag);
+    const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag, /* isOrphan */ true);
     results.push({ identity: `orphan-backup:${backup}`, files: [path], ...decision });
   }
 
