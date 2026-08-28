@@ -117,6 +117,7 @@
   "test/finalize-stage1.test.ts::TS18048": 5,
   "test/format-weekly-social.test.ts::TS2345": 2,
   "test/gate-chat-bridge.test.ts::TS7016": 1,
+  "test/gemini-image.test.ts::TS7016": 1,
   "test/gen-social-card-4x5.test.ts::TS2345": 1,
   "test/geo-citation-staleness-alarm.test.ts::TS2741": 3,
   "test/hub-prose-contract-4899.test.ts::TS2345": 2,
