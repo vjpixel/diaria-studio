@@ -108,7 +108,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, getStringArg, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
@@ -121,6 +121,7 @@ import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inj
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 import { applyKitActiveExclusionGuard } from "./lib/brevo-kit-active-exclusion.ts"; // #6485
 import { resolveKitConfig } from "./lib/kit-config.ts"; // #6485
+import { logEvent } from "./lib/run-log.ts"; // #6501
 import {
   checkAccountSendQuota,
   resolveAccountDailyLimit,
@@ -770,7 +771,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
         );
       }
     } catch (e) {
-      log(`AVISO: guard de exclusão Kit-ativo (#6485) falhou, prosseguindo sem excluir: ${(e as Error).message}`);
+      const reason = (e as Error).message;
+      log(`AVISO: guard de exclusão Kit-ativo (#6485) falhou, prosseguindo sem excluir: ${reason}`);
+      // #6501: o console.warn acima não é monitorado ativamente — sem isto,
+      // uma falha transitória do guard passa despercebida indefinidamente.
+      // Evento estruturado em data/run-log.jsonl, visível via /diaria-log.
+      logEvent(
+        {
+          edition: basename(editionDir),
+          stage: 5,
+          agent: "publish-daily-brevo",
+          level: "warn",
+          message: "kit_exclusion_guard_failed",
+          details: { reason },
+        },
+        rootDir,
+      );
     }
   }
 
