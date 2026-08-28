@@ -216,7 +216,6 @@ describe("detectEnglishLabels (#4557, #5137)", () => {
     assert.deepEqual(detectEnglishLabels("<button>Subscribe</button>"), ['"Subscribe"']);
     assert.deepEqual(detectEnglishLabels("<a>Read more</a>"), ['"Read more"']);
     assert.deepEqual(detectEnglishLabels("<a>Learn more</a>"), ['"Learn more"']);
-    assert.deepEqual(detectEnglishLabels("<button>Get started</button>"), ['"Get started"']);
     assert.deepEqual(detectEnglishLabels("<a>Click here</a>"), ['"Click here"']);
     assert.deepEqual(detectEnglishLabels("<p>Loading...</p>"), ['"Loading..."']);
     assert.deepEqual(detectEnglishLabels("<h1>Page not found</h1>"), ['"Page not found"']);
@@ -224,6 +223,26 @@ describe("detectEnglishLabels (#4557, #5137)", () => {
     assert.deepEqual(detectEnglishLabels("<a>Terms of Service</a>"), ['"Terms of Service"']);
     assert.deepEqual(detectEnglishLabels("<a>Sign in</a>"), ['"Sign in"']);
     assert.deepEqual(detectEnglishLabels("<a>Log in</a>"), ['"Login"/"Log in"']);
+  });
+
+  it("#6672 (fleet review, pr-test-analyzer): 'Login'/'Log in' é case-sensitive — não casa a variante minúscula usada em prosa", () => {
+    // "login" minúsculo é empréstimo lexical corrente em PT-BR (prosa), não
+    // rótulo de UI — casar aqui geraria falso-positivo real (verificado ao
+    // vivo pelo review: workers/site/public/p/50-dos-empregos-mudam-em-3-
+    // anos-diz-estudo/index.html tem a frase "Exige login com conta Meta").
+    assert.deepEqual(detectEnglishLabels("<p>Exige login com conta Meta.</p>"), []);
+    // capitalizado continua casando — é o padrão de rótulo de UI que o eixo existe pra pegar.
+    assert.deepEqual(detectEnglishLabels("<a>Login</a>"), ['"Login"/"Log in"']);
+  });
+
+  it("#6672 (fleet review, pr-test-analyzer): 'Get Started' REMOVIDO da lista — casava prosa citando UI de outro produto", () => {
+    // workers/site/public/p/estudos-revelam-influe-ncia-de-ia-na-poli-tica/index.html
+    // tem "Clique em Get Started" citando a UI de outro produto — não é
+    // vazamento nosso. Diferente do Login acima, o falso-positivo real já
+    // vinha capitalizado (não tinha correção de case que resolvesse), então
+    // o padrão foi removido em vez de restrito.
+    assert.deepEqual(detectEnglishLabels("<p>Clique em Get Started.</p>"), []);
+    assert.deepEqual(detectEnglishLabels("<button>Get Started</button>"), []);
   });
 
   it("'N min read' casa qualquer inteiro, case-insensitive", () => {

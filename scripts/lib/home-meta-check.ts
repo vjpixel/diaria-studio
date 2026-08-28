@@ -223,19 +223,36 @@ export function extractVisibleText(html: string): string {
  * inglesa isolada) — não precisa ser exaustiva, só útil a baixo custo de
  * manutenção; um rótulo novo entra aqui quando aparecer um caso real. */
 const ENGLISH_LABEL_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
-  { label: '"Sign Up"', re: /\bSign Up\b/i },
-  { label: '"Login"/"Log in"', re: /\bLog\s?in\b/i },
-  { label: '"Sign in"', re: /\bSign in\b/i },
+  { label: '"Sign Up"', re: /\bSign Up\b/ },
+  // #6672 (fleet review, verificado ao vivo): case-insensitive casava "login"
+  // minúsculo, empréstimo lexical corrente em PT-BR presente em conteúdo
+  // editorial real publicado ("Exige login com conta Meta",
+  // workers/site/public/p/50-dos-empregos-mudam-em-3-anos-diz-estudo/).
+  // Case-sensitive de propósito: o eixo busca RÓTULO de UI (padrão
+  // capitalizado de botão/menu — "Login", "Log in"), não a palavra em
+  // prosa — mesmo raciocínio que já valia pra "Sign Up" antes desta
+  // generalização (#6498).
+  { label: '"Login"/"Log in"', re: /\bLog\s?in\b/ },
+  { label: '"Sign in"', re: /\bSign in\b/ },
   { label: '"N min read"', re: /\b\d+\s*min read\b/i },
-  { label: '"Subscribe"', re: /\bSubscribe\b/i },
-  { label: '"Read more"', re: /\bRead more\b/i },
-  { label: '"Learn more"', re: /\bLearn more\b/i },
-  { label: '"Get started"', re: /\bGet started\b/i },
-  { label: '"Click here"', re: /\bClick here\b/i },
-  { label: '"Loading..."', re: /\bLoading\.\.\./i },
-  { label: '"Page not found"', re: /\bPage not found\b/i },
-  { label: '"Privacy Policy"', re: /\bPrivacy Policy\b/i },
-  { label: '"Terms of Service"', re: /\bTerms of Service\b/i },
+  { label: '"Subscribe"', re: /\bSubscribe\b/ },
+  { label: '"Read more"', re: /\bRead more\b/ },
+  { label: '"Learn more"', re: /\bLearn more\b/ },
+  // #6672 (fleet review, pr-test-analyzer, verificado ao vivo): "Get
+  // Started"/"Get started" REMOVIDO da lista — mesmo capitalizado (rótulo de
+  // botão), casa prosa editorial legítima citando a UI de OUTRO produto
+  // ("Clique em Get Started",
+  // workers/site/public/p/estudos-revelam-influe-ncia-de-ia-na-poli-tica/),
+  // que não é vazamento nosso. Diferente de "Login" (fixo acima só trocando
+  // case-sensitivity), aqui a forma real do falso-positivo já vem
+  // capitalizada — não tinha correção de case que resolvesse sem heurística
+  // de contexto frágil. Valor marginal do padrão não justificava o custo:
+  // fora da lista até aparecer um caso real que precise dele.
+  { label: '"Click here"', re: /\bClick here\b/ },
+  { label: '"Loading..."', re: /\bLoading\.\.\./ },
+  { label: '"Page not found"', re: /\bPage not found\b/ },
+  { label: '"Privacy Policy"', re: /\bPrivacy Policy\b/ },
+  { label: '"Terms of Service"', re: /\bTerms of Service\b/ },
 ];
 
 /**
