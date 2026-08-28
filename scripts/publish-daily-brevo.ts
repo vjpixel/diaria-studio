@@ -119,6 +119,8 @@ import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-i
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
+import { applyKitActiveExclusionGuard } from "./lib/brevo-kit-active-exclusion.ts"; // #6485
+import { resolveKitConfig } from "./lib/kit-config.ts"; // #6485
 import {
   checkAccountSendQuota,
   resolveAccountDailyLimit,
@@ -739,6 +741,37 @@ export async function main(rootDirOverride?: string): Promise<void> {
       log(`  Dispatch: TEST EMAIL pra ${testRecipient} (fonte: ${source}) — não disparado em --dry-run`);
     }
     return;
+  }
+
+  // #6485: remove da lista Brevo quem já está `active` no Kit (backend de
+  // envio, #6114) ANTES de contar/enviar — senão esse contato recebe a
+  // edição duas vezes (Kit + esta campanha). Fail-soft de propósito: Kit
+  // não configurado (`KIT_API_KEY` ausente) ou falha na API do Kit/Brevo
+  // vira AVISO, nunca aborta a criação do rascunho — o guard é mitigação
+  // prospectiva, não pré-condição de publicação (mesma disciplina do
+  // aviso de cota de conta logo abaixo, #6146).
+  const kitConfigResult = resolveKitConfig();
+  if (!kitConfigResult.ok) {
+    log(`AVISO: guard de exclusão Kit-ativo (#6485) pulado — ${kitConfigResult.reason}`);
+  } else {
+    try {
+      const exclusionResult = await applyKitActiveExclusionGuard({
+        brevoApiKey: apiKey!,
+        brevoListId: brevoDiaria!.list_id as number,
+        kitConfig: kitConfigResult.config,
+      });
+      if (exclusionResult.excluded.length > 0) {
+        log(
+          `guard Kit-ativo (#6485): ${exclusionResult.removedFromList.length} contato(s) removido(s) da lista Brevo ` +
+            `(já ativo(s) no Kit) — ${exclusionResult.excluded.join(", ")}` +
+            (exclusionResult.failedToRemove.length > 0
+              ? `; ${exclusionResult.failedToRemove.length} falha(s) ao remover: ${exclusionResult.failedToRemove.join(", ")}`
+              : ""),
+        );
+      }
+    } catch (e) {
+      log(`AVISO: guard de exclusão Kit-ativo (#6485) falhou, prosseguindo sem excluir: ${(e as Error).message}`);
+    }
   }
 
   const listInfo = await brevoGetList(apiKey!, brevoDiaria!.list_id as number);
