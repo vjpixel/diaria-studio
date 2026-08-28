@@ -34,10 +34,15 @@ import {
 import { isMainModule } from "./lib/cli-args.ts";
 
 /** Escreve `content` em `path` atomicamente (tmp + rename) — mesmo padrão de
- * `scripts/sync-env.ts`, nunca deixa o destino truncado numa falha parcial. */
-function writeFileAtomic(path: string, content: string): void {
+ * `scripts/sync-env.ts`, nunca deixa o destino truncado numa falha parcial.
+ * `mode` (achado do fleet review, #6450): sem ele o arquivo herda o umask
+ * padrão do processo (tipicamente 0644 em Linux) — inaceitável pra um
+ * arquivo com `private_key` num servidor multiusuário como o `helios`.
+ * `renameSync` preserva o mode do arquivo de origem (`.tmp`), então basta
+ * setar no `writeFileSync`. */
+function writeFileAtomic(path: string, content: string, mode?: number): void {
   const tmpPath = `${path}.tmp`;
-  writeFileSync(tmpPath, content, "utf8");
+  writeFileSync(tmpPath, content, mode !== undefined ? { encoding: "utf8", mode } : "utf8");
   renameSync(tmpPath, path);
 }
 
@@ -65,8 +70,8 @@ export function main(): number {
   }
 
   const credPath = defaultCredentialsPath(homedir());
-  mkdirSync(dirname(credPath), { recursive: true });
-  writeFileAtomic(credPath, JSON.stringify(parsed, null, 2));
+  mkdirSync(dirname(credPath), { recursive: true, mode: 0o700 });
+  writeFileAtomic(credPath, JSON.stringify(parsed, null, 2), 0o600);
   console.log(`[materialize-google-ads-credentials] credencial escrita em ${credPath} (client_email=${parsed.client_email}).`);
 
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

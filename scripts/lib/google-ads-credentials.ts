@@ -46,7 +46,12 @@ export function parseServiceAccountJson(raw: string): ServiceAccountShape {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new InvalidServiceAccountJsonError(`não é JSON válido (${err instanceof Error ? err.message : String(err)})`);
+    // Truncado (achado do fleet review, #6450): a mensagem do SyntaxError do
+    // V8 normalmente só cita posição/caractere, mas nunca confiar nisso —
+    // `raw` é um secret, e um parser diferente/versão futura poderia ecoar
+    // um trecho maior do input malformado na mensagem de erro.
+    const reason = (err instanceof Error ? err.message : String(err)).slice(0, 80);
+    throw new InvalidServiceAccountJsonError(`não é JSON válido (${reason})`);
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new InvalidServiceAccountJsonError("JSON não é um objeto");
