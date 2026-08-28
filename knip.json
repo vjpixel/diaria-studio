@@ -4,7 +4,8 @@
     "scripts/*.ts",
     "scripts/overnight/*.ts",
     "workers/*/src/index.ts",
-    "test/**/*.test.ts"
+    "test/**/*.test.ts",
+    "workers/*/test/**/*.test.ts"
   ],
   "project": [
     "scripts/**/*.ts",
