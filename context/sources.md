@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 53 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 49 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -25,12 +25,6 @@
 - URL: https://mittechreview.com.br/category/inteligencia-artificial/
 - Site query: `site:mittechreview.com.br`
 - RSS: https://mittechreview.com.br/feed/
-- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
-
-### Tecnoblog (IA)
-- URL: https://tecnoblog.net/topico/inteligencia-artificial/
-- Site query: `site:tecnoblog.net`
-- RSS: https://tecnoblog.net/tema/inteligencia-artificial/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### CNN
@@ -98,11 +92,6 @@
 - Site query: `site:blogs.nvidia.com`
 - RSS: https://blogs.nvidia.com/feed/
 
-### OpenAI
-- URL: https://openai.com/news/company-announcements/
-- Site query: `site:openai.com`
-- RSS: https://openai.com/news/rss.xml
-
 ### Anthropic
 - URL: https://www.anthropic.com/news/
 - Site query: `site:anthropic.com/news`
@@ -129,11 +118,6 @@
 - Site query: `site:tldr.tech`
 - RSS: https://tldr.tech/api/rss/ai
 
-### Ben's Bites
-- URL: https://www.bensbites.co/
-- Site query: `site:bensbites.co`
-- RSS: https://www.bensbites.com/feed
-
 ### Cyberman
 - URL: https://www.cyberman.ai/
 - Site query: `site:cyberman.ai`
@@ -152,10 +136,6 @@
 - URL: https://www.therundown.ai/archive
 - Site query: `site:therundown.ai`
 - RSS: https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml
-
-### Evolving AI
-- URL: https://evolvingai.io/
-- Site query: `site:evolvingai.io`
 
 ### VentureBeat (IA)
 - URL: https://venturebeat.com/category/ai/
