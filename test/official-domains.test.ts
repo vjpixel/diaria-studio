@@ -51,6 +51,10 @@ describe("official-domains registry (#566)", () => {
     it("corrige drift #566 — deepseek.com agora presente", () => {
       assert.ok(domains.has("deepseek.com"), "deepseek.com deve estar em lancamentoDomains após #566");
     });
+
+    it("corrige drift #6613 — z.ai (Z.ai/GLM) agora presente", () => {
+      assert.ok(domains.has("z.ai"), "z.ai deve estar em lancamentoDomains após #6613");
+    });
   });
 
   describe("lancamentoPatterns()", () => {
@@ -165,6 +169,8 @@ describe("official-domains registry (#566)", () => {
       assert.equal(find("deepseek v4 is out")?.domain, "deepseek.com");
       assert.equal(find("Meta releases Llama 4")?.domain, "ai.meta.com");
       assert.equal(find("Mistral unveils Codestral")?.domain, "mistral.ai");
+      assert.equal(find("Z.ai launches GLM-5.3-Flash")?.domain, "z.ai");
+      assert.equal(find("Zhipu AI releases GLM-4.6")?.domain, "z.ai");
     });
 
     it("Z.ai: a serie GLM sugere o dominio oficial a partir do TEXTO (#6613)", () => {
