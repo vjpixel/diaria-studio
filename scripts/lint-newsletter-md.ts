@@ -72,6 +72,7 @@ import {
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
 import {
   checkSecondaryItemCoherence,
+  secondaryItemCoherenceSeverity, // #6441
   type SecondaryItemCoherenceError,
   type SecondaryItemCoherenceReport,
 } from "./lib/lint-checks/secondary-item-coherence.ts"; // #5663
@@ -216,6 +217,7 @@ export {
 } from "./lib/lint-checks/secondary-items-have-summary.ts";
 export {
   checkSecondaryItemCoherence,
+  secondaryItemCoherenceSeverity, // #6441
   type SecondaryItemCoherenceError,
   type SecondaryItemCoherenceReport,
 } from "./lib/lint-checks/secondary-item-coherence.ts"; // #5663
@@ -498,12 +500,30 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     );
 
     if (existsSync(approvedPath)) {
-      runCheckSafely(push, "secondary-item-coherence", "#5663", "gate-blocking", () =>
-        checkSecondaryItemCoherence(
-          md,
-          JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson,
-        ),
-      );
+      // #6441: severidade dinâmica, não mais "gate-blocking" fixo — um
+      // `fabricated-ellipsis` recuperável (summary de origem íntegro; caso
+      // normal por construção, ver docstring de secondary-item-coherence.ts)
+      // vira warn-only, já que Stage 2 (`apply-secondary-item-coherence-
+      // -autofix.ts`) já teve a chance de restaurar o texto antes do gate.
+      // `unbalanced-quote`, ou o caso irrecuperável (summary também
+      // truncado), continuam gate-blocking. Exceção não tratada (JSON
+      // malformado etc.) preserva o fail-safe pré-#6441 de sempre entrar
+      // como gate-blocking.
+      try {
+        const approvedJson = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+        const coherence = checkSecondaryItemCoherence(md, approvedJson);
+        push(
+          "secondary-item-coherence",
+          "#5663",
+          secondaryItemCoherenceSeverity(coherence),
+          coherence.ok,
+          coherence,
+        );
+      } catch (err) {
+        push("secondary-item-coherence", "#5663", "gate-blocking", false, {
+          error: `exceção não tratada em secondary-item-coherence: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
 
     runCheckSafely(push, "no-untranslated-summary", "#3196", "gate-blocking", () =>
