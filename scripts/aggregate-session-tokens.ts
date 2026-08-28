@@ -287,7 +287,14 @@ export function mergeKindDayTotals(rows: KindDayTotals[]): KindDayTotals[] {
     const key = `${row.kind}|${row.day}`;
     const acc = byKey.get(key);
     if (!acc) {
-      byKey.set(key, { ...row, rounds: [...row.rounds], categories: { ...row.categories } });
+      // Cópia PROFUNDA das categorias: `{ ...row.categories }` copiaria só o
+      // objeto externo, deixando cada `CategoryTotals` compartilhado com a
+      // entrada — e o `+=` do ramo de fusão abaixo mutaria a linha original.
+      const categories: KindDayTotals["categories"] = {};
+      for (const [name, cat] of Object.entries(row.categories) as [TokenCategory, CategoryTotals][]) {
+        categories[name] = { ...cat };
+      }
+      byKey.set(key, { ...row, rounds: [...row.rounds], categories });
       continue;
     }
     acc.totalTokens += row.totalTokens;

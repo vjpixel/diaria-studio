@@ -365,6 +365,34 @@ describe("mergeKindDayTotals (#6638)", () => {
     assert.equal(merged[0].categories.implementation?.unavailableCount, 2);
   });
 
+  it("não muta as CATEGORIAS da entrada ao fundir (aliasing: cópia rasa deixaria CategoryTotals compartilhado)", () => {
+    const first: KindDayTotals = {
+      kind: "overnight",
+      day: "260814",
+      rounds: ["260814"],
+      totalTokens: 100,
+      categories: { implementation: { tokens: 100, eventCount: 1, unavailableCount: 0 } },
+    };
+    const input: KindDayTotals[] = [
+      first,
+      {
+        kind: "overnight",
+        day: "260814",
+        rounds: ["260814b"],
+        totalTokens: 50,
+        categories: { implementation: { tokens: 50, eventCount: 1, unavailableCount: 0 } },
+      },
+    ];
+    const merged = mergeKindDayTotals(input);
+    assert.equal(merged[0].categories.implementation?.tokens, 150);
+    // A linha de entrada continua valendo 100 — senão uma 2ª chamada de merge
+    // (ou qualquer leitura posterior de logRows) contaria em dobro.
+    assert.equal(first.categories.implementation?.tokens, 100);
+    assert.equal(first.categories.implementation?.eventCount, 1);
+    // Idempotência: re-fundir o resultado não muda nada.
+    assert.equal(mergeKindDayTotals(merged)[0].categories.implementation?.tokens, 150);
+  });
+
   it("não funde kinds diferentes nem dias diferentes, e não muta a entrada", () => {
     const input: KindDayTotals[] = [
       { kind: "overnight", day: "260814", rounds: ["260814"], totalTokens: 10, categories: {} },
