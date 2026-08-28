@@ -428,14 +428,18 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
     assert.match(finding!.message, /diaria\.beehiiv\.com/);
   });
 
-  it("(g) fixture sem o bloco Temas (estado real de produção, #5257) -> reportado (hub-link-missing) com todos os slugs", () => {
+  it("(g) fixture sem o bloco Temas -> reportado (hub-link-missing) com todos os slugs", () => {
     const findings = evaluateHomeMetaDrift(NO_HUB_LINKS_HTML);
     const finding = findings.find((f) => f.check === "hub-link-missing");
     assert.ok(finding, `esperava achado hub-link-missing: ${JSON.stringify(findings)}`);
     for (const h of HUB_META) {
       assert.match(finding!.message, new RegExp(h.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    assert.match(finding!.message, /#5257/);
+    // #6411 — a instrução mudou junto com o mecanismo: o bloco passou a ser
+    // gerado de HUB_META, então o achado pede REGENERAR a home, não editar o
+    // link à mão (que era o passo de painel Beehiiv do #5257).
+    assert.match(finding!.message, /#6411/);
+    assert.match(finding!.message, /gen-home-page/);
   });
 
   it("hosts de plataforma Beehiiv fora de escopo (badge + CDN) -> sem drift nenhum", () => {

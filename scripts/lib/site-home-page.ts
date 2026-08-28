@@ -28,6 +28,7 @@
 import { stripHtmlBasic } from "./strip-html.ts";
 import { escHtml } from "./html-escape.ts";
 import { parseSitemap } from "./fetch-sitemap.ts";
+import { HUB_META } from "../../workers/arquivo/src/hubs/meta.ts";
 
 export interface HomeFeedEntry {
   slug: string;
@@ -206,8 +207,34 @@ function renderSignupForm(opts: { id: string; onDark?: boolean }): string {
  * a mesma edição visivelmente na home pública. Filtrar aqui torna a função
  * correta independente do que um chamador futuro passar.
  */
+/**
+ * Bloco "Por tema" da home (#6411) — um link por hub publicado, derivado de
+ * `HUB_META` (a MESMA fonte que o eixo `hub-link-missing` de
+ * `scripts/lib/beehiiv-home-meta-check.ts` cruza contra o HTML da home).
+ *
+ * Derivar da fonte, em vez de listar os 7 slugs à mão aqui, é o ponto: o
+ * "4º passo ao publicar um hub novo" (ver a docstring de
+ * `workers/arquivo/src/hubs/meta.ts`) deixa de existir como passo. Hub que
+ * entra em `HUB_META` ganha link na home na próxima regeneração, e o alarme
+ * nunca mais dispara por esse eixo — antes o passo era manual (painel
+ * Beehiiv), e foi por isso que os 7 hubs ficaram sem link de descoberta até
+ * 28/08/2026, com o alarme reabrindo a mesma issue diariamente.
+ *
+ * Aponta pro host absoluto `arquivo.diar.ia.br` porque é ele quem serve
+ * `/temas/{slug}` — no apex, esse path é 404. `detectMissingHubLinks` casa o
+ * path independente de host, então as duas formas satisfariam o eixo; só a
+ * absoluta de fato funciona pro leitor.
+ */
+function renderTopicLinks(): string {
+  return HUB_META.map(
+    (hub) =>
+      `        <a href="https://arquivo.diar.ia.br/temas/${escHtml(hub.slug)}">${escHtml(hub.label)}</a>`,
+  ).join("\n");
+}
+
 export function buildIndexHtml(opts: BuildIndexHtmlOptions): string {
   const { feature } = opts;
+  const topicLinks = renderTopicLinks();
   const archive = feature ? opts.archive.filter((entry) => entry.slug !== feature.slug) : opts.archive;
 
   const featureHtml = feature
@@ -354,6 +381,15 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .archive-title a:hover { color: var(--teal-deep); }
 .archive-dek { font-family: Georgia, serif; font-size: 13px; line-height: 1.4; color: var(--ink-soft); font-style: italic; margin: 0; }
 
+/* Temas (#6411) */
+.topics { padding: 0 0 64px; }
+.topics-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.topics-head h2 { font-size: clamp(28px, 5vw, 40px); font-weight: 500; letter-spacing: -0.02em; }
+.topics-head a { font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
+.topics-list { display: flex; flex-wrap: wrap; gap: 10px 12px; margin-top: 24px; }
+.topics-list a { font-size: 14px; line-height: 1; padding: 10px 14px; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink-soft); }
+.topics-list a:hover { color: var(--teal-deep); border-color: var(--teal-deep); }
+
 /* Faqs */
 .faqs { padding: 64px 0; }
 .faqs .wrap { display: grid; grid-template-columns: 1fr 1.4fr; gap: 48px; }
@@ -467,6 +503,19 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       <hr class="rule">
       <div class="archive-grid">
 ${archiveCards}
+      </div>
+    </div>
+  </section>
+
+  <section class="topics" id="topics">
+    <div class="wrap">
+      <div class="topics-head">
+        <h2>Por tema</h2>
+        <a href="https://arquivo.diar.ia.br/">Ver arquivo completo →</a>
+      </div>
+      <hr class="rule">
+      <div class="topics-list">
+${topicLinks}
       </div>
     </div>
   </section>
