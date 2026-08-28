@@ -175,12 +175,22 @@ describe("clickCountsForUrl", () => {
 });
 
 describe("uniqueOpensOf", () => {
+  // #6185 self-review: `uniqueOpensOf` é genérico (`<T extends ClickWindowPost>`)
+  // desde a migração pra leitura unificada Beehiiv+Kit — passar um objeto
+  // literal "fresco" direto pro argumento faz o TS inferir T a partir do
+  // literal e aplicar excess-property-check contra `ClickWindowPost` (`id`
+  // não existe nesse shape, só em `BeehiivCachePost`). Tipar a variável
+  // como `BeehiivCachePost` primeiro evita o "fresh literal" e deixa o
+  // shape real (`id` presente, só não usado por `uniqueOpensOf`) do jeito
+  // que sempre foi — sem mudar nenhum comportamento de runtime.
   it("lê stats.email.unique_opens", () => {
-    assert.equal(uniqueOpensOf({ id: "x", stats: { email: { unique_opens: 179 } } }), 179);
+    const post: BeehiivCachePost = { id: "x", stats: { email: { unique_opens: 179 } } };
+    assert.equal(uniqueOpensOf(post), 179);
   });
   it("post undefined ou sem stats retorna 0", () => {
     assert.equal(uniqueOpensOf(undefined), 0);
-    assert.equal(uniqueOpensOf({ id: "x" }), 0);
+    const post: BeehiivCachePost = { id: "x" };
+    assert.equal(uniqueOpensOf(post), 0);
   });
 });
 
