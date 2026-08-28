@@ -48,6 +48,7 @@ import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listTagSubscribersPage } from "./lib/kit-broadcasts.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
+import { KIT_NATIVE_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import {
   auditKitTagAgainstBeehiivActive,
@@ -71,9 +72,9 @@ function resolveConfiguredAudienceTag(): string {
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
       kit_diaria?: { audience_tag?: string };
     };
-    return cfg.kit_diaria?.audience_tag ?? "kit-nativo";
+    return cfg.kit_diaria?.audience_tag ?? KIT_NATIVE_SIGNUP_MARKER;
   } catch {
-    return "kit-nativo";
+    return KIT_NATIVE_SIGNUP_MARKER;
   }
 }
 
