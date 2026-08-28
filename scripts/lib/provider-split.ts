@@ -5,9 +5,9 @@
  * agregado de um envio esconde a única coisa que importava no incidente de
  * 28/08/2026: a edição 260827 saiu pelo Kit com 13,97% de abertura contra
  * 34,8% de média na Beehiiv, e a queda estava INTEIRA no Gmail — 8,5% de
- * abertura entre os 434 endereços `@gmail.com` (72,8% da lista) contra 28,4%
- * em todo o resto. O agregado sozinho não distingue "conteúdo ruim" de "um
- * provedor filtrou o envio"; este corte distingue.
+ * abertura entre os endereços `@gmail.com` (434 dos 596 assinantes ativos,
+ * 72,8%) contra 28,4% em todo o resto. O agregado sozinho não distingue
+ * "conteúdo ruim" de "um provedor filtrou o envio"; este corte distingue.
  *
  * ## Por que o corte Gmail × resto é destacado à parte
  *
@@ -67,6 +67,15 @@ export function classifyProvider(email: string): Provider {
   return "Outros";
 }
 
+/**
+ * Entrada de {@link computeProviderSplit}.
+ *
+ * **Os três campos são normalizados antes do cruzamento** — `trim`, caixa
+ * baixa e deduplicação. Um caller que passe `["A@x.com", "a@x.com "]` vê 1
+ * destinatário, não 2. Isso está aqui, no tipo, e não só na docstring da
+ * função, porque a entrada vem de API externa e quem lê a interface para
+ * montar a chamada não passa necessariamente pelo corpo dela (#6491).
+ */
 export interface ProviderSplitInput {
   /** Quem recebeu o envio. Duplicatas e diferenças de caixa são absorvidas. */
   recipients: readonly string[];
