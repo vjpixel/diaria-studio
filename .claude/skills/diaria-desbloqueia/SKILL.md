@@ -135,6 +135,23 @@ da política, aplicar o default e rotear, sem gastar turno de pergunta.
 
 ## Passo 5 — relatório final
 
+**Guard obrigatório antes de escrever qualquer "pronto pro helios"/"fica pro
+develop": re-rodar `npx tsx scripts/desbloqueia-scan.ts` (ou, por issue,
+reler o label + o comentário `route-issue` mais recente) e citar o campo
+`track` retornado — nunca o recall de prosa lida antes ("decisão
+registrada" ≠ "track: overnight"). Mesma classe de bug do #573
+("validar afirmação sobre estado externo via TS determinístico antes de
+relayar pro editor"), aqui aplicada a `classifyExecTrack` em vez de
+Beehiiv/LinkedIn/Facebook: um comentário em prosa dizendo "Roteado para
+overnight" pode estar desatualizado se o label que a classificação
+mecânica lê (ex: `trade-off-real`) não foi removido — foi exatamente o
+que aconteceu com #5125 em 260828. Ler "Roteado para develop" e escrever
+"pronto pro helios" no relatório é o mesmo erro pelo lado inverso —
+substituir o valor mecânico já visível por um padrão genérico
+("decisão registrada = resolvido = helios pega"). Nenhum dos dois é
+aceitável: o relatório só pode nomear `helios`/overnight para uma issue
+cujo `track` mecânico, checado nesta mesma rodada, é `overnight`.
+
 Terminar com um resumo, não uma lista de comandos executados:
 
 ```
