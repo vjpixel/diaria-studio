@@ -333,6 +333,7 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { createOrUpdateSubscriber, getSubscriberById } from "./lib/kit-subscribers.ts"; // #6339
@@ -857,7 +858,26 @@ export async function verifyPromotedToBeehiiv(
  * específico, a resposta do POST já seria confiável.
  */
 export async function promoteKitSubscription(email: string, apiKey: string): Promise<{ id: number }> {
-  const subscriber = await createOrUpdateSubscriber({ email_address: email, state: "active" }, { apiKey });
+  // #6425 Parte B: regressão do switchover — este POST saía sem `fields`,
+  // então todo cadastro promovido por score entrava no Kit sem atribuição
+  // nenhuma (indistinguível de "api: direct/(none)"), igual ao par Beehiiv
+  // resolvia via `BREVO_DIARIA_PROMOCAO_SCORE_UTM` (#4530). Também grava o
+  // marcador `origem_cadastro` próprio (nem funil Worker, nem sync em lote
+  // da Beehiiv) — ver `scripts/lib/shared/kit-signup-origin.ts`.
+  const subscriber = await createOrUpdateSubscriber(
+    {
+      email_address: email,
+      state: "active",
+      fields: {
+        utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+        utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+        utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+        referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+        [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_SCORE_PROMOTION_SIGNUP_MARKER,
+      },
+    },
+    { apiKey },
+  );
   return { id: subscriber.id };
 }
 

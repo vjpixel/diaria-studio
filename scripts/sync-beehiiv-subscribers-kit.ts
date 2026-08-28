@@ -60,6 +60,7 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasMorePages } from "./backup-beehiiv.ts";
 import { listAllKitSubscribers, createOrUpdateSubscriber } from "./lib/kit-subscribers.ts";
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -99,6 +100,16 @@ interface BeehiivPage {
 
 export interface FetchBeehiivDeps {
   fetchImpl?: typeof fetch;
+}
+
+/**
+ * Pura — `fields` gravado por este sync no `POST /v4/subscribers`
+ * (#6425 Parte B, ver comentário no call site em `main()`). Extraída pra
+ * ser testável sem mock de rede — `main()` não expõe `fetchImpl` pro lado
+ * Kit (mesma limitação aceita de sempre, ver docstring do teste).
+ */
+export function buildBeehiivSyncKitFields(): Record<string, string> {
+  return { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER };
 }
 
 /**
@@ -293,7 +304,19 @@ export async function main(rootDirOverride?: string): Promise<void> {
   let failed = 0;
   for (const email of missing) {
     try {
-      await createOrUpdateSubscriber({ email_address: email, state: "active" }, kitConfig);
+      // #6425 Parte B: sem `fields`, todo cadastro copiado por este sync
+      // entrava indistinguível de "api: direct/(none)". Não há UTM
+      // POR ASSINANTE disponível neste call site (`fetchActiveBeehiivEmails`
+      // só devolve e-mail+status) — a recuperação do UTM real de quem
+      // entrou por este caminho é trabalho do backfill (#6318,
+      // `backfill-kit-attribution.ts`), não deste marcador. O que dá pra
+      // gravar aqui, e não gravava, é o `origem_cadastro` — distingue
+      // "copiado em lote da Beehiiv" de "entrou pelo funil" (`kit-nativo`)
+      // e de "promovido por score" (`brevo-diaria-score`).
+      await createOrUpdateSubscriber(
+        { email_address: email, state: "active", fields: buildBeehiivSyncKitFields() },
+        kitConfig,
+      );
       synced++;
     } catch (e) {
       failed++;

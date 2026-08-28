@@ -47,6 +47,20 @@ export type KitSubscriberListStatus =
   | "inactive"
   | "all";
 
+/** Bloco `attribution` do subscriber quando pedido via `include[]=attribution`
+ *  (#6425 Parte A) — medido ao vivo só pra quem entrou pelo form nativo
+ *  hospedado no Kit; quem foi criado via API não carrega este bloco (fica
+ *  `undefined`, ver `kit-attribution.ts::montarPlanoNativo`). */
+export interface KitSubscriberAttribution {
+  referrer: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  source_type: string | null;
+  source_name: string | null;
+  source_mechanism: string | null;
+}
+
 export interface KitSubscriberSummary {
   id: number;
   email_address: string;
@@ -55,10 +69,19 @@ export interface KitSubscriberSummary {
   /** Custom fields do assinante (`{apoio_nivel: "mantenedor", ...}`) — ver
    *  ressalva "não confirmado ao vivo" na docstring do módulo. */
   fields?: Record<string, string>;
+  /** Só presente quando a chamada pediu `include[]=attribution` — ver
+   *  `KitSubscriberAttribution`. */
+  attribution?: KitSubscriberAttribution;
 }
 
 export async function listKitSubscribersPage(
-  opts: { perPage?: number; after?: string; status?: KitSubscriberListStatus; config?: KitConfig } = {},
+  opts: {
+    perPage?: number;
+    after?: string;
+    status?: KitSubscriberListStatus;
+    includeAttribution?: boolean;
+    config?: KitConfig;
+  } = {},
 ): Promise<{ subscribers: KitSubscriberSummary[]; pagination: KitPagination }> {
   const params = new URLSearchParams();
   if (opts.perPage) params.set("per_page", String(opts.perPage));
@@ -66,6 +89,10 @@ export async function listKitSubscribersPage(
   // Sem `status`, a API devolve só `active` — o default dela, preservado aqui
   // pra não mudar o resultado dos callers que existiam antes do #6318.
   if (opts.status) params.set("status", opts.status);
+  // #6425 Parte A: só a LISTA aceita `include[]=attribution` (confirmado ao
+  // vivo) — é o que destrava recuperar a atribuição nativa de quem entrou
+  // pelo form hospedado no Kit sem passar por `subscribeToKit`.
+  if (opts.includeAttribution) params.set("include[]", "attribution");
   const qs = params.toString();
   return kitFetch(`/subscribers${qs ? `?${qs}` : ""}`, { config: opts.config });
 }
@@ -74,10 +101,26 @@ export async function listKitSubscribersPage(
  * Pagina `/v4/subscribers` inteiro. Volume esperado (algumas centenas a
  * ~2 mil, ver #6047) — sem checkpoint/resumo, roda do zero a cada chamada
  * (barato o bastante pra não precisar).
+ *
+ * **Armadilha operacional (#6425 Parte C)**: este endpoint de LISTA serve
+ * `fields` DEFASADO por um tempo depois de um `PATCH /v4/subscribers/{id}`
+ * — medido ao vivo em 27/08/2026, logo após um `--push` que gravou 3/3 com
+ * sucesso: o GET SINGULAR (`getSubscriberById`) já devolvia os campos
+ * atualizados, mas esta listagem continuou devolvendo `null` nos mesmos
+ * campos por um tempo. Consequência prática: rodar `backfill-kit-
+ * attribution.ts`/`backfill-kit-native-attribution.ts` (que decidem
+ * idempotência lendo `fields` DESTA listagem) logo depois de um `--push`
+ * pode reportar "a gravar: N" pra quem já está gravado — inofensivo (o
+ * PATCH reescreve o mesmo valor), mas engana quem confere achando que o
+ * `--push` anterior não pegou. Não é bug deste módulo nem dos backfills —
+ * é o comportamento medido da API. Se um dia isso importar (ex: um caller
+ * que trata "a gravar > 0" como falha), reler via `getSubscriberById` antes
+ * de contar como divergência real, em vez de confiar cegamente nesta lista
+ * logo após uma escrita.
  */
 export async function listAllKitSubscribers(
   config?: KitConfig,
-  opts: { status?: KitSubscriberListStatus } = {},
+  opts: { status?: KitSubscriberListStatus; includeAttribution?: boolean } = {},
 ): Promise<KitSubscriberSummary[]> {
   const all: KitSubscriberSummary[] = [];
   let after: string | undefined;
@@ -86,6 +129,7 @@ export async function listAllKitSubscribers(
       perPage: 500,
       after,
       status: opts.status,
+      includeAttribution: opts.includeAttribution,
       config,
     });
     all.push(...subscribers);
