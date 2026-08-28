@@ -142,6 +142,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { buildArchivePageHtml, UnresolvedMergeTagError } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
@@ -327,6 +328,100 @@ function sitePublishBranch(slug: string): string {
 }
 
 /**
+ * Roda `npx tsx scripts/lib/session-registry.ts merge-lock-*`, síncrono,
+ * mesmo mecanismo/script que `merge-train-live.ts` usa pro merge lock
+ * cross-sessão (#6626). Nunca lança em "denied" (exit 1 — outra sessão
+ * segura o lock, concorrência esperada) — só em erro genuíno de spawn/I/O
+ * (script ausente, `npx`/`tsx` quebrado). Injetável pra teste (nunca chama
+ * o subprocesso de verdade fora de `defaultLockRunner`).
+ */
+export type LockRunner = (args: string[], cwd: string) => { ok: boolean; stdout: string; stderr: string };
+
+const defaultLockRunner: LockRunner = (args, cwd) => {
+  try {
+    const stdout = execFileSync("npx", ["tsx", "scripts/lib/session-registry.ts", ...args], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString("utf8");
+    return { ok: true, stdout, stderr: "" };
+  } catch (e) {
+    const err = e as { status?: number | null; stdout?: Buffer | string; stderr?: Buffer | string };
+    return {
+      ok: false,
+      stdout: err.stdout ? err.stdout.toString() : "",
+      stderr: err.stderr ? err.stderr.toString() : "",
+    };
+  }
+};
+
+/**
+ * Pausa síncrona real (`Atomics.wait` sobre um `SharedArrayBuffer` — não
+ * precisa de `node:timers/promises`, então o retry de lock continua
+ * síncrono como o resto de `commitAndPushSitePage`, sem forçar a função
+ * inteira a virar `async`). Injetável pra teste — a suíte nunca dorme de
+ * verdade.
+ */
+export type SleepFn = (ms: number) => void;
+
+const defaultSleep: SleepFn = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+// #6626: bounded e curto — mesma disciplina do `MAX_LOCK_RETRIES`/
+// `LOCK_RETRY_DELAY_MS` de `merge-train-live.ts`, mas pra uma janela bem
+// mais curta (troca de checkout, não um merge inteiro), então o retry
+// também é mais curto.
+const SITE_PUBLISH_LOCK_RETRY_ATTEMPTS = 3;
+const SITE_PUBLISH_LOCK_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Adquire o merge lock cross-sessão (#6626) antes de mexer no checkout
+ * compartilhado — mesma classe de proteção que `merge-train-live.ts` já usa
+ * em torno de "manipular o checkout compartilhado temporariamente pra uma
+ * ação git ligada a `master`" (ver docblock de `commitAndPushSitePage`).
+ *
+ * A identidade usada aqui (`sessionId`) é local a ESTA chamada
+ * (`randomUUID`, gerada uma vez em `commitAndPushSitePage`) — não precisa
+ * ser a sessão real do coordenador: o lock serializa qualquer contestante
+ * que tente adquiri-lo, não só quem sabe o session-id de quem o detém, e
+ * não há reentrância dentro desta função (1 acquire, 1 release, sempre o
+ * mesmo id).
+ *
+ * Retry curto e bounded só pro caso comum de contenção transitória
+ * (`merge-lock-acquire` nega quando OUTRA sessão segura o lock — não é
+ * erro, é concorrência esperada); lança se esgotar as tentativas, antes de
+ * tocar qualquer arquivo/branch.
+ */
+function acquireSitePublishLock(rootDir: string, sessionId: string, lock: LockRunner, sleep: SleepFn): void {
+  for (let attempt = 1; attempt <= SITE_PUBLISH_LOCK_RETRY_ATTEMPTS; attempt++) {
+    const res = lock(["merge-lock-acquire", "--session-id", sessionId], rootDir);
+    if (res.ok) return;
+    if (attempt < SITE_PUBLISH_LOCK_RETRY_ATTEMPTS) sleep(SITE_PUBLISH_LOCK_RETRY_DELAY_MS);
+  }
+  throw new Error(
+    `merge lock não adquirido após ${SITE_PUBLISH_LOCK_RETRY_ATTEMPTS} tentativas (#6626) — outra sessão detém ` +
+      "o checkout compartilhado agora. Commit/push de site-page abortado antes de tocar qualquer arquivo/branch.",
+  );
+}
+
+/**
+ * Libera o merge lock adquirido por `acquireSitePublishLock`. Fail-soft de
+ * propósito: uma falha ao liberar nunca deve mascarar o resultado real do
+ * commit/push que já aconteceu (o `finally` que chama isto não pode lançar
+ * por cima de um erro genuíno em curso) — loga em stderr e segue. Um lock
+ * preso expira sozinho pelo TTL do `session-registry` (mesma rede de
+ * segurança que qualquer outro consumidor do merge lock já depende).
+ */
+function releaseSitePublishLock(rootDir: string, sessionId: string, lock: LockRunner): void {
+  const res = lock(["merge-lock-release", "--session-id", sessionId], rootDir);
+  if (!res.ok) {
+    process.stderr.write(
+      `[site-page] aviso: merge-lock-release falhou (${res.stderr || res.stdout || "sem detalhe"}) — o TTL expira sozinho.\n`,
+    );
+  }
+}
+
+/**
  * Corpo do PR de publicação de página — documenta a decisão do #6598 (PR
  * fica ABERTO, nunca auto-merge) diretamente no PR, pro coordenador de uma
  * rodada overnight/develop futura (ou o editor) entender o porquê sem
@@ -386,6 +481,14 @@ function buildSitePagePrBody(slug: string): string {
  * `push` roda SEMPRE (não só quando há commit novo nesta chamada).
  *
  * `git`/`gh` injetados — não roda comando de verdade fora de `productionDeps`.
+ *
+ * #6626: a janela inteira entre `checkout -B site-publish/{slug}` e o
+ * `checkout` de volta pro branch original é protegida pelo merge lock
+ * cross-sessão (`acquireSitePublishLock`/`releaseSitePublishLock`, mesmo
+ * mecanismo de `merge-train-live.ts`) — sem isso, uma sessão concorrente no
+ * mesmo checkout compartilhado podia observar/operar na branch errada
+ * durante essa janela (achado do review consolidado da rodada 260828f).
+ * `lock`/`sleep` injetados — mesmo padrão de `git`/`gh` acima.
  */
 export function commitAndPushSitePage(
   rootDir: string,
@@ -393,6 +496,8 @@ export function commitAndPushSitePage(
   git: GitRunner = defaultGitRunner,
   sitemapRelPath?: string,
   gh: GhRunner = defaultGhRunner,
+  lock: LockRunner = defaultLockRunner,
+  sleep: SleepFn = defaultSleep,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean } {
   const originalBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
   if (originalBranch !== "master") {
@@ -418,6 +523,10 @@ export function commitAndPushSitePage(
   let prUrl: string | undefined;
   let prNumber: number | undefined;
   let prCreated = false;
+
+  // #6626: id local a esta chamada — ver docblock de `acquireSitePublishLock`.
+  const lockSessionId = `site-publish-${randomUUID()}`;
+  acquireSitePublishLock(rootDir, lockSessionId, lock, sleep);
 
   try {
     // -B (não -b): sempre recria a branch a partir do master atual, mesmo se
@@ -501,6 +610,9 @@ export function commitAndPushSitePage(
     // Sempre volta pro branch original, mesmo em erro — o checkout
     // compartilhado nunca fica preso numa branch de publicação de página.
     git(["checkout", originalBranch], rootDir);
+    // #6626: libera o lock só DEPOIS do checkout de volta — a janela
+    // protegida cobre a troca inteira, não só metade dela.
+    releaseSitePublishLock(rootDir, lockSessionId, lock);
   }
 
   return { committed, pushed, prUrl, prNumber, prCreated };
@@ -513,11 +625,18 @@ export function commitAndPushSitePage(
  * @param gh Injetável (#6598, mesmo motivo do `git` acima) — permite
  *   exercitar `gh pr create`/`gh pr list` sem depender do CLI `gh` real.
  *   Default: `defaultGhRunner` (gh de verdade).
+ * @param lock Injetável (#6626, mesmo motivo do `git`/`gh` acima) — permite
+ *   exercitar o merge lock sem depender de `session-registry.ts` real.
+ *   Default: `defaultLockRunner` (subprocesso de verdade).
+ * @param sleep Injetável (#6626) — pausa entre retries de lock. Default:
+ *   `defaultSleep` (sono real via `Atomics.wait`).
  */
 export function productionDeps(
   rootDir: string = ROOT,
   git: GitRunner = defaultGitRunner,
   gh: GhRunner = defaultGhRunner,
+  lock: LockRunner = defaultLockRunner,
+  sleep: SleepFn = defaultSleep,
 ): PublishPageDeps {
   return {
     readEditionInputs,
@@ -527,7 +646,15 @@ export function productionDeps(
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     publish: (slug, sitemapPath?: string) => {
-      const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(rootDir, slug, git, sitemapPath, gh);
+      const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(
+        rootDir,
+        slug,
+        git,
+        sitemapPath,
+        gh,
+        lock,
+        sleep,
+      );
       return { pushed, prUrl, prNumber, prCreated };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),

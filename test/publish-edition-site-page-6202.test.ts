@@ -50,6 +50,8 @@ import {
   type PublishPageDeps,
   type GitRunner,
   type GhRunner,
+  type LockRunner,
+  type SleepFn,
 } from "../scripts/publish-edition-site-page.ts";
 import type { EditionPageInputs } from "../scripts/lib/edition-site-page.ts";
 
@@ -60,6 +62,37 @@ const INPUTS: EditionPageInputs = {
   subtitle: "Subtítulo",
   publishedAtIso: "2026-08-27T09:00:00Z",
 };
+
+/**
+ * lock de teste (#6626), escopo de módulo — usado tanto pelas suítes de
+ * `commitAndPushSitePage` quanto de `productionDeps`. Por padrão concede na
+ * 1ª tentativa, sempre; `ok` por chamada (`acquireResults`) permite simular
+ * negação/retry sem tocar o subprocesso real. Nunca chama
+ * `session-registry.ts` de verdade.
+ */
+function makeLock(acquireResults: boolean[] = []) {
+  const calls: string[][] = [];
+  let acquireCall = 0;
+  const lock: LockRunner = (args) => {
+    calls.push(args);
+    if (args[0] === "merge-lock-acquire") {
+      const ok = acquireCall < acquireResults.length ? acquireResults[acquireCall] : true;
+      acquireCall++;
+      return { ok, stdout: ok ? "ok\n" : "", stderr: ok ? "" : "denied (held by another session)\n" };
+    }
+    return { ok: true, stdout: "ok\n", stderr: "" };
+  };
+  return { lock, calls };
+}
+
+/** sleep de teste — nunca dorme de verdade, só registra que foi chamado. */
+function makeSleep() {
+  const calls: number[] = [];
+  const sleep: SleepFn = (ms) => {
+    calls.push(ms);
+  };
+  return { sleep, calls };
+}
 
 describe("#6202 extractSlugFromPostUrl", () => {
   it("extrai o slug de uma URL de edição", () => {
@@ -562,7 +595,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
     const { gh } = makeGh();
-    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r.committed, true);
     assert.equal(r.pushed, true);
     assert.equal(r.prCreated, true);
@@ -583,7 +616,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
     const { gh } = makeGh();
-    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     const checkoutB = calls.find((c) => c[0] === "checkout" && c[1] === "-B")!;
     assert.deepEqual(checkoutB, ["checkout", "-B", "site-publish/abc"]);
     const push = calls.find((c) => c[0] === "push")!;
@@ -597,7 +630,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
     const { gh } = makeGh();
-    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     const commitCall = calls.find((c) => c[0] === "commit")!;
     assert.deepEqual(commitCall.slice(-2), ["--", "workers/site/public/p/abc"]);
   });
@@ -610,7 +643,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       diff: () => "workers/site/public/p/abc/index.html\nscripts/algum-arquivo-de-outra-sessao.ts\n",
     });
     const { gh } = makeGh();
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /algum-arquivo-de-outra-sessao\.ts/);
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /algum-arquivo-de-outra-sessao\.ts/);
     assert.ok(!calls.some((c) => c[0] === "commit"), "nunca commita quando há staged alheio");
     assert.ok(!calls.some((c) => c[0] === "push"), "nunca empurra quando o commit foi abortado");
     assert.deepEqual(calls[calls.length - 1], ["checkout", "master"], "volta pro branch original mesmo em erro");
@@ -630,8 +663,8 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       return "";
     };
     const { gh } = makeGh();
-    const r1 = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
-    const r2 = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const r1 = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    const r2 = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r1.committed, true);
     assert.equal(r2.committed, false, "sem diff no path, não há o que comitar");
     assert.equal(r2.pushed, true, "push ainda roda mesmo sem commit novo nesta chamada");
@@ -658,7 +691,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       return "";
     };
     const { gh } = makeGh();
-    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r.committed, false, "nada novo a commitar");
     assert.equal(r.pushed, true, "mas o push roda mesmo assim");
     assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
@@ -667,7 +700,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
   it("REGRESSÃO P1-C: branch != master ⇒ lança, sem checkout/add/commit/push (#6202 review)", () => {
     const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
     const { gh } = makeGh();
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /overnight\/algo/);
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /overnight\/algo/);
     assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index/branch");
   });
 
@@ -680,7 +713,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
       },
     });
     const { gh } = makeGh();
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh), /non-fast-forward/);
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /non-fast-forward/);
     assert.deepEqual(
       calls[calls.length - 1],
       ["checkout", "master"],
@@ -696,7 +729,7 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     const { gh, calls: ghCalls } = makeGh({
       "pr list": () => JSON.stringify([{ number: 42, url: "https://github.com/vjpixel/diaria-studio/pull/42" }]),
     });
-    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r.prCreated, false, "PR existente reusado, não criado de novo");
     assert.equal(r.prNumber, 42);
     assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/42");
@@ -706,11 +739,110 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
   it("nunca chama wrangler nem git push origin master — mecanismo é branch + PR", () => {
     const { git, calls } = makeGit({ status: () => " M x\n", diff: () => "workers/site/public/p/abc\n" });
     const { gh } = makeGh();
-    commitAndPushSitePage("/repo", "abc", git, undefined, gh);
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     for (const c of calls) {
       assert.notEqual(c[0], "wrangler");
       if (c[0] === "push") assert.ok(!c.includes("master"), "push nunca referencia master diretamente");
     }
+  });
+
+  describe("#6626 merge lock cross-sessão em torno da troca de checkout", () => {
+    it("adquire o lock ANTES do checkout -B e libera DEPOIS do checkout de volta — nesta ordem", () => {
+      const order: string[] = [];
+      const { git } = makeGit({
+        status: () => " M workers/site/public/p/abc/index.html\n",
+        diff: () => "workers/site/public/p/abc/index.html\n",
+      });
+      const trackedGit: GitRunner = (args, cwd) => {
+        order.push(`git:${args[0]}${args[1] === "-B" ? ":-B" : ""}`);
+        return git(args, cwd);
+      };
+      const { gh } = makeGh();
+      const { lock: rawLock } = makeLock();
+      const trackedLock: LockRunner = (args, cwd) => {
+        order.push(`lock:${args[0]}`);
+        return rawLock(args, cwd);
+      };
+      const { sleep } = makeSleep();
+
+      commitAndPushSitePage("/repo", "abc", trackedGit, undefined, gh, trackedLock, sleep);
+
+      const acquireIdx = order.indexOf("lock:merge-lock-acquire");
+      const checkoutBIdx = order.indexOf("git:checkout:-B");
+      const checkoutBackIdx = order.lastIndexOf("git:checkout");
+      const releaseIdx = order.indexOf("lock:merge-lock-release");
+
+      assert.ok(acquireIdx !== -1 && checkoutBIdx !== -1 && checkoutBackIdx !== -1 && releaseIdx !== -1);
+      assert.ok(acquireIdx < checkoutBIdx, "lock adquirido antes do checkout -B");
+      assert.ok(checkoutBackIdx < releaseIdx, "checkout de volta acontece antes do lock ser liberado");
+      // O `rev-parse` inicial não precisa do lock — só lê a branch atual.
+      assert.equal(order[0], "git:rev-parse", "rev-parse roda antes de qualquer acquire");
+    });
+
+    it("libera o lock mesmo quando o push lança (finally cobre erro no meio da janela)", () => {
+      const { git } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+        push: () => {
+          throw new Error("non-fast-forward");
+        },
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock();
+      const { sleep } = makeSleep();
+
+      assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep), /non-fast-forward/);
+
+      assert.ok(lockCalls.some((c) => c[0] === "merge-lock-acquire"), "lock foi adquirido");
+      assert.ok(lockCalls.some((c) => c[0] === "merge-lock-release"), "lock foi liberado mesmo com o push lançando");
+    });
+
+    it("lock negado nas 2 primeiras tentativas, concedido na 3ª ⇒ segue normalmente, com retry entre elas", () => {
+      const { git } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock([false, false, true]);
+      const { sleep, calls: sleepCalls } = makeSleep();
+
+      const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep);
+
+      assert.equal(r.pushed, true);
+      assert.equal(
+        lockCalls.filter((c) => c[0] === "merge-lock-acquire").length,
+        3,
+        "3 tentativas de acquire — nega, nega, concede",
+      );
+      assert.equal(sleepCalls.length, 2, "dorme entre a 1ª e 2ª, e entre a 2ª e 3ª tentativa — nunca após a última");
+    });
+
+    it("lock negado em TODAS as tentativas ⇒ lança, sem tocar checkout/commit/push (#6626)", () => {
+      const { git, calls: gitCalls } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock([false, false, false]);
+      const { sleep } = makeSleep();
+
+      assert.throws(
+        () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep),
+        /merge lock não adquirido/,
+      );
+
+      assert.equal(
+        lockCalls.filter((c) => c[0] === "merge-lock-acquire").length,
+        3,
+        "esgota as 3 tentativas, nunca mais",
+      );
+      assert.ok(!lockCalls.some((c) => c[0] === "merge-lock-release"), "nunca libera um lock que não adquiriu");
+      assert.deepEqual(
+        gitCalls.map((c) => c[0]),
+        ["rev-parse"],
+        "para no rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
+      );
+    });
   });
 });
 
@@ -743,7 +875,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
       if (args.slice(0, 2).join(" ") === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/1\n";
       return "";
     };
-    const deps = productionDeps("/repo", git, gh);
+    const deps = productionDeps("/repo", git, gh, makeLock().lock, makeSleep().sleep);
     const result = deps.publish("meu-slug");
     assert.equal(result.pushed, true);
     assert.equal(result.prCreated, true);
