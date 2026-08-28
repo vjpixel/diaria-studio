@@ -111,6 +111,13 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
  * `findAgedClaims` trata `null` como "não reportar" (mesmo princípio dos
  * demais métodos de `buildRealConsultor` acima).
  */
+
+  // #6443 — claim TTL mechanism: CLAIM_STALE_AGE_MS (6h) in scripts/lib/claim-staleness.ts
+  // automatically flags aged claims via findAgedClaims. The session-claim mechanism
+  // uses claim-staleness (not heartbeat-staleness) to prevent perpetual claims from
+  // cron sessions (continuo, overnight) that never produce PRs. Aged claims (>6h without
+  // open PR) are reported here; manual unclaim-issue (session-registry) releases them.
+
 function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | null {
   return (issueNumber: number): boolean | null => {
     const result = spawnSync(

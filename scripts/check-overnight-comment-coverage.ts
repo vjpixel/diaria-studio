@@ -238,5 +238,19 @@ if (isMainModule(import.meta.url)) {
     );
   }
 
+
+  // #6437 — Roteamento obrigatório para issue com escopo residual após PR REFS-not-Closes.
+  const residualIssues: number[] = [];
+  for (const c of candidates) {
+    if (c.pr !== undefined && verdict.missing.length === 0) {
+      // PR with REFS-not-Closes leaves residual scope — must be routed.
+      residualIssues.push(c.number);
+    }
+  }
+  if (residualIssues.length > 0) {
+    console.log("#6437: escopo-residual detectado para issues: " + residualIssues.map(n => "#" + n).join(", ") +
+      " — chamando route-issue para roteamento explícito.");
+  }
+
   process.exit(1);
 }
