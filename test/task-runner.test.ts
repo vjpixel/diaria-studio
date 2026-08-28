@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runScheduledTask, execTsxStep, type StepExecResult, type AppendLogFn } from "../scripts/lib/task-runner.ts";
 import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
+import type { GitSyncResult } from "../scripts/lib/git-sync.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NOOP_FIXTURE = "test-fixtures/clarice-sync-daily/noop-exit0.ts";
@@ -417,5 +418,111 @@ describe("runScheduledTask — injeção de relógio (now)", () => {
     } finally {
       rmSync(workDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("runScheduledTask — sync de código antes dos passos (#6431)", () => {
+  let workDir: string;
+
+  before(() => {
+    workDir = mkdtempSync(join(tmpdir(), "task-runner-sync-"));
+  });
+
+  after(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("syncCode injetado é chamado antes dos passos e seu resultado é logado", () => {
+    const tempLogPath = join(workDir, "sync-temp.log");
+    const logPathOverride = join(workDir, "sync-final.log");
+
+    const mockSyncResult: GitSyncResult = {
+      outcome: "already_up_to_date",
+      message: "já atualizado",
+      branch_before: "master",
+      warnings: [],
+      proceed: true,
+      up_to_date: true,
+      commits_behind: 0,
+    };
+
+    let syncCalled = false;
+    let stepCalled = false;
+
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: () => {
+        syncCalled = true;
+        return mockSyncResult;
+      },
+      execStep: () => {
+        stepCalled = true;
+        return { code: 0, output: "ok" };
+      },
+    });
+
+    assert.equal(syncCalled, true, "esperava syncCode chamado antes dos passos");
+    assert.equal(stepCalled, true, "esperava steps rodarem após sync");
+    assert.equal(result.code, 0);
+
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /\[git-sync\] outcome=already_up_to_date/);
+    const syncIdx = content.indexOf("[git-sync]");
+    const stepIdx = content.indexOf("----- noop -----");
+    assert.ok(syncIdx >= 0, "esperava entrada [git-sync] no log");
+    assert.ok(stepIdx >= 0, "esperava entrada do passo no log");
+    assert.ok(syncIdx < stepIdx, "syncCode deve ser logado ANTES dos passos");
+  });
+
+  it("syncCode que lança exceção (fail-soft #6431) — passos ainda rodam, exit 0", () => {
+    const tempLogPath = join(workDir, "sync-throw-temp.log");
+    const logPathOverride = join(workDir, "sync-throw-final.log");
+
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: () => {
+        throw new Error("simulated sync failure");
+      },
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+
+    assert.equal(result.code, 0, "syncCode falhando não deve abortar a run (fail-soft)");
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /AVISO: sync-code\.ts lançou exceção inesperada/);
+    assert.match(content, /simulated sync failure/);
+    assert.match(content, /----- noop -----/);
+  });
+
+  it("syncCode com warnings loga cada warning individualmente", () => {
+    const tempLogPath = join(workDir, "sync-warn-temp.log");
+    const logPathOverride = join(workDir, "sync-warn-final.log");
+
+    const mockSyncResult: GitSyncResult = {
+      outcome: "synced_stashed",
+      message: "stash+pull+pop",
+      branch_before: "master",
+      warnings: ["aviso 1", "aviso 2"],
+      proceed: true,
+      up_to_date: false,
+      commits_behind: 3,
+    };
+
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      syncCode: () => mockSyncResult,
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+
+    assert.equal(result.code, 0);
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /\[git-sync\] outcome=synced_stashed/);
+    assert.match(content, /\[git-sync\] WARN: aviso 1/);
+    assert.match(content, /\[git-sync\] WARN: aviso 2/);
   });
 });
