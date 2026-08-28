@@ -44,6 +44,7 @@ import {
   readLinkedInWorkerUrl,
   probeCloudflare,
   probeBeehiiv,
+  probeKit,
   probeGraphNode,
   probeClariceCortex,
   probeWorkerHealth,
@@ -124,6 +125,7 @@ describe("INTEGRATIONS (#3848) — cobre todas as integrações listadas na issu
   const EXPECTED_API_IDS = [
     "apoia_se",
     "beehiiv",
+    "kit",
     "brave_search",
     "brevo_clarice",
     "clarice_cortex",
@@ -170,6 +172,7 @@ describe("INTEGRATIONS (#3848) — cobre todas as integrações listadas na issu
     const VALID_PROBES = new Set([
       "cloudflare",
       "beehiiv",
+      "kit",
       "facebook-graph",
       "instagram-graph",
       "clarice-cortex",
@@ -191,15 +194,15 @@ describe("INTEGRATIONS (#3848) — cobre todas as integrações listadas na issu
     }
   });
 
-  it("as 6 integrações com probe real declarado (#3848: 'pelo menos 3-4 mais críticas')", () => {
+  it("as 7 integrações com probe real declarado (#3848: 'pelo menos 3-4 mais críticas'; +kit no #6051)", () => {
     const realProbeIds = INTEGRATIONS.filter((i) =>
-      ["cloudflare", "beehiiv", "facebook-graph", "instagram-graph", "clarice-cortex", "linkedin-worker"].includes(
+      ["cloudflare", "beehiiv", "kit", "facebook-graph", "instagram-graph", "clarice-cortex", "linkedin-worker"].includes(
         i.probe,
       ),
     ).map((i) => i.id);
     assert.deepEqual(
       new Set(realProbeIds),
-      new Set(["cloudflare", "beehiiv", "facebook", "instagram", "clarice_cortex", "linkedin_worker"]),
+      new Set(["cloudflare", "beehiiv", "kit", "facebook", "instagram", "clarice_cortex", "linkedin_worker"]),
     );
   });
 });
@@ -281,6 +284,28 @@ describe("probeBeehiiv (#3848)", () => {
 
   it("rede fora do ar -> error", async () => {
     const r = await probeBeehiiv("key", "pub_1", throwingFetch("network down"));
+    assert.equal(r.reachable, "error");
+  });
+});
+
+describe("probeKit (#6051)", () => {
+  it("200 -> reachable", async () => {
+    const r = await probeKit("key", mockFetch(200, { name: "diária" }));
+    assert.equal(r.reachable, "reachable");
+  });
+
+  it("401 -> unreachable", async () => {
+    const r = await probeKit("key-invalido", mockFetch(401, {}));
+    assert.equal(r.reachable, "unreachable");
+  });
+
+  it("500 -> error", async () => {
+    const r = await probeKit("key", mockFetch(500, {}));
+    assert.equal(r.reachable, "error");
+  });
+
+  it("rede fora do ar -> error", async () => {
+    const r = await probeKit("key", throwingFetch("network down"));
     assert.equal(r.reachable, "error");
   });
 });
@@ -381,7 +406,7 @@ describe("buildIntegrationsData (#3848) — orquestração fim-a-fim", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("totalmente configurado + probes mockados com sucesso -> reachable nas 6 integrações com probe real", async () => {
+  it("totalmente configurado + probes mockados com sucesso -> reachable nas 7 integrações com probe real", async () => {
     clearIntegrationsCache();
     const root = makeTmpRoot("studio-integrations-full-");
     writeFileSync(
@@ -394,6 +419,7 @@ describe("buildIntegrationsData (#3848) — orquestração fim-a-fim", () => {
       APOIA_SE_API_SECRET: "s",
       BEEHIIV_API_KEY: "k",
       BEEHIIV_PUBLICATION_ID: "pub_1",
+      KIT_API_KEY: "k",
       BRAVE_API_KEY: "k",
       BREVO_CLARICE_API_KEY: "k",
       CLARICE_API_KEY: "k",
@@ -419,6 +445,9 @@ describe("buildIntegrationsData (#3848) — orquestração fim-a-fim", () => {
       if (u.includes("beehiiv.com")) {
         return { ok: true, status: 200, json: async () => ({ data: {} }) } as Response;
       }
+      if (u.includes("api.kit.com")) {
+        return { ok: true, status: 200, json: async () => ({ name: "diária" }) } as Response;
+      }
       if (u.includes("graph.facebook.com")) {
         return { ok: true, status: 200, json: async () => ({ id: "ok" }) } as Response;
       }
@@ -436,6 +465,7 @@ describe("buildIntegrationsData (#3848) — orquestração fim-a-fim", () => {
     const byId = Object.fromEntries(data.integrations.map((i) => [i.id, i]));
     assert.equal(byId.cloudflare.reachable, "reachable");
     assert.equal(byId.beehiiv.reachable, "reachable");
+    assert.equal(byId.kit.reachable, "reachable");
     assert.equal(byId.facebook.reachable, "reachable");
     assert.equal(byId.instagram.reachable, "reachable");
     assert.equal(byId.clarice_cortex.reachable, "reachable");
@@ -551,6 +581,7 @@ describe("segurança (#3848): nenhum valor de secret vaza no payload", () => {
       CLOUDFLARE_ACCOUNT_ID: "acc-secret-BBBB2222",
       BEEHIIV_API_KEY: "beehiiv-secret-CCCC3333",
       BEEHIIV_PUBLICATION_ID: "pub-secret-DDDD4444",
+      KIT_API_KEY: "kit-secret-JJJJ0000",
       FACEBOOK_PAGE_ACCESS_TOKEN: "fb-secret-EEEE5555",
       FACEBOOK_PAGE_ID: "fb-page-secret-FFFF6666",
       INSTAGRAM_ACCESS_TOKEN: "ig-secret-GGGG7777",
@@ -565,6 +596,7 @@ describe("segurança (#3848): nenhum valor de secret vaza no payload", () => {
       const u = String(url);
       if (u.includes("api.cloudflare.com")) return { ok: false, status: 401, json: async () => ({}), text: async () => "unauthorized" } as Response;
       if (u.includes("beehiiv.com")) return { ok: false, status: 401, json: async () => ({}), text: async () => "unauthorized" } as Response;
+      if (u.includes("api.kit.com")) return { ok: false, status: 401, json: async () => ({}), text: async () => "unauthorized" } as Response;
       if (u.includes("graph.facebook.com")) {
         return {
           ok: false,

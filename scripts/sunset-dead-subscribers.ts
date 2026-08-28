@@ -96,6 +96,25 @@
  * mas o interruptor segue desligado até o editor decidir armar a execução
  * automática.
  *
+ * ## Backend: só enxerga assinantes Beehiiv, sem checar `platform.config.json` (#6051)
+ *
+ * A seleção parte de `data/beehiiv-backup/` (snapshot Beehiiv) e o
+ * `unsubscribe:true` é um `PUT` hardcoded pra `beehiivApiBase()` — este
+ * script nunca lê `publishing.newsletter.backend`/`SUBSCRIBE_BACKEND`.
+ * Desde o #6339 (26/08/2026), os 3 workers de assinatura já cadastram
+ * assinante novo direto no Kit — a base Beehiiv que este script varre é,
+ * a partir daí, um conjunto CONGELADO (nenhum assinante novo entra nela).
+ * Consequência prática: assinante Kit que se tornar "morto" (nunca abre,
+ * nunca clica) **não é visto por este script** — ele só teria cobertura
+ * quando um `sunset-dead-subscribers-kit.ts` equivalente existir, que
+ * depende de um snapshot/backup do lado Kit ainda não escrito (mesma
+ * lacuna documentada em `edition-cache-reader.ts` pro par
+ * `loadKitCache`/broadcasts, aqui pro eixo de ASSINANTE). Não é uma
+ * regressão de código — é escopo que nunca existiu no lado Kit. A task
+ * segue `enabled: false`, e nenhum `--push` real rodou até aqui (dry-run
+ * só testado com fetch mockado), então o gap não tem efeito observável
+ * ainda; registrar aqui para quando a task for armada.
+ *
  * ## Uso
  *
  *   npx tsx scripts/sunset-dead-subscribers.ts                          # dry-run (default)
