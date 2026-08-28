@@ -87,7 +87,16 @@ export function computeRetryWaitMs(headers: Headers): number {
  * qualquer `!res.ok` ou truncamento — este é o recurso PRINCIPAL do guard,
  * uma leitura parcial não pode virar "conjunto completo" silenciosamente.
  */
-async function fetchActiveBeehiivEmails(apiKey: string, publicationId: string): Promise<string[]> {
+/**
+ * `export` desde #6504 item 2: `kit-gmail-warmup-ramp.ts` reusa esta MESMA
+ * função pra checar, antes de devolver um endereço Gmail recusado pro envio
+ * do Kit, se ele ainda está ativo na Beehiiv — o mesmo par sent/delivered
+ * que motivou este guard existir (ver `audience_tag_note` do canal
+ * `kit_diaria` em `platform.config.json`: taguear no Kit sem desativar na
+ * Beehiiv duplica o envio, e essa desativação é passo MANUAL, não guard de
+ * código). Reexportar em vez de duplicar a paginação + retry de 429.
+ */
+export async function fetchActiveBeehiivEmails(apiKey: string, publicationId: string): Promise<string[]> {
   const out: string[] = [];
   let page = 1;
   let more = true;

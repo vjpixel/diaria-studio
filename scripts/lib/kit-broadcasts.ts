@@ -195,6 +195,24 @@ export async function tagSubscriber(tagId: number, subscriberId: number, config?
 }
 
 /**
+ * `GET /v4/subscribers/{id}/tags` — lista as tags de UM assinante.
+ *
+ * Único caminho de verificação pós-`tagSubscriber` sem o atraso de
+ * propagação documentado em `kit-client.ts` (ver "Armadilhas da API v4" no
+ * topo daquele módulo): a listagem `GET /tags/{id}/subscribers` (direção
+ * tag→assinantes) mediu 180s de atraso e mentiu "lista completa" durante a
+ * janela; esta rota (direção assinante→tags) não mostrou atraso na mesma
+ * medição. Usada por `kit-gmail-warmup-ramp.ts` (#6504 item 2) pra confirmar
+ * que cada `tagSubscriber` da onda de fato pegou antes de marcar o
+ * endereço como "devolvido" no estado local — nunca confia só no 2xx da
+ * mutação, mesma disciplina do resto do módulo.
+ */
+export async function listSubscriberTags(subscriberId: number, config?: KitConfig): Promise<KitTag[]> {
+  const data = await kitFetch<{ tags: KitTag[] } | undefined>(`/subscribers/${subscriberId}/tags`, { config });
+  return data?.tags ?? [];
+}
+
+/**
  * Resolve o id da tag de test-send, criando-a se ainda não existir. Sem
  * cache — cada chamador paga 1 `listTags` (barato, endpoint singular já
  * coberto pelo retry padrão de `kitFetch`).

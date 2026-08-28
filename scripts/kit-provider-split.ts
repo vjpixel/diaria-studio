@@ -36,15 +36,47 @@
  * Uso:
  *   npx tsx scripts/kit-provider-split.ts --broadcast 25622689
  *   npx tsx scripts/kit-provider-split.ts --broadcast 25622689 --json
+ *
+ * ## `--edition AAMMDD` — instrumentação POR EDIÇÃO, persistida (#6504 item 1)
+ *
+ * Alternativa ao `--broadcast <id>` cru: resolve o broadcast do canal Kit
+ * paralelo da edição via `_internal/kit-diaria-published.json`
+ * (`readEditionKitBroadcastId`, escrito por `kit-diaria-stage5-dispatch.ts`
+ * na Etapa 5) e, além de imprimir a tabela, PERSISTE o resultado — mesma
+ * disciplina de `data/geo-citations/history.jsonl`
+ * (`scripts/lib/geo-citation-monitor.ts`): 1 snapshot dentro da edição
+ * (`_internal/kit-delivery-split.json`, sobrescrito a cada remedição — sempre
+ * a ÚLTIMA leitura) + 1 linha append-only no histórico cross-edição
+ * (`data/kit-delivery/history.jsonl`, cresce ao longo do tempo, nunca
+ * reescrito). Isso troca a checagem manual ("rodar e ler a tabela") por um
+ * registro mecânico que sobrevive à sessão de terminal e permite auditar a
+ * tendência de entrega Gmail edição a edição sem reabrir cada `_internal/`.
+ *
+ * A medição real só faz sentido depois que o broadcast MATUROU (Gmail leva
+ * horas pra terminar de aceitar/recusar) — por isso este script continua
+ * standalone, chamável a qualquer momento após o envio, em vez de encadeado
+ * no Stage 5/6 da MESMA edição (que roda antes do broadcast disparar).
+ *
+ * Uso:
+ *   npx tsx scripts/kit-provider-split.ts --edition 260828
+ *   npx tsx scripts/kit-provider-split.ts --edition 260828 --json
  */
-import { getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { readFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { kitFetch, getBroadcastStats, type KitBroadcastStats } from "./lib/kit-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { appendFileWithRetry } from "./lib/source-runs.ts";
+import { editionDir } from "./lib/edition-paths.ts";
 import {
   computeProviderSplit,
   avaliarRampa,
   verificarIntegridade,
   type ProviderRow,
+  type ProviderSplitResult,
+  type IntegridadeAviso,
+  type RampaVeredito,
 } from "./lib/provider-split.ts";
 
 /** Página de `POST /v4/subscribers/filter`. Campos opcionais porque é a API que decide. */
@@ -208,9 +240,152 @@ export function buildAudienceFilterBody(
 export function resolveBroadcastId(argv: string[]): number {
   const id = getIntArg(argv, "broadcast", { min: 1 });
   if (id === undefined) {
-    throw new Error("uso: npx tsx scripts/kit-provider-split.ts --broadcast <id> [--json]");
+    throw new Error(
+      "uso: npx tsx scripts/kit-provider-split.ts --broadcast <id> [--json]\n" +
+        "  ou: npx tsx scripts/kit-provider-split.ts --edition AAMMDD [--json]  (persiste o resultado, #6504)",
+    );
   }
   return id;
+}
+
+/** `--edition AAMMDD` — mesmo formato/validação de `editionDir` (6 dígitos). Pura. */
+export function resolveEditionArg(argv: string[]): string | undefined {
+  const edition = getStringArg(argv, "edition", { example: "260828" });
+  if (edition !== undefined && !/^\d{6}$/.test(edition)) {
+    throw new Error(`--edition inválido: "${edition}" (esperado AAMMDD, 6 dígitos).`);
+  }
+  return edition;
+}
+
+/**
+ * Shape mínimo de `_internal/kit-diaria-published.json` que este script lê —
+ * ver `scripts/lib/kit-diaria-channel.ts::KitDiariaPublished` pro shape
+ * completo (escrito por `kit-diaria-stage5-dispatch.ts` na Etapa 5). Só
+ * `broadcast_id` importa aqui.
+ */
+interface KitDiariaPublishedMinimal {
+  broadcast_id?: number;
+}
+
+/** Path de `_internal/kit-diaria-published.json` dentro do diretório de uma edição. */
+export function kitDiariaPublishedPath(editionDirPath: string): string {
+  return resolve(editionDirPath, "_internal", "kit-diaria-published.json");
+}
+
+/**
+ * Resolve o broadcast do canal Kit paralelo de uma edição a partir de
+ * `_internal/kit-diaria-published.json`. Lança com mensagem acionável quando
+ * o arquivo falta ou não tem `broadcast_id` numérico — `--edition` pede
+ * EXPLICITAMENTE a instrumentação desta edição, então "nenhum broadcast" não
+ * pode degradar em silêncio pra "nada a medir".
+ */
+export function readEditionKitBroadcastId(
+  editionDirPath: string,
+  readFileFn: (path: string, encoding: "utf8") => string = (p, e) => readFileSync(p, e),
+): number {
+  const path = kitDiariaPublishedPath(editionDirPath);
+  let raw: string;
+  try {
+    raw = readFileFn(path, "utf8");
+  } catch {
+    throw new Error(
+      `[kit-provider-split] ${path} não encontrado — a edição ainda não foi despachada pelo canal Kit ` +
+        `paralelo (kit-diaria-stage5-dispatch.ts, Etapa 5) ou não usa este canal.`,
+    );
+  }
+  let parsed: KitDiariaPublishedMinimal;
+  try {
+    parsed = JSON.parse(raw) as KitDiariaPublishedMinimal;
+  } catch (e) {
+    throw new Error(`[kit-provider-split] ${path} não é JSON válido: ${(e as Error).message}`);
+  }
+  if (typeof parsed.broadcast_id !== "number") {
+    throw new Error(`[kit-provider-split] ${path} não tem "broadcast_id" numérico.`);
+  }
+  return parsed.broadcast_id;
+}
+
+// ---------------------------------------------------------------------------
+// Persistência (#6504 item 1) — snapshot por edição + histórico cross-edição
+// ---------------------------------------------------------------------------
+
+/** Registro persistido por edição/medição. Serializável, sem funções. */
+export interface KitDeliveryRecord {
+  edition: string;
+  broadcastId: number;
+  /** ISO 8601 — quando esta medição foi feita (não quando o broadcast foi enviado). */
+  measuredAt: string;
+  kitStats: { recipients: number; open_rate: number; click_rate: number };
+  split: {
+    rows: ProviderRow[];
+    gmail: ProviderRow;
+    naoGmail: ProviderRow;
+    total: ProviderRow;
+  };
+  integridade: { ok: boolean; avisos: IntegridadeAviso[] };
+  rampa: RampaVeredito;
+}
+
+/** Monta o registro persistido a partir do resultado já computado. Pura. */
+export function buildKitDeliveryRecord(
+  edition: string,
+  broadcastId: number,
+  stats: KitBroadcastStats,
+  split: ProviderSplitResult,
+  avisos: IntegridadeAviso[],
+  veredito: RampaVeredito,
+  now: Date = new Date(),
+): KitDeliveryRecord {
+  return {
+    edition,
+    broadcastId,
+    measuredAt: now.toISOString(),
+    kitStats: { recipients: stats.recipients, open_rate: stats.open_rate, click_rate: stats.click_rate },
+    split: { rows: split.rows, gmail: split.gmail, naoGmail: split.naoGmail, total: split.total },
+    integridade: { ok: avisos.length === 0, avisos },
+    rampa: veredito,
+  };
+}
+
+/** Path do snapshot POR EDIÇÃO (sobrescrito a cada remedição — sempre a última). */
+export function kitDeliverySplitPath(editionDirPath: string): string {
+  return resolve(editionDirPath, "_internal", "kit-delivery-split.json");
+}
+
+/** Escreve o snapshot desta edição em `_internal/kit-delivery-split.json` (atômico). */
+export function persistKitDeliverySplit(
+  editionDirPath: string,
+  record: KitDeliveryRecord,
+  ioFns: { mkdirSync: (p: string, o: { recursive: true }) => void; writeFile: (p: string, c: string) => void } = {
+    mkdirSync: (p, o) => mkdirSync(p, o),
+    writeFile: (p, c) => writeFileAtomic(p, c),
+  },
+): string {
+  const path = kitDeliverySplitPath(editionDirPath);
+  ioFns.mkdirSync(dirname(path), { recursive: true });
+  ioFns.writeFile(path, JSON.stringify(record, null, 2) + "\n");
+  return path;
+}
+
+/** Log cross-edição, append-only — mesmo padrão de `DEFAULT_GEO_CITATIONS_LOG_PATH`. */
+export const DEFAULT_KIT_DELIVERY_HISTORY_PATH = "data/kit-delivery/history.jsonl";
+
+/** Anexa o registro ao histórico. `logPath`/`ioFns` injetáveis em teste. */
+export function appendKitDeliveryHistory(
+  records: KitDeliveryRecord[],
+  logPath: string = DEFAULT_KIT_DELIVERY_HISTORY_PATH,
+  ioFns: {
+    mkdirSync: (p: string, o: { recursive: true }) => void;
+    appendFileSync: (p: string, d: string) => void;
+  } = {
+    mkdirSync: (p, o) => mkdirSync(p, o),
+    appendFileSync: (p, d) => appendFileWithRetry(p, d),
+  },
+): void {
+  if (records.length === 0) return;
+  ioFns.mkdirSync(dirname(logPath), { recursive: true });
+  const lines = records.map((r) => JSON.stringify(r) + "\n").join("");
+  ioFns.appendFileSync(logPath, lines);
 }
 
 /**
@@ -261,7 +436,9 @@ export function formatTable(rows: ProviderRow[]): string {
 async function main(): Promise<void> {
   loadProjectEnv();
   const argv = process.argv.slice(2);
-  const broadcastId = resolveBroadcastId(argv);
+  const edition = resolveEditionArg(argv);
+  const editionDirPath = edition ? editionDir(edition) : undefined;
+  const broadcastId = editionDirPath ? readEditionKitBroadcastId(editionDirPath) : resolveBroadcastId(argv);
   const json = hasFlag(argv, "json");
 
   const [sent, delivered, opens, clicks, stats] = await todasOuNenhuma<
@@ -293,6 +470,16 @@ async function main(): Promise<void> {
       sent.descartadas + delivered.descartadas + opens.descartadas + clicks.descartadas,
   });
   const veredito = avaliarRampa(split, avisos);
+
+  // #6504 item 1: `--edition` persiste — snapshot da edição (sempre a
+  // última medição) + linha no histórico cross-edição (append-only, nunca
+  // reescrito). Ver docstring do módulo.
+  if (edition && editionDirPath) {
+    const record = buildKitDeliveryRecord(edition, broadcastId, stats, split, avisos, veredito);
+    const snapshotPath = persistKitDeliverySplit(editionDirPath, record);
+    appendKitDeliveryHistory([record]);
+    console.error(`\nPersistido: ${snapshotPath} + ${DEFAULT_KIT_DELIVERY_HISTORY_PATH}`);
+  }
 
   if (json) {
     console.log(
