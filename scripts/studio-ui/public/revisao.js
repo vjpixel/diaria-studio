@@ -770,6 +770,18 @@ function bindEvents() {
   window.addEventListener("beforeunload", (e) => {
     if (dirty) { e.preventDefault(); e.returnValue = ""; }
   });
+  // #6447 Fatia 2: o Editor por destaque (rv-highlights.js) dispara este
+  // evento após salvar `02-reviewed.md` — mesmo hook de resincronização já
+  // usado por `saveInlineTitle()` acima (loadFile force + dirty=false), só
+  // que disparado por OUTRO painel em vez de uma edição feita aqui dentro.
+  // Guard `currentSlug === "reviewed"` mesmo motivo de sempre: só essa aba
+  // corresponde ao arquivo que mudou.
+  window.addEventListener("rv:reviewed-saved", () => {
+    if (currentSlug === "reviewed") {
+      dirty = false;
+      loadFile("reviewed", { force: true });
+    }
+  });
 
   // #3874: `#rv-side-tabs` já nasce com a aba "Lints" marcada `.active` no
   // HTML estático (padrão pré-existente), mas `activateSidePane()` só roda

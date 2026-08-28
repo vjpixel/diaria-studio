@@ -208,6 +208,12 @@ if (el.refreshBtn) {
   el.refreshBtn.addEventListener("click", () => { loadGate(); });
 }
 
+// #6447 Fatia 2: o Editor por destaque (rv-highlights.js) dispara este
+// evento após salvar `02-reviewed.md` — o resumo do Gate (títulos,
+// checklist) precisa refletir a edição sem esperar o próximo clique manual
+// em "Atualizar".
+window.addEventListener("rv:reviewed-saved", () => { loadGate(); });
+
 loadGate();
 
 // Exportado pro suite de testes de contrato do server (ver

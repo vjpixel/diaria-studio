@@ -393,6 +393,138 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     });
   });
 
+  // #6447 Fatia 2 — editor estruturado por destaque (título por opção + corpo
+  // + "por que isso importa" + URL). Edição PRÓPRIA (260720, isolada das
+  // demais) — formato pós-#245 (blank line entre todo elemento), diferente
+  // de TWO_DESTAQUES_MD (que usa o formato legado inline "Por que isso
+  // importa: texto" na mesma linha, incompatível com o parser desta fatia).
+  describe("GET/PUT .../review/reviewed/highlights (#6447 Fatia 2)", () => {
+    const hlAammdd = "260720";
+    let hlEditionDir: string;
+    const HL_MD = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Primeira opção](https://example.com/hl-1)**",
+      "",
+      "**[Segunda opção](https://example.com/hl-1)**",
+      "",
+      "Corpo do D1.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto do D1.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 💼 MERCADO**",
+      "",
+      "**[Título do D2](https://example.com/hl-2)**",
+      "",
+      "Corpo do D2.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto do D2.",
+      "",
+    ].join("\n");
+
+    before(() => {
+      hlEditionDir = join(root, "data", "editions", hlAammdd);
+      mkdirSync(join(hlEditionDir, "_internal"), { recursive: true });
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), HL_MD, "utf8");
+    });
+
+    it("GET retorna available:true + os 2 destaques estruturados + modifiedAt", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.available, true);
+      assert.ok(body.modifiedAt);
+      assert.equal(body.highlights.length, 2);
+      assert.equal(body.highlights[0].n, 1);
+      assert.equal(body.highlights[0].titleOptions.length, 2);
+      assert.equal(body.highlights[0].url, "https://example.com/hl-1");
+      assert.equal(body.highlights[1].titleOptions.length, 1);
+    });
+
+    it("GET com 02-reviewed.md ausente: available:false + note, nunca erro", async () => {
+      const res = await fetch(new URL("/api/editions/999999/review/reviewed/highlights", server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.available, false);
+      assert.ok(body.note);
+    });
+
+    it("PUT altera só o bloco de D1 — título final + resto do arquivo intocado", async () => {
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/1`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Segunda opção",
+          url: "https://example.com/hl-1",
+          body: ["Corpo do D1."],
+          whyMatters: "Impacto do D1.",
+        }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.lint, "resposta deveria incluir o relatório de lint");
+
+      const onDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      assert.match(onDisk, /\*\*\[Segunda opção\]\(https:\/\/example\.com\/hl-1\)\*\*/);
+      assert.doesNotMatch(onDisk, /Primeira opção/);
+      assert.match(onDisk, /Título do D2/, "D2 intocado");
+    });
+
+    it("campo 'body' obrigatório ausente retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com/hl-2", whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("destaque N inexistente retorna 400 com o erro propagado", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/9`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com", body: ["y"], whyMatters: "z" }),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error ?? "", /DESTAQUE 9/);
+    });
+
+    it("mtime obsoleto (expectedModifiedAt divergente) retorna 409, sem sobrescrever", async () => {
+      const get = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      const getBody = await get.json();
+      const staleModifiedAt = getBody.modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // simula o painel salvando por baixo entre o GET acima e o PUT abaixo.
+      const currentOnDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), currentOnDisk.replace("MERCADO", "MERCADO-NOVO"), "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "edição sobre versão velha",
+          url: "https://example.com/hl-2",
+          body: ["x"],
+          whyMatters: "y",
+          expectedModifiedAt: staleModifiedAt,
+        }),
+      });
+      assert.equal(put.status, 409);
+      const body = await put.json();
+      assert.equal(body.conflict, true);
+      assert.match(readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8"), /MERCADO-NOVO/);
+    });
+  });
+
   // #3635 — editor de última milha do HTML final publicado de verdade.
   it("GET .../review/html-final antes da Etapa 4: exists:false, sem erro", async () => {
     const res = await fetch(new URL("/api/editions/260716/review/html-final", server.url));

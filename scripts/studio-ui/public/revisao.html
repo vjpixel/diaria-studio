@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/revisao.css" />
   <link rel="stylesheet" href="/rv-gate.css" />
+  <link rel="stylesheet" href="/rv-highlights.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
@@ -78,6 +79,22 @@
           <div id="rv-gate-violations"></div>
         </details>
       </div>
+    </section>
+
+    <!-- #6447 Fatia 2: "Editor por destaque" — alternativa estruturada ao
+         textarea de Markdown cru (aba "02 — Newsletter" logo abaixo), que
+         continua disponível e intocada — o editor escolhe qual usar. Título
+         com 1 clique entre as opções, corpo em N caixas por parágrafo, URL e
+         "por que isso importa" em campos próprios. Render puro
+         (rv-highlights.js) a partir de GET .../review/reviewed/highlights;
+         cada card salva individualmente via PUT .../highlights/:n. -->
+    <section class="panel rv-hl-panel" id="rv-highlights-panel">
+      <div class="rv-hl-header">
+        <h2>Editor por destaque</h2>
+        <button type="button" id="rv-hl-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-hl-status">Carregando…</p>
+      <div id="rv-hl-cards" class="rv-hl-cards"></div>
     </section>
 
     <section class="panel">
@@ -166,6 +183,7 @@
   <script>window.STUDIO_PAGE = "revisao";</script>
   <script src="/nav.js" type="module"></script>
   <script src="/rv-gate.js" type="module"></script>
+  <script src="/rv-highlights.js" type="module"></script>
   <script src="/revisao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

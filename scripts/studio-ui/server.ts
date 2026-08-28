@@ -375,6 +375,8 @@ import {
   buildSocialPreviewHtml,
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
+  readHighlightsSummary,
+  applyHighlightBlockEdit,
 } from "./studio-review.ts";
 // #6447 Fatia 1: painel "Gate" — resumo consolidado do Stage 4 (títulos
 // original/final, checklist, lints estendidos) lido só de disco. Arquivo
@@ -1259,6 +1261,103 @@ async function handleReviewFieldDestaqueTitle(
   sendJson(res, status, result);
 }
 
+/**
+ * #6447 Fatia 2: `GET /api/editions/:aammdd/review/reviewed/highlights` —
+ * leitura dos blocos DESTAQUE já estruturados (título por opção, corpo,
+ * "por que isso importa", URL) pro painel "Editor por destaque". Mesmo
+ * padrão fail-soft de `handleGateSummary` — nunca lança, `available: false`
+ * com `note` quando `02-reviewed.md` ainda não existe.
+ */
+function handleReviewHighlightsGet(rootDir: string, aammdd: string, res: ServerResponse): void {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const summary = readHighlightsSummary(rootDir, aammdd);
+  sendJson(res, 200, summary);
+}
+
+/**
+ * #6447 Fatia 2: `PUT /api/editions/:aammdd/review/reviewed/highlights/:n` —
+ * edição estruturada de UM destaque inteiro (título final + URL + parágrafos
+ * do corpo + "por que isso importa"), sem expor o Markdown cru. Corpo:
+ * `{title, url, body: string[], whyMatters, expectedModifiedAt?, force?}` —
+ * mesmo shape de guard de conflito de `handleReviewFieldDestaqueTitle`
+ * (#3729), reusado sem duplicação via `applyHighlightBlockEdit` (que já
+ * chama `saveReviewFile` internamente).
+ */
+async function handleReviewHighlightPut(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+  nRaw: string,
+): Promise<void> {
+  const n = parseInt(nRaw, 10);
+  if (!Number.isInteger(n) || n < 1) {
+    sendJson(res, 400, { error: "número de destaque inválido na URL" });
+    return;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as
+    | {
+        title?: unknown;
+        url?: unknown;
+        body?: unknown;
+        whyMatters?: unknown;
+        expectedModifiedAt?: unknown;
+        force?: unknown;
+      }
+    | null;
+  const title = parsed?.title;
+  if (typeof title !== "string" || title.trim() === "") {
+    sendJson(res, 400, { error: "campo 'title' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  const url = parsed?.url;
+  if (typeof url !== "string" || url.trim() === "") {
+    sendJson(res, 400, { error: "campo 'url' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  const bodyParas = parsed?.body;
+  if (!Array.isArray(bodyParas) || !bodyParas.every((p) => typeof p === "string")) {
+    sendJson(res, 400, { error: "campo 'body' (array de strings) é obrigatório no corpo" });
+    return;
+  }
+  const whyMatters = parsed?.whyMatters;
+  if (typeof whyMatters !== "string" || whyMatters.trim() === "") {
+    sendJson(res, 400, { error: "campo 'whyMatters' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  // #3729: mesmo contrato de expectedModifiedAt/force de handleReviewSave —
+  // ver comentário lá pro rationale completo (não duplicado aqui).
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = applyHighlightBlockEdit(
+    rootDir,
+    aammdd,
+    n,
+    { title, url, body: bodyParas as string[], whyMatters },
+    { expectedModifiedAt, force },
+  );
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
 function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
   if (!isReviewSlug(slug)) {
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
@@ -1578,6 +1677,17 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #6447 Fatia 2: edição estruturada de destaque inteiro — checada ANTES
+      // do `resetBaselineMatch` abaixo, mesma disciplina do `destaqueTitleMatch`
+      // acima (rotas de escrita mais específicas primeiro; regex não colide
+      // de fato, `/highlights/:n` é sufixo distinto de `/reset-baseline`).
+      const highlightPutMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/reviewed\/highlights\/(\d+)$/);
+      if (req.method === "PUT" && highlightPutMatch) {
+        handleReviewHighlightPut(rootDir, req, res, highlightPutMatch[1], highlightPutMatch[2]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
       const resetBaselineMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/reset-baseline$/);
       if (req.method === "POST" && resetBaselineMatch) {
         handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
@@ -1669,7 +1779,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078/#6447" });
         return;
       }
 
@@ -1814,6 +1924,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const reviewGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)$/);
       if (reviewGetMatch) {
         handleReviewGet(rootDir, reviewGetMatch[1], reviewGetMatch[2], res);
+        return;
+      }
+      // #6447 Fatia 2: leitura estruturada dos destaques — checada ANTES do
+      // get-por-slug acima seria redundante (regex distinto, `[^/]+` do slug
+      // nunca casa um path com barra), mas mantém a leitura por seção (mesma
+      // disciplina do `gateMatch` logo abaixo).
+      const highlightsGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/reviewed\/highlights$/);
+      if (highlightsGetMatch) {
+        handleReviewHighlightsGet(rootDir, highlightsGetMatch[1], res);
         return;
       }
       // #6447 Fatia 1: painel "Gate" — checado ANTES do preview genérico
