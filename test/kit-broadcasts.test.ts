@@ -19,6 +19,8 @@ import {
   resolveTestSendTagId,
   buildTestSendFilter,
   buildAllSubscribersFilter,
+  listTagSubscribersPage,
+  countKitTagMembers,
   KIT_TEST_SEND_TAG_NAME,
 } from "../scripts/lib/kit-broadcasts.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
@@ -240,5 +242,71 @@ describe("filters", () => {
 
   it("buildAllSubscribersFilter é o equivalente a 'enviar pra todo mundo' (array vazio — #6323)", () => {
     assert.deepEqual(buildAllSubscribersFilter(), []);
+  });
+});
+
+describe("#6582 listTagSubscribersPage / countKitTagMembers", () => {
+  it("listTagSubscribersPage: GET /tags/{id}/subscribers, desembrulha o envelope", async () => {
+    let captured: { url: string } | undefined;
+    const result = await withMockFetch(
+      (async (url: string) => {
+        captured = { url };
+        return jsonResponse(200, {
+          subscribers: [{ id: 1, email_address: "a@x.com" }],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => listTagSubscribersPage(42, { config: TEST_CONFIG }),
+    );
+    assert.equal(result.subscribers.length, 1);
+    assert.match(captured!.url, /\/tags\/42\/subscribers$/);
+  });
+
+  it("countKitTagMembers: soma UMA página inteira", async () => {
+    const count = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            { id: 1, email_address: "a@x.com" },
+            { id: 2, email_address: "b@x.com" },
+          ],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 2);
+  });
+
+  it("countKitTagMembers: 0 membros — o cenário do guard #6582 (tag resolve, ninguém dentro)", async () => {
+    const count = await withMockFetch(
+      (async () => jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 0);
+  });
+
+  it("countKitTagMembers: pagina até o fim antes de somar", async () => {
+    let call = 0;
+    const count = await withMockFetch(
+      (async () => {
+        call++;
+        if (call === 1) {
+          return jsonResponse(200, {
+            subscribers: [{ id: 1, email_address: "a@x.com" }],
+            pagination: { ...emptyPagination, has_next_page: true, end_cursor: "cursor2" },
+          });
+        }
+        return jsonResponse(200, {
+          subscribers: [
+            { id: 2, email_address: "b@x.com" },
+            { id: 3, email_address: "c@x.com" },
+          ],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 3);
+    assert.equal(call, 2, "não pode contar só a 1ª página");
   });
 });

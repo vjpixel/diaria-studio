@@ -46,6 +46,8 @@ function makeDeps(over: {
   readState?: Stage5KitDeps["readState"];
   writeState?: Stage5KitDeps["writeState"];
   findTagId?: Stage5KitDeps["findTagId"];
+  countTagMembers?: Stage5KitDeps["countTagMembers"];
+  getBroadcast?: Stage5KitDeps["getBroadcast"];
   buildPayload?: Stage5KitDeps["buildPayload"];
   createBroadcast?: Stage5KitDeps["createBroadcast"];
 } = {}): { deps: Stage5KitDeps; spy: Spy } {
@@ -59,6 +61,13 @@ function makeDeps(over: {
       over.writeState ??
       ((_dir, state) => void spy.writeCalls.push(state)),
     findTagId: over.findTagId ?? (async () => TAG_ID),
+    // #6582 — default não-vazio: só os testes que exercitam o guard novo
+    // (tag vazia) sobrescrevem isto pra 0.
+    countTagMembers: over.countTagMembers ?? (async () => 1),
+    // #6582 — default sem `subscriber_filter`: verificação pós-dispatch cai
+    // no ramo "não confirmável" (warning, não failure) pros testes que não
+    // exercitam a verificação especificamente.
+    getBroadcast: over.getBroadcast ?? (async () => ({})),
     buildPayload:
       over.buildPayload ??
       (() => ({ html: "<p>oi</p>", subject: "Assunto", previewText: "Preview", unresolvedImages: [], renderWarnings: [] })),
@@ -160,6 +169,90 @@ describe("#6126 runStage5KitDispatch — o guard: nenhum caminho de recusa toca 
     assert.equal(r.status, "skipped");
     assert.equal(spy.createCalls.length, 0, "dry-run não pode vazar pra chamada real");
     assert.equal(spy.writeCalls.length, 0);
+  });
+});
+
+describe("#6582 runStage5KitDispatch — tag resolvida mas VAZIA (0 membros)", () => {
+  it("0 membros ⇒ failed (não skipped — deixou de ser 'estado normal'), createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({ countTagMembers: async () => 0 });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "audienceTagEmpty");
+      assert.match(r.reason, /VAZIA/);
+      assert.match(r.reason, /6582/);
+    }
+    assert.equal(spy.createCalls.length, 0, "NUNCA criar broadcast com tag vazia");
+  });
+
+  it("countTagMembers rejeita (erro de rede) ⇒ failed, createBroadcast NÃO chamado", async () => {
+    const { deps, spy } = makeDeps({
+      countTagMembers: async () => {
+        throw new Error("ETIMEDOUT");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "countTagMembers");
+      assert.match(r.reason, /ETIMEDOUT/);
+    }
+    assert.equal(spy.createCalls.length, 0);
+  });
+
+  it("membros > 0 segue normalmente (não regride o caminho feliz)", async () => {
+    const { deps, spy } = makeDeps({ countTagMembers: async () => 92 });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    assert.equal(spy.createCalls.length, 1);
+  });
+});
+
+describe("#6582 runStage5KitDispatch — verificação pós-dispatch da audiência", () => {
+  it("releitura confirma o subscriber_filter esperado ⇒ audienceFilterVerified: true", async () => {
+    const { deps } = makeDeps({
+      getBroadcast: async () => ({ subscriber_filter: buildTagFilter(TAG_ID) }),
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.audienceFilterVerified, true);
+  });
+
+  it("releitura DIVERGE do filtro esperado ⇒ failed, broadcast já existe mas dispatch reporta falha", async () => {
+    const { deps, spy } = makeDeps({
+      // Simula a API aceitando 2xx mas aplicando um filtro diferente
+      // (ex: base inteira) — o cenário que #573/#6195 já documentam pra
+      // outras chamadas do módulo.
+      getBroadcast: async () => ({ subscriber_filter: buildAllSubscribersFilter() }),
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "failed");
+    if (r.status === "failed") {
+      assert.equal(r.step, "verifyBroadcastAudience");
+      assert.match(r.reason, /divergente/);
+      assert.match(r.reason, /555/, "precisa do broadcast_id — ele JÁ existe no Kit");
+    }
+    // O broadcast já foi criado (createBroadcast chamado) — a falha é da
+    // CAMADA de verificação, não do dispatch em si.
+    assert.equal(spy.createCalls.length, 1);
+  });
+
+  it("subscriber_filter ausente na releitura ⇒ ok mas audienceFilterVerified: false (não confirmável, não é falha)", async () => {
+    const { deps } = makeDeps({ getBroadcast: async () => ({}) });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok");
+    if (r.status === "ok") assert.equal(r.audienceFilterVerified, false);
+  });
+
+  it("getBroadcast rejeita (erro de rede) ⇒ fail-soft: ok com audienceFilterVerified: false", async () => {
+    const { deps } = makeDeps({
+      getBroadcast: async () => {
+        throw new Error("503");
+      },
+    });
+    const r = await runStage5KitDispatch(EDITION, deps);
+    assert.equal(r.status, "ok", "a releitura é verificação adicional — falha dela não derruba o dispatch");
+    if (r.status === "ok") assert.equal(r.audienceFilterVerified, false);
   });
 });
 

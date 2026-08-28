@@ -987,6 +987,110 @@ function checkStageUsageCaptured(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * #6582 — GATE-BLOCKING: quando o canal Kit paralelo (`kit_diaria`) está
+ * `enabled: true`, ele deixou de ser um canal ADITIVO (que também recebia
+ * pela Beehiiv) — desde a migração das ondas 0/1 (#6504) ele é o ÚNICO canal
+ * alcançável para quem está na tag (ver `platform.config.json` →
+ * `kit_diaria.audience_tag_note`). O playbook antigo tratava
+ * `"skipped"`/`"failed"` do dispatch (`kit-diaria-stage5-dispatch.ts`) como
+ * WARNING não-bloqueante, mesma severidade de sempre — correto enquanto o
+ * canal era aditivo, silenciosamente errado depois da migração: a edição
+ * seguia pro gate 6, o editor aprovava sem nenhum sinal, e as 92 pessoas da
+ * tag não recebiam nada.
+ *
+ * Esta regra fecha essa lacuna mecanicamente: com o canal ligado, exige que
+ * `_internal/kit-diaria-published.json` exista E tenha `broadcast_id`
+ * numérico (o dispatch resultou em `status: "ok"`/`"already_done"`) antes do
+ * Stage 6 (gate de agendamento) ser aceito como íntegro. `postDispatchOnly`
+ * porque o arquivo só existe DEPOIS que o dispatch da Etapa 5 rodou — checar
+ * em `--phase pre-dispatch` daria erro sempre, mesmo padrão de
+ * `step-5-sentinel-exists`/`social-published-complete` acima.
+ *
+ * Canal desligado (`enabled` ausente/`false`, o default) ⇒ [] — nada a
+ * checar, o canal nunca deveria ter despachado nada.
+ *
+ * `configOverride` opcional, só pra teste (mesmo padrão de
+ * `checkScheduledAt(editionDir, backendOverride)` em `invariant-checks/stage-6.ts`)
+ * — sem isso o teste dependeria do `platform.config.json` REAL do repo, que
+ * pode mudar de estado (`kit_diaria.enabled`) independente desta suíte.
+ */
+function checkKitDiariaExclusiveAudienceDispatched(
+  editionDir: string,
+  configOverride?: { kit_diaria?: { enabled?: boolean; audience_tag?: string } },
+): InvariantViolation[] {
+  let kitDiariaEnabled = false;
+  let audienceTag = "?";
+  try {
+    const cfg =
+      configOverride ??
+      (existsSync(resolve(ROOT, "platform.config.json"))
+        ? (JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
+            kit_diaria?: { enabled?: boolean; audience_tag?: string };
+          })
+        : {});
+    kitDiariaEnabled = cfg.kit_diaria?.enabled === true;
+    audienceTag = cfg.kit_diaria?.audience_tag ?? "kit-nativo";
+  } catch {
+    // platform.config.json malformado: outras regras (ex: consent-binding)
+    // já cobrem isso via seus próprios helpers. Aqui, fail-soft — não é o
+    // papel desta regra denunciar config quebrada, e denunciar "canal
+    // desligado" por engano seria pior que silenciar (falso-positivo
+    // bloqueando gate 6 por um problema não-relacionado).
+    return [];
+  }
+  if (!kitDiariaEnabled) return [];
+
+  const statePath = resolve(editionDir, "_internal", "kit-diaria-published.json");
+  if (!existsSync(statePath)) {
+    return [
+      {
+        rule: "kit-diaria-exclusive-audience-dispatched",
+        message:
+          `kit_diaria.enabled=true mas _internal/kit-diaria-published.json ausente — o canal Kit ` +
+          `(audiência possivelmente EXCLUSIVA: quem está na tag "${audienceTag}" pode não estar ` +
+          `ativo na Beehiiv — ver platform.config.json → kit_diaria.audience_tag_note) não foi ` +
+          `despachado. "skipped"/ausente deixou de ser normal desde a migração das ondas 0/1 ` +
+          `(#6504/#6582). Rodar \`npx tsx scripts/kit-diaria-stage5-dispatch.ts {EDITION_DIR}/\` ` +
+          `antes de aceitar o Stage 6.`,
+        source_issue: "#6582",
+        severity: "error",
+        file: statePath,
+      },
+    ];
+  }
+  let data: { broadcast_id?: unknown };
+  try {
+    data = JSON.parse(readFileSync(statePath, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "kit-diaria-exclusive-audience-dispatched",
+        message: `kit-diaria-published.json não parseável: ${(e as Error).message}`,
+        source_issue: "#6582",
+        severity: "error",
+        file: statePath,
+      },
+    ];
+  }
+  if (typeof data.broadcast_id !== "number") {
+    return [
+      {
+        rule: "kit-diaria-exclusive-audience-dispatched",
+        message:
+          `kit-diaria-published.json sem broadcast_id numérico — o dispatch do canal Kit não ` +
+          `completou (tag "${audienceTag}" possivelmente sem membros, ou o dispatch falhou). A ` +
+          `audiência exclusiva deste canal ficaria sem a edição. Ver #6582 — não é mais um estado ` +
+          `normal para "skipped".`,
+        source_issue: "#6582",
+        severity: "error",
+        file: statePath,
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -1148,6 +1252,17 @@ export const STAGE_5_RULES: InvariantRule[] = [
     postDispatchOnly: true,
     run: checkStageUsageCaptured,
   },
+  {
+    id: "kit-diaria-exclusive-audience-dispatched",
+    description:
+      "canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504)",
+    source_issue: "#6582",
+    stage: 5,
+    // O estado só existe DEPOIS que o dispatch da Etapa 5 rodou — mesmo
+    // motivo de step-5-sentinel-exists/social-published-complete acima.
+    postDispatchOnly: true,
+    run: checkKitDiariaExclusiveAudienceDispatched,
+  },
 ];
 
 export {
@@ -1172,4 +1287,5 @@ export {
   checkTwitterCredsSet,
   checkStageUsageCaptured,
   checkPendingResearchUnresolved,
+  checkKitDiariaExclusiveAudienceDispatched,
 };
