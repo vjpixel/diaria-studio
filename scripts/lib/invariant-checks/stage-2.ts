@@ -26,6 +26,7 @@ import {
   checkUseMelhorBeginnerMinimum,
   type BeginnerMinimumItem,
 } from "../lint-checks/use-melhor-beginner-minimum.ts";
+import { checkCarouselTextOverflow } from "./stage-4.ts"; // #6439
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -534,6 +535,25 @@ function checkUseMelhorHasBeginnerMinimum(editionDir: string): InvariantViolatio
   ];
 }
 
+/**
+ * #6439: mesma checagem de `carousel-text-overflow` (Stage 4, `stage-4.ts`),
+ * rodada aqui TAMBÉM no Stage 2 — logo após o `social-writer` escrever
+ * `03-social.md`, em vez de só no gate de revisão. Reusa a MESMA função pura
+ * (`checkCarouselTextOverflow`), nunca uma 2ª implementação: o objetivo do
+ * #6439 é encurtar o loop de feedback (dispatch do agent é barato de repetir;
+ * reescrita manual no gate + 2 rodadas de humanizador não é), não duplicar a
+ * regra.
+ *
+ * Achado que motivou (edição 260828, issue #6439): o teto do prompt do
+ * `social-writer` (`.claude/agents/social-writer.md`, "~260 caracteres") é
+ * orientativo — o agente pode estourar mesmo assim (5 parágrafos entre 313 e
+ * 368 chars nessa edição), e antes disso só era detectado no gate do Stage 4,
+ * já tarde pra ser barato de corrigir.
+ */
+function checkCarouselTextOverflowStage2(editionDir: string): InvariantViolation[] {
+  return checkCarouselTextOverflow(editionDir);
+}
+
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
@@ -619,6 +639,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     stage: 2,
     run: checkUseMelhorHasBeginnerMinimum,
   },
+  {
+    id: "carousel-text-overflow",
+    description: "parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo — mesma checagem do Stage 4, rodada cedo (#6439, #6078)",
+    source_issue: "#6439",
+    stage: 2,
+    run: checkCarouselTextOverflowStage2,
+  },
 ];
 
 export {
@@ -633,4 +660,5 @@ export {
   checkRevealTemporalPrefixInvariant,
   checkNoTrailingEditorialHookSocial,
   checkUseMelhorHasBeginnerMinimum,
+  checkCarouselTextOverflowStage2,
 };

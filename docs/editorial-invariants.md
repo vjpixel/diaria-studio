@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 85 invariants.
+**Total**: 86 invariants.
 
 ## Static (estrutura do repo)
 
@@ -45,6 +45,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `carousel-text-overflow` | parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo — mesma checagem do Stage 4, rodada cedo (#6439, #6078) | #6439 |
 | `clarice-ran` | Clarice rodou de fato sobre 02-reviewed.md (snapshot + suggestions.json presentes) (#6337, #1402) | #6337 |
 | `erro-intencional-rendered` | render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073) | #6337 |
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
