@@ -99,6 +99,14 @@
  * Uso:
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir data/editions/AAMMDD --slug o-slug-do-post
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
+ *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap workers/site/public/sitemap.xml
+ *
+ * #6454: `--sitemap` atualiza o `sitemap.xml` alongside da página (mesmo
+ * commit+push). O sitemap é lido e reescrito no mesmo diretório público
+ * (`workers/site/public/sitemap.xml`), então o mesmo deploy que publica a
+ * página também serve a entrada nova. Sem isso, o sitemap continua com a
+ * lista de edições do `gen-archive-pages.ts` (que lê do cache Beehiiv, e
+ * edições publicadas pelo Kit nunca entram nele — ver #6454).
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
@@ -147,7 +155,7 @@ export interface PublishPageDeps {
   readEditionInputs(editionDir: string, slugOverride?: string): EditionPageInputs | null;
   writePage(slug: string, html: string): void;
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo. */
-  publish(slug: string): PublishResult;
+  publish(slug: string, sitemapRelPath?: string): PublishResult;
   log(line: string): void;
 }
 
@@ -297,6 +305,7 @@ export function commitAndPushSitePage(
   rootDir: string,
   slug: string,
   git: GitRunner = defaultGitRunner,
+  sitemapRelPath?: string,
 ): { committed: boolean; pushed: boolean } {
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
   if (branch !== "master") {
@@ -312,9 +321,14 @@ export function commitAndPushSitePage(
   // é o formato em que `git status --porcelain`/`git diff --name-only`
   // devolvem paths (necessário pra comparação exata abaixo).
   const relPageDir = ["workers", "site", "public", "p", slug].join("/");
+  const pathsToStage = [relPageDir];
+  if (sitemapRelPath) pathsToStage.push(sitemapRelPath);
 
-  git(["add", "--", relPageDir], rootDir);
-  const status = git(["status", "--porcelain", "--", relPageDir], rootDir);
+  for (const p of pathsToStage) {
+    git(["add", "--", p], rootDir);
+  }
+
+  const status = git(["status", "--porcelain", "--", ...pathsToStage], rootDir);
   const committed = status.trim().length > 0;
 
   if (committed) {
@@ -322,17 +336,19 @@ export function commitAndPushSitePage(
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    const prefix = `${relPageDir}/`;
-    const outsidePathspec = stagedFiles.filter((f) => f !== relPageDir && !f.startsWith(prefix));
+    const outsidePathspec = stagedFiles.filter(
+      (f) => !pathsToStage.includes(f) && !pathsToStage.some((p) => f.startsWith(p + "/")),
+    );
     if (outsidePathspec.length > 0) {
       throw new Error(
-        `git add -- ${relPageDir} deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
+        `git add deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
           `pathspec — provável mudança concorrente no mesmo checkout compartilhado (#5156, #6202 review ` +
           `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
       );
     }
+    const commitPaths = pathsToStage.map((p) => ["--", p]).flat();
     git(
-      ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202`, "--", relPageDir],
+      ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202`, ...commitPaths],
       rootDir,
     );
   }
@@ -354,8 +370,8 @@ export function productionDeps(rootDir: string = ROOT, git: GitRunner = defaultG
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
-    publish: (slug) => {
-      const { pushed } = commitAndPushSitePage(rootDir, slug, git);
+    publish: (slug, sitemapPath?: string) => {
+      const { pushed } = commitAndPushSitePage(rootDir, slug, git, sitemapPath);
       return { pushed };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
@@ -365,7 +381,7 @@ export function productionDeps(rootDir: string = ROOT, git: GitRunner = defaultG
 export function publishEditionSitePage(
   editionDir: string,
   deps: PublishPageDeps,
-  opts: { skipPublish?: boolean; slug?: string } = {},
+  opts: { skipPublish?: boolean; slug?: string; sitemap?: string } = {},
 ): PublishPageResult {
   let inputs: EditionPageInputs | null;
   try {
@@ -428,9 +444,14 @@ export function publishEditionSitePage(
     return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
   }
 
+  // #6454: sitemapRelPath é o caminho relativo do sitemap.xml a ser
+  // atualizado alongside da página. O caller (main) passa --sitemap;
+  // em testes é undefined.
+  const sitemapRelPath = opts.sitemap;
+
   let publishResult: PublishResult;
   try {
-    publishResult = deps.publish(built.post.slug);
+    publishResult = deps.publish(built.post.slug, sitemapRelPath);
   } catch (e) {
     // A página JÁ está escrita (e pode já estar commitada, se só o push
     // falhou) — a próxima rodada/push manual a leva junto. Por isso a
@@ -456,7 +477,7 @@ export async function main(): Promise<void> {
   const editionDir = getArg(argv, "edition-dir");
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish]",
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>]",
     );
     process.exitCode = 1;
     return;
@@ -481,6 +502,7 @@ export async function main(): Promise<void> {
     result = publishEditionSitePage(resolve(ROOT, editionDir), productionDeps(), {
       skipPublish: hasFlag(argv, "skip-publish"),
       slug,
+      sitemap: getArg(argv, "sitemap"),
     });
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };

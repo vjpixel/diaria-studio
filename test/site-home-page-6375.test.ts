@@ -20,7 +20,7 @@ import {
   extractPageMeta,
   slugFromCanonicalUrl,
 } from "../scripts/lib/site-home-page.ts";
-import { buildSitemapXml } from "../scripts/lib/site-archive-pages.ts";
+import { buildSitemapXml, addSitemapEntry, sitemapEntryFromPost } from "../scripts/lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
@@ -251,5 +251,49 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
       const slug = m[1].replace("https://diar.ia.br/p/", "");
       assert.ok(existsSync(resolve(PUBLIC_DIR, "p", slug)), `slug "${slug}" do arquivo não existe em public/p/`);
     }
+  });
+});
+
+describe("#6454 addSitemapEntry — atualiza sitemap sem regenerar o inteiro", () => {
+  it("adiciona uma nova entrada ao sitemap existente", () => {
+    const existing = buildSitemapXml([{ loc: "https://diar.ia.br/p/edicao-antiga", lastmod: "2026-08-26" }]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/edicao-nova", lastmod: "2026-08-27" });
+    assert.ok(result.includes("edicao-nova"));
+    assert.ok(result.includes("edicao-antiga"));
+    assert.ok(result.includes("2026-08-27"));
+  });
+
+  it("idempotente: não duplica entrada já present", () => {
+    const existing = buildSitemapXml([{ loc: "https://diar.ia.br/p/ja-existe", lastmod: "2026-08-26" }]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/ja-existe", lastmod: "2026-08-27" });
+    const count = (result.match(/ja-existe/g) || []).length;
+    assert.equal(count, 1, "URL deve aparecer apenas uma vez");
+  });
+
+  it("entry sem lastmod: adiciona sem linha de lastmod", () => {
+    const existing = buildSitemapXml([{ loc: "https://diar.ia.br/p/x", lastmod: "2026-01-01" }]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/sem-data" });
+    assert.ok(result.includes("sem-data"));
+    assert.ok(!result.match(/sem-data[\s\S]*?<lastmod/), "não deve ter lastmod pra entry sem data");
+  });
+
+  it("mantém o XML well-formed (abre e fecha urlset)", () => {
+    const existing = buildSitemapXml([{ loc: "https://diar.ia.br/p/a", lastmod: "2026-01-01" }]);
+    const result = addSitemapEntry(existing, { loc: "https://diar.ia.br/p/b", lastmod: "2026-01-02" });
+    assert.ok(result.startsWith('<?xml'));
+    assert.ok(result.endsWith('</urlset>\n'));
+  });
+
+  it("sitemapEntryFromPost monta a entrada corretamente", () => {
+    const post = {
+      slug: "meu-slug",
+      title: "Título",
+      status: "confirmed",
+      publish_date: Math.floor(Date.parse("2026-08-27T09:00:00Z") / 1000),
+      content: { free: { web: "<html></html>" } },
+    };
+    const entry = sitemapEntryFromPost(post as any);
+    assert.equal(entry.loc, "https://diar.ia.br/p/meu-slug");
+    assert.equal(entry.lastmod, "2026-08-27");
   });
 });
