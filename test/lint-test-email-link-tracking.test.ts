@@ -446,6 +446,47 @@ describe("#4520 — mainCli() --stage via argv (CLI e2e)", () => {
       rmSync(dirname(emailFile), { recursive: true, force: true });
     }
   });
+
+  // #6608: threading do argv `--send-mode` até `sendMode` em checkLinkTracking.
+  it("--send-mode generic (delivered implícito): merge tag literal é SKIPADA (reason generic_send_merge_tag), exit 0", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile, "--send-mode", "generic"]);
+      assert.equal(r.status, 0, `esperava exit 0 (sem blockers): ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 0, "merge tag em send-mode=generic não deve ir pra fila de HEAD");
+      assert.ok(
+        out.skipped.some((s: { reason: string }) => s.reason === "generic_send_merge_tag"),
+        `esperava skip com reason "generic_send_merge_tag": ${JSON.stringify(out.skipped)}`,
+      );
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
+  });
+
+  it("SEM --send-mode (default simulate-as): merge tag literal continua indo pra HEAD normal — comportamento pré-#6608 intocado", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile]);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 1, "default simulate-as não deve skipar merge tag no e-mail entregue");
+      assert.ok(!out.skipped.some((s: { reason: string }) => s.reason === "generic_send_merge_tag"));
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
+  });
+
+  it("--send-mode simulate-as (explícito): mesmo comportamento do default", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile, "--send-mode", "simulate-as"]);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 1);
+      assert.ok(!out.skipped.some((s: { reason: string }) => s.reason === "generic_send_merge_tag"));
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
+  });
 });
 
 describe("isPostWebRedirectTarget (#4604)", () => {
@@ -546,5 +587,79 @@ describe("#4604 — redirect pro /jogar?from=post-web pós-#4578 não mascara me
     assert.equal(r.issues.length, 1);
     assert.equal(r.issues[0].type, "link_dead");
     assert.equal(r.issues[0].status, 400);
+  });
+});
+
+describe("#6608 — --send-mode generic trata merge tag literal como skip, não blocker", () => {
+  const VOTE_URL_WITH_LITERAL_TAG =
+    "https://eia.diar.ia.br/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260828&choice=A";
+
+  it("categorizeUrl(url, 'delivered', 'generic') → 'generic_send_merge_tag' pra URL com {{...}} literal", () => {
+    assert.equal(
+      categorizeUrl(VOTE_URL_WITH_LITERAL_TAG, "delivered", "generic"),
+      "generic_send_merge_tag",
+    );
+  });
+
+  it("categorizeUrl(url, 'delivered', 'simulate-as') (ou default) → null, preserva comportamento pré-#6608", () => {
+    assert.equal(categorizeUrl(VOTE_URL_WITH_LITERAL_TAG, "delivered", "simulate-as"), null);
+    assert.equal(categorizeUrl(VOTE_URL_WITH_LITERAL_TAG, "delivered"), null);
+  });
+
+  it("checkLinkTracking sendMode 'generic': merge tag literal vira skipped, NÃO issue/blocker", async () => {
+    const html = `<a href="${VOTE_URL_WITH_LITERAL_TAG}">votar</a>`;
+    let fetchCalled = false;
+    const fetchStub = (): Promise<Response> => {
+      fetchCalled = true;
+      return Promise.resolve(new Response(null, { status: 200 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered", "generic");
+    assert.equal(r.issues.length, 0, "não deve virar issue/blocker em modo generic");
+    assert.equal(fetchCalled, false, "URL com merge tag literal é skipada ANTES do HEAD, não faz fetch");
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].reason, "generic_send_merge_tag");
+  });
+
+  it("checkLinkTracking sendMode default ('simulate-as'): mesma URL continua link_dead (blocker) — comportamento pré-#6608 intocado", async () => {
+    const html = `<a href="${VOTE_URL_WITH_LITERAL_TAG}">votar</a>`;
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 400 }));
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+  });
+
+  it("sendMode 'generic' + sinal indireto do redirect pra /jogar?...&from=post-web (#4604) → skip, não blocker", async () => {
+    const html = `<a href="${VOTE_URL_WITH_LITERAL_TAG}">votar</a>`;
+    const responses = [
+      new Response(null, {
+        status: 302,
+        headers: { Location: "https://eia.diar.ia.br/jogar?edition=260828&from=post-web" },
+      }),
+      new Response(null, { status: 200 }),
+    ];
+    let i = 0;
+    const fetchStub = (): Promise<Response> => Promise.resolve(responses[i++]);
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered", "generic");
+    assert.equal(r.issues.length, 0, "não deve virar issue/blocker em modo generic");
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].reason, "generic_send_merge_tag");
+  });
+
+  it("sendMode default + o mesmo sinal indireto continua blocker (regressão #4604 preservada)", async () => {
+    const html = `<a href="${VOTE_URL_WITH_LITERAL_TAG}">votar</a>`;
+    const responses = [
+      new Response(null, {
+        status: 302,
+        headers: { Location: "https://eia.diar.ia.br/jogar?edition=260828&from=post-web" },
+      }),
+      new Response(null, { status: 200 }),
+    ];
+    let i = 0;
+    const fetchStub = (): Promise<Response> => Promise.resolve(responses[i++]);
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
   });
 });
