@@ -4,17 +4,72 @@ Worker de static assets que vai eventualmente servir o apex `diar.ia.br`
 (#467 — decisão do editor de 25/08/2026: "o apex aponta pro nosso Worker;
 o Kit fica só com o e-mail").
 
-**Estado desta unidade (1º item do checklist revisado do #467): só o
-acervo `/p/{slug}` das 253 edições publicadas** (`status: "confirmed"` em
-`data/beehiiv-cache/posts/`). `custom_domain`/`routes` apontando pro apex
-**não estão ligados ainda** — este Worker só roda em `workers.dev` até o
-cutover de DNS (fora de escopo, blast-radius real, ver
-`docs/apex-cutover-rollback.md`).
+**Estado desta unidade: acervo `/p/{slug}` das 253 edições publicadas**
+(`status: "confirmed"` em `data/beehiiv-cache/posts/`) **+ `/` e
+`/subscribe` (#6359, 26/08/2026, stub — ver abaixo).** `custom_domain`/
+`routes` apontando pro apex **não estão ligados ainda** — este Worker só
+roda em `workers.dev` até o cutover de DNS (fora de escopo, blast-radius
+real, ver `docs/apex-cutover-rollback.md`).
 
-Fora de escopo aqui, itens do checklist do #467:
+### `/` e `/subscribe` (#6359, redesign #6375)
 
-- `/`, `/subscribe`, `/forms/*` (home + formulários postando pro Kit)
+Medição ao vivo (26/08/2026, comentário da issue #6359) reduziu o escopo
+original do #467 de 4 rotas faltantes pra 2 — `/forms/*` nunca existiu no
+apex (404 hoje) e `/sitemap.xml` já era servido certo.
+
+- **`/`** — `public/index.html`, redesign completo (#6375) portando a
+  "Direção A · Edição diária" (`V1Landing`, repo `diaria-design`,
+  `v1-daily.jsx` — já **selecionada**, não uma entre opções em aberto) de
+  React/JSX pro HTML estático que este Worker serve. 7 blocos, mesma
+  hierarquia do design de referência: Nav → Masthead (H1 + lede + form de
+  inscrição inline) → Feature (destaque do dia) → Specials (livros/cursos)
+  → Archive (edições anteriores) → Faqs → Footer (form de novo, tema
+  escuro). Gerado por `scripts/gen-home-page.ts` (miolo puro em
+  `scripts/lib/site-home-page.ts`) — **não** um script ad-hoc: lê
+  `public/sitemap.xml` (ordem mais-recente-primeiro) +
+  `public/p/{slug}/index.html` já gerados por `gen-archive-pages.ts` pra
+  popular Feature/Archive com a MESMA edição confirmada mais recente e as
+  mesmas anteriores do acervo real — nunca mock (ver docstring do módulo
+  pro porquê de ler o output já commitado em vez de `data/beehiiv-cache/`
+  direto). Rodar `npx tsx scripts/gen-home-page.ts` depois de
+  `gen-archive-pages.ts` sempre que o acervo mudar. `<title>diar.ia.br</title>`
+  + meta description = tagline oficial são preservados do stub original
+  (guard de regressão do #6359 continua valendo).
+  **Escopo reduzido desta unidade (documentado no PR do #6375, decisão
+  registrada porque não cabe em pergunta):** o form de inscrição (masthead
+  + footer) é visualmente idêntico ao design (pill input + botão), mas o
+  campo de e-mail é DECORATIVO — a pill inteira é um único `<a
+  href="/subscribe">`, sem POST real pra API do Kit (bloqueado pelo #6318,
+  aberta — UTM/atribuição de cadastro não fechada). V1Specials linka
+  direto pros hubs já existentes (`livros.diar.ia.br`, `cursos.diar.ia.br`)
+  em vez de fonte de dado dinâmica — não achada nenhuma API própria de
+  contagem de livros/cursos no repo, e os hubs já são a fonte de verdade
+  de conteúdo dessas categorias.
+- **`/subscribe`** — `public/_redirects`, 302 pro perfil hospedado da
+  conta Kit (`https://diar-ia-br.kit.com/`) — a única superfície de
+  cadastro PÚBLICA que a conta já expõe (confirmado ao vivo: o único form
+  listado via MCP é tipo `embed`, sem página hospedada própria; 0 landing
+  pages publicadas). Backend de cadastro é o Kit desde o switchover #6114
+  (`platform.config.json` → `publishing.newsletter.backend`). **Continua
+  sendo o destino real do cadastro** — o #6375 não mexeu nisso, só trocou
+  o que `/` mostra visualmente antes de mandar pra cá.
+
+Redirect em vez de página própria postando na API porque UTM/atribuição de
+cadastro é escopo do #6318 (aberta — mecanismo de custom field UTM já
+mergeado e verificado no #6324, backfill 592/592 assinantes sem
+divergências; resta fechar o vínculo form+double-opt-in — Opção B, mais
+rica, medida ao vivo em 26/08 mas sem confirmação de que já virou decisão
+final/implementação — e checar se a atribuição aparece na UI do Kit) — não
+entrar nisso aqui. Smoke test de rotas: `test/site-worker-routes-6359.test.ts`
+(rotas/arquivos) + `test/site-home-page-6375.test.ts` (conteúdo do
+redesign — 7 blocos, form → `/subscribe`, links reais pro acervo).
+
+Fora de escopo aqui:
+
 - o cutover de DNS em si
+- POST real pro Kit (#6318)
+- medição de conversão visitante→assinante (item separado da issue #6375,
+  requer decisão de instrumentação)
 
 **O passo de pipeline que publica a página de uma edição NOVA já existe
 (#6202):** `scripts/publish-edition-site-page.ts`, dispatchado no Stage 6
@@ -58,6 +113,11 @@ Idempotente e regenera do zero (`rm -rf public/p` antes de escrever) —
 rerodar depois de um `beehiiv-sync.ts` novo remove órfãos automaticamente.
 Miolo puro testado em `scripts/lib/site-archive-pages.ts` /
 `test/gen-archive-pages.test.ts`.
+
+**Depois de rodar o comando acima, rodar também** `npx tsx
+scripts/gen-home-page.ts` — regenera `public/index.html` (#6375) a partir
+do `sitemap.xml`/`public/p/` recém-escritos, pra Feature/Archive da home
+refletirem o acervo atualizado.
 
 `robots.txt` é mantido à mão (mesmo conteúdo fixo dos outros Workers de
 curadoria — `Content-Signal`, `Allow: /`, bloqueio de `Amazonbot`/

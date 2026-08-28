@@ -14,6 +14,14 @@
  * preferido) pro mais antigo (Unix seconds). Retorna `null` quando nenhum
  * dos campos é parseável — caller deve detectar o `null` e fazer loud fail
  * (não silenciar como "post sem timestamp").
+ *
+ * **#6362 item 11: apesar do nome/docstring acima, este módulo também é
+ * load-bearing pra broadcasts do KIT desde #6184** —
+ * `scripts/lib/shared/newsletter-read-source.ts` chama `extractPublishedDate`/
+ * `extractPublishedAtIso` com `{ published_at: b.published_at ?? b.send_at }`
+ * pro lado Kit (que só popula ISO em `published_at`, nunca Unix seconds).
+ * Quem editar este arquivo (inclusive a ordem de precedência de campos
+ * abaixo) está mexendo nos dois backends, não só na Beehiiv.
  */
 
 export interface BeehiivPostTimestamps {

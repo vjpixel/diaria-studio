@@ -11,9 +11,40 @@
 //      (which also print /pull/ URLs) never run it. It is a START-ANCHORED
 //      prefix, so it only matches a STANDALONE `gh pr create …` call — NOT a
 //      chained `git push && gh pr create …`. Create PRs with a standalone
-//      `gh pr create` call so the hook fires.
-//   3. This script then extracts the created PR's URL from the tool output and
-//      only emits the instruction when one is present (skips `--help`, etc.).
+//      `gh pr create` call so the hook fires. **#6298: this filter alone was
+//      observed firing for a standalone `gh pr comment …` call — cause not
+//      confirmed at the harness layer — so this script no longer trusts it
+//      exclusively; see point 3 below.**
+//   3. `shouldEmitReviewInstruction` (thin wrapper over `resolveEmitDecision`)
+//      decides whether to actually emit, combining two checks (#6298): (a)
+//      `extractCreatedPrUrl` rejects a `tool_response` URL that carries a
+//      `#issuecomment-\d+`/`#discussion_r\d+`/`#pullrequestreview-\d+`
+//      fragment — the shape of a COMMENT/REVIEW URL, never a freshly-created
+//      PR's own URL (the bug in #6298: `gh pr comment`'s stdout is such a URL,
+//      and the old regex matched it because it only looked as far as the PR
+//      number, ignoring the fragment after); (b) when
+//      `payload.tool_input.command` is available, it must actually be a `gh
+//      pr create` invocation (`isGhPrCreateCommand`, duplicated from — but no
+//      longer contract-identical to — `isGhPrMergeCommand` in the sibling
+//      hook `block-gh-pr-merge-subagent.mjs`: this one returns a 3-state
+//      `"create" | "not-create" | "unknown"`, never a boolean, precisely so
+//      "command absent" can never collapse into "definitely not a create"
+//      again — the ambiguity a fleet review flagged after #6298 shipped) —
+//      not `gh pr comment`, and not a citation of the string "gh pr create"
+//      inside a quoted `--body`/`--title` of some OTHER command. `command`
+//      ABSENT from the payload resolves `"unknown"`, which the call site
+//      treats as permissive (decide from the URL alone, same as pre-#6298) —
+//      never as silent-deny: this hook's failure direction is "an extra
+//      review" over "no review at all".
+//   4. Every path that does NOT end in an emitted review instruction — no PR
+//      URL at all, a comment/review URL, or a command confirmed NOT to be
+//      `gh pr create` — logs its reason via `logSuppressedReviewInstruction`
+//      (`data/run-log.jsonl`, message `review_instruction_suppressed`). Added
+//      after a fleet review found the 3 reasons indistinguishable in the only
+//      observable output (silence): a CORRECT suppression (comment URL) and
+//      an INCORRECT one (a genuine PR misclassified by an edge case) produced
+//      the exact same nothing. Fail-soft, same contract as
+//      `logEffortDecision` below — a logging failure never blocks anything.
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
@@ -26,11 +57,16 @@
 // valor vigente aqui: este cabeçalho já ficou mentindo uma vez, entre o #4234 e
 // a correção em #4242 — e não sozinho (o mesmo PR achou outras duas cópias do
 // valor espalhadas pelo arquivo). O que é estável e vale documentar neste nível:
-//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) resolvem
-//     `low` explicitamente, independente do default — é o caminho
-//     token-sensível, e o guard existe porque naming é convenção frágil
-//     (incidente #3321, 260710: ~50 PRs, zero com o prefixo, gating nunca
-//     disparou a noite inteira);
+//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) continuam
+//     o caminho token-sensível, independente do default — mas desde #6393
+//     (260827) deixaram de resolver `low` incondicional: cada um passa por
+//     `resolveOvernightDiffEffort`, que compara o tamanho do diff contra
+//     `OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD` (1000, maior que o limiar geral
+//     de propósito — overnight continua mais barato que develop no mesmo
+//     tamanho de diff, só deixou de ser barato incondicional). O guard de
+//     sessão ativa existe porque naming é convenção frágil (incidente #3321,
+//     260710: ~50 PRs, zero com o prefixo, gating nunca disparou a noite
+//     inteira);
 //   - #4813 (260810): pra QUALQUER PR sem sinal de overnight, o effort passou a
 //     ser resolvido por tamanho de diff (ver `EFFORT_DIFF_LINE_THRESHOLD`) — não
 //     mais direto pelo `DEFAULT_EFFORT`. `DEFAULT_EFFORT` virou o fallback de
@@ -260,6 +296,36 @@ export const DEFAULT_EFFORT = "max";
 export const EFFORT_DIFF_LINE_THRESHOLD = 500;
 
 /**
+ * #6393 (260827): limiar de tamanho de diff PRÓPRIO do caminho overnight —
+ * antes desta issue, `branch_overnight`/`sessao_overnight_ativa` resolviam
+ * `low` INCONDICIONAL, sem olhar o tamanho do diff, enquanto o caminho geral
+ * (develop/sessão comum) já resolvia por `EFFORT_DIFF_LINE_THRESHOLD` desde o
+ * #4813. A assimetria estava invertida em relação ao risco: overnight é
+ * justamente o fluxo DESASSISTIDO (PR nasce, CI verde, auto-merge, sem editor
+ * olhando) — e era ele quem recebia o review mais fraco sempre, mesmo num PR
+ * de milhares de linhas.
+ *
+ * A correção NÃO iguala os dois limiares — decisão explícita do editor
+ * (discussão registrada no corpo da #6393): overnight continua mais barato
+ * que develop no mesmo tamanho de diff, então este limiar é maior que
+ * `EFFORT_DIFF_LINE_THRESHOLD` (500), não igual. 1000 linhas é o valor
+ * proposto na issue — o dobro do limiar geral, cobrindo a esmagadora maioria
+ * dos PRs overnight reais (tipicamente pequenos: 1 issue, 1-2 arquivos) sem
+ * abrir mão do gate pro PR grande mergeado sozinho de madrugada, que é
+ * exatamente o buraco que a issue fecha.
+ *
+ * Fail-direction do caminho overnight continua deliberadamente mais barata
+ * que a do caminho geral: tamanho de diff DESCONHECIDO (gh indisponível, JSON
+ * malformado) resolve `low` aqui — não `DEFAULT_EFFORT`/`max` como no
+ * caminho geral (ver `resolveOvernightDiffEffort`). Overnight já tratava "não
+ * sei o tamanho" como "confia no desconto" antes desta issue (curto-
+ * circuitava sem nem chamar `getDiffLineCount`); preservar esse viés pro caso
+ * desconhecido é exatamente o que os critérios de aceite da issue pedem — só
+ * o caso CONHECIDO grande é que precisava deixar de ser sempre `low`.
+ */
+export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
+
+/**
  * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.
  * Retorna `null` em QUALQUER falha (gh indisponível, JSON malformado, campos
  * não-numéricos) — o caller trata `null` como "não dá pra saber o tamanho do
@@ -281,14 +347,40 @@ function getDiffLineCount(num, execFn) {
 }
 
 /**
+ * #6393: decide low/max para um caminho COM sinal de overnight (branch
+ * `overnight/*` ou sessão ativa), agora que esse caminho também olha o
+ * tamanho do diff em vez de curto-circuitar sempre em `low`. Limiar PRÓPRIO
+ * (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`, ver docblock da constante) — maior
+ * que o do caminho geral, de propósito. Diff CONHECIDO e ≥ limiar → `max`
+ * (`reason` recebe o sufixo `_diff_grande`); diff pequeno OU tamanho
+ * DESCONHECIDO (`getDiffLineCount` retornou `null`) → `low`, com o `reason`
+ * BASE inalterado — overnight preserva o viés histórico de "não sei o
+ * tamanho, confia no desconto" que já tinha antes desta issue (diferente do
+ * caminho geral, que cai no `DEFAULT_EFFORT`/`max` quando o tamanho é
+ * desconhecido).
+ */
+function resolveOvernightDiffEffort(num, execFn, baseReason) {
+  const diffLineCount = getDiffLineCount(num, execFn);
+  if (diffLineCount !== null && diffLineCount >= OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD) {
+    return { effort: "max", reason: `${baseReason}_diff_grande` };
+  }
+  return { effort: "low", reason: baseReason };
+}
+
+/**
  * Resolve o headRefName de um PR e decide o effort de /code-review.
  * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
  * testável sem tocar `data/overnight/` no disco real.
  *
  * Caminhos com sinal de overnight — prefixo `overnight/*` (#2754) ou sessão
- * ativa nesta máquina (#3322) — continuam resolvendo `low` explicitamente,
- * independente de tamanho de diff ou do `DEFAULT_EFFORT`.
+ * ativa nesta máquina (#3322) — continuam token-sensíveis por padrão, mas
+ * deixaram de ser `low` INCONDICIONAL desde o #6393: cada um resolve por
+ * tamanho de diff via `resolveOvernightDiffEffort`, com um limiar PRÓPRIO
+ * (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`, maior que o do caminho geral) —
+ * ver o docblock da constante pro porquê da assimetria estar invertida em
+ * relação ao risco antes desta issue (overnight é o fluxo DESASSISTIDO, e
+ * era ele quem recebia sempre o review mais fraco).
  *
  * #4813 (260810, generaliza #4243): quando NENHUM sinal de overnight se
  * aplica, effort passa a ser resolvido por TAMANHO DE DIFF — critério
@@ -321,15 +413,21 @@ function getDiffLineCount(num, execFn) {
  * tornou visível ao coordenador, em vez de passar em silêncio (era justamente
  * esse silêncio que atrasou a detecção do #3321).
  *
- * `reason` (#4252, ramos de tamanho reformulados em #4813): código curto e
- * estável identificando QUAL ramo decidiu — `pr_sem_numero` |
- * `branch_overnight` | `sessao_overnight_ativa` | `diff_pequeno` |
- * `diff_grande` | `default` | `estado_indeterminado`. `diff_pequeno` e
- * `diff_grande` (tamanho CONHECIDO, dos dois lados do limiar) substituem o
- * antigo `diff_trivial`; `default` agora significa especificamente "tamanho
- * DESCONHECIDO, caiu no fallback" — distinção que existe pra instrumentação
- * (`logEffortDecision`) conseguir separar "grande de propósito" de
- * "desconhecido, caiu no fallback". Campo aditivo: nenhum teste existente
+ * `reason` (#4252, ramos de tamanho reformulados em #4813; ramos de overnight
+ * reformulados em #6393): código curto e estável identificando QUAL ramo
+ * decidiu — `pr_sem_numero` | `branch_overnight` | `branch_overnight_diff_grande` |
+ * `sessao_overnight_ativa` | `sessao_overnight_ativa_diff_grande` |
+ * `diff_pequeno` | `diff_grande` | `default` | `estado_indeterminado`.
+ * `diff_pequeno` e `diff_grande` (tamanho CONHECIDO, dos dois lados do
+ * limiar) substituem o antigo `diff_trivial`; `default` agora significa
+ * especificamente "tamanho DESCONHECIDO, caiu no fallback" — distinção que
+ * existe pra instrumentação (`logEffortDecision`) conseguir separar "grande
+ * de propósito" de "desconhecido, caiu no fallback". Os dois sufixos
+ * `_diff_grande` (#6393) preservam o `reason` BASE do ramo overnight que
+ * decidiu (naming, ver `resolveOvernightDiffEffort`) em vez de reusar
+ * `diff_grande` do caminho geral — a instrumentação continua distinguindo
+ * "PR overnight grande" de "PR geral grande" sem precisar cruzar com o
+ * branch/marker separadamente. Campo aditivo: nenhum teste existente
  * inspeciona o objeto inteiro (só `.effort`/`.warning`), então adicioná-lo não
  * quebra nada. Existe só pra alimentar o log de instrumentação
  * (`logEffortDecision`, chamado no entrypoint CLI abaixo — nunca aqui dentro,
@@ -361,7 +459,12 @@ export function resolveEffort(
       ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
       { encoding: "utf8", timeout: 10_000 },
     ).trim();
-    if (branch.startsWith("overnight/")) return { effort: "low", warning: null, reason: "branch_overnight" };
+    // #6393: branch overnight/* deixou de ser `low` incondicional — resolve
+    // por tamanho de diff, com o limiar PRÓPRIO (maior) do caminho overnight.
+    if (branch.startsWith("overnight/")) {
+      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "branch_overnight");
+      return { effort, warning: null, reason };
+    }
     // #5156: `sessionId` (o session_id da chamada gh pr create que criou esta
     // PR, extraído do payload do hook no entrypoint CLI abaixo) é repassado a
     // checkRoundActive — quando o default real (isOvernightRoundActive) lê um
@@ -370,8 +473,12 @@ export function resolveEffort(
     // comportamento pré-#5156. Mocks de teste (`noActiveRound`/`activeRound`)
     // ignoram o argumento livremente — não quebra nenhum teste existente.
     if (checkRoundActive(sessionId)) {
+      // #6393: mesmo tratamento de tamanho de diff do ramo `overnight/*`
+      // acima — o warning de naming (#3321) é ortogonal ao tamanho, então
+      // sai igual independente de o diff ter resolvido `low` ou `max`.
+      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "sessao_overnight_ativa");
       return {
-        effort: "low",
+        effort,
         warning:
           `branch "${branch}" não usa o prefixo overnight/ apesar de uma sessão ` +
           "overnight ativa nesta máquina (data/overnight/.active-session-*.json) — " +
@@ -379,7 +486,7 @@ export function resolveEffort(
           "prefixo no dispatch do subagente implementador (#3321). O desconto de " +
           "effort foi aplicado pelo guard de sessão ativa, não pelo naming — este " +
           "warning é só sobre o naming divergente.",
-        reason: "sessao_overnight_ativa",
+        reason,
       };
     }
     // Sem sinal de overnight/rodada-ativa: effort resolve por tamanho de diff
@@ -576,6 +683,227 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   );
 }
 
+/**
+ * #6298 fix 1: extrai a URL de uma PR REALMENTE CRIADA do `tool_response`,
+ * rejeitando falsos-positivos de outros subcomandos `gh` cujo output TAMBÉM
+ * contém uma URL `/pull/N` — o caso medido ao vivo é `gh pr comment`, cuja
+ * saída é `https://github.com/.../pull/N#issuecomment-<id>` e casava o regex
+ * antigo (que só olhava até o número da PR, ignorando o que vem depois). O
+ * mesmo formato de sufixo existe para comentário inline de review
+ * (`#discussion_r<id>`) e para a review em si (`#pullrequestreview-<id>`) —
+ * nenhuma PR recém-criada tem fragmento na própria URL, então qualquer um dos
+ * três é prova de que a URL pertence a um COMENTÁRIO/REVIEW, não à criação.
+ *
+ * Backtracking do regex é bloqueado deliberadamente: sem o `(?!\d)` logo após
+ * `\d+`, um motor de regex tentaria encolher o número casado (6282 → 628 →
+ * 62 → ...) até achar uma posição onde o `(?!#(?:issuecomment|...))` de
+ * negative lookahead passasse — produzindo um match TRUNCADO (`.../pull/628`)
+ * em vez de simplesmente falhar. `(?!\d)` garante que só o número COMPLETO é
+ * aceito como candidato antes de checar o sufixo; se o sufixo malicioso
+ * estiver lá, a tentativa nessa posição falha inteira, sem produzir match
+ * parcial.
+ */
+export function extractCreatedPrUrl(text) {
+  if (typeof text !== "string") return null;
+  const match = text.match(
+    // discussion_r's fragment has NO dash before the digits (`#discussion_r123...`),
+    // unlike issuecomment/pullrequestreview (`#issuecomment-123...`) — kept as a
+    // separate alternative, not folded into the shared `-\d+` suffix.
+    /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+(?!\d)(?!#(?:issuecomment-\d+|discussion_r\d+|pullrequestreview-\d+))/,
+  );
+  return match ? match[0] : null;
+}
+
+/**
+ * #6298 fix 2: reconfere se o comando que gerou este `PostToolUse` é de fato
+ * um `gh pr create` — o `if: "Bash(gh pr create*)"` de `.claude/settings.json`
+ * é o filtro documentado (ver cabeçalho do arquivo), mas a issue #6298
+ * observou o hook disparar mesmo assim para um `gh pr comment` isolado, sem
+ * confirmar a causa raiz na camada do harness. Em vez de confiar só nesse
+ * `if`, o hook reconfere o próprio `payload.tool_input.command`.
+ *
+ * `stripQuotedSpans`/o regex de âncora são DUPLICADOS (não importados) de
+ * `.claude/hooks/block-gh-pr-merge-subagent.mjs` (`stripQuotedSpans` +
+ * `isGhPrMergeCommand`), que resolve exatamente a mesma classe de problema
+ * pra `gh pr merge`: distinguir um comando REAL (início da string, ou depois
+ * de separador `&&`/`;`/`|`/`||`/newline) de uma MENÇÃO à mesma string dentro
+ * de aspas (ex: um `--body`/`--title` citando "gh pr create" como texto,
+ * inclusive o PRÓPRIO corpo desta issue #6298, que cita o comando exato).
+ * Duplicar em vez de importar é o padrão já estabelecido entre os dois hooks
+ * — ambos são self-contained por design (nenhum import de `scripts/*.ts`,
+ * ver docblock do topo deste arquivo: um import estático de `.ts` quebraria o
+ * hook inteiro, silenciosamente, num Node sem type-stripping nativo). Manter
+ * os dois em sincronia à mão; cada lado tem seu próprio arquivo de teste.
+ */
+export function stripQuotedSpans(command) {
+  let result = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      let j = i + 1;
+      while (j < n && command[j] !== "'") j++;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\") j++;
+        j++;
+      }
+      i = j + 1;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
+/**
+ * Classifica `command` quanto a ser (ou não) um `gh pr create` REAL — só no
+ * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
+ * newline). Ver docstring de `stripQuotedSpans` acima para o porquê da
+ * duplicação da lógica de parsing com `isGhPrMergeCommand`.
+ *
+ * **Finding do fleet review pós-#6298 (confiança alta, P2):** este espelho de
+ * `isGhPrMergeCommand` reusava também o CONTRATO boolean dele — mas a
+ * polaridade em que os dois são consumidos é OPOSTA. Em
+ * `block-gh-pr-merge-subagent.mjs`, `false` no comando ausente implementa
+ * fail-OPEN corretamente sozinho (nenhum bloqueio por falta de dado). Aqui, o
+ * fail-safe correto é o INVERSO — comando ausente tem que continuar
+ * permissivo (emitir a instrução) —, então antes desta mudança o call site
+ * (`shouldEmitReviewInstruction`) precisava de um `typeof command ===
+ * "string" &&` só pra não deixar esta função decidir sozinha sobre um dado
+ * que ela não tinha. Um `false` sozinho não distinguia "sei que NÃO é `gh pr
+ * create`" de "não sei, o campo não veio" — quem carregava essa distinção era
+ * o call site, não o contrato da função; "simplificar" removendo o `typeof`
+ * (parece redundante à primeira vista, já que a função trata non-string)
+ * inverteria o fail-safe e reabriria o #6298.
+ *
+ * Por isso o retorno deixou de ser boolean: três estados explícitos,
+ * `"create"` | `"not-create"` | `"unknown"` (comando ausente/não-string) — o
+ * chamador trata `"unknown"` como permissivo SEM precisar checar `typeof`
+ * primeiro (ver `resolveEmitDecision`/`shouldEmitReviewInstruction` abaixo).
+ * `isGhPrMergeCommand` no hook irmão continua boolean de propósito (sua
+ * polaridade de fail-open já está correta como boolean) — os dois NÃO são
+ * mais contract-idênticos, só compartilham `stripQuotedSpans`/o regex de
+ * âncora, que seguem sincronizados à mão como antes.
+ */
+export function isGhPrCreateCommand(command) {
+  if (typeof command !== "string") return "unknown";
+  const stripped = stripQuotedSpans(command);
+  return /^\s*gh\s+pr\s+create\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+create\b/.test(stripped)
+    ? "create"
+    : "not-create";
+}
+
+/**
+ * Regex só de DETECÇÃO (não de extração) de uma URL de PR com fragmento de
+ * comentário/review — usado só por `resolveEmitDecision` pra distinguir a
+ * razão (a) "não há URL de PR nenhuma" de (b) "há URL, mas é de
+ * comentário/review", quando `extractCreatedPrUrl` já devolveu `null` pras
+ * duas. Deliberadamente mais simples que o regex de extração (sem o guard
+ * anti-backtracking `(?!\d)`): aqui só interessa SE existe, nunca o valor
+ * exato capturado.
+ */
+const PR_URL_WITH_COMMENT_FRAGMENT_RE =
+  /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+#(?:issuecomment-\d+|discussion_r\d+|pullrequestreview-\d+)/;
+
+/**
+ * Finding do fleet review pós-#6298 (confiança alta, P2): `shouldEmitReviewInstruction`
+ * devolvia `null` pra três razões indistinguíveis — (a) não há URL de PR na
+ * saída, (b) a URL é de comentário/review, (c) o comando não é `gh pr
+ * create` — e o call site de produção (`if (prUrl) {...}` sem `else`) nunca
+ * observava qual. Uma supressão CORRETA (b, comentário) e uma potencialmente
+ * INCORRETA (c, edge case de comando não reconhecido classificando errado
+ * uma PR genuína) produziam o mesmo silêncio. Isso importa porque a #6298
+ * registra que a causa raiz na camada do harness nunca foi confirmada — é
+ * exatamente esse tipo de silêncio que vai precisar ser diagnosticado nesse
+ * cenário de novo.
+ *
+ * `resolveEmitDecision` é o núcleo decisório completo, com o motivo explícito
+ * — `reason` é `"no_pr_url"` | `"comment_or_review_url"` |
+ * `"not_gh_pr_create"` | `"ok"`. `shouldEmitReviewInstruction` (abaixo) segue
+ * existindo como wrapper fino só com `.prUrl`, pra não quebrar quem só
+ * precisa saber SE deve disparar.
+ */
+export function resolveEmitDecision(toolResponseText, command) {
+  const prUrl = extractCreatedPrUrl(toolResponseText);
+  if (!prUrl) {
+    const text = typeof toolResponseText === "string" ? toolResponseText : "";
+    const reason = PR_URL_WITH_COMMENT_FRAGMENT_RE.test(text) ? "comment_or_review_url" : "no_pr_url";
+    return { prUrl: null, reason };
+  }
+  const commandState = isGhPrCreateCommand(command);
+  if (commandState === "not-create") return { prUrl: null, reason: "not_gh_pr_create" };
+  return { prUrl, reason: "ok" };
+}
+
+/**
+ * Decisão pura combinando os dois fixes do #6298: existe uma URL de PR
+ * genuinamente criada (fix 1) E, quando o comando está disponível no payload,
+ * ele de fato é um `gh pr create` (fix 2)? Retorna a URL a usar, ou `null`
+ * quando não deve disparar. Wrapper fino sobre `resolveEmitDecision` — ver lá
+ * pro motivo da supressão, quando precisar dele.
+ *
+ * **Direção do fail-safe, deliberada:** este hook é `PostToolUse` e nunca
+ * pode bloquear nada — só ADICIONA contexto. Errar para "não disparou" custa
+ * uma PR sem review, o que é PIOR que um review a mais (o custo que motivou
+ * a #6298). Por isso `command` ausente do payload (campo não populado —
+ * formato de payload mais antigo, ou falha de extração) degrada para
+ * PERMISSIVO via `isGhPrCreateCommand` resolvendo `"unknown"` (nunca
+ * `"not-create"`): decide só pela URL, exatamente como o comportamento
+ * pré-#6298. Só quando o comando está presente E resolve `"not-create"` é
+ * que o fix 2 nega o disparo — nunca por ausência do campo.
+ */
+export function shouldEmitReviewInstruction(toolResponseText, command) {
+  return resolveEmitDecision(toolResponseText, command).prUrl;
+}
+
+/**
+ * Finding do fleet review pós-#6298 (confiança alta, P2, mesmo achado de
+ * `resolveEmitDecision`): loga a RAZÃO de uma supressão em
+ * `data/run-log.jsonl` (mesmo arquivo/formato de `logEffortDecision`,
+ * message `review_instruction_suppressed`) — sem isto, os 3 motivos de
+ * `shouldEmitReviewInstruction` devolver `null` continuavam indistinguíveis
+ * do lado de fora, mesmo com `resolveEmitDecision` já os separando
+ * internamente. Chamado pelo entrypoint CLI pra TODO `reason !== "ok"`, não
+ * só pro caminho (c) `not_gh_pr_create` — que é o mecanismo NOVO desta PR e o
+ * mais provável de ter edge case não coberto, mas os outros dois custam
+ * quase nada a mais pra logar e fecham a mesma lacuna de observabilidade.
+ *
+ * Fail-soft, mesmo contrato de `logEffortDecision`: uma falha ao logar nunca
+ * pode propagar nem bloquear o hook. `command` é truncado (500 chars) antes
+ * de gravar — evita inflar `run-log.jsonl` com um `--body` de PR gigante.
+ */
+export function logSuppressedReviewInstruction(
+  { reason, command },
+  { repoRoot = resolveMainRepoRoot(), appendFn = appendFileSync, mkdirFn = mkdirSync } = {},
+) {
+  try {
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: null,
+      agent: "code-review",
+      level: "info",
+      message: "review_instruction_suppressed",
+      details: {
+        reason,
+        command: typeof command === "string" ? command.slice(0, 500) : null,
+      },
+    };
+    const logPath = join(repoRoot, "data", "run-log.jsonl");
+    mkdirFn(dirname(logPath), { recursive: true });
+    appendFn(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // Swallow everything, same contract as logEffortDecision above.
+  }
+}
+
 // #2019: CLI guard — só roda o corpo do hook quando este arquivo é o entrypoint
 // (nunca ao ser importado por test/pr-create-review-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -593,22 +921,27 @@ if (
         typeof payload.tool_response === "string"
           ? payload.tool_response
           : JSON.stringify(payload.tool_response ?? "");
-      const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
-      if (match) {
+      const command = payload.tool_input?.command;
+      const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
+      if (prUrl) {
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
         // session_id ignora o argumento).
-        const { effort, warning, reason } = resolveEffort(match[0], undefined, undefined, payload.session_id);
-        logEffortDecision({ prUrl: match[0], effort, reason }); // #4252
+        const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id);
+        logEffortDecision({ prUrl, effort, reason }); // #4252
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PostToolUse",
-              additionalContext: buildReviewInstruction(match[0], effort, warning),
+              additionalContext: buildReviewInstruction(prUrl, effort, warning),
             },
           }),
         );
+      } else {
+        // Fleet review pós-#6298 (finding #2): torna a supressão observável —
+        // ver docstring de logSuppressedReviewInstruction acima.
+        logSuppressedReviewInstruction({ reason: emitReason, command });
       }
     } catch {
       // Swallow everything: a hook that errors must not block the PR creation.

@@ -234,6 +234,18 @@ const DEAL_PATTERNS: RegExp[] = [
   /\b\d+\s*(gigawatt|megawatt|GW|MW)s?\b.*\bcompute\b/i,
   // Acordos genéricos gigantes
   /\b(strategic agreement|multi[- ]year (deal|agreement|contract)|acordo estrat[ée]gico)\b/i,
+  // #5995 (achado ao vivo 260827): "X and Y Build an AI Factory" — parceria de
+  // infraestrutura entre duas empresas nomeadas no título, não lançamento de
+  // produto. Caso real: "NVIDIA and LG Group Build an AI Factory to Advance
+  // Physical AI, Mobility and AI Infrastructure". Escopo estreito (exige "X
+  // and Y" + verbo de construção + "AI Factory") pra não pegar o produto de
+  // referência "NVIDIA AI Factory" quando citado sozinho, sem 2ª empresa.
+  /\b\w+\s+and\s+\w+(\s+\w+)?\s+(build|builds|building)\b[^.\n]{0,60}\bAI\s+Factor(?:y|ies)\b/i,
+  // #5995 (260828): "X's models/products Now Run on Y" — parceria de infra
+  // cross-empresa anunciada como acordo, não lançamento de produto próprio.
+  // Caso real: "Claude Meets Blackwell Ultra: Anthropic's Models Now Run on
+  // NVIDIA GB300 in Azure" (blogs.nvidia.com).
+  /\bnow\s+run(?:s)?\s+on\b/i,
 ];
 
 /**
@@ -275,6 +287,11 @@ const CUSTOMER_STORY_PATTERNS: RegExp[] = [
   // Ex: "Databricks adota GPT-5.5 em workflows empresariais" (caso 260518)
   /\b(integra(m|r|mos)?|adota(m|r|mos)?|incorpora(m|r|mos)?|integrate[sd]?|adopt[sed]?|incorporate[sd]?)\s+.{0,40}\bem\s+(workflow|produto|sistema|plataforma|stack)/i,
   /\b(integrates?|adopts?|incorporates?)\s+.{0,40}\bin(to)?\s+(workflow|product|platform|system|stack)/i,
+  // #5995 (260828): "Working with {entidade} on {tema}" — parceria/programa
+  // com organização externa, não lançamento de produto. Caso real: "Working
+  // with the American Psychological Association on youth mental health and
+  // AI" (openai.com/index).
+  /\bworking\s+with\s+\w+(\s+\w+){0,4}\s+on\b/i,
 ];
 
 /**
@@ -322,6 +339,9 @@ const UPDATE_PATTERNS: RegExp[] = [
   // intelligence" + "frontier efficiency" co-ocorrendo — não bloqueia "the
   // frontier of AI" isolado (comum em copy de lançamento real).
   /\bprice[- ]performance\s+frontier\b|\bfrontier\s+intelligence\b[^.\n]{0,60}\bfrontier\s+efficiency\b|\bfrontier\s+efficiency\b[^.\n]{0,60}\bfrontier\s+intelligence\b/i,
+  // #5995 (260828): "X: Major Updates" — changelog-style, não lançamento
+  // novo. Caso real: "🤗 Kernels: Major Updates" (huggingface.co/blog).
+  /\bmajor\s+updates?\b/i,
 ];
 
 export function isUpdate(article: Article): boolean {
@@ -372,9 +392,18 @@ export function isTutorialByDomainExtra(url: string): boolean {
  * so single-word company names no longer match this branch. These items now fall
  * through to noticias/RADAR (correct). Genuine how-to tutorials are captured by
  * `isTutorialByKeyword` (TUTORIAL_KEYWORDS_RE) before reaching this path.
+ *
+ * #5995 (achado ao vivo 260827, modo de falha 2 — radar→use_melhor): anúncio
+ * de curso/capacitação em domínio oficial ou de terceiro não batia nenhum
+ * padrão existente. Casos reais: "New OpenAI Academy courses for the next
+ * era of work" (openai.com, domínio oficial) e "...Google, Sebrae, Itaú e
+ * Tera oferecem capacitação gratuita para empreendedores" (veículo de
+ * notícia cobrindo o programa de treinamento). `academy\s+courses?` e
+ * `capacita[çc][ãa]o\s+gratuita` são específicos o bastante pra não pegar
+ * cobertura genérica sobre "a academia de IA está crescendo" ou similar.
  */
 const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
+  /\b(migrat(ing|ion)\b|how\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b|academy\s+courses?\b|capacita[çc][ãa]o\s+gratuita\b)\b/i;
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
@@ -911,6 +940,11 @@ const RESEARCH_RESULT_PATTERNS: RegExp[] = [
   /\b(refuta(m|r|ram|ria)?|resolv(eu|e|emos|eram|ido)|comprova(m|r|ram)?)\s+(?:a|o|uma|um)\s+(conjectur|problem|teorema|hip[oó]tese)/i,
   // URL path com slug acadêmico explícito
   /\/(disprov|refut|solv|prov)(e|es|ed)?-(a|the|an|model)?-?(conjectur|theorem|problem|geometry|math)/i,
+  // #5995 (260828): "Reaches N% on {benchmark}" — resultado de avaliação/
+  // benchmark, não anúncio de produto. Caso real: "NVIDIA AVO Reaches 100%
+  // on ARC-AGI-3, Demonstrating a Frontier-Level General-Purpose
+  // Architecture..." (developer.nvidia.com/blog).
+  /\breach(?:es|ed)?\s+\d+(?:\.\d+)?%\s+on\b/i,
 ];
 export function isLikelyResearchResult(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
@@ -1335,7 +1369,7 @@ const DISCOVERY_LISTICLE_RE = new RegExp(
 // após "como"/"aprenda a" — não casa em "Como a IA está mudando X" (informativo,
 // não instrutivo) porque "a" não está na lista.
 const TUTORIAL_ACTION_VERBS_PT =
-  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar";
+  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar";
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1346,7 +1380,11 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     "|\\btechniques?\\s+for\\b" +
     "|\\bpatterns?\\s+for\\b" +
     "|\\b(run|deploy|install)\\s+\\S[^.\\n]{0,60}\\b(in one|with one|in a single|with a single)\\s+(command|step|line)\\b" +
-    "|\\b(?:veja|saiba|descubra)\\s+como\\b(?=\\s*(?:$|\\n|[.!?]))" +
+    // #5995 (260828): lookahead ampliado para tolerar sufixo de veículo
+    // scrapado ("...; veja como - Canaltech") — antes só reconhecia
+    // fim-de-string/quebra/pontuação final, deixando escapar títulos com
+    // " - Fonte" anexado após "veja como".
+    "|\\b(?:veja|saiba|descubra)\\s+como\\b(?=\\s*(?:$|\\n|[.!?]|[-–—|]))" +
     "|\\bveja\\s+o\\s+prompt\\b" +
     `|\\baprenda\\s+a\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b` +
     // #5995: "Como <verbo acionável>" — imperativo direto no início da
@@ -1364,7 +1402,17 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     // #5995: "N formas/maneiras/jeitos de <verbo>" sem o prefixo "o que é X e"
     // exigido pelo padrão acima — cobre listicle solto ("6 formas de assinar
     // o Claude mais barato e pagar menos pelo Pro").
-    "|\\b\\d+\\s+(formas|maneiras|jeitos)\\s+de\\b" +
+    // #5995 (260828): admite até 2 palavras (tipicamente adjetivo) entre o
+    // substantivo e "de" — "7 formas inteligentes de usar IA na liderança"
+    // não batia porque "inteligentes" ficava entre "formas" e "de".
+    "|\\b\\d+\\s+(formas|maneiras|jeitos)(?:\\s+\\w+){0,2}\\s+de\\b" +
+    // #5995 (260828): "Try these N X to Y" — listicle acionável em inglês,
+    // mesma classe de "N prompts para"/"N formas de" mas sem o número logo
+    // após o substantivo. Caso real: "Try these 3 Google AI tools to help
+    // find your next job." Exige "to" até 60 chars depois (achado do review
+    // independente do PR #6556: sem essa exigência, "Try these N X" batia em
+    // qualquer contagem, mais permissivo do que o próprio comentário sugere).
+    "|\\btry\\s+these\\s+\\d+\\b[^.\\n]{0,60}\\bto\\b" +
     // #5995: "N aplicações práticas de/do/da <produto>" — listicle de casos de
     // uso acionáveis ("9 aplicações práticas do ChatGPT Work").
     "|\\b\\d+\\s+aplica[çc][õoe]es\\s+pr[áa]ticas?\\s+(de|do|da)\\b" +
@@ -1426,13 +1474,20 @@ export function isOfficialLancamentoUrl(url: string): boolean {
  */
 /**
  * #5995 item 3 (modo de falha 1): título de post NÃO-produto em domínio
- * oficial → true (caller rebaixa para `noticias`). Cinco classes medidas no
- * corpus (34 casos lancamento→radar):
+ * oficial → true (caller rebaixa para `noticias`). Sete classes medidas no
+ * corpus (34 casos lancamento→radar do #5995 + 2 do #6440):
  *   1. Marco/celebração      — "Celebrating one billion Gemma downloads"
  *   2. Relatório/estado-arte — "State of Open Models: Summer 2026 Observations"
  *   3. Opinião/thought-lead. — "...Is Becoming an Investable Asset Class"
  *   4. Roundup de porta-vozes— "Omni experts share what excites them most"
  *   5. Oferta promocional    — "Start the semester with one year of Gemini, on us"
+ *   6. Expansão de programa  — "Bringing ChatGPT for Teachers to more US school
+ *      districts" (#6440, 260828) — expandir alcance de um programa já
+ *      existente pra mais entidades (distritos/regiões/países), não lançar
+ *      produto novo.
+ *   7. Piloto/programa-piloto— "Piloting the world's first double-blind AI
+ *      evaluations" (#6440, 260828) — testar um PROCESSO/programa (avaliação,
+ *      metodologia), não disponibilizar um produto.
  *
  * Guard anti-falso-positivo: título com verbo de anúncio explícito
  * (introducing/announcing/launching/unveils/...) NUNCA é demovido por aqui —
@@ -1450,14 +1505,65 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   /\bwhat excites\b/i,
   /\bon us\b/i,
   /\boffering\b/i,
+  // #6440: "Bringing X to more {districts/regions/countries/...}" — expansão
+  // de alcance de programa existente, não lançamento de produto.
+  /\bbringing\b[^\n]{0,60}\bto more\b/i,
+  // #6440: "Piloting X" — piloto de processo/programa/avaliação.
+  /\bpiloting\b/i,
+  // #5995 (rodada 260828, resíduo real medido no corpus): "Ask an AI expert:
+  // X" — série editorial de Q&A explicativo do blog.google, não anúncio.
+  // Caso real: "Ask an AI expert: What exactly is the full stack?".
+  /\bask\s+an?\s+(ai\s+)?expert\b/i,
+  // #5995 (260828): "the next era of X" — framing de visão/relatório, não
+  // produto específico. Caso real: "Advancing the next era of national
+  // science" (openai.com/index). Conservador: exige a frase completa "the
+  // next era of" — não pega "a new era" nem "next generation" isolados.
+  /\bthe\s+next\s+era\s+of\b/i,
 ];
+
+// #5995 (260828, achado do review independente do PR #6556): "How {sujeito
+// coletivo} {verbo}..." — manchete de relatório/análise sobre adoção de IA em
+// larga escala, não anúncio de produto. Casos reais: "How Nations Are
+// Deploying AI for Strategic Priorities" (blogs.nvidia.com), "How enterprises
+// put AI to work" / "How the world is putting ChatGPT to work"
+// (openai.com/index). Deliberadamente FORA de NON_PRODUCT_OFFICIAL_PATTERNS —
+// aquele array roda ANTES do short-circuit `type_hint === "lancamento"` em
+// categorize() (as classes existentes ali são de alta especificidade lexical,
+// então o risco de vencer um lançamento confirmado pelo agent é baixo). Este
+// padrão é mais genérico (qualquer manchete "How {coletivo} ...") e o review
+// encontrou um caso plausível de falso-positivo: "How Enterprises Are Already
+// Using the New Gemini 4" com type_hint="lancamento" confirmado pelo agent
+// seria demovido incorretamente se estivesse no array pre-short-circuit. Por
+// isso mora numa função separada, checada DEPOIS do short-circuit de
+// type_hint (mesma posição de isBusinessDeal/isNonProductAnnouncement/
+// isCustomerStory/isUpdate/isReport) — confirmação do agent sempre vence.
+const HOW_COLLECTIVE_REPORT_RE =
+  /\bhow\s+(nations|enterprises|businesses|companies|organizations|governments|countries|the\s+world|society|industries)\b/i;
+export function isHowCollectiveReportTitle(article: Article): boolean {
+  return HOW_COLLECTIVE_REPORT_RE.test(article.title ?? "");
+}
 
 const LAUNCH_VERB_TITLE_RE =
   /\b(introducing|announcing|launch(?:ing|es)?|unveil(?:ing|s)?|now available|general[ -]availability)\b/i;
 
+// #5995 (achado ao vivo 260827, medição em janela pós-item-3): "Introducing"
+// vence o guard acima mesmo quando o objeto anunciado é um PROGRAMA de
+// parceria/negócio, não um produto — caso real "Introducing the OpenAI
+// Partner Network" (editor moveu lancamento→radar apesar do verbo de
+// anúncio). Diferente de NON_PRODUCT_OFFICIAL_PATTERNS (que o verbo de
+// lançamento sempre vence), estes padrões são de ALTA especificidade
+// (substantivo composto "partner network/program") — o risco de falso
+// positivo em lançamento de produto genuíno é baixo o bastante para vencer
+// mesmo o verbo de anúncio.
+const BUSINESS_PROGRAM_OVERRIDE_PATTERNS: RegExp[] = [
+  /\bpartner\s+network\b/i,
+  /\bpartner\s+program\b/i,
+];
+
 export function isNonProductOfficialPost(article: Article): boolean {
   const title = article.title ?? "";
   if (!title) return false;
+  if (BUSINESS_PROGRAM_OVERRIDE_PATTERNS.some((p) => p.test(title))) return true;
   if (LAUNCH_VERB_TITLE_RE.test(title)) return false;
   return NON_PRODUCT_OFFICIAL_PATTERNS.some((p) => p.test(title));
 }
@@ -1627,6 +1733,11 @@ export function categorize(article: Article): Category {
     // Agent leu o conteúdo, é o sinal mais autoritativo. Caso: agent confirma
     // launch mesmo que título tenha "delivers" ou path tenha customer-name.
     if (article.type_hint === "lancamento") return "lancamento";
+
+    // #5995 (260828): "How {coletivo} ..." — ver isHowCollectiveReportTitle
+    // acima pro porquê de rodar aqui (pós-short-circuit type_hint) e não
+    // dentro de isNonProductOfficialPost.
+    if (isHowCollectiveReportTitle(article)) return "noticias";
 
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";

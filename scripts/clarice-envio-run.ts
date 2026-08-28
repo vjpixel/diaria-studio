@@ -383,7 +383,13 @@ const TRANSIENT_RETRY_CAP_MS = 35 * 60_000;
  * guard das 05:00 (`clarice-envio-guard.ts`), que precisa do MESMO
  * mecanismo com um orçamento de espera MENOR. Este wrapper preserva o
  * orçamento ORIGINAL (3 tentativas, fallback 1min, cap 35min) — nenhuma
- * mudança de comportamento aqui.
+ * mudança de orçamento aqui.
+ *
+ * #6288 — o motor compartilhado (`lib/transient-step-retry.ts`) passou a
+ * desistir na hora quando `retryAfterSecs` excede o `capMs`, em vez de
+ * dormir o teto e retentar sabendo que vai falhar de novo — mudança de
+ * COMPORTAMENTO real, que este wrapper herda automaticamente por delegar
+ * pro motor (ver ali pro racional completo).
  */
 async function stepWithTransientRetry<T = unknown>(
   deps: EnvioRunDeps,

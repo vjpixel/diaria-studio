@@ -53,6 +53,18 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start-claude-config-sync.mjs\"",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "AskUserQuestion",
@@ -85,6 +97,23 @@
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-gh-pr-merge-subagent.mjs\"",
             "shell": "bash",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-branch-checkout-main.mjs\"",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-beacon.mjs\"",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }
@@ -99,6 +128,13 @@
             "if": "Bash(gh pr create*)",
             "shell": "bash",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs\"",
+            "if": "Bash(gh pr merge*)",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       }

@@ -26,15 +26,21 @@
  * `HUB_LOADERS` (scripts/build-hub-page.ts), `HUB_REGISTRY` (./registry.ts) e
  * `HUB_META` (aqui).
  *
- * **4º passo, fora dos 3 acima (#5257): adicionar o link do hub novo ao
- * bloco "Temas" da HOME pública.** Diferente dos 3 lugares acima, este é
- * AÇÃO DE PAINEL do editor no Website Builder da Beehiiv, não código — a
- * auditoria "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então
- * publicados nunca foram rastreados pelo Google justamente por faltar esse
- * link. Vigiado pelo eixo `hub-link-missing` de
- * `scripts/lib/beehiiv-home-meta-check.ts` (task `Diaria-Beehiiv-Home-Meta-Check`,
- * diária) — hub que entra aqui em `HUB_META` sem o link correspondente na
- * home vira alarme automático até o passo de painel ser feito.
+ * **O "4º passo" (#5257) deixou de existir em 28/08/2026 (#6411).** Ele
+ * pedia adicionar à mão o link do hub novo ao bloco "Temas" da HOME pública,
+ * e era AÇÃO DE PAINEL do editor no Website Builder da Beehiiv — a auditoria
+ * "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então publicados
+ * nunca foram rastreados pelo Google justamente por faltar esse link. Duas
+ * coisas mudaram: o apex saiu da Beehiiv (hoje é `workers/site`, código
+ * deste repo) e o bloco "Por tema" da home passou a ser DERIVADO deste
+ * array (`renderTopicLinks` em `scripts/lib/site-home-page.ts`). Hub que
+ * entra aqui ganha link na home na próxima regeneração — nada a fazer à mão.
+ *
+ * O eixo `hub-link-missing` de `scripts/lib/beehiiv-home-meta-check.ts`
+ * (task `Diaria-Beehiiv-Home-Meta-Check`, diária) continua vigiando, agora
+ * como guard de regressão do gerador em vez de cobrança de passo manual:
+ * `test/site-home-hub-links-6411.test.ts` roda o mesmo detector em CI, então
+ * o alarme só volta a disparar se a home for ao ar sem regenerar.
  */
 
 export interface HubMeta {

@@ -555,7 +555,23 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       report,
       "clarice-schedule-group --create",
       "scripts/clarice-schedule-group.ts",
-      ["--cycle", cicloEnvio, ...contentCycleArgs, "--group", "novos", "--key", key, "--subject", assunto, "--create"],
+      [
+        "--cycle",
+        cicloEnvio,
+        ...contentCycleArgs,
+        "--group",
+        "novos",
+        "--key",
+        key,
+        "--subject",
+        assunto,
+        "--create",
+        // #6414: 'novos' é disparo imediato (não-agendado), nunca faz parte
+        // do teste de HORÁRIO da rampa (#5140) — o guard #6307/#6308 dispara
+        // porque a key de 'novos' nunca carrega sufixo -H{HH} (não passa por
+        // clarice-split-group-cells.ts). Escapar sempre, não condicional.
+        "--ignore-hour-test",
+      ],
     );
 
     // --- Passo 6: test email condicional (D12) + envio imediato ---

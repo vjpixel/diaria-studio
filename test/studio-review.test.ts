@@ -20,6 +20,8 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
+  buildReviewPreviewDraftHtml,
+  isDraftPreviewSlug,
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
   REVIEW_FILES,
@@ -494,6 +496,69 @@ describe("runReviewLints (#3559)", () => {
     assert.equal(check!.ok, true);
   });
 
+  it("#6447 achado 4: reviewed inclui domain-diversity — acusa >2 URLs do mesmo domínio registrável", () => {
+    const md = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "**[Item 1](https://techcrunch.com/1)**",
+      "",
+      "**[Item 2](https://techcrunch.com/2)**",
+      "",
+      "**[Item 3](https://techcrunch.com/3)**",
+      "",
+    ].join("\n");
+    const report = runReviewLints(root, editionDir, "reviewed", md);
+    const check = report.checks.find((c) => c.id === "domain-diversity");
+    assert.ok(check, "check domain-diversity deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.blocking, true);
+    assert.equal(check!.ok, false);
+    assert.equal(report.ok, false);
+  });
+
+  it("#6447 achado 4: reviewed inclui lancamentos-oficiais (antes só rodava em categorized)", () => {
+    const md = [
+      "## Lançamentos",
+      "",
+      "**[Cobertura de um lançamento](https://techcrunch.com/algo)**",
+      "",
+    ].join("\n");
+    const report = runReviewLints(root, editionDir, "reviewed", md);
+    const check = report.checks.find((c) => c.id === "lancamentos-oficiais");
+    assert.ok(check, "check lancamentos-oficiais deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.ok, false);
+    assert.equal(report.ok, false);
+  });
+
+  it("#6447 achado 4: reviewed inclui intentional-error-flagged — falha sem _internal/intentional-error.json", () => {
+    const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
+    const check = report.checks.find((c) => c.id === "intentional-error-flagged");
+    assert.ok(check, "check intentional-error-flagged deveria estar presente no conjunto de reviewed (#6447 achado 4)");
+    assert.equal(check!.blocking, true);
+    assert.equal(check!.ok, false);
+  });
+
+  it("#6447 achado 4: intentional-error-flagged passa com intentional-error.json completo", () => {
+    // checkIntentionalError lê `02-reviewed.md` do DISCO (deriva o path do
+    // json a partir dele) — precisa existir de verdade, não só o `md` em
+    // memória passado pro runReviewLints.
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    writeFileSync(
+      resolve(editionDir, "_internal", "intentional-error.json"),
+      JSON.stringify({
+        description: "erro de teste",
+        location: "D1",
+        category: "ortografico",
+        correct_value: "valor certo",
+        reveal: "revelação",
+      }),
+      "utf8",
+    );
+    const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
+    const check = report.checks.find((c) => c.id === "intentional-error-flagged");
+    assert.ok(check);
+    assert.equal(check!.ok, true);
+  });
+
   it("reviewed: check crashado (approved malformado não deveria crashar, mas simulamos md vazio) não derruba o batch", () => {
     // md vazio: countTitlesPerHighlight etc. devem lidar gracefully (podem
     // reportar ok:false, mas não devem lançar) — o próprio runCheck garante
@@ -863,5 +928,86 @@ describe("applyDestaqueTitleEdit (#3806 — Opção B spike: edição visual do 
     const result = applyDestaqueTitleEdit(root, "nope", 1, "título");
     assert.equal(result.ok, false);
     assert.match(result.error!, /inválido/);
+  });
+});
+
+describe("isDraftPreviewSlug (#6447 Fatia 3)", () => {
+  it("reviewed e social -> true (Markdown em edição corresponde 1:1 ao preview)", () => {
+    assert.equal(isDraftPreviewSlug("reviewed"), true);
+    assert.equal(isDraftPreviewSlug("social"), true);
+  });
+
+  it("categorized/html-final/html-final-patronos -> false", () => {
+    assert.equal(isDraftPreviewSlug("categorized"), false);
+    assert.equal(isDraftPreviewSlug("html-final"), false);
+    assert.equal(isDraftPreviewSlug("html-final-patronos"), false);
+  });
+});
+
+describe("buildReviewPreviewDraftHtml (#6447 Fatia 3 — split view com preview reativo)", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-preview-draft-"));
+    editionDir = makeEdition(root, "260828");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("slug 'reviewed': renderiza o TEXTO PASSADO, não o que está em disco (draft ainda não salvo)", () => {
+    // Disco tem uma versão — o draft em memória do editor é OUTRA. O preview
+    // precisa refletir o draft, nunca o que está salvo (essa é a diferença
+    // central desta fatia vs. buildReviewPreviewHtml).
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const draftText = TWO_DESTAQUES_MD.replace(
+      "IA chega às fábricas brasileiras",
+      "Título ainda não salvo, só no textarea",
+    );
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "reviewed", draftText);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Título ainda não salvo, só no textarea/);
+    assert.doesNotMatch(preview.html, /IA chega às fábricas brasileiras/);
+  });
+
+  it("slug 'reviewed': funciona mesmo SEM 02-reviewed.md em disco ainda (draft é tudo que existe)", () => {
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "reviewed", TWO_DESTAQUES_MD);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /IA chega às fábricas brasileiras/);
+  });
+
+  it("slug 'reviewed': Markdown malformado no meio da digitação (0 destaques) não lança — ok:false, HTML de erro", () => {
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "reviewed", "só um título solto, sem bloco DESTAQUE");
+    assert.equal(preview.ok, false);
+    assert.match(preview.html, /Erro ao renderizar preview/);
+  });
+
+  it("slug 'social': renderiza o TEXTO PASSADO, não o que está em disco", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), "# LinkedIn\n\n## d1\n\nPost salvo em disco.\n", "utf8");
+    const draftSocial = "# LinkedIn\n\n## d1\n\nPost ainda digitando, não salvo.\n";
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "social", draftSocial);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Post ainda digitando, não salvo\./);
+    assert.doesNotMatch(preview.html, /Post salvo em disco\./);
+  });
+
+  it("slug 'categorized' (fora de isDraftPreviewSlug) -> ok:false, erro explícito nomeando o slug", () => {
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "categorized", "qualquer texto");
+    assert.equal(preview.ok, false);
+    assert.match(preview.error ?? "", /categorized/);
+    assert.match(preview.error ?? "", /não é suportado/);
+  });
+
+  it("slug 'html-final' (fora de isDraftPreviewSlug) -> ok:false, erro explícito", () => {
+    const preview = buildReviewPreviewDraftHtml(editionDir, "260828", "html-final", "<html>rascunho</html>");
+    assert.equal(preview.ok, false);
+    assert.match(preview.error ?? "", /html-final/);
+  });
+
+  it("NUNCA escreve em disco — 02-reviewed.md e a pasta _internal/studio-review-baseline continuam intocados", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const onDiskBefore = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
+    buildReviewPreviewDraftHtml(editionDir, "260828", "reviewed", TWO_DESTAQUES_MD.replace("D1", "D1-DRAFT"));
+    const onDiskAfter = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
+    assert.equal(onDiskAfter, onDiskBefore);
+    assert.equal(existsSync(resolve(editionDir, "_internal", "studio-review-baseline")), false);
   });
 });

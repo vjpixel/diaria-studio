@@ -1,4 +1,4 @@
-# workers/site — futuro hosting do apex diar.ia.br (#467, decisão do editor
+# workers/site — hosting do apex diar.ia.br (#467, decisão do editor
 # 25/08/2026: "o apex aponta pro NOSSO Worker, não pro Kit — o Kit fica só
 # com o e-mail").
 #
@@ -8,28 +8,100 @@
 # path da raiz NÃO funcionou nesse cenário (causa raiz NÃO diagnosticada —
 # algo na config da zona, fora deste repo, impediu a Route de assumir
 # precedência; hipótese não confirmada é que a Beehiiv, dona do custom
-# hostname do apex, responde antes — ver a nota completa em
-# workers/artigos/wrangler.toml) e por que `custom_domain = true` é o único
-# caminho que funcionou na prática.
+# hostname do apex ANTES do cutover, respondia antes — ver a nota completa
+# em workers/artigos/wrangler.toml) e por que `custom_domain = true` é o
+# único caminho que funcionou na prática.
 #
-# ESTE Worker, especificamente, NÃO tem `custom_domain`/`routes` apontando
-# pro apex ainda — só `workers_dev = true`. Ligar o apex aqui é o CUTOVER em
-# si (soltar o custom hostname na Beehiiv → apontar o apex pra este Worker),
-# blast-radius real, fora do escopo desta unidade (1º item do checklist
-# revisado do #467 — só "Worker que serve /p/{slug} a partir dos 258 posts
-# em cache"). Plano de rollback documentado em docs/apex-cutover-rollback.md.
+# CUTOVER JÁ ACONTECEU (#467, confirmado ao vivo em 28/08/2026 — #6498):
+# `https://diar.ia.br/` serve hoje o `public/index.html` DESTE Worker (HTML
+# público byte a byte igual ao arquivo commitado; `server: cloudflare`, não
+# mais Beehiiv). A ligação do custom hostname do apex a este Worker foi
+# feita FORA deste arquivo (não aparece como `custom_domain`/`[[routes]]`
+# aqui, ao contrário do padrão de `workers/artigos/wrangler.toml` — a
+# configuração de zona que faz a amarração não é rastreada neste repo).
+# Blast-radius do cutover em si (1º item do checklist revisado do #467 —
+# só "Worker que serve /p/{slug} a partir dos 258 posts em cache") já
+# absorvido. Plano de rollback documentado em docs/apex-cutover-rollback.md.
 #
 # Escopo ATUAL (gerado por scripts/gen-archive-pages.ts):
 #   public/p/{slug}/index.html — as 253 edições publicadas (status
 #   "confirmed") em data/beehiiv-cache/posts/, a partir de content.free.web.
 #
-# Fora de escopo desta unidade (itens 2-6 do checklist revisado do #467):
-#   - passo de pipeline que publica a página de uma edição NOVA
-#   - `/`, `/subscribe`, `/forms/*` (formulários postando pro Kit)
+# `/` e `/subscribe` — fechados no #6359 (26/08/2026). Medição ao vivo na
+# própria issue reduziu o escopo original do #467 de 4 pra 2 rotas:
+# `/forms/*` devolve 404 no apex hoje (nunca existiu, não é buraco) e
+# `/sitemap.xml` já era servido corretamente. `/` é `public/index.html`
+# (home mínima própria, não redirect — preserva o sinal de SEO do apex,
+# ver docs/seo-notes.md). `/subscribe` é uma regra em `public/_redirects`
+# pro perfil hospedado da conta Kit (única superfície de cadastro pública
+# que a conta já expõe — ver comentário do próprio `_redirects` pro porquê
+# de não ser página própria postando na API). Ambas são STUB, não a versão
+# definitiva — decisão do editor (Gate B, #6359): "stub primeiro, migrar
+# depois". Smoke test de rotas: test/site-worker-routes-6359.test.ts.
+#
+# Fora de escopo desta unidade e do #467 em geral:
+#   - passo de pipeline que publica a página de uma edição NOVA (já feito, #6202)
+#   - UTM/atribuição de cadastro na API própria da apex (#6318, aberta —
+#     mecanismo de custom field mergeado/verificado no #6324, 592/592 sem
+#     divergências; resta o vínculo form+double-opt-in mais rico e a
+#     checagem na UI do Kit)
 #   - o cutover de DNS em si
+#
+# #6429: ganhou um `main` (`src/index.ts`) — fallback 302 pro Kit
+# (`https://diar-ia-br.kit.com/posts/{slug}`) quando `/p/{slug}` não existe
+# como asset (edição publicada só pelo Kit desde #6114, cache de leitura
+# ainda não a cobre). Mesmo padrão MÍNIMO de `workers/livros/wrangler.toml` —
+# nenhum gate de conteúdo, só delega pro `env.ASSETS` de sempre e intercepta
+# só o 404 de `/p/{slug}`.
 name = "diaria-site"
+main = "src/index.ts"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [assets]
 directory = "./public"
+binding = "ASSETS"
+# INVARIANTE (mesmo padrão de workers/livros/wrangler.toml, #4052 origem):
+# Workers com Static Assets servem o ASSET ANTES de invocar o script — sem
+# isto, o `main` acima NUNCA roda e o fallback do #6429 fica morto. `true`
+# cobre TODO path porque o único trabalho condicional do script é o 404 de
+# `/p/{slug}` — os demais paths passam pelo `env.ASSETS.fetch` idêntico a
+# antes.
+run_worker_first = true
+# html_handling = "drop-trailing-slash" (#467, achado ao vivo 26/08/2026):
+# o default do Cloudflare Workers Assets é "auto-trailing-slash", que
+# canonicaliza pastas (`p/{slug}/index.html`) pra forma COM barra —
+# `/p/{slug}` responderia 307 -> `/p/{slug}/`. Isso contradiz os 3 outros
+# sinais SEM barra: as 258 URLs indexadas pelo Google hoje (via Beehiiv,
+# que serve /p/{slug} 200 direto), as ~1.950 referências a essa forma no
+# repo, e o próprio `<link rel="canonical">` que buildArchivePageHtml
+# (scripts/lib/site-archive-pages.ts, via archiveUrlForSlug) grava sem
+# barra em cada página. Sinal contraditório é exatamente o cenário que
+# docs/seo-notes.md Fato 2 documenta como o risco real da migração anterior
+# (10 URLs presas semanas em "cópia, canônica divergente" mesmo com os
+# outros 3 sinais corretos) — "drop-trailing-slash" faz `/p/{slug}` servir
+# 200 direto e `/p/{slug}/` redirecionar de volta pra forma sem barra,
+# eliminando a ambiguidade antes do cutover. Confirmado na doc oficial:
+# https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/
+# — valores possíveis são auto-trailing-slash (default) / force-trailing-slash
+# / drop-trailing-slash / none. Teste de regressão:
+# test/site-worker-html-handling-467.test.ts.
+#
+# ESCOPO: vale pro bloco [assets] INTEIRO deste Worker, não só `/p/*` — `/`
+# (public/index.html, #6359) herda `drop-trailing-slash` de graça, sem
+# ambiguidade (é um único arquivo, não uma família de slugs). `/subscribe`
+# não passa por `[assets]` nenhum — é resolvido por `public/_redirects`
+# ANTES da checagem de asset (docs do próprio Cloudflare, citadas em
+# test/site-worker-routes-6359.test.ts:
+# https://developers.cloudflare.com/workers/static-assets/redirects/),
+# então `html_handling` não se aplica a ele.
+html_handling = "drop-trailing-slash"
+
+# #5920: Workers Logs ligado (observability.enabled = true) + head_sampling_rate = 1
+# em todos os Workers com `main` público — mesmo padrão de
+# workers/livros/wrangler.toml. Sem isto, console.log/console.error do
+# fallback do #6429 só existem enquanto alguém tem `wrangler tail` aberto.
+[observability]
+enabled = true
+head_sampling_rate = 1

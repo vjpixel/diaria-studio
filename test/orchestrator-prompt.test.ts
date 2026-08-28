@@ -246,7 +246,12 @@ describe("orchestrator-prompt (#634)", () => {
       // objetivo é sobreviver a corte de contexto DENTRO do próprio stage,
       // não só entre stages. Arquivo foi a 791 linhas. Teto bumped de
       // 780→800 com headroom pequeno.
-      "orchestrator-stage-4.md": 800,
+      // #6171: +10 linhas líquidas — "Fluxo pós-gate" reescrita para PARAR
+      // sempre (mesmo vindo de `/diaria-edicao`) em vez de encadear pra
+      // `orchestrator-stage-5.md` na mesma sessão: fecha a fronteira de
+      // contexto pós-gate-4 que sobrava depois do #5744 cobrir Stages 1-4.
+      // Arquivo foi a 810 linhas. Teto bumped de 800→820 com headroom pequeno.
+      "orchestrator-stage-4.md": 820,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
@@ -1188,6 +1193,119 @@ describe("#6003: gate de revisão publica newsletter/social como Artifact, em pa
     assert.ok(
       /Artifacts \(#6003\) não fazem parte deste teardown/.test(stage4),
       "o teardown de §4d/§4e precisa deixar explícito que Artifacts publicados não são derrubados (diferente do preview local via --stop-pid)",
+    );
+  });
+});
+
+describe("#6171: fronteira de contexto pós-gate 4 — /diaria-edicao nunca encadeia pra Etapa 5 na mesma sessão", () => {
+  // Achado #6171 (edição 260826): o gate do Stage 4 sozinho (433 turnos) inflava
+  // o contexto residente, e as Etapas 5/6 releem esse histórico a cada tool call
+  // quando lidas na mesma sessão — ~268M tokens de cache_read evitáveis. A fix é
+  // de playbook (parar sempre após o gate 4, instruir sessão nova) — estas
+  // assertions pinam a instrução em si, não só o hash opaco do snapshot, pra
+  // detectar reversão silenciosa da "PARE aqui SEMPRE".
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const stage5 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-5.md"), "utf8");
+
+  it("Stage 4 instrui parar SEMPRE após o gate, mesmo vindo de /diaria-edicao", () => {
+    assert.ok(
+      stage4.includes("PARE aqui SEMPRE"),
+      "orchestrator-stage-4.md precisa instruir parada incondicional pós-gate (independente de standalone vs /diaria-edicao)",
+    );
+    assert.ok(
+      stage4.includes("nunca leia `orchestrator-stage-5.md` nesta mesma sessão"),
+      "orchestrator-stage-4.md precisa proibir explicitamente a leitura de orchestrator-stage-5.md na mesma sessão",
+    );
+  });
+
+  it("a antiga instrução condicional de encadeamento (só standalone parava) não sobrevive", () => {
+    assert.ok(
+      !stage4.includes("Se foi lido a partir da skill standalone `/diaria-4-revisao`, PARE aqui"),
+      "texto antigo (parada condicional por caminho de invocação) deveria ter sido substituído pela parada incondicional (#6171)",
+    );
+    assert.ok(
+      !stage4.includes("o orchestrator prossegue imediatamente para a **Etapa 5"),
+      "texto antigo de encadeamento automático pós-gate não deveria sobreviver",
+    );
+  });
+
+  it("a nota de sentinel do Stage 4 não contradiz a fronteira pós-gate", () => {
+    assert.ok(
+      !stage4.includes("detecta que a Revisão completou e pula direto para a Etapa 5"),
+      "a linha de sentinel não pode mais afirmar que resume-aware pula direto pra Etapa 5 — contradiz a fronteira pós-gate (#6171)",
+    );
+  });
+
+  it("a mensagem pós-gate instrui sessão nova rodando /diaria-5-publicacao", () => {
+    assert.ok(
+      stage4.includes("/diaria-5-publicacao {AAMMDD}"),
+      "a mensagem impressa ao editor precisa nomear o comando /diaria-5-publicacao {AAMMDD}",
+    );
+    assert.ok(
+      /abra uma sessão NOVA/.test(stage4),
+      "a mensagem precisa instruir explicitamente abrir uma sessão nova",
+    );
+  });
+
+  it("Stage 5 não descreve mais um caminho onde é lido como continuação direta do Stage 4", () => {
+    assert.ok(
+      !stage5.includes("nunca quando foi lido a partir da skill standalone `/diaria-5-publicacao`"),
+      "texto antigo (Stage 5 só para quando standalone) não deveria sobreviver — Stage 5 agora é SEMPRE lido a partir de sessão nova (#6171)",
+    );
+    assert.ok(
+      stage5.includes("#6171"),
+      "orchestrator-stage-5.md precisa referenciar #6171 na nota de fronteira de sessão",
+    );
+  });
+});
+
+describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revisao) antes de montar o resumo", () => {
+  // #6447 (Fatia 4) já implementava a ESCRITA de _internal/.step-4-decision.json
+  // via botão "Aprovar gate" do painel, documentada como escopo intencionalmente
+  // parcial (o consumo pelo orchestrator ficou fora daquela fatia). Estas
+  // assertions pinam o lado que fecha #6444 — sem elas, uma reversão futura do
+  // §4d faria o gate voltar a ignorar a decisão do painel e apresentar sempre o
+  // resumo completo, mesmo quando o editor já aprovou tudo remotamente.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+
+  it("§4d roda o CLI de leitura com freshness check antes do resumo consolidado", () => {
+    const checkIdx = stage4.indexOf("scripts/lib/stage4-decision.ts --edition-dir");
+    const resumoIdx = stage4.indexOf("GATE HUMANO — RESUMO CONSOLIDADO");
+    assert.ok(checkIdx !== -1, "§4d precisa chamar scripts/lib/stage4-decision.ts");
+    assert.ok(resumoIdx !== -1, "§4d precisa conter o header do resumo consolidado");
+    assert.ok(checkIdx < resumoIdx, "a checagem da decisão do painel precisa vir ANTES do resumo consolidado");
+    assert.ok(
+      stage4.includes('--content-files "02-reviewed.md,03-social.md"'),
+      "a checagem precisa validar freshness contra 02-reviewed.md e 03-social.md (guard de staleness)",
+    );
+  });
+
+  it("usable:true pula o resumo completo e o loop sim/editar/ajustar/abortar", () => {
+    assert.ok(
+      stage4.includes("pular o resumo completo e o loop `sim/editar/ajustar/abortar`"),
+      "§4d precisa instruir explicitamente pular a apresentação completa quando a decisão do painel for usable",
+    );
+    assert.ok(
+      stage4.includes("gate revisao response: sim (via painel Studio"),
+      "o log do gate precisa registrar a origem 'via painel Studio' quando a decisão vem de lá",
+    );
+  });
+
+  it("usable:false com reason stale NUNCA é consumida — cai no fluxo normal", () => {
+    assert.ok(
+      stage4.includes("nunca consumir"),
+      "§4d precisa proibir explicitamente consumir uma decisão stale do painel",
+    );
+    assert.ok(
+      stage4.includes("gate_painel_decision_stale"),
+      "§4d precisa logar um warn nomeado quando descartar uma decisão stale",
+    );
+  });
+
+  it("falha do CLI de leitura é fail-soft — nunca bloqueia o gate", () => {
+    assert.ok(
+      /fail-soft.*nunca bloquear o gate/.test(stage4),
+      "§4d precisa tratar falha do check como fail-soft, sem bloquear o gate humano",
     );
   });
 });

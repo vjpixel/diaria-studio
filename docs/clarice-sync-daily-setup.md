@@ -40,6 +40,20 @@ teto de 100 req/hora da Brevo) via
 individualmente cada opener encontrado — independe do `modifiedAt` do
 contato.
 
+**Fatiamento por run (#5946 follow-up):** encolher a janela não bastou — o
+volume de campanhas DENTRO dela cresceu com a cadência de envio (~62 em
+260826) e sozinho voltou a se aproximar do teto de 100 req/hora
+(compartilhado com `clarice-build-segment.ts`/`clarice-plan-wave.ts` na
+mesma hora). `--opens-max-refresh` (default 20) limita quantas campanhas
+**já cacheadas** são forçadas a re-exportar por execução — as demais reusam
+o cache em disco (`OPENS_CATCHUP_CACHE_DIR`) sem gastar cota. Uma campanha
+nunca vista ainda é sempre buscada (baseline), independente do teto.
+Priorização por staleness (`pickCampaignsToRefresh`, sem cache primeiro,
+depois `exportedAt` mais antigo) — o progresso é durável entre execuções via
+o próprio `exportedAt` já persistido em disco, sem checkpoint dedicado: a
+campanha que ficou de fora hoje sobe pro topo da fila amanhã. `0` desliga o
+fatiamento (comportamento pré-#5946, refresca tudo todo dia).
+
 Fail-soft: uma falha no catch-up nunca reprova o sync principal
 (`opens_catchup.error` no summary). Desligável via `--no-catch-opens`.
 

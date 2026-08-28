@@ -51,6 +51,8 @@
 import "dotenv/config";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
+import type { KitConfig } from "./lib/kit-config.ts";
 
 const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 const PER_PAGE = 100;
@@ -271,6 +273,39 @@ export async function fetchAndAggregate(
     counts: aggregateByUtmSource(allSubs),
     campaignCounts: aggregateByUtmCampaign(allSubs), // #4041
     total: allSubs.length,
+    fetched_at: new Date().toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Kit (#6051 — leitura condicional via publishing.newsletter.subscriber_backend,
+// ver scripts/lib/shared/newsletter-subscriber-source.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Equivalente Kit de `fetchAndAggregate` — pagina `/v4/subscribers` inteiro
+ * (`listAllKitSubscribers`, `includeAttribution: true`) e agrega por
+ * `attribution.utm_source`/`attribution.utm_campaign`, reusando as mesmas
+ * funções puras de normalização/agregação (`aggregateByUtmSource`/
+ * `aggregateByUtmCampaign` já leem `utm_source`/`utm_campaign` de um
+ * `Record<string, unknown>` — o achatamento abaixo projeta o bloco
+ * `attribution`, quando presente, pros mesmos 2 campos no nível raiz).
+ *
+ * **Limitação conhecida, não bug**: `attribution` só vem populado pra
+ * assinante cadastrado pelo formulário nativo do Kit — ver docstring de
+ * `newsletter-subscriber-source.ts`. Ausência normaliza pra `"__none__"`,
+ * igual ao caminho Beehiiv sem UTM.
+ */
+export async function fetchAndAggregateKit(config?: KitConfig): Promise<UtmCountResult> {
+  const subscribers = await listAllKitSubscribers(config, { includeAttribution: true });
+  const flattened: Array<Record<string, unknown>> = subscribers.map((s) => ({
+    utm_source: s.attribution?.utm_source ?? null,
+    utm_campaign: s.attribution?.utm_campaign ?? null,
+  }));
+  return {
+    counts: aggregateByUtmSource(flattened),
+    campaignCounts: aggregateByUtmCampaign(flattened),
+    total: flattened.length,
     fetched_at: new Date().toISOString(),
   };
 }

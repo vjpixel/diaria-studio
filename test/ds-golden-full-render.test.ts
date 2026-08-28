@@ -462,29 +462,34 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     );
   });
 
-  // ── Composição: É IA? posicionado após USE MELHOR (#3476) ─────────────────
+  // ── Composição: É IA? posicionado após LANÇAMENTOS (#6323) ────────────────
   //
   // Antes (#2546): É IA? renderizava logo após o último destaque, antes de
-  // QUALQUER seção secundária. Pedido do editor 260716 (tornado permanente):
-  // É IA? passa a ficar DEPOIS da seção USE MELHOR — nesta fixture, USE
-  // MELHOR é a 3ª seção do array (após LANÇAMENTOS e OUTRAS NOTÍCIAS), então
-  // É IA? cai entre USE MELHOR e RADAR, não logo após D3.
+  // QUALQUER seção secundária. #3476 (260716) moveu pra depois de USE MELHOR.
+  // #6323 (260827, tornado permanente): É IA? passa a ficar DEPOIS da PRIMEIRA
+  // seção secundária que existir entre LANÇAMENTOS/USE MELHOR — o fallback
+  // (`newsletter-render-html.ts`) prioriza LANÇAMENTOS quando presente. Nesta
+  // fixture, LANÇAMENTOS é a 1ª seção do array (antes de OUTRAS NOTÍCIAS e
+  // USE MELHOR), então É IA? cai logo após LANÇAMENTOS, antes de USE MELHOR.
 
-  it("É IA? está após a seção USE MELHOR, antes de RADAR (#3476)", () => {
+  it("É IA? está após a seção LANÇAMENTOS, antes de USE MELHOR e RADAR (#6323)", () => {
     const d3Idx = html.indexOf("<!-- Destaque 3 -->");
     const lancIdx = html.indexOf("<!-- LANÇAMENTOS -->");
-    const umIdx = html.indexOf("<!-- USE MELHOR -->");
     const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
+    const umIdx = html.indexOf("<!-- USE MELHOR -->");
     const radarIdx = html.indexOf("<!-- RADAR -->");
     assert.ok(d3Idx !== -1, "comentário '<!-- Destaque 3 -->' ausente");
     assert.ok(lancIdx !== -1, "comentário '<!-- LANÇAMENTOS -->' ausente");
-    assert.ok(umIdx !== -1, "comentário '<!-- USE MELHOR -->' ausente");
     assert.ok(eiaIdx !== -1, "comentário '<!-- É IA? (poll) -->' ausente");
+    assert.ok(umIdx !== -1, "comentário '<!-- USE MELHOR -->' ausente");
     assert.ok(radarIdx !== -1, "comentário '<!-- RADAR -->' ausente");
-    // #3476: ordem D3 < LANÇAMENTOS < USE MELHOR < É IA? < RADAR.
+    // #6323: ordem D3 < LANÇAMENTOS < É IA? < USE MELHOR < RADAR (fallback
+    // deriva do array `content.sections` desta fixture — LANÇAMENTOS antes
+    // de USE MELHOR nela, diferente da ordem que `stitch-newsletter.ts`
+    // produz no pipeline real, onde USE MELHOR sempre vem primeiro).
     assert.ok(
-      d3Idx < lancIdx && lancIdx < umIdx && umIdx < eiaIdx && eiaIdx < radarIdx,
-      `Posição incorreta: D3(${d3Idx}) < LANÇ(${lancIdx}) < USEM(${umIdx}) < ÉIA(${eiaIdx}) < RADAR(${radarIdx})`,
+      d3Idx < lancIdx && lancIdx < eiaIdx && eiaIdx < umIdx && umIdx < radarIdx,
+      `Posição incorreta: D3(${d3Idx}) < LANÇ(${lancIdx}) < ÉIA(${eiaIdx}) < USEM(${umIdx}) < RADAR(${radarIdx})`,
     );
   });
 

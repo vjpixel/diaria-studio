@@ -72,12 +72,94 @@
  * buscados. O CLI (`scripts/check-decision-label-drift.ts`) é o wrapper fino
  * que busca via `gh` e imprime.
  *
- * @see scripts/lib/issue-decisions.ts (marcador estruturado que este módulo complementa)
+ * ## Roteamento explícito posterior vence (#6283)
+ *
+ * A entrada em produção de `scripts/route-issue.ts` (#6191/#6196) criou uma
+ * 2ª fonte de comentário que casa os mesmos padrões de prosa — o corpo do
+ * comentário de `routeIssue` é `Roteado para **{track}** — {reason}`, e
+ * `reason` frequentemente CITA a mesma frase-gatilho do comentário antigo
+ * que está sendo revogado ("Removendo trade-off-real", "aguardando
+ * autorização do IP"). Sem tratamento, um veredito antigo já revogado por um
+ * `route-issue` mais recente continuava produzindo achado pra sempre — e a
+ * "correção" sugerida (`gh issue edit --add-label`) desfazia uma decisão do
+ * editor tomada horas antes (medição ao vivo, rodada 260826c: 14 de 19
+ * achados eram este falso positivo).
+ *
+ * `detectLabelDrift` ignora um match de comentário se `commentBodies[i]` OU
+ * algum `commentBodies[j]` com `j > i` contém, na ABERTURA do corpo (espaço
+ * em branco antes é tolerado — `parseRouteIssueMarkerAtStart`,
+ * `issue-route.ts`), um marcador `<!-- route-issue: track=X -->` — não
+ * importa qual track foi pedido: a existência de um roteamento explícito já
+ * é, por si só, o veredito atual que supera a prosa antiga (ou a própria
+ * prosa do comentário, ver "Inclusivo" abaixo). Um `route-issue` ANTERIOR ao
+ * comentário candidato não protege — prosa nova depois de um roteamento
+ * antigo é informação nova, não revogada por nada. Aplica-se só à fonte
+ * `"comment"` — `planTexts` (fonte `"plan"`) não tem posição cronológica
+ * conhecida em relação aos comentários do GitHub, então fica fora deste
+ * tratamento.
+ *
+ * ### Inclusivo, não só posterior (#6301 finding 4)
+ *
+ * A versão original (revisão da #6283) só olhava `j > i` — um comentário
+ * nunca era suprimido pelo marcador que ELE PRÓPRIO carrega. Como o
+ * comentário do `routeIssue` costuma ser o mais recente da issue, nada vem
+ * "depois" dele — e seu próprio `--reason` (que frequentemente repete a
+ * frase-gatilho do veredito antigo que está revogando: ver exemplo de uso
+ * `--reason "aguardando resposta da Beehiiv"` na docstring de
+ * `scripts/route-issue.ts`) virava achado contra si mesmo. Especialmente
+ * ruim em `agendada`, que por desenho nunca recebe uma label satisfatória
+ * (usa o marcador `aguardando-ate:` no CORPO, não uma label) — o falso
+ * positivo recorreria em praticamente todo roteamento `agendada` cujo
+ * `reason` mencionasse espera. Corrigido incluindo `j === i`: um comentário
+ * que ABRE com seu próprio marcador É o veredito corrente, não prosa a ser
+ * julgada contra ele mesmo.
+ *
+ * Isto só é seguro por causa da exigência de posição estrutural do
+ * parágrafo anterior (`parseRouteIssueMarkerAtStart`): sem ela, um
+ * comentário que meramente CITASSE o marcador em prosa (não gravado por
+ * `buildCommentBody`) se auto-suprimiria por engano — exigir abertura de
+ * corpo garante que só o comentário genuíno de `routeIssue` se qualifica.
+ *
+ * ### Achados suprimidos ficam visíveis, não silenciosos (#6301 finding 1)
+ *
+ * `detectLabelDriftDetailed` — o que `detectLabelDrift` envolve por baixo,
+ * mantendo o array simples pros callers existentes — devolve também
+ * `suppressedByRoute`: os achados que TERIAM sido reportados se esta regra
+ * não existisse. `check-decision-label-drift.ts` e
+ * `check-decision-label-drift-gate.ts` imprimem essa contagem (stderr,
+ * nomeando a issue) sempre que > 0. Sem isso, "nenhum drift" e "havia
+ * drift, mas um `route-issue` posterior apagou" eram indistinguíveis pra
+ * quem lê o output — a mesma doença que este módulo inteiro existe pra
+ * combater (#5589/#5892/#5955).
+ *
+ * ### Precisão sobre "posterior" (#6301 finding 5)
+ *
+ * Isto NÃO é a mesma técnica de `issue-decisions.ts` — apesar de uma versão
+ * anterior desta docstring ter dito isso. Aquele módulo compara
+ * `decided_at`, um timestamp ISO 8601 embutido no próprio marcador:
+ * recência ali é auto-contida no marcador, independente de posição em
+ * array. O marcador `<!-- route-issue: track=X -->` NÃO carrega
+ * timestamp — "posterior"/"em ou depois" aqui é 100% POSICIONAL, sob a
+ * premissa (documentada em prosa, nunca expressa no tipo, nunca verificada
+ * em runtime) de que `commentBodies` chega em ordem cronológica ascendente.
+ * Antes do #6283 essa premissa sustentava só o dedup do `byPattern` (errar
+ * a ordem trocava qual comentário aparecia no excerto, o achado continuava
+ * aparecendo); desde o #6283 ela é PRECONDIÇÃO DE CORRETUDE da supressão —
+ * fora de ordem, um achado válido pode ser suprimido em silêncio (ver
+ * `DetectLabelDriftInput.commentBodies` abaixo). As duas chamadoras reais
+ * (`check-decision-label-drift.ts` via `fetchCommentBodies`,
+ * `check-decision-label-drift-gate.ts` via `gh issue view --json comments`)
+ * preservam ordem hoje — isto é dívida de precisão a documentar, não bug
+ * ativo; não redesenhado nesta unidade.
+ *
+ * @see scripts/lib/issue-decisions.ts (marcador estruturado que este módulo complementa — timestamp real, técnica DIFERENTE da posicional acima)
  * @see scripts/lib/issue-exec-track.ts (o classificador que fica desatualizado sem este guard)
+ * @see scripts/lib/issue-route.ts (parseRouteIssueMarkerAtStart — marcador que este módulo consome)
  * @see scripts/check-decision-label-drift.ts (CLI)
  */
 
 import type { ExecTrack } from "./issue-exec-track.ts";
+import { parseRouteIssueMarkerAtStart } from "./issue-route.ts";
 
 /** Um grupo de padrões de deferimento/decisão em prosa, e as labels
  * estruturais que QUALQUER UMA (relação any-of) satisfaz — presente
@@ -351,6 +433,31 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     ],
     expectedLabels: ["on-hold", "wontfix"],
   },
+  {
+    id: "escopo-residual",
+    description:
+      "Comentário indica que um PR REFS-not-Closes mergeou deixando escopo pendente ('escopo residual', 'REFS, NÃO CLOSES', 'pendente de decisão/tempo') sem label estrutural indicando o roteamento do que sobrou (#6437).",
+    // #6437 — achado ao vivo (rodada 260827b): #6340/#6169/#6185/#6186/#6051
+    // ficaram presas "Overnight sem sinal" pra sempre porque o comentário
+    // dizia "escopo residual: PR #NNNN (mergeado) é REFS, NÃO CLOSES" sem
+    // NENHUMA label estrutural indicando pra onde o residual deveria ir —
+    // `route-issue.ts` nunca era chamado. Guard de negação (0-1 token, mesmo
+    // padrão de `external-blocker`/`on-hold` acima): "não ficou escopo
+    // residual" / "sem escopo residual" não deveria casar.
+    textPatterns: [
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}escopo residual`, "i"),
+      /REFS[\s#]*\d*,?\s*N[ÃA]O CLOSES/i,
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}pendente de decis[ãa]o(\\s*(\\/|e|ou)\\s*tempo)?`, "i"),
+    ],
+    expectedLabels: [
+      "not-this-week",
+      "next-month",
+      "develop-track",
+      "trade-off-real",
+      "windows",
+      "sem-direcao-acionavel",
+    ],
+  },
 ];
 
 /**
@@ -415,7 +522,13 @@ export interface DetectLabelDriftInput {
   labels: string[];
   /** Corpos de comentário, ordem cronológica ascendente (mais recente por
    * último) — é o formato que `fetchCommentBodies` (`issue-decisions.ts`)
-   * devolve. */
+   * devolve. Ordem ascendente sustenta o "último match vence" do dedup
+   * (`byPattern`) — mas desde o #6283 (ver docstring do módulo, seção
+   * "Precisão sobre posterior", #6301 finding 5) é também PRECONDIÇÃO DE
+   * CORRETUDE da supressão por `route-issue`: como o marcador não carrega
+   * timestamp, "posterior" é lido puramente da posição neste array. Um
+   * array fora de ordem não só troca qual comentário aparece no excerto —
+   * pode suprimir (ou deixar de suprimir) o achado errado, em silêncio. */
   commentBodies: readonly string[];
   /**
    * Textos do `plan.json` da rodada pra esta issue (#5955) — na prática
@@ -463,33 +576,93 @@ export interface DetectLabelDriftInput {
   currentTrack?: ExecTrack;
 }
 
+/** Um achado que TERIA sido reportado por `detectLabelDrift`, mas foi
+ * suprimido por um `route-issue` em ou depois do comentário candidato
+ * (#6301 finding 1 — ver "Achados suprimidos ficam visíveis" na docstring
+ * do módulo). Não carrega `expectedLabels`/`actualLabels` porque o ponto
+ * não é "aplique esta label" (a supressão já significa que ninguém deveria
+ * aplicá-la) — é só tornar a supressão auditável. */
+export interface SuppressedFinding {
+  issueNumber: number;
+  patternId: string;
+  description: string;
+  /** Mesmo formato de `DriftFinding.commentExcerpt`. */
+  commentExcerpt: string;
+}
+
+/** Retorno completo de `detectLabelDriftDetailed` — achados reais +
+ * achados suprimidos por `route-issue` posterior. */
+export interface DetectLabelDriftResult {
+  findings: DriftFinding[];
+  suppressedByRoute: SuppressedFinding[];
+}
+
 /**
  * Varre os comentários em busca de padrões de deferimento/decisão em prosa
- * e reporta os que não têm a label estrutural esperada aplicada na issue.
+ * e reporta os que não têm a label estrutural esperada aplicada na issue —
+ * junto com os achados que um `route-issue` posterior (ou o próprio
+ * comentário, ver docstring do módulo) suprimiu (#6301 finding 1).
  * Determinístico, sem I/O. Nunca lança — comentário malformado (não-string)
  * é ignorado, mesma postura tolerante de `parseDecisionMarkers`.
+ *
+ * `detectLabelDrift` (abaixo) é um wrapper retrocompatível que devolve só
+ * `.findings` — use esta função diretamente quando quiser visibilidade da
+ * supressão (os dois CLIs deste módulo usam).
  */
-export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
+export function detectLabelDriftDetailed(input: DetectLabelDriftInput): DetectLabelDriftResult {
   const { issueNumber, labels, commentBodies, planTexts = [], currentTrack } = input;
   // Issue já roteada pra fora da fila do overnight — a label que falta não
   // mudaria nada. Ver `currentTrack` em `DetectLabelDriftInput`.
-  if (currentTrack !== undefined && currentTrack !== "overnight") return [];
+  if (currentTrack !== undefined && currentTrack !== "overnight") {
+    return { findings: [], suppressedByRoute: [] };
+  }
   const labelSet = new Set(labels);
   // Uma entrada por (patternId) — sobrescrita a cada match mais recente,
   // já que `commentBodies` chega em ordem cronológica ascendente.
   const byPattern = new Map<string, DriftFinding>();
+  const suppressedByPattern = new Map<string, SuppressedFinding>();
+
+  // Roteamento explícito EM OU DEPOIS vence (#6283, #6301 finding 4 — ver
+  // docstring do módulo): `hasRouteIssueAtOrAfter[i]` é true se
+  // `commentBodies[i]` OU algum `commentBodies[j]`, j > i, contém — na
+  // ABERTURA do corpo (`parseRouteIssueMarkerAtStart`, #6301 finding 2) — um
+  // marcador `<!-- route-issue: track=X -->`. Inclusivo (`i` conta, não só
+  // `j > i`) porque o próprio comentário do `routeIssue` é o candidato mais
+  // provável a repetir a frase-gatilho que está revogando; sem a inclusão
+  // ele nunca tinha nada "depois" de si mesmo e produzia achado contra a
+  // própria prosa. Calculado de trás pra frente pra custar O(n) em vez de
+  // O(n²).
+  const hasRouteIssueAtOrAfter: boolean[] = new Array(commentBodies.length).fill(false);
+  {
+    let sawRouteAtOrAfter = false;
+    for (let i = commentBodies.length - 1; i >= 0; i--) {
+      const body = commentBodies[i];
+      if (typeof body === "string" && parseRouteIssueMarkerAtStart(body) !== null) {
+        sawRouteAtOrAfter = true;
+      }
+      hasRouteIssueAtOrAfter[i] = sawRouteAtOrAfter;
+    }
+  }
 
   // Comentários primeiro, textos do plano depois: o `set` por patternId faz o
   // ÚLTIMO match vencer, e entre as duas fontes o plano é a melhor evidência
   // (veredito estruturado do coordenador, não prosa livre). Dentro dos
   // comentários a ordem cronológica ascendente preserva "mais recente vence".
-  const sources: Array<{ text: unknown; source: DriftSource }> = [
-    ...commentBodies.map((text) => ({ text, source: "comment" as const })),
+  const sources: Array<{ text: unknown; source: DriftSource; commentIndex?: number }> = [
+    ...commentBodies.map((text, commentIndex) => ({ text, source: "comment" as const, commentIndex })),
     ...planTexts.map((text) => ({ text, source: "plan" as const })),
   ];
 
-  for (const { text: raw, source } of sources) {
+  for (const { text: raw, source, commentIndex } of sources) {
     if (typeof raw !== "string") continue;
+    // Ver "Roteamento explícito posterior vence (#6283)" na docstring do
+    // módulo — só se aplica a comentários (`planTexts` não tem posição
+    // cronológica conhecida em relação aos comentários do GitHub). Não
+    // pula o comentário inteiro: ele ainda é varrido pelos padrões, só pra
+    // alimentar `suppressedByRoute` em vez de `byPattern` (#6301 finding 1)
+    // — a supressão fica visível, não silenciosa.
+    const isSuppressedByRoute =
+      source === "comment" && commentIndex !== undefined && hasRouteIssueAtOrAfter[commentIndex];
     const prose = stripHtmlComments(raw);
     for (const pattern of DRIFT_PATTERNS) {
       let match: RegExpExecArray | null = null;
@@ -505,11 +678,21 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
         labelSet.has(UNIVERSAL_SATISFYING_LABEL) ||
         pattern.expectedLabels.some((l) => labelSet.has(l));
       if (satisfied) {
-        // Label já bate no snapshot atual — nenhum achado pra este padrão,
+        // Label já bate no snapshot atual — nenhum achado pra este padrão
+        // (nem real, nem suprimido: já está resolvido de qualquer jeito),
         // independente de comentário anterior ter casado sem a label (ver
         // docstring do módulo, seção "Dedup": `labelSet` é fixo pro loop
         // inteiro, então `satisfied` nunca alterna de false pra true dentro
         // de uma mesma varredura; não há achado pendente pra remover aqui).
+        continue;
+      }
+      if (isSuppressedByRoute) {
+        suppressedByPattern.set(pattern.id, {
+          issueNumber,
+          patternId: pattern.id,
+          description: pattern.description,
+          commentExcerpt: buildExcerpt(prose, match),
+        });
         continue;
       }
       byPattern.set(pattern.id, {
@@ -524,5 +707,18 @@ export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
     }
   }
 
-  return Array.from(byPattern.values());
+  return {
+    findings: Array.from(byPattern.values()),
+    suppressedByRoute: Array.from(suppressedByPattern.values()),
+  };
+}
+
+/**
+ * Wrapper retrocompatível (#6301 finding 1) — devolve só os achados reais,
+ * mesma assinatura de sempre (`DriftFinding[]`). Todo caller existente (e
+ * todo teste existente) continua funcionando sem mudança. Use
+ * `detectLabelDriftDetailed` diretamente pra também ver `suppressedByRoute`.
+ */
+export function detectLabelDrift(input: DetectLabelDriftInput): DriftFinding[] {
+  return detectLabelDriftDetailed(input).findings;
 }

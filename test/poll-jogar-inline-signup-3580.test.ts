@@ -25,7 +25,7 @@ import {
   handleJogarSubscribe,
   parseSubscribeBody,
   SUBSCRIBE_RATE_LIMIT,
-  subscribeToBeehiiv,
+  subscribeViaConfiguredBackend,
   validateSubscribeInput,
 } from "../workers/poll/src/subscribe.ts";
 import {
@@ -110,7 +110,7 @@ describe("parseSubscribeBody (#3580)", () => {
       JSON.stringify({ name: "Ana", email: "ana@example.com", optin: true, website: "" }),
       "application/json",
     );
-    assert.deepEqual(p, { name: "Ana", email: "ana@example.com", optin: true, honeypot: "", source: "" });
+    assert.deepEqual(p, { name: "Ana", email: "ana@example.com", optin: true, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
   });
 
   it("aceita optin como string 'on' (form nativo)", () => {
@@ -127,7 +127,7 @@ describe("parseSubscribeBody (#3580)", () => {
 
   it("JSON malformado → input vazio (nunca lança)", () => {
     const p = parseSubscribeBody("{ not json", "application/json");
-    assert.deepEqual(p, { name: "", email: "", optin: false, honeypot: "", source: "" });
+    assert.deepEqual(p, { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
   });
 });
 
@@ -135,23 +135,23 @@ describe("parseSubscribeBody (#3580)", () => {
 
 describe("validateSubscribeInput (#3580)", () => {
   it("honeypot preenchido → status 200 error honeypot (descarte silencioso)", () => {
-    const v = validateSubscribeInput({ name: "", email: "a@b.com", optin: true, honeypot: "bot", source: "" });
+    const v = validateSubscribeInput({ name: "", email: "a@b.com", optin: true, honeypot: "bot", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
     assert.deepEqual(v, { ok: false, status: 200, error: "honeypot" });
   });
 
   it("opt-in NÃO marcado → 400 optin_required (consentimento LGPD obrigatório)", () => {
-    const v = validateSubscribeInput({ name: "Ana", email: "a@b.com", optin: false, honeypot: "", source: "" });
+    const v = validateSubscribeInput({ name: "Ana", email: "a@b.com", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
     assert.deepEqual(v, { ok: false, status: 400, error: "optin_required" });
   });
 
   it("e-mail inválido → 400 invalid_email", () => {
-    const v = validateSubscribeInput({ name: "Ana", email: "not-an-email", optin: true, honeypot: "", source: "" });
+    const v = validateSubscribeInput({ name: "Ana", email: "not-an-email", optin: true, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
     assert.deepEqual(v, { ok: false, status: 400, error: "invalid_email" });
   });
 
   it("válido → ok com nome trimado e cortado em 100 chars", () => {
     const longName = "x".repeat(200);
-    const v = validateSubscribeInput({ name: `  ${longName}  `, email: " a@b.com ", optin: true, honeypot: "", source: "" });
+    const v = validateSubscribeInput({ name: `  ${longName}  `, email: " a@b.com ", optin: true, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" });
     assert.equal(v.ok, true);
     if (v.ok) {
       assert.equal(v.email, "a@b.com");
@@ -190,14 +190,14 @@ describe("checkSubscribeRateLimit (#3580)", () => {
 describe("subscribeToBeehiiv (#3580)", () => {
   it("secrets ausentes → not_configured (503), sem tocar a rede", async () => {
     const fetchMock = makeFetchMock();
-    const r = await subscribeToBeehiiv(baseEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
+    const r = await subscribeViaConfiguredBackend(baseEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
     assert.deepEqual(r, { ok: false, status: 503, reason: "not_configured" });
     assert.equal(fetchMock.calls.length, 0);
   });
 
   it("POSTa pra /publications/{id}/subscriptions com Bearer + e-mail + UTM do funil", async () => {
     const fetchMock = makeFetchMock(201);
-    const r = await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "ana@example.com" }, fetchMock);
+    const r = await subscribeViaConfiguredBackend(beehiivEnv(), { name: "", email: "ana@example.com" }, fetchMock);
     assert.equal(r.ok, true);
     assert.equal(fetchMock.calls.length, 1);
     const call = fetchMock.calls[0];
@@ -220,7 +220,7 @@ describe("subscribeToBeehiiv (#3580)", () => {
   // `workers/poll/src/subscribe.ts`.
   it("isenta o cadastro inline do double opt-in da publicação (double_opt_override: off); mantém send_welcome_email", async () => {
     const fetchMock = makeFetchMock(201);
-    await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.equal(body.double_opt_override, "off");
     assert.equal(body.send_welcome_email, true);
@@ -229,7 +229,7 @@ describe("subscribeToBeehiiv (#3580)", () => {
   it("nome só vai como custom_field quando BEEHIIV_NAME_FIELD está configurado", async () => {
     const fetchMock = makeFetchMock(201);
     // sem BEEHIIV_NAME_FIELD → nome NÃO vai (degrada com graça)
-    await subscribeToBeehiiv(beehiivEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(beehiivEnv(), { name: "Ana", email: "a@b.com" }, fetchMock);
     const body1 = JSON.parse(String(fetchMock.calls[0].init?.body));
     assert.equal("custom_fields" in body1, false);
 
@@ -237,15 +237,15 @@ describe("subscribeToBeehiiv (#3580)", () => {
     const fetchMock2 = makeFetchMock(201);
     const env2 = beehiivEnv();
     env2.BEEHIIV_NAME_FIELD = "Nome";
-    await subscribeToBeehiiv(env2, { name: "Ana", email: "a@b.com" }, fetchMock2);
+    await subscribeViaConfiguredBackend(env2, { name: "Ana", email: "a@b.com" }, fetchMock2);
     const body2 = JSON.parse(String(fetchMock2.calls[0].init?.body));
     assert.deepEqual(body2.custom_fields, [{ name: "Nome", value: "Ana" }]);
   });
 
-  it("Beehiiv responde erro → beehiiv_error com o status", async () => {
+  it("Beehiiv responde erro → subscribe_error com o status", async () => {
     const fetchMock = makeFetchMock(422);
-    const r = await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
-    assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
+    const r = await subscribeViaConfiguredBackend(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    assert.deepEqual(r, { ok: false, status: 422, reason: "subscribe_error" });
   });
 
   // ── #4438 (fleet review oficial, achado 1) — timeout contra hang ──────────
@@ -261,13 +261,13 @@ describe("subscribeToBeehiiv (#3580)", () => {
   // `beehiiv_error` já tratado — nunca fica pendurado.
   it("passa um AbortSignal de timeout pro fetch — defesa contra hang", async () => {
     const fetchMock = makeFetchMock(201);
-    await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    await subscribeViaConfiguredBackend(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
     const signal = fetchMock.calls[0].init?.signal;
     assert.ok(signal instanceof AbortSignal, "fetch deve receber um AbortSignal");
     assert.equal(signal!.aborted, false, "signal não deve começar já abortado");
   });
 
-  it("fetch que trava até o signal abortar (hang simulado) → beehiiv_error, nunca fica pendurado pra sempre", async () => {
+  it("fetch que trava até o signal abortar (hang simulado) → subscribe_error, nunca fica pendurado pra sempre", async () => {
     // Mock que NUNCA resolveria por conta própria (simula rede/servidor
     // travado) — só rejeita quando o AbortSignal passado no init dispara,
     // exatamente como o `fetch` real se comporta sob AbortSignal.timeout.
@@ -285,8 +285,8 @@ describe("subscribeToBeehiiv (#3580)", () => {
       });
     }) as typeof fetch;
 
-    const r = await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, hangingFetch);
-    assert.deepEqual(r, { ok: false, status: 502, reason: "beehiiv_error" }, "hang vira falha rápida, não trava a função pra sempre");
+    const r = await subscribeViaConfiguredBackend(beehiivEnv(), { name: "", email: "a@b.com" }, hangingFetch);
+    assert.deepEqual(r, { ok: false, status: 502, reason: "subscribe_error" }, "hang vira falha rápida, não trava a função pra sempre");
   });
 });
 

@@ -147,6 +147,19 @@ export function leitorInputFromBeehiivSubscriber(sub: BeehiivSubscriberStatsShap
 
 // ---------------------------------------------------------------------------
 // Extração do dado bruto do Kit — #6050, migração Beehiiv → Kit (#461)
+//
+// Nota #6186 item 3 ("`leitor-v1` calculado do Kit dá o mesmo número que
+// daria da Beehiiv"): `leitorInputFromKitSubscriber` já satisfaz isso desde
+// o #6050 (anterior à abertura do #6186) — `test/leitor.test.ts` prova a
+// equivalência estrutural com dado sintético equivalente ("resultado é
+// equivalente ao da Beehiiv pro mesmo dado numérico"). O gap real do #6186
+// não é a FÓRMULA (já simétrica aqui), é a AUSÊNCIA de um snapshot local do
+// lado Kit equivalente a `data/beehiiv-backup/` — sem ele, nenhum caller
+// (`cac.ts`, `cohort-engagement.ts`, `cohort-retention.ts`,
+// `sunset-dead-subscribers.ts`) tem de onde ler `KitSubscriberStatsShape`
+// em produção; a função abaixo já está pronta pro dia em que esse snapshot
+// existir, mesmo padrão de "contrato pronto, sem escritor ainda" usado em
+// `scripts/lib/shared/edition-cache-reader.ts::loadKitCache`.
 // ---------------------------------------------------------------------------
 
 /** Subconjunto do subscriber bruto do Kit (`mcp__kit__filter_subscribers`,

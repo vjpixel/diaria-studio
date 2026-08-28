@@ -1,5 +1,5 @@
 /**
- * test/gen-archive-pages.test.ts (#467, regressão #633)
+ * test/gen-archive-pages.test.ts (#467, regressão #633; #6184 Kit)
  *
  * Cobre o miolo puro (scripts/lib/site-archive-pages.ts) e o gerador
  * (scripts/gen-archive-pages.ts) com fixtures sintéticas — sem depender do
@@ -13,11 +13,15 @@
  *   - meta description cai pra subtitle/preview_text quando
  *     meta_default_description vem null (#5101 item 2).
  *   - draft/slug placeholder ("new-post") nunca gera página.
+ *
+ * #6184 adiciona: `kitUnifiedPostToArchivePost` (adaptador puro
+ * UnifiedCachedPost → ArchivePost) e `loadKitArchivePosts` (gating por
+ * `read_backend`, filtro `public===true`, fixture de `data/kit-cache/broadcasts/`).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,9 +34,11 @@ import {
   buildArchivePageHtml,
   buildSitemapXml,
   sitemapEntriesForPosts,
+  kitUnifiedPostToArchivePost,
   UnresolvedMergeTagError,
 } from "../scripts/lib/site-archive-pages.ts";
-import { generateArchivePages, loadPosts } from "../scripts/gen-archive-pages.ts";
+import { generateArchivePages, loadPosts, loadKitArchivePosts } from "../scripts/gen-archive-pages.ts";
+import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
 
 function makePost(overrides: Partial<ArchivePost> = {}): ArchivePost {
   return {
@@ -79,7 +85,7 @@ describe("isPublishedPost / selectPublishedPosts", () => {
   });
 });
 
-describe("derivePageTitle / deriveMetaDescription (#5101 item 2)", () => {
+describe("derivePageTitle / deriveMetaDescription (#5101 item 2, #6281)", () => {
   it("usa meta_default_title quando presente", () => {
     assert.equal(derivePageTitle(makePost({ meta_default_title: "Título SEO" })), "Título SEO");
   });
@@ -88,29 +94,71 @@ describe("derivePageTitle / deriveMetaDescription (#5101 item 2)", () => {
     assert.equal(derivePageTitle(makePost()), "Exemplo de edição");
   });
 
-  it("usa meta_default_description quando presente", () => {
+  // #6281: meta_default_description NÃO tem mais prioridade sobre a
+  // própria edição — medido ao vivo no cache real, ~42% dos posts têm esse
+  // campo POPULADO com o MESMO bug (subtitle disfarçado, descreve só os
+  // outros destaques). Só é usado quando `ownEditionDescription` não dá pra
+  // montar (title vazio).
+  it("ignora meta_default_description quando title (própria edição) está disponível — evita reproduzir o bug do #6281 nesse campo", () => {
     assert.equal(
-      deriveMetaDescription(makePost({ meta_default_description: "Description SEO" })),
+      deriveMetaDescription(makePost({ meta_default_description: "Description SEO de outro destaque" })),
+      "Exemplo de edição. Subtítulo da edição",
+    );
+  });
+
+  it("cai pra meta_default_description só quando a própria edição não é derivável (title vazio)", () => {
+    assert.equal(
+      deriveMetaDescription(
+        makePost({ title: "", subtitle: null, preview_text: null, meta_default_description: "Description SEO" }),
+      ),
       "Description SEO",
     );
   });
 
-  it("cai pra subtitle quando meta_default_description é null", () => {
-    assert.equal(deriveMetaDescription(makePost()), "Subtítulo da edição");
-  });
-
-  it("cai pra preview_text quando subtitle e meta_default_description faltam", () => {
+  // #6281: subtitle/preview_text NUNCA descrevem a PRÓPRIA página sozinhos —
+  // na diária, por construção editorial, são o teaser dos OUTROS destaques
+  // (D2/D3) da mesma edição, não da página cujo <title> é o destaque D1
+  // (post.title). A description agora começa pelo D1 (bate com <title>) e
+  // só complementa com subtitle/preview_text.
+  it("combina title (D1, bate com <title> da página) + subtitle (D2/D3), ignorando meta_default_description", () => {
     assert.equal(
-      deriveMetaDescription(makePost({ subtitle: null })),
-      "Preview text da edição",
+      deriveMetaDescription(makePost()),
+      "Exemplo de edição. Subtítulo da edição",
     );
   });
 
-  it("nunca fica vazio — cai pro título e depois pro fallback genérico", () => {
+  it("cai pra title + preview_text quando só subtitle falta", () => {
+    assert.equal(
+      deriveMetaDescription(makePost({ subtitle: null })),
+      "Exemplo de edição. Preview text da edição",
+    );
+  });
+
+  it("cai só pro title quando subtitle e preview_text faltam — nunca description de outros destaques sem o próprio", () => {
+    assert.equal(deriveMetaDescription(makePost({ subtitle: null, preview_text: null })), "Exemplo de edição");
+  });
+
+  it("nunca fica vazio — cai pro fallback genérico quando nem title sobra", () => {
     const desc = deriveMetaDescription(
       makePost({ subtitle: null, preview_text: null, title: "" }),
     );
     assert.ok(desc.length > 0);
+  });
+
+  it("trunca em ~155 chars sem cortar no meio de palavra, com reticências", () => {
+    const post = makePost({
+      title: "Título bem longo da edição que já ocupa boa parte do orçamento de caracteres disponível",
+      subtitle:
+        "E aqui vem um teaser dos outros destaques que também é bem comprido, o suficiente pra estourar o limite de 155 caracteres da meta description padrão de SEO",
+    });
+    const desc = deriveMetaDescription(post);
+    assert.ok(desc.length <= 156, `esperado <=156 chars, veio ${desc.length}`);
+    assert.ok(desc.endsWith("…"));
+    assert.ok(!/\s…$/.test(desc), "não deve sobrar espaço colado nas reticências");
+  });
+
+  it("não trunca description curta — passa intacta", () => {
+    assert.equal(deriveMetaDescription(makePost()), "Exemplo de edição. Subtítulo da edição");
   });
 });
 
@@ -133,17 +181,23 @@ describe("buildArchivePageHtml", () => {
     assert.equal((html.match(/lang=/g) ?? []).length, 1);
   });
 
-  it("injeta title, meta description e canonical no <head>", () => {
+  it("injeta title, meta description (própria edição, #6281) e canonical no <head>", () => {
     const html = buildArchivePageHtml(makePost());
     assert.match(html, /<title>Exemplo de edição<\/title>/);
-    assert.match(html, /<meta name="description" content="Subtítulo da edição">/);
+    assert.match(html, /<meta name="description" content="Exemplo de edição\. Subtítulo da edição">/);
     assert.match(html, /<link rel="canonical" href="https:\/\/diar\.ia\.br\/p\/exemplo-de-edicao">/);
   });
 
-  it("escapa HTML na description pra não quebrar o atributo (aspas/&)", () => {
-    const post = makePost({ subtitle: 'Preço "especial" & imposto' });
+  // #6281: escaping deve acontecer EXATAMENTE 1x — content="..." usa &quot;
+  // pra representar a aspa literal (correto por spec de HTML: navegador e
+  // crawler decodificam de volta pra `"` ao ler o atributo); &amp;quot;
+  // (dupla-escapada) seria o bug real, nunca visto no código atual — este
+  // teste trava essa distinção pra não regredir.
+  it("escapa HTML na description pra não quebrar o atributo (aspas/&), exatamente 1x — não double-escaping", () => {
+    const post = makePost({ title: 'Preço "especial"', subtitle: "& imposto" });
     const html = buildArchivePageHtml(post);
-    assert.match(html, /content="Preço &quot;especial&quot; &amp; imposto"/);
+    assert.match(html, /content="Preço &quot;especial&quot;\. &amp; imposto"/);
+    assert.doesNotMatch(html, /&amp;quot;|&amp;amp;|&amp;#39;/);
   });
 
   it("escapa HTML no título — dado externo (API Beehiiv), sem isso vira XSS refletido em <title>", () => {
@@ -438,6 +492,141 @@ describe("buildArchivePageHtml — link de voto com merge tag padrão (#6210 × 
   });
 });
 
+// Decisão do editor #6210 (26/08/2026): o link de voto real (com edition+
+// choice) não pode só zerar `email=` — o endpoint /vote exige identidade e
+// o link ficaria quebrado. Precisa apontar pro fluxo /jogar (anônimo).
+describe("buildArchivePageHtml — link de voto real vira /jogar (#6210, decisão do editor)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("email={{email}}&edition=X&choice=A vira /jogar?edition=X, mesmo domínio", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=A&utm_source=diar.ia.br">A</a>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=B&utm_source=diar.ia.br">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(
+      html.includes('href="https://poll.diaria.workers.dev/jogar?edition=260812"'),
+      "link de voto deve virar /jogar?edition=... no mesmo domínio",
+    );
+    assert.ok(!/\/vote\?/.test(html), "não pode sobrar link pro /vote quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+    // As duas escolhas (A e B) da mesma edição colapsam pro MESMO link —
+    // /jogar apresenta as duas imagens e captura o clique, não recebe
+    // a escolha por query.
+    const jogarLinks = html.match(/href="https:\/\/poll\.diaria\.workers\.dev\/jogar\?edition=260812"/g);
+    assert.strictEqual(jogarLinks?.length, 2);
+  });
+
+  it("preserva o domínio original (eia.diar.ia.br vs poll.diaria.workers.dev vs legado)", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote?email={{email}}&edition=260515&choice=A&utm_source=x">A</a>' +
+          '<a href="https://diar-ia-poll.diaria.workers.dev/vote?email={{email}}&edition=260515&choice=B&sig=&utm_source=x">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260515"'));
+    assert.ok(html.includes('href="https://diar-ia-poll.diaria.workers.dev/jogar?edition=260515"'));
+  });
+
+  it("formato path-based /vote/{edition}/{A|B}?email={{email}} (buildVoteUrl atual, #5675) também vira /jogar", () => {
+    // newsletter-render-html.ts (buildVoteUrl) gera este shape, não o
+    // query-string legado — é o link que newsletter-final.html carrega
+    // quando o #6202 publica uma edição nova como página pública.
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/A?email={{email}}">A</a>' +
+          '<a href="https://eia.diar.ia.br/vote/260827/B?email={{email}}">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://eia.diar.ia.br/jogar?edition=260827"'));
+    assert.ok(!/\/vote\//.test(html), "não pode sobrar link pro /vote/ path-based quebrado");
+    assert.ok(!/\{\{email\}\}/.test(html));
+  });
+
+  // Achado do fleet review desta PR: no cache real, o shape path-based
+  // SEMPRE tem UTM de newsletter grudado depois de {{email}} — sem
+  // consumir isso, o UTM sobrevivia colado no /jogar resultante, e um
+  // clique da página WEB (sem contexto de e-mail) saía mentindo
+  // utm_medium=newsletter. Trava o comportamento correto (descartar,
+  // igual ao shape legado) contra o shape REAL, não um fixture idealizado.
+  it("descarta o UTM de newsletter grudado no shape path-based (achado do fleet review — vazamento real no cache)", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://eia.diar.ia.br/vote/260826/A?email={{email}}&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=empresas-recontratam-quem-demitiu-por-ia">A</a>' +
+          '<a href="https://eia.diar.ia.br/vote/260826/B?email={{email}}&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=empresas-recontratam-quem-demitiu-por-ia">B</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(
+      html.includes('href="https://eia.diar.ia.br/jogar?edition=260826"'),
+      "link deve virar /jogar?edition=X limpo, sem UTM de newsletter grudado",
+    );
+    assert.ok(!/utm_medium=newsletter/.test(html), "clique da página WEB não pode sair atribuído a newsletter");
+    assert.ok(!/\/vote\//.test(html));
+    assert.ok(!/\{\{email\}\}/.test(html));
+  });
+
+  // O shape legado (query-string) já descartava trailing content por
+  // construção — este teste só documenta que os DOIS shapes agora se
+  // comportam igual (achado do fleet review: antes eram assimétricos).
+  it("shape legado também descarta o mesmo jeito — os dois shapes agora são simétricos", () => {
+    const html = buildArchivePageHtml(
+      comVoto(
+        '<!DOCTYPE html><html><head></head><body>' +
+          '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260511&choice=A&sig=&utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=x">A</a>' +
+          '</body></html>',
+      ),
+    );
+    assert.ok(html.includes('href="https://poll.diaria.workers.dev/jogar?edition=260511"'));
+    assert.ok(!/utm_medium=newsletter/.test(html));
+  });
+});
+
+// Achado do fleet review desta PR: sem este guard, um shape de link de
+// voto que os 2 padrões reconhecidos NÃO cobrem (ordem de query diferente,
+// choice fora de A/B, etc.) caía em silêncio no fallback genérico — que
+// zera email= e reproduz o bug ORIGINAL do #6210 (link /vote sem
+// identidade, quebrado) sem nenhum sinal de erro.
+describe("buildArchivePageHtml — guard contra shape de /vote não reconhecido (#6210, achado do fleet review)", () => {
+  const comVoto = (web: string) => makePost({ content: { free: { web } } });
+
+  it("choice fora de A/B (shape não reconhecido) lança em vez de degradar pro fallback silencioso", () => {
+    assert.throws(
+      () =>
+        buildArchivePageHtml(
+          comVoto(
+            '<!DOCTYPE html><html><head></head><body>' +
+              '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260812&choice=C">C</a>' +
+              '</body></html>',
+          ),
+        ),
+      /merge tag não resolvida/,
+    );
+  });
+
+  it("ordem de query invertida (edition antes de email) lança em vez de degradar pro fallback silencioso", () => {
+    assert.throws(
+      () =>
+        buildArchivePageHtml(
+          comVoto(
+            '<!DOCTYPE html><html><head></head><body>' +
+              '<a href="https://poll.diaria.workers.dev/vote?edition=260812&email={{email}}&choice=A">A</a>' +
+              '</body></html>',
+          ),
+        ),
+      /merge tag não resolvida/,
+    );
+  });
+});
+
 // #6256 — a whitelist de sanitizes SÓ trata {{email}}/{{email_address_id}};
 // qualquer OUTRA merge tag desconhecida precisa lançar um tipo DISTINGUÍVEL
 // (não só um Error genérico) pra generateArchivePages poder degradar por
@@ -480,5 +669,150 @@ describe("buildArchivePageHtml — {{email_address_id}}, o identificador DOMINAN
       comTag('<!DOCTYPE html><html><head></head><body><a href="https://x/v?email={{email}}">v</a><a href="https://x/l/z_SUBSCRIBER_ID_{{email_address_id}}">l</a></body></html>'),
     );
     assert.ok(!/\{\{[a-z_]+\}\}/i.test(html), "nenhuma merge tag pode sobrar");
+  });
+});
+
+function makeUnifiedKitPost(overrides: Partial<UnifiedCachedPost> = {}): UnifiedCachedPost {
+  return {
+    origin: "kit",
+    slug: "edicao-kit",
+    title: "Assunto Kit",
+    subtitle: "Prévia curta",
+    subject: "Assunto Kit",
+    web_url: "https://diar.ia.br/kit/edicao-kit",
+    publish_date: 1_700_000_000,
+    status: "confirmed",
+    content: { free: { web: "<!DOCTYPE html><html><head></head><body><h1>Kit</h1></body></html>" } },
+    public: true,
+    ...overrides,
+  };
+}
+
+describe("kitUnifiedPostToArchivePost (#6184 — adaptador Kit → ArchivePost)", () => {
+  it("mapeia os campos comuns 1:1", () => {
+    const got = kitUnifiedPostToArchivePost(makeUnifiedKitPost());
+    assert.deepEqual(got, {
+      slug: "edicao-kit",
+      title: "Assunto Kit",
+      subtitle: "Prévia curta",
+      preview_text: null,
+      meta_default_title: null,
+      meta_default_description: null,
+      status: "confirmed",
+      web_url: "https://diar.ia.br/kit/edicao-kit",
+      displayed_date: null,
+      publish_date: 1_700_000_000,
+      content: { free: { web: "<!DOCTYPE html><html><head></head><body><h1>Kit</h1></body></html>" } },
+    });
+  });
+
+  it("devolve null quando não há slug resolvível — mesmo critério de um post Beehiiv sem slug", () => {
+    assert.equal(kitUnifiedPostToArchivePost(makeUnifiedKitPost({ slug: undefined })), null);
+  });
+
+  it("title ausente cai pro slug (nunca undefined — buildArchivePageHtml precisa de string)", () => {
+    const got = kitUnifiedPostToArchivePost(makeUnifiedKitPost({ title: undefined }));
+    assert.equal(got?.title, "edicao-kit");
+  });
+
+  it("o resultado é gerável por buildArchivePageHtml (integração fina com o resto do pipeline)", () => {
+    const archivePost = kitUnifiedPostToArchivePost(makeUnifiedKitPost())!;
+    assert.equal(isPublishedPost(archivePost), true);
+    const html = buildArchivePageHtml(archivePost);
+    assert.match(html, /<html lang="pt-BR">/);
+    assert.match(html, /<title>Assunto Kit<\/title>/);
+  });
+});
+
+describe("loadKitArchivePosts (#6184 — gating por read_backend + filtro public)", () => {
+  function writeConfig(tmp: string, readBackend: string | undefined): string {
+    const configPath = join(tmp, "platform.config.json");
+    const body =
+      readBackend === undefined
+        ? {}
+        : { publishing: { newsletter: { read_backend: readBackend } } };
+    writeFileSync(configPath, JSON.stringify(body), "utf8");
+    return configPath;
+  }
+
+  function writeKitBroadcast(dir: string, filename: string, overrides: Record<string, unknown> = {}): void {
+    writeFileSync(
+      join(dir, filename),
+      JSON.stringify({
+        id: 1,
+        subject: "Edição Kit real",
+        send_at: null,
+        status: "completed",
+        public: true,
+        published_at: "2026-08-20T09:00:00Z",
+        created_at: "2026-08-20T08:00:00Z",
+        preview_text: null,
+        description: "Prévia",
+        thumbnail_alt: null,
+        thumbnail_url: null,
+        publication_id: 1,
+        public_url: "https://diar.ia.br/kit/edicao-real",
+        content: "<!DOCTYPE html><html><head></head><body><h1>Real</h1></body></html>",
+        ...overrides,
+      }),
+      "utf8",
+    );
+  }
+
+  it("read_backend ausente (default beehiiv) devolve [] mesmo com cache Kit populado", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json");
+      const configPath = writeConfig(tmp, undefined);
+      assert.deepEqual(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }), []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=beehiiv explícito também devolve []", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json");
+      const configPath = writeConfig(tmp, "beehiiv");
+      assert.deepEqual(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }), []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=kit: inclui broadcast public:true, exclui public:false (probe/piloto/test-send)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const kitDir = join(tmp, "kit-cache");
+      mkdirSync(kitDir, { recursive: true });
+      writeKitBroadcast(kitDir, "b1.json", { public: true, public_url: "https://diar.ia.br/kit/real" });
+      writeKitBroadcast(kitDir, "b2.json", { public: false, public_url: "https://diar.ia.br/kit/probe" });
+      const configPath = writeConfig(tmp, "kit");
+
+      const posts = loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath });
+
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].slug, "real");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("read_backend=kit sem diretório de cache (nenhum kit-sync.ts rodou ainda) devolve [] sem lançar", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
+    try {
+      const configPath = writeConfig(tmp, "kit");
+      assert.deepEqual(
+        loadKitArchivePosts({ kitBroadcastsDir: join(tmp, "nao-existe"), configPath }),
+        [],
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

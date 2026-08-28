@@ -38,7 +38,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   renderFlatCard,
@@ -48,6 +48,7 @@ import {
   type FlatCardLayout,
 } from "./weekly-flat-card.ts";
 import { INSTAGRAM_CTA_LINE, splitBodyAndTags } from "./social-cta-lines.ts";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 /**
  * Corpo dos slides do carrossel DIÁRIO — tamanho fixo, não auto-size
@@ -392,12 +393,28 @@ export function writeCarouselSourceHashes(
   hashes: CarouselSourceHashes,
   opts: { replace?: boolean } = {},
 ): void {
-  const merged = opts.replace ? { ...hashes } : { ...readCarouselSourceHashes(editionDir), ...hashes };
-  writeFileSync(
-    carouselSourceHashPath(editionDir),
-    JSON.stringify({ hashes: merged, generated_at: new Date().toISOString() }, null, 2) + "\n",
-    "utf8",
-  );
+  // #6447 review (code-reviewer, P2): lock adicionado porque o painel de
+  // Revisão do Studio (studio-images.ts, "Regenerar" por destaque) agora
+  // pode disparar 2+ processos `gen-carousel-cards.ts` CONCORRENTES pra
+  // mesma edição (um clique em D1, outro em D2 poucos segundos depois) —
+  // cenário que não existia quando este read-modify-write foi escrito
+  // originalmente (`gen-carousel-cards.ts` só rodava 1x por invocação
+  // serial do Stage 3 real). Sem lock, o merge de 2 escritas concorrentes
+  // pode perder a mudança de uma delas (last-writer-wins sobre o
+  // `readCarouselSourceHashes` já lido antes da outra escrever). Mesmo
+  // primitivo de `stage4-capture-state.ts`/`stage4-decision.ts` (lock +
+  // tmp + rename) — path do lock é o mesmo arquivo + `.lock`.
+  const path = carouselSourceHashPath(editionDir);
+  const lockPath = path + ".lock";
+  acquireLock(lockPath);
+  try {
+    const merged = opts.replace ? { ...hashes } : { ...readCarouselSourceHashes(editionDir), ...hashes };
+    const tmpPath = path + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify({ hashes: merged, generated_at: new Date().toISOString() }, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, path);
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 /** Nome do arquivo local (raiz da edição) de um slide sem foto do carrossel. */

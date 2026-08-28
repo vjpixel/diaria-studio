@@ -10,10 +10,16 @@
  *
  *   1. **Inventário** — `UTM_EMITTERS` de `lib/shared/utm-registry.ts`, o que
  *      o CÓDIGO emite. Fonte da verdade dos valores.
- *   2. **Conversão (Beehiiv)** — `fetchAndAggregate` de
- *      `../count-subscriptions-by-utm.ts` (#2457, já testado): assinantes por
- *      `utm_source` e — desde o #4041 — por `utm_campaign`. É o único lado que
- *      fecha o funil ATÉ A CONVERSÃO.
+ *   2. **Conversão (Beehiiv OU Kit)** — `fetchAndAggregate`/`fetchAndAggregateKit`
+ *      de `../count-subscriptions-by-utm.ts` (#2457, já testado): assinantes
+ *      por `utm_source` e — desde o #4041 — por `utm_campaign`. É o único
+ *      lado que fecha o funil ATÉ A CONVERSÃO. Backend escolhido por
+ *      `publishing.newsletter.subscriber_backend` (`platform.config.json`,
+ *      default `"beehiiv"`, #6051) via
+ *      `../lib/shared/newsletter-subscriber-source.ts` — chave PRÓPRIA,
+ *      independente de `backend`/`read_backend` (ver docstring do módulo
+ *      compartilhado pro racional completo, inclusive a limitação conhecida
+ *      da atribuição nativa do Kit).
  *   3. **Clique (Brevo)** — `linksStats` das campanhas do digest mensal, mesma
  *      leitura que o `workers/brevo-dashboard` faz (dois GETs separados:
  *      `?statistics=globalStats` e `?statistics=linksStats`, porque o param
@@ -63,8 +69,9 @@ import {
   type UtmEmitterStatus,
   type ExternalUtmSurface,
 } from "../lib/shared/utm-registry.ts";
-import { fetchAndAggregate } from "../count-subscriptions-by-utm.ts";
+import { fetchAndAggregate, fetchAndAggregateKit } from "../count-subscriptions-by-utm.ts";
 import { resolveBeehiivConfig } from "../lib/beehiiv-config.ts";
+import { resolveNewsletterSubscriberConfig } from "../lib/shared/newsletter-subscriber-source.ts";
 import { brevoGet } from "../lib/brevo-client.ts";
 
 // Mesmo racional de `studio-integrations.ts`/`dashboard-clarice.ts`: garante
@@ -443,6 +450,13 @@ export interface BuildUtmsOptions {
   forceRefresh?: boolean;
   /** Injetável pra teste — NUNCA bater no Beehiiv real na suíte. */
   fetchSubscriptions?: typeof fetchAndAggregate;
+  /** Injetável pra teste — NUNCA bater no Kit real na suíte (#6051, só
+   *  usado quando `publishing.newsletter.subscriber_backend === "kit"`). */
+  fetchSubscriptionsKit?: typeof fetchAndAggregateKit;
+  /** Override do backend resolvido — só pra teste; produção sempre lê
+   *  `publishing.newsletter.subscriber_backend` de `platform.config.json`
+   *  real (#6051). */
+  subscriberBackend?: "beehiiv" | "kit";
   /** Injetável pra teste — NUNCA bater na Brevo real na suíte. */
   fetchClicks?: typeof fetchBrevoClicks;
   env?: Record<string, string | undefined>;
@@ -469,38 +483,52 @@ export async function buildUtmsData(
   const meta = loadUtmMetadata(rootDir);
   const emittersBase = UTM_EMITTERS.map((e) => applyMetadata(e, meta[e.id]));
 
-  // ── Beehiiv (conversão) ──────────────────────────────────────────────────
+  // ── Conversão (assinantes) — Beehiiv OU Kit, conforme
+  //    `publishing.newsletter.subscriber_backend` (#6051). Campo de erro
+  //    continua se chamando `beehiivError` mesmo no caminho Kit — nome
+  //    legado preservado pra não quebrar o client (`revisao.js`/testes) que
+  //    já lê esse campo; a flag é default `"beehiiv"` em produção, então o
+  //    caminho Kit é hoje inatingível fora de teste explícito (opts.backend).
   let sourceCounts: Record<string, number> = {};
   let campaignCounts: Record<string, number> = {};
   let totalSubscribers: number | null = null;
   let beehiivError: string | undefined;
   try {
-    const fetcher = opts.fetchSubscriptions ?? fetchAndAggregate;
-    // `loadBeehiivConfig` faz `process.exit(2)` quando a credencial falta (é
-    // um helper de CLI). No studio-server isso derrubaria o processo INTEIRO —
-    // então usamos `resolveBeehiivConfig` (#4296), a versão pura que nunca
-    // termina o processo: a ausência vira `beehiivError` diretamente, sem
-    // reimplementar a checagem de credencial (a reimplementação anterior
-    // exigia `BEEHIIV_PUBLICATION_ID` no env e perdia o fallback pra
-    // `platform.config.json` — causa raiz do #4296). Roda SEMPRE (não só
+    // `loadBeehiivConfig`/`loadKitConfig` fazem `process.exit(2)` quando a
+    // credencial falta (helpers de CLI). No studio-server isso derrubaria o
+    // processo INTEIRO — então usamos as versões puras (`resolveBeehiivConfig`,
+    // #4296 / `resolveNewsletterSubscriberConfig`, #6051) que nunca terminam
+    // o processo: ausência vira `beehiivError` direto. Roda SEMPRE (não só
     // quando `!injected`) — é leitura pura de env + arquivo local, nunca
-    // rede — pra que testes com `fetchSubscriptions` injetado também
-    // exerçam o caminho real de resolução (era exatamente essa lacuna,
-    // pular a resolução quando injetado, que deixou o bug original invisível
-    // à suíte). Só falha quando NÃO há fetcher injetado pra absorver a
-    // ausência de credencial.
-    const injected = Boolean(opts.fetchSubscriptions);
-    let cfg = { publicationId: "", apiKey: "" };
-    const resolved = resolveBeehiivConfig(env);
-    if (resolved.ok) {
-      cfg = resolved.config;
-    } else if (!injected) {
-      throw new Error(resolved.reason);
+    // rede — pra que testes com fetcher injetado também exerçam o caminho
+    // real de resolução (mesma lição do #4296: pular a resolução quando
+    // injetado escondia o bug original da suíte).
+    const injectedBeehiiv = Boolean(opts.fetchSubscriptions);
+    const injectedKit = Boolean(opts.fetchSubscriptionsKit);
+    const resolved = resolveNewsletterSubscriberConfig({ env, backend: opts.subscriberBackend });
+    if (!resolved.ok) {
+      if (!injectedBeehiiv && !injectedKit) throw new Error(resolved.reason);
+      // Sem credencial resolvível mas com fetcher injetado (teste): segue
+      // com o backend default (beehiiv) — mesmo comportamento pré-#6051.
+      const fetcher = opts.fetchSubscriptions ?? fetchAndAggregate;
+      const result = await fetcher("", "");
+      sourceCounts = result.counts ?? {};
+      campaignCounts = result.campaignCounts ?? {};
+      totalSubscribers = result.total ?? null;
+    } else if (resolved.config.backend === "kit") {
+      const fetcher = opts.fetchSubscriptionsKit ?? fetchAndAggregateKit;
+      const result = await fetcher(resolved.config.config);
+      sourceCounts = result.counts ?? {};
+      campaignCounts = result.campaignCounts ?? {};
+      totalSubscribers = result.total ?? null;
+    } else {
+      const fetcher = opts.fetchSubscriptions ?? fetchAndAggregate;
+      const { publicationId, apiKey } = resolved.config.config;
+      const result = await fetcher(publicationId, apiKey);
+      sourceCounts = result.counts ?? {};
+      campaignCounts = result.campaignCounts ?? {};
+      totalSubscribers = result.total ?? null;
     }
-    const result = await fetcher(cfg.publicationId, cfg.apiKey);
-    sourceCounts = result.counts ?? {};
-    campaignCounts = result.campaignCounts ?? {};
-    totalSubscribers = result.total ?? null;
   } catch (e) {
     beehiivError = (e as Error).message;
   }

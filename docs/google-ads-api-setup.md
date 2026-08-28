@@ -187,35 +187,26 @@ Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
 - `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — `6236094249` (a MCC, **sem** hífens)
 - `GOOGLE_ADS_CUSTOMER_ID` — `2369219639` (a conta que tem os dados)
 - `GOOGLE_PROJECT_ID` — o "ID do projeto" (`velvety-tube-505505-d1`, tabela de
-  identificadores acima), não o nome nem o número. Adicionado em #5237,
-  **ainda pendente de sync no Doppler** (confirmado ausente no vault em
-  17/08/2026: `doppler secrets get GOOGLE_PROJECT_ID` → *Could not find
-  requested secret*). Fechar com:
+  identificadores acima), não o nome nem o número. Adicionado em #5237.
+  **Correção (#6450, 27/08/2026): não é lido em lugar nenhum do código** —
+  nem pelo caminho REST (confirmado 17/08), nem pelo servidor MCP oficial
+  (confirmado lendo o fonte do `google-ads-mcp`, `ads_mcp/utils.py`). Removido
+  de `.mcp.json`; mantido só como anotação de qual projeto é.
+- `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` — JSON bruto (1 linha) da chave da Service
+  Account (#6450), única credencial que o servidor MCP oficial de fato lê
+  (via `GOOGLE_APPLICATION_CREDENTIALS`, materializado em arquivo por
+  `scripts/materialize-google-ads-credentials.ts` — ver seção abaixo).
 
-  ```bash
-  doppler secrets set GOOGLE_PROJECT_ID=velvety-tube-505505-d1
-  ```
-
-  **Não bloqueia mais a ingestão REST.** Até 17/08/2026 o CLI
-  `google-ads-ingest-spend.ts` listava esta var como obrigatória e abortava
-  com "variável de ambiente ausente" antes de tentar a chamada — motivo
-  enganoso, porque o caminho REST autentica por
-  CLIENT_ID/SECRET/REFRESH_TOKEN e nunca leu este valor. A var é exigida só
-  pelo servidor MCP oficial (`.mcp.json`, caminho ADC), que de todo modo
-  ainda depende de `GOOGLE_APPLICATION_CREDENTIALS` (Service Account
-  inexistente).
-
-## MCP oficial e ingestão automática (#5237)
-
-Escopo desta issue, feito **exceto o item que depende do editor** (pedir o
-developer token real — item 1 do checklist, ver issue):
+## MCP oficial e ingestão automática (#5237, corrigido no #6450)
 
 - **`.mcp.json` → `google-ads`**: entrada `stdio` (`pipx run --spec
   git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
   servidor oficial do time do Google Ads (link no topo do arquivo, ver
   também a issue #5237). Diferente do `clarice` (HTTP + header-auth), esse
   MCP é um processo local que lê as credenciais do próprio ambiente (`env`
-  no bloco da entrada).
+  no bloco da entrada). **Requer `pipx` instalado** (Python ≥3.10) nas 3
+  máquinas — `pip install --user pipx && pipx ensurepath`, reabrir o
+  terminal — sem ele o processo do MCP nem sobe (achado do #6450).
 
   **Contrato de auth do servidor MCP em si é DIFERENTE do fluxo REST usado
   por `google-ads-ingest-spend.ts`/`google-ads-associate-token.ts` (achado
@@ -223,21 +214,39 @@ developer token real — item 1 do checklist, ver issue):
   declarava `GOOGLE_ADS_CLIENT_ID`/`GOOGLE_ADS_CLIENT_SECRET`/
   `GOOGLE_ADS_REFRESH_TOKEN` — vars do fluxo OAuth REST, que o servidor MCP
   não lê (confirmado contra o README oficial de `googleads/google-ads-mcp`).
-  O servidor MCP só reconhece 2 métodos de auth: **ADC** (`GOOGLE_APPLICATION_CREDENTIALS`
-  apontando pro JSON de uma Service Account + `GOOGLE_PROJECT_ID` +
-  `GOOGLE_ADS_DEVELOPER_TOKEN`) ou **proxy OAuth do FastMCP**
-  (`GOOGLE_ADS_MCP_OAUTH_CLIENT_ID`/`_SECRET` + `GOOGLE_ADS_MCP_BASE_URL`).
-  A entrada em `.mcp.json` foi corrigida pro caminho ADC (`GOOGLE_PROJECT_ID`
-  + `GOOGLE_ADS_DEVELOPER_TOKEN` + `GOOGLE_ADS_CUSTOMER_ID` + `GOOGLE_APPLICATION_CREDENTIALS`)
-  — mas **`GOOGLE_APPLICATION_CREDENTIALS` ainda não existe**: requer criar
-  uma Service Account no GCP Console (IAM → Service Accounts → Create) e
-  baixar a chave JSON, ação do editor fora do escopo do #5237/#5380 (ver
-  `.env.example`). **Não testado ao vivo** por dois motivos empilhados —
-  Basic Access ainda na fila (`DEVELOPER_TOKEN_NOT_APPROVED`) E a Service
-  Account ainda não existe. Confirmar a entrada quando os dois saírem da
-  fila. O script de ingestão REST (`google-ads-ingest-spend.ts`) é um
-  caminho INDEPENDENTE — usa `CLIENT_ID`/`SECRET`/`REFRESH_TOKEN`, já
-  fail-soft, não depende de nada desta seção.
+  **Correção do #6450 (27/08/2026), lendo o fonte do server
+  (`ads_mcp/utils.py`, `_create_credentials()`) em vez do README**: o
+  servidor só reconhece **ADC** — nunca `GOOGLE_PROJECT_ID` (removido da
+  entrada, não lido em lugar nenhum) nem o proxy OAuth do FastMCP citado
+  antes aqui (não implementado nesta versão do server). ADC lê
+  `GOOGLE_APPLICATION_CREDENTIALS` (path de um JSON de Service Account) +
+  `GOOGLE_ADS_DEVELOPER_TOKEN` + `GOOGLE_ADS_LOGIN_CUSTOMER_ID`/
+  `GOOGLE_ADS_CUSTOMER_ID`.
+
+  **Decisão do editor (#6450): Service Account + Doppler**, não `gcloud auth
+  application-default login` interativo por máquina — permite as 3 máquinas
+  puxarem a mesma credencial via `npm run sync-env`. Passos manuais
+  (bloqueio externo, GCP Console + Google Ads, fora do escopo de código):
+  1. Criar a Service Account no GCP Console (IAM → Service Accounts →
+     Create, projeto `velvety-tube-505505-d1`), confirmar que a Google Ads
+     API está habilitada.
+  2. Gerar e baixar a chave JSON.
+  3. No Google Ads (MCC `623-609-4249`): Tools & Settings → Access and
+     security → Users → convidar `google-ads-mcp@{project}.iam.gserviceaccount.com`
+     com acesso Read only.
+  4. Subir o conteúdo da JSON no Doppler como `GOOGLE_ADS_SERVICE_ACCOUNT_JSON`.
+
+  Depois de `npm run sync-env`, rodar `npx tsx
+  scripts/materialize-google-ads-credentials.ts` — materializa a credencial
+  num arquivo local (`~/.config/diaria/google-ads-sa.json`) e atualiza
+  `GOOGLE_APPLICATION_CREDENTIALS` em `.env` automaticamente (fail-soft:
+  sem a var no Doppler ainda, só avisa e sai 0 — nada quebra). Validar com
+  `/mcp` depois de reabrir o Claude Code. **Não testado ao vivo** — os 4
+  passos manuais acima ainda não rodaram (nenhuma escrita real no GCP/Google
+  Ads Console nesta rodada). O script de ingestão REST
+  (`google-ads-ingest-spend.ts`) é um caminho INDEPENDENTE — usa
+  `CLIENT_ID`/`SECRET`/`REFRESH_TOKEN`, já fail-soft, não depende de nada
+  desta seção.
 - **`scripts/google-ads-ingest-spend.ts`** (+ núcleo puro
   `scripts/lib/google-ads-ingest.ts`): traduz GAQL (`segments.date` +
   `metrics.cost_micros`, agregado por mês) pro formato de

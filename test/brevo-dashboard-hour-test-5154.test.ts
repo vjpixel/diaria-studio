@@ -15,6 +15,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseHourTestCampaign,
+  resolveHourTestCampaignCell,
   aggregateHourTest,
   renderHourTestSection,
   type HourTestResult,
@@ -102,6 +103,40 @@ describe("parseHourTestCampaign", () => {
   });
 });
 
+// ─── resolveHourTestCampaignCell (#6308) ───────────────────────────────────
+
+describe("#6308: resolveHourTestCampaignCell — reconcilia as 2 campanhas H06 sem sufixo na apuração", () => {
+  test("REGRESSÃO: campaignId 164 ('d25-sab22', sem sufixo -H{HH} no nome) resolve H06 pela allowlist", () => {
+    assert.deepEqual(resolveHourTestCampaignCell({ id: 164, name: "Clarice 2607 grupo:d25-sab22" }), { hourBrt: 6 });
+  });
+
+  test("REGRESSÃO: campaignId 166 ('d26-dom23', sem sufixo -H{HH} no nome) resolve H06 pela allowlist", () => {
+    assert.deepEqual(resolveHourTestCampaignCell({ id: 166, name: "Clarice 2607 grupo:d26-dom23" }), { hourBrt: 6 });
+  });
+
+  test("campanha irmã com sufixo correto (id 165, 'd25-sab22-H10') resolve pelo NOME, sem precisar da allowlist", () => {
+    assert.deepEqual(resolveHourTestCampaignCell({ id: 165, name: "Clarice 2607 grupo:d25-sab22-H10" }), { hourBrt: 10 });
+  });
+
+  test("guard contra falso positivo: campanha ALHEIA com nome parecido mas id fora da allowlist NÃO entra", () => {
+    // Mesmo padrão de nome sem sufixo que causou o incidente, mas um id
+    // qualquer não registrado — nunca deve casar por coincidência de nome.
+    assert.equal(resolveHourTestCampaignCell({ id: 9999, name: "Clarice 2607 grupo:d25-sab22" }), null);
+  });
+
+  test("guard contra falso positivo: id 164/166 com um NOME diferente do incidente real não é mascarado — ainda resolve pela allowlist (id é a fonte de verdade, não o nome)", () => {
+    // A allowlist é por id, não por (id, nome) — documentando o comportamento
+    // esperado: se a campanha #164 for renomeada no futuro por qualquer
+    // motivo, o fallback por id continua valendo até a entrada ser removida
+    // manualmente da allowlist (ver docstring de HOUR_TEST_CAMPAIGN_ID_FALLBACK).
+    assert.deepEqual(resolveHourTestCampaignCell({ id: 164, name: "Qualquer outro nome" }), { hourBrt: 6 });
+  });
+
+  test("campanha comum, sem sufixo e id fora da allowlist → null (comportamento pré-#6308 preservado)", () => {
+    assert.equal(resolveHourTestCampaignCell({ id: 500, name: "Clarice 2608 grupo:ramp-warm" }), null);
+  });
+});
+
 // ─── aggregateHourTest ─────────────────────────────────────────────────────
 
 describe("aggregateHourTest", () => {
@@ -140,6 +175,28 @@ describe("aggregateHourTest", () => {
     assert.equal(result.cells.length, 1);
     assert.equal(result.leaderClickRateHour, null);
     assert.equal(result.pValue, null);
+  });
+
+  test("REGRESSÃO #6307/#6308: campanhas 164/166 (H06 sem sufixo no nome) entram na apuração — H06 e H10 ficam equilibrados", () => {
+    const campaigns = [
+      // campaignId 164: 'd25-sab22', SEM sufixo -H{HH} (o bug) — 22/08/2026 09:00Z = 06:00 BRT.
+      withCampaignStats(makeCampaign(164, "Clarice 2607 grupo:d25-sab22", "2026-08-22T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      // campaignId 165: 'd25-sab22-H10', irmã com sufixo correto.
+      withCampaignStats(makeCampaign(165, "Clarice 2607 grupo:d25-sab22-H10", "2026-08-22T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+      // campaignId 166: 'd26-dom23', SEM sufixo -H{HH} (o bug) — 23/08/2026 09:00Z = 06:00 BRT.
+      withCampaignStats(makeCampaign(166, "Clarice 2607 grupo:d26-dom23", "2026-08-23T09:00:00Z", { uniqueClicks: 45 }), { uniqueClicks: 45 }),
+      // campaignId 167: 'd26-dom23-H10', irmã com sufixo correto.
+      withCampaignStats(makeCampaign(167, "Clarice 2607 grupo:d26-dom23-H10", "2026-08-23T13:00:00Z", { uniqueClicks: 110 }), { uniqueClicks: 110 }),
+    ];
+    const result = aggregateHourTest(campaigns);
+    const h06 = result.cells.find((c) => c.hourBrt === 6)!;
+    const h10 = result.cells.find((c) => c.hourBrt === 10)!;
+    // Antes do #6308, 164/166 sumiam e h06.campaignCount ficaria 0 pra esses
+    // 2 dias — o painel super-representava H10 (achado ao vivo: 7×9 vs 9×9).
+    assert.equal(h06.campaignCount, 2);
+    assert.equal(h10.campaignCount, 2);
+    assert.equal(h06.clicksAttributed, 85);
+    assert.equal(h10.clicksAttributed, 210);
   });
 
   test("campanha sem campaignStats cai pro total não-atribuído (mesma degradação do A/B/C, #4559)", () => {

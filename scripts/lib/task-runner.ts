@@ -69,6 +69,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ScheduledTaskDefinition } from "./scheduled-tasks.ts";
 import { unitBaseName } from "./systemd-units.ts";
+import { syncCode as syncCodeFn, type GitSyncResult } from "./git-sync.ts";
 
 /** Resultado de rodar um único passo (`execStep`). */
 export interface StepExecResult {
@@ -158,6 +159,8 @@ export interface RunScheduledTaskOptions {
    * do módulo) sempre chama esta função — sucesso na 1ª tentativa nunca
    * distingue "sempre funcionou" de "não precisou retry". */
   appendLog?: AppendLogFn;
+  /** Injeção de syncCode antes dos passos (testes). Default: `syncCode` real de `./git-sync.ts`. */
+  syncCode?: () => GitSyncResult;
 }
 
 /** Assinatura injetável de UMA tentativa de anexar `content` a `logPath` —
@@ -197,6 +200,7 @@ export function runScheduledTask(
   const now = opts.now ?? (() => new Date());
   const execStep = opts.execStep ?? execTsxStep;
   const appendLog = opts.appendLog ?? defaultAppendLog;
+  const syncCode = opts.syncCode ?? syncCodeFn;
 
   const logPath = opts.logPathOverride ?? join(rootDir, "data", ...def.logPath.split("/"));
   const tempLogPath =
@@ -250,6 +254,28 @@ export function runScheduledTask(
   }
 
   if (!guardAborted) {
+    // #6431: sync de código antes de executar os passos — mesma disciplina
+    // fail-soft do #2686 (Passo 0 de /diaria-edicao). Qualquer falha de sync
+    // (offline, divergência, working tree suja) vira warning e a task
+    // prossegue com o código local. Nunca bloqueia uma task por falha de sync.
+    // O SHA efetivamente usado fica registrado no log da rodada.
+    let syncResult: GitSyncResult | null = null;
+    try {
+      syncResult = syncCode();
+    } catch (e) {
+      appendTemp(`AVISO: sync-code.ts lançou exceção inesperada: ${(e as Error).message}`);
+    }
+    if (syncResult) {
+      appendTemp(`[git-sync] outcome=${syncResult.outcome} up_to_date=${syncResult.up_to_date} commits_behind=${syncResult.commits_behind}`);
+      if (syncResult.warnings.length > 0) {
+        for (const w of syncResult.warnings) {
+          appendTemp(`[git-sync] WARN: ${w}`);
+        }
+      }
+    } else {
+      appendTemp("[git-sync] WARN: sync-code.ts não retornou resultado — prosseguindo com código local.");
+    }
+
     for (const step of def.steps) {
       appendTemp(`----- ${step.key} -----`);
       const args = (step.args ?? []).map((a) => (a === "{tempLogPath}" ? tempLogPath : a));

@@ -88,6 +88,16 @@
  * envio de produção completo — ver docstring de `P_PAD_BY_ESP`/
  * `P_MARGIN_FACTOR_BY_ESP` em `newsletter-render-html.ts`.
  *
+ * **#6506 — o HTML Kit passava de 102 KB (limite de clipping do Gmail), com
+ * ~50,3% do corpo em `style=""` inline.** O mecanismo de juice acima é
+ * exatamente por que `extractRepeatedInlineStyles` (`newsletter-render-html.ts`)
+ * pode trocar os 2 `style=""` mais repetidos (botão pill CTA, link inline de
+ * corpo) por `class="cb"`/`class="dl"` só neste fragmento (`esp: "kit"`) sem
+ * mudar o resultado entregue — o Kit reinlina a classe de volta, igual já
+ * fazia com `.built-with`. Redução parcial (2 padrões, não uma reescrita
+ * completa do renderer) — ver `checkKitHtmlSize` (stage-4.ts) pro guard
+ * mecânico que bloqueia o gate se ainda assim passar de 102 KB.
+ *
  * ## Merge tag do voto do É IA?
  *
  * `esp: "kit"` usa `{{ subscriber.email_address }}` (Liquid, cru — mesmo
@@ -369,6 +379,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       subject,
       preview_text: previewText,
       content: html,
+      public: true,
     });
     broadcastId = updated.id;
     publicUrl = updated.public_url;
@@ -379,6 +390,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
       preview_text: previewText,
       send_at: null, // rascunho — Etapa 6 é quem agenda de verdade
       subscriber_filter: buildAllSubscribersFilter(),
+      // #6323 (achado ao vivo): sem `public: true` o Kit nunca gera um
+      // `public_url` com slug — a doc oficial confirma que o campo controla
+      // exatamente isso ("publish this broadcast to the web... appears in a
+      // newsletter feed"). Sem ele, `public_url` volta um stub vazio
+      // (`https://{pub}.kit.com/posts/`, sem slug), quebrando {edition_url}
+      // em todos os posts sociais + post_pixel (Stage 6).
+      public: true,
     });
     broadcastId = created.id;
     publicUrl = created.public_url;

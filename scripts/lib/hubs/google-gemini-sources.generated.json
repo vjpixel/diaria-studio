@@ -685,5 +685,29 @@
       "https://exame.com/inteligencia-artificial/pesquisadores-descobrem-como-roubar-pensamentos-secretos-do-chatgpt-claude-e-gemini/"
     ],
     "editionTitle": "Reglab estima R$986 bi extra no PIB até 2030"
+  },
+  {
+    "date": "2026-08-24",
+    "editionSlug": "roteiristas-pagos-para-treinar-quem-os-substitui",
+    "url": "https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui",
+    "matchedHeadlines": [
+      "Google lança simulado do Enem no Gemini"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/gemini-ganha-simulado-gratis-do-enem-veja-como-funciona/"
+    ],
+    "editionTitle": "Roteiristas pagos para treinar quem os substitui"
+  },
+  {
+    "date": "2026-08-26",
+    "editionSlug": "empresas-recontratam-quem-demitiu-por-ia",
+    "url": "https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia",
+    "matchedHeadlines": [
+      "Google mira escritórios de advocacia com Gemini"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/google-lanca-gemini-enterprise-para-escritorios-de-advocacia/"
+    ],
+    "editionTitle": "Empresas recontratam quem demitiu por IA"
   }
 ]

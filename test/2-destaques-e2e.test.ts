@@ -163,7 +163,7 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
     }
   });
 
-  it("stitch sem D3 omite D3 e preserva ordem D1 > É IA? > seções > SORTEIO", () => {
+  it("stitch sem D3 omite D3 e preserva ordem D2 > LANÇAMENTOS > É IA? > SORTEIO", () => {
     const { dir, internalDir, cleanup } = setupEdition2D();
     try {
       writeFileSync(join(internalDir, "02-d1-draft.md"), "DESTAQUE 1 body");
@@ -194,16 +194,16 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
         sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
 
-      // Ordem: D2 > É IA? (D3 omitido) > LANÇAMENTOS > SORTEIO
+      // Ordem (#6323): D2 > LANÇAMENTOS > É IA? (D3 omitido) > SORTEIO
       const d2Pos = result.indexOf("DESTAQUE 2 body");
-      const eiaPos = result.indexOf("É IA?");
       const lancPos = result.indexOf("LANÇAMENTO");
+      const eiaPos = result.indexOf("É IA?");
       const sortPos = result.indexOf("SORTEIO");
 
       assert.ok(d2Pos > 0, "D2 presente");
-      assert.ok(eiaPos > d2Pos, `É IA? após D2 (d2=${d2Pos} eia=${eiaPos})`);
-      assert.ok(lancPos > eiaPos, `LANÇAMENTOS após É IA? (eia=${eiaPos} lanc=${lancPos})`);
-      assert.ok(sortPos > lancPos, `SORTEIO após LANÇAMENTOS (lanc=${lancPos} sort=${sortPos})`);
+      assert.ok(lancPos > d2Pos, `LANÇAMENTOS após D2 (d2=${d2Pos} lanc=${lancPos})`);
+      assert.ok(eiaPos > lancPos, `É IA? após LANÇAMENTOS (lanc=${lancPos} eia=${eiaPos})`);
+      assert.ok(sortPos > eiaPos, `SORTEIO após É IA? (eia=${eiaPos} sort=${sortPos})`);
       assert.doesNotMatch(result, /DESTAQUE 3/, "D3 NÃO deve aparecer");
     } finally {
       cleanup();

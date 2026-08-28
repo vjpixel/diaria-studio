@@ -23,7 +23,7 @@ import {
   scheduledAtForDate,
   waveKey,
 } from "../scripts/lib/clarice-wave-plan.ts";
-import { buildHourCells, checkSingleStrategyAgainstHourTest } from "../scripts/lib/clarice-group-cells.ts";
+import { buildHourCells, checkSingleStrategyAgainstHourTest, checkKeyAgainstHourTest } from "../scripts/lib/clarice-group-cells.ts";
 import { groupCellListNameFor, isGroupCellWave } from "../scripts/clarice-import-waves.ts";
 import {
   closeClariceHourTest,
@@ -435,6 +435,46 @@ describe("#5827: --no-cells não pode fragmentar um teste de horário ativo em s
     const ativo = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" };
     assert.equal(checkSingleStrategyAgainstHourTest({ kind: "hours", hoursBrt: [6, 10] }, ativo, false), null);
     assert.equal(checkSingleStrategyAgainstHourTest({ kind: "cells" }, ativo, false), null);
+  });
+});
+
+describe("#6307: checkKeyAgainstHourTest — guard preventivo do caminho --group/--key manual", () => {
+  const ativo = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-16T13:18:32.343Z", startedBy: "editor" };
+
+  it("REGRESSÃO: keys reais do incidente ('d25-sab22', 'd26-dom23') sem sufixo -H{HH} ABORTAM com teste ativo", () => {
+    const msgA = checkKeyAgainstHourTest("d25-sab22", ativo, false);
+    assert.match(msgA ?? "", /--key 'd25-sab22' não termina em -H\{HH\}/);
+    assert.match(msgA ?? "", /teste de HORÁRIO.*ATIVO/);
+    assert.match(msgA ?? "", /--ignore-hour-test/);
+
+    const msgB = checkKeyAgainstHourTest("d26-dom23", ativo, false);
+    assert.match(msgB ?? "", /--key 'd26-dom23' não termina em -H\{HH\}/);
+  });
+
+  it("key JÁ com sufixo -H{HH} (o caminho correto, ex: 'd25-sab22-H10') segue normalmente mesmo com teste ativo", () => {
+    assert.equal(checkKeyAgainstHourTest("d25-sab22-H10", ativo, false), null);
+    assert.equal(checkKeyAgainstHourTest("d25-sab22-H06", ativo, false), null);
+  });
+
+  it("key sem sufixo + teste INATIVO segue normalmente (nada a proteger)", () => {
+    assert.equal(checkKeyAgainstHourTest("d25-sab22", { status: "inativo" }, false), null);
+  });
+
+  it("key sem sufixo + teste ENCERRADO segue normalmente (só 'ativo' bloqueia)", () => {
+    const encerrado = {
+      status: "encerrado" as const,
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00Z",
+      decidedAt: "2026-08-15T00:00:00Z",
+      decidedBy: "editor",
+      winnerBrt: 10,
+      rationale: "x",
+    };
+    assert.equal(checkKeyAgainstHourTest("d25-sab22", encerrado, false), null);
+  });
+
+  it("--ignore-hour-test é o escape hatch explícito — bypassa mesmo com teste ativo e key sem sufixo", () => {
+    assert.equal(checkKeyAgainstHourTest("reativacao", ativo, true), null);
   });
 });
 

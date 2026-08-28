@@ -18,6 +18,13 @@ const REAL_FIXTURES: Array<Pick<Article, "url" | "title"> & { edition: string }>
   { edition: "260820", url: "https://openai.com/index/zero-data-retention/", title: "Offering Zero Data Retention for frontier models" },
   { edition: "260821", url: "https://blog.google/products/gemini/start-the-semester-gemini-on-us/", title: "Start the semester with one year of Gemini, on us" },
   { edition: "260824", url: "https://blog.google/technology/developers/inside-the-gemmaverse-one-billion-downloads/", title: "Inside the Gemmaverse: Celebrating one billion Gemma downloads" },
+  // #6440 (260828): expansão de programa da OpenAI e piloto de avaliação do
+  // DeepMind — chegaram a lancamento[] sem sinal positivo de produto, e o
+  // gate do Stage 4 (validate-lancamentos.ts #1968) rejeitava os dois em
+  // LANÇAMENTOS enquanto o url-bucket (#165) exigia que estivessem lá —
+  // contradição sem posição válida no MD final.
+  { edition: "260828", url: "https://openai.com/index/bringing-chatgpt-for-teachers-to-more-us-school-districts", title: "Bringing ChatGPT for Teachers to more US school districts" },
+  { edition: "260828", url: "https://deepmind.google/blog/piloting-the-worlds-first-double-blind-ai-evaluations/", title: "Piloting the world's first double-blind AI evaluations" },
 ];
 
 describe("isNonProductOfficialPost (#5995 item 3)", () => {

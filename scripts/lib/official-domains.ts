@@ -234,6 +234,14 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(qwen|alibaba)\b/i,
   },
   {
+    // #6613: gate 260828 marcou o lançamento do GLM-5.3-Flash (blog oficial
+    // da Z.ai) como invalid_url — nem a empresa (Z.ai, ex-Zhipu AI) nem a
+    // família de modelos GLM constavam no registro.
+    company: "Z.ai (ex-Zhipu AI) / GLM",
+    domains: ["z.ai"],
+    detection_keywords: /\b(z\.ai|zhipu(\s?ai)?|glm-?[0-9])\b/i,
+  },
+  {
     company: "Replicate",
     domains: ["replicate.com"],
     detection_keywords: /\b(replicate)\b/i,
@@ -323,6 +331,23 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     company: "iFood (institucional)",
     domains: ["institucional.ifood.com.br"],
     detection_keywords: /\bifood\b/i,
+  },
+  {
+    // 260828: adicionado no gate da edição 260828 (GLM-5.3-Flash flagado
+    // como invalid_url apesar de vir do blog oficial da Z.ai — mesma
+    // empresa da série de modelos GLM, ex-Zhipu AI).
+    company: "Z.ai",
+    // `zhipuai.cn` é a marca antiga (Zhipu AI). Incluído junto porque o
+    // registro paralelo de `link-ctr-categorize.ts` já lista os dois, e
+    // conteúdo histórico republicado sob o domínio velho cairia no MESMO
+    // `invalid_url` que esta entry existe pra consertar (achado do review).
+    domains: ["z.ai", "zhipuai.cn"],
+    // Casa empresa E série de modelos: a manchete costuma citar o modelo,
+    // não a empresa (a da 260828 era "GLM-5.3-Flash: modelo aberto chega
+    // perto do Opus", sem "Z.ai" em lugar nenhum). O sufixo opcional
+    // espelha o padrão do OpenAI acima (`gpt-?[0-9]+(\.[0-9]+)?o?`) pra
+    // cobrir `GLM-45` e um eventual `GLM-4o` sem precisar de outra edição.
+    detection_keywords: /\b(z\.ai|glm-?[0-9]+(\.[0-9]+)?[a-z]?)\b/i,
   },
 ];
 

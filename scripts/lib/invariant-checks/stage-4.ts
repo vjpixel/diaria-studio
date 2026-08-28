@@ -6,7 +6,9 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
@@ -70,6 +72,10 @@ import {
 } from "../../render-erro-intencional.ts";
 import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
+
+// #6336: usado só por checkKitFixtureAudit, pra localizar
+// scripts/audit-kit-fixtures.ts a partir de scripts/lib/invariant-checks/.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 interface PublicImageEntry {
   url?: string;
@@ -1881,6 +1887,200 @@ export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[
   ];
 }
 
+/**
+ * #6506 — o e-mail renderizado pelo Kit passa de 102 KB (limite de clipping
+ * do Gmail: acima disso o Gmail corta a mensagem e mostra "[Mensagem
+ * cortada]"). O pixel de abertura do Kit fica no FIM do corpo (abaixo do
+ * corte), então uma edição que estoure 102 KB tem abertura Gmail
+ * SUBCONTADA — o número vira um piso, não a taxa real, e essa taxa alimenta
+ * a decisão de rampa (#6505).
+ *
+ * **Severity CONDICIONAL ao backend ativo (achado do self-review, #6506) —
+ * NÃO é `error` incondicional.** `render-kit-html-preview.ts` roda em TODA
+ * edição no pré-render do Stage 4, mesmo com `publishing.newsletter.backend`
+ * ainda `"beehiiv"` (é assim que este check tem o que medir ANTES do
+ * cutover — ver docstring do script). Se a severity fosse `error`
+ * incondicional, este invariant travaria o gate da pipeline ATUAL (Beehiiv,
+ * já em produção) por causa de um limite de um canal que ainda nem está
+ * enviando — dano real e imediato, não é o que a issue pede. Por isso:
+ *   - backend `"kit"` (Kit é o canal REAL de envio): `error` — bloqueia o
+ *     gate, porque a consequência (abertura subcontada) só aparece semanas
+ *     depois numa análise de rampa, não no e-mail em si.
+ *   - qualquer outro backend (Beehiiv/Brevo hoje; Kit ainda em migração):
+ *     `warning` — visível pro editor (item 1 da issue, "medir e registrar"),
+ *     nunca bloqueia uma pipeline que não depende do Kit pra sair no ar.
+ *
+ * Mede `_internal/newsletter-final-kit.html` — o fragmento REAL que
+ * `scripts/render-kit-html-preview.ts` grava (mesmo `buildKitHtml` puro que
+ * `publish-newsletter-kit.ts` usaria pra publicar de verdade, sem nenhuma
+ * chamada de rede) — e não `newsletter-final.html` (que é o fragmento
+ * Beehiiv, calibrado por `BEEHIIV_WRAPPER_OVERHEAD_KB` em
+ * `lint-newsletter-html.ts`; os dois canais têm wrappers/overhead
+ * DIFERENTES no e-mail entregue, então um limiar único não serve aos dois).
+ *
+ * **Threshold SEM ajuste de overhead — ao contrário do Beehiiv.** A Beehiiv
+ * teve seu overhead medido ao vivo uma vez (#5176, ~44 KB) contra um envio
+ * real; o Kit ainda não teve — não existe hoje um e-mail Kit publicado pra
+ * medir a diferença fragmento→entregue. Usar o limiar bruto de 102 KB
+ * direto sobre o fragmento é a leitura mais próxima do que a issue #6506
+ * mediu (a mesma medição de 28/08/2026 que achou os 50,3% de `style=""`
+ * rodou sobre este artefato, não sobre um e-mail entregue) — mas é uma
+ * leitura OTIMISTA: o Kit injeta baseline inline em todo `<p>` + o próprio
+ * rodapé "Built with Kit" por cima disso (ver docstring de `buildKitHtml`),
+ * então o e-mail de fato entregue tende a ser MAIOR que este fragmento.
+ * Recalibrar (mesmo método do #5176: 1º envio de teste real, medir a
+ * diferença) antes de confiar neste threshold como preciso — até lá, ele já
+ * é uma barreira real contra o pior caso óbvio (fragmento sozinho já
+ * estourado).
+ *
+ * Arquivo ausente (pré-render Kit ainda não rodou, ou skill não chamou
+ * `render-kit-html-preview.ts` nesta retomada) → `[]`, mesmo padrão de
+ * `checkNewsletterHtmlSize` acima — nunca bloqueia por AUSÊNCIA do artefato,
+ * só pelo TAMANHO quando ele existe.
+ *
+ * `rootDir` (opcional, 2º parâmetro): override pra fixture de teste isolada
+ * de `platform.config.json` — mesmo padrão de `checkBoxDivulgacaoRuntimeExcluded`
+ * acima. `STAGE_4_RULES` nunca passa override (usa o `ROOT` real do módulo).
+ */
+export const KIT_HTML_SIZE_ERROR_BYTES = 102 * 1024;
+
+function readKitBackendActive(rootDir: string): boolean {
+  // Ausência é o caso normal (fixture de teste sem platform.config.json,
+  // clone fresco) — fail-soft pro lado que NUNCA bloqueia a pipeline atual
+  // à toa. Malformado é OUTRA coisa (fleet review, #6506): um
+  // platform.config.json corrompido no exato momento em que o backend real
+  // é "kit" E o e-mail está grande faria este catch rebaixar `error` →
+  // `warning` em silêncio, sem nenhum rastro de por quê — justo no pior
+  // momento pra essa checagem falhar sem ruído. JSON malformado agora
+  // PROPAGA (nunca vira "kit não ativo" por engano).
+  const path = resolve(rootDir, "platform.config.json");
+  if (!existsSync(path)) return false;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as {
+    publishing?: { newsletter?: { backend?: string } };
+  };
+  return raw.publishing?.newsletter?.backend === "kit";
+}
+
+export function checkKitHtmlSize(editionDir: string, rootDir: string = ROOT): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "newsletter-final-kit.html");
+  if (!existsSync(path)) return [];
+  const bytes = statSync(path).size;
+  if (bytes <= KIT_HTML_SIZE_ERROR_BYTES) return [];
+  const kb = (bytes / 1024).toFixed(1);
+  const kitIsActiveBackend = readKitBackendActive(rootDir);
+  return [
+    {
+      rule: "kit-html-too-large",
+      message:
+        `_internal/newsletter-final-kit.html tem ${bytes} bytes (${kb} KB), acima do ` +
+        `limite de clipping do Gmail (102 KB, #6506). O pixel de abertura do Kit fica ` +
+        `no FIM do corpo — abaixo do corte — então a abertura Gmail desta edição sairia ` +
+        `SUBCONTADA se publicada pelo Kit assim, e essa taxa alimenta a decisão de rampa ` +
+        `(#6505). Cortar conteúdo (boxes de divulgação, texto de destaque) é decisão ` +
+        `editorial.` +
+        (kitIsActiveBackend
+          ? ` Backend ativo é "kit" — este check BLOQUEIA o gate até isso acontecer.`
+          : ` Backend ativo ainda não é "kit" (publishing.newsletter.backend em ` +
+            `platform.config.json) — aviso não-bloqueante enquanto o Kit não for o ` +
+            `canal real de envio; vira bloqueante no dia do cutover.`),
+      source_issue: "#6506",
+      severity: kitIsActiveBackend ? "error" : "warning",
+      file: path,
+    },
+  ];
+}
+
+/**
+ * #6336: audita a base Kit de produção por assinante ATIVO cujo e-mail bate
+ * padrão de fixture de teste (`ana@example.com` e vizinhos — ver docstring
+ * de `scripts/lib/kit-fixture-patterns.ts`). Achado ao vivo 26/08/2026: uma
+ * verificação manual de funil (poll/cursos/reativar) deixou 13 resíduos
+ * desse tipo, 2 deles `active` — receberiam a próxima edição pelo Kit, e
+ * `example.com` é domínio reservado (RFC 2606): hard bounce garantido.
+ *
+ * O trabalho de rede (paginar `/v4/subscribers`, comparar padrões) mora em
+ * `scripts/audit-kit-fixtures.ts` — este check só invoca esse script via
+ * `spawnSync` (mesmo padrão de `runCheck` em `stage-2.ts`, necessário porque
+ * `InvariantRule.run` é síncrono e a chamada à API do Kit é assíncrona) e
+ * traduz o exit code em violation:
+ *
+ *   - `0` → limpo, `[]`.
+ *   - `1` → fixture(s) ATIVO(s) na base real — `error` (gate-blocking:
+ *     publicar sem agir manda a próxima edição pro fixture, hard bounce
+ *     certo).
+ *   - `2` (`KIT_API_KEY` ausente, ou API do Kit indisponível) → `warning`,
+ *     não `error`. O Kit ainda não é o backend principal de newsletter
+ *     (`platform.config.json.newsletter` = `"beehiiv"`) — exigir a
+ *     credencial em toda edição bloquearia Stage 4 pra qualquer ambiente
+ *     sem Kit configurado (CI, clone fresco, sessão cloud) por causa de uma
+ *     verificação sobre um sistema secundário ainda em migração. Mesma
+ *     disciplina fail-soft de integração opcional já usada no repo (ex:
+ *     `data/` ausente em `studio-boxes.ts`).
+ *   - qualquer outro exit code (script crashou) → `error`, mesma severidade
+ *     de "achei o problema" — um crash inesperado não deveria degradar pra
+ *     silêncio.
+ *
+ * `env` é explícito no `spawnSync` (mesmo padrão de `checkGeminiModelValid`
+ * em `stage-0.ts`) e injetável — default `process.env` em produção. Existe
+ * pra permitir que o teste (`test/stage-4-kit-fixture-audit-invariant.test.ts`)
+ * force o cenário "sem KIT_API_KEY" de forma hermética: apagar a var só do
+ * `process.env` do processo PAI não bastava (achado #6387) porque
+ * `audit-kit-fixtures.ts` chama `loadProjectEnv()`, que recarrega `.env` do
+ * disco e populava a var de novo no filho a partir da máquina real — o teste
+ * ficava fazendo fetch de verdade contra a base Kit de produção sempre que
+ * `KIT_API_KEY` estivesse setada no `.env` local. A correção passa um objeto
+ * `env` explícito com `KIT_API_KEY: ""` (presente, vazio) — `dotenv`
+ * (`override:false`, `hasOwnProperty`) só preenche uma var AUSENTE do
+ * target; uma var presente mas vazia não é sobrescrita, então
+ * `resolveKitConfig` a trata como ausente (string vazia é falsy) sem o
+ * subprocesso jamais reidratar a credencial real.
+ */
+function checkKitFixtureAudit(
+  _editionDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): InvariantViolation[] {
+  const scriptPath = resolve(ROOT, "scripts", "audit-kit-fixtures.ts");
+  const result = spawnSync(process.execPath, ["--import", "tsx", scriptPath], { encoding: "utf8", env });
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+
+  if (result.status === 0) return [];
+
+  if (result.status === 2) {
+    return [
+      {
+        rule: "kit-fixture-audit-unavailable",
+        message:
+          `audit-kit-fixtures.ts não pôde rodar (KIT_API_KEY ausente ou API do Kit ` +
+          `indisponível): ${(stderr || stdout).slice(0, 400)}. Verificação de fixture ` +
+          `ativo na base Kit pulada nesta edição — reconfigurar a credencial e rodar ` +
+          `manualmente (npx tsx scripts/audit-kit-fixtures.ts) quando possível.`,
+        source_issue: "#6336",
+        severity: "warning",
+        file: scriptPath,
+      },
+    ];
+  }
+
+  return [
+    {
+      rule: "kit-fixture-audit",
+      message:
+        `Assinante(s) de fixture de teste ATIVO(s) na base Kit de PRODUÇÃO — ` +
+        `receberia(m) a próxima edição real (domínios como example.com são reservados ` +
+        `RFC 2606, hard bounce garantido). ${(stdout || stderr).slice(0, 800)} ` +
+        `Fix: cancelar o(s) assinante(s) via API/dashboard Kit antes de publicar. ` +
+        `Prevenção: verificação ao vivo de funil (poll/cursos/reativar) usa sempre ` +
+        `vjpixel+probe-{issue}-{data}@gmail.com, nunca um fixture de test/*.test.ts — ` +
+        `e cancelar o probe ao fim da verificação é parte do rollout, não um passo ` +
+        `opcional (ver docstring de scripts/audit-kit-fixtures.ts, #6336).`,
+      source_issue: "#6336",
+      severity: "error",
+      file: scriptPath,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -2057,6 +2257,20 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkNewsletterHtmlSize,
   },
+  {
+    id: "kit-html-too-large",
+    description: `_internal/newsletter-final-kit.html acima de ${KIT_HTML_SIZE_ERROR_BYTES} bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá)`,
+    source_issue: "#6506",
+    stage: 4,
+    run: checkKitHtmlSize,
+  },
+  {
+    id: "kit-fixture-audit",
+    description: "assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336)",
+    source_issue: "#6336",
+    stage: 4,
+    run: checkKitFixtureAudit,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -2091,4 +2305,5 @@ export {
   checkCarouselTextOverflow,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
+  checkKitFixtureAudit,
 };

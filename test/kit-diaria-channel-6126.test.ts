@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   decideKitChannelDispatch,
   resolveAudienceTagId,
+  checkAudienceTagHasMembers,
   type KitDiariaPublished,
 } from "../scripts/lib/kit-diaria-channel.ts";
 import { buildTagFilter, buildTestSendFilter, buildAllSubscribersFilter } from "../scripts/lib/kit-broadcasts.ts";
@@ -134,6 +135,30 @@ describe("#6126 resolveAudienceTagId — o guard contra audiência inteira", () 
 
   it("id válido passa", () => {
     assert.deepEqual(resolveAudienceTagId("t", 7), { ok: true, tagId: 7 });
+  });
+});
+
+describe("#6582 checkAudienceTagHasMembers — tag resolvida mas VAZIA deixou de ser normal", () => {
+  it("0 membros ⇒ recusa (o cenário do incidente: tag resolve, ninguém recebe)", () => {
+    const r = checkAudienceTagHasMembers("rampa-kit", 0);
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.match(r.reason, /VAZIA/);
+      assert.match(r.reason, /rampa-kit/);
+      assert.match(r.reason, /6582/);
+    }
+  });
+
+  it("contagem negativa ou não-inteira ⇒ recusa (dado inválido, não confiar)", () => {
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      const r = checkAudienceTagHasMembers("t", bad);
+      assert.equal(r.ok, false, `contagem ${bad} deveria ser recusada`);
+    }
+  });
+
+  it("≥1 membro passa", () => {
+    assert.deepEqual(checkAudienceTagHasMembers("t", 1), { ok: true });
+    assert.deepEqual(checkAudienceTagHasMembers("t", 92), { ok: true });
   });
 });
 

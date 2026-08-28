@@ -54,17 +54,10 @@ Aprofunde:
 
 ---
 
-**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS; #3820: É IA? entra logo depois deste bloco, injetada separadamente pelo orchestrator — não faz parte deste template)
+**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS)
 
 **[Título acionável do item](URL)**
 [Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses. #1634: título no idioma original, nunca traduzir]
-
----
-
-**📺 VÍDEOS** (opcional — omitir se bucket vazio. #3820: reordenada pra antes de LANÇAMENTOS, ordem alvo USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR)
-
-**[Título do Vídeo](URL_DO_VÍDEO)**
-Nome do Canal — [Frase descritiva em 1 linha]
 
 ---
 
@@ -75,6 +68,15 @@ Nome do Canal — [Frase descritiva em 1 linha]
 
 **[Título do próximo item](URL)**
 [Frase descritiva]
+
+---
+
+(#6323: É IA? entra logo depois de LANÇAMENTOS, injetada separadamente pelo orchestrator — não faz parte deste template. Ordem alvo: USE MELHOR → LANÇAMENTOS → É IA? → VÍDEOS → RADAR)
+
+**📺 VÍDEOS** (opcional — omitir se bucket vazio. Posição relativa a É IA?/RADAR não revista pelo #6323 — segue logo após É IA?, antes de RADAR)
+
+**[Título do Vídeo](URL_DO_VÍDEO)**
+Nome do Canal — [Frase descritiva em 1 linha]
 
 ---
 

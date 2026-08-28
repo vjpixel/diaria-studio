@@ -2,8 +2,9 @@
  * test/studio-review-server.test.ts (#3559)
  *
  * Contrato HTTP das rotas de revisão de conteúdo rica registradas em
- * `server.ts` — leitura (GET), salvar (PUT), diff, lint, reset-baseline e
- * preview do e-mail, mais o guard de método preservado nas rotas
+ * `server.ts` — leitura (GET), salvar (PUT), diff, lint, reset-baseline,
+ * preview do e-mail e preview-draft (#6447 Fatia 3 — split view reativo,
+ * NUNCA escreve em disco), mais o guard de método preservado nas rotas
  * pré-existentes read-only (#3555).
  */
 import { describe, it, before, after } from "node:test";
@@ -206,6 +207,112 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(body.isEmpty, true);
   });
 
+  // #6447 Fatia 3: split view com preview reativo — draft NUNCA vai pro
+  // disco (rota puramente leitura+render), diferente de PUT .../review/:slug
+  // acima.
+  it("POST .../review/reviewed/preview-draft renderiza o TEXTO DO CORPO, sem tocar 02-reviewed.md em disco", async () => {
+    const draft = TWO_DESTAQUES_MD.replace(
+      "IA chega às fábricas brasileiras",
+      "Rascunho ainda não salvo no painel",
+    );
+    const onDiskBefore = readFileSync(join(editionDir, "02-reviewed.md"), "utf8");
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: draft }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.match(body.html, /Rascunho ainda não salvo no painel/);
+    assert.doesNotMatch(body.html, /IA chega às fábricas brasileiras/);
+    // Nada foi persistido — o disco continua exatamente como estava.
+    assert.equal(readFileSync(join(editionDir, "02-reviewed.md"), "utf8"), onDiskBefore);
+  });
+
+  it("POST .../review/social/preview-draft renderiza o TEXTO DO CORPO, sem tocar 03-social.md em disco", async () => {
+    const onDiskBefore = readFileSync(join(editionDir, "03-social.md"), "utf8");
+    const draft = "# LinkedIn\n\n## d1\n\nrascunho social ainda não salvo\n";
+    const res = await fetch(new URL("/api/editions/260716/review/social/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: draft }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.match(body.html, /rascunho social ainda não salvo/);
+    assert.equal(readFileSync(join(editionDir, "03-social.md"), "utf8"), onDiskBefore);
+  });
+
+  it("POST .../review/categorized/preview-draft (slug sem preview reativo) -> 422 com erro explícito", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/categorized/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "qualquer texto" }),
+    });
+    assert.equal(res.status, 422);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /categorized/);
+  });
+
+  it("POST .../preview-draft com slug desconhecido -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/nope/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com AAMMDD inválido -> 400 (code-reviewer F1: mesmo guard que handleGateSummary/handleReviewHighlightsGet, #6449)", async () => {
+    const res = await fetch(new URL("/api/editions/nope/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "x" }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com content:'' (aba recém-aberta, nada digitado ainda) -> ok:true, fail-soft (pr-test-analyzer achado 2)", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "" }),
+    });
+    assert.equal(res.status, 422); // 0 destaques -> fail-soft, mesmo tratamento de Markdown malformado
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.html, /Erro ao renderizar preview/);
+  });
+
+  it("POST .../preview-draft sem campo 'content' -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("POST .../preview-draft com corpo não-JSON -> 400", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "não é json",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("GET .../preview-draft (método errado) -> não casa a rota de escrita — cai no GET genérico de slug", async () => {
+    // A rota nova é só POST — um GET no mesmo path não deveria acidentalmente
+    // ser tratado como o slug "reviewed/preview-draft" (o regex genérico de
+    // GET .../review/:slug não deveria capturar a barra extra).
+    const res = await fetch(new URL("/api/editions/260716/review/reviewed/preview-draft", server.url));
+    assert.notEqual(res.status, 200);
+  });
+
   it("GET .../lint roda os checks estruturais do newsletter", async () => {
     const res = await fetch(new URL("/api/editions/260716/review/reviewed/lint", server.url));
     assert.equal(res.status, 200);
@@ -279,6 +386,33 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
   it("invariante preservado: POST em rota read-only pré-existente ainda retorna 405", async () => {
     const res = await fetch(new URL("/api/state", server.url), { method: "POST" });
     assert.equal(res.status, 405);
+  });
+
+  // #6449 review (pr-test-analyzer): rota nova do painel Gate (#6447 Fatia 1)
+  // não tinha nenhum teste no nível HTTP, ao contrário de toda rota irmã
+  // desta suíte — fecha esse gap com o mesmo padrão fetch()-level acima.
+  describe("GET .../gate (#6447 Fatia 1)", () => {
+    it("edição existente: 200, editionExists:true, shape básico do resumo", async () => {
+      const res = await fetch(new URL("/api/editions/260716/gate", server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.editionExists, true);
+      assert.equal(body.aammdd, "260716");
+      assert.ok(Array.isArray(body.checklist));
+      assert.ok(Array.isArray(body.highlights));
+    });
+
+    it("edição inexistente: 404", async () => {
+      const res = await fetch(new URL("/api/editions/999999/gate", server.url));
+      assert.equal(res.status, 404);
+      const body = await res.json();
+      assert.equal(body.editionExists, false);
+    });
+
+    it("AAMMDD malformado: 400, nunca chega a resolver diretório (#6449 review)", async () => {
+      const res = await fetch(new URL("/api/editions/nao-e-data/gate", server.url));
+      assert.equal(res.status, 400);
+    });
   });
 
   // #3806 (Opção B spike) — edição visual de UM campo (título de destaque) na
@@ -363,6 +497,221 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     it("GET nesta rota não casa nenhum handler read-only (rota é PUT-only) — 404 'rota desconhecida', não um 200/500 silencioso", async () => {
       const res = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url));
       assert.equal(res.status, 404);
+    });
+  });
+
+  // #6447 Fatia 2 — editor estruturado por destaque (título por opção + corpo
+  // + "por que isso importa" + URL). Edição PRÓPRIA (260720, isolada das
+  // demais) — formato pós-#245 (blank line entre todo elemento), diferente
+  // de TWO_DESTAQUES_MD (que usa o formato legado inline "Por que isso
+  // importa: texto" na mesma linha, incompatível com o parser desta fatia).
+  describe("GET/PUT .../review/reviewed/highlights (#6447 Fatia 2)", () => {
+    const hlAammdd = "260720";
+    let hlEditionDir: string;
+    const HL_MD = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Primeira opção](https://example.com/hl-1)**",
+      "",
+      "**[Segunda opção](https://example.com/hl-1)**",
+      "",
+      "Corpo do D1.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto do D1.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 💼 MERCADO**",
+      "",
+      "**[Título do D2](https://example.com/hl-2)**",
+      "",
+      "Corpo do D2.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto do D2.",
+      "",
+    ].join("\n");
+
+    before(() => {
+      hlEditionDir = join(root, "data", "editions", hlAammdd);
+      mkdirSync(join(hlEditionDir, "_internal"), { recursive: true });
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), HL_MD, "utf8");
+    });
+
+    it("GET retorna available:true + os 2 destaques estruturados + modifiedAt", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.available, true);
+      assert.ok(body.modifiedAt);
+      assert.equal(body.highlights.length, 2);
+      assert.equal(body.highlights[0].n, 1);
+      assert.equal(body.highlights[0].titleOptions.length, 2);
+      assert.equal(body.highlights[0].url, "https://example.com/hl-1");
+      assert.equal(body.highlights[1].titleOptions.length, 1);
+    });
+
+    it("GET com 02-reviewed.md ausente: available:false + note, nunca erro", async () => {
+      const res = await fetch(new URL("/api/editions/999999/review/reviewed/highlights", server.url));
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.available, false);
+      assert.ok(body.note);
+    });
+
+    it("PUT altera só o bloco de D1 — título final + resto do arquivo intocado", async () => {
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/1`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Segunda opção",
+          url: "https://example.com/hl-1",
+          body: ["Corpo do D1."],
+          whyMatters: "Impacto do D1.",
+        }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.lint, "resposta deveria incluir o relatório de lint");
+
+      const onDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      assert.match(onDisk, /\*\*\[Segunda opção\]\(https:\/\/example\.com\/hl-1\)\*\*/);
+      assert.doesNotMatch(onDisk, /Primeira opção/);
+      assert.match(onDisk, /Título do D2/, "D2 intocado");
+    });
+
+    it("campo 'body' obrigatório ausente retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com/hl-2", whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    // #6493 review (pr-test-analyzer): só o campo 'body' tinha teste de
+    // ausência — os outros 3 campos obrigatórios (title/url/whyMatters) têm
+    // o MESMO branch de validação em handleReviewHighlightPut, mas nenhum
+    // tinha teste próprio (um typo de nome de campo num deles não seria
+    // pego). Fecha o gap simétrico.
+    it("campo 'title' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "   ", url: "https://example.com/hl-2", body: ["x"], whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("campo 'url' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "   ", body: ["x"], whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("campo 'whyMatters' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com/hl-2", body: ["x"], whyMatters: "   " }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("destaque N inexistente retorna 400 com o erro propagado", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/9`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com", body: ["y"], whyMatters: "z" }),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error ?? "", /DESTAQUE 9/);
+    });
+
+    it("mtime obsoleto (expectedModifiedAt divergente) retorna 409, sem sobrescrever", async () => {
+      const get = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      const getBody = await get.json();
+      const staleModifiedAt = getBody.modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // simula o painel salvando por baixo entre o GET acima e o PUT abaixo.
+      const currentOnDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), currentOnDisk.replace("MERCADO", "MERCADO-NOVO"), "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "edição sobre versão velha",
+          url: "https://example.com/hl-2",
+          body: ["x"],
+          whyMatters: "y",
+          expectedModifiedAt: staleModifiedAt,
+        }),
+      });
+      assert.equal(put.status, 409);
+      const body = await put.json();
+      assert.equal(body.conflict, true);
+      assert.match(readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8"), /MERCADO-NOVO/);
+    });
+
+    // #6493 review (pr-test-analyzer): o teste acima só cobria a REJEIÇÃO do
+    // conflito — a outra metade do fluxo (#3729), o editor confirmando
+    // "sobrescrever mesmo assim" via `force:true`, nunca tinha teste
+    // dedicado nesta rota (só existia pra .../destaque-title, #3806).
+    it("force:true ignora a divergência de mtime e sobrescreve mesmo assim", async () => {
+      const get = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      const getBody = await get.json();
+      const staleModifiedAt = getBody.modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // simula, de novo, o pipeline salvando por baixo entre o GET e o PUT.
+      const currentOnDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), currentOnDisk.replace("MERCADO-NOVO", "MERCADO-MAIS-NOVO-AINDA"), "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "editor confirmou sobrescrever",
+          url: "https://example.com/hl-2",
+          body: ["corpo pós-force"],
+          whyMatters: "why pós-force",
+          expectedModifiedAt: staleModifiedAt,
+          force: true,
+        }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+
+      const onDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      assert.match(onDisk, /editor confirmou sobrescrever/, "título novo do D2 foi escrito, apesar do mtime stale");
+      // A categoria do header (linha "DESTAQUE 2 | ...") não é um campo que
+      // `HighlightEdit` toca — continua a MAIS RECENTE de disco no momento do
+      // force (o "pipeline" simulado acima já tinha reescrito só a
+      // categoria); o force sobrescreve o resto do bloco por cima disso, sem
+      // reverter essa parte que nem fazia parte da edição.
+      assert.match(onDisk, /DESTAQUE 2 \| 💼 MERCADO-MAIS-NOVO-AINDA/);
+      assert.match(onDisk, /Segunda opção/, "D1 (tocado num teste anterior) permanece intocado por este PUT em D2");
+    });
+
+    // #6493 review (pr-test-analyzer): o GET desta rota tem seu PRÓPRIO
+    // guard `AAMMDD_RE.test` (retorna 400 antes de resolver qualquer
+    // diretório) — só o caminho "AAMMDD bem-formado mas edição inexistente"
+    // (available:false via readHighlightsSummary) tinha teste; o guard de
+    // FORMATO em si nunca era exercitado.
+    it("GET com AAMMDD malformado retorna 400 (guard de formato, não available:false)", async () => {
+      const res = await fetch(new URL("/api/editions/nao-e-data/review/reviewed/highlights", server.url));
+      assert.equal(res.status, 400);
     });
   });
 
@@ -474,14 +823,17 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(body.note ?? "", /última milha/);
   });
 
-  it("(#3874) os 2 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
+  it("(#3874, +#6447 Fatia 3) os 3 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
     const res = await fetch(new URL("/revisao/260716", server.url));
     const body = await res.text();
     assert.ok(body.includes('id="rv-tabs" role="tablist" aria-label="Arquivo"'));
     assert.ok(body.includes('id="rv-side-tabs" role="tablist" aria-label="Painel"'));
+    // #6447 Fatia 3: toggle mobile Editor/Preview do split view — mesma
+    // convenção WAI-ARIA (role=tablist no container, role=tab nos botões).
+    assert.ok(body.includes('id="rv-split-toggle" role="tablist"'));
     // 5 abas de arquivo (#4275: +html-final-patronos) + 3 abas de painel
-    // lateral = 8 role="tab" no total.
-    assert.equal((body.match(/role="tab"/g) ?? []).length, 8);
+    // lateral + 2 do toggle mobile (#6447 Fatia 3) = 10 role="tab" no total.
+    assert.equal((body.match(/role="tab"/g) ?? []).length, 10);
     assert.ok(body.includes('id="rv-not-found" class="panel alert-banner" role="alert"'));
     assert.ok(body.includes('id="rv-divergence-banner" role="alert"'));
     // `#rv-side-tabs` tem painéis distintos de verdade (lint/diff/preview) —

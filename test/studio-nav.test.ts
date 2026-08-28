@@ -82,8 +82,8 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     );
   });
 
-  it("(#3853): DASHBOARD_LINKS encolheu pra 1 rota /painel/* (só clarice — diária virou item de NAV_ITEMS)", () => {
-    assert.equal(DASHBOARD_LINKS.length, 1, "só /painel/clarice deve sobrar como documento autocontido");
+  it("(#3853, #6445): DASHBOARD_LINKS tem 2 rotas /painel/* (clarice + tokens — diária virou item de NAV_ITEMS)", () => {
+    assert.equal(DASHBOARD_LINKS.length, 2, "/painel/clarice e /painel/tokens devem sobrar como documentos autocontidos");
     for (const d of DASHBOARD_LINKS) {
       assert.match(SERVER_TS, new RegExp(d.href.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
@@ -138,7 +138,7 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     assert.deepEqual(byGroup("negocio"), ["apoios", "painel-diaria", "ads"]);
     // #4041: "utms" entra em Sistema, vizinho de Integrações. #4270: "skills" idem. #4799: "tarefas" idem.
     assert.deepEqual(byGroup("sistema"), ["integracoes", "utms", "skills", "tarefas"]);
-    assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio"], "Dashboard Clarice cai no mesmo grupo Negócio, junto de Apoios/Dashboard diária/Ads");
+    assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio", "negocio"], "Dashboard Clarice e Uso de tokens caem no mesmo grupo Negócio, junto de Apoios/Dashboard diária/Ads");
   });
 
   it("(#4799): /tarefas agora É um destino de menu — rota real existe em server.ts", () => {

@@ -12,8 +12,11 @@ effort: medium
 > no `session-registry`, `continuo-plan-rotation.ts`,
 > `continuo-cost-summary.ts`, `check-continuo-token-instrumentation.ts`, o hook
 > `notify-continuo-askuserquestion.mjs`, `COORDINATOR_KINDS`) é consumida por
-> uma skill que **não vive neste repo**: a `hermes-diaria-continuo`, local do
-> `helios`, disparada por um cron do Claude Code a cada 60min DENTRO deste
+> uma skill que **não vive neste repo**: a `hermes-diaria-continuo` (mora em
+> `/home/vjpixel/.hermes/skills/productivity/hermes-diaria-continuo/`, **não**
+> em `~/.claude/skills/`, onde só existe o `humanizador`), disparada por um
+> cron **do Hermes** (`~/.hermes/cron/jobs.json`, job `5d791ef6fc2c`,
+> `every 60m` — **não** é um cron do Claude Code) a cada 60min DENTRO deste
 > checkout. O #6059 deletou tudo isso junto com a skill e quebrou o loop de
 > produção dela — revertido no #6060. Guard mecânico:
 > `test/continuo-infra-consumidor-externo.test.ts`. Remover ESTE arquivo
@@ -236,6 +239,38 @@ o mecanismo de `HEALTHY_IDLE_PHASES` existe pra evitar. O heartbeat não é
 opcional só porque o wake "não achou nada" — é justamente esse caso que o
 watchdog precisa distinguir de uma sessão travada.
 
+**Consulta de `conflicts` nos 3 pontos + fim de tick (#6168 Partes C/E).**
+Esta skill compartilha o checkout com overnight e develop, e é a que mais
+colide na prática (em 26/08 disputou a #6232 com o overnight às 11:20 × 11:27,
+e os DOIS claims sucederam — foi o achado que gerou #6236/#6242). Três
+consultas, todas com `npx tsx scripts/lib/session-registry.ts conflicts ...`
+como comando **standalone** (encadear quebra a injeção de `--session-id`,
+item 18 de `context/overnight-dispatch-rules.md`):
+
+1. **antes de abrir worktree** — `conflicts --paths {arquivos da unidade}
+   --branch {atual}`. Responde por ARQUIVO, não por issue: é o caso de duas
+   sessões em issues diferentes, sem colisão de claim nenhuma, editando o
+   mesmo arquivo (buraco 2 da #6168). `exit 1` = sobreposição com peer VIVO.
+2. **antes de `git commit`** — `conflicts --branch $(git branch --show-current)`.
+   `branch-drift` significa que outra sessão trocou o checkout embaixo (o
+   `sync-code.ts` faz `git checkout master` quando a branch não é master, e é
+   o Passo 0 de toda edição/rodada). É a checagem mais barata das três e a que
+   pega o incidente em que `commit` e `push` reportam SUCESSO e o commit foi
+   parar em `master`.
+3. **na SAÍDA, antes de encerrar o tick** — junto do `end` obrigatório abaixo.
+
+**Encerrar o registro ao fim de CADA tick — não é opcional (#6168).** A skill
+externa `hermes-diaria-continuo` (no `helios`, fora deste repo) registra com um
+`session-id` ESTÁVEL entre ticks. Sem `end` no fechamento, o registro sobrevive
+carregando `claimed_issues` de trabalho já encerrado, e nada distingue "tick
+rodando agora" de "tick que terminou há 50 min" — na prática, overnight e
+develop pulam issues por até 90 minutos por causa de claims de um tick morto.
+Ao fechar o tick: `git status --porcelain` limpo (sujo → commitar, stashar ou
+mover pra fora do repo; **nunca** encerrar deixando trabalho não commitado em
+`master` no checkout compartilhado — foi exatamente o que um tick fez em
+26/08, reportando "concluído"), depois `npx tsx
+scripts/lib/session-registry.ts end --kind continuo` (standalone).
+
 **Consentimento (revisado #5332, 15/08/2026 — não é mais
 `disable-model-invocation`).** O gate de consentimento original — a flag no
 frontmatter — foi removido pra viabilizar o auto-envolvimento. O
@@ -281,6 +316,13 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   checklist canônico que todo subagente implementador do overnight/develop
   lê) e o cita — não reproduz — no prompt de dispatch de cada subagente
   implementador.
+- **Trem de merge (#6300, decisão do editor 26/08/2026, default ATIVO):**
+  o parágrafo "Trem de merge" do Gate 2 do overnight (`.claude/skills/
+  diaria-overnight/SKILL.md`) se aplica aqui por citação, igual ao resto
+  desta seção — única diferença é `--kind continuo` em vez de `--kind
+  overnight` na chamada de `scripts/run-merge-train.ts`. Mesmo gatilho
+  (≥2 unidades Gate-2-verde sem colisão de arquivo ao mesmo tempo), mesma
+  degradação automática (bissecta até o piso se o lote vier vermelho).
 - **Reusa o formato de `plan.json`** descrito em
   `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 7) — mesmos
   campos (`issues[]`, `timeline`, `stall_events`, `resume_state`, etc.) sob
@@ -327,6 +369,53 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   `pr-review-toolkit:code-reviewer` via `Agent` com `model: sonnet`
   explícito, sobre o diff acumulado desde `base_sha`) — mesma cadência de
   `findings_depth` (cap 2) documentada lá.
+- **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
+  Antes de abrir a PR e de novo antes do merge, rodar `npx tsx
+  scripts/lib/sensitive-path-guard.ts --base origin/master --json`.
+  `"sensitive": true` → deixar a PR aberta, comentar o veredito nela e
+  encaminhar pro review consolidado (Fase 1.5) ou pra sessão com o editor;
+  seguir pra próxima unidade no mesmo ciclo (encaminhar não é parar).
+  **Fail-closed obrigatório:** se o comando sair com exit ≠ 0, imprimir
+  nada, ou emitir JSON que não parseia, tratar como **SENSÍVEL** e não
+  mergear — "não consegui determinar" nunca vira "pode seguir". (O script já
+  falha fechado do seu lado: em erro de git ele escreve em stderr, sai 1 e
+  **não** imprime veredito nenhum; esta linha existe porque quem lê é um
+  agente seguindo prosa, não um shell checando `$?`.) A lista de paths
+  vive em `SENSITIVE_RULES` (`scripts/lib/sensitive-path-guard.ts`, coberta
+  por `test/sensitive-path-guard.test.ts`) — nunca decidir "isso é
+  sensível?" por julgamento do ciclo. **Motivo:** em 260826 o PR #6214
+  tocou `scripts/lib/site-archive-pages.ts`, passou pelo review por PR e
+  **quebrou a geração do acervo público inteiro** (hotfix `4b16a195`,
+  #6255); o defeito era interação entre o guard novo e um sanitize
+  pré-existente — invisível pra review que só vê o diff, e sem teste que o
+  pegasse. Nesses caminhos o custo do ponto cego é superfície pública
+  quebrada, não CI vermelho. Não confundir com a outra quebra do mesmo dia
+  (#6237 → master vermelho, fix `eac20369`/#6261): teste desatualizado, o
+  CI pega sozinho e não precisa deste guard.
+- **Não reivindica issue nova enquanto houver rodada overnight ativa**
+  (#6277). No início de cada ciclo, antes de qualquer `claim-issue`: `npx
+  tsx scripts/lib/session-registry.ts active-of-kind --kind overnight`.
+  `active: true` → o ciclo trabalha só a própria fila de PRs abertos
+  (review/merge) e reporta "overnight ativo: N sessão(ões), fila nova não
+  tocada". **`uncertain: true` no mesmo JSON conta como `active: true`** —
+  significa que `data/sessions/` existe mas não pôde ser lido (I/O
+  transitório do OneDrive), então `active: false` ali quer dizer "não deu
+  pra saber", não "não há overnight"; fail-CLOSED. Sempre reportar também o
+  array `stale` quando não-vazio ("não há overnight ativo, mas há N registro
+  stale de X") — registro órfão nunca some em silêncio. O check-and-set do
+  #6236 fecha a corrida de ESCRITA no claim,
+  mas não evita duas sessões ANALISANDO a mesma fila. Em 260826 o overnight
+  reivindicou a #6232 às 11:20 com subagente já implementando e o contínuo
+  reivindicou às 11:27 — **os dois claims sucederam**, porque `claimIssue`
+  escrevia só no próprio arquivo de sessão sem nunca consultar os das
+  outras; foi esse achado que motivou o check-and-set (#6242). O
+  check-and-set faz a 2ª tentativa ser recusada hoje, mas a recusa chega
+  DEPOIS de a sessão já ter lido, classificado e planejado a issue: o
+  trabalho de análise se perde igual. Por isso a exclusão precisa acontecer
+  ANTES do claim, não nele. Sessão overnight com heartbeat morto
+  (> `SOFT_STALE_MS`, 90 min) **não** conta como ativa — o helper já
+  filtra, então overnight que morreu sem chamar `end` nunca trava o
+  contínuo.
 - **Registra-se em `session-registry.ts` com `kind: "continuo"`** (novo
   nesta unidade, #5293 item 2) — `npx tsx scripts/lib/session-registry.ts
   register --kind continuo` (session-id auto-injetado pelo hook

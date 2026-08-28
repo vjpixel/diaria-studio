@@ -15,9 +15,12 @@ import {
   listTags,
   createTag,
   tagSubscriber,
+  listSubscriberTags,
   resolveTestSendTagId,
   buildTestSendFilter,
   buildAllSubscribersFilter,
+  listTagSubscribersPage,
+  countKitTagMembers,
   KIT_TEST_SEND_TAG_NAME,
 } from "../scripts/lib/kit-broadcasts.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
@@ -153,6 +156,29 @@ describe("tags", () => {
   });
 });
 
+describe("listSubscriberTags (#6504 item 2)", () => {
+  it("GET /subscribers/:id/tags, devolve o array desembrulhado", async () => {
+    let capturedUrl = "";
+    const tags = await withMockFetch(
+      (async (url: string) => {
+        capturedUrl = url;
+        return jsonResponse(200, { tags: [{ id: 5, name: "rampa-kit", created_at: "2026-08-28" }] });
+      }) as typeof fetch,
+      () => listSubscriberTags(10, TEST_CONFIG),
+    );
+    assert.match(capturedUrl, /\/subscribers\/10\/tags$/);
+    assert.deepEqual(tags, [{ id: 5, name: "rampa-kit", created_at: "2026-08-28" }]);
+  });
+
+  it("resposta 2xx sem envelope 'tags' devolve [] em vez de lançar — chamador trata como 'não confirmado', nunca crasha o push", async () => {
+    const tags = await withMockFetch(
+      (async () => jsonResponse(200, {})) as typeof fetch,
+      () => listSubscriberTags(10, TEST_CONFIG),
+    );
+    assert.deepEqual(tags, []);
+  });
+});
+
 describe("resolveTestSendTagId", () => {
   it("tag já existe na 1ª página — devolve o id, não cria de novo", async () => {
     let createCalled = false;
@@ -214,7 +240,73 @@ describe("filters", () => {
     assert.deepEqual(buildTestSendFilter(42), [{ all: [{ type: "tag", ids: [42] }] }]);
   });
 
-  it("buildAllSubscribersFilter é o equivalente a 'enviar pra todo mundo'", () => {
-    assert.deepEqual(buildAllSubscribersFilter(), [{ all: [{ type: "all_subscribers" }] }]);
+  it("buildAllSubscribersFilter é o equivalente a 'enviar pra todo mundo' (array vazio — #6323)", () => {
+    assert.deepEqual(buildAllSubscribersFilter(), []);
+  });
+});
+
+describe("#6582 listTagSubscribersPage / countKitTagMembers", () => {
+  it("listTagSubscribersPage: GET /tags/{id}/subscribers, desembrulha o envelope", async () => {
+    let captured: { url: string } | undefined;
+    const result = await withMockFetch(
+      (async (url: string) => {
+        captured = { url };
+        return jsonResponse(200, {
+          subscribers: [{ id: 1, email_address: "a@x.com" }],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => listTagSubscribersPage(42, { config: TEST_CONFIG }),
+    );
+    assert.equal(result.subscribers.length, 1);
+    assert.match(captured!.url, /\/tags\/42\/subscribers$/);
+  });
+
+  it("countKitTagMembers: soma UMA página inteira", async () => {
+    const count = await withMockFetch(
+      (async () =>
+        jsonResponse(200, {
+          subscribers: [
+            { id: 1, email_address: "a@x.com" },
+            { id: 2, email_address: "b@x.com" },
+          ],
+          pagination: emptyPagination,
+        })) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 2);
+  });
+
+  it("countKitTagMembers: 0 membros — o cenário do guard #6582 (tag resolve, ninguém dentro)", async () => {
+    const count = await withMockFetch(
+      (async () => jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 0);
+  });
+
+  it("countKitTagMembers: pagina até o fim antes de somar", async () => {
+    let call = 0;
+    const count = await withMockFetch(
+      (async () => {
+        call++;
+        if (call === 1) {
+          return jsonResponse(200, {
+            subscribers: [{ id: 1, email_address: "a@x.com" }],
+            pagination: { ...emptyPagination, has_next_page: true, end_cursor: "cursor2" },
+          });
+        }
+        return jsonResponse(200, {
+          subscribers: [
+            { id: 2, email_address: "b@x.com" },
+            { id: 3, email_address: "c@x.com" },
+          ],
+          pagination: emptyPagination,
+        });
+      }) as typeof fetch,
+      () => countKitTagMembers(42, TEST_CONFIG),
+    );
+    assert.equal(count, 3);
+    assert.equal(call, 2, "não pode contar só a 1ª página");
   });
 });

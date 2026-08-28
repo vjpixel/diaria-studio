@@ -53,24 +53,25 @@ import {
   renderMarkdown,
   extractLinks,
 } from "./refresh-past-editions.ts";
-import { extractPublishedAtIso, extractPublishedDate } from "./lib/beehiiv-timestamp.ts";
-import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.ts";
 import { writeEditionReport } from "./send-edition-report.ts"; // #1950
-import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import {
+  resolveNewsletterReadConfig,
+  listRecentNewsletterPosts,
+  fetchNewsletterPostContent,
+  type NewsletterReadConfig,
+  type NormalizedNewsletterPost,
+} from "./lib/shared/newsletter-read-source.ts"; // #6184
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
 const MD_PATH = resolve(ROOT, "data/past-editions.md");
-// #2834/#2850: base URL centralizada em lib/beehiiv-config.ts (`BEEHIIV_API_URL`
-// override permite que testes apontem pra mock server local — #895 — segue
-// honrado lá).
-const BEEHIIV_API = beehiivApiBase();
 
 export interface RefreshConfig {
-  apiKey: string;
-  publicationId: string;
+  /** Backend + credenciais resolvidas (Beehiiv ou Kit, atrás de
+   *  `platform.config.json` → `publishing.newsletter.backend` — #6184). */
+  readConfig: NewsletterReadConfig;
   dedupEditionCount: number;
 }
 
@@ -83,149 +84,33 @@ export interface RefreshResult {
   md_regenerated: true;
 }
 
+/**
+ * #6184: resolve backend (Beehiiv ou Kit, `platform.config.json` →
+ * `publishing.newsletter.backend`) + credenciais via
+ * `resolveNewsletterReadConfig` (delega pra `resolveBeehiivConfig`/
+ * `resolveKitConfig` — não reimplementa validação de credencial). Mantém o
+ * mesmo contrato de saída (`process.exit(2)` em config inválida) que a
+ * versão Beehiiv-only tinha.
+ */
 function loadConfig(): RefreshConfig {
-  const apiKey = process.env.BEEHIIV_API_KEY;
-  if (!apiKey) {
-    console.error("BEEHIIV_API_KEY não definida. Configure no .env (veja .env.example).");
-    process.exit(2);
-  }
   if (!existsSync(CONFIG_PATH)) {
     console.error(`platform.config.json não encontrado em ${CONFIG_PATH}`);
     process.exit(2);
   }
-  let cfg: { beehiiv?: { publicationId?: string; dedupEditionCount?: number } };
+  let cfg: { beehiiv?: { dedupEditionCount?: number } };
   try {
     cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
   } catch (e) {
     console.error(`platform.config.json inválido: ${(e as Error).message}`);
     process.exit(2);
   }
-  const publicationId =
-    process.env.BEEHIIV_PUBLICATION_ID ?? cfg.beehiiv?.publicationId ?? "";
-  if (!publicationId) {
-    console.error(
-      "publicationId ausente — adicione `beehiiv.publicationId` em platform.config.json ou exporte BEEHIIV_PUBLICATION_ID.",
-    );
+  const dedupEditionCount = cfg.beehiiv?.dedupEditionCount ?? 14;
+  const result = resolveNewsletterReadConfig();
+  if (!result.ok) {
+    console.error(result.reason);
     process.exit(2);
   }
-  const dedupEditionCount = cfg.beehiiv?.dedupEditionCount ?? 14;
-  return { apiKey, publicationId, dedupEditionCount };
-}
-
-async function apiFetch<T>(path: string, apiKey: string): Promise<T> {
-  const res = await fetch(`${BEEHIIV_API}${path}`, {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(`Beehiiv API ${res.status} ${path}: ${await res.text()}`);
-  }
-  return (await res.json()) as T;
-}
-
-interface BeehiivPostSummary {
-  id: string;
-  status?: string;
-  publish_date?: number | null;
-  published_at?: string | null;
-  scheduled_at?: string | null;
-  updated_at?: string | null;
-  web_url?: string;
-  title?: string;
-  subject?: string;
-}
-
-interface BeehiivPostDetail extends BeehiivPostSummary {
-  html?: string;
-  free_web_content?: string;
-  free_email_content?: string;
-  content?: {
-    free?: { web?: string; email?: string };
-  };
-}
-
-/**
- * Lista posts via API REST. Pagina até atingir `limit` ou `stopBeforeIso` —
- * ambos opcionais. `stopBeforeIso` é usado em modo incremental: para de
- * paginar assim que encontrar um post com `published_at <= stopBeforeIso`
- * (todos os subsequentes são iguais ou mais antigos).
- *
- * Filtra agendamentos futuros (`status: "confirmed"` mas `publish_date >
- * now`) via `extractPublishedDate(post, now)` retornando `null` (#573).
- */
-async function listPosts(
-  cfg: RefreshConfig,
-  opts: { limit: number; stopBeforeMs?: number },
-): Promise<BeehiivPostSummary[]> {
-  const collected: BeehiivPostSummary[] = [];
-  const now = new Date();
-  let page = 1;
-
-  while (collected.length < opts.limit) {
-    // #972: `order_by=newest_first` retorna posts em ordem invertida (mais antigos
-    // primeiro) na Beehiiv API v2. A query correta é `order_by=publish_date` +
-    // `direction=desc`, que retorna os mais recentes primeiro — necessário pro
-    // loop incremental parar no `stopBeforeMs` cutoff.
-    const params = new URLSearchParams({
-      per_page: "50",
-      order_by: "publish_date",
-      direction: "desc",
-      page: String(page),
-    });
-    const raw = await apiFetch<unknown>(
-      `/publications/${cfg.publicationId}/posts?${params}`,
-      cfg.apiKey,
-    );
-    const data = parseListPostsResponse(raw);
-    const posts = data.data ?? [];
-    if (posts.length === 0) break;
-
-    let stoppedAtCutoff = false;
-    for (const p of posts as BeehiivPostSummary[]) {
-      const dt = extractPublishedDate(p, now);
-      if (!dt) continue; // agendado futuro ou sem timestamp parseável — pula
-      const ms = dt.getTime();
-      if (opts.stopBeforeMs !== undefined && ms <= opts.stopBeforeMs) {
-        // Encontrou post igual/mais antigo que o cutoff — para de paginar.
-        stoppedAtCutoff = true;
-        break;
-      }
-      collected.push(p);
-      if (collected.length >= opts.limit) break;
-    }
-
-    if (stoppedAtCutoff) break;
-    if (data.total_pages && page >= data.total_pages) break;
-    page++;
-  }
-
-  return collected;
-}
-
-/**
- * Busca conteúdo de 1 post (HTML). Beehiiv API v2 só retorna HTML
- * (não markdown) — mas pra dedup só precisamos extrair URLs, então é OK.
- */
-async function fetchPostContent(
-  postId: string,
-  cfg: RefreshConfig,
-): Promise<{ html?: string; web_url?: string }> {
-  const params = new URLSearchParams();
-  params.append("expand[]", "free_web_content");
-  params.append("expand[]", "free_email_content");
-  const raw = await apiFetch<{ data: unknown }>(
-    `/publications/${cfg.publicationId}/posts/${postId}?${params}`,
-    cfg.apiKey,
-  );
-  const detail = parseBeehiivPost(raw.data) as BeehiivPostDetail;
-  // Preferência: html canônico > free_email_content > content.free.email > free_web_content > content.free.web
-  const html =
-    detail.html ||
-    detail.free_email_content ||
-    detail.content?.free?.email ||
-    detail.free_web_content ||
-    detail.content?.free?.web ||
-    undefined;
-  return { html, web_url: detail.web_url };
+  return { readConfig: result.config, dedupEditionCount };
 }
 
 function readJsonOrNull<T>(path: string): T | null {
@@ -369,23 +254,27 @@ function sortDesc(posts: Post[]): Post[] {
 }
 
 /**
- * Converte BeehiivPostSummary + html buscado em `Post` canônico do raw JSON.
+ * Converte NormalizedNewsletterPost (#6184 — Beehiiv ou Kit) + html buscado
+ * em `Post` canônico do raw JSON. `summary.publishedAtIso` é `string`
+ * NÃO-nulo (#6362 item 5 — `listRecentNewsletterPosts` já filtra summaries
+ * sem timestamp parseável antes de devolvê-los, e o tipo agora reflete
+ * essa garantia em vez de um `string | null` que exigia um guard morto
+ * aqui), então esta função nunca precisa recusar um summary.
  */
 function toCanonicalPost(
-  summary: BeehiivPostSummary,
-  html: string | undefined,
-  web_url: string | undefined,
-  now: Date,
-): Post | null {
-  const publishedIso = extractPublishedAtIso(summary, now);
-  if (!publishedIso) return null;
-  const title = summary.title ?? summary.subject ?? "(sem título)";
+  summary: NormalizedNewsletterPost,
+  html: string | null,
+  webUrl: string | null,
+): Post {
   return {
     id: summary.id,
-    title,
-    web_url: web_url ?? summary.web_url,
-    published_at: publishedIso,
-    html,
+    title: summary.title,
+    // `webUrl` (do fetch de conteúdo, mais confiável) vence sobre o da
+    // listagem quando presente; `?? undefined` converte o `null` explícito
+    // do backend pro shape opcional que `Post.web_url` espera (#6184).
+    web_url: (webUrl ?? summary.webUrl) ?? undefined,
+    published_at: summary.publishedAtIso,
+    html: html ?? undefined,
   };
 }
 
@@ -407,20 +296,19 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   const cfg = opts.configOverride ?? loadConfig();
   const rawPath = opts.rawPath ?? RAW_PATH;
   const mdPath = opts.mdPath ?? MD_PATH;
-  const now = new Date();
 
   const existing = readJsonOrNull<Post[]>(rawPath);
   const isBootstrap = !existing || existing.length === 0;
 
   let mode: "bootstrap" | "incremental";
-  let incomingSummaries: BeehiivPostSummary[];
+  let incomingSummaries: NormalizedNewsletterPost[];
 
   if (isBootstrap) {
     mode = "bootstrap";
     process.stderr.write(
       `[refresh-dedup] Bootstrap: buscando ${cfg.dedupEditionCount} edições mais recentes\n`,
     );
-    incomingSummaries = await listPosts(cfg, { limit: cfg.dedupEditionCount });
+    incomingSummaries = await listRecentNewsletterPosts(cfg.readConfig, { limit: cfg.dedupEditionCount });
   } else {
     mode = "incremental";
     const maxKnownMs = Math.max(
@@ -430,7 +318,7 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
     process.stderr.write(
       `[refresh-dedup] Incremental: buscando edições > ${maxKnownIso}\n`,
     );
-    incomingSummaries = await listPosts(cfg, {
+    incomingSummaries = await listRecentNewsletterPosts(cfg.readConfig, {
       limit: cfg.dedupEditionCount,
       stopBeforeMs: maxKnownMs,
     });
@@ -444,13 +332,8 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   const incomingPosts: Post[] = [];
   for (const summary of incomingSummaries) {
     process.stderr.write(`  ↓ ${summary.id} (${summary.title ?? "sem título"})\n`);
-    const { html, web_url } = await fetchPostContent(summary.id, cfg);
-    const canonical = toCanonicalPost(summary, html, web_url, now);
-    if (canonical) incomingPosts.push(canonical);
-    else
-      process.stderr.write(
-        `    ! pulando ${summary.id}: sem timestamp parseável\n`,
-      );
+    const { html, webUrl } = await fetchNewsletterPostContent(cfg.readConfig, summary.id);
+    incomingPosts.push(toCanonicalPost(summary, html, webUrl));
   }
 
   const merged = isBootstrap

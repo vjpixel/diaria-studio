@@ -28,12 +28,47 @@
  * `beehiiv-origem-original.ts` — import relativo direto; diferente de
  * `utm-registry.ts`, que evita isso de propósito via cópia espelhada
  * sincronizada por CI, ver docstring lá).
+ *
+ * ## #6425 Parte B — dois marcadores novos, mesmo campo
+ *
+ * Os 3 Workers acima cobrem "entrou pelo funil". `origem_cadastro` também
+ * precisa distinguir os OUTROS dois caminhos que criam subscriber no Kit
+ * sem passar por eles — sem isso, a promoção por score e o sync em lote da
+ * Beehiiv ficavam indistinguíveis de qualquer outro cadastro via API
+ * (mesmo problema, escala menor, que motivou `applyKitSignupOriginField`
+ * originalmente):
+ *
+ * - `promoteKitSubscription` (`scripts/evaluate-brevo-diaria.ts`) — promoção
+ *   AUTOMÁTICA por score de engajamento do canal Brevo Pending.
+ * - `sync-beehiiv-subscribers-kit.ts` — sync unidirecional em LOTE, sem UTM
+ *   por assinante disponível no call site (a listagem da Beehiiv usada ali
+ *   só devolve e-mail + status; recuperar o UTM real de quem entrou por
+ *   este caminho é trabalho do backfill, #6318/`backfill-kit-attribution.ts`,
+ *   não deste marcador).
+ *
+ * Estes 2 scripts rodam em Node (não em Worker) e conhecem o nome literal
+ * do custom field — `KIT_ORIGEM_CADASTRO_FIELD_NAME` abaixo evita retypar
+ * a string em cada call site, sem reintroduzir a indireção via `env` que só
+ * faz sentido pro mundo Worker (`applyKitSignupOriginField`).
  */
 
 /** Valor gravado no campo — constante fixa, não varia por worker (o desenho
  *  não distingue QUAL dos 3 funis, só "entrou pelo funil, não foi copiado
  *  de um bulk import/sync"). */
 export const KIT_NATIVE_SIGNUP_MARKER = "kit-nativo";
+
+/** #6425 Parte B — promoção automática por score (`promoteKitSubscription`,
+ *  `scripts/evaluate-brevo-diaria.ts`). */
+export const KIT_SCORE_PROMOTION_SIGNUP_MARKER = "brevo-diaria-score";
+
+/** #6425 Parte B — sync unidirecional em lote da Beehiiv
+ *  (`scripts/sync-beehiiv-subscribers-kit.ts`). */
+export const KIT_BEEHIIV_SYNC_SIGNUP_MARKER = "beehiiv-sync";
+
+/** Nome literal do custom field no Kit (mesmo valor de
+ *  `KIT_ORIGEM_CADASTRO_FIELD` nos 3 `wrangler.toml`) — pros 2 scripts Node
+ *  acima, que não têm `env` de Worker pra indireção. */
+export const KIT_ORIGEM_CADASTRO_FIELD_NAME = "origem_cadastro";
 
 /**
  * Aplica o gate-por-ausência num objeto `fields` já em construção — único

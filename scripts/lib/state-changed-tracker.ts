@@ -181,6 +181,16 @@ export interface PlanWithGoal {
    * às quais a rodada restringiu o conjunto-alvo, ou `null`/ausente se a
    * flag não foi usada. Mesmo tratamento de escopo do `bugs_only`. */
   priority_filter?: unknown;
+  /** `--issues N,M,...` do develop (#6616-adjacente) — lista fechada de
+   * números que restringiu o conjunto-alvo da rodada. Mesmo tratamento de
+   * escopo do `bugs_only`/`priority_filter`: issue aberta fora desta lista
+   * nunca entrou em `issues[]`/`goal.tiers` por DESENHO (a sessão pediu
+   * exatamente essas issues, não o backlog inteiro) — sem este campo, toda
+   * rodada `--issues` reportava o backlog inteiro fora da lista como "novo
+   * não-triangulado", o mesmo ruído permanente que motivou `bugs_only`/
+   * `priority_filter` (#5706/#5713), só que pra `--issues` em vez de
+   * `--bugs`/`--priority`. */
+  issues_filter?: unknown;
   [key: string]: unknown;
 }
 
@@ -259,13 +269,15 @@ export function collectKnownIssueNumbers(plan: PlanWithGoal): Set<number> {
 }
 
 /**
- * Pure: normaliza `plan.bugs_only`/`plan.priority_filter` (#3375/#3499) —
- * mesmo fail-open documentado nos dois campos: ausente/shape errado vira
- * "sem filtro" (`bugsOnly: false`, `priorityFilter: null`), nunca lança.
+ * Pure: normaliza `plan.bugs_only`/`plan.priority_filter`/`plan.issues_filter`
+ * (#3375/#3499/#6616-adjacente) — mesmo fail-open documentado nos três
+ * campos: ausente/shape errado vira "sem filtro" (`bugsOnly: false`,
+ * `priorityFilter: null`, `issuesFilter: null`), nunca lança.
  */
 export function readRoundScopeFilters(plan: PlanWithGoal): {
   bugsOnly: boolean;
   priorityFilter: string[] | null;
+  issuesFilter: number[] | null;
 } {
   const bugsOnly = plan.bugs_only === true;
   const rawPriority = plan.priority_filter;
@@ -273,29 +285,38 @@ export function readRoundScopeFilters(plan: PlanWithGoal): {
     Array.isArray(rawPriority) && rawPriority.every((p) => typeof p === "string")
       ? (rawPriority as string[])
       : null;
-  return { bugsOnly, priorityFilter };
+  const rawIssues = plan.issues_filter;
+  const issuesFilter =
+    Array.isArray(rawIssues) && rawIssues.every((n) => typeof n === "number")
+      ? (rawIssues as number[])
+      : null;
+  return { bugsOnly, priorityFilter, issuesFilter };
 }
 
 /**
- * Pure: filtra `openIssues` pelos mesmos critérios `--bugs`/`--priority`
- * que restringiram o conjunto-alvo da rodada (#3375/#3499) — issue fora do
- * filtro nunca entrou em `issues[]`/`goal.tiers` por DESENHO (fora de
- * escopo do modo, não "pulada por bloqueio"; ver `.claude/skills/diaria-develop/SKILL.md`
+ * Pure: filtra `openIssues` pelos mesmos critérios `--bugs`/`--priority`/
+ * `--issues` que restringiram o conjunto-alvo da rodada
+ * (#3375/#3499/#6616-adjacente) — issue fora do filtro nunca entrou em
+ * `issues[]`/`goal.tiers` por DESENHO (fora de escopo do modo, não "pulada
+ * por bloqueio"; ver `.claude/skills/diaria-develop/SKILL.md`
  * e `.claude/skills/diaria-overnight/SKILL.md`, passo 3/Fase 0 passo 3).
  * Sem este filtro, `findMissingConvergenceIssues` reportava toda issue
  * elegível fora do filtro como "nova não-triangulada" em TODA rodada
- * `--bugs`/`--priority` — ruído permanente que ensina a ignorar o gate
- * (achado de review do #5706/#5713).
+ * `--bugs`/`--priority`/`--issues` — ruído permanente que ensina a ignorar
+ * o gate (achado de review do #5706/#5713, mesma classe encontrada de novo
+ * pra `--issues` numa sessão real que só tinha 3 issues em escopo e viu o
+ * gate listar o backlog aberto inteiro como "novo").
  */
 export function filterIssuesByRoundScope(
   openIssues: ConvergenceScanIssue[],
   plan: PlanWithGoal,
 ): ConvergenceScanIssue[] {
-  const { bugsOnly, priorityFilter } = readRoundScopeFilters(plan);
-  if (!bugsOnly && !priorityFilter) return openIssues;
+  const { bugsOnly, priorityFilter, issuesFilter } = readRoundScopeFilters(plan);
+  if (!bugsOnly && !priorityFilter && !issuesFilter) return openIssues;
   return openIssues.filter((issue) => {
     if (bugsOnly && !issue.labels.includes("bug")) return false;
     if (priorityFilter && !issue.labels.some((l) => priorityFilter.includes(l))) return false;
+    if (issuesFilter && !issuesFilter.includes(issue.number)) return false;
     return true;
   });
 }

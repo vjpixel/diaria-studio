@@ -39,6 +39,7 @@ import {
   saveUtmMetadata,
   utmMetadataPath,
 } from "../scripts/studio-ui/studio-utms.ts";
+import type { fetchAndAggregateKit } from "../scripts/count-subscriptions-by-utm.ts";
 import { UTM_EMITTERS } from "../scripts/lib/shared/utm-registry.ts";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 
@@ -61,6 +62,16 @@ function fakeSubscriptions(counts: Record<string, number>, campaignCounts: Recor
 /** Brevo fake — nunca toca rede. */
 function fakeClicks(clicksByCampaign: Record<string, number>, error?: string) {
   return (async () => ({ clicksByCampaign, campaignsRead: 1, error })) as never;
+}
+
+/** Kit fake — nunca toca rede (#6051). */
+function fakeSubscriptionsKit(counts: Record<string, number>, campaignCounts: Record<string, number> = {}) {
+  return (async () => ({
+    counts,
+    campaignCounts,
+    total: Object.values(counts).reduce((a, b) => a + b, 0),
+    fetched_at: new Date().toISOString(),
+  })) as typeof fetchAndAggregateKit;
 }
 
 describe("#4041 — fronteira de edição (só metadados, nunca valores)", () => {
@@ -389,6 +400,48 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
       });
       assert.equal(third.cached, false);
       assert.equal(calls, 2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("subscriberBackend:kit usa o fetcher Kit, nunca chama o fetcher Beehiiv (#6051)", async () => {
+    const root = tempRoot("studio-utms-kit-backend-");
+    clearUtmsCache();
+    let beehiivCalls = 0;
+    try {
+      const data = await buildUtmsData(root, {
+        env: { KIT_API_KEY: "kit_test_key" },
+        subscriberBackend: "kit",
+        fetchSubscriptions: (async () => {
+          beehiivCalls++;
+          return { counts: {}, campaignCounts: {}, total: 0, fetched_at: "x" };
+        }) as never,
+        fetchSubscriptionsKit: fakeSubscriptionsKit({ clarice: 7 }, { "clarice-2606-07-cta": 3 }),
+        fetchClicks: fakeClicks({}),
+      });
+      assert.equal(beehiivCalls, 0, "backend kit nunca deve chamar o fetcher Beehiiv");
+      assert.equal(data.beehiivError, undefined);
+      assert.equal(data.totals.subscribers, 7);
+      const mensal = data.emitters.find((e) => e.id === "mensal-clarice")!;
+      assert.equal(mensal.subscribers, 7);
+      assert.deepEqual(mensal.campaigns, [{ campaign: "clarice-2606-07-cta", count: 3 }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("subscriberBackend:kit sem KIT_API_KEY vira erro fail-soft (mesmo idioma do caminho beehiiv)", async () => {
+    const root = tempRoot("studio-utms-kit-nocred-");
+    clearUtmsCache();
+    try {
+      const data = await buildUtmsData(root, {
+        env: {},
+        subscriberBackend: "kit",
+        fetchClicks: fakeClicks({}),
+      });
+      assert.match(data.beehiivError ?? "", /KIT_API_KEY/);
+      assert.equal(data.emitters[0].subscribers, null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -20,6 +20,13 @@
  *     já existente e testado, #2286).
  *   - Beehiiv — `GET /v2/publications/{id}` (mesma base de
  *     `beehiivApiBase()`, `../lib/beehiiv-config.ts`).
+ *   - Kit (#6051) — `GET /v4/account` (`../lib/kit-config.ts`, header
+ *     `X-Kit-Api-Key`) — mesmo endpoint mínimo já confirmado ao vivo no
+ *     #6047 (uma key resolve pra uma conta só, sem publicationId
+ *     separado). Adicionado porque `publishing.newsletter.backend` virou
+ *     `"kit"` em 26/08/2026 (#6114) — o painel de integrações listava só
+ *     Beehiiv até aqui, o que tornaria o backend hoje REAL do envio
+ *     invisível neste painel.
  *   - Facebook Graph — `GET /{version}/{pageId}?fields=id` (Graph API).
  *   - Instagram Graph — mesmo `probeGraphNode` genérico (mesma API
  *     `graph.facebook.com`, #3817).
@@ -71,6 +78,7 @@ import { resolve } from "node:path";
 import { loadProjectEnv } from "../lib/env-loader.ts";
 import { detectExecMode, type ExecMode } from "../lib/exec-mode.ts";
 import { beehiivApiBase } from "../lib/beehiiv-config.ts";
+import { kitApiBase } from "../lib/kit-config.ts";
 import { checkCloudflareToken, type CloudflareTokenHealth } from "../check-cloudflare-token.ts";
 import { checkClariceHealth } from "../clarice-healthcheck.ts";
 
@@ -102,6 +110,7 @@ export type EnvMap = Record<string, string | undefined>;
 export type ProbeStrategy =
   | "cloudflare"
   | "beehiiv"
+  | "kit"
   | "facebook-graph"
   | "instagram-graph"
   | "clarice-cortex"
@@ -170,7 +179,17 @@ export const INTEGRATIONS: IntegrationDef[] = [
     kind: "api",
     envVars: ["BEEHIIV_API_KEY", "BEEHIIV_PUBLICATION_ID"],
     probe: "beehiiv",
-    note: "Newsletter — draft/schedule via API + Chrome (Stage 5/6).",
+    note:
+      "Newsletter — histórico de 259 edições pré-cutover + leitura ainda apontada pra cá (platform.config.json > publishing.newsletter.read_backend). Envio real migrou pro Kit em 26/08/2026 (#6114) — ver entry \"kit\" abaixo.",
+  },
+  {
+    id: "kit",
+    name: "Kit",
+    kind: "api",
+    envVars: ["KIT_API_KEY"],
+    probe: "kit",
+    note:
+      "Newsletter — backend de ENVIO real desde 26/08/2026 (#6114, platform.config.json > publishing.newsletter.backend) e de cadastro dos 3 workers de assinatura desde #6339 (SUBSCRIBE_BACKEND=kit). Leitura de histórico ainda aponta pra Beehiiv (read_backend) até o Kit acumular volume real de edições public:true.",
   },
   {
     id: "brave_search",
@@ -374,6 +393,26 @@ export async function probeBeehiiv(apiKey: string, publicationId: string, fetchI
   }
 }
 
+/** `GET /v4/account` — mesmo endpoint mínimo confirmado ao vivo no #6047
+ *  (a key sozinha já resolve pra uma conta, sem publicationId separado).
+ *  Auth via header `X-Kit-Api-Key` (não `Authorization: Bearer`, dialeto
+ *  diferente da Beehiiv — ver `kit-client.ts::kitFetch`). */
+export async function probeKit(apiKey: string, fetchImpl: typeof fetch): Promise<ProbeResult> {
+  try {
+    const res = await fetchImpl(`${kitApiBase()}/account`, {
+      headers: { "X-Kit-Api-Key": apiKey },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { reachable: "unreachable", error: `HTTP ${res.status} — token inválido ou sem permissão` };
+    }
+    if (!res.ok) return { reachable: "error", error: `HTTP ${res.status}` };
+    return { reachable: "reachable", error: null };
+  } catch (e) {
+    return { reachable: "error", error: (e as Error).message };
+  }
+}
+
 interface GraphErrorBody {
   error?: { message?: string; code?: number };
 }
@@ -524,6 +563,10 @@ async function evaluateIntegration(
       }
       case "beehiiv": {
         const probe = await probeBeehiiv(env.BEEHIIV_API_KEY ?? "", env.BEEHIIV_PUBLICATION_ID ?? "", fetchImpl);
+        return { ...base, configured, missingEnvVars: missing, reachable: probe.reachable, error: probe.error };
+      }
+      case "kit": {
+        const probe = await probeKit(env.KIT_API_KEY ?? "", fetchImpl);
         return { ...base, configured, missingEnvVars: missing, reachable: probe.reachable, error: probe.error };
       }
       case "facebook-graph": {

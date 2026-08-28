@@ -47,6 +47,8 @@
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
 import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
+import { listActiveSessions, type ActiveSessionRecord } from "../lib/session-registry.ts";
+import { flattenClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -81,7 +83,7 @@ export interface GhPrRaw {
   reviewDecision?: string | null;
 }
 
-export type TrackLabel = "overnight" | "develop" | "other";
+export type TrackLabel = "overnight" | "develop" | "continuo" | "other";
 
 export interface TriageIssue {
   number: number;
@@ -107,6 +109,27 @@ export interface TriageIssue {
    * (`default` — nenhuma label disse o contrário, ninguém olhou). `null` só
    * quando a classificação foi feita sem o detalhe (caller legado). */
   execTrackMatched: ExecTrackMatch | null;
+  /**
+   * #6436 — claim ATIVO de uma sessão coordenadora (`data/sessions/`), se
+   * houver. Antes desta issue, uma issue `claimed-por-outra-sessao` (em
+   * especial pela sessão `continuo`, que re-reivindica a cada 60min e por
+   * isso NUNCA fica stale) aparecia no painel como "Overnight sem sinal" —
+   * indistinguível de uma issue genuinamente sem dono. `null` = sem claim
+   * ativo conhecido (issue livre, ou `data/sessions/` inacessível — fail-soft,
+   * nunca lança). Computado em `attachClaims`, não em `parseIssues` (que é
+   * puro sobre o JSON do `gh` e não tem acesso a `data/sessions/`).
+   */
+  claim: TriageClaimInfo | null;
+}
+
+/** Claim ativo de uma issue — ver `TriageIssue.claim`. */
+export interface TriageClaimInfo {
+  kind: string;
+  machineTag: string;
+  sessionId: string;
+  /** ISO da 1ª reivindicação (`claimed_issues_at`, #6436) — `null` pra
+   * sessão anterior ao campo existir (idade desconhecida). */
+  claimedAt: string | null;
 }
 
 export interface TriagePr {
@@ -222,10 +245,13 @@ export function derivePriority(labels: string[]): string | null {
 }
 
 /**
- * Deriva a trilha (overnight/develop/other) do nome do branch — convenção
- * literal documentada em `context/overnight-dispatch-rules.md` §2:
+ * Deriva a trilha (overnight/develop/continuo/other) do nome do branch —
+ * convenção literal documentada em `context/overnight-dispatch-rules.md` §2:
  *   - `overnight/fix-{issue}-{slug}` ou `overnight/batch-{slug}` → "overnight"
  *   - `develop/fix-NNNN` ou `develop/blast-NNNN` → "develop"
+ *   - `continuo/fix-NNNN-{slug}` → "continuo" (#6446 v0.5.0 — PRs do
+ *     hermes-diaria-continuo; antes saíam sem prefixo e caíam em "other",
+ *     invisíveis na Triagem como pedido do editor em 28/08)
  *   - qualquer outro prefixo (branch manual do editor, dependabot, etc.) → "other"
  *
  * Determinístico — não é um chute de label, é o mesmo sinal que
@@ -236,6 +262,7 @@ export function deriveTrackFromBranch(headRefName: string | undefined | null): T
   const branch = (headRefName ?? "").trim();
   if (branch.startsWith("overnight/")) return "overnight";
   if (branch.startsWith("develop/")) return "develop";
+  if (branch.startsWith("continuo/")) return "continuo";
   return "other";
 }
 
@@ -266,8 +293,74 @@ ${i.body ?? ""}`);
       // fechada quando `state` chega até ela.
       execTrack: result.track,
       execTrackMatched: result.matched as ExecTrackMatch,
+      // Preenchido depois por `attachClaims` (precisa de `data/sessions/`,
+      // I/O que `parseIssues` — puro sobre o JSON do `gh` — não faz).
+      claim: null,
     };
   });
+}
+
+/**
+ * Limiar de exibição — SÓ pro badge "em andamento" do painel de Triagem
+ * (#6592). Deliberadamente separado de `SOFT_STALE_MS`
+ * (`scripts/lib/session-registry.ts`, 90min): aquele valor também governa o
+ * write-path real de claim (bloqueio de re-claim entre sessões concorrentes
+ * via `claimIssueCheckAndSet`) — apertá-lo ali arriscaria colisão genuína
+ * entre sessões que só estão lentas, não mortas. Achado ao vivo em 260828:
+ * uma sessão overnight-helios teve o PID morto sem chamar `end`/soltar o
+ * claim; `lastHeartbeat` ficou congelado, mas como `SOFT_STALE_MS` é 90min
+ * o painel continuou mostrando "em andamento — overnight-helios" por até
+ * 90min depois do processo já estar morto. Este módulo (consumidor único de
+ * `PANEL_DISPLAY_STALE_MS`) recalcula staleness OUTRA VEZ sobre
+ * `lastHeartbeat`, só pra decidir se o claim aparece no payload — não toca
+ * `claim-staleness.ts`/`block-staleness.ts`, que continuam livres pra usar
+ * `SOFT_STALE_MS`/`CLAIM_STALE_AGE_MS` sem mudança de comportamento.
+ */
+export const PANEL_DISPLAY_STALE_MS = 20 * 60 * 1000;
+
+/**
+ * Pure: heartbeat mais velho que `PANEL_DISPLAY_STALE_MS` → staleness de
+ * EXIBIÇÃO, independente do que `session.stale` (calculado contra
+ * `SOFT_STALE_MS`) já diga. Usa `lastHeartbeat` (fallback `startedAt`,
+ * mesmo padrão de `listActiveSessions`) — nunca lança em data inválida
+ * (idade desconhecida não é motivo pra esconder um claim genuinamente
+ * ativo, mesmo fail-soft do resto do módulo).
+ */
+export function isPanelDisplayStale(
+  session: Pick<ActiveSessionRecord, "lastHeartbeat" | "startedAt">,
+  nowMs: number,
+  maxAgeMs: number = PANEL_DISPLAY_STALE_MS,
+): boolean {
+  const heartbeatIso = session.lastHeartbeat ?? session.startedAt;
+  const heartbeatMs = Date.parse(heartbeatIso);
+  if (!Number.isFinite(heartbeatMs)) return false;
+  return nowMs - heartbeatMs > maxAgeMs;
+}
+
+/**
+ * #6436 — atribui `claim` (1ª sessão ativa encontrada segurando a issue,
+ * via `flattenClaims`) a cada `TriageIssue`. Pura sobre `sessions` já
+ * fornecido (mesmo padrão do resto do módulo — I/O fica em `fetchTriageData`,
+ * que chama `listActiveSessions` e passa o resultado aqui). Issue reivindicada
+ * por MAIS DE UMA sessão simultaneamente não deveria acontecer
+ * (`claimIssueCheckAndSet` recusa colisão, #6236) — se acontecer mesmo assim
+ * (dado stale/corrompido), a 1ª sessão da lista vence, sem lançar.
+ */
+export function attachClaims(
+  issues: readonly TriageIssue[],
+  sessions: readonly ClaimBearingSession[],
+): TriageIssue[] {
+  const byIssue = new Map<number, TriageClaimInfo>();
+  for (const entry of flattenClaims(sessions)) {
+    if (byIssue.has(entry.issueNumber)) continue;
+    byIssue.set(entry.issueNumber, {
+      kind: entry.kind,
+      machineTag: entry.machineTag,
+      sessionId: entry.sessionId,
+      claimedAt: entry.claimedAt,
+    });
+  }
+  return issues.map((issue) => ({ ...issue, claim: byIssue.get(issue.number) ?? null }));
 }
 
 export type CiState = "green" | "red" | "pending" | "none";
@@ -459,9 +552,26 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
   try {
     const issuesRaw = fetchGhIssues(rootDir, run, opts.issueLimit);
     const prsRaw = fetchGhPrs(rootDir, run, opts.prLimit);
+    // #6436 — `listActiveSessions` é fail-soft (nunca lança; `data/sessions/`
+    // ausente ou ilegível vira array vazio), então nunca degrada este `try`
+    // pro caminho de erro do `gh`. Filtra `stale` ANTES de repassar pra
+    // `attachClaims` — mesmo critério de `isIssueClaimedByOther` (#5474): uma
+    // sessão stale (heartbeat morto além de `SOFT_STALE_MS`) não deveria
+    // aparecer como "em andamento" pro editor, mesmo ainda listada por
+    // `listActiveSessions` (que preserva sessões stale de propósito, pra
+    // outros consumidores como o watchdog). Achado do self-review — sem
+    // este filtro, uma claim ABANDONADA continuaria mostrando "em
+    // andamento" no painel indefinidamente (até `MAX_SESSION_AGE_MS`, 24h).
+    // #6592 — 2ª passada, com o limiar mais apertado de EXIBIÇÃO
+    // (`PANEL_DISPLAY_STALE_MS`, 20min): `!s.stale` sozinho ainda deixava
+    // passar até 90min (`SOFT_STALE_MS`) de heartbeat morto, que é o valor
+    // certo pro write-path de claim mas exagerado pro badge do painel.
+    const sessions = listActiveSessions(rootDir).filter(
+      (s) => !s.stale && !isPanelDisplayStale(s, nowMs),
+    );
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
-      issues: parseIssues(issuesRaw),
+      issues: attachClaims(parseIssues(issuesRaw), sessions),
       prs: parsePrs(prsRaw),
       execTrackUi: EXEC_TRACK_UI,
       error: null,

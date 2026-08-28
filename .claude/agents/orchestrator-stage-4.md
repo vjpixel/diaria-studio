@@ -103,6 +103,8 @@ npx tsx scripts/render-halt-banner.ts \
 
    > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
 
+2a-kit. **Render de MEDIÇÃO do canal Kit (#6506) — sempre roda, mesmo com `publishing.newsletter.backend` ainda `"beehiiv"`.** Gera `_internal/newsletter-final-kit.html` (sem isso, `checkKitHtmlSize` abaixo nunca tem artefato pra medir, e só veríamos o e-mail Kit passar de 102 KB — limite de clipping do Gmail — DEPOIS do cutover real). Zero chamada de rede: `npx tsx scripts/render-kit-html-preview.ts {EDITION_DIR}/`. Exit 1 (uso/erro fatal, não deveria acontecer aqui) → logar warn e continuar — o invariant `kit-html-too-large` degrada pra `[]` sem o arquivo, bloqueando só por TAMANHO, nunca por ausência.
+
 2b. **Servir preview LOCALMENTE via `serve-preview.ts` (#3546 — substitui o Worker Cloudflare no caminho de REVISÃO).** #3420 tinha revertido pra Worker-hosted (`upload-html-public.ts`) porque #3214/Claude Artifacts quebrava por CSP (bloqueia imagem remota, só `data:` URI). #3546 resolve isso sem depender nem do Worker (cota Workers KV, rede) nem do Artifact (CSP): serve o HTML LOCALMENTE (loopback, `http://127.0.0.1:{porta}/...`) com imagens embutidas em `data:` URI via `embed-images-base64.ts` — não há CSP num servidor local próprio, e não há requisição de rede pra imagem nenhuma. **Nunca chamar `upload-html-public.ts` neste passo** — esse script fica reservado ao upload REAL que a Etapa 5 refaz independentemente no dispatch (`context/publishers/beehiiv-playbook.md` §5.2 Fase 3, sobre `newsletter-final.html` intacto, sem a variante embedded).
 
     Gerar a variante embedded (`newsletter-final.html` fica intacto, com a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` — preservada pro paste real da Etapa 5):
@@ -226,7 +228,7 @@ Exit 1 em qualquer um dos dois = placeholder pendente (narrativa MD no 1º, camp
 
 `secondary-items-have-summary` (#2545): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR sem descrição renderiza título pelado no email. Ação: editar `02-reviewed.md` e adicionar descrição plain text (1 frase) abaixo de cada item pelado, ou re-rodar Etapa 1 (se a causa foi cache-miss no enrich).
 
-`secondary-item-coherence` (#5663): **GATE-BLOCKING** — cruza cada URL secundária com o `summary` bruto de `01-approved.json` e acusa aspas desbalanceadas ou reticências que não existem no summary. Não tenta medir similaridade semântica: a ação é reescrever a descrição fielmente ao fato central, fechar a citação ou remover a reticência fabricada.
+`secondary-item-coherence` (#5663): cruza cada URL secundária com o `summary` bruto de `01-approved.json` e acusa aspas desbalanceadas ou reticências que não existem no summary. Não tenta medir similaridade semântica: a ação é reescrever a descrição fielmente ao fato central, fechar a citação ou remover a reticência fabricada. **Severidade dinâmica desde #6441** (era GATE-BLOCKING incondicional): aspas desbalanceadas seguem sempre GATE-BLOCKING (sem autofix possível); reticência fabricada (`fabricated-ellipsis`) vira **warn-only** — o Stage 2 (`apply-secondary-item-coherence-autofix.ts`, chamado dentro de `check-stage2-invariants.ts`) já teve a chance de restaurar mecanicamente o trecho a partir do summary antes deste check rodar, então qualquer ocorrência que sobrevive até aqui é residual (sem prefixo confiável pro autofix, ou re-run que pulou o Stage 2). O único caso que permanece GATE-BLOCKING de fato é quando o próprio `summary` de origem TAMBÉM termina em reticência (lixo de RSS, ex: "saudedigitalnews" #6441) — aí não há o que restaurar, e a única saída é reescrever a descrição manualmente no gate.
 `no-untranslated-summary` (#3196): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR com marcador literal `[TRADUZIR]` OU descrição detectada como inglês pela heurística de stopwords (mesmo sem o marcador, caso o humanizador tenha removido o prefixo sem traduzir o texto). `stitch-newsletter.ts` injeta `[TRADUZIR] ` em descrições EN e depende do humanizador (LLM) pra traduzir — sem este lint, o item vazava pro gate/publicação intacto (histórico: `docs/orchestrator-stage-narrative-history.md#stage-4-untranslated-summary-incident`). Ação: traduzir a descrição pra PT-BR em `02-reviewed.md` e remover o prefixo `[TRADUZIR] ` antes de aprovar.
 
 `video-links-are-youtube` (#3202): **GATE-BLOCKING** quando exit 1 — item da seção VÍDEOS com URL fora de `youtube.com`/`youtu.be` (regra editorial nova: `context/editorial-rules.md` — Seção "Vídeos"). A resolução automática roda no Stage 1 (`scripts/resolve-video-youtube.ts`, passo 1m-quinquies — busca `site:youtube.com` + substitui a URL quando há match confiável, ou flaga `video_url_unverified` no gate da Etapa 1 quando não há); este lint é o backstop que garante que nada não-YouTube sobrevive até a publicação, mesmo se a resolução foi pulada ou o editor colou um link não-YouTube manualmente (caso real: `docs/orchestrator-stage-narrative-history.md#stage-4-video-nao-youtube-caso-real`). Ação: substituir pela URL do YouTube equivalente (`youtube.com/watch?v=...` ou `youtu.be/...`) em `02-reviewed.md` antes de aprovar, ou remover o item de VÍDEOS.
@@ -356,6 +358,8 @@ npx tsx scripts/substitute-image-urls.ts \
 ```
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
+
+**Re-render também o preview de MEDIÇÃO do Kit (#6506)** — mesmo motivo do `newsletter-final.html` acima (`_internal/newsletter-final-kit.html`, §4b step 2a-kit, foi gerado ANTES do autofix): `npx tsx scripts/render-kit-html-preview.ts {EDITION_DIR}/`.
 
 **⚠️ Atualizar `{newsletter_url}` após o re-render:** o conteúdo mudou → o preview local servido em §4b step 2b fica STALE. Re-servir ANTES de montar o gate (§4c.7) — senão o editor abre o preview antigo (texto PRÉ-correção) e aprova conteúdo que não revisou. **Re-servir localmente (#3546 — mesmo padrão do §4b step 2b: encerrar o servidor antigo, re-gerar a variante embedded, subir um novo):**
 ```bash
@@ -505,6 +509,12 @@ npx tsx scripts/box-click-report.ts --last 20
 Capturar os dois e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate (§4d): primeiro o que foi aplicado (`box-selection.json`), depois o ranking (`box-click-report.ts`) como contexto. **Puramente informativo — nunca bloqueia o gate.** Se o editor discordar da seleção automática, o override é editar `02-reviewed.md` diretamente (trocar o texto do box na lacuna) — não há confirmação/reversão automatizada aqui (decisão do editor #4626: sem gate novo). Exit code de `box-click-report.ts` sempre **não-fatal**: `0` → capturar stdout (ranking vazio é resultado válido); qualquer falha (`1` = `data/editions` ausente, ou exception) → `⚠️ Recomendação de boxes indisponível: {motivo}.`, sem halt banner (não depende de MCP, diferente do #738). `box-selection.json` ausente/corrompido → mesma tolerância, pular a linha correspondente sem bloquear. Em `--no-gates`: rodar normalmente (barato, só leitura de disco), pular só a apresentação.
 
 ### 4d. Gate humano (#1694)
+
+**#6444 — consumir decisão já tomada via painel do Studio (`/revisao`) antes de montar o resumo.** Desde #6447 o painel cobre a revisão item-a-item (destaques, títulos, lints, preview, fact-check) com botão "Aprovar gate". Checar antes de montar o resumo:
+```bash
+npx tsx scripts/lib/stage4-decision.ts --edition-dir {EDITION_DIR} --read --content-files "02-reviewed.md,03-social.md"
+```
+Parsear `{usable, reason?, decision}` do stdout. `usable: true` (na checagem atual, nenhum `02-reviewed.md`/`03-social.md` foi tocado depois de `decided_at` — se um `editar`/re-render tivesse acontecido depois da aprovação, cairia no branch `stale` abaixo, não neste) = tratar como resposta `sim` já dada: pular o resumo completo e o loop `sim/editar/ajustar/abortar` abaixo, logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message "gate revisao response: sim (via painel Studio, decided_at={decided_at})"`, apresentar só `✅ Gate aprovado via painel do Studio (/revisao) em {decided_at} — seguindo para Publicação (Etapa 5).` e ir direto pro teardown do branch `sim` + §4e. `usable: false, reason: "absent"` (caso normal, painel não usado) = seguir o fluxo abaixo normalmente. `usable: false, reason: "stale"` (painel aprovou uma versão anterior — ex: `editar` reabriu o gate e o conteúdo mudou sem reaprovação) = **nunca consumir**; logar warn `gate_painel_decision_stale` e seguir o fluxo abaixo normalmente. Falha do comando acima (script indisponível/exception) é fail-soft — tratar como `usable: false`, nunca bloquear o gate por isso.
 
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
 
@@ -780,20 +790,30 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 4
 
 - Falha do sentinel → logar warn. Não bloquear.
 - Ler o JSON de stdout do `capture-stage-usage.ts` acima: se `"source":"unavailable"`, logar warn (mesmo padrão do sentinel — #5475): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'stage_usage_capture_unavailable' --details '{"reason":"<reason do stdout>"}'`. Não bloquear.
-- O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou e pula direto para a Etapa 5.
+- O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou — ver "Fluxo pós-gate — fronteira de contexto (#6171)" abaixo para o que acontece depois (a sessão PARA, nunca segue direto para a Etapa 5).
 
 ---
 
-## Fluxo pós-gate
+## Fluxo pós-gate — fronteira de contexto (#6171)
 
-**Isto só se aplica quando este playbook foi lido como parte de `/diaria-edicao` (via `orchestrator.md`).** Se foi lido a partir da skill standalone `/diaria-4-revisao`, PARE aqui: escreva o sentinel, apresente o resumo, e sugira `/diaria-5-publicacao {AAMMDD}` como próximo comando — não leia `orchestrator-stage-5.md`.
+**PARE aqui SEMPRE, independente de como este playbook foi lido** (`/diaria-4-revisao` standalone OU `/diaria-edicao`/`orchestrator.md`). Escreva o sentinel, apresente o resumo, e instrua o próximo comando — **nunca leia `orchestrator-stage-5.md` nesta mesma sessão**, nem mesmo vindo de `/diaria-edicao`.
 
-Quando lido via `/diaria-edicao`: após aprovação do gate (ou auto-approve com `--no-gates`), o orchestrator prossegue imediatamente para a **Etapa 5 — Publicação** (leia `orchestrator-stage-5.md`).
+**Por quê (#6171, mediu #5744 confirma o padrão).** O gate do Stage 4 é o mais longo do pipeline por natureza (433 turnos/1h49 numa edição real, #5414) — é o editor iterando, e isso é legítimo e não deve ser encurtado. O problema é o que vem DEPOIS: numa sessão `/diaria-edicao` contínua, as Etapas 5 e 6 herdavam esses 433 turnos de contexto e o releem a cada chamada de tool — 268M tokens de `cache_read` medidos numa edição só (260826), a maior fatia do custo total. O #5744 já cortou esse problema para os Stages 1→4 (cada um roda num processo `claude` próprio, spawnado por `run-edition-stages.ts`); o Stage 4 não entra nesse laço porque o gate humano precisa da sessão do editor. Esta seção fecha a lacuna que sobra: a fronteira DEPOIS do gate, que nenhum laço automático pode cruzar (Stage 5 nunca é spawnado headless — é o guard estrutural de `STAGE_PLAN`, que exclui os Stages 5/6 de propósito, ver `scripts/lib/edition-stage-runner.ts`). A saída é a mesma receita já em uso pelo #5578 para as demais transições: sessão nova = contexto limpo, e o editor digitando o próximo comando **é** a ação explícita que Stage 5 sempre exigiu.
 
-O pré-render do Stage 4 já populou todos os artefatos que o Stage 5 precisa:
-- `_internal/newsletter-final.html` (HTML pronto)
-- `_internal/05-social-preview.json` (URL do preview social)
-- `06-public-images.json` (URLs públicas das imagens)
-- `_internal/.close-poll-done.json` (gabarito setado)
+**O que apresentar ao editor**, após o sentinel escrito:
 
-O Stage 5 **não repete** pré-render — vai direto para o dispatch.
+```
+Stage 4 aprovado — edição {AAMMDD}.
+
+O pré-render já deixou tudo pronto para a Etapa 5 (HTML final, preview social,
+imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
+
+Próximo passo → abra uma sessão NOVA e rode:
+  /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
+
+Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) —
+`/diaria-5-publicacao` e, na sequência, `/diaria-6-agendamento {AAMMDD}` retomam
+sozinhos a partir dos arquivos em disco (mesmo mecanismo do #5578).
+```
+
+Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate.

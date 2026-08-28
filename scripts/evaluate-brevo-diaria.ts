@@ -333,8 +333,10 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
+import { createOrUpdateSubscriber, getSubscriberById } from "./lib/kit-subscribers.ts"; // #6339
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -344,6 +346,9 @@ interface BrevoDiariaConfig {
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
+  /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
+   *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
+  publishing?: { newsletter?: { backend?: string } };
 }
 
 // ── contadores a partir da estatística de contato da Brevo (puro) ─────────
@@ -821,6 +826,71 @@ export async function verifyPromotedToBeehiiv(
 }
 
 /**
+ * promoteKitSubscription / verifyPromotedToKit (#6339)
+ *
+ * `promoteBeehiivSubscription`/`verifyPromotedToBeehiiv` acima escrevem e
+ * verificam na Beehiiv — mecânica desenhada quando a Beehiiv era o backend
+ * de ENVIO da diária. Desde o switchover do #6114
+ * (`platform.config.json` → `publishing.newsletter.backend === "kit"`), a
+ * Beehiiv não publica mais nada — a promoção só continuava chegando aos
+ * assinantes promovidos por uma ponte de sync diária e temporária
+ * (`scripts/sync-beehiiv-subscribers-kit.ts`, Beehiiv → Kit, até 24h de
+ * atraso), não porque escrever na Beehiiv siga sendo o caminho certo.
+ *
+ * Estas duas funções são o par que escreve/verifica direto no backend que
+ * de fato publica hoje (Kit) — usadas pelo `runEvaluation` quando
+ * `newsletterBackend === "kit"` (que é sempre, em produção, desde o
+ * #6114). Se o backend voltar a mudar (rollback do #6114, ou uma 3ª
+ * plataforma no futuro), quem mexer aqui precisa revisitar qual das duas
+ * funções (`*ToBeehiiv`/`*ToKit`) o `newsletterBackend` deve escolher — a
+ * ramificação em si (não qual backend é o "certo") é o que sobrevive a
+ * trocas futuras.
+ *
+ * Mecânica, mais simples que o par Beehiiv: `POST /v4/subscribers` do Kit é
+ * idempotente por e-mail e `state: "active"` bypassa qualquer fluxo de
+ * confirmação (achado ao vivo #6048, ver `kit-subscribers.ts`) — não existe
+ * aqui o equivalente do DELETE+CREATE nem do estado transitório
+ * `"validating"` da Beehiiv. Ainda assim, `verifyPromotedToKit` releê via
+ * `GET /v4/subscribers/{id}` em vez de confiar no corpo da resposta do
+ * POST — mesma disciplina do par Beehiiv e do restante do módulo (nunca
+ * confiar só no status da mutação, ver as "armadilhas" documentadas em
+ * `kit-client.ts`), mesmo que o #6048 sugira que, pra este endpoint
+ * específico, a resposta do POST já seria confiável.
+ */
+export async function promoteKitSubscription(email: string, apiKey: string): Promise<{ id: number }> {
+  // #6425 Parte B: regressão do switchover — este POST saía sem `fields`,
+  // então todo cadastro promovido por score entrava no Kit sem atribuição
+  // nenhuma (indistinguível de "api: direct/(none)"), igual ao par Beehiiv
+  // resolvia via `BREVO_DIARIA_PROMOCAO_SCORE_UTM` (#4530). Também grava o
+  // marcador `origem_cadastro` próprio (nem funil Worker, nem sync em lote
+  // da Beehiiv) — ver `scripts/lib/shared/kit-signup-origin.ts`.
+  const subscriber = await createOrUpdateSubscriber(
+    {
+      email_address: email,
+      state: "active",
+      fields: {
+        utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+        utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+        utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+        referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+        [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_SCORE_PROMOTION_SIGNUP_MARKER,
+      },
+    },
+    { apiKey },
+  );
+  return { id: subscriber.id };
+}
+
+/** Releitura pós-promoção pro Kit — `true` só se `state === "active"`
+ *  (ver docstring de `promoteKitSubscription` acima). Fail-safe: qualquer
+ *  outro estado (ou erro de rede, propagado ao caller) mantém o contato
+ *  `in_brevo` em vez de assumir sucesso. */
+export async function verifyPromotedToKit(id: number, apiKey: string): Promise<boolean> {
+  const subscriber = await getSubscriberById(id, { apiKey });
+  return subscriber.state === "active";
+}
+
+/**
  * Releitura pós-supressão (#4398 review: `suppressInBrevo`/`unlinkFromBrevoList`
  * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`/
  * `verifyPromotedToBeehiiv`, que sempre releem antes de confiar no sucesso —
@@ -1023,6 +1093,20 @@ export interface RunEvaluationParams {
   brevoApiKey?: string;
   listId: number;
   log: (msg: string) => void;
+  /**
+   * Backend real de ENVIO da diária (#6339, ver `promoteKitSubscription`) —
+   * decide se a promoção por SCORE escreve na Beehiiv ou no Kit. **Não**
+   * afeta a auto-confirmação (Passo 1, `applySelfConfirmed`) — esse
+   * caminho continua escrevendo só na Beehiiv, ver o comentário
+   * `#6339, ESCOPO NÃO COBERTO` logo acima dele. Default `"beehiiv"`
+   * preserva o comportamento de todo chamador que não passa este campo
+   * (inclusive a suíte de testes pré-#6339) — `main()` sempre passa o
+   * valor lido de `platform.config.json` → `publishing.newsletter.backend`,
+   * que em produção é `"kit"` desde o switchover do #6114.
+   */
+  newsletterBackend?: "beehiiv" | "kit";
+  /** Obrigatória quando `newsletterBackend === "kit"` E `push === true`. */
+  kitApiKey?: string;
 }
 
 /**
@@ -1079,7 +1163,17 @@ export interface RunEvaluationResult {
  * contatos processados com sucesso, mesmo quando outro contato no meio falha.
  */
 export async function runEvaluation(params: RunEvaluationParams): Promise<RunEvaluationResult> {
-  const { contacts, push, publicationId, beehiivApiKey, brevoApiKey, listId, log } = params;
+  const {
+    contacts,
+    push,
+    publicationId,
+    beehiivApiKey,
+    brevoApiKey,
+    listId,
+    log,
+    newsletterBackend = "beehiiv",
+    kitApiKey,
+  } = params;
   let store = params.store;
 
   let unsubscribedNative = 0;
@@ -1235,6 +1329,18 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         if (statusCheckFailed) failed++;
       }
 
+      // #6339, ESCOPO NÃO COBERTO: diferente da promoção por score logo
+      // abaixo (que já escreve direto no backend real via
+      // `newsletterBackend`), esta auto-confirmação continua dependendo da
+      // ponte `sync-beehiiv-subscribers-kit.ts` (Beehiiv → Kit, até 24h de
+      // atraso) pra o contato de fato receber a diária quando
+      // `newsletterBackend === "kit"` — `applySelfConfirmed` só desvincula
+      // da fila Brevo, nunca escreve no Kit. Risco aceito nesta unidade
+      // (ver PR body do #6339): o volume por este caminho é residual (só
+      // quem confirma o double opt-in Beehiiv de um pool que já não cresce,
+      // ver nota "Pool Pending é FINITO" em `sync-pending-to-brevo.ts`), e
+      // `test/sync-beehiiv-subscribers-kit-load-bearing-6339.test.ts` trava
+      // a ponte como load-bearing enquanto este caminho não for corrigido.
       if (beehiivStatus === "active") {
         log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
         selfConfirmed++;
@@ -1281,16 +1387,35 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       if (!push) continue;
 
       if (evalResult.action === "promote_to_beehiiv") {
-        await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
-        const confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
+        // #6339: qual backend recebe a promoção depende de `newsletterBackend`
+        // (default "beehiiv", preservando o caminho pré-#6339 — main() sempre
+        // passa o valor real de platform.config.json). Ver docstring de
+        // `promoteKitSubscription` acima pro racional completo.
+        let confirmed: boolean;
+        if (newsletterBackend === "kit") {
+          if (!kitApiKey) {
+            throw new Error(`newsletterBackend === "kit" mas kitApiKey ausente — necessário pra promover ${contact.email} (#6339).`);
+          }
+          const { id } = await promoteKitSubscription(contact.email, kitApiKey);
+          confirmed = await verifyPromotedToKit(id, kitApiKey);
+        } else {
+          await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
+          confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
+        }
         if (!confirmed) {
-          log(`warn: ${contact.email} continua "pending" na Beehiiv após promoção — mantendo in_brevo (fail-safe).`);
+          const backendLabel = newsletterBackend === "kit" ? "ativo no Kit" : "\"pending\" na Beehiiv";
+          log(`warn: ${contact.email} continua não confirmado como ${backendLabel} após promoção — mantendo in_brevo (fail-safe).`);
           failed++;
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
         await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-        store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "promote_to_beehiiv" });
+        store = applyEvaluation(store, contact.email, {
+          ...counts.instant,
+          open_rate: evalResult.open_rate,
+          action: "promote_to_beehiiv",
+          resolutionReason: newsletterBackend === "kit" ? "score_threshold_kit" : "score_threshold",
+        });
       } else if (evalResult.action === "suppress") {
         await suppressInBrevo(brevoApiKey!, contact.email);
         await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
@@ -1355,6 +1480,20 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // #6339: qual backend recebe a promoção por score — lido de
+  // `publishing.newsletter.backend`, não hardcoded, pra este script
+  // acompanhar automaticamente um eventual rollback do switchover do
+  // #6114 (ver docstring de `promoteKitSubscription`). Default "beehiiv"
+  // só protege contra `platform.config.json` sem a chave `publishing`
+  // (nunca deveria acontecer em produção, mas evita `undefined` virar
+  // `"kit"` por engano numa comparação futura).
+  const newsletterBackend = platformConfig.publishing?.newsletter?.backend === "kit" ? "kit" : "beehiiv";
+  const kitApiKey = process.env.KIT_API_KEY;
+  if (push && newsletterBackend === "kit" && !kitApiKey) {
+    log("ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push com newsletterBackend=kit).");
+    process.exit(2);
+  }
+
   const store = readStore(DEFAULT_STORE_PATH);
 
   // #4579: reconciliação de órfãos — roda SEMPRE (mesmo em dry-run, é
@@ -1387,6 +1526,8 @@ async function main(): Promise<void> {
     brevoApiKey,
     listId: brevoDiaria.list_id as number,
     log,
+    newsletterBackend,
+    kitApiKey,
   });
 
   log(

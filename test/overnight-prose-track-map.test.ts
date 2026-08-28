@@ -42,6 +42,12 @@ const ALL_PROSE_STATUSES: OvernightProseStatus[] = [
   "not-this-week",
   "sem-direcao-acionavel",
   "ambigua-trade-off-real",
+  // #6438
+  "mesmo-tema-sessao-ativa",
+  "session-finding-deferida",
+  "stale-aguarda-reexecucao",
+  // #6437
+  "escopo-residual",
 ];
 
 describe("OVERNIGHT_PROSE_TRACK_MAP — cobertura", () => {
@@ -137,5 +143,37 @@ describe("round-trip contra classifyExecTrack real", () => {
   it("ambigua-trade-off-real: label trade-off-real → develop", () => {
     const track = classifyExecTrack({ labels: ["trade-off-real"], body: "", state: "OPEN", now: NOW });
     assert.ok(isProseTrackConsistent("ambigua-trade-off-real", track));
+  });
+
+  // #6438
+  it("mesmo-tema-sessao-ativa: sem claim registrado → continua overnight", () => {
+    const track = classifyExecTrack({ labels: [], body: "mesmo tema de sessão peer ativa, sem claim", state: "OPEN", now: NOW });
+    assert.ok(isProseTrackConsistent("mesmo-tema-sessao-ativa", track));
+  });
+
+  it("session-finding-deferida: marcador aguardando-ate futuro → agendada", () => {
+    const track = classifyExecTrack({
+      labels: ["session-finding"],
+      body: "<!-- aguardando-ate: 2026-09-01 -->",
+      state: "OPEN",
+      now: NOW,
+    });
+    assert.ok(isProseTrackConsistent("session-finding-deferida", track));
+  });
+
+  it("stale-aguarda-reexecucao: marcador aguardando-ate futuro → agendada", () => {
+    const track = classifyExecTrack({
+      labels: [],
+      body: "<!-- aguardando-ate: 2026-09-01 -->",
+      state: "OPEN",
+      now: NOW,
+    });
+    assert.ok(isProseTrackConsistent("stale-aguarda-reexecucao", track));
+  });
+
+  // #6437
+  it("escopo-residual: label windows → develop (um dos 4 tracks aceitos)", () => {
+    const track = classifyExecTrack({ labels: ["windows"], body: "", state: "OPEN", now: NOW });
+    assert.ok(isProseTrackConsistent("escopo-residual", track));
   });
 });

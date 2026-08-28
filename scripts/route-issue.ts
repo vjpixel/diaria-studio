@@ -53,7 +53,11 @@
  *
  * Valores válidos (fonte: `MOTIVO_LABEL` em `issue-route.ts`):
  *
- *   --track bloqueada:     conta-de-terceiro, plataforma, kit, execucao
+ *   --track bloqueada:     conta-de-terceiro, plataforma, kit, execucao,
+ *                          not-this-week, next-month (#6272 — as duas
+ *                          últimas gravam automaticamente um marcador
+ *                          `aguardando-ate:` D+7/D+30, ver docstring de
+ *                          `VAGUE_DEFERRAL_AUTO_DEFER_DAYS` em `issue-route.ts`)
  *   --track epica:          epica (default sem --motivo — ver `TRACK_ADD_LABEL`)
  *   --track fora-de-rodada: sem-direcao, decisao, alarme-estado
  *   --track overnight:     alarme-evento
@@ -90,10 +94,12 @@ import { isMainModule } from "./lib/cli-args.ts";
 import {
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  formatRouteIssueMarker,
   labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
   ROUTE_TRACKS,
+  VAGUE_DEFERRAL_AUTO_DEFER_DAYS,
   type RouteMotivo,
   type RouteTrack,
 } from "./lib/issue-route.ts";
@@ -179,9 +185,19 @@ function fetchIssueState(
   };
 }
 
-function buildCommentBody(track: RouteTrack, reason: string | undefined): string {
-  const marker = `<!-- route-issue: track=${track} -->`;
+function buildCommentBody(track: RouteTrack, reason: string | undefined, autoDeferUntilYmd?: string): string {
+  const marker = formatRouteIssueMarker(track);
   const lines = [marker, "", `Roteado para **${track}**${reason ? ` — ${reason}` : "."}`];
+  // #6272 — deferimento vago (not-this-week/next-month) pareado com marcador
+  // aguardando-ate: auto-computado. Registrar a data no próprio comentário
+  // (não só no marcador do corpo) pra quem lê o histórico da issue não
+  // precisar abrir o corpo pra saber quando ela reaparece na fila.
+  if (autoDeferUntilYmd) {
+    lines.push(
+      "",
+      `Marcador \`aguardando-ate: ${autoDeferUntilYmd}\` gravado automaticamente — a issue reaparece na fila nessa data sem ação manual (#6272).`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -215,6 +231,18 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   // Resolve `--motivo`: explícito > auto-derivado (#6197 3b) > undefined (genérico).
   const motivo = options.motivo ?? autoMotivoForTrack(track, fetchedBefore.data.labels);
 
+  // #6272 — deferimento vago (`not-this-week`/`next-month`) é pareado com um
+  // marcador `aguardando-ate:` auto-computado (`now + N dias`, ver
+  // `VAGUE_DEFERRAL_AUTO_DEFER_DAYS`) pra nunca ficar sem mecanismo de
+  // retorno. `undefined` pra qualquer outro track/motivo — comportamento
+  // idêntico ao anterior à #6272.
+  const vagueDeferralDays =
+    track === "bloqueada" && motivo ? VAGUE_DEFERRAL_AUTO_DEFER_DAYS[motivo] : undefined;
+  const vagueDeferralUntilIso =
+    vagueDeferralDays !== undefined
+      ? new Date(now.getTime() + vagueDeferralDays * 24 * 60 * 60 * 1000).toISOString()
+      : undefined;
+
   // Passo 1 — labels: aplica e remove o conjunto certo pro veredito.
   const plan = planRouteLabels(track, motivo);
   const { toAdd, toRemove } = diffRouteLabelPlan(fetchedBefore.data.labels, plan);
@@ -228,14 +256,23 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     }
   }
 
-  // Passo 2 — marcador `aguardando-ate:`: só `agendada` grava; qualquer
-  // outro track remove um marcador pré-existente (ver docstring do módulo
-  // pro porquê — precedência de classifyExecTrack).
+  // Passo 2 — marcador `aguardando-ate:`: `agendada` grava a data pedida;
+  // deferimento vago (#6272) grava a data auto-computada; qualquer outro
+  // track remove um marcador pré-existente (ver docstring do módulo pro
+  // porquê — precedência de classifyExecTrack).
   let markerAction: MarkerAction;
   if (track === "agendada") {
     const syncResult = syncWaitUntilMarkerOnIssue(issue, until as string, cwd, ghRun);
     if (!syncResult.ok) {
       return failResult(`falha ao sincronizar marcador aguardando-ate na issue #${issue}: ${syncResult.error}`);
+    }
+    markerAction = syncResult.action;
+  } else if (vagueDeferralUntilIso) {
+    const syncResult = syncWaitUntilMarkerOnIssue(issue, vagueDeferralUntilIso, cwd, ghRun);
+    if (!syncResult.ok) {
+      return failResult(
+        `falha ao sincronizar marcador aguardando-ate (deferimento vago, #6272) na issue #${issue}: ${syncResult.error}`,
+      );
     }
     markerAction = syncResult.action;
   } else {
@@ -247,7 +284,8 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   }
 
   // Passo 3 — comentário com dedup.
-  const commentBody = buildCommentBody(track, reason);
+  const autoDeferUntilYmd = vagueDeferralUntilIso ? vagueDeferralUntilIso.slice(0, 10) : undefined;
+  const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd);
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -291,7 +329,15 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     state: fetchedAfter.data.state,
     now,
   });
-  if (resolvedTrack !== track) {
+  // #6272 — deferimento vago com marcador auto-computado resolve `agendada`
+  // (não `bloqueada`): `classifyExecTrack` checa o marcador futuro ANTES do
+  // deferimento vago na ordem de precedência (passo 4 < passo 5 da
+  // docstring de `classifyExecTrackWithRule`). Isso é o comportamento
+  // CORRETO, não um efeito colateral a esconder — é o mesmo motivo pelo qual
+  // `backlog-reconcile.ts` (padrão 1, #6198) considera essa coexistência uma
+  // "contradição resolvível": o marcador é o sinal mais específico e vence.
+  const expectedTrack = vagueDeferralUntilIso ? "agendada" : track;
+  if (resolvedTrack !== expectedTrack) {
     return {
       ok: false,
       labelsAdded: toAdd,
@@ -301,8 +347,9 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       validated: false,
       resolvedTrack,
       error:
-        `validação pós-escrita falhou na issue #${issue}: pedido --track ${track}, ` +
-        `mas classifyExecTrack devolveu "${resolvedTrack}" com o estado final ` +
+        `validação pós-escrita falhou na issue #${issue}: pedido --track ${track}` +
+        (vagueDeferralUntilIso ? ` (esperado "${expectedTrack}" por #6272, deferimento vago com marcador)` : "") +
+        `, mas classifyExecTrack devolveu "${resolvedTrack}" com o estado final ` +
         `(labels=[${fetchedAfter.data.labels.join(", ")}], state=${fetchedAfter.data.state}). ` +
         `Isso indica um bloqueio mais forte na precedência (ex: state CLOSED, label de ` +
         `BLOCKED_LABELS ainda presente) ou um gap no mapeamento veredito→labels.`,

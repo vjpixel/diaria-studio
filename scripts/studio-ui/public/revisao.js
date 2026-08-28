@@ -29,6 +29,14 @@ import {
   buildInlineTitleConflictMessage,
 } from "./revisao-inline-edit.js";
 import { nextTabIndex, syncTabAria } from "./tablist-core.js";
+import {
+  DRAFT_PREVIEW_DEBOUNCE_MS,
+  isDraftPreviewSlug,
+  isRawEchoSlug,
+  shouldApplyDraftPreviewResponse,
+  nextDraftPreviewSeq,
+  resolveMobileView,
+} from "./rv-split-preview-format.js";
 
 const SLUGS = ["categorized", "reviewed", "social", "html-final", "html-final-patronos"];
 const FILE_LABELS = {
@@ -69,6 +77,27 @@ let htmlFinalDiverged = false;
 // mesmo cuidado de "snapshot" já documentado em saveCurrent() abaixo.
 let loadedModifiedAt = null;
 
+// #6447 Fatia 3: split view com preview reativo por debounce.
+// `draftPreviewTimer` é o `setTimeout` pendente do debounce (cancelado a
+// cada tecla nova e a cada troca de arquivo/save); `draftPreviewSeq` é o
+// contador de sequência (nunca decrementado) usado por
+// `shouldApplyDraftPreviewResponse` (rv-split-preview-format.js) pra
+// descartar em silêncio a resposta de uma request que ficou pra trás (rede
+// mais lenta que a próxima digitação) — sem isso, a resposta MAIS ANTIGA
+// podia chegar DEPOIS e sobrescrever um preview já mais atualizado.
+let draftPreviewTimer = null;
+let draftPreviewSeq = 0;
+// `true` enquanto o `<iframe>` de preview mostra um DRAFT (texto ainda não
+// salvo, via POST .../preview-draft ou eco local de html-final) — usado só
+// pra DESLIGAR a edição inline de título (#3806) nesse estado: aquele
+// mecanismo salva DIRETO em disco via PUT .../destaque-title, uma escrita
+// que não tem relação com o texto ainda-não-salvo do textarea cru; habilitar
+// os dois ao mesmo tempo deixaria o editor clicar um título no preview
+// "ao vivo" e gravar em cima de uma versão do MD que ele nem salvou ainda —
+// confuso e arriscado o bastante pra desligar de propósito, mesmo custando a
+// conveniência da edição inline enquanto o preview está em modo draft.
+let previewIsDraft = false;
+
 const el = {
   backLink: document.getElementById("back-link"),
   titulo: document.getElementById("rv-titulo"),
@@ -99,7 +128,13 @@ const el = {
   previewFrame: document.getElementById("rv-preview-frame"),
   previewRefreshBtn: document.getElementById("rv-preview-refresh-btn"),
   previewHint: document.getElementById("rv-preview-hint"),
+  previewDraftStatus: document.getElementById("rv-preview-draft-status"),
   inlineEditStatus: document.getElementById("rv-inline-edit-status"),
+  // #6447 Fatia 3: split view (editor | preview) + toggle mobile.
+  splitView: document.getElementById("rv-split-view"),
+  splitToggle: document.getElementById("rv-split-toggle"),
+  splitToggleEditor: document.getElementById("rv-split-toggle-editor"),
+  splitTogglePreview: document.getElementById("rv-split-toggle-preview"),
 };
 
 function setConn(status) {
@@ -137,24 +172,35 @@ const PREVIEW_TAB_LABELS = {
 // editor), preserva o <code>/<strong> do markup original em vez de virar
 // texto corrido sem formatação.
 const PREVIEW_HINTS = {
+  // #6447 Fatia 3: "social" e "reviewed" agora têm preview REATIVO — o texto
+  // ainda não salvo do textarea já aparece aqui ~700ms depois de parar de
+  // digitar (ver scheduleDraftPreview()/runDraftPreview() abaixo), sem
+  // precisar salvar. O botão "Atualizar preview" continua existindo pra
+  // forçar um refresh manual (útil logo após abrir a aba, antes de qualquer
+  // digitação disparar o debounce).
   social:
-    "Renderizado a partir de <code>03-social.md</code> salvo no disco (mesmo renderer " +
-    "da Etapa 4, #1800) — posts de LinkedIn/Facebook/Instagram lado a lado, com quebras " +
-    "de linha e hashtags como aparecem publicados. Salve antes de atualizar o preview.",
+    "<strong>Ao vivo</strong> enquanto você digita (re-render ~700ms após parar, texto " +
+    "ainda não salvo) — mesmo renderer da Etapa 4 (#1800) que gera o preview a partir de " +
+    "<code>03-social.md</code>: posts de LinkedIn/Facebook/Instagram lado a lado, com " +
+    "quebras de linha e hashtags como aparecem publicados.",
   // #3806 (Opção B spike): só a aba "reviewed" tem os títulos de destaque
   // editáveis diretamente no preview (clique no título, edite, Enter ou
   // clique fora salva) — o MD por trás continua a fonte da verdade, a edição
   // reescreve só a região do título (ver setupInlineTitleEditing() abaixo).
+  // #6447 Fatia 3: essa edição inline fica DESLIGADA enquanto o preview
+  // mostra um draft (`previewIsDraft`) — reaparece assim que o preview volta
+  // a refletir o disco (save ou troca de aba).
   reviewed:
-    "Renderizado a partir de <code>02-reviewed.md</code> salvo no disco (mesmo caminho " +
-    "do Stage 4) — salve antes de atualizar o preview. <strong>Títulos de destaque são " +
-    "editáveis aqui</strong>: clique no título, edite, e saia do campo (ou Enter) pra " +
-    "salvar direto no Markdown, sem abrir a aba de texto cru.",
+    "<strong>Ao vivo</strong> enquanto você digita (re-render ~700ms após parar, texto " +
+    "ainda não salvo) — mesmo caminho de render do Stage 4 a partir de " +
+    "<code>02-reviewed.md</code>. <strong>Títulos de destaque são editáveis aqui</strong> " +
+    "quando o preview reflete a versão SALVA (não durante a digitação): clique no título, " +
+    "edite, e saia do campo (ou Enter) pra salvar direto no Markdown.",
   default:
     "Renderizado a partir de <code>02-reviewed.md</code> salvo no disco (mesmo caminho " +
     "do Stage 4) — salve antes de atualizar o preview. Exceção: com a aba " +
-    "<strong>HTML final</strong> ativa, mostra o <code>_internal/newsletter-final.html</code> " +
-    "salvo diretamente (sem passar pelo Markdown).",
+    "<strong>HTML final</strong> ativa, o preview mostra o próprio HTML digitado, ao vivo " +
+    "e sem ida ao servidor (eco local — não há Markdown pra parsear).",
 };
 
 // #3687: mantém a sessão de chat (chat-drawer.js, painel fixo à esquerda)
@@ -214,6 +260,7 @@ async function loadFile(slug, { force } = {}) {
     const proceed = window.confirm("Há edições não salvas neste arquivo. Descartar e trocar de aba?");
     if (!proceed) return;
   }
+  cancelDraftPreview(); // #6447 Fatia 3: nunca deixar o debounce da aba ANTERIOR sobreviver à troca
   currentSlug = slug;
   renderTabs();
   el.editor.value = "";
@@ -298,6 +345,13 @@ async function saveCurrent() {
   // ANTES de qualquer await, nunca lido "ao vivo" depois (uma troca de aba
   // durante o guard reatribuiria `loadedModifiedAt` pro slug novo).
   const expectedModifiedAtAtSaveStart = loadedModifiedAt;
+  // #6447 Fatia 3: um save é sempre mais autoritativo que qualquer draft em
+  // voo — cancela o debounce pendente e avança a sequência (invalida
+  // qualquer resposta de preview-draft que ainda não voltou); o preview pós-
+  // save (refreshActiveSidePaneAfterSave() -> refreshPreview()) já reflete o
+  // disco de qualquer forma.
+  cancelDraftPreview();
+  draftPreviewSeq = nextDraftPreviewSeq(draftPreviewSeq);
   el.saveBtn.disabled = true;
   try {
     // #3635/#3668: guard — salvar 02-reviewed.md enquanto o HTML final já
@@ -553,6 +607,13 @@ function showPreviewError(err) {
 }
 
 async function refreshPreview() {
+  // #6447 Fatia 3: qualquer refresh do disco (manual, pós-save, troca de
+  // aba) cancela um debounce pendente e invalida qualquer resposta de draft
+  // ainda em voo — a versão do disco que está prestes a carregar é mais
+  // recente que qualquer draft anterior.
+  cancelDraftPreview();
+  previewIsDraft = false;
+  if (el.previewDraftStatus) el.previewDraftStatus.textContent = "";
   try {
     // #4275: "html-final-patronos" é a MESMA natureza de "html-final" — HTML
     // já pré-renderizado, mostrado via srcdoc direto do que está salvo em
@@ -578,6 +639,129 @@ async function refreshPreview() {
     el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/${endpoint}?t=${Date.now()}`;
   } catch (err) {
     showPreviewError(err);
+  }
+}
+
+// ── #6447 Fatia 3: split view — preview reativo por debounce ─────────────
+
+/** Cancela o timer de debounce pendente, se houver — chamado sempre que o
+ * preview vai ser atualizado por outro caminho (refresh manual, pós-save,
+ * troca de aba/arquivo) pra nunca deixar um `setTimeout` velho disparar em
+ * cima de um estado que já mudou de baixo dele. */
+function cancelDraftPreview() {
+  if (draftPreviewTimer !== null) {
+    clearTimeout(draftPreviewTimer);
+    draftPreviewTimer = null;
+  }
+}
+
+/** Reagendado a cada tecla (`input` no textarea) — só quando o painel lateral
+ * "Preview" está de fato aberto (sem custo nenhum enquanto o editor está
+ * olhando Lints/Diff; o preview daquele momento simplesmente fica obsoleto
+ * até o editor voltar pra aba Preview, quando `activateSidePane("preview")`
+ * já dispara um `runDraftPreview()` imediato). `DRAFT_PREVIEW_DEBOUNCE_MS`
+ * (rv-split-preview-format.js) — ~700ms, ver rationale no próprio módulo. */
+function scheduleDraftPreview() {
+  if (el.panePreview.hidden) return;
+  cancelDraftPreview();
+  draftPreviewTimer = setTimeout(() => {
+    draftPreviewTimer = null;
+    // Reconfere no momento do disparo — o editor pode ter saído da aba
+    // Preview durante os 700ms de espera (foi pra Lints/Diff); nesse caso o
+    // request seria desperdiçado atualizando um iframe que não está visível.
+    if (el.panePreview.hidden) return;
+    runDraftPreview().catch(showPreviewError);
+  }, DRAFT_PREVIEW_DEBOUNCE_MS);
+}
+
+/** Renderiza o preview a partir do texto ATUAL do textarea (ainda não
+ * salvo). 2 caminhos, conforme `currentSlug`:
+ *   - `isRawEchoSlug` (html-final/html-final-patronos): eco LOCAL, sem ida
+ *     ao servidor — o conteúdo digitado JÁ É o HTML final, nenhum parsing
+ *     envolvido (ver rv-split-preview-format.js pro porquê).
+ *   - `isDraftPreviewSlug` (reviewed/social): `POST .../preview-draft`
+ *     (studio-review.ts::buildReviewPreviewDraftHtml) — reusa o MESMO
+ *     renderer do preview salvo, só que sobre o texto do corpo da request em
+ *     vez do arquivo em disco. NUNCA escreve nada — puramente leitura.
+ *   - Qualquer outro slug (categorized): sem preview reativo, no-op —
+ *     documentado no hint da UI e em `isDraftPreviewSlug`.
+ * Guard de sequência (`shouldApplyDraftPreviewResponse`) descarta uma
+ * resposta que chegou fora de ordem (2ª digitação disparou request antes da
+ * resposta da 1ª voltar) — sem isso, a resposta mais ANTIGA podia sobrescrever
+ * um preview já mais atual. */
+async function runDraftPreview() {
+  const slugAtDraftStart = currentSlug;
+  const contentAtDraftStart = el.editor.value;
+
+  if (isRawEchoSlug(slugAtDraftStart)) {
+    el.previewFrame.removeAttribute("src");
+    previewIsDraft = true;
+    el.previewFrame.srcdoc =
+      contentAtDraftStart ||
+      '<p style="font-family:sans-serif;padding:1rem;color:#444">(vazio)</p>';
+    if (el.previewDraftStatus) el.previewDraftStatus.textContent = "";
+    return;
+  }
+
+  if (!isDraftPreviewSlug(slugAtDraftStart)) return; // categorized: sem preview reativo
+
+  draftPreviewSeq = nextDraftPreviewSeq(draftPreviewSeq);
+  const seq = draftPreviewSeq;
+  if (el.previewDraftStatus) el.previewDraftStatus.textContent = "Atualizando preview…";
+
+  const { body } = await fetchJson(
+    `/api/editions/${encodeURIComponent(aammdd)}/review/${slugAtDraftStart}/preview-draft`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: contentAtDraftStart }),
+    },
+  );
+
+  if (!shouldApplyDraftPreviewResponse(seq, draftPreviewSeq)) return; // resposta obsoleta — descarta
+  // A aba pode ter mudado enquanto a request estava em voo (troca rápida) —
+  // aplicar um preview de OUTRO slug no iframe seria pior que não aplicar
+  // nada (o próximo loadFile()/refreshPreview() já cuida do slug novo).
+  if (currentSlug !== slugAtDraftStart) return;
+
+  el.previewFrame.removeAttribute("src");
+  previewIsDraft = true;
+  if (body && typeof body.html === "string") {
+    el.previewFrame.srcdoc = body.html;
+    if (el.previewDraftStatus) {
+      // #6447 guardrail: Markdown malformado no MEIO da digitação (destaque
+      // incompleto, tag quebrada) nunca deveria virar exceção não tratada —
+      // buildReviewPreviewDraftHtml já é fail-soft (body.ok:false + HTML de
+      // erro embutido), este status só nomeia o estado pro editor, sem
+      // travar nada.
+      el.previewDraftStatus.textContent = body.ok ? "" : "Preview indisponível temporariamente — corrija o Markdown para continuar editando.";
+    }
+  } else {
+    // #6447 review (silent-failure-hunter, achado 1): um 500/400 de verdade
+    // (ex: exceção não tratada em handleReviewPreviewDraft) responde
+    // `{error: "..."}`, sem campo `html` — o caminho genérico anterior
+    // descartava esse `body.error` real e mostrava sempre a mesma mensagem
+    // opaca. Repassa o texto do servidor quando existe; só cai no genérico
+    // quando nem isso está disponível (corpo vazio/não-JSON).
+    const detail = body && typeof body.error === "string" ? body.error : "resposta inesperada do preview-draft";
+    showPreviewError(new Error(detail));
+  }
+}
+
+/** Toggle Editor/Preview (item 1 do escopo, mobile — abaixo de 640px).
+ * `resolveMobileView` (rv-split-preview-format.js) garante um dos 2 valores
+ * válidos; clicar "Preview" também ativa a aba lateral "preview" (o toggle
+ * mobile decide qual COLUNA aparece, a aba lateral decide qual CONTEÚDO
+ * aparece dentro da coluna direita — sem isso, "Preview" no mobile podia
+ * mostrar Lints/Diff em vez do preview, se essa era a última aba lateral
+ * ativa). */
+function setMobileView(requestedView) {
+  const view = resolveMobileView(requestedView);
+  if (el.splitView) el.splitView.dataset.mobileView = view;
+  if (el.splitToggleEditor) el.splitToggleEditor.classList.toggle("active", view === "editor");
+  if (el.splitTogglePreview) el.splitTogglePreview.classList.toggle("active", view === "preview");
+  if (el.splitToggle) {
+    syncTabAria(el.splitToggle.querySelectorAll(".rv-tab"), (btn) => btn.dataset.view === view);
   }
 }
 
@@ -682,6 +866,12 @@ function injectInlineEditAffordanceStyle(doc) {
  * algum motivo inesperado) não deveria quebrar o resto do painel. */
 function setupInlineTitleEditing() {
   if (currentSlug !== "reviewed") return;
+  // #6447 Fatia 3: desligada enquanto o preview mostra um DRAFT (texto ainda
+  // não salvo) — ver comentário de `previewIsDraft` no topo do arquivo pro
+  // porquê (a edição inline grava DIRETO em disco via PUT
+  // .../destaque-title, uma escrita que não tem relação com o textarea
+  // ainda-não-salvo).
+  if (previewIsDraft) return;
   const doc = el.previewFrame.contentDocument;
   if (!doc) return;
   injectInlineEditAffordanceStyle(doc);
@@ -718,7 +908,17 @@ function activateSidePane(pane) {
   el.paneLint.hidden = pane !== "lint";
   el.paneDiff.hidden = pane !== "diff";
   el.panePreview.hidden = pane !== "preview";
-  if (pane === "preview") refreshPreview().catch(showPreviewError);
+  if (pane === "preview") {
+    // #6447 Fatia 3: se há edição não salva no textarea, abrir a aba Preview
+    // mostra o DRAFT (texto atual) em vez do que está no disco — reusa o
+    // mesmo caminho do debounce, só que disparado na hora (sem esperar
+    // 700ms), já que o editor acabou de pedir o preview explicitamente.
+    if (dirty && (isDraftPreviewSlug(currentSlug) || isRawEchoSlug(currentSlug))) {
+      runDraftPreview().catch(showPreviewError);
+    } else {
+      refreshPreview().catch(showPreviewError);
+    }
+  }
 }
 
 // #3874: navegação por setas (WAI-ARIA APG) num `role="tablist"` — ativação
@@ -746,11 +946,29 @@ function bindEvents() {
   });
   bindTablistArrowKeys(el.tabs, (btn) => loadFile(btn.dataset.slug));
   bindTablistArrowKeys(el.sideTabs, (btn) => activateSidePane(btn.dataset.pane));
+  // #6447 review (code-reviewer F2): #rv-split-toggle é `role="tablist"`
+  // como os outros 2 — precisa da mesma navegação por seta (WAI-ARIA APG,
+  // #3874) pra não regredir a convenção que este arquivo já estabelece.
+  if (el.splitToggle) {
+    bindTablistArrowKeys(el.splitToggle, (btn) => {
+      setMobileView(btn.dataset.view);
+      if (btn.dataset.view === "preview") activateSidePane("preview");
+    });
+  }
   el.editor.addEventListener("input", () => {
     dirty = true;
     el.saveStatus.textContent = "Não salvo";
     el.saveStatus.className = "rv-save-status";
+    scheduleDraftPreview(); // #6447 Fatia 3
   });
+  // #6447 Fatia 3: toggle mobile Editor/Preview.
+  if (el.splitToggleEditor) el.splitToggleEditor.addEventListener("click", () => setMobileView("editor"));
+  if (el.splitTogglePreview) {
+    el.splitTogglePreview.addEventListener("click", () => {
+      setMobileView("preview");
+      activateSidePane("preview");
+    });
+  }
   el.saveBtn.addEventListener("click", saveCurrent);
   el.diffBtn.addEventListener("click", runDiff);
   el.lintBtn.addEventListener("click", runLints);
@@ -770,14 +988,36 @@ function bindEvents() {
   window.addEventListener("beforeunload", (e) => {
     if (dirty) { e.preventDefault(); e.returnValue = ""; }
   });
+  // #6447 Fatia 2: o Editor por destaque (rv-highlights.js) dispara este
+  // evento após salvar `02-reviewed.md` — mesmo hook de resincronização já
+  // usado por `saveInlineTitle()` acima (loadFile force + dirty=false), só
+  // que disparado por OUTRO painel em vez de uma edição feita aqui dentro.
+  // Guard `currentSlug === "reviewed"` mesmo motivo de sempre: só essa aba
+  // corresponde ao arquivo que mudou. `!dirty` (#6493 review, code-reviewer
+  // P2): se o editor já tem edição NÃO SALVA no textarea cru desta mesma
+  // aba, um force-reload aqui a descartaria silenciosamente, sem o dialog de
+  // conflito que `saveCurrent()` normalmente mostraria — pular o reload
+  // deixa a edição local intacta; o guard de conflito de sempre (#3729)
+  // ainda protege quando o editor finalmente clicar Salvar.
+  window.addEventListener("rv:reviewed-saved", () => {
+    if (currentSlug === "reviewed" && !dirty) {
+      loadFile("reviewed", { force: true });
+    }
+  });
 
-  // #3874: `#rv-side-tabs` já nasce com a aba "Lints" marcada `.active` no
-  // HTML estático (padrão pré-existente), mas `activateSidePane()` só roda
-  // no primeiro clique/ação (runDiff()/runLints()) — sem chamar aqui,
+  // #3874: `#rv-side-tabs` já nasce com uma aba marcada `.active` no HTML
+  // estático (#6447 Fatia 3: "Preview" desde essa fatia, era "Lints" antes),
+  // mas `activateSidePane()` só roda no primeiro clique/ação
+  // (runDiff()/runLints()/o próprio preview inicial) — sem chamar aqui,
   // `aria-selected` ficaria ausente em TODOS os botões até essa 1ª
   // interação. `#rv-tabs` não precisa do mesmo tratamento: `renderTabs()`
   // (chamada logo abaixo, em `init()`) já cobre o estado inicial dele.
   syncTabAria(el.sideTabs.querySelectorAll(".rv-tab"), (btn) => btn.classList.contains("active"));
+  // #6447 Fatia 3: sincroniza o toggle mobile Editor/Preview com o estado
+  // inicial já declarado no HTML (`data-mobile-view="editor"`) — mesmo
+  // motivo do syncTabAria acima, sem isso `aria-selected` fica ausente até o
+  // 1º clique.
+  setMobileView("editor");
 }
 
 async function checkEditionExists() {

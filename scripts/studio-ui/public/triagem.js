@@ -127,14 +127,59 @@ function execTrackEntry(track) {
   return (data.execTrackUi ?? []).find((e) => e.track === track);
 }
 
-function dispatchBadge(track) {
-  const entry = execTrackEntry(track);
+// #6200: `matched` distingue um `overnight` VERIFICADO (alguma label/marcador
+// decidiu positivamente) de um `overnight` POR OMISSÃO (`matched === "default"`
+// — nenhuma label disse o contrário, ninguém olhou). Os dois eram, antes
+// desta issue, o MESMO badge — "fila com 2 itens" e "fila com 2 itens que
+// ninguém conferiu" liam como a mesma tela. `matched` é opcional (chamadas
+// sem o argumento, como a legenda em `renderDispatchTrackLegend`, nunca
+// acionam o sufixo — não faz sentido marcar "sem sinal" numa entrada de
+// vocabulário genérica, só numa issue real).
+// Exportada (#6200) só pra ser testável diretamente — `test/triagem-badge.test.ts`
+// cobre o sufixo "·sem sinal"/classe `dispatch-default` sem precisar simular
+// o DOM inteiro (o guard de carga em `test/triagem-module-loads.test.ts` cobre
+// só "o módulo não explode", não o conteúdo de cada célula — ver docstring
+// de lá). `data`/`execTrackEntry` continuam módulo-privados: o caller de
+// teste passa `execTrackUiOverride` explicitamente em vez de mutar o estado
+// do módulo por fora.
+export function dispatchBadge(track, matched, execTrackUiOverride) {
+  const entry = execTrackUiOverride
+    ? execTrackUiOverride.find((e) => e.track === track)
+    : execTrackEntry(track);
   // Fallback pro valor cru só cobre a janela em que o payload ainda não
   // chegou (1º render antes do fetch); depois disso, toda variante servida
   // pelo servidor tem entrada garantida pelo Record do lib.
   const labelPt = entry?.label ?? track;
   const title = entry?.explain ?? "";
-  return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
+  const isDefault = matched === "default";
+  const label = isDefault ? `${labelPt} ·sem sinal` : labelPt;
+  const fullTitle = isDefault
+    ? `${title} Nenhum sinal positivo (label/marcador) classificou esta issue — default por omissão, ninguém verificou.`
+    : title;
+  const cls = isDefault ? `dispatch-badge dispatch-${track} dispatch-default` : `dispatch-badge dispatch-${track}`;
+  return `<span class="${cls}" title="${escapeHtml(fullTitle)}">${label}</span>`;
+}
+
+// #6436 — issue reivindicada por uma sessão coordenadora ATIVA (`data/sessions/`,
+// via `claim` no payload) mostra "em andamento — {kind} {machine}" em vez de
+// ficar indistinguível de uma issue genuinamente livre. Mais crítico pra
+// claim da sessão `continuo` (cron de 60min, nunca fica stale por si só) —
+// era exatamente essa combinação que fazia a issue parecer "Overnight sem
+// sinal" pra sempre no painel, mesmo já tendo dono. `claim` ausente/null →
+// string vazia (nenhum badge extra), nunca lança.
+export function claimBadge(claim) {
+  if (!claim) return "";
+  const who = `${claim.kind}-${claim.machineTag}`;
+  const title = claim.claimedAt
+    ? `Reivindicada por ${who} (sessão ${claim.sessionId}) desde ${claim.claimedAt}`
+    : `Reivindicada por ${who} (sessão ${claim.sessionId})`;
+  // Classe por kind (28/08, pedido do editor): o trabalho do CONTINUO era
+  // invisível — a issue classifica `overnight` (taxonomia certa: continuo
+  // drena a fila overnight) e o kind real só existia neste badge, neutro
+  // demais pra ser notado. `claim-kind-*` dá cor própria por kind; kind
+  // desconhecido cai na classe base (nunca quebra).
+  const kindCls = /^[a-z-]+$/.test(claim.kind) ? ` claim-kind-${claim.kind}` : "";
+  return `<span class="claim-badge${kindCls}" title="${escapeHtml(title)}">em andamento — ${escapeHtml(who)}</span>`;
 }
 
 // #3874: o significado de cada valor de Classificação só existia como
@@ -253,7 +298,7 @@ function renderIssuesTable() {
     tr.innerHTML = `
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
-      <td>${dispatchBadge(i.execTrack)}</td>
+      <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
       <td>${labelsBadges(i.labels)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>

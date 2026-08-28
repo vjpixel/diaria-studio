@@ -71,8 +71,17 @@ describe("needsSessionId", () => {
     assert.equal(needsSessionId("npx tsx scripts/overnight-session-marker.ts --end"), false);
   });
 
-  it("session-registry.ts register/heartbeat/end/claim-issue/is-claimed/merge-lock-* → true", () => {
-    for (const sub of ["register", "heartbeat", "end", "claim-issue", "is-claimed", "merge-lock-acquire", "merge-lock-release"]) {
+  it("session-registry.ts register/heartbeat/end/claim-issue/unclaim-issue/is-claimed/merge-lock-* → true", () => {
+    for (const sub of [
+      "register",
+      "heartbeat",
+      "end",
+      "claim-issue",
+      "unclaim-issue",
+      "is-claimed",
+      "merge-lock-acquire",
+      "merge-lock-release",
+    ]) {
       assert.equal(
         needsSessionId(`npx tsx scripts/lib/session-registry.ts ${sub} --kind overnight`),
         true,
@@ -104,6 +113,41 @@ describe("needsSessionId", () => {
     assert.equal(needsSessionId("npm test"), false);
     assert.equal(needsSessionId(""), false);
     assert.equal(needsSessionId(undefined), false);
+  });
+
+  it(
+    "resolve-develop-plan-path.ts standalone → true, incondicional (#6259/#6265: script inteiro " +
+      "exige --session-id, sem noção de subcomando)",
+    () => {
+      assert.equal(
+        needsSessionId("npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826"),
+        true,
+      );
+    },
+  );
+
+  it("resolve-develop-plan-path.ts encadeado → false, mesmo invariante dos outros 2 alvos (#6259/#6265)", () => {
+    assert.equal(
+      needsSessionId("git pull && npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826"),
+      false,
+    );
+  });
+
+  it(
+    "resolve-overnight-plan-path.ts standalone → true, incondicional (#6328: mesmo invariante do irmão develop)",
+    () => {
+      assert.equal(
+        needsSessionId("npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826"),
+        true,
+      );
+    },
+  );
+
+  it("resolve-overnight-plan-path.ts encadeado → false, mesmo invariante dos outros alvos (#6328)", () => {
+    assert.equal(
+      needsSessionId("git pull && npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826"),
+      false,
+    );
   });
 });
 
@@ -137,6 +181,14 @@ describe("needsPid (#6160)", () => {
 
   it("overnight-session-marker.ts → false (script sem noção de --pid)", () => {
     assert.equal(needsPid("npx tsx scripts/overnight-session-marker.ts --start"), false);
+  });
+
+  it("resolve-develop-plan-path.ts → false (#6259/#6265: 3º alvo não aceita --pid)", () => {
+    assert.equal(needsPid("npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826"), false);
+  });
+
+  it("resolve-overnight-plan-path.ts → false (#6328: 4º alvo também não aceita --pid)", () => {
+    assert.equal(needsPid("npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826"), false);
   });
 
   it("comando encadeado → false, mesmo citando register", () => {
@@ -187,6 +239,17 @@ describe("buildUpdatedCommand (#5156)", () => {
     assert.equal(result, "npx tsx scripts/lib/session-registry.ts register --kind overnight --session-id 'sess-abc'");
   });
 
+  it("injeta --session-id em session-registry.ts unclaim-issue (#6317 — precisa saber DE QUEM remover)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind develop --issue 6317",
+      "sess-abc",
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/lib/session-registry.ts unclaim-issue --kind develop --issue 6317 --session-id 'sess-abc'",
+    );
+  });
+
   it("retorna null quando o comando já tem --session-id (nunca sobrescreve)", () => {
     const result = buildUpdatedCommand(
       "npx tsx scripts/overnight-session-marker.ts --start --session-id ja-presente",
@@ -218,6 +281,62 @@ describe("buildUpdatedCommand (#5156)", () => {
   it("injeta --session-id em session-registry.ts is-claimed (#5161 item 4)", () => {
     const result = buildUpdatedCommand("npx tsx scripts/lib/session-registry.ts is-claimed --issue 1", "sess-abc");
     assert.equal(result, "npx tsx scripts/lib/session-registry.ts is-claimed --issue 1 --session-id 'sess-abc'");
+  });
+
+  it("injeta --session-id em resolve-develop-plan-path.ts standalone (#6259/#6265) — sem --pid, script não aceita", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826",
+      "sess-abc",
+      4242,
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826 --session-id 'sess-abc'",
+    );
+  });
+
+  it("resolve-develop-plan-path.ts já com --session-id → null, nunca sobrescreve (#6259/#6265)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826 --session-id ja-presente",
+      "sess-novo",
+    );
+    assert.equal(result, null);
+  });
+
+  it("resolve-develop-plan-path.ts encadeado → null, mesmo invariante dos outros 2 alvos (#6259/#6265)", () => {
+    const result = buildUpdatedCommand(
+      "git pull && npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826",
+      "sess-abc",
+    );
+    assert.equal(result, null);
+  });
+
+  it("injeta --session-id em resolve-overnight-plan-path.ts standalone (#6328) — sem --pid, script não aceita", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826",
+      "sess-abc",
+      4242,
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826 --session-id 'sess-abc'",
+    );
+  });
+
+  it("resolve-overnight-plan-path.ts já com --session-id → null, nunca sobrescreve (#6328)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826 --session-id ja-presente",
+      "sess-novo",
+    );
+    assert.equal(result, null);
+  });
+
+  it("resolve-overnight-plan-path.ts encadeado → null, mesmo invariante dos outros alvos (#6328)", () => {
+    const result = buildUpdatedCommand(
+      "git pull && npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826",
+      "sess-abc",
+    );
+    assert.equal(result, null);
   });
 
   it("retorna null pra script-alvo com script multi-linha (newline embutido, #5161 item 6)", () => {
@@ -367,6 +486,96 @@ describe("CLI end-to-end — harness real via stdin (#5161 fleet review item 10)
       "npx tsx scripts/lib/session-registry.ts register --kind overnight --pid 999 --session-id 'sess-real-abc'",
     );
   });
+
+  it(
+    "PreToolUse Bash real com resolve-develop-plan-path.ts standalone (#6259/#6265) → injeta " +
+      "--session-id (sem --pid — script não aceita)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: { command: "npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826" },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(
+        output.hookSpecificOutput.updatedInput.command,
+        "npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826 --session-id 'sess-real-abc'",
+      );
+    },
+  );
+
+  it(
+    "PreToolUse Bash real com resolve-develop-plan-path.ts encadeado → nenhum stdout emitido (#6259/#6265)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: {
+          command: "git pull && npx tsx scripts/resolve-develop-plan-path.ts --aammdd 260826",
+        },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stdout.trim(), "");
+    },
+  );
+
+  it(
+    "PreToolUse Bash real com resolve-overnight-plan-path.ts standalone (#6328) → injeta " +
+      "--session-id (sem --pid — script não aceita)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: { command: "npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826" },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.hookEventName, "PreToolUse");
+      assert.equal(
+        output.hookSpecificOutput.updatedInput.command,
+        "npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826 --session-id 'sess-real-abc'",
+      );
+    },
+  );
+
+  it(
+    "PreToolUse Bash real com resolve-overnight-plan-path.ts encadeado → nenhum stdout emitido (#6328)",
+    () => {
+      const payload = {
+        session_id: "sess-real-abc",
+        tool_name: "Bash",
+        tool_input: {
+          command: "git pull && npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826",
+        },
+      };
+      const result = spawnSync(process.execPath, [hookPath], {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 0);
+      assert.equal(result.stdout.trim(), "");
+    },
+  );
 
   it("comando não-alvo (ex: npm test) via stdin real → nenhum stdout emitido", () => {
     const payload = { session_id: "sess-real-abc", tool_name: "Bash", tool_input: { command: "npm test" } };

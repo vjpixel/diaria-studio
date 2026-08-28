@@ -1,0 +1,132 @@
+/**
+ * claim-staleness.test.ts (#6436)
+ *
+ * Cobre o cenário real da issue: a sessão `continuo` reivindica uma issue,
+ * re-reivindica a cada 60min sem soltar, e nunca produz PR — a claim precisa
+ * envelhecer mesmo com a sessão sempre "viva".
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  flattenClaims,
+  findAgedClaims,
+  CLAIM_STALE_AGE_MS,
+  type ClaimBearingSession,
+} from "../scripts/lib/claim-staleness.ts";
+
+describe("flattenClaims", () => {
+  it("achata claimed_issues de múltiplas sessões numa lista de entradas", () => {
+    const sessions: ClaimBearingSession[] = [
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "abc123",
+        claimed_issues: [6051, 6185],
+        claimed_issues_at: { "6051": "2026-08-20T00:00:00Z", "6185": "2026-08-21T00:00:00Z" },
+      },
+      {
+        kind: "overnight",
+        machineTag: "neo",
+        sessionId: "def456",
+        claimed_issues: [6300],
+      },
+    ];
+    const entries = flattenClaims(sessions);
+    assert.deepEqual(entries, [
+      { issueNumber: 6051, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-20T00:00:00Z" },
+      { issueNumber: 6185, kind: "continuo", machineTag: "helios", sessionId: "abc123", claimedAt: "2026-08-21T00:00:00Z" },
+      { issueNumber: 6300, kind: "overnight", machineTag: "neo", sessionId: "def456", claimedAt: null },
+    ]);
+  });
+
+  it("sessão sem claimed_issues não gera entradas", () => {
+    assert.deepEqual(flattenClaims([{ kind: "develop", machineTag: "neo", sessionId: "x" }]), []);
+  });
+});
+
+describe("findAgedClaims", () => {
+  const NOW = Date.parse("2026-08-28T00:00:00Z");
+
+  it("cenário real #6436: claim de 7h sem PR aberto → finding", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "5d791ef6",
+        claimed_issues: [6051],
+        claimed_issues_at: { "6051": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].issueNumber, 6051);
+    assert.equal(findings[0].kind, "continuo");
+    assert.ok(findings[0].ageMs >= CLAIM_STALE_AGE_MS);
+  });
+
+  it("claim de 7h COM PR aberto → nunca reporta (trabalho real em andamento)", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "5d791ef6",
+        claimed_issues: [6051],
+        claimed_issues_at: { "6051": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => true);
+    assert.deepEqual(findings, []);
+  });
+
+  it("claim recente (dentro do teto) nunca reporta, mesmo sem PR", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [1],
+        claimed_issues_at: { "1": new Date(NOW - 60_000).toISOString() },
+      },
+    ]);
+    assert.deepEqual(findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false), []);
+  });
+
+  it("claim sem claimedAt conhecido (sessão pré-#6436) nunca reporta — idade desconhecida ≠ idade excedida", () => {
+    const entries = flattenClaims([
+      { kind: "continuo", machineTag: "helios", sessionId: "x", claimed_issues: [1] },
+    ]);
+    assert.deepEqual(findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false), []);
+  });
+
+  it("hasOpenPr indeterminado (null, gh indisponível) nunca reporta — fail-soft", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [1],
+        claimed_issues_at: { "1": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    assert.deepEqual(findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => null), []);
+  });
+
+  it("resultado ordenado por número de issue", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [300, 100, 200],
+        claimed_issues_at: {
+          "300": new Date(NOW - 7 * 3_600_000).toISOString(),
+          "100": new Date(NOW - 8 * 3_600_000).toISOString(),
+          "200": new Date(NOW - 9 * 3_600_000).toISOString(),
+        },
+      },
+    ]);
+    const findings = findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false);
+    assert.deepEqual(findings.map((f) => f.issueNumber), [100, 200, 300]);
+  });
+});

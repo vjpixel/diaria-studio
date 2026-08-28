@@ -159,5 +159,17 @@
     ],
     "editionTitle": "Hacker chinês usa DeepSeek em ataques autônomos",
     "manual": true
+  },
+  {
+    "date": "2026-08-19",
+    "editionSlug": "tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "url": "https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia",
+    "matchedHeadlines": [
+      "TSE exige aviso em propaganda eleitoral com IA"
+    ],
+    "primarySourceUrls": [
+      "https://g1.globo.com/jornal-hoje/noticia/2026/08/17/eleicoes-2026-entenda-riscos-do-uso-de-inteligencia-artificial-nas-campanhas-veja-como-identificar-conteudos-criados-por-ia.ghtml"
+    ],
+    "editionTitle": "TSE exige aviso em propaganda eleitoral com IA"
   }
 ]

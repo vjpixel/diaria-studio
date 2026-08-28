@@ -285,7 +285,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],
     logPath: "clarice-subscribers/.guardrail-alarm.log",
     schedule: { kind: "interval", hours: 4 },
-    issue: "#4064, #4131 finding 1",
+    // #6563: 75 = EX_TEMPFAIL (`scripts/clarice-guardrail-alarm.ts`,
+    // `shouldSkipForLowQuota`) — skip deliberado (cota Brevo baixa, #6034)
+    // é resultado esperado, não falha; sem isto, `Diaria-Systemd-Unit-Rate-
+    // Alarm` contava cada skip como falha na taxa (achado ao vivo #6455).
+    successExitCodes: [75],
+    issue: "#4064, #4131 finding 1, #6563",
   },
   {
     name: "Diaria-Clarice-Opens-Catchup-Alarm",
@@ -513,6 +518,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // script nunca falha/alarma nesse caso (ver docstring do script).
     schedule: { kind: "daily", hour: 10, minute: 20 },
     issue: "#5311",
+  },
+  {
+    name: "Diaria-Subscribe-Redirect-Drift-Check",
+    description:
+      "smoke-test do destino do redirect /subscribe (perfil hospedado Kit) + / e /p/{slug} do Worker diaria-site — 200 sozinho não basta, exige os marcadores esperados no corpo (página de erro pode vir 200)",
+    steps: [{ key: "check", script: "scripts/subscribe-redirect-drift-check.ts" }],
+    logPath: "subscribe-redirect-drift-check/.drift-check.log",
+    // Diária 10:30 — logo depois de Diaria-Plugin-Review-Drift-Check (10:20,
+    // acima) e Diaria-Dmarc-Drain (10:25, abaixo), fechando o cluster
+    // matinal de checks/alarmes; sem colisão com nenhuma outra daily já
+    // registrada (ver grep de `kind: "daily"` neste arquivo). Mesmo
+    // raciocínio de Diaria-Hub-Drift-Check/Diaria-Robots-Txt-Drift-Check
+    // acima: o conserto (atualizar `_redirects`, redeployar o Worker) é
+    // ação manual do editor de manhã — latência de detecção abaixo da
+    // latência de resposta é desperdiçada.
+    schedule: { kind: "daily", hour: 10, minute: 30 },
+    issue: "#6365",
   },
   {
     name: "Diaria-Hub-Staleness-Check",

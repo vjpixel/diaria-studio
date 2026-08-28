@@ -549,5 +549,41 @@
       "https://www.theguardian.com/technology/2026/aug/12/ai-job-destruction"
     ],
     "editionTitle": "Amodei previu colapso do emprego. Não veio"
+  },
+  {
+    "date": "2026-08-20",
+    "editionSlug": "openai-pausa-treinamento-apos-invasao-critica",
+    "url": "https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica",
+    "matchedHeadlines": [
+      "Promessa de menos trabalho esbarra em 90h"
+    ],
+    "primarySourceUrls": [
+      "https://g1.globo.com/trabalho-e-carreira/noticia/2026/08/18/promessa-de-menos-trabalho-com-ia-esbarra-em-jornadas-de-ate-90-horas.ghtml"
+    ],
+    "editionTitle": "OpenAI pausa treinamento após invasão crítica"
+  },
+  {
+    "date": "2026-08-24",
+    "editionSlug": "roteiristas-pagos-para-treinar-quem-os-substitui",
+    "url": "https://diar.ia.br/p/roteiristas-pagos-para-treinar-quem-os-substitui",
+    "matchedHeadlines": [
+      "O estudo que fura o hype do uso no trabalho"
+    ],
+    "primarySourceUrls": [
+      "https://mittechreview.com.br/como-pessoas-usam-ia/"
+    ],
+    "editionTitle": "Roteiristas pagos para treinar quem os substitui"
+  },
+  {
+    "date": "2026-08-26",
+    "editionSlug": "empresas-recontratam-quem-demitiu-por-ia",
+    "url": "https://diar.ia.br/p/empresas-recontratam-quem-demitiu-por-ia",
+    "matchedHeadlines": [
+      "Empresas recontratam quem demitiu por IA"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/empresas-recontratam-funcionarios-substituidos-por-ia-mas-pagando-menos-por-que/"
+    ],
+    "editionTitle": "Empresas recontratam quem demitiu por IA"
   }
 ]

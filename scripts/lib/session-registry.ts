@@ -2,10 +2,15 @@
 /**
  * scripts/lib/session-registry.ts (#5156)
  *
- * Registro compartilhado e leve de sessões `/diaria-overnight`/`/diaria-develop`
- * ATIVAS — mecanismo pedido pela "Direção sugerida" do #5156, que audita 11
- * colisões concretas entre as duas skills rodando em paralelo (mesma máquina ou
- * máquinas diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
+ * Registro compartilhado e leve de sessões ATIVAS — `/diaria-overnight`,
+ * `/diaria-develop`, `/diaria-continuo`, e (desde #6168) sessões INTERATIVAS
+ * comuns via o beacon automático (`.claude/hooks/session-beacon.mjs`).
+ * (#6303 Finding Q: o texto anterior aqui listava só overnight/develop —
+ * já estava impreciso antes do #6168 adicionar `continuo`, e o #6168 piorou
+ * ao acrescentar o 4º kind sem atualizar este parágrafo.) Nasceu pela
+ * "Direção sugerida" do #5156, que audita 11 colisões concretas entre as
+ * skills coordenadoras rodando em paralelo (mesma máquina ou máquinas
+ * diferentes sincronizadas pelo mesmo junction OneDrive `data/`).
  *
  * Um arquivo por sessão viva: `data/sessions/{kind}-{machineTag}-{sessionId}.json`.
  * `sessionId` é o `session_id` que o harness do Claude Code injeta no payload de
@@ -71,11 +76,37 @@
  *     segura a issue, imprimindo quem/desde quando. `--force` toma o claim
  *     mesmo assim — escape hatch pra retomar issue de sessão morta sem
  *     esperar a staleness de 24h. Reivindicar o que a própria sessão já tem
- *     é sempre no-op de sucesso, nunca recusa.)
+ *     é sempre no-op de sucesso, nunca recusa. #6369: sessão sem registro
+ *     prévio não vira mais no-op silencioso — o CLI auto-registra uma sessão
+ *     mínima e tenta o claim de novo (ver `claimIssueAutoRegistering`),
+ *     avisando na própria mensagem de sucesso quando isso acontece.)
  *   npx tsx scripts/lib/session-registry.ts is-claimed --issue N
  *   npx tsx scripts/lib/session-registry.ts list-active
  *   npx tsx scripts/lib/session-registry.ts merge-lock-acquire
+ *     (#6334: deixou de ser reentrante pra mesma sessão — uma 2ª chamada
+ *     antes do `merge-lock-release` correspondente falha, mesmo sendo a
+ *     mesma sessão. Ver `merge-lock-renew` pra estender o TTL de um hold
+ *     que já é seu.)
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release
+ *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
+ *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
+ *     concede um hold novo. Ver `renewMergeLock`.)
+ *   npx tsx scripts/lib/session-registry.ts conflicts [--paths a.ts,b.ts] [--branch X]
+ *     (#6168 Parte C — CONSULTA "quem mais está mexendo nisto?", nunca
+ *     adquire nada nem cria arquivo; `exit 1` = sobreposição real com peer
+ *     VIVO, `exit 0` = livre.)
+ *   npx tsx scripts/lib/session-registry.ts grant-merge --kind ... --granted-to SESSION_ID [--pr N]
+ *     (#6296 — só coordenadora concede, nunca a si mesma; TTL curto, uso
+ *     único. Ver `grantMergeWindow`.)
+ *   npx tsx scripts/lib/session-registry.ts check-merge-grant
+ *     (#6296 — confirma se existe concessão viva pra esta sessão; `exit 1`
+ *     quando não há. Ver `findLiveMergeGrant`.)
+ *   npx tsx scripts/lib/session-registry.ts consume-merge-grant
+ *     (#6296 — marca a concessão viva desta sessão como consumida, uso
+ *     único; desde #6303 também disparado automaticamente por
+ *     `.claude/hooks/consume-merge-grant-on-merge.mjs` após um `gh pr merge`
+ *     bem-sucedido, sem depender de a sessão beneficiada lembrar de chamar
+ *     isto à mão. Ver `consumeMergeGrant`.)
  *   npx tsx scripts/lib/session-registry.ts gc [--max-age-days N] [--dry-run]
  * (`--session-id X` funciona também se passado explicitamente — o hook só
  * injeta quando a flag está AUSENTE, nunca sobrescreve um valor já presente.)
@@ -106,13 +137,65 @@
  * esperado quando não há sinal de processo verificável).
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 
-export type SessionKind = "overnight" | "develop" | "continuo";
+/**
+ * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
+ * AUTOMATICAMENTE pelo hook `.claude/hooks/session-beacon.mjs` (nenhuma skill
+ * chama `register` pra ela). Fecha o buraco 3 da issue: até aqui só as 3
+ * skills coordenadoras se registravam, e a maioria das sessões reais —
+ * interativas — era invisível ao registro (incidente #5751: o `helios` tinha
+ * #5738 em `claimed_issues` enquanto uma sessão interativa a implementava e
+ * mergeava em paralelo).
+ *
+ * **Não é coordenadora, e isso é deliberado.** `COORDINATOR_SESSION_KINDS`
+ * (abaixo) NÃO a inclui: uma sessão interativa não despacha subagente
+ * implementador nem decide quando entra merge, então promovê-la a
+ * coordenadora por relabel furaria o guard do #5716. O caminho legítimo dela
+ * pro merge é a concessão de janela (`merge_grant`, #6296), nunca o kind.
+ */
+export type SessionKind = "overnight" | "develop" | "continuo" | "interactive";
+
+/** Os 4 valores de `SessionKind`, para validação/enumeração em runtime (#6338). */
+export const ALL_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo", "interactive"];
+
+/**
+ * Os 3 kinds que rodam uma RODADA coordenada (`/diaria-overnight`,
+ * `/diaria-develop`, `/diaria-continuo`) — despacham subagentes
+ * implementadores e decidem quando um merge entra. `interactive` fica de
+ * fora de propósito (ver `SessionKind`).
+ *
+ * Espelha `COORDINATOR_KINDS` de `.claude/hooks/block-gh-pr-merge-subagent.mjs`,
+ * que é self-contained (`.mjs`, sem import de `.ts`) e por isso mantém a
+ * própria cópia — `test/session-beacon-blast-radius.test.ts` trava que os
+ * dois conjuntos não divergem.
+ */
+export const COORDINATOR_SESSION_KINDS: readonly SessionKind[] = ["overnight", "develop", "continuo"];
+
+/** `true` quando `kind` é uma das 3 coordenadoras (#6168). */
+export function isCoordinatorKind(kind: string): boolean {
+  return (COORDINATOR_SESSION_KINDS as readonly string[]).includes(kind);
+}
+
+/** Um worktree aberto por uma sessão (#6168 Parte A) — substitui e subsume o
+ * `active_worktrees?: number`, que era só uma contagem e nunca foi populado
+ * por skill nenhuma (#5156 item 6). */
+export interface WorktreeRef {
+  path: string;
+  branch?: string;
+  issue?: number;
+}
+
+/** Último verbo observado numa sessão + quando (#6168 Parte A). */
+export interface SessionLastAction {
+  verb: string;
+  at: string;
+}
 
 export interface SessionRecord {
   kind: SessionKind;
@@ -125,6 +208,53 @@ export interface SessionRecord {
   active_worktrees?: number;
   claimed_issues?: number[];
   /**
+   * #6436 — timestamp (ISO) de quando cada issue de `claimed_issues` foi
+   * reivindicada PELA PRIMEIRA VEZ por esta sessão. Chaveado pelo número da
+   * issue como STRING (JSON não tem chave numérica). Escrito só em
+   * `claimIssueCheckAndSet` no momento em que a issue passa a fazer parte de
+   * `claimed_issues` (`reason: "claimed"`/`"forced-override"`) — uma
+   * re-reivindicação da MESMA issue já claimed (`reason: "already-own"`,
+   * o caso concreto do #6436: a sessão `continuo` re-chama `claim-issue` a
+   * cada ciclo de 60min) NUNCA sobrescreve a entrada existente. Sem essa
+   * distinção, o timestamp "refrescaria" a cada heartbeat e a idade do claim
+   * nunca acumularia — exatamente o sintoma que fez #6051/#6185/#6186/#6431
+   * ficarem `claimed-por-outra-sessao` indefinidamente, porque a sessão
+   * `continuo` nunca solta (nem deixa "envelhecer") a claim. Usado por
+   * `scripts/lib/claim-staleness.ts` pro teto de idade de claim sem PR
+   * aberto. Ausente em registros anteriores ao #6436 — tratado como
+   * "idade desconhecida", nunca como "acabou de reivindicar".
+   */
+  claimed_issues_at?: Record<string, string>;
+  /** Branch atual do checkout desta sessão (#6168 Parte A). Lido de
+   * `.git/HEAD` pelo beacon — sem subprocesso. É o campo que responde "a
+   * branch ainda é minha?" antes de um `git commit` (evidência 5 da issue:
+   * outra sessão fez `checkout master` no meio, o commit caiu em master, e
+   * `commit`/`push` reportaram sucesso). */
+  branch?: string;
+  /** Worktrees abertos por esta sessão (#6168 Parte A). */
+  worktrees?: WorktreeRef[];
+  /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
+   * pra prefixo de diretório quando estoura. */
+  touched_paths?: string[];
+  /** Subconjunto de `touched_paths` ainda NÃO commitado — acumula em
+   * Edit/Write e zera num `git commit`. É o campo com valor operacional real
+   * (evidência 2 da issue: um tick terminou deixando 4 arquivos sem commit em
+   * `master` num checkout compartilhado e reportou "concluído"; um beacon que
+   * só dissesse `last_action: "commit"` não distinguiria isso de trabalho
+   * fechado). */
+  dirty_paths?: string[];
+  /** Último verbo observado + timestamp (#6168 Parte A). */
+  last_action?: SessionLastAction;
+  /** Concessão de janela de merge EMITIDA por esta sessão coordenadora
+   * (#6296). Campo no próprio record, deliberadamente NÃO um arquivo novo em
+   * `data/sessions/` — o #6168 tem critério de aceite explícito de que nada
+   * além de `.merge-lock.json` aparece ali, e a #6296 já admitia "arquivo
+   * dedicado OU campo no próprio record". Ver `grantMergeWindow`. */
+  merge_grant?: MergeGrant;
+  /** Anúncio de merge desta sessão (#6168 Parte F) — publicado no registro pra
+   * alcançar peer que o `ListAgents` não lista naquele instante. */
+  merge_announcement?: MergeAnnouncement;
+  /**
    * Campo COMPUTADO por `listActiveSessions` (#5474) — nunca persistido em
    * disco. `true` quando `now - lastHeartbeat > SOFT_STALE_MS`, sinalizando
    * que a sessão provavelmente está morta mesmo sem ter cruzado o teto
@@ -134,6 +264,26 @@ export interface SessionRecord {
   stale?: boolean;
   [key: string]: unknown;
 }
+
+/**
+ * Um `SessionRecord` que JÁ PASSOU por `listActiveSessions` — `stale` está
+ * computado, não é mais opcional.
+ *
+ * Existe porque a distinção importa e não estava expressa em lugar nenhum:
+ * `stale` é OPCIONAL em `SessionRecord` (nunca é persistido em disco), e todo
+ * consumidor que decide por `if (peer.stale) continue` trata `undefined`
+ * exatamente como `false`. Passar records CRUS — saídos de `readJsonSafe`/
+ * `readMergedSessionGroups` — para `findSessionConflicts`/
+ * `isIssueClaimedByOther` faria **todos** contarem como vivos em silêncio,
+ * ressuscitando claims de sessões mortas justamente nas funções que existem
+ * pra respeitar staleness (#5474).
+ *
+ * Hoje todos os call sites de produção fazem a coisa certa. Exigir este tipo
+ * na assinatura transforma isso de disciplina em garantia: o compilador
+ * recusa a lista crua, e quem quiser consultá-la precisa ir por
+ * `listActiveSessions` primeiro.
+ */
+export type ActiveSessionRecord = SessionRecord & { stale: boolean };
 
 interface MergeLockRecord {
   heldBy: string;
@@ -175,11 +325,106 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
  * `is-claimed`) é o único lugar que trata `stale: true` como sinal
  * NÃO-bloqueante — uma claim de sessão com heartbeat morto há mais de
  * `SOFT_STALE_MS` não impede outra sessão de reivindicar a mesma issue.
+ *
+ * **`SOFT_STALE_MS` é rede de segurança, não o sinal primário de liveness na
+ * prática (#6327).** Desde o beacon (`.claude/hooks/session-beacon.mjs`,
+ * #6303), `lastHeartbeat` de QUALQUER sessão viva — coordenadora ou não —
+ * normalmente já vem fresco por outro caminho, a cada chamada de ferramenta,
+ * sem a skill precisar chamar nada. Este teto de 90min só é o que decide na
+ * prática quando esse caminho falha (beacon desligado, worktree vinculado,
+ * `data/` ausente) — ver a docstring de `heartbeat()` abaixo pro mecanismo
+ * completo e o que quebra em silêncio se o beacon for reduzido/desligado.
  */
 export const SOFT_STALE_MS = 90 * 60 * 1000;
 
+/**
+ * Janela de liveness do kind `interactive` (#6168) — MUITO menor que os 90
+ * min de `SOFT_STALE_MS`, e a razão é a objeção que quase derrubou a Parte B
+ * da issue: uma sessão interativa **não emite heartbeat depois que a conversa
+ * termina**. O beacon é hook `PreToolUse`, então o heartbeat é automático
+ * *enquanto a sessão está viva* — sem nenhuma skill precisar lembrar de nada —
+ * mas quando o editor fecha a conversa as chamadas simplesmente param, e o
+ * registro sobrevive.
+ *
+ * Com a janela de 90 min compartilhada, registrar interativas trocaria risco
+ * de COLISÃO por risco de CLAIM ÓRFÃ — que é pior, porque não se resolve
+ * sozinha: overnight/develop pulariam issues por até 1h30 por causa de uma
+ * sessão que já morreu (é literalmente a evidência 1 da issue, com uma sessão
+ * develop segurando #6128/#6181 depois de terminada).
+ *
+ * 15 minutos: folgado o bastante pra cobrir o editor lendo/pensando entre duas
+ * chamadas de ferramenta, curto o bastante pra uma conversa encerrada liberar
+ * as claims dela dentro de um ciclo de rodada, não de uma hora e meia.
+ */
+export const INTERACTIVE_SOFT_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Janela de liveness aplicável a `kind` (#6168) — `interactive` tem a sua
+ * própria (ver `INTERACTIVE_SOFT_STALE_MS`); os 3 kinds coordenadores mantêm
+ * `SOFT_STALE_MS` sem nenhuma mudança de comportamento.
+ */
+export function softStaleMsForKind(kind: string): number {
+  return kind === "interactive" ? INTERACTIVE_SOFT_STALE_MS : SOFT_STALE_MS;
+}
+
 /** TTL do merge lock (item 4) — merge + pull não deveria levar mais que isso. */
 export const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * TTL da concessão de janela de merge (#6296). Maior que `MERGE_LOCK_TTL_MS`
+ * de propósito: o lock cobre só `gh pr merge` → `git pull` (segundos), mas a
+ * concessão nasce de uma CONVERSA entre sessões — o peer confere colisão por
+ * arquivo nos PRs abertos dele antes de conceder, e quem recebeu ainda vai
+ * rodar o gate de 2 condições antes de mergear. 10 minutos cobre esse
+ * intervalo sem virar permissão semi-permanente.
+ */
+export const MERGE_GRANT_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Teto de `touched_paths`/`dirty_paths` por sessão (#6168 Parte A). Acima
+ * disso, `collapseTouchedPaths` troca os caminhos por prefixos de diretório —
+ * o beacon roda em TODA chamada de ferramenta, e um registro que cresce sem
+ * limite num diretório sincronizado por OneDrive é exatamente o tipo de
+ * arquivo que gera cópia de conflito `-safeBackup-NNNN` (#5427/#6130).
+ */
+export const TOUCHED_PATHS_CAP = 200;
+
+/**
+ * Concessão de janela de merge (#6296) — emitida por uma sessão COORDENADORA
+ * registrada para uma outra sessão (tipicamente interativa) que negociou a
+ * janela por conversa (Parte F do #6168).
+ *
+ * Uso único e TTL curto: morre no primeiro merge (`consumedAt`) ou em
+ * `MERGE_GRANT_TTL_MS`, o que vier antes. Nunca é permissão permanente, e
+ * **ninguém concede a si mesmo** (ver `grantMergeWindow`) — é isso que
+ * preserva a propriedade que o #5716 protege (o coordenador decide quando
+ * entra merge) em vez de contorná-la.
+ */
+export interface MergeGrant {
+  /** `sessionId` de quem recebeu a janela. */
+  grantedTo: string;
+  /** `sessionId` da coordenadora que concedeu. */
+  grantedBy: string;
+  /** PR que a janela autoriza — informativo/auditoria. */
+  pr?: number;
+  grantedAt: string;
+  /** Preenchido quando a janela é consumida; concessão consumida não vale mais. */
+  consumedAt?: string;
+}
+
+/**
+ * Anúncio de merge (#6168 Parte F) — "vou mergear o PR X, que fecha as issues
+ * Y e toca os arquivos Z". Publicado tanto pelo canal ativo (`SendMessage` ao
+ * peer vivo) quanto no registro, porque o canal só alcança peer que o
+ * `ListAgents` lista naquele instante.
+ */
+export interface MergeAnnouncement {
+  sessionId: string;
+  pr?: number;
+  issues?: number[];
+  paths?: string[];
+  announcedAt: string;
+}
 
 /**
  * Tolerância de clock skew entre máquinas (#5161 fleet review item 2).
@@ -304,35 +549,460 @@ function writeJsonSafe(path: string, value: unknown): void {
 }
 
 /**
+ * Localiza, em `data/sessions/`, o arquivo de registro REAL (nunca backup)
+ * de QUALQUER kind para `sessionId` — espelha `findExistingSessionFile` do
+ * beacon (`.claude/hooks/session-beacon.mjs`), que cobre a ordem "register
+ * primeiro, beacon depois" (enriquece o arquivo já existente em vez de criar
+ * um `interactive-*` paralelo).
+ *
+ * `registerSession` usa isto pra cobrir a ordem INVERSA (#6326): o beacon
+ * dispara no `PreToolUse`, ANTES de a skill rodar `register` — cria
+ * `interactive-{tag}-{sessionId}.json` sem saber que a sessão vai virar
+ * coordenadora minutos depois. Sem esta busca, `registerSession` escreveria
+ * cego no path do kind novo (`sessionFilePath`), sem olhar se já existe um
+ * arquivo de OUTRO kind pro mesmo `sessionId` — e sobrariam dois registros
+ * pra uma sessão só, contando dobrado em `list-active` (achado ao vivo do
+ * #6326: `overnight-helios-{uuid}.json` + `interactive-helios-{uuid}.json`
+ * simultâneos, o 2º congelado a partir do momento em que o beacon passa a
+ * enriquecer só o 1º).
+ *
+ * Match por SUFIXO `-{sessionId}.json`, nunca por tag/kind explícitos —
+ * mesmo critério do irmão (cobre o caso raro de a sessão trocar de
+ * `machineTag()` entre o beacon e o `register`, ex: hostname mudou no meio).
+ * Ordena alfabeticamente e devolve o primeiro quando há mais de um
+ * candidato (não deveria acontecer em operação normal — é exatamente o bug
+ * que esta função corrige — mas nunca lança). **#6326 fleet review P3
+ * (decisão registrada, não corrigida neste PR):** casa só por SUFIXO de
+ * nome de arquivo, sem validar que o prefixo antes do sufixo é de fato um
+ * `SessionKind` conhecido (`parseSessionFileName(): {kind,tag,sessionId} |
+ * null` fecharia isso). Risco prático baixo — o `kind` usado no restante da
+ * função sempre vem do parâmetro TIPADO, nunca é lido de volta do nome do
+ * arquivo — e esta é a mesma ausência de validação de shape que já existia
+ * em `listSessionJsonFiles`/`readMergedSessionGroups` antes deste PR, não
+ * uma regressão introduzida aqui. **Fechado em #6338** — ver
+ * `parseSessionFileName` abaixo, agora usada como filtro aqui.
+ */
+function findExistingSessionFileAnyKind(repoRoot: string, sessionId: string): string | null {
+  const suffix = `-${sessionId}.json`;
+  const names = listSessionJsonFiles(repoRoot)
+    .filter((n) => n.endsWith(suffix) && !n.includes("-safeBackup-") && parseSessionFileName(n) !== null)
+    .sort();
+  return names.length > 0 ? join(sessionsDir(repoRoot), names[0]!) : null;
+}
+
+/**
+ * Parseia um nome de arquivo de registro de sessão (`{kind}-{tag}-{sessionId}.json`)
+ * validando que o PREFIXO é um `SessionKind` conhecido (#6338) — fecha a
+ * lacuna documentada em `findExistingSessionFileAnyKind` acima, onde o
+ * casamento por sufixo `-{sessionId}.json` nunca checava o que vinha antes.
+ *
+ * **Ambiguidade estrutural, documentada, não escondida:** tanto `tag`
+ * (`machineTag()` — alfanumérico/`_`/`-`, hostname pode ter hífen) quanto
+ * `sessionId` (tipicamente um UUID, também com hífens) podem conter `-`, então
+ * o corte entre os dois a partir só da string é inerentemente ambíguo — não
+ * há como este parser "adivinhar" onde a tag termina e o sessionId começa
+ * quando ambos usam o mesmo separador do nome de arquivo. Por isso o campo
+ * `tag`/`sessionId` retornados usam o corte ingênuo "primeiro `-` depois do
+ * kind" e só devem ser tratados como confiáveis quando o chamador não precisa
+ * distinguir os dois com certeza (o caso concreto que motivou a issue — só
+ * validar que o `kind` é conhecido). Quem precisa casar um `sessionId`
+ * ESPECÍFICO (como `findExistingSessionFileAnyKind`) deve continuar casando
+ * pelo sufixo `-{sessionId}.json` conhecido, e usar este parser só pra validar
+ * o prefixo — nunca para redescobrir o sessionId a partir do nome.
+ *
+ * `null` quando: não termina em `.json`, ou o prefixo não bate com nenhum dos
+ * `ALL_SESSION_KINDS`, ou não sobra `tag-sessionId` suficiente depois do kind.
+ */
+export function parseSessionFileName(
+  name: string,
+): { kind: SessionKind; tag: string; sessionId: string } | null {
+  if (!name.endsWith(".json")) return null;
+  const stem = name.slice(0, -".json".length);
+  const kind = ALL_SESSION_KINDS.find((k) => stem.startsWith(`${k}-`));
+  if (!kind) return null;
+  const rest = stem.slice(kind.length + 1);
+  const sepIndex = rest.indexOf("-");
+  if (sepIndex <= 0 || sepIndex >= rest.length - 1) return null; // sem tag/sessionId não-vazios dos dois lados
+  return { kind, tag: rest.slice(0, sepIndex), sessionId: rest.slice(sepIndex + 1) };
+}
+
+/**
+ * Agrupa cópias de conflito `-safeBackup-` de `names` (listagem CRUA de
+ * `data/sessions/`, real+backup) por STEM do arquivo real "dono" mais
+ * ESPECÍFICO — extraído de `readMergedSessionGroups` (#6130) e reusado por
+ * `readMergedRecordForRealFile` (#6326 fleet review item 5a — a versão
+ * anterior desta 2ª função tinha sua PRÓPRIA regra, mais fraca, que só
+ * olhava pro stem-alvo isoladamente, sem competir contra outros stems reais
+ * do diretório).
+ *
+ * Desempate: quando mais de um stem real é prefixo válido do mesmo nome de
+ * backup (ex: stems `interactive-tag-X` e `interactive-tag-X-2` concorrendo
+ * pelo backup `interactive-tag-X-2-tag-safeBackup-0001.json`), o STEM MAIS
+ * LONGO (mais específico) vence — nunca o mais curto, que atribuiria o
+ * backup à sessão ERRADA. Backup sem nenhum stem real correspondente
+ * (órfão) não aparece no mapa devolvido.
+ */
+function groupBackupsByRealStem(names: readonly string[]): Map<string, string[]> {
+  const realStems = names
+    .filter((n) => !n.includes("-safeBackup-"))
+    .map((n) => n.slice(0, -".json".length))
+    .sort((a, b) => b.length - a.length);
+  const backupsByRealStem = new Map<string, string[]>();
+  for (const backup of names) {
+    if (!backup.includes("-safeBackup-")) continue;
+    const matchStem = realStems.find((stem) => backup.startsWith(`${stem}-`));
+    if (!matchStem) continue; // órfão
+    const list = backupsByRealStem.get(matchStem) ?? [];
+    list.push(backup);
+    backupsByRealStem.set(matchStem, list);
+  }
+  return backupsByRealStem;
+}
+
+/**
+ * Lê o registro efetivo de um arquivo REAL de sessão já conhecido, mesclado
+ * com seus próprios `-safeBackup-` do OneDrive (`mergeSessionRecords`) — usado
+ * pela promoção de kind em `registerSession` (#6326) pra garantir que um
+ * claim que só sobreviveu num backup do registro ANTIGO não se perca na
+ * promoção. Reusa `groupBackupsByRealStem` (mesma disciplina fail-safe de
+ * `readMergedSessionGroups`, com o mesmo desempate "stem mais específico
+ * vence" — não uma versão mais fraca). `null` quando nem o arquivo real nem
+ * nenhum backup dele foi legível.
+ */
+function readMergedRecordForRealFile(repoRoot: string, realPath: string): SessionRecord | null {
+  const dir = sessionsDir(repoRoot);
+  const realName = basename(realPath);
+  const stem = realName.slice(0, -".json".length);
+  const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
+  const records = [realName, ...backupNames]
+    .map((n) => readJsonSafe<SessionRecord>(join(dir, n)))
+    .filter((r): r is SessionRecord => r !== null);
+  if (records.length === 0) return null;
+  return mergeSessionRecords(records);
+}
+
+/**
+ * Paths absolutos dos `-safeBackup-*` do MESMO grupo de um arquivo real de
+ * sessão — mesma composição de `groupBackupsByRealStem` que
+ * `readMergedRecordForRealFile` usa para o READ-path. Usada por
+ * `unclaimIssue` (#6567) para propagar a remoção de uma issue a TODAS as
+ * cópias do grupo, não só ao arquivo real: sem isto, `writeJsonSafe` no real
+ * deixa `-safeBackup-*` órfãos ainda carregando a issue em `claimed_issues`,
+ * e como o read-path (`readMergedSessionGroups`/`mergeSessionRecords`) faz
+ * união real+backups por design fail-safe, a issue continua aparecendo como
+ * reivindicada para `is-claimed`/`list-active` mesmo depois do
+ * `unclaim-issue` reportar sucesso. Lista vazia quando não há backup do
+ * grupo (caso comum) — nenhuma mudança de comportamento no caminho feliz.
+ */
+function sessionGroupBackupPaths(repoRoot: string, realPath: string): string[] {
+  const dir = sessionsDir(repoRoot);
+  const realName = basename(realPath);
+  const stem = realName.slice(0, -".json".length);
+  const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
+  return backupNames.map((n) => join(dir, n));
+}
+
+/**
+ * Loga (stderr, nunca lança) um aviso de que `registerSession` encontrou um
+ * registro de OUTRO kind pra `sessionId` mas não conseguiu ler nem o arquivo
+ * real nem nenhum backup dele (#6326 fleet review item 1) — cenário
+ * documentado como NORMAL no OneDrive (sync no meio de um write), e mais
+ * provável justamente quando o beacon escreve durante o sync. Complementa
+ * (não substitui) o `outcome: "promotion-failed-unreadable"` do retorno de
+ * `registerSession` — este aviso é o que fica visível a quem lê stderr
+ * direto (ex: log de systemd/Task Scheduler), o `outcome` é o que fica
+ * visível ao CÓDIGO que chama `registerSession` programaticamente.
+ */
+function warnUnreadablePromotionSource(sessionId: string, otherPath: string): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso — encontrado um registro de OUTRO kind pra sessionId="${sessionId}" em ` +
+        `"${otherPath}", mas nem o arquivo real nem nenhum backup dele foi legível (JSON corrompido/ ` +
+        "parcialmente sincronizado pelo OneDrive) — a promoção NÃO pôde ler o conteúdo antigo. Um registro NOVO " +
+        `foi criado do zero; "${otherPath}" continua em disco (outcome: "promotion-failed-unreadable").\n`,
+    );
+  } catch {
+    // Nunca deixar um log de warning derrubar o caminho fail-soft principal.
+  }
+}
+
+/**
+ * Desfecho de `registerSession` (#6326 fleet review item — antes desta
+ * mudança, o retorno era `SessionRecord` puro e o CLI (`main()`, case
+ * `register`) imprimia a MESMA mensagem nos 4 caminhos genuinamente
+ * distintos que a função pode tomar — inclusive `"promoted-orphan-left"`,
+ * que é literalmente o bug que a #6326 existe pra consertar voltando em
+ * silêncio caso o `rmSync` do arquivo antigo falhe). Mesmo padrão de
+ * `ClaimIssueReason`/`claimIssueCheckAndSet` — união discriminada em vez de
+ * um booleano ou só prosa no comentário.
+ *
+ * - `"created"` — nenhum registro existia (nem no path do kind atual, nem
+ *   sob outro kind) pra este `sessionId`; registro novo do zero.
+ * - `"reregistered"` — já havia registro no path do KIND ATUAL; caminho
+ *   idempotente de sempre (#6294/#6303), sem promoção envolvida.
+ * - `"promoted"` — encontrou e leu um registro de OUTRO kind, promoveu com
+ *   sucesso (novo path gravado, antigo removido). O caso feliz do #6326.
+ * - `"promoted-orphan-left"` — encontrou e leu um registro de OUTRO kind, o
+ *   novo path foi gravado, mas a remoção do antigo FALHOU (I/O transitório
+ *   do OneDrive, ou o arquivo persistiu depois do `rmSync` "bem-sucedido").
+ *   O órfão fica em disco — `planSessionGc` recolhe depois, mas só quando
+ *   ficar legível/o `pid` gravado nele não estiver mais vivo (ver ressalva
+ *   no docblock de `registerSession`).
+ * - `"promotion-failed-unreadable"` — encontrou um arquivo de OUTRO kind
+ *   pelo NOME, mas nem ele nem nenhum backup dele foi legível — a promoção
+ *   não pôde acontecer. Registro novo criado do zero mesmo assim (decisão:
+ *   deixar a sessão sem registro nenhum seria pior — ver docblock de
+ *   `warnUnreadablePromotionSource`). O arquivo ilegível antigo fica em
+ *   disco, órfão.
+ */
+export type RegisterSessionOutcome =
+  | "created"
+  | "reregistered"
+  | "promoted"
+  | "promoted-orphan-left"
+  | "promotion-failed-unreadable";
+
+export interface RegisterSessionResult {
+  record: SessionRecord;
+  outcome: RegisterSessionOutcome;
+  /** Path do arquivo de OUTRO kind encontrado pra este `sessionId` — presente
+   * em `"promoted"`, `"promoted-orphan-left"` e `"promotion-failed-unreadable"`,
+   * ausente em `"created"`/`"reregistered"`. */
+  promotedFrom?: string;
+}
+
+/**
+ * Primitiva de I/O usada só pela remoção do arquivo ANTIGO na promoção de
+ * kind de `registerSession` (#6326 fleet review — teste obrigatório
+ * "rmSync falhando"). Injetável pra teste, mesmo padrão de `MergeLockIo`
+ * (usado por `acquireMergeLock` mais abaixo neste módulo) — sem isto não dá
+ * pra simular uma falha de remoção de forma determinística e PORTÁVEL:
+ * monkey-patchar `require("node:fs").rmSync` não intercepta o
+ * `import { rmSync } from "node:fs"` que este módulo usa de verdade (são
+ * bindings distintos — confirmado experimentalmente), e forçar uma falha
+ * REAL de sistema operacional (lock de arquivo aberto, permissão) é frágil
+ * entre plataformas — mesma classe de problema que já deixa o teste de
+ * `checkSessionsScanHealth` via `chmod` quebrado no Windows (ver nota no
+ * teste correspondente). O default (`REAL_PROMOTION_REMOVE_IO`) usa
+ * `node:fs` de verdade; testes injetam um `remove` que lança.
+ */
+export interface PromotionRemoveIo {
+  exists: (path: string) => boolean;
+  remove: (path: string) => void;
+}
+
+const REAL_PROMOTION_REMOVE_IO: PromotionRemoveIo = {
+  exists: (path) => existsSync(path),
+  remove: (path) => rmSync(path),
+};
+
+/**
  * Registra uma sessão ativa. Idempotente — chamar de novo com o mesmo
- * kind/tag/sessionId sobrescreve o registro (mesmo padrão de `startSession` em
+ * kind/tag/sessionId atualiza o registro (mesmo padrão de `startSession` em
  * `overnight-session-marker.ts`).
+ *
+ * **#6294 — re-registrar NÃO apaga mais `claimed_issues`.** Até aqui esta
+ * função montava o record do zero com `claimed_issues: []`, então não existia
+ * caminho suportado pra corrigir um campo (`pid`, tipicamente) sem destruir as
+ * claims em voo: uma sessão com 12 issues reivindicadas que rodasse `register`
+ * de novo — que é literalmente o que `BLOCK_REASON` do #5716 sugere a quem se
+ * vê bloqueado por engano — perdia as 12 em silêncio, liberando-as pra outras
+ * sessões no meio do trabalho. Agora o re-registro PRESERVA `claimed_issues`,
+ * `startedAt` e os campos de beacon do registro anterior, e só sobrescreve o
+ * que foi passado explicitamente. Registro novo (nenhum arquivo anterior)
+ * continua nascendo com `claimed_issues: []`, comportamento inalterado.
+ *
+ * **#6326 — PROMOVE um registro pré-existente de OUTRO kind pro kind novo,
+ * quando consegue ler o conteúdo antigo.** Se não há arquivo no path do kind
+ * sendo registrado, mas existe um registro REAL pra este `sessionId` sob
+ * outro kind (tipicamente `interactive`, criado pelo beacon antes desta
+ * chamada — ver `findExistingSessionFileAnyKind`), a sessão de fato VIROU
+ * `kind` ao rodar `register`: o registro passa a viver no path do kind novo
+ * (preservando `startedAt`/`claimed_issues`/campos de beacon já acumulados,
+ * inclusive os que só existiam num `-safeBackup-` do registro antigo).
+ *
+ * **Garantia real (#6326 fleet review item 2 — a versão anterior deste
+ * parágrafo prometia "nunca sobra um par", que o código não cumpria):** no
+ * caminho feliz (arquivo antigo legível E remoção bem-sucedida — `outcome:
+ * "promoted"`), de fato nunca sobra um par `{kind-antigo}-{tag}-{sessionId}.json`
+ * + `{kind-novo}-{tag}-{sessionId}.json` simultâneo. Mas a remoção é
+ * BEST-EFFORT (`rmSync` num `try/catch` — falha de I/O transitória do
+ * OneDrive nunca lança) e a leitura do conteúdo antigo pode falhar (JSON
+ * corrompido/parcialmente sincronizado) — os dois desfechos de falha
+ * (`"promoted-orphan-left"`, `"promotion-failed-unreadable"`, ver
+ * `RegisterSessionOutcome`) DEIXAM um arquivo órfão do kind antigo em disco,
+ * com heartbeat congelado a partir de agora. Esse órfão é recolhido depois
+ * por `planSessionGc`, mas só quando (a) ficar legível — GC nunca remove
+ * estado que não consegue interpretar — E (b) o `pid` gravado nele (herdado
+ * do registro antigo — ver #6326 fleet review item 5b) não estiver mais
+ * vivo na máquina local, OU a checagem rodar de outra máquina, onde a janela
+ * conservadora de 2h (`GC_INTERACTIVE_MAX_AGE_MS`) decide.
+ *
+ * Promover (e não só ignorar) importa porque é o que
+ * `isCoordinatorKind`/`COORDINATOR_SESSION_KINDS` leem (guard do #5716) — o
+ * kind precisa refletir que a sessão é coordenadora agora. O desfecho de
+ * CADA chamada é observável via `RegisterSessionResult.outcome` — ver ali
+ * pros 5 caminhos possíveis.
  */
 export function registerSession(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
   meta: { pid?: number; tag?: string; startedAt?: string } = {},
-): SessionRecord {
+  removeIo: PromotionRemoveIo = REAL_PROMOTION_REMOVE_IO,
+): RegisterSessionResult {
   const tag = meta.tag ?? machineTag();
   const now = meta.startedAt ?? new Date().toISOString();
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  let previous = readJsonSafe<SessionRecord>(path);
+  const hadOwnFile = previous !== null;
+
+  // #6326: sem registro no path do KIND ATUAL, procurar (e promover) um
+  // registro pré-existente da MESMA sessão sob OUTRO kind — ver docstring
+  // acima. `otherPath !== path` evita o caso degenerado de um arquivo
+  // corrompido no PRÓPRIO path (readJsonSafe já devolveu null pra ele
+  // acima) ser "promovido" pra si mesmo e depois removido por engano.
+  let promotedFrom: string | null = null;
+  let unreadablePromotionSource: string | null = null;
+  if (!previous) {
+    const otherPath = findExistingSessionFileAnyKind(repoRoot, sessionId);
+    if (otherPath && otherPath !== path) {
+      const merged = readMergedRecordForRealFile(repoRoot, otherPath);
+      if (merged) {
+        previous = merged;
+        promotedFrom = otherPath;
+      } else {
+        // #6326 fleet review item 1: `otherPath` EXISTE (achado pelo NOME em
+        // `findExistingSessionFileAnyKind`), mas nem ele nem nenhum backup
+        // foi legível. Decisão (a), não (b): AVISAR alto e seguir criando o
+        // registro novo do zero, em vez de recusar e deixar a sessão SEM
+        // registro nenhum — (b) trocaria um bug de contagem dupla/órfão
+        // (recuperável: o arquivo antigo pode ficar legível numa chamada
+        // futura, ou o GC eventualmente o recolhe) por um buraco de
+        // visibilidade TOTAL, estritamente pior pros consumidores que
+        // dependem de `listActiveSessions` (claim de issue, merge lock,
+        // exclusão overnight×contínuo).
+        unreadablePromotionSource = otherPath;
+        warnUnreadablePromotionSource(sessionId, otherPath);
+      }
+    }
+  }
+
   const record: SessionRecord = {
+    ...(previous ?? {}),
     kind,
     machineTag: tag,
     sessionId,
-    startedAt: now,
+    // `startedAt` do registro ORIGINAL é preservado — re-registrar (ou
+    // promover de outro kind) não rejuvenesce a sessão (senão um `register`
+    // de correção zeraria a idade que `planSessionGc`/`listActiveSessions`
+    // usam pra decidir staleness).
+    startedAt: previous?.startedAt ?? now,
     lastHeartbeat: now,
-    claimed_issues: [],
+    claimed_issues: previous?.claimed_issues ?? [],
   };
-  if (meta.pid !== undefined) record.pid = meta.pid;
-  writeJsonSafe(sessionFilePath(repoRoot, kind, tag, sessionId), record);
-  return record;
+  if (meta.pid !== undefined) {
+    record.pid = meta.pid;
+  }
+  // #6326 fleet review item 5b (decisão registrada, não "corrigida" — ambas
+  // as opções são defensáveis, esta é a escolhida): quando a promoção
+  // sucede e `--pid` NÃO foi passado a ESTA chamada, o `pid` do registro
+  // ANTIGO (herdado via `...previous` acima, tipicamente `process.ppid`
+  // gravado pelo beacon — ver #6160) é PRESERVADO, não limpo. Justificativa:
+  // é o pid da MESMA sessão Claude Code (beacon e skill compartilham
+  // `process.ppid`/o processo pai), então continua correto — e é
+  // exatamente o sinal que o branch 3 de `decideSessionGc` usa pra nunca
+  // remover um registro de sessão viva (ver docblock acima). Limpar aqui
+  // destruiria esse sinal de liveness sem necessidade.
+
+  writeJsonSafe(path, record);
+
+  if (unreadablePromotionSource) {
+    return { record, outcome: "promotion-failed-unreadable", promotedFrom: unreadablePromotionSource };
+  }
+
+  if (promotedFrom) {
+    // Best-effort: o record novo já foi gravado com sucesso acima.
+    // `existsSync` antes do `rmSync` (mesmo padrão de
+    // `garbageCollectSessions` abaixo) evita um warning espúrio no caso
+    // benigno de o arquivo já ter sumido entre a busca e aqui (ex: um `gc`
+    // concorrente). Qualquer OUTRA falha de I/O (transitório do OneDrive) é
+    // logada, nunca lançada — e o desfecho fica visível via `outcome:
+    // "promoted-orphan-left"` (#6326 fleet review — antes disto o retorno
+    // não distinguia isso de uma promoção limpa).
+    let removed = true;
+    try {
+      if (removeIo.exists(promotedFrom)) removeIo.remove(promotedFrom);
+      if (removeIo.exists(promotedFrom)) removed = false; // remove "teve sucesso" mas o arquivo persiste (raro, ex: lock de outro processo)
+    } catch (e) {
+      removed = false;
+      warnIoError(promotedFrom, e);
+    }
+    return { record, outcome: removed ? "promoted" : "promoted-orphan-left", promotedFrom };
+  }
+
+  return { record, outcome: hadOwnFile ? "reregistered" : "created" };
 }
 
 /**
  * Atualiza `lastHeartbeat` (+ um patch opcional de `phase`/`active_worktrees`)
  * de uma sessão já registrada. Retorna `false`, nunca lança, quando não há
  * sessão pra atualizar (nunca registrada, já encerrada, ou JSON corrompido).
+ *
+ * **`overnight`/`develop` nunca chamam esta função diretamente — e isso é
+ * esperado, não um buraco (#6327).** `lastHeartbeat` dessas duas sessões
+ * coordenadoras é mantido por um mecanismo DIFERENTE: `.claude/hooks/
+ * session-beacon.mjs` (`PreToolUse`, #6303) escreve no registro EXISTENTE da
+ * sessão (via `findExistingSessionFile`) a cada chamada de ferramenta,
+ * atualizando `lastHeartbeat` como efeito colateral — sem que a skill precise
+ * chamar `heartbeat` em lugar nenhum. Só `continuo` chama este export direto
+ * (2 call sites hoje). A garantia efetiva pras 3: `lastHeartbeat` de QUALQUER
+ * sessão viva fica fresco enquanto ela roda QUALQUER ferramenta (Bash, Edit,
+ * Write, NotebookEdit — o matcher do hook), automaticamente.
+ *
+ * **Isto era falso até o #6303, e uma docstring desatualizada (a versão
+ * anterior deste comentário, e trechos de `decideSessionGc` acima) continuou
+ * descrevendo o estado pré-#6303 depois que o beacon já tinha fechado o
+ * buraco — o #6327 é a correção.** Medido ao vivo em 26/08/2026: uma sessão
+ * `develop` com 171min de vida tinha heartbeat de 0min; uma `overnight` com
+ * 246min tinha heartbeat de 4min — nenhuma das duas jamais chamou
+ * `heartbeat` neste módulo.
+ *
+ * **O acoplamento é implícito e vale a pena nomear (contra-argumento honesto
+ * do #6327, não varrido):** um mecanismo de OBSERVABILIDADE (o beacon) virou
+ * pré-requisito de um mecanismo de CORREÇÃO (claim válida — `SOFT_STALE_MS`
+ * só destrava issue de sessão morta se o heartbeat de fato parar). Isso
+ * quebra em SILÊNCIO se o beacon for desligado (`.claude/settings.json`),
+ * reduzido em frequência, ou não rodar por algum dos guards dele (worktree
+ * vinculado, `data/` ausente) — nesses casos `lastHeartbeat` volta a
+ * congelar em `startedAt` e `SOFT_STALE_MS` volta a ser o único sinal, exatamente
+ * como era antes do #6303, sem nenhum alarme dedicado pra essa regressão.
+ * `test/session-beacon-hook.test.ts` (describe "#6327") trava que o beacon
+ * atualiza `lastHeartbeat` de um registro de kind COORDENADOR (não só
+ * `interactive`) — é o que impede reduzir/desligar o beacon de virar uma
+ * mudança silenciosamente perigosa.
+ *
+ * **Decisão registrada (#6327 critério de aceite 4) — sessão coordenadora
+ * rodando de WORKTREE VINCULADO:** o beacon pula de propósito quando o
+ * próprio processo está num worktree vinculado (`isLinkedWorktree`, #6303
+ * blast radius 3 — existe pra não registrar SUBAGENTES implementadores, que
+ * sempre rodam com `isolation: "worktree"`). Isso também bloquearia o
+ * heartbeat de uma coordenadora que, por algum motivo, rodasse a partir de um
+ * worktree em vez do checkout principal. **Decisão: aceitável ficar stale
+ * nesse caso, sem heartbeat por caminho alternativo.** Três razões: (1) por
+ * convenção do repo (`context/overnight-dispatch-rules.md` item 11, "o
+ * coordenador precisa ver o diff FINAL... existe fora do worktree do
+ * subagente de propósito" — item 3, "Bootstrap do worktree", descreve a
+ * mesma premissa em prosa mais indireta), worktree é SEMPRE do subagente
+ * implementador — a coordenadora roda no checkout principal; uma
+ * coordenadora em worktree vinculado é configuração fora do padrão
+ * documentado, não o caso comum a otimizar; (2) o fallback já existe e
+ * é seguro: `SOFT_STALE_MS` (90min) volta a valer sozinho, exatamente como
+ * antes do #6303 — nenhuma claim fica presa pra sempre, só demora até 90min
+ * a mais pra destravar; (3) adicionar um call site de `heartbeat` só pra esse
+ * caso reabriria o próprio argumento do #6168 que motivou o beacon existir
+ * ("o que depende de skill lembrar, não acontece") — pra um cenário que hoje
+ * não tem instância real conhecida.
  */
 export function heartbeat(
   repoRoot: string,
@@ -377,8 +1047,53 @@ function listSessionJsonFiles(repoRoot: string): string[] {
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."));
-  } catch {
+  } catch (e) {
+    // #6277 (achado do review): este catch era VAZIO. Uma falha de I/O no
+    // diretório inteiro (EBUSY/EPERM/EACCES — os mesmos transitórios de
+    // OneDrive que `readJsonSafe` já loga por arquivo) colapsava para "nenhuma
+    // sessão existe", sem uma linha de aviso. Pior que o caso por-arquivo, que
+    // ao menos avisa. Isso virou crítico quando `findActiveSessionsOfKind`
+    // passou a decidir "há overnight rodando?" em cima disso: falha de leitura
+    // vira `active: false` e o contínuo volta a duplicar o trabalho do
+    // overnight — exatamente o desperdício que o mecanismo existe pra evitar.
+    warnIoError(dir, e);
     return [];
+  }
+}
+
+/**
+ * Resultado de `checkSessionsScanHealth` — se a varredura de `data/sessions/`
+ * conseguiu de fato ler o diretório, ou se degradou para "vazio" por falha de
+ * I/O. Existe porque o caminho fail-soft (correto para não derrubar a
+ * pipeline) é indistinguível, no retorno, de "não há sessão nenhuma" — e para
+ * uma decisão de EXCLUSÃO mútua essa ambiguidade é fail-open (#6277).
+ */
+export interface SessionsScanHealth {
+  /** `false` só quando o diretório EXISTE mas não pôde ser lido. */
+  ok: boolean;
+  /** Código/mensagem do erro de I/O — presente só quando `ok: false`. */
+  error?: string;
+}
+
+/**
+ * Responde se `data/sessions/` está legível AGORA. Diretório ausente conta
+ * como `ok: true` (é o estado normal de um clone fresco/sessão cloud — "não
+ * há sessão" é resposta honesta, não degradação). Só um erro de leitura sobre
+ * diretório existente devolve `ok: false`.
+ *
+ * O consumidor é o CLI `active-of-kind`, que expõe isso como `uncertain` no
+ * JSON para o chamador poder fail-CLOSED: com `uncertain: true`, tratar como
+ * "pode haver overnight rodando" em vez de confiar no `active: false`.
+ */
+export function checkSessionsScanHealth(repoRoot: string): SessionsScanHealth {
+  const dir = sessionsDir(repoRoot);
+  if (!existsSync(dir)) return { ok: true };
+  try {
+    readdirSync(dir);
+    return { ok: true };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code ?? (e as Error)?.message ?? String(e);
+    return { ok: false, error: String(code) };
   }
 }
 
@@ -424,7 +1139,24 @@ export function mergeSessionRecords(records: readonly SessionRecord[]): SessionR
   }
   const claimedUnion = new Set<number>();
   for (const r of records) for (const issue of r.claimed_issues ?? []) claimedUnion.add(issue);
-  return { ...primary, claimed_issues: [...claimedUnion].sort((a, b) => a - b) };
+  // #6436 — une `claimed_issues_at` de todas as cópias do grupo, mantendo o
+  // timestamp MAIS ANTIGO por issue (a claim "de verdade" começou lá, mesmo
+  // que uma cópia de conflito do OneDrive tenha um valor mais recente por
+  // ter sido escrita numa reivindicação subsequente ainda não deduplicada).
+  const claimedAtUnion: Record<string, string> = {};
+  for (const r of records) {
+    for (const [key, at] of Object.entries(r.claimed_issues_at ?? {})) {
+      const existing = claimedAtUnion[key];
+      if (!existing || Date.parse(at) < Date.parse(existing)) {
+        claimedAtUnion[key] = at;
+      }
+    }
+  }
+  return {
+    ...primary,
+    claimed_issues: [...claimedUnion].sort((a, b) => a - b),
+    claimed_issues_at: claimedAtUnion,
+  };
 }
 
 /**
@@ -469,18 +1201,82 @@ function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
 }
 
 /**
+ * Fecha o gap do READ-path documentado no #6481: `readMergedSessionGroups`
+ * agrupa só por STEM de arquivo (arquivo real + suas cópias `-safeBackup-N`)
+ * — nunca cruza entre um registro `overnight-*`/`develop-*`/`continuo-*` e um
+ * `interactive-*` do MESMO `sessionId`, que são arquivos com STEMS distintos.
+ * Essa é a mesma janela de corrida que `registerSession` (#6326) já cobre no
+ * WRITE-path: o beacon (`.claude/hooks/session-beacon.mjs`) cria
+ * `interactive-{tag}-{sessionId}.json` ANTES de a skill rodar `register
+ * --kind overnight`, e a promoção subsequente é BEST-EFFORT — `rmSync` do
+ * arquivo antigo pode falhar (I/O transitório do OneDrive), deixando os dois
+ * arquivos coexistindo por tempo indeterminado (`outcome:
+ * "promoted-orphan-left"`, ver `RegisterSessionOutcome`). Nesse intervalo,
+ * `readMergedSessionGroups` devolvia os DOIS registros como sessões
+ * distintas — e, pior, sem ordem determinística entre eles, `list-active`/
+ * `is-claimed` podiam exibir o registro `interactive` (tipicamente com
+ * `claimed_issues: []`, porque o beacon não escreve claims) no lugar do
+ * `overnight`/`develop`/`continuo` real, escondendo claims genuínas (achado
+ * ao vivo #6481: Triagem do Studio parou de mostrar 7 issues reivindicadas
+ * porque o registro efetivamente listado para aquele `sessionId` era o
+ * `interactive`).
+ *
+ * Aplica a MESMA regra que o write-path já usa (#6326, `isCoordinatorKind`):
+ * quando mais de um registro do grupo já-mesclado-por-STEM compartilha
+ * `sessionId`, o COORDENADOR (`overnight`/`develop`/`continuo`) vence sobre
+ * `interactive` como base de campos (kind, phase, branch, etc.) — e, na
+ * mesma disciplina fail-safe de `mergeSessionRecords`, `claimed_issues`/
+ * `claimed_issues_at` são a UNIÃO de TODOS os registros do grupo (incluindo
+ * o `interactive` descartado como base), nunca só os do vencedor — preferir
+ * "está reivindicada" a "não está", mesmo princípio de sempre neste módulo.
+ * Se por algum motivo dois registros COORDENADORES coexistirem pro mesmo
+ * `sessionId` (não deveria acontecer — cada skill só registra 1 kind por
+ * vez), o de heartbeat mais recente vence como base (mesmo critério de
+ * `mergeSessionRecords`).
+ *
+ * Pura — opera sobre a lista já lida do disco, não lê nada sozinha.
+ */
+function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
+  const bySessionId = new Map<string, SessionRecord[]>();
+  for (const record of records) {
+    const group = bySessionId.get(record.sessionId) ?? [];
+    group.push(record);
+    bySessionId.set(record.sessionId, group);
+  }
+
+  const out: SessionRecord[] = [];
+  for (const group of bySessionId.values()) {
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    const claimsUnion = mergeSessionRecords(group);
+    const coordinatorGroup = group.filter((r) => isCoordinatorKind(r.kind));
+    const base = coordinatorGroup.length > 0 ? mergeSessionRecords(coordinatorGroup) : claimsUnion;
+    out.push({
+      ...base,
+      claimed_issues: claimsUnion.claimed_issues,
+      claimed_issues_at: claimsUnion.claimed_issues_at,
+    });
+  }
+  return out;
+}
+
+/**
  * Lista as sessões ativas (não-stale) de `data/sessions/`, já com a UNIÃO
  * de claims de eventuais backups de conflito do OneDrive resolvida (#6130,
- * ver `readMergedSessionGroups`/`mergeSessionRecords`). Fail-soft: diretório
- * ausente ou erro de leitura → array vazio, nunca lança.
+ * ver `readMergedSessionGroups`/`mergeSessionRecords`) E com registros de
+ * kinds diferentes do MESMO `sessionId` deduplicados a favor do coordenador
+ * (#6481, ver `dedupeBySessionId`). Fail-soft: diretório ausente ou erro de
+ * leitura → array vazio, nunca lança.
  */
 export function listActiveSessions(
   repoRoot: string,
   now: number = Date.now(),
   maxAgeMs: number = MAX_SESSION_AGE_MS,
-): SessionRecord[] {
-  const out: SessionRecord[] = [];
-  for (const record of readMergedSessionGroups(repoRoot)) {
+): ActiveSessionRecord[] {
+  const out: ActiveSessionRecord[] = [];
+  for (const record of dedupeBySessionId(readMergedSessionGroups(repoRoot))) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) continue;
@@ -498,7 +1294,10 @@ export function listActiveSessions(
     // #5474: `stale` é só um sinal computado — nunca remove a sessão da lista
     // (isso quebraria consumidores como `overnight-watchdog.ts`/
     // `cleanup-merged-worktrees.ts`, que dependem da lista completa).
-    out.push({ ...record, stale: ageMs > SOFT_STALE_MS });
+    // #6168: a janela é POR KIND — `interactive` usa a sua, bem menor, porque
+    // não emite heartbeat depois que a conversa acaba (ver
+    // `INTERACTIVE_SOFT_STALE_MS`). Os 3 kinds coordenadores não mudam.
+    out.push({ ...record, stale: ageMs > softStaleMsForKind(record.kind) });
   }
   return out;
 }
@@ -520,7 +1319,7 @@ export interface ClaimIssueResult {
   ok: boolean;
   reason: ClaimIssueReason;
   /** Registro da sessão que já segura a issue — presente só em `blocked-by-other`. */
-  blockedBy?: SessionRecord;
+  blockedBy?: ActiveSessionRecord;
 }
 
 export interface ClaimIssueOptions {
@@ -585,7 +1384,7 @@ export function claimIssueCheckAndSet(
 
   const alreadyOwn = (current.claimed_issues ?? []).includes(issueNumber);
   let reason: ClaimIssueReason = "claimed";
-  let overriddenOwner: SessionRecord | undefined;
+  let overriddenOwner: ActiveSessionRecord | undefined;
   if (alreadyOwn) {
     reason = "already-own";
   } else {
@@ -600,12 +1399,76 @@ export function claimIssueCheckAndSet(
 
   const claimed = new Set(current.claimed_issues ?? []);
   claimed.add(issueNumber);
+  // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
+  // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
+  // `claimed_issues_at` em `SessionRecord`.
+  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+  const issueKey = String(issueNumber);
+  if (!(issueKey in claimedAt)) {
+    claimedAt[issueKey] = now;
+  }
   writeJsonSafe(path, {
     ...current,
     claimed_issues: [...claimed].sort((a, b) => a - b),
+    claimed_issues_at: claimedAt,
     lastHeartbeat: now,
   });
   return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };
+}
+
+/**
+ * Resultado de `claimIssueAutoRegistering` — mesmo shape de `ClaimIssueResult`
+ * mais o sinal de que a sessão precisou ser auto-registrada antes do claim.
+ */
+export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
+  /** `true` quando não havia registro de sessão pra `kind`/`sessionId` e este
+   * helper criou um (via `registerSession`) antes de tentar o claim de novo. */
+  autoRegistered: boolean;
+}
+
+/**
+ * Wrapper de `claimIssueCheckAndSet` que fecha o buraco do #6369: um
+ * `no-op-session-missing` (sessão nunca registrada) deixava de ser tratado
+ * como falha real por quem chama o CLI e virava um workaround em prosa (ex:
+ * o ciclo `continuo` do cron Hermes registrou a reivindicação num `.md` que
+ * nenhuma outra sessão lê — achado ao vivo 26/08/2026, quase causou trabalho
+ * duplicado entre duas sessões na mesma issue).
+ *
+ * A issue propôs duas direções equivalentes: "ou o comando aborta o ciclo,
+ * ou registra a sessão primeiro". Esta função implementa a 2ª — a única das
+ * duas que fecha o buraco inteiramente DENTRO deste repo, sem depender de
+ * uma skill externa (`hermes-diaria-continuo`, fora deste checkout — ver
+ * CLAUDE.md "A infra do kind `continuo` tem um consumidor EXTERNO") tratar
+ * corretamente um `exit 1`. Quando `claimIssueCheckAndSet` devolve
+ * `no-op-session-missing`, registra uma sessão mínima (`registerSession`,
+ * mesmos `kind`/`sessionId`/`tag` — idempotente, não pisa em registro
+ * existente) e tenta o claim de novo. **Nunca finge que não aconteceu nada**:
+ * o retorno sinaliza `autoRegistered: true` pra quem chama poder avisar alto
+ * (o CLI abaixo imprime isso explicitamente na mensagem de sucesso) — a
+ * intervenção fica visível, não é um passe silencioso.
+ *
+ * `claimIssueCheckAndSet` em si **não muda** — continua podendo devolver
+ * `no-op-session-missing` pra quem quiser esse comportamento explícito (é o
+ * que os testes existentes de `claimIssueCheckAndSet`/`unclaimIssue`
+ * documentam, incluindo o caso "sessão nunca existiu"). Este wrapper é
+ * aditivo, usado pelo CLI (`claim-issue`), não substitui a primitiva.
+ */
+export function claimIssueAutoRegistering(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issueNumber: number,
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+  options: ClaimIssueOptions = {},
+): ClaimIssueAutoRegisterResult {
+  const first = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+  if (first.reason !== "no-op-session-missing") {
+    return { ...first, autoRegistered: false };
+  }
+  registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
+  const retried = claimIssueCheckAndSet(repoRoot, kind, sessionId, issueNumber, tag, now, options);
+  return { ...retried, autoRegistered: true };
 }
 
 /**
@@ -628,6 +1491,193 @@ export function claimIssue(
 }
 
 /**
+ * Loga (stderr, nunca lança) que `unclaimIssue` achou o arquivo da PRÓPRIA
+ * sessão em disco mas não conseguiu ler o conteúdo (#6337 fleet review item
+ * 2 — mesma classe de bug que `warnUnreadablePromotionSource`/
+ * `outcome: "promotion-failed-unreadable"` corrigiram em `registerSession`,
+ * #6326). `readJsonSafe` devolve `null` tanto pra "arquivo ausente" quanto
+ * pra "JSON malformado" — SEM logar o segundo caso (comentário no próprio
+ * `readJsonSafe`: "comportamento pré-existente preservado, silencioso").
+ * Colapsar os dois em `no-op-session-missing` faria o chamador (a skill)
+ * tratar uma claim que está ATIVA no disco — só momentaneamente ilegível,
+ * cenário recorrente de sync do OneDrive, ver #5161/#6130/#6326 — como se a
+ * sessão nunca tivesse existido, seguindo em frente sem soltar nada e sem
+ * nenhum sinal de que algo está errado.
+ */
+function warnUnclaimUnreadable(sessionId: string, path: string): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso — unclaim-issue achou o registro de sessionId="${sessionId}" em "${path}" mas ` +
+        "não conseguiu ler o conteúdo (JSON corrompido/parcialmente sincronizado pelo OneDrive). A claim pode " +
+        'estar ATIVA no disco — isto NÃO é "sessão inexistente" (reason: "no-op-unreadable"); investigar antes de ' +
+        "assumir que não há nada pra soltar.\n",
+    );
+  } catch {
+    // Nunca deixar um log de warning quebrar o caminho fail-soft principal.
+  }
+}
+
+/**
+ * Motivo do resultado de `unclaimIssue` (#6317) — espelha `ClaimIssueReason`
+ * no formato, mas o conjunto é o inverso: nenhum caso carrega `blockedBy`
+ * (não existe "outra sessão bloqueando" pra soltar — só a própria sessão
+ * pode `unclaim`, ver docstring de `unclaimIssue`). `no-op-unreadable`
+ * (#6337 fleet review item 2) é distinto de `no-op-session-missing` de
+ * propósito — ver `warnUnclaimUnreadable` acima pro racional.
+ */
+export type UnclaimIssueReason = "unclaimed" | "no-op-not-claimed" | "no-op-session-missing" | "no-op-unreadable";
+
+export interface UnclaimIssueResult {
+  ok: boolean;
+  reason: UnclaimIssueReason;
+}
+
+/**
+ * Inverso de `claimIssueCheckAndSet` (#6317) — remove `issueNumber` de
+ * `claimed_issues` da PRÓPRIA sessão (`kind`+`tag`+`sessionId`) e regrava com
+ * o mesmo `writeJsonSafe` atômico. Existe porque `claim-issue` não tinha
+ * inverso: a única forma de soltar uma issue era `end`, que encerra a sessão
+ * inteira e solta TODAS — inviável para uma sessão longa que termina uma
+ * issue no meio de outras ainda em voo (#6317, evidência 1 do #6168
+ * acontecendo de novo).
+ *
+ * **Só remove da própria sessão — nunca mexe na claim de outra** (mesma
+ * disciplina de `releaseMergeLock`, que recusa liberar lock alheio). Não há
+ * parâmetro `force`/`sessionId` alheio nesta função de propósito: não existe
+ * caso de uso legítimo de uma sessão soltar a claim de outra — isso é
+ * responsabilidade de `end` (a sessão dona morreu) ou de staleness
+ * (`SOFT_STALE_MS`) destravando sozinha. **O que de fato garante "só a
+ * própria sessão"** não é o TIPO de `sessionId` (é `string` crua, igual
+ * `claimIssueCheckAndSet`/`registerSession`/`heartbeat` — deliberadamente não
+ * branded aqui pra não criar inconsistência nova só neste ponto do módulo) —
+ * é `.claude/hooks/inject-session-id.mjs` injetando o `session_id` REAL do
+ * payload do harness antes do comando rodar; um chamador que forjasse
+ * `--session-id` manualmente contornaria isso, mas nenhum call site
+ * documentado faz isso (mesma confiança que todo o resto do módulo deposita
+ * na injeção automática).
+ *
+ * Quatro desfechos, nenhum deles lança:
+ * - Sessão do próprio `sessionId`/`tag` NUNCA existiu (arquivo ausente) →
+ *   `{ ok: false, reason: "no-op-session-missing" }`.
+ * - Arquivo EXISTE mas não pôde ser lido (JSON corrompido/parcial — comum
+ *   durante sync do OneDrive) → `{ ok: false, reason: "no-op-unreadable" }`,
+ *   com aviso em stderr (`warnUnclaimUnreadable`) — distinto do caso acima de
+ *   propósito (#6337 fleet review item 2): a claim pode estar ATIVA no disco,
+ *   só momentaneamente ilegível, e reportar "sessão inexistente" faria o
+ *   chamador seguir em frente sem soltar nada e sem nenhum sinal de alerta —
+ *   exatamente a classe de bug que `outcome: "promotion-failed-unreadable"`
+ *   corrigiu em `registerSession` (#6326).
+ * - Issue não estava em `claimed_issues` desta sessão → **no-op honesto**,
+ *   `{ ok: false, reason: "no-op-not-claimed" }` — nunca finge sucesso (mesmo
+ *   padrão que `endSession` adotou no #5797: distinguir "removeu" de "não
+ *   havia o que remover", nunca reportar `ok: true` sem uma mudança real de
+ *   estado em disco).
+ * - Issue estava reivindicada → remove, regrava, `{ ok: true, reason:
+ *   "unclaimed" }`.
+ *
+ * **Não é compare-and-swap** — herda a mesma limitação de lost-update já
+ * documentada em `writeJsonSafe` (o beacon escreve neste MESMO arquivo a
+ * cada chamada de ferramenta da sessão): entre a leitura e a escrita deste
+ * `unclaimIssue`, um write concorrente do beacon pode perder campos. Mesmo
+ * risco residual que o resto do módulo aceita nesse arquivo, não uma
+ * regressão nova introduzida aqui.
+ *
+ * **#6481 — mescla com `-safeBackup-*` ANTES de checar `claimed_issues`,
+ * mesma disciplina fail-safe do read-path.** Até aqui esta função lia só o
+ * arquivo "real" (`readJsonSafe(path)`) — mas `data/sessions/` é uma junction
+ * OneDrive, e um write concorrente (tipicamente o beacon batendo heartbeat no
+ * MESMO arquivo entre o `claim-issue` e a tentativa de `unclaim-issue`) pode
+ * bifurcar o arquivo em cópias de conflito `-safeBackup-N`, deixando o
+ * arquivo "real" com uma versão do `claimed_issues` que NÃO inclui a issue
+ * que uma cópia de conflito carrega. Sem merge, `unclaimIssue` devolvia
+ * `no-op-not-claimed` — indistinguível de "esta sessão nunca reivindicou essa
+ * issue" — mesmo com a issue genuinamente presente em disco (achado ao vivo
+ * #6481: `unclaim-issue --issue 6431`/`--issue 6459` falharam assim 2× cada,
+ * enquanto `list-active` mostrava as duas em `claimed_issues` da mesma
+ * sessão). `readMergedRecordForRealFile` é a MESMA primitiva que
+ * `registerSession` (#6326) já usa para não perder claim na promoção de
+ * kind — reusada aqui, não reimplementada. Quando não há nenhum backup (caso
+ * comum), o merge devolve exatamente o conteúdo do arquivo real — nenhuma
+ * mudança de comportamento no caminho feliz.
+ *
+ * **#6567 — a remoção da issue é aplicada a TODOS os arquivos do grupo (real
+ * + cada `-safeBackup-*`), não só ao real.** O merge acima resolve a LEITURA
+ * (a issue aparece como reivindicada mesmo se só um backup a carrega), mas
+ * sem isto a ESCRITA seguinte (`writeJsonSafe(path, ...)`) tocava só o
+ * arquivo real — os backups continuavam em disco com `issueNumber` ainda em
+ * `claimed_issues`, e como o read-path (`readMergedSessionGroups`) faz a
+ * MESMA união real+backups, `is-claimed`/`list-active` seguiam reportando a
+ * issue como reivindicada mesmo depois do `unclaim-issue` responder `{ok:
+ * true}` — issue permanentemente inelegível até o GC eventualmente varrer o
+ * backup (achado ao vivo #6567). Cada backup é reescrito CIRURGICAMENTE (só
+ * `claimed_issues`/`claimed_issues_at` daquele próprio arquivo, preservando
+ * o resto do seu conteúdo) — nunca sobrescrito com o registro MESCLADO, que
+ * poderia introduzir campos de outra cópia num backup que nunca os teve.
+ */
+export function unclaimIssue(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  issueNumber: number,
+  tag: string = machineTag(),
+  now: string = new Date().toISOString(),
+): UnclaimIssueResult {
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const rawCurrent = readJsonSafe<SessionRecord>(path);
+  if (!rawCurrent) {
+    if (existsSync(path)) {
+      warnUnclaimUnreadable(sessionId, path);
+      return { ok: false, reason: "no-op-unreadable" };
+    }
+    return { ok: false, reason: "no-op-session-missing" };
+  }
+
+  // #6481: mescla com eventuais `-safeBackup-*` do MESMO arquivo real antes de
+  // checar `claimed_issues` — ver docstring acima. `readMergedRecordForRealFile`
+  // nunca devolve `null` aqui porque `rawCurrent` já provou que o arquivo real
+  // é legível (ela sempre inclui pelo menos o próprio arquivo real no merge).
+  const current = readMergedRecordForRealFile(repoRoot, path) ?? rawCurrent;
+
+  const claimed = current.claimed_issues ?? [];
+  if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };
+
+  // #6453 — limpa a entrada correspondente de `claimed_issues_at` junto com a
+  // remoção de `claimed_issues`. Sem isto, uma re-reivindicação futura da
+  // MESMA issue herda o timestamp da claim ANTERIOR (`claimIssueCheckAndSet`
+  // nunca sobrescreve uma chave já presente, #6436) e nasce artificialmente
+  // "envelhecida" para `findAgedClaims`/`check-block-staleness.ts` — o falso
+  // positivo exato que o gate de staleness existe para evitar.
+  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+  delete claimedAt[String(issueNumber)];
+
+  writeJsonSafe(path, {
+    ...current,
+    claimed_issues: claimed.filter((n) => n !== issueNumber),
+    claimed_issues_at: claimedAt,
+    lastHeartbeat: now,
+  });
+
+  // #6567: propaga a remoção a cada `-safeBackup-*` do grupo que ainda carrega
+  // a issue — ver docstring acima. Reescrita cirúrgica: só os dois campos de
+  // claim daquele backup, nunca o registro mesclado inteiro.
+  for (const backupPath of sessionGroupBackupPaths(repoRoot, path)) {
+    const backupRecord = readJsonSafe<SessionRecord>(backupPath);
+    if (!backupRecord) continue; // backup ilegível/parcialmente sincronizado — GC recolhe depois
+    const backupClaimed = backupRecord.claimed_issues ?? [];
+    if (!backupClaimed.includes(issueNumber)) continue;
+    const backupClaimedAt = { ...(backupRecord.claimed_issues_at ?? {}) };
+    delete backupClaimedAt[String(issueNumber)];
+    writeJsonSafe(backupPath, {
+      ...backupRecord,
+      claimed_issues: backupClaimed.filter((n) => n !== issueNumber),
+      claimed_issues_at: backupClaimedAt,
+    });
+  }
+
+  return { ok: true, reason: "unclaimed" };
+}
+
+/**
  * Retorna o registro da sessão ATIVA e DIFERENTE de `excludeSessionId` que já
  * reivindicou `issueNumber` — ou `null` se nenhuma outra sessão ativa a
  * reivindicou. Usado pelo coordenador antes de dispatchar um implementador
@@ -639,7 +1689,7 @@ export function isIssueClaimedByOther(
   issueNumber: number,
   excludeSessionId: string,
   now: number = Date.now(),
-): SessionRecord | null {
+): ActiveSessionRecord | null {
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
     // #5474: claim de sessão STALE (heartbeat morto ha mais de SOFT_STALE_MS,
@@ -649,6 +1699,81 @@ export function isIssueClaimedByOther(
     if ((session.claimed_issues ?? []).includes(issueNumber)) return session;
   }
   return null;
+}
+
+/**
+ * Sessões ATIVAS (não-stale) de um `kind` específico — a pergunta "há uma
+ * rodada `/diaria-overnight` acontecendo agora?" respondida de forma
+ * determinística, sem o consumidor precisar reimplementar o filtro de
+ * staleness sobre `listActiveSessions` (#6277 item 3).
+ *
+ * Motivação: o `hermes-diaria-continuo` roda de hora em hora e drena a MESMA
+ * fila que o overnight. O check-and-set do #6236 fecha a corrida de ESCRITA no
+ * claim, mas não evita o desperdício de duas sessões analisarem a mesma fila.
+ * Caso real em 260826: a #6232 reivindicada às 11:20 pelo overnight, com
+ * subagente já implementando, e às 11:27 pelo contínuo — os DOIS claims
+ * sucederam, porque `claimIssue` escrevia só no próprio arquivo sem consultar
+ * os das outras sessões (foi esse achado que gerou o #6236/#6242). Hoje a 2ª
+ * tentativa é recusada, mas a recusa chega DEPOIS de a sessão já ter lido,
+ * classificado e planejado a issue — o trabalho de análise se perde igual. A
+ * exclusão precisa acontecer ANTES do claim, e é isso que este helper permite:
+ * o tick do contínuo consulta antes de reivindicar issue nova e se limita a
+ * processar a própria fila de PRs enquanto houver overnight ativo.
+ *
+ * Semântica de staleness idêntica à de `isIssueClaimedByOther` (#5474):
+ * sessão com heartbeat morto há mais de `SOFT_STALE_MS` NÃO conta como ativa —
+ * um overnight que morreu sem chamar `end` não pode bloquear o contínuo para
+ * sempre. Sessões stale saem do retorno principal, mas continuam visíveis via
+ * `findStaleSessionsOfKind` para o chamador poder reportá-las.
+ *
+ * `excludeSessionId` permite a uma sessão perguntar "há OUTRA sessão deste
+ * kind?" sem se enxergar (o contínuo consultando por `continuo`, por exemplo).
+ *
+ * Fail-soft por herança: `listActiveSessions` nunca lança (diretório ausente,
+ * JSON corrompido → lista vazia), então este helper também não.
+ */
+export function findActiveSessionsOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  excludeSessionId?: string,
+  now: number = Date.now(),
+): SessionRecord[] {
+  return listActiveSessions(repoRoot, now).filter(
+    (session) => session.kind === kind && !session.stale && session.sessionId !== excludeSessionId,
+  );
+}
+
+/**
+ * Contraparte de `findActiveSessionsOfKind` — sessões do mesmo `kind` que
+ * estão dentro do teto absoluto (`MAX_SESSION_AGE_MS`) mas com heartbeat
+ * morto (`stale: true`). Não bloqueiam ninguém; existem para o chamador poder
+ * dizer "não há overnight ativo, mas há 1 registro stale de X" em vez de
+ * silenciar o registro órfão (mesma disciplina de nunca descartar em silêncio
+ * do `warnClockSkew`).
+ */
+export function findStaleSessionsOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  excludeSessionId?: string,
+  now: number = Date.now(),
+): SessionRecord[] {
+  return listActiveSessions(repoRoot, now).filter(
+    (session) => session.kind === kind && session.stale === true && session.sessionId !== excludeSessionId,
+  );
+}
+
+/**
+ * Predicado booleano sobre `findActiveSessionsOfKind` — o formato que o
+ * caminho de decisão do contínuo consome ("há overnight ativo? então não
+ * reivindico issue nova neste tick").
+ */
+export function hasActiveSessionOfKind(
+  repoRoot: string,
+  kind: SessionKind,
+  excludeSessionId?: string,
+  now: number = Date.now(),
+): boolean {
+  return findActiveSessionsOfKind(repoRoot, kind, excludeSessionId, now).length > 0;
 }
 
 /**
@@ -696,6 +1821,28 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  * segurando o lock) e liberado automaticamente pro próximo adquirente —
  * nunca trava a máquina pra sempre.
  *
+ * **#6334 — deixou de ser reentrante para a MESMA sessão.** Até aqui, uma
+ * 2ª chamada da mesma `sessionId` enquanto o lock que ELA MESMA segurava
+ * ainda estava dentro do TTL só renovava o `acquiredAt` e retornava `true`
+ * na hora, sem esperar nada — pensado como "idempotência segura" pro caso
+ * sequencial normal (acquire → merge → release, #5156 item 4). O #6299
+ * (fan-out em onda) tornou isso perigoso: a MESMA sessão overnight passou a
+ * poder ter 2-3 unidades chegando em "pronto pra mergear" ao mesmo tempo, e
+ * a reentrância deixava um 2º `gh pr merge` da mesma sessão passar "ao
+ * mesmo tempo" que o 1º sem nenhuma serialização real entre eles — quebrando
+ * o invariante de "master recebe um squash por vez" (#636) bem no cenário
+ * que o lock existe pra proteger. Nenhum caminho de produção hoje chama
+ * `acquireMergeLock` uma 2ª vez pela mesma sessão ANTES de liberar a 1ª —
+ * `mergeSoloPr`/`mergeTrainBatch` (`scripts/lib/merge-train-live.ts`) sempre
+ * fazem acquire→merge→release num único `try/finally`, e o loop de retry por
+ * lock negado (`runMergeTrain`) só tenta de novo DEPOIS que essa `finally` já
+ * rodou — então blindar a reentrância não regride nenhum fluxo real. Quem
+ * precisa genuinamente estender o TTL de um hold que já é seu (operação
+ * longa, mesmo lock, nunca liberado) usa `renewMergeLock` — uma função
+ * separada, que só aceita renovar o que a própria sessão já detém, nunca
+ * concede um hold novo. Ver `test/session-registry.test.ts` (#6334) pros
+ * dois caminhos: renovação explícita ✅ vs. 2ª aquisição concorrente ❌.
+ *
  * **#5161 fleet review item 1 (CRÍTICO):** a versão anterior fazia
  * read→check→write sem NENHUMA primitiva atômica — duas sessões podiam ler
  * "sem lock" simultaneamente e ambas escreverem, ambas recebendo `true`,
@@ -728,9 +1875,18 @@ const REAL_MERGE_LOCK_IO: MergeLockIo = {
  *      no instante de expiração do TTL), a mitigação abaixo é
  *      deliberadamente proporcional ao risco, não uma prova de CAS perfeito.
  *
- * Retorna `true` quando o lock foi adquirido (ou já era desta mesma sessão —
- * reentrante, idempotente), `false` quando outra sessão o segura e ainda
- * está dentro do TTL (ou quando perdemos a corrida de contestação acima).
+ * Retorna `true` quando o lock foi adquirido (ninguém o detinha, ou detinha
+ * mas já estava STALE — TTL expirado, tratado como abandonado), `false`
+ * quando alguém o segura e ainda está dentro do TTL — **inclusive quando
+ * esse "alguém" é a PRÓPRIA sessão chamadora** (#6334): uma 2ª chamada da
+ * mesma `sessionId` enquanto o hold dela ainda está fresco NÃO é mais
+ * reentrante — é tratada como uma tentativa concorrente de aquisição, e
+ * falha como qualquer outra. Isso é deliberado: é exatamente o caso que o
+ * #6299 tornou possível (mesma sessão com 2-3 merges "prontos" ao mesmo
+ * tempo) e que a reentrância antiga deixava passar sem serialização real.
+ * Quem precisa estender o TTL de um hold que genuinamente já é seu (nunca
+ * liberado, operação mais longa que o TTL) usa `renewMergeLock`, não uma 2ª
+ * chamada a esta função.
  */
 export function acquireMergeLock(
   repoRoot: string,
@@ -752,10 +1908,6 @@ export function acquireMergeLock(
   }
 
   const current = io.readCurrent(path);
-  if (current && current.heldBy === sessionId) {
-    io.overwrite(path, data); // reentrante: refresca o próprio lock (estende o TTL)
-    return true;
-  }
   if (current) {
     const acquiredMs = Date.parse(current.acquiredAt);
     if (Number.isFinite(acquiredMs)) {
@@ -767,7 +1919,10 @@ export function acquireMergeLock(
       // real entre máquinas, vale investigar); dentro da tolerância é
       // silencioso, é só o lock sendo tratado como fresco mesmo.
       if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) warnClockSkew("acquireMergeLock", `lock de ${current.heldBy}`, ageMs);
-      if (ageMs <= ttlMs) return false; // ainda dentro do TTL (com folga de tolerância) — outra sessão segura de verdade
+      // #6334: este teto vale IGUALMENTE quando `current.heldBy === sessionId`
+      // — um hold fresco da própria sessão bloqueia uma 2ª aquisição dela
+      // tanto quanto bloquearia a de outra sessão. Ver docblock da função.
+      if (ageMs <= ttlMs) return false; // ainda dentro do TTL (com folga de tolerância) — alguém (possivelmente nós mesmos) segura de verdade
     }
     // acquiredAt ilegível (campo corrompido, mas JSON válido) — cai pro
     // tratamento de "stale" abaixo, mesma política de antes.
@@ -778,6 +1933,32 @@ export function acquireMergeLock(
   io.overwrite(path, data);
   const verify = io.readCurrent(path);
   return verify?.heldBy === sessionId;
+}
+
+/**
+ * Estende o TTL de um lock de merge que a PRÓPRIA sessão já detém (#6334) —
+ * o caminho correto pra "operação mais longa que o TTL, mesmo hold, nunca
+ * liberado", que antes era coberto (incorretamente, ver #6334) pela
+ * reentrância de `acquireMergeLock`. Só renova o que a sessão chamadora já
+ * segura: `false` se não há lock, ou se o lock pertence a OUTRA sessão —
+ * nunca cria um hold novo, nunca rouba lock alheio. Diferente de
+ * `acquireMergeLock`, não checa staleness do TTL antes de renovar — se o
+ * arquivo ainda diz `heldBy === sessionId`, ninguém mais contestou o lock
+ * ainda, então renovar é seguro independente de quanto tempo se passou desde
+ * o último `acquiredAt`.
+ */
+export function renewMergeLock(
+  repoRoot: string,
+  sessionId: string,
+  now: number = Date.now(),
+  io: MergeLockIo = REAL_MERGE_LOCK_IO,
+): boolean {
+  const path = mergeLockPath(repoRoot);
+  const current = io.readCurrent(path);
+  if (!current || current.heldBy !== sessionId) return false;
+  const data = JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
+  io.overwrite(path, data);
+  return true;
 }
 
 /**
@@ -809,6 +1990,51 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
  * `data/sessions/` não crescer pra sempre.
  */
 export const GC_CONSERVATIVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Janela conservadora do kind `interactive` (#6168) — 2 horas, contra os 7
+ * DIAS dos kinds coordenadores. Sem isto, a Parte B da issue pioraria o
+ * problema que ela existe pra resolver: o beacon registra toda sessão
+ * interativa automaticamente, e sessão interativa termina sem chamar `end`
+ * (não há skill nenhuma pra chamar) — com a janela de 7 dias, `data/sessions/`
+ * encheria de registros mortos, cada um segurando as claims dele contra
+ * overnight/develop até a staleness resolver.
+ *
+ * 2h é folgado frente à janela de liveness de 15 min
+ * (`INTERACTIVE_SOFT_STALE_MS`) — dá 8× de margem pra uma sessão que só parou
+ * de chamar ferramenta por um tempo longo — e curto frente ao dano de um
+ * registro órfão. O branch de PID vivo continua vencendo os dois: uma sessão
+ * interativa com processo confirmadamente vivo na máquina local nunca é
+ * removida, por mais stale que o heartbeat esteja.
+ */
+export const GC_INTERACTIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Margem de segurança aplicada à janela de liveness do KIND (`SOFT_STALE_MS`/
+ * `INTERACTIVE_SOFT_STALE_MS`, via `softStaleMsForKind`) pra decidir remoção
+ * de um BACKUP ÓRFÃO — sem arquivo real correspondente (#6595).
+ *
+ * Por que um limiar distinto da janela conservadora de 7 dias
+ * (`GC_CONSERVATIVE_MAX_AGE_MS`): os 7 dias existem pra cobrir a
+ * possibilidade de uma sessão estar viva em OUTRA máquina, sem arquivo local
+ * pra provar liveness (ver docstring de `GC_CONSERVATIVE_MAX_AGE_MS`). Um
+ * backup órfão não tem essa ambiguidade — por construção, uma sessão viva
+ * bate heartbeat no arquivo REAL, nunca só no backup (ver `heartbeat` e
+ * `readMergedSessionGroups`). Ausência de arquivo real + heartbeat do backup
+ * além da janela de liveness do próprio kind significa que a sessão que o
+ * gerou não existe mais — em NENHUMA máquina. Não é limiar novo/arbitrário:
+ * é a mesma janela que `decideSessionGc` já usa pra "claramente ativa"
+ * (branch 1), só deixando de ser sobreposta pela janela conservadora no caso
+ * em que o conservadorismo não protege nada real.
+ *
+ * 4× foi escolhido porque ainda deixa folga generosa sobre falhas
+ * transitórias de heartbeat (ex: rate limit, hiccup de I/O do OneDrive) sem
+ * se aproximar da ordem de grandeza de `GC_CONSERVATIVE_MAX_AGE_MS` — pro
+ * kind `overnight` (`SOFT_STALE_MS` = 90min) dá 6h; medição ao vivo do #6595
+ * encontrou 27 órfãos `overnight`, o mais novo já 6,5× além dos 90min, então
+ * 4× segue conservador mesmo frente ao caso real que motivou a issue.
+ */
+export const GC_ORPHAN_LIVENESS_MARGIN = 4;
 
 /**
  * Checa se `pid` corresponde a um processo vivo — padrão "kill -0"
@@ -867,14 +2093,38 @@ export interface SessionGcResult {
  *   2. Heartbeat "no futuro" (clock skew) → mantém — nunca trata como
  *      abandonado.
  *   3. Além de `SOFT_STALE_MS`: se ALGUM registro do grupo foi escrito pela
- *      MÁQUINA LOCAL e carrega `pid`, a liveness do PROCESSO decide —
- *      `pid` vivo → mantém, INDEPENDENTE de quão velho o heartbeat esteja
- *      (é exatamente o cenário da ressalva: sessão viva que parou de bater
- *      heartbeat); `pid` confirmado morto → remove.
- *   4. Sem sinal de processo verificável (máquina diferente, ou nenhum
- *      registro do grupo tem `pid`) → só remove além da janela conservadora
- *      `conservativeMaxAgeMs` (default 7 dias) — chute deliberadamente caro
- *      de errar pro lado seguro.
+ *      MÁQUINA LOCAL e carrega `pid`, `pid` CONFIRMADO VIVO mantém —
+ *      INDEPENDENTE de quão velho o heartbeat esteja (é exatamente o
+ *      cenário da ressalva: sessão viva que parou de bater heartbeat).
+ *      **`pid` "morto" NÃO remove mais na hora (#6294)** — ver nota abaixo;
+ *      cai pro branch 4 junto com "sem pid".
+ *   4. Sem sinal de VIVO verificável (máquina diferente, nenhum registro do
+ *      grupo tem `pid`, ou `pid` reportado morto) → só remove além da
+ *      janela conservadora `conservativeMaxAgeMs` (default 7 dias) — chute
+ *      deliberadamente caro de errar pro lado seguro.
+ *
+ * **#6294 — "`pid` morto → remove na hora" foi RETIRADO do branch 3.**
+ * `--pid` é sempre preenchido a partir de `process.ppid` (hook
+ * `inject-session-id.mjs` e beacon `session-beacon.mjs`), sob a premissa de
+ * que esse é o pid do processo da sessão Claude Code corrente porque o
+ * harness spawna o hook/beacon como filho direto dela a cada `PreToolUse`.
+ * Medição ao vivo (#6294) CONTRADISSE essa premissa: numa sessão
+ * `overnight` demonstravelmente viva (heartbeat fresco, gates de PR
+ * rodando), o `pid` gravado já não correspondia a processo nenhum —
+ * `process.ppid`, neste harness, aponta pra um processo efêmero que morre
+ * quase imediatamente após gravar o registro, não pro processo persistente
+ * da sessão. Não há como este módulo (nem o hook/beacon) confirmar a partir
+ * do repo se isso é sempre assim ou só numa topologia específica do
+ * harness — camada opaca, não verificável daqui. Enquanto essa incerteza
+ * não for resolvida, tratar "`pid` morto" como sinal positivo de remoção é
+ * a mesma classe de risco que motivou a ressalva do #6130 em primeiro
+ * lugar: erra pro lado caro (perde `claimed_issues`/registro de uma sessão
+ * genuinamente viva) só pra economizar dias de espera na janela
+ * conservadora. `pid` VIVO continua um sinal ÚTIL de manter (falso-positivo
+ * de "vivo" — outro processo reaproveitando o mesmo pid — só estende
+ * proteção, nunca causa remoção indevida); `pid` morto deixou de ser um
+ * sinal confiável de remoção e por isso não empurra mais o veredito sozinho
+ * — some no branch 4, exatamente como "sem pid".
  *
  * **Limitação do #6130 fechada pelo #6160:** o branch 3 (PID vivo protege
  * incondicionalmente) era alcançável só pro kind `continuo` — `overnight`/
@@ -886,10 +2136,30 @@ export interface SessionGcResult {
  * toda chamada standalone de `register` sem a flag — `process.ppid` do
  * hook É o PID da sessão Claude Code corrente, porque o harness spawna o
  * hook como filho direto dela a cada `PreToolUse`. `overnight`/`develop`
- * ainda nunca chamam `heartbeat` (só `continuo` o faz), então
- * `lastHeartbeat === startedAt` continua verdadeiro a sessão inteira pra
- * eles — mas isso não impede mais o branch 3: a checagem de `pid` roda
- * independente de quão stale o heartbeat esteja.
+ * ainda nunca chamam `heartbeat` DIRETAMENTE — mas **isto não significa
+ * `lastHeartbeat === startedAt` a sessão inteira** (correção do #6327: o
+ * texto desta seção, até aqui, afirmava exatamente isso, e a medição ao vivo
+ * mostrou o oposto — ver a docstring de `heartbeat` acima pro mecanismo
+ * completo). Na prática o branch 3 (PID vivo) raramente chega a ser
+ * exercitado pra esses 2 kinds porque o branch 1 (heartbeat recente) já
+ * resolve primeiro — o beacon mantém `lastHeartbeat` fresco o tempo todo que
+ * a sessão está ativa chamando QUALQUER ferramenta, então o branch 3
+ * continua existindo como rede de segurança (heartbeat MESMO ASSIM stale —
+ * beacon desligado, worktree vinculado, `data/` ausente), não como o
+ * caminho comum que este texto descrevia antes — e é nesse caminho de rede
+ * de segurança que a checagem de `pid` continua rodando independente de
+ * quão stale o heartbeat esteja (só que, desde #6294, só o lado VIVO desse
+ * branch pesa sozinho na decisão — "pid morto" não é mais sinal positivo de
+ * remoção, ver docstring de `decideSessionGc` abaixo).
+ *
+ * **`isOrphan` (#6595)** — quando `true` (backup sem arquivo real
+ * correspondente), a janela final do branch 4 deixa de ser
+ * `conservativeMaxAgeMs` (7 dias, pensada pra "pode estar viva em outra
+ * máquina") e passa a ser `softStaleMsForKind(kind) * GC_ORPHAN_LIVENESS_MARGIN`
+ * — ver docstring de `GC_ORPHAN_LIVENESS_MARGIN` pro porquê. Sessão COM
+ * arquivo real (`isOrphan` ausente/`false`) não muda: os 7 dias continuam
+ * valendo integralmente, inclusive pro branch 3 (PID vivo), que nenhum dos
+ * dois casos altera.
  */
 function decideSessionGc(
   records: readonly SessionRecord[],
@@ -897,6 +2167,7 @@ function decideSessionGc(
   conservativeMaxAgeMs: number,
   isPidAlive: (pid: number) => boolean,
   localTag: string,
+  isOrphan = false,
 ): { action: SessionGcAction; reason: string } {
   let maxHeartbeatMs = -Infinity;
   for (const r of records) {
@@ -907,44 +2178,109 @@ function decideSessionGc(
     return { action: "kept", reason: "timestamp ilegível em todos os arquivos do grupo — GC nunca remove sem sinal de idade confiável" };
   }
 
+  // #6168: janela de liveness E janela conservadora são POR KIND —
+  // `interactive` usa as suas, bem menores, porque nasce do beacon
+  // automático e nunca chama `end` (ver INTERACTIVE_SOFT_STALE_MS /
+  // GC_INTERACTIVE_MAX_AGE_MS). Kind ausente/desconhecido cai nos valores
+  // dos coordenadores, que são os conservadores — nunca remove mais cedo
+  // sobre um registro que não se conseguiu classificar.
+  const groupKind = records[0]?.kind ?? "";
+  const softStaleMs = softStaleMsForKind(groupKind);
+  // #6595: órfão (sem arquivo real) usa a janela de liveness do próprio
+  // kind × margem, não a janela conservadora de 7 dias — ver docstring de
+  // `GC_ORPHAN_LIVENESS_MARGIN`. Sessão ancorada num arquivo real
+  // (`isOrphan === false`) preserva o comportamento anterior sem alteração.
+  // Restrito a `kind` CONHECIDO (`ALL_SESSION_KINDS`) — igual ao comentário
+  // acima sobre kind ausente/desconhecido: um `kind` que este módulo não
+  // reconhece não pode se beneficiar da janela mais curta (achado do review
+  // do #6595 — sem essa guarda, um registro corrompido/futuro com `kind`
+  // vazio cairia em `softStaleMsForKind("") = SOFT_STALE_MS` × margem em vez
+  // da janela conservadora, o oposto do "nunca remove mais cedo sobre um
+  // registro que não se conseguiu classificar").
+  const isKnownKind = (ALL_SESSION_KINDS as readonly string[]).includes(groupKind);
+  const effectiveMaxAgeMs =
+    isOrphan && isKnownKind
+      ? softStaleMs * GC_ORPHAN_LIVENESS_MARGIN
+      : groupKind === "interactive"
+        ? Math.min(conservativeMaxAgeMs, GC_INTERACTIVE_MAX_AGE_MS)
+        : conservativeMaxAgeMs;
+
   const ageMs = now - maxHeartbeatMs;
   if (ageMs < 0) {
     return { action: "kept", reason: "heartbeat no futuro (possível clock skew) — nunca tratado como abandonado" };
   }
-  if (ageMs <= SOFT_STALE_MS) {
-    return { action: "kept", reason: `heartbeat recente (${Math.round(ageMs / 60000)}min, dentro da janela de liveness de 90min) — sessão claramente ativa` };
+  if (ageMs <= softStaleMs) {
+    return {
+      action: "kept",
+      reason:
+        `heartbeat recente (${Math.round(ageMs / 60000)}min, dentro da janela de liveness de ` +
+        `${Math.round(softStaleMs / 60000)}min pro kind "${groupKind || "desconhecido"}") — sessão claramente ativa`,
+    };
   }
 
+  // #6294: só o lado VIVO deste branch decide sozinho. `pid` reportado
+  // MORTO não é mais tratado como sinal positivo de remoção — a fonte do
+  // pid (`process.ppid`, ver docstring acima) foi medida ao vivo gravando
+  // o pid de um processo efêmero, não o da sessão real, então "morto" aqui
+  // pode só significar "a fonte estava errada", nunca "a sessão acabou".
+  // Cai pro branch 4 (janela conservadora), igual a "sem pid".
   for (const r of records) {
-    if (r.machineTag === localTag && typeof r.pid === "number") {
-      if (isPidAlive(r.pid)) {
-        return {
-          action: "kept",
-          reason:
-            `heartbeat stale (${Math.round(ageMs / 60000)}min) mas processo pid=${r.pid} confirmado VIVO na máquina ` +
-            `local (${localTag}) — nunca remove registro de sessão viva (ressalva #6130)`,
-        };
-      }
+    if (r.machineTag === localTag && typeof r.pid === "number" && isPidAlive(r.pid)) {
       return {
-        action: "removed",
-        reason: `heartbeat stale (${Math.round(ageMs / 60000)}min) e processo pid=${r.pid} confirmado MORTO na máquina local (${localTag})`,
+        action: "kept",
+        reason:
+          `heartbeat stale (${Math.round(ageMs / 60000)}min) mas processo pid=${r.pid} confirmado VIVO na máquina ` +
+          `local (${localTag}) — nunca remove registro de sessão viva (ressalva #6130)`,
       };
     }
   }
 
-  if (ageMs > conservativeMaxAgeMs) {
+  const orphanWindowApplies = isOrphan && isKnownKind;
+
+  if (ageMs > effectiveMaxAgeMs) {
+    if (orphanWindowApplies) {
+      // #6595: `claimed_issues` deste órfão nunca chegam a fazer parte da
+      // união que `isIssueClaimedByOther`/`listActiveSessions`/Triagem leem
+      // (`readMergedSessionGroups` já pula todo backup sem arquivo real
+      // correspondente — ver o comentário "// órfão" lá) — não é isso que a
+      // remoção "libera". O que muda é só a existência EM DISCO destes
+      // números: se algum consumidor futuro passar a ler `data/sessions/`
+      // diretamente (sem passar pela união), essa leitura deixa de os ver.
+      const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
+      const claimsNote =
+        claimedIssues.length > 0
+          ? ` — leva junto ${claimedIssues.length} claim(s) que estavam registrados neste arquivo órfão: #${claimedIssues.join(", #")}`
+          : " — sem claimed_issues";
+      return {
+        action: "removed",
+        reason:
+          `#6595: backup ÓRFÃO (sem arquivo real correspondente) — heartbeat stale há ${Math.round(ageMs / 60_000)}min, ` +
+          `além de ${GC_ORPHAN_LIVENESS_MARGIN}× a janela de liveness do kind "${groupKind || "desconhecido"}" ` +
+          `(${Math.round(softStaleMs / 60_000)}min × ${GC_ORPHAN_LIVENESS_MARGIN} = ${Math.round(effectiveMaxAgeMs / 60_000)}min). ` +
+          "Sem arquivo real, não há sessão viva por trás (uma sessão viva bate heartbeat no arquivo real, nunca só " +
+          `no backup) — removível sem o conservadorismo de 7 dias que só se justifica quando o real pode existir noutra máquina${claimsNote}`,
+      };
+    }
     return {
       action: "removed",
       reason:
-        `heartbeat stale há ${Math.round(ageMs / 86_400_000)} dia(s), sem sinal de processo verificável ` +
-        `(máquina diferente ou sem pid registrado) — além da janela conservadora de ${Math.round(conservativeMaxAgeMs / 86_400_000)} dia(s)`,
+        `heartbeat stale há ${Math.round(ageMs / 60_000)}min, sem sinal de processo VIVO verificável ` +
+        `(máquina diferente, sem pid registrado, ou pid reportado morto — #6294: um pid "morto" não é mais ` +
+        `tratado como sinal de remoção, a fonte não é confiável o suficiente) — além da janela conservadora de ` +
+        `${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind "${groupKind || "desconhecido"}"`,
     };
   }
   return {
     action: "kept",
-    reason:
-      `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo verificável e ainda dentro da ` +
-      "janela conservadora — GC não arrisca remover sessão que pode estar viva",
+    reason: orphanWindowApplies
+      ? `#6595: backup ÓRFÃO com heartbeat stale (${Math.round(ageMs / 60000)}min) mas ainda dentro da janela de ` +
+        `liveness do kind × ${GC_ORPHAN_LIVENESS_MARGIN} (${Math.round(effectiveMaxAgeMs / 60_000)}min pro kind ` +
+        `"${groupKind || "desconhecido"}") — GC não arrisca remover cedo demais`
+      : isOrphan
+        ? `backup ÓRFÃO de kind não reconhecido ("${groupKind || "desconhecido"}") — cai na janela conservadora ` +
+          "por segurança de interpretação, mesmo sendo órfão (#6595: só kind conhecido usa a janela mais curta)"
+        : `heartbeat stale (${Math.round(ageMs / 60000)}min) mas sem sinal de processo VIVO verificável e ainda dentro ` +
+          "da janela conservadora — GC não arrisca remover sessão que pode estar viva",
   };
 }
 
@@ -1030,7 +2366,7 @@ export function planSessionGc(repoRoot: string, opts: SessionGcOptions = {}): Se
       });
       continue;
     }
-    const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag);
+    const decision = decideSessionGc([record], now, conservativeMaxAgeMs, isPidAlive, localTag, /* isOrphan */ true);
     results.push({ identity: `orphan-backup:${backup}`, files: [path], ...decision });
   }
 
@@ -1072,6 +2408,698 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
   return plan;
 }
 
+// ─── Reconciliação de claims presos em backup (#6581) ──────────────────────
+//
+// O #6567 (PR #6571) consertou o WRITE-path de `unclaimIssue`: a remoção de
+// uma issue passou a propagar para todos os `-safeBackup-*` do grupo, não só
+// o arquivo real. Isso impede o problema de CRESCER dali pra frente, mas não
+// tocou o ESTOQUE anterior — um claim que só sobrevive num backup porque o
+// arquivo REAL ainda existe mas divergiu (escrita pré-#6567 que só tocou o
+// real, deixando um `-safeBackup-*` mais antigo/bifurcado com issues que o
+// real nunca chegou a carregar) fica preso: o read-path
+// (`readMergedSessionGroups`/`mergeSessionRecords`) continua reportando a
+// issue como reivindicada via união fail-safe, mesmo sem nenhuma escrita
+// pendente que a resolva. **Isto é distinto do caso "sessão encerrou e o
+// arquivo real foi removido"** (`endSession`/GC) — aí o backup fica ÓRFÃO,
+// não faz parte de grupo nenhum, e este reconciliador explicitamente não o
+// toca (ver "Por que backup órfão... nunca vira arquivo real novo" no CLI).
+// `planClaimReconciliation`/`reconcileClaims` fecham o caso do real ainda
+// vivo: para cada grupo (arquivo real + seus `-safeBackup-*`), a união de
+// `claimed_issues` é calculada e gravada de volta no arquivo REAL. Isso não
+// muda quando o GC pode remover os backups — `planSessionGc`/`decideSessionGc`
+// decidem por liveness do GRUPO (heartbeat/pid), nunca por `claimed_issues`,
+// e removem real+backups sempre juntos, atomicamente; o benefício real desta
+// reconciliação é o arquivo real virar a fonte de verdade AUTOSSUFICIENTE da
+// claim (não depende mais de nenhum backup sobreviver) — não "destravar" o GC.
+
+export type ClaimReconciliationAction =
+  | "reconciled"
+  | "no-change"
+  | "skipped-unreadable-real"
+  | "orphan-backups-only"
+  | "write-failed";
+
+export interface ClaimReconciliationResult {
+  /** `{kind}-{tag}-{sessionId}` (stem do arquivo real) pro grupo ancorado num
+   * real, ou `orphan-backup:{arquivo}` pra um backup sem real correspondente. */
+  identity: string;
+  /** Path absoluto do arquivo real do grupo — `null` só pra `orphan-backups-only`. */
+  realPath: string | null;
+  /** Paths absolutos de todo `-safeBackup-*` do grupo (ou o próprio arquivo,
+   * pra um órfão). */
+  backupPaths: string[];
+  /** Issues presentes em algum backup do grupo mas ausentes do real —
+   * ADICIONADAS ao real quando `action === "reconciled"`. Nunca uma remoção. */
+  addedIssues: number[];
+  /** Entradas NOVAS de `claimed_issues_at` a mesclar (só para `addedIssues`) —
+   * usado por `reconcileClaims` na escrita; nunca sobrescreve uma entrada já
+   * existente no real. Vazio quando `addedIssues` é vazio. */
+  addedClaimedIssuesAt: Record<string, string>;
+  /** Quantos `-safeBackup-*` do grupo estavam ilegíveis/corrompidos e por isso
+   * ficaram de fora da união — as claims deles, se houver, ficam
+   * irrecuperáveis por esta reconciliação (não é erro nem bloqueia o resto do
+   * grupo, mas é informação que o CLI agrega no resumo final). */
+  unreadableBackupCount: number;
+  action: ClaimReconciliationAction;
+  /** Explicação legível — sempre populada, inclusive pra `"no-change"`
+   * (auditabilidade, mesmo padrão de `SessionGcResult.reason`). */
+  reason: string;
+}
+
+export interface ClaimReconciliationDecision {
+  /** Issues presentes em algum backup mas ausentes do real — a acrescentar
+   * (união fail-safe, nunca remoção — mesma direção do read-path #6130 e do
+   * write-path de `unclaimIssue` #6567). Ordenadas. */
+  addedIssues: number[];
+  /** Entradas NOVAS de `claimed_issues_at` (só para `addedIssues`) — nunca
+   * sobrescreve uma entrada já existente no real. */
+  addedClaimedIssuesAt: Record<string, string>;
+}
+
+/**
+ * Decisão PURA (sem I/O) de reconciliação de um único grupo: dado o registro
+ * REAL e os registros LEGÍVEIS de seus `-safeBackup-*` (backup ilegível já
+ * deve ter sido filtrado pelo chamador — não participa da união, mas também
+ * não bloqueia o resto do grupo), calcula o que FALTA no real via a mesma
+ * primitiva de união do read-path (`mergeSessionRecords`).
+ */
+export function decideClaimReconciliation(
+  realRecord: SessionRecord,
+  backupRecords: readonly SessionRecord[],
+): ClaimReconciliationDecision {
+  if (backupRecords.length === 0) return { addedIssues: [], addedClaimedIssuesAt: {} };
+  const merged = mergeSessionRecords([realRecord, ...backupRecords]);
+  const currentClaimed = new Set(realRecord.claimed_issues ?? []);
+  const addedIssues = (merged.claimed_issues ?? [])
+    .filter((n) => !currentClaimed.has(n))
+    .sort((a, b) => a - b);
+  const addedClaimedIssuesAt: Record<string, string> = {};
+  for (const issue of addedIssues) {
+    const at = merged.claimed_issues_at?.[String(issue)];
+    if (at) addedClaimedIssuesAt[String(issue)] = at;
+  }
+  return { addedIssues, addedClaimedIssuesAt };
+}
+
+/**
+ * Plano PURO (não escreve nada — só lê) de reconciliação de `data/sessions/`
+ * (#6581): agrupa real+backups via `groupBackupsByRealStem` (mesma primitiva
+ * do read-path, reusada aqui em vez de reimplementada) e roda
+ * `decideClaimReconciliation` por grupo. Backup ÓRFÃO (sem arquivo real
+ * correspondente) nunca vira arquivo real novo — só é reportado com action
+ * `"orphan-backups-only"`; quem decide o destino dele é o GC, com os
+ * critérios de liveness dele (`planSessionGc`), não este reconciliador.
+ * Arquivo real ilegível/corrompido nunca é sobrescrito (`"skipped-unreadable-real"`)
+ * — fail-soft, mesma disciplina de `planSessionGc` sobre registro ilegível.
+ */
+export function planClaimReconciliation(repoRoot: string): ClaimReconciliationResult[] {
+  const dir = sessionsDir(repoRoot);
+  const names = listSessionJsonFiles(repoRoot);
+  const realNames = names.filter((n) => !n.includes("-safeBackup-")).sort();
+  const backupsByRealStem = groupBackupsByRealStem(names);
+  const claimedBackupNames = new Set<string>();
+  const results: ClaimReconciliationResult[] = [];
+
+  for (const realName of realNames) {
+    const stem = realName.slice(0, -".json".length);
+    const backupNames = (backupsByRealStem.get(stem) ?? []).sort();
+    for (const b of backupNames) claimedBackupNames.add(b);
+    const realPath = join(dir, realName);
+    const backupPaths = backupNames.map((n) => join(dir, n));
+
+    const realRecord = readJsonSafe<SessionRecord>(realPath);
+    if (!realRecord) {
+      results.push({
+        identity: stem,
+        realPath,
+        backupPaths,
+        addedIssues: [],
+        addedClaimedIssuesAt: {},
+        unreadableBackupCount: 0,
+        action: "skipped-unreadable-real",
+        reason: "arquivo real ilegível/corrompido — grupo pulado (fail-soft: nunca escreve por cima do que não conseguiu entender)",
+      });
+      continue;
+    }
+
+    const backupRecords: SessionRecord[] = [];
+    let unreadableCount = 0;
+    for (const b of backupNames) {
+      const r = readJsonSafe<SessionRecord>(join(dir, b));
+      if (r) backupRecords.push(r);
+      else unreadableCount++;
+    }
+
+    const { addedIssues, addedClaimedIssuesAt } = decideClaimReconciliation(realRecord, backupRecords);
+    const unreadableNote = unreadableCount > 0 ? ` (${unreadableCount} backup(s) ilegível(is) do grupo ignorado(s))` : "";
+    results.push({
+      identity: stem,
+      realPath,
+      backupPaths,
+      addedIssues,
+      addedClaimedIssuesAt,
+      unreadableBackupCount: unreadableCount,
+      action: addedIssues.length > 0 ? "reconciled" : "no-change",
+      reason:
+        addedIssues.length > 0
+          ? `${addedIssues.length} claim(s) presos em backup — issue(s) [${addedIssues.join(", ")}]${unreadableNote}`
+          : `nenhum claim exclusivo de backup${unreadableNote}`,
+    });
+  }
+
+  const orphanBackups = names.filter((n) => n.includes("-safeBackup-") && !claimedBackupNames.has(n)).sort();
+  for (const orphan of orphanBackups) {
+    results.push({
+      identity: `orphan-backup:${orphan}`,
+      realPath: null,
+      backupPaths: [join(dir, orphan)],
+      addedIssues: [],
+      addedClaimedIssuesAt: {},
+      unreadableBackupCount: 0,
+      action: "orphan-backups-only",
+      reason:
+        "backup sem arquivo real correspondente — nunca cria arquivo real do zero pra reconciliar (decisão #6581); " +
+        "o GC (`planSessionGc`) decide o destino dele com os critérios de liveness dele",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Aplica `planClaimReconciliation` de fato: para cada grupo com
+ * `action === "reconciled"`, RELÊ tanto o arquivo real quanto cada backup do
+ * grupo (podem ter mudado entre o plano e a escrita — mesma corrida que
+ * `writeJsonSafe` já aceita em todo o resto do módulo) e RECOMPUTA
+ * `decideClaimReconciliation` contra esse estado FRESCO, em vez de reaplicar
+ * o `addedIssues` congelado no plano.
+ *
+ * **Por que recomputar em vez de reusar o plano (achado do fleet review do
+ * #6583, confirmado por 3 revisores independentes):** se `entry.addedIssues`
+ * do plano fosse aplicado cegamente sobre o `current` relido, uma issue que
+ * foi LEGITIMAMENTE removida via `unclaimIssue` no intervalo entre o plano e
+ * esta escrita (unclaim já propaga pra backups desde #6567, mas isso não
+ * ajuda aqui — o `addedIssues` já tinha sido calculado ANTES da remoção)
+ * seria silenciosamente re-adicionada — o próprio script de limpeza
+ * ressuscitando uma claim que acabara de ser corretamente encerrada.
+ * Recomputar contra o par (real, backups) lido NESTE instante fecha essa
+ * janela: se a issue já não aparece em nenhum backup (ou já está no real),
+ * `decideClaimReconciliation` simplesmente não a inclui em `addedIssues` de
+ * novo, e o grupo vira `"no-change"` sem nenhuma escrita.
+ *
+ * Escreve só `claimed_issues`/`claimed_issues_at` sobre o `current` ATUAL —
+ * nunca sobrescreve com o registro MESCLADO inteiro (que poderia introduzir
+ * campos de um backup que o real nunca teve, mesma disciplina cirúrgica de
+ * `unclaimIssue` #6567). Escrita atômica (`writeJsonSafe` → `writeFileAtomic`).
+ * Nunca remove nenhum backup — quem remove é o GC. Falha de escrita (I/O
+ * transitório do OneDrive) rebaixa a entry pra `"write-failed"` — DISTINTO de
+ * `"no-change"` (que significa "nada a fazer", não "tentou e não conseguiu")
+ * — com o motivo anexado; mesmo espírito de `garbageCollectSessions`
+ * rebaixar pra `"kept"` em falha, mas com uma action própria em vez de
+ * reusar o valor do caminho feliz — a próxima execução retenta.
+ */
+export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
+  const plan = planClaimReconciliation(repoRoot);
+  for (const entry of plan) {
+    if (entry.action !== "reconciled" || !entry.realPath) continue;
+
+    const current = readJsonSafe<SessionRecord>(entry.realPath);
+    if (!current) {
+      entry.action = "skipped-unreadable-real";
+      entry.reason = `${entry.reason} [ficou ilegível entre o plano e a escrita — pulado, próxima execução retenta]`;
+      continue;
+    }
+
+    const freshBackupRecords: SessionRecord[] = [];
+    for (const backupPath of entry.backupPaths) {
+      const r = readJsonSafe<SessionRecord>(backupPath);
+      if (r) freshBackupRecords.push(r);
+    }
+    const fresh = decideClaimReconciliation(current, freshBackupRecords);
+    entry.addedIssues = fresh.addedIssues;
+    entry.addedClaimedIssuesAt = fresh.addedClaimedIssuesAt;
+
+    if (fresh.addedIssues.length === 0) {
+      entry.action = "no-change";
+      entry.reason = `${entry.reason} [nada a adicionar contra o estado relido no momento da escrita — provavelmente já reconciliado, ou a claim foi legitimamente removida entre o plano e a escrita]`;
+      continue;
+    }
+
+    const claimedSet = new Set(current.claimed_issues ?? []);
+    for (const issue of fresh.addedIssues) claimedSet.add(issue);
+    const claimedIssuesAt = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
+    try {
+      writeJsonSafe(entry.realPath, {
+        ...current,
+        claimed_issues: [...claimedSet].sort((a, b) => a - b),
+        claimed_issues_at: claimedIssuesAt,
+      });
+    } catch (e) {
+      entry.action = "write-failed";
+      entry.reason = `${entry.reason} [escrita falhou: ${(e as Error)?.message ?? String(e)} — próxima execução retenta]`;
+    }
+  }
+  return plan;
+}
+
+// ─── Beacon: caminhos tocados (#6168 Parte A) ──────────────────────────────
+
+/**
+ * Normaliza um caminho pra comparação entre sessões: separadores POSIX, sem
+ * `./` inicial, sem barra final. `data/` é compartilhado entre Windows
+ * (`Neo`) e Linux (`helios`), então um caminho gravado com `\` por uma máquina
+ * precisa casar com o mesmo caminho gravado com `/` pela outra — sem isto, a
+ * detecção de sobreposição seria cega justamente no cenário cross-máquina que
+ * a issue chama de caso normal.
+ */
+export function normalizeBeaconPath(path: string): string {
+  return path
+    .replaceAll("\\", "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+}
+
+/**
+ * Aplica o teto de `TOUCHED_PATHS_CAP` colapsando caminhos pra prefixo de
+ * DIRETÓRIO em vez de truncar. Truncar perderia a informação de que a sessão
+ * mexeu naquela área; o prefixo preserva o sinal de sobreposição (que é o que
+ * `findSessionConflicts` consome) num espaço menor.
+ *
+ * Colapsa um nível por passada, do mais fundo pro mais raso, até caber ou até
+ * não haver mais o que colapsar. Pura, determinística (saída sempre ordenada).
+ */
+export function collapseTouchedPaths(paths: readonly string[], cap: number = TOUCHED_PATHS_CAP): string[] {
+  let current = [...new Set(paths.map(normalizeBeaconPath))].filter((p) => p !== "");
+  if (current.length <= cap) return current.sort();
+
+  // Colapsa progressivamente: a cada passada, todo caminho com mais de `depth`
+  // segmentos vira o prefixo de `depth` segmentos.
+  const maxDepth = Math.max(...current.map((p) => p.split("/").length));
+  for (let depth = maxDepth - 1; depth >= 1; depth--) {
+    current = [
+      ...new Set(
+        current.map((p) => {
+          const parts = p.split("/");
+          return parts.length > depth ? parts.slice(0, depth).join("/") : p;
+        }),
+      ),
+    ];
+    if (current.length <= cap) break;
+  }
+  // Ainda acima do teto mesmo colapsado ao 1º segmento (repo com muitos
+  // diretórios de topo): corta, mas de forma determinística e ordenada.
+  return current.sort().slice(0, cap);
+}
+
+/**
+ * `true` quando dois caminhos se sobrepõem — iguais, ou um é prefixo de
+ * DIRETÓRIO do outro. O teste de prefixo exige a barra (`a/b` cobre `a/b/c`,
+ * mas `a/b` NÃO cobre `a/bc`) — sem isso, o colapso de `collapseTouchedPaths`
+ * geraria falso positivo entre diretórios de nome parecido.
+ */
+export function beaconPathsOverlap(a: string, b: string): boolean {
+  const x = normalizeBeaconPath(a);
+  const y = normalizeBeaconPath(b);
+  if (x === "" || y === "") return false;
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+// ─── `conflicts`: consulta, nunca aquisição (#6168 Parte C) ────────────────
+
+/**
+ * Union DISCRIMINADA por `kind` — a correlação entre o tipo do conflito e os
+ * campos que ele carrega é garantia de compilador, não convenção:
+ *
+ *   - `branch-drift` NUNCA tem `peer` (é sobre o próprio registro);
+ *   - `branch-shared` e `path-overlap` SEMPRE têm;
+ *   - só `path-overlap` carrega `paths`.
+ *
+ * Declarar isso como um shape único com campos opcionais deixaria
+ * `{ kind: "path-overlap", peer: undefined }` representável — semanticamente
+ * absurdo, e o consumidor precisaria re-checar `kind` antes de tocar `peer`.
+ * A Parte D da #6168 prevê consumidores que vão querer `conflict.peer.sessionId`
+ * pra abrir conversa com quem colidiu; a union dá exhaustiveness a eles de graça.
+ */
+export type SessionConflict =
+  | { kind: "branch-drift"; detail: string }
+  | { kind: "branch-shared"; peer: ActiveSessionRecord; detail: string }
+  | { kind: "path-overlap"; peer: ActiveSessionRecord; detail: string; paths: string[] };
+
+export interface FindSessionConflictsOptions {
+  /** `sessionId` de quem pergunta — sempre excluído dos peers. */
+  sessionId: string;
+  /** Caminhos que esta sessão está prestes a tocar. */
+  paths?: readonly string[];
+  /** Branch atual do checkout de quem pergunta (`git branch --show-current`). */
+  branch?: string;
+  /** Registro da PRÓPRIA sessão, quando disponível — habilita `branch-drift`. */
+  ownRecord?: SessionRecord | null;
+  /** Tag da máquina de quem pergunta — `branch-shared` só compara peers da MESMA máquina. */
+  machineTag?: string;
+}
+
+/**
+ * Consulta PURA: "quem mais está mexendo nisto agora?" (#6168 Parte C).
+ *
+ * **Não adquire nada e não cria arquivo nenhum** — é o critério de aceite
+ * explícito da issue ("nenhum arquivo de lock NOVO"). Responde e devolve o
+ * peer; o que fazer com a resposta é decisão de quem chamou (Parte D:
+ * conversar; Parte F: ordenar o merge).
+ *
+ * Três conflitos, e o primeiro é o que a evidência 5 da issue pedia:
+ *
+ * - **`branch-drift`** — a branch registrada por ESTA sessão no beacon não é
+ *   mais a branch do checkout. Significa que outra sessão trocou o checkout
+ *   embaixo (`sync-code.ts` faz `git checkout master` quando `branch !=
+ *   master`, e é o Passo 0 de toda edição/rodada). Não envolve peer: é a
+ *   checagem barata de "a branch ainda é minha?" antes de um `git commit`,
+ *   que teria pego no ato o incidente em que `commit`/`push` reportaram
+ *   sucesso e o commit foi parar em `master`.
+ * - **`branch-shared`** — um peer vivo da MESMA máquina declara a mesma
+ *   branch. Só faz sentido intra-máquina: máquinas diferentes têm checkouts
+ *   diferentes, e homônimos de branch ali não colidem.
+ * - **`path-overlap`** — caminhos desta sessão sobrepõem `touched_paths`/
+ *   `dirty_paths` de um peer vivo. `dirty_paths` (não-commitado) é reportado
+ *   à parte porque é o sinal mais forte: trabalho em voo, sem branch ainda.
+ *
+ * **Sessão `stale` nunca conflita** — mesma semântica que
+ * `isIssueClaimedByOther` já aplica (#5474), agora com a janela por kind
+ * (#6168), então uma sessão interativa morta há 15 min já não bloqueia.
+ */
+export function findSessionConflicts(
+  sessions: readonly ActiveSessionRecord[],
+  opts: FindSessionConflictsOptions,
+): SessionConflict[] {
+  const conflicts: SessionConflict[] = [];
+  const myPaths = (opts.paths ?? []).map(normalizeBeaconPath).filter((p) => p !== "");
+
+  // 1. branch-drift — sobre o PRÓPRIO registro, não sobre peer.
+  const knownBranch = opts.ownRecord?.branch;
+  if (opts.branch && knownBranch && knownBranch !== opts.branch) {
+    conflicts.push({
+      kind: "branch-drift",
+      detail:
+        `a branch registrada por esta sessão era "${knownBranch}" e o checkout está agora em "${opts.branch}" — ` +
+        "outra sessão provavelmente trocou o checkout no meio (sync-code.ts faz `git checkout master` quando a " +
+        "branch não é master). Commitar agora pode cair na branch errada, com `commit`/`push` reportando sucesso.",
+    });
+  }
+
+  for (const peer of sessions) {
+    if (peer.sessionId === opts.sessionId) continue;
+    if (peer.stale) continue;
+
+    // 2. branch-shared — só intra-máquina (ver docstring).
+    if (
+      opts.branch &&
+      peer.branch === opts.branch &&
+      (opts.machineTag === undefined || peer.machineTag === opts.machineTag)
+    ) {
+      conflicts.push({
+        kind: "branch-shared",
+        peer,
+        detail: `${peer.kind}@${peer.machineTag} declara a MESMA branch "${opts.branch}" no mesmo checkout`,
+      });
+    }
+
+    // 3. path-overlap — dirty (não-commitado) é o sinal mais forte.
+    if (myPaths.length > 0) {
+      const peerDirty = (peer.dirty_paths ?? []).map(normalizeBeaconPath);
+      const peerTouched = (peer.touched_paths ?? []).map(normalizeBeaconPath);
+      const hitsDirty = myPaths.filter((mine) => peerDirty.some((theirs) => beaconPathsOverlap(mine, theirs)));
+      const hitsTouched = myPaths.filter((mine) => peerTouched.some((theirs) => beaconPathsOverlap(mine, theirs)));
+      const hits = [...new Set([...hitsDirty, ...hitsTouched])].sort();
+      if (hits.length > 0) {
+        conflicts.push({
+          kind: "path-overlap",
+          peer,
+          paths: hits,
+          detail:
+            `${peer.kind}@${peer.machineTag} já tocou ${hits.length} caminho(s) em comum` +
+            (hitsDirty.length > 0
+              ? ` — ${hitsDirty.length} deles com edição NÃO COMMITADA (${hitsDirty.slice(0, 5).join(", ")})`
+              : ""),
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+// ─── Parte F: ordenação de merge pela conversa (#6168) ─────────────────────
+
+export type MergeAdmission = "proceed" | "yield" | "fallback-to-lock";
+
+export interface PeerAnnouncement extends MergeAnnouncement {
+  /** `true` só com ACK EXPLÍCITO do peer. Ausência/`false` = silêncio. */
+  acked?: boolean;
+}
+
+/**
+ * Vencedor determinístico entre dois anúncios de merge (#6168 Parte F):
+ * timestamp mais ANTIGO vence; empate (ou timestamp ilegível dos dois lados)
+ * resolve pelo `sessionId` lexicograficamente MENOR.
+ *
+ * A propriedade que importa é que **as duas pontas calculam o mesmo vencedor
+ * sozinhas**, sem barganha e sem round-trip — é isso que substitui o lock
+ * como mecanismo primário sem introduzir deadlock. Pura e total: timestamp
+ * ilegível de um lado perde pro legível do outro (nunca deixa a comparação
+ * indefinida).
+ */
+export function decideMergeOrder(a: MergeAnnouncement, b: MergeAnnouncement): MergeAnnouncement {
+  const ta = Date.parse(a.announcedAt);
+  const tb = Date.parse(b.announcedAt);
+  const aOk = Number.isFinite(ta);
+  const bOk = Number.isFinite(tb);
+  if (aOk && !bOk) return a;
+  if (!aOk && bOk) return b;
+  if (aOk && bOk && ta !== tb) return ta < tb ? a : b;
+  return a.sessionId <= b.sessionId ? a : b;
+}
+
+export interface MergeAdmissionResult {
+  admission: MergeAdmission;
+  reason: string;
+  /** Anúncio vencedor quando houve disputa. */
+  winner?: MergeAnnouncement;
+  /** Peer que motivou `yield`/`fallback-to-lock`. */
+  blockedBy?: PeerAnnouncement;
+}
+
+/**
+ * Decide se esta sessão pode mergear AGORA, dado o próprio anúncio e o que os
+ * peers responderam (#6168 Parte F). Pura.
+ *
+ * Ordem de avaliação, e ela importa:
+ *
+ * 1. **Anúncio concorrente vence ACK.** Se algum peer anunciou merge próprio,
+ *    o vencedor sai de `decideMergeOrder` — independente de ter havido ACK.
+ *    Perdi → `yield` (e espero o aviso de "mergeado" pra dar `git pull` ANTES
+ *    do meu CI, que é o que o lock nunca deu: ele solta a janela sem dizer o
+ *    QUE mudou, e o outro descobre por conflito).
+ * 2. **Silêncio NUNCA é cessão** (regra dura da issue). Peer sem `acked`
+ *    explícito → `fallback-to-lock`: degrada pro `merge-lock-acquire` de
+ *    sempre, nunca pra "ninguém reclamou, então é meu". É o que impede a
+ *    conversa de virar canal de falso consenso.
+ * 3. **Sem peer nenhum** → também `fallback-to-lock`: não há com quem
+ *    combinar, então vale o piso. Degradar pro mecanismo antigo é sempre
+ *    permitido; assumir exclusividade por ausência, nunca.
+ * 4. Todos os peers deram ACK e ninguém anunciou merge concorrente →
+ *    `proceed`.
+ */
+export function resolveMergeAdmission(
+  mine: MergeAnnouncement,
+  peers: readonly PeerAnnouncement[],
+): MergeAdmissionResult {
+  const competing = peers.filter((p) => p.pr !== undefined || p.announcedAt);
+  if (competing.length > 0) {
+    let winner: MergeAnnouncement = mine;
+    let winnerPeer: PeerAnnouncement | undefined;
+    for (const peer of competing) {
+      const next = decideMergeOrder(winner, peer);
+      if (next !== winner) {
+        winner = next;
+        winnerPeer = peer;
+      }
+    }
+    if (winner.sessionId !== mine.sessionId) {
+      return {
+        admission: "yield",
+        reason:
+          `anúncio concorrente de ${winner.sessionId} (${winner.announcedAt}) vence a ordenação determinística ` +
+          "(timestamp mais antigo; empate pelo sessionId menor) — ceder e aguardar o aviso de merge concluído " +
+          "antes de dar git pull e rodar o próprio CI",
+        winner,
+        blockedBy: winnerPeer,
+      };
+    }
+  }
+
+  const silent = peers.find((p) => p.acked !== true);
+  if (silent) {
+    return {
+      admission: "fallback-to-lock",
+      reason:
+        `peer ${silent.sessionId} não deu ACK explícito — silêncio NUNCA é cessão (#6168 Parte D). ` +
+        "Cair no merge-lock-acquire de sempre.",
+      blockedBy: silent,
+    };
+  }
+  if (peers.length === 0) {
+    return {
+      admission: "fallback-to-lock",
+      reason: "nenhum peer alcançável pra combinar a ordem — vale o piso (merge-lock-acquire)",
+    };
+  }
+  return {
+    admission: "proceed",
+    reason: `${peers.length} peer(s) deram ACK explícito e nenhum anunciou merge concorrente`,
+  };
+}
+
+// ─── Concessão de janela de merge (#6296) ──────────────────────────────────
+
+export type GrantMergeReason =
+  | "granted"
+  | "self-grant-refused"
+  | "not-a-coordinator"
+  | "grantee-is-coordinator-refused"
+  | "no-op-session-missing";
+
+export interface GrantMergeResult {
+  ok: boolean;
+  reason: GrantMergeReason;
+  grant?: MergeGrant;
+}
+
+/**
+ * Concede a janela de merge a OUTRA sessão (#6296) — gravada como campo
+ * `merge_grant` no record da coordenadora que concede, nunca num arquivo
+ * novo.
+ *
+ * Motivação medida (260826, `helios`): o protocolo da Parte F foi executado à
+ * mão e cada passo funcionou — `ListAgents` achou o peer, `SendMessage`
+ * entregou, o peer conferiu colisão por arquivo nos 3 PRs dele, concedeu a
+ * janela, e o `merge-lock-acquire` deu ok. **E o `gh pr merge` foi bloqueado
+ * assim mesmo**, porque o guard do #5716 compara `session_id` contra
+ * `data/sessions/` e sessão interativa não está lá. A conversa chegou a
+ * acordo e não teve efeito nenhum sobre o mecanismo. Esta função é o que dá
+ * ao acordo uma representação que o guard consegue ler.
+ *
+ * Duas recusas, ambas estruturais:
+ * - **`self-grant-refused`** — ninguém concede a si mesmo. É o que preserva a
+ *   propriedade que o #5716 protege (a coordenadora decide quando entra
+ *   merge) em vez de contorná-la; sem isso, "conceder a si mesma" seria só um
+ *   relabel com outro nome.
+ * - **`not-a-coordinator`** — só overnight/develop/continuo concedem.
+ */
+export function grantMergeWindow(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  grantedTo: string,
+  meta: { pr?: number; tag?: string; now?: string } = {},
+): GrantMergeResult {
+  if (!isCoordinatorKind(kind)) return { ok: false, reason: "not-a-coordinator" };
+  if (grantedTo === sessionId || grantedTo.trim() === "") return { ok: false, reason: "self-grant-refused" };
+
+  // #6303 review cruzado (P1·a): recusa conceder a OUTRA COORDENADORA.
+  //
+  // Até aqui só o CONCEDENTE era validado (`isCoordinatorKind(kind)`) e só a
+  // auto-concessão era barrada. O kind de `grantedTo` nunca era olhado —
+  // então `grant-merge --granted-to {sessionId de outra coordenadora}`
+  // sucedia. Combinado com o ramo de concessão que, no guard, saía ANTES da
+  // checagem de lock, isso deixava a coordenadora beneficiada pular a
+  // serialização. Concessão cruzada (A→B, B→A) e ambas mergeavam sem lock.
+  //
+  // A concessão existe pra dar caminho a quem NÃO tem identidade de
+  // coordenadora — tipicamente uma sessão interativa. Coordenadora já tem o
+  // direito por si; o que ela precisa respeitar é o merge lock, e conceder
+  // entre pares seria justamente um jeito de contorná-lo.
+  //
+  // Defesa em profundidade, não redundância: esta recusa responde "quem pode
+  // receber"; a reordenação no guard responde "quando pode usar". Fechar só
+  // uma das duas deixaria a outra metade aberta a um `merge_grant` gravado
+  // por outro caminho.
+  const grantee = listActiveSessions(repoRoot).find((s) => s.sessionId === grantedTo);
+  if (grantee && isCoordinatorKind(grantee.kind)) {
+    return { ok: false, reason: "grantee-is-coordinator-refused" };
+  }
+
+  const tag = meta.tag ?? machineTag();
+  const path = sessionFilePath(repoRoot, kind, tag, sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current) return { ok: false, reason: "no-op-session-missing" };
+
+  const now = meta.now ?? new Date().toISOString();
+  const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
+  if (meta.pr !== undefined) grant.pr = meta.pr;
+  writeJsonSafe(path, { ...current, merge_grant: grant, lastHeartbeat: now });
+  return { ok: true, reason: "granted", grant };
+}
+
+/**
+ * `true` quando `grant` ainda vale em `now`: não consumida, dentro do TTL, e
+ * emitida para `sessionId`. Pura. Timestamp ilegível nunca vale (nunca
+ * concede sobre estado que não se conseguiu interpretar).
+ */
+export function isMergeGrantLive(
+  grant: MergeGrant | undefined,
+  sessionId: string,
+  now: number = Date.now(),
+  ttlMs: number = MERGE_GRANT_TTL_MS,
+): boolean {
+  if (!grant || grant.grantedTo !== sessionId) return false;
+  if (grant.consumedAt) return false;
+  if (grant.grantedTo === grant.grantedBy) return false; // auto-concessão nunca vale, mesmo se gravada à mão
+  const grantedMs = Date.parse(grant.grantedAt);
+  if (!Number.isFinite(grantedMs)) return false;
+  const ageMs = now - grantedMs;
+  // Idade negativa além da tolerância de skew: não trata como válida por
+  // tempo indefinido, mas também não rouba — mesma disciplina do merge lock.
+  if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) return false;
+  return ageMs <= ttlMs;
+}
+
+/**
+ * Procura, entre as sessões COORDENADORAS ativas, uma concessão viva emitida
+ * pra `sessionId` (#6296). Retorna a concessão + quem concedeu, ou `null`.
+ */
+export function findLiveMergeGrant(
+  repoRoot: string,
+  sessionId: string,
+  now: number = Date.now(),
+): { grant: MergeGrant; grantedBy: ActiveSessionRecord } | null {
+  for (const session of listActiveSessions(repoRoot, now)) {
+    if (!isCoordinatorKind(session.kind)) continue;
+    if (session.stale) continue;
+    if (isMergeGrantLive(session.merge_grant, sessionId, now)) {
+      return { grant: session.merge_grant!, grantedBy: session };
+    }
+  }
+  return null;
+}
+
+/**
+ * Marca a concessão como consumida (uso único, #6296). Chamado logo após o
+ * `gh pr merge` que a janela autorizou. Retorna `false` quando não havia
+ * concessão viva pra consumir — nunca lança.
+ */
+export function consumeMergeGrant(repoRoot: string, sessionId: string, now: number = Date.now()): boolean {
+  const found = findLiveMergeGrant(repoRoot, sessionId, now);
+  if (!found) return false;
+  const owner = found.grantedBy;
+  const path = sessionFilePath(repoRoot, owner.kind, owner.machineTag, owner.sessionId);
+  const current = readJsonSafe<SessionRecord>(path);
+  if (!current || !current.merge_grant) return false;
+  writeJsonSafe(path, {
+    ...current,
+    merge_grant: { ...current.merge_grant, consumedAt: new Date(now).toISOString() },
+  });
+  return true;
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
 /**
@@ -1079,10 +3107,28 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
  * chamador em produção.
  */
 export function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop" && value !== "continuo") {
-    throw new Error(`--kind deve ser "overnight", "develop" ou "continuo", recebido "${value}"`);
+  if (value === undefined || !(ALL_SESSION_KINDS as readonly string[]).includes(value)) {
+    throw new Error(
+      `--kind deve ser "overnight", "develop", "continuo" ou "interactive", recebido "${value}"`,
+    );
   }
-  return value;
+  return value as SessionKind;
+}
+
+/**
+ * Como `requireKind`, mas recusa `interactive` (#6168) — usada nos
+ * subcomandos que só fazem sentido pra uma coordenadora. Hoje: `grant-merge`
+ * (só coordenadora concede janela, #6296).
+ */
+export function requireCoordinatorKind(value: string | undefined): SessionKind {
+  const kind = requireKind(value);
+  if (!isCoordinatorKind(kind)) {
+    throw new Error(
+      `--kind "${kind}" não é uma sessão coordenadora — só overnight/develop/continuo podem executar esta operação. ` +
+        "Uma sessão interativa nunca concede janela de merge (nem a si mesma): peça à coordenadora registrada (#6296).",
+    );
+  }
+  return kind;
 }
 
 function requireSessionId(values: Record<string, string>): string {
@@ -1097,11 +3143,67 @@ function requireSessionId(values: Record<string, string>): string {
   return sessionId;
 }
 
+/**
+ * Resolve a raiz do checkout PRINCIPAL do repositório (#6372) — nunca
+ * `process.cwd()` nem `git rev-parse --show-toplevel`, os dois candidatos
+ * óbvios que devolvem o WORKTREE atual em vez do checkout principal.
+ *
+ * `data/` é uma junction/symlink OneDrive que só existe no checkout
+ * principal — um `git worktree` vinculado (`.claude/worktrees/agent-*`,
+ * onde TODO subagente implementador de overnight/develop/continuo roda,
+ * `isolation: "worktree"`) não a herda. Antes deste fix, `main()` resolvia
+ * `repoRoot` via `process.cwd()`: uma sessão cujo cwd persistisse dentro de
+ * um worktree (`cd` num Bash anterior — o cwd persiste entre chamadas
+ * Bash, ver docstring do harness) fazia TODO comando deste CLI
+ * (`register`, `claim-issue`, `is-claimed`, `merge-lock-acquire`,
+ * `list-active`) criar/ler um `data/sessions/` NOVO e VAZIO dentro do
+ * worktree, silenciosamente — exit 0 sempre, sem aviso. Isso desarmava, em
+ * silêncio, exatamente os 3 mecanismos que existem pra impedir 2 sessões
+ * colidirem na mesma issue/merge.
+ *
+ * `git rev-parse --path-format=absolute --git-common-dir` aponta pro `.git`
+ * REAL compartilhado entre o checkout principal e TODO worktree vinculado
+ * do mesmo repositório (mesmo mecanismo de `resolveSharedLockPath` em
+ * `scripts/lib/git-sync.ts`, #3430 — verificado empiricamente ali: rodar o
+ * comando tanto do checkout principal quanto de dentro de
+ * `.claude/worktrees/agent-*` devolve o EXATO mesmo path absoluto). Para o
+ * checkout principal, `.git` é um diretório real direto na raiz do repo —
+ * `dirname()` desse path é a raiz. `--show-toplevel`, ao contrário, devolve
+ * o toplevel do PRÓPRIO worktree (o mesmo bug que `resolveSharedLockPath`
+ * já descartou por esse motivo) — não usar.
+ *
+ * Fail-soft: se o comando git falhar (não é repo git, git indisponível,
+ * versão de git anterior a 2.31 sem `--path-format`), cai pra `cwd` —
+ * comportamento pré-#6372, correto pro caso comum (processo já rodando na
+ * raiz do checkout principal), só reabrindo o gap de worktree quando o git
+ * não está disponível pra desambiguar.
+ *
+ * `cwd` (default `process.cwd()`) existe como parâmetro explícito — não só
+ * pra deixar `git rev-parse` correr no diretório certo, mas pra tornar a
+ * função testável sem precisar mutar o cwd real do processo de teste
+ * (`process.chdir` afetaria QUALQUER outro teste rodando no mesmo processo).
+ */
+export function resolveRepoRoot(cwd: string = process.cwd()): string {
+  try {
+    const res = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (res.status === 0 && res.stdout && res.stdout.trim()) {
+      return dirname(res.stdout.trim());
+    }
+  } catch {
+    // git indisponível/timeout — fail-soft pro cwd, ver docstring acima.
+  }
+  return cwd;
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const { positional, values, flags } = parseArgs(argv);
   const command = positional[0];
-  const repoRoot = process.cwd();
+  const repoRoot = resolveRepoRoot();
 
   try {
     switch (command) {
@@ -1109,8 +3211,28 @@ function main(): void {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
         const pid = values.pid ? Number(values.pid) : undefined;
-        const record = registerSession(repoRoot, kind, sessionId, { pid });
-        process.stdout.write(`session-registry: registered ${sessionFilePath(repoRoot, kind, record.machineTag, sessionId)}\n`);
+        const result = registerSession(repoRoot, kind, sessionId, { pid });
+        const path = sessionFilePath(repoRoot, kind, result.record.machineTag, sessionId);
+        // #6326 fleet review — o CLI precisa IMPRIMIR o desfecho, não só o
+        // código carregar o tipo: os 2 casos de falha parcial
+        // ("promoted-orphan-left"/"promotion-failed-unreadable") são
+        // exatamente o bug que esta issue existe pra consertar voltando em
+        // silêncio se o operador só vir "registered {path}" nos 5 casos.
+        let suffix = "";
+        if (result.outcome === "promoted") {
+          suffix = ` (promoted from ${result.promotedFrom})`;
+        } else if (result.outcome === "promoted-orphan-left") {
+          suffix =
+            ` (ATENÇÃO: promovido de ${result.promotedFrom}, mas não foi possível remover o registro antigo — ` +
+            "órfão deixado em disco, será recolhido pelo GC)";
+        } else if (result.outcome === "promotion-failed-unreadable") {
+          suffix =
+            ` (ATENÇÃO: registro de outro kind encontrado em ${result.promotedFrom} mas ILEGÍVEL — promoção ` +
+            "não aconteceu, registro novo criado do zero)";
+        } else if (result.outcome === "reregistered") {
+          suffix = " (reregistered)";
+        }
+        process.stdout.write(`session-registry: registered ${path}${suffix}\n`);
         break;
       }
       case "heartbeat": {
@@ -1149,24 +3271,41 @@ function main(): void {
         const issue = Number(values.issue);
         if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
         const force = flags.has("force");
-        const result = claimIssueCheckAndSet(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
+        // #6369: sessão sem registro prévio (ex: ciclo `continuo` do cron
+        // Hermes chamando `claim-issue` antes de qualquer `register`) não
+        // vira mais no-op silencioso — `claimIssueAutoRegistering` registra
+        // uma sessão mínima e tenta de novo, sinalizando isso na mensagem.
+        const result = claimIssueAutoRegistering(repoRoot, kind, sessionId, issue, undefined, undefined, { force });
+        const autoRegisterSuffix = result.autoRegistered
+          ? " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]"
+          : "";
         switch (result.reason) {
           case "claimed":
-            process.stdout.write("session-registry: claim-issue ok (claimed)\n");
+            process.stdout.write(
+              `session-registry: claim-issue ok (claimed)${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
+            );
             break;
           case "already-own":
-            process.stdout.write("session-registry: claim-issue ok (already-own, no-op)\n");
+            process.stdout.write(
+              `session-registry: claim-issue ok (already-own, no-op)${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
+            );
             break;
           case "forced-override": {
             const owner = result.blockedBy;
             process.stdout.write(
               `session-registry: claim-issue ok (FORCED — tomado de ${owner?.kind}-${owner?.sessionId} ` +
-                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})\n`,
+                `desde ${owner?.startedAt}, heartbeat ${owner?.lastHeartbeat})${autoRegisterSuffix} [repoRoot=${repoRoot}]\n`,
             );
             break;
           }
           case "no-op-session-missing":
-            process.stdout.write("session-registry: claim-issue no-op (sessão inexistente)\n");
+            // Não deveria mais acontecer depois do auto-registro acima — só
+            // sobra se o próprio `registerSession` falhar em silêncio (não
+            // deveria: `writeJsonSafe` lança em erro de I/O real). Mantido
+            // como rede de segurança — nunca finge sucesso.
+            process.stdout.write(
+              "session-registry: claim-issue no-op (sessão inexistente mesmo após tentativa de auto-registro)\n",
+            );
             process.exitCode = 1;
             break;
           case "blocked-by-other": {
@@ -1179,6 +3318,38 @@ function main(): void {
             process.exitCode = 1;
             break;
           }
+        }
+        break;
+      }
+      case "unclaim-issue": {
+        const kind = requireKind(values.kind);
+        const sessionId = requireSessionId(values);
+        const issue = Number(values.issue);
+        if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
+        const result = unclaimIssue(repoRoot, kind, sessionId, issue);
+        switch (result.reason) {
+          case "unclaimed":
+            process.stdout.write(`session-registry: unclaim-issue ok (issue #${issue} liberada)\n`);
+            break;
+          case "no-op-not-claimed":
+            process.stdout.write(
+              `session-registry: unclaim-issue no-op (issue #${issue} não estava reivindicada por esta sessão)\n`,
+            );
+            process.exitCode = 1;
+            break;
+          case "no-op-session-missing":
+            process.stdout.write("session-registry: unclaim-issue no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+          case "no-op-unreadable":
+            process.stdout.write(
+              "session-registry: unclaim-issue no-op — registro EXISTE mas está ILEGÍVEL agora (JSON corrompido/" +
+                "parcialmente sincronizado pelo OneDrive). A claim pode estar ATIVA — isto NÃO é 'sessão " +
+                "inexistente'; investigar antes de assumir que não há nada pra soltar (aviso já emitido em " +
+                "stderr).\n",
+            );
+            process.exitCode = 1;
+            break;
         }
         break;
       }
@@ -1195,10 +3366,41 @@ function main(): void {
         process.stdout.write(JSON.stringify(sessions, null, 2) + "\n");
         break;
       }
+      case "active-of-kind": {
+        // #6277 item 3 — "há uma rodada deste kind acontecendo agora?".
+        // Sempre exit 0 (mesmo padrão de `is-claimed`): a resposta é o JSON,
+        // não o exit code — "não há overnight ativo" é resposta válida, não erro.
+        const kind = requireKind(values.kind);
+        const excludeSessionId = values["session-id"];
+        // `uncertain` vem ANTES da varredura: se `data/sessions/` existe mas
+        // não pôde ser lido, `active: false` significa "não deu pra saber",
+        // não "não há sessão". O chamador deve fail-CLOSED nesse caso —
+        // tratar como se houvesse overnight rodando (#6277, achado do review).
+        const health = checkSessionsScanHealth(repoRoot);
+        const sessions = findActiveSessionsOfKind(repoRoot, kind, excludeSessionId);
+        const stale = findStaleSessionsOfKind(repoRoot, kind, excludeSessionId);
+        process.stdout.write(
+          JSON.stringify(
+            {
+              kind,
+              active: hasActiveSessionOfKind(repoRoot, kind, excludeSessionId),
+              uncertain: !health.ok,
+              ...(health.ok ? {} : { ioError: health.error }),
+              sessions,
+              stale,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+        break;
+      }
       case "merge-lock-acquire": {
         const sessionId = requireSessionId(values);
         const ok = acquireMergeLock(repoRoot, sessionId);
-        process.stdout.write(`session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"}\n`);
+        process.stdout.write(
+          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} [repoRoot=${repoRoot}]\n`,
+        );
         if (!ok) process.exitCode = 1;
         break;
       }
@@ -1206,6 +3408,108 @@ function main(): void {
         const sessionId = requireSessionId(values);
         const ok = releaseMergeLock(repoRoot, sessionId);
         process.stdout.write(`session-registry: merge-lock-release ${ok ? "ok" : "denied (held by another session)"}\n`);
+        if (!ok) process.exitCode = 1;
+        break;
+      }
+      case "merge-lock-renew": {
+        // #6334: renova o TTL de um hold que a PRÓPRIA sessão já detém —
+        // nunca concede um hold novo (ver docblock de `renewMergeLock`).
+        const sessionId = requireSessionId(values);
+        const ok = renewMergeLock(repoRoot, sessionId);
+        process.stdout.write(`session-registry: merge-lock-renew ${ok ? "ok" : "denied (not held by this session)"}\n`);
+        if (!ok) process.exitCode = 1;
+        break;
+      }
+      case "conflicts": {
+        // #6168 Parte C — CONSULTA, nunca aquisição: não cria arquivo nenhum.
+        // exit 1 = sobreposição real com peer VIVO; exit 0 = livre (inclusive
+        // quando o único peer sobreposto está stale).
+        const sessionId = values["session-id"] ?? "";
+        const paths = (values.paths ?? "")
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p !== "");
+        const branch = values.branch;
+        const tag = values.tag ?? machineTag();
+        const sessions = listActiveSessions(repoRoot);
+        const ownRecord = sessions.find((s) => s.sessionId === sessionId) ?? null;
+        const opts: FindSessionConflictsOptions = { sessionId, paths, ownRecord, machineTag: tag };
+        if (branch) opts.branch = branch;
+        const conflicts = findSessionConflicts(sessions, opts);
+        process.stdout.write(JSON.stringify({ conflicts, count: conflicts.length }, null, 2) + "\n");
+        if (conflicts.length > 0) process.exitCode = 1;
+        break;
+      }
+      case "grant-merge": {
+        // #6296 — só coordenadora concede, e nunca a si mesma.
+        // #6331: `--kind` é da sessão CONCEDENTE (a própria, coordenadora),
+        // nunca da beneficiária em `--granted-to` — mensagem dedicada aqui
+        // porque este é o único subcomando com dois sujeitos de sessão, e a
+        // leitura errada ("--kind é da beneficiária") sucede em silêncio.
+        if (values.kind === undefined) {
+          throw new Error(
+            '--kind ausente — é o kind da sessão CONCEDENTE (a SUA, a coordenadora que está chamando grant-merge), ' +
+              'nunca da beneficiária em --granted-to. Deve ser "overnight", "develop" ou "continuo". ' +
+              "Ex: grant-merge --kind develop --granted-to <sessionId-do-beneficiario> [--pr N].",
+          );
+        }
+        const kind = requireCoordinatorKind(values.kind);
+        const sessionId = requireSessionId(values);
+        const grantedTo = values["granted-to"];
+        if (!grantedTo) throw new Error("--granted-to (sessionId de quem recebe a janela) é obrigatório");
+        const pr = values.pr ? Number(values.pr) : undefined;
+        const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, pr !== undefined ? { pr } : {});
+        switch (result.reason) {
+          case "granted":
+            process.stdout.write(
+              `session-registry: grant-merge ok — janela concedida a ${grantedTo}` +
+                `${pr !== undefined ? ` (PR #${pr})` : ""}, TTL ${Math.round(MERGE_GRANT_TTL_MS / 60000)}min, uso único\n`,
+            );
+            break;
+          case "self-grant-refused":
+            process.stdout.write(
+              "session-registry: grant-merge RECUSADO — uma sessão nunca concede janela a si mesma (#6296). " +
+                "É isso que preserva a propriedade do #5716 em vez de contorná-la.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "not-a-coordinator":
+            process.stdout.write("session-registry: grant-merge RECUSADO — só overnight/develop/continuo concedem\n");
+            process.exitCode = 1;
+            break;
+          case "grantee-is-coordinator-refused":
+            process.stdout.write(
+              `session-registry: grant-merge RECUSADO — ${grantedTo} é uma sessão COORDENADORA ativa (#6303). ` +
+                "Coordenadora já tem direito de mergear por si; o que ela precisa respeitar é o merge lock, e " +
+                "conceder entre pares seria justamente um jeito de contorná-lo. A concessão existe pra quem NÃO " +
+                "tem identidade de coordenadora (tipicamente uma sessão interativa). Se as duas rodadas precisam " +
+                "mergear, elas se serializam pelo merge-lock-acquire, não por concessão.\n",
+            );
+            process.exitCode = 1;
+            break;
+          case "no-op-session-missing":
+            process.stdout.write("session-registry: grant-merge no-op (sessão inexistente)\n");
+            process.exitCode = 1;
+            break;
+        }
+        break;
+      }
+      case "check-merge-grant": {
+        const sessionId = requireSessionId(values);
+        const found = findLiveMergeGrant(repoRoot, sessionId);
+        process.stdout.write(
+          JSON.stringify({ granted: found !== null, grant: found?.grant ?? null, grantedBy: found?.grantedBy ?? null }) +
+            "\n",
+        );
+        if (!found) process.exitCode = 1;
+        break;
+      }
+      case "consume-merge-grant": {
+        const sessionId = requireSessionId(values);
+        const ok = consumeMergeGrant(repoRoot, sessionId);
+        process.stdout.write(
+          `session-registry: consume-merge-grant ${ok ? "ok (janela consumida — uso único)" : "no-op (nenhuma janela viva)"}\n`,
+        );
         if (!ok) process.exitCode = 1;
         break;
       }
@@ -1231,9 +3535,21 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release|gc> [--kind overnight|develop|continuo] [--session-id X] [--tag MAQUINA] ...\n" +
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|" +
+            "list-active|active-of-kind|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|" +
+            "merge-lock-release|merge-lock-renew|gc> [--kind overnight|develop|continuo|interactive] [--session-id X] [--tag MAQUINA] ...\n" +
+            "  unclaim-issue --issue N: inverso de claim-issue (#6317) — remove a issue de claimed_issues da PRÓPRIA " +
+            "sessão; nunca mexe na claim de outra. No-op honesto (exit 1) se a issue não estava reivindicada por ela.\n" +
+            "  active-of-kind --kind K [--session-id X]: JSON {kind, active, sessions, stale} — há sessão ATIVA " +
+            "(não-stale) do kind K? `--session-id` exclui a própria sessão da resposta (#6277).\n" +
             "  --tag (só \"end\"): machineTag() da sessão a encerrar (default: machineTag() local) — necessário " +
             "pra encerrar da máquina local o registro de OUTRA máquina em data/sessions/ (#5797).\n" +
+            "  conflicts [--paths a,b] [--branch X]: CONSULTA (#6168) — quem mais está mexendo nisto agora. " +
+            "exit 1 = sobreposição com peer VIVO; exit 0 = livre. Nunca cria arquivo nem adquire nada.\n" +
+            "  grant-merge --kind {overnight|develop|continuo} --granted-to X [--pr N]: concede janela de merge a " +
+            "OUTRA sessão (#6296) — --kind é da sessão CONCEDENTE (a sua, obrigatório, #6331), nunca da " +
+            "beneficiária em --granted-to; só coordenadora concede, nunca a si mesma; TTL curto, uso único. " +
+            "check-merge-grant/consume-merge-grant são o lado de quem recebeu.\n" +
             "  gc [--max-age-days N] [--dry-run]: remove registro de sessão ENCERRADA — nunca por staleness de " +
             "heartbeat sozinha, ver docstring de decideSessionGc/planSessionGc (#6130).\n",
         );

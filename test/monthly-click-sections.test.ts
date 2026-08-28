@@ -11,6 +11,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 import {
   baseUrl,
   parseEdition,
@@ -21,6 +24,9 @@ import {
   parseUseMelhorMinClicks,
   parseRadarCount,
   useMelhorPrecedenceWarning,
+  loadBeehiivClicks,
+  loadKitClicks,
+  loadClicksWithSource,
   type LinkItem,
 } from "../scripts/monthly-click-sections.ts";
 
@@ -45,6 +51,111 @@ describe("baseUrl", () => {
     const tracked =
       "https://canaltech.com.br/ia/artigo?utm_source=diaria.beehiiv.com&utm_medium=newsletter";
     assert.equal(baseUrl(clean), baseUrl(tracked));
+  });
+});
+
+describe("loadBeehiivClicks / loadKitClicks / loadClicksWithSource (#6186, #6642 review)", () => {
+  function setupDirs() {
+    const dir = mkdtempSync(join(tmpdir(), "monthly-click-sections-"));
+    const beehiivDir = resolve(dir, "beehiiv-cache/posts");
+    const kitDir = resolve(dir, "kit-cache/posts");
+    mkdirSync(beehiivDir, { recursive: true });
+    mkdirSync(kitDir, { recursive: true });
+    return { beehiivDir, kitDir };
+  }
+
+  it("loadBeehiivClicks: soma email.unique_clicks + web.total_unique_clicked por baseUrl", () => {
+    const { beehiivDir } = setupDirs();
+    writeFileSync(
+      resolve(beehiivDir, "post_a1b2c3d4-uuid.json"),
+      JSON.stringify({
+        stats: {
+          clicks: [
+            { url: "https://a.com/?utm_source=x", email: { unique_clicks: 5 }, web: { total_unique_clicked: 2 } },
+            { url: "https://a.com/", email: { unique_clicks: 1 } }, // mesma baseUrl, soma
+          ],
+        },
+      }),
+    );
+    const map = loadBeehiivClicks("a1b2c3d4", beehiivDir);
+    assert.ok(map);
+    assert.equal(map!.get(baseUrl("https://a.com/")), 8);
+  });
+
+  it("loadBeehiivClicks: diretório ausente devolve null (não lança)", () => {
+    const { beehiivDir } = setupDirs();
+    const map = loadBeehiivClicks("nope", resolve(beehiivDir, "does-not-exist"));
+    assert.equal(map, null);
+  });
+
+  it("loadBeehiivClicks: arquivo ausente pro prefixo devolve null", () => {
+    const { beehiivDir } = setupDirs();
+    const map = loadBeehiivClicks("ffffffff", beehiivDir);
+    assert.equal(map, null);
+  });
+
+  it("loadKitClicks: soma unique_clicks direto (sem split email/web) por baseUrl", () => {
+    const { kitDir } = setupDirs();
+    writeFileSync(
+      resolve(kitDir, "kit_25654292.json"),
+      JSON.stringify({ id8: "25654292", stats: { clicks: [{ url: "https://b.com/", unique_clicks: 7 }] } }),
+    );
+    const map = loadKitClicks("25654292", kitDir);
+    assert.ok(map);
+    assert.equal(map!.get(baseUrl("https://b.com/")), 7);
+  });
+
+  it("loadKitClicks: arquivo ausente devolve null", () => {
+    const { kitDir } = setupDirs();
+    const map = loadKitClicks("00000000", kitDir);
+    assert.equal(map, null);
+  });
+
+  it("loadClicksWithSource: Beehiiv presente → usa Beehiiv, nunca cai pro Kit", () => {
+    const { beehiivDir, kitDir } = setupDirs();
+    writeFileSync(
+      resolve(beehiivDir, "post_c0ffee00-uuid.json"),
+      JSON.stringify({ stats: { clicks: [{ url: "https://only-beehiiv.com/", email: { unique_clicks: 3 } }] } }),
+    );
+    // Um arquivo Kit com o MESMO prefixo também existe — não deve ser usado.
+    writeFileSync(
+      resolve(kitDir, "kit_c0ffee00.json"),
+      JSON.stringify({ stats: { clicks: [{ url: "https://only-kit.com/", unique_clicks: 999 }] } }),
+    );
+    const result = loadClicksWithSource("c0ffee00", beehiivDir, kitDir);
+    assert.equal(result.source, "beehiiv");
+    assert.equal(result.clicks.get(baseUrl("https://only-beehiiv.com/")), 3);
+    assert.equal(result.clicks.has(baseUrl("https://only-kit.com/")), false);
+  });
+
+  it("loadClicksWithSource: Beehiiv ausente, Kit presente → cai pro Kit", () => {
+    const { beehiivDir, kitDir } = setupDirs();
+    writeFileSync(
+      resolve(kitDir, "kit_deadbeef.json"),
+      JSON.stringify({ stats: { clicks: [{ url: "https://kit-only.com/", unique_clicks: 4 }] } }),
+    );
+    const result = loadClicksWithSource("deadbeef", beehiivDir, kitDir);
+    assert.equal(result.source, "kit");
+    assert.equal(result.clicks.get(baseUrl("https://kit-only.com/")), 4);
+  });
+
+  it("loadClicksWithSource: nenhum dos dois presente → source 'none', Map vazio", () => {
+    const { beehiivDir, kitDir } = setupDirs();
+    const result = loadClicksWithSource("nadaaqui", beehiivDir, kitDir);
+    assert.equal(result.source, "none");
+    assert.equal(result.clicks.size, 0);
+  });
+
+  it("loadClicksWithSource: cache Beehiiv presente mas stats.clicks vazio conta como 'beehiiv', não cai pro Kit", () => {
+    const { beehiivDir, kitDir } = setupDirs();
+    writeFileSync(resolve(beehiivDir, "post_abc12300-uuid.json"), JSON.stringify({ stats: { clicks: [] } }));
+    writeFileSync(
+      resolve(kitDir, "kit_abc12300.json"),
+      JSON.stringify({ stats: { clicks: [{ url: "https://should-not-be-used.com/", unique_clicks: 1 }] } }),
+    );
+    const result = loadClicksWithSource("abc12300", beehiivDir, kitDir);
+    assert.equal(result.source, "beehiiv", "arquivo Beehiiv existente decide, mesmo com clicks vazio");
+    assert.equal(result.clicks.size, 0);
   });
 });
 

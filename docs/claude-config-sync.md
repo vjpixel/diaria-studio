@@ -51,6 +51,61 @@ revisão. Por ora a sincronização de memória é **manual** (copiar o arquivo
 alternativa de um mecanismo assistido (diff + confirmação antes de
 empurrar) fica pra quando isso doer na prática.
 
+## Propagação: automática desde o #6310 (era manual e silenciosa)
+
+**O que mudou:** até 26/08/2026 nada puxava o `claude-config`. Commitar uma
+mudança de config a fazia valer **só** na máquina onde foi feita (onde
+`~/.claude/settings.json` é symlink pro repo); nas outras ela simplesmente não
+existia até alguém rodar `bootstrap` à mão. Nenhum hook, nenhuma task agendada
+— verificado.
+
+O modo de falha era silencioso: a máquina não erra, só roda config velha. Já
+tinha acontecido uma vez (ver "Atualização (260810)" abaixo: `model`/
+`effortLevel` divergentes do committed, sem aviso). O caso que motivou a
+correção: 3 commits (`d28b5b6` habilitando o `pr-review-toolkit`, `d6c2fc5`
+ligando `remoteControlAtStartup`, `2c96997` gravando `outputStyle`) live no
+`helios` e ausentes no Neo e no ZenBook, sem sinal disso em lugar nenhum.
+
+**Como funciona agora:** hook `SessionStart` no `settings.json` do
+`claude-config` chama `sync-check.cjs` (também no `claude-config`), que se
+auto-destaca e sai em poucas
+dezenas de milissegundos — a garantia que importa é que a sessão nunca espera
+rede. Como o arquivo que carrega o hook **é** o arquivo sincronizado, instalar
+num lugar arma todas as máquinas; um cron
+precisaria ser armado máquina a máquina, repetindo o problema.
+
+**Contrato, deliberadamente conservador:**
+
+| situação | o que faz |
+|---|---|
+| árvore limpa, remoto à frente | `git pull --ff-only` |
+| working tree sujo | **avisa e NÃO puxa** — sujo aqui é edição direta em `~/.claude/*`, decisão do editor |
+| divergência non-ff | avisa e não força; nunca merge/rebase/stash automático |
+| offline, git ausente, repo ausente | registra e segue; exit 0 sempre |
+| `~/.claude/X` é **cópia** e não symlink | avisa — é o caso do Windows sem Modo Desenvolvedor |
+
+Aquele último é o que faltava enxergar: `bootstrap.ps1` cai num fallback de
+cópia quando o symlink falha, e a partir daí o pull atualiza o repo mas o
+conteúdo **nunca chega** a `~/.claude`. A máquina fica permanentemente
+defasada mesmo com bootstrap rodado.
+
+**Onde olhar:** `~/claude-config/.sync-state.json` (resultado do último check,
+com timestamp) e `.sync-check.log` (o que precisa de ação, mais uma linha
+quando um pull traz commits novos — silencioso só quando nada mudou). Ambos
+gitignored: sem isso a árvore ficaria permanentemente suja e o próprio script
+recusaria puxar, auto-desativando o mecanismo.
+
+**Rollout ainda não confirmado nas 3 máquinas (26/08/2026).** Há um
+chicken-and-egg: máquina que ainda não puxou até `90b537c` não tem o
+`sync-check.cjs` nem a entrada de hook, então precisa de UM `git pull`/
+`bootstrap` manual para receber o próprio mecanismo — a partir daí se propaga
+sozinha. Verificado ao vivo só no `helios`; Neo e ZenBook pendentes (o ZenBook
+é o que importa, por causa da detecção de cópia).
+
+**Ainda manual:** `memory/` (ver acima) e o `bootstrap` inicial de máquina
+nova — o sync automático mantém o repo atualizado, mas não cria symlink que
+nunca existiu.
+
 ## Setup numa máquina nova
 
 ```bash
@@ -147,78 +202,107 @@ específica pra outra máquina); a alternativa de um mecanismo assistido
 (diff + confirmação antes de empurrar) continua não implementada, sem
 urgência.
 
-## Pull automático no início da sessão (#6310, 260828)
+## Auto-arme via `diaria-studio` (260828 — fecha o rollout do #6310)
 
-A seção anterior ainda descrevia propagação **manual**: um commit no
-`claude-config` só valia na máquina que o gerou até alguém lembrar de
-rodar `bootstrap` nas outras. Medido ao vivo em 260826: 3 commits vivos no
-`helios` (onde `~/.claude/settings.json` é symlink) e ausentes no Neo e no
-ZenBook, sem nenhum aviso em lugar nenhum. Reação do editor ao ser
-informado: "eu não vou lembrar de fazer isso" — o mesmo padrão que o
-diaria-studio#6168 nomeia (*o que depende de lembrar, não acontece*).
+**O ovo-e-galinha que sobrou:** o mecanismo acima (`sync-check.cjs` + hook
+`SessionStart` no `settings.json` do PRÓPRIO `claude-config`) só dispara
+depois que `~/.claude/settings.json` já é symlink pro repo. Numa máquina que
+nunca rodou `bootstrap` — ou que caiu no fallback de cópia do Windows sem
+Modo Desenvolvedor — o mecanismo nunca chega a se armar sozinho. É
+exatamente o estado medido ao vivo no Neo e no ZenBook em 28/08/2026
+(comentários de #6310): a implementação existia e funcionava no `helios`,
+mas não tinha como chegar às outras duas máquinas sem alguém rodar o
+bootstrap manualmente — o mesmo passo que dependia de lembrar, que é o
+problema original da issue.
 
-**Mecanismo:** hook `SessionStart` no `settings.json` do próprio
-`claude-config` chama `sync-check.cjs` (Node — cross-platform, mesmo
-padrão do `statusline-wrapper.cjs`; o hook antigo `(echo ... | ccusage &)`
-é sintaxe POSIX que não roda em `cmd.exe`, por isso o `sync-check.cjs` usa
-só APIs de `node:child_process`/`node:fs`). Por rodar dentro do
-`settings.json` sincronizado, instalar numa máquina arma as três — é por
-isso que o mecanismo é hook e não cron (cron precisaria ser armado
-máquina a máquina, repetindo o problema).
+**Decisão do editor (28/08/2026):** em vez de depender de mais um passo
+manual por máquina, vendorar um SEGUNDO hook `SessionStart` — este dentro do
+`.claude/settings.json` do repo **`diaria-studio`** (não do `claude-config`).
+A diferença crucial: `diaria-studio` é um repo público de trabalho diário,
+puxado por `git pull` normal em toda sessão de edição — chega em qualquer
+máquina que já usa o projeto, independente do estado do `claude-config`
+nela. É essa inversão que fecha o ovo-e-galinha: a máquina se arma ao abrir
+o `diaria-studio`, não ao já ter o `claude-config` armado.
 
-O script se re-lança **destacado** (`spawn(..., {detached:true}).unref()`)
-e o processo pai sai `0` na hora — a sessão nunca espera rede. O filho
-detached faz: `git pull --ff-only` no `~/claude-config` (working tree sujo
-ou divergência non-ff → avisa e não mexe, nunca merge/rebase/stash
-automático) e checa se `settings.json`/`agents/`/`CLAUDE.md`/
-`statusline-wrapper.cjs`/`output-styles` em `~/.claude` são de fato
-symlink/junction pro repo — item que é **arquivo real** em vez de link
-vira aviso "cópia-em-vez-de-symlink" (o caso do Windows sem Modo
-Desenvolvedor: o `git pull` no repo funciona, mas o conteúdo não chega em
-`~/.claude` porque não há link nenhum a atravessar). Todo resultado
-(`ok`/`skipped`/`erro`, motivo, HEAD, lista de cópias) grava em
-`~/claude-config/.sync-state.json` com timestamp; avisos vão pro log
-irmão `.sync-check.log`. Nunca escreve no repo — só lê e puxa.
+Arquivos:
+- `diaria-studio/.claude/hooks/session-start-claude-config-sync.mjs` — o
+  hook em si, self-contained (mesmo padrão dos hooks irmãos deste repo —
+  nunca importa `.ts` estático). Auto-destacamento (spawn detached + exit 0
+  imediato no pai, mesmo truque de `sync-check.cjs`), fail-soft total
+  (try/catch em volta de tudo, nunca lança, nunca bloqueia a sessão),
+  debounce de 1h por timestamp (`~/claude-config/.diaria-studio-autosync-
+  state.json`) pra não reclonar/rebootstrapar a cada sessão nova aberta em
+  sequência.
+- `diaria-studio/scripts/lib/claude-config-autosync.ts` — a lógica de
+  DECISÃO pura (clonar? bootstrapar? pular?), testada isoladamente em
+  `test/claude-config-autosync.test.ts`. O hook `.mjs` duplica essa lógica
+  em JS puro (não importa o `.ts`) — ao mudar a decisão, editar os dois e
+  conferir que continuam batendo.
 
-**Estado verificado ao vivo, 260828:**
+Contrato de decisão (primeira regra que casa vence):
 
-- **`helios`** — symlinks reais, mecanismo roda como projetado.
-  `.sync-state.json` com `result: "ok"`, `copies: []`.
-- **Neo** — puxado e testado manualmente (drift local de `modelSettings`,
-  achado nesta rodada, commitado em `b58e779` e decidido como propagar às
-  3 máquinas). Segue precisando de logoff/logon pra ativar
-  `SeCreateSymbolicLinkPrivilege` antes de rerodar `bootstrap.ps1` com
-  symlink real — probe mais recente confirma conteúdo idêntico ao repo,
-  não confirma que já é symlink (não checado nesta issue).
-- **ZenBook** — clonado, `bootstrap.ps1` rodado pela primeira vez. Modo
-  Desenvolvedor **desligado** e sessão sem privilégio admin (não dá pra
-  ligar dali) → `settings.json` e `statusline-wrapper.cjs` caíram no
-  fallback de cópia (backup automático do que já havia em
-  `.bak-20260828-172455`); `agents/` linkou como junction normalmente
-  (junction de diretório não exige Modo Desenvolvedor). `sync-check.cjs`
-  testado manualmente: exit 0, detecta as duas cópias corretamente,
-  `.sync-state.json` e `.sync-check.log` gravados.
+| estado observado | ação |
+|---|---|
+| debounce ativo (rodou há < 1h nesta máquina) | pula, sem log — caminho feliz recorrente |
+| `~/claude-config/.git` ausente | `git clone` + roda o bootstrap da plataforma certa |
+| repo presente, `~/.claude/settings.json` NÃO é symlink pro repo | roda só o bootstrap (que já faz `git pull --ff-only` por conta própria) |
+| repo presente, `~/.claude/settings.json` JÁ é symlink pro repo | pula — a partir daqui `sync-check.cjs` (agora alcançável pelo symlink) assume o pull recorrente |
 
-  **Drift local do ZenBook achado no backup, ainda não reconciliado**
-  (decisão do editor pendente — diferente do de Neo, que já foi
-  resolvido): a cópia antiga tinha `permissions.defaultMode: "auto"`,
-  `enabledPlugins["frontend-design@claude-plugins-official"]`,
-  `theme: "dark"` e `skipAutoPermissionPrompt: true`, nenhum presente no
-  `claude-config` committed. Preservados no `.bak-*`, não aplicados por
-  cima do que o repo já define — decidir se algum vira config
-  compartilhada (commit) ou fica descartado é do editor, mesmo padrão do
-  `modelSettings` de Neo.
+Detecção de plataforma: `process.platform === "win32"` → `bootstrap.ps1`
+(via `powershell.exe -File`), qualquer outro valor → `bootstrap.sh` (via
+`bash`). Log e estado em `~/claude-config/.diaria-studio-autosync.log` /
+`.diaria-studio-autosync-state.json` — arquivos NOVOS, distintos de
+`.sync-check.log`/`.sync-state.json` (que continuam sendo o registro do
+mecanismo do `claude-config` em si).
 
-  Pendente pra ZenBook virar symlink de verdade: Modo Desenvolvedor
-  (Configurações > Atualização e Segurança > Para desenvolvedores, exige
-  admin) → logoff/logon → `bootstrap.ps1` de novo → confirmar
-  `copies: []` no `.sync-state.json`. Plugin `pr-review-toolkit` também
-  não estava instalado nesta máquina — pendente rodar
-  `/plugin install pr-review-toolkit@claude-plugins-official` +
-  `/reload-plugins` dentro de uma sessão do Claude Code (não roda por
-  script/hook).
+**Verificado nesta sessão (worktree isolado, sem `~/claude-config` real
+disponível):** smoke test manual do hook contra um `claude-config` fake
+(`CLAUDE_CONFIG_DIR`/`CLAUDE_CONFIG_HOME_DIR` sobrescrevendo os defaults) —
+os três casos (repo ausente, presente-mas-não-armado, já-armado) todos
+saíram com `exit 0` no pai, nunca lançaram, e o estado gravado bateu com a
+decisão esperada. **O que este PR NÃO pôde verificar:** o `git clone`/
+bootstrap reais contra o `claude-config` de verdade, em nenhuma das 3
+máquinas (helios/Neo/ZenBook) — isso é efeito de rede/IO fora do alcance de
+um worktree isolado de subagente; fica para confirmação ao vivo do editor
+(mesmo padrão dos demais itens desta issue marcados "verificado ao vivo").
 
-Enquanto Neo e ZenBook não confirmarem `copies: []`, a propagação
-automática cobre **puxar o repo**, não necessariamente **entregar o
-conteúdo em `~/.claude`** nessas duas — é a distinção que motivou o item
-"Detecta cópia-em-vez-de-symlink" nos critérios de aceite da #6310.
+## Confirmação ao vivo, ZenBook (260828, sessão interativa)
+
+A confirmação que faltava na seção anterior — feita à mão nesta sessão,
+não pelo hook `session-start-claude-config-sync.mjs` acima (esta sessão
+tinha começado antes de puxar os commits que o trazem; o smoke test real
+do próprio hook, rodando de dentro de uma sessão nova no ZenBook, ainda
+não aconteceu).
+
+`~/claude-config` nunca tinha sido clonado nesta máquina. Clonado
+manualmente (HEAD já em `b58e779`) e `bootstrap.ps1` rodado: Modo
+Desenvolvedor **desligado** e sessão sem privilégio admin (não dá pra
+ligar dali) → `settings.json` e `statusline-wrapper.cjs` caíram no
+fallback de cópia (backup automático do que já havia em
+`.bak-20260828-172455`); `agents/` linkou como junction normalmente
+(junction de diretório não exige Modo Desenvolvedor). `sync-check.cjs`
+testado manualmente (síncrono e destacado): exit 0, detecta as duas
+cópias corretamente, `.sync-state.json` e `.sync-check.log` gravados com
+timestamp.
+
+**Drift local do ZenBook achado no backup, ainda não reconciliado**
+(decisão do editor pendente — diferente do `modelSettings` de Neo, que já
+foi resolvido e commitado em `b58e779`): a cópia antiga tinha
+`permissions.defaultMode: "auto"`,
+`enabledPlugins["frontend-design@claude-plugins-official"]`,
+`theme: "dark"` e `skipAutoPermissionPrompt: true`, nenhum presente no
+`claude-config` committed. Preservados no `.bak-*`, não aplicados por cima
+do que o repo já define — decidir se algum vira config compartilhada
+(commit) ou fica descartado é do editor.
+
+Pendente pra ZenBook virar symlink de verdade (mesma sequência do Neo):
+Modo Desenvolvedor (Configurações > Atualização e Segurança > Para
+desenvolvedores, exige admin) → logoff/logon → `bootstrap.ps1` de novo →
+confirmar `copies: []` no `.sync-state.json`. Plugin `pr-review-toolkit`
+também não estava instalado nesta máquina — pendente rodar
+`/plugin install pr-review-toolkit@claude-plugins-official` +
+`/reload-plugins` dentro de uma sessão do Claude Code (não roda por
+script/hook). Enquanto isso não acontecer, a propagação automática cobre
+**puxar o repo**, não necessariamente **entregar o conteúdo em
+`~/.claude`** no ZenBook — a distinção que motivou o item "Detecta
+cópia-em-vez-de-symlink" nos critérios de aceite da #6310.

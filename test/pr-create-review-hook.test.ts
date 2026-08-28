@@ -1,9 +1,10 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir, hostname } from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   resolveEffort,
   buildReviewInstruction,
@@ -13,6 +14,12 @@ import {
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
   EFFORT_DIFF_LINE_THRESHOLD,
+  OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD,
+  extractCreatedPrUrl,
+  isGhPrCreateCommand,
+  shouldEmitReviewInstruction,
+  resolveEmitDecision,
+  logSuppressedReviewInstruction,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -191,7 +198,7 @@ describe("resolveEffort (#2754)", () => {
 // duas chamadas de `gh` quando não há sinal de overnight.
 describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243; limiar 500 desde #5420)", () => {
   function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
-    return (_cmd, args) => {
+    return (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) {
         if (diff === undefined) throw new Error("gh pr view --json additions,deletions failed");
         return diff;
@@ -279,7 +286,7 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
   });
 
   it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, reason default, nunca 'skip'", () => {
-    const execFn = (_cmd, args) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
+    const execFn = (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.reason, "default");
@@ -292,18 +299,158 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243;
     assert.equal(result.reason, "default");
   });
 
-  it("branch overnight/* já resolve low sem sequer checar o tamanho do diff", () => {
+  // #6393 (260827): substitui o antigo "branch overnight/* já resolve low sem
+  // sequer checar o tamanho do diff" — a issue removeu exatamente esse
+  // curto-circuito incondicional. Overnight agora TAMBÉM checa o diff, só que
+  // contra um limiar PRÓPRIO e maior (`OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD`,
+  // 1000) — overnight segue mais barato que develop no mesmo tamanho, mas
+  // deixa de ser barato incondicional. Estes 4 casos travam a matriz completa
+  // pedida pelo aceite da issue.
+  it("#6393: branch overnight/* com diff PEQUENO (< limiar overnight) → low, reason branch_overnight (checando o diff)", () => {
     let diffChecked = false;
-    const execFn = (_cmd, args) => {
+    const execFn = (_cmd: string, args: string[]) => {
       if (args.includes("additions,deletions")) {
         diffChecked = true;
-        return JSON.stringify({ additions: 500, deletions: 500 });
+        return JSON.stringify({ additions: 500, deletions: 400 }); // 900 < 1000
       }
       return "overnight/fix-1234\n";
     };
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, "low");
-    assert.equal(diffChecked, false, "não deveria checar o diff quando o branch overnight/* já resolveu low");
+    assert.equal(result.reason, "branch_overnight");
+    assert.equal(diffChecked, true, "#6393: overnight passou a checar o diff, diferente do comportamento pré-#6393");
+  });
+
+  it("#6393: branch overnight/* com diff GRANDE (>= limiar overnight) → max, reason branch_overnight_diff_grande", () => {
+    const execFn = (_cmd: string, args: string[]) => {
+      if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 }); // 1100 >= 1000
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "branch_overnight_diff_grande");
+  });
+
+  it("#6393: branch overnight/* com diff exatamente no limiar overnight (1000) → max (limiar é exclusivo, mesma semântica do geral)", () => {
+    const execFn = (_cmd: string, args: string[]) => {
+      if (args.includes("additions,deletions")) {
+        return JSON.stringify({ additions: OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 });
+      }
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "branch_overnight_diff_grande");
+  });
+
+  it("#6393: branch overnight/* com diff DESCONHECIDO (gh falha) → low, reason branch_overnight (fail-direction barata preservada, nunca DEFAULT_EFFORT)", () => {
+    const execFn = (_cmd: string, args: string[]) => {
+      if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "branch_overnight");
+    assert.notEqual(result.reason, "default"); // nunca cai no fallback do caminho geral
+  });
+
+  // #6393: mesma matriz para o guard de sessão ativa (#3322) — o warning de
+  // naming é ortogonal ao tamanho do diff, então sai igual nos dois lados.
+  describe("sessao_overnight_ativa com limiar próprio (#6393)", () => {
+    it("diff pequeno (< limiar overnight) → low, reason sessao_overnight_ativa, COM warning", () => {
+      const execFn = (_cmd: string, args: string[]) => {
+        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 100, deletions: 50 });
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "low");
+      assert.equal(result.reason, "sessao_overnight_ativa");
+      assert.match(result.warning, /não usa o prefixo overnight\//);
+    });
+
+    it("diff grande (>= limiar overnight) → max, reason sessao_overnight_ativa_diff_grande, COM warning", () => {
+      const execFn = (_cmd: string, args: string[]) => {
+        if (args.includes("additions,deletions")) return JSON.stringify({ additions: 700, deletions: 400 });
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "max");
+      assert.equal(result.reason, "sessao_overnight_ativa_diff_grande");
+      assert.match(result.warning, /não usa o prefixo overnight\//);
+    });
+
+    it("diff desconhecido (gh falha) → low, reason sessao_overnight_ativa (fail-direction barata preservada)", () => {
+      const execFn = (_cmd: string, args: string[]) => {
+        if (args.includes("additions,deletions")) throw new Error("gh pr view --json additions,deletions failed");
+        return "fix-3321-branch-naming\n";
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+      assert.equal(result.effort, "low");
+      assert.equal(result.reason, "sessao_overnight_ativa");
+    });
+  });
+
+  // #6393 aceite: as 4 combinações — overnight pequeno → low, overnight
+  // grande → max, geral pequeno → low, geral grande → max — travadas juntas
+  // num único bloco, pros dois limiares distintos (500 geral / 1000 overnight)
+  // nunca serem confundidos um pelo outro numa futura mudança.
+  describe("#6393 — matriz dos dois limiares (overnight 1000 vs. geral 500)", () => {
+    function execFnFor(branch: string, diff: Record<string, unknown>) {
+      return (_cmd: string, args: string[]) => (args.includes("additions,deletions") ? JSON.stringify(diff) : branch);
+    }
+
+    it("overnight pequeno (900 < 1000) → low", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", { additions: 900, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "low");
+    });
+
+    it("overnight grande (1100 >= 1000) → max", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", { additions: 1100, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "max");
+    });
+
+    it("geral pequeno (400 < 500) → low", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("develop/fix-1\n", { additions: 400, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "low");
+    });
+
+    it("geral grande (700 >= 500) → max", () => {
+      const result = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("develop/fix-1\n", { additions: 700, deletions: 0 }),
+        noActiveRound,
+      );
+      assert.equal(result.effort, "max");
+    });
+
+    // O ponto do #6393: um diff de 900 linhas passava batido como `low` no
+    // caminho overnight ANTES desta issue (curto-circuito incondicional) e
+    // CONTINUA `low` agora — só porque 900 < 1000 (limiar overnight), não
+    // porque overnight ainda ignora o tamanho. Um diff nessa mesma faixa no
+    // caminho geral já seria `max` (900 >= 500).
+    it("900 linhas: overnight → low, geral → max (a mesma assimetria de limiar, não mais uma isenção total)", () => {
+      const diff = { additions: 900, deletions: 0 };
+      const overnight = resolveEffort(
+        "https://github.com/o/r/pull/1",
+        execFnFor("overnight/fix-1\n", diff),
+        noActiveRound,
+      );
+      const geral = resolveEffort("https://github.com/o/r/pull/1", execFnFor("develop/fix-1\n", diff), noActiveRound);
+      assert.equal(overnight.effort, "low");
+      assert.equal(geral.effort, "max");
+    });
   });
 });
 
@@ -315,7 +462,7 @@ describe("resolveEffort — repassa sessionId pro checkRoundActive (#5156)", () 
   it("checkRoundActive injetado recebe o sessionId passado a resolveEffort", () => {
     const execFn = () => "fix-something\n";
     let receivedSessionId;
-    const checkRoundActive = (sid) => {
+    const checkRoundActive = (sid: string | undefined) => {
       receivedSessionId = sid;
       return true;
     };
@@ -326,8 +473,8 @@ describe("resolveEffort — repassa sessionId pro checkRoundActive (#5156)", () 
 
   it("sessionId omitido → checkRoundActive recebe undefined (não quebra mocks que ignoram o argumento)", () => {
     const execFn = () => "fix-something\n";
-    let receivedSessionId = "not-called";
-    const checkRoundActive = (sid) => {
+    let receivedSessionId: string | undefined = "not-called";
+    const checkRoundActive = (sid: string | undefined) => {
       receivedSessionId = sid;
       return false;
     };
@@ -507,7 +654,7 @@ describe("isOvernightRoundActive (#3322)", () => {
     return root;
   }
 
-  function writeMarker(root, tag, marker) {
+  function writeMarker(root: string, tag: string, marker: Record<string, unknown>) {
     const dir = join(root, "data", "overnight");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `.active-session-${tag}.json`), JSON.stringify(marker), "utf8");
@@ -666,7 +813,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
   });
 
   it("diff pequeno (< limiar) → low, reason diff_pequeno", () => {
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 1, deletions: 0 })
         : "develop/fix-4813\n";
@@ -676,7 +823,7 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
   });
 
   it("branch normal, sem rodada ativa, diff grande CONHECIDO (≥ limiar) → max, reason diff_grande", () => {
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "develop/fix-4813\n";
@@ -719,7 +866,7 @@ describe("logEffortDecision (#4252)", () => {
     return root;
   }
 
-  function readLoggedEvents(root) {
+  function readLoggedEvents(root: string) {
     const logPath = join(root, "data", "run-log.jsonl");
     return readFileSync(logPath, "utf8")
       .trim()
@@ -835,12 +982,17 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     return root;
   }
 
-  function readLoggedEvent(root) {
+  function readLoggedEvent(root: string) {
     const logPath = join(root, "data", "run-log.jsonl");
     return JSON.parse(readFileSync(logPath, "utf8").trim().split("\n")[0]);
   }
 
-  function runAndLog(prUrl, execFn, checkRoundActive, root) {
+  function runAndLog(
+    prUrl: string,
+    execFn: (cmd: string, args: string[]) => string,
+    checkRoundActive: () => boolean,
+    root: string,
+  ) {
     const { effort, reason } = resolveEffort(prUrl, execFn, checkRoundActive);
     logEffortDecision({ prUrl, effort, reason }, { repoRoot: root });
     return effort;
@@ -857,7 +1009,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
 
   it("diff pequeno (< limiar, #4813/#5420) → low, evento loga motivo=diff_pequeno agentes=1", () => {
     const root = freshRoot();
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 10, deletions: 5 })
         : "develop/fix-4252\n";
@@ -869,7 +1021,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
 
   it("branch normal com diff grande CONHECIDO (≥ limiar, #4813/#5420), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
     const root = freshRoot();
-    const execFn = (_cmd, args) =>
+    const execFn = (_cmd: string, args: string[]) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 700, deletions: 300 })
         : "fix-something-manual\n";
@@ -922,7 +1074,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
     }
   }
 
-  function withIsolatedGitCwd(run) {
+  function withIsolatedGitCwd(run: (tmpRoot: string) => void) {
     const tmpRoot = mkdtempSync(join(tmpdir(), "pr-create-review-default-checkround-"));
     const originalCwd = process.cwd();
     try {
@@ -946,7 +1098,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
         "utf8",
       );
 
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
         throw new Error(`execFn inesperado neste teste: ${args.join(" ")}`);
       };
@@ -960,7 +1112,7 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
 
   it("nenhum marker em disco → resolveEffort(prUrl, execFn) SÓ com 2 args não confunde 'ausente' com 'ativo'", () => {
     withIsolatedGitCwd(() => {
-      const execFn = (_cmd, args) => {
+      const execFn = (_cmd: string, args: string[]) => {
         if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
         if (args[0] === "pr" && args[1] === "view" && args.includes("additions,deletions")) {
           return JSON.stringify({ additions: 700, deletions: 300 }); // diff grande, evita cair em diff_pequeno
@@ -971,5 +1123,337 @@ describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item
       assert.equal(result.effort, "max");
       assert.equal(result.reason, "diff_grande");
     });
+  });
+});
+
+// #6298: o hook disparou o fleet completo de review para um `gh pr comment`
+// isolado — a saída dele (`.../pull/6282#issuecomment-5427611867`) casava o
+// regex antigo, que só olhava até o número da PR e ignorava o fragmento
+// depois. Estes testes travam os dois fixes: (1) `extractCreatedPrUrl`
+// rejeita URL de comentário/review pelo sufixo de fragmento; (2)
+// `isGhPrCreateCommand` reconfere que o comando é de fato `gh pr create`,
+// espelhando `isGhPrMergeCommand` do hook irmão `block-gh-pr-merge-subagent.mjs`.
+describe("extractCreatedPrUrl (#6298 fix 1)", () => {
+  it("URL limpa de PR recém-criada → extrai normalmente", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(extractCreatedPrUrl(resp), "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("URL de gh pr comment (#issuecomment-N) → null, nunca extrai (regressão direta do #6298)", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("URL de comentário inline de review (#discussion_r<id>) → null", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#discussion_r1234567890";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("URL de review (#pullrequestreview-<id>) → null", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#pullrequestreview-9876543210";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("não produz match truncado (ex: .../pull/628) quando o número completo tem sufixo de comentário", () => {
+    const resp = "criei em https://github.com/o/r/pull/6282#issuecomment-1 — revisar depois";
+    assert.equal(extractCreatedPrUrl(resp), null);
+  });
+
+  it("tool_response não-string (objeto serializado) → null sem lançar", () => {
+    assert.equal(extractCreatedPrUrl(undefined), null);
+    assert.equal(extractCreatedPrUrl(null), null);
+  });
+
+  it("saída sem nenhuma URL de PR (ex: --help) → null", () => {
+    assert.equal(extractCreatedPrUrl("Usage: gh pr create [flags]"), null);
+  });
+});
+
+describe("isGhPrCreateCommand (#6298 fix 2; contrato de 3 estados desde o fleet review pós-#6298, finding #1)", () => {
+  it('comando standalone gh pr create → "create"', () => {
+    assert.equal(isGhPrCreateCommand("gh pr create --title x --body y"), "create");
+  });
+
+  it('gh pr create depois de separador (&&) → "create"', () => {
+    assert.equal(isGhPrCreateCommand("git push && gh pr create --title x"), "create");
+  });
+
+  it('gh pr comment → "not-create" (o comando real do incidente #6298)', () => {
+    assert.equal(isGhPrCreateCommand("gh pr comment 6282 --body-file /tmp/body.md"), "not-create");
+  });
+
+  it('gh pr create citado dentro de --body de OUTRO comando → "not-create"', () => {
+    const cmd = `gh pr comment 6282 --body "rode gh pr create depois disso"`;
+    assert.equal(isGhPrCreateCommand(cmd), "not-create");
+  });
+
+  it('gh pr create citado dentro de --body com newline LITERAL dentro das aspas → "not-create" (#5805-style)', () => {
+    // Mesmo caso que a docstring de isGhPrMergeCommand descreve: um --body com
+    // newline literal DENTRO das aspas duplas — stripQuotedSpans varre char a
+    // char (não linha a linha), então o span aberto pelo `"` só fecha no `"`
+    // seguinte, mesmo atravessando quebras de linha.
+    const cmd = 'gh pr comment 6282 --body "medi X e Y\ngh pr create nao deveria disparar aqui\nfim"';
+    assert.equal(isGhPrCreateCommand(cmd), "not-create");
+  });
+
+  // Finding #1 do fleet review pós-#6298 (confiança alta, P2): antes desta
+  // mudança, `command` ausente resolvia o MESMO `false` que um comando
+  // reconhecido como NÃO sendo `gh pr create` — colapsando "sei que não é"
+  // com "não sei". Este teste é a regressão direta: os dois casos agora
+  // resolvem estados DIFERENTES, e nenhum dos dois é o boolean antigo.
+  it('command não-string → "unknown", distinto de "not-create" (finding #1: ausência ≠ negação)', () => {
+    assert.equal(isGhPrCreateCommand(undefined), "unknown");
+    assert.equal(isGhPrCreateCommand(null), "unknown");
+    assert.notEqual(isGhPrCreateCommand(undefined), isGhPrCreateCommand("gh pr comment 1"));
+  });
+});
+
+describe("shouldEmitReviewInstruction (#6298 — combina os dois fixes)", () => {
+  it("(a) URL de comentário → null, nenhuma instrução, mesmo com comando ausente", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    assert.equal(shouldEmitReviewInstruction(resp, undefined), null);
+  });
+
+  it("(b) URL de PR limpa + comando gh pr create → instrução emitida (URL retornada) como hoje", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const prUrl = shouldEmitReviewInstruction(resp, "gh pr create --title x --body y");
+    assert.equal(prUrl, "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("(c) gh pr create citado dentro de --body de outro comando → não dispara, mesmo com URL de PR limpa no tool_response", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const cmd = `gh pr comment 6282 --body "gh pr create nao deveria disparar aqui"`;
+    assert.equal(shouldEmitReviewInstruction(resp, cmd), null);
+  });
+
+  it("(d) payload sem command (undefined) → dispara (fail-safe permissivo, decide só pela URL)", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(shouldEmitReviewInstruction(resp, undefined), "https://github.com/vjpixel/diaria-studio/pull/6282");
+  });
+
+  it("comando real gh pr comment (payload verdadeiro do incidente #6298) → null mesmo se a URL não tivesse fragmento", () => {
+    // Defesa em profundidade: mesmo que fix 1 falhasse (URL sem fragmento por
+    // algum motivo), fix 2 sozinho já barra pelo comando.
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(shouldEmitReviewInstruction(resp, "gh pr comment 6282 --body-file /tmp/body.md"), null);
+  });
+});
+
+// Finding #2 do fleet review pós-#6298 (confiança alta, P2): resolveEmitDecision
+// expõe o motivo que shouldEmitReviewInstruction escondia atrás de um `null`
+// só — os 3 motivos indistinguíveis (nenhuma URL, URL de comentário/review,
+// comando não é gh pr create) agora resolvem `reason` diferentes.
+describe("resolveEmitDecision (#6298 finding #2 — motivo de supressão observável)", () => {
+  it('nenhuma URL de PR na saída → { prUrl: null, reason: "no_pr_url" }', () => {
+    const result = resolveEmitDecision("Usage: gh pr create [flags]", undefined);
+    assert.deepEqual(result, { prUrl: null, reason: "no_pr_url" });
+  });
+
+  it('URL de comentário (#issuecomment-N) → { prUrl: null, reason: "comment_or_review_url" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.deepEqual(result, { prUrl: null, reason: "comment_or_review_url" });
+  });
+
+  it('URL de review (#pullrequestreview-N) → reason "comment_or_review_url"', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282#pullrequestreview-9876543210";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.equal(result.reason, "comment_or_review_url");
+  });
+
+  it('URL limpa + comando NÃO é gh pr create → { prUrl: null, reason: "not_gh_pr_create" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, "gh pr comment 6282 --body-file /tmp/body.md");
+    assert.deepEqual(result, { prUrl: null, reason: "not_gh_pr_create" });
+  });
+
+  it('URL limpa + comando gh pr create → { prUrl, reason: "ok" }', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, "gh pr create --title x --body y");
+    assert.deepEqual(result, { prUrl: "https://github.com/vjpixel/diaria-studio/pull/6282", reason: "ok" });
+  });
+
+  it('URL limpa + comando ausente (unknown) → { prUrl, reason: "ok" } (permissivo, nunca not_gh_pr_create)', () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    const result = resolveEmitDecision(resp, undefined);
+    assert.deepEqual(result, { prUrl: "https://github.com/vjpixel/diaria-studio/pull/6282", reason: "ok" });
+  });
+
+  it("shouldEmitReviewInstruction continua um wrapper fino — mesma URL/null que resolveEmitDecision().prUrl", () => {
+    const resp = "https://github.com/vjpixel/diaria-studio/pull/6282\n";
+    assert.equal(
+      shouldEmitReviewInstruction(resp, "gh pr create --title x"),
+      resolveEmitDecision(resp, "gh pr create --title x").prUrl,
+    );
+    assert.equal(
+      shouldEmitReviewInstruction("no url here", undefined),
+      resolveEmitDecision("no url here", undefined).prUrl,
+    );
+  });
+});
+
+describe("logSuppressedReviewInstruction (#6298 finding #2)", () => {
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `pr-create-review-hook-suppressed-log-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  function readLoggedEvents(root: string) {
+    const logPath = join(root, "data", "run-log.jsonl");
+    return readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
+
+  it("grava reason + comando truncado no formato de scripts/log-event.ts", () => {
+    const root = freshRoot();
+    logSuppressedReviewInstruction(
+      { reason: "not_gh_pr_create", command: "gh pr comment 1 --body x" },
+      { repoRoot: root },
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.agent, "code-review");
+    assert.equal(event.level, "info");
+    assert.equal(event.message, "review_instruction_suppressed");
+    assert.deepEqual(event.details, { reason: "not_gh_pr_create", command: "gh pr comment 1 --body x" });
+  });
+
+  it("command ausente → details.command é null, não lança", () => {
+    const root = freshRoot();
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction({ reason: "no_pr_url", command: undefined }, { repoRoot: root }),
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.command, null);
+  });
+
+  it("command gigante é truncado em 500 chars", () => {
+    const root = freshRoot();
+    const hugeCommand = "gh pr comment 1 --body " + "x".repeat(1000);
+    logSuppressedReviewInstruction({ reason: "not_gh_pr_create", command: hugeCommand }, { repoRoot: root });
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.command.length, 500);
+  });
+
+  it("é fail-soft: appendFn lançando erro nunca propaga", () => {
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction(
+        { reason: "no_pr_url", command: undefined },
+        {
+          repoRoot: freshRoot(),
+          appendFn: () => {
+            throw new Error("ENOSPC: no space left on device");
+          },
+        },
+      ),
+    );
+  });
+
+  it("é fail-soft: mkdirFn lançando erro nunca propaga", () => {
+    assert.doesNotThrow(() =>
+      logSuppressedReviewInstruction(
+        { reason: "no_pr_url", command: undefined },
+        {
+          repoRoot: freshRoot(),
+          mkdirFn: () => {
+            throw new Error("EACCES: permission denied");
+          },
+        },
+      ),
+    );
+  });
+
+  it("cria data/ se ainda não existir (worktree/tmpdir sem a pasta)", () => {
+    const root = freshRoot();
+    logSuppressedReviewInstruction({ reason: "no_pr_url", command: undefined }, { repoRoot: root });
+    assert.equal(readLoggedEvents(root).length, 1);
+  });
+});
+
+// Finding #3 do fleet review pós-#6298 (confiança média, P2): a fiação
+// `payload.tool_input?.command` no entrypoint CLI é referência NOVA nesta PR
+// e nunca era exercitada fim-a-fim — toda a suíte acima chama as funções
+// exportadas diretamente, nunca o hook como PROCESSO real lendo JSON do
+// stdin. Se o nome/caminho do campo estivesse errado no payload real emitido
+// pelo harness, o hook degradaria pro caminho permissivo e o #6298
+// reapareceria em produção com a suíte inteira verde. Spawna o hook via
+// `node` de verdade, alimentando o payload pelo stdin, e confere o stdout.
+//
+// Isolamento: `resolveMainRepoRoot()`/`resolveEffort` chamam `git` sem `cwd`
+// explícito, herdando o cwd do processo — sem isolar, o subprocesso real
+// escreveria em `data/run-log.jsonl` da junction OneDrive COMPARTILHADA
+// (mesmo risco documentado no describe "checkRoundActive DEFAULT real"
+// acima). Por isso cada teste roda com `cwd` apontando pra um repo git
+// TEMPORÁRIO — `resolveMainRepoRoot()` resolve `git rev-parse
+// --git-common-dir` relativo a esse cwd, redirecionando toda escrita de log
+// pro tmpdir isolado.
+describe("hook como processo real, fim-a-fim (#6298 fleet review, finding #3)", () => {
+  const HOOK_PATH = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    ".claude",
+    "hooks",
+    "pr-create-review.mjs",
+  );
+  const roots: string[] = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function isolatedGitRoot() {
+    const root = mkdtempSync(join(tmpdir(), "pr-create-review-e2e-"));
+    roots.push(root);
+    execFileSync("git", ["init", "--quiet"], { cwd: root, timeout: 10_000 });
+    return root;
+  }
+
+  function runHook(payload: unknown, cwd: string) {
+    return spawnSync(process.execPath, [HOOK_PATH], {
+      cwd,
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+  }
+
+  it("(a) payload de gh pr comment com URL de #issuecomment- → stdout vazio, sem additionalContext", () => {
+    const root = isolatedGitRoot();
+    const payload = {
+      session_id: "sessao-teste-e2e",
+      tool_input: { command: "gh pr comment 6282 --body-file /tmp/body.md" },
+      tool_response: "https://github.com/vjpixel/diaria-studio/pull/6282#issuecomment-5427611867\n",
+    };
+    const result = runHook(payload, root);
+    assert.equal(result.status, 0);
+    assert.equal((result.stdout ?? "").trim(), "");
+  });
+
+  it("(b) payload de gh pr create com URL limpa → stdout com additionalContext", () => {
+    const root = isolatedGitRoot();
+    const payload = {
+      session_id: "sessao-teste-e2e",
+      tool_input: { command: "gh pr create --title x --body y" },
+      tool_response: "https://github.com/vjpixel/diaria-studio/pull/6282\n",
+    };
+    const result = runHook(payload, root);
+    assert.equal(result.status, 0);
+    const stdout = (result.stdout ?? "").trim();
+    assert.ok(stdout.length > 0, "esperava stdout não-vazio com additionalContext");
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "PostToolUse");
+    assert.match(parsed.hookSpecificOutput.additionalContext, /pull\/6282/);
   });
 });

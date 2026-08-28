@@ -15,8 +15,12 @@
  * cluster/composição de onda que também vivia lá foi removida, não
  * relocada). `test/studio-waves.test.ts` foi deletado.
  */
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerSession, claimIssueCheckAndSet } from "../scripts/lib/session-registry.ts";
 import {
   derivePriority,
   deriveTrackFromBranch,
@@ -27,6 +31,9 @@ import {
   fetchTriageData,
   clearTriageCache,
   defaultGhRun,
+  attachClaims,
+  isPanelDisplayStale,
+  PANEL_DISPLAY_STALE_MS,
   type GhRunFn,
   type GhIssueRaw,
   type GhPrRaw,
@@ -56,6 +63,9 @@ describe("deriveTrackFromBranch (#3562)", () => {
   });
   it("develop/blast-NNNN -> develop", () => {
     assert.equal(deriveTrackFromBranch("develop/blast-1234"), "develop");
+  });
+  it("continuo/fix-NNNN-slug -> continuo (#6446 v0.5.0 — pedido do editor 28/08)", () => {
+    assert.equal(deriveTrackFromBranch("continuo/fix-6431-sync-code-scheduled"), "continuo");
   });
   it("branch manual do editor -> other", () => {
     assert.equal(deriveTrackFromBranch("editor/hotfix-urgente"), "other");
@@ -373,6 +383,62 @@ describe("fetchTriageData (#3562)", () => {
     assert.ok(calls > callsAfterFirst);
   });
 
+  describe("fetchTriageData + claim de data/sessions/ real (#6436)", () => {
+    let root: string | null = null;
+    afterEach(() => {
+      if (root) {
+        rmSync(root, { recursive: true, force: true });
+        root = null;
+      }
+    });
+
+    it("claim de sessão ATIVA aparece na issue", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-"));
+      registerSession(root, "continuo", "5d791ef6", { tag: "helios" });
+      claimIssueCheckAndSet(root, "continuo", "5d791ef6", 6051, "helios");
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim?.kind, "continuo");
+      assert.equal(data.issues[0]?.claim?.sessionId, "5d791ef6");
+    });
+
+    it("claim de sessão STALE NÃO aparece — não deveria ler 'em andamento' pra uma sessão morta", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-stale-"));
+      const staleStart = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h > SOFT_STALE_MS (90min)
+      registerSession(root, "continuo", "sess-morta", { tag: "helios", startedAt: staleStart });
+      claimIssueCheckAndSet(root, "continuo", "sess-morta", 6051, "helios", staleStart);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim, null);
+    });
+
+    it("#6592 — claim com heartbeat > PANEL_DISPLAY_STALE_MS (20min) NÃO aparece no painel, mesmo dentro de SOFT_STALE_MS (90min)", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-panel-stale-"));
+      // 25min: > PANEL_DISPLAY_STALE_MS (20min), mas < SOFT_STALE_MS (90min) —
+      // `listActiveSessions` ainda considera esta sessão `stale: false`.
+      const heartbeat = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+      registerSession(root, "continuo", "sess-heartbeat-velho", { tag: "helios", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-heartbeat-velho", 6051, "helios", heartbeat);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim, null);
+    });
+
+    it("#6592 — claim com heartbeat < PANEL_DISPLAY_STALE_MS (20min) continua aparecendo (não regride #6436)", () => {
+      root = mkdtempSync(join(tmpdir(), "studio-issues-claims-panel-fresh-"));
+      const heartbeat = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      registerSession(root, "continuo", "sess-fresca", { tag: "helios", startedAt: heartbeat });
+      claimIssueCheckAndSet(root, "continuo", "sess-fresca", 6051, "helios", heartbeat);
+
+      const run = mockRun([{ number: 6051, title: "x", url: "u", state: "OPEN", labels: [] }], []);
+      const data = fetchTriageData(root, { run, now: () => Date.now() });
+      assert.equal(data.issues[0]?.claim?.sessionId, "sess-fresca");
+    });
+  });
+
   it("gh falhando (status != 0) sem cache anterior: arrays vazios + error preenchido, nunca lança", () => {
     const run: GhRunFn = () => ({ status: 1, stdout: "", stderr: "rate limit exceeded" });
     const data = fetchTriageData("/tmp/root-d", { run, now: () => 1000 });
@@ -447,5 +513,90 @@ describe("defaultGhRun timeout (#3783 — regressão)", () => {
     // `status` vem `null`, o mesmo shape que `runGhJson` já trata como falha
     // (`status !== 0`), então este cenário nunca vira sucesso silencioso.
     assert.equal(result.status, null, "processo morto por timeout reporta status null, não 0");
+  });
+});
+
+describe("isPanelDisplayStale (#6592, puro)", () => {
+  it("heartbeat dentro do limiar → não stale", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 5 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), false);
+  });
+
+  it("heartbeat > PANEL_DISPLAY_STALE_MS (20min) → stale de exibição", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 25 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), true);
+  });
+
+  it("exatamente no limiar (não excede) → não stale (comparação é estrita '>')", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - PANEL_DISPLAY_STALE_MS).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs), false);
+  });
+
+  it("fallback pra startedAt quando lastHeartbeat ausente", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const startedAt = new Date(nowMs - 25 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat: undefined as unknown as string, startedAt }, nowMs), true);
+  });
+
+  it("data inválida nunca lança e nunca marca stale (fail-soft — idade desconhecida não esconde claim ativo)", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    assert.equal(isPanelDisplayStale({ lastHeartbeat: "not-a-date", startedAt: "not-a-date" }, nowMs), false);
+  });
+
+  it("aceita maxAgeMs custom (override do default)", () => {
+    const nowMs = Date.parse("2026-08-28T12:00:00.000Z");
+    const lastHeartbeat = new Date(nowMs - 10 * 60 * 1000).toISOString();
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs, 5 * 60 * 1000), true);
+    assert.equal(isPanelDisplayStale({ lastHeartbeat, startedAt: lastHeartbeat }, nowMs, 15 * 60 * 1000), false);
+  });
+});
+
+describe("attachClaims (#6436)", () => {
+  function issue(number: number): ReturnType<typeof parseIssues>[number] {
+    return parseIssues([
+      { number, title: `issue ${number}`, url: "https://x", state: "OPEN", labels: [], body: "" },
+    ])[0]!;
+  }
+
+  it("issue reivindicada por sessão continuo mostra o claim, não fica indistinguível de 'sem sinal'", () => {
+    const [claimed] = attachClaims([issue(6051)], [
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "5d791ef6",
+        claimed_issues: [6051],
+        claimed_issues_at: { "6051": "2026-08-20T00:00:00Z" },
+      },
+    ]);
+    assert.deepEqual(claimed!.claim, {
+      kind: "continuo",
+      machineTag: "helios",
+      sessionId: "5d791ef6",
+      claimedAt: "2026-08-20T00:00:00Z",
+    });
+  });
+
+  it("issue sem claim de nenhuma sessão ativa → claim null", () => {
+    const [free] = attachClaims([issue(1)], [
+      { kind: "overnight", machineTag: "helios", sessionId: "x", claimed_issues: [2] },
+    ]);
+    assert.equal(free!.claim, null);
+  });
+
+  it("sem sessões ativas nenhuma → todas as issues com claim null, nunca lança", () => {
+    const [a, b] = attachClaims([issue(1), issue(2)], []);
+    assert.equal(a!.claim, null);
+    assert.equal(b!.claim, null);
+  });
+
+  it("issue reivindicada por 2 sessões simultaneamente (dado corrompido) → a 1ª da lista vence, sem lançar", () => {
+    const [claimed] = attachClaims([issue(9)], [
+      { kind: "overnight", machineTag: "helios", sessionId: "first", claimed_issues: [9] },
+      { kind: "develop", machineTag: "neo", sessionId: "second", claimed_issues: [9] },
+    ]);
+    assert.equal(claimed!.claim?.sessionId, "first");
   });
 });

@@ -18,6 +18,18 @@
  * 4. **Publicar é `git commit` + `push`, nunca `wrangler deploy` local**
  *    (#6202 review, problema 3) — o deploy real acontece via CI em push a
  *    master (`.github/workflows/deploy-site.yml`).
+ * 5. **GUARD de merge tag não resolvida (#6202, achado P0 do fleet review
+ *    não incorporado à PR #6209).** `buildArchivePageHtml` (o MESMO usado
+ *    pelo gerador do acervo, `lib/site-archive-pages.ts`) já recusa HTML com
+ *    `{{...}}` não resolvido via `UnresolvedMergeTagError` (guard entregue
+ *    sob #6210/#6256, PRs #6214/#6255/#6260 — confirmado no histórico antes
+ *    deste branch existir). O que faltava — e é o que este arquivo cobre a
+ *    partir daqui — é `publishEditionSitePage` reconhecer esse tipo
+ *    ESPECÍFICO de erro e mapear pra um exit code PRÓPRIO (`5`) com mensagem
+ *    acionável, em vez de cair no balde genérico `3` ("render falhou"), que
+ *    mistura bug de código com recusa deliberada de publicação. Não
+ *    reimplementa detecção — reusa o guard existente, escopo estritamente de
+ *    wiring + exit code dedicado.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -34,9 +46,13 @@ import {
   readEditionInputs,
   commitAndPushSitePage,
   productionDeps,
+  createExecFileSyncLockRunner,
   EditionInputsInvalid,
   type PublishPageDeps,
   type GitRunner,
+  type GhRunner,
+  type LockRunner,
+  type SleepFn,
 } from "../scripts/publish-edition-site-page.ts";
 import type { EditionPageInputs } from "../scripts/lib/edition-site-page.ts";
 
@@ -47,6 +63,37 @@ const INPUTS: EditionPageInputs = {
   subtitle: "Subtítulo",
   publishedAtIso: "2026-08-27T09:00:00Z",
 };
+
+/**
+ * lock de teste (#6626), escopo de módulo — usado tanto pelas suítes de
+ * `commitAndPushSitePage` quanto de `productionDeps`. Por padrão concede na
+ * 1ª tentativa, sempre; `ok` por chamada (`acquireResults`) permite simular
+ * negação/retry sem tocar o subprocesso real. Nunca chama
+ * `session-registry.ts` de verdade.
+ */
+function makeLock(acquireResults: boolean[] = []) {
+  const calls: string[][] = [];
+  let acquireCall = 0;
+  const lock: LockRunner = (args) => {
+    calls.push(args);
+    if (args[0] === "merge-lock-acquire") {
+      const ok = acquireCall < acquireResults.length ? acquireResults[acquireCall] : true;
+      acquireCall++;
+      return { ok, stdout: ok ? "ok\n" : "", stderr: ok ? "" : "denied (held by another session)\n" };
+    }
+    return { ok: true, stdout: "ok\n", stderr: "" };
+  };
+  return { lock, calls };
+}
+
+/** sleep de teste — nunca dorme de verdade, só registra que foi chamado. */
+function makeSleep() {
+  const calls: number[] = [];
+  const sleep: SleepFn = (ms) => {
+    calls.push(ms);
+  };
+  return { sleep, calls };
+}
 
 describe("#6202 extractSlugFromPostUrl", () => {
   it("extrai o slug de uma URL de edição", () => {
@@ -137,7 +184,7 @@ function makeDeps(over: Partial<PublishPageDeps> = {}): Harness {
     writePage: (slug, html) => void escritas.push({ slug, html }),
     publish: () => {
       publishes++;
-      return { pushed: true };
+      return { pushed: true, prUrl: "https://github.com/vjpixel/diaria-studio/pull/1", prNumber: 1, prCreated: true };
     },
     log: () => {},
     ...over,
@@ -212,7 +259,7 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
       },
       publish: () => {
         publishChamado = true;
-        return { pushed: true };
+        return { pushed: true, prCreated: true };
       },
     });
     const r = publishEditionSitePage("/x", deps);
@@ -270,10 +317,72 @@ describe("#6202 publishEditionSitePage — fail-soft em todo caminho ruim", () =
   });
 
   it("REGRESSÃO P1-B: publish() não lança mas não confirma push ⇒ code 0, published:false (nunca inferido de ausência de exceção)", () => {
-    const { deps } = makeDeps({ publish: () => ({ pushed: false }) });
+    const { deps } = makeDeps({ publish: () => ({ pushed: false, prCreated: false }) });
     const r = publishEditionSitePage("/x", deps);
     assert.equal(r.code, 0);
     if (r.code === 0) assert.equal(r.published, false, "published só é true quando publish() confirma o push");
+  });
+
+  describe("GUARD (#6202): UnresolvedMergeTagError ⇒ code 5, nada escrito/publicado", () => {
+    it("merge tag DESCONHECIDA (não coberta pelo sanitize de {{email}}/{{email_address_id}}) ⇒ code 5", () => {
+      // {{first_name}} é o mesmo fixture usado em
+      // test/gen-archive-pages.test.ts pro guard #6256 — não é uma tag real
+      // do pipeline diário, só ilustra "qualquer tag que o sanitize não
+      // cobre" (o caso motivador real seria o backend Kit, `{{
+      // subscriber.email_address }}`, que também não está na whitelist).
+      const { deps, escritas, contarPublishes } = makeDeps({
+        readEditionInputs: () => ({ ...INPUTS, html: "<p>Olá {{first_name}}, bem-vindo</p>" }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 5);
+      if (r.code === 5) {
+        assert.deepEqual(r.tags, ["{{first_name}}"]);
+        assert.match(r.reason, /\{\{first_name\}\}/);
+        assert.match(r.reason, /6210/, "aponta pra onde a decisão de fundo é tomada, sem tomá-la aqui");
+      }
+      assert.equal(escritas.length, 0, "falha fechada: NADA escrito em disco");
+      assert.equal(contarPublishes(), 0, "e nada commitado/publicado");
+    });
+
+    it("2 tags diferentes, uma repetida ⇒ `tags` deduplicado (mesmo dedup de UnresolvedMergeTagError)", () => {
+      const { deps } = makeDeps({
+        readEditionInputs: () => ({
+          ...INPUTS,
+          html: "<p>{{first_name}} e {{first_name}} de novo, e {{last_name}}</p>",
+        }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 5);
+      if (r.code === 5) assert.deepEqual(r.tags, ["{{first_name}}", "{{last_name}}"]);
+    });
+
+    it("REGRESSÃO — não regride o caso PADRÃO: `?email={{email}}` (link de voto Beehiiv) publica normalmente, code 0", () => {
+      // A tag mais comum do pipeline (presente em toda edição Beehiiv) é
+      // sanitizada DENTRO de buildArchivePageHtml antes deste guard rodar —
+      // não deveria disparar `5`. Ver docstring do módulo (exit code 5) e
+      // `buildArchivePageHtml — link de voto com merge tag padrão` em
+      // test/gen-archive-pages.test.ts.
+      const { deps, escritas } = makeDeps({
+        readEditionInputs: () => ({
+          ...INPUTS,
+          html: '<p><a href="https://joga.diar.ia.br/vote/260827/A?email={{email}}">Vote</a></p>',
+        }),
+      });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 0, "a tag padrão do voto é sanitizada, não rejeitada — não deveria virar 5");
+      assert.equal(escritas.length, 1);
+      assert.ok(!escritas[0].html.includes("{{email}}"), "a tag crua não sobrevive na página publicada");
+    });
+
+    it("caso não relacionado (título vazio) continua code 4 — o novo `instanceof` não engoliu códigos existentes", () => {
+      // buildEditionArchivePost já recusa título vazio (code 4) antes de
+      // buildArchivePageHtml rodar — este teste existe só pra deixar
+      // explícito que o guard novo (5) não engoliu nenhum dos códigos
+      // existentes (2/3/4) por engano de `instanceof`.
+      const { deps } = makeDeps({ readEditionInputs: () => ({ ...INPUTS, title: "" }) });
+      const r = publishEditionSitePage("/x", deps);
+      assert.equal(r.code, 4, "título vazio continua code 4, não foi capturado pelo novo ramo");
+    });
   });
 });
 
@@ -347,7 +456,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       const deps: PublishPageDeps = {
         readEditionInputs,
         writePage: (slug, html) => void escritas.push({ slug, html }),
-        publish: () => ({ pushed: true }),
+        publish: () => ({ pushed: true, prCreated: true, prUrl: "https://github.com/vjpixel/diaria-studio/pull/2" }),
         log: () => {},
       };
       const r = publishEditionSitePage(dir, deps, { slug: "titulo-real-da-fixture" });
@@ -451,7 +560,7 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
   });
 });
 
-describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wrangler deploy", () => {
+describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push direto em master", () => {
   /** git de teste com defaults sãos (branch master, sem staged alheio, status limpo). */
   function makeGit(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
     const calls: string[][] = [];
@@ -467,18 +576,53 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
     return { git, calls };
   }
 
-  it("caminho feliz: add, status, diff, commit e push, nesta ordem", () => {
+  /** gh de teste com defaults sãos: nenhum PR aberto ainda, `pr create` devolve uma URL. */
+  function makeGh(overrides: Partial<Record<string, (args: string[]) => string>> = {}) {
+    const calls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      calls.push(args);
+      const cmd = args.slice(0, 2).join(" ");
+      if (overrides[cmd]) return overrides[cmd]!(args);
+      if (cmd === "pr list") return "[]";
+      if (cmd === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/9999\n";
+      return "";
+    };
+    return { gh, calls };
+  }
+
+  it("caminho feliz: checkout -B, add, status, diff, commit, push, checkout de volta — nesta ordem", () => {
     const { git, calls } = makeGit({
       status: () => " M workers/site/public/p/abc/index.html\n",
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
-    const r = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r.committed, true);
     assert.equal(r.pushed, true);
+    assert.equal(r.prCreated, true);
+    assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/9999");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "add", "status", "diff", "commit", "push"],
+      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
     );
+    const revParseCall = calls[0];
+    const checkoutBack = calls[calls.length - 1];
+    assert.deepEqual(revParseCall, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert.deepEqual(checkoutBack, ["checkout", "master"]);
+  });
+
+  it("checkout -B usa a branch determinística site-publish/{slug} — nunca toca master diretamente", () => {
+    const { git, calls } = makeGit({
+      status: () => " M workers/site/public/p/abc/index.html\n",
+      diff: () => "workers/site/public/p/abc/index.html\n",
+    });
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    const checkoutB = calls.find((c) => c[0] === "checkout" && c[1] === "-B")!;
+    assert.deepEqual(checkoutB, ["checkout", "-B", "site-publish/abc"]);
+    const push = calls.find((c) => c[0] === "push")!;
+    assert.deepEqual(push, ["push", "--force-with-lease", "-u", "origin", "site-publish/abc"]);
+    assert.ok(!calls.some((c) => c[0] === "push" && c.includes("master")), "nunca empurra pra master");
   });
 
   it("commit é escopado ao pathspec da página, nunca o índice inteiro (#6202 review P1-A)", () => {
@@ -486,7 +630,8 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       status: () => " M workers/site/public/p/abc/index.html\n",
       diff: () => "workers/site/public/p/abc/index.html\n",
     });
-    commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     const commitCall = calls.find((c) => c[0] === "commit")!;
     assert.deepEqual(commitCall.slice(-2), ["--", "workers/site/public/p/abc"]);
   });
@@ -498,9 +643,11 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       // do nosso — cenário real de `git add` alheio no mesmo checkout.
       diff: () => "workers/site/public/p/abc/index.html\nscripts/algum-arquivo-de-outra-sessao.ts\n",
     });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /algum-arquivo-de-outra-sessao\.ts/);
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /algum-arquivo-de-outra-sessao\.ts/);
     assert.ok(!calls.some((c) => c[0] === "commit"), "nunca commita quando há staged alheio");
     assert.ok(!calls.some((c) => c[0] === "push"), "nunca empurra quando o commit foi abortado");
+    assert.deepEqual(calls[calls.length - 1], ["checkout", "master"], "volta pro branch original mesmo em erro");
   });
 
   it("2ª chamada sem mudança pula o commit, MAS ainda tenta o push (idempotente, sem commit vazio)", () => {
@@ -516,8 +663,9 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       if (args[0] === "diff") return "workers/site/public/p/abc/index.html\n";
       return "";
     };
-    const r1 = commitAndPushSitePage("/repo", "abc", git);
-    const r2 = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r1 = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    const r2 = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r1.committed, true);
     assert.equal(r2.committed, false, "sem diff no path, não há o que comitar");
     assert.equal(r2.pushed, true, "push ainda roda mesmo sem commit novo nesta chamada");
@@ -543,33 +691,159 @@ describe("#6202 commitAndPushSitePage — publicar é git commit+push, nunca wra
       }
       return "";
     };
-    const r = commitAndPushSitePage("/repo", "abc", git);
+    const { gh } = makeGh();
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
     assert.equal(r.committed, false, "nada novo a commitar");
     assert.equal(r.pushed, true, "mas o push roda mesmo assim");
     assert.equal(pushCalls.length, 1, "push foi de fato tentado, não pulado por status limpo");
   });
 
-  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem add/commit/push (#6202 review)", () => {
+  it("REGRESSÃO P1-C: branch != master ⇒ lança, sem checkout/add/commit/push (#6202 review)", () => {
     const { git, calls } = makeGit({ "rev-parse": () => "overnight/algo\n" });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /overnight\/algo/);
-    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index");
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /overnight\/algo/);
+    assert.equal(calls.length, 1, "para no rev-parse — nunca chega a tocar working tree/index/branch");
   });
 
-  it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage)", () => {
-    const { git } = makeGit({
+  it("push que lança propaga — chamador decide (vira code 3 em publishEditionSitePage) — e volta pro master mesmo assim", () => {
+    const { git, calls } = makeGit({
       status: () => " M x\n",
       diff: () => "workers/site/public/p/abc\n",
       push: () => {
         throw new Error("non-fast-forward");
       },
     });
-    assert.throws(() => commitAndPushSitePage("/repo", "abc", git), /non-fast-forward/);
+    const { gh } = makeGh();
+    assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep), /non-fast-forward/);
+    assert.deepEqual(
+      calls[calls.length - 1],
+      ["checkout", "master"],
+      "finally sempre volta pro branch original, mesmo quando o push lança",
+    );
   });
 
-  it("nunca chama wrangler — mecanismo é só git", () => {
+  it("PR já aberto pra essa branch ⇒ reusa, não cria um 2º (nunca duplica)", () => {
+    const { git } = makeGit({
+      status: () => " M x\n",
+      diff: () => "workers/site/public/p/abc\n",
+    });
+    const { gh, calls: ghCalls } = makeGh({
+      "pr list": () => JSON.stringify([{ number: 42, url: "https://github.com/vjpixel/diaria-studio/pull/42" }]),
+    });
+    const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    assert.equal(r.prCreated, false, "PR existente reusado, não criado de novo");
+    assert.equal(r.prNumber, 42);
+    assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/42");
+    assert.ok(!ghCalls.some((c) => c[0] === "pr" && c[1] === "create"), "nunca chama pr create quando já existe um aberto");
+  });
+
+  it("nunca chama wrangler nem git push origin master — mecanismo é branch + PR", () => {
     const { git, calls } = makeGit({ status: () => " M x\n", diff: () => "workers/site/public/p/abc\n" });
-    commitAndPushSitePage("/repo", "abc", git);
-    for (const c of calls) assert.notEqual(c[0], "wrangler");
+    const { gh } = makeGh();
+    commitAndPushSitePage("/repo", "abc", git, undefined, gh, makeLock().lock, makeSleep().sleep);
+    for (const c of calls) {
+      assert.notEqual(c[0], "wrangler");
+      if (c[0] === "push") assert.ok(!c.includes("master"), "push nunca referencia master diretamente");
+    }
+  });
+
+  describe("#6626 merge lock cross-sessão em torno da troca de checkout", () => {
+    it("adquire o lock ANTES do checkout -B e libera DEPOIS do checkout de volta — nesta ordem", () => {
+      const order: string[] = [];
+      const { git } = makeGit({
+        status: () => " M workers/site/public/p/abc/index.html\n",
+        diff: () => "workers/site/public/p/abc/index.html\n",
+      });
+      const trackedGit: GitRunner = (args, cwd) => {
+        order.push(`git:${args[0]}${args[1] === "-B" ? ":-B" : ""}`);
+        return git(args, cwd);
+      };
+      const { gh } = makeGh();
+      const { lock: rawLock } = makeLock();
+      const trackedLock: LockRunner = (args, cwd) => {
+        order.push(`lock:${args[0]}`);
+        return rawLock(args, cwd);
+      };
+      const { sleep } = makeSleep();
+
+      commitAndPushSitePage("/repo", "abc", trackedGit, undefined, gh, trackedLock, sleep);
+
+      const acquireIdx = order.indexOf("lock:merge-lock-acquire");
+      const checkoutBIdx = order.indexOf("git:checkout:-B");
+      const checkoutBackIdx = order.lastIndexOf("git:checkout");
+      const releaseIdx = order.indexOf("lock:merge-lock-release");
+
+      assert.ok(acquireIdx !== -1 && checkoutBIdx !== -1 && checkoutBackIdx !== -1 && releaseIdx !== -1);
+      assert.ok(acquireIdx < checkoutBIdx, "lock adquirido antes do checkout -B");
+      assert.ok(checkoutBackIdx < releaseIdx, "checkout de volta acontece antes do lock ser liberado");
+      // O `rev-parse` inicial não precisa do lock — só lê a branch atual.
+      assert.equal(order[0], "git:rev-parse", "rev-parse roda antes de qualquer acquire");
+    });
+
+    it("libera o lock mesmo quando o push lança (finally cobre erro no meio da janela)", () => {
+      const { git } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+        push: () => {
+          throw new Error("non-fast-forward");
+        },
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock();
+      const { sleep } = makeSleep();
+
+      assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep), /non-fast-forward/);
+
+      assert.ok(lockCalls.some((c) => c[0] === "merge-lock-acquire"), "lock foi adquirido");
+      assert.ok(lockCalls.some((c) => c[0] === "merge-lock-release"), "lock foi liberado mesmo com o push lançando");
+    });
+
+    it("lock negado nas 2 primeiras tentativas, concedido na 3ª ⇒ segue normalmente, com retry entre elas", () => {
+      const { git } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock([false, false, true]);
+      const { sleep, calls: sleepCalls } = makeSleep();
+
+      const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep);
+
+      assert.equal(r.pushed, true);
+      assert.equal(
+        lockCalls.filter((c) => c[0] === "merge-lock-acquire").length,
+        3,
+        "3 tentativas de acquire — nega, nega, concede",
+      );
+      assert.equal(sleepCalls.length, 2, "dorme entre a 1ª e 2ª, e entre a 2ª e 3ª tentativa — nunca após a última");
+    });
+
+    it("lock negado em TODAS as tentativas ⇒ lança, sem tocar checkout/commit/push (#6626)", () => {
+      const { git, calls: gitCalls } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock([false, false, false]);
+      const { sleep } = makeSleep();
+
+      assert.throws(
+        () => commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep),
+        /merge lock não adquirido/,
+      );
+
+      assert.equal(
+        lockCalls.filter((c) => c[0] === "merge-lock-acquire").length,
+        3,
+        "esgota as 3 tentativas, nunca mais",
+      );
+      assert.ok(!lockCalls.some((c) => c[0] === "merge-lock-release"), "nunca libera um lock que não adquiriu");
+      assert.deepEqual(
+        gitCalls.map((c) => c[0]),
+        ["rev-parse"],
+        "para no rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
+      );
+    });
   });
 });
 
@@ -586,7 +860,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     }
   });
 
-  it("publish() amarra corretamente com um GitRunner injetado (commit+push reais simulados)", () => {
+  it("publish() amarra corretamente com um GitRunner + GhRunner injetados (branch+PR reais simulados)", () => {
     const calls: string[][] = [];
     const git: GitRunner = (args) => {
       calls.push(args);
@@ -595,12 +869,25 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
       if (args[0] === "diff") return "workers/site/public/p/meu-slug/index.html\n";
       return "";
     };
-    const deps = productionDeps("/repo", git);
+    const ghCalls: string[][] = [];
+    const gh: GhRunner = (args) => {
+      ghCalls.push(args);
+      if (args.slice(0, 2).join(" ") === "pr list") return "[]";
+      if (args.slice(0, 2).join(" ") === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/1\n";
+      return "";
+    };
+    const deps = productionDeps("/repo", git, gh, makeLock().lock, makeSleep().sleep);
     const result = deps.publish("meu-slug");
     assert.equal(result.pushed, true);
+    assert.equal(result.prCreated, true);
+    assert.equal(result.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "add", "status", "diff", "commit", "push"],
+      ["rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+    );
+    assert.ok(
+      ghCalls.some((c) => c[0] === "pr" && c[1] === "create"),
+      "productionDeps amarra o GhRunner até gh pr create",
     );
   });
 
@@ -608,6 +895,42 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     const git: GitRunner = (args) => (args[0] === "rev-parse" ? "outra-branch\n" : "");
     const deps = productionDeps("/repo", git);
     assert.throws(() => deps.publish("meu-slug"), /outra-branch/);
+  });
+});
+
+describe("#6630 defaultLockRunner nunca trava indefinidamente", () => {
+  it("passa timeout: 60_000 pro execFileSync — mesmo valor de merge-train-live.ts:107", () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+    const fakeExec = (
+      _cmd: string,
+      _args: string[],
+      options: { cwd: string; stdio: ["ignore", "pipe", "pipe"]; timeout: number },
+    ) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      return Buffer.from("ok");
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec);
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.ok(capturedOptions, "o exec injetado foi de fato chamado");
+    assert.equal(capturedOptions?.timeout, 60_000, "timeout precisa bater com merge-train-live.ts (60s)");
+    assert.equal(result.ok, true);
+  });
+
+  it("timeout do subprocesso cai no branch catch — vira { ok: false }, não lança", () => {
+    const timeoutError = Object.assign(new Error("ETIMEDOUT"), {
+      status: null,
+      stdout: Buffer.from(""),
+      stderr: Buffer.from("spawnSync npx ETIMEDOUT"),
+    });
+    const fakeExec = () => {
+      throw timeoutError;
+    };
+    const runner = createExecFileSyncLockRunner(fakeExec);
+    const result = runner(["merge-lock-acquire"], "/repo");
+
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /ETIMEDOUT/);
   });
 });
 

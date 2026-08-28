@@ -100,7 +100,38 @@ const PUBLISHED_DATE = "2026-08-04";
  * bump `UPDATED_DATE` só depois de reconciliar a prosa manualmente. */
 // 2026-08-18 (#5628): limpeza de prosa (ponteiro/moldura de cobertura) —
 // bump por mudança de CORPO, não por fonte nova.
-const UPDATED_DATE = "2026-08-18";
+//
+// 2026-08-27 (#6274): `generate-hub-sources.ts --all` trouxe 5 edições novas
+// (14, 17, 18, 19 e 21/08/2026). Revisão de prosa, nenhuma abriu seção nova
+// — todas são mais cobertura de arcos já narrados, ou um fato isolado
+// demais pra sustentar seção própria (mesmo critério conservador de
+// `brasil-regulacao.ts`):
+//  - 14/08 "Claude Cowork chega ao painel do Chrome": mais cobertura do
+//    Cowork, já citado em `sections[3]` ("o lançamento do Claude Cowork
+//    para celular e web").
+//  - 17/08 "ChatGPT, Claude e Gemini vazavam raciocínio" (pesquisa expõe
+//    vazamento de raciocínio nos 3 modelos): mais um episódio do arco de
+//    segurança já narrado em `sections[4]` — mesmo evento entra também em
+//    `openai-chatgpt.ts`/`google-gemini.ts` (cobertura cross-hub do mesmo
+//    fato, não 3 fatos distintos).
+//  - 18/08 "Anthropic: só curar câncer convence público" (citação de Amodei
+//    sobre percepção pública): fato isolado, sem seção que o abrigue e sem
+//    volume pra abrir uma nova (é 1 citação, não um arco de meses) — não
+//    abriu seção, decisão conservadora.
+//  - 19/08 "Grupo hacker usou Claude em 8 invasões" (ligado à edição do TSE
+//    de propaganda eleitoral): já casa `SEGURANCA_PATTERN` (`hacke`) e
+//    estende o mesmo arco de `sections[4]`.
+//  - 21/08 "Marca d'água do Claude cai em horas" (bypass da marca d'água):
+//    mais um episódio do MESMO arco de segurança de `sections[4]`, ainda
+//    que o texto ("cai em horas") não bata `SEGURANCA_PATTERN` — decisão:
+//    não estender o regex pra 1 evento isolado (o arco já está descrito em
+//    prosa como "sequência ... em aberto, não uma conclusão", cobrindo o
+//    tipo de evento sem precisar enumerar cada manchete nova).
+// Nenhuma mudança de prosa em `sections`/FAQ além desta nota — os números
+// derivados (`countMatching`) continuam corretos para os padrões que essas
+// 5 edições realmente casam; bump por fonte nova + revisão de estrutura,
+// não por reescrita de corpo.
+const UPDATED_DATE = "2026-08-27";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a

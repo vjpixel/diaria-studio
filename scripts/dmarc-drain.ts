@@ -84,6 +84,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 const OUTPUT_DIR = resolve(ROOT, "data", "dmarc-reports");
+// DMARC query corrigida (overnight 260826): remetente real = noreply-dmarc-support@google.com (corrigido de dmarc-noreply@google.com)
 const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "dmarc-reports", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[dmarc-drain]";

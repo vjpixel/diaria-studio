@@ -1173,13 +1173,13 @@ export function parseEiaMirrorBlock(block: string, editionDir: string): EIA {
  *
  * Retorno:
  *   - `null`  → mirror ausente (comportamento antigo, maioria das edições
- *     históricas). O chamador (`renderHTML`) deve cair no fallback #3476
- *     (após USE MELHOR, ou antes das seções secundárias se não houver
- *     USE MELHOR) — regressão zero pra qualquer edição que nunca reordenou
- *     nada.
+ *     históricas). O chamador (`renderHTML`) deve cair no fallback #6323
+ *     (após LANÇAMENTOS, ou após USE MELHOR se não houver LANÇAMENTOS, ou
+ *     antes das seções secundárias se não houver nenhuma das duas) —
+ *     regressão zero pra qualquer edição que nunca reordenou nada.
  *   - `-1`    → mirror presente, mas nenhuma seção secundária vem antes
- *     dele no md (mesma posição relativa do fallback "sem USE MELHOR",
- *     #1085: É IA? nunca desaparece, renderiza antes das seções).
+ *     dele no md (mesma posição relativa do fallback "sem LANÇAMENTOS/USE
+ *     MELHOR", #1085: É IA? nunca desaparece, renderiza antes das seções).
  *   - `i` (≥0) → mirror presente e deve renderizar logo APÓS
  *     `sections[i]` (índice no array retornado por `parseSections`, MESMO
  *     critério de filtragem — nome bate `SECTION_HEADER_RE` E tem ≥1 item).
@@ -1938,15 +1938,29 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
   }
 }
 
-export function extractContent(editionDir: string): NewsletterContent {
+// #6447 Fatia 3: `overrideReviewedText` permite renderizar o preview a partir
+// de texto AINDA NÃO SALVO em disco (o painel de split view do Studio) sem
+// duplicar todo o parsing acima — só a FONTE do MD de destaques muda; tudo
+// que este código deriva de `reviewedText` (destaques, seções, TEXTO dos
+// boxes de divulgação via `extractBoxDivulgacao{0,1,2,3}`, coverage line
+// etc.) passa a refletir o draft. `01-eia.md`, leaderboard e os METADADOS de
+// box (imagem/categoria/alt, lidos à parte via `readBoxDivulgacao*Image`/
+// `readBoxDivulgacaoCategoriaForSlot`/`readBoxDivulgacaoAltForSlot` — sempre
+// do `platform.config.json`/disco, nunca do texto do destaque) continuam
+// lidos de `editionDir` normalmente, sem relação com o draft. `undefined`
+// (todo caller pré-#6447) preserva o comportamento original: ler
+// `02-reviewed.md` do disco e lançar se ausente.
+export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
 
-  if (!existsSync(reviewedPath)) {
+  if (overrideReviewedText === undefined && !existsSync(reviewedPath)) {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
   }
 
-  const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
+  const reviewedText = joinMultilineLinks(
+    overrideReviewedText !== undefined ? overrideReviewedText : readFileSync(reviewedPath, "utf8"),
+  );
 
   // #1972/#2978/#3476: remove os blocos dos boxes de divulgação (slot 1, slot
   // 2 e slot 3) ANTES do parse dos destaques. Se um callout estiver colado

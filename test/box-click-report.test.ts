@@ -7,6 +7,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   extractUrls,
   toBaseUrl,
@@ -20,6 +23,7 @@ import {
   renderMarkdownTable,
   isPostNeverEnriched, // #5153
   renderNeverEnrichedNote, // #5153
+  loadUnifiedPostsCache, // #6185
   type SnippetInfo,
   type PostCacheLike,
 } from "../scripts/box-click-report.ts";
@@ -574,5 +578,91 @@ describe("#6031 seasonal box pipeline (regression test)", () => {
     const report = buildBoxClickReport(opts);
     assert.equal(report.hasSeasonalBoxActive, false);
     assert.equal(report.rows[0].seasonal, false);
+  });
+});
+
+describe("loadUnifiedPostsCache (#6185 — Beehiiv + Kit, fail-soft nos dois lados)", () => {
+  function tmpDirs(): { root: string; beehiivDir: string; kitDir: string; cleanup: () => void } {
+    const root = mkdtempSync(join(tmpdir(), "box-click-unified-"));
+    const beehiivDir = join(root, "beehiiv-posts");
+    const kitDir = join(root, "kit-broadcasts");
+    return { root, beehiivDir, kitDir, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  }
+
+  it("os dois diretórios ausentes -> [] (nunca lança — diferente de loadUnifiedEditionCache cru)", () => {
+    const { beehiivDir, kitDir, cleanup } = tmpDirs();
+    try {
+      assert.deepEqual(loadUnifiedPostsCache(beehiivDir, kitDir), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("só Beehiiv presente (Kit ainda não populado) -> devolve só os posts Beehiiv", () => {
+    const { beehiivDir, kitDir, cleanup } = tmpDirs();
+    try {
+      mkdirSync(beehiivDir, { recursive: true });
+      writeFileSync(
+        join(beehiivDir, "p1.json"),
+        JSON.stringify({ id: "p1", publish_date: 1000, stats: { clicks: [] } }),
+      );
+      const posts = loadUnifiedPostsCache(beehiivDir, kitDir);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0]!.publish_date, 1000);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Kit presente: `clicks` do broadcast entra no shape ClickLike (unique_clicks -> unique_verified_clicks)", () => {
+    const { beehiivDir, kitDir, cleanup } = tmpDirs();
+    try {
+      mkdirSync(kitDir, { recursive: true });
+      writeFileSync(
+        join(kitDir, "broadcast_1.json"),
+        JSON.stringify({
+          id: 1,
+          subject: "Edição Kit",
+          status: "completed",
+          published_at: "2026-08-26T09:00:00Z",
+          clicks: [
+            { id: 1, url: "https://x.com/kit-link", unique_clicks: 7, click_to_delivery_rate: 0.2, click_to_open_rate: 0.5 },
+          ],
+        }),
+      );
+      const posts = loadUnifiedPostsCache(beehiivDir, kitDir); // beehiivDir ausente -> []
+      assert.equal(posts.length, 1);
+      const sum = sumClicksForUrl("https://x.com/kit-link", posts[0]!.stats!.clicks!);
+      assert.equal(sum.unique_verified_clicks, 7, "unique_verified_clicks deve vir de unique_clicks do Kit");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("os dois presentes: funde e ordena por publish_date desc (mesmo comportamento de mergeEditionsByDate)", () => {
+    const { beehiivDir, kitDir, cleanup } = tmpDirs();
+    try {
+      mkdirSync(beehiivDir, { recursive: true });
+      mkdirSync(kitDir, { recursive: true });
+      writeFileSync(
+        join(beehiivDir, "old.json"),
+        JSON.stringify({ id: "old", publish_date: 1000, stats: { clicks: [] } }),
+      );
+      writeFileSync(
+        join(kitDir, "broadcast_2.json"),
+        JSON.stringify({
+          id: 2,
+          subject: "Mais recente",
+          status: "completed",
+          published_at: "2026-08-26T09:00:00Z", // bem depois de publish_date:1000 (1970)
+          clicks: [],
+        }),
+      );
+      const posts = loadUnifiedPostsCache(beehiivDir, kitDir);
+      assert.equal(posts.length, 2);
+      assert.ok((posts[0]!.publish_date ?? 0) > (posts[1]!.publish_date ?? 0), "mais recente primeiro");
+    } finally {
+      cleanup();
+    }
   });
 });

@@ -28,6 +28,16 @@
  * `identifyPostsNeedingClicks` (`beehiiv-sync.ts`) usa. Esse módulo shared
  * não tem imports com efeito colateral (nada de `dotenv/config`), então
  * importá-lo daqui não reintroduz o acoplamento que a nota acima evita.
+ *
+ * **Origem Beehiiv/Kit (#6185):** `matchPostsToWindow`/`uniqueOpensOf` são
+ * genéricos desde #6185 — aceitam tanto `BeehiivCachePost[]` quanto
+ * `UnifiedCachedPost[]` (`scripts/lib/shared/edition-cache-reader.ts`),
+ * então um caller pode passar o cache unificado Beehiiv+Kit sem cast. Isso
+ * cobre a SELEÇÃO por clique (ranking de candidatos); `identifyWeeklyPostsNeedingClicks`
+ * continua Beehiiv-only DE PROPÓSITO — "precisa de enriquecimento via MCP
+ * `list_post_clicks`" é um conceito que só existe do lado Beehiiv (o Kit é
+ * REST comum, sem enriquecimento assíncrono a esperar); ver
+ * `ClickWindowPost` abaixo.
  */
 
 import { isClickCacheComplete, type ClickCacheRow } from "./shared/click-cache-completeness.ts";
@@ -71,6 +81,31 @@ export interface BeehiivCachePost {
   };
 }
 
+/**
+ * Shape estrutural mínimo que `matchPostsToWindow`/`uniqueOpensOf` precisam
+ * (#6185) — deliberadamente mais estreito que `BeehiivCachePost` (sem `id`,
+ * sem os campos de agregado bruto de `stats.email` que só
+ * `identifyWeeklyPostsNeedingClicks` usa — esses continuam Beehiiv-only,
+ * ver docstring dessa função). `UnifiedCachedPost`
+ * (`scripts/lib/shared/edition-cache-reader.ts`, #6187/#6342) satisfaz este
+ * shape estruturalmente (`stats.clicks: NormalizedLinkClick[]` é assignable
+ * a `CachedClickRow[]` — mesmos campos, ver docstring de
+ * `edition-cache-reader.ts`), então `matchPostsToWindow`/`uniqueOpensOf`
+ * aceitam tanto `BeehiivCachePost[]` (caminho Beehiiv-only, ex.:
+ * `publish-weekly-social.ts`) quanto `UnifiedCachedPost[]` (caminho
+ * unificado Beehiiv+Kit, ex.: `select-linkedin-weekly.ts` — a mesma
+ * partição por origem que o #6048 aplicou à verificação de assinante) sem
+ * nenhum cast.
+ */
+export interface ClickWindowPost {
+  status?: string;
+  publish_date?: number | null;
+  stats?: {
+    email?: { unique_opens?: number };
+    clicks?: CachedClickRow[];
+  };
+}
+
 /** Pure: `epoch seconds` → `AAMMDD` local. */
 export function aammddFromEpochSeconds(epochSec: number): string {
   const d = new Date(epochSec * 1000);
@@ -86,12 +121,12 @@ export function aammddFromEpochSeconds(epochSec: number): string {
  * um post publica na mesma data (raro), o mais recente por `publish_date`
  * vence — mesma semântica implícita do resto do pipeline (1 edição por dia).
  */
-export function matchPostsToWindow(
-  posts: BeehiivCachePost[],
+export function matchPostsToWindow<T extends ClickWindowPost>(
+  posts: T[],
   windowDates: string[],
-): Map<string, BeehiivCachePost> {
+): Map<string, T> {
   const windowSet = new Set(windowDates);
-  const out = new Map<string, BeehiivCachePost>();
+  const out = new Map<string, T>();
   for (const post of posts) {
     if (post.status !== "confirmed" || !post.publish_date) continue;
     const date = aammddFromEpochSeconds(post.publish_date);
@@ -186,6 +221,6 @@ export function clickCountsForUrl(url: string, clicks: CachedClickRow[] | undefi
 }
 
 /** Pure: `unique_opens` do e-mail do post — denominador da taxa (#4456: "aberturas é o denominador certo"). */
-export function uniqueOpensOf(post: BeehiivCachePost | undefined): number {
+export function uniqueOpensOf<T extends ClickWindowPost>(post: T | undefined): number {
   return post?.stats?.email?.unique_opens ?? 0;
 }

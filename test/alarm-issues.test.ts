@@ -29,6 +29,7 @@ import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   isAllowlisted,
+  aggregateFindingsOnDebut,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmAllowlist,
@@ -1185,5 +1186,79 @@ describe("applyAlarmReconciliation com allowlist (#5364) — I/O injetado", () =
     assert.equal(createCalled, true);
     assert.equal(findingOutcomes[0].action, "created");
     assert.equal(findingOutcomes[0].issueNumber, 8001);
+  });
+});
+
+describe("aggregateFindingsOnDebut (#6572 — generaliza o cap de estreia do #6562/#6564)", () => {
+  function findingWithGroup(fingerprint: string, group: string): AlarmFinding {
+    return {
+      check: "some-check",
+      fingerprint,
+      title: `achado ${fingerprint}`,
+      body: "corpo",
+      family: "estado",
+      group,
+    };
+  }
+
+  const buildAggregate = (group: string, findings: readonly AlarmFinding[]): AlarmFinding => ({
+    check: "some-check",
+    fingerprint: `${group}:aggregate`,
+    title: `${findings.length} achados agregados de ${group}`,
+    body: findings.map((f) => f.fingerprint).join(", "),
+    family: "estado",
+  });
+
+  it("findings sem group NUNCA agregam, mesmo em estreia acima do teto (retrocompat — comportamento pré-#6572)", () => {
+    const findings: AlarmFinding[] = [
+      { check: "x", fingerprint: "1", title: "t1", body: "b", family: "estado" },
+      { check: "x", fingerprint: "2", title: "t2", body: "b", family: "estado" },
+      { check: "x", fingerprint: "3", title: "t3", body: "b", family: "estado" },
+    ];
+    const result = aggregateFindingsOnDebut(findings, { threshold: 1, stateIsEmpty: true, buildAggregate });
+    assert.deepEqual(result, findings);
+  });
+
+  it("state vazio + volume ACIMA do teto → 1 finding agregado por grupo", () => {
+    const findings = [
+      findingWithGroup("a", "grupo-x"),
+      findingWithGroup("b", "grupo-x"),
+      findingWithGroup("c", "grupo-x"),
+    ];
+    const result = aggregateFindingsOnDebut(findings, { threshold: 2, stateIsEmpty: true, buildAggregate });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].fingerprint, "grupo-x:aggregate");
+    assert.equal(result[0].title, "3 achados agregados de grupo-x");
+  });
+
+  it("state vazio + volume NO/abaixo do teto → passa direto, 1-por-finding", () => {
+    const findings = [findingWithGroup("a", "grupo-x"), findingWithGroup("b", "grupo-x")];
+    const result = aggregateFindingsOnDebut(findings, { threshold: 2, stateIsEmpty: true, buildAggregate });
+    assert.deepEqual(result, findings);
+  });
+
+  it("state NÃO vazio → nunca agrega, mesmo acima do teto (agregação só na estreia)", () => {
+    const findings = [
+      findingWithGroup("a", "grupo-x"),
+      findingWithGroup("b", "grupo-x"),
+      findingWithGroup("c", "grupo-x"),
+    ];
+    const result = aggregateFindingsOnDebut(findings, { threshold: 2, stateIsEmpty: false, buildAggregate });
+    assert.deepEqual(result, findings);
+  });
+
+  it("grupos distintos são agregados/preservados independentemente uns dos outros", () => {
+    const findings = [
+      findingWithGroup("a", "grupo-x"),
+      findingWithGroup("b", "grupo-x"),
+      findingWithGroup("c", "grupo-x"), // grupo-x: 3 > threshold(2) → agrega
+      findingWithGroup("d", "grupo-y"), // grupo-y: 1 <= threshold(2) → passa direto
+    ];
+    const result = aggregateFindingsOnDebut(findings, { threshold: 2, stateIsEmpty: true, buildAggregate });
+    assert.equal(result.length, 2);
+    const aggregated = result.find((f) => f.fingerprint === "grupo-x:aggregate");
+    const passthrough = result.find((f) => f.fingerprint === "d");
+    assert.ok(aggregated);
+    assert.ok(passthrough);
   });
 });

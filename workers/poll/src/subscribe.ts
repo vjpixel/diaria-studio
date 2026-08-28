@@ -55,6 +55,7 @@ import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
+import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -115,8 +116,20 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * SUPERFÍCIE (não por hub individual) — granularidade suficiente pra medir
  * "arquivo" vs "hub" separado do resto sem multiplicar entradas de UTM por
  * slug de hub.
+ *
+ * #6427: `"apex"` — página própria de cadastro do apex (`diar.ia.br/assinar`,
+ * `workers/site/public/assinar/`), que POSTa aqui CROSS-ORIGIN (mesmo
+ * mecanismo de `livros-hero`/`livros-footer`). Único `source` que aceita
+ * `utm_source`/`utm_medium`/`utm_campaign` DINÂMICOS vindos do cliente — ver
+ * `isAllowedClientUtmSource`/`resolveSubscribeUtm` abaixo pro porquê e a
+ * exceção estreita ao design "nunca aceita utm_* do cliente" descrito 2
+ * parágrafos acima. Motivo: o cadastro Clarice (`withClariceUtm`,
+ * `scripts/lib/mensal/monthly-render.ts`) injeta um `utm_campaign` que MUDA a
+ * cada ciclo/posição (`clarice-{ciclo}-{posicao}`) — um `SubscribeSource`
+ * fixo por campanha, como os demais deste enum, exigiria adicionar 1 entrada
+ * nova aqui a cada envio, o que não escala.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb" | "arquivo" | "hub";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb" | "arquivo" | "hub" | "apex";
 
 /**
  * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
@@ -212,7 +225,54 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     campaign: HUB_INLINE_UTM.campaign,
     referringSite: "hub-inline",
   },
+  // #6427: triplo DEFAULT do cadastro do apex — usado sempre que o cliente
+  // não mandar utm_source/utm_medium/utm_campaign, ou mandar um utm_source
+  // que não casa a allowlist de `isAllowedClientUtmSource` abaixo. Nunca
+  // confundir com o triplo Clarice em si (esse é dinâmico, resolvido em
+  // runtime — ver `resolveSubscribeUtm`).
+  apex: {
+    source: "diaria-apex",
+    medium: "web",
+    campaign: "cadastro-apex",
+    referringSite: "apex-subscribe-page",
+  },
 };
+
+/**
+ * #6427: prefixos de `utm_source` cliente que a página de cadastro do apex
+ * (`source: "apex"`) tem permissão de repassar CRU pro triplo final — a
+ * exceção estreita e validada ao design de `resolveSubscribeUtm`/
+ * `SUBSCRIBE_UTM_BY_SOURCE` acima ("o servidor resolve o triplo UTM daqui —
+ * NUNCA aceita utm_* vindo do cliente diretamente"). `"clarice"` cobre o
+ * `utm_source=clarice` fixo que `withClariceUtm` grava em todo link de
+ * marca da Clarice News (`scripts/lib/mensal/monthly-render.ts`); `"ads"`
+ * cobre campanhas pagas futuras (Google/Meta Ads, `utm_source=ads-*`) — ver
+ * corpo da issue #6427, opção A recomendada pelo autor e decisão do editor
+ * (27/08/2026). Qualquer `utm_source` fora desta allowlist cai no triplo
+ * `SUBSCRIBE_UTM_BY_SOURCE.apex` acima, igual a não ter mandado nada —
+ * fechar essa allowlist é o que impede um visitante mal-intencionado de
+ * forjar `utm_source=organic-fake` (ou qualquer string arbitrária) e poluir
+ * a atribuição — o resto do enumerável (SubscribeSource) continua imune a
+ * isso por completo, porque só `"apex"` sequer consulta esta lista.
+ */
+export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = ["clarice", "ads"] as const;
+
+/**
+ * Pure (#6427): `true` só quando `rawSource` é uma string não-vazia que é
+ * IGUAL a um prefixo da allowlist, ou começa com `"{prefixo}-"`. `"clarice"`
+ * bate no primeiro caso (utm_source fixo, sem sufixo); `"clarice-260901-d1"`
+ * (hipotético — não é o formato real, que fica no utm_campaign, não no
+ * utm_source) e `"ads-google"` bateriam no segundo. Exige o traço como
+ * fronteira de palavra pra `"adsense"` NÃO colar em `"ads"` por acidente —
+ * comparação por substring pura (`startsWith` sem o traço) aceitaria
+ * qualquer string que começasse com as letras do prefixo, inclusive as não
+ * intencionais.
+ */
+export function isAllowedClientUtmSource(rawSource: unknown): boolean {
+  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
+  if (!s) return false;
+  return CLIENT_UTM_SOURCE_ALLOWED_PREFIXES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+}
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -226,11 +286,41 @@ export const JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE = "jogar-identify-magic-li
  * explícito na chamada. */
 export const VOTE_CLARICE_SET_NAME_REFERRING_SITE = "vote-clarice-set-name";
 
-/** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
- * (default `jogar` pra valor ausente/desconhecido — nunca lança). */
-export function resolveSubscribeUtm(raw: unknown): SubscribeUtm {
+/** #6427: triplo UTM cru mandado pelo cliente — só consultado quando
+ * `source === "apex"` (ver `resolveSubscribeUtm`). Campos individuais, não a
+ * struct `SubscribeUtm` inteira, porque o cliente nunca manda
+ * `referringSite` (esse é sempre o fixo `SUBSCRIBE_UTM_BY_SOURCE.apex.referringSite`,
+ * nunca variável por campanha). */
+export interface ClientUtmOverride {
+  source?: unknown;
+  medium?: unknown;
+  campaign?: unknown;
+}
+
+/**
+ * Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
+ * (default `jogar` pra valor ausente/desconhecido — nunca lança).
+ *
+ * #6427: quando `raw === "apex"` E `clientUtm.source` casa a allowlist de
+ * `isAllowedClientUtmSource`, o triplo final vem do CLIENTE (source/medium/
+ * campaign, com `medium`/`campaign` ausentes/vazios caindo no default do
+ * apex individualmente — só `source` é obrigatório pra sequer tentar este
+ * caminho). `referringSite` nunca vem do cliente. Fora desse caso (source
+ * diferente de `"apex"`, ou `utm_source` fora da allowlist), comportamento
+ * idêntico ao pré-#6427: cai no triplo fixo do `source` resolvido.
+ */
+export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride): SubscribeUtm {
   const key = typeof raw === "string" ? raw : "";
-  return SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
+  const base = SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
+  if (key === "apex" && clientUtm && isAllowedClientUtmSource(clientUtm.source)) {
+    const source = String(clientUtm.source).trim();
+    const medium =
+      typeof clientUtm.medium === "string" && clientUtm.medium.trim() ? clientUtm.medium.trim() : base.medium;
+    const campaign =
+      typeof clientUtm.campaign === "string" && clientUtm.campaign.trim() ? clientUtm.campaign.trim() : base.campaign;
+    return { source, medium, campaign, referringSite: base.referringSite };
+  }
+  return base;
 }
 
 /** Teto de tamanho do nome capturado — evita payload abusivo (o campo é
@@ -243,6 +333,12 @@ export const SUBSCRIBE_NAME_MAX = 100;
 export const SUBSCRIBE_RATE_LIMIT = 5;
 export const SUBSCRIBE_RATE_WINDOW_SEC = 3600; // 1h
 
+/** #6427: teto de tamanho dos campos utm_* crus do cliente — mesmo racional
+ * de `SUBSCRIBE_NAME_MAX` (payload abusivo), aplicado ANTES de qualquer
+ * validação de allowlist (`isAllowedClientUtmSource` já rejeita a maioria,
+ * mas o corte de tamanho é defesa em profundidade, barato de aplicar). */
+export const SUBSCRIBE_CLIENT_UTM_MAX = 100;
+
 export interface ParsedSubscribe {
   name: string;
   email: string;
@@ -252,6 +348,13 @@ export interface ParsedSubscribe {
   /** #4051 — chave de call site (ver `SubscribeSource`); string crua, resolvida
    * só depois via `resolveSubscribeUtm` (nunca usada diretamente como UTM). */
   source: string;
+  /** #6427: utm_source/medium/campaign CRUS do cliente — só têm efeito
+   * quando `source === "apex"` e `utm_source` casa `isAllowedClientUtmSource`
+   * (ver `resolveSubscribeUtm`); em qualquer outro `source`, são lidos mas
+   * nunca consultados. Vazio (não `undefined`) quando ausente do body. */
+  utmSource: string;
+  utmMedium: string;
+  utmCampaign: string;
 }
 
 function asStr(v: unknown): string {
@@ -281,9 +384,12 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         optin: truthyFlag(o.optin),
         honeypot: asStr(o.website),
         source: asStr(o.source),
+        utmSource: asStr(o.utm_source),
+        utmMedium: asStr(o.utm_medium),
+        utmCampaign: asStr(o.utm_campaign),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "", source: "" };
+      return { name: "", email: "", optin: false, honeypot: "", source: "", utmSource: "", utmMedium: "", utmCampaign: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -293,11 +399,14 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     optin: truthyFlag(params.get("optin")),
     honeypot: params.get("website") ?? "",
     source: params.get("source") ?? "",
+    utmSource: params.get("utm_source") ?? "",
+    utmMedium: params.get("utm_medium") ?? "",
+    utmCampaign: params.get("utm_campaign") ?? "",
   };
 }
 
 export type SubscribeValidation =
-  | { ok: true; name: string; email: string; source: string }
+  | { ok: true; name: string; email: string; source: string; utmSource: string; utmMedium: string; utmCampaign: string }
   | { ok: false; status: number; error: string };
 
 /**
@@ -323,7 +432,12 @@ export function validateSubscribeInput(p: ParsedSubscribe): SubscribeValidation 
     return { ok: false, status: 400, error: "invalid_email" };
   }
   const name = (p.name || "").trim().slice(0, SUBSCRIBE_NAME_MAX);
-  return { ok: true, name, email, source: p.source };
+  // #6427: repassados crus (allowlist/uso condicional acontece só em
+  // `resolveSubscribeUtm`) — aqui só o corte de tamanho, defesa em profundidade.
+  const utmSource = (p.utmSource || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  const utmMedium = (p.utmMedium || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  const utmCampaign = (p.utmCampaign || "").trim().slice(0, SUBSCRIBE_CLIENT_UTM_MAX);
+  return { ok: true, name, email, source: p.source, utmSource, utmMedium, utmCampaign };
 }
 
 export interface RateLimitResult {
@@ -360,7 +474,7 @@ export async function checkSubscribeRateLimit(
 export interface SubscribeResult {
   ok: boolean;
   status: number;
-  reason?: "not_configured" | "beehiiv_error";
+  reason?: "not_configured" | "subscribe_error";
 }
 
 /**
@@ -395,7 +509,7 @@ export const SUBSCRIBE_FETCH_TIMEOUT_MS = 8000;
  * deste arquivo); `send_welcome_email: true` dispara o fluxo de boas-vindas
  * configurado na publicação.
  */
-export async function subscribeToBeehiiv(
+async function subscribeToBeehiiv(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -440,16 +554,16 @@ export async function subscribeToBeehiiv(
       signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
     });
   } catch {
-    return { ok: false, status: 502, reason: "beehiiv_error" };
+    return { ok: false, status: 502, reason: "subscribe_error" };
   }
   if (res.ok) return { ok: true, status: res.status };
-  return { ok: false, status: res.status, reason: "beehiiv_error" };
+  return { ok: false, status: res.status, reason: "subscribe_error" };
 }
 
 /**
  * #6048 (migração Beehiiv → Kit, #461/#463): equivalente Kit de
  * `subscribeToBeehiiv` — mesmo contrato de entrada/saída, `SubscribeResult`
- * compartilhado (`reason: "beehiiv_error"` cobre também erro do Kit; nomear
+ * compartilhado (`reason: "subscribe_error"` cobre também erro do Kit; nomear
  * um `"kit_error"` separado quebraria o consumo em `handleJogarSubscribe`
  * sem ganho real — o handler só verifica `=== "not_configured"`).
  *
@@ -477,8 +591,106 @@ export async function subscribeToBeehiiv(
  * NENHUM foi criado ainda na conta de produção (decisão de criar os campos
  * fica pro editor, no momento do switchover). Ausentes → cadastro segue
  * normal, só sem essa atribuição gravada (mesmo degrade gracioso do nome).
+ *
+ * ## Double opt-in (#6340, decisão do editor 26/08/2026)
+ *
+ * `resolveKitCreateState` decide `state: "inactive"` em vez de `"active"`
+ * quando este worker está em `DOUBLE_OPT_IN_FLAG.enabledForWorkers` **E**
+ * `env.KIT_DOI_FORM_ID` está configurado (`optin-flag-6340.ts` — rollout
+ * worker-a-worker, `poll` primeiro por ter o menor volume, mesmo padrão do
+ * #6048). **Base já importada (589 `active`) NÃO é afetada** — isto só muda
+ * o `state` na CRIAÇÃO de um subscriber novo por este endpoint; nenhum
+ * subscriber existente é re-escrito aqui.
+ *
+ * #6565: sem `KIT_DOI_FORM_ID` configurado, `vincularKitDoiForm` é no-op —
+ * nenhum e-mail de confirmação sai, e um subscriber criado `inactive` nesse
+ * cenário ficaria preso para sempre (nada no Kit promove `inactive→active`
+ * sozinho). Por isso o guard cai de volta em `"active"` (comportamento
+ * anterior ao #6340) enquanto o form não estiver configurado — o flag por
+ * worker liga o ROLLOUT, mas só cria `inactive` quando o caminho de
+ * confirmação (o form) de fato existe pra desafogar esse estado.
+ *
+ * Quando o double opt-in está ativo E `KIT_DOI_FORM_ID` está configurado
+ * (nome enganoso à parte — é um ID de FORM, não um nome de campo, mesmo
+ * padrão dos `KIT_*_FIELD` acima), `vincularKitDoiForm` dispara em seguida
+ * (best-effort, nunca falha a assinatura) — é o vínculo
+ * `POST /v4/forms/{form}/subscribers/{sub}` que, medido ao vivo (#6340,
+ * comentário 27/08/2026), (a) preserva `state: "inactive"` (não promove
+ * sozinho), (b) grava o `referrer` com o triplo UTM no bloco de atribuição
+ * do form (`referrer_utm_parameters`, distinto — e não substituto — dos
+ * `KIT_*_FIELD` de custom field acima, que continuam sendo a ÚNICA
+ * atribuição que sobrevive pra quem nunca confirma), e (c) é o que de fato
+ * dispara o e-mail "Important: confirm your subscription" quando o form
+ * tem "Send confirmation email" ligado no dashboard do Kit — configuração
+ * OPERACIONAL fora do alcance deste repo (ver #6318, mesmo form). Sem
+ * `KIT_DOI_FORM_ID` configurado, o subscriber É criado `inactive`, e
+ * `vincularKitDoiForm` dispara o e-mail de confirmação. Sem `KIT_DOI_FORM_ID`
+ * configurado, `resolveKitCreateState` já devolve `"active"` (ver #6565
+ * acima) — o cenário "preso em inactive sem e-mail" descrito aqui até
+ * 27/08/2026 não é mais alcançável por este caminho.
+ *
+ * RISCO CONHECIDO, não resolvido nesta unidade (mesma classe do item 5 da
+ * issue #6340, "guard de envio duplicado... herdada, não nova"): a criação
+ * via `POST /v4/subscribers` é idempotente por e-mail (ver docstring do
+ * módulo), mas o corpo desta função sempre manda `state` no payload. Se um
+ * subscriber que JÁ confirmou (virou `active` no Kit) reenviar o mesmo
+ * formulário de cadastro, o 2º POST tentaria regravar `state: "inactive"`
+ * por cima — não confirmado ao vivo se o Kit de fato regride um `active`
+ * já confirmado (a docstring de `subscribeToKit` só confirma que
+ * `first_name`/`fields` são atualizados num 2º POST, nunca testou `state`).
+ * Registrar, não resolver aqui — reverificar antes do 1º `--push` real
+ * deste fluxo em produção.
  */
-export async function subscribeToKit(
+function resolveKitCreateState(env: Env): "active" | "inactive" {
+  // #6565: sem o form de confirmação configurado, criar `inactive` prende o
+  // subscriber para sempre (nenhum e-mail de confirmação sai, nada promove
+  // inactive→active sozinho) — o rollout do flag por worker só se aplica
+  // quando o caminho de confirmação de fato existe.
+  if (!env.KIT_DOI_FORM_ID) return "active";
+  return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
+    ? DOUBLE_OPT_IN_FLAG.createState
+    : "active";
+}
+
+/**
+ * #6340: vincula o subscriber recém-criado a `KIT_DOI_FORM_ID` — dispara o
+ * e-mail de confirmação do double opt-in (quando o form tem "Send
+ * confirmation email" ligado no dashboard do Kit) sem promover o `state`
+ * (ver docstring de `subscribeToKit`). Best-effort: nunca lança, só loga —
+ * uma falha aqui não deveria reverter uma criação de subscriber que já
+ * teve sucesso (mesmo racional de fail-soft do resto do arquivo).
+ */
+async function vincularKitDoiForm(
+  env: Env,
+  apiKey: string,
+  base: string,
+  subscriberId: number,
+  utm: SubscribeUtm,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const formId = env.KIT_DOI_FORM_ID;
+  if (!formId) return;
+  const referrer = `https://diar.ia.br/?utm_source=${encodeURIComponent(utm.source)}&utm_medium=${encodeURIComponent(utm.medium)}&utm_campaign=${encodeURIComponent(utm.campaign)}`;
+  try {
+    const res = await fetchImpl(`${base}/forms/${formId}/subscribers/${subscriberId}`, {
+      method: "POST",
+      headers: {
+        "X-Kit-Api-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ referrer }),
+      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "<unreadable>");
+      console.error(`[vincularKitDoiForm] Kit respondeu ${res.status} ao vincular subscriber ${subscriberId} ao form ${formId}: ${bodyText.slice(0, 500)}`);
+    }
+  } catch (err) {
+    console.error(`[vincularKitDoiForm] fetch exception: ${String(err)}`);
+  }
+}
+
+async function subscribeToKit(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
@@ -499,9 +711,14 @@ export async function subscribeToKit(
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
   applyKitSignupOriginField(fields, env);
 
+  // #6340/#6565: "active" preservado pra todo worker fora de
+  // DOUBLE_OPT_IN_FLAG.enabledForWorkers OU sem KIT_DOI_FORM_ID configurado
+  // (ver resolveKitCreateState acima) — era o literal fixo "active" antes
+  // do #6340.
+  const createState = resolveKitCreateState(env);
   const body: Record<string, unknown> = {
     email_address: input.email,
-    state: "active",
+    state: createState,
   };
   if (Object.keys(fields).length > 0) body.fields = fields;
 
@@ -525,16 +742,73 @@ export async function subscribeToKit(
     // inválido até a 1ª tentativa real de cadastro. Log estruturado, nunca
     // lança (mantém o fail-soft já documentado acima).
     console.error(`[subscribeToKit] fetch exception: ${String(err)}`);
-    return { ok: false, status: 502, reason: "beehiiv_error" };
+    return { ok: false, status: 502, reason: "subscribe_error" };
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // ver docstring acima sobre a idempotência do Kit.
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    // #6340: dispara o vínculo de form (e-mail de confirmação) só quando o
+    // subscriber foi de fato criado `inactive` por este caminho — nunca
+    // quando `createState === "active"` (worker fora do rollout), mesmo com
+    // KIT_DOI_FORM_ID configurado por engano/antecipação.
+    if (createState === "inactive") {
+      const resBody = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+      const subscriberId = resBody?.subscriber?.id;
+      if (typeof subscriberId === "number") {
+        await vincularKitDoiForm(env, apiKey, base, subscriberId, utm, fetchImpl);
+      } else {
+        console.error(`[subscribeToKit] #6340: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI (e-mail de confirmação NÃO disparado por este caminho).`);
+      }
+    }
+    return { ok: true, status: res.status };
+  }
   // #6048 — mesmo racional do catch acima: loga o corpo do erro do Kit
   // (truncado, sem incluir o header de auth) em vez de descartar em silêncio.
   const bodyText = await res.text().catch(() => "<unreadable>");
   console.error(`[subscribeToKit] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
-  return { ok: false, status: res.status, reason: "beehiiv_error" };
+  return { ok: false, status: res.status, reason: "subscribe_error" };
+}
+
+/**
+ * #6291: parser tolerante de `env.SUBSCRIBE_BACKEND` — mesma classe de bug do
+ * #6048 (fallback silencioso pro backend legado), por outra porta. Antes
+ * desta função, todo call site fazia `env.SUBSCRIBE_BACKEND === "kit"` cru:
+ * `"Kit"`, `"kit "`, `"beehiv"` (typo) caíam em Beehiiv sem nenhum aviso —
+ * indistinguível de "backend Beehiiv escolhido de propósito". Trim + lowercase
+ * tolera espaço/capitalização; qualquer valor que não seja `"kit"`/`"beehiiv"`/
+ * vazio loga o valor bruto (nunca lança) antes de degradar pro default. O
+ * TOML do worker está fora do alcance do type checker de qualquer jeito — só
+ * o runtime pode pegar isso.
+ */
+function resolveBackend(env: Pick<Env, "SUBSCRIBE_BACKEND">): "beehiiv" | "kit" {
+  const raw = (env.SUBSCRIBE_BACKEND ?? "").trim().toLowerCase();
+  if (raw === "kit") return "kit";
+  if (raw && raw !== "beehiiv") {
+    console.error(`[subscribe] SUBSCRIBE_BACKEND desconhecido: ${JSON.stringify(env.SUBSCRIBE_BACKEND)} — caindo em beehiiv`);
+  }
+  return "beehiiv";
+}
+
+/**
+ * #6291: ÚNICO ponto de entrada pro cadastro — ramifica por
+ * `SUBSCRIBE_BACKEND` (via `resolveBackend`) e chama o backend certo.
+ * `subscribeToBeehiiv`/`subscribeToKit` acima NÃO são mais exportadas: um 6º
+ * call site que esquecesse de ramificar (o bug original do #6048) não
+ * alcança mais as funções cruas — o compilador recusa a importação direta.
+ * O erro deixa de ser detectável (por um teste de regex) e passa a ser
+ * inexprimível (por tipo). `test/subscribe-backend-branching-guard-6048.test.ts`
+ * (guard de regex que só cobria os call sites já existentes) foi removido —
+ * este é o guard estrutural que o substitui.
+ */
+export async function subscribeViaConfiguredBackend(
+  env: Env,
+  input: { name: string; email: string },
+  fetchImpl: typeof fetch = fetch,
+  utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
+): Promise<SubscribeResult> {
+  return resolveBackend(env) === "kit"
+    ? subscribeToKit(env, input, fetchImpl, utm)
+    : subscribeToBeehiiv(env, input, fetchImpl, utm);
 }
 
 export interface SubscribeDeps {
@@ -543,8 +817,8 @@ export interface SubscribeDeps {
 
 /**
  * Handler `POST /jogar/subscribe` (#3580). Fluxo: parse → valida (honeypot /
- * opt-in / e-mail) → rate-limit por IP → `subscribeToBeehiiv`. Sempre responde
- * JSON (com CORS via `json(env)`).
+ * opt-in / e-mail) → rate-limit por IP → `subscribeViaConfiguredBackend`.
+ * Sempre responde JSON (com CORS via `json(env)`).
  *
  * Respostas:
  *   - 200 `{ ok: true }`  — assinou (ou honeypot silenciosamente descartado)
@@ -581,14 +855,14 @@ export async function handleJogarSubscribe(
   const rl = await checkSubscribeRateLimit(env.POLL, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
-  const utm = resolveSubscribeUtm(v.source);
-  // #6048: seleção de backend local a este handler — env.SUBSCRIBE_BACKEND
-  // não é lido por nenhum outro dispatch fora deste worker (mesmo estado do
-  // #464 pro publisher da newsletter: código pronto, switchover manual).
-  const result =
-    env.SUBSCRIBE_BACKEND === "kit"
-      ? await subscribeToKit(env, { name: v.name, email: v.email }, fetchImpl, utm)
-      : await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
+  // #6427: `v.source === "apex"` é o único caminho onde estes 3 campos têm
+  // efeito (ver docstring de `resolveSubscribeUtm`) — passá-los sempre é
+  // inofensivo pros demais `source`, que os ignoram.
+  const utm = resolveSubscribeUtm(v.source, { source: v.utmSource, medium: v.utmMedium, campaign: v.utmCampaign });
+  // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
+  // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
+  // desguardado deixou de ser possível.
+  const result = await subscribeViaConfiguredBackend(env, { name: v.name, email: v.email }, fetchImpl, utm);
   if (result.ok) {
     // #5504/hotfix pós-merge: CompleteRegistration pra Meta Conversions API
     // — fire-and-forget best-effort, DEPOIS que o cadastro na Beehiiv já foi

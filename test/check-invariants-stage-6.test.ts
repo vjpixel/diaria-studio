@@ -160,12 +160,18 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("checkScheduledAt passa com scheduled_at presente", () => {
+  // #6114 (switchover, 26/08/2026): este caso passava `backend` implícito e
+  // lia `platform.config.json` REAL — verde só enquanto o default do repo
+  // fosse "beehiiv". Virar a chave pro Kit quebrou o teste sem que nada em
+  // `checkScheduledAt` mudasse, que é a definição de teste acoplado à forma do
+  // ambiente (#6222). Agora injeta o backend, como os casos "kit"/"beehiiv
+  // explícito" abaixo já faziam.
+  it("checkScheduledAt passa com scheduled_at presente (backend beehiiv)", () => {
     writeFileSync(
       join(fixture, "_internal", "05-published.json"),
       JSON.stringify({ scheduled_at: "2026-08-05T09:00:00Z" }),
     );
-    const v = checkScheduledAt(fixture);
+    const v = checkScheduledAt(fixture, "beehiiv");
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -215,8 +221,12 @@ describe("demais regras do Stage 6 — cobertura básica (nenhum teste direto ex
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("backend beehiiv explícito: comportamento idêntico ao default (sem override)", () => {
-    writeFileSync(join(fixture, "_internal", "05-published.json"), JSON.stringify({ scheduled_at: "2026-08-05T09:00:00Z" }));
+  // #6114: era "comportamento idêntico ao default (sem override)". Depois que
+  // o caso acima passou a injetar "beehiiv", os dois viraram o MESMO teste —
+  // e o que este afirmava (paridade com o default implícito) deixou de ser
+  // verificável sem ler o config real, que é justamente o acoplamento removido.
+  it("backend beehiiv explícito: 05-published.json com scheduled_at basta", () => {
+    writeFileSync(join(fixture, "_internal", "05-published.json"), JSON.stringify({ status: "published" }));
     const v = checkScheduledAt(fixture, "beehiiv");
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });

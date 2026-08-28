@@ -20,8 +20,11 @@ import {
   applyRouteLabelPlan,
   autoMotivoForTrack,
   diffRouteLabelPlan,
+  formatRouteIssueMarker,
   labelsForNewIssue,
   MOTIVO_LABEL,
+  parseRouteIssueMarker,
+  parseRouteIssueMarkerAtStart,
   planRouteLabels,
   PROVENIENCE_LABELS,
   ROUTABLE_LABELS,
@@ -71,6 +74,13 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     ["bloqueada", "plataforma"],
     ["bloqueada", "kit"],
     ["bloqueada", "execucao"],
+    // #6272 — deferimento vago; o round-trip PURO aqui (planRouteLabels +
+    // classifyExecTrack sem body/marcador) ainda classifica "bloqueada" —
+    // o pareamento com o marcador aguardando-ate: é responsabilidade de
+    // routeIssue (I/O), coberto em describe("routeIssue — deferimento vago
+    // #6272") mais abaixo, não deste round-trip puro.
+    ["bloqueada", "not-this-week"],
+    ["bloqueada", "next-month"],
     // epica (#6201 — motivo "epica" pareado com o track próprio, não mais
     // "fora-de-rodada": epic-guarda-chuva ganhou precedência acima de
     // BLOCKED_LABELS, então classifica "epica", não "fora-de-rodada")
@@ -497,6 +507,92 @@ describe("routeIssue --motivo #6197 item 2", () => {
   });
 });
 
+describe("routeIssue — deferimento vago #6272 (not-this-week/next-month grava marcador auto-computado)", () => {
+  it("--track bloqueada --motivo not-this-week grava aguardando-ate D+7 e valida como agendada", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6272,
+      track: "bloqueada",
+      motivo: "not-this-week",
+      reason: "revisar a estrategia de rampa antes de decidir",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    // O resolvido pos-escrita e "agendada" (marcador futuro vence deferimento
+    // vago na precedencia de classifyExecTrack) — comportamento esperado,
+    // nao um bug de validacao (ver comentario em routeIssue, passo 4).
+    assert.equal(result.resolvedTrack, "agendada");
+    assert.deepEqual(result.labelsAdded, ["not-this-week"]);
+    assert.ok(gh.state.labels.includes("not-this-week"));
+    assert.match(gh.state.body, /<!-- aguardando-ate: 2026-09-02 -->/);
+    assert.ok(gh.state.comments[0].includes("aguardando-ate: 2026-09-02"));
+  });
+
+  it("--track bloqueada --motivo next-month grava aguardando-ate D+30", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6273,
+      track: "bloqueada",
+      motivo: "next-month",
+      reason: "aguardando fechamento do ciclo Clarice atual",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.validated, true);
+    assert.equal(result.resolvedTrack, "agendada");
+    assert.deepEqual(result.labelsAdded, ["next-month"]);
+    assert.match(gh.state.body, /<!-- aguardando-ate: 2026-09-25 -->/);
+  });
+
+  it("marcador auto-computado + label sobrevivem ate a data expirar (round-trip com classifyExecTrack)", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({
+      issue: 6274,
+      track: "bloqueada",
+      motivo: "not-this-week",
+      cwd: "/tmp",
+      ghRun: gh.run,
+      now: new Date("2026-08-26T00:00:00Z"),
+    });
+    // Enquanto o marcador for futuro, a issue le "agendada" — visivel na
+    // fila como deferimento com data, nao mais um bloqueio sem retorno.
+    assert.equal(
+      classifyExecTrack({ labels: gh.state.labels, body: gh.state.body, state: "OPEN", now: new Date("2026-08-30T00:00:00Z") }),
+      "agendada",
+    );
+    // Expirado o marcador, SE a label not-this-week ainda estiver presente
+    // (backlog-reconcile.ts padrao 1, #6198, e quem normalmente a remove
+    // antes disso), a issue volta a "bloqueada" — nunca "overnight" so por
+    // ter o marcador expirado com o deferimento vago intacto. E exatamente
+    // o gap que motivou a reconciliacao diaria remover a label assim que
+    // detecta o marcador coexistindo (nao esperar a expiracao) — ver padrao
+    // 1 de backlog-reconcile.ts.
+    assert.equal(
+      classifyExecTrack({ labels: gh.state.labels, body: gh.state.body, state: "OPEN", now: new Date("2026-09-10T00:00:00Z") }),
+      "bloqueada",
+    );
+  });
+
+  it("bloqueada sem motivo de deferimento vago (ex: conta-de-terceiro) nao grava marcador", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 6275,
+      track: "bloqueada",
+      motivo: "conta-de-terceiro",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.resolvedTrack, "bloqueada");
+    assert.equal(gh.state.body, "");
+  });
+});
+
 describe("routeIssue #6197 3b — preservacao de label de bloqueio preexistente", () => {
   it("roteia pra bloqueada preservando external-blocker (sem --motivo)", () => {
     const gh = fakeGh({ labels: ["external-blocker"], body: "", state: "OPEN", comments: [] });
@@ -720,5 +816,88 @@ describe("labelsForNewIssue / routeIssueForCreate — declarar track na criaçã
     assert.equal(result.ok, true);
     const resolved = classifyExecTrack({ labels: result.labels as string[], body: result.body, state: "OPEN" });
     assert.equal(resolved, "agendada");
+  });
+});
+
+// ─── formatRouteIssueMarker / parseRouteIssueMarker (#6283) ────────────────
+
+describe("formatRouteIssueMarker / parseRouteIssueMarker — round-trip", () => {
+  it("round-trip para todo ROUTE_TRACKS", () => {
+    for (const track of ROUTE_TRACKS) {
+      const marker = formatRouteIssueMarker(track);
+      assert.equal(parseRouteIssueMarker(marker), track);
+      assert.equal(parseRouteIssueMarker(`texto antes\n${marker}\ntexto depois`), track);
+    }
+  });
+
+  it("buildCommentBody real de routeIssue produz um marcador parseável (regressão de duplicação de literal)", () => {
+    // routeIssue (scripts/route-issue.ts) grava o comentário via
+    // buildCommentBody, que desde #6283 reusa formatRouteIssueMarker em vez
+    // de duplicar o literal `<!-- route-issue: track=X -->` — este teste
+    // trava que os dois lados (quem grava, quem lê) continuam falando o
+    // mesmo formato.
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({ issue: 1, track: "develop", reason: "teste", cwd: "/tmp", ghRun: gh.run });
+    const posted = gh.state.comments[0];
+    assert.ok(posted, "esperava um comentário postado");
+    assert.equal(parseRouteIssueMarker(posted), "develop");
+  });
+
+  it("body sem marcador devolve null", () => {
+    assert.equal(parseRouteIssueMarker("comentário comum, sem marcador nenhum"), null);
+  });
+
+  it("marcador com track desconhecido (fora de ROUTE_TRACKS) devolve null", () => {
+    assert.equal(
+      parseRouteIssueMarker("<!-- route-issue: track=track-que-nao-existe -->"),
+      null,
+    );
+  });
+
+  it("marcador sem sufixo de fechamento devolve null (tolerante, não lança)", () => {
+    assert.equal(parseRouteIssueMarker("<!-- route-issue: track=develop sem fechar"), null);
+  });
+});
+
+// ─── parseRouteIssueMarkerAtStart (#6301 finding 2) ─────────────────────────
+
+describe("parseRouteIssueMarkerAtStart — só reconhece o marcador na abertura do corpo", () => {
+  it("marcador na abertura (sem nada antes) é reconhecido, igual ao genérico", () => {
+    for (const track of ROUTE_TRACKS) {
+      const marker = formatRouteIssueMarker(track);
+      assert.equal(parseRouteIssueMarkerAtStart(marker), track);
+    }
+  });
+
+  it("marcador citado no MEIO da prosa (não gravado por buildCommentBody) devolve null", () => {
+    const marker = formatRouteIssueMarker("develop");
+    assert.equal(parseRouteIssueMarkerAtStart(`texto antes\n${marker}\ntexto depois`), null);
+    // O genérico, ao contrário, reconhece em qualquer posição — é a
+    // distinção que motiva a variante AtStart existir.
+    assert.equal(parseRouteIssueMarker(`texto antes\n${marker}\ntexto depois`), "develop");
+  });
+
+  it("espaço em branco antes do marcador é tolerado (ainda conta como abertura)", () => {
+    const marker = formatRouteIssueMarker("bloqueada");
+    assert.equal(parseRouteIssueMarkerAtStart(`  \n${marker}`), "bloqueada");
+  });
+
+  it("buildCommentBody real de routeIssue produz um marcador que AtStart reconhece", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    routeIssue({ issue: 2, track: "develop", reason: "teste", cwd: "/tmp", ghRun: gh.run });
+    const posted = gh.state.comments[0];
+    assert.ok(posted, "esperava um comentário postado");
+    assert.equal(parseRouteIssueMarkerAtStart(posted), "develop");
+  });
+
+  it("body sem marcador devolve null", () => {
+    assert.equal(parseRouteIssueMarkerAtStart("comentário comum, sem marcador nenhum"), null);
+  });
+
+  it("marcador com track desconhecido devolve null, mesmo na abertura", () => {
+    assert.equal(
+      parseRouteIssueMarkerAtStart("<!-- route-issue: track=track-que-nao-existe -->"),
+      null,
+    );
   });
 });

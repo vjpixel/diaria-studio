@@ -109,10 +109,20 @@ export interface Env {
    * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
   BEEHIIV_NAME_FIELD?: string;
   /** #6048 (migração Beehiiv → Kit, #461/#463): seletor de backend do
-   * cadastro inline — `"beehiiv"` (default, ausente = beehiiv) ou `"kit"`.
-   * Nenhum dispatch automático fora deste worker lê esta var — é local ao
-   * `handleJogarSubscribe` (mesmo estado do #464 pro publisher da
-   * newsletter: existe o código, o switchover é manual). */
+   * cadastro inline — `"beehiiv"` (default, ausente/desconhecido = beehiiv)
+   * ou `"kit"` (parse tolerante a espaço/capitalização, ver `resolveBackend`
+   * em subscribe.ts). O #6048 original tinha 5 handlers ramificando cada um
+   * seu próprio ternário `env.SUBSCRIBE_BACKEND === "kit" ? ... : ...` — 4
+   * deles esqueceram, e um guard de regex detectava a regressão sem
+   * IMPEDI-la (um 6º call site novo continuava alcançando as funções cruas).
+   * #6291: os 5 handlers (`handleJogarSubscribe` em subscribe.ts,
+   * `handleJogarGateSubscribe` em web-gate.ts, `handleJogarIdentify` em
+   * identify.ts, `handleSetName` neste arquivo, `handleConfirmMerge` em
+   * magic-link.ts) chamam todos `subscribeViaConfiguredBackend` (subscribe.ts)
+   * — a ÚNICA função exportada que toca o backend; `subscribeToBeehiiv`/
+   * `subscribeToKit` não são mais exportadas, então um 6º handler que
+   * tentasse pular a ramificação não compila. (Mesmo estado do #464 pro
+   * publisher da newsletter: existe o código, o switchover é manual.) */
   SUBSCRIBE_BACKEND?: string;
   /** #6048 — API key do Kit (`X-Kit-Api-Key`), só relevante quando
    * `SUBSCRIBE_BACKEND === "kit"` PRA CADASTRO. **#6048: também é consumida
@@ -149,6 +159,17 @@ export interface Env {
    *  produção (`origem_cadastro`, 25/08/2026) — falta só setar a var pra
    *  ligar. Mesmo degrade gracioso ausente dos demais `KIT_*_FIELD` acima. */
   KIT_ORIGEM_CADASTRO_FIELD?: string;
+  /** #6340 — ID do form do Kit usado pro double opt-in (`vincularKitDoiForm`,
+   * `subscribe.ts`): vincular o subscriber recém-criado a este form dispara
+   * o e-mail de confirmação "Important: confirm your subscription" quando o
+   * form tem "Send confirmation email" ligado no dashboard do Kit (ação
+   * OPERACIONAL, fora do alcance deste repo — mesmo form usado pela
+   * atribuição do #6318, ver rationale completo na docstring de
+   * `subscribeToKit`). Só consultado quando `DOUBLE_OPT_IN_FLAG` está
+   * ativo pra este worker (`optin-flag-6340.ts`). Ausente → subscriber
+   * ainda é criado `inactive`, mas nenhum e-mail de confirmação é
+   * disparado por este caminho — fail-soft, nunca bloqueia a criação. */
+  KIT_DOI_FORM_ID?: string;
   /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
    * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado
    * pelo e-mail de confirmação de merge cross-device do jogo `web`.
@@ -460,7 +481,7 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
 // de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
-import { handleJogarSubscribe, subscribeToBeehiiv, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe";
+import { handleJogarSubscribe, subscribeViaConfiguredBackend, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe"; // #6291: função única, ramifica por SUBSCRIBE_BACKEND internamente
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #5167 item 7: página de destino do double opt-in (opt_in_redirect_url,
 // ver docstring de confirmado.ts) — sem KV/brand, mesmo padrão de
@@ -1435,7 +1456,9 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       // `/set-name` (tela de resultado do voto), distinto de qualquer outro
       // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
       const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE };
-      const result = await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, utm);
+      // #6291: seleção de backend via a ÚNICA função exportada — ver
+      // docstring de `subscribeViaConfiguredBackend` em subscribe.ts.
+      const result = await subscribeViaConfiguredBackend(env, { name: cleanName, email }, fetch, utm);
       if (result.ok) {
         score.optin = true;
         signupOutcome = "subscribed";
@@ -1447,7 +1470,12 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
         await env.POLL.put(scoreKey, JSON.stringify(score));
       } else {
         console.error(JSON.stringify({
-          event: "set_name_beehiiv_subscribe_failed",
+          // #6048 (achado do fleet review): nome neutro — com
+          // SUBSCRIBE_BACKEND="kit" em produção, um evento nomeado
+          // "beehiiv" some de qualquer grep por "kit" durante investigação.
+          // Mesmo padrão de `identify_optin_not_subscribed` (identify.ts).
+          event: "set_name_subscribe_failed",
+          backend: env.SUBSCRIBE_BACKEND ?? "beehiiv",
           email_domain: email.split("@")[1] ?? "unknown",
           status: result.status,
           reason: result.reason,
@@ -1456,7 +1484,8 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       }
     } catch (e) {
       console.error(JSON.stringify({
-        event: "set_name_beehiiv_subscribe_exception",
+        event: "set_name_subscribe_exception",
+        backend: env.SUBSCRIBE_BACKEND ?? "beehiiv",
         email_domain: email.split("@")[1] ?? "unknown",
         error: String(e),
       }));

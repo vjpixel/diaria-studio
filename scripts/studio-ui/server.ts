@@ -81,7 +81,10 @@
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
  *     reviewed | social | html-final — #3635, editor de última milha do
  *     `_internal/newsletter-final.html` publicado de verdade pela Etapa 5),
- *     `.../diff`, `.../lint`, `.../reset-baseline` e
+ *     `.../diff`, `.../lint`, `.../reset-baseline`,
+ *     `POST .../review/:slug/preview-draft` (#6447 Fatia 3 — split view com
+ *     preview reativo por debounce a partir do texto NÃO SALVO do editor;
+ *     `slug` = reviewed | social, nunca escreve em disco) e
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
  *     pra `<iframe>`) + `GET /api/editions/:aammdd/social-preview.html`
  *     (#3663 — HTML legível do `03-social.md`: posts LinkedIn/Facebook/
@@ -299,7 +302,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "../lib/env-loader.ts";
@@ -338,6 +341,7 @@ import { buildRoundPayload, isRoundKind, listRoundSummaries } from "./studio-rou
 import { listReports, getReportById, resolveReportHtml } from "./studio-reports.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
+import { handlePainelTokens } from "./dashboard-tokens.ts";
 import {
   parseChatRequestBody,
   parseChatAnswerRequestBody,
@@ -373,9 +377,20 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
+  buildReviewPreviewDraftHtml, // #6447 Fatia 3 — split view com preview reativo
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
+  readHighlightsSummary,
+  applyHighlightBlockEdit,
 } from "./studio-review.ts";
+// #6447 Fatia 1: painel "Gate" — resumo consolidado do Stage 4 (títulos
+// original/final, checklist, lints estendidos) lido só de disco. Arquivo
+// próprio (`studio-gate.ts`), mesma convenção de import isolado do #3559.
+import { buildGateSummary } from "./studio-gate.ts";
+// #6447 Fatia 4: galeria de imagens por destaque + regeneração assíncrona
+// (achados 6 + 9), e escrita da decisão "aprovado pelo painel" (achado 7).
+import { buildImagesGallery, startRegenerateJob } from "./studio-images.ts";
+import { decideGateApproveAction, readStage4Decision, writeStage4ApprovedDecision } from "../lib/stage4-decision.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
@@ -444,6 +459,13 @@ const HOST = "127.0.0.1";
 // em uso no repo (oauth-setup.ts usa 8765; serve-preview.ts usa porta
 // efêmera 0). Sempre sobrescrevível via --port ou STUDIO_PORT.
 const DEFAULT_PORT = 4174;
+// #6452: quanto o watcher de código server-rendered espera sem NENHUMA
+// mudança nova antes de reiniciar o processo — coalesce um burst de writes
+// (`git pull` tocando vários arquivos em sequência, às vezes espalhado por
+// vários polls) numa única reinicialização, em vez de uma por arquivo
+// tocado. Ver `watchStudioSource` (`studio-source-watch.ts`) para o
+// mecanismo de debounce.
+const DEFAULT_SOURCE_WATCH_DEBOUNCE_MS = 3_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "public");
@@ -520,6 +542,12 @@ export interface StudioServerOptions {
   enableSourceWatch?: boolean;
   /** Intervalo do watcher de mtime do código server-rendered. */
   sourceWatchPollIntervalMs?: number;
+  /** Debounce (ms) do watcher de mtime (#6452) — só dispara `onSourceChange`
+   * depois de `sourceWatchDebounceMs` sem NENHUMA mudança nova, coalescendo
+   * um burst de writes (`git pull`/checkout tocando vários arquivos em
+   * sequência) numa única notificação. Default 0 (síncrono, comportamento
+   * pré-#6452) — `main()` abaixo liga um valor real pro uso em produção. */
+  sourceWatchDebounceMs?: number;
   /** Callback injetável para observar uma mudança sem matar o processo (testes). */
   onSourceChange?: (change: StudioSourceChange) => void;
 }
@@ -1076,6 +1104,88 @@ function editionDirFor(rootDir: string, aammdd: string): string {
   return resolveEditionDir(resolve(rootDir, "data", "editions"), aammdd);
 }
 
+// #6447 Fatia 1: painel "Gate" — mesmo padrão fail-soft dos demais handlers
+// de revisão (nunca lança; `buildGateSummary` já degrada campo a campo).
+function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse): void {
+  // Mesmo guard de formato que handleApiEdition/resolveReviewFile já usam —
+  // sem isso, um `aammdd` malformado (ex: contendo `\`, tratado como
+  // separador de path no Windows) chegaria direto em `resolveEditionDir`
+  // sem essa rede de segurança (#6449 review).
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const summary = buildGateSummary(rootDir, aammdd);
+  sendJson(res, summary.editionExists ? 200 : 404, summary);
+}
+
+/** #6447 Fatia 4 (achado 7): `POST /api/editions/:aammdd/gate/approve` —
+ * grava a decisão "aprovado pelo painel" (`_internal/.step-4-decision.json`,
+ * ver `stage4-decision.ts`). O consumo pelo orchestrator real (§4d de
+ * `orchestrator-stage-4.md`, prosa fora deste repo de código) foi fechado
+ * no #6444 — o gate lê essa decisão via `resolveStage4DecisionForConsumption`
+ * antes de montar o resumo completo. Corpo opcional `{force?: boolean}` —
+ * sem `force`, um 2º clique sobre uma decisão já `approved` responde 409
+ * (nunca sobrescreve em silêncio); com `force: true` (o editor já confirmou
+ * um dialog no client), sobrescreve com novo timestamp. */
+async function handleGateApprove(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+): Promise<void> {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const editionDir = editionDirFor(rootDir, aammdd);
+  if (!existsSync(editionDir)) {
+    sendJson(res, 404, { error: "edição não encontrada" });
+    return;
+  }
+  let body: unknown;
+  try {
+    const raw = await readRequestBody(req, REVIEW_MAX_BODY_BYTES);
+    body = raw.trim() === "" ? {} : JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const force = (body as { force?: unknown } | null)?.force === true;
+  const existing = readStage4Decision(editionDir);
+  const action = decideGateApproveAction(existing, force);
+  if (action.kind === "conflict") {
+    sendJson(res, 409, { ok: false, conflict: true, decision: action.existing });
+    return;
+  }
+  const decision = writeStage4ApprovedDecision(editionDir);
+  sendJson(res, 200, { ok: true, decision });
+}
+
+/** #6447 Fatia 4 (achado 9): `GET /api/editions/:aammdd/images` — galeria de
+ * imagens por destaque + É IA?, leitura pura de disco (nunca lança, ver
+ * `buildImagesGallery`). */
+function handleImagesGallery(rootDir: string, aammdd: string, res: ServerResponse): void {
+  const gallery = buildImagesGallery(rootDir, aammdd);
+  sendJson(res, gallery.available ? 200 : 404, gallery);
+}
+
+/** #6447 Fatia 4 (achados 6 + 9): `POST /api/editions/:aammdd/images/:target/regenerate`
+ * — dispara a cadeia de regeneração de imagem pra `target` (d1/d2/d3/eia) em
+ * BACKGROUND (ver docstring de `startRegenerateJob` — chamada de API paga,
+ * pode levar dezenas de segundos; a resposta HTTP retorna assim que o job é
+ * disparado, o client faz polling em `GET .../images` pro campo
+ * `regenerating`). Duplo-clique enquanto já `running` responde 200 com
+ * `alreadyRunning: true` sem disparar um 2º processo. */
+function handleImagesRegenerate(rootDir: string, aammdd: string, target: string, res: ServerResponse): void {
+  const result = startRegenerateJob(rootDir, aammdd, target);
+  if (!result.ok) {
+    sendJson(res, 400, { ok: false, error: result.error });
+    return;
+  }
+  sendJson(res, 200, { ok: true, alreadyRunning: result.alreadyRunning, job: result.job });
+}
+
 function handleReviewGet(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
   if (!isReviewSlug(slug)) {
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
@@ -1125,6 +1235,59 @@ function handleReviewPreview(rootDir: string, aammdd: string, res: ServerRespons
 function handleReviewSocialPreview(rootDir: string, aammdd: string, res: ServerResponse): void {
   const preview = buildSocialPreviewHtml(editionDirFor(rootDir, aammdd), aammdd);
   sendHtml(res, preview.ok ? 200 : 422, preview.html);
+}
+
+/** #6447 Fatia 3: `POST /api/editions/:aammdd/review/:slug/preview-draft` —
+ * renderiza o preview a partir do texto NO CORPO da request (ainda não salvo
+ * em disco), pro split view com re-render por debounce. NUNCA escreve em
+ * disco, nunca atualiza `_internal/studio-review-baseline/*`, nunca conta
+ * como "salvo" pra fins de conflito (#3729) — é puramente leitura+render,
+ * miolo em `buildReviewPreviewDraftHtml` (studio-review.ts). Resposta é JSON
+ * (não HTML cru como `.../preview.html`/`.../social-preview.html` acima):
+ * o cliente precisa distinguir sucesso/erro pra aplicar o guard de
+ * sequência (descartar resposta fora de ordem) antes de tocar o DOM. Corpo
+ * malformado (Markdown incompleto no meio da digitação) nunca lança daqui —
+ * `buildReviewPreviewDraftHtml`/`extractContent`/`renderHTML` já são
+ * fail-soft (viram `{ok:false, html: errorHtml(...)}`), e este handler ainda
+ * embrulha a chamada num try/catch por defesa em profundidade. */
+async function handleReviewPreviewDraft(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+  slug: string,
+): Promise<void> {
+  // #6447 review (code-reviewer F1): mesmo guard de formato que
+  // handleGateSummary/handleReviewHighlightsGet já usam (#6449) — sem isso,
+  // um `aammdd` malformado (`..`/separador de path) chegaria direto em
+  // `resolveEditionDir` antes dessa rede de segurança.
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { content?: unknown } | null;
+  const content = parsed?.content;
+  if (typeof content !== "string") {
+    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+    return;
+  }
+  try {
+    const preview = buildReviewPreviewDraftHtml(editionDirFor(rootDir, aammdd), aammdd, slug, content);
+    sendJson(res, preview.ok ? 200 : 422, preview);
+  } catch (e) {
+    sendJson(res, 500, { ok: false, error: (e as Error).message });
+  }
 }
 
 /** #achado-260716: as imagens da edição (`04-d1-2x1.jpg` etc, geradas pela
@@ -1236,6 +1399,103 @@ async function handleReviewFieldDestaqueTitle(
   }
   const force = parsed?.force === true;
   const result = applyDestaqueTitleEdit(rootDir, aammdd, n, title, { expectedModifiedAt, force });
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
+/**
+ * #6447 Fatia 2: `GET /api/editions/:aammdd/review/reviewed/highlights` —
+ * leitura dos blocos DESTAQUE já estruturados (título por opção, corpo,
+ * "por que isso importa", URL) pro painel "Editor por destaque". Mesmo
+ * padrão fail-soft de `handleGateSummary` — nunca lança, `available: false`
+ * com `note` quando `02-reviewed.md` ainda não existe.
+ */
+function handleReviewHighlightsGet(rootDir: string, aammdd: string, res: ServerResponse): void {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const summary = readHighlightsSummary(rootDir, aammdd);
+  sendJson(res, 200, summary);
+}
+
+/**
+ * #6447 Fatia 2: `PUT /api/editions/:aammdd/review/reviewed/highlights/:n` —
+ * edição estruturada de UM destaque inteiro (título final + URL + parágrafos
+ * do corpo + "por que isso importa"), sem expor o Markdown cru. Corpo:
+ * `{title, url, body: string[], whyMatters, expectedModifiedAt?, force?}` —
+ * mesmo shape de guard de conflito de `handleReviewFieldDestaqueTitle`
+ * (#3729), reusado sem duplicação via `applyHighlightBlockEdit` (que já
+ * chama `saveReviewFile` internamente).
+ */
+async function handleReviewHighlightPut(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+  nRaw: string,
+): Promise<void> {
+  const n = parseInt(nRaw, 10);
+  if (!Number.isInteger(n) || n < 1) {
+    sendJson(res, 400, { error: "número de destaque inválido na URL" });
+    return;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as
+    | {
+        title?: unknown;
+        url?: unknown;
+        body?: unknown;
+        whyMatters?: unknown;
+        expectedModifiedAt?: unknown;
+        force?: unknown;
+      }
+    | null;
+  const title = parsed?.title;
+  if (typeof title !== "string" || title.trim() === "") {
+    sendJson(res, 400, { error: "campo 'title' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  const url = parsed?.url;
+  if (typeof url !== "string" || url.trim() === "") {
+    sendJson(res, 400, { error: "campo 'url' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  const bodyParas = parsed?.body;
+  if (!Array.isArray(bodyParas) || !bodyParas.every((p) => typeof p === "string")) {
+    sendJson(res, 400, { error: "campo 'body' (array de strings) é obrigatório no corpo" });
+    return;
+  }
+  const whyMatters = parsed?.whyMatters;
+  if (typeof whyMatters !== "string" || whyMatters.trim() === "") {
+    sendJson(res, 400, { error: "campo 'whyMatters' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  // #3729: mesmo contrato de expectedModifiedAt/force de handleReviewSave —
+  // ver comentário lá pro rationale completo (não duplicado aqui).
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = applyHighlightBlockEdit(
+    rootDir,
+    aammdd,
+    n,
+    { title, url, body: bodyParas as string[], whyMatters },
+    { expectedModifiedAt, force },
+  );
   const status = result.ok ? 200 : result.conflict ? 409 : 400;
   sendJson(res, status, result);
 }
@@ -1559,9 +1819,49 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #6447 Fatia 2: edição estruturada de destaque inteiro — checada ANTES
+      // do `resetBaselineMatch` abaixo, mesma disciplina do `destaqueTitleMatch`
+      // acima (rotas de escrita mais específicas primeiro; regex não colide
+      // de fato, `/highlights/:n` é sufixo distinto de `/reset-baseline`).
+      const highlightPutMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/reviewed\/highlights\/(\d+)$/);
+      if (req.method === "PUT" && highlightPutMatch) {
+        handleReviewHighlightPut(rootDir, req, res, highlightPutMatch[1], highlightPutMatch[2]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
       const resetBaselineMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/reset-baseline$/);
       if (req.method === "POST" && resetBaselineMatch) {
         handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
+        return;
+      }
+      // #6447 Fatia 3: preview reativo do split view — NUNCA escreve em disco
+      // (ver docstring de handleReviewPreviewDraft), mas é POST (corpo com o
+      // texto ainda-não-salvo) — mesma exceção estreita ao invariante
+      // read-only das rotas de escrita acima, checada na mesma vizinhança por
+      // sufixo distinto de `/reset-baseline`.
+      const previewDraftMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/preview-draft$/);
+      if (req.method === "POST" && previewDraftMatch) {
+        handleReviewPreviewDraft(rootDir, req, res, previewDraftMatch[1], previewDraftMatch[2]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #6447 Fatia 4 (achado 7): grava a decisão "aprovado pelo painel" —
+      // exceção estreita ao invariante read-only, mesma vizinhança das
+      // demais rotas de escrita de revisão acima.
+      const gateApproveMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate\/approve$/);
+      if (req.method === "POST" && gateApproveMatch) {
+        handleGateApprove(rootDir, req, res, gateApproveMatch[1]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #6447 Fatia 4 (achados 6 + 9): dispara a cadeia de regeneração de
+      // imagem em background — ver docstring de `handleImagesRegenerate`.
+      const imagesRegenerateMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/images\/([^/]+)\/regenerate$/);
+      if (req.method === "POST" && imagesRegenerateMatch) {
+        handleImagesRegenerate(rootDir, imagesRegenerateMatch[1], decodeURIComponent(imagesRegenerateMatch[2]), res);
         return;
       }
       // #3602: exceção estreita ao invariante read-only, mesmo padrão do
@@ -1650,7 +1950,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078/#6447" });
         return;
       }
 
@@ -1797,6 +2097,29 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleReviewGet(rootDir, reviewGetMatch[1], reviewGetMatch[2], res);
         return;
       }
+      // #6447 Fatia 2: leitura estruturada dos destaques — checada ANTES do
+      // get-por-slug acima seria redundante (regex distinto, `[^/]+` do slug
+      // nunca casa um path com barra), mas mantém a leitura por seção (mesma
+      // disciplina do `gateMatch` logo abaixo).
+      const highlightsGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/reviewed\/highlights$/);
+      if (highlightsGetMatch) {
+        handleReviewHighlightsGet(rootDir, highlightsGetMatch[1], res);
+        return;
+      }
+      // #6447 Fatia 1: painel "Gate" — checado ANTES do preview genérico
+      // abaixo (regex distinto, não colide, mas mantém a leitura por seção).
+      const gateMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate$/);
+      if (gateMatch) {
+        handleGateSummary(rootDir, gateMatch[1], res);
+        return;
+      }
+      // #6447 Fatia 4 (achado 9): galeria de imagens por destaque + É IA? —
+      // mesma disciplina de leitura por seção do `gateMatch` acima.
+      const imagesGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/images$/);
+      if (imagesGetMatch) {
+        handleImagesGallery(rootDir, imagesGetMatch[1], res);
+        return;
+      }
       const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);
       if (reviewPreviewMatch) {
         handleReviewPreview(rootDir, reviewPreviewMatch[1], res);
@@ -1829,6 +2152,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/painel/clarice") {
         handlePainelClarice(req, res);
+        return;
+      }
+      // #6445: painel consolidado de uso de tokens por tipo de sessão
+      // (edição/overnight/develop/continuo) — ver dashboard-tokens.ts.
+      if (urlPath === "/painel/tokens") {
+        handlePainelTokens(req, res);
         return;
       }
       if (urlPath.startsWith("/api/")) {
@@ -1988,7 +2317,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         (change) => {
           opts.onSourceChange?.(change);
         },
-        { pollIntervalMs: opts.sourceWatchPollIntervalMs },
+        { pollIntervalMs: opts.sourceWatchPollIntervalMs, debounceMs: opts.sourceWatchDebounceMs },
       )
     : null;
 
@@ -2008,6 +2337,18 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         snapshotWatch?.close();
         sourceWatch?.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
+        // #6452: `server.close()` só resolve depois que TODA conexão aberta
+        // termina — mas o painel mantém handles de longa duração de
+        // propósito (SSE de `/api/events`, `/api/chat` streaming, keep-
+        // alive), então sem isso `close()` fica pendurado até o timeout de
+        // `shutdownWithTimeout` (10s) forçar `process.exit`. Derrubar os
+        // sockets explicitamente aqui faz `close()` resolver quase na hora
+        // — o cliente (EventSource/fetch) trata isso como uma desconexão
+        // normal e reconecta sozinho quando o processo novo sobe, então não
+        // há conexão "legítima" que isto quebre de fato: a alternativa era
+        // sempre o mesmo socket morrer, só que ~10s mais tarde e via SIGKILL
+        // do systemd em vez de um FIN limpo.
+        server.closeAllConnections?.();
       }),
   };
 }
@@ -2033,6 +2374,7 @@ async function main(): Promise<void> {
     rootDir,
     enableSnapshotPush,
     enableSourceWatch: true,
+    sourceWatchDebounceMs: DEFAULT_SOURCE_WATCH_DEBOUNCE_MS,
     onSourceChange: (change) => {
       console.warn(`[studio-server] código server-rendered mudou em ${change.path}; reiniciando`);
       process.kill(process.pid, "SIGTERM");

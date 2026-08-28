@@ -240,4 +240,9 @@ describe("toAlarmFinding — family (#5558)", () => {
     const finding = toAlarmFinding({ check: "og-title-brand", message: "og:title diverge do H1" });
     assert.equal(finding.family, "estado");
   });
+
+  it("declara group 'beehiiv-home-meta-check' (#6572) — opt-in no mecanismo genérico de agrupamento na estreia", () => {
+    const finding = toAlarmFinding({ check: "og-title-brand", message: "og:title diverge do H1" });
+    assert.equal(finding.group, "beehiiv-home-meta-check");
+  });
 });

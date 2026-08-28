@@ -24,6 +24,7 @@
 
 import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
+import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 
 export interface ArchivePost {
   slug: string;
@@ -73,22 +74,126 @@ export function derivePageTitle(post: ArchivePost): string {
 }
 
 /**
- * `meta_default_description` costuma ser `null` (#5101 item 2) — cai pra
- * `subtitle`, depois `preview_text`, nunca deixa a página sem description.
- * Último fallback (título) só dispara se os 3 campos de conteúdo faltarem.
+ * Tamanho-alvo de uma meta description pra SEO (~150-160 chars é o padrão —
+ * acima disso o Google trunca o snippet de busca de qualquer forma).
+ */
+const META_DESCRIPTION_MAX_LENGTH = 155;
+
+/**
+ * Trunca em ~155 chars sem cortar no meio de palavra — corta no último
+ * espaço antes do limite e acrescenta reticências. Só age quando o texto
+ * já excede o limite; texto curto passa intacto.
+ */
+function truncateDescription(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= META_DESCRIPTION_MAX_LENGTH) return trimmed;
+  const cut = trimmed.slice(0, META_DESCRIPTION_MAX_LENGTH);
+  const lastSpace = cut.lastIndexOf(" ");
+  const safe = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  return `${safe}…`;
+}
+
+/**
+ * Descreve a PRÓPRIA edição, não outras (#6281). `post.title` é sempre o
+ * destaque D1 da edição; `post.subtitle`/`post.preview_text` são, por
+ * construção editorial da diária, o teaser dos destaques D2/D3 da MESMA
+ * edição (formato "D2 title | D3 title" — ver `stitch-newsletter.ts`) — não
+ * o resumo de OUTRAS edições. Concatenar os dois dá os títulos dos até 3
+ * destaques desta página, sempre começando pelo D1 (que é também o
+ * `<title>` da página via `derivePageTitle` — description e title deixam de
+ * divergir). Fallback de "os títulos dos destaques da própria edição
+ * concatenados" (opção 2 do #6281), preferido sobre "D1 + 1ª frase do Por
+ * que isso importa" porque não depende de parsear `content.free.web`
+ * (estrutura já mudou de shape 3x nos últimos ~2 meses — ver comentários de
+ * `buildArchivePageHtml` sobre o link de voto — regex sobre o corpo da
+ * newsletter seria mais um ponto de fragilidade).
+ */
+function ownEditionDescription(post: ArchivePost): string | undefined {
+  const title = post.title?.trim();
+  if (!title) return undefined;
+  const others = post.subtitle?.trim() || post.preview_text?.trim();
+  return others ? `${title}. ${others}` : title;
+}
+
+/**
+ * `meta_default_description` NÃO é priorizado (mudança do #6281, ver
+ * histórico da issue original) — a premissa de que era sempre `null`
+ * (#5101 item 2) só valia pro subconjunto amostrado ali. Medido ao vivo no
+ * cache real completo (259 posts, #6281): 109 têm o campo POPULADO, e a
+ * imensa maioria carrega o MESMO padrão de bug que motivou esta issue — o
+ * teaser dos destaques D2/D3, sem nunca mencionar D1 (o assunto real da
+ * página, e o `<title>` dela). Alguém/algum processo passado preencheu
+ * `meta_default_description` copiando `subtitle`, então confiar nesse campo
+ * reproduziria o bug pra quase metade do acervo mesmo depois desta correção.
+ * `ownEditionDescription` é determinístico e sempre correto (deriva de
+ * `title`, que é sempre o D1 real) — por isso vem primeiro. Se um dia a
+ * Beehiiv passar a ter um campo de SEO genuinamente curado à mão que não
+ * seja subtitle disfarçado, essa prioridade pode reabrir — não há sinal
+ * disso nos dados de hoje.
  */
 export function deriveMetaDescription(post: ArchivePost): string {
-  return (
+  const raw =
+    ownEditionDescription(post) ||
     post.meta_default_description ||
-    post.subtitle ||
-    post.preview_text ||
     post.title ||
-    "diar.ia.br — 5 minutos diários sobre inteligência artificial."
-  );
+    "diar.ia.br — 5 minutos diários sobre inteligência artificial.";
+  return truncateDescription(raw);
 }
 
 export function archiveUrlForSlug(slug: string): string {
   return `${ARCHIVE_BASE_URL}/p/${slug}`;
+}
+
+/**
+ * Adapta 1 broadcast Kit já normalizado (`UnifiedCachedPost`,
+ * `scripts/lib/shared/edition-cache-reader.ts`) pro shape `ArchivePost`
+ * deste módulo — fecha o resíduo do #6184 (única peça da migração
+ * Beehiiv → Kit que faltava: metadados+conteúdo do acervo).
+ *
+ * **Só usado pro lado Kit.** O lado Beehiiv continua lendo
+ * `data/beehiiv-cache/posts/*.json` direto via `loadPosts`
+ * (`gen-archive-pages.ts`), sem passar por este adaptador nem por
+ * `UnifiedCachedPost` — routear o Beehiiv por aqui PERDERIA
+ * `meta_default_title`/`meta_default_description`/`preview_text`
+ * (`UnifiedCachedPost` não carrega esses campos SEO, só o vocabulário
+ * comum às duas origens), degradando a qualidade de título/description do
+ * acervo Beehiiv existente pra ganhar nada em troca (o Kit não os tem de
+ * qualquer forma). "Caminho Beehiiv precisa continuar funcional e
+ * idêntico" é requisito explícito desta unidade.
+ *
+ * Pro lado Kit, os 4 campos ficam `null` de propósito — `derivePageTitle`/
+ * `deriveMetaDescription` já degradam pra `title`/`subtitle` sem lançar
+ * (mesmo fallback que um post Beehiiv com esses campos ausentes já
+ * exercita hoje, ver describe "#5101 item 2" no teste deste módulo), e o
+ * Kit não tem um equivalente de qualquer forma (só `subject`, já mapeado
+ * pra `title` por `normalizeKitBroadcast`).
+ *
+ * Devolve `null` quando o broadcast não tem `slug` resolvível
+ * (`public_url` ausente/inválido — ver docstring de `normalizeKitBroadcast`)
+ * — mesmo critério que `isPublishedPost` já aplica a um post Beehiiv sem
+ * slug, então o caller pode simplesmente descartar `null`s e tratar o
+ * resultado como qualquer outro `ArchivePost[]`.
+ *
+ * **Caller filtra `origin === "kit"` e `public === true` ANTES de chamar
+ * isto** (mesmo discriminador de `collectAllCompletedKitPosts` em
+ * `newsletter-read-source.ts`, #6362 item 2) — este adaptador só faz a
+ * transformação de shape, não repete o filtro de "é edição real".
+ */
+export function kitUnifiedPostToArchivePost(u: UnifiedCachedPost): ArchivePost | null {
+  if (!u.slug) return null;
+  return {
+    slug: u.slug,
+    title: u.title ?? u.slug,
+    subtitle: u.subtitle ?? null,
+    preview_text: null,
+    meta_default_title: null,
+    meta_default_description: null,
+    status: u.status ?? "unknown",
+    web_url: u.web_url ?? null,
+    displayed_date: null,
+    publish_date: u.publish_date ?? null,
+    content: u.content ?? null,
+  };
 }
 
 /**
@@ -159,6 +264,76 @@ export function buildArchivePageHtml(post: ArchivePost): string {
   // para esses 91 posts, quebrando `gen-archive-pages.ts` (acervo público
   // inteiro) e `publish-edition-site-page.ts` (#6202). O replace existia
   // justamente para tratar o caso que o guard rejeitava antes de ele agir.
+  //
+  // DECISÃO DO EDITOR (#6210, 26/08/2026): a página WEB do acervo não tem
+  // identidade de assinante, então o link de voto não pode simplesmente
+  // zerar `email=` (endpoint `/vote` exige identidade — o link ficaria
+  // quebrado, exatamente a alternativa que o editor descartou). O clique
+  // deve levar pro fluxo `/jogar?edition=...` — mesmo worker `poll`, já tem
+  // gate próprio e identidade anônima (`WEB_TOKEN_DOMAIN`,
+  // `isAnonymousWebIdentity` em workers/poll/src/lib.ts). Roda ANTES do
+  // fallback genérico abaixo. As duas escolhas (A e B) da mesma edição
+  // colapsam pro MESMO link — `/jogar` já apresenta as duas imagens e
+  // captura o clique, não precisa (nem aceita) receber a escolha por query.
+  //
+  // As DUAS variantes de shape abaixo (legado query-string e o atual
+  // path-based) descartam de propósito TUDO que vem depois de
+  // `choice=[AB]`/`{{email}}` até o fechamento do atributo (`[^"'\s]*`
+  // no fim de cada regex) — inclusive `utm_source`/`utm_medium`/
+  // `utm_campaign`/`sig`. Achado do fleet review desta PR: as duas regexes
+  // tratavam isso de forma ASSIMÉTRICA (legado descartava, path-based não
+  // consumia e deixava o UTM da newsletter vazar pro link do acervo) — o
+  // vazamento é o pior dos dois lados: um clique na página WEB (sem
+  // contexto de e-mail) saindo com `utm_medium=newsletter` mente sobre a
+  // origem do tráfego pra qualquer análise a jusante. Unificado: os dois
+  // shapes agora descartam igual, e é a escolha certa aqui — o clique é de
+  // OUTRA origem (arquivo público), então UTM de newsletter não pertence a
+  // ele de jeito nenhum; se um dia o acervo precisar de UTM próprio, isso é
+  // decisão nova, não reaproveitar o que veio grudado no HTML da Beehiiv.
+  html = html.replace(
+    /https?:\/\/([a-z0-9.-]+)\/vote\?email=\{\{email\}\}&edition=([^&"'\s]+)&choice=[AB][^"'\s]*/gi,
+    (_match, domain: string, edition: string) => `https://${domain}/jogar?edition=${edition}`,
+  );
+
+  // Mesmo tratamento, shape de URL diferente: `/vote/{edition}/{A|B}?email=`
+  // (path-based, não query-string) é o formato ATUAL de `buildVoteUrl` em
+  // newsletter-render-html.ts (#5675 — edição/escolha saíram da query pra
+  // evitar quoted-printable corromper `&` no envio da Beehiiv) — é o link
+  // que `_internal/newsletter-final.html` carrega quando o passo de
+  // pipeline do #6202 publica uma edição NOVA como página pública, então
+  // precisa da mesma correção que o formato legado acima. `[^"'\s]*` no
+  // fim consome o `&utm_source=...&utm_medium=...&utm_campaign=...` que
+  // SEMPRE segue `{{email}}` neste shape no cache real (medido: 100% das
+  // ocorrências) — sem isso, o UTM de newsletter sobrevivia grudado no
+  // `/jogar?edition=...` resultante (ver nota acima).
+  html = html.replace(
+    /https?:\/\/([a-z0-9.-]+)\/vote\/([^/"'\s]+)\/[AB]\?email=\{\{email\}\}[^"'\s]*/gi,
+    (_match, domain: string, edition: string) => `https://${domain}/jogar?edition=${edition}`,
+  );
+
+  // Guard ANTES do fallback genérico (achado do fleet review desta PR):
+  // se sobrou um `/vote...{{email}}` que os dois padrões acima NÃO
+  // reconheceram (shape novo — já mudou 3× nos últimos ~2 meses: #4581 →
+  // #5675 → #6210 — ordem de query diferente, `choice` fora de A/B, etc.),
+  // o fallback genérico abaixo zeraria `email=` e reproduziria em
+  // SILÊNCIO o bug original do #6210: um `/vote?email=&...` sem
+  // identidade, que o endpoint rejeita. Falha alto e nomeia o slug em vez
+  // de deixar esse caso cair no fallback — mesmo padrão de
+  // `verifyNoUnresolvedMergeTags` logo abaixo, só que aplicado ANTES do
+  // replace que apagaria a evidência (a tag já estaria resolvida — pra
+  // vazio — quando o guard de saída rodasse, então ele nunca pegaria isto).
+  const staleVoteLink = html.match(/\/vote(?:\?|\/[^"'\s]*\?)[^"'\s]*\{\{email\}\}[^"'\s]*/i);
+  if (staleVoteLink) {
+    throw new UnresolvedMergeTagError(post.slug, [staleVoteLink[0]]);
+  }
+
+  // Fallback genérico — cobre `email={{email}}` fora de um link de voto
+  // (confirmado no cache real: link de tracking de anúncio da Beehiiv,
+  // `_bhiiv=opp_...`, e magic link `magic.beehiiv.com/v1/...`) e qualquer
+  // shape futuro que o guard acima não pegue por não ter `/vote` no path.
+  // Continua zerando o valor porque não há como saber, em geral, que o
+  // destino é um link de voto que aceita /jogar — só os 2 padrões
+  // explícitos acima têm essa garantia.
   html = html.replace(/email=\{\{email\}\}/gi, "email=");
 
   // `{{email_address_id}}` é o OUTRO identificador de assinante que a Beehiiv
@@ -192,6 +367,29 @@ export function sitemapEntriesForPosts(posts: ArchivePost[]): SitemapEntry[] {
     loc: archiveUrlForSlug(post.slug),
     lastmod: publishDateToIso(post),
   }));
+}
+
+/**
+ * #6454: monta a entrada de sitemap para uma única página — usada ao adicionar
+ * uma edição nova sem regenerar o sitemap inteiro a partir do cache.
+ */
+export function sitemapEntryFromPost(post: ArchivePost): SitemapEntry {
+  return { loc: archiveUrlForSlug(post.slug), lastmod: publishDateToIso(post) };
+}
+
+/**
+ * #6454: adiciona uma entrada ao sitemap XML existente, sem duplicar.
+ *
+ * Idempotente: se a URL já estiver presente, retorna o XML inalterado.
+ * Usa inclusão de string (não parseia o XML inteiro, que pode ter formato
+ * levemente diferente do `buildSitemapXml` padrão). Se o XML for malformado,
+ * a inclusão ainda funciona — é só uma string dentro de `</urlset>`.
+ */
+export function addSitemapEntry(existingXml: string, entry: SitemapEntry): string {
+  if (existingXml.includes(entry.loc)) return existingXml;
+  const lastmodLine = entry.lastmod ? `\n    <lastmod>${escXml(entry.lastmod)}</lastmod>` : '';
+  const insertion = `  <url>\n    <loc>${escXml(entry.loc)}</loc>${lastmodLine}\n  </url>\n`;
+  return existingXml.replace('</urlset>', insertion + '</urlset>');
 }
 
 /**

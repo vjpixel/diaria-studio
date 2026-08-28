@@ -94,7 +94,24 @@ const PUBLISHED_DATE = "2026-08-12";
  * criado, nunca revisado ainda). */
 // 2026-08-18 (#5631/#5628): reflow de parágrafo/data absoluta, limpeza de
 // ponteiro sem "seção". Bump por mudança de CORPO, não por fonte nova.
-const UPDATED_DATE = "2026-08-18";
+//
+// 2026-08-27 (#6274): `generate-hub-sources.ts --all` trouxe 3 fontes novas
+// (20, 24 e 26/08/2026). Nenhuma abriu seção nova — as 3 são mais cobertura
+// de arcos já narrados:
+//  - 20/08 "Promessa de menos trabalho esbarra em 90h": continuação do
+//    debate dados-vs-pânico de `sections[4]` ("A narrativa do apocalipse do
+//    emprego se sustenta, ou os dados a contrariam?") — mais um dado que
+//    contraria a promessa de menos carga de trabalho.
+//  - 24/08 "O estudo que fura o hype do uso no trabalho": mesmo debate de
+//    `sections[4]`, mesmo padrão já citado ali (MIT Technology Review
+//    Brasil "separando dado de pânico") — mais um estudo cético, mesmo
+//    ângulo.
+//  - 26/08 "Empresas recontratam quem demitiu por IA": MESMO fato já
+//    narrado no FAQ ("Que caso mostra uma empresa recuando de uma decisão
+//    de automação?", caso Ford) — recontratação após demissão por IA já é
+//    o tema dessa pergunta, casa `CONTRATACAO_PATTERN` ("recontrat").
+// Bump por fonte nova, não por reescrita de corpo.
+const UPDATED_DATE = "2026-08-27";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 6 hubs). */

@@ -10,12 +10,12 @@
  * vez de passar verde.
  *
  * ESCOPO (o que NÃO cobre): conta arquivos no FILESYSTEM, independente do
- * runner. Se o `node --test` parasse de casar arquivos que existem no disco
- * (ex.: alguém adicionar um glob custom quebrado ao script `test`), isto NÃO
- * pega — pra isso seria preciso capturar a contagem reportada pelo runner.
- * Hoje o `test` usa o default sem glob custom, então o gap é teórico; este
- * guard cobre o caso catastrófico (0 arquivos) com custo ~zero e sem mexer no
- * comando `npm test`.
+ * runner. `listTestFiles` abaixo é o MESMO walk usado por `scripts/run-tests.ts`
+ * (#6495) pra montar a lista explícita passada a `node --test` — as duas fontes
+ * não podem divergir por construção (função compartilhada), então o gap
+ * "runner casa um conjunto diferente do disco" é fechado, não só teórico.
+ * Este guard cobre o caso catastrófico (0 arquivos) com custo ~zero e sem
+ * mexer no comando `npm test`.
  *
  * Contexto (#1948): a suspeita original ("CI verde sem rodar a suíte") NÃO
  * reproduziu — `node --import tsx --test` descobre ~6000 testes (~298 arquivos),
@@ -34,10 +34,14 @@ export const TEST_FILE_FLOOR = 200;
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".wrangler", "data"]);
 
-/** Conta arquivos `*.test.ts` recursivamente (mesma área que `node --test`
- *  varre: `test/`, `test/**`, `workers/**​/test/`), pulando dirs de build/deps. */
-export function countTestFiles(root: string): number {
-  let n = 0;
+/** Lista arquivos `*.test.ts` recursivamente (mesma área que `node --test`
+ *  varre por padrão: `test/`, `test/**`, `workers/**​/test/`), pulando dirs de
+ *  build/deps. Caminhos absolutos, ordem determinística (sort lexicográfico
+ *  por diretório de entrada — não depende de ordem de `readdirSync`, que o
+ *  POSIX não garante). Fonte única compartilhada com `scripts/run-tests.ts`
+ *  (#6495) — nunca duplicar este walk. */
+export function listTestFiles(root: string): string[] {
+  const out: string[] = [];
   const walk = (dir: string) => {
     let entries;
     try {
@@ -45,17 +49,23 @@ export function countTestFiles(root: string): number {
     } catch {
       return;
     }
-    for (const e of entries) {
+    for (const e of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = join(dir, e.name);
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) continue;
-        walk(join(dir, e.name));
+        walk(full);
       } else if (e.name.endsWith(".test.ts")) {
-        n++;
+        out.push(full);
       }
     }
   };
   walk(root);
-  return n;
+  return out;
+}
+
+/** Conta arquivos `*.test.ts` (ver `listTestFiles`). */
+export function countTestFiles(root: string): number {
+  return listTestFiles(root).length;
 }
 
 export interface DiscoveryVerdict {

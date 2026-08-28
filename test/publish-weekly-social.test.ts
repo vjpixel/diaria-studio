@@ -517,6 +517,18 @@ function writeCachePost(dataRoot: string, id: string, post: unknown): void {
   writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(post), "utf8");
 }
 
+/** #6185: escreve um broadcast Kit em `data/kit-cache/broadcasts/{id}.json`
+ *  — mesmo shape que `normalizeKitBroadcast` (`edition-cache-reader.ts`)
+ *  espera (`RawKitBroadcastFile` = `KitBroadcastSummary` + `clicks`
+ *  opcional). Usado pra provar que a seleção por clique do carrossel
+ *  semanal do Instagram lê edições de origem Kit, não só Beehiiv — mesmo
+ *  padrão de `test/select-linkedin-weekly-integration.test.ts`. */
+function writeKitCachePost(dataRoot: string, id: string | number, broadcast: unknown): void {
+  const dir = resolve(dataRoot, "kit-cache/broadcasts");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(resolve(dir, `${id}.json`), JSON.stringify(broadcast), "utf8");
+}
+
 function epochFor(aammdd: string): number {
   const yy = Number(aammdd.slice(0, 2));
   const mm = Number(aammdd.slice(2, 4));
@@ -717,6 +729,88 @@ describe("main(): dispatch mockado", () => {
       assert.match(capturedBody.image_urls[2], /\/news\/img-unknown-weekly-271225-clicked-271220-d1-\d+-4x5\.jpg$/);
       assert.match(capturedBody.image_urls[3], /\/flat\/img-unknown-weekly-.*-clicked-cta-4x5\.jpg$/);
       assert.equal(capturedBody.image_url, null);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
+    });
+  });
+
+  describe("#6185: seleção por clique lê edição de origem Kit (broadcast completed em data/kit-cache/broadcasts/)", () => {
+    it("candidato Kit (24% de taxa) vence candidato Beehiiv (0%) — prova que o ranking lê o cache unificado, não só Beehiiv", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1 Beehiiv sem clique", url: "https://exemplo.com/beehiiv-sem-clique" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: { email: { clicks: 0, unique_opens: 50 }, clicks: [] },
+      });
+
+      const dirB = setupEdition(editionsRoot, "271221", [
+        { n: 1, title: "D1 Kit com clique", url: "https://exemplo.com/kit-com-clique" },
+      ]);
+      addImageFixture(dirB, 1, "https://cdn.example.com/271221-d1.jpg");
+      const publishedAtLocalNoon = new Date(2027, 11, 21, 12, 0, 0).toISOString();
+      writeKitCachePost(dataRoot, 900_1221, {
+        id: 900_1221,
+        subject: "Assunto Kit 271221",
+        send_at: null,
+        status: "completed",
+        public: true,
+        published_at: publishedAtLocalNoon,
+        created_at: publishedAtLocalNoon,
+        description: null,
+        thumbnail_url: null,
+        publication_id: 1,
+        clicks: [{ url: "https://exemplo.com/kit-com-clique", unique_clicks: 12, click_to_delivery_rate: 0.2, click_to_open_rate: 0.24 }],
+        stats: { recipients: 500, emails_opened: 50, unsubscribes: 0, total_clicks: 12, show_total_clicks: true, status: "completed" },
+      });
+
+      let captured = "";
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }),
+          };
+        });
+
+      try {
+        await main(
+          ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+          { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+        );
+      } finally {
+        console.log = originalLog;
+      }
+
+      // O candidato Kit (24%: 12 cliques / 50 aberturas) vem ANTES do
+      // Beehiiv (0%) — prova que o broadcast Kit entrou no ranking real via
+      // `windowPostsUnified`, não `ratePct: 0` por omissão de origem.
+      assert.match(capturedBody.text, /1\. D1 Kit com clique[\s\S]*2\. D1 Beehiiv sem clique/);
+
+      // Nenhum warning de "sem dados de clique" pra 271221 — o broadcast
+      // Kit foi encontrado e casado com a janela (#6185: sem isso, a edição
+      // Kit ficaria de fora de `windowPostsUnified` e o warning apareceria
+      // mesmo com o broadcast presente).
+      assert.ok(
+        !captured.includes("Sem dados de clique pra edição 271221"),
+        `271221 não deveria aparecer em warning de dado ausente: ${captured}`,
+      );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
@@ -1327,7 +1421,7 @@ describe("main(): dispatch mockado", () => {
         console.error = originalError;
       }
       assert.match(captured, /dado de clique INCOMPLETO/);
-      assert.match(captured, /edição\(ões\) sem post confirmado no cache Beehiiv: 271220/);
+      assert.match(captured, /edição\(ões\) sem post confirmado no cache Beehiiv\/Kit: 271220/);
       assert.match(captured, /--force-incomplete-click-data/);
       assert.equal(existsSync(resolve(dataRoot, "weekly")), false);
     });
@@ -1567,7 +1661,14 @@ describe("main(): dispatch mockado", () => {
       const saturdayStr = aammddOf(saturday);
       const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
       addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
-      // Sem FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN — env limpo pelo afterEach da suite.
+      // #6206: apagar explicitamente, não confiar no afterEach da suite — ele só
+      // reverte chaves ausentes do originalEnv (diff-based), então numa máquina
+      // com .env real (credenciais reais carregadas antes dos testes) essas 2
+      // variáveis nunca são zeradas e o teste vaza pra uma tentativa de fetch de
+      // verdade (barrada por disableNetConnect(), reason genérico "fetch failed"
+      // em vez de "facebook_not_configured").
+      delete process.env.FACEBOOK_PAGE_ID;
+      delete process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
 
       mockAgent
         .get("https://worker.test")

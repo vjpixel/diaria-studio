@@ -22,6 +22,7 @@ import {
   hasMorePages,
   backupBeehiiv,
   MCP_ONLY_GAPS,
+  readSubscriberEngagementGapCoverage,
   type ManifestEntry,
 } from "../scripts/backup-beehiiv.ts";
 
@@ -92,6 +93,10 @@ describe("summarizeManifest (#1742)", () => {
   it("sinaliza os gaps MCP-only pra não dar falsa sensação de exaustivo", () => {
     assert.deepEqual(m.mcp_only_gaps, MCP_ONLY_GAPS);
     assert.ok(m.mcp_only_gaps.length >= 2);
+  });
+
+  it("subscriber_engagement_gap default null quando o caller não passa (#6465)", () => {
+    assert.equal(m.subscriber_engagement_gap, null);
   });
 
   it("carimba api_base e generated_at", () => {
@@ -301,6 +306,59 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
     // .jsonl não é gerado (renameSync pulado); só o .partial sobra como sinal.
     assert.ok(!existsSync(resolve(outDir, "subscribers.jsonl")), "não grava .jsonl truncado");
     assert.ok(existsSync(resolve(outDir, "subscribers.jsonl.partial")), "preserva .partial como sinal");
+  });
+});
+
+describe("summarizeManifest — subscriberEngagementGap explícito (#6465)", () => {
+  it("propaga o coverage summary quando o caller passa um", () => {
+    const m = summarizeManifest({
+      generatedAt: "2026-08-28T00:00:00.000Z",
+      publicationId: "pub_123",
+      apiBase: "https://api.beehiiv.com/v2",
+      options: { subscribers: true, content: true, posts_limit: null, dry_run: false },
+      endpoints: [],
+      posts: { fetched: 0, errors: 0 },
+      subscribers: null,
+      subscriberEngagementGap: { total: 254, ok: 254, partial: 0, error: 0, pending: 0, closed: true },
+    });
+    assert.deepEqual(m.subscriber_engagement_gap, { total: 254, ok: 254, partial: 0, error: 0, pending: 0, closed: true });
+  });
+});
+
+describe("readSubscriberEngagementGapCoverage (#6465) — leitura best-effort, nunca lança", () => {
+  it("manifest ausente → null", () => {
+    const got = readSubscriberEngagementGapCoverage("/caminho/que/nao/existe/manifest.json", () => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    assert.equal(got, null);
+  });
+
+  it("manifest JSON corrompido → null (não lança)", () => {
+    const got = readSubscriberEngagementGapCoverage("qualquer.json", () => "{ isso não é json");
+    assert.equal(got, null);
+  });
+
+  it("manifest sem campo posts (shape inesperado) → null", () => {
+    const got = readSubscriberEngagementGapCoverage("qualquer.json", () => JSON.stringify({ generated_at: "x" }));
+    assert.equal(got, null);
+  });
+
+  it("manifest válido com 100% ok → closed=true", () => {
+    const manifestJson = JSON.stringify({
+      generated_at: "x",
+      posts: [{ post_id: "p1", status: "ok" }, { post_id: "p2", status: "ok" }],
+    });
+    const got = readSubscriberEngagementGapCoverage("qualquer.json", () => manifestJson);
+    assert.deepEqual(got, { total: 2, ok: 2, partial: 0, error: 0, pending: 0, closed: true });
+  });
+
+  it("manifest válido parcial → closed=false", () => {
+    const manifestJson = JSON.stringify({
+      generated_at: "x",
+      posts: [{ post_id: "p1", status: "ok" }, { post_id: "p2", status: "pending" }],
+    });
+    const got = readSubscriberEngagementGapCoverage("qualquer.json", () => manifestJson);
+    assert.equal(got?.closed, false);
   });
 });
 

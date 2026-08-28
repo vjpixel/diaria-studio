@@ -1,0 +1,158 @@
+/* rv-highlights.css (#6447 Fatia 2) — painel "Editor por destaque". Mesma
+   fonte de tokens de revisao.css/rv-gate.css (/tokens.generated.css). */
+
+.rv-hl-panel { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.rv-hl-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.rv-hl-header h2 { margin: 0; font-size: 1rem; }
+.rv-hl-header button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-hl-header button:hover { border-color: var(--ink); }
+
+.rv-hl-cards { display: flex; flex-direction: column; gap: 0.8rem; }
+
+.rv-hl-card {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.rv-hl-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.rv-hl-card-header strong { font-size: 0.95rem; }
+.rv-hl-card-status { font-size: 0.78rem; opacity: 0.75; }
+.rv-hl-card-status.dirty { color: var(--status-warn); opacity: 1; font-weight: 600; }
+.rv-hl-card-status.saved { color: var(--status-ok); opacity: 1; }
+.rv-hl-card-status.error { color: var(--status-danger); opacity: 1; font-weight: 600; }
+
+.rv-hl-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.rv-hl-field label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  opacity: 0.7;
+}
+
+.rv-hl-title-options { display: flex; flex-direction: column; gap: 0.3rem; }
+.rv-hl-title-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.rv-hl-title-option.selected { border-color: var(--ink); background: var(--paper-alt); }
+.rv-hl-title-option input[type="radio"] { flex: none; }
+.rv-hl-title-option-text { flex: 1 1 auto; min-width: 0; }
+.rv-hl-title-option-count { flex: none; font-family: var(--font-mono); font-size: 0.72rem; opacity: 0.7; }
+.rv-hl-title-option-count.over { color: var(--status-danger); opacity: 1; font-weight: 600; }
+
+.rv-hl-field input[type="text"],
+.rv-hl-field input[type="url"],
+.rv-hl-field textarea {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.rv-hl-field textarea { resize: vertical; min-height: 3.2em; }
+
+.rv-hl-body-paragraphs { display: flex; flex-direction: column; gap: 0.4rem; }
+.rv-hl-body-paragraph-row { display: flex; gap: 0.35rem; align-items: flex-start; }
+.rv-hl-body-paragraph-row textarea { flex: 1 1 auto; }
+.rv-hl-body-remove-btn,
+.rv-hl-body-add-btn {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+}
+
+.rv-hl-freeform-title { font-size: 0.78rem; opacity: 0.75; margin: 0; }
+
+.rv-hl-card-actions { display: flex; gap: 0.5rem; align-items: center; }
+.rv-hl-save-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+.rv-hl-save-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* #6447 Fatia 4 (achado 6): "Reescrever com IA" — mesmo tamanho do botão
+   Salvar, visual secundário (não é a ação primária do card). */
+.rv-hl-rewrite-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-hl-rewrite-btn:hover { border-color: var(--ink); }
+
+.rv-hl-empty { font-size: 0.85rem; opacity: 0.75; }
+
+.rv-hl-pool { margin-top: 0.4rem; }
+.rv-hl-pool-section {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.rv-hl-pool-section summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+.rv-hl-pool-item { font-size: 0.82rem; padding: 0.2rem 0; border-bottom: 1px solid var(--rule); }
+.rv-hl-pool-item:last-child { border-bottom: none; }
+
+@media (max-width: 640px) {
+  .rv-hl-header button,
+  .rv-hl-save-btn,
+  .rv-hl-rewrite-btn,
+  .rv-hl-body-add-btn,
+  .rv-hl-body-remove-btn { min-height: 44px; }
+}

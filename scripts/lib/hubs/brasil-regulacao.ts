@@ -129,7 +129,16 @@ const PUBLISHED_DATE = "2026-08-11";
  * cobertura é a janela: `sourceEditions[0].date` avança de 2026-07-03 pra
  * 2026-08-04, fechando a defasagem de 46 dias que a issue mediu (nova
  * defasagem: 14 dias, abaixo do limiar de 21 do #5124). */
-const UPDATED_DATE = "2026-08-18";
+// 2026-08-27 (#6274): `generate-hub-sources.ts --all` trouxe 1 fonte nova
+// (19/08/2026, "TSE exige aviso em propaganda eleitoral com IA"). Não abriu
+// seção nova: é o MESMO fato já narrado em `sections[1]`/FAQ ("Que prazo o
+// TSE deu para conteúdo gerado por IA nas eleições de 2026?") — a exigência
+// de rotulagem/aviso em conteúdo sintético já está descrita ali desde a
+// resolução de 22/04/2026; esta edição é cobertura de reforço perto da
+// eleição de outubro, não uma regra nova. Já casa `ELEITORAL_PATTERN`
+// (`tse`), então o número derivado do FAQ já reflete essa fonte sem
+// reescrita de prosa. Bump por fonte nova.
+const UPDATED_DATE = "2026-08-27";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 5 hubs). */

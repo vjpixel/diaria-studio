@@ -38,6 +38,18 @@ import type { OpensCatchupStatus } from "./extract-opens-catchup-status.ts";
 /** N falhas consecutivas do catch-up antes de alarmar. */
 export const CONSECUTIVE_FAILURE_THRESHOLD = 3;
 
+/** Horas que um status pode ficar "congelado" (mesmo `checked_at` relido)
+ * antes do dedup de `advanceState` deixar de tratá-lo como neutro (#5946
+ * self-review finding 1). A corrida normal 08:30/09:00 BRT resolve sozinha
+ * dentro de ~1 dia (o sync do dia seguinte escreve um `checked_at` novo);
+ * se o MESMO `checked_at` persistir além disso, o sync provavelmente parou
+ * de rodar/escrever de vez — sem esta escalada, o dedup trataria essa falha
+ * TOTAL como "já processada" pra sempre e o alarme nunca dispararia
+ * (regressão em relação ao comportamento pré-#5946, que ao menos cruzava o
+ * threshold, embora pelo motivo errado). 36h = 1 ciclo diário + folga
+ * generosa pro sync (já observado levando >1h). */
+export const STALE_STATUS_ESCALATION_HOURS = 36;
+
 export interface OpensCatchupAlarmState {
   consecutiveFailures: number;
   /** ISO do último e-mail de alarme enviado pra este streak, ou `null` se
@@ -45,16 +57,38 @@ export interface OpensCatchupAlarmState {
   lastAlarmedAt: string | null;
   /** ISO da última checagem — só informativo ("desde X"), fora da idempotência. */
   lastCheckedAt: string | null;
+  /** `checked_at` do último `OpensCatchupStatus` efetivamente PROCESSADO
+   * (#5946, achado ao vivo 24-27/08/2026) — não confundir com `lastCheckedAt`
+   * acima, que é quando o ALARME rodou, não quando o SYNC escreveu o status.
+   * Existe pra detectar releitura do mesmo arquivo (ver `advanceState`). */
+  lastStatusCheckedAt: string | null;
 }
 
 export function emptyOpensCatchupAlarmState(): OpensCatchupAlarmState {
-  return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt: null };
+  return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt: null, lastStatusCheckedAt: null };
 }
 
 /**
  * Pure: computa o próximo estado dado o status mais recente extraído do log.
  * `not_run` não altera o streak (nem soma nem zera) — só atualiza
  * `lastCheckedAt`.
+ *
+ * #5946 (achado ao vivo 24-27/08/2026): a task do alarme (09:00 BRT) roda só
+ * 30min depois da task do sync (08:30 BRT, `Diaria-Clarice-Sync`) começar —
+ * mas o sync, incluindo o catch-up, pode facilmente passar de 1h (medido:
+ * 11:30-12:44 UTC em 27/08). Quando isso acontece, o alarme lê
+ * `last-opens-catchup-status.json` ANTES do sync do próprio dia escrever o
+ * resultado — ou seja, relê o status de ONTEM, já processado, incrementando
+ * o streak sobre um resultado que já tinha sido contado (ou reportando
+ * `error` de ontem mesmo quando o catch-up de hoje já rodou limpo). O mesmo
+ * arquivo sendo lido 2x é detectável comparando `status.checked_at` contra
+ * o último `checked_at` já processado (`lastStatusCheckedAt`) — se forem
+ * iguais, o sync ainda não escreveu um resultado novo desde a última
+ * checagem: trata como neutro, igual a `not_run`, nunca reconta o mesmo dia
+ * — A MENOS que o mesmo `checked_at` já esteja congelado há mais de
+ * `STALE_STATUS_ESCALATION_HOURS` (ver docstring da constante): aí o
+ * dedup para de aplicar e o status volta a ser processado normalmente,
+ * pra uma falha TOTAL do sync (nunca mais escreve) continuar visível.
  */
 export function advanceState(
   state: OpensCatchupAlarmState,
@@ -62,14 +96,30 @@ export function advanceState(
   now: Date,
 ): OpensCatchupAlarmState {
   const lastCheckedAt = now.toISOString();
+
+  if (status.checked_at && status.checked_at === state.lastStatusCheckedAt) {
+    const statusAgeMs = now.getTime() - new Date(status.checked_at).getTime();
+    const escalationMs = STALE_STATUS_ESCALATION_HOURS * 60 * 60 * 1000;
+    const stillFresh = Number.isFinite(statusAgeMs) && statusAgeMs <= escalationMs;
+    if (stillFresh) {
+      // Mesmo status já processado na checagem anterior — sync ainda não
+      // rodou de novo desde então. Neutro: streak/lastAlarmedAt preservados.
+      return { ...state, lastCheckedAt };
+    }
+    // Congelado por tempo demais: provavelmente o sync parou de rodar —
+    // cai pro processamento normal abaixo (não neutraliza mais).
+  }
+
+  const lastStatusCheckedAt = status.checked_at || state.lastStatusCheckedAt;
+
   if (status.status === "not_run") {
-    return { ...state, lastCheckedAt };
+    return { ...state, lastCheckedAt, lastStatusCheckedAt };
   }
   if (status.status === "ok") {
     // Recuperou — zera o streak e re-arma o alarme pra próxima ocorrência.
-    return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt };
+    return { consecutiveFailures: 0, lastAlarmedAt: null, lastCheckedAt, lastStatusCheckedAt };
   }
-  return { ...state, consecutiveFailures: state.consecutiveFailures + 1, lastCheckedAt };
+  return { ...state, consecutiveFailures: state.consecutiveFailures + 1, lastCheckedAt, lastStatusCheckedAt };
 }
 
 /**

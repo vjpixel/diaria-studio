@@ -44,13 +44,14 @@
  */
 
 import "dotenv/config";
-import { existsSync, mkdirSync, appendFileSync, rmSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, appendFileSync, rmSync, renameSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { coverageSummary, type EngagementManifest, type EngagementCoverageSummary } from "./lib/beehiiv-engagement-manifest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
@@ -120,6 +121,14 @@ export interface Manifest {
   posts: { fetched: number; errors: number };
   subscribers: { fetched: number } | null;
   mcp_only_gaps: readonly string[];
+  /**
+   * Cobertura do gap `list_post_subscriber_engagement` (#6465), derivada de
+   * `data/beehiiv-backup/subscriber-engagement/manifest.json` — leitura
+   * local, best-effort, NUNCA toca a MCP daqui (este script roda como
+   * script standalone, sem MCP no escopo). `null` quando o manifest de
+   * engagement ainda não existe (extração nunca rodou nesta máquina/checkout).
+   */
+  subscriber_engagement_gap: EngagementCoverageSummary | null;
   totals: { ok: number; skipped: number; error: number };
 }
 
@@ -134,6 +143,8 @@ export function summarizeManifest(input: {
   endpoints: ManifestEntry[];
   posts: { fetched: number; errors: number };
   subscribers: { fetched: number } | null;
+  /** #6465 — pré-calculado pelo caller (leitura de arquivo fica fora desta função pura). */
+  subscriberEngagementGap?: EngagementCoverageSummary | null;
 }): Manifest {
   const totals = { ok: 0, skipped: 0, error: 0 };
   for (const e of input.endpoints) totals[e.status]++;
@@ -146,8 +157,29 @@ export function summarizeManifest(input: {
     posts: input.posts,
     subscribers: input.subscribers,
     mcp_only_gaps: MCP_ONLY_GAPS,
+    subscriber_engagement_gap: input.subscriberEngagementGap ?? null,
     totals,
   };
+}
+
+/**
+ * Lê `data/beehiiv-backup/subscriber-engagement/manifest.json` (produzido por
+ * `scripts/list-posts-for-engagement-backup.ts` / `apply-mcp-subscriber-engagement.ts`,
+ * #6465) e resume a cobertura — best-effort, NUNCA lança: manifest ausente,
+ * ilegível ou corrompido resolve pra `null` (mesma semântica de "não sei",
+ * nunca "gap fechado" por omissão).
+ */
+export function readSubscriberEngagementGapCoverage(
+  manifestPath: string,
+  readFile: (p: string) => string = (p) => readFileSync(p, "utf8"),
+): EngagementCoverageSummary | null {
+  try {
+    const raw = JSON.parse(readFile(manifestPath)) as EngagementManifest;
+    if (!raw || !Array.isArray(raw.posts)) return null;
+    return coverageSummary(raw);
+  } catch {
+    return null;
+  }
 }
 
 export function backupDir(root: string, date: string): string {
@@ -308,6 +340,11 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
   const endpoints: ManifestEntry[] = [];
   const postStats = { fetched: 0, errors: 0 };
   let subscribers: { fetched: number } | null = opts.subscribers ? { fetched: 0 } : null;
+  // #6465 — leitura local best-effort, sem tocar MCP; sinaliza no manifest do
+  // backup se o gap `list_post_subscriber_engagement` já foi fechado.
+  const subscriberEngagementGap = readSubscriberEngagementGapCoverage(
+    resolve(BACKUP_ROOT, "subscriber-engagement", "manifest.json"),
+  );
 
   if (opts.dryRun) {
     for (const ep of publicationEndpoints(cfg.publicationId)) {
@@ -323,6 +360,7 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
       endpoints,
       posts: postStats,
       subscribers,
+      subscriberEngagementGap,
     });
   }
 
@@ -475,6 +513,7 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
     endpoints,
     posts: postStats,
     subscribers,
+    subscriberEngagementGap,
   });
   writeFileAtomic(resolve(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
   return manifest;

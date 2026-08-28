@@ -87,11 +87,33 @@ describe("stepWithTransientRetry", () => {
     assert.deepEqual(sleeps, [1234]);
   });
 
-  it("retryAfterSecs excede o capMs do orçamento INJETADO => capped nesse valor, não em outro", async () => {
+  it("#6288 (decisão do editor, uniformiza com brevoGet/withBrevo429Retry): retryAfterSecs excede o capMs do orçamento => desiste JÁ, nunca dorme o teto nem retenta", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    await assert.rejects(
+      () =>
+        stepWithTransientRetry({
+          exec: () => { calls++; return transientResult(99999); },
+          sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); },
+          note: () => {},
+          parseJson,
+          label: "x",
+          scriptRelPath: "x.ts",
+          args: [],
+          budget: { maxAttempts: 3, fallbackMs: 1000, capMs: 4242 },
+          makeAbort: (m) => new FakeAbort(m),
+        }),
+      FakeAbort,
+    );
+    assert.equal(calls, 1, "nunca chama exec de novo — dormir o teto e retentar é aritmeticamente garantido a falhar igual");
+    assert.deepEqual(sleeps, [], "nunca dorme quando retryAfterSecs já excede o orçamento");
+  });
+
+  it("retryAfterSecs DENTRO do capMs do orçamento => dorme o valor real (sem cap), retenta normalmente", async () => {
     let calls = 0;
     const sleeps: number[] = [];
     await stepWithTransientRetry({
-      exec: () => { calls++; return calls === 1 ? transientResult(99999) : okResult({}); },
+      exec: () => { calls++; return calls === 1 ? transientResult(4) : okResult({}); },
       sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); },
       note: () => {},
       parseJson,
@@ -101,7 +123,8 @@ describe("stepWithTransientRetry", () => {
       budget: { maxAttempts: 3, fallbackMs: 1000, capMs: 4242 },
       makeAbort: (m) => new FakeAbort(m),
     });
-    assert.deepEqual(sleeps, [4242]);
+    assert.deepEqual(sleeps, [4000]);
+    assert.equal(calls, 2);
   });
 
   it("falha transitória persiste até esgotar maxAttempts => lança makeAbort, nunca chama exec além do orçamento", async () => {

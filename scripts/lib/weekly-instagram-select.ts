@@ -155,7 +155,7 @@ export function extractInstagramCandidates(md: string, editionDate: string): Ins
   return out;
 }
 
-// ─── Cache local de cliques do Beehiiv ─────────────────────────────────────
+// ─── Cache local de cliques do Beehiiv (+ Kit, #6185) ──────────────────────
 //
 // Mesma fonte que a newsletter semanal do LinkedIn usa
 // (`data/beehiiv-cache/posts/*.json`, populado por `scripts/beehiiv-sync.ts`
@@ -164,6 +164,34 @@ export function extractInstagramCandidates(md: string, editionDate: string): Ins
 // direto (só roda de subagent/top-level, nunca de script TS standalone) e
 // por que o gate de 7 dias de `identifyPostsNeedingClicks` não se aplica
 // (a janela de conteúdo desta skill tem 2-6 dias de idade).
+//
+// **Origem Beehiiv/Kit (#6185):** `matchPostsToWindow`/`uniqueOpensOf` são
+// genéricos desde #6185 (mesmo padrão aplicado a `weekly-linkedin-clicks.ts`
+// no mesmo PR) — aceitam tanto `BeehiivCachePost[]` quanto
+// `UnifiedCachedPost[]` (`scripts/lib/shared/edition-cache-reader.ts`), então
+// um caller (`publish-weekly-social.ts`) pode passar o cache unificado
+// Beehiiv+Kit sem cast. Cobre só a SELEÇÃO por clique (ranking) —
+// `identifyInstagramPostsNeedingClicks` continua Beehiiv-only DE PROPÓSITO
+// (mesma razão de `identifyWeeklyPostsNeedingClicks` em
+// `weekly-linkedin-clicks.ts`: "precisa de enriquecimento via MCP
+// `list_post_clicks`" só existe do lado Beehiiv).
+
+/** Shape estrutural mínimo que `matchPostsToWindow`/`uniqueOpensOf` precisam
+ * (#6185) — deliberadamente mais estreito que `BeehiivCachePost` (sem `id`,
+ * sem `stats.email.clicks`, que só `identifyInstagramPostsNeedingClicks`
+ * usa — essa função continua Beehiiv-only, ver acima).
+ * `UnifiedCachedPost` (`scripts/lib/shared/edition-cache-reader.ts`)
+ * satisfaz este shape estruturalmente (`stats.clicks: NormalizedLinkClick[]`
+ * é assignable a `CachedClickRow[]` — mesmos campos), então não precisa de
+ * cast no caller. */
+export interface ClickWindowPost {
+  status?: string;
+  publish_date?: number | null;
+  stats?: {
+    email?: { unique_opens?: number };
+    clicks?: CachedClickRow[];
+  };
+}
 
 export interface CachedClickRow {
   url: string;
@@ -200,14 +228,16 @@ export function aammddFromEpochSeconds(epochSec: number): string {
 
 /**
  * Pure: mapa `AAMMDD → post` pros posts cacheados cujo `publish_date` cai
- * numa das datas de `windowDates` e `status === "confirmed"`.
+ * numa das datas de `windowDates` e `status === "confirmed"`. Genérico desde
+ * #6185 (ver `ClickWindowPost` acima) — aceita `BeehiivCachePost[]` e
+ * `UnifiedCachedPost[]` sem cast.
  */
-export function matchPostsToWindow(
-  posts: BeehiivCachePost[],
+export function matchPostsToWindow<T extends ClickWindowPost>(
+  posts: T[],
   windowDates: string[],
-): Map<string, BeehiivCachePost> {
+): Map<string, T> {
   const windowSet = new Set(windowDates);
-  const out = new Map<string, BeehiivCachePost>();
+  const out = new Map<string, T>();
   for (const post of posts) {
     if (post.status !== "confirmed" || !post.publish_date) continue;
     const date = aammddFromEpochSeconds(post.publish_date);
@@ -288,8 +318,8 @@ export function clickCountsForUrl(url: string, clicks: CachedClickRow[] | undefi
   return zero;
 }
 
-/** Pure: `unique_opens` do e-mail do post — denominador da taxa (issue #4483: "aberturas é o denominador certo"). */
-export function uniqueOpensOf(post: BeehiivCachePost | undefined): number {
+/** Pure: `unique_opens` do e-mail do post — denominador da taxa (issue #4483: "aberturas é o denominador certo"). Genérico desde #6185 — ver `ClickWindowPost` acima. */
+export function uniqueOpensOf<T extends ClickWindowPost>(post: T | undefined): number {
   return post?.stats?.email?.unique_opens ?? 0;
 }
 

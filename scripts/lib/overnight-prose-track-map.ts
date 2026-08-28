@@ -62,7 +62,18 @@ export type OvernightProseStatus =
   | "requer-sessao-local"
   | "not-this-week"
   | "sem-direcao-acionavel"
-  | "ambigua-trade-off-real";
+  | "ambigua-trade-off-real"
+  // #6438 — os 3 motivos de `pulada` fechados pela issue, agora com status
+  // em prosa próprio (e valor no vocabulário `OVERNIGHT_PULADA_MOTIVOS` de
+  // `scripts/lib/overnight-plan-motivo.ts`, que usa os literais em
+  // kebab-case idênticos a estes — a correspondência é 1:1 de propósito).
+  | "mesmo-tema-sessao-ativa"
+  | "session-finding-deferida"
+  | "stale-aguarda-reexecucao"
+  // #6437 — PR mergeado `REFS #N, NÃO CLOSES`: escopo residual precisa de
+  // roteamento explícito (agendada/develop/fora-de-rodada), não fica preso
+  // em "overnight default" para sempre.
+  | "escopo-residual";
 
 export interface ProseTrackMapping {
   readonly status: OvernightProseStatus;
@@ -110,6 +121,26 @@ export const OVERNIGHT_PROSE_TRACK_MAP: readonly ProseTrackMapping[] = [
     status: "ambigua-trade-off-real",
     tracks: ["develop"],
     note: "label trade-off-real — cat. C do develop (#2640), TRADE_OFF_LABEL classifica develop.",
+  },
+  {
+    status: "mesmo-tema-sessao-ativa",
+    tracks: ["overnight"],
+    note: "#6438 — issue de mesmo tema de sessão peer ativa mas SEM claim registrado; nunca fica 'deixada pra ela' sem claim. O passo 4a manda avisar via SendMessage e, sem resposta, dispatchar a própria rodada — permanece overnight, nunca vira develop/bloqueada por si só.",
+  },
+  {
+    status: "session-finding-deferida",
+    tracks: ["agendada"],
+    note: "#6438 — finding de rodada anterior deferido: route-issue --track agendada --until amanhã, revisitado na próxima rodada em vez de ficar preso sem status terminal.",
+  },
+  {
+    status: "stale-aguarda-reexecucao",
+    tracks: ["agendada"],
+    note: "#6438 — falha antes do fix mergear (#5653/#5615): route-issue --track agendada --until a próxima execução da task relevante.",
+  },
+  {
+    status: "escopo-residual",
+    tracks: ["agendada", "develop", "fora-de-rodada", "overnight"],
+    note: "#6437 — PR REFS-not-Closes mergeado deixa escopo pendente; o track correto depende do que resta (agendada = depende de tempo/evento; develop = depende de decisão do editor, via label develop-track/trade-off-real; fora-de-rodada = sem-direcao-acionavel; overnight = residual dispatchável nesta mesma rodada, então nunca chega a virar `pulada`).",
   },
 ];
 

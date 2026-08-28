@@ -25,8 +25,9 @@ import {
   type CampaignGuardrailInput,
   type GuardrailAlarmState,
 } from "../scripts/lib/clarice-guardrail-alarm.ts";
-import { toAlarmFinding, shouldSkipForLowQuota } from "../scripts/clarice-guardrail-alarm.ts";
+import { toAlarmFinding, shouldSkipForLowQuota, EX_TEMPFAIL } from "../scripts/clarice-guardrail-alarm.ts";
 import { BrevoCampaignQuotaLowError } from "../scripts/lib/brevo-client.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
 const NOW = new Date("2026-07-24T06:00:00.000Z"); // envio 9B saiu 06:00 BRT (09:00 UTC) do dia seguinte no incidente real
 
@@ -361,4 +362,20 @@ test("shouldSkipForLowQuota — erro que NÃO é BrevoCampaignQuotaLowError — 
       }),
     /falha de disco inesperada/,
   );
+});
+
+// #6563: skip deliberado por cota baixa saía com exit 0 implícito — indistinguível
+// de "rodou e não achou nada a fazer" no exit code, e (achado ao vivo #6455) o
+// alarme de taxa (`Diaria-Systemd-Unit-Rate-Alarm`) contava execuções como falha
+// sem o `successExitCodes` declarado pra esta task. `EX_TEMPFAIL` fecha os dois
+// lados: o script sai com um código dedicado, e o registro da task o declara
+// como sucesso pro cálculo de taxa.
+test("EX_TEMPFAIL — 75 (sysexits EX_TEMPFAIL), distinto de qualquer successExitCode já em uso no registro (#6563)", () => {
+  assert.equal(EX_TEMPFAIL, 75);
+});
+
+test("Diaria-Clarice-Guardrail-Alarm declara EX_TEMPFAIL em successExitCodes — skip deliberado não conta como falha na taxa (#6563)", () => {
+  const def = getScheduledTaskByName("Diaria-Clarice-Guardrail-Alarm");
+  assert.ok(def, "task deveria existir no registro");
+  assert.deepEqual(def?.successExitCodes, [EX_TEMPFAIL]);
 });

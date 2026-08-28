@@ -48,6 +48,32 @@ test("brevoGet: 404 → {status:404, body:{}} sem retry", async () => {
   }
 });
 
+// #6288: espelha o fix de #6284/#6035/#5942 em withBrevo429Retry — quando o
+// Retry-After devolvido excede o orçamento (30s, BREVO_RETRY_GIVE_UP_MS),
+// brevoGet desiste JÁ em vez de dormir o teto e retentar sabendo que vai
+// falhar de novo (rate limit é por CONTA/HORA).
+test("brevoGet: 429 com Retry-After maior que o orçamento → desiste sem dormir", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    // Medido ao vivo (#6124): Retry-After de 3402s (~57min) contra um
+    // orçamento de 30s por tentativa.
+    return new Response("rate", { status: 429, headers: { "retry-after": "3402" } });
+  }) as unknown as typeof globalThis.fetch;
+  const sleeps: number[] = [];
+  try {
+    await assert.rejects(
+      () => brevoGet("key", "/x", async (ms) => { sleeps.push(ms); }),
+      /Retry-After 3402s excede o orçamento de 30s/,
+    );
+    assert.equal(calls, 1, "não deve retentar — desiste na 1ª tentativa");
+    assert.deepEqual(sleeps, [], "nunca deve dormir — clock injetado nunca é chamado");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("brevoGet: 401 → throw imediato (sem retry)", async () => {
   const origFetch = globalThis.fetch;
   let calls = 0;

@@ -116,9 +116,30 @@ import {
   lintTrailingEditorialHook,
 } from "../lint-social-md.ts";
 import { validateLancamentos, loadToolAllowlist } from "../validate-lancamentos.ts";
+// #6447 Fatia 1 (achado 4): o Studio não rodava os mesmos 2 lints
+// GATE-BLOCKING do gate real sobre `02-reviewed.md` — `validate-domain-diversity.ts`
+// (só existia no orchestrator §4c.2) e `validate-lancamentos.ts` (só rodava
+// aqui sobre `01-categorized.md`, nunca sobre a versão pós-escrita). Reusa as
+// mesmas funções puras, sem reimplementar regra nenhuma — mesmo princípio já
+// documentado no topo do arquivo ("Lints reusam as funções PURAS...").
+import { validateDomainDiversity } from "../validate-domain-diversity.ts";
+import { checkIntentionalError } from "../lib/lint-checks/intentional-error.ts";
 // #3806 (Opção B spike): mapeamento determinístico campo -> região do MD
 // pro título de destaque, editável na visão renderizada.
 import { replaceDestaqueTitleInMd } from "../extract-destaques.ts";
+// #6447 Fatia 2: editor estruturado por destaque (título por opção + corpo +
+// "por que isso importa" + URL) — parser/serializer puros, mesmo princípio
+// de reuso de `replaceDestaqueTitleInMd` acima (edição cirúrgica, só o bloco
+// do destaque tocado).
+import {
+  parseHighlightBlocks,
+  applyHighlightEdit,
+  type HighlightEdit,
+} from "../lib/lint-checks/highlight-block-edit.ts";
+// #6447 Fatia 2: limite de chars por opção de título, mesma constante que
+// `checkTitleLengths` (lint bloqueante) já usa — o painel client-side lê o
+// valor da resposta HTTP em vez de repetir o número (ver rv-highlights.js).
+import { MAX_TITLE_LENGTH } from "../lib/lint-checks/title-length.ts";
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -437,6 +458,92 @@ export function applyDestaqueTitleEdit(
   return { ...saveResult, lint: runReviewLints(rootDir, resolved.editionDir, "reviewed", replaced.md) };
 }
 
+// ── Editor estruturado por destaque (#6447 Fatia 2) ────────────────────────
+
+export interface HighlightsSummary {
+  available: boolean;
+  /** Ausente quando `available` é `false`. */
+  highlights?: ReturnType<typeof parseHighlightBlocks>["blocks"];
+  /** mtime (ISO) de `02-reviewed.md` — mesmo campo/mecanismo de
+   * `GET .../review/:slug`, reusado pra alimentar o MESMO guard de conflito
+   * 409 (`expectedModifiedAt`) que `saveReviewFile` já implementa (#3729),
+   * sem duplicar o mecanismo pro editor estruturado. */
+  modifiedAt?: string | null;
+  /** Presente quando `available` é `false` — motivo (arquivo ainda não
+   * existe nesta edição, ou AAMMDD inválido). */
+  note?: string;
+  /** #6447 Fatia 2: limite de chars por opção de título (`MAX_TITLE_LENGTH`,
+   * mesma constante do lint `title-length` bloqueante) — sempre presente
+   * (independe de `available`), pro client nunca precisar hardcodar o número. */
+  maxTitleLength: number;
+}
+
+/** Lê `02-reviewed.md` e devolve os blocos DESTAQUE já estruturados —
+ * fail-soft, mesmo padrão de `studio-gate.ts` (arquivo ausente nunca lança,
+ * vira `{ available: false, note }`). */
+export function readHighlightsSummary(rootDir: string, aammdd: string): HighlightsSummary {
+  const state = readReviewFile(rootDir, aammdd, "reviewed");
+  if (!state.ok) {
+    return { available: false, note: state.error ?? "AAMMDD ou arquivo inválido", maxTitleLength: MAX_TITLE_LENGTH };
+  }
+  if (!state.exists) {
+    return {
+      available: false,
+      note: "02-reviewed.md ainda não existe nesta edição",
+      maxTitleLength: MAX_TITLE_LENGTH,
+    };
+  }
+  const { blocks } = parseHighlightBlocks(state.content);
+  return { available: true, highlights: blocks, modifiedAt: state.modifiedAt, maxTitleLength: MAX_TITLE_LENGTH };
+}
+
+export interface ApplyHighlightBlockEditResult extends SaveReviewResult {
+  /** Lint do conteúdo NOVO (pós-edição) — mesmo padrão de
+   * `ApplyDestaqueTitleEditResult.lint` (#3806): ausente quando o save falhou
+   * ou teve conflito (nada foi escrito). */
+  lint?: LintReport;
+}
+
+/**
+ * Aplica a edição estruturada do destaque `n` em `02-reviewed.md`: lê o
+ * conteúdo atual, reescreve SÓ o bloco daquele destaque via
+ * `applyHighlightEdit` (preserva o resto do arquivo byte a byte), roda os
+ * lints de sempre sobre o resultado, e salva via `saveReviewFile` — reusando
+ * o MESMO guard de conflito mtime (`expectedModifiedAt`/`force`, #3729) que
+ * `applyDestaqueTitleEdit` já reusa, sem duplicá-lo (ver docstring de lá).
+ */
+export function applyHighlightBlockEdit(
+  rootDir: string,
+  aammdd: string,
+  n: number,
+  edit: HighlightEdit,
+  opts: SaveReviewOptions = {},
+): ApplyHighlightBlockEditResult {
+  const resolved = resolveReviewFile(rootDir, aammdd, "reviewed");
+  if (!resolved) return { ok: false, error: "AAMMDD inválido", filename: "", modifiedAt: null };
+  if (!existsSync(resolved.filePath)) {
+    return {
+      ok: false,
+      error: "02-reviewed.md ainda não existe nesta edição",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const current = readFileSync(resolved.filePath, "utf8");
+  const applied = applyHighlightEdit(current, n, edit);
+  if (!applied.ok || applied.md === undefined) {
+    return {
+      ok: false,
+      error: applied.error ?? "falha ao aplicar edição do destaque",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const saveResult = saveReviewFile(rootDir, aammdd, "reviewed", applied.md, opts);
+  if (!saveResult.ok) return saveResult;
+  return { ...saveResult, lint: runReviewLints(rootDir, resolved.editionDir, "reviewed", applied.md) };
+}
+
 /** Reseta o baseline pro conteúdo atual (editor decide "isto agora é a nova
  * versão de referência" — ex: depois de um re-run manual de Stage 2). */
 export function resetBaseline(rootDir: string, aammdd: string, slug: string): SaveReviewResult {
@@ -560,6 +667,28 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
       return { ok: placement.ok && orphanGaps.length === 0, placement, orphanGaps };
     }),
     runCheck("no-xml-artifacts", "Sem tag de tool-call grudada no fim do arquivo (#4077)", true, () => checkNoXmlArtifacts(md)),
+    // #6447 Fatia 1 (achado 4): faltavam no Studio, apesar de GATE-BLOCKING
+    // no gate real (orchestrator-stage-4.md §4c.2).
+    runCheck("domain-diversity", "Máx. 2 URLs do mesmo domínio registrável (#5735)", true, () => validateDomainDiversity(md)),
+    runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
+      const allowlist = loadToolAllowlist(rootDir);
+      const r = validateLancamentos(md, allowlist);
+      return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
+    }),
+    // #6447 Fatia 1: `intentional-error-flagged` roda oficialmente no
+    // Stage 5 (`beehiiv-playbook.md`) E, como BACKSTOP GATE-BLOCKING, já no
+    // Stage 4 real (orchestrator-stage-4.md §4c.2 — "Nenhum dos dois deveria
+    // sobreviver sem resolução até o Stage 4... rodar os dois aqui também,
+    // GATE-BLOCKING"). No fluxo normal o editor já declarou o erro no
+    // Stage 2 (§2b), então por padrão isto já vem `ok:true` quando o editor
+    // abre o painel — não é uma barra nova que o Studio inventa, é o mesmo
+    // backstop do gate real, só espelhado aqui. Lê
+    // `_internal/intentional-error.json` direto de `editionDir` — ignora
+    // `md`/conteúdo ainda não salvo do editor de propósito (o JSON é um
+    // arquivo irmão independente, sempre lido do disco).
+    runCheck("intentional-error-flagged", "Erro intencional declarado e completo (#3222)", true, () =>
+      checkIntentionalError(resolve(editionDir, "02-reviewed.md")),
+    ),
     // Warn-only (#2715) — mesma classificação da pipeline: nunca bloqueiam,
     // só surfaçam pro editor decidir.
     runCheck("title-publisher-suffix", "Título sem sufixo de veículo (warn)", false, () => checkTitlePublisherSuffix(md)),
@@ -708,8 +837,17 @@ export function resolveReviewImagePath(editionDir: string, filename: string): st
 // (duas previews concorrentes podem interpor um reset no meio). Use
 // `renderHTMLWithWarnings()` (mesmo módulo), que lê o coletor
 // sincronamente logo após o render.
-export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
-  if (!existsSync(resolve(editionDir, "02-reviewed.md"))) {
+// #6447 Fatia 3: `overrideReviewedText` — mesmo mecanismo de `extractContent`
+// (repassado sem alteração) — permite renderizar o preview a partir de texto
+// AINDA NÃO SALVO (split view com debounce, ver `buildReviewPreviewDraftHtml`
+// abaixo). `undefined` preserva o comportamento original: ler
+// `02-reviewed.md` do disco.
+export function buildReviewPreviewHtml(
+  editionDir: string,
+  aammdd?: string,
+  overrideReviewedText?: string,
+): PreviewResult {
+  if (overrideReviewedText === undefined && !existsSync(resolve(editionDir, "02-reviewed.md"))) {
     return {
       ok: false,
       error: "02-reviewed.md ainda não existe nesta edição — nada pra pré-visualizar.",
@@ -717,7 +855,7 @@ export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): Pre
     };
   }
   try {
-    const content = extractContent(editionDir);
+    const content = extractContent(editionDir, overrideReviewedText);
     let html = renderHTML(content, { fullDocument: true });
     if (aammdd) {
       const filenameMap = new Map<string, string>();
@@ -790,9 +928,17 @@ function readPostPixelImageNum(editionDir: string): string {
  * Facebook ainda) ou um destaque faltando (edição com 2 destaques em vez de
  * 3, #3369) não quebra — `parsePlatforms`/`buildSocialHtml` já iteram sobre
  * o que existir, sem indexação fixa d1/d2/d3. */
-export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
+// #6447 Fatia 3: `overrideSocialText` — mesmo mecanismo de
+// `overrideReviewedText` em `buildReviewPreviewHtml` acima — permite
+// renderizar a partir de texto ainda não salvo. `undefined` preserva o
+// comportamento original: ler `03-social.md` do disco.
+export function buildSocialPreviewHtml(
+  editionDir: string,
+  aammdd?: string,
+  overrideSocialText?: string,
+): PreviewResult {
   const socialPath = resolve(editionDir, "03-social.md");
-  if (!existsSync(socialPath)) {
+  if (overrideSocialText === undefined && !existsSync(socialPath)) {
     return {
       ok: false,
       error: "03-social.md ainda não existe nesta edição — nada pra pré-visualizar.",
@@ -800,7 +946,7 @@ export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): Pre
     };
   }
   try {
-    const md = readFileSync(socialPath, "utf8");
+    const md = overrideSocialText !== undefined ? overrideSocialText : readFileSync(socialPath, "utf8");
     const platforms = parsePlatforms(md);
     const imageMap = aammdd ? buildLocalSocialImageMap(editionDir, aammdd) : {};
     const postPixelImageNum = readPostPixelImageNum(editionDir);
@@ -810,6 +956,47 @@ export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): Pre
     const message = (e as Error).message;
     return { ok: false, error: message, html: errorHtml("Erro ao renderizar preview social", message) };
   }
+}
+
+/** #6447 Fatia 3: slugs cujo preview é DERIVADO de um Markdown que o editor
+ * está digitando neste painel — o único conjunto pra que "preview reativo por
+ * debounce" faz sentido (o texto digitado tem correspondência 1:1 com o que o
+ * preview mostra). `categorized` fica de fora de propósito: o preview daquela
+ * aba SEMPRE mostra o e-mail derivado de `02-reviewed.md` (ver
+ * `buildReviewPreviewHtml` — nunca de `01-categorized.md`), então digitar no
+ * textarea de categorized não muda nada que este preview reflita; reagir a
+ * esse texto seria enganoso (o editor veria um preview "vivo" que não é do
+ * arquivo que ele está editando). `html-final`/`html-final-patronos` também
+ * ficam fora — já SÃO o HTML final, sem parsing de Markdown envolvido; o
+ * "preview" deles é o próprio conteúdo do editor, então a reatividade ali é
+ * trivial (equivalente a ecoar o texto no `srcdoc`) e o cliente já faz isso
+ * localmente sem custo de rede (ver `revisao.js` `refreshPreview()` pro
+ * caminho `html-final` — nenhuma mudança nesta fatia). */
+export function isDraftPreviewSlug(slug: string): slug is "reviewed" | "social" {
+  return slug === "reviewed" || slug === "social";
+}
+
+/** Renderiza o preview a partir de texto AINDA NÃO SALVO em disco (`content`)
+ * — o miolo pure da rota `POST .../review/:slug/preview-draft` (#6447 Fatia
+ * 3, split view com preview reativo). NUNCA lê nem escreve
+ * `REVIEW_FILES[slug]` em disco: `content` é tudo que este preview usa do
+ * arquivo em edição; os demais artefatos da edição (`01-eia.md`, boxes,
+ * imagens, leaderboard — usados por `buildReviewPreviewHtml`/
+ * `buildSocialPreviewHtml` por baixo) continuam lidos normalmente de
+ * `editionDir`, então o preview reflete o resto da edição como está em disco
+ * AGORA — só o texto do slug em edição é o draft. `slug` fora de
+ * `isDraftPreviewSlug` retorna erro explícito; o caller
+ * (`handleReviewPreviewDraft` em `server.ts`) decide o status HTTP. */
+export function buildReviewPreviewDraftHtml(
+  editionDir: string,
+  aammdd: string,
+  slug: ReviewSlug,
+  content: string,
+): PreviewResult {
+  if (slug === "reviewed") return buildReviewPreviewHtml(editionDir, aammdd, content);
+  if (slug === "social") return buildSocialPreviewHtml(editionDir, aammdd, content);
+  const message = `preview reativo não é suportado para o slug "${slug}" — só "reviewed" e "social" têm preview derivado 1:1 do próprio Markdown em edição.`;
+  return { ok: false, error: message, html: errorHtml("Preview reativo indisponível", message) };
 }
 
 function escHtml(s: string): string {

@@ -4,6 +4,34 @@ Preparado em **25/08/2026**, antes de qualquer ação. Existe porque a capacidad
 central do cutover — `custom_domain = true` no apex depois que a Beehiiv soltar
 o custom hostname — **não é testável antes**: o teste é a própria janela.
 
+> **CUTOVER EXECUTADO em 26/08/2026, 23:12 UTC — com outage de ~1 min.**
+> `PUT /accounts/{id}/workers/domains` (attach do Custom Domain) recusou com
+> **HTTP 409** assim que a Beehiiv soltou o hostname:
+> ```
+> {"code":100117,"message":"Hostname 'diar.ia.br' already has externally
+> managed DNS records (A, CNAME, etc). Delete them first or try a different
+> hostname."}
+> ```
+> Nessa janela — domínio já solto da Beehiiv, Custom Domain ainda não anexado —
+> `diar.ia.br` respondeu **403 "DNS points to prohibited IP"**: os A/AAAA da
+> §1 abaixo ainda apontavam pro IP da Beehiiv, que vira proibido na hora em que
+> o binding dela se solta. Corrigido na hora: `DELETE` dos dois registros da
+> §1 (`9246e7ff...`/`1e19bf32...`), depois `--cutover --apply` de novo — o
+> Custom Domain assumiu e emitiu certificado em seguida.
+>
+> **O passo que faltava neste documento e no script:** remover A/AAAA
+> ANTES de tentar o attach, não depois de ele falhar. Sem isso a sequência
+> "Beehiiv desconecta → script anexa" tem uma janela real de outage entre os
+> dois passos. Rastreado em **#6373** (P1) — **corrigido**: `--cutover
+> --apply` agora lê o A/AAAA do apex, remove o que existir (com a mesma
+> disciplina de duplicata-é-erro-duro e verificação pós-mutação #573 do
+> resto do módulo), CONFIRMA a remoção, e só então tenta o `PUT` do attach —
+> tudo na mesma invocação, sem depender do operador lembrar de um `DELETE`
+> manual. Se o `DELETE` falhar ou a releitura mostrar que o registro
+> sobreviveu, o script aborta antes do attach. Quem repetir o cutover a
+> partir de agora não precisa mais fazer nada manual antes de
+> `--cutover --apply` — a própria execução cobre a §1 sozinha.
+
 Medido ao vivo via API da Cloudflare (zona `0c1a216dee80404257ce225a18fae896`).
 
 > **Este documento é o estado PRÉ-cutover.** Se ele divergir da realidade,
@@ -34,9 +62,17 @@ Fatos vizinhos, verificados na mesma medição:
 - **0 rotas de Worker** na zona (a fantasma `diar.ia.br/2026/o-agente*` foi
   removida em 25/08 — ver #467). Se aparecer rota nova, não é resíduo: é algo
   que o cutover criou.
-- O token de API do projeto **escreve DNS mas NÃO lê custom hostnames**
+- O token de API do projeto **NÃO lê custom hostnames**
   (`Authentication error` em `/custom_hostnames`). O lado Cloudflare for SaaS
   da Beehiiv só é observável pelo painel — não automatizar checagem por ali.
+  **Correção (26/08/2026):** o texto original desta linha dizia só "escreve
+  DNS" — incompleto. Confirmado ao vivo que o token também escreve **Workers
+  routes** da zona (`DELETE /zones/{z}/workers/routes/{id-inexistente}` →
+  HTTP **404**, não 403 — 404 prova permissão de escrita, só o recurso não
+  existe) e, por extensão, o recurso de Workers Custom Domains usado pelo
+  `--cutover` de `scripts/apex-cutover.ts` (ver §7 abaixo). A única lacuna
+  real do token é `/custom_hostnames` (produto Cloudflare for SaaS da
+  Beehiiv) — nada relacionado à nossa zona.
 
 ## 2. Gatilhos de rollback
 
@@ -134,6 +170,7 @@ Registrado para a decisão de reverter ser informada, não otimista:
 ```bash
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
 for u in "https://diar.ia.br/" "https://diar.ia.br/robots.txt" \
+         "https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia" \
          "https://arquivo.diar.ia.br/" "https://especial.diar.ia.br/2026/o-agente/"; do
   printf "%-50s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' -A "$UA" --max-time 20 "$u")"
 done
@@ -148,8 +185,21 @@ Sinais de que o cutover **funcionou** (não só "respondeu"):
 - `GET /robots.txt` **não** contém `# beehiiv default robots.txt` no topo
 - `GET /p/{slug}` de uma edição traz `<html lang="pt-BR">`, não `lang="en"`
 - a meta description da página descreve **aquela** edição, não outras (#5101)
+- `GET /p/{slug}` (sem barra — forma indexada pelo Google e referenciada no
+  repo) dá **200 direto**, não 307. Um 307 aí significa que o
+  `html_handling` do Worker voltou a canonicalizar pra COM barra
+  (`workers/site/wrangler.toml`), contradizendo o `<link rel="canonical">`
+  sem barra que a própria página serve — o cenário de "cópia, canônica
+  divergente" do `docs/seo-notes.md` Fato 2, desta vez causado pelo lado do
+  Worker. **Diferença do Fato 2:** lá os três sinais estavam CORRETOS e a
+  causa era crawl desatualizado do Google — resolveu-se sozinho, sem mexer
+  em código. Aqui é config de servidor (`html_handling`) que não muda
+  sozinha — exige o fix de 1 linha no `wrangler.toml`, não esperar. **E não
+  é gatilho de rollback de DNS** (seção 2): um 307 aqui significa "o Worker
+  ainda não está pronto" (bug de config, fix rápido), não "reverter" — o
+  gatilho 2 da seção 2 pressupõe `/p/{slug}` fora do ar, não redirecionando.
 
-Os três são exatamente o que o cutover existe para consertar; se qualquer um
+Os quatro são exatamente o que o cutover existe para consertar; se qualquer um
 continuar como antes, o apex ainda não é nosso, independentemente do 200.
 
 ## 6. Antes de abrir a janela
@@ -161,3 +211,65 @@ continuar como antes, o apex ainda não é nosso, independentemente do 200.
       **e** ao da Cloudflare (rollback)
 - [ ] Janela fora do horário de envio da edição (06:00 BRT) e do cluster de
       tasks matinais (09:00-09:50) — ver `docs/scheduled-tasks-registry.md`
+
+## 7. `scripts/apex-cutover.ts` — o lado Cloudflare deste plano é um script, não mais um procedimento manual
+
+Achado ao vivo em 26/08/2026 (comentários do #467): o cutover não é "editor em
+dois painéis" — é **um**. O painel da Beehiiv (`Disconnect domain`) é o único
+passo humano; tudo que este documento descreve do lado Cloudflare (seções 3-5)
+está mecanizado em `scripts/apex-cutover.ts`, dry-run por padrão:
+
+```bash
+npx tsx scripts/apex-cutover.ts --status              # lê o estado atual (nunca muta)
+npx tsx scripts/apex-cutover.ts --cutover              # imprime o plano (dry-run)
+npx tsx scripts/apex-cutover.ts --cutover --apply      # executa
+npx tsx scripts/apex-cutover.ts --rollback             # imprime o plano (dry-run)
+npx tsx scripts/apex-cutover.ts --rollback --apply     # executa — restaura exatamente a §1
+```
+
+O que o script faz por você, e onde:
+
+- **§1 (estado a restaurar):** `--status` lê os registros A/AAAA do apex com
+  os IDs atuais direto da zona — nunca precisa reconferir este arquivo à mão.
+- **§2 (gatilhos):** `--status` já mede com User-Agent de navegador, pelos
+  mesmos paths desta seção.
+- **§3 (procedimento):** `--rollback` faz a ordem certa sozinho — solta o
+  Custom Domain (3.1) ANTES de restaurar A/AAAA (3.2), e resolve o "id
+  diferente" da 3.2 automaticamente (lê o id atual e faz PATCH nele).
+  **Rode `--status` IMEDIATAMENTE antes de `--rollback --apply`** — o
+  dry-run do rollback (`--rollback` sem `--apply`) imprime o PLANO (attach a
+  soltar + patches/creates), não os registros crus da zona, então uma
+  duplicata (2 registros A, por exemplo um remanescente do Custom Domain
+  mais um manual) não fica visível ali. `--status` imprime `dns.A`/`dns.AAAA`
+  crus — é onde uma duplicata aparece antes de decidir aplicar. Desde a PR
+  #6364, uma duplicata detectada faz `--rollback` (com ou sem `--apply`)
+  **lançar** em vez de silenciosamente escolher "o primeiro registro" — mas
+  o operador só vê a mensagem de erro DEPOIS de já ter tentado; rodar
+  `--status` antes evita a surpresa.
+- **`--cutover`** mecaniza o passo que faltava documentar aqui: remove
+  primeiro o A/AAAA legado do apex (se existir — #6373, ver blockquote de
+  topo) e ENTÃO anexa o apex ao Worker `diaria-site` via **Workers Custom
+  Domain** (`PUT /accounts/{account}/workers/domains`) — o mesmo mecanismo
+  por trás de `custom_domain = true` em `wrangler.toml`, comprovado 3× em
+  produção neste projeto (`livros.`, `cursos.`, `especial.diar.ia.br`).
+  Justificativa completa do porquê deste mecanismo (e não uma Workers Route
+  clássica, já refutada pra este apex, nem editar `wrangler.toml` +
+  `wrangler deploy`) — e do porquê de remover A/AAAA automaticamente em vez
+  de só recusar com um guard — no docstring de `scripts/lib/apex-cutover.ts`
+  (`buildCutoverPlan`). **Guard de pré-condição embutido:** recusa (exit 1) a menos que `/` sirva 200 **com o `<title>`
+  real no corpo** (não só "responder alguma coisa" — um Worker que capture
+  uma exceção e devolva 200 com página de erro passaria despercebido só com
+  status) **e** `/subscribe` **redirecione (3xx)** pro perfil Kit hospedado
+  (`diar-ia-br.kit.com`) — `/subscribe` é um redirect por design, não uma
+  página 200 (#6359/#6363/#6365, em implementação paralela a este script).
+- **Verificação pós-mutação (#573):** todo `--apply` termina relendo o
+  estado da API (nunca confia na resposta do PUT/PATCH/POST/DELETE).
+- **O que o script NUNCA toca:** MX/TXT/CAA do apex, nem a Beehiiv — o
+  `Disconnect domain` continua manual, no painel dela.
+
+Testes: `test/apex-cutover.test.ts` (miolo puro — `scripts/lib/apex-cutover.ts`,
+sem rede, sem mock de `fetch`) e `test/apex-cutover-script.test.ts` (camada de
+I/O do script — `fetch` mockado com um estado de zona em memória, mesmo
+padrão de `test/worker-drift-check-script.test.ts`; cobre a sequência guard →
+mutação → verificação, contagem de chamadas de mutação com/sem `--apply`, e
+os exit codes 1/2/3).

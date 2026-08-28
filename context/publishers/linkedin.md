@@ -457,30 +457,83 @@ Publish, e o artigo agendado aparece em
 
 ---
 
-## É IA? no feed (publicação manual)
+## É IA? nas redes (dispatch avulso, fora do `/diaria-5-publicacao`)
 
-O quiz "É IA?" não sai pelo `/diaria-5-publicacao` — é postado à mão. Antes
-de postar, gerar a arte carimbada:
+O quiz "É IA?" não sai pelo `/diaria-5-publicacao` (#6169). Existem dois
+scripts, sempre nessa ordem — a arte primeiro, o dispatch depois:
 
 ```
 npx tsx scripts/gen-eia-linkedin-cards.ts --edition AAMMDD
+npx tsx scripts/publish-eia-social.ts --edition AAMMDD \
+  --at 2026-08-26T09:50:00-03:00 [--skip canal[,canal]] [--dry-run] [--force]
 ```
 
-Saem 3 arquivos na raiz da edição. Use `01-eia-linkedin-ab.jpg` (composto
-4:5, as duas fotos empilhadas) num post de **imagem única** — é o caminho
-seguro, porque a colagem multi-imagem do LinkedIn corta as laterais de cada
-tile e come justamente o carimbo. Os avulsos `01-eia-linkedin-{A,B}.jpg`
-(1:1) existem pra quem quiser o multi-imagem mesmo assim.
+Nenhum dos dois é chamado por skill nenhuma — gatilho é sempre manual, o
+editor decide quando o quiz vai pras redes (risco de script órfão conhecido
+e aceito, ver #6169). Docstring de cada arquivo tem o detalhe completo
+(flags, exit codes, idempotência); aqui vai só o que muda por rede.
+
+### 1. Arte (`gen-eia-linkedin-cards.ts`)
+
+Saem 3 arquivos na raiz da edição: `01-eia-linkedin-ab.jpg` (composto 4:5,
+as duas fotos empilhadas — usado por LinkedIn/Facebook/Threads/X) e os
+avulsos `01-eia-linkedin-{A,B}.jpg` (1:1 — usados só pelo carrossel do
+Instagram). A colagem multi-imagem corta as laterais de cada tile e come
+justamente o carimbo A/B — por isso o composto único é o formato seguro
+fora do Instagram.
 
 A arte abre com a pergunta ("Qual imagem foi gerada por IA?") porque muita
 gente passa o olho na imagem sem ler a legenda do post.
 
-Como não existe enquete com imagem no LinkedIn, o palpite vai nos
-comentários (A ou B) e o **gabarito é um comentário no próprio post, 48h
-depois** — não um post novo. O alcance orgânico se concentra nas primeiras
-24-48h e o post continua circulando enquanto recebe comentário; responder no
-mesmo dia mata o jogo pra quem chega no dia seguinte, e passar de 3 dias
-entrega o gabarito pra ninguém.
+### 2. Textos por canal (`01-eia-social.md`, escrito à mão)
+
+`publish-eia-social.ts` lê o texto de cada rede de uma seção `## {canal}`
+nesse arquivo, na raiz da edição — `## linkedin`, `## facebook`,
+`## instagram`, `## threads`, `## twitter` (mesma forma dos `## d{N}` de
+`03-social.md`, mas nível 2 sob um único `#`). O link com UTM (ver abaixo)
+já vai escrito dentro do texto de cada seção — o script não injeta nada,
+só extrai. Falta a seção de um canal que não foi passado em `--skip` →
+o script aborta com erro nomeando qual falta.
+
+### 3. Dispatch (`publish-eia-social.ts`)
+
+Por canal:
+
+| Canal | Caminho | Arte |
+|---|---|---|
+| LinkedIn, Instagram, Threads | fila do Worker `diaria-linkedin-cron` (mesma da Etapa 5) | composto 4:5 (Instagram: carrossel A→B, os dois 1:1) |
+| Facebook | Graph API, `scheduled_publish_time` | composto 4:5 |
+| X (Twitter) | NÃO despachado daqui — a API da Buffer só é alcançável por MCP, dentro de uma sessão de agente. O script imprime `twitter_handoff` (texto + `image_url` + `due_at`) pra sessão criar o post via `mcp__claude_ai_Buffer__create_post` | composto 4:5 |
+
+`--at` é obrigatório e precisa ser ISO **com offset** (`2026-08-26T09:50:00-03:00`)
+— nunca "amanhã 9h" resolvido pelo script, porque o fuso da máquina que
+dispara não é necessariamente o do editor. IDEMPOTENTE por canal: cada
+agendamento bem-sucedido grava em `_internal/eia-social-published.json`, e
+um canal já registrado é pulado num re-run (retry seguro após falha
+parcial) — `--force` ignora o registro e agenda de novo, criando um post
+NOVO (nunca move o que já existe). `--dry-run` faz tudo menos as chamadas
+de escrita (upload de imagem, fila, Graph API) e imprime o plano.
+
+Como não existe enquete com imagem em nenhuma dessas redes, o palpite vai
+nos comentários (A ou B) e o **gabarito é um comentário no post original,
+48h depois** — não um post novo. O alcance orgânico se concentra nas
+primeiras 24-48h e o post continua circulando enquanto recebe comentário;
+responder no mesmo dia mata o jogo pra quem chega no dia seguinte, e passar
+de 3 dias entrega o gabarito pra ninguém.
+
+### Verificação pós-dispatch
+
+Não existe verificador dedicado pro estado `eia-*` — `verify-social-worker-dispatch.ts`
+foi desenhado pro fluxo padrão da Etapa 5 (`06-social-published.json`), não
+pro `eia-social-published.json` avulso (`verify-scheduled-post.ts` é caso à
+parte: verifica só o post da newsletter no Beehiiv, `05-published.json` —
+nunca teve relação com canais sociais). Pra conferir se um canal realmente
+saiu: X via
+`mcp__claude_ai_Buffer__get_post` (status `sent`/`error` + `sentAt`);
+LinkedIn/Instagram/Threads exigem `DIARIA_LINKEDIN_CRON_URL`/`_TOKEN` pra
+consultar o Worker; Facebook exige o token de página (Graph API). Sem essas
+credenciais na sessão, a verificação não é possível sem inventar dado —
+reportar o que faltou, não assumir sucesso.
 
 ### Link no corpo — exceção ao #595/#3627, escopo deste post
 

@@ -176,6 +176,8 @@ import { scheduledAtForDate } from "./lib/clarice-wave-plan.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
+import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
+import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 
 loadProjectEnv();
 
@@ -927,6 +929,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }
       console.error(`↷ ${key} já criada (#${existing.campaignId}) — pulando`);
     } else {
+      // #6307: guard preventivo — só se aplica ao braço `--group` (a key
+      // digitada à mão do caminho de recuperação manual, causa raiz do
+      // incidente); o braço `--list-id` usa `list-{listId}` como default,
+      // que NUNCA teria sufixo `-H{HH}` mesmo em uso legítimo sem teste de
+      // horário — checar lá daria falso positivo permanente.
+      if (groupArg) {
+        const hourTestState = readClariceHourTestState(ROOT);
+        const clash = checkKeyAgainstHourTest(key, hourTestState, hasFlag(argv, "ignore-hour-test"));
+        if (clash) {
+          console.error(`\n❌  ERRO: ${clash}`);
+          process.exit(1);
+        }
+      }
       const subject = parseSubjectArg(argv);
       if (!subject) throw new Error("--create requer --subject \"Assunto da campanha\".");
       // #3228: opcional (paridade com publish-monthly.ts, que sempre mandava

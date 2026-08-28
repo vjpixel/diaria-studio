@@ -379,6 +379,10 @@ Falha do max = destaque inflado — re-disparar writer com instruction de trimar
   ```
   Cobre 5 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) `_internal/intentional-error.json` existe (#2284, migrado #3222) — placeholder OK, valores preenchidos pelo editor via chat (não mais via Drive), (e) `intentional-error.json.reveal` (quando já preenchido) começa com "Na última edição" ou outra palavra-gancho temporal reconhecida pelo renderer (#6139) — sem isso, o box de reveal da EDIÇÃO SEGUINTE não é renderizado, silenciosamente. Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/intentional-error.json/reveal-temporal-prefix são todos invariantes do Stage 2.
 
+  **Autofix de `fabricated-ellipsis` embutido nesta mesma chamada (#6441).** Antes dos 5 checks acima, o `main()` de `check-stage2-invariants.ts` roda `runSecondaryItemEllipsisAutofix` (`scripts/apply-secondary-item-coherence-autofix.ts`) sobre `{EDITION_DIR}/02-reviewed.md`: restaura mecanicamente qualquer descrição de item secundário (RADAR/USE MELHOR/LANÇAMENTOS) que terminou truncada em "…" entre o stitch e o humanizador, colando o trecho correspondente do `summary` de `01-approved.json` — só quando o summary de origem está íntegro (prefixo bate exatamente). Loga em `_internal/secondary-item-coherence-autofix.json`; best-effort, nunca bloqueia (arquivo ausente = no-op silencioso, item sem prefixo confiável ou com summary TAMBÉM truncado = deixado como está, pra reescrita manual no gate). Por isso o check `secondary-item-coherence` do Stage 4 (`.claude/agents/orchestrator-stage-4.md` §4c.2) rebaixou `fabricated-ellipsis` recuperável pra warn-only — só o caso irrecuperável (summary também truncado, lixo de RSS) segue gate-blocking.
+
+  **Não é mais só um passo em prosa (#6337).** Mesma classe de gap que o #6305 fechou pro sentinel do humanizador social: os 5 checks acima só existiam como esta chamada em prosa — nenhum estava registrado em `STAGE_2_RULES`, então `pipeline-sentinel.ts write --step 2` (#6009) não os cobria e uma sessão que pulasse esta chamada passava pelo gate mecânico sem detecção. Os 5 (`newsletter-humanizador-diff-ran`, `clarice-ran`, `erro-intencional-rendered`, `intentional-error-json-exists`, `reveal-temporal-prefix`) agora também rodam via `scripts/lib/invariant-checks/stage-2.ts` dentro de `write --step 2` — esta chamada explícita continua valendo (roda mais cedo, antes do gate humano, com mensagem mais rica), mas deixa de ser a ÚNICA barreira.
+
 ### 2c. Processar social
 
 Após os social agents retornarem, fazer merge em `03-social.md` via script TS. Substitui o snippet inline anterior (#870) — agora com try/catch, validação de tmp files e error reporting actionable:
@@ -441,6 +445,8 @@ npx tsx scripts/clarice-diff.ts \
 npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
 ```
 Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.
+
+**Não é mais só um passo em prosa (#6305).** Caso real (edição 260827): o humanizador rodou de fato (snapshot `03-social-pre-humanizador.md` presente, diff confirmando reescrita), mas esta chamada `--write` nunca aconteceu numa sessão via `run-edition-stages.ts` — e o `humanizer-ran` (guard mecânico de #6009 que já bloqueava o `write` do sentinel de Stage 2) não capturava isso, porque ele só prova que a skill `humanizador` rodou (via snapshot), não que este passo seguinte rodou. O Stage 4 só descobriu no `check-humanizer-social.ts --check`, exit 1, tarde demais pra ser barato de corrigir. A regra `social-humanizer-sentinel-written` (`scripts/lib/invariant-checks/stage-2.ts`) fecha essa lacuna: `pipeline-sentinel.ts write --step 2` (mesmo gate do `humanizer-ran`) agora também recusa gravar o sentinel do Stage 2 se `_internal/.humanizer-social-done.json` estiver ausente ou com hash divergente do `03-social.md` atual — pular esta chamada não passa mais silenciosamente.
 
 Exit code handling:
 - `0` → sentinel gravado com sucesso.
@@ -546,6 +552,13 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
       --in {EDITION_DIR}/02-reviewed.md
     ```
     Falha = warning, **não bloqueia** (gate já aprovou).
+
+  - **Re-gravar sentinel de humanizador social pós-gate (#6305).** Rodar de novo, **depois** da aprovação do gate acima e **antes** do `pipeline-sentinel.ts write` abaixo:
+    ```bash
+    npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
+    ```
+    **Por que este passo existe aqui (não é redundante com a chamada de §2c):** o gate de §2d convida o editor a editar `03-social.md` diretamente — mudança legítima e esperada. A chamada `--write` de §2c grava o hash sobre o texto de ANTES do gate; se o editor mexer no arquivo durante o gate (mesmo 1 palavra), o hash fica stale e a regra `social-humanizer-sentinel-written` (`scripts/lib/invariant-checks/stage-2.ts`, #6305) bloqueia o `pipeline-sentinel.ts write` logo abaixo com `hash_mismatch` — não porque algo quebrou, mas porque ninguém re-registrou o texto que o editor de fato aprovou. Re-rodar aqui fecha esse gap: o hash final bate com o texto pós-gate, e `hash_mismatch` volta a significar só o caso real (alguém editou `03-social.md` por fora deste playbook, sem re-humanizar/re-registrar). **Não remover como "já rodou em §2c"** — é exatamente essa suposição que reintroduz o falso-positivo.
+    Exit code handling: mesmo padrão da chamada de §2c — `0` = sentinel regravado; `1` = falha ao gravar (permissão, disco) — logar warn e **CONTINUAR Stage 2** (Stage 4/gate de write abaixo vai bloquear até o sentinel ser gravado manualmente).
 
   - **Escrever sentinel de conclusão do Stage 2:**
     ```bash

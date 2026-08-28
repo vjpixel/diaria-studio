@@ -25,6 +25,7 @@ import {
   checkNoPlaceholderTitleHighlights,
   checkUrlMatchesArticleUrl,
   checkNoMissingSummaryHighlights,
+  checkLancamentoHasProductSignal,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -871,6 +872,65 @@ describe("Stage 1 invariants", () => {
     const v = checkUrlMatchesArticleUrl(fixture);
     assert.equal(v.length, 1, "1 violation agregada, não 1 por item");
     assert.match(v[0].message, /2 item/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #6440: backstop — lancamento[] sem sinal POSITIVO de produto (#1968) ---
+
+  it("lancamento-has-product-signal sem violation quando 01-approved.json ausente", () => {
+    const v = checkLancamentoHasProductSignal(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("lancamento-has-product-signal passa quando lancamento[] tem sinal de produto", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        lancamento: [{ url: "https://openai.com/index/gpt-5", title: "GPT-5" }],
+      }),
+    );
+    const v = checkLancamentoHasProductSignal(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // CASO REAL 260828 (#6440): os 2 URLs citados na issue chegaram a
+  // lancamento[] sem sinal positivo de produto (expansão de programa da
+  // OpenAI, piloto de avaliação do DeepMind) — `categorize.ts` (#6440) já
+  // filtra esses dois casos específicos, mas esta invariante é a rede de
+  // segurança pra qualquer item que escape a heurística de categorização
+  // (ex: editor promove manualmente um item pro bucket lancamento no gate).
+  it("lancamento-has-product-signal falha (error) quando item não tem sinal positivo de produto", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        lancamento: [
+          {
+            url: "https://openai.com/index/bringing-chatgpt-for-teachers-to-more-us-school-districts",
+            title: "Bringing ChatGPT for Teachers to more US school districts",
+          },
+          {
+            url: "https://deepmind.google/blog/piloting-the-worlds-first-double-blind-ai-evaluations/",
+            title: "Piloting the world's first double-blind AI evaluations",
+          },
+        ],
+      }),
+    );
+    const v = checkLancamentoHasProductSignal(fixture);
+    assert.equal(v.length, 1, "1 violation agregada, não 1 por item");
+    assert.equal(v[0].rule, "lancamento-has-product-signal");
+    assert.equal(v[0].severity, "error", "gate-blocking, defesa em profundidade do #1968");
+    assert.equal(v[0].source_issue, "#6440");
+    assert.match(v[0].message, /bringing-chatgpt-for-teachers/);
+    assert.match(v[0].message, /piloting-the-worlds-first-double-blind-ai-evaluations/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("lancamento-has-product-signal sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkLancamentoHasProductSignal(fixture);
+    assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
 });

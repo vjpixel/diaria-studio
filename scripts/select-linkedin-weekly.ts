@@ -7,8 +7,11 @@
  *      AAMMDD da segunda de PUBLICAÇÃO.
  *   2. Lê `02-reviewed.md` de cada edição da janela, extrai candidatos
  *      (destaques + itens de seção).
- *   3. Cruza com o cache local de cliques do Beehiiv
- *      (`data/beehiiv-cache/posts/*.json`).
+ *   3. Cruza com o cache local de cliques (#6185: Beehiiv `data/beehiiv-cache/posts/*.json`
+ *      E Kit `data/kit-cache/broadcasts/*.json`, via `loadUnifiedPostsForRanking`
+ *      — mesma partição por origem que o #6048 aplicou à verificação de
+ *      assinante; o manifest de enriquecimento via MCP continua Beehiiv-only,
+ *      ver `loadBeehiivCache`/`identifyWeeklyPostsNeedingClicks` abaixo).
  *   4. Ranqueia por taxa (cliques verificados ÷ aberturas), filtra links
  *      comerciais/próprios, seleciona manchetes + Use Melhor + Edições da
  *      semana (link + destaques de cada edição, até 5).
@@ -54,6 +57,11 @@ import {
   uniqueOpensOf,
   type BeehiivCachePost,
 } from "./lib/weekly-linkedin-clicks.ts";
+import {
+  loadBeehiivCache as loadUnifiedBeehiivCache,
+  loadKitCache,
+  mergeEditionsByDate,
+} from "./lib/shared/edition-cache-reader.ts";
 import {
   toRankedCandidate,
   computeHeadlineCap,
@@ -102,6 +110,33 @@ function readEdition(date: string, editionsRootDir: string): EditionRead {
   };
 }
 
+/**
+ * Wrapper fail-soft de leitura unificada Beehiiv+Kit (#6185, mesmas peças de
+ * `edition-cache-reader.ts` que `loadUnifiedEditionCache` combina) —
+ * diretório Beehiiv ausente vira `[]` em vez de lançar.
+ * `loadUnifiedEditionCache` cru lança nesse caso porque trata Beehiiv como
+ * fonte PRIMÁRIA obrigatória; este script não pode ter essa exigência
+ * porque `--publish-monday` roda em qualquer edição, inclusive em tmpdir de
+ * teste sem `data/beehiiv-cache/` (mesmo raciocínio de
+ * `loadUnifiedPostsCache`, `box-click-report.ts`). `loadKitCache` já é
+ * fail-soft (diretório ausente → `[]`) — sem mudança necessária desse lado.
+ * Usada só pra SELEÇÃO por clique (ranking) — o manifest de enriquecimento
+ * via MCP (`identifyWeeklyPostsNeedingClicks`) continua Beehiiv-only de
+ * propósito e usa `loadBeehiivCache` (RAW, abaixo) em vez desta função.
+ */
+function loadUnifiedPostsForRanking(beehiivPostsDir: string, kitBroadcastsDir: string) {
+  const beehiiv = existsSync(beehiivPostsDir) ? loadUnifiedBeehiivCache(beehiivPostsDir) : [];
+  const kit = loadKitCache(kitBroadcastsDir);
+  return mergeEditionsByDate(beehiiv, kit);
+}
+
+/**
+ * Lê o cache RAW do Beehiiv (shape `BeehiivCachePost`, com `id` — usado só
+ * pelo manifest de enriquecimento via MCP, `identifyWeeklyPostsNeedingClicks`,
+ * que é Beehiiv-only de propósito — ver docstring de `weekly-linkedin-clicks.ts`).
+ * A SELEÇÃO por clique (ranking) usa `loadUnifiedPostsForRanking` (#6185,
+ * cache Beehiiv+Kit) em vez desta função — ver `main()`.
+ */
 function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
   if (!existsSync(beehiivPostsDir)) return [];
   const out: BeehiivCachePost[] = [];
@@ -126,6 +161,15 @@ export function main(rootDirOverride?: string) {
   const rootDir = rootDirOverride ?? ROOT;
   const editionsRootDir = join(rootDir, "data/editions");
   const beehiivPostsDir = join(rootDir, "data/beehiiv-cache/posts");
+  // #6185: dir Kit relativo ao MESMO rootDir de teste (nunca o repo real) —
+  // mesmo padrão de `beehiivPostsDir` acima (#4489 finding 4). Equivale a
+  // `DEFAULT_KIT_BROADCASTS_DIR` quando `rootDirOverride` está ausente (os
+  // dois resolvem pro mesmo `ROOT` do repo) — join explícito em vez do
+  // default importado pra manter os dois dirs consistentes sob o MESMO
+  // rootDir de teste. Sem escritor ainda (`kit-sync.ts`), então na prática
+  // hoje é sempre "diretório ausente" → `[]` (ver `loadKitCache`,
+  // `edition-cache-reader.ts`).
+  const kitBroadcastsDir = join(rootDir, "data/kit-cache/broadcasts");
 
   const argv = process.argv.slice(2);
   const publishMonday = getArg(argv, "publish-monday");
@@ -165,6 +209,8 @@ export function main(rootDirOverride?: string) {
   const editions = contentWindow.map((d) => readEdition(d, editionsRootDir));
   const editionsFound = editions.filter((e) => e.found);
 
+  // Manifest de enriquecimento via MCP — Beehiiv-only de propósito (ver
+  // docstring de `loadBeehiivCache` acima e de `weekly-linkedin-clicks.ts`).
   const cachePosts = loadBeehiivCache(beehiivPostsDir);
   const windowPosts = matchPostsToWindow(cachePosts, contentWindow);
 
@@ -174,6 +220,16 @@ export function main(rootDirOverride?: string) {
     return;
   }
 
+  // #6185: seleção por clique lê Beehiiv+Kit unificado — mesma partição por
+  // origem que o #6048 aplicou à verificação de assinante (edição de origem
+  // Kit também compete por clique real, quando existir escritor Kit; hoje
+  // `loadKitCache` devolve `[]` sem `kit-sync.ts`, então o comportamento
+  // observável não muda até esse escritor existir — a camada já fica pronta).
+  const windowPostsUnified = matchPostsToWindow(
+    loadUnifiedPostsForRanking(beehiivPostsDir, kitBroadcastsDir),
+    contentWindow,
+  );
+
   if (editionsFound.length === 0) {
     console.error(`Nenhuma edição encontrada na janela ${contentWindow.join(", ")} — nada pra selecionar.`);
     process.exit(1);
@@ -182,10 +238,10 @@ export function main(rootDirOverride?: string) {
   const allCandidates: WeeklyRawCandidate[] = editionsFound.flatMap((e) => e.candidates);
 
   const ranked: WeeklyRankedCandidate[] = allCandidates.map((c) => {
-    const post = windowPosts.get(c.editionDate);
+    const post = windowPostsUnified.get(c.editionDate);
     const clicks = clickCountsForUrl(c.url, post?.stats?.clicks);
     const opens = uniqueOpensOf(post);
-    return toRankedCandidate(c, clicks, opens, windowPosts.has(c.editionDate));
+    return toRankedCandidate(c, clicks, opens, windowPostsUnified.has(c.editionDate));
   });
 
   const headlineCap = computeHeadlineCap(editionsFound.length);
@@ -255,10 +311,10 @@ export function main(rootDirOverride?: string) {
   // candidatos dessa edição caem em ratePct=0 e perdem a disputa por
   // manchete sem NENHUM sinal de que foi por falta de dado, não de
   // engajamento real.
-  const editionsMissingClickData = editionsFound.filter((e) => !windowPosts.has(e.date)).map((e) => e.date);
+  const editionsMissingClickData = editionsFound.filter((e) => !windowPostsUnified.has(e.date)).map((e) => e.date);
   for (const date of editionsMissingClickData) {
     warnings.push(
-      `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv; candidatos dessa edição não competiram por clique real.`,
+      `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv/Kit; candidatos dessa edição não competiram por clique real.`,
     );
   }
 

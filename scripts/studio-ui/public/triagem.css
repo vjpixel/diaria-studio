@@ -147,6 +147,9 @@
 }
 .track-overnight { border-color: var(--brand); color: var(--brand); }
 .track-develop { border-color: var(--status-info); color: var(--status-info); }
+/* texto em warn-ink, nunca warn cru (2,73:1 sobre --paper — mesmo finding
+   do review #6461; warn cru fica só na borda) */
+.track-continuo { border-color: var(--status-warn); color: var(--status-warn-ink); }
 .track-other { opacity: 0.6; }
 /* #3714: kinds da superfície de Relatórios (relatorios.js reusa .track-badge) */
 .track-edicao { border-color: var(--status-ok); color: var(--status-ok); }
@@ -215,6 +218,60 @@
    porque a regra que se quer expressar é "a borda acompanha o texto": se a
    cor herdada mudar, a borda segue junto sem ninguém precisar lembrar. */
 .dispatch-fora-de-rodada { border-color: currentColor; opacity: 0.7; }
+
+/* #6436 — badge de claim ativo (`data/sessions/`), sempre ao lado do badge de
+   Classificação (`.dispatch-badge`), não substituindo — a issue continua
+   classificada `overnight`/etc, só que já com dono. Neutro por opacidade
+   sobre o texto herdado, mesmo padrão de `.dispatch-fora-de-rodada` acima —
+   claim não é um veredito de PRIORIDADE, é um estado de "já tem alguém
+   olhando", que pede menos destaque visual que a classificação em si. */
+.claim-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.4rem;
+  margin-left: 0.3rem;
+  border-radius: 4px;
+  border: 1px dashed currentColor;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+/* 28/08 (pedido do editor): kind da sessão dona do claim com cor própria —
+   o caso que motivou é o CONTINUO, cujo trabalho aparecia como "overnight"
+   porque o execTrack da issue é overnight (taxonomia) e este badge era o
+   único lugar onde o kind real aparecia.
+   Contraste (finding P2 do review do PR #6461): colorir o TEXTO com
+   --status-warn/--brand falha WCAG AA em qualquer opacidade (warn 2,73:1,
+   brand 3,08:1 cheios sobre --paper) — então a cor vai SÓ NA BORDA
+   (requisito não-textual, 3:1) e o texto fica em tinta de alto contraste,
+   no padrão R7 do guia: o kind já está escrito no texto do badge, cor é
+   reforço. Continuo: opacidade cheia + borda sólida warn + texto
+   --status-warn-ink (12,8:1 — o token que design-tokens.ts documenta como
+   obrigatório pra texto em badge warn). Overnight/develop: só a borda
+   colorida, texto herdado (--ink a 0.7 = 6,68:1, o baseline pré-PR). */
+.claim-kind-continuo { border-color: var(--status-warn); color: var(--status-warn-ink); opacity: 1; border-style: solid; }
+.claim-kind-develop { border-color: var(--status-info); }
+.claim-kind-overnight { border-color: var(--brand); }
+
+/* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
+   de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de
+   docs/studio-ui-ux-guidelines.md, tooltip não é suficiente sozinho); esta
+   classe reforça no visual pra quem está escaneando a coluna rápido.
+   `border-style: dashed` é o MESMO tratamento que `.dispatch-epica` usa pra
+   "isto não é uma classificação fechada/verificada" — reaproveita o
+   vocabulário visual já estabelecido em vez de inventar um 2º idioma
+   (hachura, ícone) só pra este caso. Empilha por cima de `.dispatch-overnight`
+   (cor do texto vem de lá; aqui só o estilo da borda muda).
+   `border-color: currentColor` é EXIGIDO por `test/studio-css-badge-border.test.ts`
+   (#5484: toda variante `.dispatch-*` precisa casar borda↔texto DENTRO da
+   própria regra — herdar de `.dispatch-overnight` por empilhamento de classe
+   não conta pro teste, que lê cada seletor isoladamente) — mesma técnica de
+   `.dispatch-epica`/`.dispatch-fora-de-rodada` acima: a cor de texto real
+   vem da classe base empilhada (`.dispatch-overnight` etc.), `currentColor`
+   aqui só garante que a borda SEMPRE acompanha qualquer que seja essa cor,
+   sem precisar declarar a cor de novo (e sem risco de divergir dela). */
+.dispatch-default { border-style: dashed; border-color: currentColor; }
 
 /* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
    o <select> fechado só mostra o texto da opção escolhida ("Issues ·

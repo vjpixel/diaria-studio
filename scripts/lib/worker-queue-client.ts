@@ -38,6 +38,55 @@ export interface WorkerQueuePayload {
   channel: "linkedin" | "instagram" | "threads";
 }
 
+/**
+ * deleteFromWorkerQueue (#6607)
+ *
+ * Cliente para `DELETE /queue/:key` — usado por qualquer fluxo de
+ * reagendamento ad-hoc que precisa remover uma entry já enfileirada antes
+ * de re-enfileirar com novo horário/conteúdo.
+ *
+ * O Worker (`workers/linkedin-cron/src/index.ts` `handleQueueDelete`)
+ * responde `404 { error: "key not found" }` quando a key já não existe —
+ * seja porque o post já disparou (o cron deleta a entry após postar) seja
+ * porque já foi cancelado/deletado antes. Achado ao vivo (#6607): um
+ * reagendamento chamou DELETE, ignorou o status da resposta, e seguiu para
+ * o re-enqueue mesmo quando o DELETE não achou a key — criando uma entry
+ * DUPLICADA na fila (o post original já tinha disparado). Esta função
+ * retorna `alreadyGone: true` em vez de lançar nesse caso, para que o
+ * caller trate 404 como sinal de ABORTAR o re-enqueue (opção 2 da issue —
+ * mais simples que adicionar um `GET /queue/:key` novo no Worker).
+ *
+ * `alreadyGone: true` NÃO é sucesso silencioso — o caller deve reportar
+ * isto ao editor/log antes de decidir o que fazer (o post pode já ter sido
+ * publicado, então reagendar de novo pode duplicar de outra forma se o
+ * conteúdo for postado por outro canal).
+ */
+export async function deleteFromWorkerQueue(
+  workerUrl: string,
+  token: string,
+  key: string,
+  logPrefix = "worker-queue-client",
+): Promise<{ deleted: boolean; alreadyGone: boolean; key: string }> {
+  const deleteUrl = workerUrl.replace(/\/+$/, "") + "/queue/" + encodeURIComponent(key).replace(/%3A/g, ":");
+  const res = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: { "X-Diaria-Token": token },
+    signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+  });
+  if (res.status === 404) {
+    console.warn(
+      `[${logPrefix}] DELETE ${key} → 404 (key not found — post já disparou ou já foi removido antes). ` +
+        `Abortando re-enqueue para evitar entry duplicada.`,
+    );
+    return { deleted: false, alreadyGone: true, key };
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Worker queue DELETE HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return { deleted: true, alreadyGone: false, key };
+}
+
 export async function postToWorkerQueue(
   workerUrl: string,
   token: string,

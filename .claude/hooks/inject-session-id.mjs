@@ -1,9 +1,14 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
-// standalone de `scripts/overnight-session-marker.ts` (--start/--phase) e
+// standalone de `scripts/overnight-session-marker.ts` (--start/--phase),
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
-// is-claimed/merge-lock-acquire/merge-lock-release) que ainda não trazem a
-// flag (#5156; `is-claimed` adicionado no #5161 fleet review item 4 — ver
-// nota abaixo sobre `INJECTABLE_SUBCOMMANDS`).
+// unclaim-issue/is-claimed/merge-lock-acquire/merge-lock-release),
+// `scripts/resolve-develop-plan-path.ts` e `scripts/resolve-overnight-
+// plan-path.ts` (incondicional pros 2 últimos — o script inteiro exige a
+// flag, sem noção de subcomando) que ainda não trazem a flag (#5156;
+// `is-claimed` adicionado no #5161 fleet review item 4 — ver nota abaixo
+// sobre `INJECTABLE_SUBCOMMANDS`; `resolve-develop-plan-path.ts` adicionado
+// no #6259/#6265; `resolve-overnight-plan-path.ts` adicionado no #6328;
+// `unclaim-issue` adicionado no #6317, mesmo motivo — ver `SESSION_ID_TARGETS`).
 //
 // Wired in .claude/settings.json under hooks.PreToolUse, matcher "Bash".
 //
@@ -56,24 +61,93 @@
 // gravado, `decideSessionGc` nunca alcança o branch "processo vivo protege
 // incondicionalmente" pra essas sessões, caindo direto na janela
 // conservadora de 7 dias por tempo (ver docblock de `decideSessionGc` em
-// `scripts/lib/session-registry.ts`). O hook roda como processo filho
-// direto do processo da sessão Claude Code corrente (spawnado pelo harness
-// a cada PreToolUse) — `process.ppid`, portanto, É o PID dessa sessão, o
-// mesmo processo que `defaultIsPidAlive`/`process.kill(pid, 0)` precisa
-// checar depois pra decidir se o registro ainda está "vivo". Mesma
+// `scripts/lib/session-registry.ts`). A premissa original era que o hook
+// roda como processo filho direto do processo da sessão Claude Code
+// corrente (spawnado pelo harness a cada PreToolUse), logo `process.ppid`
+// seria o pid dessa sessão. **#6294 mediu essa premissa como FALSA pelo
+// menos uma vez ao vivo**: numa sessão `overnight` demonstravelmente ativa,
+// o `pid` gravado por esta linha já não correspondia a processo nenhum —
+// `process.ppid`, neste harness, aponta pra um processo efêmero que morre
+// quase imediatamente, não pro processo persistente da sessão. Não dá pra
+// confirmar a partir deste repo se isso é sempre assim ou específico de
+// uma topologia do harness (camada opaca, não verificável daqui) — por
+// isso `decideSessionGc` não trata mais "pid morto" como sinal de remoção
+// (só "pid vivo" continua protegendo, erra sempre pro lado seguro). Mesma
 // disciplina fail-open do `--session-id`: `--pid` já presente no comando
 // nunca é sobrescrito.
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
+// #6259/#6265: `resolve-develop-plan-path.ts` é o 3º alvo — diferente dos
+// outros dois, não tem noção de subcomando: o script INTEIRO exige
+// `--session-id` (ele mesmo aborta com exit 2 se ausente, ver seu próprio
+// `--session-id ausente` guard), então "precisa de --session-id" é
+// incondicional pra qualquer chamada standalone que cite o script.
+const TARGET_RESOLVE_PLAN_PATH = "resolve-develop-plan-path.ts";
+// #6328: `resolve-overnight-plan-path.ts` é o 4º alvo, irmão direto do
+// anterior — mesmo script genérico (`scripts/lib/plan-path-resolution.ts`)
+// por trás, mesma regra incondicional de `--session-id`. Nome distinto o
+// suficiente (`overnight` vs `develop`) pra `command.includes(...)` nunca
+// confundir os dois.
+const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
-const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
+// #6168/#6296: `conflicts`, `grant-merge`, `check-merge-grant` e
+// `consume-merge-grant` entram pelo MESMO motivo que `is-claimed` entrou no
+// #5161 item 4 — todos recebem `--session-id` como a identidade de quem
+// pergunta. O modo de falha SEM a flag injetada não é uniforme entre os 4
+// (achado do fleet review #6303 — a versão anterior deste comentário dizia
+// "degradam em silêncio" pros 4, o que só é verdade pro primeiro):
+//   - `conflicts` usa `values["session-id"] ?? ""` direto, sem passar por
+//     `requireSessionId` — sem a flag, degrada EM SILÊNCIO: não consegue se
+//     auto-excluir dos peers, e a própria sessão aparece como conflito
+//     consigo mesma;
+//   - `grant-merge`, `check-merge-grant` e `consume-merge-grant` chamam
+//     `requireSessionId(values)`, que FALHA ALTO E CEDO (erro explícito
+//     "--session-id ausente…", nunca um resultado incorreto silencioso) —
+//     mesmo assim vale injetar aqui, porque o erro evitável (subcomando
+//     abortando por falta da flag) é o que a injeção existe pra prevenir,
+//     não porque o resultado errado seria silencioso.
+// #6317: `unclaim-issue` entra pelo mesmo motivo que `claim-issue` — precisa
+// da flag pra saber DE QUEM remover (`requireSessionId`, mesma disciplina de
+// falha alta e cedo do subcomando irmão).
+// #6334: `merge-lock-renew` entra pelo mesmo motivo que `merge-lock-acquire`/
+// `merge-lock-release` — precisa da flag pra saber de quem é o hold a renovar.
+const INJECTABLE_SUBCOMMANDS =
+  /\b(register|heartbeat|end|claim-issue|unclaim-issue|is-claimed|conflicts|grant-merge|check-merge-grant|consume-merge-grant|merge-lock-acquire|merge-lock-release|merge-lock-renew)\b/;
 // #6160: só o subcomando `register` aceita `--pid` (ver CLI de
 // scripts/lib/session-registry.ts) — os demais subcomandos não têm parâmetro
 // homônimo, então a injeção de `--pid` é restrita a este subcomando.
 const REGISTER_SUBCOMMAND = /\bregister\b/;
+
+// #6259/#6265: tabela de alvos pra `needsSessionId` — generalizado de "2
+// constantes + 2 `if`s" pra uma lista, porque um 3º alvo com regra PRÓPRIA
+// (incondicional, sem subcomando) deixaria o padrão anterior repetitivo.
+// Cada entrada decide, a partir do `command` JÁ sabido conter `match`, se a
+// flag é necessária — mantém as regras de `overnight-session-marker.ts` e
+// `session-registry.ts` byte-a-byte idênticas ao comportamento anterior
+// (mesmas regexes, mesma ordem de checagem), só movidas pra dentro da tabela.
+// `needsPid` NÃO usa esta tabela de propósito — `--pid` continua exclusivo
+// de `session-registry.ts register` (nenhum outro alvo aceita o parâmetro).
+const SESSION_ID_TARGETS = [
+  {
+    match: TARGET_MARKER,
+    needsSessionId: (command) => /--start\b/.test(command) || /--phase\b/.test(command),
+  },
+  {
+    match: TARGET_REGISTRY,
+    needsSessionId: (command) => INJECTABLE_SUBCOMMANDS.test(command),
+  },
+  {
+    match: TARGET_RESOLVE_PLAN_PATH,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_RESOLVE_OVERNIGHT_PLAN_PATH,
+    needsSessionId: () => true,
+  },
+];
 
 /**
  * Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`
@@ -92,11 +166,8 @@ export function isChainedCommand(command) {
 export function needsSessionId(command) {
   if (typeof command !== "string" || command.trim() === "") return false;
   if (isChainedCommand(command)) return false;
-  if (command.includes(TARGET_MARKER)) {
-    return /--start\b/.test(command) || /--phase\b/.test(command);
-  }
-  if (command.includes(TARGET_REGISTRY)) {
-    return INJECTABLE_SUBCOMMANDS.test(command);
+  for (const target of SESSION_ID_TARGETS) {
+    if (command.includes(target.match)) return target.needsSessionId(command);
   }
   return false;
 }

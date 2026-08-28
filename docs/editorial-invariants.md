@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 78 invariants.
+**Total**: 89 invariants.
 
 ## Static (estrutura do repo)
 
@@ -36,6 +36,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only) | #3916 |
+| `lancamento-has-product-signal` | lancamento[] nunca contém item sem sinal POSITIVO de produto (#1968, backstop #6440) | #6440 |
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
@@ -45,9 +46,16 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
+| `carousel-text-overflow` | parágrafo de 03-social.md não cabe no card do carrossel diário em tamanho fixo — mesma checagem do Stage 4, rodada cedo (#6439, #6078) | #6439 |
+| `clarice-ran` | Clarice rodou de fato sobre 02-reviewed.md (snapshot + suggestions.json presentes) (#6337, #1402) | #6337 |
+| `erro-intencional-rendered` | render-erro-intencional.ts rodou — sem placeholder literal remanescente em 02-reviewed.md (#6337, #1073) | #6337 |
 | `humanizer-ran` | humanizer rodou em 02-reviewed.md + 03-social.md (#1385) | #1385 |
+| `intentional-error-json-exists` | _internal/intentional-error.json existe — render-erro-intencional.ts inseriu o placeholder (#6337, #2284/#3222) | #6337 |
+| `newsletter-humanizador-diff-ran` | humanizador da newsletter rodou (diff _internal/02-normalized.md vs _internal/02-humanized.md) (#6337, #1072) | #6337 |
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
+| `reveal-temporal-prefix` | intentional-error.json.reveal (quando preenchido) começa com prefixo temporal reconhecido pelo renderer da edição seguinte (#6337, #6139) | #6337 |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares (#964) | #964 |
+| `social-humanizer-sentinel-written` | check-humanizer-social.ts --write rodou de fato no fim do Stage 2 — sentinel .humanizer-social-done.json existe e bate com 03-social.md atual (#6305) | #6305 |
 | `social-no-trailing-editorial-hook` | 03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658) | #2658 |
 | `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + platform-headers-unicos + humanizer-section-coverage (#595, #1861, #2148, #3388) | #595 |
 | `use-melhor-beginner-minimum` | USE MELHOR (pós-caps) tem ≥2 itens acessíveis a iniciantes — warn-only (#3213) | #3213 |
@@ -78,6 +86,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
+| `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
+| `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
@@ -101,6 +111,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch) | #facebook |
 | `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch) | #facebook |
 | `instagram-creds-set` | INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49) | #49 |
+| `kit-diaria-exclusive-audience-dispatched` | canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504) | #6582 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
 | `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |

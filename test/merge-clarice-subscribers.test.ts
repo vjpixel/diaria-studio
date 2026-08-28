@@ -4,6 +4,7 @@ import {
   recencyWeight,
   computeScore,
   isLowQualityEmail,
+  isSyntheticE2ERecord,
   mergeRecord,
   verifyRisk,
   openProbability,
@@ -199,6 +200,55 @@ describe("isLowQualityEmail", () => {
     const r = isLowQualityEmail("test@gmail.com");
     assert.equal(r.bad, true);
     assert.equal(r.reason, "fake_pattern");
+  });
+
+  // #6366: usuários E2E da suíte de teste da Clarice (collab-<epoch-ms>-<rand>)
+  // passam pelo MillionVerifier como catch_all em clarice.ai (domínio
+  // catch-all legítimo do parceiro, 23 endereços reais no store) e causaram
+  // 8,6% de hard bounce na campanha #182.
+  it("collab-<epoch-ms>-<rand>@clarice.ai (endereço sintético E2E, domínio catch-all real) → bad (#6366)", () => {
+    const r = isLowQualityEmail("collab-1787632203829-4ltker@clarice.ai");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "synthetic_e2e_local_part");
+  });
+
+  it("regular-<epoch-ms>@clarice.ai (mesma família, domínio catch-all real) → bad (#6366)", () => {
+    const r = isLowQualityEmail("regular-1787632203829@clarice.ai");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "synthetic_e2e_local_part");
+  });
+
+  it("regular-<epoch-ms>@example.com (a outra metade do par E2E) → bad, mas via test_domain (#6366)", () => {
+    const r = isLowQualityEmail("regular-1787632203829@example.com");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "test_domain");
+  });
+
+  it("colaborador.real@clarice.ai (endereço legítimo do parceiro, mesmo domínio catch-all) → bom (#6366)", () => {
+    const r = isLowQualityEmail("colaborador.real@clarice.ai");
+    assert.equal(r.bad, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSyntheticE2ERecord (#6366 — 2ª camada, pelo Name do cliente Stripe)
+// ---------------------------------------------------------------------------
+
+describe("isSyntheticE2ERecord", () => {
+  it('Name = "E2E Metrics User" → true', () => {
+    assert.equal(isSyntheticE2ERecord(merged({ name: "E2E Metrics User" })), true);
+  });
+
+  it("case/whitespace insensível → true", () => {
+    assert.equal(isSyntheticE2ERecord(merged({ name: "  e2e metrics user  " })), true);
+  });
+
+  it("cliente real → false", () => {
+    assert.equal(isSyntheticE2ERecord(merged({ name: "João Silva" })), false);
+  });
+
+  it("sem Name → false", () => {
+    assert.equal(isSyntheticE2ERecord(merged({ name: null })), false);
   });
 });
 

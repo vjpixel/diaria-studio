@@ -883,9 +883,42 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
     };
   }
 
-  it("N fetches paralelos: tempo total ≈ 1 fetch (não N fetches sequenciais)", async () => {
-    const DELAY = 100; // ms por fetch — 100ms dá margem suficiente pra CI com spikes
-    const N = 5;       // 5 URLs distintas
+  /**
+   * #6264: mede ORDEM DE EVENTOS em vez de relógio de parede. Um fetch
+   * "instrumentado" registra um evento 'start' antes do delay e um evento
+   * 'end' depois — o array `events` compartilhado entre todas as chamadas
+   * preserva a ordem real em que cada fase ocorreu.
+   *
+   * Por que isso não é flaky sob carga (ao contrário do threshold em ms que
+   * substituiu): `Promise.all(pendingFetches)` em `filterAgentIssues`
+   * constrói o array de promises com um `for` síncrono — cada chamada a
+   * `isLinkDeadFalsePositive`/`headOrGet`/`fetchFn` roda até o primeiro
+   * `await` ANTES de o event loop processar qualquer timer. Isso é garantia
+   * de semântica do JS (microtasks síncronas não cedem pro timer queue),
+   * não de velocidade da máquina — os N `start` sempre precedem o 1º `end`
+   * quando os fetches são de fato disparados em paralelo, e essa ordem não
+   * degrada com CPU lenta/contenção (só o INTERVALO entre eventos degrada,
+   * não a ORDEM). Uma implementação sequencial (`for` com `await` a cada
+   * iteração) intercalaria start/end por URL — essa diferença estrutural é
+   * o que o teste detecta, sem depender de nenhum limiar em ms.
+   */
+  function instrumentedFetch(
+    statusByUrl: Record<string, number>,
+    delayMs: number,
+    events: Array<{ url: string; phase: "start" | "end" }>,
+  ): FetchFn {
+    return async (url) => {
+      events.push({ url: url as string, phase: "start" });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      events.push({ url: url as string, phase: "end" });
+      const s = statusByUrl[url as string] ?? 200;
+      return { status: s, headers: new Headers() } as Response;
+    };
+  }
+
+  it("N fetches paralelos: todos os HEAD disparam antes do 1º completar (ordem de eventos, não relógio — #6264)", async () => {
+    const DELAY = 30; // curto de propósito — o teste não mede duração, só ordem
+    const N = 5; // 5 URLs distintas
     const statusMap: Record<string, number> = {};
     const issues: string[] = [];
     for (let i = 1; i <= N; i++) {
@@ -893,21 +926,32 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
       statusMap[url] = 404; // todos mortos → mantém
       issues.push(`email:link_dead: ${url} → HTTP 404`);
     }
-    const fetchFn = delayedFetch(statusMap, DELAY);
+    const events: Array<{ url: string; phase: "start" | "end" }> = [];
+    const fetchFn = instrumentedFetch(statusMap, DELAY, events);
 
-    const start = Date.now();
     await filterAgentIssues(issues, "<p>x</p>", "260611", fetchFn);
-    const elapsed = Date.now() - start;
 
-    // Paralelo: deve terminar bem abaixo de N×DELAY (sequencial).
-    // Threshold: N×DELAY×0.6 = 300ms (sequencial seria 500ms, paralelo ideal ~100ms).
-    // 0.6× do sequencial — CI com spikes de 200-250ms ainda passa (era 0.8× com DELAY=50ms
-    // causando flakiness quando spike atingia 218ms; separação agora é 300ms vs 500ms).
-    const sequentialMs = N * DELAY;   // 500ms se fosse sequencial
-    const threshold = Math.floor(sequentialMs * 0.6);  // 300ms — claramente abaixo do sequencial
+    // #4628: HEAD 404 dispara fallback GET → 2 fetches por URL (N×2 chamadas);
+    // cada chamada gera 2 eventos ('start' + 'end') → N×4 eventos no total.
+    assert.equal(events.length, N * 4, `esperado ${N * 4} eventos (${N * 2} fetches × start/end), got ${events.length}`);
+
+    // A 1ª rodada (HEAD de cada URL) é disparada num único laço síncrono —
+    // os N primeiros eventos do array devem ser todos 'start', nenhum 'end'
+    // intercalado. Se os fetches fossem sequenciais, o 2º 'start' só viria
+    // depois do 1º 'end'.
+    const firstRoundPhases = events.slice(0, N).map((e) => e.phase);
     assert.ok(
-      elapsed < threshold,
-      `fetches devem ser paralelos: elapsed ${elapsed}ms, esperado < ${threshold}ms (sequencial seria ${sequentialMs}ms)`,
+      firstRoundPhases.every((p) => p === "start"),
+      `os ${N} primeiros eventos devem ser 'start' sem 'end' intercalado (paralelismo real): ${JSON.stringify(events.slice(0, N + 1))}`,
+    );
+
+    // E nenhum evento antes do N-ésimo 'start' é um 'end' — reforça que o
+    // primeiro fetch a TERMINAR não termina antes do último a COMEÇAR.
+    const indexOfFirstEnd = events.findIndex((e) => e.phase === "end");
+    const indexOfNthStart = N - 1; // 0-based
+    assert.ok(
+      indexOfFirstEnd > indexOfNthStart,
+      `o 1º 'end' (índice ${indexOfFirstEnd}) deve vir depois do ${N}º 'start' (índice ${indexOfNthStart}) — fetches sequenciais terminariam o 1º antes do último começar`,
     );
   });
 

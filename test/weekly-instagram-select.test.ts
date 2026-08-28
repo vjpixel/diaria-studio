@@ -396,6 +396,31 @@ describe("cache de cliques Beehiiv — matchPostsToWindow / clickCountsForUrl / 
     assert.equal(manifest.length, 1);
     assert.equal(manifest[0].id, "post_x");
   });
+
+  // #6185: `matchPostsToWindow`/`uniqueOpensOf` são genéricos (`<T extends
+  // ClickWindowPost>`) desde a migração pra leitura unificada Beehiiv+Kit —
+  // `UnifiedCachedPost` (`edition-cache-reader.ts`) satisfaz o shape
+  // estruturalmente (mesmos campos `status`/`publish_date`/`stats.email.
+  // unique_opens`/`stats.clicks`), então `publish-weekly-social.ts` pode
+  // passar o cache unificado sem cast. Prova aqui com um objeto mínimo
+  // desse shape (sem importar `UnifiedCachedPost`, que criaria um import
+  // cruzado deste módulo pra `lib/shared/` sem necessidade real).
+  it("matchPostsToWindow/uniqueOpensOf aceitam um post de origem Kit (shape UnifiedCachedPost) sem cast", () => {
+    const kitOriginPost = {
+      origin: "kit" as const,
+      status: "confirmed",
+      publish_date: epochFor("260727"),
+      stats: {
+        email: { unique_opens: 50 },
+        clicks: [{ url: "https://exemplo.com/d1", base_url: "https://exemplo.com/d1", email: { unique_verified_clicks: 12 } }],
+      },
+    };
+    const windowPosts = matchPostsToWindow([kitOriginPost], ["260727"]);
+    assert.equal(windowPosts.size, 1);
+    const post = windowPosts.get("260727");
+    assert.equal(uniqueOpensOf(post), 50);
+    assert.equal(clickCountsForUrl("https://exemplo.com/d1", post?.stats?.clicks).uniqueVerifiedClicks, 12);
+  });
 });
 
 describe("toRankedCandidate", () => {

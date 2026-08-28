@@ -784,13 +784,22 @@ export function stitchNewsletter(input: StitchInput): string {
   if (slot3Box) {
     parts.push(slot3Box, "", "---", "");
   }
-  // #3476: USE MELHOR agora vem ANTES de É IA? (pedido do editor 260716,
-  // tornado permanente). Antes (#2546): È IA? renderizava logo após o último
-  // destaque (D3 em edições de 3 destaques; D2 em edições de 2), e USE MELHOR
-  // vinha depois. Ordem editorial de USE MELHOR-antes-de-LANÇAMENTOS (#1752,
-  // 260603) preservada.
+  // #6323: USE MELHOR vem ANTES de LANÇAMENTOS, que vem ANTES de É IA?
+  // (decisão do editor 260827, tornado permanente — substitui a ordem
+  // USE MELHOR → É IA? → LANÇAMENTOS do #3476/260716). Racional: LANÇAMENTOS
+  // é curto hoje e ficava espremido entre dois blocos de "pausa" (USE MELHOR
+  // e É IA?); mover É IA? pra depois de LANÇAMENTOS o aproxima do RADAR (a
+  // seção mais densa), funcionando como intervalo antes da leitura mais
+  // longa. Ordem editorial de USE MELHOR-antes-de-LANÇAMENTOS (#1752, 260603)
+  // preservada.
   if (useMelhor) {
     parts.push(useMelhor);
+    parts.push("");
+    parts.push("---");
+    parts.push("");
+  }
+  if (lancamentos) {
+    parts.push(lancamentos);
     parts.push("");
     parts.push("---");
     parts.push("");
@@ -802,18 +811,11 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
   );
 
-  // #3820: VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, decisão
-  // editorial 260722). Histórico: #3100 (gate 260708) já tinha movido VÍDEOS
-  // pra antes de RADAR mas ainda depois de LANÇAMENTOS; #3820 sobe mais um
-  // degrau — VÍDEOS agora abre as seções secundárias pós-É-IA?/USE-MELHOR.
+  // #3820: posição de VÍDEOS relativa a É IA?/RADAR não foi revista pelo
+  // #6323 — segue logo após É IA?, antes de RADAR (decisão editorial
+  // 260722; histórico: #3100 já tinha movido VÍDEOS pra antes de RADAR).
   if (videos) {
     parts.push(videos);
-    parts.push("");
-    parts.push("---");
-    parts.push("");
-  }
-  if (lancamentos) {
-    parts.push(lancamentos);
     parts.push("");
     parts.push("---");
     parts.push("");

@@ -244,6 +244,15 @@ export interface KitBroadcastDetail extends KitBroadcastSummary {
   public_url: string | undefined;
   email_address: string;
   email_template: { id: number; name: string };
+  // #6582 — usado pela verificação pós-dispatch do canal Kit paralelo
+  // (`kit-diaria-stage5-dispatch.ts`): confirma que o `subscriber_filter`
+  // enviado em `POST /broadcasts` "pegou" de verdade, mesma disciplina do
+  // #573 (2xx não implica efeito) já aplicada ao resto deste módulo. **NÃO
+  // confirmado ao vivo se `GET /broadcasts/{id}` ecoa este campo de volta**
+  // — a doc pública não documenta o shape de leitura pra `subscriber_filter`,
+  // só o de escrita. Por isso opcional e por isso o caller trata ausência
+  // como "não confirmável ainda" (warning), não como divergência.
+  subscriber_filter?: unknown;
 }
 
 export async function getBroadcast(id: number, config?: KitConfig): Promise<KitBroadcastDetail> {
@@ -308,12 +317,47 @@ export async function getBroadcastClicks(
 // Stats (abertura, CTR) — equivalente a collect-edition-signals.ts
 // ---------------------------------------------------------------------------
 
-/** Shape confirmado ao vivo em 260824 contra um draft real (`{recipients:
- *  585, open_rate: 0, ...}` — 585 é o total da conta pro draft, não um
- *  envio real ainda). `click_rate` aqui é a mesma armadilha click-to-open
- *  documentada em `scripts/lib/leitor.ts` pra Beehiiv — reverificar contra
- *  `emails_opened`/`recipients` quando houver envio real antes de usar como
- *  CTR sobre entregas. */
+/**
+ * ## `click_rate` do Kit — CONFIRMADO, e é o OPOSTO da armadilha da Beehiiv (#6186)
+ *
+ * Shape visto pela 1ª vez ao vivo em 260824 contra um draft (`{recipients:
+ * 585, open_rate: 0, ...}` — 585 era o total da conta pro draft, não um
+ * envio real). Na época `click_rate` era suspeito da MESMA armadilha
+ * click-to-open documentada em `scripts/lib/leitor.ts` pra Beehiiv.
+ *
+ * **Medido contra o 1º envio real do Kit em 26/08/2026** (broadcast
+ * `25609304`, piloto Patronos, `status: completed`):
+ *
+ * ```
+ * recipients=5  emails_opened=3  total_clicks=3  click_rate=40.0
+ * ```
+ *
+ * Testadas as duas fórmulas óbvias contra 40,0 — **nenhuma bate**:
+ *
+ * | fórmula | resultado | bate? |
+ * |---|---|---|
+ * | `total_clicks / recipients` (CTR sobre entregas ingênuo) | 60,0 | ❌ |
+ * | `total_clicks / emails_opened` (click-to-open, a armadilha da Beehiiv) | 100,0 | ❌ |
+ * | `2 clicadores únicos / 5 recipients` | **40,0** | ✅ |
+ *
+ * Só um numerador de **2** (pessoas distintas que clicaram, não `total_clicks`
+ * = 3) fecha a conta. Ou seja: `click_rate` do Kit é
+ * `unique_clicked / delivered` — exatamente a definição de CTR que
+ * `scripts/lib/leitor.ts`/`docs/definicao-leitor.md` exigem, e o **oposto**
+ * do `click_rate` da Beehiiv (que é click-to-open, `unique_clicked /
+ * unique_opened` — infla ~7×, ver docstring de `leitor.ts`). Os dois campos
+ * têm o MESMO nome e semânticas DIFERENTES entre os dois backends —
+ * `kitBroadcastCtrPct` abaixo existe pra essa distinção nunca precisar ser
+ * lembrada de memória por quem for ler stats agregado.
+ *
+ * Ressalva de amostra (n=5): a exclusão das duas hipóteses é ARITMÉTICA, não
+ * estatística — com `total_clicks=3` e `click_rate=40%` sobre 5 entregas, as
+ * duas fórmulas erradas ficam matematicamente impossíveis, não só
+ * improváveis. Mas "numerador = 2 pessoas distintas" é deduzido (2 = 0,40 ×
+ * 5), não observado pessoa a pessoa — reconfirmar no 1º envio com dezenas de
+ * destinatários, quando um empate aritmético entre fórmulas se torna
+ * impossível.
+ */
 export interface KitBroadcastStats {
   recipients: number;
   open_rate: number;
@@ -338,4 +382,29 @@ export async function getBroadcastStats(id: number, config?: KitConfig): Promise
     throw new Error(`[kit-client] getBroadcastStats(${id}): resposta 2xx sem o envelope "broadcast.stats" esperado`);
   }
   return data.broadcast.stats;
+}
+
+/**
+ * CTR sobre entregas de um broadcast do Kit — `unique_clicked / delivered`,
+ * exatamente a definição que `leitor-v1` exige. **Único ponto de leitura de
+ * `click_rate` recomendado** — ver a tabela de confirmação na docstring de
+ * `KitBroadcastStats` acima antes de ler `click_rate` direto em qualquer
+ * outro lugar.
+ *
+ * ## ⚠️ NÃO é a mesma coisa que `click_rate` da Beehiiv
+ *
+ * `stats.click_rate` da Beehiiv é click-to-open (`unique_clicked /
+ * unique_opened`) e NUNCA deve ser usado como CTR — `scripts/lib/leitor.ts`
+ * chega a omitir o campo do tipo estreito que aceita, de propósito, pra
+ * forçar cálculo manual (`computeCtrPct`). Aqui é o INVERSO: o `click_rate`
+ * do Kit **já é** a semântica certa (confirmado ao vivo, #6186) — não
+ * recalcular à mão a partir de `total_clicks`, que conta CLIQUES, não
+ * CLICADORES (a razão de `total_clicks / recipients` bater errado na
+ * verificação: 3 cliques de 2 pessoas distintas, uma delas clicou 2×).
+ *
+ * Campo homônimo, semântica oposta entre os dois backends — é exatamente o
+ * risco que esta função nomeada existe pra eliminar.
+ */
+export function kitBroadcastCtrPct(stats: Pick<KitBroadcastStats, "click_rate">): number {
+  return stats.click_rate;
 }

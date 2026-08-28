@@ -295,18 +295,22 @@ export function renderScheduledSection(
  * `billingCycleWindow`), exibido explicitamente no rótulo pra nunca ser
  * confundido com o ciclo de CONTEÚDO/envio do #2909/#2923 (mês corrente,
  * planejamento de reenvio) — os dois são conceitos DIFERENTES por design.
- * `planCredits` é o RESTANTE do ciclo vindo da Brevo (/v3/account) — NÃO o total
- * do plano. O denominador real (volume/allowance do ciclo) é derivado como
- * `planCredits + cumulativeSent` (restante + já enviado). `null` quando o fetch
- * falhou e não há cache: a seção mostra o número absoluto sem percentual/barra.
- * (Correção 260705: o #2910 usava o restante direto como denominador, que encolhia
- * a cada envio — o denominador correto é o total do ciclo, restante + enviado.)
+ * `planTotal` é o TOTAL do ciclo (denominador), já resolvido pelo call site
+ * (`resolvePlanTotal`, brevo-api.ts) — esta função NÃO soma mais nada a ele.
+ * `null` quando o fetch falhou e não há cache: a seção mostra o número
+ * absoluto sem percentual/barra.
+ * (Correção 260705, #2910: o denominador era o restante direto — encolhia a
+ * cada envio. Correção #6394: `planTotal` deixou de ser derivado AQUI como
+ * `planCredits + cumulativeSent` — combinar um `planCredits` de snapshot
+ * antigo com o `cumulativeSent` AO VIVO deste render inflava o total pelo
+ * volume enviado depois do snapshot. `resolvePlanTotal` agora entrega o
+ * total já snapshot-consistente; esta função só o exibe.)
  * Exportado pra teste unitário.
  */
 export function renderVolumeSection(
   cumulativeSent: number,
   window: BillingCycleWindow,
-  planCredits: number | null,
+  planTotal: number | null,
   // #3080: true quando a janela de campanhas buscadas na Brevo (CAMPAIGNS_FETCH_LIMIT)
   // está "cheia" (truncada) E a campanha mais antiga dentro dela é POSTERIOR ao início
   // do ciclo de cobrança — sinal de que `cumulativeSent` pode estar SUBCONTANDO (há
@@ -323,12 +327,6 @@ export function renderVolumeSection(
   // bounces), não pessoas únicas.
   // Tooltip compartilhado via ENVIOS_TOOLTIP — mesma cópia usada na tabela por-campanha e mensal.
   const sentLabel = `<strong title="${escHtml(ENVIOS_TOOLTIP)}">${cumulativeSent.toLocaleString("pt-BR")} envios (eventos)</strong>`;
-
-  // `planCredits` da Brevo (/v3/account) é o RESTANTE do ciclo, NÃO o total do plano.
-  // O volume/allowance do ciclo (denominador) = restante + já enviado neste ciclo.
-  // Ex: 34.708 restante + 5.292 enviado = 40.000 (o plano real). O #2910 usava o
-  // restante direto como denominador → errado: encolhia a cada envio (bug do editor 260705).
-  const planTotal = planCredits === null ? null : planCredits + cumulativeSent;
 
   if (planTotal === null || planTotal <= 0) {
     return `

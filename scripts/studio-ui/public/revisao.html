@@ -8,6 +8,9 @@
   <link rel="stylesheet" href="/style.css" />
   <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/revisao.css" />
+  <link rel="stylesheet" href="/rv-gate.css" />
+  <link rel="stylesheet" href="/rv-highlights.css" />
+  <link rel="stylesheet" href="/rv-images.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
@@ -42,6 +45,82 @@
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.
     </div>
+
+    <!-- #6447 Fatia 1: painel "Gate" — checklist de conclusão + resumo
+         consolidado (títulos, WhatsApp, meta description, fact-check, boxes,
+         violations) espelhando o que hoje só existe no chat do gate real
+         (orchestrator-stage-4.md §4c/§4d). SEMPRE visível, sempre no topo —
+         não é uma aba escondida. Render puro (rv-gate.js), sem LLM. -->
+    <section class="panel rv-gate-panel" id="rv-gate-panel">
+      <div class="rv-gate-header">
+        <h2>Gate</h2>
+        <button type="button" id="rv-gate-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-gate-status">Carregando…</p>
+      <div id="rv-gate-checklist" class="rv-gate-checklist"></div>
+      <div id="rv-gate-body" class="rv-gate-body" hidden>
+        <details class="rv-gate-section" open>
+          <summary>Títulos por destaque</summary>
+          <div id="rv-gate-titles"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>WhatsApp / Meta description (D1)</summary>
+          <div id="rv-gate-meta"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Fact-check</summary>
+          <div id="rv-gate-factcheck"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Boxes de divulgação</summary>
+          <div id="rv-gate-boxes"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Violations / avisos de render</summary>
+          <div id="rv-gate-violations"></div>
+        </details>
+        <!-- #6447 Fatia 4 (achado 7): grava a decisão em
+             _internal/.step-4-decision.json — escopo intencionalmente
+             parcial (só a escrita, ver docstring de stage4-decision.ts). -->
+        <div class="rv-gate-approve-row">
+          <button type="button" id="rv-gate-approve-btn">Aprovar gate</button>
+          <span class="rv-gate-approve-status" id="rv-gate-approve-status"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- #6447 Fatia 2: "Editor por destaque" — alternativa estruturada ao
+         textarea de Markdown cru (aba "02 — Newsletter" logo abaixo), que
+         continua disponível e intocada — o editor escolhe qual usar. Título
+         com 1 clique entre as opções, corpo em N caixas por parágrafo, URL e
+         "por que isso importa" em campos próprios. Render puro
+         (rv-highlights.js) a partir de GET .../review/reviewed/highlights;
+         cada card salva individualmente via PUT .../highlights/:n. -->
+    <section class="panel rv-hl-panel" id="rv-highlights-panel">
+      <div class="rv-hl-header">
+        <h2>Editor por destaque</h2>
+        <button type="button" id="rv-hl-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-hl-status">Carregando…</p>
+      <div id="rv-hl-cards" class="rv-hl-cards"></div>
+    </section>
+
+    <!-- #6447 Fatia 4 (achado 9): galeria de imagens por destaque (2:1, 1:1,
+         card 4:5, carrossel) + É IA? (A/B), cada uma com botão "Regenerar"
+         que dispara a mesma cadeia de scripts do Stage 3 real (achado 6) em
+         background — ver rv-images.js / studio-images.ts. -->
+    <section class="panel rv-img-panel" id="rv-images-panel">
+      <div class="rv-img-header">
+        <h2>Imagens</h2>
+        <button type="button" id="rv-img-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-img-status">Carregando…</p>
+      <div id="rv-img-destaques" class="rv-img-destaques"></div>
+      <details class="rv-gate-section" id="rv-img-eia-section">
+        <summary>É IA?</summary>
+        <div id="rv-img-eia" class="rv-img-group"></div>
+      </details>
+    </section>
 
     <section class="panel">
       <div class="rv-tabs" id="rv-tabs" role="tablist" aria-label="Arquivo">
@@ -80,54 +159,72 @@
       <p class="rv-divergence-banner" id="rv-sanitized-banner" role="alert" hidden></p>
     </section>
 
-    <section class="panel rv-editor-panel">
-      <div class="rv-editor-toolbar">
-        <button type="button" id="rv-save-btn">Salvar</button>
-        <button type="button" id="rv-diff-btn">Ver diff vs. original</button>
-        <button type="button" id="rv-lint-btn">Rodar lints</button>
-        <button type="button" id="rv-reset-baseline-btn">Usar versão atual como base</button>
-        <span class="rv-save-status" id="rv-save-status"></span>
-      </div>
-      <textarea id="rv-editor" class="rv-editor" spellcheck="false" placeholder="Selecione um arquivo acima…"></textarea>
-    </section>
+    <!-- #6447 Fatia 3: split view (editor | preview) lado a lado em telas
+         ≥641px; abaixo de 640px (mesmo breakpoint que o resto do arquivo já
+         usa), os 2 filhos diretos de #rv-split-view empilham e este toggle
+         mostra só um por vez — ver rv-split-preview-format.js pro estado
+         puro (debounce/sequência/toggle) e revisao.js (scheduleDraftPreview/
+         runDraftPreview/setMobileView) pro fiar isto ao DOM. -->
+    <div class="rv-split-toggle" id="rv-split-toggle" role="tablist" aria-label="Editor ou preview (telas pequenas)">
+      <button type="button" class="rv-tab active" data-view="editor" role="tab" id="rv-split-toggle-editor">Editor</button>
+      <button type="button" class="rv-tab" data-view="preview" role="tab" id="rv-split-toggle-preview">Preview</button>
+    </div>
 
-    <section class="panel">
-      <div class="rv-tabs" id="rv-side-tabs" role="tablist" aria-label="Painel">
-        <button type="button" class="rv-tab active" data-pane="lint" role="tab" id="rv-tab-lint" aria-controls="rv-pane-lint">Lints</button>
-        <button type="button" class="rv-tab" data-pane="diff" role="tab" id="rv-tab-diff" aria-controls="rv-pane-diff">Diff</button>
-        <button type="button" class="rv-tab" data-pane="preview" role="tab" id="rv-tab-preview" aria-controls="rv-pane-preview">Preview do e-mail</button>
-      </div>
-
-      <div id="rv-pane-lint" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-lint">
-        <div id="rv-lint-results" class="rv-lint-results">
-          <p class="hint">Clique em "Rodar lints" acima.</p>
+    <div class="rv-split-view" id="rv-split-view" data-mobile-view="editor">
+      <section class="panel rv-editor-panel rv-split-editor">
+        <div class="rv-editor-toolbar">
+          <button type="button" id="rv-save-btn">Salvar</button>
+          <button type="button" id="rv-diff-btn">Ver diff vs. original</button>
+          <button type="button" id="rv-lint-btn">Rodar lints</button>
+          <button type="button" id="rv-reset-baseline-btn">Usar versão atual como base</button>
+          <span class="rv-save-status" id="rv-save-status"></span>
         </div>
-      </div>
+        <textarea id="rv-editor" class="rv-editor" spellcheck="false" placeholder="Selecione um arquivo acima…"></textarea>
+      </section>
 
-      <div id="rv-pane-diff" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-diff" hidden>
-        <div id="rv-diff-view" class="rv-diff-view">
-          <p class="hint">Clique em "Ver diff vs. original" acima.</p>
+      <section class="panel rv-split-side">
+        <div class="rv-tabs" id="rv-side-tabs" role="tablist" aria-label="Painel">
+          <button type="button" class="rv-tab" data-pane="lint" role="tab" id="rv-tab-lint" aria-controls="rv-pane-lint">Lints</button>
+          <button type="button" class="rv-tab" data-pane="diff" role="tab" id="rv-tab-diff" aria-controls="rv-pane-diff">Diff</button>
+          <button type="button" class="rv-tab active" data-pane="preview" role="tab" id="rv-tab-preview" aria-controls="rv-pane-preview">Preview do e-mail</button>
         </div>
-      </div>
 
-      <div id="rv-pane-preview" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-preview" hidden>
-        <p class="hint" id="rv-preview-hint">
-          Renderizado a partir de <code>02-reviewed.md</code> salvo no disco
-          (mesmo caminho do Stage 4) — salve antes de atualizar o preview.
-          Exceção: com a aba <strong>HTML final</strong> ativa, mostra o
-          <code>_internal/newsletter-final.html</code> salvo diretamente (sem
-          passar pelo Markdown).
-        </p>
-        <button type="button" id="rv-preview-refresh-btn">Atualizar preview</button>
-        <p class="hint" id="rv-inline-edit-status" aria-live="polite"></p>
-        <iframe id="rv-preview-frame" class="rv-preview-frame" title="Preview do e-mail"></iframe>
-      </div>
-    </section>
+        <div id="rv-pane-lint" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-lint" hidden>
+          <div id="rv-lint-results" class="rv-lint-results">
+            <p class="hint">Clique em "Rodar lints" acima.</p>
+          </div>
+        </div>
+
+        <div id="rv-pane-diff" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-diff" hidden>
+          <div id="rv-diff-view" class="rv-diff-view">
+            <p class="hint">Clique em "Ver diff vs. original" acima.</p>
+          </div>
+        </div>
+
+        <div id="rv-pane-preview" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-preview">
+          <p class="hint" id="rv-preview-hint">
+            Renderizado a partir de <code>02-reviewed.md</code> salvo no disco
+            (mesmo caminho do Stage 4). <strong>Ao vivo</strong> enquanto você
+            digita nas abas Newsletter/Social (re-render ~700ms após parar de
+            digitar, sem precisar salvar — texto ainda não salvo, nunca
+            grava em disco). Exceção: com a aba <strong>HTML final</strong>
+            ativa, mostra o próprio HTML digitado diretamente (sem parsing).
+          </p>
+          <button type="button" id="rv-preview-refresh-btn">Atualizar preview</button>
+          <p class="hint" id="rv-preview-draft-status" aria-live="polite"></p>
+          <p class="hint" id="rv-inline-edit-status" aria-live="polite"></p>
+          <iframe id="rv-preview-frame" class="rv-preview-frame" title="Preview do e-mail"></iframe>
+        </div>
+      </section>
+    </div>
 
   </main>
 
   <script>window.STUDIO_PAGE = "revisao";</script>
   <script src="/nav.js" type="module"></script>
+  <script src="/rv-gate.js" type="module"></script>
+  <script src="/rv-highlights.js" type="module"></script>
+  <script src="/rv-images.js" type="module"></script>
   <script src="/revisao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

@@ -1177,16 +1177,18 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("retryAfterSecs absurdamente alto => capped em 35min, nunca pendura a rodada", async () => {
+    it("#6288 (decisão do editor, uniformiza com brevoGet/withBrevo429Retry): retryAfterSecs absurdamente alto excede o cap de 35min => desiste JÁ, nunca dorme o teto à toa", async () => {
       const root = freshRoot();
       const sleeps: number[] = [];
-      const { exec } = makeFakeExec({
+      const { exec, calls } = makeFakeExec({
         ...goldenHandlers(),
-        "scripts/clarice-plan-wave.ts": [transientResult(3600), jsonResult(goldenProposal())], // 1h
+        "scripts/clarice-plan-wave.ts": [transientResult(3600), jsonResult(goldenProposal())], // 1h > cap de 35min
       });
       const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
-      assert.equal(r.code, 0, r.reportMarkdown);
-      assert.deepEqual(sleeps, [35 * 60_000], "capped em 35min mesmo com retryAfterSecs de 1h");
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.deepEqual(sleeps, [], "nunca dorme quando retryAfterSecs já excede o orçamento — dormir o teto e retentar falharia igual");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "desiste na 1ª chamada, nunca retenta com um Retry-After impossível");
+      assert.match(r.reportMarkdown, /excede o orçamento/);
       rmSync(root, { recursive: true, force: true });
     });
 
