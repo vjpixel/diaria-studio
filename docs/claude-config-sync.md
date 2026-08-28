@@ -199,3 +199,67 @@ manual (copiar o arquivo à mão quando precisar levar uma memória
 específica pra outra máquina); a alternativa de um mecanismo assistido
 (diff + confirmação antes de empurrar) continua não implementada, sem
 urgência.
+
+## Auto-arme via `diaria-studio` (260828 — fecha o rollout do #6310)
+
+**O ovo-e-galinha que sobrou:** o mecanismo acima (`sync-check.cjs` + hook
+`SessionStart` no `settings.json` do PRÓPRIO `claude-config`) só dispara
+depois que `~/.claude/settings.json` já é symlink pro repo. Numa máquina que
+nunca rodou `bootstrap` — ou que caiu no fallback de cópia do Windows sem
+Modo Desenvolvedor — o mecanismo nunca chega a se armar sozinho. É
+exatamente o estado medido ao vivo no Neo e no ZenBook em 28/08/2026
+(comentários de #6310): a implementação existia e funcionava no `helios`,
+mas não tinha como chegar às outras duas máquinas sem alguém rodar o
+bootstrap manualmente — o mesmo passo que dependia de lembrar, que é o
+problema original da issue.
+
+**Decisão do editor (28/08/2026):** em vez de depender de mais um passo
+manual por máquina, vendorar um SEGUNDO hook `SessionStart` — este dentro do
+`.claude/settings.json` do repo **`diaria-studio`** (não do `claude-config`).
+A diferença crucial: `diaria-studio` é um repo público de trabalho diário,
+puxado por `git pull` normal em toda sessão de edição — chega em qualquer
+máquina que já usa o projeto, independente do estado do `claude-config`
+nela. É essa inversão que fecha o ovo-e-galinha: a máquina se arma ao abrir
+o `diaria-studio`, não ao já ter o `claude-config` armado.
+
+Arquivos:
+- `diaria-studio/.claude/hooks/session-start-claude-config-sync.mjs` — o
+  hook em si, self-contained (mesmo padrão dos hooks irmãos deste repo —
+  nunca importa `.ts` estático). Auto-destacamento (spawn detached + exit 0
+  imediato no pai, mesmo truque de `sync-check.cjs`), fail-soft total
+  (try/catch em volta de tudo, nunca lança, nunca bloqueia a sessão),
+  debounce de 1h por timestamp (`~/claude-config/.diaria-studio-autosync-
+  state.json`) pra não reclonar/rebootstrapar a cada sessão nova aberta em
+  sequência.
+- `diaria-studio/scripts/lib/claude-config-autosync.ts` — a lógica de
+  DECISÃO pura (clonar? bootstrapar? pular?), testada isoladamente em
+  `test/claude-config-autosync.test.ts`. O hook `.mjs` duplica essa lógica
+  em JS puro (não importa o `.ts`) — ao mudar a decisão, editar os dois e
+  conferir que continuam batendo.
+
+Contrato de decisão (primeira regra que casa vence):
+
+| estado observado | ação |
+|---|---|
+| debounce ativo (rodou há < 1h nesta máquina) | pula, sem log — caminho feliz recorrente |
+| `~/claude-config/.git` ausente | `git clone` + roda o bootstrap da plataforma certa |
+| repo presente, `~/.claude/settings.json` NÃO é symlink pro repo | roda só o bootstrap (que já faz `git pull --ff-only` por conta própria) |
+| repo presente, `~/.claude/settings.json` JÁ é symlink pro repo | pula — a partir daqui `sync-check.cjs` (agora alcançável pelo symlink) assume o pull recorrente |
+
+Detecção de plataforma: `process.platform === "win32"` → `bootstrap.ps1`
+(via `powershell.exe -File`), qualquer outro valor → `bootstrap.sh` (via
+`bash`). Log e estado em `~/claude-config/.diaria-studio-autosync.log` /
+`.diaria-studio-autosync-state.json` — arquivos NOVOS, distintos de
+`.sync-check.log`/`.sync-state.json` (que continuam sendo o registro do
+mecanismo do `claude-config` em si).
+
+**Verificado nesta sessão (worktree isolado, sem `~/claude-config` real
+disponível):** smoke test manual do hook contra um `claude-config` fake
+(`CLAUDE_CONFIG_DIR`/`CLAUDE_CONFIG_HOME_DIR` sobrescrevendo os defaults) —
+os três casos (repo ausente, presente-mas-não-armado, já-armado) todos
+saíram com `exit 0` no pai, nunca lançaram, e o estado gravado bateu com a
+decisão esperada. **O que este PR NÃO pôde verificar:** o `git clone`/
+bootstrap reais contra o `claude-config` de verdade, em nenhuma das 3
+máquinas (helios/Neo/ZenBook) — isso é efeito de rede/IO fora do alcance de
+um worktree isolado de subagente; fica para confirmação ao vivo do editor
+(mesmo padrão dos demais itens desta issue marcados "verificado ao vivo").
