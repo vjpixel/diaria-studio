@@ -67,15 +67,15 @@ describe("home — bloco Por tema (#6411)", () => {
     }
   });
 
-  it("um hub novo em HUB_META nasce linkado (deriva da fonte, não de lista fixa)", () => {
+  it("não linka nenhum /temas/ órfão — hub despublicado some da home", () => {
+    // Cobre o sentido que `detectMissingHubLinks` NÃO cobre: ele só acha hub
+    // de HUB_META FALTANDO na home, nunca um link SOBRANDO. Se o bloco
+    // voltar a ser lista fixa, remover um hub de HUB_META (despublicar)
+    // deixaria o link para trás — 404 pro leitor, e os testes acima
+    // continuariam verdes. Derivar da fonte torna os dois sentidos verdade;
+    // este teste é quem trava isso.
     const html = buildIndexHtml({ feature: FEATURE, archive: [] });
-    // Se o bloco passar a listar slugs à mão, este teste continua verde só
-    // enquanto a lista fixa casar HUB_META — o `deepEqual` acima é quem pega
-    // a divergência. Aqui garantimos a contagem, que uma lista fixa
-    // desatualizada quebraria imediatamente.
-    const linkCount = HUB_META.filter((hub) =>
-      html.includes(`/temas/${hub.slug}`),
-    ).length;
-    assert.equal(linkCount, HUB_META.length);
+    const linked = [...html.matchAll(/\/temas\/([a-z0-9-]+)/g)].map((m) => m[1]);
+    assert.deepEqual([...new Set(linked)].sort(), HUB_META.map((h) => h.slug).sort());
   });
 });

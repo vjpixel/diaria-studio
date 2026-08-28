@@ -374,7 +374,12 @@ export function evaluateHomeMetaDrift(
   if (missingHubs.length > 0) {
     findings.push({
       check: "hub-link-missing",
-      message: `hub(s) publicado(s) sem link "/temas/{slug}" na home: ${missingHubs.join(", ")} — adicionar ao bloco "Temas" da home (#5257)`,
+      // A ação mudou no #6411: o bloco "Por tema" é GERADO de `HUB_META`,
+      // então o achado deixou de significar "adicionar o link à mão" (o que
+      // este texto pedia, e que a issue automática repetia todo dia) e passou
+      // a significar "a home no ar está atrás do gerador". Instruir o passo
+      // obsoleto aqui mandaria quem lê o alarme editar um arquivo gerado.
+      message: `hub(s) publicado(s) sem link "/temas/{slug}" na home: ${missingHubs.join(", ")} — a home no ar está desatualizada em relação a HUB_META: rodar \`npx tsx scripts/gen-home-page.ts\` e commitar o index.html (#6411)`,
     });
   }
 
