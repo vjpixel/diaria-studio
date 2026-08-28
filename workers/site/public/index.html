@@ -152,7 +152,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <a href="https://eia.diar.ia.br/leaderboard">É IA?</a>
       </div>
       <div class="nav-cta">
-        <a class="btn btn-ink" href="/subscribe">Assinar</a>
+        <a class="btn btn-ink" href="/assinar">Assinar</a>
       </div>
     </div>
   </nav>
@@ -172,7 +172,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <p class="lede">Um resumo diário das principais pesquisas, notícias, tendências e insights — para ler em 5 minutos, se manter atualizado e usar IA <span class="accent">melhor</span>.</p>
         <div>
           <span class="kicker kicker--teal">Comece a receber hoje</span>
-          <a class="signup" id="masthead-form" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
+          <a class="signup" id="masthead-form" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
     <span class="signup-pill">
       <span class="signup-input" aria-hidden="true">seu@email.com</span>
       <span class="signup-btn">Assinar grátis</span>
@@ -346,7 +346,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <div class="footer-headline">5 minutos.<br><span class="accent">Toda manhã.</span></div>
         <div>
           <span class="footer-label">Assine grátis</span>
-          <a class="signup signup--dark" id="footer-form" href="/subscribe" aria-label="Assinar diar.ia.br gratuitamente">
+          <a class="signup signup--dark" id="footer-form" href="/assinar" aria-label="Assinar diar.ia.br gratuitamente">
     <span class="signup-pill">
       <span class="signup-input" aria-hidden="true">seu@email.com</span>
       <span class="signup-btn">Assinar grátis</span>
@@ -364,5 +364,24 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
       </div>
     </div>
   </footer>
+  <script>
+  // #6427: repassa a query string ATUAL (UTM da Clarice News, tráfego pago,
+  // etc — ver withClariceUtm em scripts/lib/mensal/monthly-render.ts) pros
+  // 3 CTAs de assinatura desta home antes de o visitante clicar. Um anchor
+  // href="/assinar" estático NUNCA carrega o utm_source=... da URL atual
+  // sozinho (resolução de URL relativa não herda query de referência
+  // absoluta-por-path) — sem isto, a atribuição morreria aqui mesmo com a
+  // página /assinar (workers/site/public/assinar/) pronta pra recebê-la.
+  // Escopo mínimo: só os 3 anchors que de fato apontam pra /assinar — nunca
+  // toca outros hrefs da página (ex: "Ler edição", que usam a mesma classe
+  // .btn-ink com destino diferente).
+  (function () {
+    if (!window.location.search) return;
+    var ctas = document.querySelectorAll('a[href="/assinar"]');
+    for (var i = 0; i < ctas.length; i++) {
+      ctas[i].setAttribute("href", "/assinar" + window.location.search);
+    }
+  })();
+  </script>
 </body>
 </html>

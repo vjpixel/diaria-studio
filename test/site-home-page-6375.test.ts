@@ -3,7 +3,8 @@
  *
  * Cobre o redesign da home (`workers/site/public/index.html`, Direção A ·
  * Edição diária) — miolo puro (`scripts/lib/site-home-page.ts`) com fixtures
- * em memória, e o arquivo COMMITTED (7 blocos esperados, form → /subscribe,
+ * em memória, e o arquivo COMMITTED (7 blocos esperados, form → /assinar (#6427,
+ * antes /subscribe),
  * link do destaque do dia → um `/p/{slug}` real do cache).
  */
 
@@ -120,9 +121,9 @@ describe("buildIndexHtml", () => {
     }
   });
 
-  it("form do masthead E do footer apontam pro /subscribe existente", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/subscribe"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/subscribe"/);
+  it("form do masthead E do footer apontam pro /assinar (#6427)", () => {
+    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
+    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
   });
 
   it("link do destaque do dia aponta pra a URL real da feature", () => {
@@ -157,7 +158,13 @@ describe("buildIndexHtml", () => {
         },
       ],
     });
-    assert.ok(!dirty.includes("<script>"), "tag <script> crua vazou pro HTML renderizado");
+    // #6427: buildIndexHtml passou a incluir 1 <script> LEGÍTIMO, próprio
+    // (repasse de query string pros CTAs de /assinar — nunca deriva de
+    // input do caller), então a checagem de escape não pode mais banir
+    // QUALQUER `<script>` no documento — teria que ser o PAYLOAD do
+    // atacante especificamente que não vazasse cru.
+    assert.ok(!dirty.includes("<script>alert(1)"), "payload malicioso da feature vazou como <script> cru");
+    assert.ok(!dirty.includes("<script>alert(2)"), "payload malicioso do arquivo vazou como <script> cru");
     assert.ok(!dirty.includes("<img src=x"), "tag <img> crua vazou pro HTML renderizado (escapada, viraria texto inerte)");
     assert.match(dirty, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(dirty, /&lt;img src=x onerror=alert\(1\)&gt;/);
@@ -217,9 +224,9 @@ describe("workers/site/public/index.html — committed (#6375)", () => {
     }
   });
 
-  it("form aponta pro /subscribe existente (masthead + footer)", () => {
-    assert.match(html, /id="masthead-form"[^>]*href="\/subscribe"/);
-    assert.match(html, /id="footer-form"[^>]*href="\/subscribe"/);
+  it("form aponta pro /assinar (masthead + footer, #6427)", () => {
+    assert.match(html, /id="masthead-form"[^>]*href="\/assinar"/);
+    assert.match(html, /id="footer-form"[^>]*href="\/assinar"/);
   });
 
   it("V1Specials linka pros hubs reais já existentes (livros/cursos)", () => {

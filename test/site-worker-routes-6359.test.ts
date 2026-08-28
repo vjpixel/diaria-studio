@@ -76,9 +76,9 @@ describe("workers/site/public — / (#6359)", () => {
     );
   });
 
-  it("tem link pra /subscribe (CTA de assinatura na home)", () => {
+  it("tem link pra /assinar (CTA de assinatura na home, #6427 — antes /subscribe)", () => {
     const html = readFileSync(indexPath, "utf8");
-    assert.match(html, /href="\/subscribe"/);
+    assert.match(html, /href="\/assinar"/);
   });
 });
 
