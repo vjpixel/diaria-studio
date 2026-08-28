@@ -88,6 +88,10 @@ export const NAV_ITEMS = [
  * de Apoios/Dashboard diária em 📊 Negócio, como pedido pelo editor. */
 export const DASHBOARD_LINKS = [
   { label: "Dashboard Clarice", href: "/painel/clarice", group: "negocio" },
+  // #6445: painel consolidado de uso de tokens por tipo de sessão
+  // (edição/overnight/develop/continuo) — documento autocontido calculado
+  // on-demand (dashboard-tokens.ts), mesmo padrão do Dashboard Clarice.
+  { label: "Uso de tokens", href: "/painel/tokens", group: "negocio" },
 ];
 
 /** Resolve qual item de NAV_ITEMS está ativo pra um dado `pageId`
