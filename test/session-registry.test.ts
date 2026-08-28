@@ -44,8 +44,10 @@ import {
   garbageCollectSessions,
   resolveRepoRoot,
   GC_CONSERVATIVE_MAX_AGE_MS,
+  GC_ORPHAN_LIVENESS_MARGIN,
   MAX_SESSION_AGE_MS,
   SOFT_STALE_MS,
+  INTERACTIVE_SOFT_STALE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
   type MergeLockIo,
@@ -2251,6 +2253,150 @@ describe("planSessionGc / garbageCollectSessions (#6130)", () => {
     assert.equal(plan[0].identity, "orphan-backup:develop-Neo-s-encerrada-Neo-safeBackup-0001.json");
     assert.equal(plan[0].action, "removed");
     assert.equal(existsSync(backupPath), false);
+  });
+
+  // ─── #6595: órfão sem arquivo real usa janela do KIND × margem, não os 7 dias ──
+
+  it("#6595: órfão ALÉM de 4× a janela de liveness do kind é removível, mesmo bem aquém dos 7 dias conservadores", () => {
+    const root = freshRoot();
+    // overnight: softStaleMs = SOFT_STALE_MS (90min) × 4 = 6h. 6,5h fica além.
+    const ageMs = 6.5 * 60 * 60 * 1000;
+    writeRawSessionFile(root, "overnight-helios-s-orfa-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "s-orfa",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [111, 222],
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(
+      plan[0].action,
+      "removed",
+      "órfão overnight além de 4×90min=6h é removível, muito antes dos 7 dias conservadores",
+    );
+    assert.match(plan[0].reason, /#6595/);
+    assert.match(plan[0].reason, /#111, #222/, "reason nomeia os claims liberados pela remoção do órfão");
+  });
+
+  it("#6595: órfão DENTRO da janela de liveness × margem é mantido", () => {
+    const root = freshRoot();
+    // overnight: janela efetiva = 90min × 4 = 6h. 3h fica dentro.
+    const ageMs = 3 * 60 * 60 * 1000;
+    writeRawSessionFile(root, "overnight-helios-s-recente-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "s-recente",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [],
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept", "3h < 4×90min=6h — ainda dentro da janela, GC não remove cedo demais");
+  });
+
+  it("#6595: órfão SEM timestamp legível é mantido (fail-safe), independente da janela do kind", () => {
+    const root = freshRoot();
+    writeRawSessionFile(root, "overnight-helios-s-sem-ts-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "s-sem-ts",
+      startedAt: "não-é-uma-data",
+      lastHeartbeat: "também-não",
+      claimed_issues: [999],
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, "kept", "timestamp ilegível nunca é removido, nem no caminho de órfão");
+    assert.match(plan[0].reason, /ilegível/);
+  });
+
+  it("#6595 (fleet review): órfão com `kind` AUSENTE/desconhecido cai na janela CONSERVADORA de 7 dias, nunca na janela curta do órfão", () => {
+    // Achado do review do #6595: sem esta guarda, `softStaleMsForKind(\"\")`
+    // resolve pro default de 90min e a janela do órfão (4×90min=6h) seria
+    // aplicada a um registro que este módulo não conseguiu classificar —
+    // o oposto do "kind ausente/desconhecido cai nos valores conservadores"
+    // que a mesma função já garante pra sessão ancorada em arquivo real.
+    const root = freshRoot();
+    const ageMs = 10 * 60 * 60 * 1000; // 10h — além das 6h do órfão overnight, mas bem aquém dos 7 dias
+    writeRawSessionFile(root, "overnight-helios-s-kind-vazio-helios-safeBackup-0001.json", {
+      // `kind` omitido de propósito — simula registro corrompido/legado.
+      machineTag: "helios",
+      sessionId: "s-kind-vazio",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [],
+    } as Partial<SessionRecord>);
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(
+      plan[0].action,
+      "kept",
+      "10h > 4×90min=6h (janela do órfão) mas < 7 dias (janela conservadora) — kind desconhecido usa a conservadora",
+    );
+  });
+
+  it("#6595: sessão COM arquivo real e heartbeat de 3 dias segue mantida — os 7 dias NÃO regrediram", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "s-real-3d", {
+      tag: "helios",
+      startedAt: new Date(NOW - 3 * ONE_DAY_MS).toISOString(),
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    assert.equal(plan.length, 1);
+    assert.equal(
+      plan[0].action,
+      "kept",
+      "sessão ancorada em arquivo real usa a janela conservadora de 7 dias, não a janela do órfão (3 dias < 6h × algo não se aplica aqui)",
+    );
+  });
+
+  it("#6595: kinds diferentes usam janelas de liveness diferentes pro caminho de órfão — overnight 90min vs interactive 15min", () => {
+    const root = freshRoot();
+    // 90min de idade: overnight ainda está dentro de SOFT_STALE_MS (90min) —
+    // nem chega no branch de janela-de-órfão. interactive (15min) já está
+    // muito além de 4×15min=60min também, então ambos os kinds precisam de
+    // janelas efetivamente distintas pra este teste discriminar.
+    const ageMs = 65 * 60 * 1000; // 65min
+
+    writeRawSessionFile(root, "overnight-helios-s-ov-helios-safeBackup-0001.json", {
+      kind: "overnight",
+      machineTag: "helios",
+      sessionId: "s-ov",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [],
+    });
+    writeRawSessionFile(root, "interactive-helios-s-int-helios-safeBackup-0001.json", {
+      kind: "interactive",
+      machineTag: "helios",
+      sessionId: "s-int",
+      startedAt: new Date(NOW - ageMs).toISOString(),
+      lastHeartbeat: new Date(NOW - ageMs).toISOString(),
+      claimed_issues: [],
+    });
+
+    const plan = planSessionGc(root, { now: NOW, localMachineTag: "helios", isPidAlive: () => false });
+    const overnightEntry = plan.find((e) => e.identity.includes("s-ov"));
+    const interactiveEntry = plan.find((e) => e.identity.includes("s-int"));
+    assert.ok(overnightEntry && interactiveEntry);
+    // overnight: 65min < 4×90min=360min → mantém.
+    assert.equal(overnightEntry!.action, "kept", "65min ainda dentro de 4×90min pro kind overnight");
+    // interactive: 65min > 4×15min=60min → remove.
+    assert.equal(interactiveEntry!.action, "removed", "65min além de 4×15min pro kind interactive");
+  });
+
+  it("GC_ORPHAN_LIVENESS_MARGIN é 4× por padrão", () => {
+    assert.equal(GC_ORPHAN_LIVENESS_MARGIN, 4);
+    assert.equal(SOFT_STALE_MS, 90 * 60 * 1000);
+    assert.equal(INTERACTIVE_SOFT_STALE_MS, 15 * 60 * 1000);
   });
 
   it("arquivo ilegível/corrompido nunca é removido pelo GC", () => {
