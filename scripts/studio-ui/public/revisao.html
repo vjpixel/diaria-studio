@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/style.css" />
   <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/revisao.css" />
+  <link rel="stylesheet" href="/rv-gate.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
@@ -42,6 +43,42 @@
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.
     </div>
+
+    <!-- #6447 Fatia 1: painel "Gate" — checklist de conclusão + resumo
+         consolidado (títulos, WhatsApp, meta description, fact-check, boxes,
+         violations) espelhando o que hoje só existe no chat do gate real
+         (orchestrator-stage-4.md §4c/§4d). SEMPRE visível, sempre no topo —
+         não é uma aba escondida. Render puro (rv-gate.js), sem LLM. -->
+    <section class="panel rv-gate-panel" id="rv-gate-panel">
+      <div class="rv-gate-header">
+        <h2>Gate</h2>
+        <button type="button" id="rv-gate-refresh-btn">Atualizar</button>
+      </div>
+      <p class="hint" id="rv-gate-status">Carregando…</p>
+      <div id="rv-gate-checklist" class="rv-gate-checklist"></div>
+      <div id="rv-gate-body" class="rv-gate-body" hidden>
+        <details class="rv-gate-section" open>
+          <summary>Títulos por destaque</summary>
+          <div id="rv-gate-titles"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>WhatsApp / Meta description (D1)</summary>
+          <div id="rv-gate-meta"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Fact-check</summary>
+          <div id="rv-gate-factcheck"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Boxes de divulgação</summary>
+          <div id="rv-gate-boxes"></div>
+        </details>
+        <details class="rv-gate-section">
+          <summary>Violations / avisos de render</summary>
+          <div id="rv-gate-violations"></div>
+        </details>
+      </div>
+    </section>
 
     <section class="panel">
       <div class="rv-tabs" id="rv-tabs" role="tablist" aria-label="Arquivo">
@@ -128,6 +165,7 @@
 
   <script>window.STUDIO_PAGE = "revisao";</script>
   <script src="/nav.js" type="module"></script>
+  <script src="/rv-gate.js" type="module"></script>
   <script src="/revisao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

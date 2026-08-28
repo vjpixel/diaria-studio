@@ -116,6 +116,14 @@ import {
   lintTrailingEditorialHook,
 } from "../lint-social-md.ts";
 import { validateLancamentos, loadToolAllowlist } from "../validate-lancamentos.ts";
+// #6447 Fatia 1 (achado 4): o Studio não rodava os mesmos 2 lints
+// GATE-BLOCKING do gate real sobre `02-reviewed.md` — `validate-domain-diversity.ts`
+// (só existia no orchestrator §4c.2) e `validate-lancamentos.ts` (só rodava
+// aqui sobre `01-categorized.md`, nunca sobre a versão pós-escrita). Reusa as
+// mesmas funções puras, sem reimplementar regra nenhuma — mesmo princípio já
+// documentado no topo do arquivo ("Lints reusam as funções PURAS...").
+import { validateDomainDiversity } from "../validate-domain-diversity.ts";
+import { checkIntentionalError } from "../lib/lint-checks/intentional-error.ts";
 // #3806 (Opção B spike): mapeamento determinístico campo -> região do MD
 // pro título de destaque, editável na visão renderizada.
 import { replaceDestaqueTitleInMd } from "../extract-destaques.ts";
@@ -560,6 +568,23 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
       return { ok: placement.ok && orphanGaps.length === 0, placement, orphanGaps };
     }),
     runCheck("no-xml-artifacts", "Sem tag de tool-call grudada no fim do arquivo (#4077)", true, () => checkNoXmlArtifacts(md)),
+    // #6447 Fatia 1 (achado 4): faltavam no Studio, apesar de GATE-BLOCKING
+    // no gate real (orchestrator-stage-4.md §4c.2).
+    runCheck("domain-diversity", "Máx. 2 URLs do mesmo domínio registrável (#5735)", true, () => validateDomainDiversity(md)),
+    runCheck("lancamentos-oficiais", "LANÇAMENTOS só com link oficial (#160)", true, () => {
+      const allowlist = loadToolAllowlist(rootDir);
+      const r = validateLancamentos(md, allowlist);
+      return { ok: r.status === "ok" && r.invalid_urls.length === 0 && r.not_a_tool.length === 0, ...r };
+    }),
+    // #6447 Fatia 1: `intentional-error-flagged` hoje só roda no Stage 5
+    // (`beehiiv-playbook.md`) — trazido aqui pro Studio como leitura
+    // antecipada (não muda o gate real, só dá visibilidade cedo). Lê
+    // `_internal/intentional-error.json` direto de `editionDir` — ignora
+    // `md`/conteúdo ainda não salvo do editor de propósito (o JSON é um
+    // arquivo irmão independente, sempre lido do disco).
+    runCheck("intentional-error-flagged", "Erro intencional declarado e completo (#3222)", true, () =>
+      checkIntentionalError(resolve(editionDir, "02-reviewed.md")),
+    ),
     // Warn-only (#2715) — mesma classificação da pipeline: nunca bloqueiam,
     // só surfaçam pro editor decidir.
     runCheck("title-publisher-suffix", "Título sem sufixo de veículo (warn)", false, () => checkTitlePublisherSuffix(md)),
