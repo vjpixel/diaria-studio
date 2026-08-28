@@ -55,7 +55,14 @@ export type BrevoDiariaContactStatus =
    * registro fica `Pending` lá de propósito (API v2 não tem campo `status`
    * gravável pra distinguir "bounce" de "inativo por qualquer outro
    * motivo"). */
-  | "bounced";
+  | "bounced"
+  /** #6485 — 5ª saída terminal: o contato já está ATIVO no Kit (backend
+   * de envio novo, #6114) quando o guard de exclusão roda antes do
+   * dispatch da campanha Brevo. Distinto de `unsubscribed`/`bounced` — não
+   * é ação da pessoa nem falha de entrega, é o Kit já ter assumido o envio
+   * pra esse e-mail (a fila de reativação cumpriu seu papel: o contato
+   * converteu). Ver `scripts/lib/brevo-kit-active-exclusion.ts`. */
+  | "converted_to_kit";
 
 export interface BrevoDiariaContact {
   email: string;
@@ -79,6 +86,8 @@ export interface BrevoDiariaContact {
   unsubscribed_at?: string;
   /** ISO — quando status virou bounced (#5351 Parte B). */
   bounced_at?: string;
+  /** ISO — quando status virou converted_to_kit (#6485). */
+  converted_to_kit_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -120,7 +129,13 @@ export interface BrevoDiariaContact {
     /** #5351 Parte B — `emailBlacklisted` sem `userUnsubscription` E sem
      * `hardBounces`: ação admin-side/complaint na Brevo, motivo exato não
      * distinguível pela API disponível. */
-    | "native_admin_block";
+    | "native_admin_block"
+    /** #6485 — motivo dedicado de `converted_to_kit` (ver docstring do
+     * status acima). Único `resolution_reason` pareado com esse status —
+     * mantido como união distinta (não reaproveitado de outro) porque o
+     * mecanismo que grava (guard de exclusão pré-dispatch) é distinto de
+     * todos os outros callers de `apply*` deste módulo. */
+    | "converted_to_kit";
 }
 
 export interface BrevoDiariaStore {
@@ -321,6 +336,29 @@ export function applyBrevoDiariaBounced(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
       return { ...c, status: "bounced", bounced_at: now, resolution_reason: reason };
+    }),
+  };
+}
+
+/**
+ * Pura — marca um contato como `converted_to_kit` (#6485): o guard de
+ * exclusão pré-dispatch (`scripts/lib/brevo-kit-active-exclusion.ts`)
+ * encontrou este e-mail como `active` no Kit E membro da lista Brevo da
+ * diária, e o removeu da lista antes da campanha ser criada. Mesmo guard de
+ * idempotência dos outros `apply*` deste módulo — só contatos `in_brevo`
+ * transicionam; um contato já resolvido (`unsubscribed`/`bounced`/etc.)
+ * nunca regride nem é re-marcado.
+ */
+export function applyConvertedToKit(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "in_brevo") return c;
+      return { ...c, status: "converted_to_kit", converted_to_kit_at: now, resolution_reason: "converted_to_kit" };
     }),
   };
 }
