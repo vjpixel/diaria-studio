@@ -62,7 +62,14 @@ describe("promoteKitSubscription / verifyPromotedToKit (#6339)", () => {
       const result = await promoteKitSubscription("a@b.com", "kkey");
       assert.equal(result.id, 555);
       assert.match(url, /\/subscribers$/);
-      assert.deepEqual(body, { email_address: "a@b.com", state: "active" });
+      // #6425 Parte B: passou a mandar `fields` (UTM do registry +
+      // origem_cadastro) — cobertura detalhada do shape em
+      // test/kit-attribution-6425.test.ts; aqui só confirma que o body
+      // NÃO regrediu pra "sem fields nenhum" (o bug original desta issue).
+      const b = body as { email_address: string; state: string; fields?: Record<string, string> };
+      assert.equal(b.email_address, "a@b.com");
+      assert.equal(b.state, "active");
+      assert.ok(b.fields && Object.keys(b.fields).length > 0, "esperava fields não-vazio (regressão do #6425)");
     } finally {
       restore();
     }

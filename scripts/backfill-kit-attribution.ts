@@ -18,6 +18,21 @@
  * imprime o plano completo — inclusive quem NÃO vai ser tocado e por quê —
  * e só escreve com `--push`.
  *
+ * ## Armadilha operacional (#6425 Parte C) — "a gravar: N" logo após um --push
+ *
+ * A idempotência deste script lê `fields` da LISTAGEM (`listAllKitSubscribers`
+ * → `GET /v4/subscribers`), não do GET singular. Medido ao vivo em
+ * 27/08/2026: depois de um `--push` que gravou 3/3 com sucesso, o GET
+ * SINGULAR (`getSubscriberById`) já devolvia `atribuicao_fonte` atualizado,
+ * mas esta LISTAGEM continuou devolvendo `null` nos mesmos campos por um
+ * tempo — comportamento da API do Kit, não bug deste script (ver docstring
+ * de `listAllKitSubscribers` em `scripts/lib/kit-subscribers.ts`). Rodar
+ * este script em dry-run logo após um `--push` pode reportar "a gravar: N"
+ * pra quem JÁ está gravado — inofensivo (reescreve o mesmo valor, nunca
+ * duplica nem regride), mas engana quem confere achando que o `--push`
+ * anterior não pegou. Se isso acontecer, esperar um pouco e rodar de novo
+ * antes de suspeitar de falha real.
+ *
  * Uso:
  *   npx tsx scripts/backfill-kit-attribution.ts
  *   npx tsx scripts/backfill-kit-attribution.ts --push

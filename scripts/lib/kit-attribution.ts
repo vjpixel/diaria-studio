@@ -147,6 +147,109 @@ export interface KitSubscriberLite {
   fields?: Record<string, unknown>;
 }
 
+// ── Parte A do #6425 — atribuição NATIVA do form hospedado no Kit ─────────
+//
+// O docstring acima ("a atribuição NATIVA do Kit é inalcançável") só vale
+// pra quem é criado via API. Quem se cadastra pelo form nativo
+// (`https://diar-ia-br.kit.com/`) NÃO passa por `subscribeToKit`
+// (`workers/poll/src/subscribe.ts`), então nenhum custom field é escrito —
+// mas o Kit guarda a atribuição do form no bloco `attribution`, legível via
+// `GET /v4/subscribers?include[]=attribution` (medido ao vivo no #6425:
+// `referrer`, `source_type`, `source_name`, `source_mechanism` sempre
+// presentes; `utm_*` só quando a visita trouxe parâmetro na URL). Isto é
+// RECUPERAÇÃO EXATA de um dado que o Kit já guarda, não inferência — por
+// isso ganha `atribuicao_fonte` PRÓPRIO (`kit-nativo-form`), distinto de
+// `beehiiv-import`/`reconstruido-logs`: a confiabilidade é alta (dado
+// nativo do próprio Kit), mas o UTM pode legitimamente vir vazio quando a
+// visita não trouxe parâmetro nenhum — isso não é falha de recuperação.
+
+/** `atribuicao_fonte` gravado por este 2º backfill (Parte A do #6425). */
+export const ATRIBUICAO_FONTE_KIT_NATIVO_FORM = "kit-nativo-form";
+
+/** Bloco `attribution` como `GET /v4/subscribers?include[]=attribution`
+ *  devolve por subscriber. */
+export interface KitNativeAttribution {
+  referrer?: string | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
+  utm_campaign?: string | null;
+  source_type?: string | null;
+  source_name?: string | null;
+  source_mechanism?: string | null;
+}
+
+export interface KitSubscriberComAtribuicao extends KitSubscriberLite {
+  attribution?: KitNativeAttribution | null;
+}
+
+/**
+ * Pura — monta os custom fields a partir do bloco `attribution` nativo do
+ * Kit. Só os 4 campos que têm equivalente direto nos nossos custom fields
+ * (`utm_source`/`utm_medium`/`utm_campaign`/`referring_site`, via
+ * `referrer`) são copiados — `source_type`/`source_name`/`source_mechanism`
+ * não têm campo próprio hoje (não existiam antes desta issue) e ficariam
+ * sem nenhum consumidor; adicionar 3 custom fields novos só pra guardar
+ * "form_subscription"/"Newsletter site"/"newsletter" (sempre os mesmos 3
+ * valores pra todo mundo que vem do form, #6425) não paga o custo. Mesma
+ * disciplina de `buildAttributionFields`: campo vazio é OMITIDO, nunca
+ * gravado como `""`; devolve `null` quando não há nada a gravar (o form
+ * respondeu, mas a visita não trouxe UTM nem referrer).
+ */
+export function buildNativeFormAttributionFields(
+  attribution: KitNativeAttribution,
+): AttributionFields | null {
+  const fields: AttributionFields = {};
+  const utmSource = attribution.utm_source?.trim();
+  const utmMedium = attribution.utm_medium?.trim();
+  const utmCampaign = attribution.utm_campaign?.trim();
+  const referrer = attribution.referrer?.trim();
+  if (utmSource) fields.utm_source = utmSource;
+  if (utmMedium) fields.utm_medium = utmMedium;
+  if (utmCampaign) fields.utm_campaign = utmCampaign;
+  if (referrer) fields.referring_site = referrer;
+  if (Object.keys(fields).length === 0) return null;
+  fields.atribuicao_fonte = ATRIBUICAO_FONTE_KIT_NATIVO_FORM;
+  return fields;
+}
+
+/**
+ * Pura — mesmo formato de `PlanoBackfill`/`montarPlano` acima, mas cruzando
+ * contra o bloco `attribution` nativo do Kit (Parte A do #6425) em vez do
+ * snapshot da Beehiiv — não há "casar por e-mail" aqui, o dado já vem
+ * anexado ao próprio subscriber. `semOrigem` = subscriber sem bloco
+ * `attribution` nenhum (criado via API, cai fora do escopo desta função —
+ * é candidato do backfill original, `montarPlano`, não deste); `origemVazia`
+ * = tem `attribution`, mas nenhum campo útil (form sem UTM/referrer — caso
+ * legítimo, não erro).
+ */
+export function montarPlanoNativo(
+  kitSubscribers: KitSubscriberComAtribuicao[],
+  opts: { force?: boolean } = {},
+): PlanoBackfill {
+  const aplicar: PlanoEntry[] = [];
+  const semOrigem: string[] = [];
+  const origemVazia: string[] = [];
+  let jaFeitos = 0;
+  for (const kit of kitSubscribers) {
+    const email = kit.email_address.toLowerCase();
+    if (!opts.force && jaBackfillado(kit.fields)) {
+      jaFeitos++;
+      continue;
+    }
+    if (!kit.attribution) {
+      semOrigem.push(email);
+      continue;
+    }
+    const fields = buildNativeFormAttributionFields(kit.attribution);
+    if (!fields) {
+      origemVazia.push(email);
+      continue;
+    }
+    aplicar.push({ subscriberId: kit.id, email, fields });
+  }
+  return { aplicar, jaFeitos, semOrigem, origemVazia };
+}
+
 /**
  * Pura — cruza a base Kit com o snapshot Beehiiv e devolve o plano completo,
  * incluindo o que NÃO vai ser tocado e por quê. O caller imprime isso antes
