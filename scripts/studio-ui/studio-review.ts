@@ -837,8 +837,17 @@ export function resolveReviewImagePath(editionDir: string, filename: string): st
 // (duas previews concorrentes podem interpor um reset no meio). Use
 // `renderHTMLWithWarnings()` (mesmo módulo), que lê o coletor
 // sincronamente logo após o render.
-export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
-  if (!existsSync(resolve(editionDir, "02-reviewed.md"))) {
+// #6447 Fatia 3: `overrideReviewedText` — mesmo mecanismo de `extractContent`
+// (repassado sem alteração) — permite renderizar o preview a partir de texto
+// AINDA NÃO SALVO (split view com debounce, ver `buildReviewPreviewDraftHtml`
+// abaixo). `undefined` preserva o comportamento original: ler
+// `02-reviewed.md` do disco.
+export function buildReviewPreviewHtml(
+  editionDir: string,
+  aammdd?: string,
+  overrideReviewedText?: string,
+): PreviewResult {
+  if (overrideReviewedText === undefined && !existsSync(resolve(editionDir, "02-reviewed.md"))) {
     return {
       ok: false,
       error: "02-reviewed.md ainda não existe nesta edição — nada pra pré-visualizar.",
@@ -846,7 +855,7 @@ export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): Pre
     };
   }
   try {
-    const content = extractContent(editionDir);
+    const content = extractContent(editionDir, overrideReviewedText);
     let html = renderHTML(content, { fullDocument: true });
     if (aammdd) {
       const filenameMap = new Map<string, string>();
@@ -919,9 +928,17 @@ function readPostPixelImageNum(editionDir: string): string {
  * Facebook ainda) ou um destaque faltando (edição com 2 destaques em vez de
  * 3, #3369) não quebra — `parsePlatforms`/`buildSocialHtml` já iteram sobre
  * o que existir, sem indexação fixa d1/d2/d3. */
-export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
+// #6447 Fatia 3: `overrideSocialText` — mesmo mecanismo de
+// `overrideReviewedText` em `buildReviewPreviewHtml` acima — permite
+// renderizar a partir de texto ainda não salvo. `undefined` preserva o
+// comportamento original: ler `03-social.md` do disco.
+export function buildSocialPreviewHtml(
+  editionDir: string,
+  aammdd?: string,
+  overrideSocialText?: string,
+): PreviewResult {
   const socialPath = resolve(editionDir, "03-social.md");
-  if (!existsSync(socialPath)) {
+  if (overrideSocialText === undefined && !existsSync(socialPath)) {
     return {
       ok: false,
       error: "03-social.md ainda não existe nesta edição — nada pra pré-visualizar.",
@@ -929,7 +946,7 @@ export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): Pre
     };
   }
   try {
-    const md = readFileSync(socialPath, "utf8");
+    const md = overrideSocialText !== undefined ? overrideSocialText : readFileSync(socialPath, "utf8");
     const platforms = parsePlatforms(md);
     const imageMap = aammdd ? buildLocalSocialImageMap(editionDir, aammdd) : {};
     const postPixelImageNum = readPostPixelImageNum(editionDir);
@@ -939,6 +956,47 @@ export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): Pre
     const message = (e as Error).message;
     return { ok: false, error: message, html: errorHtml("Erro ao renderizar preview social", message) };
   }
+}
+
+/** #6447 Fatia 3: slugs cujo preview é DERIVADO de um Markdown que o editor
+ * está digitando neste painel — o único conjunto pra que "preview reativo por
+ * debounce" faz sentido (o texto digitado tem correspondência 1:1 com o que o
+ * preview mostra). `categorized` fica de fora de propósito: o preview daquela
+ * aba SEMPRE mostra o e-mail derivado de `02-reviewed.md` (ver
+ * `buildReviewPreviewHtml` — nunca de `01-categorized.md`), então digitar no
+ * textarea de categorized não muda nada que este preview reflita; reagir a
+ * esse texto seria enganoso (o editor veria um preview "vivo" que não é do
+ * arquivo que ele está editando). `html-final`/`html-final-patronos` também
+ * ficam fora — já SÃO o HTML final, sem parsing de Markdown envolvido; o
+ * "preview" deles é o próprio conteúdo do editor, então a reatividade ali é
+ * trivial (equivalente a ecoar o texto no `srcdoc`) e o cliente já faz isso
+ * localmente sem custo de rede (ver `revisao.js` `refreshPreview()` pro
+ * caminho `html-final` — nenhuma mudança nesta fatia). */
+export function isDraftPreviewSlug(slug: string): slug is "reviewed" | "social" {
+  return slug === "reviewed" || slug === "social";
+}
+
+/** Renderiza o preview a partir de texto AINDA NÃO SALVO em disco (`content`)
+ * — o miolo pure da rota `POST .../review/:slug/preview-draft` (#6447 Fatia
+ * 3, split view com preview reativo). NUNCA lê nem escreve
+ * `REVIEW_FILES[slug]` em disco: `content` é tudo que este preview usa do
+ * arquivo em edição; os demais artefatos da edição (`01-eia.md`, boxes,
+ * imagens, leaderboard — usados por `buildReviewPreviewHtml`/
+ * `buildSocialPreviewHtml` por baixo) continuam lidos normalmente de
+ * `editionDir`, então o preview reflete o resto da edição como está em disco
+ * AGORA — só o texto do slug em edição é o draft. `slug` fora de
+ * `isDraftPreviewSlug` retorna erro explícito; o caller
+ * (`handleReviewPreviewDraft` em `server.ts`) decide o status HTTP. */
+export function buildReviewPreviewDraftHtml(
+  editionDir: string,
+  aammdd: string,
+  slug: ReviewSlug,
+  content: string,
+): PreviewResult {
+  if (slug === "reviewed") return buildReviewPreviewHtml(editionDir, aammdd, content);
+  if (slug === "social") return buildSocialPreviewHtml(editionDir, aammdd, content);
+  const message = `preview reativo não é suportado para o slug "${slug}" — só "reviewed" e "social" têm preview derivado 1:1 do próprio Markdown em edição.`;
+  return { ok: false, error: message, html: errorHtml("Preview reativo indisponível", message) };
 }
 
 function escHtml(s: string): string {

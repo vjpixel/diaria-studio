@@ -1938,15 +1938,25 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
   }
 }
 
-export function extractContent(editionDir: string): NewsletterContent {
+// #6447 Fatia 3: `overrideReviewedText` permite renderizar o preview a partir
+// de texto AINDA NÃO SALVO em disco (o painel de split view do Studio, split
+// view do editor) sem duplicar todo o parsing acima — só a fonte do MD de
+// destaques muda; `01-eia.md`, boxes, leaderboard etc. continuam lidos de
+// `editionDir` normalmente (o preview-draft é só do texto que o editor está
+// digitando, nunca dos outros artefatos). `undefined` (todo caller pré-#6447)
+// preserva o comportamento original: ler `02-reviewed.md` do disco e lançar
+// se ausente.
+export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
 
-  if (!existsSync(reviewedPath)) {
+  if (overrideReviewedText === undefined && !existsSync(reviewedPath)) {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
   }
 
-  const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
+  const reviewedText = joinMultilineLinks(
+    overrideReviewedText !== undefined ? overrideReviewedText : readFileSync(reviewedPath, "utf8"),
+  );
 
   // #1972/#2978/#3476: remove os blocos dos boxes de divulgação (slot 1, slot
   // 2 e slot 3) ANTES do parse dos destaques. Se um callout estiver colado

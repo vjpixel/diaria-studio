@@ -141,6 +141,33 @@
   margin-top: 0.5rem;
 }
 
+/* #6447 Fatia 3 — split view (editor | preview) lado a lado. Os 2 filhos
+   diretos (.rv-split-editor/.rv-split-side) são as MESMAS 2 <section
+   class="panel"> de antes (editor de Markdown + side-tabs Lints/Diff/
+   Preview), só agora dentro de um grid — nenhuma delas mudou de conteúdo.
+   `align-items: start` evita que a coluna mais curta estique pra altura da
+   mais longa (comportamento default de grid, indesejado aqui — cada painel
+   tem sua própria altura/scroll). */
+.rv-split-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+.rv-split-editor,
+.rv-split-side {
+  min-width: 0; /* previne overflow de <textarea>/<iframe> dentro do grid */
+}
+
+/* Toggle Editor/Preview — só existe visualmente abaixo do breakpoint mobile
+   (ver media query abaixo); em telas largas fica sempre `display: none`,
+   as 2 colunas do split view já mostram os dois ao mesmo tempo. */
+.rv-split-toggle {
+  display: none;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
 @media (max-width: 640px) {
   .statusbar { gap: 0.75rem; }
   main { padding: 1rem 0.75rem 3rem; }
@@ -153,4 +180,12 @@
   .rv-editor-toolbar button {
     min-height: 44px;
   }
+
+  /* #6447 Fatia 3: abaixo de 640px, o split view empilha em 1 coluna e o
+     toggle acima decide qual dos 2 filhos fica visível — `data-mobile-view`
+     é escrito por revisao.js (setMobileView()), nunca direto pelo CSS. */
+  .rv-split-toggle { display: flex; }
+  .rv-split-view { grid-template-columns: 1fr; }
+  .rv-split-view[data-mobile-view="editor"] .rv-split-side { display: none; }
+  .rv-split-view[data-mobile-view="preview"] .rv-split-editor { display: none; }
 }

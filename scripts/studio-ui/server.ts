@@ -81,7 +81,10 @@
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
  *     reviewed | social | html-final — #3635, editor de última milha do
  *     `_internal/newsletter-final.html` publicado de verdade pela Etapa 5),
- *     `.../diff`, `.../lint`, `.../reset-baseline` e
+ *     `.../diff`, `.../lint`, `.../reset-baseline`,
+ *     `POST .../review/:slug/preview-draft` (#6447 Fatia 3 — split view com
+ *     preview reativo por debounce a partir do texto NÃO SALVO do editor;
+ *     `slug` = reviewed | social, nunca escreve em disco) e
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
  *     pra `<iframe>`) + `GET /api/editions/:aammdd/social-preview.html`
  *     (#3663 — HTML legível do `03-social.md`: posts LinkedIn/Facebook/
@@ -373,6 +376,7 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
+  buildReviewPreviewDraftHtml, // #6447 Fatia 3 — split view com preview reativo
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
   readHighlightsSummary,
@@ -1161,6 +1165,51 @@ function handleReviewSocialPreview(rootDir: string, aammdd: string, res: ServerR
   sendHtml(res, preview.ok ? 200 : 422, preview.html);
 }
 
+/** #6447 Fatia 3: `POST /api/editions/:aammdd/review/:slug/preview-draft` —
+ * renderiza o preview a partir do texto NO CORPO da request (ainda não salvo
+ * em disco), pro split view com re-render por debounce. NUNCA escreve em
+ * disco, nunca atualiza `_internal/studio-review-baseline/*`, nunca conta
+ * como "salvo" pra fins de conflito (#3729) — é puramente leitura+render,
+ * miolo em `buildReviewPreviewDraftHtml` (studio-review.ts). Resposta é JSON
+ * (não HTML cru como `.../preview.html`/`.../social-preview.html` acima):
+ * o cliente precisa distinguir sucesso/erro pra aplicar o guard de
+ * sequência (descartar resposta fora de ordem) antes de tocar o DOM. Corpo
+ * malformado (Markdown incompleto no meio da digitação) nunca lança daqui —
+ * `buildReviewPreviewDraftHtml`/`extractContent`/`renderHTML` já são
+ * fail-soft (viram `{ok:false, html: errorHtml(...)}`), e este handler ainda
+ * embrulha a chamada num try/catch por defesa em profundidade. */
+async function handleReviewPreviewDraft(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+  slug: string,
+): Promise<void> {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { content?: unknown } | null;
+  const content = parsed?.content;
+  if (typeof content !== "string") {
+    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+    return;
+  }
+  try {
+    const preview = buildReviewPreviewDraftHtml(editionDirFor(rootDir, aammdd), aammdd, slug, content);
+    sendJson(res, preview.ok ? 200 : 422, preview);
+  } catch (e) {
+    sendJson(res, 500, { ok: false, error: (e as Error).message });
+  }
+}
+
 /** #achado-260716: as imagens da edição (`04-d1-2x1.jpg` etc, geradas pela
  * Etapa 3) não apareciam no preview do painel de revisão — `renderHTML` do
  * pipeline produz `<img src="{{IMG:filename}}">`, um placeholder que só a
@@ -1704,6 +1753,18 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const resetBaselineMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/reset-baseline$/);
       if (req.method === "POST" && resetBaselineMatch) {
         handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
+        return;
+      }
+      // #6447 Fatia 3: preview reativo do split view — NUNCA escreve em disco
+      // (ver docstring de handleReviewPreviewDraft), mas é POST (corpo com o
+      // texto ainda-não-salvo) — mesma exceção estreita ao invariante
+      // read-only das rotas de escrita acima, checada na mesma vizinhança por
+      // sufixo distinto de `/reset-baseline`.
+      const previewDraftMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/preview-draft$/);
+      if (req.method === "POST" && previewDraftMatch) {
+        handleReviewPreviewDraft(rootDir, req, res, previewDraftMatch[1], previewDraftMatch[2]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
         return;
       }
       // #3602: exceção estreita ao invariante read-only, mesmo padrão do
