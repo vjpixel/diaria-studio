@@ -7,6 +7,7 @@ import {
   isGhPrMergeCommand,
   extractGhPrMergeTargetPr,
   shouldBlockGhPrMerge,
+  classifyMergeBlockCause,
   readActiveCoordinatorSessionIds,
   readActiveCoordinatorScan,
   readMergeLockHolder,
@@ -16,6 +17,7 @@ import {
   machineTag,
   BLOCK_REASON,
   SCOPED_GRANT_HINT,
+  LOCK_CONTENTION_HINT,
   buildBlockReason,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
@@ -302,6 +304,71 @@ describe("BLOCK_REASON (#5716, reescrito no #6303 Finding K)", () => {
     assert.match(BLOCK_REASON, /grant-merge/);
     assert.match(BLOCK_REASON, /check-merge-grant/);
   });
+
+  it("#6497 defeito 1: menciona o merge lock e o comando de aquisição/liberação", () => {
+    assert.match(BLOCK_REASON, /merge lock/i);
+    assert.match(BLOCK_REASON, /merge-lock-acquire/);
+    assert.match(BLOCK_REASON, /merge-lock-release/);
+  });
+
+  it("#6497 defeito 2: nunca afirma 'nesta máquina' — data/sessions/ é compartilhado via OneDrive", () => {
+    assert.doesNotMatch(BLOCK_REASON, /ativa nesta máquina/);
+    assert.match(BLOCK_REASON, /compartilhado entre máquinas/i);
+  });
+
+  it("#6497 defeito 3: o exemplo de grant-merge nomeia de quem é o --kind (a concedente)", () => {
+    assert.match(BLOCK_REASON, /grant-merge --kind \{kind DELA, a concedente\}/);
+  });
+});
+
+describe("classifyMergeBlockCause (#6497) — motivo nomeado por trás de shouldBlockGhPrMerge", () => {
+  it("sem coordenadora nenhuma e varredura confiável → null (não bloqueia)", () => {
+    assert.equal(classifyMergeBlockCause(new Set(), "sessao-interativa-1"), null);
+  });
+
+  it("varredura degradada e vazia → 'scan-degraded'", () => {
+    assert.equal(
+      classifyMergeBlockCause(new Set(), "sessao-x", { scanDegraded: true }),
+      "scan-degraded",
+    );
+  });
+
+  it("chamador sem identidade nenhuma (não-coordenadora, sem grant) → 'not-authorized'", () => {
+    const coords = new Set(["sessao-coordenadora"]);
+    assert.equal(classifyMergeBlockCause(coords, "sessao-alheia"), "not-authorized");
+  });
+
+  it("lock preso por OUTRA sessão → 'lock-held-other', mesmo pra coordenadora", () => {
+    const coords = new Set(["sessao-coordenadora"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sessao-coordenadora", { mergeLockHolder: "outra-sessao" }),
+      "lock-held-other",
+    );
+  });
+
+  it("2+ coordenadoras ativas, lock livre → 'contention-multi-coordinator'", () => {
+    const coords = new Set(["coord-a", "coord-b"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "coord-a", { mergeLockHolder: null }),
+      "contention-multi-coordinator",
+    );
+  });
+
+  it("1 coordenadora ativa, chamador é a BENEFICIADA da concessão (não a coordenadora) → 'contention-grantee'", () => {
+    const coords = new Set(["coord-a"]);
+    assert.equal(
+      classifyMergeBlockCause(coords, "sessao-interativa", {
+        hasLiveGrant: true,
+        mergeLockHolder: null,
+      }),
+      "contention-grantee",
+    );
+  });
+
+  it("1 coordenadora ativa, é ela mesma chamando, lock livre → null (caso solo comum, não bloqueia)", () => {
+    const coords = new Set(["coord-a"]);
+    assert.equal(classifyMergeBlockCause(coords, "coord-a", { mergeLockHolder: null }), null);
+  });
 });
 
 describe("buildBlockReason (#6322 achado 2 — concessão escopada bloqueia sem explicar por quê)", () => {
@@ -334,6 +401,52 @@ describe("buildBlockReason (#6322 achado 2 — concessão escopada bloqueia sem 
   it("concessão ESCOPADA + alvo DIFERENTE (número explícito, mas de outro PR) → acrescenta o hint", () => {
     const reason = buildBlockReason({ hasLiveGrant: true, grantPr: 100, targetPr: 200 });
     assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT}`);
+  });
+});
+
+describe("buildBlockReason — LOCK_CONTENTION_HINT (#6497, cenário do incidente relatado na issue)", () => {
+  it("sem blockCause → nunca acrescenta o hint de lock", () => {
+    assert.equal(buildBlockReason({}), BLOCK_REASON);
+  });
+
+  it("blockCause 'contention-grantee' — sessão interativa com concessão bloqueada por outra coordenadora ativa → menciona merge lock/merge-lock-acquire", () => {
+    // Cenário exato do #6497: a beneficiada de um grant confirma
+    // `check-merge-grant: granted: true` e é bloqueada mesmo assim, porque
+    // há outra coordenadora ativa e o lock ainda serializa.
+    const reason = buildBlockReason({
+      hasLiveGrant: true,
+      grantPr: undefined,
+      targetPr: 105,
+      blockCause: "contention-grantee",
+    });
+    assert.match(reason, /merge lock/i);
+    assert.match(reason, /merge-lock-acquire/);
+    assert.equal(reason, `${BLOCK_REASON} ${LOCK_CONTENTION_HINT}`);
+  });
+
+  it("blockCause 'contention-multi-coordinator' → mesmo hint de lock", () => {
+    const reason = buildBlockReason({ blockCause: "contention-multi-coordinator" });
+    assert.equal(reason, `${BLOCK_REASON} ${LOCK_CONTENTION_HINT}`);
+  });
+
+  it("blockCause 'lock-held-other' → mesmo hint de lock, mesmo pra uma coordenadora registrada", () => {
+    const reason = buildBlockReason({ blockCause: "lock-held-other" });
+    assert.equal(reason, `${BLOCK_REASON} ${LOCK_CONTENTION_HINT}`);
+  });
+
+  it("blockCause 'not-authorized'/'scan-degraded' → NÃO acrescenta o hint de lock (causa não é o lock)", () => {
+    assert.equal(buildBlockReason({ blockCause: "not-authorized" }), BLOCK_REASON);
+    assert.equal(buildBlockReason({ blockCause: "scan-degraded" }), BLOCK_REASON);
+  });
+
+  it("concessão ESCOPADA que não bate + blockCause de lock → acrescenta OS DOIS hints", () => {
+    const reason = buildBlockReason({
+      hasLiveGrant: true,
+      grantPr: 100,
+      targetPr: 200,
+      blockCause: "contention-grantee",
+    });
+    assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT} ${LOCK_CONTENTION_HINT}`);
   });
 });
 
