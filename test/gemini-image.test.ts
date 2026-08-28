@@ -76,7 +76,7 @@ describe("buildResizeOptions (#6459)", () => {
       .toBuffer();
 
     const subjectBand = await sharp({
-      create: { width, height: subjectBandHeight, channels: 3, noise: { type: "gaussian", mean: 128, sigma: 60 } },
+      create: { width, height: subjectBandHeight, channels: 3, background: { r: 0, g: 0, b: 0 }, noise: { type: "gaussian", mean: 128, sigma: 60 } },
     })
       .png()
       .toBuffer();
@@ -127,7 +127,7 @@ describe("buildResizeOptions (#6459)", () => {
     // sair com exatamente as dimensões pedidas, independente de onde a
     // saliência mais forte cair.
     const source = await sharp({
-      create: { width: 900, height: 900, channels: 3, noise: { type: "gaussian", mean: 128, sigma: 30 } },
+      create: { width: 900, height: 900, channels: 3, background: { r: 128, g: 128, b: 128 }, noise: { type: "gaussian", mean: 128, sigma: 30 } },
     })
       .jpeg({ quality: 90 })
       .toBuffer();
