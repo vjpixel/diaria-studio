@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   countTestFiles,
   discoveryVerdict,
+  listTestFiles,
   TEST_FILE_FLOOR,
 } from "../scripts/assert-test-discovery.ts";
 
@@ -22,6 +23,32 @@ describe("assert-test-discovery — guard anti-vacuidade (#1948)", () => {
     assert.ok(n > TEST_FILE_FLOOR, `esperado > ${TEST_FILE_FLOOR} arquivos, achou ${n}`);
     // este próprio arquivo deve estar entre eles
     assert.ok(n >= 1);
+  });
+
+  it("listTestFiles: countTestFiles é literalmente o length de listTestFiles (#6495 — fonte única)", () => {
+    const files = listTestFiles(ROOT);
+    assert.equal(files.length, countTestFiles(ROOT));
+  });
+
+  it("listTestFiles: retorna caminhos absolutos, todos terminando em .test.ts", () => {
+    const files = listTestFiles(ROOT);
+    assert.ok(files.length > 0);
+    for (const f of files) {
+      assert.ok(f.startsWith(ROOT), `esperado path absoluto sob ${ROOT}, achou ${f}`);
+      assert.ok(f.endsWith(".test.ts"), `esperado sufixo .test.ts, achou ${f}`);
+    }
+  });
+
+  it("listTestFiles: este próprio arquivo está na lista", () => {
+    const files = listTestFiles(ROOT);
+    const self = fileURLToPath(import.meta.url);
+    assert.ok(files.includes(self), "test/assert-test-discovery.test.ts deveria estar na lista");
+  });
+
+  it("listTestFiles: ordem determinística (2 chamadas produzem a mesma sequência)", () => {
+    const a = listTestFiles(ROOT);
+    const b = listTestFiles(ROOT);
+    assert.deepEqual(a, b);
   });
 
   it("verdict OK quando a contagem está no/acima do piso", () => {
