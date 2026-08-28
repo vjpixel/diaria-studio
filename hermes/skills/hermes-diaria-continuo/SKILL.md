@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.0
+version: 0.5.1
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -57,10 +57,28 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
    ao vivo 28/08/2026, #6483: `register`/`heartbeat` desta skill gravou
    `"kind":"overnight"` em `data/sessions/`, sumindo da trilha "Contínuo" da
    Triagem do Studio e poluindo a trilha "Overnight" com uma entrada que não
-   é overnight de verdade). Exemplo completo — `npx tsx
+   é overnight de verdade — usar SEMPRE o MESMO `--kind continuo` em
+   `register`/`heartbeat`/`claim-issue`, nunca alternar).
+   **`--session-id` é POR TICK, nunca por job (#6443, 28/08/2026)** — gerar
+   UMA VEZ aqui, no início deste tick, e reusar o MESMO valor em TODOS os
+   comandos `session-registry.ts` deste tick (`register`/`heartbeat`/
+   `claim-issue`); nunca regerar no meio do tick, nunca reusar entre
+   ticks: `SESSION_ID="hermes-cron-5d791ef6fc2c-$(date -u +%Y%m%dT%H%M%SZ)"`.
+   Era um id estável do job cron (`hermes-cron-5d791ef6fc2c` sem sufixo) — o
+   heartbeat de CADA tick renovava a MESMA entrada do registro, que por isso
+   nunca ficava `stale`, e um claim órfão de um tick que não abriu PR nunca
+   expirava sozinho (#6443). Com o sufixo por tick, a entrada do tick
+   ANTERIOR simplesmente para de receber heartbeat quando o tick seguinte
+   começa (mesmo sem chamar `end`) — `SOFT_STALE_MS` (90min,
+   `isIssueClaimedByOther` em `session-registry.ts`, #5474) trata essa
+   entrada como stale e deixa de bloquear `claim-issue`/`is-claimed` pra
+   qualquer outra sessão, sem depender de nada além do que já existe.
+   (`claim-staleness.ts`/#6436 é uma camada DIFERENTE e complementar — TTL
+   por idade da claim em si, `claimed_issues_at`, sem PR aberto — consumida
+   por `check-block-staleness.ts`; não é o mecanismo que este fix aciona.)
+   Exemplo completo — `npx tsx
    scripts/lib/session-registry.ts register --kind continuo --session-id
-   hermes-cron-5d791ef6fc2c` (id estável do job cron; usar o MESMO `--kind
-   continuo` + `--session-id` em `heartbeat`/`claim-issue`/`end`).
+   "$SESSION_ID"`.
 
 ### 2. Classificar — SEM LLM, executando o código real
 
@@ -128,25 +146,33 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
 Para cada issue elegível (após claim):
 
 1. **Claim é LEASE de trabalho imediato, nunca reserva de fila** (regra dura,
-   28/08 — incidente recorrente: o contínuo acumulava claims sem PR nenhum e
-   travava as issues para o develop indefinidamente, porque o session-id do
-   cron é por JOB e o heartbeat renova a cada tick — a sessão nunca fica
-   stale, então claim órfão nunca expira sozinho):
+   28/08 — incidente recorrente antes do #6443: o contínuo acumulava claims
+   sem PR nenhum e travava as issues para o develop indefinidamente, porque
+   o session-id do cron era por JOB (fixo entre ticks) e o heartbeat renovava
+   a MESMA entrada a cada tick — a sessão nunca ficava stale, então claim
+   órfão nunca expirava sozinho. Corrigido pelo session-id por TICK do passo
+   1.3 — usar sempre `$SESSION_ID` (a variável gerada naquele passo), nunca
+   mais o literal fixo):
    - Reivindicar **UMA issue por vez**, e somente no instante em que a
      implementação dela vai começar NESTE tick. Nunca reivindicar "as
      elegíveis" em lote no início do ciclo. Comando: `session-registry.ts
-     claim-issue --kind continuo --issue N --session-id hermes-cron-5d791ef6fc2c`
+     claim-issue --kind continuo --issue N --session-id "$SESSION_ID"`
      (sempre `--kind continuo`, nunca `overnight` — ver passo 1.3).
    - Só issues `track=overnight` podem ser reivindicadas. `bloqueada`/
      `develop`/`epica`/`agendada` NUNCA — mesmo que pareçam fáceis.
    - **Fim de tick = higiene obrigatória**: para cada issue em
      `claimed_issues` SEM PR aberto referenciando-a e sem worktree ativo,
      rodar `session-registry.ts unclaim-issue --kind continuo --issue N
-     --session-id hermes-cron-5d791ef6fc2c` ANTES do relatório (`--kind` e
+     --session-id "$SESSION_ID"` ANTES do relatório (`--kind` e
      `--session-id` são ambos obrigatórios no CLI — `requireKind`/
      `requireSessionId` lançam sem eles; `--kind` sempre `continuo`, nunca
      `overnight`, mesmo motivo do passo 1.3). Claim que sobrevive ao
-     tick precisa de evidência de trabalho em curso.
+     tick precisa de evidência de trabalho em curso. **Rede de segurança**
+     (#6443): mesmo que esta higiene falhe/seja pulada num tick, o
+     session-id por tick (passo 1.3) garante que a entrada do tick pare de
+     receber heartbeat quando ele termina — `SOFT_STALE_MS` (90min) trata
+     essa entrada como stale sozinha, sem depender desta higiene ter
+     rodado.
    - `claim-issue` com `exit 1` = outra sessão segura a issue → pular só ela.
      Sessões stale (heartbeat > 90min) não bloqueiam.
 2. **Delegar a implementação ao harness**:
@@ -220,6 +246,15 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.1 (28/08/2026): session-id do cron por TICK, não por JOB (#6443,
+  raiz da issue — itens 2/3 da decisão do editor já tinham sido resolvidos
+  via #6436). `$SESSION_ID` agora inclui timestamp UTC do início do tick
+  (`hermes-cron-{job}-{YYYYMMDDTHHMMSSZ}`), gerado uma vez no passo 1.3 e
+  reusado nos demais comandos `session-registry.ts` do tick. Antes, o id
+  fixo por job fazia o heartbeat de cada tick renovar a MESMA entrada do
+  registro indefinidamente — a sessão nunca ficava `stale`, e um claim
+  órfão de um tick sem PR nunca expirava sozinho (medido em 28/08: 7 issues
+  em `claimed_issues`, 6 sem PR aberto). Passos 1.3 e 4.1 atualizados.
 - 0.5.0 (28/08/2026): arquitetura delegada — classificação via código real
   (`classifyExecTrackWithRule`, 6 categorias), implementação via
   `claude-openrouter.sh` (harness Claude Code + OpenRouter), review diário
