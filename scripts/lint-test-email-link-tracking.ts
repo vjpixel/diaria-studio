@@ -59,11 +59,17 @@
  *        subscription real).
  *      A allowlist é por domínio/padrão específico — links REALMENTE
  *      quebrados fora dessas classes continuam `link_dead` blocker.
+ *    - `generic_send_merge_tag` (#6608): merge tag `{{...}}`/sinal indireto
+ *      (`isPostWebRedirectTarget`) ainda no e-mail ENTREGUE, mas só quando
+ *      `--send-mode generic` foi passado explicitamente — ver header de
+ *      `LinkTrackingSendMode` abaixo. Default (`simulate-as`) preserva 100%
+ *      o comportamento anterior (blocker).
  *
  * Uso:
  *   npx tsx scripts/lint-test-email-link-tracking.ts \
  *     --email-file /tmp/email-260514.txt \
- *     --out /tmp/lint-link-tracking.json
+ *     --out /tmp/lint-link-tracking.json \
+ *     [--send-mode generic|simulate-as]   # default simulate-as, ver #6608
  *
  * Exit codes:
  *   0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required não contam)
@@ -106,7 +112,8 @@ export interface LinkSkip {
     | "rate_limited"
     | "amazon_bot_block"
     | "font_degradation"
-    | "beehiiv_footer_artifact";
+    | "beehiiv_footer_artifact"
+    | "generic_send_merge_tag";
   domain?: string;
   /** Status HTTP quando bot_blocked. */
   status?: number;
@@ -193,6 +200,31 @@ export function decodeRedirectWrapper(url: string): string {
 export type LinkTrackingStage = "draft" | "delivered";
 
 /**
+ * #6608: modo de envio do test email — determina se uma merge tag ainda
+ * literal no e-mail ENTREGUE (`stage: "delivered"`) é o defeito real
+ * (custom field não populado, comportamento default pré-#6608) ou um
+ * artefato CONHECIDO E ACEITO do modo de envio genérico da Beehiiv.
+ *
+ * `"simulate-as"` (default — preserva 100% o comportamento pré-#6608): o
+ * test email foi enviado via "Simulate as → Search for a specific
+ * subscriber" (`beehiiv-playbook.md` §7, #6011), que resolve merge tags com
+ * contexto de assinante real. Tag ainda literal aqui é blocker de verdade.
+ *
+ * `"generic"`: o test email foi enviado via "Send test email" genérico
+ * (checkbox de destinatário, sem contexto de assinante) — modo que a
+ * Beehiiv **nunca** resolve merge tags de sistema nele, mesmo com o draft
+ * 100% correto (#6011). A partir do #6608, o picker de busca de assinante
+ * do "Simulate as" parou de responder a qualquer técnica de automação
+ * testada (issue não fechada, causa raiz não investigada) — até que isso
+ * seja resolvido (ou reproduzido manualmente pelo editor), toda edição
+ * enviada pelo playbook automatizado sai no modo genérico. Tratar
+ * `{{email}}`/`{{poll_token}}` literal como `link_dead` nesse cenário é
+ * falso-positivo mecânico, não defeito de conteúdo — vira `skipped[]` com
+ * reason `generic_send_merge_tag`, nunca `issues[]`.
+ */
+export type LinkTrackingSendMode = "generic" | "simulate-as";
+
+/**
  * Categoriza URL pra decisão de skip:
  * - non_http: protocolos não-http (mailto, tel, javascript) — skip silencioso
  * - auth_required: domínios que exigem login (skip + info)
@@ -223,13 +255,24 @@ export type LinkTrackingStage = "draft" | "delivered";
  * (pathname `/jogar` + `from=post-web`), classificando como `link_dead`
  * mesmo com HTTP final 200. Ver header de `isPostWebRedirectTarget` abaixo.
  */
-export function categorizeUrl(url: string, stage: LinkTrackingStage = "draft"): "non_http" | "auth_required" | "merge_tag" | null {
+export function categorizeUrl(
+  url: string,
+  stage: LinkTrackingStage = "draft",
+  sendMode: LinkTrackingSendMode = "simulate-as",
+): "non_http" | "auth_required" | "merge_tag" | "generic_send_merge_tag" | null {
   // #1949: URL com merge tag Beehiiv (`{{email}}`) — a vote URL do É IA? é
   // `?email={{email}}&...`. Beehiiv expande no ENVIO; um HEAD na URL literal
   // retornaria 4xx (falso link_dead) — SÓ vale em stage="draft" (ver header
   // desta função pro rationale completo do #4512).
   // #1186: `{{poll_sig}}` removido — modo merge-tag sem sig HMAC.
   if (stage === "draft" && /\{\{[^}]+\}\}/.test(url)) return "merge_tag";
+  // #6608: e-mail JÁ ENTREGUE, mas enviado via "Send test email" genérico —
+  // esse modo é conhecido por não resolver merge tags de sistema mesmo com
+  // draft correto (ver header de `LinkTrackingSendMode`). Tag ainda literal
+  // aqui é limitação aceita do modo de envio, não defeito — skip, não HEAD.
+  if (stage === "delivered" && sendMode === "generic" && /\{\{[^}]+\}\}/.test(url)) {
+    return "generic_send_merge_tag";
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -412,6 +455,9 @@ export async function checkLinkTracking(
   // (chamador real hoje, mainCli(), passa "delivered" explicitamente — ver
   // header de categorizeUrl acima pro rationale completo).
   stage: LinkTrackingStage = "draft",
+  // #6608: default "simulate-as" preserva 100% do comportamento pré-#6608 —
+  // ver header de `LinkTrackingSendMode` pro rationale completo.
+  sendMode: LinkTrackingSendMode = "simulate-as",
 ): Promise<LinkTrackingResult> {
   const rawUrls = extractEmailUrls(emailContent);
   const issues: LinkIssue[] = [];
@@ -435,7 +481,7 @@ export async function checkLinkTracking(
       continue;
     }
 
-    const cat = categorizeUrl(decoded, stage);
+    const cat = categorizeUrl(decoded, stage, sendMode);
     if (cat === "non_http") {
       skipped.push({ url: decoded, reason: decoded.startsWith("mailto:") ? "tel_mailto" : "non_http" });
       continue;
@@ -443,6 +489,17 @@ export async function checkLinkTracking(
     if (cat === "merge_tag") {
       // #1949: vote URL com {{email}} — expande no envio (#1186: sem poll_sig).
       skipped.push({ url: decoded, reason: "merge_tag" });
+      continue;
+    }
+    if (cat === "generic_send_merge_tag") {
+      // #6608: e-mail entregue via "Send test email" genérico — modo
+      // conhecido por não resolver merge tags de sistema (#6011). Não é o
+      // defeito que este linter existe pra pegar nesse cenário — skip.
+      skipped.push({
+        url: decoded,
+        reason: "generic_send_merge_tag",
+        note: "Merge tag literal em test email enviado via modo genérico (não Simulate as) — limitação aceita do modo de envio, ver #6608.",
+      });
       continue;
     }
     if (cat === "auth_required") {
@@ -476,15 +533,27 @@ export async function checkLinkTracking(
         // Checado ANTES dos ramos por status abaixo de propósito: o HEAD final
         // aqui tipicamente é 200 (a página /jogar existe e funciona), então sem
         // esta checagem cairia no `else { passed++ }` — mascarando o defeito.
-        issues.push({
-          type: "link_dead",
-          severity: "blocker",
-          url,
-          final_url: r.final_url,
-          status: r.status,
-          hops: r.hops,
-          details: `Redirect final aponta pra /jogar com from=post-web (HTTP ${r.status} em ${r.final_url}) — merge tag de identidade do voto ainda literal no /vote (guard isUnsubstitutedMergeTag, workers/poll/src/vote.ts, #4578/#4604).`,
-        });
+        //
+        // #6608: mesmo sinal indireto pode vir de um envio via modo genérico
+        // (nunca resolve merge tag, #6011) em vez de custom field ausente —
+        // sendMode "generic" trata como limitação aceita (skip), não blocker.
+        if (sendMode === "generic") {
+          skipped.push({
+            url,
+            reason: "generic_send_merge_tag",
+            note: `Redirect final aponta pra /jogar com from=post-web (HTTP ${r.status} em ${r.final_url}) — sinal de merge tag ainda literal, mas test email enviado via modo genérico (não Simulate as); limitação aceita do modo de envio, ver #6608.`,
+          });
+        } else {
+          issues.push({
+            type: "link_dead",
+            severity: "blocker",
+            url,
+            final_url: r.final_url,
+            status: r.status,
+            hops: r.hops,
+            details: `Redirect final aponta pra /jogar com from=post-web (HTTP ${r.status} em ${r.final_url}) — merge tag de identidade do voto ainda literal no /vote (guard isUnsubstitutedMergeTag, workers/poll/src/vote.ts, #4578/#4604).`,
+          });
+        }
       } else if (r.hops > MAX_REDIRECTS) {
         issues.push({
           type: "link_redirect_chain_long",
@@ -534,7 +603,9 @@ export async function checkLinkTracking(
 async function mainCli(): Promise<number> {
   const { flags, values } = parseArgs(process.argv.slice(2));
   if (flags.has("help") || !values["email-file"]) {
-    console.error("Uso: lint-test-email-link-tracking.ts --email-file <file> [--out <json>]");
+    console.error(
+      "Uso: lint-test-email-link-tracking.ts --email-file <file> [--out <json>] [--send-mode generic|simulate-as]",
+    );
     return 2;
   }
   const emailFile = values["email-file"];
@@ -549,7 +620,12 @@ async function mainCli(): Promise<number> {
   // "delivered" (override via --stage draft, se algum caller futuro precisar
   // checar HTML de pré-render onde merge tag não-expandida é esperada).
   const stage: LinkTrackingStage = values.stage === "draft" ? "draft" : "delivered";
-  const result = await checkLinkTracking(content, fetch, DEFAULT_CONCURRENCY, stage);
+  // #6608: default "simulate-as" preserva o comportamento pré-#6608 — o
+  // caller (`review-test-email.md` passo 17) passa `--send-mode generic`
+  // explicitamente só quando confirmou que o test email saiu via "Send test
+  // email" genérico (não "Simulate as"), ver header de `LinkTrackingSendMode`.
+  const sendMode: LinkTrackingSendMode = values["send-mode"] === "generic" ? "generic" : "simulate-as";
+  const result = await checkLinkTracking(content, fetch, DEFAULT_CONCURRENCY, stage, sendMode);
   if (values.out) writeFileSync(values.out, JSON.stringify(result, null, 2), "utf8");
   console.log(JSON.stringify(result, null, 2));
 

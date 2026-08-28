@@ -156,13 +156,27 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    conhecido por NÃO resolver merge tags de sistema (`{{email}}` sai literal
 >    mesmo com draft correto) — merge tag literal nesse cenário é artefato do
 >    modo de envio, não defeito do conteúdo; reenviar com "Simulate as" antes de
->    marcar `issues_unfixable`. Na
->    prática você não precisa decidir isso manualmente: o check determinístico
->    do passo 17 (`lint-test-email-link-tracking.ts`, `stage: "delivered"`)
->    já trata merge tag literal no e-mail entregue como `link_dead` (blocker)
->    automaticamente — se você mesmo notar `{{poll_token}}` literal no corpo
->    lido, pode reportar (`email:link_dead: {{poll_token}} não substituída —
->    ver #4512`), o passo 17 vai confirmar/duplicar independentemente.
+>    marcar `issues_unfixable`.
+>    **ATUALIZAÇÃO #6608 (260828, NÃO FECHA a causa raiz — só o fallback):** o
+>    picker de busca de assinante do "Simulate as" (`input[placeholder="Search
+>    for a specific subscriber"]`) parou de responder a qualquer técnica de
+>    automação testada (clique real + type, backspace+retype, native React
+>    setter) — o dropdown de resultados nunca renderiza. Enquanto isso não for
+>    resolvido (investigação da causa raiz é FORA de escopo deste agente —
+>    nenhuma ferramenta de Chrome/browser disponível aqui), toda edição
+>    enviada pelo playbook automatizado sai no modo genérico. Nesse caso —
+>    **e só nesse caso, confirmado, não por suposição** — passe
+>    `--send-mode generic` no passo 17 abaixo. O script então trata
+>    `{{email}}`/`{{poll_token}}` literal (e o sinal indireto do redirect pro
+>    `/jogar?...&from=post-web`) como `skipped[]` (reason
+>    `generic_send_merge_tag`), **não** `issues[]`/blocker. Se o envio foi
+>    confirmadamente via "Simulate as" (ou produção), **não** passe a flag —
+>    default (`simulate-as`) preserva o comportamento normal (blocker).
+>    Você não precisa decidir a categoria sozinho antes de rodar o passo 17:
+>    o check determinístico (`lint-test-email-link-tracking.ts`) já faz a
+>    classificação — sua única decisão é qual `--send-mode` corresponde ao
+>    envio real que você fez (registre no passo 0/log qual modo foi usado,
+>    pra essa decisão não depender de memória).
 >    **#1186:** `{{poll_sig}}` foi removido da vote URL — ausência de sig= é normal.
 > 2. **Novo design system (#1936):** manchetes em **Georgia serif SEM negrito** e
 >    legenda do É IA? em **sans SEM itálico** são CORRETOS. Réguas/bordas bege
@@ -391,7 +405,10 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 ```bash
 npx tsx scripts/lint-test-email-link-tracking.ts \
   --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
-  --out {edition_dir}/_internal/lint-link-tracking-{AAMMDD}.json
+  --out {edition_dir}/_internal/lint-link-tracking-{AAMMDD}.json \
+  # --send-mode generic  # SÓ se o send foi confirmadamente via "Send test email"
+                          # genérico (não "Simulate as") — ver ressalva #6011/#6608
+                          # acima. Omitir = default "simulate-as" (comportamento normal).
 # Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required não contam, #1949).
 # Exit 1 = ao menos 1 blocker (link_dead OU link_redirect_chain_long).
 ```
@@ -399,7 +416,10 @@ npx tsx scripts/lint-test-email-link-tracking.ts \
 **#4512:** este comando roda com `stage: "delivered"` por default (o e-mail
 apontado por `--email-file` é sempre o JÁ ENTREGUE, nunca draft) — uma merge
 tag `{{poll_token}}`/`{{email}}` ainda literal aqui **não é mais skipada como
-`merge_tag`**: segue pro HEAD normal e vira `link_dead` (blocker).
+`merge_tag`**: segue pro HEAD normal e vira `link_dead` (blocker) — **exceto**
+com `--send-mode generic` (#6608), onde vira `generic_send_merge_tag` no
+`skipped[]` (ver ressalva #6011/#6608 acima e a seção `generic_send_merge_tag`
+mais abaixo).
 
 **#4604 (correção do rationale do #4512 — o guard mudou de comportamento no
 #4578):** o `/vote` real **não retorna mais 4xx incondicionalmente** pra
@@ -443,7 +463,19 @@ ficam no JSON pra debug mas **NÃO viram issue**:
   mais aparecer — uma tag ainda literal aqui vira `link_dead` (blocker) via
   o caminho normal, não `merge_tag` skip. Se `merge_tag` aparecer no
   `skipped[]` deste comando, é sinal de regressão no script (deveria estar
-  vazio pra este call site).
+  vazio pra este call site) — **exceto** quando você passou
+  `--send-mode generic` (#6608): nesse modo a categoria correta é
+  `generic_send_merge_tag` (abaixo), não `merge_tag` puro — se `merge_tag`
+  (sem o prefixo `generic_send_`) aparecer com `--send-mode generic` ainda é
+  sinal de regressão.
+- **`generic_send_merge_tag` (#6608, só aparece com `--send-mode generic`
+  explícito)**: `{{email}}`/`{{poll_token}}` literal (ou o sinal indireto do
+  redirect pro `/jogar?...&from=post-web`) no e-mail entregue, mas o send foi
+  confirmadamente via "Send test email" genérico — modo que a Beehiiv nunca
+  resolve merge tags de sistema nele, mesmo com draft correto (#6011). **NÃO
+  é o defeito de conteúdo que este passo existe pra pegar nesse cenário** —
+  não reportar como `link_dead`. Mencionar no resumo da edição como
+  limitação conhecida/aceita (não force o fix loop), não como blocker.
 - **`amazon_bot_block` (#3480)**: domínios Amazon (amazon.com, amazon.com.br,
   amzn.to) retornam **404** (não 401/403) pra HEAD de user-agent não-navegador
   — bot-block "silencioso". Página existe normalmente pra humanos. **NÃO é
