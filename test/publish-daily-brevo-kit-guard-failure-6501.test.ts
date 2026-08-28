@@ -42,7 +42,6 @@ const ENV_KEYS = [API_KEY_ENV, "POLL_SECRET", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLA
 const savedEnv: Record<string, string | undefined> = {};
 
 function mockProcessExit(): void {
-  // @ts-expect-error mocking
   process.exit = (code?: number) => {
     throw new Error(`__mocked_exit__(${code ?? 0})`);
   };
