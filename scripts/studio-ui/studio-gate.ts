@@ -355,16 +355,23 @@ export function buildChecklist(
     ? ""
     : `${factCheck.blockingCount} claim(s) bloqueante(s)`;
 
+  // #6449 achado ao vivo (editor, 260828): os labels antigos eram afirmações
+  // positivas ("Sem violations bloqueantes", "Fact-check ok") que continuavam
+  // exibidas junto do badge ATENÇÃO + detail quando o item falhava — o texto
+  // resultante ("ATENÇÃO Sem violations bloqueantes 2 violation(ões)
+  // bloqueante(s) aberta(s)") lia como uma contradição literal. Labels agora
+  // nomeiam o CRITÉRIO sendo checado (neutro), nunca afirmam o resultado — o
+  // badge (OK/ATENÇÃO) + detail é que carregam o veredito.
   return [
     {
       id: "titles-per-highlight",
-      label: "1 título escolhido por destaque",
+      label: "Título único por destaque",
       ok: titlesOk,
       detail: titlesDetail,
     },
     {
       id: "lint-violations",
-      label: "Sem violations bloqueantes",
+      label: "Violations bloqueantes",
       ok: violationsOk,
       detail: violationsOk
         ? ""
@@ -374,7 +381,7 @@ export function buildChecklist(
     },
     {
       id: "fact-check",
-      label: "Fact-check ok",
+      label: "Fact-check",
       ok: factCheckOk,
       detail: factCheckDetail,
     },
