@@ -42,13 +42,28 @@ function bodyOf(call: { init: RequestInit | undefined }): Record<string, unknown
 }
 
 describe("subscribeToKit — double opt-in (#6340)", () => {
-  it("worker poll (na allowlist do flag) cria subscriber com state: inactive", async () => {
+  it("worker poll (na allowlist do flag) COM KIT_DOI_FORM_ID configurado cria subscriber com state: inactive", async () => {
+    const { subscribeViaConfiguredBackend } = await import("../workers/poll/src/subscribe.ts");
+    const fetchMock = makeFetchMock();
+    const env = { SUBSCRIBE_BACKEND: "kit", KIT_API_KEY: "kk", KIT_DOI_FORM_ID: "999" } as any;
+    await subscribeViaConfiguredBackend(env, { name: "", email: "novo@example.com" }, fetchMock);
+    assert.equal(fetchMock.calls[0].url, "https://api.kit.com/v4/subscribers");
+    assert.equal(bodyOf(fetchMock.calls[0]).state, "inactive");
+  });
+
+  // #6565: sem KIT_DOI_FORM_ID configurado, vincularKitDoiForm é no-op — nenhum
+  // e-mail de confirmação sai, então criar "inactive" prendia o cadastro para
+  // sempre. resolveKitCreateState deve cair de volta em "active" nesse caso,
+  // mesmo com o worker na allowlist do flag.
+  it("worker poll na allowlist do flag MAS SEM KIT_DOI_FORM_ID cria subscriber com state: active (#6565)", async () => {
     const { subscribeViaConfiguredBackend } = await import("../workers/poll/src/subscribe.ts");
     const fetchMock = makeFetchMock();
     const env = { SUBSCRIBE_BACKEND: "kit", KIT_API_KEY: "kk" } as any;
     await subscribeViaConfiguredBackend(env, { name: "", email: "novo@example.com" }, fetchMock);
     assert.equal(fetchMock.calls[0].url, "https://api.kit.com/v4/subscribers");
-    assert.equal(bodyOf(fetchMock.calls[0]).state, "inactive");
+    assert.equal(bodyOf(fetchMock.calls[0]).state, "active");
+    // sem form configurado, nunca deveria tentar vincular a nenhum form
+    assert.equal(fetchMock.calls.length, 1);
   });
 
   it("vincula ao KIT_DOI_FORM_ID (dispara e-mail de confirmação) quando configurado", async () => {
