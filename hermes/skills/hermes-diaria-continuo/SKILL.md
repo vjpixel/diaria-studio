@@ -37,7 +37,7 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
 | ferramenta | o que faz | modelo |
 |---|---|---|
-| `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | glm-5.2:free → dots-3:free → glm-5.3-flash |
+| `~/.hermes/scripts/claude-openrouter.sh` | roda `claude -p` com OpenRouter (stdin=prompt; `--tools`, `--budget`, `--timeout`) | `dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` → `z-ai/glm-5.3-flash` |
 | `npx tsx --eval` (direto, sem LLM) | classificação determinística | nenhum |
 | `~/.hermes/scripts/daily-consolidated-review.sh` | review Opus do diff do dia (cron separado, 1x/dia) | Anthropic (assinatura) |
 
