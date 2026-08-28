@@ -44,14 +44,13 @@
  */
 
 import "dotenv/config";
-import { existsSync, mkdirSync, appendFileSync, rmSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, appendFileSync, rmSync, renameSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { readFileSync } from "node:fs";
 import { coverageSummary, type EngagementManifest, type EngagementCoverageSummary } from "./lib/beehiiv-engagement-manifest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
