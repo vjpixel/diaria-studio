@@ -26,8 +26,109 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
+import { isMainModule } from "../scripts/lib/cli-args.ts";
 import { buildPrompt, buildResizeOptions } from "../scripts/gemini-image.js";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Regressão #6486 (achado ao vivo, edição 260828).
+ *
+ * `scripts/gemini-image.js` comparava `import.meta.url` com
+ * `` `file://${process.argv[1]}` `` cru — no Windows, `process.argv[1]` vem
+ * como `C:\Users\...\gemini-image.js` (backslash, sem URL-encoding) enquanto
+ * `import.meta.url` é `file:///C:/Users/.../gemini-image.js` (barras normais,
+ * triplo-slash). A comparação nunca batia, `isMainModule` era sempre
+ * `false`, `main()` nunca rodava, e o processo saía com exit 0 sem gerar a
+ * imagem nem imprimir nada — falha silenciosa. O fix trocou o guard inline
+ * pelo helper `isMainModule` de `scripts/lib/cli-args.ts`, que normaliza os
+ * dois lados via `fileURLToPath` antes de comparar.
+ */
+describe("gemini-image.js usa isMainModule (#6486)", () => {
+  it("importa isMainModule de lib/cli-args e não monta o guard `file://` à mão", () => {
+    const source = readFileSync(resolve(ROOT, "scripts/gemini-image.js"), "utf8");
+    assert.match(
+      source,
+      /from ['"]\.\/lib\/cli-args\.ts['"]/,
+      "gemini-image.js deve importar isMainModule de ./lib/cli-args.ts",
+    );
+    assert.match(
+      source,
+      /if\s*\(\s*isMainModule\(import\.meta\.url\)\s*\)/,
+      "gemini-image.js deve usar isMainModule(import.meta.url) como guard de CLI",
+    );
+    assert.doesNotMatch(
+      source,
+      /import\.meta\.url\s*===\s*`file:\/\//,
+      "gemini-image.js não deve mais comparar import.meta.url com um template `file://` cru (bug do #6486)",
+    );
+  });
+
+  it("reproduz o par (argv[1], import.meta.url) real do Windows — o guard cru nunca bateria", () => {
+    // `fileURLToPath`/o par produzido por argv[1]+import.meta.url é
+    // PLATFORM-DEPENDENT no próprio Node (confirmado ao vivo: rodando este
+    // teste em Linux, `fileURLToPath("file:///C:/Users/.../gemini-image.js")`
+    // devolve `/C:/Users/.../gemini-image.js`, não a forma com backslash que
+    // um host Windows de verdade produziria) — então simular o par Windows
+    // aqui não pode provar que `isMainModule` "resolve certo" nesse host
+    // específico sem rodar em win32 de verdade. O que ESTE teste prova,
+    // executável em qualquer SO: o guard ANTIGO (`file://${argv[1]}` cru)
+    // nunca bate no par real que um Windows produz — é a causa raiz do
+    // #6486. A correção em si (delegar a `fileURLToPath`, API nativa do
+    // Node.js já testada para win32 fora deste repo) é validada quanto ao
+    // PAR QUE O SO ATUAL produz pelo teste "isMainModule casa o par..." em
+    // test/main-module-guard.test.ts — mesma técnica usada ali para o bug
+    // gêmeo do #6191 em route-issue.ts.
+    const windowsArgv1 = "C:\\Users\\ed\\Projects\\diaria-studio\\scripts\\gemini-image.js";
+    const windowsMetaUrl = "file:///C:/Users/ed/Projects/diaria-studio/scripts/gemini-image.js";
+    assert.notEqual(
+      windowsMetaUrl,
+      `file://${windowsArgv1}`,
+      "o guard cru `file://${argv[1]}` nunca bate no par que um Windows real produz — é o bug inteiro do #6486",
+    );
+  });
+
+  it("isMainModule casa o par (import.meta.url, argv[1]) que este SO produz de verdade, pro path de gemini-image.js", () => {
+    // Complemento do teste acima, na técnica correta pra qualquer SO: usa o
+    // par que a PRÓPRIA máquina rodando o teste produz para este arquivo
+    // (fileURLToPath/pathToFileURL fazem o round-trip nativo do Node,
+    // corretamente por plataforma) — no CI Linux é o caso que o bug NÃO
+    // afetava (acerto por acidente); numa máquina Windows real seria
+    // exatamente o caso que o guard antigo quebrava e o novo conserta.
+    const scriptPath = resolve(ROOT, "scripts/gemini-image.js");
+    const metaUrl = pathToFileURL(scriptPath).href;
+    const original = process.argv[1];
+    try {
+      process.argv[1] = scriptPath;
+      assert.equal(isMainModule(metaUrl), true);
+
+      process.argv[1] = resolve(ROOT, "scripts/outro-script.ts");
+      assert.equal(isMainModule(metaUrl), false);
+    } finally {
+      process.argv[1] = original;
+    }
+  });
+
+  it("isMainModule continua correto no formato Unix/Linux (caminho que já funcionava)", () => {
+    const unixArgv1 = "/home/ed/diaria-studio/scripts/gemini-image.js";
+    const unixMetaUrl = "file:///home/ed/diaria-studio/scripts/gemini-image.js";
+
+    const original = process.argv[1];
+    try {
+      process.argv[1] = unixArgv1;
+      assert.equal(isMainModule(unixMetaUrl), true);
+
+      process.argv[1] = "/home/ed/diaria-studio/scripts/outro-script.ts";
+      assert.equal(isMainModule(unixMetaUrl), false);
+    } finally {
+      process.argv[1] = original;
+    }
+  });
+});
 
 describe("buildPrompt (#6459)", () => {
   it("inclui instrução explícita de headroom acima do sujeito", () => {

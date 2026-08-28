@@ -87,7 +87,11 @@ function walkTsFiles(dir: string, out: string[] = []): string[] {
     if (entry === "node_modules" || entry.startsWith(".")) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) walkTsFiles(full, out);
-    else if (entry.endsWith(".ts")) out.push(full);
+    // #6486: gemini-image.js reintroduziu o guard cru fora do radar deste
+    // invariante porque só .ts era varrido — scripts/*.js (comfyui-run.js,
+    // cloudflare-image.js, openai-image.js, gemini-image.js) também podem
+    // montar o guard à mão, então precisam do mesmo escrutínio.
+    else if (entry.endsWith(".ts") || entry.endsWith(".js")) out.push(full);
   }
   return out;
 }
@@ -148,7 +152,7 @@ describe("isMainModule (#6191)", () => {
 });
 
 describe("nenhum script monta o guard de main module à mão (#6191)", () => {
-  it("scripts/**/*.ts usam isMainModule, não template `file://`", () => {
+  it("scripts/**/*.{ts,js} usam isMainModule, não template `file://`", () => {
     const offenders = walkTsFiles(SCRIPTS)
       .filter((f) => containsRawGuard(readFileSync(f, "utf8")))
       .map((f) => f.slice(ROOT.length + 1).replaceAll("\\", "/"));

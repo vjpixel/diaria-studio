@@ -21,6 +21,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import sharp from 'sharp';
+import { isMainModule } from './lib/cli-args.ts';
 
 /**
  * Monta o prompt final enviado ao Gemini a partir do JSON de prompt (`sd`).
@@ -61,9 +62,13 @@ export function buildResizeOptions() {
   return { fit: 'cover', position: sharp.strategy.attention };
 }
 
-const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-
-if (isMainModule) {
+// #6486: a comparação manual `file://${process.argv[1]}` quebra no Windows —
+// process.argv[1] vem com backslash sem URL-encoding (`C:\Users\...`),
+// enquanto import.meta.url é uma URL real (`file:///C:/Users/...`, barras
+// normais). isMainModule() de lib/cli-args.ts normaliza os dois lados via
+// fileURLToPath antes de comparar, o mesmo helper que image-generate.ts e
+// outros scripts do repo já usam corretamente em Windows.
+if (isMainModule(import.meta.url)) {
   main().catch(e => { console.error(e.stack || e.message); process.exit(1); });
 }
 
