@@ -177,6 +177,37 @@ export function resolveStage4DecisionForConsumption(
   return { usable: true, decision };
 }
 
+/**
+ * Resolve a mtime (ms) de um content file pro freshness check acima,
+ * distinguindo "arquivo genuinamente ausente" (ENOENT — caso normal, mtime
+ * 0, nunca invalida a decisão por si só) de qualquer OUTRO erro de I/O
+ * (EACCES, EPERM, EBUSY, lock transitório do Windows/OneDrive durante um
+ * `Edit`/`Write` concorrente do orchestrator no mesmo arquivo) — esse
+ * segundo caso é uma checagem que FALHOU, não uma confirmação de "arquivo
+ * não mudou", e tratar os dois igual (retornando 0) permitiria que um erro
+ * de leitura mascarasse silenciosamente um `editar` real que aconteceu
+ * depois da aprovação, deixando uma decisão STALE passar como fresca e
+ * pulando o gate humano por engano (achado do fleet review, #6444).
+ * `Infinity` força `stale` em `resolveStage4DecisionForConsumption` (nunca
+ * é `> ` que uma comparação vença — falha sempre pro lado seguro).
+ *
+ * `statFn` é injetável só pra teste (default = `statSync` real).
+ */
+export function resolveContentFileMtimeMs(
+  path: string,
+  statFn: (p: string) => { mtimeMs: number } = statSync,
+): number {
+  try {
+    return statFn(path).mtimeMs;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    console.error(
+      `stage4-decision: falha ao checar mtime de ${path}: ${(err as Error).message} — tratando como possivelmente mais recente (fail-safe)`,
+    );
+    return Infinity;
+  }
+}
+
 // CLI:
 //   Leitura crua (imprime o JSON da decisão, ou `null` se ausente):
 //     npx tsx scripts/lib/stage4-decision.ts --edition-dir <dir> --read
@@ -206,13 +237,7 @@ if (isMainModule(import.meta.url)) {
       .split(",")
       .map((f) => f.trim())
       .filter((f) => f.length > 0)
-      .map((f) => {
-        try {
-          return statSync(resolve(editionDir, f)).mtimeMs;
-        } catch {
-          return 0;
-        }
-      });
+      .map((f) => resolveContentFileMtimeMs(resolve(editionDir, f)));
     console.log(JSON.stringify(resolveStage4DecisionForConsumption(decision, mtimesMs)));
   }
 }

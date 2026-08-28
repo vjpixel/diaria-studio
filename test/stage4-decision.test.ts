@@ -17,6 +17,7 @@ import {
   writeStage4ApprovedDecision,
   decideGateApproveAction,
   resolveStage4DecisionForConsumption,
+  resolveContentFileMtimeMs,
 } from "../scripts/lib/stage4-decision.ts";
 
 describe("stage4-decision (#6447 Fatia 4, achado 7)", () => {
@@ -124,6 +125,55 @@ describe("resolveStage4DecisionForConsumption (#6444 — consumo da decisão pel
       reason: "absent",
       decision: null,
     });
+  });
+});
+
+describe("resolveContentFileMtimeMs (#6444 achado do fleet review — erro não-ENOENT nunca vira 'sem sinal')", () => {
+  it("ENOENT (arquivo genuinamente ausente) -> mtime 0", () => {
+    const fakeStat = () => {
+      const err = new Error("ENOENT: no such file") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    assert.equal(resolveContentFileMtimeMs("/qualquer/path.md", fakeStat), 0);
+  });
+
+  it("EACCES (erro de I/O real, não ausência) -> Infinity, nunca 0", () => {
+    const fakeStat = () => {
+      const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    };
+    assert.equal(resolveContentFileMtimeMs("/qualquer/path.md", fakeStat), Infinity);
+  });
+
+  it("EBUSY (lock transitório) -> Infinity, nunca 0", () => {
+    const fakeStat = () => {
+      const err = new Error("EBUSY: resource busy") as NodeJS.ErrnoException;
+      err.code = "EBUSY";
+      throw err;
+    };
+    assert.equal(resolveContentFileMtimeMs("/qualquer/path.md", fakeStat), Infinity);
+  });
+
+  it("erro sem stat -> retorno flui pra resolveStage4DecisionForConsumption como stale, nunca usable:true", () => {
+    // Reproduz o cenário do achado: um content file existe e MUDOU de verdade
+    // depois de decided_at, mas o statSync falhou por um motivo não-ENOENT
+    // (ex: lock do Windows durante um Write concorrente). O mtime resolvido
+    // precisa forçar 'stale' — nunca ser indistinguível de "arquivo ausente".
+    const decidedAtMs = new Date("2026-08-28T12:00:00.000Z").getTime();
+    const failingStat = () => {
+      const err = new Error("EACCES") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    };
+    const mtimeMs = resolveContentFileMtimeMs("/edited-but-unreadable.md", failingStat);
+    const result = resolveStage4DecisionForConsumption(
+      { decision: "approved", decided_at: new Date(decidedAtMs).toISOString(), decided_via: "studio" },
+      [mtimeMs],
+    );
+    assert.equal(result.usable, false, "erro de I/O real nunca deve resultar em usable:true");
+    assert.equal(result.reason, "stale");
   });
 });
 
