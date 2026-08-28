@@ -47,6 +47,8 @@
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
 import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
+import { listActiveSessions } from "../lib/session-registry.ts";
+import { flattenClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -107,6 +109,27 @@ export interface TriageIssue {
    * (`default` — nenhuma label disse o contrário, ninguém olhou). `null` só
    * quando a classificação foi feita sem o detalhe (caller legado). */
   execTrackMatched: ExecTrackMatch | null;
+  /**
+   * #6436 — claim ATIVO de uma sessão coordenadora (`data/sessions/`), se
+   * houver. Antes desta issue, uma issue `claimed-por-outra-sessao` (em
+   * especial pela sessão `continuo`, que re-reivindica a cada 60min e por
+   * isso NUNCA fica stale) aparecia no painel como "Overnight sem sinal" —
+   * indistinguível de uma issue genuinamente sem dono. `null` = sem claim
+   * ativo conhecido (issue livre, ou `data/sessions/` inacessível — fail-soft,
+   * nunca lança). Computado em `attachClaims`, não em `parseIssues` (que é
+   * puro sobre o JSON do `gh` e não tem acesso a `data/sessions/`).
+   */
+  claim: TriageClaimInfo | null;
+}
+
+/** Claim ativo de uma issue — ver `TriageIssue.claim`. */
+export interface TriageClaimInfo {
+  kind: string;
+  machineTag: string;
+  sessionId: string;
+  /** ISO da 1ª reivindicação (`claimed_issues_at`, #6436) — `null` pra
+   * sessão anterior ao campo existir (idade desconhecida). */
+  claimedAt: string | null;
 }
 
 export interface TriagePr {
@@ -266,8 +289,37 @@ ${i.body ?? ""}`);
       // fechada quando `state` chega até ela.
       execTrack: result.track,
       execTrackMatched: result.matched as ExecTrackMatch,
+      // Preenchido depois por `attachClaims` (precisa de `data/sessions/`,
+      // I/O que `parseIssues` — puro sobre o JSON do `gh` — não faz).
+      claim: null,
     };
   });
+}
+
+/**
+ * #6436 — atribui `claim` (1ª sessão ativa encontrada segurando a issue,
+ * via `flattenClaims`) a cada `TriageIssue`. Pura sobre `sessions` já
+ * fornecido (mesmo padrão do resto do módulo — I/O fica em `fetchTriageData`,
+ * que chama `listActiveSessions` e passa o resultado aqui). Issue reivindicada
+ * por MAIS DE UMA sessão simultaneamente não deveria acontecer
+ * (`claimIssueCheckAndSet` recusa colisão, #6236) — se acontecer mesmo assim
+ * (dado stale/corrompido), a 1ª sessão da lista vence, sem lançar.
+ */
+export function attachClaims(
+  issues: readonly TriageIssue[],
+  sessions: readonly ClaimBearingSession[],
+): TriageIssue[] {
+  const byIssue = new Map<number, TriageClaimInfo>();
+  for (const entry of flattenClaims(sessions)) {
+    if (byIssue.has(entry.issueNumber)) continue;
+    byIssue.set(entry.issueNumber, {
+      kind: entry.kind,
+      machineTag: entry.machineTag,
+      sessionId: entry.sessionId,
+      claimedAt: entry.claimedAt,
+    });
+  }
+  return issues.map((issue) => ({ ...issue, claim: byIssue.get(issue.number) ?? null }));
 }
 
 export type CiState = "green" | "red" | "pending" | "none";
@@ -459,9 +511,13 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
   try {
     const issuesRaw = fetchGhIssues(rootDir, run, opts.issueLimit);
     const prsRaw = fetchGhPrs(rootDir, run, opts.prLimit);
+    // #6436 — `listActiveSessions` é fail-soft (nunca lança; `data/sessions/`
+    // ausente ou ilegível vira array vazio), então nunca degrada este `try`
+    // pro caminho de erro do `gh`.
+    const sessions = listActiveSessions(rootDir);
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
-      issues: parseIssues(issuesRaw),
+      issues: attachClaims(parseIssues(issuesRaw), sessions),
       prs: parsePrs(prsRaw),
       execTrackUi: EXEC_TRACK_UI,
       error: null,

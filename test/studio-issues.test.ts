@@ -27,6 +27,7 @@ import {
   fetchTriageData,
   clearTriageCache,
   defaultGhRun,
+  attachClaims,
   type GhRunFn,
   type GhIssueRaw,
   type GhPrRaw,
@@ -447,5 +448,52 @@ describe("defaultGhRun timeout (#3783 — regressão)", () => {
     // `status` vem `null`, o mesmo shape que `runGhJson` já trata como falha
     // (`status !== 0`), então este cenário nunca vira sucesso silencioso.
     assert.equal(result.status, null, "processo morto por timeout reporta status null, não 0");
+  });
+});
+
+describe("attachClaims (#6436)", () => {
+  function issue(number: number): ReturnType<typeof parseIssues>[number] {
+    return parseIssues([
+      { number, title: `issue ${number}`, url: "https://x", state: "OPEN", labels: [], body: "" },
+    ])[0]!;
+  }
+
+  it("issue reivindicada por sessão continuo mostra o claim, não fica indistinguível de 'sem sinal'", () => {
+    const [claimed] = attachClaims([issue(6051)], [
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "5d791ef6",
+        claimed_issues: [6051],
+        claimed_issues_at: { "6051": "2026-08-20T00:00:00Z" },
+      },
+    ]);
+    assert.deepEqual(claimed!.claim, {
+      kind: "continuo",
+      machineTag: "helios",
+      sessionId: "5d791ef6",
+      claimedAt: "2026-08-20T00:00:00Z",
+    });
+  });
+
+  it("issue sem claim de nenhuma sessão ativa → claim null", () => {
+    const [free] = attachClaims([issue(1)], [
+      { kind: "overnight", machineTag: "helios", sessionId: "x", claimed_issues: [2] },
+    ]);
+    assert.equal(free!.claim, null);
+  });
+
+  it("sem sessões ativas nenhuma → todas as issues com claim null, nunca lança", () => {
+    const [a, b] = attachClaims([issue(1), issue(2)], []);
+    assert.equal(a!.claim, null);
+    assert.equal(b!.claim, null);
+  });
+
+  it("issue reivindicada por 2 sessões simultaneamente (dado corrompido) → a 1ª da lista vence, sem lançar", () => {
+    const [claimed] = attachClaims([issue(9)], [
+      { kind: "overnight", machineTag: "helios", sessionId: "first", claimed_issues: [9] },
+      { kind: "develop", machineTag: "neo", sessionId: "second", claimed_issues: [9] },
+    ]);
+    assert.equal(claimed!.claim?.sessionId, "first");
   });
 });

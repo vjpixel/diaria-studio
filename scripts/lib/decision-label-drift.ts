@@ -433,6 +433,31 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
     ],
     expectedLabels: ["on-hold", "wontfix"],
   },
+  {
+    id: "escopo-residual",
+    description:
+      "Comentário indica que um PR REFS-not-Closes mergeou deixando escopo pendente ('escopo residual', 'REFS, NÃO CLOSES', 'pendente de decisão/tempo') sem label estrutural indicando o roteamento do que sobrou (#6437).",
+    // #6437 — achado ao vivo (rodada 260827b): #6340/#6169/#6185/#6186/#6051
+    // ficaram presas "Overnight sem sinal" pra sempre porque o comentário
+    // dizia "escopo residual: PR #NNNN (mergeado) é REFS, NÃO CLOSES" sem
+    // NENHUMA label estrutural indicando pra onde o residual deveria ir —
+    // `route-issue.ts` nunca era chamado. Guard de negação (0-1 token, mesmo
+    // padrão de `external-blocker`/`on-hold` acima): "não ficou escopo
+    // residual" / "sem escopo residual" não deveria casar.
+    textPatterns: [
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}escopo residual`, "i"),
+      /REFS[\s#]*\d*,?\s*N[ÃA]O CLOSES/i,
+      new RegExp(`${SIMPLE_NEGATION_LOOKBEHIND}pendente de decis[ãa]o(\\s*(\\/|e|ou)\\s*tempo)?`, "i"),
+    ],
+    expectedLabels: [
+      "not-this-week",
+      "next-month",
+      "develop-track",
+      "trade-off-real",
+      "windows",
+      "sem-direcao-acionavel",
+    ],
+  },
 ];
 
 /**

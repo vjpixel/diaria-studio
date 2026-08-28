@@ -23,7 +23,16 @@
  * `pulada` já não se sustenta — reavaliar dispatch antes de fechar a
  * rodada/sessão (mesma disciplina do gate 0.5/#5476/#5706).
  *
+ * **#6436 — 2ª checagem, independente do `plan.json`:** além dos 3 motivos
+ * transitórios acima, este CLI também varre `data/sessions/` inteiro
+ * (`listActiveSessions`) por claims mais velhas que `CLAIM_STALE_AGE_MS`
+ * (`scripts/lib/claim-staleness.ts`) SEM PR aberto correspondente — cobre a
+ * sessão `continuo` (cron de 60min do Hermes), que re-reivindica a mesma
+ * issue indefinidamente sem nunca soltar, deixando-a `claimed-por-outra-
+ * sessao` pra sempre mesmo sem nenhum trabalho visível em andamento.
+ *
  * @see scripts/lib/block-staleness.ts
+ * @see scripts/lib/claim-staleness.ts (#6436, checagem de claim envelhecida)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo + gate irmão)
  * @see .claude/skills/diaria-overnight/SKILL.md
  * @see .claude/skills/diaria-develop/SKILL.md
@@ -39,8 +48,9 @@ import {
   type BlockStalenessPlanIssue,
   type PrState,
 } from "./lib/block-staleness.ts";
-import { isIssueClaimedByOther } from "./lib/session-registry.ts";
+import { isIssueClaimedByOther, listActiveSessions } from "./lib/session-registry.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
 
 /** Monta um consultor real, apoiado em `gh` (PR state + labels) e
  * `isIssueClaimedByOther` (leitura direta de `data/sessions/*.json`, sem
@@ -94,6 +104,30 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
   };
 }
 
+/**
+ * #6436 — `true`/`false`/`null` (não verificável) se existe PR ABERTO cujo
+ * título/corpo cita `#{issueNumber}`. Fail-soft: qualquer falha do `gh`
+ * (offline, rate limit, não-autenticado) devolve `null`, nunca `false` —
+ * `findAgedClaims` trata `null` como "não reportar" (mesmo princípio dos
+ * demais métodos de `buildRealConsultor` acima).
+ */
+function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | null {
+  return (issueNumber: number): boolean | null => {
+    const result = spawnSync(
+      "gh",
+      ["pr", "list", "--state", "open", "--search", `#${issueNumber}`, "--json", "number"],
+      { cwd: repoRoot, encoding: "utf8", timeout: 15_000 },
+    );
+    if (result.error || result.status !== 0 || !result.stdout) return null;
+    try {
+      const parsed = JSON.parse(result.stdout) as Array<{ number?: number }>;
+      return Array.isArray(parsed) && parsed.length > 0;
+    } catch {
+      return null;
+    }
+  };
+}
+
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
   const planPath = values.plan;
@@ -120,19 +154,43 @@ if (isMainModule(import.meta.url)) {
     planRaw as IssuesBearing<BlockStalenessPlanIssue>,
   );
 
-  const consultor = buildRealConsultor(process.cwd());
+  const repoRoot = process.cwd();
+  const consultor = buildRealConsultor(repoRoot);
   const findings = findStaleBlocks(issues, consultor);
 
-  if (findings.length === 0) {
-    console.log("ok — nenhum bloqueio pulada (pr-em-voo/claimed-por-outra-sessao/bloqueio-execucao) caducado");
+  // #6436 — teto de idade de claim sem PR aberto, INDEPENDENTE do plan.json
+  // (varre `data/sessions/` inteiro, não só as issues `pulada` deste plano —
+  // uma issue claimed pela `continuo` pode nunca ter entrado neste plan.json).
+  const sessions = listActiveSessions(repoRoot);
+  const claimEntries = flattenClaims(sessions);
+  const hasOpenPr = buildHasOpenPr(repoRoot);
+  const agedClaims = findAgedClaims(claimEntries, Date.now(), CLAIM_STALE_AGE_MS, hasOpenPr);
+
+  if (findings.length === 0 && agedClaims.length === 0) {
+    console.log(
+      "ok — nenhum bloqueio pulada (pr-em-voo/claimed-por-outra-sessao/bloqueio-execucao) caducado, nenhuma claim envelhecida sem PR",
+    );
     process.exit(0);
   }
 
-  console.error(
-    `[check-block-staleness] bloqueio(s) caducado(s) — reavalie dispatch antes de fechar a rodada:`,
-  );
-  for (const f of findings) {
-    console.error(`  #${f.number} (motivo "${f.motivo}"): ${f.reason}`);
+  if (findings.length > 0) {
+    console.error(
+      `[check-block-staleness] bloqueio(s) caducado(s) — reavalie dispatch antes de fechar a rodada:`,
+    );
+    for (const f of findings) {
+      console.error(`  #${f.number} (motivo "${f.motivo}"): ${f.reason}`);
+    }
+  }
+  if (agedClaims.length > 0) {
+    console.error(
+      `[check-block-staleness] claim(s) envelhecida(s) sem PR aberto (#6436, teto ${CLAIM_STALE_AGE_MS / 3_600_000}h) — considerar pendência de re-triagem (check-state-changed-pending.ts --add-pending):`,
+    );
+    for (const c of agedClaims) {
+      const ageH = (c.ageMs / 3_600_000).toFixed(1);
+      console.error(
+        `  #${c.issueNumber} — claimed por ${c.kind}-${c.machineTag}-${c.sessionId} há ${ageH}h (desde ${c.claimedAt}), sem PR aberto`,
+      );
+    }
   }
   process.exit(1);
 }

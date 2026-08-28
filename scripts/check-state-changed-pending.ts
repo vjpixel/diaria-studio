@@ -60,7 +60,9 @@ interface GhIssueListItem {
   body?: string | null;
 }
 
-interface FetchOpenIssuesResult {
+/** Exportado (#6435) — `scripts/check-overnight-fila-convergence-gate.ts`
+ * reusa exatamente este shape em vez de redeclarar. */
+export interface FetchOpenIssuesResult {
   issues: ConvergenceScanIssue[];
   error?: string;
 }
@@ -79,7 +81,10 @@ const CONVERGENCE_ISSUE_LIMIT = 200;
  * qualquer falha (CLI ausente, sem auth, rate limit, JSON malformado) volta
  * como `{ issues: [], error }` pra `main()` decidir degradar em vez de
  * travar. */
-function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResult {
+/** Exportado (#6435) — mesma fonte única que `scripts/check-overnight-fila-convergence-gate.ts`
+ * (gate mecânico da Fase 1 passo 1) usa, em vez de duplicar o fetch fail-soft
+ * + a detecção de truncamento por `--limit`. */
+export function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResult {
   const result = spawnSync(
     "gh",
     [

@@ -876,3 +876,53 @@ describe("detectLabelDriftDetailed — suppressedByRoute (#6301 finding 1)", () 
     assert.deepEqual(detectLabelDrift(input), detectLabelDriftDetailed(input).findings);
   });
 });
+
+describe("escopo-residual (#6437)", () => {
+  it("comentário 'escopo residual: PR mergeado é REFS, NÃO CLOSES' sem label estrutural → achado", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6340,
+      labels: ["P2", "enhancement"],
+      commentBodies: [
+        "escopo residual real: PR #5900 (mergeado) é REFS, NÃO CLOSES — itens pendentes de decisão/tempo. Não dispatchada.",
+      ],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "escopo-residual");
+    assert.deepEqual(findings[0].expectedLabels, [
+      "not-this-week",
+      "next-month",
+      "develop-track",
+      "trade-off-real",
+      "windows",
+      "sem-direcao-acionavel",
+    ]);
+  });
+
+  it("REFS #N, NÃO CLOSES sozinho (sem a frase 'escopo residual') já casa", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6169,
+      labels: [],
+      commentBodies: ["PR #5901 mergeado. REFS #6169, NÃO CLOSES (2ª frente ainda não atacada)."],
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].patternId, "escopo-residual");
+  });
+
+  it("qualquer label do conjunto esperado resolve o padrão", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6185,
+      labels: ["develop-track"],
+      commentBodies: ["escopo residual: PR #5902 mergeado REFS, NÃO CLOSES."],
+    });
+    assert.equal(findings.length, 0);
+  });
+
+  it("guard de negação: 'sem escopo residual' não casa", () => {
+    const findings = detectLabelDrift({
+      issueNumber: 6186,
+      labels: [],
+      commentBodies: ["PR #5903 mergeado com Closes — sem escopo residual."],
+    });
+    assert.equal(findings.length, 0);
+  });
+});

@@ -207,6 +207,24 @@ export interface SessionRecord {
   pid?: number;
   active_worktrees?: number;
   claimed_issues?: number[];
+  /**
+   * #6436 — timestamp (ISO) de quando cada issue de `claimed_issues` foi
+   * reivindicada PELA PRIMEIRA VEZ por esta sessão. Chaveado pelo número da
+   * issue como STRING (JSON não tem chave numérica). Escrito só em
+   * `claimIssueCheckAndSet` no momento em que a issue passa a fazer parte de
+   * `claimed_issues` (`reason: "claimed"`/`"forced-override"`) — uma
+   * re-reivindicação da MESMA issue já claimed (`reason: "already-own"`,
+   * o caso concreto do #6436: a sessão `continuo` re-chama `claim-issue` a
+   * cada ciclo de 60min) NUNCA sobrescreve a entrada existente. Sem essa
+   * distinção, o timestamp "refrescaria" a cada heartbeat e a idade do claim
+   * nunca acumularia — exatamente o sintoma que fez #6051/#6185/#6186/#6431
+   * ficarem `claimed-por-outra-sessao` indefinidamente, porque a sessão
+   * `continuo` nunca solta (nem deixa "envelhecer") a claim. Usado por
+   * `scripts/lib/claim-staleness.ts` pro teto de idade de claim sem PR
+   * aberto. Ausente em registros anteriores ao #6436 — tratado como
+   * "idade desconhecida", nunca como "acabou de reivindicar".
+   */
+  claimed_issues_at?: Record<string, string>;
   /** Branch atual do checkout desta sessão (#6168 Parte A). Lido de
    * `.git/HEAD` pelo beacon — sem subprocesso. É o campo que responde "a
    * branch ainda é minha?" antes de um `git commit` (evidência 5 da issue:
@@ -1100,7 +1118,24 @@ export function mergeSessionRecords(records: readonly SessionRecord[]): SessionR
   }
   const claimedUnion = new Set<number>();
   for (const r of records) for (const issue of r.claimed_issues ?? []) claimedUnion.add(issue);
-  return { ...primary, claimed_issues: [...claimedUnion].sort((a, b) => a - b) };
+  // #6436 — une `claimed_issues_at` de todas as cópias do grupo, mantendo o
+  // timestamp MAIS ANTIGO por issue (a claim "de verdade" começou lá, mesmo
+  // que uma cópia de conflito do OneDrive tenha um valor mais recente por
+  // ter sido escrita numa reivindicação subsequente ainda não deduplicada).
+  const claimedAtUnion: Record<string, string> = {};
+  for (const r of records) {
+    for (const [key, at] of Object.entries(r.claimed_issues_at ?? {})) {
+      const existing = claimedAtUnion[key];
+      if (!existing || Date.parse(at) < Date.parse(existing)) {
+        claimedAtUnion[key] = at;
+      }
+    }
+  }
+  return {
+    ...primary,
+    claimed_issues: [...claimedUnion].sort((a, b) => a - b),
+    claimed_issues_at: claimedAtUnion,
+  };
 }
 
 /**
@@ -1279,9 +1314,18 @@ export function claimIssueCheckAndSet(
 
   const claimed = new Set(current.claimed_issues ?? []);
   claimed.add(issueNumber);
+  // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
+  // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
+  // `claimed_issues_at` em `SessionRecord`.
+  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
+  const issueKey = String(issueNumber);
+  if (!(issueKey in claimedAt)) {
+    claimedAt[issueKey] = now;
+  }
   writeJsonSafe(path, {
     ...current,
     claimed_issues: [...claimed].sort((a, b) => a - b),
+    claimed_issues_at: claimedAt,
     lastHeartbeat: now,
   });
   return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };

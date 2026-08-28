@@ -216,6 +216,24 @@
    cor herdada mudar, a borda segue junto sem ninguém precisar lembrar. */
 .dispatch-fora-de-rodada { border-color: currentColor; opacity: 0.7; }
 
+/* #6436 — badge de claim ativo (`data/sessions/`), sempre ao lado do badge de
+   Classificação (`.dispatch-badge`), não substituindo — a issue continua
+   classificada `overnight`/etc, só que já com dono. Neutro por opacidade
+   sobre o texto herdado, mesmo padrão de `.dispatch-fora-de-rodada` acima —
+   claim não é um veredito de PRIORIDADE, é um estado de "já tem alguém
+   olhando", que pede menos destaque visual que a classificação em si. */
+.claim-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.4rem;
+  margin-left: 0.3rem;
+  border-radius: 4px;
+  border: 1px dashed currentColor;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
 /* #6200: sufixo " ·sem sinal" já entrega a distinção em TEXTO (não depende
    de cor pra ser lido — mesmo padrão-guarda do resto da página, R7 de
    docs/studio-ui-ux-guidelines.md, tooltip não é suficiente sozinho); esta
