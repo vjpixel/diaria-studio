@@ -68,9 +68,11 @@ export interface HighlightBlock {
   category: string;
   /** 1-3 opções de título pré-gate, ou 1 só pós-gate (poda já feita). */
   titleOptions: HighlightTitleOption[];
-  /** URL canônica — extraída do link markdown da(s) opção(ões) de título.
-   * Todas as opções apontam pra mesma URL (variantes do mesmo artigo); vazio
-   * se nenhuma opção tiver link inline (formato legado sem URL embedada). */
+  /** URL canônica — extraída do link markdown da PRIMEIRA opção de título que
+   * tiver link inline (o parser não verifica as demais opções — assume-se,
+   * sem confirmar, que todas apontam pra mesma URL — variantes do mesmo
+   * artigo, convenção do template). Vazio se NENHUMA opção tiver link inline
+   * (formato legado sem URL embedada). */
   url: string;
   /** Parágrafos do corpo (entre o bloco de títulos e "Por que isso importa:"). */
   body: string[];
@@ -106,9 +108,15 @@ export interface ApplyHighlightEditResult {
 
 // ── Parse ────────────────────────────────────────────────────────────────
 
-/** Normaliza CRLF→LF antes do split — mesmo motivo de
- * `countTitlesPerHighlight` (#5084): `HIGHLIGHT_HEADER_RE` usa `$` sem `/m`,
- * exigindo fim de string exato; um `\r` sobrando quebra o match. */
+/** Normaliza CRLF→LF antes do split. Diferente de `countTitlesPerHighlight`
+ * (#5084, mesma normalização mas por outro motivo): aqui todo match de
+ * `HIGHLIGHT_HEADER_RE`/`WHY_MATTERS_LINE_RE`/etc já roda sobre `.trim()`
+ * (que por si só já remove um `\r` residual), então a normalização NÃO é
+ * necessária pros matches em si. É necessária porque `trailingRaw`
+ * (`parseBlockContent` abaixo) reconstrói linhas RAW, sem trim, via
+ * `lines.slice(...).join("\n")` — sem normalizar antes, um `\r` residual de
+ * arquivo fonte CRLF ficaria embutido no meio desse bloco opaco, quebrando a
+ * promessa de "verbatim" (ver nota de design no topo do arquivo). */
 function normalizeLines(md: string): string[] {
   return md.replace(/\r\n/g, "\n").split("\n");
 }
@@ -296,6 +304,16 @@ export function applyHighlightEdit(
   if (!trimmedTitle) return { ok: false, error: "título não pode ser vazio" };
   const trimmedUrl = edit.url.trim();
   if (!trimmedUrl) return { ok: false, error: "URL não pode ser vazia" };
+  // #6493 review (type-design-analyzer, P2): validar o esquema, não só
+  // não-vazio — todo consumidor de leitura desta MESMA URL (`parseInlineLink`,
+  // os regexes de título abaixo, `parseHighlightBlocks`) assume `https?://`;
+  // uma URL sem esquema salva aqui produziria uma linha de título que o
+  // PRÓXIMO parse não reconhece como link (title-options viraria [], url
+  // viraria "" na leitura seguinte) — um round-trip quebrado detectável só
+  // depois do save, silenciosamente.
+  if (!/^https?:\/\//i.test(trimmedUrl)) {
+    return { ok: false, error: "URL precisa começar com http:// ou https://" };
+  }
 
   const bodyParagraphs = edit.body.map((p) => p.trim()).filter((p) => p.length > 0);
   if (bodyParagraphs.length === 0) return { ok: false, error: "corpo não pode ficar vazio" };

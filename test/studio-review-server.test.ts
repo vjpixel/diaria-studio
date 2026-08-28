@@ -486,6 +486,38 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
       assert.equal(res.status, 400);
     });
 
+    // #6493 review (pr-test-analyzer): só o campo 'body' tinha teste de
+    // ausência — os outros 3 campos obrigatórios (title/url/whyMatters) têm
+    // o MESMO branch de validação em handleReviewHighlightPut, mas nenhum
+    // tinha teste próprio (um typo de nome de campo num deles não seria
+    // pego). Fecha o gap simétrico.
+    it("campo 'title' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "   ", url: "https://example.com/hl-2", body: ["x"], whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("campo 'url' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "   ", body: ["x"], whyMatters: "y" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("campo 'whyMatters' obrigatório ausente (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "x", url: "https://example.com/hl-2", body: ["x"], whyMatters: "   " }),
+      });
+      assert.equal(res.status, 400);
+    });
+
     it("destaque N inexistente retorna 400 com o erro propagado", async () => {
       const res = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/9`, server.url), {
         method: "PUT",
@@ -522,6 +554,57 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
       const body = await put.json();
       assert.equal(body.conflict, true);
       assert.match(readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8"), /MERCADO-NOVO/);
+    });
+
+    // #6493 review (pr-test-analyzer): o teste acima só cobria a REJEIÇÃO do
+    // conflito — a outra metade do fluxo (#3729), o editor confirmando
+    // "sobrescrever mesmo assim" via `force:true`, nunca tinha teste
+    // dedicado nesta rota (só existia pra .../destaque-title, #3806).
+    it("force:true ignora a divergência de mtime e sobrescreve mesmo assim", async () => {
+      const get = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights`, server.url));
+      const getBody = await get.json();
+      const staleModifiedAt = getBody.modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // simula, de novo, o pipeline salvando por baixo entre o GET e o PUT.
+      const currentOnDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      writeFileSync(join(hlEditionDir, "02-reviewed.md"), currentOnDisk.replace("MERCADO-NOVO", "MERCADO-MAIS-NOVO-AINDA"), "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${hlAammdd}/review/reviewed/highlights/2`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "editor confirmou sobrescrever",
+          url: "https://example.com/hl-2",
+          body: ["corpo pós-force"],
+          whyMatters: "why pós-force",
+          expectedModifiedAt: staleModifiedAt,
+          force: true,
+        }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+
+      const onDisk = readFileSync(join(hlEditionDir, "02-reviewed.md"), "utf8");
+      assert.match(onDisk, /editor confirmou sobrescrever/, "título novo do D2 foi escrito, apesar do mtime stale");
+      // A categoria do header (linha "DESTAQUE 2 | ...") não é um campo que
+      // `HighlightEdit` toca — continua a MAIS RECENTE de disco no momento do
+      // force (o "pipeline" simulado acima já tinha reescrito só a
+      // categoria); o force sobrescreve o resto do bloco por cima disso, sem
+      // reverter essa parte que nem fazia parte da edição.
+      assert.match(onDisk, /DESTAQUE 2 \| 💼 MERCADO-MAIS-NOVO-AINDA/);
+      assert.match(onDisk, /Segunda opção/, "D1 (tocado num teste anterior) permanece intocado por este PUT em D2");
+    });
+
+    // #6493 review (pr-test-analyzer): o GET desta rota tem seu PRÓPRIO
+    // guard `AAMMDD_RE.test` (retorna 400 antes de resolver qualquer
+    // diretório) — só o caminho "AAMMDD bem-formado mas edição inexistente"
+    // (available:false via readHighlightsSummary) tinha teste; o guard de
+    // FORMATO em si nunca era exercitado.
+    it("GET com AAMMDD malformado retorna 400 (guard de formato, não available:false)", async () => {
+      const res = await fetch(new URL("/api/editions/nao-e-data/review/reviewed/highlights", server.url));
+      assert.equal(res.status, 400);
     });
   });
 

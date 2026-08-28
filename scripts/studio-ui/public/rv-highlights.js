@@ -26,6 +26,7 @@ import {
   formatTitleCharCount,
   resolveFinalTitle,
   buildHighlightSavePayload,
+  mergeIncomingHighlights,
 } from "./rv-highlights-format.js";
 
 function getAammddFromPath() {
@@ -56,24 +57,6 @@ function el_(tag, opts = {}) {
   if (opts.text !== undefined) node.textContent = opts.text;
   if (opts.type) node.type = opts.type;
   return node;
-}
-
-function initCardState(h) {
-  return {
-    n: h.n,
-    category: h.category,
-    titleOptions: h.titleOptions,
-    url: h.url,
-    body: [...h.body],
-    whyMatters: h.whyMatters,
-    modifiedAt: h.modifiedAt,
-    selectedIndex: 0,
-    freeformTitle: "",
-    dirty: false,
-    saving: false,
-    statusMessage: "",
-    statusKind: "", // "dirty" | "saved" | "error" | ""
-  };
 }
 
 function markDirty(state, statusEl) {
@@ -360,12 +343,16 @@ export async function loadHighlights() {
       return;
     }
     el.status.textContent = "";
+    // #6493 review (code-reviewer, P2): reload nunca descarta edição
+    // dirty:true em progresso em OUTRO card — mergeIncomingHighlights
+    // preserva esses cards tal como estão; só cards não-dirty são
+    // refeitos a partir da resposta fresca do servidor. Ver docstring da
+    // função pra por que isso é seguro mesmo quando o arquivo mudou de
+    // verdade (o próximo save desse card recebe o 409 de sempre).
+    const previousStates = [...cardState.values()];
+    const merged = mergeIncomingHighlights(previousStates, summary.highlights, summary.modifiedAt);
     cardState.clear();
-    for (const h of summary.highlights) {
-      const state = initCardState(h);
-      state.modifiedAt = summary.modifiedAt;
-      cardState.set(h.n, state);
-    }
+    for (const state of merged) cardState.set(state.n, state);
     renderCards();
   } catch (err) {
     console.error("rv-highlights: falha ao carregar destaques:", err);

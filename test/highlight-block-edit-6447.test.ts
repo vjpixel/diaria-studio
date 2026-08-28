@@ -268,4 +268,191 @@ describe("applyHighlightEdit (#6447 Fatia 2)", () => {
     });
     assert.equal(result.ok, false);
   });
+
+  it("falha explicitamente com URL vazia", () => {
+    const { blocks } = parseHighlightBlocks(FIXTURE);
+    const d1 = blocks[0];
+    const result = applyHighlightEdit(FIXTURE, 1, {
+      title: d1.titleOptions[0].text,
+      url: "   ",
+      body: d1.body,
+      whyMatters: d1.whyMatters,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /URL/);
+  });
+
+  it("falha explicitamente com URL sem esquema http(s) (#6493 review)", () => {
+    const { blocks } = parseHighlightBlocks(FIXTURE);
+    const d1 = blocks[0];
+    const result = applyHighlightEdit(FIXTURE, 1, {
+      title: d1.titleOptions[0].text,
+      url: "example.com/sem-esquema",
+      body: d1.body,
+      whyMatters: d1.whyMatters,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /http/);
+  });
+
+  it("falha explicitamente com corpo vazio (todos os parágrafos em branco)", () => {
+    const { blocks } = parseHighlightBlocks(FIXTURE);
+    const d1 = blocks[0];
+    const result = applyHighlightEdit(FIXTURE, 1, {
+      title: d1.titleOptions[0].text,
+      url: d1.url,
+      body: ["   ", ""],
+      whyMatters: d1.whyMatters,
+    });
+    assert.equal(result.ok, false);
+  });
+
+  it("falha explicitamente com 'por que isso importa' vazio", () => {
+    const { blocks } = parseHighlightBlocks(FIXTURE);
+    const d1 = blocks[0];
+    const result = applyHighlightEdit(FIXTURE, 1, {
+      title: d1.titleOptions[0].text,
+      url: d1.url,
+      body: d1.body,
+      whyMatters: "   ",
+    });
+    assert.equal(result.ok, false);
+  });
+});
+
+describe("formatos legados de linha de título (#590/#1051) — round-trip (#6493 review)", () => {
+  it("formato inner-bold ([**Título**](URL)) é preservado na reconstrução", () => {
+    const md = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "[**Título em inner-bold**](https://example.com/x)",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const { blocks } = parseHighlightBlocks(md);
+    assert.equal(blocks[0].titleOptions[0].text, "Título em inner-bold");
+
+    const result = applyHighlightEdit(md, 1, {
+      title: "Novo título inner-bold",
+      url: blocks[0].url,
+      body: blocks[0].body,
+      whyMatters: blocks[0].whyMatters,
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /\[\*\*Novo título inner-bold\*\*\]\(https:\/\/example\.com\/x\)/);
+  });
+
+  it("formato plain ([Título](URL), sem negrito) é preservado na reconstrução", () => {
+    const md = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "[Título sem negrito](https://example.com/y)",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const { blocks } = parseHighlightBlocks(md);
+    assert.equal(blocks[0].titleOptions[0].text, "Título sem negrito");
+
+    const result = applyHighlightEdit(md, 1, {
+      title: "Novo título plain",
+      url: blocks[0].url,
+      body: blocks[0].body,
+      whyMatters: blocks[0].whyMatters,
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /\[Novo título plain\]\(https:\/\/example\.com\/y\)/);
+    assert.doesNotMatch(result.md!, /\*\*Novo título plain\*\*/);
+  });
+});
+
+describe("'Por que isso importa' com múltiplos parágrafos — round-trip (#6493 review)", () => {
+  const MULTI_WHY_MD = [
+    "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    "",
+    "**[Título único](https://example.com/multi)**",
+    "",
+    "Corpo do destaque.",
+    "",
+    "Por que isso importa:",
+    "",
+    "Primeiro parágrafo do why.",
+    "",
+    "Segundo parágrafo do why.",
+    "",
+    "---",
+    "",
+  ].join("\n");
+
+  it("parse junta os 2 parágrafos com \\n\\n", () => {
+    const { blocks } = parseHighlightBlocks(MULTI_WHY_MD);
+    assert.equal(blocks[0].whyMatters, "Primeiro parágrafo do why.\n\nSegundo parágrafo do why.");
+  });
+
+  it("reconstrução a partir do texto multi-parágrafo recria as 2 linhas separadas por blank line", () => {
+    const { blocks } = parseHighlightBlocks(MULTI_WHY_MD);
+    const result = applyHighlightEdit(MULTI_WHY_MD, 1, {
+      title: blocks[0].titleOptions[0].text,
+      url: blocks[0].url,
+      body: blocks[0].body,
+      whyMatters: blocks[0].whyMatters,
+    });
+    assert.equal(result.ok, true);
+    const { blocks: newBlocks } = parseHighlightBlocks(result.md!);
+    assert.equal(newBlocks[0].whyMatters, "Primeiro parágrafo do why.\n\nSegundo parágrafo do why.");
+    assert.match(result.md!, /Primeiro parágrafo do why\.\n\nSegundo parágrafo do why\./);
+  });
+});
+
+describe("CRLF (#6493 review) — trailingRaw fica livre de \\r residual", () => {
+  it("arquivo fonte CRLF: 'Aprofunde:' preservado sem \\r embutido, e a URL/eol de saída seguem CRLF", () => {
+    const lfMd = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título único](https://example.com/crlf)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Outra fonte](https://example.com/crlf-b) - Fonte B",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    const crlfMd = lfMd.replace(/\n/g, "\r\n");
+
+    const { blocks } = parseHighlightBlocks(crlfMd);
+    assert.equal(blocks[0].trailingRaw.includes("\r"), false, "trailingRaw não deve conter \\r residual");
+    assert.match(blocks[0].trailingRaw, /^Aprofunde:/);
+
+    const result = applyHighlightEdit(crlfMd, 1, {
+      title: "Novo título via CRLF",
+      url: blocks[0].url,
+      body: blocks[0].body,
+      whyMatters: blocks[0].whyMatters,
+    });
+    assert.equal(result.ok, true);
+    // eol de saída acompanha o eol detectado na ENTRADA (CRLF) — mesma
+    // convenção de `replaceDestaqueTitleInMd` (extract-destaques.ts).
+    assert.match(result.md!, /\r\n/);
+    assert.match(result.md!, /Novo título via CRLF/);
+  });
 });
