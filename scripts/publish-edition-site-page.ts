@@ -47,33 +47,63 @@
  * trata como warning. É a mesma disciplina do canal Brevo (#5772) e do canal
  * Kit (#6126).
  *
- * ## Mecanismo de publicação: commit + push, não `wrangler deploy` (#6202 review, problema 3)
+ * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *
- * `.github/workflows/deploy-site.yml` documenta que `workers/site/public/p/**`
- * é COMMITADO no repo — o deploy real dispara por push a master tocando
- * `workers/site/**`, não por invocação local de `wrangler`. Publicar via
- * `wrangler deploy` local publicaria estado NÃO-commitado e faria o worker em
- * produção divergir do que está no repo, todo dia, sem sinal. Este script
- * escreve a página e, se não pedido `--skip-publish`, faz `git add` + `git
- * commit` + `git push` da pasta da página — nada mais. Fail-soft: falha de
- * commit/push nunca lança, vira `code: 3` com o motivo; a página já está
- * escrita (e, se o commit teve sucesso antes do push falhar, já commitada)
- * localmente — a próxima rodada/push manual a leva junto.
+ * **Histórico (#6202): este script fazia `git push` DIRETO em `master`.**
+ * Em 260828 (#6598) uma regra de proteção de branch (`GH013`, ruleset
+ * "Changes must be made through a pull request") foi ativada em `master`
+ * no GitHub e o push direto passou a ser rejeitado — toda edição doravante
+ * falharia esse passo (fail-soft, não bloqueia o pipeline, mas o acervo do
+ * site para de crescer). Migrado para: `git checkout -B
+ * site-publish/{slug}` a partir do `master` local (precondição inalterada:
+ * o checkout precisa estar em `master` antes de começar — garante que a
+ * branch nasça de um ponto conhecido, não de uma branch alheia que por
+ * acaso esteja em uso no checkout compartilhado), commit escopado ao
+ * pathspec da página (mesma disciplina P1-A/P1-B de sempre), `git push
+ * --force-with-lease -u origin site-publish/{slug}` (force-with-lease é
+ * seguro aqui porque a branch é de propriedade exclusiva deste script —
+ * recriada do zero a cada chamada via `-B`, nunca editada por humano), e
+ * de volta pro `master` local (`finally`, mesmo em erro) — o checkout
+ * compartilhado nunca fica preso numa branch de publicação de página.
+ * Depois do push, `gh pr create` (reusando um PR já aberto pra essa
+ * branch, se existir — `gh pr list --head ... --state open`) abre o PR;
+ * **o script NUNCA mergeia** (decisão do editor, #6598: menos código novo,
+ * e mergear automaticamente uma página de site foge do padrão
+ * branch→CI→merge já estabelecido pra esta linha de skills — Stage 6 já é
+ * gate humano, um PR extra pendente não atrasa a edição). O deploy real só
+ * acontece quando alguém — o coordenador de uma próxima rodada
+ * overnight/develop, ou o editor manualmente — mergear o PR
+ * (`.github/workflows/deploy-site.yml` dispara em push a `master`).
+ *
+ * `wrangler deploy` local segue descartado pelo mesmo motivo de sempre:
+ * publicaria estado NÃO-commitado e faria o worker em produção divergir do
+ * que está no repo, todo dia, sem sinal.
+ *
+ * Fail-soft, inalterado: falha de checkout/commit/push/`gh pr create`
+ * nunca lança pro chamador do módulo — vira `code: 3` com o motivo; a
+ * página já está escrita localmente (e, se o commit teve sucesso antes de
+ * algo mais adiante falhar, já commitada na branch) — a próxima
+ * rodada/push manual a leva junto.
  *
  * ## Idempotência
  *
  * Escrever a mesma página duas vezes é inofensivo (mesmo conteúdo, mesmo
- * caminho). `commitAndPushSitePage` não gera commit vazio: se `git status
- * --porcelain` não acusar mudança no caminho da página, pula o `commit` —
- * mas SEMPRE tenta o `push` (#6202 review, problema P1-B: status limpo
- * significa "nada novo a commitar", não "nada a empurrar" — um commit de uma
- * rodada anterior pode ter ficado sem push por falha de rede/auth, e só
- * tentar de novo nessa 2ª chamada recupera isso). `--skip-publish` existe pra
- * quando só a escrita local importa; o resultado informa se o push está
- * confirmado em dia com o remoto (`published`).
+ * caminho). `commitAndPushSitePage` recria `site-publish/{slug}` do zero a
+ * cada chamada (`checkout -B`, sempre a partir do `master` atual) — não há
+ * estado local acumulando entre chamadas. Não gera commit vazio: se `git
+ * status --porcelain` não acusar mudança no caminho da página, pula o
+ * `commit` — mas SEMPRE tenta o `push` (#6202 review, problema P1-B: status
+ * limpo significa "nada novo a commitar", não "nada a empurrar" — um commit
+ * de uma rodada anterior pode ter ficado sem push por falha de rede/auth, e
+ * só tentar de novo nessa 2ª chamada recupera isso). Reabrir um PR já aberto
+ * pra mesma branch nunca duplica — `gh pr list --head ... --state open` é
+ * checado antes de `gh pr create`. `--skip-publish` existe pra quando só a
+ * escrita local importa; o resultado informa se o push está confirmado em
+ * dia com o remoto (`published`) e, quando disponível, a URL do PR.
  *
  * Exit codes:
- *   0 — página escrita (e publicada — commit+push — se pedido)
+ *   0 — página escrita (e branch publicada + PR aberto/reusado — se pedido;
+ *       o deploy real só acontece depois do PR ser mergeado, ver acima)
  *   1 — uso
  *   2 — pré-requisito AUSENTE: `_internal/newsletter-final.html` ou
  *       `_internal/05-published.json` ainda não existem. NÃO é erro, é "esta
@@ -140,15 +170,25 @@ function readNewsletterBackend(rootDir: string): string {
 }
 
 /**
- * Resultado de `publish()`: `pushed` indica se o push está CONFIRMADAMENTE em
- * dia com o remoto ao final da chamada (#6202 review P1-B) — verdadeiro tanto
- * quando este `publish()` de fato empurrou algo quanto quando não havia nada
- * pendente a empurrar (já publicado por uma rodada anterior). `publish()`
- * lança em qualquer falha (branch errada, commit/push com erro) — nunca
- * retorna `pushed: false` como forma de reportar erro.
+ * Resultado de `publish()`: `pushed` indica se o push da branch
+ * `site-publish/{slug}` está CONFIRMADAMENTE em dia com o remoto ao final da
+ * chamada (#6202 review P1-B, mantido no #6598 mesmo com o mecanismo trocado
+ * de push-direto-em-master pra branch+PR) — verdadeiro tanto quando este
+ * `publish()` de fato empurrou algo quanto quando não havia nada pendente a
+ * empurrar. `prUrl`/`prNumber` só vêm preenchidos quando `gh pr create`/`gh
+ * pr list` tiveram sucesso — ausentes não significam falha (o push pode ter
+ * confirmado e a etapa de abrir/reusar o PR ainda assim lançar, o que
+ * `publish()` propaga como qualquer outra falha). `prCreated` distingue "PR
+ * novo aberto nesta chamada" de "PR já existente reusado" — só informativo
+ * pro log, nunca decide comportamento. `publish()` lança em qualquer falha
+ * (branch base errada, commit/push/gh com erro) — nunca retorna `pushed:
+ * false` como forma de reportar erro.
  */
 export interface PublishResult {
   pushed: boolean;
+  prUrl?: string;
+  prNumber?: number;
+  prCreated: boolean;
 }
 
 export interface PublishPageDeps {
@@ -160,7 +200,7 @@ export interface PublishPageDeps {
 }
 
 export type PublishPageResult =
-  | { code: 0; slug: string; bytes: number; published: boolean }
+  | { code: 0; slug: string; bytes: number; published: boolean; prUrl?: string }
   | { code: 2; reason: string }
   | { code: 3; reason: string }
   | { code: 4; reason: string }
@@ -275,47 +315,96 @@ export type GitRunner = (args: string[], cwd: string) => string;
 const defaultGitRunner: GitRunner = (args, cwd) =>
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
+/** Roda `gh`, síncrono, capturando stdout como string. Injetável pra teste. */
+export type GhRunner = (args: string[], cwd: string) => string;
+
+const defaultGhRunner: GhRunner = (args, cwd) =>
+  execFileSync("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
+
+/** Nome da branch dedicada de publicação de página, sempre determinístico a partir do slug. */
+function sitePublishBranch(slug: string): string {
+  return `site-publish/${slug}`;
+}
+
 /**
- * `git add` + (`git commit` condicional) + `git push` da pasta da página.
+ * Corpo do PR de publicação de página — documenta a decisão do #6598 (PR
+ * fica ABERTO, nunca auto-merge) diretamente no PR, pro coordenador de uma
+ * rodada overnight/develop futura (ou o editor) entender o porquê sem
+ * precisar caçar a issue.
+ */
+function buildSitePagePrBody(slug: string): string {
+  return [
+    `Publica a página \`/p/${slug}\` no acervo do site (Worker \`diaria-site\`).`,
+    "",
+    "Gerado automaticamente por `scripts/publish-edition-site-page.ts` (Stage 6).",
+    "",
+    "**Mecanismo (#6598):** branch dedicada + PR, nunca push direto em `master` — " +
+      "`master` passou a exigir PR (ruleset `GH013`) em 260828, e o push direto que " +
+      "este script fazia antes (#6202) começou a ser rejeitado.",
+    "",
+    "**Este PR fica aberto de propósito (#6598, decisão do editor):** o script " +
+      "NUNCA mergeia sozinho — mergear página de site fora do fluxo normal de " +
+      "branch→CI→merge desta linha de skills (overnight/develop) foge do padrão " +
+      "estabelecido, e Stage 6 já é gate humano, então um PR extra pendente não " +
+      "atrasa a edição. Merge manual (ou pela próxima rodada overnight/develop) é " +
+      "o que falta pro deploy real acontecer " +
+      "(`.github/workflows/deploy-site.yml` dispara em push a `master`).",
+    "",
+    "Refs #6202, #6598",
+  ].join("\n");
+}
+
+/**
+ * `git checkout -B` numa branch dedicada + (`git commit` condicional) +
+ * `git push` + `gh pr create` (reusando PR aberto existente, se houver) — e
+ * de volta pro branch original.
  *
- * #6202 review, problema P1-C: recusa rodar fora de `master`. O deploy real
- * (`.github/workflows/deploy-site.yml`) só dispara em push a master — commitar
- * numa branch errada (checkout compartilhado com sessões overnight/develop
- * concorrentes, #5156) nunca aciona o deploy e este script reportaria sucesso
- * falso. Lança — o chamador (`publishEditionSitePage`) converte em `code: 3`.
+ * #6598: NUNCA `git push` em `master` — desde 260828 uma regra de proteção
+ * (`GH013`) rejeita push direto. Mecanismo atual: `checkout -B
+ * site-publish/{slug}` a partir do branch de origem (precisa ser `master` —
+ * ver guard abaixo), commit escopado, `push --force-with-lease` (seguro
+ * porque a branch é recriada do zero a cada chamada, propriedade exclusiva
+ * deste script), `gh pr create`/reuse, e `checkout` de volta pro branch
+ * original em `finally` — o checkout compartilhado nunca fica preso numa
+ * branch de publicação de página, mesmo se algo no meio lançar.
  *
- * #6202 review, problema P1-A: `commit` é escopado ao MESMO pathspec do
- * `add`/`status` (nunca commita o índice inteiro) — e antes de commitar,
- * confirma que NADA além do pathspec da página está staged. Um `git add`
- * alheio (sessão concorrente no mesmo checkout compartilhado) entraria no
- * commit e iria pra master sem review; a checagem lança em vez de commitar
+ * #6202 review, problema P1-C (mantido): recusa rodar fora de `master`. A
+ * branch nova precisa nascer de um ponto conhecido — commitar a partir de
+ * uma branch errada (checkout compartilhado com sessões overnight/develop
+ * concorrentes, #5156) produziria uma página divergente do `master` real.
+ * Lança — o chamador (`publishEditionSitePage`) converte em `code: 3`.
+ *
+ * #6202 review, problema P1-A (mantido): `commit` é escopado ao MESMO
+ * pathspec do `add`/`status` (nunca commita o índice inteiro) — e antes de
+ * commitar, confirma que NADA além do pathspec da página está staged. Um
+ * `git add` alheio (sessão concorrente no mesmo checkout compartilhado)
+ * entraria no commit sem review; a checagem lança em vez de commitar
  * silenciosamente por cima.
  *
- * #6202 review, problema P1-B: `status --porcelain` limpo significa "nada
- * NOVO a commitar" — não "nada a empurrar". Um commit de uma rodada anterior
- * pode ter ficado sem push (falha de rede/auth) e o status já sai limpo nesse
- * caso. Por isso o `push` roda SEMPRE (não só quando há commit novo nesta
- * chamada) — `git push` é idempotente: sem nada pendente, sai 0 sem efeito
- * ("Everything up-to-date"). `pushed: true` no retorno significa "confirmado
- * em dia com o remoto ao final desta chamada", nunca "algo mudou".
+ * #6202 review, problema P1-B (mantido): `status --porcelain` limpo
+ * significa "nada NOVO a commitar" — não "nada a empurrar". Por isso o
+ * `push` roda SEMPRE (não só quando há commit novo nesta chamada).
  *
- * `git` injetado — não roda git de verdade fora de `productionDeps`.
+ * `git`/`gh` injetados — não roda comando de verdade fora de `productionDeps`.
  */
 export function commitAndPushSitePage(
   rootDir: string,
   slug: string,
   git: GitRunner = defaultGitRunner,
   sitemapRelPath?: string,
-): { committed: boolean; pushed: boolean } {
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
-  if (branch !== "master") {
+  gh: GhRunner = defaultGhRunner,
+): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean } {
+  const originalBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], rootDir).trim();
+  if (originalBranch !== "master") {
     throw new Error(
-      `checkout não está em master (branch atual: '${branch}') — commit/push abortado antes de tocar ` +
-        `qualquer arquivo. .github/workflows/deploy-site.yml só dispara em push a master; commitar de ` +
-        `outra branch nunca aciona o deploy e reportaria sucesso falso. Provável sessão concorrente ` +
-        `trocou de branch neste checkout compartilhado (#5156, #6202 review problema P1-C).`,
+      `checkout não está em master (branch atual: '${originalBranch}') — commit/push abortado antes de ` +
+        `tocar qualquer arquivo. A branch de publicação de página precisa nascer de um master conhecido; ` +
+        `commitar a partir de outra branch produziria uma página divergente do master real. Provável ` +
+        `sessão concorrente trocou de branch neste checkout compartilhado (#5156, #6202/#6598).`,
     );
   }
+
+  const branchName = sitePublishBranch(slug);
 
   // Forward-slash sempre — git normaliza pathspecs assim mesmo no Windows, e
   // é o formato em que `git status --porcelain`/`git diff --name-only`
@@ -324,45 +413,112 @@ export function commitAndPushSitePage(
   const pathsToStage = [relPageDir];
   if (sitemapRelPath) pathsToStage.push(sitemapRelPath);
 
-  for (const p of pathsToStage) {
-    git(["add", "--", p], rootDir);
-  }
+  let committed = false;
+  let pushed = false;
+  let prUrl: string | undefined;
+  let prNumber: number | undefined;
+  let prCreated = false;
 
-  const status = git(["status", "--porcelain", "--", ...pathsToStage], rootDir);
-  const committed = status.trim().length > 0;
+  try {
+    // -B (não -b): sempre recria a branch a partir do master atual, mesmo se
+    // uma chamada anterior a deixou pra trás localmente — elimina qualquer
+    // estado acumulado entre chamadas (idempotência, ver docstring do módulo).
+    git(["checkout", "-B", branchName], rootDir);
 
-  if (committed) {
-    const stagedFiles = git(["diff", "--cached", "--name-only"], rootDir)
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const outsidePathspec = stagedFiles.filter(
-      (f) => !pathsToStage.includes(f) && !pathsToStage.some((p) => f.startsWith(p + "/")),
-    );
-    if (outsidePathspec.length > 0) {
-      throw new Error(
-        `git add deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
-          `pathspec — provável mudança concorrente no mesmo checkout compartilhado (#5156, #6202 review ` +
-          `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
+    for (const p of pathsToStage) {
+      git(["add", "--", p], rootDir);
+    }
+
+    const status = git(["status", "--porcelain", "--", ...pathsToStage], rootDir);
+    committed = status.trim().length > 0;
+
+    if (committed) {
+      const stagedFiles = git(["diff", "--cached", "--name-only"], rootDir)
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const outsidePathspec = stagedFiles.filter(
+        (f) => !pathsToStage.includes(f) && !pathsToStage.some((p) => f.startsWith(p + "/")),
+      );
+      if (outsidePathspec.length > 0) {
+        throw new Error(
+          `git add deixou ${outsidePathspec.length} arquivo(s) alheio(s) staged fora do ` +
+            `pathspec — provável mudança concorrente no mesmo checkout compartilhado (#5156, #6202 review ` +
+            `problema P1-A). Commit abortado, nada foi commitado: ${outsidePathspec.join(", ")}`,
+        );
+      }
+      const commitPaths = pathsToStage.map((p) => ["--", p]).flat();
+      git(
+        ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`, ...commitPaths],
+        rootDir,
       );
     }
-    const commitPaths = pathsToStage.map((p) => ["--", p]).flat();
-    git(
-      ["commit", "-m", `chore(site): publica página da edição /p/${slug}\n\nRefs #6202`, ...commitPaths],
+
+    git(["push", "--force-with-lease", "-u", "origin", branchName], rootDir);
+    pushed = true;
+
+    const existingRaw = gh(
+      ["pr", "list", "--head", branchName, "--state", "open", "--json", "number,url"],
       rootDir,
     );
+    let existing: Array<{ number: number; url: string }> = [];
+    try {
+      const parsed: unknown = JSON.parse(existingRaw);
+      if (Array.isArray(parsed)) existing = parsed as Array<{ number: number; url: string }>;
+    } catch {
+      existing = [];
+    }
+
+    if (existing.length > 0) {
+      prNumber = existing[0].number;
+      prUrl = existing[0].url;
+      prCreated = false;
+    } else {
+      const createOut = gh(
+        [
+          "pr",
+          "create",
+          "--base",
+          "master",
+          "--head",
+          branchName,
+          "--title",
+          `chore(site): publica página da edição /p/${slug} (#6598)`,
+          "--body",
+          buildSitePagePrBody(slug),
+        ],
+        rootDir,
+      );
+      // `gh pr create` imprime a URL do PR criado como última linha do stdout.
+      prUrl = createOut
+        .trim()
+        .split("\n")
+        .pop()
+        ?.trim();
+      prCreated = true;
+    }
+  } finally {
+    // Sempre volta pro branch original, mesmo em erro — o checkout
+    // compartilhado nunca fica preso numa branch de publicação de página.
+    git(["checkout", originalBranch], rootDir);
   }
 
-  git(["push"], rootDir);
-  return { committed, pushed: true };
+  return { committed, pushed, prUrl, prNumber, prCreated };
 }
 
 /**
  * @param git Injetável (#6202 review, problema P2-G) — permite exercitar a
  *   amarração de `publish` com um `GitRunner` controlado, sem depender de um
  *   repositório git real. Default: `defaultGitRunner` (git de verdade).
+ * @param gh Injetável (#6598, mesmo motivo do `git` acima) — permite
+ *   exercitar `gh pr create`/`gh pr list` sem depender do CLI `gh` real.
+ *   Default: `defaultGhRunner` (gh de verdade).
  */
-export function productionDeps(rootDir: string = ROOT, git: GitRunner = defaultGitRunner): PublishPageDeps {
+export function productionDeps(
+  rootDir: string = ROOT,
+  git: GitRunner = defaultGitRunner,
+  gh: GhRunner = defaultGhRunner,
+): PublishPageDeps {
   return {
     readEditionInputs,
     writePage: (slug, html) => {
@@ -371,8 +527,8 @@ export function productionDeps(rootDir: string = ROOT, git: GitRunner = defaultG
       writeFileSync(join(dir, "index.html"), html, "utf8");
     },
     publish: (slug, sitemapPath?: string) => {
-      const { pushed } = commitAndPushSitePage(rootDir, slug, git, sitemapPath);
-      return { pushed };
+      const { pushed, prUrl, prNumber, prCreated } = commitAndPushSitePage(rootDir, slug, git, sitemapPath, gh);
+      return { pushed, prUrl, prNumber, prCreated };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
@@ -464,11 +620,16 @@ export function publishEditionSitePage(
   // #6202 review, problema P1-B: `published` só é `true` quando `publish()`
   // confirma o push (de fato ocorreu, ou já estava em dia com o remoto) —
   // nunca inferido do sucesso de `deps.writePage`/da ausência de exceção.
+  // #6598: `published: true` não significa mais "já no próximo deploy" —
+  // significa "branch pushada, PR aberto/reusado, aguardando merge".
   if (publishResult.pushed) {
-    deps.log(`publicado — git commit+push ok, /p/${built.post.slug} entra no próximo deploy de workers/site`);
-    return { code: 0, slug: built.post.slug, bytes: html.length, published: true };
+    const prNote = publishResult.prUrl
+      ? ` — PR ${publishResult.prCreated ? "aberto" : "reusado"}: ${publishResult.prUrl} (merge pendente pro deploy)`
+      : " — push confirmado, mas gh pr create/list não retornou URL";
+    deps.log(`publicado — branch site-publish/${built.post.slug} em dia com o remoto${prNote}`);
+    return { code: 0, slug: built.post.slug, bytes: html.length, published: true, prUrl: publishResult.prUrl };
   }
-  deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não entra no próximo deploy ainda`);
+  deps.log(`git commit/push rodou sem lançar mas não confirmou push — /p/${built.post.slug} não tem branch pushada ainda`);
   return { code: 0, slug: built.post.slug, bytes: html.length, published: false };
 }
 
