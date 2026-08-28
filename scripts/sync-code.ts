@@ -22,6 +22,14 @@
  * invisível no meio do JSON e vira sinalização explícita pro orchestrator/
  * editor (incidente 260825: pipeline inteiro rodou com código antigo sob 3×
  * "sucesso" porque o warning era prosa ignorable).
+ *
+ * #6668: quando `outcome === "stash_pop_conflict"`, imprime um 2º BANNER
+ * (mais forte — checkout ficou com arquivo(s) VERSIONADO(S) com marcador de
+ * conflito literal no disco, mais sério que um `stash_pop_failed` comum).
+ * Ainda fail-soft (exit 0) — este script não decide sozinho parar a
+ * pipeline (isso é escopo do orchestrator/stage, CLAUDE.md "Sync de código
+ * no início de cada edição"), só garante que o sinal não fique perdido no
+ * meio do JSON.
  */
 
 import { syncCode } from "./lib/git-sync.ts";
@@ -48,6 +56,21 @@ if (result.commits_behind > 0) {
       `   com comportamento antigo — incluindo os guards que deveriam\n` +
       `   detectar isso (guard defasado concorda com sujeito defasado).\n` +
       `   Para sincronizar: git fetch origin && git merge --ff-only origin/master\n\n`,
+  );
+}
+
+// #6668: banner mais forte pro caso de stash pop ter deixado arquivo(s)
+// VERSIONADO(S) com conflito não-resolvido no disco (mais sério que um
+// stash_pop_failed comum — ver docstring de GitSyncOutcome.stash_pop_conflict
+// em scripts/lib/git-sync.ts). Ainda fail-soft (exit 0 abaixo, inalterado).
+if (result.outcome === "stash_pop_conflict") {
+  process.stderr.write(
+    `\n🛑 CONFLITO DE STASH POP DEIXADO NO DISCO — arquivo(s) versionado(s) com marcadores\n` +
+      `   de conflito literais (<<<<<<</=======/>>>>>>>). O checkout fica sintaticamente\n` +
+      `   quebrado e OUTRA SESSÃO pode ler esse arquivo como se estivesse íntegro.\n` +
+      `   A edição vai continuar (fail-soft), mas isto NÃO é um "pop falhou" comum —\n` +
+      `   resolva manualmente antes que outra sessão leia o arquivo quebrado:\n` +
+      `   git status --porcelain | grep -E '^(DD|AU|UD|UA|DU|AA|UU)' ; git diff ; resolva os marcadores ; git add.\n\n`,
   );
 }
 
