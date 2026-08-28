@@ -55,7 +55,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     const exit = runTestBatches({
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 10,
-      spawn: (() => ({ status: 0 })) as typeof import("node:child_process").spawnSync,
+      spawn: (() => ({ status: 0 })) as unknown as typeof import("node:child_process").spawnSync,
     });
     assert.equal(exit, 0);
   });
@@ -109,7 +109,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     const exit = runTestBatches({
       files: ["/a.test.ts", "/b.test.ts", "/c.test.ts", "/d.test.ts"],
       batchSize: 2,
-      spawn: (() => ({ status: 0 })) as typeof import("node:child_process").spawnSync,
+      spawn: (() => ({ status: 0 })) as unknown as typeof import("node:child_process").spawnSync,
     });
     assert.equal(exit, 0);
   });
