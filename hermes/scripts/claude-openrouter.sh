@@ -25,6 +25,16 @@
 #   - Fallback de modelo: free primeiro; se free falhar (balde diário esgota —
 #     compartilhado por CONTA entre todos os :free), cai pro glm-5.3-flash
 #     pago (~USD 0,075/M in; teto diário da chave limita o estrago).
+#   - Exit codes na falha total da cadeia (#6617, 28/08/2026): 1 = falha
+#     transitória (quota/rate-limit/timeout — "volta sozinho" é uma leitura
+#     válida); 4 = pelo menos um modelo da cadeia falhou com sinal de CONFIG
+#     INVÁLIDA (model id que o provedor não reconhece) e nenhum sinal de
+#     quota apareceu — "volta sozinho" é falso aqui, precisa correção manual
+#     do MODELS_DEFAULT/--model. Motivado por incidente real: o watchdog de
+#     rate-limit do Hermes lia rc≠0 como sinônimo de quota-exhaustion e
+#     pausava o job dizendo "reset natural resolve", mas `z-ai/glm-5.2:free`
+#     tinha saído do catálogo do OpenRouter (confirmado via
+#     /api/v1/models, 28/08) — a cadeia nunca ia se recuperar sozinha.
 #
 # Uso:
 #   echo "<tarefa>" | claude-openrouter.sh [--tools "Read,Bash(npx tsx:*)"] \
@@ -35,7 +45,10 @@ TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
 BUDGET="0.25"
 TIMEOUT="1800"
-MODELS_DEFAULT=("z-ai/glm-5.2:free" "dots-studio/dots-3-note-preview:free" "z-ai/glm-5.3-flash")
+# z-ai/glm-5.2:free saiu do catálogo do OpenRouter (confirmado ao vivo em
+# /api/v1/models, 28/08/2026 — #6617) e foi substituído por poolside/laguna-
+# s-2.1:free, já validado em produção (job 5d791ef6fc2c do Hermes contínuo).
+MODELS_DEFAULT=("poolside/laguna-s-2.1:free" "dots-studio/dots-3-note-preview:free" "z-ai/glm-5.3-flash")
 MODEL_FORCED=""
 
 while [ $# -gt 0 ]; do
@@ -90,9 +103,26 @@ cd "$CWD"
 # de ruído era a ÚNICA cópia — linha real que contivesse um dos padrões era
 # perdida pra sempre). O terminal segue filtrado; o arquivo tem tudo.
 STDERR_LOG="${TMPDIR:-/tmp}/claude-openrouter-stderr.$$.log"
+# Sinais agregados pra decidir o exit code final (#6617): "unrecognized_model"
+# sozinho é ruído esperado de QUALQUER modelo de terceiro (o CLI não conhece
+# nenhum slug do OpenRouter) — não distingue modelo válido de inválido. O que
+# distingue é o PROVEDOR recusar o modelo (rc≠0 + saída vazia + nenhum sinal
+# de quota/rate-limit no mesmo stderr) vs. a conta ficar sem cota (429/rate
+# limit explícito, ou timeout — esses SIM se resolvem sozinhos no reset).
+SAW_QUOTA_SIGNAL=0
+SAW_CONFIG_ERROR_SIGNAL=0
 for MODEL in "${MODELS[@]}"; do
   echo "[claude-openrouter] tentando model=$MODEL" >&2
+  ATTEMPT_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt.$$.log"
+  : > "$ATTEMPT_LOG"
   set +e
+  # #6617 review finding 1: redirecionar direto pro arquivo (síncrono) em vez
+  # de passar por `tee` dentro de process substitution — `OUT=$(...)` só
+  # espera o pipeline de STDOUT fechar, nunca o job assíncrono do `>(...)`
+  # terminar de escrever, então o `grep` de classificação logo abaixo podia
+  # ler um $ATTEMPT_LOG parcialmente flushado e perder o próprio sinal que
+  # decide entre exit 1 e exit 4. Filtro de ruído pro terminal roda DEPOIS,
+  # já sobre o arquivo completo.
   OUT=$(printf '%s' "$PROMPT" | timeout "$TIMEOUT" env \
     ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
     ANTHROPIC_AUTH_TOKEN="$KEY" \
@@ -100,26 +130,57 @@ for MODEL in "${MODELS[@]}"; do
     claude -p \
       --model "$MODEL" \
       --allowedTools "$TOOLS" \
-      --max-budget-usd "$BUDGET" 2> >(tee -a "$STDERR_LOG" | grep -vE "not a model this version|unrecognized_model|connectors are disabled" >&2) \
+      --max-budget-usd "$BUDGET" 2> "$ATTEMPT_LOG" \
     )
   RC=$?
   set -e
+  cat "$ATTEMPT_LOG" >> "$STDERR_LOG"
+  grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
   if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
     printf '%s\n' "$OUT"
     echo "[claude-openrouter] ok model=$MODEL" >&2
-    rm -f "$STDERR_LOG"
+    rm -f "$STDERR_LOG" "$ATTEMPT_LOG"
     exit 0
   fi
-  # Distinguir os dois modos de falha (finding do review #6446: "falhou rc=0"
-  # é ativamente enganoso — rc=0 com stdout vazio é outra doença).
-  if [ $RC -eq 0 ]; then
-    echo "[claude-openrouter] falhou model=$MODEL: saída VAZIA com rc=0 (sessão terminou sem texto final) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
-  elif [ $RC -eq 124 ]; then
+  # Classificar o motivo desta tentativa (finding do review #6446 cobria só
+  # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
+  # distinção quota-transitória vs config-permanente dentro do rc≠0/vazio).
+  if [ $RC -eq 124 ]; then
+    SAW_QUOTA_SIGNAL=1
     echo "[claude-openrouter] falhou model=$MODEL: TIMEOUT (${TIMEOUT}s) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  elif grep -qiE "model not found|invalid model|not a valid model|no endpoints found|no allowed providers" "$ATTEMPT_LOG"; then
+    # #6617 review finding 3: checar config-inválida ANTES de rate-limit —
+    # "not a valid model" também casaria com um grep solto por "valid model"
+    # numa mensagem de quota, então a ordem evita falso-negativo cruzado.
+    SAW_CONFIG_ERROR_SIGNAL=1
+    echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  elif grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\(429\)" "$ATTEMPT_LOG"; then
+    # #6617 review finding 4: "429" sozinho podia casar com ruído não
+    # relacionado (contagem de bytes, linha) — agora exige contexto de
+    # rate-limit textual OU o número junto de "http"/"status".
+    SAW_QUOTA_SIGNAL=1
+    echo "[claude-openrouter] falhou model=$MODEL rc=$RC: RATE-LIMIT/QUOTA (sinal no stderr) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  elif [ $RC -eq 0 ]; then
+    echo "[claude-openrouter] falhou model=$MODEL: saída VAZIA com rc=0 (sessão terminou sem texto final) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
   else
-    echo "[claude-openrouter] falhou model=$MODEL rc=$RC — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+    echo "[claude-openrouter] falhou model=$MODEL rc=$RC — sem sinal claro de quota nem de modelo inválido; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
   fi
+  rm -f "$ATTEMPT_LOG"
 done
 
+# #6617 review finding 2: qualquer sinal de config inválida em QUALQUER
+# modelo da cadeia já é acionável — não esperar que NENHUM modelo tenha
+# mostrado sinal de quota. MODELS_DEFAULT mistura :free com pago; é bem
+# possível que o modelo pago bata rate-limit real enquanto um :free tem id
+# morto no mesmo run, e nesse caso misturar os dois sob exit 1 mascararia de
+# novo o exato incidente que esta issue corrige.
+if [ "$SAW_CONFIG_ERROR_SIGNAL" -eq 1 ]; then
+  if [ "$SAW_QUOTA_SIGNAL" -eq 1 ]; then
+    echo "ERRO: todos os modelos da cadeia falharam — sinais MISTOS (config inválida em pelo menos 1 modelo, quota/rate-limit em outro). Tratando como config inválida: não assumir que o reset de cota resolve sozinho." >&2
+  else
+    echo "ERRO: todos os modelos da cadeia falharam — sinal de CONFIG INVÁLIDA (model id que o provedor não reconhece), NÃO de rate-limit. Não vai se resolver sozinho no reset de cota; corrigir MODELS_DEFAULT/--model." >&2
+  fi
+  exit 4
+fi
 echo "ERRO: todos os modelos da cadeia falharam" >&2
 exit 1
