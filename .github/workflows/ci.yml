@@ -25,7 +25,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 (#6413) — worker-drift-check-script.test.ts precisa de
+      # origin/master resolvível localmente (getLastCommitAt/resolveProductionRef
+      # comparam sempre contra a ref de produção, nunca a branch checked out —
+      # o default fetch-depth:1 do actions/checkout só traz o commit único do PR,
+      # sem nenhuma ref de master). Mesmo padrão já usado pelos jobs de
+      # pr-checks.yml que precisam de histórico git real (regression-test-gate,
+      # seed-html-sync).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

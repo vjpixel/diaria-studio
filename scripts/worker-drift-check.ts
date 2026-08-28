@@ -278,19 +278,22 @@ export function resolveProductionRef(root: string = ROOT): string {
  * `git log -1 --format=%aI {ref} -- workers/{dir}` — `%aI` é a data do autor em
  * ISO 8601 estrito (com offset), a mesma disciplina de timestamp usada em
  * outros comparadores de tempo do repo (ver docstring de `sentDate` em
- * `brevo-client.ts`). `ref` vem de `resolveProductionRef` — sempre
- * `origin/master`/`master`, nunca a branch atualmente checked out (#6413:
- * sem isso, um commit de feature branch não-mergeada em outro worktree do
- * mesmo repo compartilhado gera falso positivo de drift, porque o alarme
- * lia o commit "alcançável a partir do HEAD" de quem quer que estivesse
- * checked out no momento da execução). Retorna `null` se não há nenhum
- * commit tocando esse path na ref de produção (não deveria acontecer na
- * prática — o diretório existe versionado em master — mas tratado como edge
- * case, não uma exceção).
+ * `brevo-client.ts`). `ref`, se omitido, vem de `resolveProductionRef` —
+ * sempre `origin/master`/`master`, nunca a branch atualmente checked out
+ * (#6413: sem isso, um commit de feature branch não-mergeada em outro
+ * worktree do mesmo repo compartilhado gera falso positivo de drift, porque
+ * o alarme lia o commit "alcançável a partir do HEAD" de quem quer que
+ * estivesse checked out no momento da execução). O call site que avalia
+ * TODOS os workers resolve a ref 1x e passa explicitamente (evita 1
+ * `spawnSync` de `rev-parse` por worker); passar `undefined` resolve de
+ * novo por chamada — usado pelos testes, que exercitam workers isolados.
+ * Retorna `null` se não há nenhum commit tocando esse path na ref de
+ * produção (não deveria acontecer na prática — o diretório existe
+ * versionado em master — mas tratado como edge case, não uma exceção).
  */
-export function getLastCommitAt(workerDir: string, root: string = ROOT): string | null {
-  const ref = resolveProductionRef(root);
-  const res = spawnSync("git", ["log", "-1", "--format=%aI", ref, "--", join("workers", workerDir)], {
+export function getLastCommitAt(workerDir: string, root: string = ROOT, ref?: string): string | null {
+  const resolvedRef = ref ?? resolveProductionRef(root);
+  const res = spawnSync("git", ["log", "-1", "--format=%aI", resolvedRef, "--", join("workers", workerDir)], {
     encoding: "utf8",
     cwd: root,
     timeout: 30_000,
@@ -403,11 +406,15 @@ async function main(): Promise<void> {
   // resto), mas sem dado confiável nesta execução específica.
   const { metadata, error: metadataError } = await fetchAllWorkerScriptsMetadata(accountId, workersToken);
 
+  // Resolvida 1x fora do .map() (#6413 self-review finding 2) — evita 1
+  // `spawnSync("git", ["rev-parse", ...])` extra por worker (11 workers hoje).
+  const productionRef = resolveProductionRef();
+
   const inputs: WorkerDriftCheckInput[] = workers.map((w) => ({
     workerName: w.workerName,
     workerDir: w.workerDir,
     lastDeployedAt: metadata ? resolveLastDeployedAt(w.workerName, metadata) : null,
-    lastCommitAt: getLastCommitAt(w.workerDir),
+    lastCommitAt: getLastCommitAt(w.workerDir, ROOT, productionRef),
     deployError: metadataError,
   }));
 

@@ -167,6 +167,24 @@ describe("getLastCommitAt (#6413) — ignora commit de branch não-mergeada no c
     const reported = getLastCommitAt("poll", tmpRepo);
     assert.equal(reported, masterCommitAt);
   });
+
+  it("checkout raso sem origin/master NEM master local (ex: CI fetch-depth:1 num PR) -> null, nunca lança (self-review #6413)", () => {
+    // Reproduz o cenário achado no self-review deste PR: um checkout que
+    // não tem `origin/master` (sem fetch de outras branches) nem uma
+    // branch local chamada `master` (checkout raso/detached, ex:
+    // actions/checkout@v4 com fetch-depth:1 padrão num evento
+    // pull_request). resolveProductionRef cai pro literal "master", que
+    // não resolve — getLastCommitAt precisa reportar `null` de forma
+    // limpa (spawnSync com status != 0), nunca lançar. É por isso que
+    // `.github/workflows/ci.yml` ganhou `fetch-depth: 0` no job `test`
+    // neste mesmo PR — sem isso, este cenário aconteceria de verdade em
+    // TODO PR e quebraria o teste "(#4723) — git log real" acima.
+    git(["update-ref", "-d", "refs/remotes/origin/master"]);
+    git(["branch", "-D", "master"]);
+    assert.equal(resolveProductionRef(tmpRepo), "master");
+    assert.doesNotThrow(() => getLastCommitAt("poll", tmpRepo));
+    assert.equal(getLastCommitAt("poll", tmpRepo), null);
+  });
 });
 
 describe("fetchAllWorkerScriptsMetadata (#4723) — fetch mockado, sem rede real", () => {
