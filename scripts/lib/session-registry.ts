@@ -682,6 +682,27 @@ function readMergedRecordForRealFile(repoRoot: string, realPath: string): Sessio
 }
 
 /**
+ * Paths absolutos dos `-safeBackup-*` do MESMO grupo de um arquivo real de
+ * sessão — mesma composição de `groupBackupsByRealStem` que
+ * `readMergedRecordForRealFile` usa para o READ-path. Usada por
+ * `unclaimIssue` (#6567) para propagar a remoção de uma issue a TODAS as
+ * cópias do grupo, não só ao arquivo real: sem isto, `writeJsonSafe` no real
+ * deixa `-safeBackup-*` órfãos ainda carregando a issue em `claimed_issues`,
+ * e como o read-path (`readMergedSessionGroups`/`mergeSessionRecords`) faz
+ * união real+backups por design fail-safe, a issue continua aparecendo como
+ * reivindicada para `is-claimed`/`list-active` mesmo depois do
+ * `unclaim-issue` reportar sucesso. Lista vazia quando não há backup do
+ * grupo (caso comum) — nenhuma mudança de comportamento no caminho feliz.
+ */
+function sessionGroupBackupPaths(repoRoot: string, realPath: string): string[] {
+  const dir = sessionsDir(repoRoot);
+  const realName = basename(realPath);
+  const stem = realName.slice(0, -".json".length);
+  const backupNames = groupBackupsByRealStem(listSessionJsonFiles(repoRoot)).get(stem) ?? [];
+  return backupNames.map((n) => join(dir, n));
+}
+
+/**
  * Loga (stderr, nunca lança) um aviso de que `registerSession` encontrou um
  * registro de OUTRO kind pra `sessionId` mas não conseguiu ler nem o arquivo
  * real nem nenhum backup dele (#6326 fleet review item 1) — cenário
@@ -1578,6 +1599,20 @@ export interface UnclaimIssueResult {
  * kind — reusada aqui, não reimplementada. Quando não há nenhum backup (caso
  * comum), o merge devolve exatamente o conteúdo do arquivo real — nenhuma
  * mudança de comportamento no caminho feliz.
+ *
+ * **#6567 — a remoção da issue é aplicada a TODOS os arquivos do grupo (real
+ * + cada `-safeBackup-*`), não só ao real.** O merge acima resolve a LEITURA
+ * (a issue aparece como reivindicada mesmo se só um backup a carrega), mas
+ * sem isto a ESCRITA seguinte (`writeJsonSafe(path, ...)`) tocava só o
+ * arquivo real — os backups continuavam em disco com `issueNumber` ainda em
+ * `claimed_issues`, e como o read-path (`readMergedSessionGroups`) faz a
+ * MESMA união real+backups, `is-claimed`/`list-active` seguiam reportando a
+ * issue como reivindicada mesmo depois do `unclaim-issue` responder `{ok:
+ * true}` — issue permanentemente inelegível até o GC eventualmente varrer o
+ * backup (achado ao vivo #6567). Cada backup é reescrito CIRURGICAMENTE (só
+ * `claimed_issues`/`claimed_issues_at` daquele próprio arquivo, preservando
+ * o resto do seu conteúdo) — nunca sobrescrito com o registro MESCLADO, que
+ * poderia introduzir campos de outra cópia num backup que nunca os teve.
  */
 export function unclaimIssue(
   repoRoot: string,
@@ -1621,6 +1656,24 @@ export function unclaimIssue(
     claimed_issues_at: claimedAt,
     lastHeartbeat: now,
   });
+
+  // #6567: propaga a remoção a cada `-safeBackup-*` do grupo que ainda carrega
+  // a issue — ver docstring acima. Reescrita cirúrgica: só os dois campos de
+  // claim daquele backup, nunca o registro mesclado inteiro.
+  for (const backupPath of sessionGroupBackupPaths(repoRoot, path)) {
+    const backupRecord = readJsonSafe<SessionRecord>(backupPath);
+    if (!backupRecord) continue; // backup ilegível/parcialmente sincronizado — GC recolhe depois
+    const backupClaimed = backupRecord.claimed_issues ?? [];
+    if (!backupClaimed.includes(issueNumber)) continue;
+    const backupClaimedAt = { ...(backupRecord.claimed_issues_at ?? {}) };
+    delete backupClaimedAt[String(issueNumber)];
+    writeJsonSafe(backupPath, {
+      ...backupRecord,
+      claimed_issues: backupClaimed.filter((n) => n !== issueNumber),
+      claimed_issues_at: backupClaimedAt,
+    });
+  }
+
   return { ok: true, reason: "unclaimed" };
 }
 

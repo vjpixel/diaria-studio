@@ -895,6 +895,50 @@ describe("unclaimIssue — libera issue da PRÓPRIA sessão, sem encerrá-la (#6
     const result = unclaimIssue(root, "develop", "sess-sem-backup", 42, "host-a", new Date(NOW + 1000).toISOString());
     assert.deepEqual(result, { ok: true, reason: "unclaimed" });
   });
+
+  it(
+    "#6567 — unclaim com issue presente num -safeBackup-N remove a claim de LÁ também, " +
+      "não só do arquivo real — is-claimed/list-active param de reportar a issue como reivindicada",
+    () => {
+      const root = freshRoot();
+      const tag = "host-a";
+      const sessionId = "sess-6567";
+      registerSession(root, "overnight", sessionId, { tag, startedAt: new Date(NOW).toISOString() });
+      claimIssue(root, "overnight", sessionId, 6567, tag, new Date(NOW).toISOString());
+      // Backup de conflito do OneDrive escrito depois do claim (ex: heartbeat
+      // do beacon bifurcando o arquivo) — carrega a MESMA claim.
+      writeRawSessionFile(root, `overnight-${tag}-${sessionId}-${tag}-safeBackup-0001.json`, {
+        kind: "overnight",
+        machineTag: tag,
+        sessionId,
+        startedAt: new Date(NOW).toISOString(),
+        lastHeartbeat: new Date(NOW).toISOString(),
+        claimed_issues: [6567],
+        claimed_issues_at: { "6567": new Date(NOW).toISOString() },
+      });
+
+      const result = unclaimIssue(root, "overnight", sessionId, 6567, tag, new Date(NOW + 1000).toISOString());
+      assert.deepEqual(result, { ok: true, reason: "unclaimed" });
+
+      // O bug do #6567: writeJsonSafe tocava só o arquivo real, deixando o
+      // backup em disco ainda com a issue — e o read-path faz união
+      // real+backups, então a issue continuava "fantasma" reivindicada.
+      const backupPath = join(sessionsDir(root), `overnight-${tag}-${sessionId}-${tag}-safeBackup-0001.json`);
+      const backupContent = JSON.parse(readFileSync(backupPath, "utf8"));
+      assert.deepEqual(
+        backupContent.claimed_issues,
+        [],
+        "o backup também deve perder a issue de claimed_issues — não só o arquivo real",
+      );
+      assert.deepEqual(backupContent.claimed_issues_at, {}, "claimed_issues_at do backup também é limpo");
+
+      // Cenário fim-a-fim que a issue descreve: is-claimed/list-active NÃO
+      // podem mais reportar a issue como reivindicada após o unclaim.
+      const active = listActiveSessions(root, NOW + 2000);
+      const stillClaimedSomewhere = active.some((s) => (s.claimed_issues ?? []).includes(6567));
+      assert.equal(stillClaimedSomewhere, false, "6567 não pode mais aparecer reivindicada em nenhuma sessão ativa");
+    },
+  );
 });
 
 // ─── claimIssueCheckAndSet — check-and-set (#6236) ─────────────────────────
