@@ -25,6 +25,7 @@
 .rv-gate-checklist { display: flex; flex-direction: column; gap: 0.35rem; }
 .rv-gate-check-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   align-items: baseline;
   padding: 0.4rem 0.6rem;
@@ -49,9 +50,9 @@
 }
 .rv-gate-check-row.ok .rv-gate-check-badge { color: var(--status-ok); }
 .rv-gate-check-row.fail .rv-gate-check-badge { color: var(--status-danger); }
-.rv-gate-check-label { flex: 1; }
+.rv-gate-check-label { flex: 1 1 auto; min-width: 0; }
 .rv-gate-check-detail {
-  width: 100%;
+  flex: 1 0 100%;
   font-size: 0.78rem;
   opacity: 0.85;
   margin-top: 0.15rem;
