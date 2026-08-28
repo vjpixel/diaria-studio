@@ -2,6 +2,21 @@
 /**
  * scripts/beehiiv-home-meta-check.ts (#4557, #5099, #5106, #5112)
  *
+ * **Nome do arquivo/task é herdado da era em que a home era um tema Beehiiv
+ * — desatualizado desde o cutover do apex (#467, confirmado ao vivo em
+ * 28/08/2026): `https://diar.ia.br/` hoje é servida por
+ * `workers/site/public/index.html`, código deste repo, não pela Beehiiv.
+ * Renomear arquivo(s) + task agendada tem blast radius próprio (a task roda
+ * no `helios` via systemd) e fica pra decisão futura — rastreado em #6498,
+ * que também decide o destino do eixo `english-labels` (só faz sentido
+ * numa home-tema-Beehiiv; numa home HTML nossa não detecta mais o que foi
+ * criado pra detectar — ver nota de escopo no topo de
+ * `scripts/lib/beehiiv-home-meta-check.ts`). Os demais eixos continuam
+ * válidos: `port-in-url` avalia a página de edição (`/p/{slug}`, ainda
+ * render Beehiiv em cache); `og-title-brand`/`http-self-link`/
+ * `legacy-host-link` são checáveis em qualquer home; `hub-link-missing`
+ * virou guard de regressão do gerador (#6411).**
+ *
  * Smoke-test de runtime: bate `GET https://diar.ia.br/` (home pública — GET
  * simples, sem autenticação, sem API do Beehiiv, sem MCP — qualquer visitante
  * vê o mesmo HTML, isso NÃO é uma ação de publish/schedule/send) e verifica
@@ -9,12 +24,13 @@
  * `og:title` sem a marca oficial (ou com a grafia legada "Diar.ia"),
  * self-links `href="http://diar.ia.br..."` (deveria ser https), rótulos
  * residuais em inglês na UI do tema Beehiiv ("Sign Up", "Login", "N min
- * read"), links pra host legado (#5099), e — desde #5106 — porta explícita
- * numa URL reader-facing, checado contra a página da edição mais recente
- * (não a home; ver `findLatestPostUrl`/`evaluatePostPageDrift`). Se algum
- * eixo der drift, alarma o editor por e-mail — e, desde #5112, garante uma
- * issue GitHub por achado (criada ou reusada) e comenta/fecha issues cujo
- * achado deixou de reproduzir.
+ * read" — eixo `english-labels`, ver nota de escopo acima), links pra host
+ * legado (#5099), e — desde #5106 — porta explícita numa URL reader-facing,
+ * checado contra a página da edição mais recente (não a home; ver
+ * `findLatestPostUrl`/`evaluatePostPageDrift`). Se algum eixo der drift,
+ * alarma o editor por e-mail — e, desde #5112, garante uma issue GitHub por
+ * achado (criada ou reusada) e comenta/fecha issues cujo achado deixou de
+ * reproduzir.
  *
  * Contexto: a issue #4557 original pede 3 mudanças de PAINEL Beehiiv e diz
  * explicitamente que não é código — é ação manual do editor no painel. O
@@ -81,6 +97,7 @@ import {
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
+  aggregateFindingsOnDebut,
   emptyAlarmIssuesState,
   type AlarmFinding,
   type AlarmIssuesState,
@@ -102,6 +119,20 @@ const HOME_URL = `${BEEHIIV_BASE_URL}/`;
  * lá pra dizer 48h" — já nasce correto aqui porque implementamos as duas
  * juntas). */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
+
+/** #6572 — grupo declarado em cada finding pra `aggregateFindingsOnDebut`
+ * (`alarm-issues.ts`), 3º consumidor do mecanismo genérico (junto de
+ * `session-registry-safebackup`, #6562/#6564, e `systemd-unit-rate`,
+ * também #6572). Este check tem só 6 eixos possíveis — o volume nunca
+ * chega perto do que motivou os outros dois consumidores — mas o opt-in é
+ * de graça (findings sem `group` nunca agregam, e abaixo do teto o
+ * comportamento é idêntico ao pré-#6572: 1 issue por eixo). */
+const HOME_META_GROUP = "beehiiv-home-meta-check";
+/** Teto (exclusivo) — na prática nunca deve disparar (só 6 eixos possíveis
+ * no total), mas mantém o check simetricamente pronto se um eixo novo
+ * passar a emitir múltiplos findings por execução. */
+const HOME_META_ESTREIA_AGGREGATE_THRESHOLD = 4;
+const HOME_META_ESTREIA_AGGREGATE_FINGERPRINT = "estreia-aggregate";
 
 // ─── Estado (idempotência do E-MAIL) — mesmo padrão I/O de hub-drift-check.ts ─
 
@@ -223,6 +254,42 @@ export function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
     ].join("\n"),
     labels: ["bug"],
     priority: priorityForCheck(f.check),
+    group: HOME_META_GROUP,
+  };
+}
+
+/**
+ * #6572 — achado agregado da estreia (`aggregateFindingsOnDebut`
+ * `buildAggregate`, injetado). Mesmo formato dos outros 2 consumidores
+ * (`session-registry-safebackup`/`systemd-unit-rate`): lista cada eixo
+ * individual (fingerprint + título já formatado) em vez do
+ * `HomeMetaDriftFinding` original, que não chega até aqui.
+ */
+export function buildAggregatedHomeMetaFinding(findings: readonly AlarmFinding[]): AlarmFinding {
+  const sorted = [...findings].sort((a, b) => a.fingerprint.localeCompare(b.fingerprint));
+  return {
+    check: "beehiiv-home-meta-check",
+    fingerprint: HOME_META_ESTREIA_AGGREGATE_FINGERPRINT,
+    title: `[diar.ia.br] ${sorted.length} eixos de drift na home na estreia do alarme`,
+    body: [
+      "Achado automático do smoke-test `Diaria-Beehiiv-Home-Meta-Check`",
+      "(`scripts/beehiiv-home-meta-check.ts`), agregado por ser a 1ª execução (modo de estreia, #6572).",
+      "",
+      `${sorted.length} eixos com drift encontrados na 1ª execução deste alarme nesta máquina/checkout — acima do ` +
+        `teto de ${HOME_META_ESTREIA_AGGREGATE_THRESHOLD}, agregados nesta issue única em vez de 1 issue por eixo:`,
+      "",
+      ...sorted.map((f) => `- \`${f.check}\`: ${f.body.split("\n").find((l) => l.startsWith("Detalhe:")) ?? f.title}`),
+      "",
+      `Home: ${HOME_URL}`,
+      "",
+      "Refs #4557/#5099/#5106 — a correção é ação manual do editor no",
+      "painel/template Beehiiv, não código deste repo. Esta issue agregada é exclusiva da 1ª execução do alarme — a " +
+        "partir da execução seguinte o alarme volta ao modo normal (1 issue por eixo) e esta issue se fecha sozinha, " +
+        "independente de os eixos ainda derivarem ou não.",
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+    family: "estado",
   };
 }
 
@@ -315,8 +382,18 @@ async function main(): Promise<void> {
   // de CLOSE_ALARM_ISSUE_AFTER_RUNS execuções limpas consecutivas, mesmo
   // quando o drift ainda pendente é o MESMO já alarmado antes (sem e-mail
   // novo). Em --dry-run, só PLANEJA (puro, sem tocar `gh`) e imprime.
-  const alarmFindings = findings.map(toAlarmFinding);
   const alarmState = loadAlarmIssuesState();
+  const stateIsEmpty = Object.keys(alarmState).length === 0;
+  // #6572 — modo de estreia: vários eixos com drift na 1ª execução (state
+  // vazio) agregam numa issue só acima do teto, mesmo mecanismo genérico
+  // usado por `session-registry-safebackup-alarm.ts` (#6562/#6564) e
+  // `systemd-unit-rate-alarm.ts` (#6572). Na prática nunca dispara (só 6
+  // eixos possíveis), mas o check já opta pelo mesmo mecanismo.
+  const alarmFindings = aggregateFindingsOnDebut(findings.map(toAlarmFinding), {
+    threshold: HOME_META_ESTREIA_AGGREGATE_THRESHOLD,
+    stateIsEmpty,
+    buildAggregate: (_group, groupFindings) => buildAggregatedHomeMetaFinding(groupFindings),
+  });
   let issueRefs: Map<string, HomeMetaFindingIssueRef> | undefined;
 
   if (isDryRun) {

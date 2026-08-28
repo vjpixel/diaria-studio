@@ -14,9 +14,14 @@ import {
   DEFAULT_FAILURE_THRESHOLD,
   type UnitInvocationOutcome,
 } from "../scripts/lib/systemd-unit-rate-alarm.ts";
-import { tasksToUnitsToCheck, toAlarmFinding } from "../scripts/systemd-unit-rate-alarm.ts";
+import {
+  tasksToUnitsToCheck,
+  toAlarmFinding,
+  buildAggregatedUnitRateFinding,
+  SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
+} from "../scripts/systemd-unit-rate-alarm.ts";
 import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
-import { planAlarmReconciliation, emptyAlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
+import { planAlarmReconciliation, emptyAlarmIssuesState, aggregateFindingsOnDebut } from "../scripts/lib/alarm-issues.ts";
 
 const UNIT = "diaria-clarice-novos.service";
 
@@ -256,6 +261,65 @@ describe("toAlarmFinding", () => {
     assert.equal(finding.priority, "P1");
     assert.match(finding.title, /diaria-clarice-novos\.service/);
     assert.match(finding.body, /journalctl --user -u/);
+  });
+
+  it("declara group 'systemd-unit-rate' (#6572) — opt-in no mecanismo genérico de agrupamento na estreia", () => {
+    const unit = { taskName: "Diaria-Clarice-Novos", unitName: UNIT, successExitCodes: [] };
+    const evaluation = evaluateUnitFailureRate([failure(), failure(), success(), success(), success()]);
+    const finding = toAlarmFinding({ unit, evaluation });
+    assert.equal(finding.group, "systemd-unit-rate");
+  });
+});
+
+describe("agrupamento genérico na estreia (#6572) — systemd-unit-rate como 2º consumidor de aggregateFindingsOnDebut", () => {
+  function findingFor(unitName: string): ReturnType<typeof toAlarmFinding> {
+    const unit = { taskName: unitName, unitName, successExitCodes: [] };
+    const evaluation = evaluateUnitFailureRate([failure(), failure(), success(), success(), success()]);
+    return toAlarmFinding({ unit, evaluation });
+  }
+
+  it("state vazio + volume ACIMA do teto → 1 finding agregado, não 1-por-unit (4 issues de 2 causas raiz, cenário do #6572)", () => {
+    const units = ["a", "b", "c", "d"].map((s) => `diaria-${s}.service`);
+    const perUnit = units.map(findingFor);
+    assert.equal(perUnit.length, SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD + 1);
+
+    const result = aggregateFindingsOnDebut(perUnit, {
+      threshold: SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
+      stateIsEmpty: true,
+      buildAggregate: (_group, groupFindings) => buildAggregatedUnitRateFinding(groupFindings),
+    });
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].check, "systemd-unit-rate");
+    assert.equal(result[0].fingerprint, "estreia-aggregate");
+    for (const u of units) assert.match(result[0].body, new RegExp(u.replace(/\./g, "\\.")));
+  });
+
+  it("state NÃO vazio → sempre 1-por-unit, mesmo acima do teto (agregação só na estreia)", () => {
+    const units = ["a", "b", "c", "d"].map((s) => `diaria-${s}.service`);
+    const perUnit = units.map(findingFor);
+
+    const result = aggregateFindingsOnDebut(perUnit, {
+      threshold: SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
+      stateIsEmpty: false,
+      buildAggregate: (_group, groupFindings) => buildAggregatedUnitRateFinding(groupFindings),
+    });
+
+    assert.equal(result.length, units.length);
+  });
+
+  it("state vazio + volume NO/abaixo do teto → continua 1-por-unit (comportamento preservado)", () => {
+    const units = ["a", "b", "c"].map((s) => `diaria-${s}.service`);
+    const perUnit = units.map(findingFor);
+    assert.equal(perUnit.length, SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD);
+
+    const result = aggregateFindingsOnDebut(perUnit, {
+      threshold: SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
+      stateIsEmpty: true,
+      buildAggregate: (_group, groupFindings) => buildAggregatedUnitRateFinding(groupFindings),
+    });
+
+    assert.equal(result.length, units.length);
   });
 });
 

@@ -47,7 +47,7 @@
 
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "../lib/shared/gh-run.ts";
 import { classifyExecTrackWithRule, EXEC_TRACK_UI, type ExecTrack, type ExecTrackMatch } from "../lib/issue-exec-track.ts";
-import { listActiveSessions } from "../lib/session-registry.ts";
+import { listActiveSessions, type ActiveSessionRecord } from "../lib/session-registry.ts";
 import { flattenClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
@@ -301,6 +301,43 @@ ${i.body ?? ""}`);
 }
 
 /**
+ * Limiar de exibição — SÓ pro badge "em andamento" do painel de Triagem
+ * (#6592). Deliberadamente separado de `SOFT_STALE_MS`
+ * (`scripts/lib/session-registry.ts`, 90min): aquele valor também governa o
+ * write-path real de claim (bloqueio de re-claim entre sessões concorrentes
+ * via `claimIssueCheckAndSet`) — apertá-lo ali arriscaria colisão genuína
+ * entre sessões que só estão lentas, não mortas. Achado ao vivo em 260828:
+ * uma sessão overnight-helios teve o PID morto sem chamar `end`/soltar o
+ * claim; `lastHeartbeat` ficou congelado, mas como `SOFT_STALE_MS` é 90min
+ * o painel continuou mostrando "em andamento — overnight-helios" por até
+ * 90min depois do processo já estar morto. Este módulo (consumidor único de
+ * `PANEL_DISPLAY_STALE_MS`) recalcula staleness OUTRA VEZ sobre
+ * `lastHeartbeat`, só pra decidir se o claim aparece no payload — não toca
+ * `claim-staleness.ts`/`block-staleness.ts`, que continuam livres pra usar
+ * `SOFT_STALE_MS`/`CLAIM_STALE_AGE_MS` sem mudança de comportamento.
+ */
+export const PANEL_DISPLAY_STALE_MS = 20 * 60 * 1000;
+
+/**
+ * Pure: heartbeat mais velho que `PANEL_DISPLAY_STALE_MS` → staleness de
+ * EXIBIÇÃO, independente do que `session.stale` (calculado contra
+ * `SOFT_STALE_MS`) já diga. Usa `lastHeartbeat` (fallback `startedAt`,
+ * mesmo padrão de `listActiveSessions`) — nunca lança em data inválida
+ * (idade desconhecida não é motivo pra esconder um claim genuinamente
+ * ativo, mesmo fail-soft do resto do módulo).
+ */
+export function isPanelDisplayStale(
+  session: Pick<ActiveSessionRecord, "lastHeartbeat" | "startedAt">,
+  nowMs: number,
+  maxAgeMs: number = PANEL_DISPLAY_STALE_MS,
+): boolean {
+  const heartbeatIso = session.lastHeartbeat ?? session.startedAt;
+  const heartbeatMs = Date.parse(heartbeatIso);
+  if (!Number.isFinite(heartbeatMs)) return false;
+  return nowMs - heartbeatMs > maxAgeMs;
+}
+
+/**
  * #6436 — atribui `claim` (1ª sessão ativa encontrada segurando a issue,
  * via `flattenClaims`) a cada `TriageIssue`. Pura sobre `sessions` já
  * fornecido (mesmo padrão do resto do módulo — I/O fica em `fetchTriageData`,
@@ -525,7 +562,13 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
     // outros consumidores como o watchdog). Achado do self-review — sem
     // este filtro, uma claim ABANDONADA continuaria mostrando "em
     // andamento" no painel indefinidamente (até `MAX_SESSION_AGE_MS`, 24h).
-    const sessions = listActiveSessions(rootDir).filter((s) => !s.stale);
+    // #6592 — 2ª passada, com o limiar mais apertado de EXIBIÇÃO
+    // (`PANEL_DISPLAY_STALE_MS`, 20min): `!s.stale` sozinho ainda deixava
+    // passar até 90min (`SOFT_STALE_MS`) de heartbeat morto, que é o valor
+    // certo pro write-path de claim mas exagerado pro badge do painel.
+    const sessions = listActiveSessions(rootDir).filter(
+      (s) => !s.stale && !isPanelDisplayStale(s, nowMs),
+    );
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
       issues: attachClaims(parseIssues(issuesRaw), sessions),
