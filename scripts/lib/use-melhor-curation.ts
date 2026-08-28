@@ -594,6 +594,16 @@ export function selectUseMelhorSplit(
  *      consumer específica) — ex: "crie seu currículo com ChatGPT passo a passo".
  *   c) Manter variedade de domínios de aplicação (carreira, finanças, negócio,
  *      redes sociais, estudos) para cobrir o perfil casual da audiência.
+ *
+ * #6604/#6605/#6606 (28/08/2026): 3 queries com 3-4 falhas consecutivas no
+ * discovery search (auto-reporter) foram AMPLIADAS no tema — decisão do
+ * editor (via /diaria-desbloqueia): reescrever pra ficar mais ampla em vez
+ * de manter como estava ou construir um mecanismo de disable individual
+ * (só valeria o custo se o padrão se repetisse em mais queries). Removida
+ * especificidade excessiva que reduzia demais os resultados: citar 2
+ * ferramentas nomeadas (Copilot/Gemini) → generalizado pra "IA"; "para
+ * redes sociais" → generalizado pro tema de criação de conteúdo; "iniciante"
+ * removido da query de finanças pessoais.
  */
 export const HOWTO_BR_DISCOVERY_TOPICS: readonly string[] = [
   // Carreira / CV
@@ -607,11 +617,11 @@ export const HOWTO_BR_DISCOVERY_TOPICS: readonly string[] = [
   "como usar ChatGPT para atendimento ao cliente guia iniciante",
   // Produtividade / planilhas
   "como usar IA para organizar planilhas Excel Google Sheets passo a passo",
-  "tutorial como usar Copilot ou Gemini para produtividade no trabalho",
+  "tutorial como usar IA para produtividade no trabalho passo a passo",
   // Redes sociais / conteudo
-  "tutorial passo a passo como criar conteudo para redes sociais com IA",
+  "tutorial passo a passo como criar conteudo com IA",
   // Financas pessoais
-  "guia como usar IA para financas pessoais iniciante passo a passo",
+  "guia como usar IA para financas pessoais passo a passo",
   // Iniciantes / geral
   "tutorial IA para iniciantes sem precisar programar passo a passo Brasil",
   // Freelancer / autonomo
