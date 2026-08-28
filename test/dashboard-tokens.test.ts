@@ -71,6 +71,17 @@ describe("buildTokensDashboardHtml (#6445)", () => {
     }
   });
 
+  it("self-review: since/until com aspas duplas não escapam do atributo value= (regressão contra attribute-injection)", () => {
+    const root = tmpRoot();
+    try {
+      const html = buildTokensDashboardHtml({ rootDir: root, since: '260101" onmouseover="alert(1)', until: undefined });
+      assert.doesNotMatch(html, /value="260101" onmouseover="alert\(1\)"/);
+      assert.match(html, /&quot;/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("nunca lança mesmo com run-log.jsonl corrompido (fail-soft herdado de aggregateRunLogByKindAndDay)", () => {
     const root = tmpRoot();
     mkdirSync(join(root, "data"), { recursive: true });

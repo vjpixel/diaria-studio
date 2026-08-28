@@ -44,15 +44,12 @@ import {
   defaultSinceAammdd,
 } from "../aggregate-session-tokens.ts";
 import { renderMarkdownToHtml } from "./studio-reports.ts";
+import { escHtml } from "../lib/html-escape.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const DEFAULT_WINDOW_DAYS = 14;
 const DEFAULT_ALARM_PCT = 50;
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 export interface TokensDashboardOptions {
   rootDir?: string;
