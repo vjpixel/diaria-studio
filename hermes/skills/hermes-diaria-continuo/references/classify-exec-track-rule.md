@@ -1,6 +1,17 @@
-# Regra `classifyExecTrack` — fonte única (`scripts/lib/issue-exec-track.ts`)
+# Regra `classifyExecTrack` — fonte única é o CÓDIGO, nunca este arquivo
 
-Arquivo fonte: `/home/vjpixel/diaria-studio/scripts/lib/issue-exec-track.ts` (linha 1, 28781 chars).
-Função `classifyExecTrack` (linhas 286-318) — 5 categorias (`overnight`/`develop`/`agendada`/`bloqueada`/`fora-de-rodada`).
-Conforme `SKILL.md` `overnight` (`.claude/skills/diaria-overnight/`): `overnight` = fila acionável deste ciclo; `develop` = `trade-off-real`/`credencial-escopo`; `agendada` = `aguardando-ate:` vence `trade-off-real`; `bloqueada` = `external-blocker`/`on-hold`/`not-this-week`; `fora-de-rodada` = nenhuma.
-A `SKILL.md` `hermes-diaria-continuo` (v0.3.2) incorpora esta regra diretamente; a `SKILL.md` original `.claude/skills/diaria-continuo/` usa classificação por prosa (`a`/`b`/`c`) sem referência ao arquivo fonte — divergência confirmada neste ciclo.
+Fonte: `scripts/lib/issue-exec-track.ts` — `classifyExecTrackWithRule` (retorna
+`{track, matched}`) e o wrapper `classifyExecTrack` (só o track). O tipo
+`ExecTrack` tem **6 categorias**: `overnight` / `develop` / `agendada` /
+`bloqueada` / `epica` / `fora-de-rodada` (a 6ª, `epica`, entrou no #6201).
+
+**NÃO descrever a regra aqui.** A versão anterior deste arquivo congelava um
+snapshot (5 categorias, números de linha, contagem de chars) que envelheceu em
+silêncio e virou o exemplo canônico do bug que a SKILL.md v0.5.0 corrige.
+Números de linha e contagens mudam a cada refactor — quem precisa da regra
+executa o código (receita no §2 da SKILL.md) ou lê o arquivo fonte de hoje.
+
+Nota histórica corrigida: `.claude/skills/diaria-continuo/SKILL.md` (deste
+repo) TAMBÉM chama `classifyExecTrack` direto desde #6204/#6205 (26/08) — a
+"divergência por prosa a/b/c" que a versão anterior deste arquivo reportava
+já estava fechada lá.

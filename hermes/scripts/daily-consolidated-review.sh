@@ -29,7 +29,13 @@ mkdir -p "$STATE_DIR"
 
 if [ -f "$STATE_FILE" ]; then
   BASE_SHA=$(cat "$STATE_FILE")
-  git cat-file -e "$BASE_SHA" 2>/dev/null || BASE_SHA=$(git rev-parse "origin/master~20")
+  if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+    # Fallback NUNCA silencioso (finding P1 do review do PR #6446): marco
+    # inválido = janela arbitrária de 20 commits, que pode PULAR dias de
+    # história ou re-revisar — o operador precisa saber que degradou.
+    echo "[daily-review] AVISO: marco salvo ($BASE_SHA) não existe mais no repo (state corrompido ou history rewrite) — degradando para origin/master~20; a cobertura desta rodada é aproximada" >&2
+    BASE_SHA=$(git rev-parse "origin/master~20")
+  fi
 else
   # Primeira execução: só o último dia de commits, nunca o histórico inteiro.
   BASE_SHA=$(git log origin/master --since="24 hours ago" --format=%H | tail -1)
@@ -64,11 +70,23 @@ Para CADA finding com confiança alta ou média: crie uma issue via \`gh issue c
 
 Se nada de confiança alta/média: não crie issue nenhuma.
 
-Ao final, imprima um resumo: N commits revisados, M findings, links das issues criadas."
+OBRIGATÓRIO ao final, como ÚLTIMA linha da sua resposta, o marcador literal (o script só avança o marco de review se ela existir):
+RESUMO-DAILY-REVIEW: commits=<N> findings=<M> issues_criadas=<links ou nenhuma> issues_falharam=<K>
+Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o finding perdido no corpo do resumo — nunca omita falha de tool."
 
-echo "$PROMPT" | claude -p \
+# Finding P1 do review do PR #6446: exit 0 do claude -p NÃO prova review
+# completo (pode parar cedo, gh pode falhar sem propagar rc). O marco só
+# avança se o marcador de resumo existir no output capturado. timeout de 90min
+# cobre o P2 de stall indefinido (CLAUDE.md: stall silencioso é inaceitável).
+OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
+echo "$PROMPT" | timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*)" \
-  --model opus --effort low
+  --model opus --effort low | tee "$OUT_FILE"
+
+if ! grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
+  echo "[daily-review] ERRO: output não contém o marcador RESUMO-DAILY-REVIEW — review possivelmente incompleto; marco NÃO avançado (transcript em $OUT_FILE)" >&2
+  exit 4
+fi
 
 # Marco avança só depois do review completar sem erro (set -e garante).
 echo "$HEAD_SHA" > "$STATE_FILE"

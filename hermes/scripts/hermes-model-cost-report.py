@@ -52,16 +52,37 @@ def _connect() -> sqlite3.Connection:
 # local sem sufixo :free nao e vazamento — era o falso-positivo da 1a versao.
 BILLABLE_PROVIDERS = {"openrouter", "openai-codex", "openai", "anthropic"}
 
+# Providers conhecidos que NUNCA cobram (inferencia local).
+FREE_PROVIDERS = {"custom", "ollama"}
+
+# Ids que denunciam modelo local mesmo com billing_provider ausente no row.
+LOCAL_MODEL_HINTS = ("qwen-64k", "qwen3.5", "gemma3", ":latest")
+
 
 def _is_leak(model: str, provider: str) -> bool:
-    """True para id pago fora da allowlist (candidato a cobranca indevida)."""
-    if not model or (provider or "").lower() not in BILLABLE_PROVIDERS:
+    """True para id pago fora da allowlist (candidato a cobranca indevida).
+
+    FAIL-CLOSED em provider desconhecido (finding P2 do review do PR #6446):
+    a versao anterior tratava billing_provider NULL/vazio como "nao cobra" —
+    o oposto do proposito do detector. Agora provider ausente so escapa se o
+    MODELO em si for comprovadamente gratuito/local; caso contrario, flag.
+    """
+    if not model:
         return False
     if model.endswith(":free") or model in PAID_ALLOWLIST:
         return False
     # stealth/* rodou gratuito durante a janela de preview (ox-alpha, ate
     # 26/08/2026). Sem sufixo :free, mas nunca cobrou.
-    return not model.startswith("stealth/")
+    if model.startswith("stealth/"):
+        return False
+    prov = (provider or "").lower()
+    if prov in FREE_PROVIDERS:
+        return False
+    if prov in BILLABLE_PROVIDERS:
+        return True
+    # Provider ausente/desconhecido: suspeito por default, a menos que o id
+    # do modelo seja claramente local.
+    return not any(h in model for h in LOCAL_MODEL_HINTS)
 
 
 def collect(days: int) -> list[dict]:

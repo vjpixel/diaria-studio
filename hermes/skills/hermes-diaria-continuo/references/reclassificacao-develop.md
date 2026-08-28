@@ -11,12 +11,17 @@ por humano precisa ser reclassificada para `develop`.
 ## Regra
 
 - Se a issue tem bloqueio humano (decisão pendente, revisão de conteúdo, ação
-  do editor) → adicionar a label `bloqueio-execucao` (existe no repo) e
-  registrar no corpo que a issue é `develop-track`.
-- A label `develop-track` NÃO existe no repo; usar `bloqueio-execucao` +
-  comentário documentando o bloqueio como mecanismo equivalente.
-- Isso remove a issue do runtime do continuo (o classificador lê
-  `bloqueio-execucao` como `bloqueada`).
+  do editor) → aplicar a label **`develop-track`**, que **EXISTE no repo e
+  mapeia direto pro track `develop`** (`DEVELOP_HUMAN_BLOCK_LABEL` em
+  `scripts/lib/issue-exec-track.ts`, do próprio #5948).
+- **Correção 28/08 (review do PR #6446):** a versão anterior deste arquivo
+  afirmava que `develop-track` não existia e mandava usar `bloqueio-execucao`
+  como equivalente — errado, e pior que errado: `bloqueio-execucao` classifica
+  como `bloqueada` (nenhuma sessão pega), enquanto o caso descrito aqui é
+  `develop` (o editor destrava ao vivo). Seguir a instrução antiga escondia a
+  issue do develop.
+- `bloqueio-execucao` continua válido pro que ele é: bloqueio DURO que nenhuma
+  sessão destrava (classifica `bloqueada`) — não pra "precisa do editor".
 
 ## Exemplo aplicado na sessão 23/08
 

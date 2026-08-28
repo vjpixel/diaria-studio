@@ -49,10 +49,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Validar numéricos ANTES do loop (finding do review #6446: valor malformado
+# faria TODOS os modelos falharem identicamente, mascarado como "cadeia caiu").
+case "$TIMEOUT" in (*[!0-9]*|'') echo "ERRO: --timeout deve ser inteiro em segundos, veio '$TIMEOUT'" >&2; exit 2 ;; esac
+case "$BUDGET" in (*[!0-9.]*|''|.|*.*.*) echo "ERRO: --budget deve ser numérico em USD, veio '$BUDGET'" >&2; exit 2 ;; esac
+
 # Mesma fonte de chave que o próprio Hermes usa (credential_pool.openrouter).
+# try/except (finding do review #6446): auth.json ausente/corrompido imprimia
+# traceback cru e matava o script via set -e ANTES do guard de mensagem abaixo.
 KEY=$(python3 - <<'PY'
 import json
-a = json.load(open('/home/vjpixel/.hermes/auth.json'))
+try:
+    a = json.load(open('/home/vjpixel/.hermes/auth.json'))
+except Exception:
+    raise SystemExit(0)  # stdout vazio -> guard do shell dá a mensagem
 for c in a.get('credential_pool', {}).get('openrouter', []):
     t = c.get('access_token', '')
     if t.startswith('sk-or-'):
@@ -60,7 +70,7 @@ for c in a.get('credential_pool', {}).get('openrouter', []):
         break
 PY
 )
-[ -n "$KEY" ] || { echo "ERRO: nenhuma chave OpenRouter no auth.json" >&2; exit 3; }
+[ -n "$KEY" ] || { echo "ERRO: nenhuma chave OpenRouter legível em ~/.hermes/auth.json (arquivo ausente, JSON inválido, ou sem token sk-or-*)" >&2; exit 3; }
 
 PROMPT=$(cat)
 [ -n "$PROMPT" ] || { echo "ERRO: prompt vazio no stdin" >&2; exit 2; }
@@ -76,6 +86,10 @@ fi
 # assim — ANTHROPIC_AUTH_TOKEN tem precedência sobre o OAuth da assinatura
 # (o CLI avisa "connectors are disabled ... takes precedence", validado 28/08).
 cd "$CWD"
+# stderr CRU sempre preservado em arquivo (finding do review #6446: o filtro
+# de ruído era a ÚNICA cópia — linha real que contivesse um dos padrões era
+# perdida pra sempre). O terminal segue filtrado; o arquivo tem tudo.
+STDERR_LOG="${TMPDIR:-/tmp}/claude-openrouter-stderr.$$.log"
 for MODEL in "${MODELS[@]}"; do
   echo "[claude-openrouter] tentando model=$MODEL" >&2
   set +e
@@ -86,16 +100,25 @@ for MODEL in "${MODELS[@]}"; do
     claude -p \
       --model "$MODEL" \
       --allowedTools "$TOOLS" \
-      --max-budget-usd "$BUDGET" 2> >(grep -vE "not a model this version|unrecognized_model|connectors are disabled" >&2) \
+      --max-budget-usd "$BUDGET" 2> >(tee -a "$STDERR_LOG" | grep -vE "not a model this version|unrecognized_model|connectors are disabled" >&2) \
     )
   RC=$?
   set -e
   if [ $RC -eq 0 ] && [ -n "$OUT" ]; then
     printf '%s\n' "$OUT"
     echo "[claude-openrouter] ok model=$MODEL" >&2
+    rm -f "$STDERR_LOG"
     exit 0
   fi
-  echo "[claude-openrouter] falhou model=$MODEL rc=$RC — próximo da cadeia" >&2
+  # Distinguir os dois modos de falha (finding do review #6446: "falhou rc=0"
+  # é ativamente enganoso — rc=0 com stdout vazio é outra doença).
+  if [ $RC -eq 0 ]; then
+    echo "[claude-openrouter] falhou model=$MODEL: saída VAZIA com rc=0 (sessão terminou sem texto final) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  elif [ $RC -eq 124 ]; then
+    echo "[claude-openrouter] falhou model=$MODEL: TIMEOUT (${TIMEOUT}s) — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  else
+    echo "[claude-openrouter] falhou model=$MODEL rc=$RC — próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+  fi
 done
 
 echo "ERRO: todos os modelos da cadeia falharam" >&2
