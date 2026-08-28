@@ -234,6 +234,14 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(qwen|alibaba)\b/i,
   },
   {
+    // #6613: gate 260828 marcou o lançamento do GLM-5.3-Flash (blog oficial
+    // da Z.ai) como invalid_url — nem a empresa (Z.ai, ex-Zhipu AI) nem a
+    // família de modelos GLM constavam no registro.
+    company: "Z.ai (ex-Zhipu AI) / GLM",
+    domains: ["z.ai"],
+    detection_keywords: /\b(z\.ai|zhipu(\s?ai)?|glm-?[0-9])\b/i,
+  },
+  {
     company: "Replicate",
     domains: ["replicate.com"],
     detection_keywords: /\b(replicate)\b/i,
