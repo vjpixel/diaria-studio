@@ -50,6 +50,10 @@
  */
 
 import { deleteFromWorkerQueue, postToWorkerQueue, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { isMainModule } from "./lib/cli-args.ts";
+
+loadProjectEnv();
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -126,8 +130,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   return 0;
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {
