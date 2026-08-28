@@ -19,6 +19,7 @@ import {
   aggregateByUtmSource,
   formatCountsTable,
   fetchAndAggregate,
+  fetchAndAggregateKit,
 } from "../scripts/count-subscriptions-by-utm.ts";
 
 // ---------------------------------------------------------------------------
@@ -317,6 +318,60 @@ describe("fetchAndAggregate — paginação (#2457 fix)", () => {
         /truncado: 5\/50/,
         "deve lançar quando total_results não foi totalmente drenado",
       );
+    } finally { m.restore(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchAndAggregateKit (#6051)
+// ---------------------------------------------------------------------------
+
+describe("fetchAndAggregateKit — leitura condicional via Kit (#6051)", () => {
+  const mockKitFetch = (subscribers: unknown[]) => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          subscribers,
+          pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+    return { restore: () => { globalThis.fetch = orig; } };
+  };
+
+  it("agrega por attribution.utm_source/utm_campaign", async () => {
+    const m = mockKitFetch([
+      {
+        id: 1,
+        email_address: "a@b.com",
+        state: "active",
+        created_at: "x",
+        attribution: { utm_source: "clarice", utm_campaign: "clarice-2606-07-cta", utm_medium: null, referrer: null, source_type: null, source_name: null, source_mechanism: null },
+      },
+      {
+        id: 2,
+        email_address: "c@d.com",
+        state: "active",
+        created_at: "x",
+        attribution: { utm_source: "clarice", utm_campaign: "clarice-2606-07-cta", utm_medium: null, referrer: null, source_type: null, source_name: null, source_mechanism: null },
+      },
+    ]);
+    try {
+      const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
+      assert.equal(r.total, 2);
+      assert.equal(r.counts["clarice"], 2);
+      assert.equal(r.campaignCounts["clarice-2606-07-cta"], 2);
+    } finally { m.restore(); }
+  });
+
+  it("attribution AUSENTE (assinante criado via API/worker) cai em __none__, nunca lança", async () => {
+    const m = mockKitFetch([{ id: 3, email_address: "e@f.com", state: "active", created_at: "x" }]);
+    try {
+      const r = await fetchAndAggregateKit({ apiKey: "kit_test_key" });
+      assert.equal(r.total, 1);
+      assert.equal(r.counts["__none__"], 1);
+      assert.equal(r.campaignCounts["__none__"], 1);
     } finally { m.restore(); }
   });
 });
