@@ -265,7 +265,7 @@ describe("startRegenerateJob (#6447 Fatia 4 — runScript injetado, nunca spawn 
     assert.equal(second.alreadyRunning, true);
     assert.equal(calls, 1); // só 1 processo real disparado, apesar dos 2 cliques
 
-    releaseFirstStep?.();
+    releaseFirstStep!();
   });
 
   it("eia e d1 são jobs INDEPENDENTES — regenerar um não bloqueia o outro", () => {
@@ -283,7 +283,7 @@ describe("startRegenerateJob (#6447 Fatia 4 — runScript injetado, nunca spawn 
     if (!eiaResult.ok) return;
     assert.equal(eiaResult.alreadyRunning, false); // não é bloqueado pelo job de d1 em progresso
 
-    released?.();
+    released!();
   });
 });
 

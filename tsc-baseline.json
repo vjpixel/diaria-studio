@@ -252,6 +252,7 @@
   "test/rodada-selection.test.ts::TS7016": 1,
   "test/rv-gate-format.test.ts::TS7016": 1,
   "test/rv-highlights-format.test.ts::TS7016": 1,
+  "test/rv-images-format.test.ts::TS7016": 1,
   "test/rv-split-preview-format.test.ts::TS7016": 1,
   "test/schedule-kit-diaria-6048.test.ts::TS2353": 2,
   "test/scheduled-tasks.test.ts::TS2339": 2,
