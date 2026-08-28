@@ -168,11 +168,23 @@ export interface KitActiveExclusionResult {
  * interseção (menos seeds), remove da lista Brevo, marca `converted_to_kit`
  * no store (só quem existir lá — a lista Brevo pode ter contato nunca
  * ingerido por este store, ex: seed ou legado), e loga cada exclusão.
- * Fail-soft NÃO se aplica aqui de propósito — diferente de
- * `brevo-diaria-stage5-dispatch.ts`, uma falha neste guard deve abortar o
- * dispatch da campanha (não faz sentido enviar sabendo que a exclusão não
- * rodou) — é o CALLER (`publish-daily-brevo.ts`) que decide como reagir a
- * uma exceção lançada aqui.
+ *
+ * Esta função em si não engole exceção nenhuma — qualquer falha de rede/API
+ * (Brevo ou Kit) sobe pro caller sem tratamento. **Quem decide o que fazer
+ * com essa exceção é o CALLER** (`publish-daily-brevo.ts`, #6501): lá o
+ * comportamento real é fail-soft — a chamada é envolvida em try/catch que
+ * loga um AVISO (evento `kit_exclusion_guard_failed` via `log-event.ts`,
+ * visível em `/diaria-log`) e segue criando/enviando a campanha sem a
+ * exclusão ter rodado. Isso é deliberado, não um bug do caller: abortar a
+ * campanha diária inteira por causa de uma falha transitória numa API
+ * SECUNDÁRIA (a exclusão é uma otimização anti-duplicidade — evita mandar a
+ * mesma edição 2x pra quem já migrou pro Kit — não uma condição de
+ * correção fundamental do envio) provavelmente causa mais dano ao leitor do
+ * que simplesmente enviar sem ela. Ver #6501 (achado do review consolidado
+ * da rodada 260828b, PR #6487/#6485) — este parágrafo documentava antes o
+ * comportamento OPOSTO ("deve abortar"), divergente do que o caller sempre
+ * fez; a correção foi alinhar o texto ao comportamento real e reforçar o
+ * aviso, não mudar o comportamento.
  */
 export async function applyKitActiveExclusionGuard(
   params: { brevoApiKey: string; brevoListId: number; kitConfig?: KitConfig; seedEmails?: readonly string[] },
