@@ -76,6 +76,7 @@ function fakeResult(overrides: Partial<WarmupRampResult> = {}): WarmupRampResult
     needsBeehiivDeactivation: ["b@gmail.com"],
     pushed: false,
     unverifiedEmails: [],
+    failedEmails: [],
     ...overrides,
   };
 }
@@ -129,6 +130,24 @@ describe("formatReport", () => {
   it("lista endereços tagueados mas não confirmados pela releitura", () => {
     const out = formatReport(fakeResult({ unverifiedEmails: ["a@gmail.com"] }));
     assert.match(out, /NÃO confirmou.*a@gmail\.com/s);
+  });
+
+  it("lista endereços que FALHARAM (create/tag/releitura lançou) com o motivo — fleet review, mesma classe do #6507", () => {
+    const out = formatReport(
+      fakeResult({ failedEmails: [{ email: "falhou@gmail.com", error: "ECONNRESET: timeout" }] }),
+    );
+    assert.match(out, /falharam.*falhou@gmail\.com.*ECONNRESET/s);
+  });
+
+  it("não confunde failedEmails com unverifiedEmails — seções distintas quando ambos presentes", () => {
+    const out = formatReport(
+      fakeResult({
+        unverifiedEmails: ["nao-confirmado@gmail.com"],
+        failedEmails: [{ email: "erro@gmail.com", error: "5xx" }],
+      }),
+    );
+    assert.match(out, /NÃO confirmou.*nao-confirmado@gmail\.com/s);
+    assert.match(out, /falharam.*erro@gmail\.com/s);
   });
 
   it("omite a seção de desativação manual quando ninguém precisa dela", () => {

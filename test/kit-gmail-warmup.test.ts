@@ -9,6 +9,7 @@ import {
   computeNextWaveSize,
   planNextWave,
   partitionByBeehiivActive,
+  resolveWarmupBeehiivPartition,
   returnedEmails,
   lastPushedWaveSize,
   buildInitialState,
@@ -141,6 +142,28 @@ describe("partitionByBeehiivActive", () => {
     const { safeToTag, needsBeehiivDeactivation } = partitionByBeehiivActive(["a@gmail.com"], new Set());
     assert.deepEqual(safeToTag, ["a@gmail.com"]);
     assert.deepEqual(needsBeehiivDeactivation, []);
+  });
+});
+
+describe("resolveWarmupBeehiivPartition (#6504 — fleet review: guard central contra envio duplicado)", () => {
+  it("beehiivCfgOk=false → TODOS os e-mails viram needsBeehiivDeactivation, ninguém é seguro (falha segura)", () => {
+    const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(
+      ["a@gmail.com", "b@gmail.com"],
+      false, // config Beehiiv indisponível/checagem falhou
+      new Set(), // mesmo que o conjunto de ativos esteja vazio (nunca deveria ser consultado aqui)
+    );
+    assert.deepEqual(safeToTag, [], "quando a checagem Beehiiv não pôde rodar, nada pode ser tagueado");
+    assert.deepEqual(needsBeehiivDeactivation, ["a@gmail.com", "b@gmail.com"]);
+  });
+
+  it("beehiivCfgOk=true → delega pra partitionByBeehiivActive normalmente", () => {
+    const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(
+      ["a@gmail.com", "b@gmail.com"],
+      true,
+      new Set(["b@gmail.com"]),
+    );
+    assert.deepEqual(safeToTag, ["a@gmail.com"]);
+    assert.deepEqual(needsBeehiivDeactivation, ["b@gmail.com"]);
   });
 });
 

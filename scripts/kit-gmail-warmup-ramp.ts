@@ -61,7 +61,7 @@ import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
 import {
   computeGmailRejectedEmails,
   planNextWave,
-  partitionByBeehiivActive,
+  resolveWarmupBeehiivPartition,
   returnedEmails,
   lastPushedWaveSize,
   buildInitialState,
@@ -145,6 +145,13 @@ export interface WarmupRampResult {
   needsBeehiivDeactivation: string[];
   pushed: boolean;
   unverifiedEmails: string[];
+  /** E-mails cujo create/tag/releitura LANÇOU (rede, 5xx, JSON malformado) —
+   *  distinto de `unverifiedEmails` (mutação foi aceita mas a releitura não
+   *  reflete a tag ainda). Nunca aborta a onda inteira (fleet review, mesma
+   *  classe de bug já corrigida em #6507/kit-ramp-cohort.ts) — a onda é
+   *  construída e salva com quem TEVE sucesso, mesmo que outros e-mails da
+   *  mesma onda falhem. */
+  failedEmails: Array<{ email: string; error: string }>;
 }
 
 export async function runWarmupRamp(opts: {
@@ -191,7 +198,7 @@ export async function runWarmupRamp(opts: {
     // Onda vazia (segurada pelo gate, ou já esgotada) — registrar como
     // proposta não-empurrada é ruído (nenhum e-mail, nenhuma decisão nova) e
     // infla o histórico sem valor; não grava wave.
-    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [] };
+    return { state, plan, safeToTag: [], needsBeehiivDeactivation: [], pushed: false, unverifiedEmails: [], failedEmails: [] };
   }
 
   const beehiivCfg = resolveBeehiivConfig();
@@ -204,12 +211,10 @@ export async function runWarmupRamp(opts: {
         `tratando TODOS os endereços da onda como "precisa de desativação manual" (falha segura, nunca duplica envio).\n`,
     );
   }
-  const { safeToTag, needsBeehiivDeactivation } = beehiivCfg.ok
-    ? partitionByBeehiivActive(plan.emails, activeBeehiiv)
-    : { safeToTag: [], needsBeehiivDeactivation: plan.emails };
+  const { safeToTag, needsBeehiivDeactivation } = resolveWarmupBeehiivPartition(plan.emails, beehiivCfg.ok, activeBeehiiv);
 
   if (!opts.push) {
-    return { state, plan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [] };
+    return { state, plan, safeToTag, needsBeehiivDeactivation, pushed: false, unverifiedEmails: [], failedEmails: [] };
   }
 
   const tagName = readAudienceTagName();
@@ -223,18 +228,28 @@ export async function runWarmupRamp(opts: {
 
   const unverifiedEmails: string[] = [];
   const actuallyTagged: string[] = [];
+  const failedEmails: Array<{ email: string; error: string }> = [];
+  // Cada e-mail é protegido individualmente (fleet review — mesma classe de
+  // bug já corrigida em #6507/kit-ramp-cohort.ts): sem isto, uma exceção no
+  // create/tag/releitura de UM e-mail (rede, 5xx, JSON malformado) propagava
+  // sem tratamento, abortando a onda inteira antes de `buildWaveEntry`/
+  // `saveState` — perdendo o rastro de e-mails já tagueados de verdade em
+  // produção, e fazendo o próximo `planNextWave` reoferecê-los como se nada
+  // tivesse sido tentado.
   for (const email of safeToTag) {
-    const subscriber = await createOrUpdateSubscriber({ email_address: email });
-    await tagSubscriber(tagId, subscriber.id);
-    // Confirma por releitura (subscriber→tags, sem atraso de propagação
-    // medido — ver docstring de listSubscriberTags), nunca só pelo 2xx da
-    // mutação (kit-client.ts, "Armadilhas da API v4").
-    const tags = await listSubscriberTags(subscriber.id);
-    if (tags.some((t) => t.id === tagId)) {
-      actuallyTagged.push(email);
-    } else {
+    try {
+      const subscriber = await createOrUpdateSubscriber({ email_address: email });
+      await tagSubscriber(tagId, subscriber.id);
+      // Confirma por releitura (subscriber→tags, sem atraso de propagação
+      // medido — ver docstring de listSubscriberTags), nunca só pelo 2xx da
+      // mutação (kit-client.ts, "Armadilhas da API v4").
+      const tags = await listSubscriberTags(subscriber.id);
       actuallyTagged.push(email); // mutação foi tentada/aceita — conta pra returnedEmails
-      unverifiedEmails.push(email);
+      if (!tags.some((t) => t.id === tagId)) {
+        unverifiedEmails.push(email);
+      }
+    } catch (e) {
+      failedEmails.push({ email, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -242,7 +257,7 @@ export async function runWarmupRamp(opts: {
   state = { ...state, waves: [...state.waves, wave] };
   saveState(state, statePath);
 
-  return { state, plan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails };
+  return { state, plan, safeToTag: actuallyTagged, needsBeehiivDeactivation, pushed: true, unverifiedEmails, failedEmails };
 }
 
 export function formatReport(result: WarmupRampResult): string {
@@ -264,6 +279,12 @@ export function formatReport(result: WarmupRampResult): string {
   if (result.unverifiedEmails.length > 0) {
     lines.push(
       `  ⚠️ tagueados mas a releitura NÃO confirmou (retry manual recomendado): ${result.unverifiedEmails.join(", ")}`,
+    );
+  }
+  if (result.failedEmails.length > 0) {
+    lines.push(
+      `  ❌ falharam (create/tag/releitura lançou — não confundir com "tagueado mas não confirmado" acima):\n` +
+        result.failedEmails.map((f) => `    - ${f.email}: ${f.error}`).join("\n"),
     );
   }
   lines.push(result.pushed ? "\n--push: onda aplicada e estado persistido." : "\n--dry-run: nada foi escrito. Rode com --push para aplicar.");

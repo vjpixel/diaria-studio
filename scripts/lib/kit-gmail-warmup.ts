@@ -171,6 +171,24 @@ export function partitionByBeehiivActive(
   return { safeToTag, needsBeehiivDeactivation };
 }
 
+/**
+ * Resolve a partição Beehiiv considerando também o caso "config Beehiiv
+ * indisponível" — extraído de `runWarmupRamp` (fleet review, #6504) pra
+ * ficar testável sem rede: quando `beehiivCfgOk` é `false`, TODOS os
+ * e-mails da onda vão pra `needsBeehiivDeactivation` (nada é tagueado) —
+ * falha segura, nunca duplica envio. É o guard central que impede taguear
+ * alguém ainda ativo na Beehiiv quando a checagem em si não pôde rodar.
+ */
+export function resolveWarmupBeehiivPartition(
+  emails: readonly string[],
+  beehiivCfgOk: boolean,
+  activeBeehiivEmails: ReadonlySet<string>,
+): { safeToTag: string[]; needsBeehiivDeactivation: string[] } {
+  return beehiivCfgOk
+    ? partitionByBeehiivActive(emails, activeBeehiivEmails)
+    : { safeToTag: [], needsBeehiivDeactivation: [...emails] };
+}
+
 // ---------------------------------------------------------------------------
 // Estado persistido — `data/kit-gmail-warmup/state.json` (default)
 // ---------------------------------------------------------------------------
@@ -249,8 +267,13 @@ export function buildInitialState(
  * não foi taguado, então não pode contar como "devolvido" em
  * `returnedEmails`/`lastPushedWaveSize`, senão a próxima rodada nunca mais
  * reconsidera esses endereços mesmo depois do editor desativá-los na
- * Beehiiv. Pura — `pushed:false` (dry-run) grava o registro só pra
- * auditoria/relatório; `alreadyReturned` só soma ondas `pushed:true`.
+ * Beehiiv. Pura — só é chamada pelo caller real (`runWarmupRamp`) quando
+ * `--push` está ativo; em dry-run o caller retorna antes, sem construir nem
+ * salvar nenhum registro de onda (o rastro de um dry-run é só o relatório
+ * impresso, `formatReport`, nunca `state.json`). Se ALGUÉM chamar esta
+ * função com `pushed:false` (o parâmetro aceita o valor — é só o caller real
+ * que nunca o exercita), o registro sai construído normalmente; é
+ * `alreadyReturned`/`returnedEmails` que somam só ondas `pushed:true`.
  */
 export function buildWaveEntry(
   state: KitGmailWarmupState,
