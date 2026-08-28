@@ -10,13 +10,15 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildImagesGallery,
   buildRegenerateSteps,
   startRegenerateJob,
   getRegenerateJob,
   isImageTarget,
+  defaultRunScript,
 } from "../scripts/studio-ui/studio-images.ts";
 
 function makeEdition(root: string, aammdd: string): string {
@@ -103,15 +105,20 @@ describe("buildImagesGallery (#6447 Fatia 4, achado 9)", () => {
 });
 
 describe("buildRegenerateSteps (#6447 Fatia 4 — espelha stage-3-run.ts)", () => {
-  it("d1: 4 passos (2x1/1x1, 4x5 nativo, compose, carrossel)", () => {
+  it("d1: 5 passos (lint pre-flight, 2x1/1x1, 4x5 nativo, compose, carrossel)", () => {
     const steps = buildRegenerateSteps("d1", "/tmp/edicao", "260828");
-    assert.equal(steps.length, 4);
-    assert.match(steps[0].script, /image-generate\.ts$/);
-    assert.ok(!steps[0].args.includes("--ratio"));
+    assert.equal(steps.length, 5);
+    // #6447 review (comment-analyzer, P1): lint-image-prompt.ts SEMPRE roda
+    // primeiro, ANTES de qualquer chamada paga a image-generate.ts — mesma
+    // ordem de stage-3-run.ts (linha ~420-436, lint pre-flight por destaque).
+    assert.match(steps[0].script, /lint-image-prompt\.ts$/);
+    assert.ok(steps[0].args[0].includes("02-d1-prompt.md"), "1º arg posicional deve ser o path do prompt");
     assert.match(steps[1].script, /image-generate\.ts$/);
-    assert.ok(steps[1].args.includes("--ratio"));
-    assert.match(steps[2].script, /gen-social-card-4x5\.ts$/);
-    assert.match(steps[3].script, /gen-carousel-cards\.ts$/);
+    assert.ok(!steps[1].args.includes("--ratio"));
+    assert.match(steps[2].script, /image-generate\.ts$/);
+    assert.ok(steps[2].args.includes("--ratio"));
+    assert.match(steps[3].script, /gen-social-card-4x5\.ts$/);
+    assert.match(steps[4].script, /gen-carousel-cards\.ts$/);
   });
 
   it("eia: 1 passo (eia-compose --edition AAMMDD --force — CLI distinta, não --edition-dir)", () => {
@@ -189,7 +196,7 @@ describe("startRegenerateJob (#6447 Fatia 4 — runScript injetado, nunca spawn 
     await new Promise((r) => setTimeout(r, 20));
     const job = getRegenerateJob(aammdd, "d1");
     assert.equal(job?.status, "done");
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5); // lint + image-generate x2 + gen-social-card-4x5 + gen-carousel-cards
     assert.ok(job?.steps.every((s) => s.code === 0));
   });
 
@@ -207,6 +214,35 @@ describe("startRegenerateJob (#6447 Fatia 4 — runScript injetado, nunca spawn 
     assert.equal(job?.status, "error");
     assert.equal(call, 2); // parou no 2º passo, nunca chegou no 3º/4º
     assert.match(job?.error ?? "", /linha 2 do erro real/);
+  });
+
+  it("#6447 review (silent-failure-hunter): runScript que REJEITA (em vez de resolver) nunca vira unhandled rejection — job termina 'error'", async () => {
+    writeFileSync(resolve(editionDir, "_internal", "02-d1-prompt.md"), "cena de teste", "utf8");
+    let call = 0;
+    const runScript = async () => {
+      call++;
+      if (call === 2) throw new Error("falha síncrona inesperada no runScript");
+      return { code: 0, stderr: "" };
+    };
+    startRegenerateJob(root, aammdd, "d1", { runScript });
+    await new Promise((r) => setTimeout(r, 20));
+    const job = getRegenerateJob(aammdd, "d1");
+    assert.equal(job?.status, "error");
+    assert.match(job?.error ?? "", /falha síncrona inesperada no runScript/);
+    assert.ok(job?.finishedAt);
+  });
+
+  it("#6447 review (code-reviewer): buildImagesGallery expõe lastError do último job que falhou pro destaque", async () => {
+    writeFileSync(resolve(editionDir, "_internal", "02-d1-prompt.md"), "cena de teste", "utf8");
+    const runScript = async () => ({ code: 1, stderr: "violação: Starry Night mencionado" });
+    startRegenerateJob(root, aammdd, "d1", { runScript });
+    await new Promise((r) => setTimeout(r, 20));
+    const gallery = buildImagesGallery(root, aammdd);
+    assert.equal(gallery.available, true);
+    if (!gallery.available) return;
+    const d1 = gallery.destaques.find((d) => d.n === 1);
+    assert.match(d1?.lastError ?? "", /Starry Night/);
+    assert.equal(d1?.regenerating, false); // já terminou (com erro), não está mais rodando
   });
 
   it("duplo-clique enquanto running -> alreadyRunning:true, NUNCA dispara um 2º processo", async () => {
@@ -248,5 +284,51 @@ describe("startRegenerateJob (#6447 Fatia 4 — runScript injetado, nunca spawn 
     assert.equal(eiaResult.alreadyRunning, false); // não é bloqueado pelo job de d1 em progresso
 
     released?.();
+  });
+});
+
+// #6447 review (pr-test-analyzer, P2): toda a cobertura acima injeta
+// `runScript` — o wrapper de `spawn` de verdade (`defaultRunScript`) nunca
+// era exercitado. Usa um script Node fixture descartável (nunca um script
+// real da pipeline) — zero custo de API, valida só a mecânica de
+// captura/exit-code.
+describe("defaultRunScript (#6447 review — spawn real, script fixture descartável)", () => {
+  // `--import tsx` precisa resolver o pacote `tsx` a partir do `cwd` do
+  // processo filho — por isso `cwd` aqui é a RAIZ DO REPO (onde `node_modules/
+  // tsx` existe de verdade), nunca o tmpdir do fixture. `scriptRelPath` pode
+  // ser um path ABSOLUTO (o `resolve(cwd, scriptRelPath)` interno de
+  // `defaultRunScript` devolve o absoluto inalterado independente do `cwd`),
+  // então o fixture pode morar fora do repo sem afetar a resolução do `tsx`.
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  let fixtureDir: string;
+
+  beforeEach(() => {
+    fixtureDir = mkdtempSync(join(tmpdir(), "studio-images-runscript-"));
+  });
+  afterEach(() => rmSync(fixtureDir, { recursive: true, force: true }));
+
+  it("captura stdout: exit 0, escreve em stdout -> code:0, stdout aparece no stderr combinado com marcador [stdout]", async () => {
+    const scriptPath = resolve(fixtureDir, "ok.ts");
+    writeFileSync(scriptPath, 'console.log("linha de progresso no stdout"); process.exit(0);\n', "utf8");
+    const result = await defaultRunScript(scriptPath, [], repoRoot);
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /\[stdout\]/);
+    assert.match(result.stderr, /linha de progresso no stdout/);
+  });
+
+  it("captura stderr + exit code não-zero", async () => {
+    const scriptPath = resolve(fixtureDir, "fail.ts");
+    writeFileSync(scriptPath, 'process.stderr.write("erro real do script\\n"); process.exit(1);\n', "utf8");
+    const result = await defaultRunScript(scriptPath, [], repoRoot);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /erro real do script/);
+  });
+
+  it("script com args recebidos corretamente (positional + flag)", async () => {
+    const scriptPath = resolve(fixtureDir, "echo-args.ts");
+    writeFileSync(scriptPath, 'console.error(JSON.stringify(process.argv.slice(2))); process.exit(0);\n', "utf8");
+    const result = await defaultRunScript(scriptPath, ["--foo", "bar", "positional"], repoRoot);
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /"--foo","bar","positional"/);
   });
 });

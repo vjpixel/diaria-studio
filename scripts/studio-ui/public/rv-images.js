@@ -135,6 +135,19 @@ function renderDestaques(gallery) {
 }
 
 let pollTimer = null;
+// #6447 review (silent-failure-hunter, P2): a 1ª versão não guardava se
+// havia job em progresso na última leitura BEM-SUCEDIDA — uma falha
+// transitória de rede (offline momentâneo, restart do próprio
+// Diaria-Studio-Server) caía no `catch` abaixo e NUNCA reagendava o
+// próximo poll, deixando o botão "Regenerando…" desabilitado pra sempre
+// mesmo que o job real terminasse minutos depois (o editor só descobria
+// recarregando a página manualmente, sem nenhuma dica de que precisava).
+// `lastKnownRegenerating` guarda o último estado confirmado; um limite de
+// tentativas consecutivas (`MAX_POLL_RETRY_ATTEMPTS`) evita retry
+// indefinido se o server cair de vez.
+let lastKnownRegenerating = false;
+let pollRetryAttempts = 0;
+const MAX_POLL_RETRY_ATTEMPTS = 5;
 
 function stopPolling() {
   if (pollTimer) {
@@ -168,21 +181,52 @@ export async function loadImages() {
       stopPolling();
       return;
     }
-    el.status.textContent = "";
+    pollRetryAttempts = 0; // leitura bem-sucedida — zera o contador de falhas
+    el.status.textContent = buildStatusMessage(gallery);
     renderDestaques(gallery);
     renderGroup(el.eia, gallery.eia.images, "eia", isTargetRegenerating(gallery, "eia"));
-    // Continua pollando enquanto QUALQUER job estiver rodando — pra e sozinho
+    // Continua pollando enquanto QUALQUER job estiver rodando — para sozinho
     // quando o último terminar (nunca deixa um timer órfão rodando pra
     // sempre numa página sem regeneração pendente).
-    if (anyTargetRegenerating(gallery)) {
+    lastKnownRegenerating = anyTargetRegenerating(gallery);
+    if (lastKnownRegenerating) {
       scheduleNextPoll();
     } else {
       stopPolling();
     }
   } catch (err) {
     console.error("rv-images: falha ao carregar galeria de imagens:", err);
-    el.status.textContent = "Falha ao carregar a galeria de imagens — verifique a conexão.";
+    // Só reagenda se havia (por última leitura confirmada) um job em
+    // progresso — senão uma página parada há minutos ficaria pollando pra
+    // sempre em silêncio atrás de uma falha de rede sem nenhum job pra
+    // esperar. Com job em progresso, tenta de novo por um número limitado
+    // de vezes antes de desistir e pedir refresh manual.
+    if (lastKnownRegenerating && pollRetryAttempts < MAX_POLL_RETRY_ATTEMPTS) {
+      pollRetryAttempts++;
+      el.status.textContent = `Falha ao atualizar a galeria — tentando de novo (${pollRetryAttempts}/${MAX_POLL_RETRY_ATTEMPTS})…`;
+      scheduleNextPoll();
+      return;
+    }
+    stopPolling();
+    el.status.textContent = lastKnownRegenerating
+      ? "Falha ao atualizar a galeria repetidamente — a regeneração pode ter terminado nesse meio tempo; clique Atualizar."
+      : "Falha ao carregar a galeria de imagens — verifique a conexão e clique Atualizar.";
   }
+}
+
+/** Mensagem de topo da galeria — inclui o(s) erro(s) do último job que
+ * falhou pra algum destaque/eia (#6447 review, code-reviewer: sem isto o
+ * client não tinha NENHUMA forma de saber que um job de regeneração —
+ * chamada de API PAGA — tinha falhado; `regenerating` volta a `false` tanto
+ * em sucesso quanto em erro). */
+function buildStatusMessage(gallery) {
+  const errors = [];
+  for (const d of gallery.destaques) {
+    if (d.lastError) errors.push(`D${d.n}: ${d.lastError}`);
+  }
+  if (gallery.eia && gallery.eia.lastError) errors.push(`É IA?: ${gallery.eia.lastError}`);
+  if (errors.length === 0) return "";
+  return `Última regeneração falhou — ${errors.join(" | ")}`;
 }
 
 if (el.refreshBtn) {
