@@ -4,6 +4,15 @@
  * Equivalente Kit de `test/poll-jogar-inline-signup-3580.test.ts` — cobre
  * `subscribeToKit` (novo) e a seleção de backend (`env.SUBSCRIBE_BACKEND`)
  * em `handleJogarSubscribe`. Mesmo padrão de mock de fetch (sem rede real).
+ *
+ * #6340 (26/08/2026): o caso "POSTa pra /subscribers..." abaixo esperava
+ * `state:"active"` — comportamento correto ANTES da decisão do editor de
+ * double opt-in. Com `DOUBLE_OPT_IN_FLAG.enabledForWorkers` incluindo
+ * `"poll"` (`optin-flag-6340.ts`), este mesmo funil ("jogar") passa a criar
+ * `state:"inactive"` — não há exceção documentada em #6340 (nem nos
+ * comentários) pro funil "jogar" especificamente; a flag é por WORKER, não
+ * por source. Assertion atualizada; ver docstring do teste pro raciocínio
+ * completo.
  */
 
 import { describe, it } from "node:test";
@@ -76,7 +85,17 @@ describe("subscribeToKit (#6048)", () => {
     assert.equal(fetchMock.calls.length, 0);
   });
 
-  it("POSTa pra /subscribers com X-Kit-Api-Key + email_address + state:active", async () => {
+  it("POSTa pra /subscribers com X-Kit-Api-Key + email_address + state:inactive (#6340)", async () => {
+    // #6340 (26/08/2026, decisão do editor): "cadastro novo pelos funis passa
+    // a ter double opt-in no Kit" — sem carve-out por source. O funil "jogar"
+    // bate no MESMO endpoint (`/jogar/subscribe` → `subscribeToKit`) que
+    // arquivo/hub/livros/etc, todos com o MESMO mecanismo de consentimento
+    // (checkbox on-page, #5095) — não há base textual na issue #6340 (nem
+    // nos comentários) pra tratar "jogar" como exceção. A flag
+    // (`DOUBLE_OPT_IN_FLAG.enabledForWorkers`, `optin-flag-6340.ts`) é
+    // deliberadamente por WORKER, não por source — este teste cobria
+    // `state:active`, o comportamento ANTERIOR à decisão do editor; agora
+    // cobre o novo default esperado pra todo cadastro via `poll`.
     const fetchMock = makeFetchMock(201);
     const r = await subscribeViaConfiguredBackend(kitEnv(), { name: "", email: "ana@example.com" }, fetchMock);
     assert.equal(r.ok, true);
@@ -88,7 +107,7 @@ describe("subscribeToKit (#6048)", () => {
     assert.equal(headers["X-Kit-Api-Key"], "test-kit-key");
     const body = JSON.parse(String(call.init?.body));
     assert.equal(body.email_address, "ana@example.com");
-    assert.equal(body.state, "active", "achado ao vivo #6048: state:active bypassa confirmação, mesmo efeito do double_opt_override:off da Beehiiv");
+    assert.equal(body.state, "inactive", "#6340: double opt-in ativo pro worker poll — state:inactive até confirmação, Brevo entrega enquanto isso (ver PR do #6340)");
   });
 
   it("200 (upsert de e-mail já existente) também é sucesso — Kit é idempotente por e-mail (achado ao vivo #6048)", async () => {

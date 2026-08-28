@@ -50,8 +50,17 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 2. Guard de colisão editorial: `npx tsx scripts/lib/find-current-edition.ts
    --stage 2` (e stages relevantes). Edição em curso → registrar pausa, não
    despachar trabalho técnico concorrente neste tick.
-3. `session-registry.ts` heartbeat/registro se aplicável; fora do harness não
-   inventar `--session-id`.
+3. `session-registry.ts` heartbeat/registro se aplicável, **sempre com
+   `--kind continuo`** — fora do harness não inventar `--session-id`.
+   **Nunca `--kind overnight`, mesmo esta skill sendo derivada do overnight**
+   (é justamente essa derivação que torna o erro fácil de cometer — achado
+   ao vivo 28/08/2026, #6483: `register`/`heartbeat` desta skill gravou
+   `"kind":"overnight"` em `data/sessions/`, sumindo da trilha "Contínuo" da
+   Triagem do Studio e poluindo a trilha "Overnight" com uma entrada que não
+   é overnight de verdade). Exemplo completo — `npx tsx
+   scripts/lib/session-registry.ts register --kind continuo --session-id
+   hermes-cron-5d791ef6fc2c` (id estável do job cron; usar o MESMO `--kind
+   continuo` + `--session-id` em `heartbeat`/`claim-issue`/`end`).
 
 ### 2. Classificar — SEM LLM, executando o código real
 
@@ -125,13 +134,19 @@ Para cada issue elegível (após claim):
    stale, então claim órfão nunca expira sozinho):
    - Reivindicar **UMA issue por vez**, e somente no instante em que a
      implementação dela vai começar NESTE tick. Nunca reivindicar "as
-     elegíveis" em lote no início do ciclo.
+     elegíveis" em lote no início do ciclo. Comando: `session-registry.ts
+     claim-issue --kind continuo --issue N --session-id hermes-cron-5d791ef6fc2c`
+     (sempre `--kind continuo`, nunca `overnight` — ver passo 1.3).
    - Só issues `track=overnight` podem ser reivindicadas. `bloqueada`/
      `develop`/`epica`/`agendada` NUNCA — mesmo que pareçam fáceis.
    - **Fim de tick = higiene obrigatória**: para cada issue em
      `claimed_issues` SEM PR aberto referenciando-a e sem worktree ativo,
-     rodar `session-registry.ts unclaim-issue --issue N` ANTES do relatório.
-     Claim que sobrevive ao tick precisa de evidência de trabalho em curso.
+     rodar `session-registry.ts unclaim-issue --kind continuo --issue N
+     --session-id hermes-cron-5d791ef6fc2c` ANTES do relatório (`--kind` e
+     `--session-id` são ambos obrigatórios no CLI — `requireKind`/
+     `requireSessionId` lançam sem eles; `--kind` sempre `continuo`, nunca
+     `overnight`, mesmo motivo do passo 1.3). Claim que sobrevive ao
+     tick precisa de evidência de trabalho em curso.
    - `claim-issue` com `exit 1` = outra sessão segura a issue → pular só ela.
      Sessões stale (heartbeat > 90min) não bloqueiam.
 2. **Delegar a implementação ao harness**:

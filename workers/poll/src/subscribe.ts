@@ -55,6 +55,7 @@ import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
 import { sendCompleteRegistrationEvent } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
+import { DOUBLE_OPT_IN_FLAG } from "./optin-flag-6340"; // #6340
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -590,7 +591,90 @@ async function subscribeToBeehiiv(
  * NENHUM foi criado ainda na conta de produção (decisão de criar os campos
  * fica pro editor, no momento do switchover). Ausentes → cadastro segue
  * normal, só sem essa atribuição gravada (mesmo degrade gracioso do nome).
+ *
+ * ## Double opt-in (#6340, decisão do editor 26/08/2026)
+ *
+ * `resolveKitCreateState` decide `state: "inactive"` em vez de `"active"`
+ * quando este worker está em `DOUBLE_OPT_IN_FLAG.enabledForWorkers`
+ * (`optin-flag-6340.ts` — rollout worker-a-worker, `poll` primeiro por ter
+ * o menor volume, mesmo padrão do #6048). **Base já importada (589 `active`)
+ * NÃO é afetada** — isto só muda o `state` na CRIAÇÃO de um subscriber novo
+ * por este endpoint; nenhum subscriber existente é re-escrito aqui.
+ *
+ * Quando o double opt-in está ativo E `KIT_DOI_FORM_ID` está configurado
+ * (nome enganoso à parte — é um ID de FORM, não um nome de campo, mesmo
+ * padrão dos `KIT_*_FIELD` acima), `vincularKitDoiForm` dispara em seguida
+ * (best-effort, nunca falha a assinatura) — é o vínculo
+ * `POST /v4/forms/{form}/subscribers/{sub}` que, medido ao vivo (#6340,
+ * comentário 27/08/2026), (a) preserva `state: "inactive"` (não promove
+ * sozinho), (b) grava o `referrer` com o triplo UTM no bloco de atribuição
+ * do form (`referrer_utm_parameters`, distinto — e não substituto — dos
+ * `KIT_*_FIELD` de custom field acima, que continuam sendo a ÚNICA
+ * atribuição que sobrevive pra quem nunca confirma), e (c) é o que de fato
+ * dispara o e-mail "Important: confirm your subscription" quando o form
+ * tem "Send confirmation email" ligado no dashboard do Kit — configuração
+ * OPERACIONAL fora do alcance deste repo (ver #6318, mesmo form). Sem
+ * `KIT_DOI_FORM_ID` configurado, o subscriber É criado `inactive`, mas
+ * NENHUM e-mail de confirmação é disparado por este caminho — cadastro
+ * "preso" em inactive até o editor configurar o form. Documentado, não
+ * resolvido aqui (é ação de dashboard, não de código).
+ *
+ * RISCO CONHECIDO, não resolvido nesta unidade (mesma classe do item 5 da
+ * issue #6340, "guard de envio duplicado... herdada, não nova"): a criação
+ * via `POST /v4/subscribers` é idempotente por e-mail (ver docstring do
+ * módulo), mas o corpo desta função sempre manda `state` no payload. Se um
+ * subscriber que JÁ confirmou (virou `active` no Kit) reenviar o mesmo
+ * formulário de cadastro, o 2º POST tentaria regravar `state: "inactive"`
+ * por cima — não confirmado ao vivo se o Kit de fato regride um `active`
+ * já confirmado (a docstring de `subscribeToKit` só confirma que
+ * `first_name`/`fields` são atualizados num 2º POST, nunca testou `state`).
+ * Registrar, não resolver aqui — reverificar antes do 1º `--push` real
+ * deste fluxo em produção.
  */
+function resolveKitCreateState(): "active" | "inactive" {
+  return DOUBLE_OPT_IN_FLAG.enabledForWorkers.includes("poll")
+    ? DOUBLE_OPT_IN_FLAG.createState
+    : "active";
+}
+
+/**
+ * #6340: vincula o subscriber recém-criado a `KIT_DOI_FORM_ID` — dispara o
+ * e-mail de confirmação do double opt-in (quando o form tem "Send
+ * confirmation email" ligado no dashboard do Kit) sem promover o `state`
+ * (ver docstring de `subscribeToKit`). Best-effort: nunca lança, só loga —
+ * uma falha aqui não deveria reverter uma criação de subscriber que já
+ * teve sucesso (mesmo racional de fail-soft do resto do arquivo).
+ */
+async function vincularKitDoiForm(
+  env: Env,
+  apiKey: string,
+  base: string,
+  subscriberId: number,
+  utm: SubscribeUtm,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const formId = env.KIT_DOI_FORM_ID;
+  if (!formId) return;
+  const referrer = `https://diar.ia.br/?utm_source=${encodeURIComponent(utm.source)}&utm_medium=${encodeURIComponent(utm.medium)}&utm_campaign=${encodeURIComponent(utm.campaign)}`;
+  try {
+    const res = await fetchImpl(`${base}/forms/${formId}/subscribers/${subscriberId}`, {
+      method: "POST",
+      headers: {
+        "X-Kit-Api-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ referrer }),
+      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "<unreadable>");
+      console.error(`[vincularKitDoiForm] Kit respondeu ${res.status} ao vincular subscriber ${subscriberId} ao form ${formId}: ${bodyText.slice(0, 500)}`);
+    }
+  } catch (err) {
+    console.error(`[vincularKitDoiForm] fetch exception: ${String(err)}`);
+  }
+}
+
 async function subscribeToKit(
   env: Env,
   input: { name: string; email: string },
@@ -612,9 +696,13 @@ async function subscribeToKit(
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
   applyKitSignupOriginField(fields, env);
 
+  // #6340: "active" preservado pra todo worker fora de
+  // DOUBLE_OPT_IN_FLAG.enabledForWorkers (ver resolveKitCreateState acima) —
+  // era o literal fixo "active" antes desta mudança.
+  const createState = resolveKitCreateState();
   const body: Record<string, unknown> = {
     email_address: input.email,
-    state: "active",
+    state: createState,
   };
   if (Object.keys(fields).length > 0) body.fields = fields;
 
@@ -642,7 +730,22 @@ async function subscribeToKit(
   }
   // 200 (upsert de e-mail já existente) e 201 (criação) são ambos sucesso —
   // ver docstring acima sobre a idempotência do Kit.
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    // #6340: dispara o vínculo de form (e-mail de confirmação) só quando o
+    // subscriber foi de fato criado `inactive` por este caminho — nunca
+    // quando `createState === "active"` (worker fora do rollout), mesmo com
+    // KIT_DOI_FORM_ID configurado por engano/antecipação.
+    if (createState === "inactive") {
+      const resBody = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+      const subscriberId = resBody?.subscriber?.id;
+      if (typeof subscriberId === "number") {
+        await vincularKitDoiForm(env, apiKey, base, subscriberId, utm, fetchImpl);
+      } else {
+        console.error(`[subscribeToKit] #6340: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI (e-mail de confirmação NÃO disparado por este caminho).`);
+      }
+    }
+    return { ok: true, status: res.status };
+  }
   // #6048 — mesmo racional do catch acima: loga o corpo do erro do Kit
   // (truncado, sem incluir o header de auth) em vez de descartar em silêncio.
   const bodyText = await res.text().catch(() => "<unreadable>");
