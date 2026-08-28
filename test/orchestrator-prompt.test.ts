@@ -1258,3 +1258,54 @@ describe("#6171: fronteira de contexto pós-gate 4 — /diaria-edicao nunca enca
     );
   });
 });
+
+describe("#6444: gate 4 consome a decisão gravada pelo painel do Studio (/revisao) antes de montar o resumo", () => {
+  // #6447 (Fatia 4) já implementava a ESCRITA de _internal/.step-4-decision.json
+  // via botão "Aprovar gate" do painel, documentada como escopo intencionalmente
+  // parcial (o consumo pelo orchestrator ficou fora daquela fatia). Estas
+  // assertions pinam o lado que fecha #6444 — sem elas, uma reversão futura do
+  // §4d faria o gate voltar a ignorar a decisão do painel e apresentar sempre o
+  // resumo completo, mesmo quando o editor já aprovou tudo remotamente.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+
+  it("§4d roda o CLI de leitura com freshness check antes do resumo consolidado", () => {
+    const checkIdx = stage4.indexOf("scripts/lib/stage4-decision.ts --edition-dir");
+    const resumoIdx = stage4.indexOf("GATE HUMANO — RESUMO CONSOLIDADO");
+    assert.ok(checkIdx !== -1, "§4d precisa chamar scripts/lib/stage4-decision.ts");
+    assert.ok(resumoIdx !== -1, "§4d precisa conter o header do resumo consolidado");
+    assert.ok(checkIdx < resumoIdx, "a checagem da decisão do painel precisa vir ANTES do resumo consolidado");
+    assert.ok(
+      stage4.includes('--content-files "02-reviewed.md,03-social.md"'),
+      "a checagem precisa validar freshness contra 02-reviewed.md e 03-social.md (guard de staleness)",
+    );
+  });
+
+  it("usable:true pula o resumo completo e o loop sim/editar/ajustar/abortar", () => {
+    assert.ok(
+      stage4.includes("pular o resumo completo e o loop `sim/editar/ajustar/abortar`"),
+      "§4d precisa instruir explicitamente pular a apresentação completa quando a decisão do painel for usable",
+    );
+    assert.ok(
+      stage4.includes("gate revisao response: sim (via painel Studio"),
+      "o log do gate precisa registrar a origem 'via painel Studio' quando a decisão vem de lá",
+    );
+  });
+
+  it("usable:false com reason stale NUNCA é consumida — cai no fluxo normal", () => {
+    assert.ok(
+      stage4.includes("nunca consumir"),
+      "§4d precisa proibir explicitamente consumir uma decisão stale do painel",
+    );
+    assert.ok(
+      stage4.includes("gate_painel_decision_stale"),
+      "§4d precisa logar um warn nomeado quando descartar uma decisão stale",
+    );
+  });
+
+  it("falha do CLI de leitura é fail-soft — nunca bloqueia o gate", () => {
+    assert.ok(
+      /fail-soft.*nunca bloquear o gate/.test(stage4),
+      "§4d precisa tratar falha do check como fail-soft, sem bloquear o gate humano",
+    );
+  });
+});

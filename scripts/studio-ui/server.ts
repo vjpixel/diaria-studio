@@ -1120,12 +1120,13 @@ function handleGateSummary(rootDir: string, aammdd: string, res: ServerResponse)
 
 /** #6447 Fatia 4 (achado 7): `POST /api/editions/:aammdd/gate/approve` —
  * grava a decisão "aprovado pelo painel" (`_internal/.step-4-decision.json`,
- * ver `stage4-decision.ts` pro escopo intencionalmente parcial — só a
- * escrita, o consumo pelo orchestrator real é prosa fora deste repo de
- * código). Corpo opcional `{force?: boolean}` — sem `force`, um 2º clique
- * sobre uma decisão já `approved` responde 409 (nunca sobrescreve em
- * silêncio); com `force: true` (o editor já confirmou um dialog no client),
- * sobrescreve com novo timestamp. */
+ * ver `stage4-decision.ts`). O consumo pelo orchestrator real (§4d de
+ * `orchestrator-stage-4.md`, prosa fora deste repo de código) foi fechado
+ * no #6444 — o gate lê essa decisão via `resolveStage4DecisionForConsumption`
+ * antes de montar o resumo completo. Corpo opcional `{force?: boolean}` —
+ * sem `force`, um 2º clique sobre uma decisão já `approved` responde 409
+ * (nunca sobrescreve em silêncio); com `force: true` (o editor já confirmou
+ * um dialog no client), sobrescreve com novo timestamp. */
 async function handleGateApprove(
   rootDir: string,
   req: IncomingMessage,
