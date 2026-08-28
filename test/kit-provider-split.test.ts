@@ -20,6 +20,8 @@ import {
   drainPages,
   resolveBroadcastId,
   formatTable,
+  buildAudienceFilterBody,
+  todasOuNenhuma,
   MAX_PAGES,
   type KitEngagedPage,
 } from "../scripts/kit-provider-split.ts";
@@ -202,5 +204,69 @@ describe("formatTable", () => {
     ]);
     assert.match(out.split("\n")[0], /entregues/);
     assert.match(out.split("\n")[0], /entrega/);
+  });
+});
+
+describe("buildAudienceFilterBody", () => {
+  it("pede o TIPO que o caller nomeou — o eixo não pode sair trocado", () => {
+    // O risco concreto (#6513, P1): trocar "sent" por "delivered" inverte
+    // numerador e denominador da taxa de entrega e vira o gate de cabeça pra
+    // baixo, com tabela plausível e nenhum teste falhando.
+    for (const tipo of ["sent", "delivered", "opens", "clicks"] as const) {
+      const body = buildAudienceFilterBody(25622689, tipo) as {
+        all: Array<{ type: string; any: Array<{ type: string; ids: number[] }> }>;
+      };
+      assert.equal(body.all[0].type, tipo, `eixo ${tipo} pediu outra coisa`);
+      assert.deepEqual(body.all[0].any[0], { type: "broadcasts", ids: [25622689] });
+    }
+  });
+
+  it("escopa no broadcast pedido, nunca na conta inteira", () => {
+    const body = buildAudienceFilterBody(42, "sent") as {
+      all: Array<{ any: Array<{ ids: number[] }> }>;
+    };
+    assert.deepEqual(body.all[0].any[0].ids, [42]);
+  });
+
+  it("só manda 'after' quando há cursor (1ª página não leva a chave)", () => {
+    assert.equal("after" in buildAudienceFilterBody(1, "sent"), false);
+    assert.equal(buildAudienceFilterBody(1, "sent", "cursor-x").after, "cursor-x");
+  });
+});
+
+describe("todasOuNenhuma", () => {
+  it("devolve os valores na ORDEM das tarefas quando todas resolvem", async () => {
+    const r = await todasOuNenhuma<[number, string]>([Promise.resolve(1), Promise.resolve("a")]);
+    assert.deepEqual(r, [1, "a"]);
+  });
+
+  it("nomeia TODAS as falhas, não só a primeira a rejeitar", async () => {
+    // `Promise.all` descartaria a segunda falha em silêncio — com 5 chamadas
+    // concorrentes contra a mesma conta, mais de uma cai junto (#6513, P3).
+    await assert.rejects(
+      () =>
+        todasOuNenhuma([
+          Promise.reject(new Error("enviados quebrou")),
+          Promise.reject(new Error("entregues quebrou")),
+          Promise.resolve(3),
+        ]),
+      (err: Error) => {
+        assert.match(err.message, /2 de 3 coleta\(s\) falharam/);
+        assert.match(err.message, /enviados quebrou/);
+        assert.match(err.message, /entregues quebrou/);
+        return true;
+      },
+    );
+  });
+
+  it("indica o ÍNDICE da tarefa que falhou", async () => {
+    await assert.rejects(
+      () => todasOuNenhuma([Promise.resolve(1), Promise.reject(new Error("boom"))]),
+      /\[1\] boom/,
+    );
+  });
+
+  it("rejeição não-Error também é reportada legivelmente", async () => {
+    await assert.rejects(() => todasOuNenhuma([Promise.reject("string crua")]), /string crua/);
   });
 });

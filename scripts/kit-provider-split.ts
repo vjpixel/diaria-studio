@@ -20,13 +20,14 @@
  * ## O que este script NÃO faz
  *
  * Não escreve nada — nem no Kit, nem na Beehiiv, nem em disco. É leitura pura
- * (4 endpoints do Kit) mais o cruzamento puro de `lib/provider-split.ts`.
+ * (2 endpoints do Kit, 5 chamadas: `/subscribers/filter` uma vez por eixo mais
+ * `/broadcasts/{id}/stats`) e o cruzamento puro de `lib/provider-split.ts`.
  *
  * ## Denominador: `sent`, não a lista de ativos
  *
- * `POST /v4/subscribers/filter` com `{type: "sent", any: [{broadcasts}]}`
- * devolve o snapshot real do envio, e `{type: "delivered"}` devolve quem
- * aceitou. A versão anterior usava `listAllKitSubscribers` como proxy de
+ * `POST /v4/subscribers/filter` com `type: "sent"` (corpo completo em
+ * {@link buildAudienceFilterBody}) devolve o snapshot real do envio, e
+ * `type: "delivered"` devolve quem aceitou. A versão anterior usava `listAllKitSubscribers` como proxy de
  * destinatários e precisava documentar uma ressalva permanente (quem entrou ou
  * saiu depois do envio deslocava todas as taxas). Com `sent` a ressalva some —
  * e a divergência contra `stats.recipients` do próprio Kit vira um guard de
@@ -37,11 +38,12 @@
  *   npx tsx scripts/kit-provider-split.ts --broadcast 25622689 --json
  */
 import { getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { kitFetch, getBroadcastStats } from "./lib/kit-client.ts";
+import { kitFetch, getBroadcastStats, type KitBroadcastStats } from "./lib/kit-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   computeProviderSplit,
   avaliarRampa,
+  verificarIntegridade,
   type ProviderRow,
 } from "./lib/provider-split.ts";
 
@@ -159,14 +161,41 @@ const ROTULO: Record<BroadcastAudience, string> = {
  * função.
  */
 export function fetchAudience(broadcastId: number, type: BroadcastAudience): Promise<DrainResult> {
-  return drainPages((after) => {
-    const body: Record<string, unknown> = {
-      all: [{ type, any: [{ type: "broadcasts", ids: [broadcastId] }], count_greater_than: 0 }],
-      per_page: 100,
-    };
-    if (after) body.after = after;
-    return kitFetch<KitEngagedPage>("/subscribers/filter", { method: "POST", body });
-  }, ROTULO[type]);
+  return drainPages(
+    (after) =>
+      kitFetch<KitEngagedPage>("/subscribers/filter", {
+        method: "POST",
+        body: buildAudienceFilterBody(broadcastId, type, after),
+      }),
+    ROTULO[type],
+  );
+}
+
+/**
+ * Corpo de `POST /v4/subscribers/filter` para um eixo do broadcast.
+ *
+ * Separado de {@link fetchAudience} para ser testável sem rede (achado do
+ * review da PR #6513, P1): o fake de `drainPages` ignora o corpo, então nada
+ * garantia que `fetchAudience(id, "sent")` de fato pedisse `type: "sent"`. Uma
+ * troca entre `"sent"` e `"delivered"` — copy-paste, refactor — inverteria o
+ * numerador e o denominador da taxa de entrega e produziria uma tabela
+ * plausível com o gate de cabeça pra baixo, sem nenhum teste falhando.
+ *
+ * `count_greater_than: 0` vale para os quatro eixos: o Kit trata todos como
+ * contagem de eventos por assinante, e é isso que faz `sent`/`delivered`
+ * baterem com o painel (594/251 no broadcast 25622689).
+ */
+export function buildAudienceFilterBody(
+  broadcastId: number,
+  type: BroadcastAudience,
+  after?: string,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    all: [{ type, any: [{ type: "broadcasts", ids: [broadcastId] }], count_greater_than: 0 }],
+    per_page: 100,
+  };
+  if (after) body.after = after;
+  return body;
 }
 
 /**
@@ -182,6 +211,33 @@ export function resolveBroadcastId(argv: string[]): number {
     throw new Error("uso: npx tsx scripts/kit-provider-split.ts --broadcast <id> [--json]");
   }
   return id;
+}
+
+/**
+ * `Promise.all` das quatro coletas + stats, mas reportando TODAS as falhas.
+ *
+ * `Promise.all` rejeita na primeira falha e descarta as demais — com 5
+ * chamadas concorrentes contra a mesma conta do Kit (rate limit, hiccup de
+ * rede), é comum mais de uma cair junto, e saber que só "entregues" quebrou
+ * quando na verdade "enviados" também quebrou manda o diagnóstico pro lado
+ * errado (achado do review da PR #6513, P3). `allSettled` + erro agregado
+ * nomeia todas.
+ */
+export async function todasOuNenhuma<T extends readonly unknown[]>(
+  tarefas: { [K in keyof T]: Promise<T[K]> },
+): Promise<T> {
+  const resultados = await Promise.allSettled(tarefas as readonly Promise<unknown>[]);
+  const falhas = resultados
+    .map((r, i) => (r.status === "rejected" ? { i, r } : null))
+    .filter((x): x is { i: number; r: PromiseRejectedResult } => x !== null);
+
+  if (falhas.length > 0) {
+    const detalhe = falhas
+      .map(({ i, r }) => `[${i}] ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`)
+      .join("; ");
+    throw new Error(`${falhas.length} de ${resultados.length} coleta(s) falharam: ${detalhe}`);
+  }
+  return resultados.map((r) => (r as PromiseFulfilledResult<unknown>).value) as unknown as T;
 }
 
 export function formatTable(rows: ProviderRow[]): string {
@@ -208,7 +264,9 @@ async function main(): Promise<void> {
   const broadcastId = resolveBroadcastId(argv);
   const json = hasFlag(argv, "json");
 
-  const [sent, delivered, opens, clicks, stats] = await Promise.all([
+  const [sent, delivered, opens, clicks, stats] = await todasOuNenhuma<
+    [DrainResult, DrainResult, DrainResult, DrainResult, KitBroadcastStats]
+  >([
     fetchAudience(broadcastId, "sent"),
     fetchAudience(broadcastId, "delivered"),
     fetchAudience(broadcastId, "opens"),
@@ -216,16 +274,40 @@ async function main(): Promise<void> {
     getBroadcastStats(broadcastId),
   ]);
 
+  // `opens`/`clicks` viram `openers`/`clickers`: o vocabulário da API do Kit
+  // (evento) e o do módulo de corte (pessoa) diferem de propósito.
   const split = computeProviderSplit({
     sent: sent.emails,
     delivered: delivered.emails,
     openers: opens.emails,
     clickers: clicks.emails,
   });
-  const veredito = avaliarRampa(split);
+
+  // Integridade ANTES do branch de saída: em `--json` (o modo que automação
+  // consome) os avisos não existiam de forma alguma antes do #6513, e em modo
+  // texto eram linhas impressas acima de um veredito que os ignorava.
+  const avisos = verificarIntegridade({
+    split,
+    destinatariosReportados: stats.recipients,
+    registrosDescartados:
+      sent.descartadas + delivered.descartadas + opens.descartadas + clicks.descartadas,
+  });
+  const veredito = avaliarRampa(split, avisos);
 
   if (json) {
-    console.log(JSON.stringify({ broadcastId, kitStats: stats, split, rampa: veredito }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          broadcastId,
+          kitStats: stats,
+          split,
+          integridade: { ok: avisos.length === 0, avisos },
+          rampa: veredito,
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 
@@ -242,27 +324,8 @@ async function main(): Promise<void> {
       `note que as taxas do Kit são sobre ENVIADOS, as da tabela acima sobre ENTREGUES.`,
   );
 
-  if (stats.recipients !== split.total.sent) {
-    console.log(
-      `Aviso: o Kit reporta ${stats.recipients} destinatários e o filtro "sent" trouxe ${split.total.sent}. ` +
-        `Os dois deveriam bater — a diferença aponta coleta truncada, não churn. Reconferir com --json antes de confiar nas taxas.`,
-    );
-  }
-  if (split.foraDoEnvio.openers > 0 || split.foraDoEnvio.clickers > 0) {
-    console.log(
-      `Aviso: ${split.foraDoEnvio.openers} abridor(es) e ${split.foraDoEnvio.clickers} clicador(es) não constam no envio — ignorados. ` +
-        `Com "sent" como base isso deveria ser zero.`,
-    );
-  }
-  if (split.engajouSemEntrega.openers > 0 || split.engajouSemEntrega.clickers > 0) {
-    console.log(
-      `Aviso: ${split.engajouSemEntrega.openers} abridor(es) e ${split.engajouSemEntrega.clickers} clicador(es) ` +
-        `não constam como entregues — inconsistência de tracking do Kit. Infla a abertura acima.`,
-    );
-  }
-  const descartadas = sent.descartadas + delivered.descartadas + opens.descartadas + clicks.descartadas;
-  if (descartadas > 0) {
-    console.log(`Aviso: ${descartadas} registro(s) vieram sem e-mail utilizável e foram ignorados.`);
+  for (const aviso of avisos) {
+    console.log(`Aviso [${aviso.codigo}]: ${aviso.mensagem}`);
   }
 
   console.log(`\nRampa: ${veredito.motivo}\n`);

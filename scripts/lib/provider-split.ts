@@ -147,11 +147,37 @@ export interface ProviderSplitResult {
    * envio real não pode ser alimentado por um número corrigido em silêncio.
    */
   engajouSemEntrega: { openers: number; clickers: number };
+  /**
+   * Endereços marcados como ENTREGUES que não constam no snapshot de envio.
+   *
+   * O cruzamento percorre `sent`, então um endereço assim não entra em linha
+   * nenhuma nem em nenhum total — desaparece por completo. Achado do review da
+   * PR #6513 (P2): as duas outras assimetrias já tinham contador
+   * (`foraDoEnvio`, `engajouSemEntrega`) e esta não, o que quebrava a
+   * disciplina do módulo de nunca corrigir em silêncio. Como `sent` e
+   * `delivered` vêm de duas consultas paginadas independentes, um valor > 0
+   * aqui é a assinatura de coleta inconsistente entre elas.
+   */
+  entregueForaDoEnvio: number;
 }
 
+/**
+ * Taxa em pontos percentuais, 1 casa. **Só para EXIBIÇÃO.**
+ *
+ * Comparação de piso nunca passa por aqui (achado do review da PR #6513, P2):
+ * arredondar antes de comparar deixa 94,96% virar `95.0` e passar num piso de
+ * 95%. `avaliarRampa` compara a razão crua e usa este valor apenas para
+ * escrever o motivo.
+ */
 function pct(part: number, whole: number): number {
   if (whole <= 0) return 0;
   return Math.round((part / whole) * 1000) / 10;
+}
+
+/** Razão crua em pontos percentuais, sem arredondar. Base das comparações de piso. */
+function razaoPct(part: number, whole: number): number {
+  if (whole <= 0) return 0;
+  return (part / whole) * 100;
 }
 
 function normalizeSet(emails: readonly string[]): Set<string> {
@@ -170,9 +196,17 @@ interface Tally {
   clickers: number;
 }
 
-const ZERO: Tally = { sent: 0, delivered: 0, openers: 0, clickers: 0 };
+/**
+ * Congelado de propósito (achado do review da PR #6513, P2): é um objeto de
+ * escopo de módulo usado como fallback de `Map.get`, e todo caller que o usa
+ * como semente precisa copiá-lo antes de somar. Um `+=` esquecido sobre a
+ * referência crua corromperia o zero de todas as chamadas seguintes no mesmo
+ * processo — em silêncio. `freeze` troca essa corrupção silenciosa por
+ * `TypeError` na primeira tentativa de escrita.
+ */
+const ZERO: Readonly<Tally> = Object.freeze({ sent: 0, delivered: 0, openers: 0, clickers: 0 });
 
-function buildRow(provider: ProviderRow["provider"], t: Tally): ProviderRow {
+function buildRow(provider: ProviderRow["provider"], t: Readonly<Tally>): ProviderRow {
   return {
     provider,
     sent: t.sent,
@@ -209,6 +243,7 @@ export function computeProviderSplit(input: ProviderSplitInput): ProviderSplitRe
     openers: [...openers].filter((e) => sent.has(e) && !delivered.has(e)).length,
     clickers: [...clickers].filter((e) => sent.has(e) && !delivered.has(e)).length,
   };
+  const entregueForaDoEnvio = [...delivered].filter((e) => !sent.has(e)).length;
 
   const tally = new Map<Provider, Tally>();
   for (const email of sent) {
@@ -225,7 +260,7 @@ export function computeProviderSplit(input: ProviderSplitInput): ProviderSplitRe
     .map(([provider, t]) => buildRow(provider, t))
     .sort((a, b) => b.sent - a.sent || a.provider.localeCompare(b.provider));
 
-  const g = tally.get("Gmail") ?? ZERO;
+  const g = tally.get("Gmail") ?? { ...ZERO };
   const totals = [...tally.values()].reduce<Tally>(
     (acc, t) => ({
       sent: acc.sent + t.sent,
@@ -248,6 +283,7 @@ export function computeProviderSplit(input: ProviderSplitInput): ProviderSplitRe
     total: buildRow("Total", totals),
     foraDoEnvio,
     engajouSemEntrega,
+    entregueForaDoEnvio,
   };
 }
 
@@ -276,10 +312,103 @@ export const RAMPA_GMAIL_DELIVERY_RATE_FLOOR_PCT = 95;
  */
 export const RAMPA_GMAIL_OPEN_RATE_FLOOR_PCT = 20;
 
+/** Um problema de COLETA — não de resultado — encontrado antes de julgar a rampa. */
+export interface IntegridadeAviso {
+  codigo:
+    | "total-nao-bate"
+    | "engajou-fora-do-envio"
+    | "engajou-sem-entrega"
+    | "entregue-fora-do-envio"
+    | "registro-sem-email";
+  mensagem: string;
+}
+
+/**
+ * Entrada de {@link verificarIntegridade}. Os dois números vêm de fora do
+ * cruzamento puro — o primeiro do agregado do próprio provedor de envio, o
+ * segundo da coleta — e por isso são opcionais: quem não os tiver ainda checa
+ * o que dá.
+ */
+export interface IntegridadeInput {
+  split: ProviderSplitResult;
+  /** `stats.recipients` do provedor. Deve bater com `split.total.sent`. */
+  destinatariosReportados?: number;
+  /** Linhas que vieram sem e-mail utilizável e sumiram das contas. */
+  registrosDescartados?: number;
+}
+
+/**
+ * Problemas de coleta que tornam as taxas não-confiáveis.
+ *
+ * Existe porque o review da PR #6513 achou o mesmo defeito nos dois modos de
+ * saída (P1, confiança alta): as checagens moravam soltas dentro do `main()`,
+ * como `console.log` impressos ACIMA do veredito — então em modo texto o
+ * operador lia "PODE CRESCER" logo abaixo de um aviso de coleta truncada, e em
+ * `--json` (o modo que automação consome) elas não existiam de forma alguma.
+ * Um aviso que não impede a decisão que ele contradiz não é um guard; é
+ * decoração.
+ *
+ * Todos os quatro códigos são BLOQUEANTES em {@link avaliarRampa}, e a razão
+ * é a mesma para os quatro: nenhum deles distingue "anomalia benigna do
+ * provedor" de "coleta truncada". Como o resultado do bloqueio é SEGURAR — a
+ * direção segura, que só custa uma investigação — a assimetria de custo manda
+ * tratar os dois casos igual. Se um deles disparar cronicamente, o conserto é
+ * na origem do dado, nunca afrouxar o guard.
+ */
+export function verificarIntegridade(input: IntegridadeInput): IntegridadeAviso[] {
+  const { split, destinatariosReportados, registrosDescartados } = input;
+  const avisos: IntegridadeAviso[] = [];
+
+  if (destinatariosReportados !== undefined && destinatariosReportados !== split.total.sent) {
+    avisos.push({
+      codigo: "total-nao-bate",
+      mensagem:
+        `o provedor reporta ${destinatariosReportados} destinatários e a coleta trouxe ${split.total.sent}. ` +
+        `Os dois deveriam bater — a diferença aponta coleta truncada, não churn.`,
+    });
+  }
+  if (split.foraDoEnvio.openers > 0 || split.foraDoEnvio.clickers > 0) {
+    avisos.push({
+      codigo: "engajou-fora-do-envio",
+      mensagem:
+        `${split.foraDoEnvio.openers} abridor(es) e ${split.foraDoEnvio.clickers} clicador(es) não constam no envio. ` +
+        `Com o snapshot do envio como base isso deveria ser zero.`,
+    });
+  }
+  if (split.engajouSemEntrega.openers > 0 || split.engajouSemEntrega.clickers > 0) {
+    avisos.push({
+      codigo: "engajou-sem-entrega",
+      mensagem:
+        `${split.engajouSemEntrega.openers} abridor(es) e ${split.engajouSemEntrega.clickers} clicador(es) não constam ` +
+        `como entregues — impossível, e infla a taxa de abertura acima do real.`,
+    });
+  }
+  if (split.entregueForaDoEnvio > 0) {
+    avisos.push({
+      codigo: "entregue-fora-do-envio",
+      mensagem:
+        `${split.entregueForaDoEnvio} endereço(s) constam como entregues mas não no envio — ` +
+        `sumiram de todas as linhas e de todos os totais. As duas coletas discordam entre si.`,
+    });
+  }
+  if (registrosDescartados !== undefined && registrosDescartados > 0) {
+    avisos.push({
+      codigo: "registro-sem-email",
+      mensagem:
+        `${registrosDescartados} registro(s) vieram sem e-mail utilizável e sumiram das contas — ` +
+        `numeradores e denominadores estão incompletos em medida desconhecida.`,
+    });
+  }
+
+  return avisos;
+}
+
 export interface RampaVeredito {
   podeCrescer: boolean;
   /** Motivo em uma linha, pronto pra impressão. Sempre preenchido. */
   motivo: string;
+  /** Os avisos que entraram no julgamento. Vazio quando a coleta está limpa. */
+  avisos: IntegridadeAviso[];
 }
 
 /**
@@ -299,31 +428,58 @@ export interface RampaVeredito {
  * recusa". Quem lê isso como aval para reincluir os recusados de uma vez está
  * lendo além do dado (#6504).
  */
-export function avaliarRampa(split: ProviderSplitResult): RampaVeredito {
+export function avaliarRampa(
+  split: ProviderSplitResult,
+  avisos: IntegridadeAviso[] = [],
+): RampaVeredito {
   const { gmail } = split;
+
+  // Coleta suspeita vence qualquer taxa: uma tabela plausível calculada sobre
+  // dado incompleto é o pior caso possível deste gate, porque parece certa.
+  // Antes do #6513 os avisos eram só linhas impressas ACIMA do veredito, então
+  // "PODE CRESCER" saía logo abaixo de "coleta truncada" sem contradição
+  // mecânica nenhuma — e em `--json` os avisos nem existiam.
+  if (avisos.length > 0) {
+    return {
+      podeCrescer: false,
+      motivo:
+        `SEGURAR — a coleta não é confiável, então nenhuma taxa foi julgada: ` +
+        avisos.map((a) => a.mensagem).join(" | "),
+      avisos,
+    };
+  }
 
   if (gmail.sent === 0) {
     return {
       podeCrescer: false,
       motivo:
         "SEGURAR — nenhum endereço Gmail no envio. Isso não é colapso de entrega: é sinal de consulta/filtro errado. Conferir antes de interpretar como dado.",
+      avisos,
     };
   }
-  if (gmail.deliveryRatePct < RAMPA_GMAIL_DELIVERY_RATE_FLOOR_PCT) {
+
+  // Razão CRUA, não a taxa exibida: `pct` arredonda pra 1 casa, e 94,96%
+  // arredonda pra 95.0 — passaria num piso de 95% (review da PR #6513, P2).
+  const entrega = razaoPct(gmail.delivered, gmail.sent);
+  const abertura = razaoPct(gmail.openers, gmail.delivered);
+
+  if (entrega < RAMPA_GMAIL_DELIVERY_RATE_FLOOR_PCT) {
     return {
       podeCrescer: false,
       motivo:
         `SEGURAR — entrega Gmail em ${gmail.deliveryRatePct.toFixed(1)}% (${gmail.delivered}/${gmail.sent}), ` +
         `abaixo do piso de ${RAMPA_GMAIL_DELIVERY_RATE_FLOOR_PCT}%. O Gmail está recusando na porta; aquecer antes de crescer.`,
+      avisos,
     };
   }
-  if (gmail.openRatePct < RAMPA_GMAIL_OPEN_RATE_FLOOR_PCT) {
+  if (abertura < RAMPA_GMAIL_OPEN_RATE_FLOOR_PCT) {
     return {
       podeCrescer: false,
       motivo:
         `SEGURAR — entrega Gmail OK (${gmail.deliveryRatePct.toFixed(1)}%), mas abertura sobre entregues em ` +
         `${gmail.openRatePct.toFixed(1)}%, abaixo do piso de ${RAMPA_GMAIL_OPEN_RATE_FLOOR_PCT}%. ` +
         `Aceita mas provavelmente não chega na caixa de entrada.`,
+      avisos,
     };
   }
   return {
@@ -331,10 +487,14 @@ export function avaliarRampa(split: ProviderSplitResult): RampaVeredito {
     motivo:
       `PODE CRESCER — entrega Gmail em ${gmail.deliveryRatePct.toFixed(1)}% e abertura sobre entregues em ` +
       `${gmail.openRatePct.toFixed(1)}%, ambas acima do piso. Vale só para o perfil já aceito pelo Gmail.`,
+    avisos,
   };
 }
 
 /** Atalho booleano de {@link avaliarRampa}, para quem não precisa do motivo. */
-export function rampaPodeCrescer(split: ProviderSplitResult): boolean {
-  return avaliarRampa(split).podeCrescer;
+export function rampaPodeCrescer(
+  split: ProviderSplitResult,
+  avisos: IntegridadeAviso[] = [],
+): boolean {
+  return avaliarRampa(split, avisos).podeCrescer;
 }
