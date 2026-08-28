@@ -196,7 +196,7 @@ describe("normalizeKitBroadcast", () => {
         click_tracking_disabled: false,
       },
     });
-    assert.deepEqual(got.stats, { email: { unique_opens: 40 } });
+    assert.deepEqual(got.stats, { email: { unique_opens: 40, recipients: 100, ctr_pct: 10, unsubscribes: 0 } });
   });
 
   it("com `stats` E `clicks` no raw file, os dois convivem no mesmo objeto stats (#6344)", () => {
@@ -221,7 +221,7 @@ describe("normalizeKitBroadcast", () => {
       ],
     });
     assert.deepEqual(got.stats, {
-      email: { unique_opens: 40 },
+      email: { unique_opens: 40, recipients: 100, ctr_pct: 10, unsubscribes: 0 },
       clicks: [
         {
           url: "https://exemplo.com/a",
@@ -255,7 +255,7 @@ describe("normalizeKitBroadcast", () => {
         click_tracking_disabled: false,
       },
     });
-    assert.deepEqual(got.stats, { email: { unique_opens: 0 } });
+    assert.deepEqual(got.stats, { email: { unique_opens: 0, recipients: 5, ctr_pct: 0, unsubscribes: 0 } });
   });
 
   it("com `clicks` no raw file, stats.clicks normaliza cada item (#6185)", () => {
@@ -279,6 +279,114 @@ describe("normalizeKitBroadcast", () => {
         },
       ],
     });
+  });
+});
+
+describe("normalizeKitBroadcast — stats agregado (recipients/ctr_pct/unsubscribes, #6186)", () => {
+  const baseSummary = {
+    id: 42,
+    subject: "Assunto Kit",
+    send_at: null,
+    status: "completed" as const,
+    public: true,
+    published_at: "2026-08-20T09:00:00Z",
+    created_at: "2026-08-20T08:00:00Z",
+    preview_text: null,
+    description: "Prévia curta",
+    thumbnail_alt: null,
+    thumbnail_url: "https://img/kit.jpg",
+    publication_id: 1,
+  };
+
+  it("recipients/unsubscribes são passthrough direto de b.stats", () => {
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      stats: {
+        recipients: 585,
+        open_rate: 40,
+        emails_opened: 234,
+        click_rate: 12.5,
+        unsubscribe_rate: 0.5,
+        unsubscribes: 3,
+        total_clicks: 90,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+    });
+    assert.equal(got.stats?.email?.recipients, 585);
+    assert.equal(got.stats?.email?.unsubscribes, 3);
+  });
+
+  it("ctr_pct usa kitBroadcastCtrPct (click_rate do Kit), nunca recalcula a partir de total_clicks/recipients", () => {
+    // Fixture medida ao vivo (kit-client.ts docstring, broadcast 25609304,
+    // piloto Patronos 26/08/2026): recipients=5, emails_opened=3,
+    // total_clicks=3, click_rate=40.0. As duas fórmulas ingênuas
+    // (total_clicks/recipients=60, total_clicks/emails_opened=100) NÃO
+    // batem — só `click_rate` cru (via kitBroadcastCtrPct) é o valor certo.
+    const got = normalizeKitBroadcast({
+      ...baseSummary,
+      stats: {
+        recipients: 5,
+        open_rate: 60,
+        emails_opened: 3,
+        click_rate: 40.0,
+        unsubscribe_rate: 0,
+        unsubscribes: 0,
+        total_clicks: 3,
+        show_total_clicks: true,
+        status: "completed",
+        progress: 100,
+        open_tracking_disabled: false,
+        click_tracking_disabled: false,
+      },
+    });
+    assert.equal(got.stats?.email?.ctr_pct, 40.0);
+    assert.notEqual(got.stats?.email?.ctr_pct, (3 / 5) * 100, "não pode bater com total_clicks/recipients (60)");
+    assert.notEqual(
+      got.stats?.email?.ctr_pct,
+      (3 / 3) * 100,
+      "não pode bater com total_clicks/emails_opened (click-to-open, 100)",
+    );
+  });
+
+  it("Proxy que lança ao acessar click_rate direto — normalizeKitBroadcast só o lê via kitBroadcastCtrPct", () => {
+    // kitBroadcastCtrPct É a função que lê click_rate — o objetivo aqui é
+    // provar que normalizeKitBroadcast não tem uma 2ª leitura solta da
+    // chave em paralelo (ex: pra recalcular algo diferente de ctr_pct).
+    let accessCount = 0;
+    const rawStats = {
+      recipients: 100,
+      open_rate: 40,
+      emails_opened: 40,
+      unsubscribe_rate: 0,
+      unsubscribes: 0,
+      total_clicks: 10,
+      show_total_clicks: true,
+      status: "completed",
+      progress: 100,
+      open_tracking_disabled: false,
+      click_tracking_disabled: false,
+    };
+    const statsProxy = new Proxy(
+      { ...rawStats, click_rate: 10 },
+      {
+        get(target, prop, receiver) {
+          if (prop === "click_rate") accessCount++;
+          return Reflect.get(target, prop, receiver);
+        },
+      },
+    );
+    const got = normalizeKitBroadcast({ ...baseSummary, stats: statsProxy as unknown as typeof rawStats & { click_rate: number } });
+    assert.equal(accessCount, 1, "click_rate deveria ser lido exatamente 1x, dentro de kitBroadcastCtrPct");
+    assert.equal(got.stats?.email?.ctr_pct, 10);
+  });
+
+  it("sem `stats` no raw file, recipients/ctr_pct/unsubscribes ficam ausentes (não 0 inventado)", () => {
+    const got = normalizeKitBroadcast(baseSummary);
+    assert.equal(got.stats, undefined);
   });
 });
 
