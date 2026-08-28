@@ -1180,10 +1180,74 @@ function readMergedSessionGroups(repoRoot: string): SessionRecord[] {
 }
 
 /**
+ * Fecha o gap do READ-path documentado no #6481: `readMergedSessionGroups`
+ * agrupa só por STEM de arquivo (arquivo real + suas cópias `-safeBackup-N`)
+ * — nunca cruza entre um registro `overnight-*`/`develop-*`/`continuo-*` e um
+ * `interactive-*` do MESMO `sessionId`, que são arquivos com STEMS distintos.
+ * Essa é a mesma janela de corrida que `registerSession` (#6326) já cobre no
+ * WRITE-path: o beacon (`.claude/hooks/session-beacon.mjs`) cria
+ * `interactive-{tag}-{sessionId}.json` ANTES de a skill rodar `register
+ * --kind overnight`, e a promoção subsequente é BEST-EFFORT — `rmSync` do
+ * arquivo antigo pode falhar (I/O transitório do OneDrive), deixando os dois
+ * arquivos coexistindo por tempo indeterminado (`outcome:
+ * "promoted-orphan-left"`, ver `RegisterSessionOutcome`). Nesse intervalo,
+ * `readMergedSessionGroups` devolvia os DOIS registros como sessões
+ * distintas — e, pior, sem ordem determinística entre eles, `list-active`/
+ * `is-claimed` podiam exibir o registro `interactive` (tipicamente com
+ * `claimed_issues: []`, porque o beacon não escreve claims) no lugar do
+ * `overnight`/`develop`/`continuo` real, escondendo claims genuínas (achado
+ * ao vivo #6481: Triagem do Studio parou de mostrar 7 issues reivindicadas
+ * porque o registro efetivamente listado para aquele `sessionId` era o
+ * `interactive`).
+ *
+ * Aplica a MESMA regra que o write-path já usa (#6326, `isCoordinatorKind`):
+ * quando mais de um registro do grupo já-mesclado-por-STEM compartilha
+ * `sessionId`, o COORDENADOR (`overnight`/`develop`/`continuo`) vence sobre
+ * `interactive` como base de campos (kind, phase, branch, etc.) — e, na
+ * mesma disciplina fail-safe de `mergeSessionRecords`, `claimed_issues`/
+ * `claimed_issues_at` são a UNIÃO de TODOS os registros do grupo (incluindo
+ * o `interactive` descartado como base), nunca só os do vencedor — preferir
+ * "está reivindicada" a "não está", mesmo princípio de sempre neste módulo.
+ * Se por algum motivo dois registros COORDENADORES coexistirem pro mesmo
+ * `sessionId` (não deveria acontecer — cada skill só registra 1 kind por
+ * vez), o de heartbeat mais recente vence como base (mesmo critério de
+ * `mergeSessionRecords`).
+ *
+ * Pura — opera sobre a lista já lida do disco, não lê nada sozinha.
+ */
+function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
+  const bySessionId = new Map<string, SessionRecord[]>();
+  for (const record of records) {
+    const group = bySessionId.get(record.sessionId) ?? [];
+    group.push(record);
+    bySessionId.set(record.sessionId, group);
+  }
+
+  const out: SessionRecord[] = [];
+  for (const group of bySessionId.values()) {
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    const claimsUnion = mergeSessionRecords(group);
+    const coordinatorGroup = group.filter((r) => isCoordinatorKind(r.kind));
+    const base = coordinatorGroup.length > 0 ? mergeSessionRecords(coordinatorGroup) : claimsUnion;
+    out.push({
+      ...base,
+      claimed_issues: claimsUnion.claimed_issues,
+      claimed_issues_at: claimsUnion.claimed_issues_at,
+    });
+  }
+  return out;
+}
+
+/**
  * Lista as sessões ativas (não-stale) de `data/sessions/`, já com a UNIÃO
  * de claims de eventuais backups de conflito do OneDrive resolvida (#6130,
- * ver `readMergedSessionGroups`/`mergeSessionRecords`). Fail-soft: diretório
- * ausente ou erro de leitura → array vazio, nunca lança.
+ * ver `readMergedSessionGroups`/`mergeSessionRecords`) E com registros de
+ * kinds diferentes do MESMO `sessionId` deduplicados a favor do coordenador
+ * (#6481, ver `dedupeBySessionId`). Fail-soft: diretório ausente ou erro de
+ * leitura → array vazio, nunca lança.
  */
 export function listActiveSessions(
   repoRoot: string,
@@ -1191,7 +1255,7 @@ export function listActiveSessions(
   maxAgeMs: number = MAX_SESSION_AGE_MS,
 ): ActiveSessionRecord[] {
   const out: ActiveSessionRecord[] = [];
-  for (const record of readMergedSessionGroups(repoRoot)) {
+  for (const record of dedupeBySessionId(readMergedSessionGroups(repoRoot))) {
     const heartbeatIso = record.lastHeartbeat ?? record.startedAt;
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) continue;
@@ -1496,6 +1560,24 @@ export interface UnclaimIssueResult {
  * `unclaimIssue`, um write concorrente do beacon pode perder campos. Mesmo
  * risco residual que o resto do módulo aceita nesse arquivo, não uma
  * regressão nova introduzida aqui.
+ *
+ * **#6481 — mescla com `-safeBackup-*` ANTES de checar `claimed_issues`,
+ * mesma disciplina fail-safe do read-path.** Até aqui esta função lia só o
+ * arquivo "real" (`readJsonSafe(path)`) — mas `data/sessions/` é uma junction
+ * OneDrive, e um write concorrente (tipicamente o beacon batendo heartbeat no
+ * MESMO arquivo entre o `claim-issue` e a tentativa de `unclaim-issue`) pode
+ * bifurcar o arquivo em cópias de conflito `-safeBackup-N`, deixando o
+ * arquivo "real" com uma versão do `claimed_issues` que NÃO inclui a issue
+ * que uma cópia de conflito carrega. Sem merge, `unclaimIssue` devolvia
+ * `no-op-not-claimed` — indistinguível de "esta sessão nunca reivindicou essa
+ * issue" — mesmo com a issue genuinamente presente em disco (achado ao vivo
+ * #6481: `unclaim-issue --issue 6431`/`--issue 6459` falharam assim 2× cada,
+ * enquanto `list-active` mostrava as duas em `claimed_issues` da mesma
+ * sessão). `readMergedRecordForRealFile` é a MESMA primitiva que
+ * `registerSession` (#6326) já usa para não perder claim na promoção de
+ * kind — reusada aqui, não reimplementada. Quando não há nenhum backup (caso
+ * comum), o merge devolve exatamente o conteúdo do arquivo real — nenhuma
+ * mudança de comportamento no caminho feliz.
  */
 export function unclaimIssue(
   repoRoot: string,
@@ -1506,14 +1588,20 @@ export function unclaimIssue(
   now: string = new Date().toISOString(),
 ): UnclaimIssueResult {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
-  const current = readJsonSafe<SessionRecord>(path);
-  if (!current) {
+  const rawCurrent = readJsonSafe<SessionRecord>(path);
+  if (!rawCurrent) {
     if (existsSync(path)) {
       warnUnclaimUnreadable(sessionId, path);
       return { ok: false, reason: "no-op-unreadable" };
     }
     return { ok: false, reason: "no-op-session-missing" };
   }
+
+  // #6481: mescla com eventuais `-safeBackup-*` do MESMO arquivo real antes de
+  // checar `claimed_issues` — ver docstring acima. `readMergedRecordForRealFile`
+  // nunca devolve `null` aqui porque `rawCurrent` já provou que o arquivo real
+  // é legível (ela sempre inclui pelo menos o próprio arquivo real no merge).
+  const current = readMergedRecordForRealFile(repoRoot, path) ?? rawCurrent;
 
   const claimed = current.claimed_issues ?? [];
   if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };

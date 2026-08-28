@@ -855,6 +855,46 @@ describe("unclaimIssue — libera issue da PRÓPRIA sessão, sem encerrá-la (#6
     assert.deepEqual(result, { ok: false, reason: "no-op-session-missing" });
     assert.equal(stderrOutput, "", "arquivo ausente é o caso comum — não emite aviso, só o ilegível emite");
   });
+
+  it(
+    "#6481 — claim presente SÓ num backup -safeBackup-N (arquivo real defasado) ainda é encontrada e removida, " +
+      "em vez de devolver falso 'no-op-not-claimed'",
+    () => {
+      const root = freshRoot();
+      const tag = "host-a";
+      const sessionId = "sess-6481";
+      // Arquivo REAL — já foi sobrescrito (ex: heartbeat do beacon) SEM a
+      // claim #6431, que só sobreviveu numa cópia de conflito do OneDrive.
+      registerSession(root, "overnight", sessionId, { tag, startedAt: new Date(NOW).toISOString() });
+      claimIssue(root, "overnight", sessionId, 6459, tag, new Date(NOW).toISOString());
+      // Backup do MESMO stem carrega a claim que o arquivo real perdeu.
+      writeRawSessionFile(root, `overnight-${tag}-${sessionId}-${tag}-safeBackup-0001.json`, {
+        kind: "overnight",
+        machineTag: tag,
+        sessionId,
+        startedAt: new Date(NOW).toISOString(),
+        lastHeartbeat: new Date(NOW).toISOString(),
+        claimed_issues: [6431, 6459],
+      });
+
+      const result = unclaimIssue(root, "overnight", sessionId, 6431, tag, new Date(NOW + 1000).toISOString());
+      assert.deepEqual(result, { ok: true, reason: "unclaimed" }, "a claim do backup foi encontrada e removida");
+
+      // O arquivo real é regravado com a UNIÃO (menos a issue liberada) — a
+      // outra claim (#6459), presente só no real, permanece intacta.
+      const content = JSON.parse(readFileSync(sessionFilePath(root, "overnight", tag, sessionId), "utf8"));
+      assert.deepEqual(content.claimed_issues, [6459]);
+    },
+  );
+
+  it("#6481 — sem nenhum backup, comportamento do caminho feliz é inalterado (regressão de não-regressão)", () => {
+    const root = freshRoot();
+    registerSession(root, "develop", "sess-sem-backup", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    claimIssue(root, "develop", "sess-sem-backup", 42, "host-a", new Date(NOW).toISOString());
+
+    const result = unclaimIssue(root, "develop", "sess-sem-backup", 42, "host-a", new Date(NOW + 1000).toISOString());
+    assert.deepEqual(result, { ok: true, reason: "unclaimed" });
+  });
 });
 
 // ─── claimIssueCheckAndSet — check-and-set (#6236) ─────────────────────────
@@ -1881,6 +1921,101 @@ describe("listActiveSessions / isIssueClaimedByOther — união de claims de bac
 
     assert.deepEqual(listActiveSessions(root, NOW), []);
     assert.equal(isIssueClaimedByOther(root, 999, "sess-outra", NOW), null, "backup órfão não reivindica nada");
+  });
+});
+
+// ─── #6481 — read-path deduplica registro overnight/interactive do MESMO sessionId ─
+
+describe("listActiveSessions — deduplica registros de kinds diferentes do MESMO sessionId (#6481)", () => {
+  const NOW = Date.parse("2026-08-28T12:00:00.000Z");
+
+  it("registro overnight (com claimed_issues) e interactive (vazio) do mesmo sessionId → 1 sessão só, kind overnight, claims preservadas", () => {
+    const root = freshRoot();
+    const startedAt = new Date(NOW - 60 * 60 * 1000).toISOString();
+    // Simula a corrida do #6326: o beacon já escreveu interactive-*, e a
+    // promoção pra overnight FALHOU em remover o arquivo antigo
+    // (outcome: "promoted-orphan-left") — os dois coexistem no disco.
+    writeRawSessionFile(root, "overnight-host-a-sess-1.json", {
+      kind: "overnight",
+      machineTag: "host-a",
+      sessionId: "sess-1",
+      startedAt,
+      lastHeartbeat: new Date(NOW - 5 * 60 * 1000).toISOString(),
+      claimed_issues: [6431, 6459],
+    });
+    writeRawSessionFile(root, "interactive-host-a-sess-1.json", {
+      kind: "interactive",
+      machineTag: "host-a",
+      sessionId: "sess-1",
+      startedAt,
+      lastHeartbeat: new Date(NOW - 1 * 60 * 1000).toISOString(),
+      claimed_issues: [],
+    });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1, "os 2 arquivos do mesmo sessionId contam como 1 sessão só");
+    assert.equal(sessions[0].kind, "overnight", "kind coordenador vence sobre interactive");
+    assert.deepEqual(sessions[0].claimed_issues, [6431, 6459], "claims do registro overnight não desaparecem");
+  });
+
+  it("is-claimed enxerga a claim do registro overnight mesmo com um interactive paralelo do mesmo sessionId", () => {
+    const root = freshRoot();
+    const startedAt = new Date(NOW - 60 * 60 * 1000).toISOString();
+    writeRawSessionFile(root, "overnight-host-a-sess-2.json", {
+      kind: "overnight",
+      machineTag: "host-a",
+      sessionId: "sess-2",
+      startedAt,
+      lastHeartbeat: startedAt,
+      claimed_issues: [6481],
+    });
+    writeRawSessionFile(root, "interactive-host-a-sess-2.json", {
+      kind: "interactive",
+      machineTag: "host-a",
+      sessionId: "sess-2",
+      startedAt,
+      lastHeartbeat: new Date(NOW - 30 * 1000).toISOString(),
+      claimed_issues: [],
+    });
+
+    const owner = isIssueClaimedByOther(root, 6481, "sess-outra", NOW);
+    assert.ok(owner !== null, "claim do registro coordenador não pode desaparecer atrás do registro interactive");
+    assert.equal(owner.sessionId, "sess-2");
+  });
+
+  it("claim que só existe no registro interactive (nunca deveria acontecer, mas fail-safe) ainda aparece na união", () => {
+    const root = freshRoot();
+    const startedAt = new Date(NOW - 60 * 60 * 1000).toISOString();
+    writeRawSessionFile(root, "develop-host-a-sess-3.json", {
+      kind: "develop",
+      machineTag: "host-a",
+      sessionId: "sess-3",
+      startedAt,
+      lastHeartbeat: startedAt,
+      claimed_issues: [100],
+    });
+    writeRawSessionFile(root, "interactive-host-a-sess-3.json", {
+      kind: "interactive",
+      machineTag: "host-a",
+      sessionId: "sess-3",
+      startedAt,
+      lastHeartbeat: startedAt,
+      claimed_issues: [200],
+    });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].kind, "develop");
+    assert.deepEqual(sessions[0].claimed_issues, [100, 200], "união de claims, mesmo as que só existem no lado interactive");
+  });
+
+  it("dois sessionId DIFERENTES (1 overnight, 1 interactive de outra sessão) nunca são fundidos entre si", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-a", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+    registerSession(root, "interactive", "sess-b", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 2, "sessionIds distintos continuam sessões distintas");
   });
 });
 
