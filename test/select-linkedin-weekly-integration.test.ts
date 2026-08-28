@@ -64,6 +64,18 @@ function writeCachePost(root: string, id: string, post: unknown): void {
   writeFileSync(join(dir, `${id}.json`), JSON.stringify(post), "utf8");
 }
 
+/** #6185: escreve um broadcast Kit em `data/kit-cache/broadcasts/{id}.json`
+ *  — mesmo shape que `normalizeKitBroadcast` (`edition-cache-reader.ts`)
+ *  espera (`RawKitBroadcastFile` = `KitBroadcastSummary` + `clicks`
+ *  opcional). Usado pra provar que a seleção por clique lê edições de
+ *  origem Kit, não só Beehiiv (o manifest de enriquecimento via MCP
+ *  continua Beehiiv-only, de propósito — não testado aqui). */
+function writeKitCachePost(root: string, id: string | number, broadcast: unknown): void {
+  const dir = join(root, "data/kit-cache/broadcasts");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify(broadcast), "utf8");
+}
+
 function mkTmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "select-linkedin-weekly-test-"));
 }
@@ -730,5 +742,82 @@ describe("achado do silent-failure-hunter (revisão #4501): 2 D1 que produzem a 
       w.some((x) => /URL derivada colide entre 260817 e 260818/.test(x) && /post ERRADO/.test(x)),
       `warnings: ${JSON.stringify(w)}`,
     );
+  });
+});
+
+/**
+ * #6185: seleção por clique lê Beehiiv E Kit, conforme a origem da edição —
+ * mesma partição por origem que o #6048 aplicou à verificação de assinante.
+ * Regressão pro `windowPostsUnified` de `select-linkedin-weekly.ts` (o
+ * `matchPostsToWindow` genérico de `weekly-linkedin-clicks.ts`) — sem isso,
+ * uma edição de origem Kit nunca competiria por clique real (ratePct=0
+ * sempre), mesmo com o broadcast presente e enriquecido no cache Kit.
+ */
+describe("#6185: seleção por clique lê edição de origem Kit (broadcast completed em data/kit-cache/broadcasts/)", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+
+    // 260901: edição de origem BEEHIIV, sem clique nenhum casando com sua
+    // URL (candidato perde a disputa de manchete).
+    writeEdition(
+      root,
+      "260901",
+      ["**DESTAQUE 1 | 💼 MERCADO**", "", "**[Matéria Beehiiv sem clique](https://exemplo.com/materia-beehiiv)**", "", "Corpo.", ""].join("\n"),
+    );
+    writeCachePost(root, "post_beehiiv_901", {
+      id: "post_beehiiv_901",
+      status: "confirmed",
+      publish_date: epochFor("260901"),
+      stats: { email: { clicks: 0, unique_opens: 50 }, clicks: [] },
+    });
+
+    // 260902: edição de origem KIT (published_at ISO, SEM contraparte no
+    // cache Beehiiv) — com clique real registrado no broadcast Kit.
+    writeEdition(
+      root,
+      "260902",
+      ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", "", "**[Matéria Kit com clique](https://exemplo.com/materia-kit)**", "", "Corpo.", ""].join("\n"),
+    );
+    const publishedAtLocalNoon = new Date(2026, 8, 2, 12, 0, 0).toISOString();
+    writeKitCachePost(root, 900902, {
+      id: 900902,
+      subject: "Assunto Kit 260902",
+      send_at: null,
+      status: "completed",
+      public: true,
+      published_at: publishedAtLocalNoon,
+      created_at: publishedAtLocalNoon,
+      description: null,
+      thumbnail_url: null,
+      publication_id: 1,
+      clicks: [{ url: "https://exemplo.com/materia-kit", unique_clicks: 12, click_to_delivery_rate: 0.2, click_to_open_rate: 0.24 }],
+      stats: { recipients: 500, emails_opened: 50, unsubscribes: 0, total_clicks: 12, show_total_clicks: true, status: "completed" },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("NÃO gera warning de 'sem dados de clique' pra 260902 — o broadcast Kit foi encontrado", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      !w.some((x) => x.includes("260902")),
+      `260902 não deveria aparecer em nenhum warning de dado ausente: ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("o candidato Kit (24% de taxa: 12 cliques / 50 aberturas) vence a ordem sobre o Beehiiv (0%) — prova que o broadcast Kit entrou no ranking real, não ratePct=0 por omissão", () => {
+    const headlines = selectionJson.headlines as Array<{ editionDate: string; title: string; ratePct: number }>;
+    assert.equal(headlines[0].editionDate, "260902", `1º lugar deveria ser a edição Kit: ${JSON.stringify(headlines)}`);
+    assert.equal(headlines[0].ratePct, 24);
+    assert.equal(headlines[1].editionDate, "260901");
+    assert.equal(headlines[1].ratePct, 0);
   });
 });
