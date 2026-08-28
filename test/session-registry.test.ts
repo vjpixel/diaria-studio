@@ -978,6 +978,40 @@ describe("claimIssueCheckAndSet — recusa colisão entre sessões ativas (#6236
     // heartbeat, por outro lado, SEGUE avançando normalmente.
     assert.equal(contentAfterReclaim.lastHeartbeat, reClaimAt);
   });
+
+  it("#6453: unclaim limpa claimed_issues_at — re-claim posterior não herda o timestamp da 1ª claim", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-1", { tag: "host-a", startedAt: new Date(NOW).toISOString() });
+
+    const firstClaimAt = new Date(NOW).toISOString();
+    claimIssueCheckAndSet(root, "overnight", "sess-1", 6453, "host-a", firstClaimAt);
+    const afterFirstClaim = JSON.parse(readFileSync(sessionFilePath(root, "overnight", "host-a", "sess-1"), "utf8"));
+    assert.equal(afterFirstClaim.claimed_issues_at["6453"], firstClaimAt);
+
+    // Bloqueio qualquer 10 minutos depois: a sessão solta a issue.
+    const unclaimAt = new Date(NOW + 10 * 60 * 1000).toISOString();
+    const unclaimResult = unclaimIssue(root, "overnight", "sess-1", 6453, "host-a", unclaimAt);
+    assert.equal(unclaimResult.ok, true);
+
+    const afterUnclaim = JSON.parse(readFileSync(sessionFilePath(root, "overnight", "host-a", "sess-1"), "utf8"));
+    assert.equal(
+      "6453" in (afterUnclaim.claimed_issues_at ?? {}),
+      false,
+      "unclaimIssue deve remover a entrada de claimed_issues_at junto com claimed_issues (#6453)",
+    );
+
+    // Re-claim da MESMA issue, pela MESMA sessão, 13h depois da 1ª claim.
+    const reClaimAt = new Date(NOW + 13 * 60 * 60 * 1000).toISOString();
+    const reResult = claimIssueCheckAndSet(root, "overnight", "sess-1", 6453, "host-a", reClaimAt);
+    assert.equal(reResult.reason, "claimed", "sem histórico de claimed_issues_at, a re-reivindicação é tratada como nova claim");
+
+    const afterReclaim = JSON.parse(readFileSync(sessionFilePath(root, "overnight", "host-a", "sess-1"), "utf8"));
+    assert.equal(
+      afterReclaim.claimed_issues_at["6453"],
+      reClaimAt,
+      "claimed_issues_at deve refletir o timestamp da 2ª claim, não da 1ª (falso positivo do gate de staleness, #6453)",
+    );
+  });
 });
 
 // ─── claimIssueAutoRegistering — fecha o no-op silencioso do #6369 ────────
