@@ -57,4 +57,5 @@ nimbalyst-local/
 # 02-reviewed.md, removido do rastreamento nesta mesma mudança — vazava
 # como deleção em qualquer PR alheia que rodasse a suíte localmente).
 test/_tmp_*/
+scripts/_tmp_*/  # #6541: runtime temp dirs created by overnight/test scripts — never source
 __pycache__/
