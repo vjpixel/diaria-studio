@@ -41,7 +41,11 @@
  * Exit codes:
  *   0 — reagendado com sucesso (delete + re-enqueue, ou key já não
  *       existia no lado antigo — impossível aqui, ver exit 3).
- *   1 — erro de uso (args faltando/inválidos).
+ *   1 — erro de uso (args faltando/inválidos), ou re-enqueue falhou APÓS o
+ *       DELETE ter removido a entry antiga (#6702) — neste caso a mensagem
+ *       "ATENÇÃO: a key X JÁ FOI DELETADA..." traz o payload completo pra
+ *       re-enfileirar manualmente; NÃO re-rodar o script (o 2º DELETE bate
+ *       404 e induz ao diagnóstico errado de "post já disparou").
  *   2 — Worker não configurado (sem URL/token).
  *   3 — DELETE retornou 404 (key já não existe na fila) — **re-enqueue
  *       ABORTADO de propósito**. Investigar se o post já disparou antes
@@ -125,7 +129,26 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     image_urls: args["image-urls"] ? args["image-urls"].split(",").map((s) => s.trim()) : undefined,
   };
 
-  const result = await postToWorkerQueue(workerUrl, token, payload, 2, "reschedule-worker-queue-post");
+  let result;
+  try {
+    result = await postToWorkerQueue(workerUrl, token, payload, 2, "reschedule-worker-queue-post");
+  } catch (err) {
+    // #6702 — o DELETE já removeu a entry antiga: se o re-enqueue falhar e
+    // morrermos com "Erro fatal: <msg do POST>" puro, a leitura natural do
+    // operador é "falhou, nada mudou, rodo de novo" — e o 2º run bate 404 no
+    // DELETE (exit 3, "confirme se o post já disparou"), apontando pra
+    // hipótese errada enquanto o post some da fila. Relançar com o payload
+    // completo transforma a perda silenciosa em perda VISÍVEL com caminho de
+    // recuperação manual. (Inverter a ordem POST→DELETE foi considerado e
+    // descartado: falha de DELETE após POST ok recria exatamente a duplicata
+    // que o #6607 existe pra evitar, e o Worker não tem endpoint atômico.)
+    const original = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `ATENÇÃO: a key ${key} JÁ FOI DELETADA da fila e o re-enqueue falhou. ` +
+        `Re-enfileire manualmente com este payload: ${JSON.stringify(payload)} — ` +
+        `erro original: ${original}`,
+    );
+  }
   console.log(JSON.stringify({ deleted_old_key: key, reenqueued: result }, null, 2));
   return 0;
 }
