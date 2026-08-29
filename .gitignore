@@ -57,5 +57,10 @@ nimbalyst-local/
 # 02-reviewed.md, removido do rastreamento nesta mesma mudança — vazava
 # como deleção em qualquer PR alheia que rodasse a suíte localmente).
 test/_tmp_*/
-scripts/_tmp_*/  # #6541: runtime temp dirs created by overnight/test scripts — never source
+# #6541: runtime temp dirs created by overnight/test scripts — never source.
+# ATENÇÃO: comentário em linha PRÓPRIA. .gitignore não suporta comentário
+# inline — de 2026-08 a 2026-08-29 esta regra viveu como
+# `scripts/_tmp_*/  # ...` e casava com NADA, deixando passar um artefato
+# de runtime com e-mail de 100 assinantes pro repo PÚBLICO (#6691).
+scripts/_tmp_*/
 __pycache__/
