@@ -15,6 +15,8 @@ import {
   applyEngagement,
   extractEngagementArray,
   countExistingLines,
+  readExistingRecords,
+  mergeEngagementRecords,
   EmptyReplaceGuardError,
 } from "../scripts/apply-mcp-subscriber-engagement.ts";
 import type { EngagementManifest } from "../scripts/lib/beehiiv-engagement-manifest.ts";
@@ -153,6 +155,85 @@ describe("applyEngagement — guard REPLACE-vazio (mesmo padrão de #4836)", () 
 
     const after = readManifest(outDir).posts.find((p) => p.post_id === "post_1")!;
     assert.deepEqual(after, before, "manifest não deve mudar quando o guard recusa o write");
+  });
+});
+
+describe("applyEngagement — modo --append (#6733)", () => {
+  it("aplicar 2 páginas em sequência via --append resulta nas duas presentes (sem sobrescrever a 1ª)", () => {
+    const { outDir } = setup();
+    const page1 = applyEngagement(
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 1 }, { subscriber_id: "sub_2", opens: 2 }] }),
+      { postId: "post_1", pagesFetched: 1, totalPages: 2, outDir },
+    );
+    assert.equal(page1.after_count, 2);
+    assert.equal(page1.status, "partial");
+
+    const page2 = applyEngagement(
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_3", opens: 3 }] }),
+      { postId: "post_1", pagesFetched: 2, totalPages: 2, append: true, outDir },
+    );
+    assert.equal(page2.before_count, 2);
+    assert.equal(page2.after_count, 3);
+    assert.equal(page2.status, "ok");
+
+    const jsonlPath = resolve(outDir, "post_1.jsonl");
+    const lines = readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const ids = lines.map((l) => l.subscriber_id).sort();
+    assert.deepEqual(ids, ["sub_1", "sub_2", "sub_3"], "as duas páginas ficam presentes, nada foi sobrescrito");
+  });
+
+  it("dedup por subscriber_id entre páginas — incoming vence em caso de conflito", () => {
+    const { outDir } = setup();
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 1 }] }), { postId: "post_1", outDir });
+    const result = applyEngagement(
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1", opens: 99 }] }),
+      { postId: "post_1", append: true, outDir },
+    );
+    assert.equal(result.after_count, 1, "mesmo subscriber_id não duplica");
+
+    const jsonlPath = resolve(outDir, "post_1.jsonl");
+    const lines = readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].opens, 99, "registro incoming vence sobre o já existente");
+  });
+
+  it("--append cobre a 1ª aplicação (arquivo ainda não existente)", () => {
+    const { outDir } = setup();
+    const result = applyEngagement(
+      JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }),
+      { postId: "post_novo", append: true, outDir },
+    );
+    assert.equal(result.before_count, 0);
+    assert.equal(result.after_count, 1);
+    assert.equal(countExistingLines(resolve(outDir, "post_novo.jsonl")), 1);
+  });
+
+  it("--append com payload vazio nunca aciona o guard de replace-vazio (mescla, não substitui)", () => {
+    const { outDir } = setup();
+    applyEngagement(JSON.stringify({ engagement: [{ subscriber_id: "sub_1" }] }), { postId: "post_1", outDir });
+    // Sem --allow-empty-replace — se isto fosse REPLACE, lançaria EmptyReplaceGuardError.
+    const result = applyEngagement(JSON.stringify({ engagement: [] }), { postId: "post_1", append: true, outDir });
+    assert.equal(result.after_count, 1, "página vazia em --append não apaga o que já estava");
+  });
+
+  it("registros sem subscriber_id nunca são deduplicados entre si", () => {
+    const merged = mergeEngagementRecords([{ note: "a" }], [{ note: "b" }]);
+    assert.equal(merged.length, 2, "cada registro sem subscriber_id é tratado como único");
+  });
+});
+
+describe("readExistingRecords", () => {
+  it("[] quando o arquivo não existe", () => {
+    const { outDir } = setup();
+    assert.deepEqual(readExistingRecords(resolve(outDir, "nope.jsonl")), []);
+  });
+
+  it("faz parse de cada linha não-vazia", () => {
+    const { outDir } = setup();
+    mkdirSync(outDir, { recursive: true });
+    const path = resolve(outDir, "manual.jsonl");
+    writeFileSync(path, '{"subscriber_id":"a"}\n{"subscriber_id":"b"}\n\n');
+    assert.deepEqual(readExistingRecords(path), [{ subscriber_id: "a" }, { subscriber_id: "b" }]);
   });
 });
 
