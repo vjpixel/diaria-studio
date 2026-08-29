@@ -120,6 +120,11 @@ export interface BrevoDiariaContact {
      * `promoteKitSubscription` em `evaluate-brevo-diaria.ts`). */
     | "score_threshold_kit"
     | "self_confirmed_beehiiv"
+    /** #6677 — mesma decisão de `self_confirmed_beehiiv` (confirmação do opt-in
+     * por iniciativa própria), mas o contato tem origem Kit (`beehiiv_subscription_id`
+     * com prefixo `kit:`), nunca tocou a Beehiiv — a trilha de auditoria deve
+     * registrar `self_confirmed_kit` pra distinguir. */
+    | "self_confirmed_kit"
     | "native_unsubscribe"
     | "native_unsubscribe_beehiiv_404"
     /** #6340 item 4 fix B — descadastro nativo genuíno (`userUnsubscription`)
@@ -278,7 +283,13 @@ export function applySelfConfirmed(
   return {
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
-      return { ...c, status: "promoted_beehiiv", promoted_at: now, resolution_reason: "self_confirmed_beehiiv" };
+      const isKitOrigin = c.beehiiv_subscription_id.startsWith("kit:");
+      return {
+        ...c,
+        status: "promoted_beehiiv",
+        promoted_at: now,
+        resolution_reason: isKitOrigin ? "self_confirmed_kit" : "self_confirmed_beehiiv",
+      };
     }),
   };
 }
