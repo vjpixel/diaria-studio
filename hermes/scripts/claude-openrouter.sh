@@ -43,15 +43,57 @@ set -euo pipefail
 
 TOOLS="Read,Grep,Glob,Bash"
 CWD="/home/vjpixel/diaria-studio"
-BUDGET="2.0"
+BUDGET="20.0"
 TIMEOUT="1800"
-# #6666: BUDGET de $0.25 → $2.0. O CLAUDE.md tem 76KB (~19k tokens de entrada)
-# e o CLI rastreia o custo de carregar o contexto contra --max-budget-usd.
-# Com $0.25 (que cobre ~16.7k tokens de entrada a ~$15/M), a chamada com
-# CLAUDE.md carregado já excede o budget no primeiro request, e o erro
-# "Exceeded USD budget" vai pro STDOUT (não stderr), então o classify-grep
-# de stderr nunca o via — a cadeia falha silenciosamente (#6666).
-# $2.0 cobre ~133k tokens de contexto, folga para CLAUDE.md + generation.
+# #6712: BUDGET de $2.0 → $20.0. O #6666 tinha subido de $0.25 → $2.0
+# tratando o SINTOMA; a causa é outra e o valor certo é ordens de grandeza
+# maior. O CLI NÃO reconhece o slug do gateway
+# ("[claude-code:unrecognized_model] {\"model\":\"z-ai/glm-5.3-flash\"}" em
+# todo /tmp/claude-openrouter-stderr.*.log) e contabiliza contra
+# --max-budget-usd usando o preço DEFAULT da Anthropic (~$3/M in, $15/M out,
+# $0.30/M cache read) em vez do preço real do modelo. Erro de ~14-18x
+# (18.1x / 14.1x / 16.6x nos 3 pontos medidos abaixo — média 16.3x; o valor
+# varia com a proporção in/out/cache de cada delegação, não é uma constante).
+#
+# Medido no tick de 29/08/2026 19:52-20:32Z, 3 delegações reais:
+#   1.86M tokens -> custo real $0.067  |  CLI estimou $1.21
+#   3.80M tokens -> custo real $0.137  |  CLI estimou $1.93
+#   4.39M tokens -> custo real $0.159  |  CLI estimou $2.64
+# (preço real medido do glm-5.3-flash: $0.0361/M, derivado do billing.)
+# As 3 estouraram budget de $1.0/$1.5/$2.0 gastando centavos, e o tick de
+# 40min produziu ZERO PRs — trabalho interrompido no meio, reportado como
+# "falha de infra".
+#
+# O --max-budget-usd NÃO é o controle de custo desta pipeline: quem limita
+# gasto de verdade é o teto diário da key na OpenRouter, aplicado pelo
+# PROVEDOR e imune a erro de estimativa. (O valor do teto vive no dashboard
+# da OpenRouter, não neste repo — em 29/08/2026 era $3/dia, com intenção
+# declarada do editor de baixar para $1; conferir lá, nunca assumir daqui.)
+# Aqui o budget fica só como rede contra runaway catastrófico. Não voltar a
+# calibrá-lo pelo custo esperado de uma delegação — a régua está errada,
+# então qualquer valor "justo" calculado nela volta a cortar trabalho
+# legítimo.
+#
+# DOIS PRESSUPOSTOS que este valor carrega, e que morrem em silêncio se a
+# cadeia mudar (achados do review da PR #6722):
+#
+#   (a) O fator de erro foi medido SÓ para z-ai/glm-5.3-flash. Um modelo
+#       cujo preço real se aproxime do default da Anthropic torna $20 um teto
+#       de gasto REAL de $20, não de ~$1. Ao mexer em MODELS_DEFAULT ou passar
+#       --model novo, remedir antes de confiar neste número.
+#   (b) "A key limita" vale para o elo PAGO. Os dois elos `:free` da cadeia
+#       são protegidos por o custo real ser zero, não pelo teto da key — se um
+#       `:free` virar pago (mudança do lado da OpenRouter, sem aviso), essa
+#       proteção some sem nada falhar.
+#
+# (O erro "Exceeded USD budget" vai pro STDOUT, não stderr — por isso o
+# capture de stdout no RC≠0 introduzido pelo #6666 continua necessário.)
+#
+# Os 3 tetos distintos citados acima ($1.0/$1.5/$2.0) não vêm daqui: este é
+# só o DEFAULT. Um `--budget` explícito no call site o sobrepõe, e em
+# 29/08/2026 o tick reagiu ao abort tentando valores cada vez MENORES. Por
+# isso test/hermes-budget-guard.test.ts trava o call site da SKILL.md junto
+# com este default — subir um sem o outro não conserta o caminho que roda.
 # Decisivo é o contexto — dots-3 tem 512k na variante :free vs 262k do
 # laguna, e este wrapper roda `claude -p` DENTRO do checkout com CLAUDE.md
 # inteiro carregado, então contexto maior importa mais que o resto do

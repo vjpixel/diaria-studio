@@ -188,8 +188,17 @@ coordenador. Se a issue for inviável/ambígua além do trivial, comente nela
 o bloqueio via gh issue comment e pare." | \
   ~/.hermes/scripts/claude-openrouter.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
-    --budget 2.0 --timeout 2400
+    --budget 20.0 --timeout 2400
 ```
+
+**NUNCA baixar o `--budget` para "economizar" (#6712).** Ele não controla o
+gasto desta pipeline — o CLI não reconhece o slug do gateway e estima o custo
+a preço da Anthropic, ~14-18x o real, então um teto "econômico" aborta a
+delegação no meio gastando centavos. Quem limita gasto é o teto diário da key
+na OpenRouter, aplicado pelo provedor. Em 29/08/2026 o tick reagiu a
+`Exceeded USD budget` tentando 1.5 e depois 1.0 — a direção errada: 3
+delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
+órfão. Se este erro aparecer, o valor a mexer é para CIMA.
 
 3. O PR aberto entra na fila do passo 3 (review independente continua sendo
    o gate — o harness implementa, o pipeline do Hermes revisa e mergeia).
