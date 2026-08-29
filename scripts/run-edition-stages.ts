@@ -36,8 +36,18 @@
  * existe para evitar — seria possível "implementar" o #5744 e não economizar
  * nada.
  *
+ * **`--session-supervised` (#6719).** Repassa `SESSION_SUPERVISED_FLAG` ao
+ * Stage 1 spawnado — sinaliza que o EDITOR está presente na sessão-mãe
+ * (invocação original de `/diaria-edicao` sem `--no-gates`), distinto de
+ * `--no-gates` (que este script sempre passa a todo stage, controlando só o
+ * gate INTERNO de cada um). Sem esta flag, `orchestrator-stage-0-preflight.md`
+ * § 0-replies (rascunhos do concurso "ache o erro") nunca roda, porque o Stage
+ * 1 spawnado não tem como distinguir "headless porque é automação
+ * desassistida" de "headless só porque o #5744 isola contexto, com o editor
+ * do lado". Ver `scripts/lib/edition-stage-runner.ts`.
+ *
  * Uso:
- *   npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json]
+ *   npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]
  *
  * Exit codes: 0 = todos os stages do plano ok/pulados; != 0 = exit code do
  * stage que falhou (o laço para no primeiro erro).
@@ -156,6 +166,7 @@ export function main(
     env,
     plan,
     execFn,
+    sessionSupervised: flags.has("session-supervised"),
     ...(assertSentinelFn ? { assertSentinelFn } : {}),
     // Progresso no stderr deixa o stdout parseável quando `--json` é usado.
     // NÃO é o que protege o contexto da sessão — o Bash tool entrega os dois

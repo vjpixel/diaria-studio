@@ -84,6 +84,36 @@ export const STAGE_PLAN: ReadonlyArray<EditionStage> = [
  */
 export const HEADLESS_FLAGS = "--no-gates";
 
+/**
+ * Flag distinta de `HEADLESS_FLAGS` — sinaliza ao Stage 1 spawnado que o
+ * EDITOR ESTÁ SUPERVISIONANDO a sessão-mãe, mesmo que este spawn em si rode
+ * headless (#6719).
+ *
+ * **O bug que isto conserta.** `HEADLESS_FLAGS` (`--no-gates`) responde a uma
+ * pergunta ("este spawn pode auto-aprovar o próprio gate interno do stage?")
+ * que o #5744 conflou com outra bem diferente ("o editor está presente nesta
+ * sessão, ou isto é uma rodada desassistida?"). Antes do #5744, `/diaria-edicao`
+ * sem `--no-gates` rodava o Stage 1 INLINE no processo top-level e setava
+ * `pre_gate = true` ali mesmo — `orchestrator-stage-0-preflight.md` § 0-replies
+ * (o rascunho de resposta pro concurso "ache o erro") lia esse `pre_gate` e
+ * rodava normalmente. Ao trocar o Stage 1 por um `claude --print` num
+ * PROCESSO NOVO, `pre_gate` nunca mais chega lá — a skill `/diaria-1-pesquisa`
+ * só conhece `--no-gates`, e como este módulo passa `--no-gates`
+ * INCONDICIONALMENTE (é o que permite o stage terminar sem editor para
+ * responder ao SEU PRÓPRIO gate), a sessão spawnada não tem como distinguir
+ * "rodando headless porque é uma automação desassistida" de "rodando headless
+ * só porque §5744 isola contexto, com o editor ali do lado".
+ *
+ * Esta flag é o canal que falta: `runEditionStages` a inclui no prompt do
+ * Stage 1 quando `sessionSupervisedFlag` é passado como `true` pelo chamador
+ * (hoje só `/diaria-edicao`, quando a invocação ORIGINAL do editor não trazia
+ * `--no-gates`). `/diaria-1-pesquisa` a lê e seta `pre_gate = true`
+ * independentemente de `--no-gates` também estar presente. O runner AGENDADO
+ * (`run-scheduled-edicao.ts`) nunca passa esta flag — lá não há editor
+ * nenhum, e `pre_gate` deve permanecer `false`/undefined.
+ */
+export const SESSION_SUPERVISED_FLAG = "--session-supervised";
+
 /** Teto de turnos POR STAGE (era o teto da edição inteira antes do #5738). */
 export const MAX_TURNS = "120";
 
@@ -208,6 +238,15 @@ export interface RunEditionStagesOptions {
   env: NodeJS.ProcessEnv;
   /** Subconjunto de `STAGE_PLAN` a executar. */
   plan?: ReadonlyArray<EditionStage>;
+  /**
+   * #6719: `true` quando a invocação ORIGINAL (não este spawn) tinha o
+   * editor presente e supervisionando — isto é, a sessão-mãe NÃO recebeu
+   * `--no-gates` do editor. Anexa `SESSION_SUPERVISED_FLAG` ao prompt do
+   * Stage 1 (único stage cujo playbook lê `pre_gate` para § 0-replies).
+   * Default `false` preserva o comportamento pré-existente do runner
+   * agendado (desassistido, sem editor).
+   */
+  sessionSupervised?: boolean;
   execFn?: typeof execFileSync;
   /**
    * `assertSentinel`, NÃO `sentinelExists` (achados P0/P1 do review da PR #5753).
@@ -280,6 +319,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     resolveClaudeBin,
     env,
     plan = STAGE_PLAN,
+    sessionSupervised = false,
     execFn = execFileSync,
     assertSentinelFn = assertSentinelImpl,
     onProgress = () => {},
@@ -312,7 +352,11 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     // garantido de alcançar a sub-sessão (o playbook do stage pode levar
     // o modelo a disparar task em background; a instrução explícita de
     // single-turn previne o sintoma na origem).
-    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS} ${NO_BACKGROUND_DIRECTIVE}`;
+    // #6719: só o Stage 1 lê `pre_gate` (§ 0-replies) — anexar a flag aos
+    // demais stages não teria efeito, mas manteria o escopo do achado restrito
+    // ao que de fato precisa dela.
+    const supervisedFlagPart = sessionSupervised && stage === 1 ? ` ${SESSION_SUPERVISED_FLAG}` : "";
+    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}${supervisedFlagPart} ${NO_BACKGROUND_DIRECTIVE}`;
     onProgress(`Stage ${stage}: claude -p '${prompt.slice(0, 80)}…'`);
 
     let stageOutcome: StageOutcome | null = null;
