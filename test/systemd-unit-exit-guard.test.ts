@@ -32,6 +32,11 @@ test("parseSuccessExitStatuses — sem a chave — retorna array vazio", () => {
   assert.deepEqual(parseSuccessExitStatuses(content), []);
 });
 
+test("parseSuccessExitStatuses — linha SuccessExitStatus= vazia (só espaços) não registra exit code 0 espúrio (review #6726)", () => {
+  const content = ["[Service]", "SuccessExitStatus=   ", "ExecStart=/bin/true"].join("\n");
+  assert.deepEqual(parseSuccessExitStatuses(content), []);
+});
+
 test("parseSuccessExitStatuses — ignora linhas comentadas/indentadas de outra chave", () => {
   const content = ["# SuccessExitStatus=999 (comentário, não conta)", "Description=x"].join("\n");
   assert.deepEqual(parseSuccessExitStatuses(content), []);

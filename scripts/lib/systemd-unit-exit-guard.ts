@@ -62,6 +62,13 @@ export function parseSuccessExitStatuses(serviceFileContent: string): number[] {
     const match = /^\s*SuccessExitStatus\s*=\s*(.+)$/.exec(line);
     if (!match) continue;
     for (const token of match[1].trim().split(/\s+/)) {
+      // #6695 review finding: token vazio (linha "SuccessExitStatus=" sem
+      // valor, ou só espaços) faz `Number("")` retornar 0, que passaria
+      // `Number.isFinite` e seria registrado como "0 declarado" mesmo sem
+      // nenhum código real na linha -- `trim()` acima já reduz o caso comum
+      // a string vazia, mas o guard explícito cobre qualquer token vazio
+      // remanescente de espaços múltiplos.
+      if (token === "") continue;
       const n = Number(token);
       if (Number.isFinite(n)) codes.push(n);
     }
