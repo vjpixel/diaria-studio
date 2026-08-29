@@ -126,10 +126,14 @@ export function defaultCredentialsPath(homeDir: string): string {
  * corrompido nesse caminho; se `source === "env"` o raw já parseou direto,
  * então a linha em disco já está boa e reescrevê-la seria trabalho inútil,
  * ou pior, arriscaria introduzir uma diferença onde não havia bug).
+ * `rewriteSkippedUnsafe`: `source === "fallback"` mas o JSON contém `#` — ver
+ * guard abaixo; a reescrita foi INTENCIONALMENTE pulada pra não trocar uma
+ * corrupção por outra.
  */
 export interface ServiceAccountEnvUpdateResult {
   content: string;
   rewroteServiceAccountJson: boolean;
+  rewriteSkippedUnsafe: boolean;
 }
 
 /**
@@ -152,6 +156,17 @@ export interface ServiceAccountEnvUpdateResult {
  * mora inteiro no unescape do dotenv em tempo de load, por isso reescrever
  * sem aspas resolve para QUALQUER consumidor futuro que carregue o `.env`
  * via `env-loader.ts`, não só para esta execução do script.
+ *
+ * **Guard contra `#` (#6704, achado do fleet review):** o parser de valor
+ * NÃO-citado do `dotenv@16.6.1` corta o valor no primeiro `#` que encontrar
+ * — em qualquer posição, não só "` #` com espaço antes" (regex real:
+ * `[^#\r\n]+`). Se algum campo do JSON (ex: uma URL com fragmento em
+ * `client_x509_cert_url`) algum dia contiver `#`, escrever sem aspas
+ * introduziria uma corrupção NOVA, diferente da que motivou #6704, e o
+ * script afirmaria erroneamente ter consertado de vez. Por isso, antes de
+ * reescrever, confere se o JSON serializado contém `#`; se contiver, NÃO
+ * reescreve (mantém o `.env` como estava — corrompido mas sem piorar) e
+ * sinaliza isso em `rewriteSkippedUnsafe` pro chamador avisar o operador.
  */
 export function applyServiceAccountEnvUpdates(
   envContent: string,
@@ -161,11 +176,17 @@ export function applyServiceAccountEnvUpdates(
 ): ServiceAccountEnvUpdateResult {
   let content = upsertEnvVar(envContent, "GOOGLE_APPLICATION_CREDENTIALS", credPath);
   let rewroteServiceAccountJson = false;
+  let rewriteSkippedUnsafe = false;
   if (source === "fallback") {
-    content = upsertEnvVar(content, "GOOGLE_ADS_SERVICE_ACCOUNT_JSON", JSON.stringify(parsed));
-    rewroteServiceAccountJson = true;
+    const serialized = JSON.stringify(parsed);
+    if (serialized.includes("#")) {
+      rewriteSkippedUnsafe = true;
+    } else {
+      content = upsertEnvVar(content, "GOOGLE_ADS_SERVICE_ACCOUNT_JSON", serialized);
+      rewroteServiceAccountJson = true;
+    }
   }
-  return { content, rewroteServiceAccountJson };
+  return { content, rewroteServiceAccountJson, rewriteSkippedUnsafe };
 }
 
 /** Upsert idempotente de uma linha `KEY=value` no conteúdo de um `.env` —

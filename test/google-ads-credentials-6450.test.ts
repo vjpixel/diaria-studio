@@ -149,7 +149,25 @@ describe("applyServiceAccountEnvUpdates (#6704)", () => {
       'GOOGLE_ADS_SERVICE_ACCOUNT_JSON="{\\"client_email\\":\\"a@b.com\\"}"\nGOOGLE_APPLICATION_CREDENTIALS=old';
     const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "env", parsed);
     assert.equal(result.rewroteServiceAccountJson, false);
+    assert.equal(result.rewriteSkippedUnsafe, false);
     assert.match(result.content, /^GOOGLE_ADS_SERVICE_ACCOUNT_JSON="\{\\"client_email\\":\\"a@b\.com\\"\}"$/m);
+    assert.match(result.content, /GOOGLE_APPLICATION_CREDENTIALS=\/home\/x\/sa\.json/);
+  });
+
+  it("source='fallback' mas o JSON contém '#' (ex: URL com fragmento) => NÃO reescreve, sinaliza rewriteSkippedUnsafe (#6704, achado do fleet review)", () => {
+    // dotenv corta valor NÃO-citado no 1º '#' que encontrar, em qualquer
+    // posição (regex real do dotenv@16.6.1: `[^#\r\n]+`) — reescrever sem
+    // aspas aqui trocaria a corrupção conhecida (#6450) por uma corrupção
+    // NOVA e silenciosa. O guard tem que recusar a reescrita nesse caso.
+    const dangerous = { ...parsed, client_x509_cert_url: "https://example.com/cert#fragment" };
+    const current = "GOOGLE_ADS_SERVICE_ACCOUNT_JSON=old\nGOOGLE_APPLICATION_CREDENTIALS=old";
+    const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "fallback", dangerous);
+    assert.equal(result.rewroteServiceAccountJson, false, "não deve reescrever quando o JSON contém '#'");
+    assert.equal(result.rewriteSkippedUnsafe, true);
+    // a linha original (ainda corrompida) permanece intocada — pior que
+    // consertado, mas nunca pior do que já estava
+    assert.match(result.content, /^GOOGLE_ADS_SERVICE_ACCOUNT_JSON=old$/m);
+    // GOOGLE_APPLICATION_CREDENTIALS continua sendo atualizado normalmente
     assert.match(result.content, /GOOGLE_APPLICATION_CREDENTIALS=\/home\/x\/sa\.json/);
   });
 

@@ -146,16 +146,18 @@ export function main(): number {
     parsed = result.parsed;
     source = result.source;
     if (source === "fallback") {
-      // Warn (não log de sucesso silencioso, #6704): até a linha de baixo
-      // reescrever o .env, GOOGLE_ADS_SERVICE_ACCOUNT_JSON ainda está
-      // corrompido nele — qualquer outro consumidor que leia via
-      // env-loader.ts (não só este script) segue quebrado até essa reescrita
-      // rodar. `npm run sync-env` NÃO resolve isto (o round-trip
-      // Doppler→.env→dotenv é a própria causa da corrupção).
+      // Warn (não log de sucesso silencioso, #6704): até o bloco abaixo
+      // reescrever o .env (se for seguro fazê-lo — ver guard do '#' em
+      // applyServiceAccountEnvUpdates), GOOGLE_ADS_SERVICE_ACCOUNT_JSON
+      // ainda está corrompido nele — qualquer outro consumidor que leia via
+      // env-loader.ts (não só este script) segue quebrado. `npm run
+      // sync-env` NÃO resolve isto (o round-trip Doppler→.env→dotenv é a
+      // própria causa da corrupção). Mensagem deliberadamente NÃO promete a
+      // reescrita aqui — o resultado real (consertado, pulado por '#', ou
+      // .env ausente) é logado mais abaixo, onde já se sabe qual foi.
       console.warn(
         "[materialize-google-ads-credentials] GOOGLE_ADS_SERVICE_ACCOUNT_JSON em .env estava corrompido " +
-          "(round-trip dotenv, ver docstring) — usado o valor direto do Doppler CLI para esta execução. " +
-          "Reescrevendo a linha em .env sem aspas (formato que o dotenv não desescapa) para consertar de vez.",
+          "(round-trip dotenv, ver docstring) — usado o valor direto do Doppler CLI para esta execução.",
       );
     }
   } catch (err) {
@@ -175,12 +177,26 @@ export function main(): number {
   const envPath = resolve(root, ".env");
   if (existsSync(envPath)) {
     const current = readFileSync(envPath, "utf8");
-    const { content: updated, rewroteServiceAccountJson } = applyServiceAccountEnvUpdates(
+    const { content: updated, rewroteServiceAccountJson, rewriteSkippedUnsafe } = applyServiceAccountEnvUpdates(
       current,
       credPath,
       source,
       parsed,
     );
+    if (rewriteSkippedUnsafe) {
+      // #6704, achado do fleet review: o dotenv instalado corta valor
+      // não-citado no 1º `#` que encontrar, em qualquer posição — se algum
+      // campo do JSON contiver `#`, reescrever sem aspas trocaria a
+      // corrupção conhecida (#6450) por uma corrupção NOVA e silenciosa.
+      // Avisa e deixa o `.env` como estava — pior que consertado, mas nunca
+      // pior que já era.
+      console.warn(
+        "[materialize-google-ads-credentials] GOOGLE_ADS_SERVICE_ACCOUNT_JSON contém '#' — " +
+          "reescrita sem aspas foi PULADA de propósito (dotenv corta valor não-citado no 1º '#', " +
+          "trocaria uma corrupção por outra). O .env segue corrompido para outros consumidores; " +
+          "esta execução já tem a credencial correta via fallback do Doppler CLI.",
+      );
+    }
     if (updated !== current) {
       writeFileAtomic(envPath, updated);
       console.log("[materialize-google-ads-credentials] .env atualizado: GOOGLE_APPLICATION_CREDENTIALS aponta pro arquivo acima.");
