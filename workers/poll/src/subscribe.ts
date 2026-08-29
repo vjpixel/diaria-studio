@@ -760,6 +760,39 @@ async function subscribeToKit(
         console.error(`[subscribeToKit] #6340: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI (e-mail de confirmação NÃO disparado por este caminho).`);
       }
     }
+    // #6508: cadastro via API direta também entra na sequence de boas-vindas.
+    // Quem passa pelo form (UI) é coberto pela Automation Rule do Kit
+    // (trigger "Subscribes to a form" → "Subscribe to an email sequence",
+    // rule id 5578342, sequence 2876508) — mas o worker `poll` cria
+    // subscriber via POST /v4/subscribers SEM passar pelo form, então
+    // precisa do vínculo explícito aqui. Best-effort: nunca falha a
+    // assinatura, só loga — mesmo padrão de `vincularKitDoiForm`.
+    const seqRes = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+    const seqSubscriberId = seqRes?.subscriber?.id;
+    if (typeof seqSubscriberId === "number" && env.KIT_WELCOME_SEQUENCE_ID) {
+      const seqId = parseInt(env.KIT_WELCOME_SEQUENCE_ID, 10);
+      if (!isNaN(seqId)) {
+        try {
+          const seqFetch = await fetchImpl(`${base}/sequences/${seqId}/subscribers`, {
+            method: "POST",
+            headers: {
+              "X-Kit-Api-Key": apiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ subscriber_id: seqSubscriberId }),
+            signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+          });
+          if (!seqFetch.ok) {
+            const bodyText = await seqFetch.text().catch(() => "<unreadable>");
+            console.error(`[subscribeToKit] #6508: falha ao adicionar subscriber ${seqSubscriberId} à sequence ${seqId}: ${seqFetch.status} ${bodyText.slice(0, 300)}`);
+          }
+        } catch (err) {
+          console.error(`[subscribeToKit] #6508: fetch exception ao adicionar à sequence: ${String(err)}`);
+        }
+      } else {
+        console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID inválido: "${env.KIT_WELCOME_SEQUENCE_ID}" — pulando vínculo com sequence`);
+      }
+    }
     return { ok: true, status: res.status };
   }
   // #6048 — mesmo racional do catch acima: loga o corpo do erro do Kit
