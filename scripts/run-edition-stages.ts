@@ -131,7 +131,7 @@ export function main(
   const { values, flags } = parseArgsLib(argv);
   const aammdd = values["edition"];
   if (!aammdd || !AAMMDD_RE.test(aammdd)) {
-    stderr("Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json]");
+    stderr("Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]");
     return 2;
   }
 
