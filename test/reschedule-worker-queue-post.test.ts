@@ -148,6 +148,30 @@ describe("reschedule-worker-queue-post main()", () => {
     assert.ok(logs.some((l) => /reenqueued/.test(l)));
   });
 
+  it("DELETE 200 + POST falho → lança ATENÇÃO com key e payload (não perde em silêncio, #6702)", async () => {
+    const seenMethods: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "";
+      seenMethods.push(method);
+      if (method === "DELETE") {
+        return jsonResponse(200, { deleted: true, key: "queue:d1:260828" });
+      }
+      return new Response("upstream unavailable", { status: 503 });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      main(baseArgs),
+      (err: Error) => {
+        assert.match(err.message, /JÁ FOI DELETADA/);
+        assert.match(err.message, /queue:d1:260828/);
+        assert.match(err.message, /"text":"hello"/); // payload completo pra re-enfileirar à mão
+        assert.match(err.message, /503/); // erro original preservado
+        return true;
+      },
+    );
+    assert.equal(seenMethods.filter((m) => m === "POST").length, 2, "re-enqueue deve esgotar as 2 tentativas");
+  });
+
   it("sem --worker-url/--token (nem env) → exit 2, sem chamar fetch", async () => {
     delete process.env.DIARIA_LINKEDIN_CRON_URL;
     delete process.env.DIARIA_LINKEDIN_CRON_TOKEN;
