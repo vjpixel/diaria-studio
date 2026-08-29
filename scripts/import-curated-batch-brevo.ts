@@ -75,6 +75,7 @@ import {
   type SkippedEntry,
   type SkipReason,
 } from "./lib/curated-batch-import.ts";
+import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_CURATED_LOG_PATH = resolve(ROOT, "data/brevo-diaria/curated-import-log.jsonl");
@@ -189,7 +190,7 @@ export async function importOneCuratedContact(params: {
 
   const nextStore = upsertIngested(
     store,
-    { email: entry.email, beehiiv_subscription_id: `curated:${normalizeEmail(entry.email)}` },
+    { email: entry.email, beehiiv_subscription_id: buildOrigin("curated", normalizeEmail(entry.email)) },
     now(),
   );
   persistStore(nextStore);
