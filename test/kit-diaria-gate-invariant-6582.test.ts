@@ -102,6 +102,19 @@ describe("checkKitDiariaExclusiveAudienceDispatched (#6582)", () => {
     }
   });
 
+  it("REGRESSÃO #6692: backend=kit + kit_diaria.enabled=true simultâneos ⇒ [] — o switchover já cobre a audiência, dispatch real faria skip e nunca escreveria o estado que esta regra exigiria", () => {
+    const dir = makeEditionDir("kit-diaria-gate-6692-");
+    try {
+      const cfg = {
+        kit_diaria: { enabled: true, audience_tag: "rampa-kit" },
+        publishing: { newsletter: { backend: "kit" } },
+      };
+      assert.deepEqual(checkKitDiariaExclusiveAudienceDispatched(dir, cfg), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sem configOverride, lê platform.config.json REAL do repo — nunca lança", () => {
     const dir = makeEditionDir("kit-diaria-gate-6582-");
     try {

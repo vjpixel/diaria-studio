@@ -1014,23 +1014,42 @@ function checkStageUsageCaptured(editionDir: string): InvariantViolation[] {
  * `checkScheduledAt(editionDir, backendOverride)` em `invariant-checks/stage-6.ts`)
  * — sem isso o teste dependeria do `platform.config.json` REAL do repo, que
  * pode mudar de estado (`kit_diaria.enabled`) independente desta suíte.
+ *
+ * #6692 (achado do review consolidado sobre #6582): esta regra decidia
+ * sozinha "o canal Kit deveria ter despachado?" olhando só
+ * `kit_diaria.enabled === true`, ignorando a precedência real de
+ * `decideKitChannelDispatch` (`kit-diaria-channel.ts`) — que tem uma checagem
+ * ANTERIOR: `publishing.newsletter.backend === "kit"` sempre vira `skip`
+ * (motivo: o switchover #6114 já cobre a audiência inteira; rodar o canal
+ * paralelo junto entregaria a edição em dobro). Uma config com
+ * `backend: "kit"` E `kit_diaria.enabled: true` simultâneos fazia esta regra
+ * exigir um `kit-diaria-published.json` que o dispatch real nunca escreveria
+ * (ele decide `skip` antes de tentar) — travando o Gate 6 num loop sem saída.
+ * Corrigido reusando `decideKitChannelDispatch` em vez de reimplementar a
+ * regra parcialmente.
  */
 function checkKitDiariaExclusiveAudienceDispatched(
   editionDir: string,
-  configOverride?: { kit_diaria?: { enabled?: boolean; audience_tag?: string } },
+  configOverride?: {
+    kit_diaria?: { enabled?: boolean; audience_tag?: string };
+    publishing?: { newsletter?: { backend?: string } };
+  },
 ): InvariantViolation[] {
   let kitDiariaEnabled = false;
   let audienceTag = "?";
+  let newsletterBackend: string | undefined;
   try {
     const cfg =
       configOverride ??
       (existsSync(resolve(ROOT, "platform.config.json"))
         ? (JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
             kit_diaria?: { enabled?: boolean; audience_tag?: string };
+            publishing?: { newsletter?: { backend?: string } };
           })
         : {});
     kitDiariaEnabled = cfg.kit_diaria?.enabled === true;
     audienceTag = cfg.kit_diaria?.audience_tag ?? "kit-nativo";
+    newsletterBackend = cfg.publishing?.newsletter?.backend;
   } catch {
     // platform.config.json malformado: outras regras (ex: consent-binding)
     // já cobrem isso via seus próprios helpers. Aqui, fail-soft — não é o
@@ -1040,6 +1059,11 @@ function checkKitDiariaExclusiveAudienceDispatched(
     return [];
   }
   if (!kitDiariaEnabled) return [];
+  // #6692: `backend: "kit"` vence sobre `kit_diaria.enabled` — mesma
+  // precedência de `decideKitChannelDispatch`. Se o dispatch real decidiria
+  // `skip` por este motivo, esta regra não deve exigir um estado que o
+  // dispatch nunca produziria.
+  if (newsletterBackend === "kit") return [];
 
   const statePath = resolve(editionDir, "_internal", "kit-diaria-published.json");
   if (!existsSync(statePath)) {

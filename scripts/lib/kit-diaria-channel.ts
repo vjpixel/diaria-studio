@@ -74,6 +74,17 @@ export interface KitDiariaPublished {
   audience_tag_id: number;
   status: "draft" | "scheduled";
   scheduled_at?: string;
+  /**
+   * #6693 — `false` quando `verifyBroadcastAudience` (releitura pós-
+   * `createBroadcast`) achou o `subscriber_filter` divergente do esperado: o
+   * broadcast já existe no Kit (efeito externo real, irreversível de
+   * "desfazer" localmente), mas a audiência não bateu com a tag pretendida.
+   * Ausente/`true` ⇒ verificado (ou verificação não se aplica, estado
+   * anterior ao #6693). Existe pra que o RESUME saiba que já existe um
+   * broadcast desta edição (evitando criar um 2º, duplicado) sem precisar
+   * assumir silenciosamente que a audiência dele está correta.
+   */
+  audience_verified?: boolean;
 }
 
 export type KitChannelDecision =
