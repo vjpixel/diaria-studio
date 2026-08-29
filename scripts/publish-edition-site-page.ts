@@ -416,16 +416,36 @@ const SITE_PUBLISH_LOCK_RETRY_DELAY_MS = 5_000;
  * (`merge-lock-acquire` nega quando OUTRA sessão segura o lock — não é
  * erro, é concorrência esperada); lança se esgotar as tentativas, antes de
  * tocar qualquer arquivo/branch.
+ *
+ * #6703 achado 1: `res.ok === false` conflava dois casos bem diferentes —
+ * "negado, outra sessão detém o lock" (exit 1 do script, esperado sob
+ * concorrência) e "erro de infra" (crash do `npx tsx`, script ausente,
+ * timeout de 60s do `LockRunner` — ver `LOCK_RUNNER_TIMEOUT_MS`). A
+ * mensagem final SEMPRE afirmava a 1ª causa, mesmo quando o erro real era
+ * infra quebrada. Mesma discriminação denied-vs-infra-error que
+ * `merge-train-live.ts` (`mergeTrainBatch`/`mergeSoloPr`) já faz via regex
+ * `/denied/i` em stdout/stderr — reusada aqui em vez de reinventada.
  */
 function acquireSitePublishLock(rootDir: string, sessionId: string, lock: LockRunner, sleep: SleepFn): void {
+  let lastDenied = false;
+  let lastDetail = "sem detalhe";
   for (let attempt = 1; attempt <= SITE_PUBLISH_LOCK_RETRY_ATTEMPTS; attempt++) {
     const res = lock(["merge-lock-acquire", "--session-id", sessionId], rootDir);
     if (res.ok) return;
+    lastDenied = /denied/i.test(res.stdout) || /denied/i.test(res.stderr);
+    lastDetail = res.stderr || res.stdout || "sem detalhe";
     if (attempt < SITE_PUBLISH_LOCK_RETRY_ATTEMPTS) sleep(SITE_PUBLISH_LOCK_RETRY_DELAY_MS);
   }
+  if (lastDenied) {
+    throw new Error(
+      `merge lock não adquirido após ${SITE_PUBLISH_LOCK_RETRY_ATTEMPTS} tentativas (#6626) — outra sessão detém ` +
+        "o checkout compartilhado agora. Commit/push de site-page abortado antes de tocar qualquer arquivo/branch.",
+    );
+  }
   throw new Error(
-    `merge lock não adquirido após ${SITE_PUBLISH_LOCK_RETRY_ATTEMPTS} tentativas (#6626) — outra sessão detém ` +
-      "o checkout compartilhado agora. Commit/push de site-page abortado antes de tocar qualquer arquivo/branch.",
+    `merge-lock-acquire falhou após ${SITE_PUBLISH_LOCK_RETRY_ATTEMPTS} tentativas por erro de infra (#6703) — ` +
+      `não é contenção de outra sessão, causa não identificada: ${lastDetail}. Commit/push de site-page ` +
+      "abortado antes de tocar qualquer arquivo/branch.",
   );
 }
 
@@ -442,6 +462,31 @@ function releaseSitePublishLock(rootDir: string, sessionId: string, lock: LockRu
   if (!res.ok) {
     process.stderr.write(
       `[site-page] aviso: merge-lock-release falhou (${res.stderr || res.stdout || "sem detalhe"}) — o TTL expira sozinho.\n`,
+    );
+  }
+}
+
+/**
+ * Renova o TTL do lock adquirido por `acquireSitePublishLock` (#6703 achado
+ * 2). `MERGE_LOCK_TTL_MS` (2min, `session-registry.ts`) foi dimensionado
+ * pra "gh pr merge + git pull" — a janela protegida aqui é mais longa
+ * (`checkout -B` + `add` + `commit` + `push --force-with-lease` + `gh pr
+ * list` + `gh pr create` + `checkout` de volta, múltiplos round-trips de
+ * rede), podendo ultrapassar o TTL original. `renewMergeLock`
+ * (`session-registry.ts merge-lock-renew`) só estende um hold que a PRÓPRIA
+ * sessão já detém — nunca cria um hold novo, nunca rouba lock alheio (ver
+ * docblock de `renewMergeLock`). Fail-soft, mesmo padrão de
+ * `releaseSitePublishLock`: uma falha de renovação não pode abortar a
+ * janela no meio (deixaria o checkout preso em `site-publish/{slug}` sem
+ * nunca voltar pro branch original) — loga em stderr e segue; o pior caso é
+ * a mesma corrida que o TTL já aceitava antes de existir renovação.
+ */
+function renewSitePublishLock(rootDir: string, sessionId: string, lock: LockRunner): void {
+  const res = lock(["merge-lock-renew", "--session-id", sessionId], rootDir);
+  if (!res.ok) {
+    process.stderr.write(
+      `[site-page] aviso: merge-lock-renew falhou (${res.stderr || res.stdout || "sem detalhe"}) — TTL pode ` +
+        "expirar antes do fim da janela protegida.\n",
     );
   }
 }
@@ -588,9 +633,14 @@ export function commitAndPushSitePage(
       );
     }
 
+    // #6703 achado 2: renova o TTL antes de cada round-trip de rede restante
+    // — push, e (mais adiante) gh pr list/create — pra janela protegida não
+    // exceder o TTL de 2min dimensionado pra uma operação bem mais curta.
+    renewSitePublishLock(rootDir, lockSessionId, lock);
     git(["push", "--force-with-lease", "-u", "origin", branchName], rootDir);
     pushed = true;
 
+    renewSitePublishLock(rootDir, lockSessionId, lock);
     const existingRaw = gh(
       ["pr", "list", "--head", branchName, "--state", "open", "--json", "number,url"],
       rootDir,
@@ -608,6 +658,7 @@ export function commitAndPushSitePage(
       prUrl = existing[0].url;
       prCreated = false;
     } else {
+      renewSitePublishLock(rootDir, lockSessionId, lock);
       const createOut = gh(
         [
           "pr",
@@ -634,9 +685,25 @@ export function commitAndPushSitePage(
   } finally {
     // Sempre volta pro branch original, mesmo em erro — o checkout
     // compartilhado nunca fica preso numa branch de publicação de página.
-    git(["checkout", originalBranch], rootDir);
-    // #6626: libera o lock só DEPOIS do checkout de volta — a janela
-    // protegida cobre a troca inteira, não só metade dela.
+    // #6703 achado 3: o `checkout` de volta em si pode lançar (conflito,
+    // I/O, branch original removida por outra sessão) — sem este try/catch,
+    // essa exceção pulava DIRETO pro topo do `finally`, e
+    // `releaseSitePublishLock` NUNCA rodava (o lock só sairia pelo TTL) E o
+    // checkout compartilhado ficava preso em `site-publish/{slug}`. O
+    // release precisa rodar independente do checkout de volta ter lançado
+    // ou não — por isso vira um `catch` que só loga, nunca relança (não
+    // pode mascarar o erro real que já estava em curso e propagando por
+    // cima deste `finally`).
+    try {
+      git(["checkout", originalBranch], rootDir);
+    } catch (e) {
+      process.stderr.write(
+        `[site-page] aviso: checkout de volta para '${originalBranch}' falhou (${(e as Error).message}) — ` +
+          `checkout compartilhado pode ter ficado preso em '${branchName}'.\n`,
+      );
+    }
+    // #6626: libera o lock só DEPOIS da tentativa de checkout de volta — a
+    // janela protegida cobre a troca inteira, não só metade dela.
     releaseSitePublishLock(rootDir, lockSessionId, lock);
   }
 
