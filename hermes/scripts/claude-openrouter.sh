@@ -140,11 +140,25 @@ for MODEL in "${MODELS[@]}"; do
   # já sobre o arquivo completo.
   # ANTHROPIC_DEFAULT_HAIKU_MODEL fixa o modelo das chamadas de BACKGROUND do
   # CLI no mesmo slug barato da tentativa atual (#6716). Sem isto, `--model` só
-  # governa a conversa: as chamadas auxiliares (summarization pra `--resume`,
-  # auto-compact) usam o default do CLI e saíram como Claude Sonnet 5 a preço
-  # cheio no billing do OpenRouter — medido em 29/08/2026 nas sessões
-  # 76433685 ($0.38) e 1520faa3 ($0.417), ~75% do custo de cada delegação,
-  # contra ~$0.09 se tudo tivesse rodado no slug pedido.
+  # governa a conversa: as chamadas auxiliares usam o default do CLI e saíram
+  # como Claude Sonnet 5 a preço cheio no billing do OpenRouter — medido em
+  # 29/08/2026 nas sessões 76433685 ($0.38) e 1520faa3 ($0.417), ~75% do custo
+  # de cada delegação, contra ~$0.09 se tudo tivesse rodado no slug pedido.
+  #
+  # Qual auxiliar dispara aqui não está estabelecido: a doc lista summarization
+  # pra `--resume` e auto-compact, mas este wrapper nunca passa `--resume`
+  # (chamada única, sem continuação), o que deixa o auto-compact como candidato
+  # provável — o contexto sobe de ~52k pra ~70k dentro de um tick. Não confirmado.
+  #
+  # TRADE-OFF ACEITO (review da PR #6717): quando o elo corrente é `:free`, o
+  # background passa a puxar do MESMO balde `free-models-per-day` (por CONTA)
+  # que o primário — 2 saques por delegação em vez de 1, então o balde seca mais
+  # cedo e a cadeia cai no pago antes. Antes do fix essas chamadas iam pro Sonnet
+  # pago e não tocavam o balde. O custo em DINHEIRO cai de qualquer forma; o que
+  # piora é a cota free, que já é o gargalo do #6712 (17h/dia de pausa). Se isso
+  # incomodar, a alternativa é fixar o background sempre no elo PAGO barato
+  # (glm-5.3-flash) em vez de "$MODEL" — não feito aqui pra manter a propriedade
+  # "background nunca custa mais que o primário" e evitar um slug hardcoded.
   #
   # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
   # .jsonl da sessão (as duas acima registram só glm-5.3-flash), então

@@ -39,12 +39,40 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
 
-/** Linhas de código do wrapper, sem comentários shell (o docblock do próprio
- * script cita a var em prosa — casar com isso daria falso verde). */
+/**
+ * Linhas de código do wrapper, sem comentários shell (o docblock do próprio
+ * script cita a var em prosa — casar com isso daria falso verde).
+ *
+ * Tira comentário de linha inteira E comentário inline (`cmd  # nota`). O
+ * inline não existe hoje perto desta var, mas o repo usa `# ref (#NNNN)` com
+ * frequência e este teste é um guard de longo prazo: sem isso, um comentário
+ * futuro citando a var produziria falso verde (achado do review da PR #6717).
+ *
+ * O corte de inline só vale quando o `#` vem depois de espaço em branco e fora
+ * de aspas — `"https://openrouter.ai/api"` não tem `#`, mas um valor com `#`
+ * dentro de string não pode ser truncado.
+ */
 function codeLines(): string[] {
   return readFileSync(WRAPPER_PATH, "utf8")
     .split("\n")
-    .filter((line) => !/^\s*#/.test(line));
+    .filter((line) => !/^\s*#/.test(line))
+    .map(stripInlineComment);
+}
+
+/** Remove `# ...` no fim da linha, respeitando aspas simples e duplas. */
+export function stripInlineComment(line: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote && line[i - 1] !== "\\") quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
 }
 
 describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
@@ -68,6 +96,18 @@ describe("claude-openrouter.sh — pin do modelo de background (#6716)", () => {
         "Um slug fixo fica errado nos demais elos de MODELS_DEFAULT (que mistura " +
         ":free e pago) e pode sair do catálogo do OpenRouter — ver #6617.",
     );
+  });
+
+  it("stripInlineComment não confunde `#` dentro de aspas com comentário", () => {
+    // Sem o corte de inline, um comentário futuro citando a var daria falso
+    // verde; com um corte ingênuo, um `#` dentro de string truncaria código real.
+    assert.equal(
+      stripInlineComment('    FOO="bar" \\  # ANTHROPIC_DEFAULT_HAIKU_MODEL antigo').trim(),
+      'FOO="bar" \\',
+    );
+    assert.equal(stripInlineComment('    URL="https://x/#frag" \\').trim(), 'URL="https://x/#frag" \\');
+    assert.equal(stripInlineComment("    A='b#c' \\").trim(), "A='b#c' \\");
+    assert.equal(stripInlineComment('    sem comentario'), '    sem comentario');
   });
 
   it("fica no mesmo bloco env do ANTHROPIC_BASE_URL (chega ao processo do CLI)", () => {
