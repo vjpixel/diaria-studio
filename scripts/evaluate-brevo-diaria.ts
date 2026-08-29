@@ -333,6 +333,7 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
@@ -893,8 +894,20 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
 /** Prefixo sintético de `beehiiv_subscription_id` pra contato ingerido a
  *  partir do cohort `inactive` do Kit — convenção de
  *  `sync-kit-inactive-to-brevo.ts` (#6340 item 3), mesmo padrão de
- *  `curated:`/`sunset:` já usados por outros scripts de ingestão. */
-export const KIT_ORIGIN_ID_PREFIX = "kit:";
+ *  `curated:`/`sunset:` já usados por outros scripts de ingestão.
+ *
+ *  #6699 — re-exportado a partir de `ORIGIN_PREFIX.KIT`
+ *  (`scripts/lib/shared/brevo-diaria-origin.ts`, o módulo canônico de
+ *  parser/construtor de origem, #6678) em vez de um literal `"kit:"`
+ *  independente. Antes deste fix, este arquivo, `brevo-diaria-store.ts` e o
+ *  módulo canônico definiam o mesmo prefixo 3× — mudar `ORIGIN_PREFIX.KIT`
+ *  não propagava pra cá nem pro store, e nenhum teste existente pegava a
+ *  divergência (ver `test/brevo-diaria-origin-consumers-6699.test.ts`).
+ *  Mantido como constante própria (em vez de substituir todo uso por
+ *  `ORIGIN_PREFIX.KIT` inline) porque o nome `KIT_ORIGIN_ID_PREFIX` já é
+ *  amplamente referenciado neste arquivo e documentado em comentários de
+ *  outros módulos (`brevo-diaria-store.ts`). */
+export const KIT_ORIGIN_ID_PREFIX = ORIGIN_PREFIX.KIT;
 
 /**
  * #6340 item 4 (fix C, review pós-merge) — resultado discriminado de

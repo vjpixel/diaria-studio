@@ -132,9 +132,14 @@ import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 // #6340 item 4 fix D — importa a constante do prefixo do módulo canônico shared/
 // (brevo-diaria-origin.ts) em vez de do evaluate-brevo-diaria.ts: ambos (produtor
 // aqui e consumidor em evaluate-brevo-diaria.ts) referenciam a MESMA constante
-// canônica, travando divergences de prefixo em compile-time. Ver o teste "fix D"
-// em test/sync-kit-inactive-to-brevo-6340.test.ts pro guard que trava produtor e
-// consumidor na mesma constante.
+// canônica (`evaluate-brevo-diaria.ts` re-exporta `KIT_ORIGIN_ID_PREFIX =
+// ORIGIN_PREFIX.KIT` desde #6699). Isto trava a divergência de prefixo em
+// RUNTIME, via teste — não em compile-time: nenhum tipo do TypeScript aqui
+// impede reintroduzir um literal `"kit:"` independente em outro arquivo
+// (foi exatamente o que aconteceu em `brevo-diaria-store.ts` antes do
+// #6699). O guard real é o teste "fix D" em
+// test/sync-kit-inactive-to-brevo-6340.test.ts (produtor↔evaluate) somado a
+// test/brevo-diaria-origin-consumers-6699.test.ts (cobre também o store).
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
