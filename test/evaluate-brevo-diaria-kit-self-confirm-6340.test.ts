@@ -150,7 +150,9 @@ describe("runEvaluation — Passo 1 (auto-confirmação) roteado por origem (#63
       assert.equal(unlinkCalled, true);
       const c = findContact(result.store, "kit-ativo@b.com")!;
       assert.equal(c.status, "promoted_beehiiv");
-      assert.equal(c.resolution_reason, "self_confirmed_beehiiv");
+      // #6677: contato de origem Kit resolve `self_confirmed_kit` — a
+      // confirmação aconteceu no Kit, nunca na Beehiiv.
+      assert.equal(c.resolution_reason, "self_confirmed_kit");
     } finally {
       restore();
     }
@@ -508,7 +510,8 @@ describe("runEvaluation — Passo 0 (descadastro nativo) roteado por origem (#63
       assert.equal(beehiivCalls, 0);
       const c = findContact(result.store, "kit-ja-ativo@b.com")!;
       assert.equal(c.status, "promoted_beehiiv");
-      assert.equal(c.resolution_reason, "self_confirmed_beehiiv");
+      // #6677 — ver nota acima.
+      assert.equal(c.resolution_reason, "self_confirmed_kit");
     } finally {
       restore();
     }
@@ -619,8 +622,12 @@ describe("runEvaluation — origens mistas no MESMO run (#6340 item 4 fix F, rev
       assert.equal(result.failed, 1, "só kit-malformado-mix conta failed — nenhum vazamento pros outros 2");
       assert.equal(result.kept, 1, "kit-malformado-mix, mesmo com id malformado, ainda cai na avaliação normal por taxa de abertura (Passo 2) — 0/0 abaixo do piso de amostra");
       assert.equal(findContact(result.store, "kit-ok@b.com")!.status, "promoted_beehiiv");
-      assert.equal(findContact(result.store, "kit-ok@b.com")!.resolution_reason, "self_confirmed_beehiiv");
       assert.equal(findContact(result.store, "beehiiv-ok@b.com")!.status, "promoted_beehiiv");
+      // #6677: no MESMO run, cada origem grava seu próprio `resolution_reason`
+      // — é o que prova que a distinção sobrevive ao loop multi-contato, e não
+      // só a um run de contato único.
+      assert.equal(findContact(result.store, "kit-ok@b.com")!.resolution_reason, "self_confirmed_kit");
+      assert.equal(findContact(result.store, "beehiiv-ok@b.com")!.resolution_reason, "self_confirmed_beehiiv");
       assert.equal(findContact(result.store, "kit-malformado-mix@b.com")!.status, "in_brevo", "malformado nunca resolve — segue in_brevo");
     } finally {
       restore();
