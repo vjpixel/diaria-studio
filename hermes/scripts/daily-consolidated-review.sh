@@ -88,6 +88,20 @@ if ! grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
   exit 4
 fi
 
+# Cosmético: separa os links do resumo com espaço, pra clientes que autolinkam
+# (Telegram) não grudarem URL na vírgula/no `=` e gerarem link quebrado.
+#
+# `|| true` é DELIBERADO e não é ruído: o script roda sob `set -euo pipefail`,
+# e sem ele uma falha deste sed (arquivo read-only, disco cheio) abortaria
+# ANTES de `echo "$HEAD_SHA" > "$STATE_FILE"` — o marco não avançaria, e o
+# review Opus daquele dia, já pago e concluído, seria refeito sobre o mesmo
+# range no dia seguinte. Formatação nunca deve custar um review inteiro.
+#
+# Roda DEPOIS do gate `grep -q RESUMO-DAILY-REVIEW`, então não pode mascarar
+# review incompleto. Nenhum consumidor parseia `issues_criadas=`
+# programaticamente (só este grep, que é anterior) — verificado em 29/08/2026.
+sed -i 's/,https:\/\//, https:\/\//g; s/issues_criadas=https:\/\//issues_criadas= https:\/\//g' "$OUT_FILE" || true
+
 # Marco avança só depois do review completar sem erro (set -e garante).
 echo "$HEAD_SHA" > "$STATE_FILE"
 echo "[daily-review] concluído — marco avançado para $HEAD_SHA"
