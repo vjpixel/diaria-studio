@@ -121,6 +121,7 @@ import {
   type MvCoverage,
   type PendingToIngestEntry,
 } from "./sync-pending-to-brevo.ts";
+import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -177,7 +178,7 @@ export function computeKitContactsToIngest(
     if (known.has(s.email) || seen.has(s.email)) continue;
     if (verifiedEmails && !verifiedEmails.has(s.email)) continue;
     seen.add(s.email);
-    out.push({ email: s.email, beehiiv_subscription_id: `kit:${s.kit_subscriber_id}` });
+    out.push({ email: s.email, beehiiv_subscription_id: buildOrigin("kit", String(s.kit_subscriber_id)) });
   }
   return out;
 }
