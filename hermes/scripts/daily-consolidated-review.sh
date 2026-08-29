@@ -88,6 +88,27 @@ if ! grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then
   exit 4
 fi
 
+# Cosmético: separa os links do resumo com espaço, pra clientes que autolinkam
+# (Telegram) não grudarem URL na vírgula/no `=` e gerarem link quebrado.
+#
+# ESCOPADO à linha do resumo (`/RESUMO-DAILY-REVIEW:/{...}`). O OUT_FILE é o
+# transcript INTEIRO do Opus, e sem o endereço a substituição reescreveria
+# qualquer `,https://` em prosa ou código citado no corpo do review — mutação
+# silenciosa de conteúdo que ninguém pediu (achado do review da PR #6738).
+#
+# O degrade é fail-soft POR DESIGN, mas não silencioso: o script roda sob
+# `set -euo pipefail`, então sem o `||` uma falha deste sed (arquivo
+# read-only, disco cheio) abortaria ANTES de `echo "$HEAD_SHA" >
+# "$STATE_FILE"` — o marco não avançaria, e o review Opus daquele dia, já
+# pago e concluído, seria refeito sobre o mesmo range no dia seguinte.
+# Formatação nunca deve custar um review inteiro. O AVISO em stderr segue o
+# mesmo padrão do fallback de BASE_SHA inválido mais acima neste script.
+#
+# Roda DEPOIS do gate `grep -q RESUMO-DAILY-REVIEW`, então não pode mascarar
+# review incompleto. Nenhum consumidor parseia `issues_criadas=`
+# programaticamente (só este grep, que é anterior) — verificado em 29/08/2026.
+sed -i '/RESUMO-DAILY-REVIEW:/{s|,\(https\?://\)|, \1|g; s|issues_criadas=\(https\?://\)|issues_criadas= \1|g}' "$OUT_FILE" || echo "[daily-review] AVISO: formatação de links do resumo falhou — cosmético, marco segue avançando" >&2
+
 # Marco avança só depois do review completar sem erro (set -e garante).
 echo "$HEAD_SHA" > "$STATE_FILE"
 echo "[daily-review] concluído — marco avançado para $HEAD_SHA"
