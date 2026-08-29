@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WRAPPER_PATH = join(ROOT, "hermes/scripts/claude-openrouter.sh");
+const SKILL_PATH = join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md");
 
 describe("guard de budget do wrapper (#6666)", () => {
   const source = readFileSync(WRAPPER_PATH, "utf8");
@@ -89,5 +90,31 @@ describe("guard de budget do wrapper (#6666)", () => {
       stdoutCapture < firstClassifyGrep,
       `echo "$OUT" >> "$ATTEMPT_LOG" (pos ${stdoutCapture}) deve vir ANTES do primeiro classify-grep (pos ${firstClassifyGrep}) — o stdout com o erro do CLI precisa estar no ATTEMPT_LOG antes de ser classificado (#6666)`,
     );
+  });
+});
+
+describe("call sites do wrapper nao sobrepoem o piso de BUDGET (#6712)", () => {
+  /**
+   * O default do wrapper nao basta: a SKILL.md invoca
+   * `claude-openrouter.sh --budget N`, e um `--budget` explicito SOBREPOE o
+   * default. Em 29/08/2026 o wrapper tinha default 2.0 e a skill passava
+   * exatamente 2.0 — subir so o default teria deixado o bug intacto no
+   * caminho que de fato roda. Este teste trava os dois lados juntos.
+   */
+  it("todo --budget literal na SKILL.md e >= o piso do wrapper", () => {
+    const wrapper = readFileSync(WRAPPER_PATH, "utf8");
+    const floor = parseFloat(wrapper.match(/^BUDGET="([^"]+)"/m)![1]);
+    const skill = readFileSync(SKILL_PATH, "utf8");
+    // so linhas de COMANDO (bloco de codigo), nao prosa citando o valor
+    const found = [...skill.matchAll(/--budget\s+([0-9]+(?:\.[0-9]+)?)/g)].map((m) =>
+      parseFloat(m[1]),
+    );
+    assert.ok(found.length > 0, "nenhum `--budget N` encontrado na SKILL.md — o call site sumiu ou mudou de forma");
+    for (const v of found) {
+      assert.ok(
+        v >= floor,
+        `SKILL.md invoca --budget ${v}, abaixo do piso ${floor} do wrapper. Um --budget explicito sobrepoe o default, entao esse call site reintroduz o abort do #6712 (o CLI estima custo a preco Anthropic, ~14-18x o real, e mata a delegacao gastando centavos).`,
+      );
+    }
   });
 });
