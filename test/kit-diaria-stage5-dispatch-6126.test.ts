@@ -237,6 +237,61 @@ describe("#6582 runStage5KitDispatch — verificação pós-dispatch da audiênc
     assert.equal(spy.createCalls.length, 1);
   });
 
+  describe("#6693 REGRESSÃO — persistir broadcast_id ANTES de retornar failed em verifyBroadcastAudience", () => {
+    it("estado é gravado com broadcast_id e audience_verified:false — sem isso o resume duplicaria o broadcast", async () => {
+      const { deps, spy } = makeDeps({
+        getBroadcast: async () => ({ subscriber_filter: buildAllSubscribersFilter() }),
+      });
+      const r = await runStage5KitDispatch(EDITION, deps);
+      assert.equal(r.status, "failed");
+      assert.equal(spy.writeCalls.length, 1, "o bug original NÃO gravava estado neste retorno failed");
+      assert.deepEqual(spy.writeCalls[0], {
+        broadcast_id: 555,
+        subject: "Assunto",
+        preview_text: "Preview",
+        audience_tag: "kit-nativo",
+        audience_tag_id: TAG_ID,
+        status: "draft",
+        audience_verified: false,
+      });
+    });
+
+    it("2ª chamada de decideKitChannelDispatch (resume) vê o estado gravado e decide already_done, NUNCA dispatch de novo", async () => {
+      const { deps: firstDeps } = makeDeps({
+        getBroadcast: async () => ({ subscriber_filter: buildAllSubscribersFilter() }),
+      });
+      let persisted: KitDiariaPublished | null = null;
+      firstDeps.writeState = (_dir, state) => {
+        persisted = state;
+      };
+      const first = await runStage5KitDispatch(EDITION, firstDeps);
+      assert.equal(first.status, "failed");
+      assert.ok(persisted, "o 1º dispatch precisa ter persistido o estado");
+
+      // Resume: uma 2ª invocação do dispatch, lendo o estado que a 1ª gravou.
+      const { deps: secondDeps, spy: secondSpy } = makeDeps({ existing: persisted! });
+      const second = await runStage5KitDispatch(EDITION, secondDeps);
+      assert.deepEqual(second, { status: "already_done", broadcastId: 555 });
+      assert.equal(secondSpy.createCalls.length, 0, "resume NUNCA cria um 2º broadcast duplicado");
+    });
+
+    it("writeState também falha (disco cheio) ⇒ a mensagem avisa que o resume PODE duplicar", async () => {
+      const { deps, spy } = makeDeps({
+        getBroadcast: async () => ({ subscriber_filter: buildAllSubscribersFilter() }),
+        writeState: () => {
+          throw new Error("ENOSPC");
+        },
+      });
+      const r = await runStage5KitDispatch(EDITION, deps);
+      assert.equal(r.status, "failed");
+      if (r.status === "failed") {
+        assert.match(r.reason, /ENOSPC/);
+        assert.match(r.reason, /2º duplicado|duplicado/i);
+      }
+      assert.equal(spy.createCalls.length, 1);
+    });
+  });
+
   it("subscriber_filter ausente na releitura ⇒ ok mas audienceFilterVerified: false (não confirmável, não é falha)", async () => {
     const { deps } = makeDeps({ getBroadcast: async () => ({}) });
     const r = await runStage5KitDispatch(EDITION, deps);
@@ -453,5 +508,31 @@ describe("#6181 --send-test — testar o HTML antes de agendar", () => {
     const r = await runStage5KitDispatch(EDITION, deps, { sendTest: true, dryRun: true });
     assert.equal(r.status, "skipped");
     assert.equal(spy.createCalls.length, 0);
+  });
+
+  describe("#6701 REGRESSÃO — mensagem de tag vazia aponta pro lugar certo em cada caminho", () => {
+    it("--send-test com tag de teste VAZIA ⇒ mensagem fala da tag de TESTE, não de produção", async () => {
+      const { deps, spy } = makeDeps({ countTagMembers: async () => 0 });
+      const r = await runStage5KitDispatch(EDITION, deps, { sendTest: true });
+      assert.equal(r.status, "failed");
+      if (r.status === "failed") {
+        assert.equal(r.step, "audienceTagEmpty");
+        assert.match(r.reason, /diaria-test-email|KIT_TEST_SEND_TAG_NAME|teste/i);
+        // A mensagem de produção não deve vazar pro caminho de teste.
+        assert.doesNotMatch(r.reason, /ondas 0\/1/);
+        assert.doesNotMatch(r.reason, /único canal alcançável/);
+      }
+      assert.equal(spy.createCalls.length, 0);
+    });
+
+    it("produção (sem --send-test) com tag VAZIA ⇒ mensagem original de produção intacta", async () => {
+      const { deps } = makeDeps({ countTagMembers: async () => 0 });
+      const r = await runStage5KitDispatch(EDITION, deps);
+      assert.equal(r.status, "failed");
+      if (r.status === "failed") {
+        assert.match(r.reason, /ondas 0\/1/);
+        assert.match(r.reason, /6582/);
+      }
+    });
   });
 });

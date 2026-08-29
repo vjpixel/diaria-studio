@@ -334,7 +334,18 @@ export async function runStage5KitDispatch(
   }
   const membershipCheck = checkAudienceTagHasMembers(audienceTag, memberCount);
   if (!membershipCheck.ok) {
-    return { status: "failed", step: "audienceTagEmpty", reason: membershipCheck.reason };
+    // #6701: `checkAudienceTagHasMembers` só conhece o caminho de PRODUÇÃO —
+    // sua mensagem fala das "92 pessoas das ondas 0/1" e "Kit é o único canal
+    // alcançável", que é verdade para `decision.audienceTag` mas não faz
+    // sentido para `KIT_TEST_SEND_TAG_NAME` (uma tag de teste, sem relação
+    // com a migração das ondas 0/1). Sob `--send-test`, `audienceTag` já foi
+    // trocado (linha acima) — a mensagem precisa acompanhar essa troca.
+    const reason = opts.sendTest
+      ? `tag de teste "${audienceTag}" (KIT_TEST_SEND_TAG_NAME) está VAZIA — 0 membros. Popule-a no ` +
+        `Kit com ao menos 1 assinante de teste antes de rodar --send-test; sem membros o broadcast de ` +
+        `teste não teria destinatário nenhum.`
+      : membershipCheck.reason;
+    return { status: "failed", step: "audienceTagEmpty", reason };
   }
 
   let html: string;
@@ -406,6 +417,29 @@ export async function runStage5KitDispatch(
       const expected = buildTagFilter(tagCheck.tagId);
       const matches = JSON.stringify(reread.subscriber_filter) === JSON.stringify(expected);
       if (!matches) {
+        // #6693: o broadcast JÁ EXISTE no Kit a partir daqui (efeito externo
+        // real) — retornar `failed` sem persistir `broadcast_id` fazia o
+        // RESUME automático não achar `existing.broadcast_id`,
+        // `decideKitChannelDispatch` decidir `dispatch` de novo, e criar um
+        // SEGUNDO broadcast duplicado para a mesma edição. Persistir ANTES de
+        // retornar — com `audience_verified: false` — é o que faz o próximo
+        // `decideKitChannelDispatch` cair em `already_done` em vez de
+        // recomeçar do zero, mesma disciplina do bloco `writeState` mais
+        // abaixo (#6138 finding 2) aplicada a este 2º ponto de saída.
+        let persistError: string | undefined;
+        try {
+          deps.writeState(editionDir, {
+            broadcast_id: created.id,
+            subject,
+            preview_text: previewText,
+            audience_tag: audienceTag,
+            audience_tag_id: tagCheck.tagId,
+            status: "draft",
+            audience_verified: false,
+          });
+        } catch (e) {
+          persistError = (e as Error).message;
+        }
         return {
           status: "failed",
           step: "verifyBroadcastAudience",
@@ -413,7 +447,12 @@ export async function runStage5KitDispatch(
             `broadcast_id=${created.id} JÁ FOI CRIADO no Kit, mas a releitura mostra subscriber_filter ` +
             `divergente do esperado (tag "${audienceTag}" id ${tagCheck.tagId}) — a API aceitou 2xx sem ` +
             `aplicar o filtro certo. NÃO re-rodar sem conferir/corrigir no Kit — risco de broadcast já ` +
-            `existente com audiência errada.`,
+            `existente com audiência errada.` +
+            (persistError
+              ? ` ADICIONALMENTE, o estado local não pôde ser gravado (${persistError}) — o resume NÃO vai ` +
+                `reconhecer este broadcast e pode criar um 2º duplicado; corrigir manualmente antes de re-rodar.`
+              : ` broadcast_id gravado em ${resolveKitDiariaStatePath(editionDir)} com audience_verified:false ` +
+                `— o resume vai reconhecer este broadcast como já existente e não vai criar um 2º.`),
         };
       }
       audienceFilterVerified = true;
