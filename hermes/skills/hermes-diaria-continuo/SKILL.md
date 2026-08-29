@@ -188,7 +188,7 @@ coordenador. Se a issue for inviável/ambígua além do trivial, comente nela
 o bloqueio via gh issue comment e pare." | \
   ~/.hermes/scripts/claude-openrouter.sh \
     --tools "Read,Grep,Glob,Bash,Edit,Write" \
-    --budget 0.25 --timeout 2400
+    --budget 2.0 --timeout 2400
 ```
 
 3. O PR aberto entra na fila do passo 3 (review independente continua sendo
