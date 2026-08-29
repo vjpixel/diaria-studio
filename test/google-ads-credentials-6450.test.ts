@@ -11,6 +11,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  applyServiceAccountEnvUpdates,
   defaultCredentialsPath,
   InvalidServiceAccountJsonError,
   parseServiceAccountJson,
@@ -137,5 +138,119 @@ describe("upsertEnvVar (#6450)", () => {
     const once = upsertEnvVar("FOO=1", "GOOGLE_APPLICATION_CREDENTIALS", "/home/x/sa.json");
     const twice = upsertEnvVar(once, "GOOGLE_APPLICATION_CREDENTIALS", "/home/x/sa.json");
     assert.equal(once, twice);
+  });
+});
+
+describe("applyServiceAccountEnvUpdates (#6704)", () => {
+  const parsed = JSON.parse(VALID_SA);
+
+  it("source='env' (raw já parseou direto) => só atualiza GOOGLE_APPLICATION_CREDENTIALS, NUNCA reescreve GOOGLE_ADS_SERVICE_ACCOUNT_JSON", () => {
+    const current =
+      'GOOGLE_ADS_SERVICE_ACCOUNT_JSON="{\\"client_email\\":\\"a@b.com\\"}"\nGOOGLE_APPLICATION_CREDENTIALS=old';
+    const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "env", parsed);
+    assert.equal(result.rewroteServiceAccountJson, false);
+    assert.equal(result.rewriteSkippedUnsafe, false);
+    assert.match(result.content, /^GOOGLE_ADS_SERVICE_ACCOUNT_JSON="\{\\"client_email\\":\\"a@b\.com\\"\}"$/m);
+    assert.match(result.content, /GOOGLE_APPLICATION_CREDENTIALS=\/home\/x\/sa\.json/);
+  });
+
+  it("source='fallback' mas o JSON contém '#' (ex: URL com fragmento) => NÃO reescreve, sinaliza rewriteSkippedUnsafe (#6704, achado do fleet review)", () => {
+    // dotenv corta valor NÃO-citado no 1º '#' que encontrar, em qualquer
+    // posição (regex real do dotenv@16.6.1: `[^#\r\n]+`) — reescrever sem
+    // aspas aqui trocaria a corrupção conhecida (#6450) por uma corrupção
+    // NOVA e silenciosa. O guard tem que recusar a reescrita nesse caso.
+    const dangerous = { ...parsed, client_x509_cert_url: "https://example.com/cert#fragment" };
+    const current = "GOOGLE_ADS_SERVICE_ACCOUNT_JSON=old\nGOOGLE_APPLICATION_CREDENTIALS=old";
+    const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "fallback", dangerous);
+    assert.equal(result.rewroteServiceAccountJson, false, "não deve reescrever quando o JSON contém '#'");
+    assert.equal(result.rewriteSkippedUnsafe, true);
+    // a linha original (ainda corrompida) permanece intocada — pior que
+    // consertado, mas nunca pior do que já estava
+    assert.match(result.content, /^GOOGLE_ADS_SERVICE_ACCOUNT_JSON=old$/m);
+    // GOOGLE_APPLICATION_CREDENTIALS continua sendo atualizado normalmente
+    assert.match(result.content, /GOOGLE_APPLICATION_CREDENTIALS=\/home\/x\/sa\.json/);
+  });
+
+  it("source='fallback' (raw estava corrompido) => reescreve GOOGLE_ADS_SERVICE_ACCOUNT_JSON SEM aspas ao redor", () => {
+    const current =
+      'GOOGLE_ADS_SERVICE_ACCOUNT_JSON="broken multi\nline value"\nGOOGLE_APPLICATION_CREDENTIALS=old';
+    const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "fallback", parsed);
+    assert.equal(result.rewroteServiceAccountJson, true);
+    const line = result.content
+      .split("\n")
+      .find((l) => l.startsWith("GOOGLE_ADS_SERVICE_ACCOUNT_JSON="));
+    assert.ok(line, "linha GOOGLE_ADS_SERVICE_ACCOUNT_JSON deve existir no resultado");
+    const value = line!.slice("GOOGLE_ADS_SERVICE_ACCOUNT_JSON=".length);
+    assert.ok(!value.startsWith('"'), "valor reescrito não deve começar com aspas — dotenv só desescapa valores citados");
+    assert.ok(!value.endsWith('"'), "valor reescrito não deve terminar com aspas");
+    // O valor reescrito precisa ser o JSON compacto (1 linha física) e
+    // parsear de volta pro objeto original — é isso que garante que o
+    // PRÓXIMO load via env-loader.ts (dotenv, sem unescape em valor não
+    // citado) devolve o JSON íntegro.
+    assert.deepEqual(JSON.parse(value), parsed);
+  });
+
+  it("reescrita sem aspas sobrevive a um round-trip via dotenv — não seria mais desescapada (achado #6704)", () => {
+    const current = "FOO=1";
+    const result = applyServiceAccountEnvUpdates(current, "/home/x/sa.json", "fallback", parsed);
+    const line = result.content
+      .split("\n")
+      .find((l) => l.startsWith("GOOGLE_ADS_SERVICE_ACCOUNT_JSON="))!;
+    const value = line.slice("GOOGLE_ADS_SERVICE_ACCOUNT_JSON=".length);
+    // Reproduz a regra de unescape do dotenv (`value.replace(/\\n/g, '\n')`)
+    // só quando o valor está entre aspas duplas — como o valor NÃO está
+    // entre aspas, simulamos que o dotenv o copia literalmente (sem regex de
+    // unescape) e confirmamos que o JSON.parse ainda funciona.
+    assert.deepEqual(JSON.parse(value), parsed);
+  });
+
+  it("é idempotente em source='fallback' — aplicar 2x produz a mesma linha reescrita", () => {
+    const once = applyServiceAccountEnvUpdates("FOO=1", "/home/x/sa.json", "fallback", parsed);
+    const twice = applyServiceAccountEnvUpdates(once.content, "/home/x/sa.json", "fallback", parsed);
+    assert.equal(once.content, twice.content);
+  });
+});
+
+describe("Doppler fetch — timeout/stdio das opções de exec (#6704)", () => {
+  // NUNCA chamar `fetchFromDopplerDirectly()`/`execFileSync` de verdade aqui
+  // (guard do overnight: nunca tocar Doppler real nem credenciais reais).
+  // `buildDopplerFetchExecOptions()` é puro — só monta o objeto de opções,
+  // zero I/O — então o teste confere o valor exato sem nunca invocar um
+  // subprocesso. Mockar `execFileSync` via `node:test`'s `mock.method` foi
+  // tentado e descartado: a binding nomeada que o script importa de
+  // `node:child_process` não reflete a substituição (nem via namespace nem
+  // via default import), então o mock nunca interceptava — e a chamada real
+  // rodava por baixo, contra o Doppler de verdade da máquina. Ver nota no PR.
+  it("timeout = 60s (mesmo valor do #6630) e stdin ignorado", async () => {
+    const mod = await import("../scripts/materialize-google-ads-credentials.ts");
+    assert.equal(mod.DOPPLER_FETCH_TIMEOUT_MS, 60_000, "timeout deve ser 60s, mesmo valor do #6630");
+
+    const options = mod.buildDopplerFetchExecOptions();
+    assert.equal(options.timeout, mod.DOPPLER_FETCH_TIMEOUT_MS);
+    assert.deepEqual(
+      options.stdio,
+      ["ignore", "pipe", "pipe"],
+      "stdin deve ser ignorado — nunca herdar stdin do script (sem espaço pra prompt interativo travar)",
+    );
+  });
+});
+
+describe("tryOrNull — fail-soft genérico (#6704)", () => {
+  it("função lança => retorna null, nunca propaga", async () => {
+    const mod = await import("../scripts/materialize-google-ads-credentials.ts");
+    assert.equal(
+      mod.tryOrNull(() => {
+        throw new Error("boom");
+      }),
+      null,
+    );
+  });
+
+  it("função retorna normalmente => devolve o valor, sem alterar", async () => {
+    const mod = await import("../scripts/materialize-google-ads-credentials.ts");
+    assert.equal(
+      mod.tryOrNull(() => "valor"),
+      "valor",
+    );
   });
 });

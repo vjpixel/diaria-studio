@@ -119,6 +119,76 @@ export function defaultCredentialsPath(homeDir: string): string {
   return join(homeDir, ".config", "diaria", "google-ads-sa.json");
 }
 
+/**
+ * Resultado de `applyServiceAccountEnvUpdates`: o conteúdo atualizado do
+ * `.env` + se a linha `GOOGLE_ADS_SERVICE_ACCOUNT_JSON` foi reescrita (só
+ * quando `source === "fallback"` — o `.env` só está confirmadamente
+ * corrompido nesse caminho; se `source === "env"` o raw já parseou direto,
+ * então a linha em disco já está boa e reescrevê-la seria trabalho inútil,
+ * ou pior, arriscaria introduzir uma diferença onde não havia bug).
+ * `rewriteSkippedUnsafe`: `source === "fallback"` mas o JSON contém `#` — ver
+ * guard abaixo; a reescrita foi INTENCIONALMENTE pulada pra não trocar uma
+ * corrupção por outra.
+ */
+export interface ServiceAccountEnvUpdateResult {
+  content: string;
+  rewroteServiceAccountJson: boolean;
+  rewriteSkippedUnsafe: boolean;
+}
+
+/**
+ * Aplica ao conteúdo de um `.env` as 2 atualizações que
+ * `materialize-google-ads-credentials.ts` precisa fazer: sempre aponta
+ * `GOOGLE_APPLICATION_CREDENTIALS` pro arquivo materializado, e — só quando
+ * `source === "fallback"` (achado #6704) — reescreve `GOOGLE_ADS_SERVICE_ACCOUNT_JSON`
+ * com o JSON compacto (sem indentação, 1 linha física) SEM aspas ao redor.
+ *
+ * **Por que sem aspas conserta de vez, não só para esta execução (#6704):**
+ * o achado original do #6450 é que o round-trip Doppler→`.env`→dotenv
+ * corrompe o secret porque `dotenv` desescapa `\n`/`\r` em TODO valor entre
+ * aspas DUPLAS — inclusive os `\n` que fazem parte da `private_key` dentro do
+ * JSON. `dotenv` só aplica esse unescape a valores citados; um valor SEM
+ * aspas é copiado literalmente para `process.env`, então os `\n` da
+ * `private_key` chegam como os 2 caracteres `\` + `n` (exatamente como estão
+ * no JSON serializado) e o `JSON.parse` subsequente os interpreta
+ * corretamente como quebra de linha. O arquivo `.env` em si nunca teve
+ * problema de estrutura (é sempre 1 linha física, com ou sem aspas) — o bug
+ * mora inteiro no unescape do dotenv em tempo de load, por isso reescrever
+ * sem aspas resolve para QUALQUER consumidor futuro que carregue o `.env`
+ * via `env-loader.ts`, não só para esta execução do script.
+ *
+ * **Guard contra `#` (#6704, achado do fleet review):** o parser de valor
+ * NÃO-citado do `dotenv@16.6.1` corta o valor no primeiro `#` que encontrar
+ * — em qualquer posição, não só "` #` com espaço antes" (regex real:
+ * `[^#\r\n]+`). Se algum campo do JSON (ex: uma URL com fragmento em
+ * `client_x509_cert_url`) algum dia contiver `#`, escrever sem aspas
+ * introduziria uma corrupção NOVA, diferente da que motivou #6704, e o
+ * script afirmaria erroneamente ter consertado de vez. Por isso, antes de
+ * reescrever, confere se o JSON serializado contém `#`; se contiver, NÃO
+ * reescreve (mantém o `.env` como estava — corrompido mas sem piorar) e
+ * sinaliza isso em `rewriteSkippedUnsafe` pro chamador avisar o operador.
+ */
+export function applyServiceAccountEnvUpdates(
+  envContent: string,
+  credPath: string,
+  source: "env" | "fallback",
+  parsed: ServiceAccountShape,
+): ServiceAccountEnvUpdateResult {
+  let content = upsertEnvVar(envContent, "GOOGLE_APPLICATION_CREDENTIALS", credPath);
+  let rewroteServiceAccountJson = false;
+  let rewriteSkippedUnsafe = false;
+  if (source === "fallback") {
+    const serialized = JSON.stringify(parsed);
+    if (serialized.includes("#")) {
+      rewriteSkippedUnsafe = true;
+    } else {
+      content = upsertEnvVar(content, "GOOGLE_ADS_SERVICE_ACCOUNT_JSON", serialized);
+      rewroteServiceAccountJson = true;
+    }
+  }
+  return { content, rewroteServiceAccountJson, rewriteSkippedUnsafe };
+}
+
 /** Upsert idempotente de uma linha `KEY=value` no conteúdo de um `.env` —
  * substitui a linha existente (primeira ocorrência) ou acrescenta ao final
  * se ausente. Nunca duplica a chave nem reordena as demais linhas. Pura:
