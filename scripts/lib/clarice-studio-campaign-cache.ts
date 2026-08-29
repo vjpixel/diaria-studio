@@ -105,6 +105,14 @@ function safeJsonParse(raw: string): unknown {
  * caso num diretório temporário e/ou forçar um bump de versão sem depender
  * da constante do módulo).
  */
+interface MemoryEntry {
+  value: string;
+  /** `null` = sem TTL (entrada quente vinda do disco — arquivo imutável já
+   * grava sozinho, essa cópia em memória é só hit-rápido, pode viver pra
+   * sempre). Number = epoch ms de expiração (entrada com TTL — ver `put`). */
+  expiresAt: number | null;
+}
+
 export function createLocalFileCampaignCache(
   opts: { dir?: string; version?: number } = {},
 ): LocalFileKv {
@@ -114,7 +122,19 @@ export function createLocalFileCampaignCache(
   // Cobre 2 papéis: (a) hit-rápido dentro do mesmo processo pra chaves que
   // acabaram de ser lidas/escritas do disco, e (b) ÚNICO lugar onde valores
   // com TTL (recentes/mutáveis) ficam — nunca vão a disco, de propósito.
-  const memory = new Map<string, string>();
+  //
+  // Achado do review do #6750 (código-reviewer, PR desta issue): a 1ª versão
+  // guardava só a string, sem TTL — uma chave gravada com `expirationTtl`
+  // (créditos do plano, 24h; stats de campanha recente, 30min) ficava presa
+  // em memória pela vida INTEIRA do processo do Studio server (que roda dias),
+  // nunca expirando de verdade. Isso silenciosamente reintroduzia o risco do
+  // #6394 (créditos e cumulativeSent de instantes diferentes recombinados) e
+  // contradizia tanto o comentário de `dashboard-clarice.ts` quanto o banner
+  // da UI ("busca ao vivo" deixava de ser verdade no 2º clique em "Atualizar
+  // agora" dentro da mesma janela). Fix: guardar `expiresAt` junto (mesmo
+  // padrão de `MemoryKv` em dashboard-clarice.ts) e checar expiração em toda
+  // leitura.
+  const memory = new Map<string, MemoryEntry>();
   let dirReady = false;
 
   function ensureDir(): boolean {
@@ -128,17 +148,29 @@ export function createLocalFileCampaignCache(
     }
   }
 
+  function readMemory(key: string): string | null {
+    const entry = memory.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt !== null && entry.expiresAt < Date.now()) {
+      memory.delete(key); // TTL vencido — nunca serve um valor stale
+      return null;
+    }
+    return entry.value;
+  }
+
   return {
     async get(key, type) {
-      const cached = memory.get(key);
-      if (cached !== undefined) {
+      const cached = readMemory(key);
+      if (cached !== null) {
         return type === "text" ? cached : safeJsonParse(cached);
       }
       const path = filePathFor(dir, key, version);
       try {
         if (!existsSync(path)) return null;
         const raw = readFileSync(path, "utf8");
-        memory.set(key, raw); // aquece o hit-rápido em memória pro resto do processo
+        // Arquivo em disco só existe pra dado IMUTÁVEL (ver `put` abaixo) —
+        // o hit-rápido em memória correspondente também é sem TTL.
+        memory.set(key, { value: raw, expiresAt: null });
         return type === "text" ? raw : safeJsonParse(raw);
       } catch {
         return null; // arquivo corrompido/inacessível — trata como miss, nunca lança
@@ -146,10 +178,14 @@ export function createLocalFileCampaignCache(
     },
 
     async put(key, value, putOpts) {
-      memory.set(key, value); // hit imediato dentro deste processo, sempre
       // TTL presente = dado recente/mutável (ver docstring do módulo) — nunca
-      // persistido em disco; expira sozinho quando este processo reiniciar.
-      if (putOpts?.expirationTtl) return;
+      // persistido em disco; expira pelo próprio TTL declarado (não só quando
+      // o processo reinicia — ver achado do review acima).
+      if (putOpts?.expirationTtl) {
+        memory.set(key, { value, expiresAt: Date.now() + putOpts.expirationTtl * 1000 });
+        return;
+      }
+      memory.set(key, { value, expiresAt: null }); // hit imediato dentro deste processo
       if (!ensureDir()) return;
       const path = filePathFor(dir, key, version);
       try {

@@ -320,7 +320,7 @@ export function injectKvOnlyBanner(html: string, fetchedAt: string | null): stri
     `<div style="background:#DCEEFB;color:#0b4a6f;padding:10px 16px;text-align:center;` +
     `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #A9D6F5;">` +
     `📋 Mostrando a última coleta salva no KV — ${escHtml(fetchedLabel)}. Zero chamadas à Brevo nesta abertura. ` +
-    `<a href="?fresh=1" style="font-weight:600;">Atualizar agora</a> busca ao vivo (usa quota da Brevo).</div>`;
+    `<a href="?fresh=1" style="font-weight:600;">Atualizar agora</a> busca dados recentes ao vivo (usa quota da Brevo) — campanhas antigas (&gt;7 dias) vêm de um cache local, não mudam mais.</div>`;
   if (/<body[^>]*>/i.test(html)) {
     return html.replace(/<body[^>]*>/i, (m) => m + banner);
   }

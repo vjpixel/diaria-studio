@@ -98,6 +98,24 @@ describe("createLocalFileCampaignCache", () => {
     assert.deepEqual(value, { gs: { sent: 1 } });
   });
 
+  it("chave com TTL expira em memória sozinha, sem precisar de 'restart' (achado do review do #6750)", async () => {
+    const cache = createLocalFileCampaignCache({ dir, version: 1 });
+    await cache.put("brevo:plan-credits", JSON.stringify({ credits: 999 }), { expirationTtl: 1 }); // 1s
+
+    // Ainda dentro do TTL — hit em memória.
+    assert.deepEqual(await cache.get("brevo:plan-credits", "json"), { credits: 999 });
+
+    // Espera o TTL vencer (sem precisar recriar a instância — diferente do
+    // caso "TTL nunca persiste em disco" acima, que simula um restart).
+    await new Promise((r) => setTimeout(r, 1100));
+
+    assert.equal(
+      await cache.get("brevo:plan-credits", "json"),
+      null,
+      "entrada com TTL vencido nunca deve ser servida como se ainda fosse válida",
+    );
+  });
+
   it("delete remove tanto a entrada em memória quanto o arquivo em disco", async () => {
     const cache = createLocalFileCampaignCache({ dir, version: 1 });
     await cache.put("stats:123", JSON.stringify({ gs: { sent: 10 } }));
