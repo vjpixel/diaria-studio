@@ -336,7 +336,7 @@ import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; 
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { createOrUpdateSubscriber, getSubscriberById } from "./lib/kit-subscribers.ts"; // #6339
+import { createOrUpdateSubscriber, getSubscriberById } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -890,6 +890,33 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
   return subscriber.state === "active";
 }
 
+/** Prefixo sintético de `beehiiv_subscription_id` pra contato ingerido a
+ *  partir do cohort `inactive` do Kit — convenção de
+ *  `sync-kit-inactive-to-brevo.ts` (#6340 item 3), mesmo padrão de
+ *  `curated:`/`sunset:` já usados por outros scripts de ingestão. */
+export const KIT_ORIGIN_ID_PREFIX = "kit:";
+
+/**
+ * #6340 item 4 — extrai o id numérico de subscriber Kit de um
+ * `beehiiv_subscription_id` no formato sintético `kit:${kit_subscriber_id}`
+ * (ver `KIT_ORIGIN_ID_PREFIX`). `null` para qualquer coisa que não comece
+ * com esse prefixo (origem Beehiiv — `sub_...`/id bruto — ou qualquer outra
+ * origem sintética como `curated:`/`sunset:`) **e também** para um sufixo
+ * malformado depois do prefixo (não-numérico, vazio, não-inteiro, `<= 0`).
+ * Parse defensivo de propósito: um `beehiiv_subscription_id` corrompido
+ * nunca pode derrubar a rodada inteira de `runEvaluation` — o caller trata
+ * `null` como "não dá pra determinar o subscriber Kit desta origem agora",
+ * nunca como "não é origem Kit" quando o prefixo já bateu (ver o `log` de
+ * warn específico pra esse caso em `runEvaluation`).
+ */
+export function parseKitSubscriberId(beehiivSubscriptionId: string): number | null {
+  if (!beehiivSubscriptionId.startsWith(KIT_ORIGIN_ID_PREFIX)) return null;
+  const raw = beehiivSubscriptionId.slice(KIT_ORIGIN_ID_PREFIX.length);
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return id;
+}
+
 /**
  * Releitura pós-supressão (#4398 review: `suppressInBrevo`/`unlinkFromBrevoList`
  * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`/
@@ -1096,16 +1123,32 @@ export interface RunEvaluationParams {
   /**
    * Backend real de ENVIO da diária (#6339, ver `promoteKitSubscription`) —
    * decide se a promoção por SCORE escreve na Beehiiv ou no Kit. **Não**
-   * afeta a auto-confirmação (Passo 1, `applySelfConfirmed`) — esse
-   * caminho continua escrevendo só na Beehiiv, ver o comentário
-   * `#6339, ESCOPO NÃO COBERTO` logo acima dele. Default `"beehiiv"`
-   * preserva o comportamento de todo chamador que não passa este campo
-   * (inclusive a suíte de testes pré-#6339) — `main()` sempre passa o
-   * valor lido de `platform.config.json` → `publishing.newsletter.backend`,
-   * que em produção é `"kit"` desde o switchover do #6114.
+   * decide a auto-confirmação (Passo 1, `applySelfConfirmed`) — esse
+   * caminho é roteado pela ORIGEM do contato (#6340 item 4,
+   * `parseKitSubscriberId`), não por este parâmetro: contato de origem Kit
+   * (`beehiiv_subscription_id` prefixado `kit:...`) SEMPRE confirma no Kit,
+   * contato de origem Beehiiv continua escrevendo só na Beehiiv — ver o
+   * comentário `#6339, ESCOPO NÃO COBERTO` logo acima dele, que descreve um
+   * gap DIFERENTE (Beehiiv→Kit, ainda não fechado) e não muda com este
+   * parâmetro nem com o #6340 item 4. Default `"beehiiv"` preserva o
+   * comportamento de todo chamador que não passa este campo (inclusive a
+   * suíte de testes pré-#6339) — `main()` sempre passa o valor lido de
+   * `platform.config.json` → `publishing.newsletter.backend`, que em
+   * produção é `"kit"` desde o switchover do #6114.
    */
   newsletterBackend?: "beehiiv" | "kit";
-  /** Obrigatória quando `newsletterBackend === "kit"` E `push === true`. */
+  /**
+   * Obrigatória quando `newsletterBackend === "kit"` E `push === true`
+   * (promoção por score, #6339). Desde #6340 item 4, também consultada
+   * (sempre, independente de `push`/`newsletterBackend`) pela
+   * auto-confirmação de contatos de origem Kit (Passo 1) — mas nesse
+   * caminho a ausência NUNCA lança, nem em `push`: degrada pra "ainda não
+   * confirmado nesta rodada" com log de warn (ver `runEvaluation`), porque
+   * um contato de origem Kit pode existir no store mesmo quando
+   * `newsletterBackend === "beehiiv"` (rollback) ou em dry-run local sem
+   * `KIT_API_KEY` configurada — nenhum desses cenários pode abortar a
+   * rodada inteira.
+   */
   kitApiKey?: string;
 }
 
@@ -1146,10 +1189,14 @@ export interface RunEvaluationResult {
   kept: number;
   /**
    * Conta QUALQUER anomalia por contato: falha transitória de API (checagem
-   * de estado Brevo, checagem de status Beehiiv, promoção, supressão) OU
+   * de estado Brevo, checagem de status Beehiiv, checagem de status Kit —
+   * #6340 item 4 — id malformado incluso, promoção, supressão) OU
    * verificação pós-escrita que não confirma (mantido em `in_brevo` por
    * fail-safe). Nunca um não-evento silencioso (#738) — o caller (main())
-   * usa isto pra decidir o exit code.
+   * usa isto pra decidir o exit code. **Exceção deliberada**: `kitApiKey`
+   * ausente pra um contato de origem Kit NUNCA conta aqui (precondição de
+   * ambiente, não anomalia — mesmo tratamento de `brevoApiKey` ausente no
+   * Passo 0).
    */
   failed: number;
 }
@@ -1318,37 +1365,106 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       }
 
       // 1) auto-confirmação — sempre checada, independente da taxa de
-      // abertura. Reusa `beehiivStatus` se o passo 0 já buscou (contato
-      // `emailBlacklisted`) — nunca um 2º GET pro mesmo contato no mesmo run.
-      if (beehiivStatus === undefined) {
-        beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
-          log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
-          statusCheckFailed = true;
-          return undefined;
-        });
-        if (statusCheckFailed) failed++;
-      }
-
-      // #6339, ESCOPO NÃO COBERTO: diferente da promoção por score logo
-      // abaixo (que já escreve direto no backend real via
-      // `newsletterBackend`), esta auto-confirmação continua dependendo da
-      // ponte `sync-beehiiv-subscribers-kit.ts` (Beehiiv → Kit, até 24h de
-      // atraso) pra o contato de fato receber a diária quando
-      // `newsletterBackend === "kit"` — `applySelfConfirmed` só desvincula
-      // da fila Brevo, nunca escreve no Kit. Risco aceito nesta unidade
-      // (ver PR body do #6339): o volume por este caminho é residual (só
-      // quem confirma o double opt-in Beehiiv de um pool que já não cresce,
-      // ver nota "Pool Pending é FINITO" em `sync-pending-to-brevo.ts`), e
-      // `test/sync-beehiiv-subscribers-kit-load-bearing-6339.test.ts` trava
-      // a ponte como load-bearing enquanto este caminho não for corrigido.
-      if (beehiivStatus === "active") {
-        log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
-        selfConfirmed++;
-        if (push) {
-          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-          store = applySelfConfirmed(store, contact.email);
+      // abertura. Roteada pela ORIGEM do contato (#6340 item 4): contato de
+      // origem Kit (`beehiiv_subscription_id` prefixado `kit:...`, ver
+      // `sync-kit-inactive-to-brevo.ts` #6340 item 3) confirma no KIT, não
+      // na Beehiiv — o gap original (checar Beehiiv pra um contato que só
+      // existe no Kit nunca resolve "active", deixando-o preso na fila do
+      // Brevo mesmo depois de confirmar o double opt-in) é exatamente o
+      // que este roteamento fecha. Os dois caminhos são MUTUAMENTE
+      // EXCLUSIVOS por contato — nunca os dois GETs (Kit E Beehiiv) no
+      // mesmo run pro mesmo contato.
+      const kitSubscriberId = parseKitSubscriberId(contact.beehiiv_subscription_id);
+      if (contact.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)) {
+        // Origem Kit confirmada pelo prefixo. `kitSubscriberId === null`
+        // aqui só acontece com um sufixo malformado (não-numérico/`<=0`) —
+        // dado corrompido, não "não é Kit": conta como anomalia (mesmo
+        // espírito de `statusCheckFailed` no caminho Beehiiv), nunca lança,
+        // e o contato segue pra avaliação normal (Passo 2) como qualquer
+        // outro não confirmado nesta rodada.
+        let kitConfirmed = false;
+        if (kitSubscriberId === null) {
+          log(
+            `warn: ${contact.email} tem beehiiv_subscription_id de origem Kit malformado ` +
+              `("${contact.beehiiv_subscription_id}") — não é possível extrair o subscriber id; pulando checagem ` +
+              "de auto-confirmação Kit nesta rodada (#6340 item 4).",
+          );
+          failed++;
+        } else if (!kitApiKey) {
+          // Ausência de KIT_API_KEY nunca aborta (dry-run local sem a env
+          // configurada, ou `newsletterBackend === "beehiiv"` — rollback —
+          // com contato Kit ainda no store) — degrada pra "ainda não
+          // confirmado nesta rodada", NÃO conta como `failed` (mesmo
+          // tratamento não-anômalo de `brevoApiKey` ausente no Passo 0
+          // acima: precondição de ambiente, não falha transitória).
+          log(
+            `${contact.email}: origem Kit mas kitApiKey ausente — pulando checagem de auto-confirmação Kit nesta ` +
+              "rodada (#6340 item 4); avaliado normalmente pela taxa de abertura enquanto isso.",
+          );
+        } else {
+          try {
+            const kitSubscriber = await getSubscriberById(kitSubscriberId, { apiKey: kitApiKey });
+            kitConfirmed = kitSubscriber.state === "active";
+          } catch (e) {
+            log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitSubscriberId}): ${(e as Error).message}`);
+            failed++;
+          }
         }
-        continue;
+
+        if (kitConfirmed) {
+          log(`${contact.email}: já ativo no Kit (auto-confirmação #6340 item 4) → promovido, sem depender da taxa de abertura.`);
+          selfConfirmed++;
+          if (push) {
+            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+            store = applySelfConfirmed(store, contact.email);
+          }
+          continue;
+        }
+        // Ainda `inactive` no Kit (ou id malformado/key ausente/falha de
+        // rede, tratados acima) — segue pra avaliação normal (Passo 2)
+        // abaixo, igual a qualquer outro contato não confirmado. NUNCA cai
+        // no bloco Beehiiv a seguir (`else`) — a origem já decidiu o
+        // backend de checagem.
+      } else {
+        // Reusa `beehiivStatus` se o passo 0 já buscou (contato
+        // `emailBlacklisted`) — nunca um 2º GET pro mesmo contato no mesmo
+        // run.
+        if (beehiivStatus === undefined) {
+          beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+            log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
+            statusCheckFailed = true;
+            return undefined;
+          });
+          if (statusCheckFailed) failed++;
+        }
+
+        // #6339, ESCOPO NÃO COBERTO: diferente da promoção por score logo
+        // abaixo (que já escreve direto no backend real via
+        // `newsletterBackend`), esta auto-confirmação continua dependendo da
+        // ponte `sync-beehiiv-subscribers-kit.ts` (Beehiiv → Kit, até 24h de
+        // atraso) pra o contato de fato receber a diária quando
+        // `newsletterBackend === "kit"` — `applySelfConfirmed` só desvincula
+        // da fila Brevo, nunca escreve no Kit. Risco aceito nesta unidade
+        // (ver PR body do #6339): o volume por este caminho é residual (só
+        // quem confirma o double opt-in Beehiiv de um pool que já não cresce,
+        // ver nota "Pool Pending é FINITO" em `sync-pending-to-brevo.ts`), e
+        // `test/sync-beehiiv-subscribers-kit-load-bearing-6339.test.ts` trava
+        // a ponte como load-bearing enquanto este caminho não for corrigido.
+        // **Este gap é DIFERENTE do #6340 item 4 acima**: aquele cobria a
+        // ausência de roteamento por origem (contato Kit sendo checado na
+        // Beehiiv — corrigido nesta unidade, `if` acima); este cobre um
+        // contato de origem BEEHIIV (`else`, aqui) cuja confirmação, mesmo
+        // check corretamente na Beehiiv, ainda depende da ponte de sync
+        // pra chegar ao Kit — os dois nunca se sobrepõem por contato.
+        if (beehiivStatus === "active") {
+          log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
+          selfConfirmed++;
+          if (push) {
+            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+            store = applySelfConfirmed(store, contact.email);
+          }
+          continue;
+        }
       }
 
       // 2) taxa de abertura + piso de amostra (#4476 item 1), em 2 variantes
