@@ -97,6 +97,7 @@ import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; 
 import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
 import { loadLinkSectionMapForCycle, loadLinkTitleMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184 / #4198
+import { createLocalFileCampaignCache } from "../lib/clarice-studio-campaign-cache.ts"; // #6720 Fatia A
 
 // ─── Shim de KVNamespace em memória (processo local, sem Cloudflare) ────────
 //
@@ -146,6 +147,18 @@ class MemoryKv {
 }
 
 const memoryKv = new MemoryKv();
+
+// #6720 Fatia A: cache LOCAL (arquivo por chave, imune a WAL/OneDrive-sync —
+// ver docstring de clarice-studio-campaign-cache.ts) usado SÓ no caminho
+// AO VIVO (`?fresh=1`) para as 3 chamadas que hoje desligam o cache-aside via
+// `skipKvCache=true` (fetchRecentCampaigns/fetchScheduledCampaigns/
+// fetchPlanCredits) — nunca para o KV COMPARTILHADO de produção
+// (`CLARICE_STATS_CACHE_KV_NAMESPACE_ID` acima, usado por readKvTabs/cohorts/
+// couponUsage/eiaEngagement, que continua intocado). 1 instância por processo
+// (mesmo padrão de `memoryKv`) — o Map interno de itens com TTL só faz
+// sentido persistir pela vida do processo, e a persistência em disco (itens
+// imutáveis) já é idempotente entre chamadas.
+const localCampaignCache = createLocalFileCampaignCache();
 
 // #4165/#4173: id do namespace `STATS_CACHE` do Worker `clarice-dashboard`
 // (`workers/brevo-dashboard/wrangler.toml` `[[kv_namespaces]] id = ...`) —
@@ -307,7 +320,7 @@ export function injectKvOnlyBanner(html: string, fetchedAt: string | null): stri
     `<div style="background:#DCEEFB;color:#0b4a6f;padding:10px 16px;text-align:center;` +
     `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #A9D6F5;">` +
     `📋 Mostrando a última coleta salva no KV — ${escHtml(fetchedLabel)}. Zero chamadas à Brevo nesta abertura. ` +
-    `<a href="?fresh=1" style="font-weight:600;">Atualizar agora</a> busca ao vivo (usa quota da Brevo).</div>`;
+    `<a href="?fresh=1" style="font-weight:600;">Atualizar agora</a> busca dados recentes ao vivo (usa quota da Brevo) — campanhas antigas (&gt;7 dias) vêm de um cache local, não mudam mais.</div>`;
   if (/<body[^>]*>/i.test(html)) {
     return html.replace(/<body[^>]*>/i, (m) => m + banner);
   }
@@ -470,27 +483,33 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     // ~100+ GETs) — preserva o mesmo perfil de concorrência contra a janela
     // de rate-limit da Brevo que a produção já assume como seguro.
     //
-    // #4186: `skipKvCache: true` (último argumento) nas 3 chamadas -- o
-    // painel Studio NÃO deve ler/escrever `list:{id}`/`stats:{id}`/
+    // #4186 (KV de produção) + #6720 Fatia A (cache local): as 3 chamadas
+    // abaixo recebem um `env` sombreado com `STATS_CACHE` = cache LOCAL em
+    // arquivo (`localCampaignCache`, ver docstring de
+    // clarice-studio-campaign-cache.ts) e `skipKvCache: false` — o painel
+    // Studio segue NUNCA lendo/escrevendo `list:{id}`/`stats:{id}`/
     // `brevo:plan-credits` no KV COMPARTILHADO de produção (mesmo namespace
-    // desde #4165/#4173). Medido: sem isso, abrir o painel local disparava
-    // até ~100 GETs na Brevo com a key de produção e escrevia no KV público
-    // sem nenhuma coordenação (`tryAcquireRefreshLock`/`coalesceRefresh` só
-    // existem em index.ts) -- contribuiu pro incidente de rate-limit
-    // registrado no #4187. `readKvTabs` abaixo continua usando o KV real
-    // normalmente -- isso NÃO muda (é o que #4165/#4173 pediram).
+    // desde #4165/#4173 — isso não mudou, é o que #4186 pediu), mas agora o
+    // cache-aside de brevo-api.ts RODA de verdade contra um KV local em vez
+    // de ser desligado inteiro: campanha imutável (>7d, `isImmutableCampaign`)
+    // grava em `data/clarice-studio-cache/campaigns/` e nunca mais precisa de
+    // um GET na Brevo; só campanhas recentes (<7d) continuam ao vivo em todo
+    // reload. `readKvTabs` abaixo continua usando o KV real (`env`, sem
+    // sombra) normalmente -- isso não muda.
     // #6394: `fetchPlanCredits` (restante cru), não `resolvePlanTotal` — este
-    // caminho é sempre AO VIVO (skipKvCache=true desliga toda leitura/escrita
-    // de KV, então `resolvePlanTotal` não teria como parear um snapshot).
-    // Combinado abaixo com o `cumulativeSent` das campanhas buscadas NESTA
-    // MESMA chamada (também ao vivo) — os dois operandos são do mesmo
-    // instante, então recombinar aqui não reintroduz o bug do #6394.
-    const liveCredits = await fetchPlanCredits(env, "cached", true).catch(() => null);
-    const scheduled = await fetchScheduledCampaigns(env, 50, false, undefined, true).catch((e) => {
+    // caminho é sempre AO VIVO em relação à Brevo (o cache local acima só
+    // evita re-fetch de campanha imutável; créditos do plano continuam
+    // buscados na hora), então `resolvePlanTotal` não teria como parear um
+    // snapshot. Combinado abaixo com o `cumulativeSent` das campanhas
+    // buscadas NESTA MESMA chamada (também ao vivo) — os dois operandos são
+    // do mesmo instante, então recombinar aqui não reintroduz o bug do #6394.
+    const campaignCacheEnv: Env = { ...env, STATS_CACHE: localCampaignCache as unknown as Env["STATS_CACHE"] };
+    const liveCredits = await fetchPlanCredits(campaignCacheEnv, "cached", false).catch(() => null);
+    const scheduled = await fetchScheduledCampaigns(campaignCacheEnv, 50, false, undefined, false).catch((e) => {
       console.error("[dashboard-clarice] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
       return [];
     });
-    const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false, undefined, true);
+    const campaigns = await fetchRecentCampaigns(campaignCacheEnv, CAMPAIGNS_FETCH_LIMIT, false, undefined, false);
     planCredits =
       liveCredits === null
         ? null

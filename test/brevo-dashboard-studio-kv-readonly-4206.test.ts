@@ -299,12 +299,18 @@ describe("dashboard-clarice.ts — wiring do render KV-only default (#4206)", ()
     assert.match(body, /injectKvOnlyBanner\(html,\s*fetchedAt\)/, "o banner de fetchedAt deve ser aplicado nesse caminho");
   });
 
-  it("renderClariceDashboardLiveUncached (?fresh=1) preserva os 3 fetchers com skipKvCache:true (#4186, inalterado)", () => {
+  it("renderClariceDashboardLiveUncached (?fresh=1) chama os 3 fetchers via campaignCacheEnv + skipKvCache:false (#6720 Fatia A, substitui skipKvCache:true do #4186)", () => {
     const start = src.indexOf("async function renderClariceDashboardLiveUncached");
     assert.ok(start > 0, "não achei o caminho ao vivo no arquivo-fonte");
     const body = src.slice(start);
-    assert.match(body, /fetchPlanCredits\(env,\s*"cached",\s*true\)/);
-    assert.match(body, /fetchScheduledCampaigns\(env,\s*50,\s*false,\s*undefined,\s*true\)/);
-    assert.match(body, /fetchRecentCampaigns\(env,\s*CAMPAIGNS_FETCH_LIMIT,\s*false,\s*undefined,\s*true\)/);
+    // #6720 Fatia A: `skipKvCache:true` (que desligava o cache-aside inteiro)
+    // virou `skipKvCache:false` + `env` sombreado (`campaignCacheEnv`) cujo
+    // STATS_CACHE é o cache LOCAL em arquivo — nunca o KV real de produção
+    // (`env`, sem sombra). Ver test/clarice-studio-campaign-cache.test.ts e
+    // test/brevo-dashboard-studio-skip-kv-cache-4186.test.ts.
+    assert.match(body, /const campaignCacheEnv: Env = \{ \.\.\.env, STATS_CACHE: localCampaignCache/);
+    assert.match(body, /fetchPlanCredits\(campaignCacheEnv,\s*"cached",\s*false\)/);
+    assert.match(body, /fetchScheduledCampaigns\(campaignCacheEnv,\s*50,\s*false,\s*undefined,\s*false\)/);
+    assert.match(body, /fetchRecentCampaigns\(campaignCacheEnv,\s*CAMPAIGNS_FETCH_LIMIT,\s*false,\s*undefined,\s*false\)/);
   });
 });
