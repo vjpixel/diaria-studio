@@ -41,3 +41,26 @@ systemctl --user enable --now diaria-clarice-guardrail-alarm.timer
 
 Isso registra a task `Diaria-Clarice-Guardrail-Alarm` (a cada 4h). Idempotente
 — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-clarice-guardrail-alarm.timer`.
+
+## Ação PENDENTE no `helios` (#6695, 29/08/2026)
+
+O commit `5997cddd` (#6562/#6563) fez o script sair com exit 75
+(`EX_TEMPFAIL`) quando `shouldSkipForLowQuota` acusa cota Brevo baixa, e
+declarou `successExitCodes: [75]` no registro (`scripts/lib/scheduled-tasks.ts`).
+**Isso só vira comportamento real depois de rodar o comando acima
+(`setup-systemd-timers.ts` + `cp` pra `~/.config/systemd/user/` +
+`daemon-reload`) de novo na unit já armada** — nenhum PR/CI/watchdog
+regenera a unit sozinho. Enquanto esse passo manual não rodar, o próprio
+script detecta a unit desatualizada (`isExitCodeArmedForUnit`,
+`scripts/lib/systemd-unit-exit-guard.ts`) e sai com exit 0 no skip em vez
+de 75 — nunca marca a unit como `failed`, mas também não dá ainda o sinal
+fino que o `Diaria-Systemd-Unit-Rate-Alarm` precisa pra distinguir "skip
+deliberado" de "rodou normal". Rodar:
+
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm
+cp .systemd-units/diaria-clarice-guardrail-alarm.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+```
+
+Confirmar com `grep SuccessExitStatus ~/.config/systemd/user/diaria-clarice-guardrail-alarm.service`.

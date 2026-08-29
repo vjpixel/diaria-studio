@@ -25,7 +25,13 @@ import {
   type CampaignGuardrailInput,
   type GuardrailAlarmState,
 } from "../scripts/lib/clarice-guardrail-alarm.ts";
-import { toAlarmFinding, shouldSkipForLowQuota, EX_TEMPFAIL } from "../scripts/clarice-guardrail-alarm.ts";
+import {
+  toAlarmFinding,
+  shouldSkipForLowQuota,
+  EX_TEMPFAIL,
+  TASK_NAME,
+  resolveLowQuotaSkipExitCode,
+} from "../scripts/clarice-guardrail-alarm.ts";
 import { BrevoCampaignQuotaLowError } from "../scripts/lib/brevo-client.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 
@@ -378,4 +384,22 @@ test("Diaria-Clarice-Guardrail-Alarm declara EX_TEMPFAIL em successExitCodes —
   const def = getScheduledTaskByName("Diaria-Clarice-Guardrail-Alarm");
   assert.ok(def, "task deveria existir no registro");
   assert.deepEqual(def?.successExitCodes, [EX_TEMPFAIL]);
+});
+
+test("TASK_NAME casa com o nome exato do registro (#6695) — mesma string usada pra achar a unit systemd armada", () => {
+  assert.equal(TASK_NAME, "Diaria-Clarice-Guardrail-Alarm");
+  assert.ok(getScheduledTaskByName(TASK_NAME), "TASK_NAME precisa apontar pra uma task existente no registro");
+});
+
+// #6695: successExitCodes declarado no registro não basta sozinho — só vira
+// SuccessExitStatus=75 real depois do editor rodar setup-systemd-timers.ts +
+// copiar o .service regenerado pra ~/.config/systemd/user/ na unit JÁ ARMADA.
+// resolveLowQuotaSkipExitCode é o guard que evita marcar a unit como `failed`
+// enquanto esse passo manual não rodou.
+test("resolveLowQuotaSkipExitCode — unit armada com SuccessExitStatus=75 confirmado — retorna EX_TEMPFAIL (#6695)", () => {
+  assert.equal(resolveLowQuotaSkipExitCode(true), EX_TEMPFAIL);
+});
+
+test("resolveLowQuotaSkipExitCode — unit NÃO confirmada (não regenerada/armada ainda) — retorna 0, nunca EX_TEMPFAIL (#6695)", () => {
+  assert.equal(resolveLowQuotaSkipExitCode(false), 0);
 });

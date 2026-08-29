@@ -45,6 +45,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoGet, assertCampaignQuotaHeadroom, BrevoCampaignQuotaLowError } from "./lib/brevo-client.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { isExitCodeArmedForUnit } from "./lib/systemd-unit-exit-guard.ts";
 import {
   evaluateSendGuardrails,
   isReadyForEvaluation,
@@ -206,8 +207,50 @@ export function shouldSkipForLowQuota(assertQuota: () => void = assertCampaignQu
  * `Diaria-Systemd-Unit-Rate-Alarm` (`scripts/systemd-unit-rate-alarm.ts`)
  * pare de contar este skip como falha na taxa (achado #6563 — o mecanismo
  * `successExitCodes` já existe e cobre exatamente este caso).
+ *
+ * **#6695 (achado pós-#6563):** declarar `successExitCodes` no registro NÃO
+ * basta sozinho — só vira `SuccessExitStatus=` real na unit systemd depois
+ * de `npx tsx scripts/setup-systemd-timers.ts` REGENERAR o `.service` e o
+ * editor COPIAR o resultado pra `~/.config/systemd/user/` no `helios`
+ * (`daemon-reload` + `enable --now` de novo) — passo manual, nenhum
+ * PR/CI/watchdog dispara isso sozinho. A unit já armada em produção antes
+ * deste commit não tem `SuccessExitStatus=75`, então `main()` não confia
+ * cegamente neste exit code — ver `isExitCodeArmedForUnit` (chamada em
+ * `main()` logo abaixo), que checa a unit REAL em disco antes de emitir
+ * 75; sem confirmação, cai pra exit 0 (sempre seguro, com ou sem a
+ * declaração) e loga um aviso pedindo o `setup-systemd-timers.ts` manual.
+ * **Ação pendente do editor no `helios` (não fechada por este commit):**
+ * `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm`
+ * seguido de `cp .systemd-units/diaria-clarice-guardrail-alarm.service
+ * ~/.config/systemd/user/ && systemctl --user daemon-reload` — sem isso,
+ * o skip por cota baixa continua saindo como exit 0 "genérico" (nunca como
+ * `failed`, mas também sem o sinal fino de "foi skip, não silêncio" que o
+ * #6563 pretendia dar ao `Diaria-Systemd-Unit-Rate-Alarm`). Ver
+ * `docs/clarice-guardrail-alarm-setup.md`.
  */
 export const EX_TEMPFAIL = 75 as const;
+
+/** Nome exato da task no registro (`scripts/lib/scheduled-tasks.ts`) —
+ * reusado por `isExitCodeArmedForUnit` pra achar a unit systemd real
+ * armada em disco (#6695). Duplicar a string aqui em vez de importar um
+ * literal de `scheduled-tasks.ts` é deliberado: `getScheduledTaskByName`
+ * já é chamado com este MESMO literal em `test/clarice-guardrail-alarm.test.ts`
+ * (linha que garante `successExitCodes` declarado) — manter os dois como
+ * strings soltas e deixar o teste de integração (que também lê o registro)
+ * pegar divergência é mais simples que introduzir um import circular. */
+export const TASK_NAME = "Diaria-Clarice-Guardrail-Alarm" as const;
+
+/**
+ * Resolve o exit code do skip por cota baixa dado se a unit systemd
+ * ARMADA já declara `SuccessExitStatus=75` (#6695). Pura — recebe o
+ * booleano já calculado (`isExitCodeArmedForUnit`), facilita teste sem
+ * tocar filesystem. `armed=true` → `EX_TEMPFAIL` (75, o sinal fino que o
+ * #6563 pretendia); `armed=false` → 0 (exit sempre seguro, nunca vira
+ * `failed` numa unit que ainda não sabe tratar 75 como sucesso).
+ */
+export function resolveLowQuotaSkipExitCode(armed: boolean): number {
+  return armed ? EX_TEMPFAIL : 0;
+}
 
 interface BrevoCampaignListItem {
   id: number;
@@ -269,8 +312,23 @@ async function main(): Promise<void> {
   // sweep por 429 esgotado; próxima execução do timer (4h) tenta de novo.
   const skipReason = shouldSkipForLowQuota();
   if (skipReason) {
+    // #6695: só emite EX_TEMPFAIL (75) se a unit systemd ARMADA neste
+    // host já declarar SuccessExitStatus=75 — senão o systemd marcaria a
+    // unit `failed` de verdade (pior que o exit 1 anterior ao #6563,
+    // porque parece falha real pro Diaria-Systemd-Unit-Rate-Alarm). Ver
+    // docstring de `resolveLowQuotaSkipExitCode`/EX_TEMPFAIL acima.
+    const armed = isExitCodeArmedForUnit(TASK_NAME, EX_TEMPFAIL);
+    const exitCode = resolveLowQuotaSkipExitCode(armed);
+    if (!armed) {
+      console.log(
+        `[clarice-guardrail-alarm] AVISO: unit systemd ainda não declara SuccessExitStatus=${EX_TEMPFAIL} — ` +
+          `saindo com exit 0 em vez de ${EX_TEMPFAIL} pra não marcar a unit como failed. ` +
+          `Rodar 'npx tsx scripts/setup-systemd-timers.ts --task ${TASK_NAME}' + copiar pra ` +
+          `~/.config/systemd/user/ + 'systemctl --user daemon-reload' no helios pra habilitar o exit ${EX_TEMPFAIL} (#6695).`,
+      );
+    }
     console.log(`[clarice-guardrail-alarm] pulando esta execução — ${skipReason}`);
-    process.exitCode = EX_TEMPFAIL;
+    process.exitCode = exitCode;
     return;
   }
 
