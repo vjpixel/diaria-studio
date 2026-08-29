@@ -92,8 +92,12 @@ describe("claude-openrouter.sh — chave fora do cmdline (#6718)", () => {
     const lines = logicalCodeLines().filter((l) => l.includes(`${VAR}=`));
     assert.ok(
       lines.length >= 1,
-      "esperava ao menos 1 uso de ANTHROPIC_AUTH_TOKEN em código — sem ele a " +
-        "chave não chega ao CLI e a delegação quebra em auth",
+      "ANTHROPIC_AUTH_TOKEN desapareceu do código do wrapper. Duas leituras, " +
+        "as duas acionáveis: (a) a entrega da chave foi removida de verdade — " +
+        "a delegação quebra em auth; (b) a entrega trocou de mecanismo (ex: " +
+        "`claude --api-key \"$KEY\"`) — que REINTRODUZ o vazamento da #6718, " +
+        "pois flags também são argumentos de processo (cmdline 0444). Nenhuma " +
+        "das duas é o caminho: a chave entra por export no subshell.",
     );
     for (const line of lines) {
       assert.match(
@@ -124,10 +128,12 @@ describe("claude-openrouter.sh — chave fora do cmdline (#6718)", () => {
     const iSub = lines.findIndex((l) => l.includes(`OUT=$(printf '%s' "$PROMPT" | (`));
     const iExport = lines.findIndex((l) => l.trim().startsWith(`export ${VAR}=`));
     const iClaude = lines.findIndex((l) => l.includes("claude -p"));
+    const iClose = lines.findIndex((l, i) => i > iSub && l.trim() === "))");
     const iRc = lines.findIndex((l) => l.trim() === "RC=$?");
     assert.ok(iSub >= 0, "subshell do OUT=$(printf ... | ( não encontrado — a estrutura do fix #6718 mudou");
-    assert.ok(iExport > iSub, "ANTHROPIC_AUTH_TOKEN exportado ANTES do subshell: vaza pro shell que chamou o wrapper e sequestra sessões da assinatura claude.ai (#5608)");
+    assert.ok(iExport > iSub, "ANTHROPIC_AUTH_TOKEN exportado FORA do bloco do wrapper: se este trecho for colado/fonteado num shell interativo (o padrão do incidente #5608), a var sequestra sessões da assinatura claude.ai — o export tem que ficar dentro do subshell do OUT=$(...)");
     assert.ok(iClaude > iExport, "o claude -p roda ANTES do export da chave — a delegação sobe sem auth");
+    assert.ok(iClose > iExport && iClose > iClaude, "export e claude -p não estão contidos no MESMO subshell (fechamento )) antes de ambos): a chave pode não chegar ao CLI ou o escopo do wrapper se rompe — preservar o bloco OUT=$(printf ... | ( ... )) do fix #6718");
     assert.ok(iRc > iClaude, "âncora RC=$? não encontrada depois da invocação — estrutura do loop de tentativas mudou");
   });
 
