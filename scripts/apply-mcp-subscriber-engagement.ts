@@ -27,25 +27,41 @@
  *     [--pages-fetched 3 --total-pages 3] [--allow-empty-replace] \
  *     [--out-dir data/beehiiv-backup/subscriber-engagement]
  *
+ *   # Append vs replace: default é REPLACE (reescreve o `.jsonl` inteiro a
+ *   # partir do array completo). Use --append (#6733) pra aplicar página a
+ *   # página IMEDIATAMENTE após cada fetch MCP, sem exigir acumular/
+ *   # retranscrever manualmente múltiplas páginas antes de aplicar nenhuma —
+ *   # esse acúmulo manual já perdeu 1 registro de 100 numa transcrição real:
+ *   echo '{"engagement":[page1]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 1 --total-pages 3
+ *   echo '{"engagement":[page2]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 2 --total-pages 3 --append
+ *   echo '{"engagement":[page3]}' | npx tsx scripts/apply-mcp-subscriber-engagement.ts --post-id X --pages-fetched 3 --total-pages 3 --append
+ *
  * Stdin JSON (tolerante — mesmo padrão de `apply-mcp-clicks.ts`):
  *   { "engagement": [...] }   — wrapper shape (resposta direta da MCP)
  *   { "data": [...] }         — alternativo
  *   [...]                     — array nu
  *
- * Modo é sempre REPLACE (reescreve o `.jsonl` inteiro a partir do array
- * completo que o invocador acumulou) — não existe modo `--append` aqui
- * porque, diferente de `list_post_clicks` (que o enricher pagina em
- * chamadas separadas e junta em `allClicks` ANTES de aplicar, mesma
- * recomendação deste script), o dado por assinante pode ser grande o
- * bastante pra justificar aplicar página a página no futuro — quando esse
- * dia chegar, adicionar `--append` com dedup por `subscriber_id`
- * (análogo ao dedup por `url` de `apply-mcp-clicks.ts`). Por ora, REPLACE
- * cobre o caso de uso do agent (acumula tudo, aplica uma vez).
+ * Modo padrão é REPLACE (reescreve o `.jsonl` inteiro a partir do array
+ * completo que o invocador passou). `--append` (#6733) mescla o payload
+ * novo com o que já está em disco, deduplicando por `subscriber_id`
+ * (registro incoming vence em caso de conflito — mesma convenção do dedup
+ * por `url` de `apply-mcp-clicks.ts`); registro sem `subscriber_id` nunca é
+ * deduplicado contra outro (cada um é tratado como único, via chave
+ * sintética) — degrada pra "nunca perde dado", nunca pra "colapsa dado
+ * potencialmente distinto". `--append` existe porque, diferente de
+ * `list_post_clicks` (que o enricher já pagina e junta em `allClicks` antes
+ * de aplicar), a paginação de `list_post_subscriber_engagement` tende a ter
+ * mais páginas — forçar o agent a acumular/retranscrever manualmente todas
+ * antes do primeiro apply é o que causou a perda de registro que motivou
+ * este flag.
  *
- * GUARD (mesmo padrão de #4836 em `apply-mcp-clicks.ts`): REPLACE nunca
- * apaga um JSONL não-vazio com um payload vazio sem `--allow-empty-replace`
- * explícito — um MCP que responde vazio por rate-limit/timeout/paginação
- * malformada não pode silenciosamente destruir engagement já confirmado.
+ * GUARD (mesmo padrão de #4836 em `apply-mcp-clicks.ts`): em modo REPLACE
+ * (sem `--append`), nunca apaga um JSONL não-vazio com um payload vazio sem
+ * `--allow-empty-replace` explícito — um MCP que responde vazio por
+ * rate-limit/timeout/paginação malformada não pode silenciosamente destruir
+ * engagement já confirmado. Em modo `--append`, o guard não se aplica —
+ * aplicar uma página vazia nunca apaga o que já está em disco (é sempre uma
+ * união, nunca uma substituição), então não há dado pra perder.
  *
  * Efeito colateral (sempre, mesmo em erro): grava/atualiza
  * `{out-dir}/manifest.json` via `scripts/lib/beehiiv-engagement-manifest.ts`
@@ -109,6 +125,40 @@ export function countExistingLines(path: string): number {
   return content.split("\n").filter((line) => line.trim().length > 0).length;
 }
 
+/** Lê e faz parse das linhas não-vazias de um JSONL existente — [] se o arquivo não existe. */
+export function readExistingRecords(path: string): unknown[] {
+  if (!existsSync(path)) return [];
+  const content = readFileSync(path, "utf8");
+  return content
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as unknown);
+}
+
+/**
+ * Mescla `existing` (já em disco) com `incoming` (payload desta chamada),
+ * deduplicando por `subscriber_id` — incoming vence em caso de conflito
+ * (mesma convenção do dedup por `url` em `apply-mcp-clicks.ts`). Registro
+ * sem `subscriber_id` string nunca é deduplicado contra outro: cada um
+ * recebe uma chave sintética própria (índice na lista concatenada), então
+ * nunca colide com um registro de outra página que também careça do campo.
+ */
+export function mergeEngagementRecords(existing: unknown[], incoming: unknown[]): unknown[] {
+  const merged = new Map<string, unknown>();
+  let syntheticIdx = 0;
+  const put = (record: unknown) => {
+    const subscriberId =
+      record && typeof record === "object" && typeof (record as { subscriber_id?: unknown }).subscriber_id === "string"
+        ? (record as { subscriber_id: string }).subscriber_id
+        : undefined;
+    const key = subscriberId ?? `__no_id_${syntheticIdx++}`;
+    merged.set(key, record);
+  };
+  for (const r of existing) put(r);
+  for (const r of incoming) put(r); // incoming wins se mesmo subscriber_id
+  return [...merged.values()];
+}
+
 export interface ApplyEngagementOpts {
   postId: string;
   title?: string;
@@ -116,6 +166,8 @@ export interface ApplyEngagementOpts {
   totalPages?: number;
   allowEmptyReplace?: boolean;
   outDir?: string;
+  /** Mescla com o JSONL existente (dedup por `subscriber_id`) em vez de sobrescrever (#6733). */
+  append?: boolean;
 }
 
 export interface ApplyEngagementResult {
@@ -160,12 +212,21 @@ export function applyEngagement(stdinJson: string, opts: ApplyEngagementOpts): A
 
   const beforeCount = countExistingLines(jsonlPath);
   const raw = JSON.parse(stdinJson) as unknown;
-  const records = extractEngagementArray(raw);
+  const incoming = extractEngagementArray(raw);
 
-  if (beforeCount > 0 && records.length === 0 && !opts.allowEmptyReplace) {
-    // Guard dispara ANTES de tocar manifest ou disco — mesma ordem de
-    // `apply-mcp-clicks.ts` (nunca grava estado parcial num caminho de erro).
-    throw new EmptyReplaceGuardError(opts.postId, beforeCount);
+  let records: unknown[];
+  if (opts.append) {
+    // Append (#6733): mescla com o que já está em disco — nunca apaga nada,
+    // então o guard de replace-vazio abaixo não se aplica a este ramo.
+    const existing = readExistingRecords(jsonlPath);
+    records = mergeEngagementRecords(existing, incoming);
+  } else {
+    if (beforeCount > 0 && incoming.length === 0 && !opts.allowEmptyReplace) {
+      // Guard dispara ANTES de tocar manifest ou disco — mesma ordem de
+      // `apply-mcp-clicks.ts` (nunca grava estado parcial num caminho de erro).
+      throw new EmptyReplaceGuardError(opts.postId, beforeCount);
+    }
+    records = incoming;
   }
 
   writeJsonlAtomic(jsonlPath, records);
@@ -213,7 +274,7 @@ async function main(): Promise<void> {
   if (postIdIdx === -1 || !argv[postIdIdx + 1]) {
     console.error(
       "uso: apply-mcp-subscriber-engagement.ts --post-id post_<uuid> [--title T] " +
-        "[--pages-fetched N --total-pages M] [--allow-empty-replace] [--out-dir DIR]  (JSON via stdin)",
+        "[--pages-fetched N --total-pages M] [--append] [--allow-empty-replace] [--out-dir DIR]  (JSON via stdin)",
     );
     process.exit(2);
   }
@@ -227,6 +288,7 @@ async function main(): Promise<void> {
     totalPages: parseIntArg(argv, "--total-pages"),
     allowEmptyReplace: argv.includes(ALLOW_EMPTY_REPLACE_FLAG),
     outDir: outDirIdx !== -1 ? resolve(argv[outDirIdx + 1]) : undefined,
+    append: argv.includes("--append"),
   };
 
   const stdinJson = await readStdin();

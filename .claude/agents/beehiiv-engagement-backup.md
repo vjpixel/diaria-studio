@@ -31,24 +31,29 @@ Essa lista normalmente vem de `npx tsx scripts/list-posts-for-engagement-backup.
 
 Para cada post no input:
 
-1. **Fetch primeira página** via MCP:
+1. **Fetch e aplique PÁGINA A PÁGINA — nunca acumule várias páginas antes do primeiro apply (#6733).** Para cada página que a MCP retornar:
    ```
    mcp__claude_ai_Beehiiv__list_post_subscriber_engagement(post_id=X, per_page=100)
    ```
-   Se a resposta trouxer paginação (`pagination.total_pages > 1`), fetch páginas 2..N em SEQUÊNCIA (nunca em paralelo — risco de rate-limit). Acumule tudo num único array `allEngagement` antes de aplicar — não use `--append` do script (não existe; o script só tem modo REPLACE, ver seu docstring).
+   e IMEDIATAMENTE aplique essa página sozinha via `apply-mcp-subscriber-engagement.ts` (passo 3) — a 1ª página sem `--append` (REPLACE — é a primeira escrita do post nesta invocação), as demais com `--append` (mescla com dedup por `subscriber_id`, nunca apaga o que já foi aplicado). **Não** transcreva/acumule o JSON de páginas anteriores manualmente num array `allEngagement` pra aplicar tudo de uma vez no final — foi exatamente esse acúmulo manual que perdeu 1 registro de 100 numa transcrição real (#6733). Se a resposta trouxer paginação (`pagination.total_pages > 1`), fetch páginas 2..N em SEQUÊNCIA (nunca em paralelo — risco de rate-limit), aplicando cada uma assim que chega.
 
-2. **Identidade de clique (opcional, quando o invocador pedir explicitamente)**: `mcp__claude_ai_Beehiiv__list_post_click_subscribers(post_id=X, per_page=100)`, mesma disciplina de paginação sequencial. Se usado, funda os registros no MESMO array `allEngagement` antes de aplicar (não crie um 2º arquivo por post) — cada registro é gravado como veio da MCP, sem reshape.
+2. **Identidade de clique (opcional, quando o invocador pedir explicitamente)**: `mcp__claude_ai_Beehiiv__list_post_click_subscribers(post_id=X, per_page=100)`, mesma disciplina de paginação sequencial + apply imediato por página (`--append`, dedup por `subscriber_id` funde com os registros de engagement já aplicados no mesmo arquivo) — cada registro é gravado como veio da MCP, sem reshape.
 
-3. **Aplicar via stdin pipe**:
+3. **Aplicar via stdin pipe, uma página por vez**:
    ```bash
-   echo '<JSON com {"engagement": allEngagement}>' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
-     --post-id X --title "..." --pages-fetched N --total-pages N
-   ```
-   - `--pages-fetched`/`--total-pages`: se você buscou TODAS as páginas que a MCP reportou, passe os dois iguais (ex: `--pages-fetched 3 --total-pages 3`) — o script marca `status: "ok"`. Se você teve que parar no meio (rate-limit, erro, timeout), passe o que conseguiu (`--pages-fetched 1 --total-pages 3`) — o script marca `status: "partial"`, e o post volta a aparecer na próxima chamada de `list-posts-for-engagement-backup.ts`.
-   - Capture exit code; se != 0, log erro e prossiga (não aborte o batch inteiro).
-   - **Exit code 3 é o guard de replace-vazio** (mesma disciplina do `apply-mcp-clicks.ts` #4836): o script recusou substituir um JSONL NÃO-VAZIO pelo payload vazio que a MCP retornou. **NÃO** reinvoque com `--allow-empty-replace` por conta própria — você não tem como distinguir "MCP confirmou zero engajamento agora" de "resposta truncada/malformada". Trate como `fail` no summary com o motivo `guard-empty-replace`.
+   # 1ª página do post (REPLACE — sem --append):
+   echo '<JSON com {"engagement": page1}>' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
+     --post-id X --title "..." --pages-fetched 1 --total-pages N
 
-4. **Confirme a persistência lendo o disco de volta** (mesma disciplina de `beehiiv-clicks-enricher` #4958) — exit code 0 só prova que o script rodou sem erro, não que o write persistiu como esperado. Depois de cada chamada do passo 3, cheque a saída JSON do próprio script (`{post_id, before_count, after_count, status}`) — `after_count` deve bater com `allEngagement.length` que você enviou. Se não bater, trate como `fail` com o motivo `write-mismatch`.
+   # páginas seguintes do MESMO post (--append — mescla, dedup por subscriber_id):
+   echo '<JSON com {"engagement": page2}>' | npx tsx scripts/apply-mcp-subscriber-engagement.ts \
+     --post-id X --title "..." --pages-fetched 2 --total-pages N --append
+   ```
+   - `--pages-fetched`/`--total-pages`: em cada chamada, `--pages-fetched` é o número da página que você acabou de aplicar (não o total acumulado) e `--total-pages` é o total reportado pela MCP. Quando `--pages-fetched == --total-pages` na última chamada, o script marca `status: "ok"`. Se você teve que parar no meio (rate-limit, erro, timeout) antes da última página, a chamada mais recente já aplicada fica com `--pages-fetched < --total-pages` — o script marca `status: "partial"`, e o post volta a aparecer na próxima chamada de `list-posts-for-engagement-backup.ts` (a próxima invocação retoma com `--append`, sem perder as páginas já aplicadas).
+   - Capture exit code; se != 0, log erro e prossiga (não aborte o batch inteiro).
+   - **Exit code 3 é o guard de replace-vazio** (mesma disciplina do `apply-mcp-clicks.ts` #4836) — só dispara na 1ª página (sem `--append`) de um post que já tinha JSONL não-vazio de uma invocação anterior: o script recusou substituir um JSONL NÃO-VAZIO pelo payload vazio que a MCP retornou. **NÃO** reinvoque com `--allow-empty-replace` por conta própria — você não tem como distinguir "MCP confirmou zero engajamento agora" de "resposta truncada/malformada". Trate como `fail` no summary com o motivo `guard-empty-replace`. (Páginas seguintes com `--append` nunca disparam esse guard — mesclar uma página vazia não apaga nada.)
+
+4. **Confirme a persistência lendo o disco de volta** (mesma disciplina de `beehiiv-clicks-enricher` #4958) — exit code 0 só prova que o script rodou sem erro, não que o write persistiu como esperado. Depois de cada chamada do passo 3, cheque a saída JSON do próprio script (`{post_id, before_count, after_count, status}`) — em REPLACE (1ª página), `after_count` deve bater com o tamanho da página que você enviou; em `--append` (páginas seguintes), `after_count` deve ser ≥ `before_count` (pode ser igual ao anterior + tamanho da página nova, ou um pouco menor se houve overlap de `subscriber_id` deduplicado — nunca menor que `before_count`). Se `after_count < before_count` num `--append`, algo está errado (isso não deveria acontecer — mescla nunca reduz); trate como `fail` com o motivo `write-mismatch`.
 
 5. **Logue progresso conciso** em stderr — uma linha por post:
    ```
@@ -80,7 +85,7 @@ Sinal de que você está prestes a fabricar: você não consegue apontar, para o
 - ❌ NÃO escreva diretamente em `data/beehiiv-backup/subscriber-engagement/*` — sempre via `apply-mcp-subscriber-engagement.ts` (atomic write + atualização do manifest de cobertura).
 - ❌ NÃO retorne os registros brutos de engagement no summary stdout — só counters. O dado fica só nos `.jsonl` em disco.
 - ❌ NÃO chame outros MCPs além dos dois listados no frontmatter. Seu escopo é mínimo de propósito.
-- ❌ NÃO invente `--append` no script — ele não existe (ver docstring de `apply-mcp-subscriber-engagement.ts`); acumule tudo antes de aplicar.
+- ❌ NÃO acumule múltiplas páginas manualmente num array antes do primeiro apply — use `--append` do script (#6733) pra aplicar cada página assim que chega (ver passo 1/3 acima).
 
 ## Output esperado pelo invocador
 
