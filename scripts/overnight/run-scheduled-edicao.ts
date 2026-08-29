@@ -100,19 +100,30 @@ export { STAGE_PLAN, HEADLESS_FLAGS } from "../lib/edition-stage-runner.ts";
  * **A lista é enumerada, não exaustiva** (achado do review do PR #5609). A
  * própria mensagem do CLI diz "ANTHROPIC_API_KEY **or another auth source**",
  * e a superfície de auth do Claude Code inclui outras vars que roteiam pra
- * um provider diferente do login. As 4 primeiras abaixo cobrem o incidente
- * observado (as 2 de key) mais o roteamento Bedrock/Vertex; as 3 seguintes
- * (#5791) cobrem identidade de sessão pai — nenhuma delas aparece em
- * `.env.example` hoje, então remover é no-op no ambiente atual e blindagem
- * pra quando alguma entrar no `.env` por outro motivo. `ANTHROPIC_BASE_URL`
- * ficou de FORA de propósito: ela não autentica sozinha, e um proxy
- * legítimo configurado no futuro seria quebrado em silêncio por um filtro
- * que ninguém lembraria de estar aqui. Se aparecer um caso novo de auth
- * shadowing, o conserto é acrescentar a var a esta lista — com o motivo.
+ * um provider diferente do login. As 5 primeiras abaixo cobrem o incidente
+ * observado (as 2 de key) mais a base URL (#6714) e o roteamento
+ * Bedrock/Vertex; as 3 seguintes (#5791) cobrem identidade de sessão pai —
+ * nenhuma delas aparece em `.env.example` hoje, então remover é no-op no
+ * ambiente atual e blindagem pra quando alguma entrar no `.env` por outro
+ * motivo. `ANTHROPIC_BASE_URL` ficou de FORA na versão original (#5609): não
+ * autentica sozinha, e um proxy legítimo configurado no futuro seria quebrado
+ * em silêncio por um filtro que ninguém lembraria de estar aqui. O #6714
+ * reverte: o par `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` apontando pra
+ * gateway de terceiro (OpenRouter — chamadas de Sonnet a preço cheio no log
+ * do gateway, 29/08/2026) produz exatamente o shadowing que a lista existe
+ * pra impedir, e filtrar só a AUTH_TOKEN não basta — com ela removida, a
+ * BASE_URL residual faria o CLI enviar o login claude.ai pro host de
+ * terceiro. O risco do proxy legítimo é aceito; se um dia existir, o
+ * conserto é REMOVER a var desta lista — com o motivo.
  */
 export const CLAUDE_CLI_STRIPPED_ENV_VARS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
+  // #6714 — não autentica sozinha (exclusão original do #5609), mas em par
+  // com ANTHROPIC_AUTH_TOKEN apontando pra gateway de terceiro roteia a
+  // sessão inteira pro gateway e desabilita os conectores claude.ai. Ver
+  // comentário do docstring acima e regra #5608 no CLAUDE.md.
+  "ANTHROPIC_BASE_URL",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   // #5791 — hipótese, não causa raiz confirmada. Achado ao vivo 260821: um
