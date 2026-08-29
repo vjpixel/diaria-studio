@@ -17,6 +17,7 @@ import {
   computeKitContactsToIngest,
   type KitInactiveSubscriber,
 } from "../scripts/sync-kit-inactive-to-brevo.ts";
+import { KIT_ORIGIN_ID_PREFIX, parseKitSubscriberId } from "../scripts/evaluate-brevo-diaria.ts";
 import type { KitSubscriberSummary } from "../scripts/lib/kit-subscribers.ts";
 import type { BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
 
@@ -104,5 +105,24 @@ describe("computeKitContactsToIngest — dedup pelo store COMPARTILHADO com sync
     const inactive: KitInactiveSubscriber[] = [{ kit_subscriber_id: 1, email: "a@b.com" }];
     const out = computeKitContactsToIngest(inactive, { contacts: [] }, null);
     assert.equal(out.length, 1);
+  });
+
+  // #6340 item 4 fix D (review pós-merge): produtor (este arquivo, via
+  // `computeKitContactsToIngest`) e consumidor (`evaluate-brevo-diaria.ts`,
+  // via `parseKitSubscriberId`) usam a MESMA constante importada
+  // (`KIT_ORIGIN_ID_PREFIX`) — antes deste fix o produtor escrevia o literal
+  // `"kit:"` hardcoded, e nada travava os dois juntos. Este teste falha se
+  // um dos dois lados voltar a divergir da constante compartilhada (ex: um
+  // rename futuro de `KIT_ORIGIN_ID_PREFIX` só de um lado).
+  it("#6340 item 4 fix D — o beehiiv_subscription_id produzido usa KIT_ORIGIN_ID_PREFIX (não um literal 'kit:' solto), e o consumidor consegue fazer o parse de volta", () => {
+    const inactive: KitInactiveSubscriber[] = [{ kit_subscriber_id: 999, email: "produtor-consumidor@b.com" }];
+    const out = computeKitContactsToIngest(inactive, { contacts: [] });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].beehiiv_subscription_id, `${KIT_ORIGIN_ID_PREFIX}999`, "o produtor precisa usar a MESMA constante que o consumidor importa");
+    assert.deepEqual(
+      parseKitSubscriberId(out[0].beehiiv_subscription_id),
+      { kind: "kit-valid", id: 999 },
+      "o consumidor (evaluate-brevo-diaria.ts) precisa conseguir extrair o id de volta do que o produtor escreveu",
+    );
   });
 });

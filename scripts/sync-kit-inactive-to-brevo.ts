@@ -20,9 +20,16 @@
  *   contato Beehiiv-pending ingerido lá competem pelo MESMO teto de fila
  *   (`brevo_diaria.daily_send_cap`) e passam pela MESMA avaliação de
  *   engajamento em `evaluate-brevo-diaria.ts` — nenhuma mudança nesse script
- *   foi necessária (a issue #6340 marca isso como "deliberadamente fora
- *   desta unidade, por risco": item 4, promoção Kit→active, ainda depende
- *   do #6339/tocaria `evaluate-brevo-diaria.ts` diretamente).
+ *   foi necessária **para o item 3** (a issue #6340 marcava a promoção
+ *   Kit→active como "deliberadamente fora desta unidade, por risco": item
+ *   4, que tocaria `evaluate-brevo-diaria.ts` diretamente). **O item 4 foi
+ *   implementado depois, em unidade separada** — `runEvaluation` Passo 1
+ *   (auto-confirmação) roteia por origem via `parseKitSubscriberId`: um
+ *   contato com `beehiiv_subscription_id` prefixado `kit:` (como os que
+ *   este script ingere) que vira `active` no Kit sai da fila do Brevo sem
+ *   depender da taxa de abertura, mesmo tratamento terminal que a
+ *   auto-confirmação Beehiiv já tinha. Ver o comentário `#6340 item 4` em
+ *   `evaluate-brevo-diaria.ts` pro mecanismo completo.
  * - **Convenção de origem sintética no `beehiiv_subscription_id`**: o campo
  *   é nomeado para a origem Beehiiv (`BrevoDiariaContact.beehiiv_subscription_id:
  *   string`, obrigatório), mas já existem 2 precedentes de uso para origem
@@ -121,6 +128,17 @@ import {
   type MvCoverage,
   type PendingToIngestEntry,
 } from "./sync-pending-to-brevo.ts";
+// #6340 item 4 fix D (review pós-merge) — importa a constante do prefixo em
+// vez de repetir o literal `"kit:"` aqui. Antes deste fix, o produtor
+// (este arquivo) escrevia o literal hardcoded enquanto o consumidor
+// (`evaluate-brevo-diaria.ts`, `parseKitSubscriberId`) fazia o parse contra
+// `KIT_ORIGIN_ID_PREFIX` — nada travava os dois juntos: mudar a constante
+// de um lado faria o outro tratar silenciosamente todo contato Kit como
+// origem Beehiiv (bug de correção, não crash, invisível pra qualquer teste
+// que exercite a constante isoladamente). Ver o teste "fix D" em
+// `test/sync-kit-inactive-to-brevo-6340.test.ts` pro guard que trava
+// produtor e consumidor na mesma constante.
+import { KIT_ORIGIN_ID_PREFIX } from "./evaluate-brevo-diaria.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -177,7 +195,7 @@ export function computeKitContactsToIngest(
     if (known.has(s.email) || seen.has(s.email)) continue;
     if (verifiedEmails && !verifiedEmails.has(s.email)) continue;
     seen.add(s.email);
-    out.push({ email: s.email, beehiiv_subscription_id: `kit:${s.kit_subscriber_id}` });
+    out.push({ email: s.email, beehiiv_subscription_id: `${KIT_ORIGIN_ID_PREFIX}${s.kit_subscriber_id}` });
   }
   return out;
 }
