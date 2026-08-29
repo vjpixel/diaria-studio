@@ -210,16 +210,34 @@ describe("dashboard-clarice.ts — wiring de skipKvCache + fallback last-good (#
   );
   const src = readFileSync(srcPath, "utf-8");
 
-  it("fetchPlanCredits é chamado com skipKvCache:true (3º argumento)", () => {
-    assert.match(src, /fetchPlanCredits\(env,\s*"cached",\s*true\)/);
+  // #6720 Fatia A: as 3 chamadas trocaram `skipKvCache: true` (que desligava
+  // o cache-aside inteiro, forçando fetch ao vivo sempre) por
+  // `skipKvCache: false` + um `env` sombreado (`campaignCacheEnv`) cujo
+  // `STATS_CACHE` é o cache LOCAL em arquivo (`createLocalFileCampaignCache`),
+  // não o KV real de produção. O invariante do #4186 (nunca tocar o KV
+  // COMPARTILHADO) continua valendo — só muda de "cache totalmente desligado"
+  // para "cache local, isolado da produção" (ver
+  // test/clarice-studio-campaign-cache.test.ts pro mecanismo do adapter e o
+  // describe "wiring: env sombreado nunca usa o STATS_CACHE de produção"
+  // abaixo pra prova de que `campaignCacheEnv` não é o `env` de produção).
+
+  it("fetchPlanCredits é chamado com campaignCacheEnv + skipKvCache:false (3º argumento)", () => {
+    assert.match(src, /fetchPlanCredits\(campaignCacheEnv,\s*"cached",\s*false\)/);
   });
 
-  it("fetchScheduledCampaigns é chamado com skipKvCache:true (5º argumento)", () => {
-    assert.match(src, /fetchScheduledCampaigns\(env,\s*50,\s*false,\s*undefined,\s*true\)/);
+  it("fetchScheduledCampaigns é chamado com campaignCacheEnv + skipKvCache:false (5º argumento)", () => {
+    assert.match(src, /fetchScheduledCampaigns\(campaignCacheEnv,\s*50,\s*false,\s*undefined,\s*false\)/);
   });
 
-  it("fetchRecentCampaigns é chamado com skipKvCache:true (5º argumento)", () => {
-    assert.match(src, /fetchRecentCampaigns\(env,\s*CAMPAIGNS_FETCH_LIMIT,\s*false,\s*undefined,\s*true\)/);
+  it("fetchRecentCampaigns é chamado com campaignCacheEnv + skipKvCache:false (5º argumento)", () => {
+    assert.match(src, /fetchRecentCampaigns\(campaignCacheEnv,\s*CAMPAIGNS_FETCH_LIMIT,\s*false,\s*undefined,\s*false\)/);
+  });
+
+  it("campaignCacheEnv sombreia STATS_CACHE com o cache LOCAL, não o KV real de produção", () => {
+    assert.match(
+      src,
+      /const campaignCacheEnv: Env = \{ \.\.\.env, STATS_CACHE: localCampaignCache as unknown as Env\["STATS_CACHE"\] \}/,
+    );
   });
 
   it("catch de BrevoRateLimitError usa buildRateLimitFallback (não mais uma tela de erro em branco)", () => {
