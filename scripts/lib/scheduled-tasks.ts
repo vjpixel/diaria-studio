@@ -289,8 +289,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `shouldSkipForLowQuota`) — skip deliberado (cota Brevo baixa, #6034)
     // é resultado esperado, não falha; sem isto, `Diaria-Systemd-Unit-Rate-
     // Alarm` contava cada skip como falha na taxa (achado ao vivo #6455).
+    // **#6695: declarar isto AQUI não basta sozinho.** Só vira
+    // `SuccessExitStatus=75` real na unit systemd depois de
+    // `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm`
+    // + copiar o `.service` regenerado pra `~/.config/systemd/user/` +
+    // `systemctl --user daemon-reload` no `helios` (ação manual do editor,
+    // nenhum PR/CI regenera isso sozinho). Até esse passo rodar, o script
+    // (`isExitCodeArmedForUnit`, #6695) detecta a unit desatualizada e
+    // sai com 0 em vez de 75 — nunca `failed`, mas também sem o sinal fino
+    // que este `successExitCodes` pretende habilitar. Ver
+    // `docs/clarice-guardrail-alarm-setup.md`.
     successExitCodes: [75],
-    issue: "#4064, #4131 finding 1, #6563",
+    issue: "#4064, #4131 finding 1, #6563, #6695",
   },
   {
     name: "Diaria-Clarice-Opens-Catchup-Alarm",
