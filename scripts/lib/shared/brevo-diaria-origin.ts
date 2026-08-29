@@ -93,20 +93,3 @@ export function buildOrigin(kind: OriginKind, payload: string): string {
   }
 }
 
-/** Verifica se um valor é de origem Beehiiv (para o roteamento do #6340 item 4). */
-export function isBeehiivOrigin(raw: string): boolean {
-  try {
-    return parseOrigin(raw).kind === "beehiiv";
-  } catch {
-    return false;
-  }
-}
-
-/** Verifica se um valor é de origem Kit. */
-export function isKitOrigin(raw: string): boolean {
-  try {
-    return parseOrigin(raw).kind === "kit";
-  } catch {
-    return false;
-  }
-}
