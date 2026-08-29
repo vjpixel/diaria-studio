@@ -204,6 +204,27 @@ export interface SessionRecord {
   startedAt: string;
   lastHeartbeat: string;
   phase?: string;
+  /**
+   * **#6706 — NÃO é o PID da sessão Claude Code, apesar do nome e da
+   * intenção original.** Gravado a partir de `process.ppid` no momento em
+   * que o hook/beacon roda (ver `registerSession`/`heartbeat` acima) — a
+   * premissa era que esse é o pid do processo PAI, persistente, da sessão.
+   * Medição ao vivo (#6294, reconfirmada pelo #6706) mostrou o oposto: o pid
+   * gravado é de um SUBPROCESSO EFÊMERO (o hook/tool-call em si), que já
+   * morreu no instante em que qualquer leitor tenta checar `/proc`/`kill(pid,
+   * 0)` — inclusive para sessões demonstravelmente vivas. Por isso
+   * `decideSessionGc` (ver seu docblock, branch 3) só usa este campo pra
+   * ESTENDER proteção quando aparenta vivo (nunca remove por ele estar
+   * "morto" — decisão do #6294) — na prática esse branch quase nunca chega a
+   * confirmar "vivo" de verdade, porque o valor gravado raramente corresponde
+   * a um processo real. **Nunca tratar este campo como sinal de liveness em
+   * NENHUM consumidor novo** — o sinal de liveness prático deste módulo é
+   * `stale`/`SOFT_STALE_MS` (ver `listActiveSessions`), não `pid`. Mantido no
+   * schema (não removido) porque `decideSessionGc` ainda o consulta como
+   * proteção adicional best-effort e porque removê-lo exigiria coordenar a
+   * mudança com `.claude/hooks/inject-session-id.mjs`/`session-beacon.mjs`
+   * (fora deste módulo) — avaliado e adiado, não esquecido.
+   */
   pid?: number;
   active_worktrees?: number;
   claimed_issues?: number[];
@@ -2482,6 +2503,32 @@ export interface ClaimReconciliationDecision {
  * deve ter sido filtrado pelo chamador — não participa da união, mas também
  * não bloqueia o resto do grupo), calcula o que FALTA no real via a mesma
  * primitiva de união do read-path (`mergeSessionRecords`).
+ *
+ * **#6698 — nunca ressuscita uma claim já removida por um `unclaimIssue`
+ * PRÉ-#6567.** Antes desta mudança, esta função era unidirecional puro: TUDO
+ * que sobrava só em backup virava `addedIssues`, sem distinguir dois cenários
+ * que produzem exatamente a mesma forma em disco (issue presente no backup,
+ * ausente do real):
+ *   (a) claim genuinamente viva que só sobreviveu no backup (escrita
+ *       concorrente do OneDrive perdeu a issue no real) — ressuscitar é
+ *       correto, é o caso que o #6581 existe pra resolver;
+ *   (b) claim já removida de propósito por um `unclaimIssue` ANTERIOR ao
+ *       #6567 (que só tocava o arquivo real, deixando o backup com um
+ *       resíduo da issue) — ressuscitar aqui é um BUG: a #6581 devolve ao
+ *       real uma claim que o dono já soltou.
+ *
+ * Distinção usada (a mesma sugerida na issue): uma issue só é adicionada
+ * quando `claimed_issues_at` do BACKUP para aquela issue existe E é
+ * POSTERIOR ao `lastHeartbeat` do real — evidência de que o REAL ficou pra
+ * trás (não recebeu uma escrita que já aconteceu depois da claim), não de que
+ * o backup preserva algo que o real removeu de propósito depois. Sem essa
+ * evidência (timestamp ausente — claim anterior ao #6436, quando
+ * `claimed_issues_at` passou a existir — ou timestamp mais antigo/igual ao
+ * heartbeat do real, sinal de que o real teve chance de refletir a claim e
+ * genuinamente não a tem), cai no comportamento ANTERIOR — adiciona mesmo
+ * assim — porque não há como comprovar a hipótese (b) sem o timestamp:
+ * suprimir a adição sem essa evidência trocaria o bug conhecido do #6698 por
+ * outro (claim (a) genuína nunca reconciliada, o próprio motivo do #6581).
  */
 export function decideClaimReconciliation(
   realRecord: SessionRecord,
@@ -2490,12 +2537,21 @@ export function decideClaimReconciliation(
   if (backupRecords.length === 0) return { addedIssues: [], addedClaimedIssuesAt: {} };
   const merged = mergeSessionRecords([realRecord, ...backupRecords]);
   const currentClaimed = new Set(realRecord.claimed_issues ?? []);
-  const addedIssues = (merged.claimed_issues ?? [])
-    .filter((n) => !currentClaimed.has(n))
-    .sort((a, b) => a - b);
+  const realHeartbeatMs = Date.parse(realRecord.lastHeartbeat ?? realRecord.startedAt ?? "");
+  const candidateIssues = (merged.claimed_issues ?? []).filter((n) => !currentClaimed.has(n)).sort((a, b) => a - b);
+
+  const addedIssues: number[] = [];
   const addedClaimedIssuesAt: Record<string, string> = {};
-  for (const issue of addedIssues) {
+  for (const issue of candidateIssues) {
     const at = merged.claimed_issues_at?.[String(issue)];
+    const atMs = at ? Date.parse(at) : NaN;
+    // #6698: com evidência de timestamp disponível (`at` presente e parseável
+    // + heartbeat do real parseável), só ressuscita quando o backup é
+    // POSTERIOR ao real — nunca quando é anterior/igual (evidência de remoção
+    // deliberada pré-#6567). Sem evidência (qualquer um dos dois lados
+    // ilegível/ausente), preserva o comportamento anterior: adiciona.
+    if (at && Number.isFinite(atMs) && Number.isFinite(realHeartbeatMs) && atMs <= realHeartbeatMs) continue;
+    addedIssues.push(issue);
     if (at) addedClaimedIssuesAt[String(issue)] = at;
   }
   return { addedIssues, addedClaimedIssuesAt };
