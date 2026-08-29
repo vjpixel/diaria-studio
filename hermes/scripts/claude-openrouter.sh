@@ -14,7 +14,9 @@
 # (com aviso de "modelo desconhecido", inofensivo).
 #
 # REGRAS INEGOCIÁVEIS (#5608 do diaria-studio):
-#   - As env vars ANTHROPIC_* vivem SÓ no processo filho (env ... claude).
+#   - As env vars ANTHROPIC_* vivem SÓ no processo filho (export num
+#     subshell que envolve o `claude`; #6718 — nunca como argumento de `env`,
+#     que fica world-readable no /proc/<pid>/cmdline).
 #     NUNCA exportar no ambiente global — sequestram sessões da assinatura
 #     e desligam os conectores claude.ai (Beehiiv/Gmail) do pipeline.
 #   - Este wrapper é pra fila de issues/código. NÃO usar pra nada que precise
@@ -216,16 +218,24 @@ for MODEL in "${MODELS[@]}"; do
   # valha igual num gateway genérico é inferência do padrão observado aqui,
   # não fato documentado. Se o billing seguir mostrando um supporting model
   # depois desta linha, a causa é outra: reabrir #6716 em vez de trocar o slug.
-  OUT=$(printf '%s' "$PROMPT" | timeout "$TIMEOUT" env \
-    ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
-    ANTHROPIC_AUTH_TOKEN="$KEY" \
-    ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 \
+  # #6718: as vars ANTHROPIC_* entram por `export` num subshell, não por
+  # `env VAR=valor` — argumentos de processo são world-readable em
+  # /proc/<pid>/cmdline (0444; um `ps -eo args` trivial imprimia a chave
+  # inteira durante TODA a delegação, até 40 min por tick), enquanto
+  # /proc/<pid>/environ é 0400 (só o dono lê). O subshell preserva o escopo
+  # que o `env` garantia: as vars morrem com ele e NUNCA escapam pro shell
+  # que chamou o wrapper (regra #5608 — sequestrariam sessões da assinatura).
+  OUT=$(printf '%s' "$PROMPT" | (
+    export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+    export ANTHROPIC_AUTH_TOKEN="$KEY"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000
+    timeout "$TIMEOUT" \
     claude -p \
       --model "$MODEL" \
       --allowedTools "$TOOLS" \
-      --max-budget-usd "$BUDGET" 2> "$ATTEMPT_LOG" \
-    )
+      --max-budget-usd "$BUDGET" 2> "$ATTEMPT_LOG"
+  ))
   RC=$?
     set -e
     # #6666: capturar stdout também no RC≠0 — "Exceeded USD budget" é erro do CLI
