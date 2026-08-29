@@ -20,7 +20,7 @@ import {
   buildAggregatedUnitRateFinding,
   SYSTEMD_UNIT_RATE_ESTREIA_AGGREGATE_THRESHOLD,
 } from "../scripts/systemd-unit-rate-alarm.ts";
-import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
+import { SCHEDULED_TASKS, type ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
 import { planAlarmReconciliation, emptyAlarmIssuesState, aggregateFindingsOnDebut } from "../scripts/lib/alarm-issues.ts";
 
 const UNIT = "diaria-clarice-novos.service";
@@ -360,5 +360,81 @@ describe("reconciliação (alarm-issues.ts) — reuso do critério de fechamento
       actions3.map((a) => a.kind),
       ["comment_resolved"],
     );
+  });
+});
+
+// #6723 — REGRESSÃO: skip DEFENSIVO intencional (ex: `Diaria-Clarice-
+// Guardrail-Alarm` saindo com `exit 75`/EX_TEMPFAIL — #6563 — porque decidiu
+// pular a execução por cota Brevo baixa) não pode contar como falha na taxa
+// e abrir issue (#6455-6458). Fio completo do registro real até o veredito:
+// `SCHEDULED_TASKS` (declara `successExitCodes: [75]`) → `tasksToUnitsToCheck`
+// (propaga pro `UnitToCheck`) → `parseJournalUnitOutcomes` (journal real de
+// uma unit AINDA NÃO regenerada com `SuccessExitStatus=75`, #6695 — cada skip
+// aparece como "Main process exited...status=75" + "Failed with result",
+// journal indistinguível de falha real sem o exit code) → `evaluateUnitFailureRate`
+// com esse `successExitCodes` — nenhum destes pontos deve requalificar o
+// skip como falha.
+describe("skip defensivo (exit code de sucesso) não conta como falha na taxa (#6723)", () => {
+  const GUARDRAIL_TASK = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Clarice-Guardrail-Alarm");
+
+  it("sanity: a task real declara successExitCodes: [75] (EX_TEMPFAIL, #6563) — se isto quebrar, o teste abaixo não prova nada", () => {
+    assert.ok(GUARDRAIL_TASK, "Diaria-Clarice-Guardrail-Alarm precisa existir em SCHEDULED_TASKS");
+    assert.deepEqual(GUARDRAIL_TASK!.successExitCodes, [75]);
+  });
+
+  it("journal com histórico de skips (status=75) mistos a sucessos → veredito 'ok', nunca 'alarm-rate'", () => {
+    const [unit] = tasksToUnitsToCheck([GUARDRAIL_TASK!]);
+    const unitName = unit.unitName;
+    // Journal real de uma unit AINDA sem `SuccessExitStatus=75` (#6695): todo
+    // skip aparece como "Failed with result 'exit-code'" com status=75 — a
+    // MESMA forma de uma falha real, só distinguível pelo exit code.
+    const lines = [
+      `Aug 20 06:00:01 helios systemd[1]: ${unitName}: Main process exited, code=exited, status=75/n/a`,
+      `Aug 20 06:00:01 helios systemd[1]: ${unitName}: Failed with result 'exit-code'.`,
+      `Aug 20 10:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+      `Aug 20 14:00:01 helios systemd[1]: ${unitName}: Main process exited, code=exited, status=75/n/a`,
+      `Aug 20 14:00:01 helios systemd[1]: ${unitName}: Failed with result 'exit-code'.`,
+      `Aug 20 18:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+      `Aug 20 22:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+    ];
+    const outcomes = parseJournalUnitOutcomes(lines, unitName);
+    assert.equal(outcomes.length, 5);
+    assert.equal(outcomes.filter((o) => o.kind === "failure").length, 2, "2 skips aparecem no journal como 'failure' — o parse não sabe da semântica de negócio");
+
+    const evaluation = evaluateUnitFailureRate(outcomes, { successExitCodes: unit.successExitCodes });
+    assert.equal(evaluation.failuresInWindow, 0, "os 2 skips (status=75) são reclassificados como não-falha por successExitCodes");
+    assert.equal(evaluation.verdict, "ok", "veredito NUNCA deve ser alarm-rate só por skip defensivo repetido");
+    assert.equal(isAlarmingRateVerdict(evaluation.verdict), false);
+  });
+
+  it("mesmo journal, SEM successExitCodes (regressão do bug relatado) → os 2 skips contam como falha e alarmam — prova que o teste acima exercita o mecanismo de verdade", () => {
+    const [unit] = tasksToUnitsToCheck([GUARDRAIL_TASK!]);
+    const unitName = unit.unitName;
+    const lines = [
+      `Aug 20 06:00:01 helios systemd[1]: ${unitName}: Main process exited, code=exited, status=75/n/a`,
+      `Aug 20 06:00:01 helios systemd[1]: ${unitName}: Failed with result 'exit-code'.`,
+      `Aug 20 10:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+      `Aug 20 14:00:01 helios systemd[1]: ${unitName}: Main process exited, code=exited, status=75/n/a`,
+      `Aug 20 14:00:01 helios systemd[1]: ${unitName}: Failed with result 'exit-code'.`,
+      `Aug 20 18:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+      `Aug 20 22:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+    ];
+    const outcomes = parseJournalUnitOutcomes(lines, unitName);
+    const evaluationWithoutSuccessCodes = evaluateUnitFailureRate(outcomes, { successExitCodes: [] });
+    assert.equal(evaluationWithoutSuccessCodes.failuresInWindow, 2);
+    assert.equal(evaluationWithoutSuccessCodes.verdict, "alarm-rate");
+  });
+
+  it("unit JÁ regenerada com SuccessExitStatus=75 (#6695 concluído): journal nem loga 'Failed' — skip vira 'Deactivated successfully' puro, sem depender de successExitCodes", () => {
+    const [unit] = tasksToUnitsToCheck([GUARDRAIL_TASK!]);
+    const unitName = unit.unitName;
+    const lines = Array.from(
+      { length: 5 },
+      (_, i) => `Aug 2${i} 06:00:01 helios systemd[1]: ${unitName}: Deactivated successfully.`,
+    );
+    const outcomes = parseJournalUnitOutcomes(lines, unitName);
+    const evaluation = evaluateUnitFailureRate(outcomes, { successExitCodes: unit.successExitCodes });
+    assert.equal(evaluation.failuresInWindow, 0);
+    assert.equal(evaluation.verdict, "ok");
   });
 });

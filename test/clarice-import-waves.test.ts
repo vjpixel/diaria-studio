@@ -19,6 +19,7 @@ import {
   groupListsRegistryPath,
   appendGroupListsRegistry,
   resolveRegistryKey,
+  shouldWarnMissingCampaignKey,
   validateProcessId,
   importOneWave,
   makeRealImportRunClient,
@@ -312,6 +313,13 @@ describe("isGroupCellWave (#4762 — gate único, reusado por resolveListName e 
 
   it("group null (rampa) → SEMPRE false, mesmo com sufixo coincidente — gate duplo defensivo", () => {
     assert.equal(isGroupCellWave(null, "W1-A"), false);
+  });
+
+  // #6721: célula de HORÁRIO (#5140, `--hour-cells`) entra no MESMO ramo que
+  // A/B/C — mesmo gate, sufixo `-H{00-23}` em vez de `-A/-B/-C`.
+  it("group ativo + sufixo -H{00-23} (teste de horário, #5140) → true", () => {
+    assert.equal(isGroupCellWave("d33-dom30", "d33-dom30-H06"), true);
+    assert.equal(isGroupCellWave("d33-dom30", "d33-dom30-H10"), true);
   });
 });
 
@@ -629,6 +637,16 @@ describe("resolveRegistryKey (#4753, sinal de célula EXPLÍCITO desde #4762)", 
     assert.equal(resolveRegistryKey("d4-ter04-c", true, "novos-260807"), "d4-ter04-c");
   });
 
+  // #6721: mesma garantia acima, mas SEM campaignKey — é exatamente o caminho
+  // real de `clarice-envio-run.ts` (import de célula de HORÁRIO nunca passa
+  // `--key`). `wave.key` já carrega o sufixo `-H{00-23}` (`hasCell=true`), e
+  // fica intacto — é ele que uma resolução futura por `--key` de campanha
+  // (`d33-dom30-H06`) vai encontrar, sem precisar de `--list-index`.
+  it("célula de HORÁRIO sem campaignKey → mantém waveKey (já é a key de campanha)", () => {
+    assert.equal(resolveRegistryKey("d33-dom30-H06", true), "d33-dom30-H06");
+    assert.equal(resolveRegistryKey("d33-dom30-H10", true, undefined), "d33-dom30-H10");
+  });
+
   // #4762: achado do fleet review da PR #4758 sobre a #4753 — antes,
   // `resolveRegistryKey` re-derivava "isto é célula?" fazendo regex direto
   // em `waveKey`, sem o gate em `group` que a função irmã `resolveListName`
@@ -648,6 +666,33 @@ describe("resolveRegistryKey (#4753, sinal de célula EXPLÍCITO desde #4762)", 
   // no registro, que não resolveria nunca.
   it("campaignKey vazia é tratada como ausente, não como key literal", () => {
     assert.equal(resolveRegistryKey("novos", false, ""), "novos");
+  });
+});
+
+// #6721 — REGRESSÃO: o aviso "--key não informado" disparava incondicionalmente
+// em `!campaignKey`, mesmo quando TODAS as entradas do lote eram células
+// (A/B/C ou de HORÁRIO) e portanto já tinham sua própria key distinta gravada
+// — o caminho real de `clarice-envio-run.ts`, que nunca passa `--key` ao
+// importar `--hour-cells`. O aviso afirmava "gravadas com a key estática do
+// grupo", o oposto do que `resolveRegistryKey` de fato grava nesse caso.
+describe("shouldWarnMissingCampaignKey (#6721)", () => {
+  it("sem campaignKey + alguma entrada SEM célula → true (caso real do bug #4753)", () => {
+    assert.equal(shouldWarnMissingCampaignKey([false], undefined), true);
+    assert.equal(shouldWarnMissingCampaignKey([false, true], undefined), true);
+  });
+
+  it("sem campaignKey + TODAS as entradas com célula (A/B/C ou horário) → false — já resolvíveis pela própria key", () => {
+    assert.equal(shouldWarnMissingCampaignKey([true], undefined), false);
+    assert.equal(shouldWarnMissingCampaignKey([true, true], undefined), false, "caso real #6721: 2 células de horário, sem --key");
+  });
+
+  it("com campaignKey informado → nunca avisa, com célula ou sem (a key preferida foi de fato passada)", () => {
+    assert.equal(shouldWarnMissingCampaignKey([false], "novos-260807"), false);
+    assert.equal(shouldWarnMissingCampaignKey([true], "novos-260807"), false);
+  });
+
+  it("lote vazio → false (nada foi gravado, nada a avisar)", () => {
+    assert.equal(shouldWarnMissingCampaignKey([], undefined), false);
   });
 });
 

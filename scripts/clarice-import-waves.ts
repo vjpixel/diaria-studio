@@ -794,6 +794,28 @@ export function resolveRegistryKey(waveKey: string, hasCell: boolean, campaignKe
   return waveKey;
 }
 
+/**
+ * #6721 — decide se o aviso "--key não informado" (main(), logo abaixo do
+ * `appendGroupListsRegistry`) deve disparar. Extraído como função PURA (em
+ * vez de checar `!args.campaignKey` sozinho, como o código fazia até aqui)
+ * porque o aviso só é verdadeiro para entradas SEM célula: `resolveRegistryKey`
+ * só cai no nome ESTÁTICO do grupo (`wave.key === group`, típico de grupos
+ * nomeados como "novos"/"ramp-warm") quando `hasCell` é falso — pra células
+ * A/B/C ou de HORÁRIO (`-A`/`-B`/`-C`/`-H{00-23}`), `wave.key` já carrega o
+ * sufixo distintivo e é preservado tal qual, então a entrada JÁ é resolvível
+ * por esse mesmo valor como `--key` depois, sem `--list-index`.
+ *
+ * Achado ao vivo #6721: `clarice-envio-run.ts` importa ondas de célula de
+ * HORÁRIO (`--hour-cells`) sem nunca passar `--key`, e o aviso antigo
+ * disparava incondicionalmente em `!campaignKey` — afirmando que as entradas
+ * "foram gravadas com a key estática do grupo" quando, na verdade, cada
+ * célula já tinha sua própria key (`d33-dom30-H06`/`d33-dom30-H10`), o oposto
+ * do que o aviso dizia.
+ */
+export function shouldWarnMissingCampaignKey(hasCellFlags: boolean[], campaignKey?: string): boolean {
+  return !campaignKey && hasCellFlags.some((hasCell) => !hasCell);
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1095,7 +1117,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // `--list-index` depois — que é exatamente o bug da #4753, reintroduzido
     // em silêncio. O banner de sucesso acima não distinguia os dois casos, e a
     // omissão só aparecia 2 passos adiante. Avisa no ponto da falha.
-    if (!args.campaignKey) {
+    //
+    // #6721: `shouldWarnMissingCampaignKey` — ver docstring dela — só é true
+    // quando existe entrada SEM célula no lote (a única afetada pelo bug da
+    // #4753); ondas de célula A/B/C ou de horário já são resolvíveis pela
+    // própria key gravada, sem `--list-index`.
+    if (shouldWarnMissingCampaignKey(plans.map((p) => p.hasCell), args.campaignKey)) {
       console.error(
         `⚠️  --key não informado: as entradas acima foram gravadas com a key estática '${args.group}'. ` +
           `Uma resolução posterior por --key de campanha NÃO vai encontrá-las (bug da #4753) — ` +
