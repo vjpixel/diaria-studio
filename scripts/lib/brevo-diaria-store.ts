@@ -122,6 +122,15 @@ export interface BrevoDiariaContact {
     | "self_confirmed_beehiiv"
     | "native_unsubscribe"
     | "native_unsubscribe_beehiiv_404"
+    /** #6340 item 4 fix B — descadastro nativo genuíno (`userUnsubscription`)
+     * de um contato de origem KIT (`beehiiv_subscription_id` prefixado
+     * `kit:`, ver `KIT_ORIGIN_ID_PREFIX`). Distinto de `native_unsubscribe`
+     * (que confirma a propagação pra Beehiiv) porque este caminho NUNCA toca
+     * a Beehiiv — não existe registro Beehiiv pra um contato de origem Kit —
+     * e nunca escreve no Kit tampouco (o contato já veio do cohort
+     * `inactive` do Kit, então não há assinatura ativa lá pra desativar; ver
+     * `evaluate-brevo-diaria.ts`, comentário `#6340 item 4 fix B`). */
+    | "native_unsubscribe_kit_origin"
     | "self_confirmed_after_suppression"
     /** #5351 Parte B — `emailBlacklisted` com `statistics.hardBounces` não
      * vazio: bounce de entrega genuíno (endereço inválido/caixa cheia). */
@@ -288,15 +297,20 @@ export function applySelfConfirmed(
  *
  * @param reason (#4633) — override pro caso HTTP 404 permanente na
  * propagação (`native_unsubscribe_beehiiv_404`, ver
- * `RunEvaluationParams`/`runEvaluation` em `evaluate-brevo-diaria.ts`);
- * default `"native_unsubscribe"` cobre o caso confirmado normalmente
+ * `RunEvaluationParams`/`runEvaluation` em `evaluate-brevo-diaria.ts`), ou
+ * (#6340 item 4 fix B) `native_unsubscribe_kit_origin` pra um contato de
+ * origem Kit (nunca toca Beehiiv/Kit — ver docstring do valor no union
+ * acima); default `"native_unsubscribe"` cobre o caso confirmado normalmente
  * (releitura mostrou `inactive`).
  */
 export function applyNativeUnsubscribe(
   store: BrevoDiariaStore,
   email: string,
   now: string = new Date().toISOString(),
-  reason: Extract<BrevoDiariaContact["resolution_reason"], "native_unsubscribe" | "native_unsubscribe_beehiiv_404"> = "native_unsubscribe",
+  reason: Extract<
+    BrevoDiariaContact["resolution_reason"],
+    "native_unsubscribe" | "native_unsubscribe_beehiiv_404" | "native_unsubscribe_kit_origin"
+  > = "native_unsubscribe",
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
   return {

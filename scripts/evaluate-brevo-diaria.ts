@@ -897,24 +897,57 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
 export const KIT_ORIGIN_ID_PREFIX = "kit:";
 
 /**
+ * #6340 item 4 (fix C, review pós-merge) — resultado discriminado de
+ * `parseKitSubscriberId`. Antes deste fix a função retornava `number | null`,
+ * onde `null` colapsava DOIS casos que o caller trata de forma diferente:
+ * "não é origem Kit" (no-op, cai no caminho Beehiiv) e "é origem Kit mas o
+ * id está malformado" (conta como anomalia — ver `runEvaluation`). A união
+ * discriminada torna a distinção verificável pelo compilador (`switch`
+ * exaustivo no call site) em vez de depender de um `.startsWith()` refeito
+ * por fora, redundante com o já feito dentro da própria função.
+ */
+export type KitOriginParseResult =
+  | { kind: "not-kit" }
+  | { kind: "kit-malformed"; raw: string }
+  | { kind: "kit-valid"; id: number };
+
+/**
  * #6340 item 4 — extrai o id numérico de subscriber Kit de um
  * `beehiiv_subscription_id` no formato sintético `kit:${kit_subscriber_id}`
- * (ver `KIT_ORIGIN_ID_PREFIX`). `null` para qualquer coisa que não comece
- * com esse prefixo (origem Beehiiv — `sub_...`/id bruto — ou qualquer outra
- * origem sintética como `curated:`/`sunset:`) **e também** para um sufixo
- * malformado depois do prefixo (não-numérico, vazio, não-inteiro, `<= 0`).
- * Parse defensivo de propósito: um `beehiiv_subscription_id` corrompido
- * nunca pode derrubar a rodada inteira de `runEvaluation` — o caller trata
- * `null` como "não dá pra determinar o subscriber Kit desta origem agora",
- * nunca como "não é origem Kit" quando o prefixo já bateu (ver o `log` de
- * warn específico pra esse caso em `runEvaluation`).
+ * (ver `KIT_ORIGIN_ID_PREFIX`). `{kind: "not-kit"}` para qualquer coisa que
+ * não comece com esse prefixo (origem Beehiiv — `sub_...`/id bruto — ou
+ * qualquer outra origem sintética como `curated:`/`sunset:`); `{kind:
+ * "kit-malformed", raw}` para um sufixo malformado depois do prefixo já
+ * confirmado (ver validação abaixo); `{kind: "kit-valid", id}` caso
+ * contrário. Parse defensivo de propósito: um `beehiiv_subscription_id`
+ * corrompido nunca pode derrubar a rodada inteira de `runEvaluation` — o
+ * caller trata `kit-malformed` como "não dá pra determinar o subscriber Kit
+ * desta origem agora" (anomalia — conta em `failed`), nunca como "não é
+ * origem Kit" (`not-kit`, no-op) — ver o `log` de warn específico pra esse
+ * caso em `runEvaluation`.
+ *
+ * #6340 item 4 fix E (review pós-merge) — validação por regex de dígitos
+ * (`^[0-9]+$`) em vez de `Number(raw)` cru: `Number()` aceita espaço em
+ * branco (`Number(" 123") === 123`) e notação científica
+ * (`Number("1e2") === 100`), ambos passando por `Number.isInteger` — a
+ * docstring anterior prometia rejeitar "não-numérico" sem de fato rejeitar
+ * esses dois casos. O prefixo (`KIT_ORIGIN_ID_PREFIX = "kit:"`) é
+ * case-sensitive por `.startsWith()` — `"Kit:123"` cai em `not-kit` (não
+ * `kit-malformed`), silenciosamente tratado como origem Beehiiv; isso é
+ * intencional (o produtor único, `sync-kit-inactive-to-brevo.ts`, sempre
+ * escreve o prefixo em minúsculas via `KIT_ORIGIN_ID_PREFIX`, ver fix D) mas
+ * é uma armadilha se algum futuro produtor variar o case — coberto por
+ * teste (`test/evaluate-brevo-diaria-kit-self-confirm-6340.test.ts`).
  */
-export function parseKitSubscriberId(beehiivSubscriptionId: string): number | null {
-  if (!beehiivSubscriptionId.startsWith(KIT_ORIGIN_ID_PREFIX)) return null;
+const KIT_SUBSCRIBER_ID_RE = /^[0-9]+$/;
+
+export function parseKitSubscriberId(beehiivSubscriptionId: string): KitOriginParseResult {
+  if (!beehiivSubscriptionId.startsWith(KIT_ORIGIN_ID_PREFIX)) return { kind: "not-kit" };
   const raw = beehiivSubscriptionId.slice(KIT_ORIGIN_ID_PREFIX.length);
+  if (!KIT_SUBSCRIBER_ID_RE.test(raw)) return { kind: "kit-malformed", raw };
   const id = Number(raw);
-  if (!Number.isInteger(id) || id <= 0) return null;
-  return id;
+  if (!Number.isInteger(id) || id <= 0) return { kind: "kit-malformed", raw };
+  return { kind: "kit-valid", id };
 }
 
 /**
@@ -1140,14 +1173,33 @@ export interface RunEvaluationParams {
   /**
    * Obrigatória quando `newsletterBackend === "kit"` E `push === true`
    * (promoção por score, #6339). Desde #6340 item 4, também consultada
-   * (sempre, independente de `push`/`newsletterBackend`) pela
-   * auto-confirmação de contatos de origem Kit (Passo 1) — mas nesse
-   * caminho a ausência NUNCA lança, nem em `push`: degrada pra "ainda não
-   * confirmado nesta rodada" com log de warn (ver `runEvaluation`), porque
-   * um contato de origem Kit pode existir no store mesmo quando
-   * `newsletterBackend === "beehiiv"` (rollback) ou em dry-run local sem
-   * `KIT_API_KEY` configurada — nenhum desses cenários pode abortar a
-   * rodada inteira.
+   * (sempre, independente de `push`/`newsletterBackend`) pelo Passo 0
+   * (descadastro nativo de contato de origem Kit — fix B) e pela
+   * auto-confirmação de contatos de origem Kit (Passo 1) — mas
+   * `runEvaluation` em si NUNCA lança na ausência: degrada pra "ainda não
+   * decidido nesta rodada" com log de warn e incrementa `kitAutoConfirmSkipped`
+   * (ver `RunEvaluationResult`), porque um contato de origem Kit pode existir
+   * no store mesmo quando `newsletterBackend === "beehiiv"` (rollback) ou em
+   * dry-run local sem `KIT_API_KEY` configurada — nenhum desses cenários
+   * pode abortar a rodada inteira DENTRO de `runEvaluation`.
+   *
+   * **Correção (fix A, review pós-merge do #6340 item 4) — a analogia com
+   * `brevoApiKey` do Passo 0 que este comentário fazia antes era enganosa e
+   * levou a uma lacuna real.** `brevoApiKey` ausente em `push` SEMPRE aborta
+   * em `main()` ANTES de avaliar qualquer contato (precondição dura, ver o
+   * `process.exit(2)` logo no início de `main()`) — não existe caminho onde
+   * `runEvaluation` roda sem ela em `push`. `kitApiKey`, antes deste fix, só
+   * era exigida por `main()` quando `newsletterBackend === "kit"` — mas o
+   * roteamento por ORIGEM do Passo 0/1 é INDEPENDENTE de
+   * `newsletterBackend`: com `newsletterBackend === "beehiiv"` (rollback) e
+   * `push: true`, o script rodava sem `KIT_API_KEY`, e todo contato `kit:`
+   * caía no ramo `!kitApiKey` — que incrementava zero contadores e reportava
+   * `exitCode` 0, deixando o contato preso `in_brevo` indefinidamente sem
+   * sinal em cron algum (o próprio envio duplicado Kit+Brevo que o item 4
+   * existe pra impedir). `main()` agora exige `KIT_API_KEY` sempre que há
+   * ≥1 contato de origem Kit no conjunto avaliado, não só quando
+   * `newsletterBackend === "kit"` — a condição correta é "existe trabalho
+   * que depende da key", não "o backend atual é kit".
    */
   kitApiKey?: string;
 }
@@ -1194,11 +1246,31 @@ export interface RunEvaluationResult {
    * verificação pós-escrita que não confirma (mantido em `in_brevo` por
    * fail-safe). Nunca um não-evento silencioso (#738) — o caller (main())
    * usa isto pra decidir o exit code. **Exceção deliberada**: `kitApiKey`
-   * ausente pra um contato de origem Kit NUNCA conta aqui (precondição de
-   * ambiente, não anomalia — mesmo tratamento de `brevoApiKey` ausente no
-   * Passo 0).
+   * ausente pra um contato de origem Kit NUNCA conta aqui — ver
+   * `kitAutoConfirmSkipped` abaixo, que é o contador dedicado desse caso
+   * (fix A, review pós-merge do #6340 item 4).
    */
   failed: number;
+  /**
+   * #6340 item 4 fix A (review pós-merge) — quantos contatos de origem Kit
+   * NÃO puderam ter a auto-confirmação decidida nesta rodada por
+   * `kitApiKey` ausente (Passo 0 e Passo 1). Contador SEPARADO de `failed`
+   * de propósito: isto não é uma falha transitória de API nem um dado
+   * corrompido — é uma precondição de ambiente ausente (mesmo espírito da
+   * exceção documentada em `failed` acima), mas ainda assim PRECISA ser
+   * visível pro caller: antes deste fix, `kitApiKey` ausente em `push:true`
+   * com `newsletterBackend==="beehiiv"` (rollback) fazia TODO contato `kit:`
+   * cair neste ramo silenciosamente — `exitCode` 0, nenhum contador
+   * incrementado, contato preso `in_brevo` indefinidamente sem que nenhum
+   * monitor de cron percebesse (exatamente o envio duplicado Kit+Brevo que o
+   * item 4 existe pra impedir). `main()` agora (a) exige `KIT_API_KEY`
+   * sempre que há ≥1 contato de origem Kit no conjunto avaliado, e (b) trata
+   * `kitAutoConfirmSkipped > 0` como saída não-zero (mesmo caminho de
+   * `failed > 0`) pro caso em que a rodada roda mesmo assim (dry-run, ou uma
+   * 2ª rodada concorrente sem a env var) — "algo não pôde ser confirmado"
+   * precisa aparecer em cron, não só "algo falhou".
+   */
+  kitAutoConfirmSkipped: number;
 }
 
 /**
@@ -1231,9 +1303,25 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let suppressed = 0;
   let kept = 0;
   let failed = 0;
+  let kitAutoConfirmSkipped = 0;
 
   for (const contact of contacts) {
     try {
+      // #6340 item 4 fix B/C — origem do contato, determinada UMA vez no
+      // topo da iteração (não só no Passo 1 como antes do fix), e reusada
+      // pelos Passos 0 E 1 — decide se a checagem "já confirmado?" embutida
+      // em cada passo consulta a Beehiiv ou o Kit. `kitParseResult.kind !==
+      // "not-kit"` substitui o `.startsWith(KIT_ORIGIN_ID_PREFIX)` redundante
+      // que existia antes deste fix (fix C — união discriminada elimina a
+      // dupla checagem do mesmo prefixo por 2 caminhos diferentes).
+      const kitParseResult = parseKitSubscriberId(contact.beehiiv_subscription_id);
+      const isKitOrigin = kitParseResult.kind !== "not-kit";
+      // Cache do status Kit — mesmo papel de `beehiivStatus` abaixo, pro
+      // lado Kit: `undefined` = ainda não checado nesta iteração; setado
+      // pelo Passo 0 (quando `emailBlacklisted`) e reusado pelo Passo 1 —
+      // nunca 2 GETs ao Kit no mesmo run pro mesmo contato.
+      let kitConfirmed: boolean | undefined;
+
       // 0) descadastro NATIVO (#4476 item 7) — checado ANTES de qualquer
       // outra avaliação. Requer brevoApiKey (ausente em dry-run sem o env
       // configurado) — best-effort: sem a key, este passo é pulado (dry-run
@@ -1243,7 +1331,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // `emailBlacklisted` na Brevo é descadastro genuíno; reusado no passo
       // 1 (auto-confirmação) quando a decisão do passo 0 cai pra baixo —
       // nunca um 2º GET pro mesmo contato no mesmo run. `undefined` = ainda
-      // não buscado nesta iteração.
+      // não buscado nesta iteração. Só se aplica a contato de origem
+      // Beehiiv — ver `isKitOrigin` acima (#6340 item 4 fix B).
       let beehiivStatus: string | null | undefined;
       let statusCheckFailed = false;
       if (brevoApiKey) {
@@ -1256,7 +1345,83 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // novo na próxima rodada. Não passa pra auto-confirmação/score.
           continue;
         }
-        if (nativeState.emailBlacklisted) {
+        if (nativeState.emailBlacklisted && isKitOrigin) {
+          // #6340 item 4 fix B — contato de origem Kit NUNCA consulta nem
+          // escreve na Beehiiv, nem aqui nem em nenhum outro ramo deste
+          // bloco: a checagem "já confirmado?" que decide se um
+          // `emailBlacklisted` é descadastro genuíno consulta o KIT em vez
+          // da Beehiiv (mesmo racional do #4630 — nunca reverter um contato
+          // já confirmado — só que pro backend certo desta origem).
+          // `kitConfirmed` fica cacheado e é reusado pelo Passo 1 abaixo —
+          // nunca 2 GETs ao Kit no mesmo run pro mesmo contato. `switch`
+          // exaustivo sobre `"kit-malformed" | "kit-valid"` — o TS já prova
+          // `"not-kit"` inalcançável aqui via narrowing de `isKitOrigin`
+          // (`kitParseResult.kind !== "not-kit"`), então nem compila um
+          // `case "not-kit"` (fix C).
+          switch (kitParseResult.kind) {
+            case "kit-malformed":
+              log(
+                `warn: ${contact.email} tem beehiiv_subscription_id de origem Kit malformado ` +
+                  `("${contact.beehiiv_subscription_id}") — não é possível decidir o Passo 0 (#6340 item 4 fix B).`,
+              );
+              failed++;
+              continue;
+            case "kit-valid":
+              if (!kitApiKey) {
+                log(
+                  `${contact.email}: emailBlacklisted na Brevo, origem Kit, mas kitApiKey ausente — não dá pra ` +
+                    "decidir se é descadastro genuíno ou ruído admin/bounce nesta rodada (#6340 item 4 fix B).",
+                );
+                kitAutoConfirmSkipped++;
+                continue;
+              }
+              try {
+                const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
+                kitConfirmed = kitSubscriber.state === "active";
+              } catch (e) {
+                log(`warn: falha ao checar status Kit de ${contact.email} no Passo 0 (#6340 item 4 fix B): ${(e as Error).message}`);
+                failed++;
+                continue;
+              }
+              break;
+          }
+
+          if (kitConfirmed !== true) {
+            if (nativeState.userUnsubscribed) {
+              log(
+                `${contact.email}: já descadastrado (emailBlacklisted + userUnsubscription confirmado) na Brevo, ` +
+                  "origem Kit → saída nativa LOCAL, libera slot imediatamente (#6340 item 4 fix B — nunca propagado " +
+                  "pra Beehiiv: não existe registro lá pra este e-mail; nunca propagado pro Kit: o contato já veio " +
+                  "do cohort inactive de lá, sem assinatura ativa pra desativar).",
+              );
+              unsubscribedNative++;
+              if (push) {
+                await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+                store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_kit_origin");
+              }
+              continue;
+            }
+            // emailBlacklisted true mas nem já-ativo no Kit nem
+            // userUnsubscription genuíno — ruído de adminUnsubscription/
+            // bounce isolado, mesmo racional do caminho Beehiiv abaixo (mas
+            // este ramo JÁ é 100% local — nunca chamou Beehiiv nem Kit pra
+            // escrever, só leu o Kit pra decidir).
+            const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
+            log(
+              `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (${bounceReason}), origem Kit → ` +
+                "marcado bounced localmente (zero chamada Beehiiv/Kit), libera slot.",
+            );
+            bouncedNative++;
+            if (push) {
+              await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+              store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
+            }
+            continue;
+          }
+          // kitConfirmed === true cai direto pro bloco compartilhado de
+          // auto-confirmação (Passo 1) abaixo — nunca reverte um contato já
+          // ativo no Kit.
+        } else if (nativeState.emailBlacklisted) {
           // #4630: `emailBlacklisted` sozinho mistura clique real de opt-out
           // (`userUnsubscription`) com qualquer ação admin-side/bounce
           // (`adminUnsubscription`) — e o bug original era nunca checar se a
@@ -1264,7 +1429,9 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // Corrigido: busca o status Beehiiv primeiro; se já `active`, cai
           // no bloco compartilhado de auto-confirmação abaixo (nunca reverte
           // um assinante real) — só senão é que se decide entre descadastro
-          // genuíno (`userUnsubscribed`) e ruído admin/bounce.
+          // genuíno (`userUnsubscribed`) e ruído admin/bounce. Só se aplica a
+          // contato de origem Beehiiv (`!isKitOrigin` — ver o `if` gêmeo
+          // acima, #6340 item 4 fix B).
           beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
             log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
             statusCheckFailed = true;
@@ -1373,45 +1540,64 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // Brevo mesmo depois de confirmar o double opt-in) é exatamente o
       // que este roteamento fecha. Os dois caminhos são MUTUAMENTE
       // EXCLUSIVOS por contato — nunca os dois GETs (Kit E Beehiiv) no
-      // mesmo run pro mesmo contato.
-      const kitSubscriberId = parseKitSubscriberId(contact.beehiiv_subscription_id);
-      if (contact.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)) {
-        // Origem Kit confirmada pelo prefixo. `kitSubscriberId === null`
-        // aqui só acontece com um sufixo malformado (não-numérico/`<=0`) —
-        // dado corrompido, não "não é Kit": conta como anomalia (mesmo
-        // espírito de `statusCheckFailed` no caminho Beehiiv), nunca lança,
-        // e o contato segue pra avaliação normal (Passo 2) como qualquer
-        // outro não confirmado nesta rodada.
-        let kitConfirmed = false;
-        if (kitSubscriberId === null) {
-          log(
-            `warn: ${contact.email} tem beehiiv_subscription_id de origem Kit malformado ` +
-              `("${contact.beehiiv_subscription_id}") — não é possível extrair o subscriber id; pulando checagem ` +
-              "de auto-confirmação Kit nesta rodada (#6340 item 4).",
-          );
-          failed++;
-        } else if (!kitApiKey) {
-          // Ausência de KIT_API_KEY nunca aborta (dry-run local sem a env
-          // configurada, ou `newsletterBackend === "beehiiv"` — rollback —
-          // com contato Kit ainda no store) — degrada pra "ainda não
-          // confirmado nesta rodada", NÃO conta como `failed` (mesmo
-          // tratamento não-anômalo de `brevoApiKey` ausente no Passo 0
-          // acima: precondição de ambiente, não falha transitória).
-          log(
-            `${contact.email}: origem Kit mas kitApiKey ausente — pulando checagem de auto-confirmação Kit nesta ` +
-              "rodada (#6340 item 4); avaliado normalmente pela taxa de abertura enquanto isso.",
-          );
-        } else {
-          try {
-            const kitSubscriber = await getSubscriberById(kitSubscriberId, { apiKey: kitApiKey });
-            kitConfirmed = kitSubscriber.state === "active";
-          } catch (e) {
-            log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitSubscriberId}): ${(e as Error).message}`);
-            failed++;
+      // mesmo run pro mesmo contato. `isKitOrigin`/`kitParseResult` já
+      // computados no topo da iteração (#6340 item 4 fix B) — reusados aqui,
+      // não recalculados.
+      if (isKitOrigin) {
+        // Reusa `kitConfirmed` se o Passo 0 já buscou (contato
+        // `emailBlacklisted`, origem Kit) — nunca um 2º GET ao Kit no mesmo
+        // run pro mesmo contato.
+        if (kitConfirmed === undefined) {
+          // `switch` exaustivo sobre `"kit-malformed" | "kit-valid"` — o TS
+          // prova `"not-kit"` inalcançável aqui via narrowing de
+          // `isKitOrigin` (mesmo racional do Passo 0, fix C).
+          switch (kitParseResult.kind) {
+            case "kit-malformed":
+              // Dado corrompido, não "não é Kit": conta como anomalia (mesmo
+              // espírito de `statusCheckFailed` no caminho Beehiiv), nunca
+              // lança, e o contato segue pra avaliação normal (Passo 2) como
+              // qualquer outro não confirmado nesta rodada.
+              log(
+                `warn: ${contact.email} tem beehiiv_subscription_id de origem Kit malformado ` +
+                  `("${contact.beehiiv_subscription_id}") — não é possível extrair o subscriber id; pulando checagem ` +
+                  "de auto-confirmação Kit nesta rodada (#6340 item 4).",
+              );
+              failed++;
+              break;
+            case "kit-valid":
+              if (!kitApiKey) {
+                // Ausência de KIT_API_KEY nunca aborta `runEvaluation` em si
+                // (dry-run local sem a env configurada, ou
+                // `newsletterBackend === "beehiiv"` — rollback — com contato
+                // Kit ainda no store) — degrada pra "ainda não confirmado
+                // nesta rodada". NÃO conta como `failed` (não é falha
+                // transitória de API nem dado corrompido) — conta em
+                // `kitAutoConfirmSkipped` (fix A, review pós-merge): `main()`
+                // agora exige `KIT_API_KEY` sempre que há ≥1 contato de
+                // origem Kit no conjunto avaliado, então este ramo só é
+                // alcançado em dry-run/chamada direta sem a env — mas quando
+                // é alcançado em `push` (chamador que ignora `main()`), o
+                // contador dedicado garante que a lacuna fique visível, ver
+                // docstring de `kitAutoConfirmSkipped`.
+                log(
+                  `${contact.email}: origem Kit mas kitApiKey ausente — pulando checagem de auto-confirmação Kit nesta ` +
+                    "rodada (#6340 item 4); avaliado normalmente pela taxa de abertura enquanto isso.",
+                );
+                kitAutoConfirmSkipped++;
+              } else {
+                try {
+                  const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
+                  kitConfirmed = kitSubscriber.state === "active";
+                } catch (e) {
+                  log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitParseResult.id}): ${(e as Error).message}`);
+                  failed++;
+                }
+              }
+              break;
           }
         }
 
-        if (kitConfirmed) {
+        if (kitConfirmed === true) {
           log(`${contact.email}: já ativo no Kit (auto-confirmação #6340 item 4) → promovido, sem depender da taxa de abertura.`);
           selfConfirmed++;
           if (push) {
@@ -1566,6 +1752,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     suppressed,
     kept,
     failed,
+    kitAutoConfirmSkipped,
   };
 }
 
@@ -1605,12 +1792,34 @@ async function main(): Promise<void> {
   // `"kit"` por engano numa comparação futura).
   const newsletterBackend = platformConfig.publishing?.newsletter?.backend === "kit" ? "kit" : "beehiiv";
   const kitApiKey = process.env.KIT_API_KEY;
-  if (push && newsletterBackend === "kit" && !kitApiKey) {
-    log("ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push com newsletterBackend=kit).");
+
+  // readStore/filter são I/O local síncrono (mesma classe do
+  // platformConfig acima) — seguro fazer ANTES do guard de KIT_API_KEY
+  // abaixo, que ainda precisa rodar antes do 1º await de rede (#4651, ver
+  // comentário no topo de main()).
+  const store = readStore(DEFAULT_STORE_PATH);
+  const inBrevo: BrevoDiariaContact[] = store.contacts.filter((c) => c.status === "in_brevo");
+
+  // #6340 item 4 fix A (review pós-merge) — o guard original só exigia
+  // KIT_API_KEY quando `newsletterBackend === "kit"`, mas o roteamento por
+  // ORIGEM do Passo 0/1 de `runEvaluation` é INDEPENDENTE de
+  // `newsletterBackend`: com `newsletterBackend === "beehiiv"` (rollback) e
+  // `push: true`, o script rodava sem a key, e TODO contato de origem Kit
+  // caía no ramo `!kitApiKey` sem incrementar nenhum contador visível —
+  // `exitCode` 0, contato preso `in_brevo` indefinidamente, invisível pra
+  // qualquer monitor de cron (exatamente o envio duplicado Kit+Brevo que o
+  // item 4 existe pra impedir). A condição correta é "existe trabalho que
+  // depende da key" — ≥1 contato de origem Kit no conjunto que será
+  // avaliado nesta rodada (`inBrevo`) — não "o backend atual é kit". O
+  // guard `newsletterBackend === "kit"` original é mantido explicitamente
+  // (a promoção por score em si SEMPRE precisa da key nesse backend, mesmo
+  // sem nenhum contato Kit ainda no store).
+  const hasKitOriginContacts = inBrevo.some((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX));
+  if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
+    const why = newsletterBackend === "kit" ? "newsletterBackend=kit" : `${inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length} contato(s) de origem Kit no store`;
+    log(`ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push — ${why}, #6340 item 4 fix A).`);
     process.exit(2);
   }
-
-  const store = readStore(DEFAULT_STORE_PATH);
 
   // #4579: reconciliação de órfãos — roda SEMPRE (mesmo em dry-run, é
   // read-only) quando a chave Brevo está disponível; NUNCA aborta o run
@@ -1630,7 +1839,6 @@ async function main(): Promise<void> {
     log(`reconciliação de órfãos (#4579) pulada — ${brevoDiaria.api_key_env} ausente no ambiente.`);
   }
 
-  const inBrevo: BrevoDiariaContact[] = store.contacts.filter((c) => c.status === "in_brevo");
   log(`${inBrevo.length} contato(s) in_brevo a avaliar.`);
 
   const result = await runEvaluation({
@@ -1652,7 +1860,8 @@ async function main(): Promise<void> {
       `${result.bouncedNative} bounced (bounce/ação admin, #5351 — NUNCA propagado pra Beehiiv), ` +
       `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
-      `${result.kept} mantido(s), ${result.failed} falha(s).`,
+      `${result.kept} mantido(s), ${result.failed} falha(s), ` +
+      `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A).`,
   );
 
   // Windows fix (#4651, mesma classe do #4638/#1401): tanto o branch
@@ -1665,12 +1874,16 @@ async function main(): Promise<void> {
   // keep-alive ainda abertos.
   if (!push) {
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
-    if (result.failed > 0) process.exitCode = 1;
+    // #6340 item 4 fix A — `kitAutoConfirmSkipped > 0` sinaliza saída
+    // não-zero no MESMO caminho de `failed > 0`: não é falha transitória de
+    // contato, é "algo não pôde ser confirmado por falta de credencial", e
+    // precisa aparecer em cron (ver docstring de `kitAutoConfirmSkipped`).
+    if (result.failed > 0 || result.kitAutoConfirmSkipped > 0) process.exitCode = 1;
     return;
   }
   writeStore(result.store, DEFAULT_STORE_PATH);
   log("push concluído — store atualizado.");
-  if (result.failed > 0) process.exitCode = 1;
+  if (result.failed > 0 || result.kitAutoConfirmSkipped > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {

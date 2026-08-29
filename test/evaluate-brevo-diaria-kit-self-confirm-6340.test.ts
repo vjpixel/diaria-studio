@@ -62,32 +62,44 @@ function kitSubscriberRes(id: number, state: string, email: string): Response {
   return jsonRes(200, { subscriber: { id, email_address: email, state, created_at: "2026-08-01T00:00:00.000Z" } });
 }
 
-describe("parseKitSubscriberId — extrai o id numérico do beehiiv_subscription_id sintético (#6340 item 4)", () => {
+describe("parseKitSubscriberId — união discriminada (#6340 item 4 fix C, review pós-merge)", () => {
   it(`extrai o id de um "${KIT_ORIGIN_ID_PREFIX}123" válido`, () => {
-    assert.equal(parseKitSubscriberId(`${KIT_ORIGIN_ID_PREFIX}123`), 123);
+    assert.deepEqual(parseKitSubscriberId(`${KIT_ORIGIN_ID_PREFIX}123`), { kind: "kit-valid", id: 123 });
   });
 
-  it("origem Beehiiv (sem o prefixo kit:) → null", () => {
-    assert.equal(parseKitSubscriberId("sub_a@b.com"), null);
+  it("origem Beehiiv (sem o prefixo kit:) → not-kit", () => {
+    assert.deepEqual(parseKitSubscriberId("sub_a@b.com"), { kind: "not-kit" });
   });
 
-  it("outra origem sintética (curated:/sunset:) → null, nunca confundida com Kit", () => {
-    assert.equal(parseKitSubscriberId("curated:a@b.com"), null);
-    assert.equal(parseKitSubscriberId("sunset:a@b.com"), null);
+  it("outra origem sintética (curated:/sunset:) → not-kit, nunca confundida com Kit", () => {
+    assert.deepEqual(parseKitSubscriberId("curated:a@b.com"), { kind: "not-kit" });
+    assert.deepEqual(parseKitSubscriberId("sunset:a@b.com"), { kind: "not-kit" });
   });
 
-  it("sufixo não-numérico → null (malformado)", () => {
-    assert.equal(parseKitSubscriberId("kit:abc"), null);
+  it("sufixo não-numérico → kit-malformed (distinto de not-kit — é origem Kit, mas o id não dá pra extrair)", () => {
+    assert.deepEqual(parseKitSubscriberId("kit:abc"), { kind: "kit-malformed", raw: "abc" });
   });
 
-  it("sufixo vazio → null", () => {
-    assert.equal(parseKitSubscriberId("kit:"), null);
+  it("sufixo vazio → kit-malformed", () => {
+    assert.deepEqual(parseKitSubscriberId("kit:"), { kind: "kit-malformed", raw: "" });
   });
 
-  it("sufixo <= 0 ou não-inteiro → null", () => {
-    assert.equal(parseKitSubscriberId("kit:0"), null);
-    assert.equal(parseKitSubscriberId("kit:-5"), null);
-    assert.equal(parseKitSubscriberId("kit:12.5"), null);
+  it("sufixo <= 0 ou não-inteiro → kit-malformed", () => {
+    assert.deepEqual(parseKitSubscriberId("kit:0"), { kind: "kit-malformed", raw: "0" });
+    assert.deepEqual(parseKitSubscriberId("kit:-5"), { kind: "kit-malformed", raw: "-5" });
+    assert.deepEqual(parseKitSubscriberId("kit:12.5"), { kind: "kit-malformed", raw: "12.5" });
+  });
+
+  it("#6340 item 4 fix E — espaço em branco no sufixo → kit-malformed (Number(' 123') aceitaria, regex de dígitos rejeita)", () => {
+    assert.deepEqual(parseKitSubscriberId("kit: 123"), { kind: "kit-malformed", raw: " 123" });
+  });
+
+  it("#6340 item 4 fix E — notação científica no sufixo → kit-malformed (Number('1e2')===100 aceitaria, regex de dígitos rejeita)", () => {
+    assert.deepEqual(parseKitSubscriberId("kit:1e2"), { kind: "kit-malformed", raw: "1e2" });
+  });
+
+  it("#6340 item 4 fix E — prefixo case-sensitive: 'Kit:123' (maiúscula) → not-kit, NUNCA kit-malformed (cai silenciosamente como origem Beehiiv)", () => {
+    assert.deepEqual(parseKitSubscriberId("Kit:123"), { kind: "not-kit" });
   });
 });
 
@@ -270,7 +282,8 @@ describe("runEvaluation — Passo 1 (auto-confirmação) roteado por origem (#63
         // kitApiKey OMITIDO de propósito
       });
       assert.equal(result.selfConfirmed, 0);
-      assert.equal(result.failed, 0, "kitApiKey ausente é precondição de ambiente — nunca conta como failed (mesmo tratamento de brevoApiKey ausente no Passo 0)");
+      assert.equal(result.failed, 0, "kitApiKey ausente é precondição de ambiente — nunca conta como failed");
+      assert.equal(result.kitAutoConfirmSkipped, 1, "#6340 item 4 fix A — contador DEDICADO pra kitApiKey ausente, distinto de failed");
       assert.equal(result.kept, 1);
       assert.ok(logs.some((l) => l.includes("kitApiKey ausente")));
     } finally {
@@ -302,6 +315,7 @@ describe("runEvaluation — Passo 1 (auto-confirmação) roteado por origem (#63
       });
       assert.equal(result.selfConfirmed, 0);
       assert.equal(result.failed, 0);
+      assert.equal(result.kitAutoConfirmSkipped, 1, "#6340 item 4 fix A — mesmo em push, kitApiKey ausente conta aqui, não em failed");
     } finally {
       restore();
     }
@@ -341,6 +355,273 @@ describe("runEvaluation — Passo 1 (auto-confirmação) roteado por origem (#63
       assert.equal(result.kept, 2, "os dois contatos são avaliados normalmente por taxa de abertura (nenhum confirmado no Kit)");
       assert.equal(result.selfConfirmed, 0);
       assert.ok(logs.some((l) => l.includes("falha ao checar status Kit de kit-falha@b.com")));
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("runEvaluation — Passo 0 (descadastro nativo) roteado por origem (#6340 item 4 fix B, review pós-merge)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  /** Resposta Brevo (`GET /contacts/{email}`, Passo 0) com `emailBlacklisted:
+   *  true` — variante blacklisted de `neutralBrevoContactRes` (arquivo
+   *  irmão), com `userUnsubscription` opcional. */
+  function blacklistedBrevoContactRes(opts: { userUnsubscribed?: boolean; hardBounced?: boolean } = {}): Response {
+    return jsonRes(200, {
+      emailBlacklisted: true,
+      statistics: {
+        messagesSent: [],
+        opened: [],
+        unsubscriptions: {
+          userUnsubscription: opts.userUnsubscribed ? [{ date: "2026-08-01T00:00:00.000Z" }] : [],
+          adminUnsubscription: [],
+        },
+        ...(opts.hardBounced ? { hardBounces: [{ campaignId: 1 }] } : {}),
+      },
+    });
+  }
+
+  it("push:true, kit-origem, emailBlacklisted + userUnsubscription genuína, ainda inactive no Kit → unsubscribedNative, resolution_reason native_unsubscribe_kit_origin, ZERO chamada Beehiiv, unlink chamado", async () => {
+    let beehiivCalls = 0;
+    let unlinkCalled = false;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) {
+        beehiivCalls++;
+        throw new Error(`fetch Beehiiv NUNCA deveria rodar pra contato de origem Kit no Passo 0: ${u}`);
+      }
+      if (u.includes("api.kit.com")) return kitSubscriberRes(321, "inactive", "kit-unsub@b.com");
+      if (init?.method === "PUT") {
+        unlinkCalled = true;
+        assert.deepEqual(JSON.parse(init.body as string), { unlinkListIds: [7] });
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/")) return blacklistedBrevoContactRes({ userUnsubscribed: true });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("kit-unsub@b.com", { beehiiv_subscription_id: "kit:321" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+        kitApiKey: "kkey",
+      });
+      assert.equal(result.unsubscribedNative, 1);
+      assert.equal(result.selfConfirmed, 0);
+      assert.equal(result.bouncedNative, 0);
+      assert.equal(result.failed, 0);
+      assert.equal(beehiivCalls, 0, "contato de origem Kit nunca consulta/escreve na Beehiiv no Passo 0 (#6340 item 4 fix B)");
+      assert.equal(unlinkCalled, true);
+      const c = findContact(result.store, "kit-unsub@b.com")!;
+      assert.equal(c.status, "unsubscribed");
+      assert.equal(c.resolution_reason, "native_unsubscribe_kit_origin");
+    } finally {
+      restore();
+    }
+  });
+
+  it("kit-origem, emailBlacklisted SEM userUnsubscription (ruído admin/bounce), ainda inactive no Kit → bouncedNative/native_admin_block, ZERO chamada Beehiiv", async () => {
+    let beehiivCalls = 0;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) {
+        beehiivCalls++;
+        throw new Error(`fetch Beehiiv NUNCA deveria rodar pra contato de origem Kit no Passo 0: ${u}`);
+      }
+      if (u.includes("api.kit.com")) return kitSubscriberRes(322, "inactive", "kit-bounce@b.com");
+      if (init?.method === "PUT") return jsonRes(200, {});
+      if (u.includes("/contacts/")) return blacklistedBrevoContactRes({ userUnsubscribed: false });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("kit-bounce@b.com", { beehiiv_subscription_id: "kit:322" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+        kitApiKey: "kkey",
+      });
+      assert.equal(result.bouncedNative, 1);
+      assert.equal(result.unsubscribedNative, 0);
+      assert.equal(result.failed, 0);
+      assert.equal(beehiivCalls, 0);
+      const c = findContact(result.store, "kit-bounce@b.com")!;
+      assert.equal(c.status, "bounced");
+      assert.equal(c.resolution_reason, "native_admin_block");
+    } finally {
+      restore();
+    }
+  });
+
+  it("kit-origem, emailBlacklisted MAS já ativo no Kit → cai no bloco compartilhado de auto-confirmação (selfConfirmed), NUNCA tratado como unsub, e o Passo 1 reusa o mesmo GET (só 1 chamada ao Kit no run)", async () => {
+    let kitCalls = 0;
+    let beehiivCalls = 0;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) {
+        beehiivCalls++;
+        throw new Error(`fetch Beehiiv NUNCA deveria rodar pra contato de origem Kit: ${u}`);
+      }
+      if (u.includes("api.kit.com")) {
+        kitCalls++;
+        return kitSubscriberRes(323, "active", "kit-ja-ativo@b.com");
+      }
+      if (init?.method === "PUT") return jsonRes(200, {});
+      if (u.includes("/contacts/")) return blacklistedBrevoContactRes({ userUnsubscribed: true });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("kit-ja-ativo@b.com", { beehiiv_subscription_id: "kit:323" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+        kitApiKey: "kkey",
+      });
+      assert.equal(result.selfConfirmed, 1, "já ativo no Kit → auto-confirmação, NUNCA revertido por causa do emailBlacklisted (mesmo racional do #4630 pro par Beehiiv)");
+      assert.equal(result.unsubscribedNative, 0);
+      assert.equal(result.bouncedNative, 0);
+      assert.equal(kitCalls, 1, "Passo 1 reusa o kitConfirmed já obtido no Passo 0 — nunca 2 GETs ao Kit no mesmo run");
+      assert.equal(beehiivCalls, 0);
+      const c = findContact(result.store, "kit-ja-ativo@b.com")!;
+      assert.equal(c.status, "promoted_beehiiv");
+      assert.equal(c.resolution_reason, "self_confirmed_beehiiv");
+    } finally {
+      restore();
+    }
+  });
+
+  it("kit-origem, emailBlacklisted, kitApiKey AUSENTE → kitAutoConfirmSkipped (não failed), ZERO chamada Beehiiv/Kit, contato pulado esta rodada (nenhuma mutação no store)", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) throw new Error(`fetch Beehiiv NUNCA deveria rodar: ${u}`);
+      if (u.includes("api.kit.com")) throw new Error(`fetch Kit NUNCA deveria rodar sem kitApiKey: ${u}`);
+      if (u.includes("/contacts/")) return blacklistedBrevoContactRes({ userUnsubscribed: true });
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    const logs: string[] = [];
+    try {
+      const contacts = [contact("kit-semkey-p0@b.com", { beehiiv_subscription_id: "kit:324" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: (m) => logs.push(m),
+        // kitApiKey OMITIDO de propósito
+      });
+      assert.equal(result.kitAutoConfirmSkipped, 1);
+      assert.equal(result.failed, 0);
+      assert.equal(result.unsubscribedNative, 0);
+      assert.equal(result.bouncedNative, 0);
+      assert.equal(result.kept, 0, "contato pulado inteiro nesta rodada — nem passa pra avaliação de score (dado incompleto)");
+      const c = findContact(result.store, "kit-semkey-p0@b.com")!;
+      assert.equal(c.status, "in_brevo", "nenhuma mutação — retentado na próxima rodada quando a key estiver presente");
+      assert.ok(logs.some((l) => l.includes("kitApiKey ausente")));
+    } finally {
+      restore();
+    }
+  });
+
+  it("kit-origem, emailBlacklisted, id malformado → conta failed, ZERO chamada Kit/Beehiiv", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) throw new Error(`fetch Beehiiv NUNCA deveria rodar: ${u}`);
+      if (u.includes("api.kit.com")) throw new Error(`fetch Kit NUNCA deveria rodar pra id malformado: ${u}`);
+      if (u.includes("/contacts/")) return blacklistedBrevoContactRes({ userUnsubscribed: true });
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    const logs: string[] = [];
+    try {
+      const contacts = [contact("kit-malformado-p0@b.com", { beehiiv_subscription_id: "kit:xyz" })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: (m) => logs.push(m),
+        kitApiKey: "kkey",
+      });
+      assert.equal(result.failed, 1);
+      assert.equal(result.kitAutoConfirmSkipped, 0);
+      assert.ok(logs.some((l) => l.includes("não é possível decidir o Passo 0")));
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("runEvaluation — origens mistas no MESMO run (#6340 item 4 fix F, review pós-merge)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  it("Kit-confirmado + Beehiiv-confirmado + Kit-malformado no MESMO runEvaluation → contadores independentes, nenhum estado (beehiivStatus/kitConfirmed/statusCheckFailed) vaza de um contato pro próximo", async () => {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.kit.com/v4/subscribers/501")) return kitSubscriberRes(501, "active", "kit-ok@b.com");
+      if (u.includes("subscriptions/by_email/beehiiv-ok%40b.com")) return jsonRes(200, { data: { status: "active" } });
+      if (u.includes("/contacts/")) return neutralBrevoContactRes();
+      if (init?.method === "PUT") return jsonRes(200, {});
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [
+        contact("kit-ok@b.com", { beehiiv_subscription_id: "kit:501" }),
+        contact("beehiiv-ok@b.com"), // default: sub_beehiiv-ok@b.com — origem Beehiiv
+        contact("kit-malformado-mix@b.com", { beehiiv_subscription_id: "kit:notanumber" }),
+      ];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+        kitApiKey: "kkey",
+      });
+      assert.equal(result.selfConfirmed, 2, "kit-ok (via Kit) + beehiiv-ok (via Beehiiv) — cada um confirmado no backend certo");
+      assert.equal(result.failed, 1, "só kit-malformado-mix conta failed — nenhum vazamento pros outros 2");
+      assert.equal(result.kept, 1, "kit-malformado-mix, mesmo com id malformado, ainda cai na avaliação normal por taxa de abertura (Passo 2) — 0/0 abaixo do piso de amostra");
+      assert.equal(findContact(result.store, "kit-ok@b.com")!.status, "promoted_beehiiv");
+      assert.equal(findContact(result.store, "kit-ok@b.com")!.resolution_reason, "self_confirmed_beehiiv");
+      assert.equal(findContact(result.store, "beehiiv-ok@b.com")!.status, "promoted_beehiiv");
+      assert.equal(findContact(result.store, "kit-malformado-mix@b.com")!.status, "in_brevo", "malformado nunca resolve — segue in_brevo");
     } finally {
       restore();
     }
