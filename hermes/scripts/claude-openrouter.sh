@@ -138,9 +138,32 @@ for MODEL in "${MODELS[@]}"; do
   # ler um $ATTEMPT_LOG parcialmente flushado e perder o próprio sinal que
   # decide entre exit 1 e exit 4. Filtro de ruído pro terminal roda DEPOIS,
   # já sobre o arquivo completo.
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL fixa o modelo das chamadas de BACKGROUND do
+  # CLI no mesmo slug barato da tentativa atual (#6716). Sem isto, `--model` só
+  # governa a conversa: as chamadas auxiliares (summarization pra `--resume`,
+  # auto-compact) usam o default do CLI e saíram como Claude Sonnet 5 a preço
+  # cheio no billing do OpenRouter — medido em 29/08/2026 nas sessões
+  # 76433685 ($0.38) e 1520faa3 ($0.417), ~75% do custo de cada delegação,
+  # contra ~$0.09 se tudo tivesse rodado no slug pedido.
+  #
+  # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
+  # .jsonl da sessão (as duas acima registram só glm-5.3-flash), então
+  # auditoria por transcript nunca as vê — a fonte é o billing do gateway.
+  #
+  # Usa "$MODEL" (o elo corrente da cadeia) em vez de um slug fixo pra valer
+  # em qualquer posição: o background herda o mesmo custo do primário, nunca
+  # um modelo mais caro que o que se pediu.
+  #
+  # A doc do Claude Code confirma que esta var cobre "background functionality"
+  # (`ANTHROPIC_SMALL_FAST_MODEL` é o nome legado, deprecado). O fallback
+  # pra Sonnet quando ela NÃO está setada só é documentado pra Bedrock — que
+  # valha igual num gateway genérico é inferência do padrão observado aqui,
+  # não fato documentado. Se o billing seguir mostrando um supporting model
+  # depois desta linha, a causa é outra: reabrir #6716 em vez de trocar o slug.
   OUT=$(printf '%s' "$PROMPT" | timeout "$TIMEOUT" env \
     ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
     ANTHROPIC_AUTH_TOKEN="$KEY" \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
     CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 \
     claude -p \
       --model "$MODEL" \
