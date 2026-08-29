@@ -20,9 +20,16 @@
  *   contato Beehiiv-pending ingerido lá competem pelo MESMO teto de fila
  *   (`brevo_diaria.daily_send_cap`) e passam pela MESMA avaliação de
  *   engajamento em `evaluate-brevo-diaria.ts` — nenhuma mudança nesse script
- *   foi necessária (a issue #6340 marca isso como "deliberadamente fora
- *   desta unidade, por risco": item 4, promoção Kit→active, ainda depende
- *   do #6339/tocaria `evaluate-brevo-diaria.ts` diretamente).
+ *   foi necessária **para o item 3** (a issue #6340 marcava a promoção
+ *   Kit→active como "deliberadamente fora desta unidade, por risco": item
+ *   4, que tocaria `evaluate-brevo-diaria.ts` diretamente). **O item 4 foi
+ *   implementado depois, em unidade separada** — `runEvaluation` Passo 1
+ *   (auto-confirmação) roteia por origem via `parseKitSubscriberId`: um
+ *   contato com `beehiiv_subscription_id` prefixado `kit:` (como os que
+ *   este script ingere) que vira `active` no Kit sai da fila do Brevo sem
+ *   depender da taxa de abertura, mesmo tratamento terminal que a
+ *   auto-confirmação Beehiiv já tinha. Ver o comentário `#6340 item 4` em
+ *   `evaluate-brevo-diaria.ts` pro mecanismo completo.
  * - **Convenção de origem sintética no `beehiiv_subscription_id`**: o campo
  *   é nomeado para a origem Beehiiv (`BrevoDiariaContact.beehiiv_subscription_id:
  *   string`, obrigatório), mas já existem 2 precedentes de uso para origem
@@ -122,6 +129,12 @@ import {
   type PendingToIngestEntry,
 } from "./sync-pending-to-brevo.ts";
 import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
+// #6340 item 4 fix D — importa a constante do prefixo do módulo canônico shared/
+// (brevo-diaria-origin.ts) em vez de do evaluate-brevo-diaria.ts: ambos (produtor
+// aqui e consumidor em evaluate-brevo-diaria.ts) referenciam a MESMA constante
+// canônica, travando divergences de prefixo em compile-time. Ver o teste "fix D"
+// em test/sync-kit-inactive-to-brevo-6340.test.ts pro guard que trava produtor e
+// consumidor na mesma constante.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
