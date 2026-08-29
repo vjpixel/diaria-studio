@@ -805,12 +805,14 @@ async function subscribeToKit(
             console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID inválido: "${env.KIT_WELCOME_SEQUENCE_ID}" — pulando vínculo com sequence`);
           }
         } else {
-          // #6694 item (c): mesmo padrão de log de skip do irmão
-          // KIT_DOI_FORM_ID (`vincularKitDoiForm` retorna cedo mas o
-          // ausente/inválido dos dois é logado nos demais ramos) — sem
-          // KIT_WELCOME_SEQUENCE_ID configurado isto é dormência esperada
-          // (nenhum wrangler.toml seta a var hoje), não erro, mas registrar
-          // o skip evita silêncio indistinguível de "não devia rodar".
+          // #6694 item (c): diferente do irmão `vincularKitDoiForm` (que
+          // retorna cedo em SILÊNCIO TOTAL quando `KIT_DOI_FORM_ID` está
+          // ausente — só loga o `!res.ok`/exception de uma chamada HTTP que
+          // de fato aconteceu), este ramo agora loga também o caso AUSENTE.
+          // Sem KIT_WELCOME_SEQUENCE_ID configurado isto é dormência
+          // esperada (nenhum wrangler.toml seta a var hoje), não erro, mas
+          // registrar o skip evita silêncio indistinguível de "não devia
+          // rodar".
           console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID não configurado — pulando vínculo com sequence de boas-vindas para subscriber ${seqSubscriberId}.`);
         }
       }
