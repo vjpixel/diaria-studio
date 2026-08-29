@@ -170,6 +170,18 @@ export interface Env {
    * ainda é criado `inactive`, mas nenhum e-mail de confirmação é
    * disparado por este caminho — fail-soft, nunca bloqueia a criação. */
   KIT_DOI_FORM_ID?: string;
+  /** #6508 — ID da sequence de boas-vindas do Kit (sequence `Boas-vindas`,
+   * id `2876508`, criada 28/08/2026). Usado em `subscribeToKit`
+   * (`subscribe.ts`) pra adicionar o subscriber criado via API direta
+   * (`POST /v4/subscribers`, worker `poll`) à sequence — quem passa pelo
+   * FORM `9839463` já entra automaticamente via Automation Rule do Kit
+   * (rule id `5578342`, trigger "Subscribes to a form" → action
+   * "Subscribe to an email sequence"), mas o worker `poll` cria
+   * subscriber SEM passar pelo form, então precisa do vínculo explícito
+   * aqui. Best-effort: nunca falha a assinatura, só loga — mesmo padrão
+   * de `vincularKitDoiForm`. Ausente → cadastro entra na sequence só
+   * se passar pelo form (comportamento atual), sem erro. */
+  KIT_WELCOME_SEQUENCE_ID?: string;
   /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
    * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado
    * pelo e-mail de confirmação de merge cross-device do jogo `web`.
