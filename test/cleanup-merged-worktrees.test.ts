@@ -285,3 +285,45 @@ test("shouldSkipForSharedSession — sessão ativa COM --confirm-shared → pros
 test("shouldSkipForSharedSession — múltiplas sessões ativas sem confirmação → pula", () => {
   assert.equal(shouldSkipForSharedSession([fakeSession, { ...fakeSession, sessionId: "sess-2" }], false), true);
 });
+
+// ── #6706 — só sessão coordenadora NÃO-stale conta ──
+//
+// Achado ao vivo: `cleanup-merged-worktrees.ts` recusou rodar reportando 15
+// sessões "ativas" quando só 2 estavam de fato vivas — o guard contava
+// qualquer registro coordenador presente em `data/sessions/` dentro do teto
+// absoluto de 24h (`MAX_SESSION_AGE_MS`), sem checar o campo `stale` que
+// `listActiveSessions` já computa a partir de `SOFT_STALE_MS` (90min). O
+// campo `pid` não serve de substituto (#6294/#6706: nunca resolve a um
+// processo real neste harness, mesmo pra sessão genuinamente viva).
+
+test("shouldSkipForSharedSession — sessão coordenadora STALE (heartbeat morto >90min, mas dentro das 24h) NÃO bloqueia mais (#6706)", () => {
+  const staleSession: SessionRecord = { ...fakeSession, stale: true };
+  assert.equal(
+    shouldSkipForSharedSession([staleSession], false),
+    false,
+    "sessão coordenadora stale não deve mais contar como 'ativa' pro guard de sessão compartilhada",
+  );
+});
+
+test("shouldSkipForSharedSession — mistura de sessões stale e não-stale: só a não-stale bloqueia (#6706)", () => {
+  const staleSession: SessionRecord = { ...fakeSession, sessionId: "sess-morta", stale: true };
+  const liveSession: SessionRecord = { ...fakeSession, sessionId: "sess-viva", stale: false };
+  assert.equal(
+    shouldSkipForSharedSession([staleSession, liveSession], false),
+    true,
+    "com pelo menos 1 coordenadora genuinamente viva no grupo, o guard continua pulando a varredura",
+  );
+});
+
+test("shouldSkipForSharedSession — TODAS stale → nunca pula, mesmo em grande quantidade (#6706, regressão do incidente '15 sessões ativas, 2 vivas')", () => {
+  const manyStale: SessionRecord[] = Array.from({ length: 15 }, (_, i) => ({
+    ...fakeSession,
+    sessionId: `sess-morta-${i}`,
+    stale: true,
+  }));
+  assert.equal(
+    shouldSkipForSharedSession(manyStale, false),
+    false,
+    "15 registros coordenadores stale não devem bloquear a varredura — nenhum está genuinamente vivo",
+  );
+});

@@ -113,6 +113,85 @@ describe("decideClaimReconciliation (#6581) — pura, sem I/O", () => {
     assert.deepEqual(decision.addedIssues, [200]);
     assert.deepEqual(decision.addedClaimedIssuesAt, { "200": "2026-08-02T00:00:00.000Z" });
   });
+
+  // ── #6698 — nunca ressuscita claim removida por unclaimIssue PRÉ-#6567 ──
+
+  it("cenário (a) — claim válida só no backup, com claimed_issues_at POSTERIOR ao heartbeat do real → adiciona (#6698)", () => {
+    const real: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s10",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [],
+    };
+    // A claim aconteceu DEPOIS do último heartbeat conhecido do real — sinal
+    // de que o real ficou pra trás (não teve chance de refletir a escrita).
+    const backup: SessionRecord = {
+      ...real,
+      claimed_issues: [100],
+      claimed_issues_at: { "100": "2026-08-02T00:00:00.000Z" },
+    };
+    const decision = decideClaimReconciliation(real, [backup]);
+    assert.deepEqual(decision.addedIssues, [100], "claim genuína (backup mais novo que o real) deve ser ressuscitada");
+  });
+
+  it("cenário (b) — claim removida por unclaimIssue pré-#6567 (claimed_issues_at ANTERIOR/igual ao heartbeat do real) → NÃO ressuscita (#6698)", () => {
+    const real: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s11",
+      // O real já bateu heartbeat DEPOIS da claim original (ex: um
+      // `unclaimIssue` pré-#6567 que só tocou o real) — teve chance de
+      // refletir a issue e genuinamente não a tem.
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-10T00:00:00.000Z",
+      claimed_issues: [],
+    };
+    // Backup é um resíduo — a claim original é mais ANTIGA que o heartbeat
+    // atual do real.
+    const backup: SessionRecord = {
+      ...real,
+      lastHeartbeat: "2026-08-01T00:00:00.000Z",
+      claimed_issues: [100],
+      claimed_issues_at: { "100": "2026-08-01T00:00:00.000Z" },
+    };
+    const decision = decideClaimReconciliation(real, [backup]);
+    assert.deepEqual(decision.addedIssues, [], "claim já removida deliberadamente não deve ser ressuscitada");
+    assert.deepEqual(decision.addedClaimedIssuesAt, {});
+  });
+
+  it("cenário (b), timestamp EXATAMENTE igual ao heartbeat do real → também não ressuscita (limite inclusivo, #6698)", () => {
+    const real: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s12",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-05T00:00:00.000Z",
+      claimed_issues: [],
+    };
+    const backup: SessionRecord = {
+      ...real,
+      claimed_issues: [100],
+      claimed_issues_at: { "100": "2026-08-05T00:00:00.000Z" },
+    };
+    assert.deepEqual(decideClaimReconciliation(real, [backup]).addedIssues, []);
+  });
+
+  it("sem claimed_issues_at (claim pré-#6436) → sem evidência, preserva o comportamento anterior (adiciona, #6698)", () => {
+    const real: SessionRecord = {
+      kind: "continuo",
+      machineTag: "predator",
+      sessionId: "s13",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      lastHeartbeat: "2026-08-10T00:00:00.000Z",
+      claimed_issues: [],
+    };
+    // Backup sem claimed_issues_at nenhum — impossível provar remoção
+    // deliberada, então o fallback é o comportamento pré-#6698 (adiciona).
+    const backup: SessionRecord = { ...real, lastHeartbeat: "2026-08-01T00:00:00.000Z", claimed_issues: [100] };
+    assert.deepEqual(decideClaimReconciliation(real, [backup]).addedIssues, [100]);
+  });
 });
 
 // ─── planClaimReconciliation / reconcileClaims (integração, tmpdir) ────────

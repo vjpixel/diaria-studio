@@ -307,9 +307,28 @@ function listWorktreesSafe(cwd: string): WorktreeEntry[] {
  * e só coordenadora despacha implementador. Uma sessão interativa não abre
  * worktree em `.claude/worktrees/` por conta própria; quando ela abre um à
  * mão, quem o remove é ela mesma.
+ *
+ * **#6706 — só conta sessão coordenadora NÃO-stale.** Antes desta mudança,
+ * o filtro considerava qualquer registro `SessionRecord` cujo `kind` fosse
+ * coordenador, ignorando o campo computado `stale` que `listActiveSessions`
+ * já popula (heartbeat morto há mais de `SOFT_STALE_MS`/90min, ver
+ * `scripts/lib/session-registry.ts`). Como o campo `pid` gravado no registro
+ * nunca corresponde ao processo real da sessão neste harness (achado #6294,
+ * reconfirmado pelo #6706 — nenhum PID de registro é resolvível em `/proc`
+ * mesmo pra sessão genuinamente viva), `stale` é o ÚNICO sinal de liveness
+ * prático disponível aqui; sem filtrar por ele, uma sessão overnight/develop
+ * morta há 20h (dentro do teto absoluto de 24h que `listActiveSessions` usa
+ * pra decidir se inclui o registro na lista, mas muito além da janela de
+ * liveness de 90min) contava como "ativa" pra sempre — achado ao vivo: este
+ * script recusou rodar reportando 15 sessões "ativas" quando só 2 estavam de
+ * fato vivas. `s.stale` pode ser `undefined` num `SessionRecord` cru fora de
+ * `listActiveSessions` (nunca persistido em disco) — `!s.stale` trata
+ * `undefined` como "não-stale", preservando o comportamento de quem passar
+ * uma lista sem essa checagem computada (nenhum call site real faz isso hoje;
+ * `listActiveSessionsSafe` sempre passa por `listActiveSessions`).
  */
 export function shouldSkipForSharedSession(activeSessions: SessionRecord[], confirmShared: boolean): boolean {
-  const coordinators = activeSessions.filter((s) => isCoordinatorKind(s.kind));
+  const coordinators = activeSessions.filter((s) => isCoordinatorKind(s.kind) && !s.stale);
   return coordinators.length > 0 && !confirmShared;
 }
 
@@ -336,12 +355,17 @@ function main(): void {
   try {
     const activeSessions = listActiveSessionsSafe(repoRoot);
     if (shouldSkipForSharedSession(activeSessions, confirmShared)) {
-      const who = activeSessions.map((s) => `${s.kind}:${s.sessionId}`).join(", ");
+      // #6706: reporta só as coordenadoras NÃO-stale que de fato causaram o
+      // skip — logar `activeSessions` inteiro (incluindo stale) é o que
+      // produziu o achado ao vivo "15 sessões ativas quando só 2 estavam de
+      // fato vivas" (ver docstring de `shouldSkipForSharedSession`).
+      const live = activeSessions.filter((s) => isCoordinatorKind(s.kind) && !s.stale);
+      const who = live.map((s) => `${s.kind}:${s.sessionId}`).join(", ");
       console.warn(
-        `[cleanup-merged-worktrees] ${activeSessions.length} sessão(ões) ativa(s) detectada(s) em data/sessions/ (${who}) — ` +
-          "pulando a varredura de .claude/worktrees/ por segurança (#5156 item 9): um worktree ainda em uso por " +
-          "outra sessão poderia ser removido no meio do trabalho dela. Rode de novo com --confirm-shared se já " +
-          "confirmou que é seguro prosseguir mesmo assim.",
+        `[cleanup-merged-worktrees] ${live.length} sessão(ões) coordenadora(s) ativa(s) (não-stale) detectada(s) em ` +
+          `data/sessions/ (${who}) — pulando a varredura de .claude/worktrees/ por segurança (#5156 item 9): um ` +
+          "worktree ainda em uso por outra sessão poderia ser removido no meio do trabalho dela. Rode de novo com " +
+          "--confirm-shared se já confirmou que é seguro prosseguir mesmo assim.",
       );
       return;
     }
