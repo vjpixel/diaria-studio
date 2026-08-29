@@ -146,6 +146,7 @@ import {
 } from "./lib/brevo-diaria-store.ts";
 import { computeAvailableSlots, computeCurrentActiveCount, ingestContactToBrevo } from "./sync-pending-to-brevo.ts";
 import { loadBrevoDiariaTarget } from "./lib/brevo-diaria-target.ts";
+import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_SUNSET_LOG_PATH = resolve(ROOT, "data/brevo-diaria/sunset-log.jsonl");
@@ -571,7 +572,7 @@ export async function applySunsetOne(params: {
   // pelo store) e pro `evaluate-brevo-diaria.ts` (que só enxerga o store).
   const nextStore = upsertIngested(
     store,
-    { email: input.email, beehiiv_subscription_id: `sunset:${normalizeEmail(input.email)}` },
+    { email: input.email, beehiiv_subscription_id: buildOrigin("sunset", normalizeEmail(input.email)) },
     now,
   );
 

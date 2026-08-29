@@ -184,6 +184,7 @@ import {
   type BrevoDiariaContact,
 } from "./lib/brevo-diaria-store.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
+import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts"; // #6678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RATE_LIMIT_DELAY_MS = 300;
@@ -373,7 +374,7 @@ export function computeContactsToIngest(
     if (known.has(p.email) || seen.has(p.email)) continue;
     if (verifiedEmails && !verifiedEmails.has(p.email)) continue;
     seen.add(p.email);
-    out.push({ email: p.email, beehiiv_subscription_id: p.id });
+    out.push({ email: p.email, beehiiv_subscription_id: buildOrigin("beehiiv", p.id) });
   }
   return out;
 }
