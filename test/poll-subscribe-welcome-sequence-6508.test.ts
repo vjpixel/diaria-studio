@@ -1,5 +1,5 @@
 /**
- * test/poll-subscribe-welcome-sequence-6508.test.ts (#6508)
+ * test/poll-subscribe-welcome-sequence-6508.test.ts (#6508, #6694)
  *
  * Guard de regressão contra o bug: cadastro via API direta
  * (`subscribeToKit` no worker `poll`) nunca entrava na sequence de
@@ -16,6 +16,13 @@
  *      (best-effort, fail-soft, mesmo padrão de `vincularKitDoiForm`)
  *   4. `KIT_WELCOME_SEQUENCE_ID` inválido (não numérico) → loga erro,
  *      não tenta a sequence, assinatura segue normal
+ *
+ * #6694 acrescenta:
+ *   5. `createState === "inactive"` (double opt-in pendente, #6340) ⇒ NUNCA
+ *      chama `/sequences/{id}/subscribers` explicitamente — só a Automation
+ *      Rule do Kit (disparada pelo vínculo ao form DOI, fora do alcance
+ *      deste teste unitário) pode inscrever esse subscriber. Evita boas-vindas
+ *      antes da confirmação do double opt-in E a duplicidade com a rule.
  */
 
 import { describe, it } from "node:test";
@@ -160,5 +167,31 @@ describe("subscribeToKit — sequence de boas-vindas (#6508)", () => {
     assert.ok(result.ok, `KIT_WELCOME_SEQUENCE_ID inválido não deveria quebrar a assinatura, got: ${JSON.stringify(result)}`);
     const hasSequenceCall = calls.some(c => c.url.includes("/sequences/"));
     assert.equal(hasSequenceCall, false, "não deveria tentar a sequence com ID inválido");
+  });
+
+  it("#6694: createState=inactive (double opt-in pendente) NUNCA chama /sequences/{id}/subscribers", async () => {
+    const calls: { url: string }[] = [];
+    const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+      calls.push({ url: String(input) });
+      return new Response(
+        JSON.stringify({ subscriber: { id: 99999 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    // KIT_DOI_FORM_ID configurado + worker "poll" na allowlist do
+    // DOUBLE_OPT_IN_FLAG (optin-flag-6340.ts) ⇒ resolveKitCreateState
+    // devolve "inactive" — o subscriber ainda não confirmou o double opt-in.
+    const result = await subscribeViaConfiguredBackend(
+      { ...baseEnv, KIT_DOI_FORM_ID: "9839463", KIT_WELCOME_SEQUENCE_ID: "2876508" },
+      { name: "Teste", email: "teste@example.com" },
+      fetchImpl,
+    );
+
+    assert.ok(result.ok, `assinatura deveria ter sucesso, got: ${JSON.stringify(result)}`);
+    const hasFormLinkCall = calls.some(c => c.url.includes("/forms/9839463/subscribers/"));
+    const hasSequenceCall = calls.some(c => c.url.includes("/sequences/"));
+    assert.ok(hasFormLinkCall, "deveria ter vinculado ao form DOI (dispara o e-mail de confirmação, #6340)");
+    assert.equal(hasSequenceCall, false, "NUNCA deveria inscrever na sequence explicitamente antes da confirmação do double opt-in — só a Automation Rule do Kit pode fazer isso");
   });
 });

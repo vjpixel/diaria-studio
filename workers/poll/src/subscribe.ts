@@ -760,37 +760,61 @@ async function subscribeToKit(
         console.error(`[subscribeToKit] #6340: resposta ${res.status} sem subscriber.id — não foi possível vincular ao form DOI (e-mail de confirmação NÃO disparado por este caminho).`);
       }
     }
-    // #6508: cadastro via API direta também entra na sequence de boas-vindas.
-    // Quem passa pelo form (UI) é coberto pela Automation Rule do Kit
-    // (trigger "Subscribes to a form" → "Subscribe to an email sequence",
-    // rule id 5578342, sequence 2876508) — mas o worker `poll` cria
-    // subscriber via POST /v4/subscribers SEM passar pelo form, então
-    // precisa do vínculo explícito aqui. Best-effort: nunca falha a
-    // assinatura, só loga — mesmo padrão de `vincularKitDoiForm`.
-    const seqRes = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
-    const seqSubscriberId = seqRes?.subscriber?.id;
-    if (typeof seqSubscriberId === "number" && env.KIT_WELCOME_SEQUENCE_ID) {
-      const seqId = parseInt(env.KIT_WELCOME_SEQUENCE_ID, 10);
-      if (!isNaN(seqId)) {
-        try {
-          const seqFetch = await fetchImpl(`${base}/sequences/${seqId}/subscribers`, {
-            method: "POST",
-            headers: {
-              "X-Kit-Api-Key": apiKey,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ subscriber_id: seqSubscriberId }),
-            signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
-          });
-          if (!seqFetch.ok) {
-            const bodyText = await seqFetch.text().catch(() => "<unreadable>");
-            console.error(`[subscribeToKit] #6508: falha ao adicionar subscriber ${seqSubscriberId} à sequence ${seqId}: ${seqFetch.status} ${bodyText.slice(0, 300)}`);
+    // #6508/#6694: cadastro via API direta também entra na sequence de
+    // boas-vindas — mas SÓ quando `createState !== "inactive"` (worker fora
+    // do rollout de double opt-in, ou DOI desligado): #6340 introduziu
+    // `vincularKitDoiForm` acima, que já vincula o subscriber `inactive` ao
+    // form DOI (`KIT_DOI_FORM_ID`) — e esse vínculo dispara a Automation
+    // Rule do Kit (trigger "Subscribes to a form" → "Subscribe to an email
+    // sequence", rule id 5578342, sequence 2876508) sozinha. Manter a
+    // chamada explícita abaixo TAMBÉM pra esse caminho duplicava a
+    // inscrição (2 caminhos pra mesma sequence) e — pior — atravessava a
+    // fronteira que o #6340 existe pra proteger: o subscriber `inactive`
+    // ainda não confirmou o double opt-in.
+    // Pro caminho `active` (DOI desligado, ou worker fora do rollout),
+    // `vincularKitDoiForm` nunca roda — o subscriber nunca é linkado ao
+    // form, então a Automation Rule não tem gatilho — daí a chamada
+    // explícita aqui continuar sendo o ÚNICO caminho de inscrição na
+    // sequence pra esse caso. Best-effort: nunca falha a assinatura, só
+    // loga — mesmo padrão de `vincularKitDoiForm`.
+    if (createState !== "inactive") {
+      const seqRes = await res.clone().json().catch(() => undefined) as { subscriber?: { id?: number } } | undefined;
+      const seqSubscriberId = seqRes?.subscriber?.id;
+      if (typeof seqSubscriberId === "number") {
+        if (env.KIT_WELCOME_SEQUENCE_ID) {
+          const seqId = parseInt(env.KIT_WELCOME_SEQUENCE_ID, 10);
+          if (!isNaN(seqId)) {
+            try {
+              const seqFetch = await fetchImpl(`${base}/sequences/${seqId}/subscribers`, {
+                method: "POST",
+                headers: {
+                  "X-Kit-Api-Key": apiKey,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ subscriber_id: seqSubscriberId }),
+                signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+              });
+              if (!seqFetch.ok) {
+                const bodyText = await seqFetch.text().catch(() => "<unreadable>");
+                console.error(`[subscribeToKit] #6508: falha ao adicionar subscriber ${seqSubscriberId} à sequence ${seqId}: ${seqFetch.status} ${bodyText.slice(0, 300)}`);
+              }
+            } catch (err) {
+              console.error(`[subscribeToKit] #6508: fetch exception ao adicionar à sequence: ${String(err)}`);
+            }
+          } else {
+            console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID inválido: "${env.KIT_WELCOME_SEQUENCE_ID}" — pulando vínculo com sequence`);
           }
-        } catch (err) {
-          console.error(`[subscribeToKit] #6508: fetch exception ao adicionar à sequence: ${String(err)}`);
+        } else {
+          // #6694 item (c): diferente do irmão `vincularKitDoiForm` (que
+          // retorna cedo em SILÊNCIO TOTAL quando `KIT_DOI_FORM_ID` está
+          // ausente — só loga o `!res.ok`/exception de uma chamada HTTP que
+          // de fato aconteceu), este ramo agora loga também o caso AUSENTE.
+          // Sem KIT_WELCOME_SEQUENCE_ID configurado isto é dormência
+          // esperada (nenhum wrangler.toml seta a var hoje), não erro, mas
+          // registrar o skip evita silêncio indistinguível de "não devia
+          // rodar".
+          console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID não configurado — pulando vínculo com sequence de boas-vindas para subscriber ${seqSubscriberId}.`);
         }
-      } else {
-        console.error(`[subscribeToKit] #6508: KIT_WELCOME_SEQUENCE_ID inválido: "${env.KIT_WELCOME_SEQUENCE_ID}" — pulando vínculo com sequence`);
       }
     }
     return { ok: true, status: res.status };
