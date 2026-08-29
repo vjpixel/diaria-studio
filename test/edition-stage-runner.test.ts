@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import {
   STAGE_PLAN,
   HEADLESS_FLAGS,
+  SESSION_SUPERVISED_FLAG,
   runEditionStages,
   collectMcpPermissionFailures,
   assertNoPublishStage,
@@ -211,6 +212,37 @@ describe("edition-stage-runner — laço", () => {
     assert.ok(!prompts.some((p) => p.includes("diaria-4-revisao")));
   });
 
+  describe("#6719: sessionSupervised — pre_gate chega ao Stage 1 spawnado", () => {
+    it("sessionSupervised default (false) NÃO anexa a flag a nenhum stage — comportamento pré-existente preservado", () => {
+      W = sentinelWorld(0);
+      const prompts: string[] = [];
+      const execFn = spawnInto(W, prompts);
+
+      runEditionStages(makeOpts({ execFn, plan: planThrough(4) }));
+
+      for (const p of prompts) assert.ok(!p.includes(SESSION_SUPERVISED_FLAG), `flag vazou sem sessionSupervised: ${p}`);
+    });
+
+    it("sessionSupervised=true anexa a flag SÓ ao prompt do Stage 1 — é o único playbook que lê pre_gate", () => {
+      W = sentinelWorld(0);
+      const prompts: string[] = [];
+      const execFn = spawnInto(W, prompts);
+
+      runEditionStages(makeOpts({ execFn, plan: planThrough(4), sessionSupervised: true }));
+
+      assert.equal(prompts.length, 4);
+      assert.ok(
+        prompts[0].startsWith(`/diaria-1-pesquisa ${AAMMDD} ${HEADLESS_FLAGS} ${SESSION_SUPERVISED_FLAG} `),
+        `Stage 1 deveria carregar ${SESSION_SUPERVISED_FLAG}: ${prompts[0]}`,
+      );
+      for (const p of prompts.slice(1)) {
+        assert.ok(!p.includes(SESSION_SUPERVISED_FLAG), `stage 2-4 não deveria carregar a flag: ${p}`);
+      }
+      // --no-gates continua presente em TODO prompt — a flag nova é aditiva,
+      // nunca substitui o guard existente do #5739.
+      for (const p of prompts) assert.ok(p.includes(HEADLESS_FLAGS));
+    });
+  });
 
   it("#6045: todo prompt carrega a diretiva anti-background (sessão single-turn)", () => {
     W = sentinelWorld(0);
@@ -515,6 +547,24 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
     const { deps } = makeDeps({ execFn: spawnInto(W, [], { stage: "diaria-2-escrita", code: 6 }) });
     assert.equal(cliMain(["--edition", "260820", "--through", "3"], deps), 6);
   });
+
+  it("#6719: --session-supervised chega até o prompt do Stage 1 quando passado; ausente por default", () => {
+    W = sentinelWorld(0);
+    const supervised = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3", "--session-supervised"], supervised.deps);
+    assert.ok(
+      supervised.prompts[0].includes(SESSION_SUPERVISED_FLAG),
+      "sem --session-supervised no argv, o Stage 1 spawnado nunca recebe pre_gate=true — §0-replies (#6719) ficaria sempre pulado mesmo com o editor presente",
+    );
+
+    W = sentinelWorld(0);
+    const unsupervised = makeDeps();
+    cliMain(["--edition", "260820", "--through", "3"], unsupervised.deps);
+    assert.ok(
+      !unsupervised.prompts.some((p) => p.includes(SESSION_SUPERVISED_FLAG)),
+      "sem a flag no argv, nenhum prompt deveria carregá-la — comportamento desassistido (runner agendado) preservado",
+    );
+  });
 });
 
 describe("wiring da skill /diaria-edicao (#5744)", () => {
@@ -537,6 +587,18 @@ describe("wiring da skill /diaria-edicao (#5744)", () => {
     assert.ok(
       !/--through\s*[456]/.test(skill),
       "a skill nunca pode mandar spawnar Stage 4+ headless — são os gates humanos",
+    );
+  });
+
+  it("#6719: SKILL.md instrui repassar --session-supervised quando o editor não passou --no-gates", () => {
+    const skill = readFileSync(
+      join(import.meta.dirname, "..", ".claude", "skills", "diaria-edicao", "SKILL.md"),
+      "utf8",
+    );
+    assert.match(
+      skill,
+      /--session-supervised/,
+      "sem esta instrução, §0-replies (#6719) fica pulado mesmo em invocação totalmente interativa",
     );
   });
 });

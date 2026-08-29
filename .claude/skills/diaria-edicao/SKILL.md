@@ -106,10 +106,12 @@ Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade 
 **Rodar em BACKGROUND** (`run_in_background: true` no tool Bash):
 
 ```bash
-npx tsx scripts/run-edition-stages.ts --edition $1 --through 3
+npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-supervised se --no-gates NÃO foi passado à invocação ORIGINAL de /diaria-edicao}
 ```
 
 Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**. Sessão nova nasce com contexto limpo, o que é o efeito de um `/clear` entre stages — algo que esta sessão não consegue fazer em si mesma (`/clear` é comando de usuário).
+
+**`--session-supervised` (#6719) — sempre que o EDITOR está presente nesta sessão.** Todo spawn deste comando passa `--no-gates` a cada stage (é o que permite o subprocesso terminar sem ninguém ali para responder ao gate INTERNO dele) — mas isso não significa que a sessão é desassistida. Quando a invocação original de `/diaria-edicao` (esta conversa) **não** trazia `--no-gates`, o editor está presente e supervisionando, mesmo que os Stages 1-3 rodem headless por isolamento de contexto (#5744). Passar `--session-supervised` é o que permite `orchestrator-stage-0-preflight.md` § 0-replies (rascunhos do concurso "ache o erro") rodar no Stage 1 spawnado — sem isso a seção fica permanentemente pulada, mesmo com o editor do lado. Omitir esta flag quando `--no-gates` FOI passado a `/diaria-edicao` — aí a sessão é de fato desassistida.
 
 **Por que background e não `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
 
