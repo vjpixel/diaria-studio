@@ -844,6 +844,85 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
         "para no rev-parse — nunca chega a fazer checkout -B/add/commit/push quando o lock esgota",
       );
     });
+
+    it("#6703 achado 1: lock falha por ERRO DE INFRA (não denied) ⇒ mensagem NÃO afirma 'outra sessão detém o lock'", () => {
+      const { git, calls: gitCalls } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const { gh } = makeGh();
+      // Simula `npx tsx` quebrado/script ausente/timeout — `ok: false` sem
+      // "denied" em stdout/stderr, diferente de contenção genuína.
+      const lock: LockRunner = () => ({ ok: false, stdout: "", stderr: "spawnSync npx ENOENT" });
+      const { sleep } = makeSleep();
+
+      assert.throws(() => commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep), (err: unknown) => {
+        const msg = (err as Error).message;
+        assert.doesNotMatch(msg, /outra sessão detém/, "não deve afirmar contenção quando a causa é infra");
+        assert.match(msg, /erro de infra/i, "deve nomear a causa real como erro de infra");
+        assert.match(msg, /ENOENT/, "preserva o detalhe original do stderr");
+        return true;
+      });
+      assert.deepEqual(
+        gitCalls.map((c) => c[0]),
+        ["rev-parse"],
+        "nunca chega a tocar checkout/commit/push quando o lock falha por infra",
+      );
+    });
+
+    it("#6703 achado 3: checkout de volta lança ⇒ releaseSitePublishLock AINDA roda (lock não vaza)", () => {
+      const { git: baseGit } = makeGit({
+        status: () => " M x\n",
+        diff: () => "workers/site/public/p/abc\n",
+      });
+      const git: GitRunner = (args, cwd) => {
+        // O checkout de VOLTA (2º argumento é o nome da branch original, não
+        // "-B") lança — simula conflito/I/O/branch removida por outra sessão.
+        if (args[0] === "checkout" && args[1] === "master") {
+          throw new Error("fatal: cannot lock ref (checkout de volta falhou)");
+        }
+        return baseGit(args, cwd);
+      };
+      const { gh } = makeGh();
+      const { lock, calls: lockCalls } = makeLock();
+      const { sleep } = makeSleep();
+
+      // A função NÃO deve lançar — o erro do checkout de volta é capturado
+      // internamente (loga um aviso), nunca mascara o resultado do
+      // commit/push que já teve sucesso.
+      const r = commitAndPushSitePage("/repo", "abc", git, undefined, gh, lock, sleep);
+      assert.equal(r.pushed, true, "commit/push já tinha sucedido antes do checkout de volta falhar");
+      assert.ok(lockCalls.some((c) => c[0] === "merge-lock-acquire"), "lock foi adquirido");
+      assert.ok(
+        lockCalls.some((c) => c[0] === "merge-lock-release"),
+        "REGRESSÃO: release roda mesmo quando o checkout de volta lança — sem isto o lock só sairia pelo TTL",
+      );
+    });
+
+    it("#6703 achado 2: renova o lock antes de cada round-trip de rede da janela longa (push, gh pr list/create)", () => {
+      const { git } = makeGit({
+        status: () => " M workers/site/public/p/abc/index.html\n",
+        diff: () => "workers/site/public/p/abc/index.html\n",
+      });
+      const { gh } = makeGh();
+      const order: string[] = [];
+      const { lock: rawLock } = makeLock();
+      const trackedLock: LockRunner = (args, cwd) => {
+        order.push(args[0]);
+        return rawLock(args, cwd);
+      };
+      const { sleep } = makeSleep();
+
+      commitAndPushSitePage("/repo", "abc", git, undefined, gh, trackedLock, sleep);
+
+      const renewCount = order.filter((a) => a === "merge-lock-renew").length;
+      assert.ok(renewCount >= 2, `esperava pelo menos 2 renovações na janela longa, teve ${renewCount}`);
+      const acquireIdx = order.indexOf("merge-lock-acquire");
+      const firstRenewIdx = order.indexOf("merge-lock-renew");
+      const releaseIdx = order.indexOf("merge-lock-release");
+      assert.ok(acquireIdx < firstRenewIdx, "1ª renovação acontece depois do acquire");
+      assert.ok(order.lastIndexOf("merge-lock-renew") < releaseIdx, "renovações acontecem antes do release final");
+    });
   });
 });
 
