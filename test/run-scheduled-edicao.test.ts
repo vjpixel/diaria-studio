@@ -337,14 +337,25 @@ describe("run-scheduled-edicao.ts — ANTHROPIC_API_KEY não vaza pro CLI (#5608
     const filtered = claudeCliEnv({
       CLAUDE_CODE_USE_BEDROCK: "1",
       CLAUDE_CODE_USE_VERTEX: "1",
-      ANTHROPIC_BASE_URL: "https://proxy.interno",
     });
 
     assert.equal(filtered.CLAUDE_CODE_USE_BEDROCK, undefined);
     assert.equal(filtered.CLAUDE_CODE_USE_VERTEX, undefined);
-    // Fora da lista de propósito: não autentica sozinha, e filtrar quebraria
-    // em silêncio um proxy legítimo configurado no futuro.
-    assert.equal(filtered.ANTHROPIC_BASE_URL, "https://proxy.interno");
+  });
+
+  it("regressão #6714: ANTHROPIC_BASE_URL de gateway de terceiro sai junto da AUTH_TOKEN", () => {
+    const filtered = claudeCliEnv({
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+      ANTHROPIC_AUTH_TOKEN: "hrms2-gateway-key",
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth",
+    });
+
+    // O par BASE_URL+AUTH_TOKEN roteia a sessão inteira pro gateway de
+    // terceiro (OpenRouter) — mesma troca proibida pela regra #5608.
+    assert.equal(filtered.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(filtered.ANTHROPIC_AUTH_TOKEN, undefined);
+    // O login claude.ai sobrevive — é o que a sessão deve usar.
+    assert.equal(filtered.CLAUDE_CODE_OAUTH_TOKEN, "oauth");
   });
 
   it("vars de identidade de sessão saem — filho não deve herdar a sessão pai (#5791)", () => {
