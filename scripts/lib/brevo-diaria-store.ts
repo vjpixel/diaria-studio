@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BrevoDiariaAction } from "./shared/brevo-diaria-score.ts";
+import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/brevo-diaria/contacts.json");
@@ -283,7 +284,10 @@ export function applySelfConfirmed(
   return {
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
-      const isKitOrigin = c.beehiiv_subscription_id.startsWith("kit:");
+      // #6699 — usa a constante canônica (`ORIGIN_PREFIX.KIT`, ver
+      // scripts/lib/shared/brevo-diaria-origin.ts) em vez do literal "kit:"
+      // hardcoded: era a 3ª definição independente do mesmo prefixo no repo.
+      const isKitOrigin = c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT);
       return {
         ...c,
         status: "promoted_beehiiv",
