@@ -20,6 +20,24 @@
  * `claude -p`, um processo completamente diferente de `npx tsx`; além disso
  * desregistrada por decisão do editor desde 260711, #3259).
  *
+ * **`Diaria-Node-Modules-Health-Check` (#6030) também fica de fora, por
+ * desenho, não por esquecimento (#6774/#6658):** o unit
+ * (`scripts/systemd/diaria-node-modules-health-check.{service,timer}`,
+ * `scripts/systemd/node-modules-health-check.sh`) é SHELL PURO de propósito
+ * — sua razão de existir é detectar quando `node_modules`/`tsx` deste
+ * checkout está quebrado, e um `ScheduledTaskStep` deste registro só sabe
+ * invocar `.ts` via `node --import tsx` (`task-runner.ts`). Colocar este
+ * script no registro faria seu próprio executor depender exatamente do
+ * componente que ele existe pra vigiar — se `node_modules` quebrar, o check
+ * quebraria junto, o modo de falha oposto ao que o #6030 corrigiu. Cadência
+ * de 15 minutos também não cabe em `ScheduledTaskSchedule.interval`, que só
+ * expressa múltiplos de HORA inteira (ver `scheduleToOnCalendar` em
+ * `systemd-units.ts`). Mesma dupla exclusão-por-schema de
+ * `Diaria-Overnight-Watchdog` acima — ambas ficam de fora do registro E na
+ * allowlist `KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES`
+ * (`scripts/lib/task-never-armed-alarm.ts`), pra `Diaria-Task-Never-Armed-Alarm`
+ * não alarmar "timer órfão" sobre uma exclusão documentada e intencional.
+ *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.
@@ -1477,6 +1495,22 @@ export function getScheduledTaskByName(name: string): ScheduledTaskDefinition | 
 /** Lista os nomes de todas as tasks do registro, na ordem declarada. */
 export function listScheduledTaskNames(): string[] {
   return SCHEDULED_TASKS.map((t) => t.name);
+}
+
+/**
+ * Nomes das tasks marcadas `enabled: false` — desarmadas de propósito por
+ * decisão do editor (ex: `Diaria-Sunset-Weekly`, #5807), não "esquecidas".
+ * `Diaria-Task-Never-Armed-Alarm` (#6773) usa isto pra excluir estas tasks
+ * da checagem "nunca armada": `setup-systemd-timers.ts` já pula de propósito
+ * a geração de `.service`/`.timer` pra elas (ver docstring de
+ * `ScheduledTaskDefinition.enabled` acima), então nenhum timer armado pra
+ * uma task aqui listada é o comportamento CORRETO, não um drift a alarmar.
+ * Reaproveita o campo `enabled` já existente (consumido pelo runner e pelo
+ * gerador de units) em vez de introduzir um 2º campo redundante só pro
+ * alarme — mesmo sinal, dois consumidores.
+ */
+export function listDisabledScheduledTaskNames(): string[] {
+  return SCHEDULED_TASKS.filter((t) => t.enabled === false).map((t) => t.name);
 }
 
 // ---------------------------------------------------------------------------

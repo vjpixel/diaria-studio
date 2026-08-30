@@ -40,13 +40,24 @@ import { unitBaseName } from "./systemd-units.ts";
  * Tasks legitimamente FORA do registro declarativo por limitação de schema
  * (documentado em `scheduled-tasks.ts`, cabeçalho — janela cruzando meia-
  * noite / entrypoint não-`npx tsx`), mas que TÊM timer systemd armado de
- * propósito. Sem esta allowlist, `orphanTimers` alarmaria pra sempre nas
- * duas — nunca vão entrar no registro por desenho, não por esquecimento.
+ * propósito. Sem esta allowlist, `orphanTimers` alarmaria pra sempre nelas —
+ * nunca vão entrar no registro por desenho, não por esquecimento.
  * Nomes já em kebab-case de unit (sem sufixo `.timer`/`.service`).
+ *
+ * `diaria-node-modules-health-check` (#6030, #6774, resolve o achado da
+ * #6658): unit SHELL PURO — não invoca `npx tsx`/`node --import tsx` de
+ * propósito, porque a razão dela existir é detectar quando `node_modules`/
+ * `tsx` deste checkout está quebrado; colocá-la no registro (executado via
+ * `task-runner.ts`, que É `node --import tsx`) faria seu próprio executor
+ * depender do componente que ela existe pra vigiar. Cadência de 15min
+ * também não cabe em `ScheduledTaskSchedule.interval` (só múltiplos de hora
+ * inteira). Mesma classe de exclusão de `diaria-overnight-watchdog` — ver
+ * cabeçalho de `scheduled-tasks.ts`.
  */
 export const KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES: readonly string[] = [
   "diaria-edicao-diaria",
   "diaria-overnight-watchdog",
+  "diaria-node-modules-health-check",
 ];
 
 /** Pure — extrai os nomes-base de unit (sem `.timer`) da saída de
@@ -93,13 +104,28 @@ function verdictFor(neverArmed: string[], orphanTimers: string[]): TaskNeverArme
  * Pure — cruza a lista de `TaskName`s do registro declarativo contra os
  * nomes-base de unit `.timer` armados no systemd. `armedUnitBaseNames` já
  * vem parseado (I/O feito pelo caller via `parseSystemctlListTimersOutput`).
+ *
+ * `disabledTaskNames` (#6773, default `[]` — aditivo, não quebra callers
+ * existentes): `TaskName`s marcadas `enabled: false` no registro
+ * (`listDisabledScheduledTaskNames()` de `scheduled-tasks.ts`) — excluídas
+ * da checagem `neverArmed` porque `setup-systemd-timers.ts` já pula de
+ * propósito a geração de unit pra elas (ex: `Diaria-Sunset-Weekly`, #5807).
+ * Nenhum timer armado pra uma task desarmada por decisão do editor é o
+ * comportamento CORRETO — sem esta exclusão, `Diaria-Task-Never-Armed-Alarm`
+ * reabre o mesmo falso-positivo pra sempre (achado #6657/#6773). Ainda
+ * entram no cálculo de `orphanTimers` (via `registryUnitSet`, abaixo) — se
+ * alguém armar manualmente um timer pra uma task desabilitada, isso segue
+ * sendo reconhecido como "tem task correspondente", não como órfão.
  */
 export function evaluateTaskNeverArmed(
   registryTaskNames: string[],
   armedUnitBaseNames: string[],
+  disabledTaskNames: string[] = [],
 ): TaskNeverArmedEvaluation {
   const armedSet = new Set(armedUnitBaseNames);
+  const disabledSet = new Set(disabledTaskNames);
   const neverArmed = registryTaskNames
+    .filter((name) => !disabledSet.has(name))
     .filter((name) => !armedSet.has(unitBaseName(name)))
     .sort();
 

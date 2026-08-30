@@ -23,6 +23,7 @@ import {
   formatScheduleHuman,
   getScheduledTaskByName,
   GSC_URL_INSPECTION_DAILY_QUOTA,
+  listDisabledScheduledTaskNames,
   listScheduledTaskNames,
   listScheduledTaskRows,
   renderScheduledTasksTable,
@@ -234,6 +235,22 @@ describe("getScheduledTaskByName / listScheduledTaskNames", () => {
       listScheduledTaskNames(),
       SCHEDULED_TASKS.map((t) => t.name),
     );
+  });
+
+  it("listDisabledScheduledTaskNames (#6773) retorna exatamente as tasks com enabled:false", () => {
+    assert.deepEqual(
+      listDisabledScheduledTaskNames(),
+      SCHEDULED_TASKS.filter((t) => t.enabled === false).map((t) => t.name),
+    );
+    // Diaria-Sunset-Weekly é o caso real que motivou a issue (#5807/#6773) —
+    // interruptor desligado por decisão do editor, não esquecimento.
+    assert.ok(listDisabledScheduledTaskNames().includes("Diaria-Sunset-Weekly"));
+  });
+
+  it("listDisabledScheduledTaskNames nunca inclui task sem `enabled` (default true implícito)", () => {
+    const enabledTask = SCHEDULED_TASKS.find((t) => t.enabled === undefined);
+    assert.ok(enabledTask, "esperava pelo menos 1 task sem campo `enabled` no registro");
+    assert.ok(!listDisabledScheduledTaskNames().includes(enabledTask!.name));
   });
 });
 
