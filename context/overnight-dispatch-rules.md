@@ -69,9 +69,28 @@ harness (subagente entra em Monitor-loop e não retorna → stall).
 `npx tsc --noEmit` e os testes afetados rodam **SEMPRE em FOREGROUND**,
 aguardando o resultado antes de retornar — nunca em background. Se um full-run
 local for genuinamente necessário (raro), pipe por `| tail -40` pra forçar o
-resultado a voltar na própria chamada. Subagente que tocar
-`.claude/agents/orchestrator-*.md` roda `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts`
-antes do push (#634).
+resultado a voltar na própria chamada.
+
+**Subagente que tocar QUALQUER arquivo listado em `ORCHESTRATOR_FILES` no topo
+de `test/orchestrator-prompt.test.ts` roda `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts`
+antes do push (#634).** Não confiar em enumerar os caminhos à mão aqui — foi
+exatamente essa enumeração manual (só `.claude/agents/orchestrator-*.md`,
+citando o glob e esquecendo que ele nem cobre `orchestrator.md` na raiz, sem
+hífen) que causou o gap do #6767 (2 ocorrências na mesma rodada overnight
+260829b: editar `.claude/skills/diaria-3-imagens/SKILL.md` e
+`.claude/skills/diaria-artigo-especial/SKILL.md` exigiu sincronizar as
+menções correspondentes em `.claude/agents/orchestrator-stage-3.md`/
+`orchestrator-stage-4.md`/`orchestrator-stage-2.md` — é essa 2ª edição, no
+arquivo do orchestrator, que quebra o snapshot; nenhum subagente rodou o
+comando de fix porque a regra citava só o padrão de nome, não a lista real
+do teste). Ler o array `ORCHESTRATOR_FILES` do teste é sempre a fonte
+correta — hoje ele inclui `orchestrator.md` e `orchestrator-stage-{0-preflight,
+1-research,2,3,4,5,6}.md`, mas o array pode crescer sem que esta prosa
+acompanhe. Regra prática: se o diff toca **qualquer** arquivo dentro de
+`.claude/agents/` cujo nome comece com `orchestrator`, rodar o comando acima
+antes do push — inclusive quando a mudança nasceu de sincronizar um
+`.claude/skills/*/SKILL.md` com o playbook (não é preciso ter editado o
+arquivo do orchestrator "de propósito" para o guard se aplicar).
 
 ## 5. Teste de regressão em bugfix (#633)
 
@@ -146,6 +165,16 @@ checkout -- <arquivo>` (reverter arquivo específico), ou um commit temporário
 quiser desfazer) — nenhum desses toca a lista de stash compartilhada.
 
 ## 11. Parar no self-review — nunca mergear sozinho (#4740, incidente 260806b)
+
+**PROIBIÇÃO EXPLÍCITA (#6762): NUNCA rode `gh pr merge`, `gh pr merge --auto`,
+nem qualquer variante — merge é ação EXCLUSIVA do coordenador, mesmo com CI
+já verde.** Após o `gh pr create` + self-review (regra 7), o passo seguinte é
+**retornar ao coordenador** — não esperar CI, não checar `gh pr checks`, não
+mergear. Registrado aqui de forma explícita porque uma 3ª ocorrência do
+mesmo incidente (PR #6759, rodada `/diaria-overnight` 260829b) aconteceu com
+CI verde e diff correto — o mecanismo de segurança foi contornado por sorte,
+não por design; a proibição precisa ser lida sem exigir inferência a partir
+do texto abaixo.
 
 O passo final do subagente implementador é `gh pr create` + self-review
 (#2038, regra 7) + retorno ao coordenador. **"Retornar" é literal: nenhum
