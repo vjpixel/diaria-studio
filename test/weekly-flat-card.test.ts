@@ -236,7 +236,7 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
     assert.doesNotMatch(svg, /\*\*/);
   });
 
-  it("#6740-render-fix: **bold** colado direto em pontuação (sem espaço) não ganha espaço fantasma nem órfã em linha própria", () => {
+  it("#6751-render-fix: **bold** colado direto em pontuação (sem espaço) não ganha espaço fantasma nem órfã em linha própria", () => {
     // Achado ao vivo (carrossel diário 260830): "**trecho**:"/"**trecho**." —
     // bold fechando direto sobre pontuação, sem espaço no texto original.
     // Antes do fix, o `:`/`.` virava uma "palavra" própria que o wrap juntava
@@ -256,7 +256,7 @@ describe("#6086 item c: negrito seletivo (`**...**` no title)", () => {
     assert.ok(lines[lines.length - 1].endsWith("fim."), `última linha deveria terminar em "fim.", veio: ${JSON.stringify(lines)}`);
   });
 
-  it("#6740-render-fix: **bold** com espaço normal ao redor continua funcionando (não regride o caso comum)", () => {
+  it("#6751-render-fix: **bold** com espaço normal ao redor continua funcionando (não regride o caso comum)", () => {
     const FIXED = { mode: "fixed" as const, size: 62 };
     const svg = buildFlatCardSvg({ kicker: "x", title: "A **frase em destaque** B", footer: "y" }, FIXED);
     assert.match(svg, />A <tspan font-weight="700">frase em destaque<\/tspan> B</);

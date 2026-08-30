@@ -109,7 +109,7 @@ interface WeightedWord {
   text: string;
   bold: boolean;
   /**
-   * (#6740-render-fix) `true` quando NÃO havia espaço entre esta palavra e a
+   * (#6751-render-fix) `true` quando NÃO havia espaço entre esta palavra e a
    * anterior no texto original — caso típico: `**trecho**,`/`**trecho**.`
    * (bold fechando direto em cima de pontuação, sem espaço). `parseInlineBold`
    * corta em segmentos plain/bold e, sem este flag, `": abre"`/`"."` viravam
@@ -417,7 +417,7 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
     // DIFERENTE fica SEMPRE fora do `<tspan>` (espaço na borda de um tspan é
     // suscetível ao colapso de whitespace do XML) — exceto quando a palavra
     // que abre o novo segmento é `attached` (colada, sem espaço no original,
-    // #6740-render-fix): aí nem o `sep` entre segmentos nem o espaço interno
+    // #6751-render-fix): aí nem o `sep` entre segmentos nem o espaço interno
     // do `+=` abaixo entram.
     const segs: { text: string; bold: boolean; leadAttached: boolean }[] = [];
     for (const w of line.words) {
