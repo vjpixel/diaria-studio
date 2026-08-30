@@ -7,6 +7,7 @@ import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCal
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
+import { saveCachedBody } from "../scripts/lib/url-body-cache.ts"; // #6739
 
 // ─── #4083 — fixtures ESTÁVEIS de boxes_divulgacao ─────────────────────────
 // Testes de MECANISMO de injeção não devem depender do que platform.config.json
@@ -2150,6 +2151,73 @@ describe("renderUseMelhorSection (#2447/#2450)", () => {
   });
 });
 
+// #6739: renderUseMelhorSection prefere tempo real (body cacheado) sobre a
+// heurística de título quando `opts.bodiesDir` está disponível.
+describe("renderUseMelhorSection — #6739 body cacheado sobre heurística de título", () => {
+  it("usa word count do body cacheado (não a heurística de título) quando o body está disponível e é substancial", () => {
+    const bodiesDir = mkdtempSync(join(tmpdir(), "stitch-use-melhor-bodies-"));
+    try {
+      const url = "https://example.com/threat-model";
+      // 3000 palavras / 200 ppm = 15 min — heurística de título (sem sinal de
+      // tutorial) daria "(5 min)" por default; o body real corrige pra "(15 min)".
+      const words = new Array(3000).fill("palavra").join(" ");
+      saveCachedBody(bodiesDir, url, `<html><body><p>${words}</p></body></html>`);
+      const instrumentation: Array<{ url: string; source: string; estimate: string }> = [];
+      const out = renderUseMelhorSection(
+        [
+          {
+            url,
+            title: "Using LLMs to Secure Source Code",
+            summary: "Um roteiro de threat model, varredura e correção.",
+          },
+        ],
+        { bodiesDir, instrumentation },
+      );
+      assert.match(out, /\(15 min\)/, `deve usar o tempo do word count, não o default de título; got: ${out}`);
+      assert.ok(!out.includes("(5 min)"), "não deve conter o placeholder de título quando body substancial está disponível");
+      assert.equal(instrumentation.length, 1);
+      assert.equal(instrumentation[0].source, "wordcount");
+    } finally {
+      rmSync(bodiesDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem bodiesDir (comportamento pré-#6739): usa a heurística de título e não instrumenta", () => {
+    const instrumentation: Array<{ url: string; source: string }> = [];
+    const out = renderUseMelhorSection(
+      [
+        {
+          url: "https://example.com/threat-model",
+          title: "Using LLMs to Secure Source Code",
+          summary: "Um roteiro de threat model, varredura e correção.",
+        },
+      ],
+      { instrumentation },
+    );
+    assert.match(out, /\(5 min\)/, "sem bodiesDir, cai na heurística de título (default)");
+    assert.equal(instrumentation[0]?.source, "title-heuristic");
+  });
+
+  it("cache miss (URL sem body salvo) cai pra heurística de título — fail-soft, nunca lança", () => {
+    const bodiesDir = mkdtempSync(join(tmpdir(), "stitch-use-melhor-bodies-miss-"));
+    try {
+      const out = renderUseMelhorSection(
+        [
+          {
+            url: "https://example.com/url-sem-cache",
+            title: "Tutorial de RAG",
+            summary: "Guia rápido.",
+          },
+        ],
+        { bodiesDir },
+      );
+      assert.match(out, /\(15 min\)/, "MEDIUM_TUTORIAL_RE ainda deve casar (título tem 'Tutorial')");
+    } finally {
+      rmSync(bodiesDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── #4274/#4413 — PARA ENCERRAR: slot A editável, convite social fixo ─────
 
 describe("#4274/#4413 — buildParaEncerrar: slot A editável via platform.config.json, convite social é bloco fixo", () => {
@@ -2262,6 +2330,52 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
       assert.ok(socialPos > slotAPos, "convite social fixo continua por último, mesmo com slotA customizado");
     } finally {
       cleanup();
+    }
+  });
+});
+
+describe("stitchNewsletter — #6739 instrumentação da fonte da estimativa de tempo do USE MELHOR", () => {
+  it("escreve _internal/use-melhor-tempo-source.json com 1 entry por item de use_melhor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-use-melhor-instrumentation-"));
+    const internalDir = join(dir, "_internal");
+    try {
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "c" },
+          lancamento: [],
+          radar: [],
+          use_melhor: [
+            {
+              url: "https://example.com/tutorial",
+              title: "Como usar ChatGPT no trabalho",
+              summary: "Guia prático para usar ChatGPT no dia a dia",
+            },
+          ],
+        }),
+      );
+      stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        sponsor: false,
+      });
+      const instrumentationPath = join(internalDir, "use-melhor-tempo-source.json");
+      const entries = JSON.parse(readFileSync(instrumentationPath, "utf8"));
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].url, "https://example.com/tutorial");
+      // Sem body cacheado nesta edição (fixture não popula link-verify-bodies)
+      // → cai pra heurística de título, fonte instrumentada corretamente.
+      assert.equal(entries[0].source, "title-heuristic");
+      assert.equal(entries[0].estimate, "(5 min)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

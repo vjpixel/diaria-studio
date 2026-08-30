@@ -384,6 +384,55 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2411 (guard Stage 4, migr
   });
 });
 
+describe("checkNarrativeNotGenericPlaceholder — #6734 backstop: reveal sem prefixo temporal correto", () => {
+  it("sinaliza record.reveal que começa com \"Nessa edição\" (caso real 260828: ChatGTP/ChatGPT)", () => {
+    // Caso real da issue #6734: reveal escrito pensando na edição ATUAL
+    // ("Nessa edição, ...") em vez de fraseado pra edição SEGUINTE revelar
+    // ("Na última edição, ..."). Não é catálogo, não é o placeholder genérico
+    // do convite ao sorteio — passava incólume pelas 2 checagens anteriores.
+    const dir = mkdtempSync(join(tmpdir(), "stage4-6734-reveal-no-temporal-prefix-"));
+    try {
+      // Sem bloco ERRO INTENCIONAL no corpo — só o record importa aqui.
+      writeFileSync(join(dir, "02-reviewed.md"), "conteúdo qualquer sem o bloco.", "utf8");
+      writeIntentionalErrorJsonFixture(dir, {
+        description: "DESTAQUE 1 menciona a expansão da OpenAI no Brasil",
+        reveal: "Nessa edição, escrevi ChatGTP onde o correto é ChatGPT, no destaque sobre a expansão da OpenAI no Brasil.",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "ChatGPT",
+      });
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 1,
+        `reveal sem prefixo temporal deve gerar 1 violation. Got: ${JSON.stringify(violations)}`);
+      assert.equal(violations[0].rule, "reveal-temporal-prefix");
+      assert.equal(violations[0].severity, "warning");
+      assert.equal(violations[0].source_issue, "#6734");
+      assert.match(violations[0].message, /prefixo temporal|Na última edição/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO sinaliza record.reveal que já começa com \"Na última edição\"", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-6734-reveal-correct-prefix-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "conteúdo qualquer sem o bloco.", "utf8");
+      writeIntentionalErrorJsonFixture(dir, {
+        description: "DESTAQUE 1 menciona a expansão da OpenAI no Brasil",
+        reveal: "Na última edição, escrevi ChatGTP onde o correto é ChatGPT.",
+        location: "DESTAQUE 1",
+        category: "factual",
+        correct_value: "ChatGPT",
+      });
+      const violations = checkNarrativeNotGenericPlaceholder(dir);
+      assert.equal(violations.length, 0,
+        `reveal com prefixo correto não deve gerar violation. Got: ${JSON.stringify(violations)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── #2410/#2411 discriminants — migrado pra JSON #3222 ──────────────────────────────
 //
 // Os testes originais cobriam bugs de parsing de aspas simples/duplas dentro do

@@ -31,6 +31,11 @@ import {
   checkAndNormalizeUrl,
   isOpinionOrStudy,
   estimateUseMelhorTempo,
+  estimateUseMelhorTempoDetailed, // #6739
+  roundToReadingMinutesBucket, // #6739
+  extractPlainTextFromHtml, // #6739
+  countWords, // #6739
+  extractYoutubeLengthSeconds, // #6739
   normalizeDashToParens,
   isRadarHowToEligible,
   promoteHowTosFromRadar,
@@ -2243,6 +2248,117 @@ describe("estimateUseMelhorTempo (#2447)", () => {
       estimateUseMelhorTempo("Inteligência artificial nos pequenos negócios", "https://www.seudinheiro.com/2026/seu-negocio/ia-pequenos-negocios/"),
       "(5 min)",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// estimateUseMelhorTempoDetailed / roundToReadingMinutesBucket / countWords /
+// extractYoutubeLengthSeconds (#6739)
+// ---------------------------------------------------------------------------
+
+describe("roundToReadingMinutesBucket (#6739)", () => {
+  it("arredonda pro bucket discreto mais próximo (5/10/15/20/30)", () => {
+    assert.equal(roundToReadingMinutesBucket(1), 5);
+    assert.equal(roundToReadingMinutesBucket(6), 5);
+    assert.equal(roundToReadingMinutesBucket(8), 10);
+    assert.equal(roundToReadingMinutesBucket(12), 10);
+    assert.equal(roundToReadingMinutesBucket(13), 15);
+    assert.equal(roundToReadingMinutesBucket(18), 20);
+    assert.equal(roundToReadingMinutesBucket(25), 20);
+    assert.equal(roundToReadingMinutesBucket(26), 30);
+    assert.equal(roundToReadingMinutesBucket(100), 30);
+  });
+});
+
+describe("countWords / extractPlainTextFromHtml (#6739)", () => {
+  it("extrai texto de HTML removendo script/style/tags e conta palavras", () => {
+    const html = "<html><head><style>.x{color:red}</style></head><body><script>var x=1;</script><p>Uma frase de teste com seis palavras.</p></body></html>";
+    const text = extractPlainTextFromHtml(html);
+    assert.doesNotMatch(text, /color:red|var x=1/);
+    assert.equal(countWords(text), 7); // "Uma frase de teste com seis palavras." = 7 tokens
+  });
+
+  it("countWords de string vazia/whitespace retorna 0", () => {
+    assert.equal(countWords(""), 0);
+    assert.equal(countWords("   "), 0);
+  });
+});
+
+describe("extractYoutubeLengthSeconds (#6739)", () => {
+  it("extrai lengthSeconds do player response inline", () => {
+    const html = 'algum HTML ... "lengthSeconds":"754" ... resto do player response';
+    assert.equal(extractYoutubeLengthSeconds(html), 754);
+  });
+
+  it("retorna null quando não encontra o campo", () => {
+    assert.equal(extractYoutubeLengthSeconds("<html>sem player response</html>"), null);
+  });
+});
+
+describe("estimateUseMelhorTempoDetailed (#6739) — causa raiz: 60% saía em (5 min) sem medir conteúdo", () => {
+  it("sem bodyHtml → comportamento idêntico à heurística de título pré-#6739 (source: title-heuristic)", () => {
+    const r = estimateUseMelhorTempoDetailed("Como usar o ChatGPT no trabalho", "https://example.com/post");
+    assert.equal(r.estimate, "(5 min)");
+    assert.equal(r.source, "title-heuristic");
+  });
+
+  it("bodyHtml com poucas palavras (abaixo do limiar de 300) → cai pra heurística de título", () => {
+    // Caso real medido no #6739: mediana de ~8 palavras extraíveis (shell de SPA).
+    const html = "<html><body><p>Carregando…</p></body></html>";
+    const r = estimateUseMelhorTempoDetailed("Como usar o ChatGPT no trabalho", "https://example.com/post", html);
+    assert.equal(r.source, "title-heuristic");
+    assert.equal(r.estimate, "(5 min)");
+  });
+
+  it("bodyHtml com conteúdo substancial (≥300 palavras) → estimativa por word count, não título", () => {
+    // 600 palavras ≈ 3 min de leitura a 200ppm → arredonda pro bucket 5 (não é o "5 min" da
+    // heurística de título — é medido, mas coincide no bucket mínimo).
+    const words = new Array(600).fill("palavra").join(" ");
+    const html = `<html><body><p>${words}</p></body></html>`;
+    // Título SEM nenhum sinal de tutorial (heurística de título daria "(5 min)" também,
+    // mas por um motivo diferente — aqui confirmamos que veio de wordcount).
+    const r = estimateUseMelhorTempoDetailed("Inteligência artificial nos pequenos negócios", "https://example.com/post", html);
+    assert.equal(r.source, "wordcount");
+  });
+
+  it("bodyHtml longo (≈3000 palavras) produz estimativa MAIOR que o default de título — o bug real do #6739", () => {
+    // Este é o caso que a issue documenta: título sem sinal de tutorial (cairia em
+    // "(5 min)" na heurística antiga) mas o CONTEÚDO real é longo — a estimativa
+    // correta é maior. 3000 palavras / 200 ppm = 15 min.
+    const words = new Array(3000).fill("palavra").join(" ");
+    const html = `<html><body><p>${words}</p></body></html>`;
+    const r = estimateUseMelhorTempoDetailed("Using LLMs to Secure Source Code", "https://example.com/threat-model", html);
+    assert.equal(r.source, "wordcount");
+    assert.equal(r.estimate, "(15 min)");
+    // Confirma que a heurística de título SOZINHA teria dado o placeholder (5 min) —
+    // é exatamente a discrepância que motivou a issue.
+    assert.equal(estimateUseMelhorTempo("Using LLMs to Secure Source Code", "https://example.com/threat-model"), "(5 min)");
+  });
+
+  it("bodyHtml de página YouTube com lengthSeconds → usa duração real do vídeo (source: youtube)", () => {
+    const html = 'player response ... "lengthSeconds":"900" ... resto do HTML';
+    const r = estimateUseMelhorTempoDetailed(
+      "Como treinar oratória com ChatGPT",
+      "https://www.youtube.com/watch?v=abc123",
+      html,
+    );
+    assert.equal(r.source, "youtube");
+    assert.equal(r.estimate, "(15 min)"); // 900s = 15min exato
+  });
+
+  it("URL de YouTube sem lengthSeconds extraível cai pro fallback de word count/título", () => {
+    const html = "<html><body>sem player response embutido</body></html>";
+    const r = estimateUseMelhorTempoDetailed(
+      "Como treinar oratória com ChatGPT",
+      "https://www.youtube.com/watch?v=abc123",
+      html,
+    );
+    assert.equal(r.source, "title-heuristic");
+  });
+
+  it("bodyHtml null/undefined não crasha — mesmo comportamento de estimateUseMelhorTempo", () => {
+    assert.equal(estimateUseMelhorTempoDetailed("Tutorial básico de Python", "not-a-url", null).source, "title-heuristic");
+    assert.equal(estimateUseMelhorTempoDetailed("Tutorial básico de Python", "not-a-url", undefined).estimate, "(15 min)");
   });
 });
 
