@@ -35,8 +35,20 @@
 #     do MODELS_DEFAULT/--model. Motivado por incidente real: o watchdog de
 #     rate-limit do Hermes lia rc≠0 como sinônimo de quota-exhaustion e
 #     pausava o job dizendo "reset natural resolve", mas `z-ai/glm-5.2:free`
-#     tinha saído do catálogo do OpenRouter (confirmado via
-#     /api/v1/models, 28/08) — a cadeia nunca ia se recuperar sozinha.
+#     ESTAVA AUSENTE do catálogo do OpenRouter na medição de 28/08
+#     (/api/v1/models) — naquele momento a cadeia não ia se recuperar sozinha.
+#
+#     ATENÇÃO (medido 30/08/2026, mesmo endpoint): `z-ai/glm-5.2:free` ESTÁ
+#     no catálogo hoje. A ausência de 28/08 foi uma janela, não uma remoção
+#     permanente — o texto anterior aqui dizia "tinha saído do catálogo" e
+#     isso virou mentira em 2 dias. Consequência prática pro exit 4: os sinais
+#     que o disparam (`no endpoints found` e vizinhos, regex do SAW_CONFIG_
+#     ERROR_SIGNAL abaixo — NÃO `unrecognized_model`, que é ruído filtrado)
+#     não distinguem id INVÁLIDO de id válido temporariamente sem endpoint.
+#     Nesse 2º caso o exit 4 pede correção manual de uma config que está
+#     certa. Antes de editar MODELS_DEFAULT por causa de um exit 4, conferir
+#     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
+#     procurar o id. Tratamento dos 3 casos: issue #6803.
 #
 # Uso:
 #   echo "<tarefa>" | claude-openrouter.sh [--tools "Read,Bash(npx tsx:*)"] \
