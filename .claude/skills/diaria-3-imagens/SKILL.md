@@ -129,7 +129,7 @@ Antes do gate, rodar o invariant check (defesa em profundidade — mesmo comando
 npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDIR}/
 ```
 
-Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo correspondente (2b ou 2c) antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
+Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo 2b antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
 
 **Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada`, escrever o sentinel (#5793) e finalizar:
 
@@ -158,7 +158,7 @@ Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 
 **Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto (escrever o sentinel abaixo antes de retornar). É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
 
-Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar Parte 2 (2b + 2c) para aquela imagem. "retry" → re-rodar Parte 2 completa.
+Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar o passo 2b (`--only d{N}`) para aquela imagem. "retry" → re-rodar Parte 2 completa.
 
 **Escrever sentinel de conclusão (#5793)** — cobre tanto `--no-gates` quanto o "sim" respondido organicamente pelo editor:
 
