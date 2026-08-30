@@ -41,7 +41,7 @@ import {
   CURADORIA_PILLS,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (apoio Apoia.se + ferramentas), compartilhada com o mensal; renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o slot A não tem override); SOCIAL_INVITE/CURADORIA_PILLS #4413/#4411 (blocos fixos, não mais lidos de config/snippet por edição)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
-import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao3, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476; extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338
+import { extractBoxDivulgacao0, extractBoxDivulgacao1, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338; extractBoxDivulgacao3 removido do stitch pelo #6748 (slot 3 eliminado) — a função continua existindo em newsletter-parse.ts pros lints que ainda leem edições antigas
 import {
   resolveUsedSnippets,
   isAgradecimentoSnippetUsed,
@@ -650,23 +650,15 @@ export function stitchNewsletter(input: StitchInput): string {
   const slot2Box = wantSponsor && d3 !== null && !slot2AlreadyPresent
     ? loadDivulgacaoSnippet(boxesCfg.slot2, input.snippetsRootDir)
     : null;
-  // #3476: slot 3 — SEMPRE após o ÚLTIMO destaque (D3 se existir, senão D2),
-  // antes de USE MELHOR/É IA?. Existe em QUALQUER contagem de destaques
-  // (diferente do slot2, que exige D3) — não é uma lacuna ENTRE destaques, é
-  // a região pós-destaques (`extractBoxDivulgacao3`/`locateBoxAfterLastDestaque`).
-  // Idempotência: sonda a mesma forma "glued ao destaque OU isolado" via
-  // `extractBoxDivulgacao3`, unindo o texto do último destaque com o próximo
-  // conteúdo conhecido (USE MELHOR se presente, senão o próprio bloco É IA?).
-  const lastDestaque = d3 ?? d2;
-  const nextAfterLastDestaque = useMelhor || eiaBlock;
-  function boxAlreadyPresentAfterLastDestaque(destaqueText: string, nextText: string): boolean {
-    if (CART_MARKER_RE.test(destaqueText) || CART_MARKER_RE.test(nextText)) return true;
-    return extractBoxDivulgacao3(`${destaqueText}\n\n---\n\n${nextText}`) !== null;
-  }
-  const slot3AlreadyPresent = boxAlreadyPresentAfterLastDestaque(lastDestaque, nextAfterLastDestaque);
-  const slot3Box = wantSponsor && !slot3AlreadyPresent
-    ? loadDivulgacaoSnippet(boxesCfg.slot3, input.snippetsRootDir)
-    : null;
+  // #6748: slot 3 ELIMINADO — a edição sai com no máximo 2 caixas de
+  // divulgação (slot1 + slot2), revertendo a decisão do #3476 que tornou
+  // permanente um 3º slot sempre após o último destaque. `boxesCfg.slot3`
+  // continua existindo no SCHEMA (`BoxesDivulgacaoConfig`/`platform.config.json`)
+  // por back-compat/reversibilidade — decisão documentada no PR #6748 (opção
+  // "deixar presente mas nunca selecionado", em vez de remover o campo) — mas
+  // deliberadamente NUNCA é lido aqui: `slot3Box` é sempre `null`,
+  // independente do que estiver configurado.
+  const slot3Box: string | null = null;
 
   // Caixa de agradecimento a novos apoiadores: entra logo após a coverage line
   // (que termina na frase-CTA de apoio), ainda dentro da região de intro.

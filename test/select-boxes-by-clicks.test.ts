@@ -20,11 +20,21 @@ import {
   selectBoxesForSlots,
   loadBoxesDivulgacaoAutoConfig,
   resolveBoxesForEdition,
+  ROTATION_SLOTS,
   type SnippetEditionClicks,
   type SnippetHistory,
   type RankedBox,
 } from "../scripts/select-boxes-by-clicks.ts";
 import type { SnippetInfo, PostCacheLike } from "../scripts/box-click-report.ts";
+
+// ── #6748: ROTATION_SLOTS ────────────────────────────────────────────────
+
+describe("ROTATION_SLOTS (#6748 — slot 3 eliminado da rotação)", () => {
+  it("contém só 1 e 2 — slot 3 nunca mais participa de ranking/histórico/anti-repetição", () => {
+    assert.deepEqual([...ROTATION_SLOTS].sort(), [1, 2]);
+    assert.equal(ROTATION_SLOTS.has(3), false);
+  });
+});
 
 // ── computeTrend ─────────────────────────────────────────────────────────
 
@@ -254,7 +264,9 @@ describe("findPreviousEditionSnippets (#4626 critério 3)", () => {
 
   it("pula edições ilegíveis até achar a 1ª com 02-reviewed.md", () => {
     const reviewed: Record<string, string> = {
-      "260801": mdWithBox(3, "https://x.com/a"),
+      // #6748: slot 3 saiu de ROTATION_SLOTS (default) — usa slot 1 aqui, já
+      // que o ponto do teste é "pular edições ilegíveis", não qual slot.
+      "260801": mdWithBox(1, "https://x.com/a"),
     };
     const excluded = findPreviousEditionSnippets(
       "260803",
@@ -426,7 +438,7 @@ function writePost(postsDir: string, id: string, aammddIso: string, url: string,
 }
 
 describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
-  it("auto DESLIGADO (autoCfg.enabled=false) -> passthrough total, boxes_divulgacao usado tal como está", () => {
+  it("auto DESLIGADO (autoCfg.enabled=false) -> passthrough total, boxes_divulgacao usado tal como está — #6748: slot3 sempre null/disabled, mesmo configurado", () => {
     const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
     try {
       const { effective, selection } = resolveBoxesForEdition({
@@ -437,14 +449,17 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
         postsDir,
         snippetsDir,
       });
-      assert.deepEqual(effective, { slot0: "", slot1: "a.md", slot2: "b.md", slot3: "c.md" });
+      // #6748: slot3 sai como `null` no efetivo, independente do "c.md"
+      // configurado — slot 3 eliminado da rotação, revoga #3476.
+      assert.deepEqual(effective, { slot0: "", slot1: "a.md", slot2: "b.md", slot3: null });
       assert.ok(selection.every((s) => s.mode === "disabled"));
+      assert.equal(selection.find((s) => s.slot === 3)!.file, null, "slot3 nunca reporta arquivo, mesmo configurado");
     } finally {
       cleanup();
     }
   });
 
-  it("cold start (0 edições no histórico) -> cede pro valor já configurado em TODOS os slots auto, sem quebrar (#4626 self-review)", () => {
+  it("cold start (0 edições no histórico) -> cede pro valor já configurado nos slots 1/2 auto, sem quebrar (#4626 self-review); slot3 continua sempre disabled/null (#6748)", () => {
     const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
     try {
       const { effective, selection } = resolveBoxesForEdition({
@@ -459,9 +474,13 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
         slot0: null,
         slot1: "existing1.md",
         slot2: "existing2.md",
-        slot3: "existing3.md",
+        // #6748: nunca "existing3.md", mesmo configurado.
+        slot3: null,
       });
-      assert.ok(selection.every((s) => s.mode === "fallback-no-candidates"));
+      assert.ok(
+        selection.filter((s) => s.slot === 1 || s.slot === 2).every((s) => s.mode === "fallback-no-candidates"),
+      );
+      assert.equal(selection.find((s) => s.slot === 3)!.mode, "disabled");
     } finally {
       cleanup();
     }
@@ -502,6 +521,8 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
 
       const { effective, selection } = resolveBoxesForEdition({
         aammdd: "260806",
+        // #6748: pinnedSlots inclui 3 de propósito — pin de slot 3 é ignorado
+        // (slot 3 nunca mais participa, nem pinado).
         boxesCfg: { slot0: null, slot1: "current1.md", slot2: "current2.md", slot3: "pinned.md" },
         autoCfg: { enabled: true, pinnedSlots: new Set([3]), recentWindow: 3, priorWindow: 3, lastN: 20 },
         editionsDir,
@@ -509,9 +530,10 @@ describe("resolveBoxesForEdition (#4626, integração com fixtures)", () => {
         snippetsDir,
       });
 
-      // slot3 pinado -> permanece pinned.md, nunca entra no ranking.
-      assert.equal(effective.slot3, "pinned.md");
-      assert.equal(selection.find((s) => s.slot === 3)!.mode, "pinned");
+      // #6748: slot3 nunca participa — nem ranking, nem pin, mesmo com 3
+      // presente em `pinned_slots`. Sempre "disabled" e `null`.
+      assert.equal(effective.slot3, null);
+      assert.equal(selection.find((s) => s.slot === 3)!.mode, "disabled");
 
       // slot1 auto: winner.md tem o score mais alto, mas foi usado na edição
       // IMEDIATAMENTE anterior (260805) -> banido. loser.md (única alternativa
