@@ -218,7 +218,9 @@ describe("listEditionSummaries (#3555)", () => {
   it("marca gatesPending [4] quando stage 4 tem prereqs prontos e output ausente", () => {
     const { root, cleanup } = setupRoot();
     try {
-      makeEditionFiles(root, "260716", ["02-reviewed.md", "03-social.md"]);
+      // #6731: Stage 4 também exige o output do Stage 3 (04-d1-1x1.jpg) no prereq —
+      // sem ele, gate 4 não deve ser marcado ainda (Stage 3 pendente).
+      makeEditionFiles(root, "260716", ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"]);
       const summaries = listEditionSummaries(root);
       assert.deepEqual(summaries[0].gatesPending, [4]);
     } finally {
@@ -625,7 +627,7 @@ describe("buildStudioState (#3555)", () => {
   it("agrega gatesPending de múltiplas edições", () => {
     const { root, cleanup } = setupRoot();
     try {
-      makeEditionFiles(root, "260710", ["02-reviewed.md", "03-social.md"]); // gate 4
+      makeEditionFiles(root, "260710", ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"]); // gate 4 (#6731: exige tb output do Stage 3)
       makeEditionFiles(root, "260711", [
         "_internal/.step-5-done.json", // gate 6 prereq
       ]);
