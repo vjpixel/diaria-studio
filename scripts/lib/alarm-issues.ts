@@ -139,6 +139,25 @@ const ALARM_EVENT_LABEL_DESCRIPTION =
   // long" tanto no self-heal quanto na criação manual do label real.
   "Alarme de EVENTO PASSADO (#5553) — não se auto-resolve, precisa de revisão humana";
 
+/**
+ * #6772 — label aplicada a achados de família `"estado"` cuja condição só
+ * normaliza por AÇÃO (armar/desarmar um timer), nunca sozinha — 3ª família,
+ * ao lado de `ALARM_LABEL` sozinho (auto-resolve) e `ALARM_EVENT_LABEL`
+ * (evento passado). `classifyExecTrack` roteia `alarm` + `alarm-acao` pra
+ * `overnight` em vez de `fora-de-rodada`. Emitida hoje só por
+ * `toNeverArmedFinding`/`toOrphanTimerFinding`
+ * (`scripts/task-never-armed-alarm.ts`). Precisava entrar em
+ * `SELF_HEALABLE_LABELS` — sem isso, `gh issue create --label alarm-acao`
+ * falha com "not found" na 1ª execução (mesmo modo de falha do #5338 que
+ * motivou `ALARM_LABEL` existir aqui) e a label nunca chega na issue.
+ */
+export const ALARM_ACTION_LABEL = "alarm-acao";
+const ALARM_ACTION_LABEL_COLOR = "d93f0b";
+const ALARM_ACTION_LABEL_DESCRIPTION =
+  // Teto de 100 chars do GitHub (mesma pegadinha do #5553 documentada acima
+  // em ALARM_EVENT_LABEL_DESCRIPTION).
+  "Alarme de ESTADO que só normaliza por AÇÃO humana/de código (#6772)";
+
 /** Metadados de toda label que este módulo sabe AUTO-CRIAR via self-heal
  * (#5338, generalizado no #5553) — usado tanto por `ensureLabelExists` quanto
  * pelo setup manual documentado. Adicionar uma label nova ao mecanismo de
@@ -146,6 +165,7 @@ const ALARM_EVENT_LABEL_DESCRIPTION =
 const SELF_HEALABLE_LABELS: Record<string, { color: string; description: string }> = {
   [ALARM_LABEL]: { color: ALARM_LABEL_COLOR, description: ALARM_LABEL_DESCRIPTION },
   [ALARM_EVENT_LABEL]: { color: ALARM_EVENT_LABEL_COLOR, description: ALARM_EVENT_LABEL_DESCRIPTION },
+  [ALARM_ACTION_LABEL]: { color: ALARM_ACTION_LABEL_COLOR, description: ALARM_ACTION_LABEL_DESCRIPTION },
 };
 
 export type AlarmPriority = "P0" | "P1" | "P2" | "P3";
