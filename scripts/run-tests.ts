@@ -201,6 +201,14 @@ export function runTestBatches(opts: RunTestsOptions): number {
     spawn(process.execPath, ["--import", "tsx", "--test", ...extraArgs, ...batch], {
       encoding: "utf8",
       stdio: ["inherit", "pipe", "pipe"],
+      // Review #6807 (P1, confiança alta): sem isto, o default de 1 MB do
+      // Node estoura fácil com BATCH_SIZE=150 e 200+ console.log já na
+      // suíte — o spawn falha com result.error ANTES do retry (#6495) ter
+      // chance de rodar, transformando um batch 100% verde num falso
+      // "falha ao spawnar". maxBuffer generoso (não Infinity — string de
+      // tamanho ilimitado ainda pode estourar heap em runner com pouca
+      // RAM); 256 MB é folga larga sobre qualquer batch observado até hoje.
+      maxBuffer: 256 * 1024 * 1024,
     });
 
   /** `spawn` está tipado como `typeof spawnSync` (assinatura genérica) —

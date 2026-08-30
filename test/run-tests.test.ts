@@ -113,6 +113,25 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     });
     assert.equal(exit, 0);
   });
+
+  it("passa maxBuffer generoso pro spawn (#6807, review P1) — sem isso, um batch de 150 arquivos " +
+    "com stdio:pipe estoura o default de 1 MB do Node e vira falha de spawn falsa ANTES do retry " +
+    "de #6495 ter chance de rodar", () => {
+    let seenOptions: Record<string, unknown> | undefined;
+    runTestBatches({
+      files: ["/a.test.ts"],
+      spawn: ((_cmd, _args, options) => {
+        seenOptions = options as Record<string, unknown>;
+        return { status: 0 } as ReturnType<typeof import("node:child_process").spawnSync>;
+      }) as typeof import("node:child_process").spawnSync,
+    });
+    assert.ok(seenOptions, "spawn não foi chamado");
+    const maxBuffer = seenOptions?.maxBuffer;
+    assert.ok(
+      typeof maxBuffer === "number" && maxBuffer > 1024 * 1024,
+      `maxBuffer precisa ser bem acima do default de 1 MB do Node, veio: ${maxBuffer}`,
+    );
+  });
 });
 
 // --- retry de ERR_MODULE_NOT_FOUND (#6495) --------------------------------
