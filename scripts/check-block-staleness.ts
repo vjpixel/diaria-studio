@@ -46,6 +46,7 @@ import {
   findStaleBlocks,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
+  type IssueState,
   type PrState,
 } from "./lib/block-staleness.ts";
 import { isIssueClaimedByOther, listActiveSessions } from "./lib/session-registry.ts";
@@ -119,6 +120,22 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
       const labels = fetchLabels(issueNumber);
       if (labels === null) return null;
       return labels.has(label);
+    },
+    getIssueState(issueNumber: number): IssueState {
+      const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "state"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      if (result.error || result.status !== 0 || !result.stdout) return "UNKNOWN";
+      try {
+        const parsed = JSON.parse(result.stdout) as { state?: string };
+        const state = (parsed.state ?? "").toUpperCase();
+        if (state === "OPEN" || state === "CLOSED") return state;
+        return "UNKNOWN";
+      } catch {
+        return "UNKNOWN";
+      }
     },
   };
 }

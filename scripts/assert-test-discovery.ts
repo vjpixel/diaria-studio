@@ -34,6 +34,25 @@ export const TEST_FILE_FLOOR = 200;
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".wrangler", "data"]);
 
+/** Diretórios pulados por PATH relativo à raiz (não só pelo nome do dir) —
+ *  usado quando o nome sozinho é legítimo em outros lugares. `.claude/`
+ *  guarda `agents/`, `skills/`, `hooks/` que continuam sendo varridos
+ *  normalmente; só `.claude/worktrees` guarda cópias completas do repo
+ *  (worktrees de rodadas `/diaria-overnight`/`/diaria-develop`, cada uma com
+ *  sua própria `test/`) — pular `.claude` inteiro esconderia qualquer teste
+ *  futuro legítimo sob esse diretório (#6801: 12.341 de 13.767 arquivos
+ *  enumerados localmente vinham só de `.claude/worktrees`, inflando ~10× a
+ *  contagem real de 1.426 e rodando código obsoleto de branches antigas).
+ *  Cada entrada é uma lista de segmentos POSIX, casada por PREFIXO contra o
+ *  path relativo percorrido — cobre também sub-worktrees aninhadas. */
+const SKIP_PATH_PREFIXES: string[][] = [[".claude", "worktrees"]];
+
+function isSkippedPath(relSegments: string[]): boolean {
+  return SKIP_PATH_PREFIXES.some(
+    (prefix) => relSegments.length >= prefix.length && prefix.every((seg, i) => relSegments[i] === seg),
+  );
+}
+
 /** Lista arquivos `*.test.ts` recursivamente (mesma área que `node --test`
  *  varre por padrão: `test/`, `test/**`, `workers/**​/test/`), pulando dirs de
  *  build/deps. Caminhos absolutos, ordem determinística (sort lexicográfico
@@ -42,7 +61,7 @@ const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".wrangler",
  *  (#6495) — nunca duplicar este walk. */
 export function listTestFiles(root: string): string[] {
   const out: string[] = [];
-  const walk = (dir: string) => {
+  const walk = (dir: string, relSegments: string[]) => {
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -51,15 +70,17 @@ export function listTestFiles(root: string): string[] {
     }
     for (const e of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
       const full = join(dir, e.name);
+      const rel = [...relSegments, e.name];
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) continue;
-        walk(full);
+        if (isSkippedPath(rel)) continue;
+        walk(full, rel);
       } else if (e.name.endsWith(".test.ts")) {
         out.push(full);
       }
     }
   };
-  walk(root);
+  walk(root, []);
   return out;
 }
 

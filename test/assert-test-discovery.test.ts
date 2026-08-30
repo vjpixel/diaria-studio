@@ -4,10 +4,12 @@
  * Cobre o guard anti-vacuidade do `pretest`: a contagem real de arquivos de
  * teste fica acima do piso, e o veredito falha-alto quando a descoberta colapsa.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   countTestFiles,
   discoveryVerdict,
@@ -60,5 +62,45 @@ describe("assert-test-discovery — guard anti-vacuidade (#1948)", () => {
     assert.equal(discoveryVerdict(0).ok, false); // o caso "verde vazio" que o #1948 temia
     assert.equal(discoveryVerdict(TEST_FILE_FLOOR - 1).ok, false);
     assert.match(discoveryVerdict(0).message, /anti-vacuity/);
+  });
+});
+
+describe("listTestFiles — pula .claude/worktrees sem esconder .claude inteiro (#6801)", () => {
+  const tmpRoots: string[] = [];
+  after(() => {
+    for (const dir of tmpRoots) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ignora *.test.ts sob .claude/worktrees/<x>/test/ (cópias de worktrees overnight/develop)", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "diaria-discovery-worktrees-"));
+    tmpRoots.push(tmpRoot);
+
+    const worktreeTestDir = join(tmpRoot, ".claude", "worktrees", "agent-abc123", "test");
+    mkdirSync(worktreeTestDir, { recursive: true });
+    writeFileSync(join(worktreeTestDir, "foo.test.ts"), "// stale copy from a worktree\n");
+
+    const legitTestDir = join(tmpRoot, "test");
+    mkdirSync(legitTestDir, { recursive: true });
+    writeFileSync(join(legitTestDir, "real.test.ts"), "// real repo test\n");
+
+    const files = listTestFiles(tmpRoot);
+    assert.deepEqual(
+      files.map((f) => f.replace(tmpRoot, "").split("\\").join("/")),
+      ["/test/real.test.ts"],
+      "só o teste real deveria aparecer — nada de .claude/worktrees",
+    );
+  });
+
+  it("NÃO pula .claude inteiro — arquivo de teste sob .claude/agents (fora de worktrees/) continua sendo descoberto", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "diaria-discovery-claude-agents-"));
+    tmpRoots.push(tmpRoot);
+
+    const agentsDir = join(tmpRoot, ".claude", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, "not-a-worktree.test.ts"), "// legit, must still be found\n");
+
+    const files = listTestFiles(tmpRoot);
+    assert.equal(files.length, 1, ".claude/agents não é .claude/worktrees — não deve ser pulado");
+    assert.ok(files[0].endsWith("not-a-worktree.test.ts"));
   });
 });
