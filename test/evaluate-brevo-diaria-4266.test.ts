@@ -241,14 +241,22 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
   }
 
   it("extrai contadores instantâneos, contadores maduros, E emailBlacklisted:false do mesmo body", async () => {
+    // #6705 — capturado 1x pra comparar `last_messagesSent_at` contra o MESMO
+    // valor gravado no fixture (recalcular `hoursAgoIso` de novo no assert
+    // daria um timestamp alguns ms diferente).
+    const mostRecentEvent = freshEvent(3);
     globalThis.fetch = (async () =>
       jsonRes(200, {
         // 1 e 2 maduros (72h), 3 imaturo (1h) — sends_count instantâneo=3, maduro=2
-        statistics: { messagesSent: [matureEvent(1), matureEvent(2), freshEvent(3)], opened: [matureEvent(1)] },
+        statistics: { messagesSent: [matureEvent(1), matureEvent(2), mostRecentEvent], opened: [matureEvent(1)] },
       })) as typeof fetch;
     try {
       const state = await fetchBrevoContactState("key", "a@b.com");
-      assert.deepEqual(state, {
+      // #6705 — `last_messagesSent_at` checado à parte: é derivado de
+      // `hoursAgoIso(1)` (relativo a `Date.now()` no momento do fixture),
+      // não um literal fixo comparável via deepEqual.
+      const { last_messagesSent_at, ...rest } = state;
+      assert.deepEqual(rest, {
         sends_count: 3,
         opens_count: 1,
         mature_sends_count: 2,
@@ -257,6 +265,7 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
         userUnsubscribed: false, // #4630 — sem statistics.unsubscriptions.userUnsubscription no fixture
         hardBounced: false, // #5351 Parte B — sem statistics.hardBounces no fixture
       });
+      assert.equal(last_messagesSent_at, mostRecentEvent.date, "evento mais recente (1h atrás, imaturo) entre os 3 messagesSent");
     } finally {
       restore();
     }
