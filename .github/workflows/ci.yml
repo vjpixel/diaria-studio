@@ -3,6 +3,25 @@ name: CI
 on:
   push:
     branches: [master]
+    # #6711 — mesmo paths-ignore do bloco pull_request: abaixo, replicado
+    # aqui. Achado ao vivo (comentário da issue): um PR docs-only que já
+    # pulou a suíte no lado pull_request: ainda pagava a suíte inteira de
+    # novo no push:master do squash-merge — 100% do custo sem nenhum sinal
+    # novo, porque o diff nunca foi coberto por ela em nenhum dos dois lados.
+    # Decisão do editor (#6711, 30/08/2026, via /diaria-desbloqueia): aceitar
+    # não rodar a suíte em merges docs-only também no master. Manter os dois
+    # blocos em sincronia manualmente — não há include compartilhado nativo
+    # do GitHub Actions entre triggers de um mesmo workflow (`test/ci-workflow-paths-ignore.test.ts`
+    # trava a sincronia). Se um required status check aplicado a PUSH (ruleset
+    # de branch, distinto do gate de merge de PR) for adicionado ao `master`
+    # um dia, revisitar este bloco também — mesma ressalva do comentário do
+    # bloco pull_request: abaixo.
+    paths-ignore:
+      - "CLAUDE.md"
+      - "**/*.md"
+      - "docs/**"
+      - "**/.claude/skills/**"
+      - "**/*.mdx"
   pull_request:
     # #5901 — diffs que não tocam código executável não pagam a suite (~7min):
     # o PR docs-only médio cai de ~7min pra segundos. pr-checks.yml (gates
