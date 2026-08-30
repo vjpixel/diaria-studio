@@ -407,22 +407,33 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
   let hops = 0;
   let lastStatus: number | null = null;
 
-  async function fetchOnce(method: "HEAD" | "GET", signal: AbortSignal): Promise<Response> {
-    return fetchImpl(current, {
-      method,
-      redirect: method === "HEAD" ? "manual" : "follow",
-      signal,
-    });
-  }
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const method = attempt === 0 ? "HEAD" : "GET";
+  // ── Phase 1: follow redirects via HEAD (manual redirect) ──────────────
+  // #6825: o loop anterior `for (let attempt = 0; attempt < 2; attempt++)`
+  // conflou dois eixos num único counter: (1) seguir redirects via HEAD e
+  // (2) cair pra GET quando HEAD falha. Um redirect HEAD (3xx) fazia
+  // `continue`, que avançava `attempt` pra 1 — e na iteração seguinte o
+  // método já era GET, mesmo sendo só continuação legítima da cadeia.
+  // Como o GET rodava com `redirect: "follow"`, ele terminava a cadeia
+  // inteira sozinho sem incrementar `hops`. Resultado: pra qualquer link
+  // com ≥2 hops reais de redirect, `hops` nunca passava de 1 — e o blocker
+  // `r.hops > MAX_REDIRECTS` (documentado no cabeçalho do arquivo como um
+  // dos dois tipos de blocker) nunca mais disparava.
+  //
+  // A separação em duas fases resolve: o loop de HEAD só sai quando o
+  // status é não-redirect (2xx/4xx/5xx) ou quando a cadeia excede o
+  // limite — nunca por ter consumido a "tentativa de GET". Só então o
+  // GET é emitido, uma única vez, para a URL final da fase HEAD.
+  while (hops <= MAX_REDIRECTS) {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), HEAD_TIMEOUT_MS);
     try {
-      const res = await fetchOnce(method, controller.signal);
+      const res = await fetchImpl(current, {
+        method: "HEAD",
+        redirect: "manual",
+        signal: controller.signal,
+      });
       lastStatus = res.status;
-      if (res.status >= 300 && res.status < 400 && method === "HEAD") {
+      if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get("location");
         if (!loc) {
           return { status: res.status, hops, final_url: current, timed_out: false, via_get: false };
@@ -434,30 +445,64 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
           current = loc;
         }
         hops++;
+        // #6825: se ultrapassou o limite, retorna imediatamente com o hop
+        // contado — não deixa o GET fallback mascarar a cadeia longa.
+        if (hops > MAX_REDIRECTS) {
+          return { status: res.status, hops, final_url: current, timed_out: false, via_get: false };
+        }
         continue;
       }
-      // #6819: HEAD 4xx (exceto 401/403/429, já skipados pelo caller) → GET.
-      // GET não faz redirect manual (ver follow acima) — status é o final.
-      if (method === "HEAD" && res.status >= 400 && res.status !== 401 && res.status !== 403 && res.status !== 429) {
-        continue;
+      // Non-redirect response from HEAD.
+      // #6819: HEAD 4xx (exceto 401/403/429, já skipados pelo caller) →
+      // quebra pro GET phase (não retorna aqui).
+      if (
+        res.status >= 400 &&
+        res.status !== 401 &&
+        res.status !== 403 &&
+        res.status !== 429
+      ) {
+        break;
       }
-      return { status: res.status, hops, final_url: current, timed_out: false, via_get: method === "GET" };
+      // 2xx/3xx-não-redirect (ex: 200, 204, 304) → sucesso, retorna.
+      return { status: res.status, hops, final_url: current, timed_out: false, via_get: false };
     } catch (e) {
       const isAbort = (e as Error).name === "AbortError";
+      if (isAbort) {
+        return { status: null, hops, final_url: current, timed_out: true, via_get: false };
+      }
       // #6819: qualquer falha em HEAD (timeout, DNS, conexão recusada) não é
       // fatal — tenta GET uma única vez antes de reportar. Links que só
       // respondem em GET (ex: worker pesado, ou .invalid quefalha em HEAD
       // mas poderia responder em GET) seriam falso link_timeout sem isso.
-      if (method === "HEAD") {
-        continue;
-      }
-      return { status: lastStatus, hops, final_url: current, timed_out: isAbort, via_get: method === "GET" };
+      break;
     } finally {
       clearTimeout(t);
     }
   }
-  // Excedeu as 2 tentativas (HEAD 4xx + GET) sem status < 400
-  return { status: lastStatus, hops, final_url: current, timed_out: false, via_get: true };
+
+  // ── Phase 2: GET fallback (single attempt, follows redirects natively) ─
+  // Só chega aqui quando a fase HEAD terminou sem status < 400 e sem
+  // timeout — ou seja, HEAD devolveu 4xx/5xx (exceto os skipados) ou
+  // lançou exceção não-Abort. O GET herda `redirect: "follow"` (padrão
+  // fetch) e o status é o final. Hops NÃO é incrementado nesta fase — o
+  // GET resolve a cadeia inteira na stack do fetch, e contá-la seria
+  // duplo: a cadeia já foi contada na fase HEAD até o ponto da falha.
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), HEAD_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(current, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    lastStatus = res.status;
+    return { status: res.status, hops, final_url: res.url || current, timed_out: false, via_get: true };
+  } catch (e) {
+    const isAbort = (e as Error).name === "AbortError";
+    return { status: lastStatus, hops, final_url: current, timed_out: isAbort, via_get: true };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 /**
