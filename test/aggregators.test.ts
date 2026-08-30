@@ -36,9 +36,18 @@ describe("isAggregator — *.beehiiv.com blanket block (#6440)", () => {
     assert.equal(isAggregator("https://therundownai.beehiiv.com/p/some-post"), true);
   });
 
-  it("bloqueia beehiiv.com raiz e qualquer subdomínio novo de terceiro", () => {
-    assert.equal(isAggregator("https://beehiiv.com/p/whatever"), true);
+  it("bloqueia qualquer subdomínio novo de terceiro", () => {
     assert.equal(isAggregator("https://umnewsletterqualquer.beehiiv.com/p/x"), true);
+  });
+
+  // #6724: beehiiv.com/www.beehiiv.com é o domínio RAIZ (página de marketing/
+  // referral da própria Beehiiv) — nunca hospeda newsletter de terceiro, só
+  // subdomínios hospedam conteúdo roundup. Falso positivo real: o link de
+  // disclosure `?via=Diaria` do nosso próprio bloco "PARA ENCERRAR" foi
+  // bloqueado como agregador na edição 260830.
+  it("NÃO bloqueia o domínio raiz beehiiv.com/www.beehiiv.com (nosso link de referral)", () => {
+    assert.equal(isAggregator("https://beehiiv.com/p/whatever"), false);
+    assert.equal(isAggregator("https://www.beehiiv.com?via=Diaria"), false);
   });
 
   it("NÃO bloqueia nosso próprio host legado na Beehiiv (diaria.beehiiv.com)", () => {

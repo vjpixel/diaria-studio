@@ -22,6 +22,9 @@ STATE_DIR="$REPO/data/continuo"
 STATE_FILE="$STATE_DIR/last-daily-review-sha"
 MAX_DIFF_LINES=20000
 
+# shellcheck source=./lib/daily-review-coverage.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daily-review-coverage.sh"
+
 cd "$REPO"
 git fetch origin -q
 HEAD_SHA=$(git rev-parse origin/master)
@@ -54,7 +57,15 @@ DIFF_LINES=$(git diff "$BASE_SHA..$HEAD_SHA" | wc -l)
 RANGE_NOTE=""
 if [ "$DIFF_LINES" -gt "$MAX_DIFF_LINES" ]; then
   RANGE_NOTE="ATENÇÃO: diff tem $DIFF_LINES linhas (> $MAX_DIFF_LINES). Priorize arquivos de scripts/lib/, publishers e hooks; arquivos de teste e docs só se algo neles parecer errado."
+  # #6757: degradação de cobertura não pode passar calada — mesmo padrão dos
+  # outros dois AVISOs deste script (marco inválido, sed cosmético).
+  echo "[daily-review] AVISO: cobertura degradada — diff de $DIFF_LINES linhas excede o teto de $MAX_DIFF_LINES; priorizando scripts/lib/, publishers e hooks (ver RESUMO-DAILY-REVIEW no output para o campo cobertura=)" >&2
 fi
+
+# #6757: campo de cobertura do resumo — computado AQUI (determinístico), não
+# pelo modelo, pra nunca divergir do teto real; o prompt abaixo instrui o
+# Opus a copiar este valor literal, não recalcular.
+COVERAGE_FIELD=$(daily_review_coverage_field "$DIFF_LINES" "$MAX_DIFF_LINES")
 
 PROMPT="Você é o review consolidado diário do diaria-studio. Revise o diff acumulado \`git diff $BASE_SHA..$HEAD_SHA\` (commits: \`git log --oneline $BASE_SHA..$HEAD_SHA\`), mergeado em sua maior parte por modelos não-Anthropic via fila autônoma — seu papel é pegar o que o gate leve por PR deixou passar.
 
@@ -68,10 +79,14 @@ Procure, nesta ordem de prioridade:
 
 Para CADA finding com confiança alta ou média: crie uma issue via \`gh issue create\` com label de tipo (bug/enhancement) + prioridade P0-P3 justificada no corpo (regra do CLAUDE.md: nunca perguntar, sempre criar com prioridade), corpo citando arquivo:linha e o commit do range. Prefixe o título com [daily-review]. Antes de criar, cheque \`gh issue list --search\` para não duplicar issue aberta equivalente.
 
+Além do commit, resolva a ORIGEM do defeito até a PR e a trilha de execução (#6756): rode \`gh pr list --search <sha> --state all --json number,headRefName\` (o sha é o commit citado no finding) para achar a PR que o introduziu, e derive a trilha do prefixo de \`headRefName\` (\`continuo/\`→continuo, \`overnight/\`→overnight, \`develop/\`→develop, qualquer outro prefixo→other). Inclua no corpo da issue, em linha própria, o marcador HTML invisível (mesmo padrão do \`<!-- aguardando-ate: -->\` que \`classifyExecTrack\` já consome — não aparece na renderização, é feito pra ser parseado):
+<!-- origem: pr=<numero> trilha=<continuo|overnight|develop|other> commit=<sha> -->
+Se a PR não for encontrada (\`gh pr list --search\` vazio), use \`pr=desconhecida trilha=desconhecida\` em vez de adivinhar.
+
 Se nada de confiança alta/média: não crie issue nenhuma.
 
-OBRIGATÓRIO ao final, como ÚLTIMA linha da sua resposta, o marcador literal (o script só avança o marco de review se ela existir):
-RESUMO-DAILY-REVIEW: commits=<N> findings=<M> issues_criadas=<links ou nenhuma> issues_falharam=<K>
+OBRIGATÓRIO ao final, como ÚLTIMA linha da sua resposta, o marcador literal (o script só avança o marco de review se ela existir) — copie o campo cobertura EXATAMENTE como fornecido abaixo, não recalcule:
+RESUMO-DAILY-REVIEW: commits=<N> findings=<M> issues_criadas=<links ou nenhuma> issues_falharam=<K> $COVERAGE_FIELD
 Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o finding perdido no corpo do resumo — nunca omita falha de tool."
 
 # Finding P1 do review do PR #6446: exit 0 do claude -p NÃO prova review
@@ -80,7 +95,7 @@ Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o 
 # cobre o P2 de stall indefinido (CLAUDE.md: stall silencioso é inaceitável).
 OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
 echo "$PROMPT" | timeout 5400 claude -p \
-  --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*)" \
+  --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
   --model opus --effort low | tee "$OUT_FILE"
 
 if ! grep -q "RESUMO-DAILY-REVIEW:" "$OUT_FILE"; then

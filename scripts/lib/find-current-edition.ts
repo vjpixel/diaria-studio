@@ -48,7 +48,12 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
   },
   4: {
     // Stage 4 = Revisão editorial assistida (#1694)
-    prereq: ["02-reviewed.md", "03-social.md"],
+    // #6731: 02-reviewed.md/03-social.md são artefatos do STAGE 2 — sem o
+    // output do Stage 3 (imagens) no prereq, o detector marca "gate 4 em
+    // progresso" (e dispara notificação de "Gate pendente") assim que o
+    // Stage 2 termina, edições inteiras antes do Stage 3 sequer rodar.
+    // "04-d1-1x1.jpg" é o mesmo sentinel já usado como output de Stage 3.
+    prereq: ["02-reviewed.md", "03-social.md", "04-d1-1x1.jpg"],
     output: ["_internal/.step-4-done.json"],
   },
   5: {

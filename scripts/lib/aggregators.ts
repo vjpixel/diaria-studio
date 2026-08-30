@@ -67,11 +67,17 @@ const OUR_OWN_BEEHIIV_HOST = "diaria.beehiiv.com";
  * (`theaipulse.beehiiv.com` etc.) — qualquer subdomínio novo de terceiro
  * escapava até alguém adicionar à mão. Caso real 260828 (#6440):
  * `therundownai.beehiiv.com` chegou ao USE MELHOR sem bater nenhuma entrada
- * de `AGGREGATOR_HOSTS`. Bloqueio blanket: todo `*.beehiiv.com` é agregador,
- * exceto o nosso próprio host (`OUR_OWN_BEEHIIV_HOST`, acima).
+ * de `AGGREGATOR_HOSTS`. Bloqueio blanket: todo SUBDOMÍNIO de `*.beehiiv.com`
+ * é agregador, exceto o nosso próprio host (`OUR_OWN_BEEHIIV_HOST`, acima).
+ *
+ * #6724: o domínio RAIZ `beehiiv.com`/`www.beehiiv.com` (página de marketing/
+ * referral da própria Beehiiv, ex: link de disclosure `?via=Diaria` no bloco
+ * "PARA ENCERRAR") NUNCA hospeda newsletter de terceiro — só subdomínios
+ * hospedam conteúdo roundup. Bloquear a raiz produzia falso positivo no
+ * nosso próprio link de referral. Checagem restrita a `host.endsWith(".beehiiv.com")`.
  */
 function isThirdPartyBeehiivHost(host: string): boolean {
-  const isBeehiivHost = host === "beehiiv.com" || host.endsWith(".beehiiv.com");
+  const isBeehiivHost = host.endsWith(".beehiiv.com");
   if (!isBeehiivHost) return false;
   return host !== OUR_OWN_BEEHIIV_HOST && !host.endsWith("." + OUR_OWN_BEEHIIV_HOST);
 }

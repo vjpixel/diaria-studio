@@ -98,44 +98,28 @@ Output JSON: `{ ok, swaps[], reason }`. Logar como info no run-log.
 
 Pré-requisito: writer agent emitiu `destaque_url:` em frontmatter de cada prompt (writer.md step 6).
 
-### 2b. Gerar imagens
+### 2b. Runner determinístico (`scripts/stage-3-run.ts`, #5415) — CAMINHO ÚNICO de 2b/2c (#5822, #6740)
 
-Para cada destaque indicado (ou todos se sem argumento), chamar **uma vez** por destaque:
+**Não reimplementar os comandos individuais de geração de imagem aqui.** Até o #6740 este passo listava `image-generate.ts`/`gen-social-card-4x5.ts` em prosa própria (a mesma prosa que o #5822 tinha corrigido pra incluir o card 4:5), separada de `.claude/agents/orchestrator-stage-3.md` — e quando o #6005 Parte B acrescentou `gen-carousel-cards.ts` (carrossel obrigatório de 5 slides do Instagram) só àquele outro arquivo, esta skill ficou defasada em silêncio: uma edição rodada via `/diaria-3-imagens --no-gates` (o caminho headless de `run-edition-stages.ts`) reportava `OK` sem gerar nenhum dos 12 slides de carrossel, porque este texto nunca mandava rodar aquele script (achado ao vivo #6740, edição 260830). Delegar ao mesmo runner que `orchestrator-stage-3.md` usa elimina a classe inteira — os dois caminhos (`/diaria-edicao` e `/diaria-3-imagens` standalone) passam a executar o MESMO código, não duas prosas que podem divergir de novo na próxima feature.
 
-```bash
-npx tsx scripts/image-generate.ts \
-  --editorial {EDIR}/_internal/02-d{N}-prompt.md \
-  --out-dir {EDIR}/ \
-  --destaque d{N}
-```
-
-Substituir `d{N}` por `d1`, `d2`, `d3`. **D1 gera automaticamente 2 arquivos** (`04-d1-2x1.jpg` 1600×800 + `04-d1-1x1.jpg` 800×800 via center-crop) numa única chamada — sem segunda chamada separada. D2/D3 geram `04-d2-1x1.jpg` e `04-d3-1x1.jpg` (1024×1024).
-
-O script também grava `04-d{N}-sd-prompt.json` com o prompt exato usado na geração.
-
-Se a imagem já existir e não quiser regenerar, script sai com exit 0. Para forçar regeneração usar `--force`.
-
-Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Para ComfyUI, setar `image_generator: "comfyui"` em `platform.config.json`.
-
-### 2c. Card 4:5 do feed com título embutido (#4114, #5822)
-
-**Este passo NÃO é opcional pra feature existir — mesmo texto de `.claude/agents/orchestrator-stage-3.md` §3b.** `publish-facebook.ts`/`publish-instagram.ts` escolhem a imagem via `selectSocialCardImageFile` (`04-d{N}-4x5.jpg` se existir, senão cai pro `1x1` sem título, **em silêncio**). Sem os 2 comandos abaixo o card com título nunca existe — só as imagens 2:1/1:1 do passo 2b.
-
-Para cada destaque presente (o mesmo conjunto processado no passo 2b):
+Chamar, para os destaques indicados (todos se `$2` estiver vazio, ou o único de `$2 = d1|d2|d3`):
 
 ```bash
-# 1. arte 4:5 nativa → 04-d{N}-4x5-nativo.jpg (não é crop do 2:1 — o card é retrato, precisa da altura que o 2:1 descarta)
-npx tsx scripts/image-generate.ts \
-  --editorial {EDIR}/_internal/02-d{N}-prompt.md \
-  --out-dir {EDIR}/ \
-  --destaque d{N} \
-  --ratio 4x5
-
-# 2. compõe o card final (imagem + título) → 04-d{N}-4x5.jpg, todos os destaques prontos de uma vez
-npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDIR}/
+npx tsx scripts/stage-3-run.ts --edition $1 [--only d{N}] [--force]
 ```
 
-**Falha aqui é BLOQUEANTE (#4090).** Se qualquer um dos dois comandos sair com código ≠ 0 para qualquer destaque, **PARAR** — não seguir para o gate 2d. Mostrar ao editor o stderr completo: a causa mais comum é `assertBrandSerifAvailable` (fonte de marca Georgia ausente nesta máquina) abortando — instalar a fonte, ou setar `DIARIA_ALLOW_FONT_FALLBACK=1` como escape hatch deliberado. Skip-if-exists vale igual aos outros geradores — não passar `--force` automaticamente.
+Cobre lint pre-flight → `image-generate.ts` (2x1/1x1 + 4x5 nativo) por destaque → `gen-social-card-4x5.ts` (card 4:5 com título) → `gen-carousel-cards.ts` (#6005 Parte B — 3 slides de parágrafo + CTA do carrossel do Instagram) → leaderboard top1 (fail-soft) → box de campeões → pre-gate invariants (`check-invariants.ts --stage 3`) → descoberta dos pares do crop-reviewer.
+
+Interpretar o JSON de saída:
+- `code: 0` → miolo concluído. Usar `destaques[]` (por destaque: `lintOk`/`imageGenerated`/`nativeArt4x5Generated`), `cardsGenerated`, `carouselCardsGenerated`, `championsInjected`, `invariantsPassed`/`invariantsViolations` e `cropReviewPairs` no resumo do gate abaixo.
+- `code: 1` → erro duro/BLOQUEANTE (imagem, card 4:5 ou carrossel com exit ≠ 0 — #4090/#6005) — **PARAR**, mostrar `notes[]` completo ao editor (causa mais comum: `assertBrandSerifAvailable`, fonte Georgia ausente — instalar ou setar `DIARIA_ALLOW_FONT_FALLBACK=1`). Não seguir para o gate 2d.
+- `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo script — ComfyUI indisponível, ou #4583 raffle stale) — parar mesmo com `--no-gates`.
+- Destaque com `lintOk: false` → geração pausada só naquele destaque (`lintViolations` no resultado) — mostrar ao editor.
+- `cropReviewPairs` não-vazio → dispatchar `Agent("image-crop-reviewer", { edition: $1, pairs: cropReviewPairs, out_path })`, depois persistir com `run-image-crop-reviewer.ts --edition-dir {EDIR}/ --input-json <output-do-agent>`.
+
+**Fallback**: se o script não existir, ou falhar de um jeito não coberto pelos `code`s acima (erro de spawn, exceção fora do `try/catch`), seguir os comandos individuais documentados em `.claude/agents/orchestrator-stage-3.md` §3b (fonte única do fallback em prosa — não duplicar aqui, pra não recriar o mesmo drift que motivou este passo).
+
+@see scripts/stage-3-run.ts (docstring no topo tem o mapeamento seção-a-seção do que está coberto vs. delegado)
 
 ### 2d. Gate unificado de imagens
 
@@ -145,7 +129,7 @@ Antes do gate, rodar o invariant check (defesa em profundidade — mesmo comando
 npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDIR}/
 ```
 
-Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo correspondente (2b ou 2c) antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
+Exit 0 → seguir para o gate abaixo. Exit 1 → bloquear o gate, mostrar as violações ao editor (qual destaque/arquivo falta) e voltar ao passo 2b antes de tentar de novo — **nunca apresentar o gate com invariante vermelho**.
 
 **Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada`, escrever o sentinel (#5793) e finalizar:
 
@@ -174,7 +158,7 @@ Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 
 **Se `--no-gates` (#5738):** pular este gate — assumir "sim", finalizar direto (escrever o sentinel abaixo antes de retornar). É o que o runner agendado precisa: em `--print` ninguém responde, e sem isto a sessão queimaria os turnos aguardando e morreria sem escrever o sentinel do Stage 3.
 
-Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar Parte 2 (2b + 2c) para aquela imagem. "retry" → re-rodar Parte 2 completa.
+Caso contrário, aguardar resposta. "sim" → finalizar (escrever o sentinel abaixo). "d1"/"d2"/"d3" → re-rodar o passo 2b (`--only d{N}`) para aquela imagem. "retry" → re-rodar Parte 2 completa.
 
 **Escrever sentinel de conclusão (#5793)** — cobre tanto `--no-gates` quanto o "sim" respondido organicamente pelo editor:
 
@@ -193,6 +177,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - `{EDIR}/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
 - `{EDIR}/04-d1-4x5-nativo.jpg`, `04-d2-4x5-nativo.jpg`, `04-d3-4x5-nativo.jpg` — arte 4:5 nativa, insumo do card
 - `{EDIR}/04-d1-4x5.jpg`, `04-d2-4x5.jpg`, `04-d3-4x5.jpg` — card final com título embutido (#4114), o que `selectSocialCardImageFile` escolhe pro feed Facebook/Instagram
+- `{EDIR}/04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg` — slides sem foto do carrossel do Instagram (#6005 Parte B), 1 por destaque presente, gerados por `gen-carousel-cards.ts` dentro do runner do passo 2b
 - `{EDIR}/04-d{N}-sd-prompt.json` — prompts usados na geração
 
 ## Notas

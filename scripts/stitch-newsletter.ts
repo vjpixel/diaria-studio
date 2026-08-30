@@ -30,9 +30,11 @@ import { writeFileAtomicIfChanged } from "./lib/atomic-write.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
 import {
-  estimateUseMelhorTempo,
+  estimateUseMelhorTempoDetailed, // #6739
   normalizeDashToParens,
+  type UseMelhorTempoSource, // #6739
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
+import { loadCachedBody } from "./lib/url-body-cache.ts"; // #6739 — body cacheado do Stage 1
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import {
   renderEncerramentoSocialApoio,
@@ -442,13 +444,23 @@ export function renderSection(
   return lines.join("\n");
 }
 
+/** #6739: instrumentação por item — de onde veio a estimativa de tempo injetada. */
+export interface UseMelhorTempoInstrumentationEntry {
+  url: string;
+  title: string;
+  estimate: string;
+  source: UseMelhorTempoSource;
+}
+
 /**
- * #2447/#2450: Renderiza a seção USE MELHOR com injeção automática de estimativa
+ * #2447/#2450/#6739: Renderiza a seção USE MELHOR com injeção automática de estimativa
  * de tempo `(X min)` quando a descrição ainda não tem tempo.
  *
  * Diferenças em relação a `renderSection` genérico:
  *   1. Detecta se a descrição já contém tempo → não injeta duplicata.
- *   2. Se não tem tempo → appenda `estimateUseMelhorTempo(title, url)` ao fim.
+ *   2. Se não tem tempo → appenda a estimativa ao fim, preferindo conteúdo real
+ *      (body cacheado em `opts.bodiesDir`, #6739) sobre a heurística de título
+ *      (ver `estimateUseMelhorTempoDetailed`).
  *   3. Normaliza `— X min` → `(X min)` (formato canônico, #2450).
  *
  * O editor pode ajustar a estimativa no gate Stage 2 → Stage 4. O lint
@@ -456,12 +468,32 @@ export function renderSection(
  *
  * Finding 3 (#2464): retorna "" quando TODOS os items são inválidos (sem url/title).
  * Sem esse guard, o header "🛠️ USE MELHOR" seria emitido órfão sem itens.
+ *
+ * @param opts.bodiesDir Diretório do cache de bodies HTML intra-edição
+ *   (`_internal/_forensic/link-verify-bodies`, #717/#6739). Ausente/null →
+ *   comportamento pré-#6739 (só heurística de título). Lookup é por `a.url`
+ *   exato — best-effort: quando o body foi cacheado sob a `final_url`
+ *   pós-redirect, o lookup erra o cache e cai pro fallback de título (mesma
+ *   degradação fail-soft de qualquer cache miss aqui, nunca bloqueia).
+ * @param opts.instrumentation Array (mutado in-place) que recebe 1 entry por
+ *   item processado — `{ url, title, estimate, source }`. Caller decide se
+ *   persiste (`_internal/use-melhor-tempo-source.json`, #6739) pra medir
+ *   depois quanto ainda sai de `title-heuristic`.
  */
-export function renderUseMelhorSection(items: ArticleLike[]): string {
+export function renderUseMelhorSection(
+  items: ArticleLike[],
+  opts: { bodiesDir?: string | null; instrumentation?: UseMelhorTempoInstrumentationEntry[] } = {},
+): string {
   if (items.length === 0) return "";
   const header = `**🛠️ USE MELHOR**`;
   const lines: string[] = [header, ""];
   let validCount = 0;
+  const estimateFor = (title: string, url: string): { estimate: string; source: UseMelhorTempoSource } => {
+    const bodyHtml = opts.bodiesDir ? loadCachedBody(opts.bodiesDir, url) : null;
+    const result = estimateUseMelhorTempoDetailed(title, url, bodyHtml);
+    opts.instrumentation?.push({ url, title, estimate: result.estimate, source: result.source });
+    return result;
+  };
   for (const a of items) {
     if (!a.url || !a.title) continue;
     validCount++;
@@ -476,10 +508,10 @@ export function renderUseMelhorSection(items: ArticleLike[]): string {
       // #2450: normalizar `— X min` → `(X min)` primeiro (atalho editorial)
       desc = normalizeDashToParens(desc);
 
-      // #2447: injetar estimativa auto se não tiver nenhuma.
+      // #2447/#6739: injetar estimativa auto se não tiver nenhuma.
       // USE_MELHOR_TEMPO_RE importado do lint (finding 5 #2464 — sem cópia duplicada).
       if (!USE_MELHOR_TEMPO_RE.test(desc)) {
-        const estimate = estimateUseMelhorTempo(a.title, a.url);
+        const { estimate } = estimateFor(a.title, a.url);
         desc = desc ? `${desc.trimEnd()} ${estimate}` : estimate;
       }
 
@@ -487,7 +519,7 @@ export function renderUseMelhorSection(items: ArticleLike[]): string {
     } else {
       // Sem summary: injetar placeholder de tempo mínimo para o lint não bloquear.
       // O editor vai preencher a descrição + ajustar o tempo no gate.
-      const estimate = estimateUseMelhorTempo(a.title, a.url);
+      const { estimate } = estimateFor(a.title, a.url);
       lines.push(`[DESCRIÇÃO PENDENTE] ${estimate}`);
     }
     lines.push("");
@@ -498,6 +530,31 @@ export function renderUseMelhorSection(items: ArticleLike[]): string {
   // Remove trailing blank
   while (lines[lines.length - 1] === "") lines.pop();
   return lines.join("\n");
+}
+
+/**
+ * #6739: persiste `_internal/use-melhor-tempo-source.json` com a fonte de
+ * cada estimativa injetada (`wordcount` | `youtube` | `title-heuristic`) —
+ * instrumentação pra medir depois quanto do USE MELHOR ainda sai de
+ * placeholder de título em vez de estimativa real. Best-effort: nunca lança
+ * (mesmo padrão fail-soft de qualquer `_internal/*` derivado — write falhar
+ * não deve derrubar o stitch).
+ */
+function writeUseMelhorTempoInstrumentation(
+  editionDir: string,
+  entries: UseMelhorTempoInstrumentationEntry[],
+): void {
+  try {
+    const internalDir = join(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(
+      join(internalDir, "use-melhor-tempo-source.json"),
+      JSON.stringify(entries, null, 2),
+      "utf8",
+    );
+  } catch {
+    // best-effort — instrumentação não deve bloquear o stitch.
+  }
 }
 
 /**
@@ -599,7 +656,16 @@ export function stitchNewsletter(input: StitchInput): string {
   // #2447/#2450: USE MELHOR recebe tratamento especial — injetar estimativa de
   // tempo auto-gerada `(X min)` quando a descrição ainda não tem tempo, e
   // normalizar `— X min` → `(X min)` para garantir formato canônico de parênteses.
-  const useMelhor = renderUseMelhorSection(approved.use_melhor ?? []);
+  // #6739: prefere tempo real (word count / duração de vídeo) sobre a heurística
+  // de título quando o body cacheado do Stage 1 está disponível — instrumentado
+  // em `_internal/use-melhor-tempo-source.json` pra medir depois quanto ainda
+  // sai de `title-heuristic`.
+  const useMelhorTempoInstrumentation: UseMelhorTempoInstrumentationEntry[] = [];
+  const useMelhor = renderUseMelhorSection(approved.use_melhor ?? [], {
+    bodiesDir: join(input.editionDir, "_internal", "_forensic", "link-verify-bodies"),
+    instrumentation: useMelhorTempoInstrumentation,
+  });
+  writeUseMelhorTempoInstrumentation(input.editionDir, useMelhorTempoInstrumentation);
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
