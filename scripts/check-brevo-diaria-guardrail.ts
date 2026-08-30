@@ -81,6 +81,7 @@ import {
   applyGuardrailCheck,
   unpauseRollout,
   selectUnalarmedSuspended,
+  shouldPauseRollout,
   type CampaignGuardrailInput,
   type RolloutGuardrailState,
 } from "./lib/brevo-diaria-guardrail.ts";
@@ -93,6 +94,40 @@ interface BrevoDiariaConfig {
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
+}
+
+/** #6799: erro tipado pra config corrompida — permite ao caller (`main()`)
+ * tratar como falha controlada (log claro + exit(2)) em vez de deixar o
+ * `SyntaxError` cru do `JSON.parse` propagar como exceção não-tratada. */
+export class PlatformConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformConfigError";
+  }
+}
+
+/**
+ * Pura o suficiente pra testar isoladamente (I/O só de leitura local).
+ *
+ * #6799: as 3 execuções de 30/08/2026 morreram com um `SyntaxError` não-
+ * tratado bem aqui — `JSON.parse(readFileSync(...))` sem try/catch era o
+ * único ponto do fluxo principal deste script capaz de crashar até
+ * `process.exitCode=1` (linha final do módulo) com um stack trace opaco.
+ * `platform.config.json` é config ESSENCIAL (diferente do latch em
+ * `guardrail-state.json`, que tem um "estado vazio" seguro pra fail-soft) —
+ * não há como continuar sem ela, então a correção não é mascarar o erro,
+ * é convertê-lo num diagnóstico claro e catchable.
+ */
+export function loadPlatformConfig(path: string): PlatformConfig {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as PlatformConfig;
+  } catch (e) {
+    throw new PlatformConfigError(
+      `${path} não parseia como JSON válido (${(e as Error).message}) — ` +
+        "config corrompida ou escrita parcial (git conflict marker, save interrompido). " +
+        "Não é seguro prosseguir sem config válida.",
+    );
+  }
 }
 
 interface BrevoCampaignListItem {
@@ -277,14 +312,20 @@ async function main(): Promise<void> {
       log("--dry-run + --unpause: imprimiria o unpause, NÃO grava.");
       return;
     }
-    const state = readRolloutGuardrailState();
+    const state = readRolloutGuardrailState(undefined, log);
     const next = unpauseRollout(state, new Date());
     writeRolloutGuardrailState(next);
     log(`rollout despausado explicitamente (estava pausado desde: ${state.paused_at ?? "nunca"}).`);
     return;
   }
 
-  const platformConfig = JSON.parse(readFileSync(PLATFORM_CONFIG_PATH, "utf8")) as PlatformConfig;
+  let platformConfig: PlatformConfig;
+  try {
+    platformConfig = loadPlatformConfig(PLATFORM_CONFIG_PATH);
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(2);
+  }
   const brevoDiaria = platformConfig.brevo_diaria;
   if (!brevoDiaria) {
     log("ERRO: brevo_diaria não configurado em platform.config.json.");
@@ -301,7 +342,7 @@ async function main(): Promise<void> {
   // checagem se ela viesse depois.
   await handleSuspendedCampaigns({
     fetchSuspended: () => fetchSuspendedCampaigns(apiKey!, log),
-    readState: () => readRolloutGuardrailState(),
+    readState: () => readRolloutGuardrailState(undefined, log),
     writeState: (st) => writeRolloutGuardrailState(st),
     alarm: (fresh, all) => alarmSuspendedCampaigns(fresh, all, log),
     isDryRun,
@@ -321,7 +362,7 @@ async function main(): Promise<void> {
   // reavaliava o mesmo agregado que causou a pausa e re-pausava sozinho,
   // sobrepondo a decisão do editor em silêncio (ver "Janela de agregação
   // pós-unpause" em scripts/lib/brevo-diaria-guardrail.ts).
-  const stateBefore = readRolloutGuardrailState();
+  const stateBefore = readRolloutGuardrailState(undefined, log);
   const evaluation = evaluateBrevoDiariaRolloutGuardrail(stats, undefined, stateBefore.unpaused_at);
 
   if (evaluation === null) {
@@ -334,9 +375,28 @@ async function main(): Promise<void> {
   }
 
   const { result } = evaluation;
+  // #6799 (sinal saturado): `anyBreach` inclui `openBreach`, que
+  // `shouldPauseRollout` deliberadamente NUNCA usa pra pausar (cohort fria
+  // de reativação — abertura baixa é esperada/informativa, não fracasso,
+  // ver docstring de `shouldPauseRollout`). Nas 130 execuções investigadas
+  // na issue, `anyBreach=true` em 130/130 mas `rollout OK, sem pausa` em
+  // 130/130 também — o log ANTIGO só mostrava `anyBreach`, então parecia
+  // (incorretamente) que o guardrail nunca detectava nada real. Não é um
+  // limiar mal calibrado: é a abertura (sempre abaixo de 15% numa base fria
+  // de 7+ meses, por desenho) dominando um agregado que soma TODAS as
+  // campanhas já enviadas desde sempre — o sinal que de fato pausaria
+  // (bounce/spam/unsub) segue limpo, só não aparecia destacado no log.
+  // `pauseWorthyBreach` torna essa distinção explícita sem mudar NENHUMA
+  // decisão de pausa (`shouldPauseRollout`/`applyGuardrailCheck` abaixo
+  // continuam idênticos) — é puramente observabilidade.
+  const pauseWorthyBreach = shouldPauseRollout(result);
   log(
     `agregado de ${evaluation.campaignCount} campanha(s): anyBreach=${result.anyBreach} ` +
-      `(abertura ${result.openRatePct.toFixed(1)}%, bounce hard ${result.hardBounceRatePct.toFixed(2)}%/total ${result.bounceRatePct.toFixed(2)}%, ` +
+      `pauseWorthyBreach=${pauseWorthyBreach}` +
+      (result.anyBreach && !pauseWorthyBreach
+        ? " (só abertura — informativo, cohort fria, nunca pausa sozinha)"
+        : "") +
+      ` (abertura ${result.openRatePct.toFixed(1)}%, bounce hard ${result.hardBounceRatePct.toFixed(2)}%/total ${result.bounceRatePct.toFixed(2)}%, ` +
       `unsub ${result.unsubRatePct.toFixed(2)}%, spam ${result.spamRatePct.toFixed(3)}%)`,
   );
 

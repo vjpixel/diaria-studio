@@ -49,10 +49,11 @@
  */
 
 import { createServer } from "node:http";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { exec } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
@@ -294,7 +295,13 @@ async function main(): Promise<void> {
     refresh_obtained_ms: Date.now(),
   };
 
-  writeFileSync(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2), "utf8");
+  // #6799 (finding do code-reviewer, PR #6809): mesma escrita atômica de
+  // `google-auth.ts::saveCredentials` — este é o OUTRO writer do mesmo
+  // `data/.credentials.json` compartilhado, e é justamente rodado durante
+  // um incidente (o editor re-autentica aqui em resposta ao banner de token
+  // expirado) — o momento em que um refresh concorrente de outro script via
+  // Task Scheduler é mais provável, não menos.
+  writeFileAtomic(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2) + "\n");
   console.log(`\n✅ Tokens salvos em ${CREDENTIALS_PATH}`);
   console.log("\nSetup concluído! Próximos passos:");
   console.log("  • drive-sync.ts e inbox-drain.ts agora funcionam automaticamente.");

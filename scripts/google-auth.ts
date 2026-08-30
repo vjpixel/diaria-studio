@@ -8,8 +8,9 @@
  * Sem dependências externas — usa fetch nativo do Node 18+.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -69,8 +70,23 @@ function loadCredentials(): GoogleCredentials {
   }
 }
 
+/**
+ * #6799: escrita ATÔMICA (write-temp + fsync + rename, `writeFileAtomic`).
+ * `data/.credentials.json` é reescrito a cada refresh de access_token e é
+ * lido por múltiplos scripts (Drive sync, inbox-drain, upload de imagens,
+ * alarmes por Gmail) que podem rodar concorrentemente via Task Scheduler —
+ * um `writeFileSync` plano (comportamento anterior) trunca o arquivo antes
+ * de escrever; duas execuções concorrentes truncando/escrevendo o MESMO
+ * arquivo (2 file descriptors independentes, offsets independentes) podem
+ * intercalar bytes de dois processos e deixar um JSON sintaticamente
+ * inválido — exatamente a classe de corrupção investigada no #6799.
+ * `writeFileAtomic` elimina essa janela: escreve num arquivo temporário
+ * (nome único por processo) e troca por `rename`, atômico no NTFS/POSIX —
+ * o arquivo final é sempre OU a versão anterior completa OU a nova versão
+ * completa, nunca uma mistura parcial de duas escritas concorrentes.
+ */
 function saveCredentials(creds: GoogleCredentials): void {
-  writeFileSync(credentialsPath(), JSON.stringify(creds, null, 2), "utf8");
+  writeFileAtomic(credentialsPath(), JSON.stringify(creds, null, 2) + "\n");
 }
 
 async function refreshAccessToken(

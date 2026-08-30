@@ -366,6 +366,62 @@ test("readRolloutGuardrailState — rollout_paused ausente/não-booleano → est
   }
 });
 
+// ─── #6799: warn callback — nunca silencioso quando o arquivo EXISTE mas
+// está corrompido/com shape errado (fail-soft não é mascarar) ─────────────
+
+test("readRolloutGuardrailState — JSON malformado: chama `warn` com mensagem clara (fail-soft ≠ silencioso)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "brevo-diaria-guardrail-state-warn-malformed-"));
+  try {
+    const path = join(dir, "guardrail-state.json");
+    writeFileSync(path, "{ isso não é JSON válido");
+    const warnings: string[] = [];
+    const state = readRolloutGuardrailState(path, (msg) => warnings.push(msg));
+    assert.deepEqual(state, emptyRolloutGuardrailState());
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /não parseia como JSON válido/);
+    assert.match(warnings[0], new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRolloutGuardrailState — shape inesperado: chama `warn` com mensagem clara", () => {
+  const dir = mkdtempSync(join(tmpdir(), "brevo-diaria-guardrail-state-warn-shape-"));
+  try {
+    const path = join(dir, "guardrail-state.json");
+    writeFileSync(path, JSON.stringify({ rollout_paused: "sim" }));
+    const warnings: string[] = [];
+    readRolloutGuardrailState(path, (msg) => warnings.push(msg));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /shape esperado/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRolloutGuardrailState — arquivo AUSENTE (1ª execução, não é corrupção): `warn` NÃO é chamado", () => {
+  const dir = mkdtempSync(join(tmpdir(), "brevo-diaria-guardrail-state-warn-missing-"));
+  try {
+    const warnings: string[] = [];
+    readRolloutGuardrailState(join(dir, "does-not-exist.json"), (msg) => warnings.push(msg));
+    assert.equal(warnings.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRolloutGuardrailState — sem `warn` passado, comportamento idêntico ao anterior (default undefined não lança)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "brevo-diaria-guardrail-state-nowarn-"));
+  try {
+    const path = join(dir, "guardrail-state.json");
+    writeFileSync(path, "{ inválido");
+    const state = readRolloutGuardrailState(path);
+    assert.deepEqual(state, emptyRolloutGuardrailState());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("writeRolloutGuardrailState — cria o diretório pai se ainda não existir (1ª execução)", () => {
   const dir = mkdtempSync(join(tmpdir(), "brevo-diaria-guardrail-state-newdir-"));
   try {

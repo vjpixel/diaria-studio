@@ -363,12 +363,30 @@ export const DEFAULT_GUARDRAIL_STATE_PATH = resolve(ROOT, "data/brevo-diaria/gua
  * de `sync-pending-to-brevo.ts` (não bloqueia por engano) — o PRÓPRIO
  * `check-brevo-diaria-guardrail.ts`, ao rodar de novo, reavalia e persiste
  * um estado válido na próxima execução.
+ *
+ * `warn` (#6799, opcional): chamado com uma mensagem clara SÓ quando o
+ * arquivo EXISTE mas o parse falha ou o shape é inesperado (JSON corrompido
+ * ou gravado por versão incompatível) — nunca quando o arquivo simplesmente
+ * não existe ainda (1ª execução, caso normal, não é corrupção). Sem `warn`
+ * passado (default), o fail-soft continua idêntico ao comportamento
+ * anterior — só quem passa a callback (ex: `check-brevo-diaria-guardrail.ts`,
+ * via `log`) ganha visibilidade de que um estado foi resetado por corrupção
+ * em vez de mascarar isso em silêncio.
  */
-export function readRolloutGuardrailState(path: string = DEFAULT_GUARDRAIL_STATE_PATH): RolloutGuardrailState {
+export function readRolloutGuardrailState(
+  path: string = DEFAULT_GUARDRAIL_STATE_PATH,
+  warn?: (msg: string) => void,
+): RolloutGuardrailState {
   if (!existsSync(path)) return emptyRolloutGuardrailState();
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof raw?.rollout_paused !== "boolean") return emptyRolloutGuardrailState();
+    if (typeof raw?.rollout_paused !== "boolean") {
+      warn?.(
+        `AVISO: ${path} existe mas não tem o shape esperado (\`rollout_paused\` ausente/não-booleano) — ` +
+          "tratando como estado vazio (fail-soft), nunca pausado.",
+      );
+      return emptyRolloutGuardrailState();
+    }
     return {
       rollout_paused: raw.rollout_paused,
       paused_at: typeof raw.paused_at === "string" ? raw.paused_at : null,
@@ -386,7 +404,11 @@ export function readRolloutGuardrailState(path: string = DEFAULT_GUARDRAIL_STATE
         ? raw.alarmed_suspended_campaign_ids.filter((v: unknown) => typeof v === "number")
         : [],
     };
-  } catch {
+  } catch (e) {
+    warn?.(
+      `AVISO: ${path} existe mas não parseia como JSON válido (${(e as Error).message}) — ` +
+        "tratando como estado vazio (fail-soft, nunca pausado). Estado corrompido foi resetado, não mascarado.",
+    );
     return emptyRolloutGuardrailState();
   }
 }
