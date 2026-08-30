@@ -108,15 +108,41 @@ export function stripInlineBold(title: string): string {
 interface WeightedWord {
   text: string;
   bold: boolean;
+  /**
+   * (#6751-render-fix) `true` quando NÃO havia espaço entre esta palavra e a
+   * anterior no texto original — caso típico: `**trecho**,`/`**trecho**.`
+   * (bold fechando direto em cima de pontuação, sem espaço). `parseInlineBold`
+   * corta em segmentos plain/bold e, sem este flag, `": abre"`/`"."` viravam
+   * "palavras" próprias que o wrap junta com espaço — inserindo um espaço
+   * fantasma antes da pontuação (achado ao vivo, carrossel diário 260830:
+   * "Anthropic :", "script fixo\n." órfão em linha própria). Palavras
+   * `attached` nunca ganham espaço antes de si (nem no `text` de exibição,
+   * nem no `<tspan>` renderizado) e nunca abrem uma nova linha sozinhas.
+   */
+  attached?: boolean;
 }
 
 function wordsWithWeight(title: string): WeightedWord[] {
-  return parseInlineBold(title).flatMap((seg) =>
+  const words: WeightedWord[] = [];
+  const segments = parseInlineBold(title);
+  segments.forEach((seg, segIdx) => {
+    // A ausência de espaço na FRONTEIRA entre 2 segmentos pode estar do lado
+    // do segmento anterior ("A " antes de "**bold**") ou deste ("**bold**"
+    // seguido de ": resto", sem espaço nenhum do lado de "resto") —
+    // `parseInlineBold` preserva o espaço de qualquer um dos 2 lados
+    // dependendo de onde ele estava no texto original. Só é "colado" (sem
+    // espaço algum na fronteira) quando NENHUM dos dois lados tem espaço.
+    const prevEndsWithSpace = segIdx === 0 || segments[segIdx - 1].text.length === 0 || /\s$/.test(segments[segIdx - 1].text);
+    const segStartsWithSpace = seg.text.length === 0 || /^\s/.test(seg.text);
+    const boundaryAttached = segIdx > 0 && !prevEndsWithSpace && !segStartsWithSpace;
     seg.text
       .split(/\s+/)
       .filter(Boolean)
-      .map((text) => ({ text, bold: seg.bold })),
-  );
+      .forEach((text, i) => {
+        words.push({ text, bold: seg.bold, attached: i === 0 && boundaryAttached });
+      });
+  });
+  return words;
 }
 
 /** Largura estimada da palavra em "caracteres regulares" (bold pesa mais). */
@@ -130,8 +156,11 @@ function greedyWrapWeighted(words: WeightedWord[], maxCharsPerLine: number): Wei
   let curWidth = 0;
   for (const w of words) {
     const ww = wordWidth(w);
-    const candidateWidth = cur.length === 0 ? ww : curWidth + 1 + ww; // +1 pelo espaço
-    if (candidateWidth > maxCharsPerLine && cur.length > 0) {
+    const gap = w.attached ? 0 : 1; // sem espaço fantasma entre palavra "colada"
+    const candidateWidth = cur.length === 0 ? ww : curWidth + gap + ww;
+    // Palavra `attached` nunca inicia linha nova sozinha — ficaria separada
+    // da palavra a que se cola (ex: pontuação órfã).
+    if (!w.attached && candidateWidth > maxCharsPerLine && cur.length > 0) {
       lines.push(cur);
       cur = [w];
       curWidth = ww;
@@ -254,7 +283,7 @@ function wrapSingleParagraph(title: string, maxCharsPerLine: number): FlatCardLi
   // diário (>24 palavras) já caem no guloso hoje, então é o mesmo regime.
   return greedyWrapWeighted(wordsWithWeight(title), maxCharsPerLine).map((words) => ({
     words,
-    text: words.map((w) => w.text).join(" "),
+    text: words.reduce((acc, w, i) => acc + (i === 0 || w.attached ? "" : " ") + w.text, ""),
   }));
 }
 
@@ -386,16 +415,19 @@ export function buildFlatCardSvg(text: FlatCardText, layout: FlatCardLayout = DE
   const lineMarkup = (line: FlatCardLine): string => {
     // Segmentos contíguos de mesmo peso; o espaço entre segmentos de peso
     // DIFERENTE fica SEMPRE fora do `<tspan>` (espaço na borda de um tspan é
-    // suscetível ao colapso de whitespace do XML).
-    const segs: { text: string; bold: boolean }[] = [];
+    // suscetível ao colapso de whitespace do XML) — exceto quando a palavra
+    // que abre o novo segmento é `attached` (colada, sem espaço no original,
+    // #6751-render-fix): aí nem o `sep` entre segmentos nem o espaço interno
+    // do `+=` abaixo entram.
+    const segs: { text: string; bold: boolean; leadAttached: boolean }[] = [];
     for (const w of line.words) {
       const last = segs[segs.length - 1];
-      if (last && last.bold === w.bold) last.text += ` ${w.text}`;
-      else segs.push({ text: w.text, bold: w.bold });
+      if (last && last.bold === w.bold) last.text += (w.attached ? "" : " ") + w.text;
+      else segs.push({ text: w.text, bold: w.bold, leadAttached: !!w.attached });
     }
     return segs
       .map((s, i) => {
-        const sep = i > 0 ? " " : "";
+        const sep = i > 0 && !s.leadAttached ? " " : "";
         return s.bold ? `${sep}<tspan font-weight="700">${esc(s.text)}</tspan>` : `${sep}${esc(s.text)}`;
       })
       .join("");
