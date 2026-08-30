@@ -215,6 +215,38 @@ def main() -> int:
             f"(saída: {out!r})",
         )
 
+        # --- #6795: 2 ticks CONSECUTIVOS de fallback bem-sucedido (rc=1 em
+        # cada, sem linha TERMINAL) não podem, juntos, disparar ALERTA. Este
+        # é o cenário real que o finding 1 acima (1 único tick) não cobre:
+        # "rc=1" sozinho na tupla contava delegation_streak=2 num par de
+        # ticks NORMAIS (o :free #1 estoura cota, o #2 responde, exit 0),
+        # que é justamente o caso comum, não a exceção.
+        for f in out_dir.glob("*.md"):
+            f.unlink()
+        _write_tick(
+            out_dir,
+            "tick-01.md",
+            "[claude-openrouter] tentando model=dots-3\n"
+            "[claude-openrouter] falhou model=dots-3 rc=1: RATE-LIMIT/QUOTA — transitório, próximo da cadeia\n"
+            "[claude-openrouter] tentando model=laguna\n"
+            "[claude-openrouter] ok model=laguna\n",
+        )
+        _write_tick(
+            out_dir,
+            "tick-02.md",
+            "[claude-openrouter] tentando model=dots-3\n"
+            "[claude-openrouter] falhou model=dots-3 rc=1: RATE-LIMIT/QUOTA — transitório, próximo da cadeia\n"
+            "[claude-openrouter] tentando model=laguna\n"
+            "[claude-openrouter] ok model=laguna\n",
+        )
+        _write_jobs(jobs_json, streak=0, status="ok", model="dots-3")
+        out = _run(mod, None)
+        assert_true(
+            "#6795: 2 ticks consecutivos de fallback bem-sucedido (rc=1 cada, sem linha TERMINAL) não produzem ALERTA",
+            out == "OK",
+            f"(saída: {out!r})",
+        )
+
         # --- Finding 3: last_status != 'ok' com streaks saudáveis não alarma ---
         for f in out_dir.glob("*.md"):
             f.unlink()

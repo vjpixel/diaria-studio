@@ -182,6 +182,30 @@ STDERR_LOG="${TMPDIR:-/tmp}/claude-openrouter-stderr.$$.log"
 # limit explícito, ou timeout — esses SIM se resolvem sozinhos no reset).
 SAW_QUOTA_SIGNAL=0
 SAW_CONFIG_ERROR_SIGNAL=0
+
+# #6803: "model not found"/"invalid model" no stderr pode ser ausência
+# TRANSITÓRIA do catálogo (indisponibilidade momentânea), não config
+# permanente — medido ao vivo em 30/08/2026: `z-ai/glm-5.2:free` disparou
+# esse sinal em 28/08 (exit 4, "config inválida, não volta sozinha") e
+# estava de volta no catálogo 2 dias depois. Antes de marcar
+# SAW_CONFIG_ERROR_SIGNAL=1 (que produz exit 4, para o job pedindo correção
+# manual de MODELS_DEFAULT), reconsulta `GET /api/v1/models` — endpoint
+# público, sem auth, barato — e confirma se o id realmente sumiu. Se o
+# curl falhar (rede indisponível, timeout) o resultado é "não confirmado":
+# mantém o comportamento ANTERIOR (exit 4) por segurança — não dá pra provar
+# que o id existe, então não dá pra baixar a severidade.
+model_in_openrouter_catalog() {
+  local model="$1"
+  local catalog
+  if ! catalog=$(curl -sf --max-time 10 "https://openrouter.ai/api/v1/models" 2>/dev/null); then
+    return 2
+  fi
+  if printf '%s' "$catalog" | grep -qF "\"id\":\"$model\""; then
+    return 0
+  fi
+  return 1
+}
+
 for MODEL in "${MODELS[@]}"; do
   echo "[claude-openrouter] tentando model=$MODEL" >&2
   ATTEMPT_LOG="${TMPDIR:-/tmp}/claude-openrouter-attempt.$$.log"
@@ -237,6 +261,12 @@ for MODEL in "${MODELS[@]}"; do
   # /proc/<pid>/environ é 0400 (só o dono lê). O subshell preserva o escopo
   # que o `env` garantia: as vars morrem com ele e NUNCA escapam pro shell
   # que chamou o wrapper (regra #5608 — sequestrariam sessões da assinatura).
+  # #6666 item 1 ("capturar o erro real"): registrar quanto tempo o processo
+  # viveu junto do exit code — os 3 stderr logs inspecionados no incidente
+  # (#6666) só tinham avisos de ruído, sem timing; um processo que morre em
+  # <1s (crash imediato) vs um que roda até o TIMEOUT completo são causas
+  # bem diferentes, e nenhuma das duas era distinguível antes disto.
+  ATTEMPT_START_TS=$(date +%s)
   OUT=$(printf '%s' "$PROMPT" | (
     export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
     export ANTHROPIC_AUTH_TOKEN="$KEY"
@@ -249,6 +279,7 @@ for MODEL in "${MODELS[@]}"; do
       --max-budget-usd "$BUDGET" 2> "$ATTEMPT_LOG"
   ))
   RC=$?
+  ATTEMPT_DURATION_S=$(( $(date +%s) - ATTEMPT_START_TS ))
     set -e
     # #6696 finding 2: snapshot do stderr PURO antes do stdout entrar no
     # mesmo arquivo. Este wrapper roda DENTRO deste checkout, onde as
@@ -280,6 +311,26 @@ for MODEL in "${MODELS[@]}"; do
     # duplicando log e inflando a chance de falso-positivo por substring
     # nos watchdogs que varrem esse output.
     grep -vE "not a model this version|unrecognized_model|connectors are disabled" "$ATTEMPT_LOG" >&2 || true
+    # #6666 item 1: registrar rc + duração de vida do processo — nenhum dos
+    # 3 stderr logs inspecionados no incidente tinha isso, só ruído de
+    # conector/unrecognized_model, então não dava pra distinguir "processo
+    # morreu na hora" de "rodou até o TIMEOUT e não terminou a tempo".
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >&2
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$STDERR_LOG"
+    # #6666 item 1: cópia num path ESTÁVEL (não $$-escopado) da última
+    # falha — o path com PID some junto com o processo e, sem nada
+    # arquivando-o, o log fica irrecuperável assim que o PID é reciclado ou
+    # /tmp é limpo. Sobrescrita a cada falha nova (best-effort — investigar
+    # "a falha mais recente" é o caso de uso; falhas concorrentes de ticks
+    # paralelos ainda têm o path $$-escopado como fonte completa).
+    # Review #6808 (P2, confiança alta): a linha de diagnóstico (rc+duração)
+    # só ia pro STDERR_LOG ($$-escopado, some com o processo) — o
+    # last-failure.log ESTÁVEL era uma cópia do ATTEMPT_LOG de ANTES da
+    # linha de diagnóstico ser escrita, então o arquivo que devia sobreviver
+    # não continha o próprio dado que o #6666 item 1 existe pra preservar.
+    # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
+    echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT" >> "$ATTEMPT_LOG"
+    cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
     # Classificar o motivo desta tentativa (finding do review #6446 cobria só
     # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
     # distinção quota-transitória vs config-permanente dentro do rc≠0/vazio).
@@ -290,15 +341,24 @@ for MODEL in "${MODELS[@]}"; do
       # #6617 review finding 3: checar config-inválida ANTES de rate-limit —
       # "not a valid model" também casaria com um grep solto por "valid model"
       # numa mensagem de quota, então a ordem evita falso-negativo cruzado.
-      SAW_CONFIG_ERROR_SIGNAL=1
-      echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      #
+      # #6803: antes de marcar como config PERMANENTE (exit 4), reconsulta o
+      # catálogo — o provedor pode ter recusado o modelo por indisponibilidade
+      # TRANSITÓRIA, não porque o id deixou de existir.
+      if model_in_openrouter_catalog "$MODEL"; then
+        SAW_QUOTA_SIGNAL=1
+        echo "[claude-openrouter] falhou model=$MODEL rc=$RC: PROVEDOR REJEITOU, mas o id CONTINUA no catálogo agora (/api/v1/models) — provável indisponibilidade TRANSITÓRIA (#6803), tratando como rate-limit/quota, NÃO como config permanente; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      else
+        SAW_CONFIG_ERROR_SIGNAL=1
+        echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — confirmado ausente do catálogo agora (ou catálogo inacessível) (#6803); config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      fi
     elif grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 4: "429" sozinho podia casar com ruído não
       # relacionado (contagem de bytes, linha) — agora exige contexto de
       # rate-limit textual OU o número junto de "http"/"status".
       SAW_QUOTA_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC: RATE-LIMIT/QUOTA (sinal no stderr) — transitório, próximo da cadeia; stderr cru em $STDERR_LOG" >&2
-    elif grep -qiE "exceeded.*budget|budget.*exceeded|too expensive|cost.*exceed" "$ATTEMPT_LOG"; then
+    elif grep -qE "Exceeded USD budget" "$ATTEMPT_LOG"; then
       # #6696 finding 1: budget-exceeded é DETERMINÍSTICO pro mesmo valor de
       # BUDGET — o mesmo prompt estoura em TODO run até alguém mexer no
       # valor, então não é "transitório, reset resolve" (SAW_QUOTA_SIGNAL);
@@ -308,6 +368,22 @@ for MODEL in "${MODELS[@]}"; do
       # além do que o BUDGET comporta faria todo tick estourar e o
       # watchdog/consumidor leria "reset natural resolve" — nunca a correção
       # manual necessária (subir BUDGET ou cortar contexto).
+      #
+      # #6796: este é o ÚNICO classificador que ainda vê texto GERADO pelo
+      # modelo (ATTEMPT_LOG = STDERR_ONLY_LOG + $OUT, e $OUT é a resposta do
+      # modelo) — não dá pra migrar pro snapshot stderr-only como os outros
+      # 2 (finding 2 do #6696), porque "Exceeded USD budget" é erro do CLI
+      # que vai pro STDOUT (#6666), nunca pro stderr. O padrão anterior
+      # ("exceeded.*budget|budget.*exceeded|too expensive|cost.*exceed") era
+      # frouxo o bastante pra casar PROSA — este checkout roda tarefas que
+      # discutem justamente orçamento/custo (#6712, #6716, #6791), então um
+      # tick em que o modelo escreve "o job excedeu o budget" e morre com
+      # rc≠0 disparava SAW_CONFIG_ERROR_SIGNAL espúrio (exit 4, pede correção
+      # manual sobre modelos que estavam sãos). O CLI emite o texto literal
+      # "Exceeded USD budget" (capitalização exata, confirmada nos comentários
+      # acima e em #6666/#6712/test/hermes-budget-guard.test.ts) — casar só
+      # essa string reduz a superfície a "o modelo reproduziu literalmente a
+      # frase do CLI em inglês", muito mais raro que prosa PT-BR sobre custo.
       SAW_CONFIG_ERROR_SIGNAL=1
       echo "[claude-openrouter] falhou model=$MODEL rc=$RC: ORÇAMENTO EXCEDIDO (stdout: BUDGET=$BUDGET insuficiente para o contexto carregado) — permanente até o valor mudar, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
     elif [ $RC -eq 0 ]; then

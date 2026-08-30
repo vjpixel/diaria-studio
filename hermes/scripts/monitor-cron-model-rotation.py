@@ -53,8 +53,18 @@ JOB_ID = "5d791ef6fc2c"
 # marcador precisa ser a linha TERMINAL, que só aparece quando a cadeia
 # INTEIRA falhou (todos os modelos, sem nenhum sucesso) — ver o `exit 1`/
 # `exit 4` no fim do loop do wrapper.
+#
+# #6795: "rc=1" foi removido pelo MESMO motivo que já valeu para
+# "falhou model=" — `claude-openrouter.sh:282,288,300,304` imprime
+# "falhou model=$MODEL rc=$RC: ..." em stderr para CADA modelo que falha
+# antes de um seguinte dar certo, e um `:free` estourar cota (rc=1) seguido
+# de sucesso no próximo elo é o tick normal e bem-sucedido, não uma falha de
+# delegação. O filtro por substring casava essa linha e contava como falha
+# um tick que terminou com exit 0. A linha TERMINAL correta já está na
+# tupla ("ERRO: todos os modelos da cadeia falharam") — "rc=1" é redundante
+# no caso real (cadeia inteira falhou) e nocivo no caso comum (fallback
+# bem-sucedido).
 DELEGATION_FAILURE_MARKERS = (
-    "rc=1",
     "wrapper degradado",
     "ERRO: todos os modelos da cadeia falharam",
 )
