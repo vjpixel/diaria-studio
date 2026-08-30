@@ -1225,6 +1225,32 @@ describe("runStage1 --phase post-gate", () => {
       });
     });
   });
+
+  // Regression #6827: sessão headless (--auto) completava todo o Stage 1 mas
+  // nunca escrevia o sentinel, fazendo o runner não detectar conclusão e
+  // re-executar o stage inteiro na próxima etapa. Garante que o write do
+  // sentinel no post-gate usa args canônicos (edition, step, outputs) e é
+  // o ÚLTIMO passo — após apply-gate-edits, check-invariants e experiment.
+  it("#6827: --auto (headless) escreve sentinel com args canônicos e por último", async () => {
+    return withTmpRoot("stage-1-run-p5-6827-", (root, editionDir) => {
+      const { exec, calls } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const sentinelCall = calls.find((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write");
+        assert.ok(sentinelCall, "sentinel write deve ser chamado em --auto");
+        assert.deepEqual(
+          sentinelCall!.args,
+          ["write", "--edition", "260423", "--step", "1", "--outputs", "01-categorized.md,_internal/01-approved.json"],
+        );
+        // sentinel é o último step: não há calls após ele exceto update-stage-status/capture-stage-usage
+        const sentinelIdx = calls.findIndex((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write");
+        const postSentinelScripts = calls.slice(sentinelIdx + 1).map((c) => c.script.split("/").pop());
+        assert.equal(postSentinelScripts.every((s) => s === "update-stage-status.ts" || s === "capture-stage-usage.ts"), true);
+        assert.ok(postSentinelScripts.length > 0, "depois do sentinel vêm stage-status + usage-capture, não mais work pipeline");
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

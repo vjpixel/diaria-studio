@@ -82,7 +82,44 @@ Semântica completa (exit codes, output JSON, falha do próprio validator) em **
 
 `{EDITION_DIR}/_internal/01-categorized.json` + `01-categorized.md` — apresentar ao usuário para aprovação. Após aprovação, salvar em `_internal/01-approved.json`.
 
-## Passo 4 — Fechar task tracking pós-gate (#904)
+## Passo 4 — Escrever sentinel de conclusão (#6827) — OBRIGATÓRIO antes de retornar
+
+**Este passo é o que faz o Stage 1 sair limpo em modo headless.** O runner
+(`scripts/lib/edition-stage-runner.ts`) decide retomar/skipir o Stage 2+ pelo
+arquivo `_internal/.step-1-done.json` — se ele não estiver lá, a próxima etapa
+re-executa o Stage 1 inteiro, ou pior, o orchestrator parte pra frente com a
+edição sem sentinel e o checkpoint nunca é escrito (#6827, edição 260831:
+sessão `--print` completou todo o trabalho com outputs válidos e saiu sem
+gravar o sentinel, causando falha silenciosa de detecção de conclusão).
+
+Semântica completa em `scripts/pipeline-sentinel.ts` (exit codes, `--bypass-reason`,
+regras de `check-invariants --stage 1` rodadas automaticamente pelo próprio
+`write`). **#3530:** `{EDITION_DIR}` já foi resolvido no Passo 1/§ 0 Setup —
+reusar aqui, nunca montar `data/editions/$1/` à mão.
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition $1 \
+  --step 1 \
+  --outputs "01-categorized.md,_internal/01-approved.json"
+```
+
+- **É o ÚLTIMO passo deste stage.** Não é "depois do gate" no sentido de "quando
+  der tempo" — é a saída. Em `--no-gates` (runner agendado, `--print`) o gate é
+  auto-aprovado por `apply-gate-edits.ts --auto` e esta chamada vem em seguida,
+  incondicionalmente. Em sessão com o editor, vem imediatamente após a aprovação
+  do gate (ou após o editor confirmar "editar + re-aprovar").
+- **Falha do `write` é fail-soft, não desculpa para pular.** Se retorna exit != 0
+  (inviável de write, violação de invariant `severity: error` sem
+  `--bypass-reason`), logar `warn: sentinel_write_failed` via `log-event.ts` e
+  **reeter a chamada com `--bypass-reason "..."`** descrevendo o falso-positivo
+  conhecido — nunca deixar o stage sem sentinel por falha transitória.
+- **Não confundir com o marker `inject-inbox-urls`.** `pipeline-sentinel.ts
+  assert-marker --name inject-inbox-urls` é uma checagem separada (prova que o
+  inbox drain rodou, #594) e continua valendo no Passo 2 do playbook; este
+  passo é o sentinel de CONCLUSÃO do stage, `.step-1-done.json`.
+
+## Passo 5 — Fechar task tracking pós-gate (#904)
 
 **Imediatamente após gate aprovado** (quando o sentinel `pipeline-sentinel.ts write --step 1` for executado em 1y do orchestrator), marcar todas as tasks `Stage 1*` (incluindo `Stage 1x — GATE HUMANO`) como `completed` via `TaskUpdate`. Sem isso, o timer da task de gate continua rodando indefinidamente na UI mesmo com Stage 2 já dispatchado.
 
