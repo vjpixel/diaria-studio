@@ -151,48 +151,67 @@ def main() -> int:
         )
 
         # --- Finding 2: rotação pula modelo já falhado NESTA sequência ---
+        # Usa slugs `:free` de propósito (regressão do bug achado no
+        # self-review: um corte ingênuo em `:` truncava "laguna-s-2.1:free"
+        # pra "laguna-s-2.1", perdendo o sufixo e quebrando o match contra a
+        # chain — ver comentário de FAILED_MODEL_RE no módulo).
         for f in out_dir.glob("*.md"):
             f.unlink()
-        # chain reduzida a 2 pra forçar o wrap-around; modelo atual = dots-3,
-        # tick mostra dots-3 E laguna tendo falhado nesta mesma sequência.
-        _write_config(config_yaml, [("dots-3", "openrouter"), ("laguna", "openrouter")])
+        free_chain = [
+            ("dots-studio/dots-3-note-preview:free", "openrouter"),
+            ("poolside/laguna-s-2.1:free", "openrouter"),
+        ]
+        _write_config(config_yaml, free_chain)
+        # Mistura os 2 formatos reais do wrapper: "model=$MODEL rc=$RC: ..."
+        # (espaço antes do rc=) e "model=$MODEL: ..." (':' direto após o modelo).
         _write_tick(
             out_dir,
             "tick-01.md",
-            "falhou model=dots-3 rc=1\nfalhou model=laguna rc=1\nERRO: todos os modelos da cadeia falharam\n",
+            "falhou model=dots-studio/dots-3-note-preview:free rc=1: RATE-LIMIT/QUOTA\n"
+            "falhou model=poolside/laguna-s-2.1:free: TIMEOUT (2400s)\n"
+            "ERRO: todos os modelos da cadeia falharam\n",
         )
         _write_tick(
             out_dir,
             "tick-02.md",
-            "falhou model=dots-3 rc=1\nfalhou model=laguna rc=1\nERRO: todos os modelos da cadeia falharam\n",
+            "falhou model=dots-studio/dots-3-note-preview:free rc=1: RATE-LIMIT/QUOTA\n"
+            "falhou model=poolside/laguna-s-2.1:free: TIMEOUT (2400s)\n"
+            "ERRO: todos os modelos da cadeia falharam\n",
         )
-        _write_jobs(jobs_json, streak=2, status="error", model="dots-3")
+        _write_jobs(jobs_json, streak=2, status="error", model="dots-studio/dots-3-note-preview:free")
         out = _run(mod, None)
         assert_true(
-            "finding 2: com os 2 únicos modelos da chain falhados nesta sequência, cai no fallback (candidates[0])",
-            "dots-3" in out or "laguna" in out,  # fallback: sem opção livre, usa o primeiro candidato
+            "finding 2: com os 2 únicos modelos :free da chain falhados nesta sequência, cai no fallback (candidates[0])",
+            "dots-3-note-preview:free" in out or "laguna-s-2.1:free" in out,
             f"(saída: {out!r})",
         )
 
-        # Chain de 3 com só 1 falhado nesta sequência: deve pular o falhado.
+        # Chain de 3 (2 :free + 1 pago) com só os 2 :free falhados nesta
+        # sequência: deve pular AMBOS (sufixo :free preservado) e recomendar
+        # o pago.
         for f in out_dir.glob("*.md"):
             f.unlink()
-        _write_config(config_yaml, chain)  # 3 entradas
+        free_chain_3 = free_chain + [("z-ai/glm-5.3-flash", "openrouter")]
+        _write_config(config_yaml, free_chain_3)
         _write_tick(
             out_dir,
             "tick-01.md",
-            "falhou model=dots-3 rc=1\nfalhou model=laguna rc=1\nERRO: todos os modelos da cadeia falharam\n",
+            "falhou model=dots-studio/dots-3-note-preview:free rc=1: RATE-LIMIT/QUOTA\n"
+            "falhou model=poolside/laguna-s-2.1:free: TIMEOUT (2400s)\n"
+            "ERRO: todos os modelos da cadeia falharam\n",
         )
         _write_tick(
             out_dir,
             "tick-02.md",
-            "falhou model=dots-3 rc=1\nfalhou model=laguna rc=1\nERRO: todos os modelos da cadeia falharam\n",
+            "falhou model=dots-studio/dots-3-note-preview:free rc=1: RATE-LIMIT/QUOTA\n"
+            "falhou model=poolside/laguna-s-2.1:free: TIMEOUT (2400s)\n"
+            "ERRO: todos os modelos da cadeia falharam\n",
         )
-        _write_jobs(jobs_json, streak=2, status="error", model="dots-3")
+        _write_jobs(jobs_json, streak=2, status="error", model="dots-studio/dots-3-note-preview:free")
         out = _run(mod, None)
         assert_true(
-            "finding 2: pula 'laguna' (já falhou nesta sequência) e recomenda 'gpt-5.6-luna'",
-            "gpt-5.6-luna" in out,
+            "finding 2: pula os 2 modelos :free (já falharam nesta sequência, sufixo preservado) e recomenda o pago glm-5.3-flash",
+            "z-ai/glm-5.3-flash" in out,
             f"(saída: {out!r})",
         )
 

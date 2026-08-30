@@ -21,6 +21,14 @@ Lógica:
                         pulando o atual e os que já falharam nesta sequência.
   - job rodando agora → "RUNNING" estável.
 """
+# from __future__ import annotations (#6697 self-review): as novas type hints
+# `str | None`/`list[str]`/`set[str]` introduzidas nesta revisão usam sintaxe
+# de anotação do Python 3.10+; sem este import, DEFINIR as funções (não só
+# chamá-las) já lança TypeError num interpretador mais antigo — e não há
+# garantia versionada aqui de qual Python roda no `helios`. O future import
+# torna toda anotação uma string avaliada preguiçosamente, seguro desde 3.7+.
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -54,7 +62,16 @@ DELEGATION_FAILURE_MARKERS = (
 # #6697 finding 1: regex pra extrair, de um tick que falhou de fato, QUAIS
 # modelos ele tentou nesta sequência — usado pela rotação (finding 2) pra
 # não recomendar de volta um modelo que já falhou no mesmo tick.
-FAILED_MODEL_RE = re.compile(r"falhou model=([^\s:]+)")
+#
+# Achado no self-review desta mesma PR: um corte em `[^\s:]+` (parar no
+# primeiro ':') TRUNCA slugs `:free` — a maioria dos modelos da chain
+# (ex: "poolside/laguna-s-2.1:free") tem um ':' DENTRO do próprio nome, não
+# só como delimitador do log. `claude-openrouter.sh` imprime "falhou
+# model=$MODEL" seguido ora por espaço ("model=$MODEL rc=$RC: ..."), ora por
+# ':' direto ("model=$MODEL: TIMEOUT ...") — captura por \S+ (não-espaço) e
+# só depois remove um ':' remanescente no fim (`.rstrip(":")`), que nunca
+# aparece DENTRO de um slug real (sempre termina em letra, ex: "...free").
+FAILED_MODEL_RE = re.compile(r"falhou model=(\S+)")
 
 
 def _latest_tick_files(max_check: int = 5) -> list[str]:
@@ -108,7 +125,7 @@ def failed_models_in_latest_tick() -> set[str]:
     content = _read_tick(files[-1])
     if content is None:
         return set()
-    return set(FAILED_MODEL_RE.findall(content))
+    return {m.rstrip(":") for m in FAILED_MODEL_RE.findall(content)}
 
 
 def load_chain():
