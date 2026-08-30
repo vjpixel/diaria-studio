@@ -635,6 +635,22 @@ export function logEffortDecision(
  * consegue nem determinar o que está revisando, e o caminho é raro.
  */
 
+/**
+ * #6732: marcador literal que a sessão deve postar quando a ferramenta Agent
+ * NÃO está disponível (a delegação do `hermes-diaria-continuo` roda com
+ * `--tools` sem `Agent`/`Task`, de propósito — #6712). Duplicado por STRING
+ * (não import) de `scripts/lib/pr-review-authenticity.ts` — este arquivo
+ * nunca importa `.ts` do repo (ver o docblock no topo, "Also deliberately
+ * self-contained"); `REVIEW_AGENT`, logo abaixo, é definido localmente pelo
+ * mesmo motivo, nunca importado de outro módulo (correção de fleet review
+ * #6820: a frase anterior lia como "REVIEW_AGENT não tem consumidor
+ * nenhum", o que é falso — o teste importa esse export; a intenção sempre
+ * foi "nunca importado PARA DENTRO deste arquivo"). Manter as duas pontas em
+ * sincronia manual — `scripts/check-pr-review-authenticity.ts` é quem lê
+ * este marcador de volta.
+ */
+export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
+
 /** Agente primário do review por PR (nome prefixado pelo plugin — ver #4234). */
 export const REVIEW_AGENT = "pr-review-toolkit:code-reviewer";
 
@@ -678,7 +694,16 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     "Tag every finding with its confidence (alta/média/baixa) and severity (P0..P3): ranking and filtering are a " +
     "SEPARATE downstream step (the auto-merge gate of #5251 reads those tags), never the reviewing agent's job (#5304). " +
     "Then post the findings as inline PR comments (`gh pr comment`/`gh api`). " +
-    "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
+    "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched). " +
+    "IF the Agent tool is NOT available to you in THIS session (e.g. the `hermes-diaria-continuo` delegation, which " +
+    "intentionally omits it, #6712): do not dispatch anything, and do NOT label your own reading of the diff as an " +
+    "agent review under any phrasing resembling \"Review automatizado\" — that is exactly the fabrication #6732 " +
+    `exists to stop (measured live on PRs #6713/#6715). Instead, read the diff yourself and post a comment starting ` +
+    `with the literal line \`${SELF_REVIEW_MARKER}\` on its own line, followed by plain prose stating this is a ` +
+    "self-review by the PR's own authoring session, with no independent reviewer. The pre-merge gate " +
+    "(`scripts/check-pr-review-authenticity.ts`, #6732) reads that marker and treats it as NOT satisfying #5251 — " +
+    "the PR stays open for external review (`daily-consolidated-review.sh` or overnight/develop pickup), never " +
+    "merges on a self-review alone." +
     warningNote
   );
 }

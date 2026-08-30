@@ -222,6 +222,7 @@
   "test/pr-create-review-hook.test.ts::TS7005": 3,
   "test/pr-create-review-hook.test.ts::TS7016": 1,
   "test/pr-create-review-hook.test.ts::TS7034": 3,
+  "test/pr-review-authenticity.test.ts::TS7016": 1,
   "test/publish-consent.test.ts::TS2345": 7,
   "test/publish-daily-brevo-integration-4532.test.ts::TS2578": 1,
   "test/publish-daily-brevo-send-test-5086.test.ts::TS2578": 1,

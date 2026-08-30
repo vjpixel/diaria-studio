@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.2
+version: 0.5.3
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -139,7 +139,44 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    comentar no PR e encaminhar.
 3. **Review independente pré-merge** (pipeline `requesting-code-review`,
    inalterado): scan estático → baseline de testes → reviewer independente
-   fail-closed → auto-fix loop (máx. 2). Passed → merge no MESMO tick.
+   fail-closed → auto-fix loop (máx. 2).
+
+   **Gate de autenticidade do review, obrigatório antes de mergear (#6732):**
+   a delegação do passo 4 roda sem ferramenta Agent (`--tools` abaixo omite
+   `Agent`/`Task`, de propósito — #6712), então ela não consegue de fato
+   despachar um subagente revisor via o dispatch que
+   `.claude/hooks/pr-create-review.mjs` instrui. A instrução do hook cobre
+   isso (30/08/2026): sem Agent tool disponível, a sessão posta o review como
+   self-review honesto, com a linha literal `<!-- self-review: true -->`, em
+   vez de fabricar um comentário no formato `"Review automatizado (N
+   agente(s)..."` de um dispatch que não aconteceu (era exatamente isso que
+   os PRs #6713/#6715 mostravam, indistinguível de um review real).
+
+   Antes de mergear, rodar:
+   ```bash
+   npx tsx scripts/check-pr-review-authenticity.ts --pr N
+   ```
+   `exit 0` (`pass` — comentário no formato de review independente
+   encontrado, sem o marcador de self-review) → merge no MESMO tick, como
+   antes. `exit != 0` (`self_review`, `no_review`, ou `error` — fail-closed,
+   mesma disciplina do guard de caminho sensível do passo 2) → **NÃO
+   mergear**: deixar o PR aberto, registrar no relatório do tick como
+   "aguardando review externo — self-review não satisfaz o gate do #5251",
+   e passar para a próxima issue/PR da fila.
+
+   **Estado honesto sobre "quem revisa depois" (achado do fleet review do
+   #6820, 30/08/2026): NÃO existe hoje um passo explícito em
+   `/diaria-overnight`/`/diaria-develop` que adote um PR órfão marcado
+   self-review, rode um review de verdade nele, e o mergeie.** O checklist
+   de "PR alheio já aberto" dessas duas skills (autor conhecido? CI verde?
+   atualizado nas últimas ~24-48h?) decide se a sessão reimplementa a issue
+   de forma independente — não decide "revisar e mergear o PR existente". Na
+   prática, hoje, um PR self-reviewed do contínuo fica aberto **indefinidamente**
+   a menos que uma sessão o note manualmente. `daily-consolidated-review.sh`
+   também não fecha esse loop — gera achados/issues sobre o diff, nunca
+   mergeia PR aberto. Rastreado em #6823; não bloqueia este gate (o gate
+   continua correto — impede o self-merge inseguro — só o "e depois?"
+   segue em aberto).
 
 ### 4. Implementar issues elegíveis — via harness delegado
 
@@ -279,6 +316,18 @@ MESMO ciclo enquanto houver orçamento.
 
 ## Changelog
 
+- 0.5.3 (30/08/2026): gate de autenticidade de review pré-merge (#6732) —
+  a delegação (sem ferramenta Agent) fabricava um comentário no formato de
+  review independente, satisfazendo o gate de auto-merge do #5251 com
+  self-review disfarçado (medido nos PRs #6713/#6715). A instrução do hook
+  (`.claude/hooks/pr-create-review.mjs`) agora manda postar self-review
+  honesto (`<!-- self-review: true -->`) quando o Agent tool não está
+  disponível; o passo 3 do §3 acima roda
+  `scripts/check-pr-review-authenticity.ts --pr N` antes de mergear —
+  `exit 0` = review independente confirmado, mergeia; qualquer outro código
+  = fail-closed, PR fica aberto aguardando review externo (Opus diário ou
+  pickup do overnight/develop). Opção (2) da decisão do editor de 29/08,
+  liberada para execução em 30/08.
 - 0.5.2 (28/08/2026): session-id do cron por TICK, não por JOB (#6443,
   raiz da issue — itens 2/3 da decisão do editor já tinham sido resolvidos
   via #6436). `$SESSION_ID` agora inclui timestamp UTC do início do tick
