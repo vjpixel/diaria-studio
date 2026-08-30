@@ -312,7 +312,12 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet, brevoPut } from "./lib/brevo-client.ts";
-import { eventTimestampMs } from "./lib/brevo-stats.ts";
+import { eventTimestampMs, latestEventTime } from "./lib/brevo-stats.ts";
+import {
+  buildDuplicateWindowEntry,
+  appendBrevoKitDuplicateWindowLog,
+  type BrevoKitDuplicateWindowEntry,
+} from "./lib/brevo-kit-duplicate-window.ts"; // #6705 — instrumentação/medição, não correção
 import {
   computeBrevoDiariaOpenRate,
   classifyBrevoDiariaAction,
@@ -476,6 +481,12 @@ export interface BrevoContactState {
    * admin-side/complaint), usado só quando `emailBlacklisted && !userUnsubscribed`
    * pra escolher entre `resolution_reason` `"native_bounce"`/`"native_admin_block"`. */
   hardBounced: boolean;
+  /** #6705 — ISO do envio Brevo mais recente (`statistics.messagesSent`,
+   * `latestEventTime`), ou `null` se nunca houve envio. Usado exclusivamente
+   * pela instrumentação da janela de duplicidade Kit×Brevo (ver
+   * `lib/brevo-kit-duplicate-window.ts`) — nunca influencia a decisão de
+   * promoção/supressão em si. */
+  last_messagesSent_at: string | null;
 }
 
 export async function fetchBrevoContactState(apiKey: string, email: string): Promise<BrevoContactState> {
@@ -492,6 +503,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     emailBlacklisted: res.body?.emailBlacklisted === true,
     userUnsubscribed: hasUserUnsubscription(res.body?.statistics),
     hardBounced: hasHardBounce(res.body?.statistics),
+    last_messagesSent_at: latestEventTime(res.body?.statistics?.messagesSent),
   };
 }
 
@@ -1215,6 +1227,18 @@ export interface RunEvaluationParams {
    * que depende da key", não "o backend atual é kit".
    */
   kitApiKey?: string;
+  /**
+   * #6705 — instrumentação (medição, NUNCA correção) da janela de
+   * duplicidade Kit×Brevo: chamada toda vez que este `runEvaluation`
+   * detecta, em `push`, um contato já `active` no Kit — a saída REAL da
+   * fila (não a confirmação em si, que este processo não observa
+   * diretamente). Opcional e OMITIDA por padrão: sem isto, nenhuma linha é
+   * gravada (nenhum efeito colateral em disco além dos já existentes) —
+   * mantém a suíte de testes livre de I/O de arquivo. `main()` injeta a
+   * implementação de produção (`appendBrevoKitDuplicateWindowLog`,
+   * `lib/brevo-kit-duplicate-window.ts`).
+   */
+  appendDuplicateWindowLog?: (entry: BrevoKitDuplicateWindowEntry) => void;
 }
 
 /**
@@ -1305,6 +1329,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     log,
     newsletterBackend = "beehiiv",
     kitApiKey,
+    appendDuplicateWindowLog,
   } = params;
   let store = params.store;
 
@@ -1334,6 +1359,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // pelo Passo 0 (quando `emailBlacklisted`) e reusado pelo Passo 1 —
       // nunca 2 GETs ao Kit no mesmo run pro mesmo contato.
       let kitConfirmed: boolean | undefined;
+      // #6705 — `created_at` do subscriber Kit, capturado sempre que um GET
+      // ao Kit roda nesta iteração (Passo 0 ou Passo 1 abaixo), reusado pela
+      // instrumentação da janela de duplicidade quando `kitConfirmed` vira
+      // `true`. Melhor proxy disponível pro momento de entrada no funil Kit
+      // — NÃO é o instante da confirmação do double opt-in (ver docstring de
+      // `lib/brevo-kit-duplicate-window.ts`).
+      let kitSubscriberCreatedAt: string | null = null;
 
       // 0) descadastro NATIVO (#4476 item 7) — checado ANTES de qualquer
       // outra avaliação. Requer brevoApiKey (ausente em dry-run sem o env
@@ -1391,6 +1423,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               try {
                 const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
                 kitConfirmed = kitSubscriber.state === "active";
+                kitSubscriberCreatedAt = kitSubscriber.created_at ?? null; // #6705
               } catch (e) {
                 log(`warn: falha ao checar status Kit de ${contact.email} no Passo 0 (#6340 item 4 fix B): ${(e as Error).message}`);
                 failed++;
@@ -1601,6 +1634,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 try {
                   const kitSubscriber = await getSubscriberById(kitParseResult.id, { apiKey: kitApiKey });
                   kitConfirmed = kitSubscriber.state === "active";
+                  kitSubscriberCreatedAt = kitSubscriber.created_at ?? null; // #6705
                 } catch (e) {
                   log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitParseResult.id}): ${(e as Error).message}`);
                   failed++;
@@ -1614,6 +1648,19 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           log(`${contact.email}: já ativo no Kit (auto-confirmação #6340 item 4) → promovido, sem depender da taxa de abertura.`);
           selfConfirmed++;
           if (push) {
+            // #6705 — instrumentação (medição, nunca correção) da janela de
+            // duplicidade: esta detecção só acontece NESTA rodada, não no
+            // instante real da confirmação do double opt-in no Kit.
+            // Opcional/omitida em teste (ver docstring do parâmetro) — nunca
+            // lança, nunca bloqueia a promoção em si.
+            appendDuplicateWindowLog?.(
+              buildDuplicateWindowEntry({
+                email: contact.email,
+                kitSubscriberCreatedAt,
+                lastBrevoSendAt: nativeState?.last_messagesSent_at ?? null,
+                brevoSendsCount: nativeState?.sends_count ?? contact.sends_count,
+              }),
+            );
             await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
             store = applySelfConfirmed(store, contact.email);
           }
@@ -1865,6 +1912,7 @@ async function main(): Promise<void> {
     log,
     newsletterBackend,
     kitApiKey,
+    appendDuplicateWindowLog: appendBrevoKitDuplicateWindowLog, // #6705
   });
 
   log(
