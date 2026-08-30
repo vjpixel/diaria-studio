@@ -2797,6 +2797,7 @@ describe("GET/PUT /api/boxes/para-encerrar (#4274)", () => {
   });
 
   it("409 quando expectedModifiedAt diverge (outra aba/sessão salvou nesse meio tempo), não sobrescreve", async () => {
+    const configPath = join(root, "platform.config.json");
     const get = await (await fetch(new URL("/api/boxes/para-encerrar", server.url))).json();
     // Simula outra sessão salvando primeiro.
     await fetch(new URL("/api/boxes/para-encerrar", server.url), {
@@ -2804,6 +2805,13 @@ describe("GET/PUT /api/boxes/para-encerrar (#4274)", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slotA: "concorrente A", slotB: "concorrente B", expectedModifiedAt: get.modifiedAt }),
     });
+    // Força o mtime a avançar de forma determinística (#6742) — em alguns
+    // filesystems/CI a resolução de mtime é grosseira o bastante pra duas
+    // escritas caírem no mesmo timestamp, fazendo o guard não ver divergência
+    // nenhuma e responder 200 em vez de 409. Mesmo padrão já usado nos testes
+    // de `saveBoxSlots`/`saveParaEncerrar` acima (`utimesSync` + 2s).
+    const bumped = new Date(new Date(get.modifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
     // Tentativa com o mtime STALE (visto antes da escrita concorrente).
     const put = await fetch(new URL("/api/boxes/para-encerrar", server.url), {
       method: "PUT",
