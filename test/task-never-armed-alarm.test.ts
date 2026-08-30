@@ -85,10 +85,55 @@ describe("evaluateTaskNeverArmed", () => {
     assert.deepEqual(ev.orphanTimers, ["diaria-orphan"]);
   });
 
-  it("allowlist (KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES) nunca vira orphan — diaria-edicao-diaria e diaria-overnight-watchdog", () => {
-    assert.deepEqual(KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES, ["diaria-edicao-diaria", "diaria-overnight-watchdog"]);
-    const ev = evaluateTaskNeverArmed([], ["diaria-edicao-diaria", "diaria-overnight-watchdog"]);
+  it("allowlist (KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES) nunca vira orphan — diaria-edicao-diaria, diaria-overnight-watchdog e diaria-node-modules-health-check (#6774)", () => {
+    assert.deepEqual(KNOWN_SCHEMA_EXCEPTION_UNIT_NAMES, [
+      "diaria-edicao-diaria",
+      "diaria-overnight-watchdog",
+      "diaria-node-modules-health-check",
+    ]);
+    const ev = evaluateTaskNeverArmed(
+      [],
+      ["diaria-edicao-diaria", "diaria-overnight-watchdog", "diaria-node-modules-health-check"],
+    );
     assert.equal(ev.verdict, "ok");
+  });
+
+  it("#6774/#6658: diaria-node-modules-health-check.timer armado, sem task no registro → não é órfão (exceção de schema, shell puro)", () => {
+    const ev = evaluateTaskNeverArmed(["Diaria-Foo-Bar"], ["diaria-foo-bar", "diaria-node-modules-health-check"]);
+    assert.equal(ev.verdict, "ok");
+    assert.deepEqual(ev.orphanTimers, []);
+  });
+
+  it("#6773: task com enabled:false (ex: Diaria-Sunset-Weekly) SEM timer armado não é neverArmed quando listada em disabledTaskNames", () => {
+    const ev = evaluateTaskNeverArmed(
+      ["Diaria-Sunset-Weekly", "Diaria-Foo-Bar"],
+      ["diaria-foo-bar"],
+      ["Diaria-Sunset-Weekly"],
+    );
+    assert.equal(ev.verdict, "ok");
+    assert.deepEqual(ev.neverArmed, []);
+  });
+
+  it("#6773: sem disabledTaskNames (3º arg omitido), comportamento antigo é preservado — task desabilitada SEM timer ainda alarma", () => {
+    const ev = evaluateTaskNeverArmed(["Diaria-Sunset-Weekly"], []);
+    assert.equal(ev.verdict, "alarm-never-armed");
+    assert.deepEqual(ev.neverArmed, ["Diaria-Sunset-Weekly"]);
+  });
+
+  it("#6773: task desabilitada com timer armado manualmente ainda conta como 'tem task correspondente' (não vira órfã)", () => {
+    const ev = evaluateTaskNeverArmed(
+      ["Diaria-Sunset-Weekly"],
+      ["diaria-sunset-weekly"],
+      ["Diaria-Sunset-Weekly"],
+    );
+    assert.equal(ev.verdict, "ok");
+    assert.deepEqual(ev.orphanTimers, []);
+  });
+
+  it("#6773: disabledTaskNames não mascara task HABILITADA homônima por engano — só exclui o nome exato passado", () => {
+    const ev = evaluateTaskNeverArmed(["Diaria-Sunset-Weekly", "Diaria-Outra"], [], ["Diaria-Sunset-Weekly"]);
+    assert.equal(ev.verdict, "alarm-never-armed");
+    assert.deepEqual(ev.neverArmed, ["Diaria-Outra"]);
   });
 
   it("timer fora do prefixo diaria-* nunca vira orphan (fora do escopo deste repo)", () => {
@@ -178,5 +223,15 @@ describe("toNeverArmedFinding / toOrphanTimerFinding", () => {
     assert.equal(f.priority, "P3");
     assert.equal(f.fingerprint, "diaria-orphan");
     assert.equal(f.check, "task-never-armed-orphan-timer");
+  });
+
+  it("#6772: toNeverArmedFinding carrega a label alarm-acao (só ação humana/de código normaliza)", () => {
+    const f = toNeverArmedFinding("Diaria-Foo-Bar");
+    assert.ok(f.labels?.includes("alarm-acao"), `esperava 'alarm-acao' em ${JSON.stringify(f.labels)}`);
+  });
+
+  it("#6772: toOrphanTimerFinding carrega a label alarm-acao", () => {
+    const f = toOrphanTimerFinding("diaria-orphan");
+    assert.ok(f.labels?.includes("alarm-acao"), `esperava 'alarm-acao' em ${JSON.stringify(f.labels)}`);
   });
 });

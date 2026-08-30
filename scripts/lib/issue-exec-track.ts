@@ -152,6 +152,7 @@ export type ExecTrackMatch =
   | "label:credencial-escopo"
   | "label:develop-track"
   | "label:alarm-evento"
+  | "label:alarm-acao"
   | "label:decisao-registrada"
   | "label:alarm"
   | "label:epic-guarda-chuva"
@@ -188,6 +189,7 @@ export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
   "label:credencial-escopo",
   "label:develop-track",
   "label:alarm-evento",
+  "label:alarm-acao",
   "label:decisao-registrada",
   "label:alarm",
   "label:epic-guarda-chuva",
@@ -294,6 +296,35 @@ const RESOLVED_BY_PROSE_LABELS = new Set([
  * bastaria pra cair em `fora-de-rodada` por engano — daí este valor ganhar um
  * ramo de precedência explícito em vez de só ficar de fora do Set acima. */
 const ALARM_EVENT_LABEL = "alarm-evento";
+
+/**
+ * #6772 — 3ª família de alarme, distinta de `alarm` (ESTADO que normaliza
+ * SOZINHO) e `alarm-evento` (EVENTO PASSADO, precisa de revisão humana mas
+ * não tem remediador de código): alarme de família ESTADO cuja condição só
+ * normaliza por AÇÃO — alguém (ou uma rodada) rodar um comando/script que
+ * muda o estado observado (ex: armar o timer que falta, desarmar o timer
+ * órfão). Sem esta label, `[alarm]` puro cai em `fora-de-rodada` (2ª
+ * checagem, `RESOLVED_BY_PROSE_LABELS`) sob a premissa de que TODO alarme de
+ * ESTADO se auto-resolve — premissa falsa pra este subconjunto: nenhuma
+ * rodada o pega, e o auto-close nunca dispara porque nada muda o estado
+ * sozinho (achado ao vivo #6772: `[diar.ia.br] task nunca armada: *`
+ * #6652-6658/#6729 e `timer órfão sem task no registro` #6658/#6730 ficavam
+ * presos indefinidamente).
+ *
+ * Roteia pra `overnight` (não `develop`) porque a remediação típica —
+ * `setup-systemd-timers.ts`/`arm-systemd-timers.ts` no servidor — é
+ * exatamente o tipo de ação mecânica que uma rodada desassistida no `helios`
+ * já executa sem precisar do editor presente; não é cat. A-E do develop.
+ *
+ * Aplicada pelo emissor JUNTO de `alarm` (`family: "estado"` sempre adiciona
+ * `ALARM_LABEL`, ver `scripts/lib/alarm-issues.ts`) — mesmo padrão de
+ * `alarm-evento`, checada ANTES de `RESOLVED_BY_PROSE_LABELS` pra vencer a
+ * label `alarm` companheira. Hoje só emitida por
+ * `toNeverArmedFinding`/`toOrphanTimerFinding` (`scripts/task-never-armed-alarm.ts`)
+ * — a 2ª família apontada pelo #6772 (issues de "cópia de conflito do
+ * OneDrive presente") é sintoma separado, fora do escopo desta label.
+ */
+const ALARM_ACTION_LABEL = "alarm-acao";
 
 /** Bloqueio que nenhuma sessão destrava sozinha — conta de terceiro,
  * credencial, allowlist, plataforma plan-gated, ou bloqueio de execução já
@@ -494,9 +525,11 @@ export function parseWaitUntil(body: string | null | undefined): Date | null {
  *                         data específica — se tivesse data, seria o
  *                         marcador `aguardando-ate:` do passo 4, não esta
  *                         label).
- *   7. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`):
- *                         checado ANTES do passo 8 pra vencer a label `alarm`
- *                         companheira, que sozinha cairia em fora-de-rodada.
+ *   7. `overnight`      — (#5553) alarme de EVENTO PASSADO (`alarm-evento`),
+ *                         ou (#6772) alarme de ESTADO cuja condição só
+ *                         normaliza por AÇÃO (`alarm-acao`): checado ANTES do
+ *                         passo 8 pra vencer a label `alarm` companheira, que
+ *                         sozinha cairia em fora-de-rodada.
  *   8. `fora-de-rodada` — (2ª checagem, #5532) já resolvida em prosa
  *                         (`decisao-registrada`) ou alarme de ESTADO que se
  *                         auto-resolve (`alarm`, sem `alarm-evento`), ou
@@ -557,6 +590,7 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return { track: "develop", matched: "label:develop-track" };
 
   if (has(ALARM_EVENT_LABEL)) return { track: "overnight", matched: "label:alarm-evento" };
+  if (has(ALARM_ACTION_LABEL)) return { track: "overnight", matched: "label:alarm-acao" };
 
   const proseLabel = labels.find((l) => RESOLVED_BY_PROSE_LABELS.has(l));
   if (proseLabel) return { track: "fora-de-rodada", matched: `label:${proseLabel}`  };
@@ -600,7 +634,7 @@ export const EXEC_TRACK_LABELS: Record<ExecTrack, string> = {
  */
 export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   overnight:
-    "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0) e o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão).",
+    "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0), o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão), e o alarme de ESTADO que só normaliza por AÇÃO (label `alarm-acao`, #6772 — ex: timer nunca armado/órfão, remediado rodando um script, não sozinho).",
   develop:
     "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A), ou (#5948) é bloqueio humano/dependência sem data específica (label `develop-track` — se tivesse data, seria `aguardando-ate:` e viraria Agendada).",
   agendada:

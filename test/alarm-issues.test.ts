@@ -30,6 +30,7 @@ import {
   applyAlarmReconciliation,
   isAllowlisted,
   aggregateFindingsOnDebut,
+  ALARM_ACTION_LABEL,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmAllowlist,
@@ -648,6 +649,58 @@ describe("ensureAlarmIssue — retry fail-soft de label ausente (#5338)", () => 
     };
     ensureAlarmIssue({ ...FINDING_A, family: "evento" }, undefined, CWD, run);
     assert.equal(descriptions.length, 2, "deveria ter tentado self-heal de 'alarm' e 'alarm-evento'");
+    for (const d of descriptions) {
+      assert.ok(d.length <= 100, `descrição com ${d.length} chars excede o teto do GitHub: "${d}"`);
+    }
+  });
+
+  it("#6772: label 'alarm-acao' ausente no repo -> self-heal generalizado cria a label, retry mantém 'alarm-acao'", () => {
+    let createAttempts = 0;
+    let labelCreateArgs: string[][] = [];
+    let lastLabelArg: string | null = null;
+    const findingWithAlarmAcao: AlarmFinding = { ...FINDING_A, labels: [ALARM_ACTION_LABEL] };
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        labelCreateArgs.push(args);
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        createAttempts++;
+        const idx = args.indexOf("--label");
+        lastLabelArg = idx >= 0 ? args[idx + 1] : null;
+        if (createAttempts === 1) return fail("could not add label: 'alarm-acao' not found");
+        return ok("https://github.com/x/y/issues/6005\n");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    const result = ensureAlarmIssue(findingWithAlarmAcao, undefined, CWD, run);
+    assert.equal(labelCreateArgs.length, 1, "deveria ter tentado auto-criar só a label ausente");
+    assert.equal(labelCreateArgs[0][2], "alarm-acao");
+    assert.equal(createAttempts, 2);
+    assert.match(lastLabelArg ?? "", /\balarm-acao\b/);
+    assert.match(lastLabelArg ?? "", /\balarm\b/, "'alarm' nunca esteve ausente -> segue no retry normalmente");
+    assert.equal(result.action, "created");
+    assert.equal(result.issueNumber, 6005);
+  });
+
+  it("#6772: descrição de 'alarm-acao' respeita o teto de 100 chars do GitHub (mesma pegadinha do #5553)", () => {
+    const descriptions: string[] = [];
+    const findingWithAlarmAcao: AlarmFinding = { ...FINDING_A, labels: [ALARM_ACTION_LABEL] };
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") return ok("[]");
+      if (args[0] === "label" && args[1] === "create") {
+        const idx = args.indexOf("--description");
+        descriptions.push(args[idx + 1]);
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        return fail("could not add label: 'alarm' not found, could not add label: 'alarm-acao' not found");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    ensureAlarmIssue(findingWithAlarmAcao, undefined, CWD, run);
+    assert.equal(descriptions.length, 2, "deveria ter tentado self-heal de 'alarm' e 'alarm-acao'");
     for (const d of descriptions) {
       assert.ok(d.length <= 100, `descrição com ${d.length} chars excede o teto do GitHub: "${d}"`);
     }

@@ -501,6 +501,42 @@ describe("classifyExecTrack — alarme de evento passado (#5553)", () => {
   });
 });
 
+describe("classifyExecTrack — alarme de ação pendente (#6772)", () => {
+  it("label alarm-acao sozinha → overnight", () => {
+    assert.equal(track(["alarm-acao"]), "overnight");
+  });
+
+  it("alarm + alarm-acao (par real, emitido junto por toNeverArmedFinding/toOrphanTimerFinding) → overnight, NÃO fora-de-rodada", () => {
+    // Regressão do achado #6772: sem uma checagem própria pra `alarm-acao`
+    // ANTES de `RESOLVED_BY_PROSE_LABELS`, a label `alarm` companheira
+    // sozinha bastaria pra classificar fora-de-rodada — exatamente o
+    // comportamento que prendia #6652-6658/#6729/#6730 indefinidamente
+    // (nenhuma rodada os pegava, e o auto-close nunca dispara porque nada
+    // muda o estado sozinho).
+    assert.equal(track(["alarm", "alarm-acao"]), "overnight");
+  });
+
+  it("alarm SEM alarm-acao (alarme de estado que se auto-resolve) continua fora-de-rodada", () => {
+    assert.equal(track(["alarm"]), "fora-de-rodada");
+  });
+
+  it("alarm-acao + external-blocker → bloqueada (bloqueio real vence)", () => {
+    assert.equal(track(["alarm", "alarm-acao", "external-blocker"]), "bloqueada");
+  });
+
+  it("alarm-acao + windows → develop (máquina vence, checado antes de alarm-acao)", () => {
+    assert.equal(track(["alarm", "alarm-acao", "windows"]), "develop");
+  });
+
+  it("alarm-acao + on-hold → fora-de-rodada (editor tirou de circulação vence tudo)", () => {
+    assert.equal(track(["alarm", "alarm-acao", "on-hold"]), "fora-de-rodada");
+  });
+
+  it("alarm-acao + alarm-evento (não deveria coexistir, mas ambos roteiam overnight de qualquer forma)", () => {
+    assert.equal(track(["alarm", "alarm-acao", "alarm-evento"]), "overnight");
+  });
+});
+
 describe("classifyExecTrack — precedência", () => {
   it("fora-de-rodada vence bloqueio", () => {
     assert.equal(track(["on-hold", "external-blocker"]), "fora-de-rodada");
@@ -717,6 +753,12 @@ describe("classifyExecTrackWithRule — matched (#6200)", () => {
     const r = classifyExecTrackWithRule({ labels: ["alarm-evento"], body: "", now: NOW });
     assert.equal(r.track, "overnight");
     assert.equal(r.matched, "label:alarm-evento");
+  });
+
+  it("label alarm-acao → label:alarm-acao (#6772)", () => {
+    const r = classifyExecTrackWithRule({ labels: ["alarm-acao"], body: "", now: NOW });
+    assert.equal(r.track, "overnight");
+    assert.equal(r.matched, "label:alarm-acao");
   });
 
   it("label decisao-registrada → label:decisao-registrada", () => {

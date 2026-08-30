@@ -44,7 +44,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
+import { listScheduledTaskNames, listDisabledScheduledTaskNames } from "./lib/scheduled-tasks.ts";
 import {
   parseSystemctlListTimersOutput,
   evaluateTaskNeverArmed,
@@ -118,7 +118,12 @@ export function toNeverArmedFinding(taskName: string): AlarmFinding {
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
-    labels: ["bug"],
+    // #6772 — label `alarm-acao`: a condição só normaliza por AÇÃO HUMANA/de
+    // código (armar o timer), nunca sozinha — sem este sinal,
+    // `classifyExecTrack` roteava `[alarm]` puro pra `fora-de-rodada`
+    // (achado ao vivo: #6652-6658/#6729, presas indefinidamente, nenhuma
+    // rodada as pegava). Ver `scripts/lib/issue-exec-track.ts`.
+    labels: ["bug", "alarm-acao"],
     priority: "P1",
     family: "estado",
   };
@@ -144,7 +149,10 @@ export function toOrphanTimerFinding(unitBaseName: string): AlarmFinding {
       "comentada/fechada sozinha quando o achado deixar de reproduzir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
-    labels: ["enhancement"],
+    // #6772 — mesmo racional do `alarm-acao` de `toNeverArmedFinding` acima:
+    // um timer órfão só some com ação manual do editor (desarmar) ou do
+    // registro (readotar), nunca sozinho.
+    labels: ["enhancement", "alarm-acao"],
     priority: "P3",
     family: "estado",
   };
@@ -209,7 +217,12 @@ async function main(): Promise<void> {
   }
 
   const registryTaskNames = listScheduledTaskNames();
-  const evaluation: TaskNeverArmedEvaluation = evaluateTaskNeverArmed(registryTaskNames, armedUnitBaseNames);
+  const disabledTaskNames = listDisabledScheduledTaskNames();
+  const evaluation: TaskNeverArmedEvaluation = evaluateTaskNeverArmed(
+    registryTaskNames,
+    armedUnitBaseNames,
+    disabledTaskNames,
+  );
   console.log(
     `${LOG_PREFIX} verdict=${evaluation.verdict} neverArmed=[${evaluation.neverArmed.join(", ")}] ` +
       `orphanTimers=[${evaluation.orphanTimers.join(", ")}]`,
