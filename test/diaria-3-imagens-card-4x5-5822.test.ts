@@ -1,5 +1,5 @@
 /**
- * test/diaria-3-imagens-card-4x5-5822.test.ts (#5822)
+ * test/diaria-3-imagens-card-4x5-5822.test.ts (#5822, atualizado pelo #6740)
  *
  * `.claude/skills/diaria-3-imagens/SKILL.md` (fluxo STANDALONE, hoje usado
  * por `run-edition-stages.ts` no Passo 2 de `/diaria-edicao`, #5744/#5738)
@@ -10,12 +10,23 @@
  * `selectSocialCardImageFile` cai no fallback 1:1 sem título **em silêncio**
  * — os posts de Facebook/Instagram saíam sem o título embutido.
  *
+ * **#6740 mudou o mecanismo, não a garantia.** O passo 2b/2c em prosa própria
+ * (que o #5822 tinha corrigido) era exatamente o tipo de duplicação que
+ * divergiu de novo quando o #6005 Parte B acrescentou `gen-carousel-cards.ts`
+ * só a `orchestrator-stage-3.md` — esta skill ficou defasada em silêncio e
+ * nunca gerou o carrossel do Instagram (achado ao vivo #6740). O conserto foi
+ * delegar ao mesmo runner determinístico (`scripts/stage-3-run.ts`) que
+ * `orchestrator-stage-3.md` já usava, então os testes abaixo passaram a
+ * verificar a DELEGAÇÃO em vez dos comandos individuais em prosa própria —
+ * os comandos em si (incluindo `--ratio 4x5`, `gen-social-card-4x5.ts` e
+ * `gen-carousel-cards.ts`) continuam garantidos, só que dentro do runner.
+ *
  * Grep tests, mesmo padrão de `test/diaria-skill-sentinel-coverage.test.ts`
  * (#5793/#5792) e `test/orchestrator-stage-6-wiring.test.ts` (#4574): não
  * executa a skill de verdade (exigiria uma sessão Claude Code real) — só
- * confirma que os 2 comandos gate-blocking e o invariant check estão
- * presentes no texto do playbook, nos pontos certos (depois da geração
- * 2:1/1:1, antes do gate humano).
+ * confirma que a delegação e o invariant check estão presentes no texto do
+ * playbook, nos pontos certos (depois do match de prompts, antes do gate
+ * humano).
  */
 
 import { describe, it } from "node:test";
@@ -27,34 +38,42 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL_3 = resolve(ROOT, ".claude/skills/diaria-3-imagens/SKILL.md");
 const ORCHESTRATOR_STAGE_3 = resolve(ROOT, ".claude/agents/orchestrator-stage-3.md");
+const STAGE_3_RUN = resolve(ROOT, "scripts/stage-3-run.ts");
 
-describe("diaria-3-imagens/SKILL.md cobre o card 4:5 (#5822)", () => {
+describe("diaria-3-imagens/SKILL.md cobre o card 4:5 (#5822, delegação via #6740)", () => {
   const skill = readFileSync(SKILL_3, "utf8");
+  const stage3Run = readFileSync(STAGE_3_RUN, "utf8");
 
-  it("referencia a issue #5822", () => {
+  it("referencia a issue #5822 (histórico) e #6740 (delegação atual)", () => {
     assert.match(skill, /#5822/);
+    assert.match(skill, /#6740/);
   });
 
-  it("chama image-generate.ts --ratio 4x5 por destaque", () => {
-    assert.match(skill, /image-generate\.ts[\s\S]*?--ratio 4x5/);
+  it("delega ao runner scripts/stage-3-run.ts em vez de reimplementar os comandos", () => {
+    assert.match(skill, /npx tsx scripts\/stage-3-run\.ts --edition/);
   });
 
-  it("chama gen-social-card-4x5.ts com --edition-dir", () => {
-    assert.match(skill, /gen-social-card-4x5\.ts\s+--edition-dir/);
+  it("o runner delegado (stage-3-run.ts) de fato chama image-generate.ts --ratio 4x5", () => {
+    assert.match(stage3Run, /image-generate\.ts[\s\S]*?"--ratio",\s*"4x5"/);
   });
 
-  it("o passo do card 4:5 (2c) vem depois da geração 2:1/1:1 (2b) e antes do gate (2d)", () => {
-    const idx2b = skill.indexOf("### 2b. Gerar imagens");
-    const idx2c = skill.indexOf("### 2c. Card 4:5 do feed");
+  it("o runner delegado (stage-3-run.ts) de fato chama gen-social-card-4x5.ts com --edition-dir", () => {
+    assert.match(stage3Run, /gen-social-card-4x5\.ts[\s\S]{0,80}--edition-dir/);
+  });
+
+  it("o passo de delegação (2b) vem depois do match de prompts (2a-bis) e antes do gate (2d)", () => {
+    const idx2aBis = skill.indexOf("### 2a-bis. Match prompts");
+    const idx2b = skill.indexOf("### 2b. Runner determinístico");
     const idx2d = skill.indexOf("### 2d. Gate unificado de imagens");
-    assert.ok(idx2b !== -1 && idx2c !== -1 && idx2d !== -1, "passos 2b, 2c e 2d devem existir");
-    assert.ok(idx2b < idx2c && idx2c < idx2d, "ordem correta: 2b < 2c < 2d — card 4:5 nunca antes da geração base, nunca depois do gate");
+    assert.ok(idx2aBis !== -1 && idx2b !== -1 && idx2d !== -1, "passos 2a-bis, 2b e 2d devem existir");
+    assert.ok(idx2aBis < idx2b && idx2b < idx2d, "ordem correta: 2a-bis < 2b < 2d");
   });
 
-  it("marca a falha do card 4:5 como BLOQUEANTE, igual ao playbook do orchestrator", () => {
-    const idx2c = skill.indexOf("### 2c. Card 4:5 do feed");
-    assert.ok(idx2c !== -1);
-    const block = skill.slice(idx2c, idx2c + 1400);
+  it("marca a falha do runner (imagem/card/carrossel) como BLOQUEANTE, igual ao playbook do orchestrator", () => {
+    const idx2b = skill.indexOf("### 2b. Runner determinístico");
+    assert.ok(idx2b !== -1);
+    const idx2d = skill.indexOf("### 2d. Gate unificado de imagens");
+    const block = skill.slice(idx2b, idx2d);
     assert.match(block, /BLOQUEANTE/);
   });
 

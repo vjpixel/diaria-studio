@@ -1506,6 +1506,72 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * (#6740) Contraparte de `carousel-cards-stale`/`carousel-upload-incomplete`/
+ * `carousel-upload-stale` pro caso que nenhum dos três cobre: os três só
+ * comparam DIVERGÊNCIA entre estados que já existem (`if (!slidesOnDiskDe(d))
+ * continue` — saída legítima quando SÓ aquele destaque não tem carrossel,
+ * texto estourou o limite do #6078), então AUSÊNCIA TOTAL (0 dos N×4 arquivos
+ * pra edição inteira) passa pelos três em silêncio, achando que "nada a
+ * comparar" é o mesmo que "está tudo certo".
+ *
+ * Achado ao vivo #6740, edição 260830: `/diaria-3-imagens --no-gates`
+ * (headless) nunca invocou `gen-carousel-cards.ts` — 0 dos 12 slides
+ * existiam, `06-public-images.json` não tinha as entries, e
+ * `check-invariants --stage 4` não acusou NADA porque os três checks de
+ * carrossel viram "nenhum slide, nada a cruzar" pra cada destaque
+ * isoladamente. Este check olha a edição INTEIRA: se `03-social.md` tem
+ * texto de destaque (`## d{N}`) mas NENHUM dos destaques configurados tem os
+ * 4 slides no disco, é sinal de que `gen-carousel-cards.ts` nunca rodou —
+ * error, porque o carrossel de 5 slides é o formato OBRIGATÓRIO do Instagram
+ * pra D1/D2/D3 (#6005 Parte B/#6078), não um extra opcional que pode faltar
+ * em silêncio.
+ *
+ * Escopo deliberadamente estreito: só ausência TOTAL. Um destaque isolado sem
+ * carrossel (os outros 1-2 têm) continua legítimo — best-effort por destaque,
+ * já coberto pelo fallback single-image do publish — e não é assunto deste
+ * check.
+ */
+function checkCarouselCardsMissing(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return []; // Stage 2 nem rodou — não é assunto deste check
+
+  const section = extractSection(readFileSync(socialPath, "utf8"), "Social");
+  if (!section) return []; // estrutura quebrada já é coberta por carousel-cards-stale (warning)
+
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+
+  const comTexto = slots.filter((d) => {
+    const dText = extractDestaqueBlock(section, d);
+    return dText !== null && dText.trim().length > 0;
+  });
+  if (comTexto.length === 0) return []; // nenhum destaque com texto — nada que devesse ter sido rasterizado
+
+  const slidesOnDiskDe = (d: string): boolean =>
+    CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(resolve(editionDir, carouselSlideFilename(d, slot))));
+
+  if (comTexto.some(slidesOnDiskDe)) return []; // ao menos 1 destaque tem carrossel — não é ausência TOTAL
+
+  return [
+    {
+      rule: "carousel-cards-missing",
+      message:
+        `NENHUM dos ${comTexto.length * CAROUSEL_SLIDE_SLOTS.length} slides do carrossel diário existe, ` +
+        `pra NENHUM dos destaques com texto em 03-social.md (${comTexto.join(", ")}) — sinal de que ` +
+        `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" nunca rodou nesta edição ` +
+        `(ausência TOTAL, diferente de staleness/incompletude parcial — que carousel-cards-stale/ ` +
+        `carousel-upload-incomplete/carousel-upload-stale já cobrem). Sem isto, os ${comTexto.length} ` +
+        `destaque(s) publicariam no Instagram como post single-image, contrariando o formato de carrossel ` +
+        `obrigatório (#6005 Parte B/#6078). Fix: rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ` +
+        `${editionDir}" e depois "npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" antes do gate.`,
+      source_issue: "#6740",
+      severity: "error",
+      file: socialPath,
+    },
+  ];
+}
+
+/**
  * (#6064 item 2) Contraparte do `card-4x5-upload-missing` pro carrossel: os 4
  * slides existem no disco mas alguma das 5 chaves do carrossel não está em
  * `06-public-images.json`. `resolveCarouselImageUrls` é tudo-ou-nada por
@@ -2209,6 +2275,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCard4x5UploadMismatch,
   },
   {
+    id: "carousel-cards-missing",
+    description: "ausência TOTAL dos slides do carrossel diário (0 dos N×4) pra edição com texto de destaque — gen-carousel-cards.ts provavelmente nunca rodou (#6740)",
+    source_issue: "#6740",
+    stage: 4,
+    run: checkCarouselCardsMissing,
+  },
+  {
     id: "carousel-cards-stale",
     description: "slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064)",
     source_issue: "#6064",
@@ -2299,6 +2372,7 @@ export {
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,
+  checkCarouselCardsMissing,
   checkCarouselCardsStale,
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
