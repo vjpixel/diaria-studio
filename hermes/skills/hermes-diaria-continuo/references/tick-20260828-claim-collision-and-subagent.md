@@ -49,10 +49,35 @@ tempo normal (MCP paginado). Não interpretar vazio como falha; aguardar
 
 ## 3. Modelo ativo (não memorizar — ler `config.yaml`)
 
-No banner desta sessão (`provider=openrouter`, `model=thinkingmachines/inkling:free`):
-o wrapper `claude-openrouter.sh` resolve via `fallback_chains.coding_fallback`
-em `~/.hermes/config.yaml`. Referência #6640 já atualizada: ler `config.yaml`
-antes de citar a chain; NÃO confiar na memória.
+No banner desta sessão (`provider=openrouter`,
+`model=thinkingmachines/inkling:free`).
+
+**CORREÇÃO (30/08/2026).** A frase original desta seção dizia que o wrapper
+`claude-openrouter.sh` "resolve via `fallback_chains.coding_fallback` em
+`~/.hermes/config.yaml`". Isso está errado por DOIS motivos independentes, e
+os dois foram medidos:
+
+1. O wrapper não lê config.yaml nenhum — a cadeia dele é o array bash
+   `MODELS_DEFAULT`, hardcoded no próprio script (hoje:
+   `dots-3-note-preview:free` → `laguna-s-2.1:free` → `glm-5.3-flash`).
+   Mudar o config.yaml não muda o que o wrapper roda; o guard que existe pra
+   esse par é `test/hermes-model-chain-drift.test.ts`, e ele cobre só
+   wrapper↔SKILL.md.
+2. `fallback_chains.coding_fallback` não roteia nada nem no Hermes nativo. O
+   bloco `smart_model_routing:` do `~/.hermes/config.yaml` (perfis
+   coding/general/simple, `default_profile`, `fallback_chain_key`) é config
+   MORTA: a feature foi removida do hermes-agent em `424e9f36b0`
+   ("refactor: remove smart_model_routing feature #12732", abr/2026) e a
+   remoção está na versão instalada (0.20.4) — `git merge-base
+   --is-ancestor 424e9f36b0 HEAD` → yes. Descoberto ao vivo em 29/08/2026,
+   depois de aquele bloco já ter sido editado achando que era vivo.
+
+O que de fato roteia no Hermes nativo: `model.default` + `fallback_providers`
+(bloco global único, sem perfis) e, por perfil isolado,
+`~/.hermes/profiles/{nome}/config.yaml` via `gateway.profile_routes`.
+
+A parte da referência #6640 que continua valendo: ler o arquivo antes de
+citar qualquer cadeia; NÃO confiar na memória — inclusive nesta.
 
 Status subagente (`proc_6f661133b4a7`): `running`, 465s+, saída ainda vazia —
 normal. Próximo tick confirma e retoma pendentes restantes (89).
