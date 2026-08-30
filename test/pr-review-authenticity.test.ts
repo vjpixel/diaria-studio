@@ -27,6 +27,19 @@ import {
   SELF_REVIEW_MARKER,
   type PrCommentNode,
 } from "../scripts/lib/pr-review-authenticity.ts";
+import { SELF_REVIEW_MARKER as HOOK_SELF_REVIEW_MARKER } from "../.claude/hooks/pr-create-review.mjs";
+
+// #6820 (fleet review do #6732): a constante é duplicada por STRING (não
+// import) entre este módulo e o hook `.claude/hooks/pr-create-review.mjs`
+// (que nunca importa `.ts` do repo, ver o docblock daquele arquivo). Os
+// testes de CADA arquivo, isoladamente, só comparavam a própria cópia contra
+// um literal hardcoded — nenhum dos dois pegaria as duas cópias divergindo
+// entre si. Este teste é o guard real: importa AS DUAS e compara.
+describe("SELF_REVIEW_MARKER — as duas cópias duplicadas nunca divergem (#6820)", () => {
+  it("scripts/lib/pr-review-authenticity.ts e .claude/hooks/pr-create-review.mjs concordam byte-a-byte", () => {
+    assert.equal(SELF_REVIEW_MARKER, HOOK_SELF_REVIEW_MARKER);
+  });
+});
 
 function comment(id: string, body: string): PrCommentNode {
   return { id, body };
@@ -68,6 +81,29 @@ describe("classifyReviewComment", () => {
   it("'Review automatizado' no MEIO do texto (não no início) -> 'other', evita casar citação incidental", () => {
     const body = "Alguém mencionou que o 'Review automatizado' de PRs antigos era diferente.";
     assert.equal(classifyReviewComment(body), "other");
+  });
+
+  // #6820 (fleet review do #6732): a checagem original era `body.includes
+  // (SELF_REVIEW_MARKER)` — substring solta, sem a mesma âncora que o regex
+  // de review independente já tinha. Um review real que discutisse este
+  // módulo em prosa (ex: uma PR futura editando este mesmo arquivo) citaria
+  // o marcador NO MEIO da explicação e seria classificado como self-review
+  // por engano — falso-negativo pro lado que autoriza merge.
+  it("SELF_REVIEW_MARKER citado NO MEIO de um review real (não em linha própria) -> 'other', não 'self-review'", () => {
+    const body =
+      `Review automatizado (1 agente, effort low): sem findings. ` +
+      `Nota: este PR adiciona o marcador ${SELF_REVIEW_MARKER} usado pelo gate do #6732.`;
+    assert.equal(classifyReviewComment(body), "independent-review");
+  });
+
+  it("SELF_REVIEW_MARKER em linha PRÓPRIA (mesmo com texto ao redor) -> 'self-review'", () => {
+    const body = `Algum preâmbulo.\n${SELF_REVIEW_MARKER}\nSelf-review do autor, sem agente independente.`;
+    assert.equal(classifyReviewComment(body), "self-review");
+  });
+
+  it("SELF_REVIEW_MARKER com espaços ao redor na própria linha ainda conta (trim)", () => {
+    const body = `  ${SELF_REVIEW_MARKER}  \nSelf-review do autor.`;
+    assert.equal(classifyReviewComment(body), "self-review");
   });
 });
 
@@ -138,6 +174,18 @@ describe("evaluatePrReviewAuthenticity — regressão #6732: self-review nunca v
     ]);
     assert.equal(result.verdict, "pass");
     assert.equal(result.matchedCommentId, "new");
+  });
+
+  it("elemento null/primitivo misturado no array -> ignorado, nunca lança (payload malformado por item)", () => {
+    const result = evaluatePrReviewAuthenticity([
+      comment("c1", "Comentário normal."),
+      null,
+      42,
+      "string solta",
+      comment("c2", "Review automatizado (1 agente, effort low): sem findings."),
+    ]);
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.matchedCommentId, "c2");
   });
 
   it("nenhum comentário casa formato de review (só conversa normal) -> 'no_review'", () => {

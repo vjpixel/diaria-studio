@@ -162,11 +162,21 @@ issue nova é reivindicada. Para cada PR, nesta ordem:
    mesma disciplina do guard de caminho sensível do passo 2) → **NÃO
    mergear**: deixar o PR aberto, registrar no relatório do tick como
    "aguardando review externo — self-review não satisfaz o gate do #5251",
-   e passar para a próxima issue/PR da fila. O PR fica candidato a merge por
-   `daily-consolidated-review.sh` (Opus, findings viram issues — mas ele não
-   mergeia PRs abertos, só gera achados) ou por pickup de uma sessão
-   `/diaria-overnight`/`/diaria-develop`, que têm a ferramenta Agent e podem
-   rodar o review de verdade antes de mergear.
+   e passar para a próxima issue/PR da fila.
+
+   **Estado honesto sobre "quem revisa depois" (achado do fleet review do
+   #6820, 30/08/2026): NÃO existe hoje um passo explícito em
+   `/diaria-overnight`/`/diaria-develop` que adote um PR órfão marcado
+   self-review, rode um review de verdade nele, e o mergeie.** O checklist
+   de "PR alheio já aberto" dessas duas skills (autor conhecido? CI verde?
+   atualizado nas últimas ~24-48h?) decide se a sessão reimplementa a issue
+   de forma independente — não decide "revisar e mergear o PR existente". Na
+   prática, hoje, um PR self-reviewed do contínuo fica aberto **indefinidamente**
+   a menos que uma sessão o note manualmente. `daily-consolidated-review.sh`
+   também não fecha esse loop — gera achados/issues sobre o diff, nunca
+   mergeia PR aberto. Rastreado em #6823; não bloqueia este gate (o gate
+   continua correto — impede o self-merge inseguro — só o "e depois?"
+   segue em aberto).
 
 ### 4. Implementar issues elegíveis — via harness delegado
 

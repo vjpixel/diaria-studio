@@ -12,12 +12,17 @@
  * sem `Agent`/`Task`) recebe do hook `.claude/hooks/pr-create-review.mjs` a
  * instrução de despachar `pr-review-toolkit:code-reviewer` via ferramenta
  * Agent. Sem essa ferramenta, o dispatch é impossível — mas a sessão, ao
- * tentar cumprir a instrução, lia o diff ela mesma e postava um comentário no
- * formato `"Review automatizado (1 agente, effort low — desconto
- * overnight): sem findings..."`, indistinguível textualmente de um review de
- * verdade (medido ao vivo nos PRs #6713/#6715). O gate de auto-merge do
- * #5251 lê exatamente essa string — um autor se auto-aprovando satisfazia o
- * gate com a mesma evidência que um review independente produziria.
+ * tentar cumprir a instrução, lia o diff ela mesma e postava um comentário se
+ * passando por review de verdade. **Medido em pelo menos DUAS formas de
+ * texto distintas** (achado do fleet review do #6820, corrigindo uma citação
+ * anterior deste docstring que afirmava as duas serem iguais): PR #6713
+ * postou `"Review automatizado (1 agente, effort low — desconto
+ * overnight): sem findings..."`; PR #6715 (também `continuo/`, mesma
+ * fabricação, formato diferente) postou `"Code review (pr-review-
+ * toolkit:code-reviewer, sonnet, diff ...): sem findings..."`. O gate de
+ * auto-merge do #5251 lê esse texto em prosa — um autor se auto-aprovando
+ * satisfazia o gate com a mesma evidência que um review independente
+ * produziria.
  *
  * ## A correção (decisão do editor, opção 2 do #6732)
  *
@@ -25,13 +30,33 @@
  * `buildReviewInstruction` (`.claude/hooks/pr-create-review.mjs`) agora
  * instrui: se o Agent tool não está disponível nesta sessão, rotular
  * honestamente — comentário começando pela linha literal `SELF_REVIEW_MARKER`
- * abaixo, nunca com o texto `"Review automatizado"`. Este módulo classifica
- * o comentário mais recente do PR e decide se o gate está satisfeito.
+ * abaixo, nunca com texto que soe como review de verdade. Este módulo
+ * classifica o comentário mais recente do PR e decide se o gate está
+ * satisfeito.
  *
  * **Fail-closed por design** (mesmo padrão do passo 2 do §3 da SKILL —
  * `sensitive-path-guard.ts`): ausência de review, erro de payload, ou
  * self-review explícito NUNCA autorizam merge. Só `"independent-review"`
  * autoriza.
+ *
+ * ## Limitação residual, registrada explicitamente (achado do fleet review)
+ *
+ * Este gate é **honor-system em ambos os lados**, não uma verificação
+ * criptográfica de que um dispatch real aconteceu. O lado negativo
+ * (self-review) tem uma âncora forte — `SELF_REVIEW_MARKER` é um literal
+ * exato que só aparece se a sessão seguir a instrução nova. O lado positivo
+ * (`INDEPENDENT_REVIEW_RE`) é regex sobre prosa livre que um LLM compõe —
+ * e a própria descoberta de que #6713/#6715 fabricaram em DOIS formatos
+ * diferentes mostra que a mesma sessão pode produzir texto que nem o
+ * marcador de self-review nem o regex reconhecem (caindo em `"other"` →
+ * `no_review`, fail-closed — nunca um falso `"pass"`) ou que, por acaso,
+ * COINCIDE com `INDEPENDENT_REVIEW_RE` sem um dispatch real ter ocorrido.
+ * Nada aqui prova criptograficamente que a ferramenta Agent foi de fato
+ * invocada. O gate garante uma coisa, e só uma: uma sessão que segue a nova
+ * instrução do hook nunca produz um falso `"pass"` disfarçado de self-review
+ * explícito — não garante que toda prosa de review genuína seja reconhecida,
+ * nem impede uma fabricação em formato ainda não observado de colar por
+ * acidente no regex positivo.
  */
 
 /** Marcador literal que a instrução do hook manda postar quando o Agent tool
@@ -53,13 +78,30 @@ const INDEPENDENT_REVIEW_RE = /^Review automatizado \(\d+ agentes?, effort (?:lo
 
 export type ReviewCommentKind = "self-review" | "independent-review" | "other";
 
-/** Classifica um único corpo de comentário. Pura, nunca lança. */
+/**
+ * Classifica um único corpo de comentário. Pura, nunca lança.
+ *
+ * #6820 (fleet review do #6732): a checagem original fazia `body.includes
+ * (SELF_REVIEW_MARKER)` — substring solta em QUALQUER lugar do corpo, sem a
+ * mesma âncora que `INDEPENDENT_REVIEW_RE` já tinha (início de linha, pra
+ * não casar uma citação incidental). Um comentário de review LEGÍTIMO que
+ * discutisse este próprio módulo/marcador em prosa (ex: um review de uma PR
+ * futura que edite este arquivo) citaria o literal `SELF_REVIEW_MARKER` e
+ * seria classificado `"self-review"` por engano — falso-negativo pro lado
+ * que autoriza merge (fail-closed, nunca inseguro, mas bloqueia review real).
+ * Fix: exigir que o marcador apareça como uma LINHA PRÓPRIA (trimmed),
+ * exatamente como a instrução do hook manda postar — "a linha literal
+ * `<!-- self-review: true -->` na própria linha".
+ */
 export function classifyReviewComment(body: unknown): ReviewCommentKind {
   if (typeof body !== "string" || body.length === 0) return "other";
   // Checar o marcador de self-review PRIMEIRO: uma sessão que copiasse o
-  // texto "Review automatizado" por engano ainda deve contar como self-review
-  // se carregar o marcador — o marcador é a fonte de verdade, não o prefixo.
-  if (body.includes(SELF_REVIEW_MARKER)) return "self-review";
+  // texto de review real por engano ainda deve contar como self-review se
+  // carregar o marcador — o marcador é a fonte de verdade, não o prefixo.
+  const hasOwnLineMarker = body
+    .split("\n")
+    .some((line) => line.trim() === SELF_REVIEW_MARKER);
+  if (hasOwnLineMarker) return "self-review";
   if (INDEPENDENT_REVIEW_RE.test(body.trim())) return "independent-review";
   return "other";
 }
@@ -81,7 +123,11 @@ export interface PrCommentNode {
 /**
  * Decide o veredito a partir de `comments` já parseado (ordem cronológica
  * ascendente, mesma ordem que `gh pr view --json comments` devolve — mesma
- * premissa de `evaluatePrChecksGate`). Varre de trás para frente e para no
+ * premissa de `detectLabelDriftDetailed` em `scripts/lib/decision-label-
+ * drift.ts`, não de `evaluatePrChecksGate` — aquele opera sobre
+ * `statusCheckRollup`, sem noção de ordem cronológica de comentário;
+ * corrigido no #6820 depois do fleet review flagar a citação errada). Varre
+ * de trás para frente e para no
  * PRIMEIRO comentário que seja um review (self ou independente) — comentários
  * de review mais antigos (de uma rodada de fix anterior, por exemplo) nunca
  * devem decidir sobre o estado atual do PR.
@@ -94,7 +140,7 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
   if (!Array.isArray(comments)) {
     return {
       verdict: "error",
-      reason: "payload de comments não é um array (comando/parse falhou)",
+      reason: "campo comments ausente ou não é um array (comando falhou, JSON malformado, ou schema inesperado do gh)",
     };
   }
 

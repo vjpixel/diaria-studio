@@ -639,11 +639,15 @@ export function logEffortDecision(
  * #6732: marcador literal que a sessão deve postar quando a ferramenta Agent
  * NÃO está disponível (a delegação do `hermes-diaria-continuo` roda com
  * `--tools` sem `Agent`/`Task`, de propósito — #6712). Duplicado por STRING
- * (não import) de `scripts/lib/pr-review-authenticity.ts`, mesmo motivo de
- * `REVIEW_AGENT` acima nunca ter sido importado de lugar nenhum: este
- * arquivo não importa `.ts` do repo (ver o docblock no topo, "Also
- * deliberately self-contained"). Manter as duas pontas em sincronia manual —
- * `scripts/check-pr-review-authenticity.ts` é quem lê este marcador de volta.
+ * (não import) de `scripts/lib/pr-review-authenticity.ts` — este arquivo
+ * nunca importa `.ts` do repo (ver o docblock no topo, "Also deliberately
+ * self-contained"); `REVIEW_AGENT`, logo abaixo, é definido localmente pelo
+ * mesmo motivo, nunca importado de outro módulo (correção de fleet review
+ * #6820: a frase anterior lia como "REVIEW_AGENT não tem consumidor
+ * nenhum", o que é falso — o teste importa esse export; a intenção sempre
+ * foi "nunca importado PARA DENTRO deste arquivo"). Manter as duas pontas em
+ * sincronia manual — `scripts/check-pr-review-authenticity.ts` é quem lê
+ * este marcador de volta.
  */
 export const SELF_REVIEW_MARKER = "<!-- self-review: true -->";
 

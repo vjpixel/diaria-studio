@@ -16,6 +16,11 @@
  *   1 = self_review (comentário marcado com o marcador de self-review)
  *   2 = no_review   (nenhum comentário de review encontrado)
  *   3 = error       (gh falhou, PR inexistente, JSON malformado)
+ *   4 = uso inválido (--pr ausente/não-numérico — distinto de `no_review`,
+ *       #6820: antes colidia com o exit 2 do veredito, e um chamador que só
+ *       olhasse o código não distinguia "PR sem review ainda" de "você
+ *       invocou errado", mesma ambiguidade pré-existente do gate irmão
+ *       `check-pr-checks-gate.ts`, não replicada aqui de propósito)
  *
  * @see scripts/lib/pr-review-authenticity.ts
  * @see hermes/skills/hermes-diaria-continuo/SKILL.md (§3, passo 3)
@@ -80,7 +85,7 @@ if (isMainModule(import.meta.url)) {
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
     console.error("[check-pr-review-authenticity] uso: --pr N");
-    process.exit(2);
+    process.exit(4);
   }
 
   const result = fetchPrReviewAuthenticity(prNumber, process.cwd());
