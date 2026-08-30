@@ -51,10 +51,18 @@ const LOG_PREFIX = "[typecheck-ratchet]";
  * há erros) — só propaga se o próprio `spawnSync` falhar em executar
  * (`error` setado, ex: binário não encontrado). */
 export function runTscTest(cwd: string = ROOT): string {
+  // `shell: true` é necessário aqui (diferente do `spawnSync("gh", [...])`
+  // visto em `check-develop-label-cleared.ts`): `npx` é um wrapper `.cmd` no
+  // Windows, não um executável direto, e `spawnSync` sem shell não resolve
+  // isso — falha com `spawnSync npx ENOENT` (#6777). Portátil: `shell: true`
+  // não quebra nada em Linux/Mac, onde `npx` já é resolvido normalmente.
+  // Sem input de usuário nos argumentos (todos literais), então o não-escape
+  // de array args com `shell: true` (aviso `DEP0190`) não é um risco aqui.
   const res = spawnSync("npx", ["tsc", "-p", TSCONFIG, "--noEmit"], {
     cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    shell: true,
   });
   if (res.error) {
     throw new Error(`${LOG_PREFIX} falha ao executar 'npx tsc -p ${TSCONFIG} --noEmit': ${res.error.message}`);
