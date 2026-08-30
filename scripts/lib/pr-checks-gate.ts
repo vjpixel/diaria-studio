@@ -172,6 +172,25 @@ export function keepLatestPerName(nodes: readonly PrCheckNode[]): PrCheckNode[] 
   return [...out, ...semNome];
 }
 
+/**
+ * #6768: um node "deu sinal" (algo do CI de fato aconteceu pra ele) quando:
+ * - `CheckRun` já `COMPLETED` — passou ou falhou, não importa `startedAt`
+ *   (um payload parcial/antigo pode não trazer o campo mesmo já concluído).
+ * - `CheckRun` com `startedAt` válido — está rodando ou já rodou.
+ * - `StatusContext` com `state` fora de `PENDING_STATES` — já resolveu.
+ *
+ * Sem isso (`nenhumComecou` calculado só por `startedAt` ausente, achado do
+ * self-review do PR #6770), um `StatusContext` — que estruturalmente NUNCA
+ * tem `startedAt` — ou um `CheckRun` `COMPLETED` de payload parcial sem o
+ * campo eram lidos como "não começou", produzindo `blocked_by_conflict` por
+ * cima de um check que na verdade já `FAILURE`/`SUCCESS`.
+ */
+function hasStartedSignal(node: PrCheckNode): boolean {
+  if (typeof node.state === "string") return !PENDING_STATES.has(node.state);
+  if (node.status === "COMPLETED") return true;
+  return parseStartedAt(node.startedAt) !== null;
+}
+
 function isCancelledCheckRun(node: PrCheckNode): boolean {
   return node.status === "COMPLETED" && node.conclusion === "CANCELLED";
 }
@@ -265,26 +284,24 @@ export function evaluatePrChecksGate(
     };
   }
 
-  // #6768: nenhum check começou (nem sequer entrou no rollup, ou está lá
-  // como QUEUED sem `startedAt`) e o PR está em conflito com a base — o
-  // GitHub nunca vai rodar `pull_request` pra este SHA. Checar isto ANTES
-  // do early-return de array vazio abaixo, que senão produziria `pending`
-  // pra este caso.
-  const nenhumComecou =
-    statusCheckRollup.length === 0 ||
-    statusCheckRollup.every((n) => parseStartedAt((n as PrCheckNode | null)?.startedAt) === null);
-  if (nenhumComecou && opts.mergeable === "CONFLICTING") {
-    return {
-      verdict: "blocked_by_conflict",
-      failingChecks: [],
-      pendingChecks: [],
-      reason:
-        "PR está CONFLICTING com a base e nenhum check chegou a começar — o GitHub não computa o merge ref " +
-        "pra rodar `pull_request` neste SHA. Esperar CI aqui é inútil; resolver o conflito (merge/rebase com a base) primeiro.",
-    };
-  }
-
+  // #6768: rollup vazio (nem check nenhum registrado) + PR CONFLICTING com a
+  // base é o caso mais claro — o GitHub não computa o merge ref pra rodar
+  // `pull_request` neste SHA, então nem check-suite chega a existir. Checar
+  // isto ANTES do early-return de array vazio abaixo, que senão produziria
+  // `pending` pra este caso. O caso "checks existem mas nenhum começou"
+  // (todos `QUEUED` sem `startedAt`) é resolvido mais abaixo, depois da
+  // dedup — ver comentário perto de `pendingChecks`.
   if (statusCheckRollup.length === 0) {
+    if (opts.mergeable === "CONFLICTING") {
+      return {
+        verdict: "blocked_by_conflict",
+        failingChecks: [],
+        pendingChecks: [],
+        reason:
+          "PR está CONFLICTING com a base e nenhum check chegou a ser registrado — o GitHub não computa o " +
+          "merge ref pra rodar `pull_request` neste SHA. Esperar CI aqui é inútil; resolver o conflito (merge/rebase com a base) primeiro.",
+      };
+    }
     return {
       verdict: "pending",
       failingChecks: [],
@@ -353,6 +370,29 @@ export function evaluatePrChecksGate(
   }
 
   if (pendingChecks.length > 0) {
+    // #6768, 2º caso: o rollup TEM entradas (diferente do early-return de
+    // array vazio acima), mas nenhuma delas deu qualquer sinal real ainda
+    // (todas `QUEUED` sem `startedAt`, nenhuma `StatusContext` fora de
+    // PENDING/EXPECTED). Calculado sobre `vigentes` (pós-dedup #6766) — não
+    // sobre o rollup cru — pra não confundir um `CANCELLED` já descartado
+    // com sinal de que "algo rodou". Também calculado sobre TODAS as
+    // vigentes, não só as que caíram em `pendingChecks`: se qualquer uma já
+    // é `COMPLETED` (passou, e por isso não foi empurrada pra nenhum
+    // array), isso já é sinal de que o `pull_request` disparou — nunca
+    // `blocked_by_conflict` nesse caso, mesmo que outro check ainda não
+    // tenha começado.
+    const nenhumComecou = vigentes.every((n) => !hasStartedSignal((n ?? {}) as PrCheckNode));
+    if (nenhumComecou && opts.mergeable === "CONFLICTING") {
+      return {
+        verdict: "blocked_by_conflict",
+        failingChecks: [],
+        pendingChecks,
+        reason:
+          "PR está CONFLICTING com a base e nenhum check registrado chegou a começar (todos ainda sem " +
+          "`startedAt`) — o GitHub não computa o merge ref pra rodar `pull_request` neste SHA. Esperar CI " +
+          "aqui é inútil; resolver o conflito (merge/rebase com a base) primeiro.",
+      };
+    }
     return {
       verdict: "pending",
       failingChecks: [],

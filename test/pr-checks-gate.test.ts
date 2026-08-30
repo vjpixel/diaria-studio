@@ -455,6 +455,54 @@ describe("evaluatePrChecksGate — #6768: CONFLICTING sem check nenhum vira bloc
     const r = evaluatePrChecksGate([], { mergeable: "CONFLICTING" });
     assert.equal(isPrChecksGateGreen(r), false);
   });
+
+  // Achados P1 do self-review do PR #6770: `nenhumComecou` calculado só por
+  // `startedAt` ausente confundia "não começou" com "já resolveu, mas o
+  // shape/payload não carrega startedAt". Nenhum destes pode virar
+  // `blocked_by_conflict` — todos já têm sinal real de CI.
+  it("StatusContext já FAILURE + mergeable CONFLICTING => 'fail', nunca 'blocked_by_conflict' (StatusContext nunca tem startedAt)", () => {
+    const r = evaluatePrChecksGate([{ name: "vercel", state: "FAILURE" }], { mergeable: "CONFLICTING" });
+    assert.equal(r.verdict, "fail");
+    assert.notEqual(r.verdict, "blocked_by_conflict");
+  });
+
+  it("StatusContext já SUCCESS + mergeable CONFLICTING => 'pass', nunca 'blocked_by_conflict'", () => {
+    const r = evaluatePrChecksGate([{ name: "vercel", state: "SUCCESS" }], { mergeable: "CONFLICTING" });
+    assert.equal(r.verdict, "pass");
+  });
+
+  it("CheckRun COMPLETED sem `startedAt` no payload (parcial) + mergeable CONFLICTING => decide pelo conclusion, nunca 'blocked_by_conflict'", () => {
+    const semStartedAt = { name: "ci", status: "COMPLETED", conclusion: "FAILURE" } as PrCheckNode;
+    const r = evaluatePrChecksGate([semStartedAt], { mergeable: "CONFLICTING" });
+    assert.equal(r.verdict, "fail");
+    assert.notEqual(r.verdict, "blocked_by_conflict");
+  });
+
+  it("CANCELLED + SUCCESS sobrevivente, NENHUM com startedAt, + mergeable CONFLICTING => resolve pelo sobrevivente ('pass'), não 'blocked_by_conflict' (interação #6766×#6768)", () => {
+    // O sobrevivente pós-dedup é COMPLETED/SUCCESS — já é sinal de que o
+    // pull_request rodou, então blocked_by_conflict nunca devia disparar
+    // aqui, mesmo que nenhuma entrada carregue startedAt.
+    const r = evaluatePrChecksGate(
+      [
+        { name: "x", status: "COMPLETED", conclusion: "CANCELLED" },
+        { name: "x", status: "COMPLETED", conclusion: "SUCCESS" },
+      ],
+      { mergeable: "CONFLICTING" },
+    );
+    assert.equal(r.verdict, "pass");
+  });
+
+  it("1 check pendente sem sinal nenhum + 1 check já COMPLETED (não empurrado a nenhum array) + CONFLICTING => 'pending', não 'blocked_by_conflict' (qualquer sinal real desarma o veredito)", () => {
+    const r = evaluatePrChecksGate(
+      [
+        { name: "ci-a", status: "QUEUED", conclusion: null },
+        { name: "ci-b", status: "COMPLETED", conclusion: "SUCCESS" },
+      ],
+      { mergeable: "CONFLICTING" },
+    );
+    assert.equal(r.verdict, "pending");
+    assert.deepEqual(r.pendingChecks, ["ci-a"]);
+  });
 });
 
 describe("mensagem de pass não conta entradas supersedidas", () => {
