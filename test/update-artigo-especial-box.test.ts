@@ -448,8 +448,8 @@ describe("#6748 self-review (alta confiança): pin do box de fato RENDERIZA na n
         editionDir: dir,
         snippetsRootDir: snippetsDir,
         boxesDivulgacao: {
-          slot1: pinnedConfig.boxes_divulgacao!.slot1 ?? null,
-          slot2: pinnedConfig.boxes_divulgacao!.slot2 ?? null,
+          slot1: (pinnedConfig.boxes_divulgacao!.slot1 as string | null) ?? null,
+          slot2: (pinnedConfig.boxes_divulgacao!.slot2 as string | null) ?? null,
         },
       });
 
@@ -484,8 +484,8 @@ describe("#6748 self-review (alta confiança): pin do box de fato RENDERIZA na n
         editionDir: dir,
         snippetsRootDir: snippetsDir,
         boxesDivulgacao: {
-          slot1: pinnedConfig.boxes_divulgacao!.slot1 ?? null,
-          slot2: pinnedConfig.boxes_divulgacao!.slot2 ?? null,
+          slot1: (pinnedConfig.boxes_divulgacao!.slot1 as string | null) ?? null,
+          slot2: (pinnedConfig.boxes_divulgacao!.slot2 as string | null) ?? null,
         },
       });
 
