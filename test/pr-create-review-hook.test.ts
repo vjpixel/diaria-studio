@@ -12,6 +12,7 @@ import {
   logEffortDecision,
   REVIEW_AGENT,
   REVIEW_FLEET_MAX,
+  SELF_REVIEW_MARKER,
   DEFAULT_EFFORT,
   EFFORT_DIFF_LINE_THRESHOLD,
   OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD,
@@ -561,6 +562,41 @@ describe("buildReviewInstruction (#2754)", () => {
   it("warning presente → aparece anexado ao final da instrução", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low", "branch divergente do padrão");
     assert.match(msg, /\[aviso: branch divergente do padrão\]$/);
+  });
+});
+
+// #6732: a delegação do contínuo roda sem ferramenta Agent (--tools omite
+// Agent/Task, #6712) — sem esta cláusula, a sessão tentava cumprir a
+// instrução de dispatch mesmo assim, lendo o diff ela própria e postando um
+// comentário indistinguível de um review real ("Review automatizado (1
+// agente, effort low...", medido nos PRs #6713/#6715). O gate de auto-merge
+// do #5251 lia essa string fabricada como se fosse independente.
+describe("buildReviewInstruction — instrução de self-review honesto quando Agent tool está ausente (#6732)", () => {
+  it("todo effort instrui postar o marcador literal quando o Agent tool não está disponível", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction("https://github.com/o/r/pull/1", effort);
+      assert.match(msg, /Agent tool is NOT available/i);
+      assert.ok(
+        msg.includes(SELF_REVIEW_MARKER),
+        `instrução (effort=${effort}) deveria citar o marcador literal ${SELF_REVIEW_MARKER}`,
+      );
+    }
+  });
+
+  it("proíbe explicitamente rotular self-review como 'Review automatizado'", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
+    assert.match(msg, /do NOT label your own reading of the diff as an\s+agent review/i);
+    assert.match(msg, /Review automatizado/);
+  });
+
+  it("referencia o gate de pré-merge que lê o marcador (#6732) e o #5251 como não-satisfeito", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
+    assert.match(msg, /check-pr-review-authenticity\.ts/);
+    assert.match(msg, /NOT satisfying #5251/i);
+  });
+
+  it("SELF_REVIEW_MARKER exportado é o mesmo literal usado na instrução (regressão de drift)", () => {
+    assert.equal(SELF_REVIEW_MARKER, "<!-- self-review: true -->");
   });
 });
 
