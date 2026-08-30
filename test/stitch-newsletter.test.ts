@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, regenerateHubDivulgacaoBoxForEdition, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, regenerateHubDivulgacaoBoxForEdition, type ParaEncerrarConfig, type UseMelhorTempoInstrumentationEntry } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
@@ -2162,7 +2162,7 @@ describe("renderUseMelhorSection — #6739 body cacheado sobre heurística de t�
       // tutorial) daria "(5 min)" por default; o body real corrige pra "(15 min)".
       const words = new Array(3000).fill("palavra").join(" ");
       saveCachedBody(bodiesDir, url, `<html><body><p>${words}</p></body></html>`);
-      const instrumentation: Array<{ url: string; source: string; estimate: string }> = [];
+      const instrumentation: UseMelhorTempoInstrumentationEntry[] = [];
       const out = renderUseMelhorSection(
         [
           {
@@ -2183,7 +2183,7 @@ describe("renderUseMelhorSection — #6739 body cacheado sobre heurística de t�
   });
 
   it("sem bodiesDir (comportamento pré-#6739): usa a heurística de título e não instrumenta", () => {
-    const instrumentation: Array<{ url: string; source: string }> = [];
+    const instrumentation: UseMelhorTempoInstrumentationEntry[] = [];
     const out = renderUseMelhorSection(
       [
         {
