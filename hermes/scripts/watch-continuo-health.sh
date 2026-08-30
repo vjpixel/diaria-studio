@@ -23,6 +23,8 @@ set -uo pipefail
 
 REPO="/home/vjpixel/diaria-studio"
 cd "$REPO" || { echo "ERRO: repo ausente"; exit 1; }
+# shellcheck source=./lib/continuo-branch-prefix.sh
+source "$REPO/hermes/scripts/lib/continuo-branch-prefix.sh"
 FAILS=0
 
 # Dedup: existe issue ABERTA cujo título CONTÉM o marcador?
@@ -165,19 +167,29 @@ else
 fi
 
 # ── 5. adoção da convenção de branch (informational) ─────────────────────────
-if ! NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author --jq '
-  [.[] | select(.createdAt > (now - 86400 | todate))
-       | select(.author.login == "vjpixel")
-       | .headRefName
-       | select((startswith("continuo/") or startswith("overnight/") or startswith("develop/") or startswith("dependabot/")) | not)
-  ] | join(", ")' 2>/dev/null); then
+# #6771 (absorve #6709): a checagem original marcava TODA branch das últimas
+# 24h sem prefixo autônomo, incluindo sessão interativa do editor — investigado
+# ao vivo em #6709: as 7 branches acusadas eram TODAS de sessão interativa
+# (#6707, #6675, #6639, #6632, worktree de subagente), nenhuma do contínuo, e
+# o alarme disparava TODO DIA pelo mesmo motivo. Falso positivo recorrente
+# treina quem lê a ignorar o alarme inteiro — o próprio objetivo do check.
+# Fix: aceitar também os prefixos convencionais de sessão interativa/develop
+# manual já em uso neste repo, via o filtro compartilhado
+# `lib/continuo-branch-prefix.sh` (extraído pra arquivo próprio, não inline,
+# porque `continuo-branch-prefix.test.sh` precisa exercitar exatamente o
+# mesmo filtro que roda em produção — mesma disciplina de
+# `scripts/lib/pr-review-authenticity.ts`, #6732). O check continua pegando
+# o caso real que motivou #6461: um PR do contínuo que saiu sem nenhum
+# prefixo reconhecido.
+if ! NOPREFIX=$(gh pr list --state all --limit 30 --json headRefName,createdAt,author \
+     --jq "$CONTINUO_BRANCH_PREFIX_JQ_FILTER" 2>/dev/null); then
   echo "[watch] convenção de branch: INDETERMINADO (gh pr list falhou)" >&2; FAILS=$((FAILS+1)); NOPREFIX=""
 fi
 if [ -n "$NOPREFIX" ]; then
   file_issue "[watch-continuo] PRs autônomos" \
     "[watch-continuo] PRs autônomos das últimas 24h sem prefixo de trilha" \
     "enhancement,P3" \
-    "Detectado por watch-continuo-health.sh — branches sem \`continuo/\`/\`overnight/\`/\`develop/\` criados nas últimas 24h: \`$NOPREFIX\`. Se forem do contínuo, a skill v0.5.0 não está seguindo a convenção do #6461 e os PRs aparecem como \`other\` na Triagem. Se forem PRs manuais do editor, fechar como esperado. P3: cosmético/observabilidade, sem impacto funcional."
+    "Detectado por watch-continuo-health.sh — branches sem nenhum prefixo autônomo/interativo reconhecido criados nas últimas 24h: \`$NOPREFIX\` (lista completa dos prefixos aceitos em \`hermes/scripts/lib/continuo-branch-prefix.sh\`, #6771). Se forem do contínuo, a skill v0.5.0 não está seguindo a convenção do #6461 e os PRs aparecem como \`other\` na Triagem. Se forem PRs manuais do editor, fechar como esperado. P3: cosmético/observabilidade, sem impacto funcional."
 else
   echo "[watch] convenção de branch ok"
 fi
