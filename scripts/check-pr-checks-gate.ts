@@ -19,10 +19,12 @@
  * Exit codes (todo valor != 0 significa "condição 1 NÃO satisfeita" — o
  * chamador nunca precisa distinguir "erro" de "reprovado" pra decidir se
  * pode mergear, só pra decidir a mensagem):
- *   0 = pass    (verdict "pass" — autorizado)
- *   1 = fail    (ao menos 1 check reprovado)
- *   2 = pending (checks ainda rodando, ou nenhum check registrado ainda)
- *   3 = error   (gh falhou, PR inexistente, JSON malformado, payload sem statusCheckRollup)
+ *   0 = pass                (verdict "pass" — autorizado)
+ *   1 = fail                (ao menos 1 check reprovado)
+ *   2 = pending             (checks ainda rodando, ou nenhum check registrado ainda)
+ *   3 = error               (gh falhou, PR inexistente, JSON malformado, payload sem statusCheckRollup)
+ *   4 = blocked_by_conflict (#6768 — PR CONFLICTING com a base; CI nunca vai rodar pra este SHA,
+ *                            nenhuma espera resolve — precisa merge/rebase com a base primeiro)
  *
  * @see scripts/lib/pr-checks-gate.ts
  * @see .claude/skills/diaria-overnight/SKILL.md (condição 1 do gate — #2210/#2222)
@@ -35,19 +37,21 @@ import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-g
 
 interface GhPrViewStatusCheckRollup {
   statusCheckRollup?: unknown;
+  /** `"MERGEABLE" | "CONFLICTING" | "UNKNOWN"` — ver #6768/`evaluatePrChecksGate`. */
+  mergeable?: unknown;
 }
 
 /**
- * Busca `statusCheckRollup` via `gh pr view`. Fail-hard por design (ao
- * contrário do gate de label #5821, que é hygiene e pode fail-soft): esta
- * é a condição 1 de um gate que AUTORIZA merge — qualquer falha de comando
- * vira `verdict: "error"`, nunca `"pass"`, e o entrypoint sai com código
- * != 0. Nunca lança.
+ * Busca `statusCheckRollup` (+ `mergeable`, #6768) via `gh pr view`. Fail-hard
+ * por design (ao contrário do gate de label #5821, que é hygiene e pode
+ * fail-soft): esta é a condição 1 de um gate que AUTORIZA merge — qualquer
+ * falha de comando vira `verdict: "error"`, nunca `"pass"`, e o entrypoint
+ * sai com código != 0. Nunca lança.
  */
 function fetchPrChecksGate(prNumber: number, cwd: string): PrChecksGateResult {
   const result = spawnSync(
     "gh",
-    ["pr", "view", String(prNumber), "--json", "statusCheckRollup"],
+    ["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable"],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
 
@@ -89,8 +93,10 @@ function fetchPrChecksGate(prNumber: number, cwd: string): PrChecksGateResult {
     };
   }
 
-  const rollup = (parsed as GhPrViewStatusCheckRollup).statusCheckRollup;
-  return evaluatePrChecksGate(rollup);
+  const payload = parsed as GhPrViewStatusCheckRollup;
+  const rollup = payload.statusCheckRollup;
+  const mergeable = typeof payload.mergeable === "string" ? payload.mergeable : undefined;
+  return evaluatePrChecksGate(rollup, { mergeable });
 }
 
 const EXIT_CODES: Record<PrChecksGateResult["verdict"], number> = {
@@ -98,6 +104,7 @@ const EXIT_CODES: Record<PrChecksGateResult["verdict"], number> = {
   fail: 1,
   pending: 2,
   error: 3,
+  blocked_by_conflict: 4,
 };
 
 if (isMainModule(import.meta.url)) {

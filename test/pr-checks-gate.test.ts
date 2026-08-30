@@ -238,14 +238,32 @@ describe("evaluatePrChecksGate — run supersedida por force-push", () => {
 });
 
 describe("keepLatestPerName", () => {
-  it("sem startedAt em TODAS, não desduplica — mantém o grupo inteiro", () => {
+  it("sem startedAt em TODAS, não desduplica por CHRONOLOGIA — mantém o grupo inteiro quando nenhuma é CANCELLED", () => {
     // Expectativa MUDADA após o review (achado alta/P1). A versão anterior
     // desempatava por posição, o que descarta um check real por palpite.
+    // (FAILURE vs SUCCESS: nenhuma das duas é categoricamente descartável —
+    // precisa de timestamp pra provar quem supersede quem, e não há.)
+    const r = keepLatestPerName([
+      { name: "x", conclusion: "FAILURE", status: "COMPLETED" },
+      { name: "x", conclusion: "SUCCESS", status: "COMPLETED" },
+    ]);
+    assert.equal(r.length, 2, "sem timestamp não há como provar quem supersede quem");
+  });
+
+  it("CANCELLED vs SUCCESS sem startedAt em nenhuma: desduplica MESMO ASSIM (#6766) — não é uma decisão cronológica", () => {
+    // Diferente do caso acima: quando uma das entradas é CANCELLED e a outra
+    // não, não precisa de timestamp pra saber qual descartar — é uma regra
+    // categórica (`dropSupersededCancelled`, roda ANTES da comparação por
+    // horário), não uma disputa de "qual é mais nova". Ver #6766: o próprio
+    // bug original mostrou que comparar por `startedAt` entre um CANCELLED e
+    // uma run genuína é enganoso mesmo QUANDO o timestamp existe — então não
+    // ter timestamp nenhum não é motivo pra manter o CANCELLED.
     const r = keepLatestPerName([
       { name: "x", conclusion: "CANCELLED", status: "COMPLETED" },
       { name: "x", conclusion: "SUCCESS", status: "COMPLETED" },
     ]);
-    assert.equal(r.length, 2, "sem timestamp não há como provar quem supersede quem");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].conclusion, "SUCCESS");
   });
 
   it("node sem name não é desduplicável e passa inteiro", () => {
@@ -310,6 +328,132 @@ describe("keepLatestPerName — timestamp MISTO nunca produz falso-verde", () =>
       { name: "ci", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-26T11:49:35Z" },
     ]);
     assert.equal(r.verdict, "pass");
+  });
+});
+
+// #6766 (rodada overnight 260829b) — payload real medido no PR #6764: um
+// evento `labeled` pós-`gh run rerun` disparou um 2º run separado, cancelado
+// pelo `concurrency`, cujas entradas têm `startedAt` MAIS TARDE que as do run
+// que de fato passou — `keepLatestPerName` por timestamp escolhia a
+// `CANCELLED` errada e o gate reportava `fail` com CI genuinamente verde.
+describe("evaluatePrChecksGate — #6766: CANCELLED de run superseded não reprova quando startedAt engana", () => {
+  it("CANCELLED com startedAt MAIS TARDE que o SUCCESS ainda assim não reprova (payload real do PR #6764)", () => {
+    // "Unused code check" no PR #6764: o run cancelado (evento `labeled`)
+    // começou às 00:54:58 — depois do job do run que passou, que começou às
+    // 00:52:17 e concluiu SUCCESS às 00:52:43. Timestamp puro escolheria o
+    // CANCELLED (mais recente por startedAt) — o bug exato da issue.
+    const r = evaluatePrChecksGate([
+      {
+        name: "Unused code check",
+        status: "COMPLETED",
+        conclusion: "CANCELLED",
+        startedAt: "2026-08-30T00:54:58Z",
+      },
+      {
+        name: "Unused code check",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        startedAt: "2026-08-30T00:52:17Z",
+      },
+    ]);
+    assert.equal(r.verdict, "pass");
+    assert.deepEqual(r.failingChecks, []);
+  });
+
+  it("mesmo cenário mas a substituta é FAILURE (não SUCCESS) — CANCELLED ainda é descartado, mas o gate reprova pela FAILURE real", () => {
+    const r = evaluatePrChecksGate([
+      { name: "tests", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-30T00:54:58Z" },
+      { name: "tests", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-08-30T00:52:17Z" },
+    ]);
+    assert.equal(r.verdict, "fail");
+    assert.deepEqual(r.failingChecks, ["tests"]);
+  });
+
+  it("CANCELLED com substituta ainda EM ANDAMENTO (sem conclusion) vira pending, não fail", () => {
+    const r = evaluatePrChecksGate([
+      { name: "slow-job", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-30T00:54:58Z" },
+      { name: "slow-job", status: "IN_PROGRESS", conclusion: null, startedAt: "2026-08-30T00:55:10Z" },
+    ]);
+    assert.equal(r.verdict, "pending");
+    assert.deepEqual(r.pendingChecks, ["slow-job"]);
+  });
+
+  it("CANCELLED sozinho (sem substituta) continua reprovando — regra pré-existente preservada", () => {
+    const r = evaluatePrChecksGate([
+      { name: "knip", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-30T00:54:58Z" },
+    ]);
+    assert.equal(r.verdict, "fail");
+  });
+
+  it("múltiplos checks do payload real do PR #6764 — todos passam mesmo com CANCELLED intercalado", () => {
+    const rollupReal = [
+      { name: "Unused code check", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-30T00:54:58Z" },
+      { name: "test", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-30T00:52:16Z" },
+      { name: "Unused code check", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-30T00:52:17Z" },
+      { name: "Static invariants check", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-08-30T00:54:58Z" },
+      { name: "Static invariants check", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-08-30T00:52:17Z" },
+      {
+        name: "Regression test gate",
+        status: "COMPLETED",
+        conclusion: "CANCELLED",
+        startedAt: "2026-08-30T00:54:57Z",
+      },
+      {
+        name: "Regression test gate",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        startedAt: "2026-08-30T00:55:10Z",
+      },
+    ];
+    const r = evaluatePrChecksGate(rollupReal);
+    assert.equal(r.verdict, "pass", r.reason);
+  });
+});
+
+// #6768 (rodada overnight 260829b) — PR #6765: branch virou CONFLICTING
+// depois do merge de outros PRs da mesma onda; o GitHub nunca disparou
+// `pull_request` pra esse SHA (não computa merge ref com conflito), então o
+// check-suite ficou `queued` pra sempre sem nunca virar `workflow_run`.
+describe("evaluatePrChecksGate — #6768: CONFLICTING sem check nenhum vira blocked_by_conflict, não pending genérico", () => {
+  it("statusCheckRollup vazio + mergeable CONFLICTING => 'blocked_by_conflict'", () => {
+    const r = evaluatePrChecksGate([], { mergeable: "CONFLICTING" });
+    assert.equal(r.verdict, "blocked_by_conflict");
+    assert.match(r.reason, /CONFLICTING/);
+  });
+
+  it("todos os checks QUEUED (sem startedAt) + mergeable CONFLICTING => 'blocked_by_conflict'", () => {
+    const r = evaluatePrChecksGate([{ name: "ci", status: "QUEUED", conclusion: null }], {
+      mergeable: "CONFLICTING",
+    });
+    assert.equal(r.verdict, "blocked_by_conflict");
+  });
+
+  it("statusCheckRollup vazio SEM mergeable informado continua 'pending' (comportamento pré-#6768 preservado)", () => {
+    const r = evaluatePrChecksGate([]);
+    assert.equal(r.verdict, "pending");
+  });
+
+  it("statusCheckRollup vazio + mergeable MERGEABLE continua 'pending', nunca blocked_by_conflict", () => {
+    const r = evaluatePrChecksGate([], { mergeable: "MERGEABLE" });
+    assert.equal(r.verdict, "pending");
+  });
+
+  it("statusCheckRollup vazio + mergeable UNKNOWN continua 'pending' — só CONFLICTING dispara o veredito novo", () => {
+    const r = evaluatePrChecksGate([], { mergeable: "UNKNOWN" });
+    assert.equal(r.verdict, "pending");
+  });
+
+  it("checks JÁ começaram (têm startedAt) + mergeable CONFLICTING não dispara blocked_by_conflict — CI já está rodando de verdade", () => {
+    const r = evaluatePrChecksGate([{ name: "ci", status: "IN_PROGRESS", conclusion: null, startedAt: "2026-08-30T00:00:00Z" }], {
+      mergeable: "CONFLICTING",
+    });
+    assert.equal(r.verdict, "pending");
+    assert.notEqual(r.verdict, "blocked_by_conflict");
+  });
+
+  it("isPrChecksGateGreen(blocked_by_conflict) é sempre false", () => {
+    const r = evaluatePrChecksGate([], { mergeable: "CONFLICTING" });
+    assert.equal(isPrChecksGateGreen(r), false);
   });
 });
 
