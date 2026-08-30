@@ -103,6 +103,12 @@
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-branch-checkout-main.mjs\"",
             "shell": "bash",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs\"",
+            "shell": "bash",
+            "timeout": 30
           }
         ]
       },

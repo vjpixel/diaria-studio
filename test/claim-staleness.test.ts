@@ -112,6 +112,83 @@ describe("findAgedClaims", () => {
     assert.deepEqual(findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => null), []);
   });
 
+  // #6754 — falso positivo ao vivo: issue #6677 já estava CLOSED quando foi
+  // reportada como "claim envelhecida sem PR aberto"; o checker nunca
+  // consultava o estado da issue antes de sinalizar.
+  it("#6754: issue CLOSED → nunca reporta, mesmo sem PR aberto e claim antiga", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [6677],
+        claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(
+      entries,
+      NOW,
+      CLAIM_STALE_AGE_MS,
+      () => false,
+      () => true,
+    );
+    assert.deepEqual(findings, []);
+  });
+
+  it("#6754: issue OPEN (isIssueClosed → false) segue avaliação normal (reporta)", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [6677],
+        claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(
+      entries,
+      NOW,
+      CLAIM_STALE_AGE_MS,
+      () => false,
+      () => false,
+    );
+    assert.equal(findings.length, 1);
+  });
+
+  it("#6754: isIssueClosed não verificável (null) → fail-soft, segue avaliação normal", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [6677],
+        claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(
+      entries,
+      NOW,
+      CLAIM_STALE_AGE_MS,
+      () => false,
+      () => null,
+    );
+    assert.equal(findings.length, 1);
+  });
+
+  it("#6754: isIssueClosed omitido (chamador antigo) → comportamento inalterado", () => {
+    const entries = flattenClaims([
+      {
+        kind: "continuo",
+        machineTag: "helios",
+        sessionId: "x",
+        claimed_issues: [6677],
+        claimed_issues_at: { "6677": new Date(NOW - 7 * 3_600_000).toISOString() },
+      },
+    ]);
+    const findings = findAgedClaims(entries, NOW, CLAIM_STALE_AGE_MS, () => false);
+    assert.equal(findings.length, 1);
+  });
+
   it("resultado ordenado por número de issue", () => {
     const entries = flattenClaims([
       {

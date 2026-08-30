@@ -108,12 +108,21 @@ export interface AgedClaimFinding {
  * desconhecida não é idade excedida, mesmo fail-soft de `block-staleness.ts`
  * (preferir falso negativo a reabrir/marcar staleness por engano de dado
  * ausente).
+ *
+ * `isIssueClosed` (opcional, #6754): issue já `CLOSED` nunca precisa de
+ * re-triagem — reportá-la como "claim envelhecida" é sempre falso positivo
+ * (achado ao vivo #6754/#6677: a issue tinha sido fechada, mas o checker
+ * nunca consultava o estado dela antes de sinalizar). `true` pula o
+ * finding; `false`/`null`/omitido segue a avaliação normal (idade +
+ * `hasOpenPr`) — mesmo fail-soft do resto do módulo, "não sei" nunca vira
+ * "está fechada".
  */
 export function findAgedClaims(
   entries: readonly ClaimEntry[],
   now: number,
   maxAgeMs: number,
   hasOpenPr: (issueNumber: number) => boolean | null,
+  isIssueClosed?: (issueNumber: number) => boolean | null,
 ): AgedClaimFinding[] {
   const out: AgedClaimFinding[] = [];
   for (const entry of entries) {
@@ -122,6 +131,7 @@ export function findAgedClaims(
     if (!Number.isFinite(claimedAtMs)) continue;
     const ageMs = now - claimedAtMs;
     if (ageMs < maxAgeMs) continue;
+    if (isIssueClosed?.(entry.issueNumber) === true) continue; // issue fechada — nunca precisa de re-triagem
     const openPr = hasOpenPr(entry.issueNumber);
     if (openPr !== false) continue; // true ou null (não verificável) → nunca reporta
     out.push({

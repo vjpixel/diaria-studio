@@ -59,6 +59,35 @@ import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-s
  * `findStaleBlocks` já trata esses valores como "não verificável".
  */
 function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
+  // #6754 fleet review — a categoria `bloqueio-execucao` agora checa TODAS
+  // as labels de `BLOCKED_LABELS_SET` (4 labels) por issue; sem cache isso
+  // vira 4 chamadas `gh issue view` idênticas (mesmo issue, mesmo campo
+  // `labels`, só o filtro final muda). Memoiza por issueNumber dentro desta
+  // instância de consultor — 1 fetch por issue, independente de quantas
+  // labels forem checadas.
+  const labelsCache = new Map<number, Set<string> | null>();
+  function fetchLabels(issueNumber: number): Set<string> | null {
+    if (labelsCache.has(issueNumber)) return labelsCache.get(issueNumber) ?? null;
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    let value: Set<string> | null;
+    if (result.error || result.status !== 0 || !result.stdout) {
+      value = null;
+    } else {
+      try {
+        const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: string }> };
+        value = new Set((parsed.labels ?? []).map((l) => l.name).filter((n): n is string => !!n));
+      } catch {
+        value = null;
+      }
+    }
+    labelsCache.set(issueNumber, value);
+    return value;
+  }
+
   return {
     getPrState(prNumber: number): PrState {
       const result = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "state"], {
@@ -87,19 +116,9 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
       }
     },
     hasLabel(issueNumber: number, label: string): boolean | null {
-      const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 15_000,
-      });
-      if (result.error || result.status !== 0 || !result.stdout) return null;
-      try {
-        const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: string }> };
-        const labels = parsed.labels ?? [];
-        return labels.some((l) => l.name === label);
-      } catch {
-        return null;
-      }
+      const labels = fetchLabels(issueNumber);
+      if (labels === null) return null;
+      return labels.has(label);
     },
   };
 }
@@ -122,6 +141,32 @@ function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | nu
     try {
       const parsed = JSON.parse(result.stdout) as Array<{ number?: number }>;
       return Array.isArray(parsed) && parsed.length > 0;
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * #6754 — `true`/`false` se a issue está `CLOSED`; `null` (não verificável)
+ * em qualquer falha de `gh` (offline, rate limit, não-autenticado). Issue
+ * fechada nunca precisa de re-triagem por claim envelhecida — ver docstring
+ * de `findAgedClaims` em `claim-staleness.ts`.
+ */
+function buildIsIssueClosed(repoRoot: string): (issueNumber: number) => boolean | null {
+  return (issueNumber: number): boolean | null => {
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "state"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (result.error || result.status !== 0 || !result.stdout) return null;
+    try {
+      const parsed = JSON.parse(result.stdout) as { state?: string };
+      const state = (parsed.state ?? "").toUpperCase();
+      if (state === "CLOSED") return true;
+      if (state === "OPEN") return false;
+      return null;
     } catch {
       return null;
     }
@@ -164,7 +209,14 @@ if (isMainModule(import.meta.url)) {
   const sessions = listActiveSessions(repoRoot);
   const claimEntries = flattenClaims(sessions);
   const hasOpenPr = buildHasOpenPr(repoRoot);
-  const agedClaims = findAgedClaims(claimEntries, Date.now(), CLAIM_STALE_AGE_MS, hasOpenPr);
+  const isIssueClosed = buildIsIssueClosed(repoRoot);
+  const agedClaims = findAgedClaims(
+    claimEntries,
+    Date.now(),
+    CLAIM_STALE_AGE_MS,
+    hasOpenPr,
+    isIssueClosed,
+  );
 
   if (findings.length === 0 && agedClaims.length === 0) {
     console.log(

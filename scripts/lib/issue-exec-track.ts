@@ -305,6 +305,15 @@ const BLOCKED_LABELS = new Set([
   "bloqueio-execucao",
 ]);
 
+/** Export somente-leitura de `BLOCKED_LABELS` (#6754) — fonte única de "quais
+ * labels significam bloqueio real" pra consumidores fora deste módulo
+ * (`scripts/lib/block-staleness.ts`). Reexportar em vez de duplicar a lista
+ * evita a classe de bug do #6754: o checker de bloqueio caducado só conhecia
+ * `bloqueio-execucao`, então uma issue bloqueada por `kit-migration` (label
+ * de bloqueio distinta, sem `bloqueio-execucao` presente) era relatada como
+ * "bloqueio caducou" — falso positivo. */
+export const BLOCKED_LABELS_SET: ReadonlySet<string> = BLOCKED_LABELS;
+
 /**
  * #5694 — subcaso de `external-blocker` mais barato de destravar: a
  * credencial JÁ EXISTE, só falta escopo/permission (achado real do #5641 —
